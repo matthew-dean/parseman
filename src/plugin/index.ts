@@ -122,10 +122,11 @@ export function transformMacro(
 
       if (!referencesAny(init, allNames, scope)) continue
 
-      const parser = evaluateExpr(init, scope)
+      const mapFnSources: string[] = []
+      const parser = evaluateExpr(init, scope, code, mapFnSources)
       if (parser === null) { anyUnresolved = true; continue }
 
-      const compiled = compile(parser)
+      const compiled = compile(parser, mapFnSources.length ? mapFnSources : undefined)
       if (compiled.inlineExpression === null) { anyUnresolved = true; continue }
 
       replacements.push({

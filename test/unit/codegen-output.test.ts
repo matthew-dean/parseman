@@ -192,16 +192,18 @@ const line = sequence(method, sp, version)
     expect(result).not.toContain('literal(')
   })
 
-  it('keeps import when a declaration cannot be inlined (has user function)', () => {
+  it('inlines transform() with an inline callback, removing the import', () => {
     const result = transformMacro(
       `import { literal, transform } from 'parseman' with { type: 'macro' }
 const p = transform(literal('hi'), s => s.toUpperCase())`,
       'test.ts',
       new Set(['parseman'])
     )
-    // transform with user fn is not inlinable — plugin should keep (or null)
-    if (result !== null) {
-      expect(result.code).toContain('transform(')
-    }
+    // transform with an inline callback is now fully compilable
+    expect(result).not.toBeNull()
+    expect(result!.code).not.toContain('transform(')
+    expect(result!.code).not.toContain('parseman')
+    expect(result!.code).toContain('s => s.toUpperCase()')
+    expect(result!.code).toContain('const _mf =')
   })
 })

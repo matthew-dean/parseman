@@ -791,7 +791,7 @@ export type CompiledParser<T> = {
   inlineExpression: string | null
 }
 
-export function compile<T>(parser: Combinator<T>): CompiledParser<T> {
+export function compile<T>(parser: Combinator<T>, mapFnSources?: string[]): CompiledParser<T> {
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -837,10 +837,11 @@ export function compile<T>(parser: Combinator<T>): CompiledParser<T> {
 
   const defaultCtx: ParseContext = { trackLines: false }
 
-  // Build an inline expression only when there are no runtime fallbacks or
-  // map-function closures that can't be serialized.
-  const canInline = ctx.runtimeParsers.length === 0 && ctx.mapFns.length === 0
-  const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, collatorDecl) : null
+  // Build an inline expression when there are no runtime fallbacks, and either
+  // no map-function closures or their source text has been provided for injection.
+  const mfCovered = ctx.mapFns.length === 0 || (mapFnSources !== undefined && mapFnSources.length === ctx.mapFns.length)
+  const canInline = ctx.runtimeParsers.length === 0 && mfCovered
+  const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, collatorDecl, mapFnSources) : null
 
   return {
     source,
@@ -855,6 +856,7 @@ function buildInlineExpression(
   ctx: Ctx,
   r: ER,
   collatorDecl: string,
+  mapFnSources?: string[],
 ): string {
   const bodyLines = [
     `  let pos = _pos`,
@@ -868,18 +870,19 @@ function buildInlineExpression(
     `}`,
   ].join('\n')
 
-  const needsWrapper = ctx.regexDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0
-  if (!needsWrapper) {
-    return innerFn
-  }
+  // When map-function source texts are provided, declare _mf inline so the
+  // emitted _mf[i] references resolve without a runtime closure array.
+  const mfDecl = mapFnSources?.length ? `  const _mf = [${mapFnSources.join(', ')}]` : ''
 
-  // Wrap in IIFE to hoist regex/collator declarations and named recursive functions.
-  // Named functions declared here close over _re* consts and can call each other
-  // freely — JS hoists function declarations within the IIFE scope.
+  const needsWrapper = ctx.regexDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl
+  if (!needsWrapper) return innerFn
+
+  // Wrap in IIFE to hoist regex/collator/mf declarations and named recursive functions.
   return [
     `/* @__PURE__ */ (() => {`,
     ...ctx.regexDecls.map(d => `  ${d}`),
     collatorDecl ? `  ${collatorDecl.trim()}` : '',
+    mfDecl,
     ...ctx.namedFnDecls.flatMap(f => f.split('\n').map(l => `  ${l}`)),
     `  return ${innerFn}`,
     `})()`,

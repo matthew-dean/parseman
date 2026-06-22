@@ -102,19 +102,18 @@ const requestLine = sequence(method, sp, target)
   })
 })
 
-describe('transformMacro — non-inlinable declarations', () => {
-  it('leaves transform() declarations as regular runtime calls', () => {
+describe('transformMacro — transform() declarations', () => {
+  it('inlines transform() with an inline callback', () => {
     const code = `
 import { literal, transform } from 'parseman' with { type: 'macro' }
 const upper = transform(literal('hello'), s => s.toUpperCase())
 `.trim()
     const result = transform(code)
-    // transform with user fn can't be inlined — import kept, decl kept as-is
-    if (result !== null) {
-      // If something was transformed, it shouldn't have removed all of parseman
-      // The transform call itself remains (only inlinable declarations are replaced)
-      expect(result.code).toContain('transform(')
-    }
+    // transform with an inline callback is now fully compilable
+    expect(result).not.toBeNull()
+    expect(result!.code).not.toContain('transform(')
+    expect(result!.code).toContain('s => s.toUpperCase()')
+    expect(result!.code).toContain('const _mf =')
   })
 })
 
