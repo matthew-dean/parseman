@@ -17,6 +17,7 @@ import { parseCSV, compiledCSV } from '../examples/csv/parser.ts'
 import { parseConfig, compiledConfig } from '../examples/toml-ish/parser.ts'
 import { compile } from '../src/index.ts'
 import { buildChevrotainJSON } from './chevrotain-json.ts'
+import { buildChevrotainCSV } from './chevrotain-csv.ts'
 import { buildParsimmonJSON } from './parsimmon-json.ts'
 import { buildParsimmonCSV } from './parsimmon-csv.ts'
 import { buildPeggyJSON } from './peggy-json.ts'
@@ -27,6 +28,7 @@ import { buildPeggyCSV } from './peggy-csv.ts'
 // ---------------------------------------------------------------------------
 const compiledJSON   = compile(jsonValue)
 const chevrotainJSON = buildChevrotainJSON()
+const chevrotainCSV  = buildChevrotainCSV()
 const parsimmonJSON  = buildParsimmonJSON()
 const parsimmonCSV   = buildParsimmonCSV()
 const peggyJSON      = buildPeggyJSON()
@@ -97,6 +99,7 @@ function csvGroup(label: string, input: string, iters: number) {
   console.log(`\n  [${label}] ${input.length} bytes, ${rows} rows`)
   bench('Parmésan (interpreter)',     () => parseCSV(input), iters)
   bench('Parmésan (compiled)',   () => compiledCSV.parse(input), iters)
+  bench('Chevrotain',            () => chevrotainCSV(input), iters)
   bench('Parsimmon',             () => parsimmonCSV(input), iters)
   bench('Peggy',                 () => peggyCSV(input), iters)
 }
