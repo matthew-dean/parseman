@@ -3,14 +3,16 @@ import {
   literal, regex, sequence, choice, many, optional, sepBy,
   parse, withCtx, guard,
 } from '../../src/index.ts'
-import { Parser, IncrementalParser } from '../../src/index.ts'
+import { IncrementalParser } from '../../src/index.ts'
 import type { Refs } from '../../src/index.ts'
 import type { CSTNode } from '../../src/index.ts'
 
 // ---------------------------------------------------------------------------
 // Simple grammar for all basic tests
 // ---------------------------------------------------------------------------
-class JsonLikeGrammar extends Parser {
+class JsonLikeGrammar extends IncrementalParser {
+  constructor() { super('Object') }
+
   ws     = regex(/\s*/)
   digits = regex(/[0-9]+/)
   ident  = regex(/[a-zA-Z_]\w*/)
@@ -25,7 +27,7 @@ class JsonLikeGrammar extends Parser {
 }
 
 function makeParser() {
-  return new IncrementalParser(new JsonLikeGrammar(), 'Object')
+  return new JsonLikeGrammar()
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +167,8 @@ describe('IncrementalParser — immutable tree', () => {
 // Context-sensitive incremental parse
 // ---------------------------------------------------------------------------
 describe('IncrementalParser — context-sensitive', () => {
-  class LangGrammar extends Parser {
+  class LangGrammar extends IncrementalParser {
+    constructor() { super('Program') }
     ws = regex(/\s*/)
 
     Return = (g: Refs<LangGrammar>) => sequence(
@@ -179,7 +182,7 @@ describe('IncrementalParser — context-sensitive', () => {
   }
 
   it('incremental re-parse of a Body node uses saved inFn:true context', () => {
-    const ip = new IncrementalParser(new LangGrammar(), 'Program')
+    const ip = new LangGrammar()
     const tree = ip.parse('return ')
     expect(tree).not.toBeNull()
     const tree2 = ip.edit('return return ', 7, 7)
@@ -187,7 +190,7 @@ describe('IncrementalParser — context-sensitive', () => {
   })
 
   it('savedContext on Stmt node records inFn:true for incremental re-use', () => {
-    const ip = new IncrementalParser(new LangGrammar(), 'Program')
+    const ip = new LangGrammar()
     const tree = ip.parse('return ')
     expect(tree).not.toBeNull()
 

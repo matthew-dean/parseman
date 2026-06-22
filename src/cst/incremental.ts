@@ -1,9 +1,10 @@
 import type { ParseContext } from '../types.ts'
-import type { Parser, RuleKeys } from './grammar.ts'
+import { Parser } from './grammar.ts'
+import type { RuleKeys } from './grammar.ts'
 import type { CSTLeaf, CSTError, NodeLike } from './types.ts'
 
 // ---------------------------------------------------------------------------
-// Tree navigation helpers (work with any NodeLike)
+// Tree navigation helpers
 // ---------------------------------------------------------------------------
 
 type FoundNode = {
@@ -15,7 +16,6 @@ function isNode(x: unknown): x is NodeLike {
   return typeof x === 'object' && x !== null && (x as { _tag?: string })._tag === 'node'
 }
 
-/** Find the deepest NodeLike whose span contains `pos`. */
 function findContaining(node: NodeLike, pos: number, path: number[] = []): FoundNode | null {
   for (let i = 0; i < node.children.length; i++) {
     const child = node.children[i]!
@@ -27,7 +27,6 @@ function findContaining(node: NodeLike, pos: number, path: number[] = []): Found
   return null
 }
 
-/** Walk up the path, collecting ancestor nodes root → target. */
 function ancestorsAt(root: NodeLike, path: number[]): NodeLike[] {
   const ancestors: NodeLike[] = [root]
   let cur: NodeLike = root
@@ -40,17 +39,10 @@ function ancestorsAt(root: NodeLike, path: number[]): NodeLike[] {
   return ancestors
 }
 
-/** Minimal interface needed to reconstruct nodes during tree replacement. */
 type Rebuilder<N extends NodeLike> = {
   rebuild(node: N, children: ReadonlyArray<N | CSTLeaf | CSTError>): N
 }
 
-/**
- * Immutable replacement: rebuild ancestor nodes up the path via grammar.rebuild(),
- * leaving siblings and the rest of the tree untouched.
- * Delegating to rebuild() means custom buildNode() overrides are honoured —
- * class-instance nodes survive re-rooting correctly.
- */
 function replaceAtPath<N extends NodeLike>(
   grammar: Rebuilder<N>,
   root: N,
@@ -70,44 +62,42 @@ function replaceAtPath<N extends NodeLike>(
 // IncrementalParser
 // ---------------------------------------------------------------------------
 
-/** Extract the node type N from a Parser<N>. */
-type NodeOf<G> = G extends Parser<infer N> ? N : never
-
 /**
- * Wraps a Parser with incremental re-parsing.
+ * Extend this instead of Parser when you need incremental re-parsing.
+ * Pass the root rule name to super() in your constructor.
  *
- * On the first `parse()` call a full parse is performed. Subsequent `edit()`
- * calls find the smallest node that contains the edit, re-parse just that
- * node using its saved context, and stop early if the new node ends at the
- * same position as the old node (adjusted for the edit delta). This is
- * O(changed region) amortized for typical edits.
+ *   class CssParser extends IncrementalParser {
+ *     constructor() { super('Stylesheet') }
+ *     ident      = regex(/[a-zA-Z-]+/)
+ *     Selector   = (g: Refs<CssParser>) => sequence(g.ident, g.ident)
+ *     Stylesheet = (g: Refs<CssParser>) => many(g.Selector)
+ *   }
  *
- * Supports context-sensitive grammars via savedContext: each node records a
- * clone of ctx.user at parse time, so re-parsing starts from the exact same
- * context state — something tree-sitter cannot do.
+ *   const css = new CssParser()
+ *   let tree = css.parse('div p')
+ *   tree = css.edit('div  p', 3, 4)   // re-parses only the Selector node
  *
- *   const ip = new IncrementalParser(new CssParser(), 'Stylesheet')
- *   let tree = ip.parse(source)
- *   tree = ip.edit(source.slice(0, 42) + newText + source.slice(50), 42, 50)
+ * On first parse() a full parse runs. Subsequent edit() calls find the
+ * smallest node containing the edit, re-parse just that subtree using its
+ * saved context, and stop early when the new span end matches the expected
+ * position. O(changed region) amortized for typical edits.
  */
-export class IncrementalParser<G extends Parser<any>> {
-  private grammar: G
-  private rootName: RuleKeys<G>
-  private tree: NodeOf<G> | null = null
-  private input: string = ''
+export class IncrementalParser<N extends NodeLike = NodeLike> extends Parser<N> {
+  private readonly _rootRule: string
+  private _tree: N | null = null
+  private _input: string = ''
 
-  constructor(grammar: G, rootRule: RuleKeys<G>) {
-    this.grammar = grammar
-    this.rootName = rootRule
+  constructor(rootRule: string) {
+    super()
+    this._rootRule = rootRule
   }
 
-  /** Full parse — always used the first time. Returns null if parse fails. */
-  parse(input: string): NodeOf<G> | null {
-    this.input = input
+  parse(input: string): N | null {
+    this._input = input
     const ctx: ParseContext = { trackLines: false }
-    const r = this.grammar.rule(this.rootName).parse(input, 0, ctx)
-    this.tree = r.ok ? r.value as NodeOf<G> : null
-    return this.tree
+    const r = this.rule(this._rootRule as RuleKeys<this>).parse(input, 0, ctx)
+    this._tree = r.ok ? r.value : null
+    return this._tree
   }
 
   /**
@@ -117,16 +107,15 @@ export class IncrementalParser<G extends Parser<any>> {
    * @param editStart Character offset where the edit begins (inclusive).
    * @param editEnd   Character offset where the old text ends (exclusive).
    */
-  edit(newInput: string, editStart: number, editEnd: number): NodeOf<G> | null {
-    if (!this.tree) return this.parse(newInput)
+  edit(newInput: string, editStart: number, editEnd: number): N | null {
+    if (!this._tree) return this.parse(newInput)
 
-    const delta = newInput.length - this.input.length
+    const delta = newInput.length - this._input.length
 
-    const found = findContaining(this.tree, editStart)
+    const found = findContaining(this._tree, editStart)
     if (!found) return this.parse(newInput)
 
-    // Walk from deepest containing node up toward root, trying each level.
-    const ancestors = ancestorsAt(this.tree, found.path)
+    const ancestors = ancestorsAt(this._tree, found.path)
     const candidates: FoundNode[] = [found]
     const pathCopy = [...found.path]
     for (let i = ancestors.length - 2; i >= 0; i--) {
@@ -138,26 +127,21 @@ export class IncrementalParser<G extends Parser<any>> {
       const { node, path } = candidate
       const expectedEnd = node.span.end + delta
 
-      const parser = this.grammar.rule(node.type as RuleKeys<G>)
+      const parser = this.rule(node.type as RuleKeys<this>)
       const ctx: ParseContext = { trackLines: false, user: node.savedContext }
       const r = parser.parse(newInput, node.span.start, ctx)
       if (!r.ok) continue
 
       if (r.span.end === expectedEnd) {
-        // Early termination: the rest of the tree is structurally unaffected.
-        this.tree = replaceAtPath(this.grammar, this.tree!, path, r.value as NodeOf<G>)
-        this.input = newInput
-        return this.tree
+        this._tree = replaceAtPath(this, this._tree!, path, r.value)
+        this._input = newInput
+        return this._tree
       }
-      // End position shifted — the edit affects more than this node; try parent.
     }
 
     return this.parse(newInput)
   }
 
-  /** The current tree, or null if not yet parsed / last parse failed. */
-  get currentTree(): NodeOf<G> | null { return this.tree }
-
-  /** The input string that produced currentTree. */
-  get currentInput(): string { return this.input }
+  get currentTree(): N | null { return this._tree }
+  get currentInput(): string { return this._input }
 }

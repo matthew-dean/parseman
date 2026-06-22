@@ -332,20 +332,33 @@ parse(css.rule('Stylesheet'), src, { trivia: many(choice(regex(/\s+/), comment))
 
 ### IncrementalParser
 
-Wraps a `Parser` class with incremental re-parsing. On first `parse()` a full parse runs. Subsequent `edit()` calls find the smallest containing node, re-parse just that subtree using its saved context, and stop early when the reparsed node ends at the same position as before (adjusted for the edit delta). O(changed region) amortized for typical edits.
+Extend `IncrementalParser` instead of `Parser` when you need incremental re-parsing. Pass the root rule name to `super()` and everything else stays the same.
 
 ```ts
-import { IncrementalParser } from 'parseman'
+import { IncrementalParser, regex, literal, sequence, choice, many } from 'parseman'
+import type { Refs } from 'parseman'
 
-const ip = new IncrementalParser(new ExprParser(), 'Expr')
+class ExprParser extends IncrementalParser {
+  constructor() { super('Expr') }
 
-let tree = ip.parse('1+2+3')
-tree = ip.edit('1+20+3', 2, 3)   // only the Num node at offset 2 is re-parsed
-tree = ip.edit('1+20+30', 5, 6)  // only the Num node at offset 5 is re-parsed
+  ws     = regex(/\s*/)
+  digits = regex(/[0-9]+/)
+  Num    = (g: Refs<ExprParser>) => g.digits
+  Add    = (g: Refs<ExprParser>) => sequence(g.Num, many(sequence(literal('+'), g.Num)))
+  Expr   = (g: Refs<ExprParser>) => choice(g.Add, g.Num)
+}
 
-ip.currentTree   // the current tree
-ip.currentInput  // the input string that produced it
+const expr = new ExprParser()
+
+let tree = expr.parse('1+2+3')
+tree = expr.edit('1+20+3', 2, 3)   // only the Num node at offset 2 is re-parsed
+tree = expr.edit('1+20+30', 5, 6)  // only the Num node at offset 5 is re-parsed
+
+expr.currentTree   // the current tree
+expr.currentInput  // the input string that produced it
 ```
+
+On first `parse()` a full parse runs. Subsequent `edit()` calls find the smallest node containing the edit, re-parse just that subtree using its saved context, and stop early when the new span end matches the expected position. O(changed region) amortized for typical edits.
 
 Context-sensitive grammars work correctly: each CST node records a `ctx.user` snapshot at parse time (`savedContext`), so re-parsing resumes from the exact same state. Solid enough for a language server.
 

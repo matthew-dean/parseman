@@ -244,7 +244,9 @@ describe('Parser — custom AST via buildNode()', () => {
     text: string
   }
 
-  class MyGrammar extends Parser<MyNode> {
+  class MyGrammar extends IncrementalParser<MyNode> {
+    constructor() { super('Num') }
+
     protected override buildNode(
       type: string,
       span: Span,
@@ -269,8 +271,7 @@ describe('Parser — custom AST via buildNode()', () => {
   })
 
   it('IncrementalParser works with custom AST', () => {
-    const g = new MyGrammar()
-    const ip = new IncrementalParser(g, 'Num')
+    const ip = new MyGrammar()
     const tree = ip.parse('42')
     expect(tree).not.toBeNull()
     expect((tree as MyNode).text).toBe('[Num:0-2]')
