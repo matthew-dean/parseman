@@ -1,5 +1,5 @@
 import regexpTree from 'regexp-tree'
-import type { Parser, ParseContext, ParseResult, ParserMeta, FirstSet } from '../types.ts'
+import type { Combinator, ParseContext, ParseResult, ParserMeta, FirstSet } from '../types.ts'
 import { any, fromRange, union, empty } from './first-set.ts'
 
 function firstSetFromRegex(pattern: string): { firstSet: FirstSet; canMatchNewline: boolean } {
@@ -14,6 +14,23 @@ function firstSetFromRegex(pattern: string): { firstSet: FirstSet; canMatchNewli
 type RegexNode = {
   type: string
   [key: string]: unknown
+}
+
+function canBeEmpty(node: RegexNode | null | undefined): boolean {
+  if (!node) return true
+  switch (node.type) {
+    case 'Repetition': {
+      const q = node.quantifier as { kind: string; from?: number }
+      return q.kind === '*' || q.kind === '?' || (q.kind === 'Range' && (q.from ?? 1) === 0)
+    }
+    case 'Alternative': {
+      const exprs = node.expressions as RegexNode[]
+      return !exprs || exprs.length === 0 || exprs.every(e => canBeEmpty(e))
+    }
+    case 'Group': return canBeEmpty(node.expression as RegexNode)
+    case 'Disjunction': return canBeEmpty(node.left as RegexNode) || canBeEmpty(node.right as RegexNode)
+    default: return false
+  }
 }
 
 function extractFirstSet(node: RegexNode | null | undefined): { firstSet: FirstSet; canMatchNewline: boolean } {
@@ -31,7 +48,17 @@ function extractFirstSet(node: RegexNode | null | undefined): { firstSet: FirstS
     case 'Alternative': {
       const exprs = node.expressions as RegexNode[]
       if (!exprs || exprs.length === 0) return { firstSet: empty(), canMatchNewline: false }
-      return extractFirstSet(exprs[0]!)
+      // Walk forward through expressions that can match empty, unioning their first-sets.
+      // This handles patterns like -?[0-9]+ where the first expr is optional.
+      let fs: FirstSet = empty()
+      let canNL = false
+      for (const expr of exprs) {
+        const r = extractFirstSet(expr)
+        fs = union(fs, r.firstSet)
+        canNL = canNL || r.canMatchNewline
+        if (!canBeEmpty(expr)) break
+      }
+      return { firstSet: fs, canMatchNewline: canNL }
     }
     case 'Char': {
       const kind = node.kind as string
@@ -95,7 +122,7 @@ function optimizeRegex(source: string, flags: string): string {
   }
 }
 
-export function regex(pattern: string | RegExp, flags = ''): Parser<string> {
+export function regex(pattern: string | RegExp, flags = ''): Combinator<string> {
   const source = typeof pattern === 'string' ? pattern : pattern.source
   const resolvedFlags = typeof pattern === 'string' ? flags : pattern.flags
 
@@ -109,13 +136,17 @@ export function regex(pattern: string | RegExp, flags = ''): Parser<string> {
     _tag: 'regex',
     _meta: meta,
     _def: { tag: 'regex', source, flags: resolvedFlags, optimizedSource },
-    parse(input: string, pos: number, _ctx: ParseContext): ParseResult<string> {
+    parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       anchored.lastIndex = pos
       const m = anchored.exec(input)
       if (m === null) {
         return { ok: false, expected: [`/${source}/`], span: { start: pos, end: pos } }
       }
-      return { ok: true, value: m[0]!, span: { start: pos, end: pos + m[0]!.length } }
+      const span = { start: pos, end: pos + m[0]!.length }
+      const leaf = { _tag: 'leaf', value: m[0]!, span }
+      if (ctx._cstLeaves) (ctx._cstLeaves as typeof leaf[]).push(leaf)
+      if (ctx._cstRawChildren) (ctx._cstRawChildren as typeof leaf[]).push(leaf)
+      return { ok: true, value: m[0]!, span }
     },
   }
 }

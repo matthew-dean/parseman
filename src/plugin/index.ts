@@ -1,28 +1,28 @@
 /**
- * parsecraft unplugin — macro transform
+ * parseman unplugin — macro transform
  *
- * Handles:  import { ... } from 'parsecraft' with { type: 'macro' }
+ * Handles:  import { ... } from 'parseman' with { type: 'macro' }
  *
  * For each such import, walks the file's AST, finds variable declarations
- * whose RHS is a pure parsecraft combinator call, evaluates them at build time,
+ * whose RHS is a pure parseman combinator call, evaluates them at build time,
  * compiles the result to an optimized inline function, and replaces the
  * declaration — removing the import entirely.
  *
  * Usage:
  *   // vite.config.ts
- *   import parsecraft from 'parsecraft/plugin'
- *   export default { plugins: [parsecraft()] }
+ *   import parseman from 'parseman/plugin'
+ *   export default { plugins: [parseman()] }
  *
  *   // rollup.config.js
- *   import parsecraft from 'parsecraft/plugin'
- *   export default { plugins: [parsecraft.rollup()] }
+ *   import parseman from 'parseman/plugin'
+ *   export default { plugins: [parseman.rollup()] }
  */
 import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import MagicString from 'magic-string'
 import { evaluateExpr, referencesAny, type Scope } from './evaluator.ts'
 import { compile } from '../compiler/codegen.ts'
-import type { Parser } from '../types.ts'
+import type { Combinator } from '../types.ts'
 import type {
   ImportDeclaration,
   VariableDeclarator,
@@ -31,23 +31,23 @@ import type {
 } from '@oxc-project/types'
 
 export type ParsecraftPluginOptions = {
-  /** Extra module specifiers to treat as parsecraft re-exports */
+  /** Extra module specifiers to treat as parseman re-exports */
   moduleAliases?: string[]
 }
 
-const PARSECRAFT_MODULE = 'parsecraft'
+const PARSEMAN_MODULE = 'parseman'
 
 export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
-  name: 'parsecraft',
+  name: 'parseman',
 
   transformInclude(id: string) {
     return /\.[jt]sx?$/.test(id) && !id.includes('node_modules')
   },
 
   transform(code: string, id: string) {
-    if (!code.includes('parsecraft')) return null
+    if (!code.includes('parseman')) return null
     if (!code.includes('macro')) return null
-    const moduleAliases = new Set([PARSECRAFT_MODULE, ...(opts.moduleAliases ?? [])])
+    const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
     return transformMacro(code, id, moduleAliases)
   },
 }))
@@ -66,7 +66,7 @@ type ImportInfo = {
 export function transformMacro(
   code: string,
   id: string,
-  moduleAliases = new Set([PARSECRAFT_MODULE]),
+  moduleAliases = new Set([PARSEMAN_MODULE]),
 ): { code: string; map: ReturnType<MagicString['generateMap']> } | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -105,7 +105,7 @@ export function transformMacro(
   if (macroImports.length === 0) return null
 
   // --- Pass 2: evaluate declarations in source order ---
-  const scope: Scope = new Map<string, Parser<unknown>>()
+  const scope: Scope = new Map<string, Combinator<unknown>>()
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   let anyUnresolved = false
 

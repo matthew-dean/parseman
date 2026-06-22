@@ -1,18 +1,18 @@
-import type { Parser, ParseContext, ParseResult } from '../types.ts'
+import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { buildLineIndex, annotateSpan } from '../compiler/line-index.ts'
 
-export type GrammarOptions = {
-  trivia?: Parser<unknown>
+export type ParseOptions = {
+  trivia?: Combinator<unknown>
   trackLines?: boolean
 }
 
-export function grammar<T>(opts: GrammarOptions, root: Parser<T>): Parser<T> {
+export function grammar<T>(opts: ParseOptions, root: Combinator<T>): Combinator<T> {
   return {
     _tag: 'grammar',
     _meta: root._meta,
     _def: {
       tag: 'grammar',
-      parser: root as Parser<unknown>,
+      parser: root as Combinator<unknown>,
       triviaParser: opts.trivia,
       trackLines: opts.trackLines ?? false,
     },
@@ -32,9 +32,9 @@ export function grammar<T>(opts: GrammarOptions, root: Parser<T>): Parser<T> {
 }
 
 export function parse<T>(
-  parser: Parser<T>,
+  parser: Combinator<T>,
   input: string,
-  opts: GrammarOptions = {}
+  opts: ParseOptions = {}
 ): ParseResult<T> {
   const trackLines = opts.trackLines ?? false
   const ctx: ParseContext = opts.trivia !== undefined

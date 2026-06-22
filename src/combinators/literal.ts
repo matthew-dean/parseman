@@ -1,4 +1,4 @@
-import type { Parser, ParseContext, ParseResult, ParserMeta } from '../types.ts'
+import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { fromChar, empty } from './first-set.ts'
 
 let _collatorCache: Intl.Collator | null = null
@@ -13,7 +13,7 @@ export type LiteralOptions = {
   caseInsensitive?: boolean
 }
 
-export function literal(value: string, opts: LiteralOptions = {}): Parser<string> {
+export function literal(value: string, opts: LiteralOptions = {}): Combinator<string> {
   const caseInsensitive = opts.caseInsensitive ?? false
 
   const firstSet = value.length > 0
@@ -52,7 +52,11 @@ export function literal(value: string, opts: LiteralOptions = {}): Parser<string
         ? collator().compare(slice, value) === 0
         : slice === value
       if (matched) {
-        return { ok: true, value: slice, span: { start: pos, end } }
+        const span = { start: pos, end }
+        const leaf = { _tag: 'leaf', value: slice, span }
+        if (_ctx._cstLeaves) (_ctx._cstLeaves as typeof leaf[]).push(leaf)
+        if (_ctx._cstRawChildren) (_ctx._cstRawChildren as typeof leaf[]).push(leaf)
+        return { ok: true, value: slice, span }
       }
       return { ok: false, expected: [JSON.stringify(value)], span: { start: pos, end: pos } }
     },

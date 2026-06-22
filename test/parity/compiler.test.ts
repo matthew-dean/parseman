@@ -25,8 +25,8 @@ function parity<T>(label: string, parser: ReturnType<typeof compile<T>> extends 
   }
 }
 
-// Convenience: parity for a Parser<T>
-function par<T>(label: string, parser: import('../../src/index.ts').Parser<T>, inputs: string[]) {
+// Convenience: parity for a Combinator<T>
+function par<T>(label: string, parser: import('../../src/index.ts').Combinator<T>, inputs: string[]) {
   const compiled = compile(parser)
   for (const input of inputs) {
     it(`${label} — ${JSON.stringify(input)}`, () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { literal, sequence, regex, many, parse, grammar } from '../../src/index.ts'
+import { literal, sequence, regex, many, parse } from '../../src/index.ts'
 import { trivia } from '../../src/combinators/map.ts'
 
 describe('sequence', () => {
@@ -20,8 +20,8 @@ describe('sequence', () => {
 
   it('auto-skips trivia between terms', () => {
     const ws = trivia(regex(/\s+/))
-    const p = grammar({ trivia: ws }, sequence(literal('foo'), literal('bar')))
-    const r = parse(p, 'foo   bar')
+    const p = sequence(literal('foo'), literal('bar'))
+    const r = parse(p, 'foo   bar', { trivia: ws })
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.value).toEqual(['foo', 'bar'])
   })

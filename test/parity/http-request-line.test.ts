@@ -2,7 +2,7 @@
  * Parity test: the runtime interpreter must produce identical results to
  * a hand-written reference parser for the same inputs.
  *
- * Grammar: HTTP/1.x request line
+ * Parser: HTTP/1.x request line
  *   METHOD SP request-target SP HTTP/1.x CRLF
  */
 import { describe, it, expect } from 'vitest'
@@ -14,7 +14,7 @@ type RequestLine = {
   version: string
 }
 
-// --- parsecraft parser ---
+// --- parseman parser ---
 const method = choice(
   literal('GET'), literal('POST'), literal('PUT'), literal('DELETE'),
   literal('PATCH'), literal('HEAD'), literal('OPTIONS')

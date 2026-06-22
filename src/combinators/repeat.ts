@@ -1,6 +1,6 @@
-import type { Parser, ParseContext, ParseResult, ParserMeta } from '../types.ts'
+import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 
-export function many<T>(parser: Parser<T>): Parser<T[]> {
+export function many<T>(parser: Combinator<T>): Combinator<T[]> {
   const meta: ParserMeta = {
     firstSet: parser._meta.firstSet,
     canMatchNewline: parser._meta.canMatchNewline,
@@ -10,7 +10,7 @@ export function many<T>(parser: Parser<T>): Parser<T[]> {
   return {
     _tag: 'many',
     _meta: meta,
-    _def: { tag: 'many', parser: parser as Parser<unknown>, min: 0 },
+    _def: { tag: 'many', parser: parser as Combinator<unknown>, min: 0 },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       const values: T[] = []
       let cur = pos
@@ -26,7 +26,7 @@ export function many<T>(parser: Parser<T>): Parser<T[]> {
   }
 }
 
-export function oneOrMore<T>(parser: Parser<T>): Parser<T[]> {
+export function oneOrMore<T>(parser: Combinator<T>): Combinator<T[]> {
   const meta: ParserMeta = {
     firstSet: parser._meta.firstSet,
     canMatchNewline: parser._meta.canMatchNewline,
@@ -36,7 +36,7 @@ export function oneOrMore<T>(parser: Parser<T>): Parser<T[]> {
   return {
     _tag: 'oneOrMore',
     _meta: meta,
-    _def: { tag: 'oneOrMore', parser: parser as Parser<unknown>, min: 1 },
+    _def: { tag: 'oneOrMore', parser: parser as Combinator<unknown>, min: 1 },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       const first = parser.parse(input, pos, ctx)
       if (!first.ok) return first
@@ -54,7 +54,7 @@ export function oneOrMore<T>(parser: Parser<T>): Parser<T[]> {
   }
 }
 
-export function optional<T>(parser: Parser<T>): Parser<T | null> {
+export function optional<T>(parser: Combinator<T>): Combinator<T | null> {
   const meta: ParserMeta = {
     firstSet: parser._meta.firstSet,
     canMatchNewline: parser._meta.canMatchNewline,
@@ -64,7 +64,7 @@ export function optional<T>(parser: Parser<T>): Parser<T | null> {
   return {
     _tag: 'optional',
     _meta: meta,
-    _def: { tag: 'optional', parser: parser as Parser<unknown> },
+    _def: { tag: 'optional', parser: parser as Combinator<unknown> },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T | null> {
       const result = parser.parse(input, pos, ctx)
       if (result.ok) return result as ParseResult<T>
@@ -73,7 +73,7 @@ export function optional<T>(parser: Parser<T>): Parser<T | null> {
   }
 }
 
-export function sepBy<T, S>(parser: Parser<T>, separator: Parser<S>): Parser<T[]> {
+export function sepBy<T, S>(parser: Combinator<T>, separator: Combinator<S>): Combinator<T[]> {
   const meta: ParserMeta = {
     firstSet: parser._meta.firstSet,
     canMatchNewline: parser._meta.canMatchNewline || separator._meta.canMatchNewline,
@@ -83,7 +83,7 @@ export function sepBy<T, S>(parser: Parser<T>, separator: Parser<S>): Parser<T[]
   return {
     _tag: 'sepBy',
     _meta: meta,
-    _def: { tag: 'sepBy', parser: parser as Parser<unknown>, separator: separator as Parser<unknown> },
+    _def: { tag: 'sepBy', parser: parser as Combinator<unknown>, separator: separator as Combinator<unknown> },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       const first = parser.parse(input, pos, ctx)
       if (!first.ok) return { ok: true, value: [], span: { start: pos, end: pos } }
@@ -91,11 +91,11 @@ export function sepBy<T, S>(parser: Parser<T>, separator: Parser<S>): Parser<T[]
       let cur = first.span.end
       while (cur < input.length) {
         let sepPos = cur
-        if (ctx.trivia) { const tr = ctx.trivia.parse(input, sepPos, ctx); if (tr.ok) sepPos = tr.span.end }
+        if (ctx.trivia) { const triviaCtx = { trivia: ctx.trivia, trackLines: ctx.trackLines, user: ctx.user }; const tr = ctx.trivia.parse(input, sepPos, triviaCtx); if (tr.ok) { if (ctx._cstRawChildren && tr.span.end > tr.span.start) (ctx._cstRawChildren as unknown[]).push({ _tag: 'trivia', value: input.slice(tr.span.start, tr.span.end), span: tr.span }); sepPos = tr.span.end } }
         const sep = separator.parse(input, sepPos, ctx)
         if (!sep.ok) break
         let nextPos = sep.span.end
-        if (ctx.trivia) { const tr = ctx.trivia.parse(input, nextPos, ctx); if (tr.ok) nextPos = tr.span.end }
+        if (ctx.trivia) { const triviaCtx = { trivia: ctx.trivia, trackLines: ctx.trackLines, user: ctx.user }; const tr = ctx.trivia.parse(input, nextPos, triviaCtx); if (tr.ok) { if (ctx._cstRawChildren && tr.span.end > tr.span.start) (ctx._cstRawChildren as unknown[]).push({ _tag: 'trivia', value: input.slice(tr.span.start, tr.span.end), span: tr.span }); nextPos = tr.span.end } }
         const next = parser.parse(input, nextPos, ctx)
         if (!next.ok) break
         values.push(next.value)
