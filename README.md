@@ -4,9 +4,7 @@
 
 # Parséman (PAR-zə-mahn)
 
-Write parsers with combinators, then let the bundler plugin compile them to optimized inline functions at build time — `charCodeAt` dispatch, `while` loops, zero allocation on failure paths. Your parsers are just TypeScript — the plugin optimizes them at build time, invisibly. Easy to write, easy to debug.
-
-The same code runs without the plugin: the interpreter produces identical results. Use the macro build for production; skip it in tests and anywhere a bundler isn't in the picture.
+Write parsers in TypeScript — fast enough to run as-is, and blazing fast when the bundler macro kicks in. Same code either way; no grammar files, no generated output to check in. Drop the plugin in tests or anywhere a bundler isn't around and everything still works.
 
 ## Benchmarks
 
