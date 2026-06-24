@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
-import { advanceTrivia, consumeTrivia, needsDeferredTriviaCommit, scanTrivia } from './trivia-skip.ts'
+import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
 
 /**
  * Parse one repetition item at `cur`, first skipping (and, in capture mode,
@@ -18,10 +18,7 @@ function repItem<T>(
   cur: number,
   ctx: ParseContext
 ): { value: T; end: number } | { fail: ParseResult<T> } | 'stop' {
-  const raw = ctx._cstRawChildren as unknown[] | undefined
-  const mark = raw ? raw.length : 0
-  const tlog = ctx._cstTriviaLog
-  const tmark = tlog ? tlog.length : 0
+  const mark = saveTriviaMark(ctx)
   let pos = cur
   if (ctx.trivia) {
     if (needsDeferredTriviaCommit(ctx)) {
@@ -36,19 +33,16 @@ function repItem<T>(
   // fail and could trigger an item's recover()/error side-effects). The trivia
   // is trailing — roll it back for the enclosing context and stop.
   if (pos >= input.length) {
-    if (raw) raw.length = mark
-    if (tlog) tlog.length = tmark
+    rollbackTrivia(ctx, mark)
     return 'stop'
   }
   const result = parser.parse(input, pos, ctx)
   if (!result.ok) {
-    if (raw) raw.length = mark
-    if (tlog) tlog.length = tmark
+    rollbackTrivia(ctx, mark)
     return { fail: result }
   }
   if (result.span.end === pos) {
-    if (raw) raw.length = mark
-    if (tlog) tlog.length = tmark
+    rollbackTrivia(ctx, mark)
     return 'stop'
   }
   return { value: result.value, end: result.span.end }
@@ -144,12 +138,38 @@ export function sepBy<T, S>(parser: Combinator<T>, separator: Combinator<S>): Co
       const values: T[] = [first.value]
       let cur = first.span.end
       while (cur < input.length) {
-        const sepPos = ctx.trivia ? consumeTrivia(input, cur, ctx) : cur
+        let mark = saveTriviaMark(ctx)
+        let sepPos = cur
+        if (ctx.trivia) {
+          if (needsDeferredTriviaCommit(ctx)) {
+            const scan = scanTrivia(input, cur, ctx)
+            scan.commit()
+            sepPos = scan.end
+          } else {
+            sepPos = advanceTrivia(input, cur, ctx)
+          }
+        }
         const sep = separator.parse(input, sepPos, ctx)
-        if (!sep.ok) break
-        const nextPos = ctx.trivia ? consumeTrivia(input, sep.span.end, ctx) : sep.span.end
+        if (!sep.ok) {
+          rollbackTrivia(ctx, mark)
+          break
+        }
+        mark = saveTriviaMark(ctx)
+        let nextPos = sep.span.end
+        if (ctx.trivia) {
+          if (needsDeferredTriviaCommit(ctx)) {
+            const scan = scanTrivia(input, sep.span.end, ctx)
+            scan.commit()
+            nextPos = scan.end
+          } else {
+            nextPos = advanceTrivia(input, sep.span.end, ctx)
+          }
+        }
         const next = parser.parse(input, nextPos, ctx)
-        if (!next.ok) break
+        if (!next.ok) {
+          rollbackTrivia(ctx, mark)
+          break
+        }
         values.push(next.value)
         cur = next.span.end
       }

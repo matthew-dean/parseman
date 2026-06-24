@@ -17,6 +17,9 @@ import { buildParsermanCSTJSON, buildParsermanCSTJSONNoTriv } from './parseman-c
 import { parseCSV, compiledCSV, csvParser } from '../examples/csv/parser.ts'
 import { parseConfig, compiledConfig } from '../examples/toml-ish/parser.ts'
 import { parseGraphQL, graphqlDoc } from '../examples/graphql/parser.ts'
+import { parseCssCompiled, parseCss } from '../examples/css/parser.ts'
+import { readCssFixture } from './css-fixture.ts'
+import { buildCombinatorInliningCases, benchCase } from './combinator-inlining.ts'
 import { compile } from '../src/index.ts'
 import { buildChevrotainJSON } from './chevrotain-json.ts'
 import { buildChevrotainCSV } from './chevrotain-csv.ts'
@@ -241,5 +244,39 @@ function gqlGroup(label: string, input: string, iters: number) {
 gqlGroup('small',  SMALL_GQL,  50_000)
 gqlGroup('medium', MEDIUM_GQL, 10_000)
 gqlGroup('large',  LARGE_GQL,  2_000)
+
+// ---------------------------------------------------------------------------
+// Combinator inlining micro-benchmarks (interpreted vs compile())
+// ---------------------------------------------------------------------------
+console.log('\n=== Combinator inlining (interpreted vs compiled) ===')
+for (const c of buildCombinatorInliningCases()) {
+  const { interpretedUs, compiledUs, speedup } = benchCase(c, 20_000)
+  console.log(
+    `  ${c.name.padEnd(32)} interp ${interpretedUs.toFixed(2)}µs  compiled ${compiledUs.toFixed(2)}µs  ${speedup.toFixed(2)}×`,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// CSS grammar (jess port) — node()-heavy CST + trivia capture
+// ---------------------------------------------------------------------------
+console.log('\n=== CSS parsing (warm) — jess grammar, CST + trivia ===')
+try {
+  const bootstrap = readCssFixture('bootstrap4.css')
+  console.log(`\n  [bootstrap4] ${bootstrap.length} bytes`)
+  bench('Parséman CSS (compiled, full)', () => parseCssCompiled(bootstrap), 30)
+  bench('Parséman CSS (interpreted, full)', () => parseCss(bootstrap), 30)
+} catch (e) {
+  console.log(`  (skipped — ${(e as Error).message})`)
+}
+for (const fixture of ['selector.css', 'decls.css'] as const) {
+  try {
+    const src = readCssFixture(fixture)
+    console.log(`\n  [${fixture}] ${src.length} bytes`)
+    bench('Parséman CSS (compiled, full)', () => parseCssCompiled(src), 500)
+    bench('Parséman CSS (interpreted, full)', () => parseCss(src), 500)
+  } catch {
+    // fixture missing
+  }
+}
 
 console.log()

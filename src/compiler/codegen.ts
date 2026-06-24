@@ -412,10 +412,26 @@ function emitSeq(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, pos: st
     // Mirror interpreter sequence.ts:27 — skip trivia before each item except the first.
     if (i > 0 && ctx.activeTrivia) {
       if (ctx.capturing) {
-        // Capture trivia into _ctx._cstRawChildren. A sequence commits all terms,
-        // so no rollback is needed (a later failure discards the node's collectors).
         const capFn = ensureTriviaCaptureFn(ctx)
-        stmts.push(`${ind(ctx)}${curV} = ${capFn}(input, ${curV}, _ctx)`)
+        const markV = v(ctx, '_mk')
+        const markTl = v(ctx, '_mktl')
+        const markLog = v(ctx, '_mklg')
+        const scanEndV = v(ctx, '_sne')
+        stmts.push(
+          `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
+          `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
+          `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+          `${ind(ctx)}const ${scanEndV} = ${capFn}(input, ${curV}, _ctx)`,
+        )
+        const r = emit(def.parsers[i]!, ctx, scanEndV)
+        stmts.push(...r.stmts)
+        const endAfterV = v(ctx, '_sea')
+        stmts.push(
+          `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; }`,
+        )
+        valueVars.push(r.valueVar)
+        continue
       } else {
         const trivFn = ensureTriviaFn(ctx)
         stmts.push(`${ind(ctx)}${curV} = ${trivFn}(input, ${curV}, _ctx)`)
@@ -496,6 +512,7 @@ function emitGreedyClassify(
   const matchV = v(ctx, '_gm')
   const wordV  = v(ctx, '_gw')
   const endV   = v(ctx, '_ge')
+  const valV   = v(ctx, '_gcv')
 
   const stmts: string[] = [
     `${ind(ctx)}${reVar}.lastIndex = ${pos}`,
@@ -503,28 +520,37 @@ function emitGreedyClassify(
     `${ind(ctx)}if (${matchV} === null) ${failArr({ ...ctx, indent: 0 }, allExpected, pos)}`,
     `${ind(ctx)}const ${wordV} = ${matchV}[0]`,
     `${ind(ctx)}const ${endV} = ${pos} + ${wordV}.length`,
+    `${ind(ctx)}let ${valV}`,
   ]
 
-  // For each literal arm: if word === literal, apply its transform chain and return
+  // For each literal arm: if word === literal, capture + transform chain
+  let first = true
   for (let i = 0; i < def.parsers.length; i++) {
     if (i === superIndex) continue
     const p = def.parsers[i]!
     const litVal = getCoreLiteralValue(p)
     if (litVal === null) continue
 
-    stmts.push(`${ind(ctx)}if (${wordV} === ${JSON.stringify(litVal)}) {`)
+    const kw = first ? 'if' : 'else if'
+    first = false
+    stmts.push(`${ind(ctx)}${kw} (${wordV} === ${JSON.stringify(litVal)}) {`)
     ctx.indent++
     const tR = emitTransformChain(p, JSON.stringify(litVal), endV, pos, ctx)
-    stmts.push(...tR.stmts)
-    stmts.push(`${ind(ctx)}return { ok: true, value: ${tR.valueVar}, span: { start: ${pos}, end: ${endV} } }`)
+    stmts.push(...emitLeafCapture(ctx, JSON.stringify(litVal), pos, endV))
+    stmts.push(...tR.stmts, `${ind(ctx)}${valV} = ${tR.valueVar}`)
     ctx.indent--
     stmts.push(`${ind(ctx)}}`)
   }
 
-  // Regex arm: apply its transform chain to the matched word
+  // Regex arm: capture + transform chain for the matched word
   const rR = emitTransformChain(superParser, wordV, endV, pos, ctx)
-  stmts.push(...rR.stmts)
-  return { stmts, valueVar: rR.valueVar, endVar: endV }
+  const regexKw = first ? 'if' : 'else'
+  stmts.push(`${ind(ctx)}${regexKw} {`)
+  ctx.indent++
+  stmts.push(...emitLeafCapture(ctx, wordV, pos, endV), ...rR.stmts, `${ind(ctx)}${valV} = ${rR.valueVar}`)
+  ctx.indent--
+  stmts.push(`${ind(ctx)}}`)
+  return { stmts, valueVar: valV, endVar: endV }
 }
 
 // ── literalsLongestFirst: sorted startsWith checks, no backtracking ───────────
@@ -550,10 +576,15 @@ function emitLiteralsLongestFirst(
     const kw = first ? 'if' : 'else if'
     first = false
 
+    const litEnd = `${pos} + ${litLen}`
     stmts.push(`${ind(ctx)}${kw} (${litCond}) {`)
     ctx.indent++
-    const tR = emitTransformChain(p, JSON.stringify(litVal), `${pos} + ${litLen}`, pos, ctx)
-    stmts.push(...tR.stmts, `${ind(ctx)}${valV} = ${tR.valueVar}; ${endV} = ${pos} + ${litLen}`)
+    const tR = emitTransformChain(p, JSON.stringify(litVal), litEnd, pos, ctx)
+    stmts.push(
+      ...emitLeafCapture(ctx, JSON.stringify(litVal), pos, litEnd),
+      ...tR.stmts,
+      `${ind(ctx)}${valV} = ${tR.valueVar}; ${endV} = ${litEnd}`,
+    )
     ctx.indent--
     stmts.push(`${ind(ctx)}}`)
   }
@@ -597,8 +628,10 @@ function emitFirstMatch(
     // back any leaves pushed by a failed or auto-not-rejected arm.
     const markLeaves = ctx.capturing ? v(ctx, '_cml') : null
     const markRaw    = ctx.capturing ? v(ctx, '_cmr') : null
+    const markTl     = ctx.capturing ? v(ctx, '_cmtl') : null
+    const markLog    = ctx.capturing ? v(ctx, '_cmlg') : null
     const rollback   = markLeaves
-      ? `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLeaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markRaw}`
+      ? `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLeaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markRaw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}`
       : ''
 
     stmts.push(`${ind0}if (${skipCond}) {`)
@@ -610,6 +643,8 @@ function emitFirstMatch(
       stmts.push(
         `${ind1}const ${markLeaves} = _ctx._cstLeaves?.length ?? 0`,
         `${ind1}const ${markRaw} = _ctx._cstRawChildren?.length ?? 0`,
+        `${ind1}const ${markTl} = _ctx._cstTriviaLog?.length ?? 0`,
+        `${ind1}const ${markLog} = _ctx._triviaLog?.length ?? 0`,
       )
     }
     const { stmts: armStmts, okVar, valVar, endVar } = emitFallible(p, ctx, pos)
@@ -644,16 +679,10 @@ function emitNonDisjoint(
   ctx: Ctx,
   pos: string,
 ): ER {
-  // greedyClassify / literalsLongestFirst match literals via a super-regex or
-  // direct charCode checks and skip emitLit — so they DON'T emit leaf capture.
-  // In a capturing compile, fall back to firstMatch (which emits each arm via
-  // emit() and captures correctly). Non-CST grammars keep the optimizations.
-  if (!ctx.capturing) {
-    if (strategy.tag === 'greedyClassify')
-      return emitGreedyClassify(def, strategy.superIndex, allExpected, ctx, pos)
-    if (strategy.tag === 'literalsLongestFirst')
-      return emitLiteralsLongestFirst(def, strategy.sortedIndices, allExpected, ctx, pos)
-  }
+  if (strategy.tag === 'greedyClassify')
+    return emitGreedyClassify(def, strategy.superIndex, allExpected, ctx, pos)
+  if (strategy.tag === 'literalsLongestFirst')
+    return emitLiteralsLongestFirst(def, strategy.sortedIndices, allExpected, ctx, pos)
   return emitFirstMatch(def, allExpected, ctx, pos)
 }
 
@@ -722,14 +751,16 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
       const capFn = ensureTriviaCaptureFn(ctx)
       const markV = v(ctx, '_mk')
       const markTl = v(ctx, '_mktl')
+      const markLog = v(ctx, '_mklg')
       const npV = v(ctx, '_np')
       stmts.push(
         `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
         `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
+        `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
         `${ind(ctx)}const ${npV} = ${capFn}(input, ${curV}, _ctx)`,
       )
       itemPos = npV
-      rollback = `if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; `
+      rollback = `if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; `
     } else {
       const trivFn = ensureTriviaFn(ctx)
       const npV = v(ctx, '_np')
@@ -741,7 +772,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   const { stmts: iterStmts, okVar: iterOk, valVar: iterVal, endVar: iterEnd } = emitFallible(def.parser, ctx, itemPos)
   stmts.push(
     ...iterStmts,
-    `${ind(ctx)}if (!${iterOk} || ${iterEnd} === ${curV}) { ${rollback}break }`,
+    `${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`,
     `${ind(ctx)}${arrV}.push(${iterVal})`,
     `${ind(ctx)}${curV} = ${iterEnd}`,
   )
@@ -787,61 +818,76 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   )
   ctx.indent++
 
-  // Mirror interpreter repeat.ts — skip trivia before and after separator. In
-  // capture mode, mark rawChildren before the separator's trivia and roll back
-  // if neither the separator nor the next item materializes (trailing trivia).
-  let rollback = ''
-  if (ctx.capturing) {
-    const markV = v(ctx, '_mk')
-    const markTl = v(ctx, '_mktl')
-    stmts.push(
-      `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
-      `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
-    )
-    rollback = `if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; `
-  }
-
+  // Mirror interpreter sepBy — separate rollback marks for pre-sep and post-sep trivia.
   let sepAtPos = curV
   if (ctx.activeTrivia) {
     if (ctx.capturing) {
       const capFn = ensureTriviaCaptureFn(ctx)
+      const markV = v(ctx, '_mk')
+      const markTl = v(ctx, '_mktl')
+      const markLog = v(ctx, '_mklg')
       const spV = v(ctx, '_sp')
-      stmts.push(`${ind(ctx)}const ${spV} = ${capFn}(input, ${curV}, _ctx)`)
+      stmts.push(
+        `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
+        `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
+        `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+        `${ind(ctx)}const ${spV} = ${capFn}(input, ${curV}, _ctx)`,
+      )
       sepAtPos = spV
+      const sepRollback = `if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; `
+      const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos)
+      stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${sepRollback}break }`)
+
+      const mark2V = v(ctx, '_mk2')
+      const mark2Tl = v(ctx, '_mktl2')
+      const mark2Log = v(ctx, '_mklg2')
+      const npV = v(ctx, '_np')
+      stmts.push(
+        `${ind(ctx)}const ${mark2V} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
+        `${ind(ctx)}const ${mark2Tl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
+        `${ind(ctx)}const ${mark2Log} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+        `${ind(ctx)}const ${npV} = ${capFn}(input, ${sepEnd}, _ctx)`,
+      )
+      const nextRollback = `if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${mark2V}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${mark2Tl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${mark2Log}; `
+      const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
+        emitFallible(def.parser, ctx, npV)
+      stmts.push(
+        ...nextStmts,
+        `${ind(ctx)}if (!${nextOk}) { ${nextRollback}break }`,
+        `${ind(ctx)}${arrV}.push(${nextVal})`,
+        `${ind(ctx)}${curV} = ${nextEnd}`,
+      )
     } else {
       const trivFn = ensureTriviaFn(ctx)
       const spV = v(ctx, '_sp')
       stmts.push(`${ind(ctx)}const ${spV} = ${trivFn}(input, ${curV}, _ctx)`)
       sepAtPos = spV
-    }
-  }
+      const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos)
+      stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) break`)
 
-  const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos)
-  stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollback}break }`)
-
-  let nextAtPos = sepEnd
-  if (ctx.activeTrivia) {
-    if (ctx.capturing) {
-      const capFn = ensureTriviaCaptureFn(ctx)
-      const npV = v(ctx, '_np')
-      stmts.push(`${ind(ctx)}const ${npV} = ${capFn}(input, ${sepEnd}, _ctx)`)
-      nextAtPos = npV
-    } else {
-      const trivFn = ensureTriviaFn(ctx)
       const npV = v(ctx, '_np')
       stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${sepEnd}, _ctx)`)
-      nextAtPos = npV
+      const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
+        emitFallible(def.parser, ctx, npV)
+      stmts.push(
+        ...nextStmts,
+        `${ind(ctx)}if (!${nextOk}) break`,
+        `${ind(ctx)}${arrV}.push(${nextVal})`,
+        `${ind(ctx)}${curV} = ${nextEnd}`,
+      )
     }
+  } else {
+    const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos)
+    stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) break`)
+    const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
+      emitFallible(def.parser, ctx, sepEnd)
+    stmts.push(
+      ...nextStmts,
+      `${ind(ctx)}if (!${nextOk}) break`,
+      `${ind(ctx)}${arrV}.push(${nextVal})`,
+      `${ind(ctx)}${curV} = ${nextEnd}`,
+    )
   }
-
-  const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
-    emitFallible(def.parser, ctx, nextAtPos)
-  stmts.push(
-    ...nextStmts,
-    `${ind(ctx)}if (!${nextOk}) { ${rollback}break }`,
-    `${ind(ctx)}${arrV}.push(${nextVal})`,
-    `${ind(ctx)}${curV} = ${nextEnd}`,
-  )
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
   ctx.indent--
@@ -1187,6 +1233,8 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
 // ---------------------------------------------------------------------------
 export type CompiledParser<T> = {
   parse(input: string, pos?: number): ParseResult<T>
+  /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
+  parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
   /**
    * Like parse(), but activates error recovery. recover() nodes collect their
    * ParseErrors into result.errors instead of (only) embedding them as values.
@@ -1318,6 +1366,9 @@ export function compile<T>(parser: Combinator<T>, mapFnSources?: string[]): Comp
     inlineExpression,
     parse(input: string, pos = 0): ParseResult<T> {
       return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, defaultCtx)
+    },
+    parseWithContext(input: string, parseCtx: ParseContext, pos = 0): ParseResult<T> {
+      return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, parseCtx)
     },
     parseWithErrors(input: string, pos = 0): ParseResult<T> & { errors: ParseError[] } {
       const errors: ParseError[] = []

@@ -122,10 +122,14 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
         // Save leaf-array lengths so a failed/rejected arm can be rolled back.
         const leavesLen = ctx._cstLeaves?.length
         const rawLen    = ctx._cstRawChildren?.length
+        const tlLen     = ctx._cstTriviaLog?.length
+        const logLen    = ctx._triviaLog?.length
         const result = parsers[i]!.parse(input, pos, ctx)
         if (!result.ok) {
           if (leavesLen !== undefined && ctx._cstLeaves) ctx._cstLeaves.length = leavesLen
           if (rawLen    !== undefined && ctx._cstRawChildren) ctx._cstRawChildren.length = rawLen
+          if (tlLen     !== undefined && ctx._cstTriviaLog) ctx._cstTriviaLog.length = tlLen
+          if (logLen    !== undefined && ctx._triviaLog) ctx._triviaLog.length = logLen
           expected.push(...result.expected)
           continue
         }
@@ -133,6 +137,8 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
         if (checks && autoNotFires(input, result.span.end, checks)) {
           if (leavesLen !== undefined && ctx._cstLeaves) ctx._cstLeaves.length = leavesLen
           if (rawLen    !== undefined && ctx._cstRawChildren) ctx._cstRawChildren.length = rawLen
+          if (tlLen     !== undefined && ctx._cstTriviaLog) ctx._cstTriviaLog.length = tlLen
+          if (logLen    !== undefined && ctx._triviaLog) ctx._triviaLog.length = logLen
           continue
         }
         return result as ParseResult<UnionArms<T>>

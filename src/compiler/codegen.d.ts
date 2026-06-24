@@ -9,6 +9,8 @@
 import type { Combinator, ParseResult, ParseError } from '../types.ts';
 export type CompiledParser<T> = {
     parse(input: string, pos?: number): ParseResult<T>;
+    /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
+    parseWithContext(input: string, ctx: import('../types.ts').ParseContext, pos?: number): ParseResult<T>;
     /**
      * Like parse(), but activates error recovery. recover() nodes collect their
      * ParseErrors into result.errors instead of (only) embedding them as values.

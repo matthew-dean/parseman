@@ -177,6 +177,8 @@ Two takeaways:
 
 **When NOT to collapse:** keep the parts as separate combinators wherever the builder needs them as distinct CST children — for per-field source spans (`fieldSpans`/`valueSpans`), for trivia recovered *between* the parts, or for distinct typed nodes. Correctness first; collapse only the genuinely opaque runs.
 
+For library-level codegen and macro optimizations (not grammar authoring), see [PERF_IDEAS.md](./PERF_IDEAS.md).
+
 ---
 
 ## Whitespace and comment skipping

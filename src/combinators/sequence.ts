@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseFail } from '../types.ts'
 import { empty } from './first-set.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, scanTrivia } from './trivia-skip.ts'
+import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
 
 type UnwrapParsers<T extends Combinator<unknown>[]> = {
   [K in keyof T]: T[K] extends Combinator<infer U> ? U : never
@@ -29,17 +29,10 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           // this term actually matches content past the trivia. A term that matches
           // empty (optional/many/lookahead) leaves the trivia for the enclosing rule.
           let scanEnd: number
-          let raw: unknown[] | undefined
-          let mark = 0
-          let tlog: number[] | undefined
-          let tmark = 0
+          let mark = saveTriviaMark(ctx)
 
           if (needsDeferredTriviaCommit(ctx)) {
             const scan = scanTrivia(input, cur, ctx)
-            raw = ctx._cstRawChildren as unknown[] | undefined
-            mark = raw ? raw.length : 0
-            tlog = ctx._cstTriviaLog
-            tmark = tlog ? tlog.length : 0
             scan.commit()
             scanEnd = scan.end
           } else {
@@ -51,8 +44,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           if (result.span.end > scanEnd) {
             cur = result.span.end
           } else {
-            if (raw) raw.length = mark
-            if (tlog) tlog.length = tmark
+            rollbackTrivia(ctx, mark)
           }
           values.push(result.value)
           continue
