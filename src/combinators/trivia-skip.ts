@@ -11,6 +11,22 @@ export type TriviaScan = { end: number; commit: () => void }
 
 const NOOP_COMMIT = () => {}
 
+/** True when trivia recording must be deferred until the following term commits. */
+export function needsDeferredTriviaCommit(ctx: ParseContext): boolean {
+  return ctx._triviaLog !== undefined || ctx._cstTriviaLog !== undefined
+}
+
+/**
+ * Skip trivia at `cur` and return the new position. No recording, no wrapper
+ * object — use between sequence/repeat terms when CST trivia capture is off.
+ */
+export function advanceTrivia(input: string, cur: number, ctx: ParseContext): number {
+  const triviaP = ctx.trivia
+  if (!triviaP) return cur
+  const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
+  return tr.ok && tr.span.end > cur ? tr.span.end : cur
+}
+
 /**
  * Scan trivia at `cur` using `ctx.trivia`, WITHOUT recording it. Returns the
  * position after the trivia (or `cur` if none) and a `commit()` to record it.
@@ -66,6 +82,7 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
  * accept the trivia between two committed terms (e.g. sequence/sepBy).
  */
 export function consumeTrivia(input: string, cur: number, ctx: ParseContext): number {
+  if (!needsDeferredTriviaCommit(ctx)) return advanceTrivia(input, cur, ctx)
   const scan = scanTrivia(input, cur, ctx)
   scan.commit()
   return scan.end

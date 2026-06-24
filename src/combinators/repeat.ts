@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
-import { consumeTrivia, scanTrivia } from './trivia-skip.ts'
+import { advanceTrivia, consumeTrivia, needsDeferredTriviaCommit, scanTrivia } from './trivia-skip.ts'
 
 /**
  * Parse one repetition item at `cur`, first skipping (and, in capture mode,
@@ -24,9 +24,13 @@ function repItem<T>(
   const tmark = tlog ? tlog.length : 0
   let pos = cur
   if (ctx.trivia) {
-    const scan = scanTrivia(input, cur, ctx)
-    scan.commit()
-    pos = scan.end
+    if (needsDeferredTriviaCommit(ctx)) {
+      const scan = scanTrivia(input, cur, ctx)
+      scan.commit()
+      pos = scan.end
+    } else {
+      pos = advanceTrivia(input, cur, ctx)
+    }
   }
   // Nothing but trivia left: don't speculatively parse an item at EOF (it would
   // fail and could trigger an item's recover()/error side-effects). The trivia
