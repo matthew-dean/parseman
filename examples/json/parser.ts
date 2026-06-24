@@ -21,6 +21,26 @@ import {
   type Combinator,
 } from '../../src/index.ts'
 
+function unescapeJsonString(inner: string): string {
+  if (!inner.includes('\\')) return inner
+  return inner
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+    .replace(/\\\//g, '/')
+    .replace(/\\b/g, '\b')
+    .replace(/\\f/g, '\f')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+}
+
+function objectFromPairs<V>(pairs: ReadonlyArray<readonly [string, V]>): Record<string, V> {
+  const obj = Object.create(null) as Record<string, V>
+  for (const [k, v] of pairs) obj[k] = v
+  return obj
+}
+
 // ---------------------------------------------------------------------------
 // Whitespace
 // ---------------------------------------------------------------------------
@@ -41,16 +61,7 @@ const jsonNumber = transform(
 const jsonStringInner = regex(/(?:[^"\\]|\\(?:["\\\/bfnrt]|u[0-9a-fA-F]{4}))*/)
 export const jsonString = transform(
   sequence(literal('"'), jsonStringInner, literal('"')),
-  ([, inner]) => inner
-    .replace(/\\"/g,  '"')
-    .replace(/\\\\/g, '\\')
-    .replace(/\\\//g, '/')
-    .replace(/\\b/g,  '\b')
-    .replace(/\\f/g,  '\f')
-    .replace(/\\n/g,  '\n')
-    .replace(/\\r/g,  '\r')
-    .replace(/\\t/g,  '\t')
-    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+  ([, inner]) => unescapeJsonString(inner),
 )
 
 // ---------------------------------------------------------------------------
@@ -80,7 +91,7 @@ export const { jsonValue } = rules<{ jsonValue: Combinator<JSONValue> }>(g => {
 
   const jsonObject = transform(
     sequence(literal('{'), optional(sepBy(jsonPair, comma)), literal('}')),
-    ([, pairs]) => Object.fromEntries(pairs ?? []) as Record<string, JSONValue>
+    ([, pairs]) => objectFromPairs(pairs ?? []) as Record<string, JSONValue>,
   )
 
   return {
@@ -128,7 +139,7 @@ export function makeJSONParser(customWs: typeof ws = ws) {
     )
     const object = transform(
       sequence(literal('{'), optional(sepBy(pair, comma)), literal('}')),
-      ([, pairs]) => Object.fromEntries(pairs ?? []) as Record<string, JSONValue>
+      ([, pairs]) => objectFromPairs(pairs ?? []) as Record<string, JSONValue>,
     )
 
     return {

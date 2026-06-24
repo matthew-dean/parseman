@@ -18,9 +18,9 @@ Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster.
 
 ![GraphQL parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parsecraft/main/assets/bench-graphql.svg)
 
-Parséman has three modes — **interpreter** (zero setup, works anywhere), **macro build** (compiled by the bundler plugin at build time, zero runtime cost), and **`.compile()`** (optional runtime JIT). Most production use lands on one of the first two. The initialization section only shows parsers with a nonzero setup cost: `.compile()` costs 85–680 µs depending on grammar size; Chevrotain always costs 950–1,300 µs. Parsers not listed there start for free.
+Parséman has three modes — **interpreter** (zero setup, works anywhere), **macro build** (compiled by the bundler plugin at build time, zero runtime cost), and **`.compile()`** (optional runtime JIT). Most production use lands on one of the first two. The initialization section only shows parsers with a nonzero setup cost: `.compile()` costs 75–650 µs depending on grammar size; Chevrotain always costs 840–1,400 µs. Parsers not listed there start for free.
 
-On JSON, Parséman macro beats Peggy at small and medium sizes; Peggy pulls ahead by ~19% at 12 kB — it's been doing this a while. On CSV and GraphQL, where the grammar is non-recursive or fully inlineable, Parséman macro is the clear winner — CSV macro is now ~6× faster than Peggy on the 500-row fixture. For CST-building grammars (`node()` rules with trivia capture), the interpreter runs ~2× faster than Chevrotain on the JSON CST fixture while building an equivalent tree.
+On JSON, CSV, and GraphQL, Parséman macro beats Peggy at every fixture size in the charts above. For CST-building grammars (`node()` rules with trivia capture), the interpreter runs ~2× faster than Chevrotain on the JSON CST fixture while building an equivalent tree.
 
 ---
 

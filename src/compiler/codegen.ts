@@ -71,6 +71,49 @@ type Ctx = {
 function v(ctx: Ctx, prefix = '_v'): string { return `${prefix}${ctx.vars++}` }
 function ind(ctx: Ctx): string { return '  '.repeat(ctx.indent) }
 
+/** Sentinel + end-position slot for compiled `rules()` / `withCtx` named fns. */
+const NAMED_FN_FAIL = '_pfFail'
+const NAMED_FN_END = '_pfEnd'
+
+function namedFnPrelude(): string[] {
+  return [`const ${NAMED_FN_FAIL} = {}`, `let ${NAMED_FN_END}`]
+}
+
+function pushNamedFnDecl(
+  ctx: Ctx,
+  fnName: string,
+  bodyStmts: string[],
+  valueVar: string,
+  endVar: string,
+): void {
+  ctx.namedFnDecls.push([
+    `function ${fnName}(input, _pos, _ctx) {`,
+    `  let _pfok = false, _pfv, _pfe = _pos`,
+    `  _pfail: {`,
+    ...bodyStmts,
+    `  _pfv = ${valueVar}; _pfe = ${endVar}; _pfok = true`,
+    `  }`,
+    `  if (!_pfok) return ${NAMED_FN_FAIL}`,
+    `  ${NAMED_FN_END} = _pfe`,
+    `  return _pfv`,
+    `}`,
+  ].join('\n'))
+}
+
+function emitNamedFnCall(ctx: Ctx, fnName: string, pos: string, failExpected: string): ER {
+  const vv = v(ctx, '_pfv')
+  const ev = v(ctx, '_pfe')
+  return {
+    stmts: [
+      `${ind(ctx)}const ${vv} = ${fnName}(input, ${pos}, _ctx)`,
+      `${ind(ctx)}if (${vv} === ${NAMED_FN_FAIL}) ${failStmt({ ...ctx, indent: 0 }, failExpected, pos).trim()}`,
+      `${ind(ctx)}const ${ev} = ${NAMED_FN_END}`,
+    ],
+    valueVar: vv,
+    endVar: ev,
+  }
+}
+
 /**
  * Emit a spanned-leaf capture into the active node()'s collectors (via _ctx,
  * matching the interpreter). Emitted only in a capturing compile; the runtime
@@ -950,32 +993,11 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
 
-    ctx.namedFnDecls.push([
-      `function ${fnName}(input, _pos, _ctx) {`,
-      `  let _pfok = false, _pfv, _pfe = _pos`,
-      `  _pfail: {`,
-      ...r.stmts,
-      `  _pfv = ${r.valueVar}; _pfe = ${r.endVar}; _pfok = true`,
-      `  }`,
-      `  return _pfok ? [_pfv, _pfe] : null`,
-      `}`,
-    ].join('\n'))
+    pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar)
   }
 
   const fnName = ctx.namedParsers.get(p)!
-  const rv = v(ctx, '_pfr')
-  const vv = v(ctx, '_pfv')
-  const ev = v(ctx, '_pfe')
-  return {
-    stmts: [
-      `${ind(ctx)}const ${rv} = ${fnName}(input, ${pos}, _ctx)`,
-      `${ind(ctx)}if (!${rv}) ${failStmt({ ...ctx, indent: 0 }, '"parser"', pos).trim()}`,
-      `${ind(ctx)}const ${vv} = ${rv}[0]`,
-      `${ind(ctx)}const ${ev} = ${rv}[1]`,
-    ],
-    valueVar: vv,
-    endVar: ev,
-  }
+  return emitNamedFnCall(ctx, fnName, pos, '"parser"')
 }
 
 // ── recover: try inner; on failure scan to sentinel, emit ParseError node ────
@@ -1107,28 +1129,19 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         const innerR = emit(innerParser, ctx, '_pos')
         ctx.indent    = savedIndent
         ctx.failLabel = savedFailLabel
-        ctx.namedFnDecls.push([
-          `function ${fnName}(input, _pos, _ctx) {`,
-          `  let _pfok = false, _pfv, _pfe = _pos`,
-          `  _pfail: {`,
-          ...innerR.stmts,
-          `  _pfv = ${innerR.valueVar}; _pfe = ${innerR.endVar}; _pfok = true`,
-          `  }`,
-          `  return _pfok ? [_pfv, _pfe] : null`,
-          `}`,
-        ].join('\n'))
+        pushNamedFnDecl(ctx, fnName, innerR.stmts, innerR.valueVar, innerR.endVar)
       }
       const fn = ctx.namedParsers.get(innerParser)!
 
       const rv = v(ctx, '_wcr')
-      const vv = v(ctx)
+      const vv = v(ctx, '_wcv')
       const ev = v(ctx, '_wce')
       return {
         stmts: [
-          `${ind(ctx)}const ${rv} = ${fn}(input, ${pos}, { ..._ctx, state: _mf[${evIdx}]() })`,
-          `${ind(ctx)}if (!${rv}) ${failStmt({ ...ctx, indent: 0 }, '"withCtx"', pos).trim()}`,
-          `${ind(ctx)}const ${vv} = ${rv}[0]`,
-          `${ind(ctx)}const ${ev} = ${rv}[1]`,
+          `${ind(ctx)}const ${rv} = { ..._ctx, state: _mf[${evIdx}]() }`,
+          `${ind(ctx)}const ${vv} = ${fn}(input, ${pos}, ${rv})`,
+          `${ind(ctx)}if (${vv} === ${NAMED_FN_FAIL}) ${failStmt({ ...ctx, indent: 0 }, '"withCtx"', pos).trim()}`,
+          `${ind(ctx)}const ${ev} = ${NAMED_FN_END}`,
         ],
         valueVar: vv,
         endVar: ev,
@@ -1216,9 +1229,12 @@ export function compile<T>(parser: Combinator<T>, mapFnSources?: string[]): Comp
     ? `const _collator = new Intl.Collator(undefined, { sensitivity: 'accent' })\n`
     : ''
 
+  const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
+
   const source = [
     ...ctx.regexDecls,
     '',
+    ...namedPrelude,
     ...ctx.namedFnDecls,
     `${collatorDecl}function _parse(input, _pos, _rp, _mf, _build, _ctx) {`,
     `  let pos = _pos`,
@@ -1230,6 +1246,7 @@ export function compile<T>(parser: Combinator<T>, mapFnSources?: string[]): Comp
   const fn = new Function('input', '_pos', '_rp', '_mf', '_build', '_ctx', [
     ...ctx.regexDecls,
     collatorDecl,
+    ...namedPrelude,
     ...ctx.namedFnDecls,
     `let pos = _pos`,
     ...r.stmts,
@@ -1307,12 +1324,14 @@ function buildInlineExpression(
   if (!needsWrapper) return innerFn
 
   // Wrap in IIFE to hoist regex/collator/mf/build declarations and named recursive functions.
+  const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   return [
     `/* @__PURE__ */ (() => {`,
     ...ctx.regexDecls.map(d => `  ${d}`),
     collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,
     buildDecl,
+    ...namedPrelude.map(l => `  ${l}`),
     ...ctx.namedFnDecls.flatMap(f => f.split('\n').map(l => `  ${l}`)),
     `  return ${innerFn}`,
     `})()`,
