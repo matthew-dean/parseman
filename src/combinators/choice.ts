@@ -119,10 +119,22 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       // ── firstMatch (+ gated arms): try each arm in order, skipping gated-off arms ──
       for (let i = 0; i < parsers.length; i++) {
         if (gates[i] && !gates[i]!(ctx.state)) continue   // gate blocks this arm
+        // Save leaf-array lengths so a failed/rejected arm can be rolled back.
+        const leavesLen = ctx._cstLeaves?.length
+        const rawLen    = ctx._cstRawChildren?.length
         const result = parsers[i]!.parse(input, pos, ctx)
-        if (!result.ok) { expected.push(...result.expected); continue }
+        if (!result.ok) {
+          if (leavesLen !== undefined && ctx._cstLeaves) ctx._cstLeaves.length = leavesLen
+          if (rawLen    !== undefined && ctx._cstRawChildren) ctx._cstRawChildren.length = rawLen
+          expected.push(...result.expected)
+          continue
+        }
         const checks = autoNot[i]
-        if (checks && autoNotFires(input, result.span.end, checks)) continue
+        if (checks && autoNotFires(input, result.span.end, checks)) {
+          if (leavesLen !== undefined && ctx._cstLeaves) ctx._cstLeaves.length = leavesLen
+          if (rawLen    !== undefined && ctx._cstRawChildren) ctx._cstRawChildren.length = rawLen
+          continue
+        }
         return result as ParseResult<UnionArms<T>>
       }
       return { ok: false, expected, span: { start: pos, end: pos } }

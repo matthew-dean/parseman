@@ -163,12 +163,14 @@ export function makeParseDoc<N extends NodeLike>(
   ruleName: string,
   input: string,
   trivia?: Combinator<unknown>,
-  captureTrivia?: boolean
+  captureTrivia?: boolean,
+  triviaLog?: number[]
 ): ParseDoc<N> {
   const ctx: ParseContext = {
     trackLines: false,
     ...(trivia !== undefined ? { trivia } : {}),
-    ...(captureTrivia ? { captureTrivia: true } : {})
+    ...(captureTrivia ? { captureTrivia: true } : {}),
+    ...(triviaLog !== undefined ? { _triviaLog: triviaLog } : {}),
   }
   const r = parser.rule(ruleName as RuleKeys<typeof parser>).parse(input, 0, ctx)
   if (r.ok) {

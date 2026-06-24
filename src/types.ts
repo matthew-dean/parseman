@@ -97,6 +97,13 @@ export type ParseContext = {
    * Passed to buildNode() as rawChildren so grammars can inspect trivia.
    */
   _cstRawChildren?: unknown[]
+  /**
+   * Framework-internal: flat trivia log. When set, scanTrivia records each
+   * consumed trivia run as two numbers [runStart, runEnd] appended to this
+   * array instead of (or in addition to) rawChildren capture. Zero object
+   * allocations — just number pushes.
+   */
+  _triviaLog?: number[]
 }
 
 /**

@@ -31,6 +31,19 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
   const triviaP = ctx.trivia
   if (!triviaP) return { end: cur, commit: NOOP_COMMIT }
 
+  // ── Log mode: flat numeric accumulation, zero object allocations ──────────
+  const log = ctx._triviaLog
+  if (log !== undefined) {
+    const tr = triviaP.parse(input, cur, { trackLines: false, state: ctx.state })
+    if (!tr.ok || tr.span.end === cur) return { end: cur, commit: NOOP_COMMIT }
+    const end = tr.span.end
+    return {
+      end,
+      commit: () => { log.push(cur, end) },
+    }
+  }
+
+  // ── Capture mode: record trivia tokens into rawChildren ───────────────────
   if (ctx.captureTrivia && ctx._cstRawChildren) {
     const sink: TriviaSink[] = []
     const tr = triviaP.parse(input, cur, {

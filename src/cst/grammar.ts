@@ -85,6 +85,13 @@ export class Parser<N extends NodeLike = CSTNode> {
   protected _captureTrivia?: boolean
 
   /**
+   * When set, makeParseDoc injects this array as ctx._triviaLog so each
+   * scanTrivia.commit() pushes [runStart, runEnd] pairs into it.
+   * Reset to [] before each parse() call in any subclass that uses it.
+   */
+  protected _triviaLog?: number[]
+
+  /**
    * Optional map of public entry-point aliases → actual rule names. Lets callers
    * `parse('value', src)` when the grammar's rule is `ValueList`, removing
    * per-adapter name-translation tables.
@@ -237,7 +244,7 @@ export class Parser<N extends NodeLike = CSTNode> {
       ruleName = ruleNameOrInput as string
       src = input
     }
-    return makeParseDoc(this, this._resolveRule(ruleName), src, this._trivia, this._captureTrivia)
+    return makeParseDoc(this, this._resolveRule(ruleName), src, this._trivia, this._captureTrivia, this._triviaLog)
   }
 
   /**

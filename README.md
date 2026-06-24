@@ -137,8 +137,8 @@ Combinator trees — `literal`, `regex`, `sequence`, `choice`, `many`, `oneOrMor
 | `guard(predicate)` | Succeeds only when `predicate(ctx)` returns true; used for context-sensitive rules. |
 | `withCtx(extra, parser)` | Merge `extra` into the user context for the duration of `parser`. |
 | `recover(parser, sentinel)` | On failure, skip input until `sentinel` matches; returns a `CSTError` node. |
-| `scanTo(sentinel, skips?, opts?)` | Consume input up to (and including) `sentinel`, optionally skipping balanced pairs. |
-| `balanced(open, close)` | Match a balanced pair (e.g. `(…)`, `[…]`). Used as a `skip` argument to `scanTo`. |
+| `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Pass `opts.skip` to treat certain patterns as opaque blobs that may contain the sentinel character. Pass `opts.orEOF: true` to succeed at end-of-input. |
+| `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` or `[…]` — including the delimiters. Primarily used as an element of `scanTo`'s `opts.skip` list. |
 
 ---
 
@@ -379,7 +379,35 @@ const stmt = recover(g.Stmt, literal(';'))
 const block = scanTo(literal('}'), [balanced(literal('('), literal(')')), balanced(literal('['), literal(']'))])
 ```
 
-`scanTo(sentinel, skips?, opts?)` consumes input character-by-character until `sentinel` matches. Pass `skips` to skip over balanced pairs that might contain the sentinel character. Pass `opts.orEOF: true` to succeed at end-of-input if the sentinel is never found.
+### `scanTo` vs `balanced` — when to use each
+
+Both are **position arithmetic**: pure cursor-advance with zero CST allocation. Neither pushes terminals into the enclosing `node()`'s child list; only the final scanned span appears as a single leaf.
+
+**`scanTo(sentinel, opts?)`** — use when you need to consume an open-ended region whose boundary is a specific token. It scans character-by-character, stopping the moment `sentinel` matches. Pass `opts.skip` to declare patterns that should be treated as opaque blobs so their content never accidentally looks like the sentinel:
+
+```ts
+// Consume a CSS at-rule prelude up to '{' or ';',
+// but don't stop inside parentheses or strings.
+const prelude = scanTo(choice(literal('{'), literal(';')), {
+  skip: [balanced('(', ')'), singleStr, doubleStr],
+})
+```
+
+**`balanced(open, close, opts?)`** — use when you want to match a single self-contained delimited region and get its full text back (delimiters included). This is the natural building block for `scanTo`'s `skip` list:
+
+```ts
+const parenGroup  = balanced('(', ')')   // matches (a + b) including the parens
+const bracketExpr = balanced('[', ']')   // matches [0] including the brackets
+```
+
+`balanced` can itself accept a `skip` list for deeply nested structures:
+
+```ts
+// Match (…) allowing strings inside to contain unbalanced parens
+const parenWithStrings = balanced('(', ')', { skip: [singleStr, doubleStr] })
+```
+
+**The key difference**: `scanTo` scans *until* a boundary; `balanced` matches *across* a known delimited region. Use `balanced` inside `scanTo`'s `skip` to prevent the scanner from stopping at a sentinel that appears inside a nested structure.
 
 ---
 

@@ -508,6 +508,21 @@ function emitFirstMatch(
     }
     const skipCond = gateCond ? `!${resV}?.ok && ${gateCond}` : `!${resV}?.ok`
 
+    // In capturing mode, save leaf-array lengths before the arm so we can roll
+    // back any leaves pushed by a failed or auto-not-rejected arm.
+    const markLeaves = ctx.capturing ? v(ctx, '_cml') : null
+    const markRaw    = ctx.capturing ? v(ctx, '_cmr') : null
+    const rollback   = markLeaves
+      ? `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLeaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markRaw}`
+      : ''
+    const markStmts  = markLeaves
+      ? [`${ind(ctx)}  const ${markLeaves} = _ctx._cstLeaves?.length ?? 0`,
+         `${ind(ctx)}  const ${markRaw} = _ctx._cstRawChildren?.length ?? 0`]
+      : []
+    const rollbackStmt = rollback
+      ? `${ind(ctx)}  if (!${resV}?.ok) { ${rollback} }`
+      : ''
+
     if (autoNot && autoNot.length > 0) {
       const tmp = v(ctx, '_ct')
       const anCode = v(ctx, '_anc')
@@ -516,11 +531,20 @@ function emitFirstMatch(
           ? firstSetCond(anCode, check.set)
           : `input.startsWith(${JSON.stringify(check.value)}, ${tmp}.span.end)`
       ).join(' || ')
+      stmts.push(`${ind(ctx)}if (${skipCond}) {`)
+      stmts.push(...markStmts)
       stmts.push(
-        `${ind(ctx)}if (${skipCond}) { const ${tmp} = (() => { try { return ${iife} } catch {} })(); if (${tmp}?.ok) { const ${anCode} = ${tmp}.span.end < input.length ? input.charCodeAt(${tmp}.span.end) : -1; if (!(${rejectCond})) ${resV} = ${tmp} } }`,
+        `${ind(ctx)}  const ${tmp} = (() => { try { return ${iife} } catch {} })()`,
+        `${ind(ctx)}  if (${tmp}?.ok) { const ${anCode} = ${tmp}.span.end < input.length ? input.charCodeAt(${tmp}.span.end) : -1; if (!(${rejectCond})) ${resV} = ${tmp} }`,
       )
+      if (rollbackStmt) stmts.push(rollbackStmt)
+      stmts.push(`${ind(ctx)}}`)
     } else {
-      stmts.push(`${ind(ctx)}if (${skipCond}) { try { ${resV} = ${iife} } catch {} }`)
+      stmts.push(`${ind(ctx)}if (${skipCond}) {`)
+      stmts.push(...markStmts)
+      stmts.push(`${ind(ctx)}  try { ${resV} = ${iife} } catch {}`)
+      if (rollbackStmt) stmts.push(rollbackStmt)
+      stmts.push(`${ind(ctx)}}`)
     }
   }
   stmts.push(`${ind(ctx)}if (!${resV}?.ok) ${failArr({ ...ctx, indent: 0 }, allExpected, pos)}`)
@@ -757,8 +781,12 @@ function emitScanTo(
   ]
   ctx.indent++
 
+  // Sentinel check and skippers must not emit CST leaves — they are pure position
+  // probes. Use a non-capturing ctx so their literal()/regex() don't push leaves.
+  const probeCtx: Ctx = { ...ctx, capturing: false }
+
   // Sentinel check — labeled block, no IIFE
-  const { stmts: sentStmts, okVar: sentOk } = emitFallible(def.sentinel, ctx, curV)
+  const { stmts: sentStmts, okVar: sentOk } = emitFallible(def.sentinel, probeCtx, curV)
   stmts.push(...sentStmts, `${ind(ctx)}if (${sentOk}) { ${foundV} = true; break }`)
 
   // Skippers — labeled block per skipper; a failure just means "not this one"
@@ -766,7 +794,7 @@ function emitScanTo(
     const advV = v(ctx, '_stadv')
     stmts.push(`${ind(ctx)}let ${advV} = false`)
     for (const skipper of def.skip) {
-      const { stmts: skStmts, okVar: skOk, endVar: skEnd } = emitFallible(skipper, ctx, curV)
+      const { stmts: skStmts, okVar: skOk, endVar: skEnd } = emitFallible(skipper, probeCtx, curV)
       stmts.push(
         `${ind(ctx)}if (!${advV}) {`,
         ...skStmts,
