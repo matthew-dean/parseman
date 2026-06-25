@@ -533,6 +533,8 @@ compiled.source                                   // generated JS source string
 compiled.inlineExpression                         // self-contained expression (what the plugin inlines)
 ```
 
+> **CSP:** `compile()` uses `new Function` under the hood, so it cannot run in environments with a strict [Content Security Policy](https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide) that blocks `'unsafe-eval'`. Use the interpreter or the macro build plugin instead.
+
 ---
 
 ## ParseResult types

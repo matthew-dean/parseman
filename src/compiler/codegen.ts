@@ -1346,6 +1346,15 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
   }
 }
 
+/**
+ * Compile a combinator tree into an optimized parse function at runtime.
+ *
+ * Uses `new Function` internally, so it will fail in environments with a strict
+ * Content Security Policy that omits `'unsafe-eval'`. Prefer the interpreter or
+ * macro build plugin in those cases.
+ *
+ * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
+ */
 export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): CompiledParser<T> {
   const ctx: Ctx = {
     vars: 0,
