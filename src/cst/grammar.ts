@@ -154,8 +154,8 @@ export class Parser<N extends NodeLike = CSTNode> {
    *
    * `rawChildren` is the structural children (nodes + leaves + errors) in parse
    * order. `triviaLog` carries trivia as a flat number array: `[start, end,
-   * insertIdx, ...]` triples, where `insertIdx` is the rawChildren index before
-   * which this trivia run was consumed. Use `buildTriviaIndex` or
+   * insertIdx, ...]` entries (three numbers each), where `insertIdx` is the rawChildren index before
+   * which this trivia entry was consumed. Use `buildTriviaIndex` or
    * `triviaLogToRaw` to work with it. The default implementation ignores both.
    */
   protected buildNode(

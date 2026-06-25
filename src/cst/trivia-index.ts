@@ -11,7 +11,7 @@ export type TriviaToken = { readonly value: string; readonly span: Span }
  *   index.before.get(node.span.start)  // trivia immediately before a node
  *   index.after.get(node.span.end)     // trivia immediately after a node
  *
- * A given trivia run is registered under BOTH the following item's start
+ * A given trivia entry is registered under BOTH the following item's start
  * (`before`) and the preceding item's end (`after`), so either lookup finds it.
  */
 export type TriviaIndex = {
@@ -54,8 +54,8 @@ export type TriviaIndexOptions = {
 /**
  * Walk a tree produced by a parseman `Parser` grammar (with `_captureTrivia`
  * enabled) and build a before/after trivia index. Each node must carry a
- * `triviaLog: readonly number[]` property (the flat `[start, end, insertIdx, ...]`
- * triples emitted during parse) and a `rawChildren` property (structural items
+ * `triviaLog: readonly number[]` property (flat `[start, end, insertIdx, …]` —
+ * three numbers per entry) and a `rawChildren` property (structural items
  * with `.span`). `input` is the source string used to materialize trivia values.
  *
  * With `opts`, also captures leading trivia (before the root's content) and

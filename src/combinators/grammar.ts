@@ -42,7 +42,12 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
       const ctx: ParseContext = {
         ..._ctx,
         trackLines,
-        ...(opts.trivia !== undefined ? { trivia: opts.trivia } : {}),
+        ...(opts.trivia !== undefined ? {
+          trivia: opts.trivia,
+          ...(opts.trivia._meta.triviaKindLabels
+            ? { triviaKindLabels: opts.trivia._meta.triviaKindLabels }
+            : {}),
+        } : {}),
         ...(opts.captureTrivia || _ctx?.captureTrivia ? { captureTrivia: true } : {}),
       }
       const result = root.parse(input, pos ?? 0, ctx)

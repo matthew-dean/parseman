@@ -40,6 +40,7 @@ export type ParserDef =
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
+  | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; trackLines: boolean }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
@@ -62,6 +63,11 @@ import type { CstCaptureBuf } from './cst/capture-buffer.ts'
 
 export type ParseContext = {
   trivia?: Combinator<unknown>
+  /**
+   * Label table for the active trivia parser (`label(name, arm)` strings in
+   * choice order). When set, trivia logs include a kind index per entry.
+   */
+  triviaKindLabels?: readonly string[]
   /**
    * When true (and a CST node is collecting children), trivia consumed between
    * terms is recorded into _cstRawChildren as separate CSTTrivia tokens — one
@@ -101,15 +107,15 @@ export type ParseContext = {
   _cstRawChildren?: unknown[]
   /**
    * Framework-internal: flat trivia log. When set, scanTrivia records each
-   * consumed trivia run as two numbers [runStart, runEnd] appended to this
+   * consumed trivia entry as two numbers [start, end] appended to this
    * array instead of (or in addition to) rawChildren capture. Zero object
    * allocations — just number pushes.
    */
   _triviaLog?: number[]
   /**
    * Framework-internal: flat per-node trivia log for CST capture mode.
-   * When set alongside _cstRawChildren, each trivia run is recorded as three
-   * numbers [start, end, insertIdx] appended here instead of allocating a
+   * When set alongside _cstRawChildren, each trivia entry is recorded as three
+   * numbers [start, end, insertIdx] appended here (one entry = three numbers) instead of allocating a
    * CSTTrivia object. `insertIdx` is the _cstRawChildren.length at the moment
    * the trivia was consumed, so consumers know where in rawChildren to insert it.
    * Zero object allocations — replaces the CSTTrivia object path entirely.
@@ -136,6 +142,8 @@ export type ParserMeta = {
   canMatchNewline: boolean
   /** Whether this parser is marked as trivia (auto-skip) */
   isTrivia: boolean
+  /** User-defined labels for labeled trivia arms (`label(name, parser)`). */
+  triviaKindLabels?: readonly string[]
   /** choice(): true when all alternative first sets are pairwise disjoint */
   disjoint?: boolean
 }

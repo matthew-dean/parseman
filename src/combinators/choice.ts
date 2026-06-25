@@ -242,6 +242,7 @@ export function getCoreRegexDef(p: Combinator<unknown>): { source: string; flags
   const def = p._def
   if (def.tag === 'regex') return { source: def.source, flags: def.flags }
   if (def.tag === 'transform') return getCoreRegexDef(def.parser)
+  if (def.tag === 'label') return getCoreRegexDef(def.parser)
   return null
 }
 

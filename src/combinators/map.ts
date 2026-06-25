@@ -1,4 +1,5 @@
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
+import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 
 export function transform<T, U>(
   parser: Combinator<T>,
@@ -32,10 +33,29 @@ export function skip<T, S>(main: Combinator<T>, skipped: Combinator<S>): Combina
 }
 
 export function trivia<T>(parser: Combinator<T>): Combinator<T> {
+  const kindLabels = analyzeLabeledTrivia(parser as Combinator<unknown>)?.labels
   return {
     _tag: parser._tag,
-    _meta: { ...parser._meta, isTrivia: true },
+    _meta: {
+      ...parser._meta,
+      isTrivia: true,
+      ...(kindLabels ? { triviaKindLabels: kindLabels } : {}),
+    },
     _def: { tag: 'trivia', parser: parser as Combinator<unknown> },
+    parse: parser.parse.bind(parser),
+  }
+}
+
+/**
+ * Attach a string label to a parser arm (e.g. trivia `choice` branches).
+ * Parse behavior is unchanged; the label is metadata for tooling and future
+ * trivia-kind capture (`'whitespace'`, `'blockComment'`, …).
+ */
+export function label<T>(name: string, parser: Combinator<T>): Combinator<T> {
+  return {
+    _tag: parser._tag,
+    _meta: parser._meta,
+    _def: { tag: 'label', label: name, parser: parser as Combinator<unknown> },
     parse: parser.parse.bind(parser),
   }
 }

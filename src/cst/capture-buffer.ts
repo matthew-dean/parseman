@@ -157,15 +157,43 @@ export function rollbackCstCapture(ctx: ParseContext, mark: CstRollbackMark): vo
   if (ctx._cstLeaves) ctx._cstLeaves.length = mark.leaves
 }
 
-export function pushCstTriviaTriplet(ctx: ParseContext, start: number, end: number): void {
+export function pushCstTriviaEntry(
+  ctx: ParseContext,
+  start: number,
+  end: number,
+  kindIndex?: number,
+): void {
   const insertIdx = cstRawLen(ctx)
   const b = ctx._cstBuf
+  const withKind = ctx.triviaKindLabels !== undefined && kindIndex !== undefined
   if (b) {
-    if (!b.tl) b.tl = [start, end, insertIdx]
-    else b.tl.push(start, end, insertIdx)
+    if (!b.tl) {
+      b.tl = withKind ? [start, end, insertIdx, kindIndex] : [start, end, insertIdx]
+    } else if (withKind) {
+      b.tl.push(start, end, insertIdx, kindIndex)
+    } else {
+      b.tl.push(start, end, insertIdx)
+    }
     return
   }
-  if (ctx._cstTriviaLog) ctx._cstTriviaLog.push(start, end, insertIdx)
+  if (ctx._cstTriviaLog) {
+    if (withKind) ctx._cstTriviaLog.push(start, end, insertIdx, kindIndex)
+    else ctx._cstTriviaLog.push(start, end, insertIdx)
+  }
+}
+
+export function pushTriviaLogEntry(
+  ctx: ParseContext,
+  start: number,
+  end: number,
+  kindIndex?: number,
+): void {
+  if (!ctx._triviaLog) return
+  if (ctx.triviaKindLabels !== undefined && kindIndex !== undefined) {
+    ctx._triviaLog.push(start, end, kindIndex)
+  } else {
+    ctx._triviaLog.push(start, end)
+  }
 }
 
 export function cstDeferredTriviaActive(ctx: ParseContext): boolean {

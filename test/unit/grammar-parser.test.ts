@@ -400,7 +400,7 @@ describe('Parser — rawChildren/triviaLog in buildNode', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.value.children.every(c => c._tag !== 'trivia')).toBe(true)
-    // triviaLog has [start, end, insertIdx] per trivia run
+    // triviaLog has [start, end, insertIdx] per trivia entry
     expect(r.value.triviaLog.length).toBe(3)
     const [start, end] = r.value.triviaLog
     expect('div p'.slice(start, end)).toBe(' ')

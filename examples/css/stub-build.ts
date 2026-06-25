@@ -9,7 +9,7 @@ export type CssNode = {
   children: unknown[]
   /** Structural child count from rawChildren at build time. */
   rawCount: number
-  /** Length of this rule's flat triviaLog triple slice. */
+  /** `triviaLog.length` for this node (3 numbers per captured trivia entry). */
   localTriviaLen: number
 }
 
@@ -30,8 +30,8 @@ export function mk(
   }
 }
 
-export function buildLazyTriviaMap(triviaLog: readonly number[], _input: string): { triples: number } {
-  return { triples: Math.floor(triviaLog.length / 2) }
+export function buildLazyTriviaMap(triviaLog: readonly number[], _input: string): { entries: number } {
+  return { entries: Math.floor(triviaLog.length / 2) }
 }
 
 export function nilNode(): CssNode {

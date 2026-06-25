@@ -1,9 +1,13 @@
 import type { ParseContext } from '../types.ts'
 import {
-  cstDeferredTriviaActive,
-  cstRawLen,
-  cstTlLen,
-  pushCstTriviaTriplet,
+  analyzeLabeledTrivia,
+  recordTriviaChunks,
+  scanLabeledTriviaChunks,
+  tryFastLabeledScan,
+} from '../cst/trivia-kinds.ts'
+import {
+  pushCstTriviaEntry,
+  pushTriviaLogEntry,
   rollbackCstCapture,
   saveCstMark,
 } from '../cst/capture-buffer.ts'
@@ -24,7 +28,7 @@ const NOOP_COMMIT = () => {}
 
 /** True when trivia recording must be deferred until the following term commits. */
 export function needsDeferredTriviaCommit(ctx: ParseContext): boolean {
-  return cstDeferredTriviaActive(ctx)
+  return ctx._triviaLog !== undefined || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined
 }
 
 export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
@@ -37,6 +41,21 @@ export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): voi
   if (ctx._triviaLog) ctx._triviaLog.length = mark.log
 }
 
+function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaScan {
+  const triviaP = ctx.trivia!
+  const spec = analyzeLabeledTrivia(triviaP)
+  if (!spec) return { end: cur, commit: NOOP_COMMIT }
+
+  const fast = tryFastLabeledScan(input, cur, triviaP)
+  const { end, chunks } = fast ?? scanLabeledTriviaChunks(input, cur, spec)
+  if (end === cur) return { end: cur, commit: NOOP_COMMIT }
+
+  return {
+    end,
+    commit: () => recordTriviaChunks(ctx, chunks),
+  }
+}
+
 /**
  * Skip trivia at `cur` and return the new position. No recording, no wrapper
  * object — use between sequence/repeat terms when CST trivia capture is off.
@@ -44,6 +63,10 @@ export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): voi
 export function advanceTrivia(input: string, cur: number, ctx: ParseContext): number {
   const triviaP = ctx.trivia
   if (!triviaP) return cur
+  if (ctx.triviaKindLabels) {
+    const scan = scanWithLabels(input, cur, ctx)
+    return scan.end
+  }
   const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
   return tr.ok && tr.span.end > cur ? tr.span.end : cur
 }
@@ -51,16 +74,6 @@ export function advanceTrivia(input: string, cur: number, ctx: ParseContext): nu
 /**
  * Scan trivia at `cur` using `ctx.trivia`, WITHOUT recording it. Returns the
  * position after the trivia (or `cur` if none) and a `commit()` to record it.
- *
- * Recording is gated on `ctx.captureTrivia`:
- *   - capture off (default): commit() is a no-op; trivia is skipped silently.
- *   - capture on (and a rawChildren collector is active): commit() records each
- *     maximal trivia sub-match (a whitespace run or a comment) as a separate
- *     CSTTrivia token. Relies on the trivia parser being structured so each
- *     token is a distinct leaf match.
- *
- * The trivia parser always runs with `trivia` unset in its sub-context so it
- * cannot recurse into itself.
  */
 export function scanTrivia(input: string, cur: number, ctx: ParseContext): TriviaScan {
   const triviaP = ctx.trivia
@@ -69,7 +82,10 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
   const log = ctx._triviaLog
   const captureTl = ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)
 
-  // ── Log and/or capture mode: defer recording until commit() ─────────────
+  if (ctx.triviaKindLabels && (log !== undefined || captureTl)) {
+    return scanWithLabels(input, cur, ctx)
+  }
+
   if (log !== undefined || captureTl) {
     const tr = triviaP.parse(input, cur, {
       trackLines: log !== undefined ? false : ctx.trackLines,
@@ -80,8 +96,8 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
     return {
       end,
       commit: () => {
-        if (log !== undefined) log.push(cur, end)
-        if (captureTl) pushCstTriviaTriplet(ctx, cur, end)
+        pushTriviaLogEntry(ctx, cur, end)
+        if (captureTl) pushCstTriviaEntry(ctx, cur, end)
       },
     }
   }

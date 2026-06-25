@@ -7,6 +7,8 @@
  *   - Chevrotain
  *   - Parsimmon
  *   - Peggy (code-generating PEG parser)
+ *   - Nearley (json.ne upstream; csv.ne + graphql.ne ported from Peggy for parity)
+ *   - Jison (JSON + GraphQL grammars with value-building semantic actions)
  *   - JSON.parse() (native baseline for JSON)
  *
  * Run:  node --import tsx bench/run.ts
@@ -34,6 +36,11 @@ import { buildParsimmonGraphQL } from './parsimmon-graphql.ts'
 import { buildPeggyJSON } from './peggy-json.ts'
 import { buildPeggyCSV } from './peggy-csv.ts'
 import { buildPeggyGraphQL } from './peggy-graphql.ts'
+import { buildNearleyJSON, initNearleyJSON } from './nearley-json.ts'
+import { buildNearleyCSV, initNearleyCSV } from './nearley-csv.ts'
+import { buildNearleyGraphQL, initNearleyGraphQL } from './nearley-graphql.ts'
+import { buildJisonJSON, initJisonJSON } from './jison-json.ts'
+import { buildJisonGraphQL, initJisonGraphQL } from './jison-graphql.ts'
 
 // ---------------------------------------------------------------------------
 // Compiled parsers (built once, reused across bench runs)
@@ -51,6 +58,11 @@ const parsimmonGQL      = buildParsimmonGraphQL()
 const peggyJSON         = buildPeggyJSON()
 const peggyCSV          = buildPeggyCSV()
 const peggyGQL          = buildPeggyGraphQL()
+const nearleyJSON       = buildNearleyJSON()
+const nearleyCSV        = buildNearleyCSV()
+const nearleyGQL        = buildNearleyGraphQL()
+const jisonJSON         = buildJisonJSON()
+const jisonGQL          = buildJisonGraphQL()
 
 // ---------------------------------------------------------------------------
 // Fixtures (shared with parseman-perf.ts)
@@ -89,18 +101,23 @@ setupBench('Parséman (.compile())', () => compile(jsonDoc),         500)
 setupBench('Chevrotain',             () => buildChevrotainJSON(),    50)
 setupBench('Parsimmon',              () => buildParsimmonJSON(),     20_000)
 setupBench('Peggy',                  () => buildPeggyJSON(),         20_000)
+setupBench('Nearley',                () => initNearleyJSON(),       20_000)
+setupBench('Jison',                  () => initJisonJSON(),         20_000)
 
 console.log('\n  [CSV]')
 setupBench('Parséman (.compile())', () => compile(csvParser),       500)
 setupBench('Chevrotain',             () => buildChevrotainCSV(),     50)
 setupBench('Parsimmon',              () => buildParsimmonCSV(),      20_000)
 setupBench('Peggy',                  () => buildPeggyCSV(),          20_000)
+setupBench('Nearley',                () => initNearleyCSV(),        20_000)
 
 console.log('\n  [GraphQL]')
 setupBench('Parséman (.compile())', () => compile(graphqlDoc),      200)
 setupBench('Chevrotain',             () => buildChevrotainGraphQL(), 30)
 setupBench('Parsimmon',              () => buildParsimmonGraphQL(),  20_000)
 setupBench('Peggy',                  () => buildPeggyGraphQL(),      20_000)
+setupBench('Nearley',                () => initNearleyGraphQL(),     20_000)
+setupBench('Jison',                  () => initJisonGraphQL(),      20_000)
 
 // ---------------------------------------------------------------------------
 // JSON warm-parse benchmarks
@@ -114,6 +131,8 @@ function jsonGroup(label: string, input: string, iters: number) {
   bench('Chevrotain',              () => chevrotainJSON(input), iters)
   bench('Parsimmon',               () => parsimmonJSON(input), iters)
   bench('Peggy',                   () => peggyJSON(input), iters)
+  bench('Nearley',                 () => nearleyJSON(input), iters)
+  bench('Jison',                   () => jisonJSON(input), iters)
   bench('JSON.parse (native)',     () => JSON.parse(input), iters)
 }
 
@@ -150,6 +169,7 @@ function csvGroup(label: string, input: string, iters: number) {
   bench('Chevrotain',              () => chevrotainCSV(input), iters)
   bench('Parsimmon',               () => parsimmonCSV(input), iters)
   bench('Peggy',                   () => peggyCSV(input), iters)
+  bench('Nearley',                 () => nearleyCSV(input), iters)
 }
 
 csvGroup('small', SMALL_CSV, 50_000)
@@ -167,6 +187,8 @@ function gqlGroup(label: string, input: string, iters: number) {
   bench('Chevrotain',              () => chevrotainGQL(input), iters)
   bench('Parsimmon',               () => parsimmonGQL(input), iters)
   bench('Peggy',                   () => peggyGQL(input), iters)
+  bench('Nearley',                 () => nearleyGQL(input), iters)
+  bench('Jison',                   () => jisonGQL(input), iters)
 }
 
 gqlGroup('small',  SMALL_GQL,  50_000)

@@ -8,7 +8,9 @@ Write parsers in TypeScript — fast enough to run as-is, and blazing fast when 
 
 ## Benchmarks
 
-Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster.
+Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster. Refresh: `pnpm bench`, then `pnpm bench:svg` (updates `assets/bench-*.svg`).
+
+Compared parsers: **Parséman**, Peggy, Parsimmon, Chevrotain, Nearley, and Jison (plus `JSON.parse` on JSON). Each implements the same parsing work on the bench fixtures — building JS values / row arrays / GraphQL AST nodes, not syntax-only validation. Peggy grammars in `bench/*.pegjs` are the reference; Nearley JSON uses [kach/nearley `examples/json.ne`](https://github.com/kach/nearley/blob/master/examples/json.ne); other Nearley and Jison grammars are ports of those Peggy files (`bench/vendor/`).
 
 ![JSON parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parsecraft/main/assets/bench-json.svg)
 
@@ -16,9 +18,9 @@ Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster.
 
 ![GraphQL parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parsecraft/main/assets/bench-graphql.svg)
 
-Parséman has three modes — **interpreter** (zero setup, works anywhere), **macro build** (compiled by the bundler plugin at build time, zero runtime cost), and **`.compile()`** (optional runtime JIT). Most production use lands on one of the first two. The initialization section only shows parsers with a nonzero setup cost: `.compile()` costs 75–650 µs depending on grammar size; Chevrotain always costs 840–1,400 µs. Parsers not listed there start for free.
+Parséman has three modes — **interpreter** (zero setup, works anywhere), **macro build** (compiled by the bundler plugin at build time, zero runtime cost), and **`.compile()`** (optional runtime JIT). Most production use lands on one of the first two. The initialization section only shows parsers with a nonzero setup cost: `.compile()` costs 75–650 µs depending on grammar size; Chevrotain always costs 840–1,400 µs. Parsers not listed there start for free. (Init numbers are pinned on the charts — they're noisy run-to-run; warm-parse bars are the meaningful comparison.)
 
-On JSON, CSV, and GraphQL, Parséman macro beats Peggy at every fixture size in the charts above. For CST-building grammars (`node()` rules with trivia capture), the interpreter runs ~2× faster than Chevrotain on the JSON CST fixture while building an equivalent tree.
+On JSON, CSV, and GraphQL, Parséman macro beats Peggy at every fixture size in the charts above (e.g. GraphQL large: **142 µs** vs Peggy **400 µs**). For CST-building grammars (`node()` rules with trivia capture), the interpreter runs ~2× faster than Chevrotain on the JSON CST fixture while building an equivalent tree.
 
 ---
 
@@ -136,6 +138,7 @@ A combinator reads from the input at the current position and succeeds or fails 
 | `sepBy(combinator, sep)` | Zero or more combinator matches separated by `sep`. |
 | `transform(combinator, fn)` | Map the result: `fn(value, span) → newValue`. |
 | `skip(main, skipped)` | Match `main` then `skipped`; return `main`'s value. |
+| `label(name, combinator)` | Attach a string label to a combinator arm (metadata). Used on trivia `choice` branches for per-chunk kind capture — see [Whitespace and comment skipping](#whitespace-and-comment-skipping). |
 | `node(type, combinator, build)` | CST/AST rule: captures the combinator's terminals into `children`/`rawChildren` and trivia offsets into a flat `triviaLog`, then calls `build(children, rawChildren, span, triviaLog)`. |
 | `ref<T>()` | Low-level forward declaration slot (use `rules()` in most cases). |
 | `not(combinator)` | Negative lookahead — succeeds (consuming nothing) when the combinator fails. |
@@ -153,6 +156,7 @@ A combinator reads from the input at the current position and succeeds or fails 
 | `makeWord(boundary?)` | Returns `(str) => Combinator` with a fixed word-boundary class. Not a combinator — see [keyword disambiguation](#ordered-choice-and-keyword-disambiguation). |
 | `rules(factory)` | Named, mutually-recursive rule bundle. See [Named and recursive rules](#named-and-recursive-rules). |
 | `parser({ trivia }, combinator)` | Wrap a root combinator with document-level trivia skipping. See [Whitespace and comment skipping](#whitespace-and-comment-skipping). |
+| `triviaEntries(log, labels?, opts?)` | View over a flat trivia log: `.kind(i)`, `.text(i, input)`, `.start(i)`, `.end(i)`. Stride is 2/3 for root `_triviaLog`, 3/4 for per-node `triviaLog` when kinds are enabled. |
 
 ---
 
@@ -206,6 +210,25 @@ const lineComment  = sequence(literal('//'), regex(/[^\n]*/))
 const blockComment = sequence(literal('/*'), scanTo(literal('*/'), []))
 const ws           = trivia(many(choice(regex(/\s+/), lineComment, blockComment)))
 ```
+
+Label trivia arms so each captured chunk records its kind in `_triviaLog` / per-node `triviaLog`:
+
+```ts
+const rw = trivia(oneOrMore(choice(
+  label('whitespace', regex(/[ \t\n\r\f]+/)),
+  label('blockComment', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
+)))
+
+// After parse, resolve kinds lazily:
+import { triviaEntries } from 'parseman'
+const entries = triviaEntries(triviaLog, rw._meta.triviaKindLabels)
+entries.kind(0)  // 'whitespace'
+entries.text(0, input)  // slice on demand
+```
+
+`label(name, parser)` names a trivia arm; `node('Ruleset', …)` names a CST node — different namespaces, no conflict.
+
+When all trivia arms are labeled, each captured chunk appends a **kind index** to the log (stride +1). Root `_triviaLog` entries are `[start, end, kind]`; per-node `triviaLog` entries are `[start, end, insertIdx, kind]`. Without labels, strides are 2 and 3 respectively.
 
 ---
 
@@ -316,7 +339,7 @@ value.define(choice(object, array, str, num, bool, nil))
 
 ## Grammars that build an AST
 
-For grammars that produce a typed CST/AST, support incremental re-parsing, or care about trivia, wrap each rule in `node(type, combinator, build)`. parseman captures the rule's terminals into `children` / `rawChildren` and records trivia as flat `[start, end, insertIdx, …]` triples in `triviaLog`, then hands all four to `build(children, rawChildren, span, triviaLog)`. **Capture is the library's job:** you don't wrap terminals to recover their spans, and you don't reconstruct trivia — it's collected as the parser runs, in both the interpreter and the compiled build. Use `buildTriviaIndex(tree, input)` to turn `triviaLog` into a before/after lookup table.
+For grammars that produce a typed CST/AST, support incremental re-parsing, or care about trivia, wrap each rule in `node(type, combinator, build)`. parseman captures the rule's terminals into `children` / `rawChildren` and records trivia as flat `[start, end, insertIdx, …]` **entries** in `triviaLog` (three numbers per whitespace/comment chunk), then hands all four to `build(children, rawChildren, span, triviaLog)`. **Capture is the library's job:** you don't wrap terminals to recover their spans, and you don't reconstruct trivia — it's collected as the parser runs, in both the interpreter and the compiled build. Use `buildTriviaIndex(tree, input)` to turn `triviaLog` into a before/after lookup table.
 
 ```ts
 import { rules, parser, node, regex, literal, sequence, many, trivia } from 'parseman'
@@ -340,7 +363,7 @@ Expr.parse('1 + 2 + 3', 0, { trackLines: false })
 
 - **`children`** — structural items in source order: spanned `CSTLeaf` terminals (`{ _tag:'leaf', value, span }`) and sub-nodes (whatever a nested `node()`'s `build` returned). A `build` that returns a bare string is recorded by the parent as a spanned leaf, so single-item "collapsing" rules keep their source span.
 - **`rawChildren`** — structural children only (same items as `children`, without trivia tokens).
-- **`triviaLog`** — flat `[start, end, insertIdx, …]` triples for whitespace/comments consumed between terms. `insertIdx` is the `rawChildren` index before which the trivia was consumed. Pass the tree to `buildTriviaIndex(tree, input)` for a `before`/`after` map of trivia tokens — useful for whitespace-sensitive syntax (e.g. CSS `div p` vs `div.p`).
+- **`triviaLog`** — flat `[start, end, insertIdx, …]` entries for whitespace/comments consumed between terms. `insertIdx` is the `rawChildren` index before which the trivia was consumed. Pass the tree to `buildTriviaIndex(tree, input)` for a `before`/`after` map of trivia tokens — useful for whitespace-sensitive syntax (e.g. CSS `div p` vs `div.p`).
 
 Each rule returned from the factory is independently callable — `Expr`, `Num` above are the **rule registry** incremental re-parsing needs. Wrap a rule's inner combinator in `parser({ trivia }, combinator)` so trivia-skipping is baked in regardless of which rule you start from; the macro compiles the wrapper (and all capture) away to flat JS.
 
@@ -563,7 +586,9 @@ pnpm install
 pnpm test       # Vitest — interpreter + compiler parity + ordered-choice semantics
 pnpm typecheck  # TypeScript 7
 pnpm build      # ESM + CJS + .d.ts → dist/
-pnpm bench      # Parséman vs Peggy vs Parsimmon vs Chevrotain
+pnpm bench                  # Parséman vs Peggy, Parsimmon, Chevrotain, Nearley, Jison
+pnpm bench:svg              # refresh assets/bench-*.svg after bench
+pnpm bench:compile-grammars # regenerate Peggy / Nearley / Jison parser output in bench/
 ```
 
 ## License

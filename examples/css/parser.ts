@@ -157,7 +157,7 @@ export const {
 export type CssParseResult = {
   tree: CssNode
   errors: Array<{ message: string; offset?: number }>
-  trivia: { triples: number }
+  trivia: { entries: number }
 }
 
 function finishCssParse(

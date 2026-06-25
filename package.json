@@ -1,6 +1,6 @@
 {
   "name": "parseman",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
   "type": "module",
   "author": "Matthew Dean <matthew-dean@users.noreply.github.com>",
@@ -36,8 +36,9 @@
     "typecheck": "tsc",
     "bench": "node --import tsx/esm bench/run.ts",
     "bench:baseline": "node --import tsx/esm bench/update-parseman-baseline.ts",
+    "bench:svg": "node --import tsx/esm bench/gen-svg.ts",
     "build:chevrotain-bench": "node --import tsx/esm scripts/build-chevrotain-bench.mjs",
-    "bench:compile-grammars": "peggy --format es -o bench/json-parser.js bench/json.pegjs && peggy --format es -o bench/csv-parser.js bench/csv.pegjs && peggy --format es -o bench/graphqlite-parser.js bench/graphqlite.pegjs"
+    "bench:compile-grammars": "peggy --format es -o bench/json-parser.js bench/json.pegjs && peggy --format es -o bench/csv-parser.js bench/csv.pegjs && peggy --format es -o bench/graphql-parser.js bench/graphql.pegjs && peggy --format es -o bench/graphqlite-parser.js bench/graphqlite.pegjs && nearleyc bench/vendor/nearley/json.ne -o bench/json-nearley.js && nearleyc bench/vendor/nearley/csv.ne -o bench/csv-nearley.js && nearleyc bench/vendor/nearley/graphql.ne -o bench/graphql-nearley.js && cp bench/graphql-nearley.js bench/graphql-nearley.cjs && node bench/compile-jison.mjs"
   },
   "keywords": [
     "parser",
@@ -52,7 +53,9 @@
     "@types/node": "~26.0.0",
     "@types/parsimmon": "~1.10.9",
     "chevrotain": "~12.0.0",
-    "esbuild": "~0.28.1",
+    "jison": "~0.4.18",
+    "moo": "~0.5.3",
+    "nearley": "~2.20.1",
     "parsimmon": "~1.18.1",
     "peggy": "~5.1.0",
     "tsup": "~8.5.1",

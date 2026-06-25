@@ -4,7 +4,7 @@ Library-level opportunities for faster compiled parsers. Grammar authors can onl
 
 ## Already landed
 
-- **Flat trivia log** — `_cstTriviaLog` as `[start, end, insertIdx, …]` triples; no per-run `CSTTrivia` objects.
+- **Flat trivia log** — `_cstTriviaLog` as `[start, end, insertIdx, …]` per trivia entry; no per-entry `CSTTrivia` objects.
 - **`node()` ctx save/restore** — mutate `_ctx` fields instead of spreading a new `ParseContext` per call.
 - **Fast non-capturing trivia** — `_tfN` returns a position number, not `{ ok, value, span }`.
 - **Choice fast paths (non-CST)** — `greedyClassify`, `literalsLongestFirst`, disjoint first-char dispatch, `autoNot` for `firstMatch`.
@@ -13,6 +13,7 @@ Library-level opportunities for faster compiled parsers. Grammar authors can onl
 - **Interpreter `node()` lazy capture** — `capture-buffer.ts`: defer `children`/`raw`/`tl` array alloc until first push; single-child scalar fast path.
 - **Trivia loop specialization** — `trivia-fast-path.ts`: hand-rolled `charCodeAt` loop for `oneOrMore(choice(ws, blockComment))` and ASCII ws-only trivia; CSS bootstrap4 compiled **−52%** (25.8→12.3ms).
 - **Transform / build inlining** — `inline-callback.ts`: paste unary and `sequence`+destructure transform bodies at call sites; GraphQL large compiled **−6%**. `inline-build.ts`: emit `mk()` CST nodes literally (CSS-neutral).
+- **Labeled trivia kind capture** — `label(name, parser)` on trivia `choice` arms records per-chunk kind indices in `_triviaLog` / per-node `triviaLog`; `triviaEntries()` resolves kinds and text lazily. Interpreter + compiled parity in `test/parity/trivia-kinds.test.ts`.
 
 ---
 
@@ -57,7 +58,7 @@ Moved to **Already landed**.
 
 `transform(sequence(a, b, c), ([x, y, z]) => …)` with destructure-array `fnSrc` / arrow `toString()` now emits straight-line locals + inlined body — no `_arr`, no `_mf[n]`. Unary transforms (`s => parseInt(s, 10)`, object literals, etc.) also inline when closure-free.
 
-**Result:** GraphQL large compiled **−6%** (149→138µs); medium **−5%**. Remaining: transforms whose body references outer scope or non-destructure params.
+**Result:** GraphQL large compiled **−6%** (~149→~142µs); medium **−5%**. Remaining: transforms whose body references outer scope or non-destructure params.
 
 ### ~~5. Inline transforms and builds at call sites~~ (partial ✅)
 
@@ -94,10 +95,13 @@ Patterns like `\d+`, `[A-Za-z_]\w*`, single char classes — emit hand-rolled sc
 
 ## Measuring
 
-- `pnpm bench` — external parser comparison **plus** Parseman interpreted vs compiled across all example grammars (with baseline Δ).
+- `pnpm bench` — external parser comparison (Peggy, Parsimmon, Chevrotain, Nearley, Jison) **plus** Parseman interpreted vs compiled across all example grammars (with baseline Δ).
+- `pnpm bench:compile-grammars` — regenerate precompiled Peggy, Nearley, and Jison parsers in `bench/` after editing `bench/*.pegjs` or `bench/vendor/`.
+- `pnpm bench:svg` — regenerate `assets/bench-*.svg` for the README (update µs values in `bench/gen-svg.ts` from `pnpm bench` output first).
 - `pnpm bench:baseline` — refresh `bench/parseman-baseline.json` **and append** a snapshot to `bench/parseman-history.jsonl` (commit both to track the needle over time).
 - `test/perf/parseman-perf.test.ts` — smoke + compiled absolute (25%) and speedup-ratio (15%) regression guard vs baseline (interpreted absolute skipped in CI — vitest/JIT noise).
 - `test/perf/css-parser.test.ts` — CSS correctness + bootstrap timing when fixture available.
+- `test/parity/trivia-kinds.test.ts` — labeled trivia kind indices: interpreted vs compiled parity.
 - `test/parity/trivia-log-regression.test.ts` — interpreted/compiled `_triviaLog` golden parity.
 - `test/parity/compiler-capture-choice.test.ts` — capturing choice fast-path parity.
 - `test/unit/codegen-output.test.ts` — snapshot guard on emitted JS shape.

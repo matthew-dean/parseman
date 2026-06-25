@@ -8,7 +8,15 @@
  */
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
-import { analyzeTriviaFastPath, buildFastTriviaFnDecl } from './trivia-fast-path.ts'
+import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
+import {
+  analyzeTriviaFastPath,
+  buildFastTriviaFnDecl,
+  buildLabeledRegexTriviaFnDecl,
+  buildLabeledRuntimeTriviaFnDecl,
+  labeledTriviaKindIndices,
+  labeledTriviaRegexArms,
+} from './trivia-fast-path.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import {
   transformFnSource,
@@ -46,6 +54,8 @@ type Ctx = {
   namedFnDecls: string[]
   /** Active trivia parser (set by grammar() wrappers, cleared on exit) */
   activeTrivia?: Combinator<unknown>
+  /** Label table from grammar trivia for default ParseContext. */
+  triviaKindLabels?: readonly string[]
   /**
    * Whether this compile contains any node() rule. When true, terminals emit a
    * `_ctx._cstLeaves` capture and trivia skips capture trivia tokens — flowing
@@ -141,8 +151,19 @@ function emitLeafCapture(ctx: Ctx, valExpr: string, startExpr: string, endExpr: 
   ]
 }
 
+function ensureRegexDecl(ctx: Ctx, optimizedSource: string, flags: string): string {
+  const f = 'y' + flags.replace(/[gy]/g, '')
+  const key = `${optimizedSource}/${f}`
+  let rName = ctx.regexMap.get(key)
+  if (rName === undefined) {
+    rName = `_re${ctx.regexDecls.length}`
+    ctx.regexDecls.push(`const ${rName} = /${optimizedSource}/${f}`)
+    ctx.regexMap.set(key, rName)
+  }
+  return rName
+}
+
 /**
- * Compile the active trivia parser as `_tfN(input, pos, ctx, cap?)`.
  * When `cap` is truthy, also records `[start, end]` (and optional insertIdx) into
  * `_ctx._triviaLog` / `_ctx._cstTriviaLog`. One emitted function serves both skip
  * and capture call sites — no duplicate trivia parser tree, no _tc wrapper call.
@@ -156,8 +177,33 @@ function ensureTriviaFn(ctx: Ctx): string {
   ctx.triviaCaptureNames.set(trivia, fnName)
 
   const fastKind = analyzeTriviaFastPath(trivia)
+  const kindIndices = labeledTriviaKindIndices(trivia)
   if (fastKind) {
-    ctx.namedFnDecls.push(buildFastTriviaFnDecl(fnName, fastKind))
+    ctx.namedFnDecls.push(buildFastTriviaFnDecl(fnName, fastKind, kindIndices ?? undefined))
+    return fnName
+  }
+
+  const labeledSpec = analyzeLabeledTrivia(trivia)
+  if (labeledSpec) {
+    const regexSpec = labeledTriviaRegexArms(trivia)
+    if (regexSpec) {
+      const reNames: string[] = []
+      for (const arm of regexSpec.arms) {
+        const def = arm.parser._def
+        if (def.tag !== 'regex') break
+        reNames.push(ensureRegexDecl(ctx, def.optimizedSource, def.flags))
+      }
+      if (reNames.length === regexSpec.arms.length) {
+        ctx.namedFnDecls.push(buildLabeledRegexTriviaFnDecl(fnName, regexSpec, reNames))
+        return fnName
+      }
+    }
+
+    const rpStart = ctx.runtimeParsers.length
+    for (const arm of labeledSpec.arms) {
+      ctx.runtimeParsers.push(arm.parser)
+    }
+    ctx.namedFnDecls.push(buildLabeledRuntimeTriviaFnDecl(fnName, labeledSpec, rpStart))
     return fnName
   }
 
@@ -1168,13 +1214,21 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     }
     case 'lazy':     return emitLazy(p, def, ctx, pos)
     case 'trivia':   return emit(def.parser, ctx, pos)
+    case 'label':    return emit(def.parser, ctx, pos)
     case 'grammar': {
-      // Propagate trivia from the grammar opts into ctx so emitSeq can skip it.
       const savedTrivia = ctx.activeTrivia
-      if (def.triviaParser) ctx.activeTrivia = def.triviaParser
+      const savedKindLabels = ctx.triviaKindLabels
+      if (def.triviaParser) {
+        ctx.activeTrivia = def.triviaParser
+        if (def.triviaParser._meta.triviaKindLabels) {
+          ctx.triviaKindLabels = def.triviaParser._meta.triviaKindLabels
+        }
+      }
       const r = emit(def.parser, ctx, pos)
       if (savedTrivia === undefined) delete ctx.activeTrivia
       else ctx.activeTrivia = savedTrivia
+      if (savedKindLabels === undefined) delete ctx.triviaKindLabels
+      else ctx.triviaKindLabels = savedKindLabels
       return r
     }
     case 'not':     return emitNot(def, ctx, pos)
@@ -1275,6 +1329,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'lazy':      { try { return hasNodeDef(d.thunk(), seen) } catch { return false } }
     case 'grammar':
     case 'trivia':
+    case 'label':
     case 'optional':
     case 'many':
     case 'oneOrMore':
@@ -1347,7 +1402,10 @@ export function compile<T>(parser: Combinator<T>, mapFnSources?: string[]): Comp
     ctx: ParseContext,
   ) => ParseResult<T>
 
-  const defaultCtx: ParseContext = { trackLines: false }
+  const defaultCtx: ParseContext = {
+    trackLines: false,
+    ...(ctx.triviaKindLabels ? { triviaKindLabels: ctx.triviaKindLabels } : {}),
+  }
 
   // Prefer per-def sources captured in codegen-traversal order (set by the
   // macro via def.fnSrc). Fall back to a caller-provided positional array.

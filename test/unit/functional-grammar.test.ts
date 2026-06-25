@@ -269,7 +269,7 @@ const { Pair } = rules(g => {
     expect(r.value.ch).toEqual(['a', ':', '<Num>'])
     // rawChildren: structural only (no trivia objects)
     expect(r.value.raw).toEqual(['a', ':', '<Num>'])
-    // triviaLog: [start, end, insertIdx] triples for each trivia run
+    // triviaLog: [start, end, insertIdx] per trivia entry
     // ' /*c*/ ' is at 1..8, before rawChildren[1] (':' at offset 8)
     // ' ' is at 9..10, before rawChildren[2] (<Num> at offset 10)
     expect(r.value.tlog).toEqual([1, 8, 1, 9, 10, 2])

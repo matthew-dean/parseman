@@ -1,23 +1,43 @@
 import { expect } from 'vitest'
 import type { Combinator, CompiledParser, ParseContext, ParseResult } from '../../../src/types.ts'
 
-/** Flat [start, end, start, end, …] pairs from `_triviaLog`. */
-export function triviaPairs(log: readonly number[]): Array<[number, number]> {
-  const pairs: Array<[number, number]> = []
-  for (let i = 0; i + 1 < log.length; i += 2) {
-    pairs.push([log[i]!, log[i + 1]!])
+/** Stride for flat trivia logs: 2 or 3 numbers per entry. */
+export function triviaLogStride(log: readonly number[], labels?: readonly string[]): number {
+  if (!labels) return 2
+  if (log.length % 3 === 0) return 3
+  return 2
+}
+
+/** Flat trivia entries from `_triviaLog`. */
+export function triviaEntriesFromLog(
+  log: readonly number[],
+  labels?: readonly string[],
+): Array<{ start: number; end: number; kindIndex?: number }> {
+  const stride = triviaLogStride(log, labels)
+  const out: Array<{ start: number; end: number; kindIndex?: number }> = []
+  for (let i = 0; i + stride - 1 < log.length; i += stride) {
+    const entry: { start: number; end: number; kindIndex?: number } = {
+      start: log[i]!,
+      end: log[i + 1]!,
+    }
+    if (stride === 3) entry.kindIndex = log[i + 2]
+    out.push(entry)
   }
-  return pairs
+  return out
 }
 
 /** Fails when speculative trivia commits were not rolled back (duplicate spans). */
-export function expectUniqueTriviaPairs(log: readonly number[]): void {
-  expect(log.length % 2, '_triviaLog length must be even (start/end pairs)').toBe(0)
+export function expectUniqueTriviaEntries(
+  log: readonly number[],
+  labels?: readonly string[],
+): void {
+  const stride = triviaLogStride(log, labels)
+  expect(log.length % stride, `_triviaLog length must be a multiple of ${stride}`).toBe(0)
   const seen = new Set<string>()
-  for (const [start, end] of triviaPairs(log)) {
-    expect(end, `trivia end must follow start at ${start}`).toBeGreaterThan(start)
-    const key = `${start},${end}`
-    expect(seen.has(key), `duplicate trivia pair [${start}, ${end})`).toBe(false)
+  for (const e of triviaEntriesFromLog(log, labels)) {
+    expect(e.end, `trivia end must follow start at ${e.start}`).toBeGreaterThan(e.start)
+    const key = `${e.start},${e.end}`
+    expect(seen.has(key), `duplicate trivia entry [${e.start}, ${e.end})`).toBe(false)
     seen.add(key)
   }
 }
@@ -47,13 +67,31 @@ export function runTriviaLogParity<T>(
  * Core guard: interpreted and compiled must record identical trivia spans.
  * Catches out-of-sync rollback/codegen bugs in either direction.
  */
-export function expectTriviaLogParity(iLog: readonly number[], cLog: readonly number[]): void {
-  expectUniqueTriviaPairs(iLog)
-  expectUniqueTriviaPairs(cLog)
+export function expectTriviaLogParity(
+  iLog: readonly number[],
+  cLog: readonly number[],
+  labels?: readonly string[],
+): void {
+  expectUniqueTriviaEntries(iLog, labels)
+  expectUniqueTriviaEntries(cLog, labels)
   expect(cLog, 'compiled _triviaLog must match interpreted _triviaLog').toEqual([...iLog])
 }
 
-export function expectTriviaLogGolden(log: readonly number[], expected: readonly number[]): void {
-  expectUniqueTriviaPairs(log)
+export function expectTriviaLogGolden(
+  log: readonly number[],
+  expected: readonly number[],
+  labels?: readonly string[],
+): void {
+  expectUniqueTriviaEntries(log, labels)
   expect([...log], 'golden _triviaLog').toEqual([...expected])
+}
+
+/** @deprecated use triviaEntriesFromLog */
+export function triviaPairs(log: readonly number[]): Array<[number, number]> {
+  return triviaEntriesFromLog(log).map(e => [e.start, e.end])
+}
+
+/** @deprecated use expectUniqueTriviaEntries */
+export function expectUniqueTriviaPairs(log: readonly number[]): void {
+  expectUniqueTriviaEntries(log)
 }

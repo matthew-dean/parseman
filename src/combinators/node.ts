@@ -9,7 +9,7 @@ import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/cap
  *   - `children`    — structural items in source order: spanned CSTLeaf terminals
  *                     and sub-nodes (whatever `build` returned for inner nodes).
  *   - `rawChildren` — structural children only (same items as `children`).
- *   - `triviaLog`   — flat `[start, end, insertIdx, ...]` triples for trivia runs
+ *   - `triviaLog`   — flat log of trivia entries: each entry is `[start, end, insertIdx]`
  *                     consumed between terms. `insertIdx` is the rawChildren index
  *                     before which the trivia was consumed. Use `buildTriviaIndex`
  *                     to turn this into a before/after lookup table.
