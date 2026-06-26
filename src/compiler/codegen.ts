@@ -309,6 +309,147 @@ function firstSetCond(codeVar: string, fs: FirstSet): string {
   ).join(' || ')
 }
 
+// ── CST/trivia capture rollback: cheap when no buffer is active ─────────────
+// The four capture buffers (`_cstLeaves`, `_cstRawChildren`, `_cstTriviaLog`,
+// `_triviaLog`) are usually all undefined on the hot path (a grammar with any
+// node() compiles with ctx.capturing=true, but at runtime most callers don't
+// request a CST — they only want the value). Reading `_x?.length ?? 0` four
+// times per fallible block — and emitFallible runs for every sequence term,
+// repeat item, optional, and choice arm — turned into a measurable de-opt
+// (compiled CSS regressed ~2.3×). We gate the whole save/restore on a single
+// boolean: when no buffer is live the marks are 0 and the restore is one test.
+/** Body of a capture restore — resets each live buffer to its saved length. */
+function captureRestoreBody(mL: string, mR: string, mTl: string, mLg: string | null): string {
+  const base = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${mL}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${mR}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${mTl}`
+  // `_triviaLog` is the standalone diagnostic trivia log. The interpreter only
+  // rewinds it on a failed *choice* arm (choice.ts), NOT on a failed sequence
+  // term — a sequence returns the failure with earlier trivia still logged. To
+  // stay byte-for-byte at parity with the interpreter, only rewind it where the
+  // interpreter does (choice arms); sequence-term rollbacks (emitFallible) leave
+  // it intact.
+  return mLg ? `${base}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${mLg}` : base
+}
+
+/**
+ * True when parsing `p` may push a capture (leaf/child/trivia) into the active
+ * buffers and THEN fail, leaving partial state that an enclosing node() would
+ * wrongly absorb. Used to decide whether a fallible block needs CST-rollback.
+ *
+ * Sound over-approximation: the ONLY constructs that capture-then-fail are
+ *   - a sequence whose non-final term captures before a later term can fail
+ *   - a sepBy/oneOrMore item-then-separator partial (handled by their own
+ *     dedicated rollback, so still covered conservatively here)
+ * Atomic terminals (literal/regex/keywords/charClass/guard/not) fail without
+ * having captured. node() buffers into a private sub-scope and discards it on
+ * failure, so it never leaks. choice/firstMatch roll back each failed arm
+ * internally. optional/many never "fail" with partial output. Delegating
+ * wrappers (transform/label/grammar/withCtx/expect/skip) pass through to inner.
+ */
+function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    // Atomic / non-capturing-then-failing: a failure happens before any push.
+    case 'literal':
+    case 'regex':
+    case 'keywords':
+    case 'guard':
+    case 'not':
+    case 'trivia':
+    case 'scanTo':
+    case 'unknown':
+      return false
+    // node() captures into its own private buffers and rolls them back on
+    // failure (emitNode restores _ctx.* and never pushes on the !ok path).
+    case 'node':
+      return false
+    // choice/firstMatch already roll back each failed arm; on overall failure
+    // nothing committed remains.
+    case 'choice':
+      return false
+    // optional never fails; many/oneOrMore only "fail" with zero captured items.
+    case 'optional':
+    case 'many':
+    case 'oneOrMore':
+      return false
+    // sepBy emits its own per-iteration rollback in emitSepBy.
+    case 'sepBy':
+      return false
+    // A sequence is the real case: an earlier capturing term followed by a term
+    // that can fail leaves the earlier captures buffered.
+    case 'sequence': {
+      const parts = d.parsers
+      // Only risky if >=2 terms and some non-final term can capture.
+      if (parts.length < 2) return parts.some(x => mayLeavePartialCapture(x, seen))
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (hasNodeDef(parts[i]!) || capturesLeaf(parts[i]!)) return true
+      }
+      return false
+    }
+    // Delegating wrappers: defer to the wrapped parser.
+    case 'transform':
+    case 'label':
+    case 'expect':
+    case 'withCtx':
+    case 'grammar':
+      return mayLeavePartialCapture(d.parser, seen)
+    case 'skip':
+      return mayLeavePartialCapture(d.main, seen)
+    case 'recover':
+      return mayLeavePartialCapture(d.parser, seen)
+    case 'lazy': {
+      try { return mayLeavePartialCapture(d.thunk(), seen) } catch { return true }
+    }
+    // Unknown shapes: be safe and keep the rollback.
+    default:
+      return true
+  }
+}
+
+/** True when `p` can push a leaf/node into the capture buffers on success. */
+function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'literal':
+    case 'regex':
+    case 'keywords':
+    case 'node':
+      return true
+    case 'not':
+    case 'guard':
+    case 'trivia':
+    case 'unknown':
+      return false
+    case 'sequence':
+    case 'choice':
+      return d.parsers.some(x => capturesLeaf(x, seen))
+    case 'sepBy':
+      return capturesLeaf(d.parser, seen) || capturesLeaf(d.separator, seen)
+    case 'many':
+    case 'oneOrMore':
+    case 'optional':
+    case 'transform':
+    case 'label':
+    case 'expect':
+    case 'withCtx':
+    case 'grammar':
+    case 'recover':
+      return capturesLeaf(d.parser, seen)
+    case 'skip':
+      return capturesLeaf(d.main, seen)
+    case 'scanTo':
+      return true
+    case 'lazy': {
+      try { return capturesLeaf(d.thunk(), seen) } catch { return true }
+    }
+    default:
+      return true
+  }
+}
+
 /** Wrap stmts + success return in an IIFE. Returns the IIFE expression string. */
 function asIIFE(stmts: string[], valueVar: string, endVar: string, startPos: string, indent: string): string {
   return [
@@ -351,26 +492,32 @@ function emitFallible(
   // Without this they leak into the enclosing node()'s children. (The non-disjoint
   // choice path does the same per-arm; a disjoint choice commits to one arm and
   // relies on this boundary to undo a failed commit.)
-  const mL  = ctx.capturing ? v(ctx, '_fcl')  : null
-  const mR  = ctx.capturing ? v(ctx, '_fcr')  : null
-  const mTl = ctx.capturing ? v(ctx, '_fctl') : null
-  const mLg = ctx.capturing ? v(ctx, '_fclg') : null
+  //
+  // The rollback is only needed when `inner` can push a capture and THEN fail
+  // (i.e. leave partial buffered state). Atomic terminals, self-contained nodes,
+  // choices/repeats that roll back internally, etc. never leave partial captures
+  // — emitting the save/restore around every fallible block (every sequence term)
+  // was a ~2.3× compiled-CSS regression. Gate it on the structural predicate so
+  // hot grammars compile back to tight code while correctness is preserved.
+  // A failed sequence term does NOT rewind `_triviaLog` (the interpreter leaves
+  // earlier trivia logged) — only the CST child buffers are restored here.
+  const needsRollback = ctx.capturing && mayLeavePartialCapture(inner)
+  const mL  = needsRollback ? v(ctx, '_fcl')  : null
+  const mR  = needsRollback ? v(ctx, '_fcr')  : null
+  const mTl = needsRollback ? v(ctx, '_fctl') : null
   const stmts = [
     `${ind0}let ${okV} = false, ${valV}, ${endV} = ${pos}`,
     ...(mL ? [
       `${ind0}const ${mL} = _ctx._cstLeaves?.length ?? 0`,
       `${ind0}const ${mR} = _ctx._cstRawChildren?.length ?? 0`,
       `${ind0}const ${mTl} = _ctx._cstTriviaLog?.length ?? 0`,
-      `${ind0}const ${mLg} = _ctx._triviaLog?.length ?? 0`,
     ] : []),
     `${ind0}${lbl}: {`,
     ...r.stmts,
-    `${ind0}  ${valV} = ${r.valueVar}`,
-    `${ind0}  ${endV} = ${r.endVar}`,
-    `${ind0}  ${okV} = true`,
+    `${ind0}  ${valV} = ${r.valueVar}; ${endV} = ${r.endVar}; ${okV} = true`,
     `${ind0}}`,
     ...(mL ? [
-      `${ind0}if (!${okV}) { if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${mL}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${mR}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${mTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${mLg} }`,
+      `${ind0}if (!${okV}) { ${captureRestoreBody(mL, mR!, mTl!, null)} }`,
     ] : []),
   ]
   return { stmts, okVar: okV, valVar: valV, endVar: endV }
@@ -712,13 +859,19 @@ function emitFirstMatch(
     const skipCond = gateCond ? `!${resOkV} && ${gateCond}` : `!${resOkV}`
 
     // In capturing mode, save leaf-array lengths before the arm so we can roll
-    // back any leaves pushed by a failed or auto-not-rejected arm.
-    const markLeaves = ctx.capturing ? v(ctx, '_cml') : null
-    const markRaw    = ctx.capturing ? v(ctx, '_cmr') : null
-    const markTl     = ctx.capturing ? v(ctx, '_cmtl') : null
-    const markLog    = ctx.capturing ? v(ctx, '_cmlg') : null
+    // back any leaves pushed by a failed or auto-not-rejected arm. Only needed
+    // when the arm can actually leave partial captures (a capture-then-fail), or
+    // when it captures and an auto-not check can reject an otherwise-successful
+    // match. Atomic/self-contained arms skip the save/restore entirely.
+    const armHasAutoNot = !!(autoNot && autoNot.length > 0)
+    const armNeedsRollback = ctx.capturing &&
+      (mayLeavePartialCapture(p) || (armHasAutoNot && capturesLeaf(p)))
+    const markLeaves = armNeedsRollback ? v(ctx, '_cml') : null
+    const markRaw    = armNeedsRollback ? v(ctx, '_cmr') : null
+    const markTl     = armNeedsRollback ? v(ctx, '_cmtl') : null
+    const markLog    = armNeedsRollback ? v(ctx, '_cmlg') : null
     const rollback   = markLeaves
-      ? `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLeaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markRaw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}`
+      ? captureRestoreBody(markLeaves, markRaw!, markTl!, markLog!)
       : ''
 
     stmts.push(`${ind0}if (${skipCond}) {`)
@@ -754,11 +907,7 @@ function emitFirstMatch(
       stmts.push(`${ind0}  }`)
       if (rollback) stmts.push(`${ind0}  if (!${resOkV}) { ${rollback} }`)
     } else {
-      stmts.push(`${ind0}  if (${okVar}) {`)
-      stmts.push(`${ind0}    ${resValV} = ${valVar}`)
-      stmts.push(`${ind0}    ${resEndV} = ${endVar}`)
-      stmts.push(`${ind0}    ${resOkV} = true`)
-      stmts.push(`${ind0}  }`)
+      stmts.push(`${ind0}  if (${okVar}) { ${resValV} = ${valVar}; ${resEndV} = ${endVar}; ${resOkV} = true }`)
       if (rollback) stmts.push(`${ind0}  else { ${rollback} }`)
     }
     stmts.push(`${ind0}}`)
