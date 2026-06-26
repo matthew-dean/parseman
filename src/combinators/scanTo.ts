@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
 import { literal } from './literal.ts'
 import { sequence } from './sequence.ts'
 import { transform } from './map.ts'
+import { expect } from './expect.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
@@ -47,7 +48,13 @@ export function scanTo(
       // Sentinel checks and skip scans must not emit CST children of their own —
       // scanTo represents the whole scanned span as one leaf. Probe them with a
       // collector-free context so their internal literal()/regex() don't push.
-      const probeCtx: ParseContext = { trackLines: ctx.trackLines, state: ctx.state }
+      // The error channel IS forwarded, so a committed skipper (e.g. balanced()
+      // whose open delimiter was consumed) can still report an unmatched close.
+      const probeCtx: ParseContext = {
+        trackLines: ctx.trackLines,
+        state: ctx.state,
+        ...(ctx._errors !== undefined ? { _errors: ctx._errors } : {}),
+      }
 
       // Record the scanned text as a CSTLeaf so buildNode-driven grammars can
       // see it in children/rawChildren (it would otherwise be lost — only the
@@ -110,18 +117,26 @@ export function balanced(
   // combinator; added to the interior scan's skip list, a nested `open` is
   // consumed intact (recursively) before the scan looks for the matching `close`.
   const self = ref<string>()
+  // Once `open` is consumed, the pair is COMMITTED: the interior scans to `close`
+  // OR end-of-input (orEOF), and the close is required via expect(). A truly
+  // unmatched `open` therefore reports "expected <close>" (into ctx._errors) and
+  // recovers, instead of failing silently and letting the caller treat the stray
+  // open as ordinary content. Well-formed input finds `close` before EOF, so this
+  // is behaviourally identical there.
   const inner = scanTo(literal(close), {
     ...options,
+    orEOF: true,
     skip: [self, ...(options.skip ?? [])],
   })
   const combi = transform(
-    sequence(literal(open), inner, literal(close)),
-    ([o, content, c]) => o + content + c,
+    sequence(literal(open), inner, expect(literal(close), close)),
+    // `c` is the close string, or a ParseError when expect() recovered an unmatched open.
+    ([o, content, c]) => o + content + (typeof c === 'string' ? c : ''),
   )
   // Provide the callback source so the macro can inline this library-internal
   // transform (codegen derives map-fn sources from def.fnSrc).
   if (combi._def.tag === 'transform') {
-    combi._def.fnSrc = '([o, content, c]) => o + content + c'
+    combi._def.fnSrc = '([o, content, c]) => o + content + (typeof c === "string" ? c : "")'
   }
   self.define(combi as Combinator<string>)
   return combi

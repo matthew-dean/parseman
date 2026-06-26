@@ -262,3 +262,38 @@ describe('scanTo — compiled', () => {
     if (r.ok) expect(r.value).toBe('(hello world)')
   })
 })
+
+// ---------------------------------------------------------------------------
+// balanced() — cut after open: an unmatched open reports + recovers
+// ---------------------------------------------------------------------------
+import { parse as _parseB } from '../../src/index.ts'
+import type { ParseError as _PE } from '../../src/index.ts'
+
+describe('balanced() — unmatched open reports an error', () => {
+  it('well-formed input records NO error (unchanged behaviour)', () => {
+    const r = _parseB(balanced('(', ')'), '(a(b)c)', { recover: true })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.value).toBe('(a(b)c)')
+      expect(r.errors).toHaveLength(0)
+    }
+  })
+
+  it('unmatched open records "expected close" + recovers', () => {
+    const r = _parseB(balanced('(', ')'), '(a(b)c', { recover: true })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect((r.errors as _PE[]).length).toBeGreaterThanOrEqual(1)
+      expect((r.errors as _PE[])[0]!.expected).toContain(')')
+    }
+  })
+
+  it('reports through a scanTo skip set (the css/less use)', () => {
+    // prelude-style scan: stop at `{`, skipping balanced parens. An unmatched `(`
+    // in the prelude must surface an error rather than be swallowed silently.
+    const prelude = scanTo(literal('{'), { skip: [balanced('(', ')')], orEOF: true })
+    const r = _parseB(prelude, '(missing bracket here', { recover: true })
+    expect(r.ok).toBe(true)
+    if (r.ok) expect((r.errors as _PE[]).length).toBeGreaterThanOrEqual(1)
+  })
+})
