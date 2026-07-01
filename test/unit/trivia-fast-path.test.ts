@@ -14,9 +14,21 @@ describe('trivia fast path — detection', () => {
   const ws = regex(/[ \t\n\r\f]+/)
   const comment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)
 
-  it('detects CSS rw shape', () => {
+  const lineComment = regex(/\/\/[^\n\r]*/)
+
+  it('detects CSS rw shape (ws + block comment)', () => {
     const rw = trivia(oneOrMore(choice(ws, comment)))
-    expect(analyzeTriviaFastPath(rw)).toBe('wsComments')
+    expect(analyzeTriviaFastPath(rw)).toEqual({ ws: true, blockComment: true, lineComment: false })
+  })
+
+  it('detects Less rw shape (ws + block + line comment, 3 arms)', () => {
+    const rw = trivia(oneOrMore(choice(ws, comment, lineComment)))
+    expect(analyzeTriviaFastPath(rw)).toEqual({ ws: true, blockComment: true, lineComment: true })
+  })
+
+  it('detects ws + line-comment only', () => {
+    const rw = trivia(oneOrMore(choice(ws, lineComment)))
+    expect(analyzeTriviaFastPath(rw)).toEqual({ ws: true, blockComment: false, lineComment: true })
   })
 
   it('does not fast-path merged alternation regex (one arm per parse)', () => {
@@ -25,13 +37,15 @@ describe('trivia fast path — detection', () => {
   })
 
   it('detects ws-only trivia', () => {
-    expect(analyzeTriviaFastPath(trivia(regex(/[ \t]+/)))).toBe('wsOnly')
-    expect(analyzeTriviaFastPath(trivia(oneOrMore(ws)))).toBe('wsOnly')
+    expect(analyzeTriviaFastPath(trivia(regex(/[ \t]+/)))).toEqual({ ws: true, blockComment: false, lineComment: false })
+    expect(analyzeTriviaFastPath(trivia(oneOrMore(ws)))).toEqual({ ws: true, blockComment: false, lineComment: false })
   })
 
   it('returns null for non-matching trivia', () => {
     expect(analyzeTriviaFastPath(trivia(regex(/\s+/)))).toBeNull()
     expect(analyzeTriviaFastPath(trivia(regex(/#[0-9a-f]+/)))).toBeNull()
+    // an unrecognized third arm disqualifies the whole choice
+    expect(analyzeTriviaFastPath(trivia(oneOrMore(choice(ws, comment, regex(/#[0-9a-f]+/)))))).toBeNull()
   })
 })
 

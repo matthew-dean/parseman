@@ -3,9 +3,22 @@ import { getCoreRegexDef } from '../combinators/choice.ts'
 import type { LabeledTriviaSpec } from '../cst/trivia-kinds.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 
-export type TriviaFastKind = 'wsComments' | 'wsOnly'
+/**
+ * Which scannable trivia shapes a fast-path loop must handle. Every shape here
+ * is recognizable by a cheap 1–2 char test at the current position and is
+ * mutually disjoint from the others on those chars, so a single char-scan loop
+ * carries one branch per shape PRESENT — any combination, no arm-count limit.
+ * `ws` is always required (there is no comment-only trivia).
+ */
+export type TriviaFastShapes = { ws: true; blockComment: boolean; lineComment: boolean }
 
 const BLOCK_COMMENT = String.raw`\/\*(?:[^*]|\*(?!\/))*\*\/`
+
+/** `//`-to-end-of-line comment sources (both `[^\n\r]` orderings). */
+const LINE_COMMENT_SOURCES = new Set([
+  String.raw`\/\/[^\n\r]*`,
+  String.raw`\/\/[^\r\n]*`,
+])
 
 /** Regex sources for ASCII whitespace runs (incl. regexp-tree reorderings). */
 const WS_CLASS_SOURCES = new Set([
@@ -41,17 +54,26 @@ function isBlockCommentSource(source: string): boolean {
   return source === BLOCK_COMMENT
 }
 
+function isLineCommentSource(source: string): boolean {
+  return LINE_COMMENT_SOURCES.has(source)
+}
+
 /**
- * Detect trivia shapes safe to lower to a hand-rolled scan loop in compiled output.
- * Matches CSS `rw` (`oneOrMore(choice(ws, blockComment))`) and ASCII ws-only grammars.
- * Single alternation regexes are excluded — one regex exec matches only one arm per call.
+ * Detect trivia shapes safe to lower to a hand-rolled char-scan loop in compiled
+ * output. Accepts `oneOrMore(choice(ws, …))` where every arm is a scannable
+ * shape (whitespace, `/* *​/` block comment, `//` line comment) — ANY count and
+ * order, since those shapes are mutually disjoint on their first 1–2 chars so
+ * one loop can branch per shape present. Also accepts a bare ws-class regex.
+ * A single alternation regex is NOT one of these (one exec matches one arm per
+ * call, defeating the loop) and returns null → the caller falls back to the
+ * regex/generic trivia path.
  */
-export function analyzeTriviaFastPath(trivia: Combinator<unknown>): TriviaFastKind | null {
+export function analyzeTriviaFastPath(trivia: Combinator<unknown>): TriviaFastShapes | null {
   const core = unwrapTrivia(trivia)
 
   const direct = getCoreRegexDef(core)?.source
   if (direct) {
-    if (isWsClassSource(direct)) return 'wsOnly'
+    if (isWsClassSource(direct)) return { ws: true, blockComment: false, lineComment: false }
     return null
   }
 
@@ -59,22 +81,26 @@ export function analyzeTriviaFastPath(trivia: Combinator<unknown>): TriviaFastKi
   if (!inner) return null
 
   const innerSrc = getCoreRegexDef(inner)?.source
-  if (innerSrc && isWsClassSource(innerSrc)) return 'wsOnly'
+  if (innerSrc && isWsClassSource(innerSrc)) return { ws: true, blockComment: false, lineComment: false }
 
   const arms = choiceArms(inner)
-  if (!arms || arms.length !== 2) return null
+  if (!arms || arms.length < 2) return null
 
   let hasWs = false
-  let hasComment = false
+  let blockComment = false
+  let lineComment = false
   for (const arm of arms) {
     const src = getCoreRegexDef(arm)?.source
     if (!src) return null
     if (isWsClassSource(src)) hasWs = true
-    else if (isBlockCommentSource(src)) hasComment = true
+    else if (isBlockCommentSource(src)) blockComment = true
+    else if (isLineCommentSource(src)) lineComment = true
     else return null
   }
-  if (hasWs && hasComment) return 'wsComments'
-  return null
+  // Whitespace is the base; a comment-only choice never occurs and the loop
+  // below assumes ws is present as its first branch.
+  if (!hasWs) return null
+  return { ws: true, blockComment, lineComment }
 }
 
 const CAP_RECORD = [
@@ -84,27 +110,42 @@ const CAP_RECORD = [
   `  }`,
 ].join('\n')
 
-const WS_ONLY_LOOP = [
-  `  while (_e < input.length) {`,
-  `    const c = input.charCodeAt(_e)`,
-  `    if (c === 32 || c === 9 || c === 10 || c === 13 || c === 12) { _e++; continue }`,
-  `    break`,
-  `  }`,
-].join('\n')
-
-const WS_COMMENTS_LOOP = [
-  `  while (_e < input.length) {`,
-  `    const c = input.charCodeAt(_e)`,
-  `    if (c === 32 || c === 9 || c === 10 || c === 13 || c === 12) { _e++; continue }`,
+// Per-shape scan branches, each dispatched on the current char `c`. Composed
+// into one loop by `composeFastLoop` — one branch per shape present.
+const WS_BRANCH = `    if (c === 32 || c === 9 || c === 10 || c === 13 || c === 12) { _e++; continue }`
+const BLOCK_BRANCH = [
   `    if (c === 47 && input.charCodeAt(_e + 1) === 42) {`,
   `      let j = _e + 2`,
   `      while (j + 1 < input.length && !(input.charCodeAt(j) === 42 && input.charCodeAt(j + 1) === 47)) j++`,
   `      _e = j + 2 <= input.length ? j + 2 : input.length`,
   `      continue`,
   `    }`,
-  `    break`,
-  `  }`,
 ].join('\n')
+// `//` to end-of-line: stop at CR or LF (matches `\/\/[^\n\r]*`).
+const LINE_BRANCH = [
+  `    if (c === 47 && input.charCodeAt(_e + 1) === 47) {`,
+  `      let j = _e + 2`,
+  `      while (j < input.length && input.charCodeAt(j) !== 10 && input.charCodeAt(j) !== 13) j++`,
+  `      _e = j`,
+  `      continue`,
+  `    }`,
+].join('\n')
+
+/** One char-scan loop carrying a branch per present shape (ws always first). */
+function composeFastLoop(shapes: TriviaFastShapes): string {
+  const branches = [
+    WS_BRANCH,
+    shapes.blockComment ? BLOCK_BRANCH : '',
+    shapes.lineComment ? LINE_BRANCH : '',
+  ].filter(Boolean)
+  return [
+    `  while (_e < input.length) {`,
+    `    const c = input.charCodeAt(_e)`,
+    ...branches,
+    `    break`,
+    `  }`,
+  ].join('\n')
+}
 
 const CAP_CHUNK = (wsKind: number, commentKind: number) => [
   `    if (c === 32 || c === 9 || c === 10 || c === 13 || c === 12) {`,
@@ -145,15 +186,18 @@ const WS_COMMENTS_LOOP_LABELED = (wsKind: number, commentKind: number) => [
 /** Emit a specialized `_tfN` that skips trivia without regex / combinator dispatch. */
 export function buildFastTriviaFnDecl(
   fnName: string,
-  kind: TriviaFastKind,
+  shapes: TriviaFastShapes,
   kindIndices?: { ws: number; comment: number },
 ): string {
-  const loop = kind === 'wsComments' && kindIndices
-    ? WS_COMMENTS_LOOP_LABELED(kindIndices.ws, kindIndices.comment)
-    : kind === 'wsComments'
-      ? WS_COMMENTS_LOOP
-      : WS_ONLY_LOOP
-  const cap = kindIndices ? '' : CAP_RECORD
+  // Labeled path: only the ws + block-comment shape emits per-chunk kind
+  // indices today (the labeled kind analysis is 2-arm; a labeled 3-arm trivia
+  // never reaches here — the caller keeps it on the labeled-regex path). Every
+  // other shape uses the non-labeled composed loop + whole-run CAP_RECORD.
+  const useLabeled = !!kindIndices && shapes.blockComment && !shapes.lineComment
+  const loop = useLabeled
+    ? WS_COMMENTS_LOOP_LABELED(kindIndices!.ws, kindIndices!.comment)
+    : composeFastLoop(shapes)
+  const cap = useLabeled ? '' : CAP_RECORD
   const lines = [
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
     `  let _e = _pos`,

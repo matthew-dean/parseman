@@ -233,14 +233,20 @@ function ensureTriviaFn(ctx: Ctx): string {
   ctx.triviaFnNames.set(trivia, fnName)
   ctx.triviaCaptureNames.set(trivia, fnName)
 
-  const fastKind = analyzeTriviaFastPath(trivia)
+  const fastShapes = analyzeTriviaFastPath(trivia)
   const kindIndices = labeledTriviaKindIndices(trivia)
-  if (fastKind) {
-    ctx.namedFnDecls.push(buildFastTriviaFnDecl(fnName, fastKind, kindIndices ?? undefined))
+  const labeledSpec = analyzeLabeledTrivia(trivia)
+  // Fast char-scan path. For UNLABELED trivia, any recognized shape set qualifies
+  // (whole-run [start,end] capture, no per-arm kinds needed). For LABELED trivia
+  // the fast path can only emit per-chunk kinds for the ws+block shape; every
+  // other labeled shape (ws+line, ws+block+line) stays on the labeled-regex path
+  // below so its kind tags survive.
+  const fastCoversLabeled = !!kindIndices && !!fastShapes && fastShapes.blockComment && !fastShapes.lineComment
+  if (fastShapes && (!labeledSpec || fastCoversLabeled)) {
+    ctx.namedFnDecls.push(buildFastTriviaFnDecl(fnName, fastShapes, kindIndices ?? undefined))
     return fnName
   }
 
-  const labeledSpec = analyzeLabeledTrivia(trivia)
   if (labeledSpec) {
     const regexSpec = labeledTriviaRegexArms(trivia)
     if (regexSpec) {
