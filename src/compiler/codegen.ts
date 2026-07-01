@@ -83,6 +83,18 @@ type Ctx = {
    * Used by emitFallible to let labeled blocks act as the failure boundary.
    */
   failLabel?: string | undefined
+  /**
+   * Precomputed by analyzeLazyUsage() before codegen starts. emitLazy consults
+   * this to inline a single-use, non-recursive ref directly at its call site
+   * instead of hoisting it into a named function. Undefined when compile()
+   * hasn't run the pre-pass (should not happen in practice — always set in
+   * compile() — but kept optional so emitLazy degrades to "always named" if
+   * ever invoked without it, e.g. future direct unit tests of emitLazy).
+   */
+  lazyUsage?: {
+    counts: Map<Combinator<unknown>, number>
+    recursive: Set<Combinator<unknown>>
+  }
 }
 
 function v(ctx: Ctx, prefix = '_v'): string { return `${prefix}${ctx.vars++}` }
@@ -1303,6 +1315,22 @@ function emitRuntimeFallback(parser: Combinator<unknown>, ctx: Ctx, pos: string)
  * we push to namedFnDecls doesn't affect correctness.
  */
 function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' }>, ctx: Ctx, pos: string): ER {
+  // Single-use, non-recursive ref: inline its body at this call site instead
+  // of hoisting a named function nobody else calls. Uses the CURRENT ctx
+  // indent/failLabel (unlike the named-function path below, which resets
+  // both for a fresh function scope) — the resolved combinator is emitted
+  // exactly as if the grammar author had written it inline directly.
+  const usage = ctx.lazyUsage
+  if (usage && (usage.counts.get(p) ?? 0) <= 1 && !usage.recursive.has(p)) {
+    let resolved: Combinator<unknown>
+    try {
+      resolved = def.thunk()
+    } catch {
+      return emitRuntimeFallback(p, ctx, pos)
+    }
+    return emit(resolved, ctx, pos)
+  }
+
   if (!ctx.namedParsers.has(p)) {
     const fnName = `_pf${ctx.namedParsers.size}`
     ctx.namedParsers.set(p, fnName)   // register FIRST so recursive refs see it
@@ -1591,6 +1619,120 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
   }
 }
 
+/** Immediate child combinators of a def, for generic tree walks (childrenOf). */
+function childrenOf(def: ParserDef): Combinator<unknown>[] {
+  switch (def.tag) {
+    case 'sequence':
+    case 'choice':    return def.parsers
+    case 'many':
+    case 'optional':
+    case 'transform':
+    case 'trivia':
+    case 'label':
+    case 'grammar':
+    case 'not':
+    case 'node':
+    case 'withCtx':
+    case 'expect':    return [def.parser]
+    // emitMany's oneOrMore branch and emitSepBy both codegen `def.parser` TWICE
+    // (a mandatory first match, then again inside the repeat loop) — two real
+    // emit() call sites, so the usage analysis must see two edges here or it
+    // undercounts a single-use `parser` ref as inline-safe when it's actually
+    // referenced from two positions within this one compiled function.
+    case 'oneOrMore': return [def.parser, def.parser]
+    case 'sepBy':     return [def.parser, def.parser, def.separator]
+    case 'skip':      return [def.main, def.skipped]
+    case 'recover':   return [def.parser, def.sentinel]
+    case 'scanTo':    return [def.sentinel, ...def.skip]
+    case 'lazy':
+    case 'literal':
+    case 'regex':
+    case 'keywords':
+    case 'guard':
+    case 'unknown':   return []
+  }
+}
+
+/**
+ * Static-occurrence analysis for `lazy` (ref()) combinators, ahead of codegen.
+ * `emitLazy` currently hoists EVERY lazy ref into its own named function
+ * (_pfN), even when it's referenced from exactly one place — necessary for
+ * genuinely recursive/shared rules, wasteful for the common case of a `g.foo`
+ * helper rule used for grammar readability but only ever called once. On a
+ * large mutually-referential grammar (many `g.xxx` helper rules, each used
+ * from ~1 call site) this multiplies function count far past the number of
+ * rules a grammar author actually wrote — observed on the Less grammar:
+ * ~1700 compiled functions from ~150 source rules, vs a roughly 1:3 ratio on
+ * a comparably-sized but flatter grammar.
+ *
+ * Returns, for every reachable `lazy` combinator: how many static call sites
+ * reference it (`counts`), and whether it participates in a reference cycle
+ * (`recursive` — must stay a named function; inlining a cycle would recurse
+ * forever). A ref with count <= 1 and no cycle membership is safe to inline
+ * directly at its single call site instead of becoming a named function.
+ *
+ * Traversal cost: each `lazy` ref's body is descended into at most once
+ * (subsequent occurrences just bump the counter) — polynomial in the number
+ * of distinct reachable combinators, matching emitLazy's own memoized
+ * codegen cost. Non-lazy nodes are walked without memoization, same as
+ * `emit()` itself (a directly-shared non-ref subtree — discouraged by the
+ * `g.xxx` convention but not disallowed — is revisited per occurrence, same
+ * cost class as compilation already pays for it today).
+ */
+function analyzeLazyUsage(root: Combinator<unknown>): {
+  counts: Map<Combinator<unknown>, number>
+  recursive: Set<Combinator<unknown>>
+} {
+  return analyzeLazyUsageMulti([root])
+}
+
+/**
+ * Multi-root variant, for compileRuleMap(): a `rules()` factory's returned
+ * map has many top-level entries that legitimately share reachable sub-rules
+ * (e.g. `Stylesheet` and `Declaration` both reach `g.valueList`). Walking each
+ * entry as its own root into ONE shared counts/descended/active state means a
+ * ref's count correctly reflects total usage across the WHOLE rule map — used
+ * once as its own top-level entry AND referenced once internally elsewhere is
+ * count 2 (stays a named function, shared correctly), not two independent 1s
+ * from two unrelated single-root analyses.
+ */
+function analyzeLazyUsageMulti(roots: Iterable<Combinator<unknown>>): {
+  counts: Map<Combinator<unknown>, number>
+  recursive: Set<Combinator<unknown>>
+} {
+  const counts = new Map<Combinator<unknown>, number>()
+  const recursive = new Set<Combinator<unknown>>()
+  const descended = new Set<Combinator<unknown>>()
+  const active = new Set<Combinator<unknown>>()
+
+  function walk(p: Combinator<unknown>): void {
+    const def = p._def
+    if (def.tag === 'lazy') {
+      counts.set(p, (counts.get(p) ?? 0) + 1)
+      if (active.has(p)) {
+        recursive.add(p)
+        return
+      }
+      if (descended.has(p)) return
+      descended.add(p)
+      let resolved: Combinator<unknown>
+      try {
+        resolved = def.thunk()
+      } catch {
+        return // ref.define() not called yet — emitLazy's own try/catch handles this at codegen time
+      }
+      active.add(p)
+      walk(resolved)
+      active.delete(p)
+      return
+    }
+    for (const child of childrenOf(def)) walk(child)
+  }
+
+  for (const root of roots) walk(root)
+  return { counts, recursive }
+}
+
 /**
  * Compile a combinator tree into an optimized parse function at runtime.
  *
@@ -1617,6 +1759,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     triviaFnNames: new Map(),
     namedFnDecls: [],
     capturing: hasNodeDef(combinator as Combinator<unknown>),
+    lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
   }
 
   const r = emit(combinator as Combinator<unknown>, ctx, '_pos')
@@ -1701,6 +1844,115 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
       return { ...result, errors } as ParseResult<T> & { errors: ParseError[] }
     },
   }
+}
+
+/**
+ * Compile every entry of a `rules(factory)` map's returned object using ONE
+ * shared codegen Ctx (regexes, named functions, map/build-fn arrays) instead
+ * of running `compile()` independently per entry.
+ *
+ * Why this exists: `compile()` per entry gives each entry its own namedParsers
+ * cache, so a sub-rule reachable from N different top-level entries (e.g.
+ * `valueList` reachable from `Declaration`, `CustomDeclaration`, `Guard`, …)
+ * gets fully re-compiled N times — on a richly cross-referential grammar
+ * (Less: ~125 rule-map entries, deep mutual reference) this multiplies total
+ * compiled size far past what the source grammar actually needs, independent
+ * of the per-ref single-use inlining `analyzeLazyUsage` already handles
+ * within one compile() call. Sharing one Ctx here means a sub-rule compiles
+ * exactly once for the WHOLE rule map, however many entries reach it.
+ *
+ * Returns a single `replacement` — ONE shared IIFE, evaluated once, whose
+ * result is the `{ key: fn, ... }` map — meant to replace the entire
+ * `rules(factory)` call-expression (not one expression per key; splicing a
+ * separate self-contained expression per key would either re-run the shared
+ * prelude once per entry or duplicate its text per entry, undoing the win).
+ * `keys` lists every entry compileRuleMap() saw, for the caller to validate
+ * against the source's own key list.
+ *
+ * Returns null (same all-or-nothing contract the per-entry `compile()` +
+ * `inlineExpression === null` check gave the plugin before) when the map
+ * contains anything that can't be inlined — a runtime-fallback parser, or an
+ * uncaptured transform/build closure source. The plugin's existing "warn and
+ * leave this rules() call interpreted" fallback covers this case unchanged.
+ */
+export function compileRuleMap(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+): { keys: string[]; replacement: string } | null {
+  const ctx: Ctx = {
+    vars: 0,
+    indent: 1,
+    regexDecls: [],
+    regexMap: new Map(),
+    mapFns: [],
+    mapFnSrcs: [],
+    buildFns: [],
+    buildSrcs: [],
+    runtimeParsers: [],
+    needsCollator: false,
+    namedParsers: new Map(),
+    triviaCaptureNames: new Map(),
+    triviaFnNames: new Map(),
+    namedFnDecls: [],
+    capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
+    lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
+  }
+
+  const perEntry = ruleMap.map(([key, rule]) => ({ key, r: emit(rule, ctx, '_pos') }))
+
+  const collatorDecl = ctx.needsCollator
+    ? `const _collator = new Intl.Collator(undefined, { sensitivity: 'accent' })\n`
+    : ''
+
+  const derivedSrcs = ctx.mapFnSrcs.length === ctx.mapFns.length && ctx.mapFnSrcs.every((s): s is string => s !== null)
+    ? ctx.mapFnSrcs as string[]
+    : undefined
+  const buildCovered = ctx.buildFns.length === 0 || ctx.buildSrcs.every((s): s is string => s !== null)
+  const buildSources = ctx.buildFns.length === 0 ? undefined : (ctx.buildSrcs as string[])
+  const mfCovered = ctx.mapFns.length === 0 || derivedSrcs !== undefined
+  const canInline = ctx.runtimeParsers.length === 0 && mfCovered && buildCovered
+  if (!canInline) return null
+
+  const mfDecl = derivedSrcs?.length ? `  const _mf = [${derivedSrcs.join(', ')}]` : ''
+  const buildDecl = buildSources?.length ? `  const _build = [${buildSources.join(', ')}]` : ''
+  const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
+  const hoistedDecls = [
+    ...ctx.regexDecls.map(d => `  ${d}`),
+    collatorDecl ? `  ${collatorDecl.trim()}` : '',
+    mfDecl,
+    buildDecl,
+    ...namedPrelude.map(l => `  ${l}`),
+    ...ctx.namedFnDecls.flatMap((decl, i) => {
+      const lines = decl.split('\n').map(l => `  ${l}`)
+      return i > 0 ? ['', ...lines] : lines
+    }),
+  ].filter(Boolean)
+
+  const entryFnText = (r: ER): string => [
+    `function(input, _pos, _ctx) {`,
+    `  let pos = _pos`,
+    ...r.stmts,
+    `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+    `}`,
+  ].join('\n')
+
+  // One shared IIFE, evaluated ONCE, returning the whole `{ key: fn, ... }`
+  // map — this whole string is the caller's replacement for the entire
+  // `rules(factory)` call-expression (NOT one expression per key spliced into
+  // a separately-built object literal, which would either re-run the shared
+  // prelude per entry or duplicate its text per entry — both defeat the point).
+  const objBody = perEntry
+    .map(({ key, r }) => `    ${JSON.stringify(key)}: ${entryFnText(r).split('\n').join('\n    ')}`)
+    .join(',\n')
+  const replacement = [
+    `/* @__PURE__ */ (() => {`,
+    ...hoistedDecls,
+    `  return {`,
+    objBody,
+    `  }`,
+    `})()`,
+  ].join('\n')
+
+  return { keys: perEntry.map(e => e.key), replacement }
 }
 
 function buildInlineExpression(

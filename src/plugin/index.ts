@@ -21,7 +21,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile } from '../compiler/codegen.ts'
+import { compile, compileRuleMap } from '../compiler/codegen.ts'
 import type { Combinator } from '../types.ts'
 import type {
   ImportDeclaration,
@@ -132,6 +132,9 @@ export function transformMacro(
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
   let anyUnresolved = false
+  // Unique per rules() call site in this file — holds the ONE shared compiled
+  // rule-map object; each destructured local name reads its property off it.
+  let ruleMapHolderCounter = 0
 
   // Surface a shape the macro couldn't compile (it silently runs via the
   // interpreter otherwise). Includes a file:line anchor so it's actionable.
@@ -145,11 +148,18 @@ export function transformMacro(
     warnings.push(`${id}:${lineOf(pos)} — ${msg} (running via the interpreter; add the plugin or simplify the declaration to compile it)`)
   }
 
-  /** Compile a `rules(factory)` call into `[key, inlineExpression]` rule entries. */
+  /**
+   * Compile a `rules(factory)` call into ONE shared replacement expression
+   * for the whole call — see compileRuleMap() in codegen.ts for why this is
+   * one shared codegen pass instead of one `compile()` per entry (a `rules()`
+   * factory's entries commonly share large reachable sub-rule graphs; a
+   * shared pass compiles each shared sub-rule once instead of once per entry
+   * that reaches it).
+   */
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { entries: Array<[string, string]>; ruleMap: Map<string, Combinator<unknown>> } | null => {
+  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>> } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
     const factoryArg = args[0] as Expression | undefined
     if (!factoryArg) { warn(init.start, `${label}: rules() needs a factory argument`); return null }
@@ -157,13 +167,9 @@ export function transformMacro(
     const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
     if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
 
-    const entries: Array<[string, string]> = []
-    for (const [ruleKey, rule] of ruleMap) {
-      const compiled = compile(rule)
-      if (compiled.inlineExpression === null) { warn(init.start, `${label}: rule "${ruleKey}" couldn't be inlined`); return null }
-      entries.push([ruleKey, compiled.inlineExpression])
-    }
-    return { entries, ruleMap }
+    const compiled = compileRuleMap([...ruleMap])
+    if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
+    return { replacement: compiled.replacement, ruleMap }
   }
 
   const isRulesCall = (init: Expression): boolean =>
@@ -286,15 +292,16 @@ export function transformMacro(
           }
         }
 
-        // const name = rules(factory) → an object literal of compiled rules,
-        // so `name.RuleX(...)` resolves to the compiled function at runtime.
+        // const name = rules(factory) → the ONE shared compiled-rule-map
+        // expression, so `name.RuleX(...)` resolves to the compiled function
+        // at runtime (the map's own values are already plain functions).
         if (isRulesCall(init)) {
           const compiledRules = compileRulesFactory(init, varName)
           if (!compiledRules) continue
           replacements.push({
             start: init.start,
             end: init.end,
-            replacement: `{\n${compiledRules.entries.map(([k, expr]) => `  ${k}: ${expr}`).join(',\n')}\n}`,
+            replacement: compiledRules.replacement,
           })
           continue
         }
@@ -339,11 +346,13 @@ export function transformMacro(
 
         const compiledRules = compileRulesFactory(init, '{ … }')
         if (!compiledRules) continue
-        const byKey = new Map(compiledRules.entries)
 
-        // Walk the ObjectPattern properties and emit each rule under its local name.
+        // Walk the ObjectPattern properties, validating each destructured key
+        // exists on the compiled rule map — collect bindings before emitting
+        // any replacement text (uniform with the previous all-or-nothing
+        // per-declaration behavior).
         const pattern = d.id as unknown as { properties: unknown[] }
-        const lines: string[] = []
+        const bindings: Array<{ ruleKey: string; localName: string }> = []
         let allOk = true
 
         for (const prop of pattern.properties) {
@@ -360,19 +369,29 @@ export function transformMacro(
             : ruleKey
           if (!ruleKey || !localName) { allOk = false; break }
 
-          const inlineExpr = byKey.get(ruleKey)
-          if (inlineExpr === undefined) {
+          if (!compiledRules.ruleMap.has(ruleKey)) {
             warn(init.start, `destructured rule "${ruleKey}" isn't returned by the rules() factory`)
             allOk = false; break
           }
 
-          lines.push(`${exportPrefix}${kind} ${localName} = ${inlineExpr}`)
+          bindings.push({ ruleKey, localName })
           // Store under the local name so a later macro declaration can reference it.
           const rule = compiledRules.ruleMap.get(ruleKey)
           if (rule) scope.set(localName, { combi: rule, mfSrcs: [] })
         }
 
         if (!allOk) continue
+
+        // ONE shared holder (not exported — an internal implementation
+        // detail) evaluates the compiled rule map exactly once; each
+        // destructured local name is just a property read off it, preserving
+        // that name's own export-ness from the original declaration.
+        const holderVar = `__rules${ruleMapHolderCounter++}`
+        const lines = [
+          `const ${holderVar} = ${compiledRules.replacement}`,
+          ...bindings.map(({ ruleKey, localName }) =>
+            `${exportPrefix}${kind} ${localName} = ${holderVar}[${JSON.stringify(ruleKey)}]`),
+        ]
 
         replacements.push({
           start: stmtStart,

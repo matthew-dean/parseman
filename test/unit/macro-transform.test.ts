@@ -146,10 +146,10 @@ const grammar = rules(g => {
     const result = transform(code)!
     // import removed → fully compiled
     expect(result.code).not.toContain("from 'parseman'")
-    // emitted as an object literal of compiled rule functions
-    expect(result.code).toContain('const grammar = {')
-    expect(result.code).toContain('A:')
-    expect(result.code).toContain('B:')
+    // emitted as one shared expression whose result is the compiled rule map
+    expect(result.code).toContain('const grammar =')
+    expect(result.code).toContain('"A":')
+    expect(result.code).toContain('"B":')
     expect(result.code).not.toContain('rules(')
     expect(result.warnings).toEqual([])
   })
