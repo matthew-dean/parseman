@@ -1,4 +1,11 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitepress'
+
+const { version } = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../package.json'), 'utf8'),
+) as { version: string }
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
@@ -21,7 +28,7 @@ export default defineConfig({
       { text: 'Guide', link: '/guide/getting-started' },
       { text: 'Reference', link: '/reference/api' },
       {
-        text: 'v0.10.0',
+        text: `v${version}`,
         items: [
           { text: 'Changelog', link: 'https://github.com/matthew-dean/parseman/releases' },
           { text: 'npm', link: 'https://www.npmjs.com/package/parseman' },
