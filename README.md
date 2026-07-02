@@ -68,7 +68,7 @@ Full API in the **[reference](https://matthew-dean.github.io/parseman/reference/
 
 **When parsing to JS values** — objects, row arrays, AST nodes — **Parséman's macro build is the fastest general-purpose JS parser we benchmark**, beating Peggy, Parsimmon, Chevrotain, Nearley, and Jison at every grammar and size. The only thing that edges it out is a purpose-built native like `JSON.parse`; for anything that *doesn't* have a built-in, Parséman is the one to beat.
 
-Building a bare **syntax tree** instead is a different job — [Lezer](https://lezer.codemirror.net/) (CodeMirror's parser) is excellent at that, while Parséman's richer object CST still builds ~1.8× faster than Chevrotain's. Full breakdown in the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks).
+For **syntax tree building**, the compiled CST path (macro build) beats [Lezer](https://lezer.codemirror.net/) on the JSON CST fixture too — while producing a richer object tree with spans and trivia. Full breakdown in the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks).
 
 Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster. Refresh: `pnpm bench`, then `pnpm bench:svg` (updates `assets/bench-*.svg`).
 
@@ -80,9 +80,11 @@ Compared parsers: **Parséman**, Peggy, Parsimmon, Chevrotain, Nearley, and Jiso
 
 ![GraphQL parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-graphql.svg)
 
+![JSON CST parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-cst-json.svg)
+
 Parséman has three modes — **interpreter** (zero setup, works anywhere), **macro build** (compiled by the bundler plugin at build time, zero runtime cost), and **`.compile()`** (optional runtime JIT). Most production use lands on one of the first two. The initialization section only shows parsers with a nonzero setup cost: `.compile()` costs 75–650 µs depending on grammar size; Chevrotain always costs 840–1,400 µs. Parsers not listed there start for free. (Init numbers are pinned on the charts — they're noisy run-to-run; warm-parse bars are the meaningful comparison.)
 
-On JSON, CSV, and GraphQL, Parséman macro beats every other library at every fixture size in the charts above — e.g. GraphQL large **142 µs** vs Peggy **400 µs**, JSON large **125 µs** vs Peggy **483 µs** / Chevrotain **1,936 µs**. Native `JSON.parse` is the one thing faster on JSON (**38 µs** large). Even the zero-setup interpreter beats all five libraries at large sizes. For CST-building grammars (`node()` rules with trivia capture), the interpreter runs ~2× faster than Chevrotain on the JSON CST fixture while building an equivalent tree. Full write-up and how to refresh the charts: **[benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks)**. Grammar-level speed levers: [performance guide](https://matthew-dean.github.io/parseman/guide/performance); library-level codegen: [PERF_IDEAS.md](./PERF_IDEAS.md).
+On JSON, CSV, and GraphQL, Parséman macro beats every other library at every fixture size in the charts above — e.g. GraphQL large **154 µs** vs Peggy **423 µs**, JSON large **125 µs** vs Peggy **472 µs** / Chevrotain **1,946 µs**. Native `JSON.parse` is the one thing faster on JSON (**45 µs** large). Even the zero-setup interpreter beats all five libraries at large sizes. On the CST chart, macro build beats Lezer at every size (**344 µs** vs **587 µs** large, parse-only). Full write-up and how to refresh the charts: **[benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks)**. Grammar-level speed levers: [performance guide](https://matthew-dean.github.io/parseman/guide/performance); library-level codegen: [PERF_IDEAS.md](./PERF_IDEAS.md).
 
 ---
 

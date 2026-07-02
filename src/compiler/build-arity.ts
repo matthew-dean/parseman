@@ -19,8 +19,16 @@ const PARAM_LIST_RE =
   // (params) => ...   |   function name?(params) ...   |   single-ident arrow `x => ...`
   /^(?:function\b[^(]*\(([^)]*)\)|\(([^)]*)\)\s*=>|([A-Za-z_$][\w$]*)\s*=>)/
 
-/** A simple formal param is a plain identifier (optionally with whitespace). No `=`, `{`, `[`, `.`. */
-const SIMPLE_IDENT_RE = /^[A-Za-z_$][\w$]*$/
+/**
+ * A confirmable formal param: a plain identifier, optionally `?`-optional and
+ * optionally carrying a TypeScript type annotation (`c`, `c?`, `c: any`,
+ * `c?: Foo`). The build source is sliced verbatim from the (possibly TS) grammar
+ * source, so typed params must be recognized or every typed grammar keeps full
+ * capture. Type annotations containing a comma (generics/tuples/object types) are
+ * split apart by the caller's `,`-split into non-matching fragments → `null`
+ * (conservative). No `=` (default) is accepted — defaults stay unconfirmed.
+ */
+const CONFIRMABLE_PARAM_RE = /^[A-Za-z_$][\w$]*\s*\??\s*(?::[^,=]+)?$/
 
 /**
  * Confirmed count of simple formal parameters the build declares, or `null` when the
@@ -41,7 +49,7 @@ export function confirmedBuildArity(src: string): number | null {
   // (`...args`), destructuring (`{a}`, `[a]`), or default (`a = 1`) all appear here.
   const parts = inner.split(',')
   for (const part of parts) {
-    if (!SIMPLE_IDENT_RE.test(part.trim())) return null
+    if (!CONFIRMABLE_PARAM_RE.test(part.trim())) return null
   }
 
   // A stray `arguments` reference defeats formal-arity reasoning entirely; only a

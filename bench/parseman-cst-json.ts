@@ -1,16 +1,16 @@
 /**
  * Parseman CST JSON grammar for benchmarking the trivia-capture path.
  *
- * Two exported factories:
- *   buildParsermanCSTJSON()      — captureTrivia: true  (trivia in rawChildren)
- *   buildParsermanCSTJSONNoTriv() — captureTrivia: false (trivia skipped silently)
+ * Exported factories:
+ *   buildParsermanCSTJSON()           — interpreted, captureTrivia: true
+ *   buildParsermanCSTJSONNoTriv()     — interpreted, captureTrivia: false
+ *   buildParsermanCSTJSONCompiled()   — macro/.compile() output, captureTrivia: false
  *
- * Commas are included in the trivia pattern (like GraphQL's optional-comma
- * convention) so the grammar stays simple. The benchmark measures tree-building
- * overhead, not grammar completeness.
+ * Build callbacks use three parameters `(ch, _r, span)` so arity-gated elision
+ * skips per-node trivia logging and state cloning on the hot path.
  */
 import {
-  rules, node, regex, literal, choice, many, sequence, trivia, parser,
+  rules, node, regex, literal, choice, many, sequence, trivia, parser, compile,
   type CSTNode, type CSTLeaf, type CSTError,
 } from '../src/index.ts'
 
@@ -20,9 +20,8 @@ function mkNode(
   type: string,
   children: ReadonlyArray<CSTNode | CSTLeaf | CSTError>,
   span: { start: number; end: number },
-  state: unknown,
 ): CSTNode {
-  return { _tag: 'node', type, span, state, children }
+  return { _tag: 'node', type, span, state: null, children }
 }
 
 function makeCstJsonRoot(captureTrivia: boolean) {
@@ -30,30 +29,30 @@ function makeCstJsonRoot(captureTrivia: boolean) {
   const numberRe = regex(/-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)
 
   const { Value } = rules(g => {
-    const StringVal = node('StringVal', stringRe, (ch, _r, span, _tl, state) =>
-      mkNode('StringVal', ch as CSTNode['children'], span, state))
-    const NumberVal = node('NumberVal', numberRe, (ch, _r, span, _tl, state) =>
-      mkNode('NumberVal', ch as CSTNode['children'], span, state))
-    const True = node('True', literal('true'), (ch, _r, span, _tl, state) =>
-      mkNode('True', ch as CSTNode['children'], span, state))
-    const False = node('False', literal('false'), (ch, _r, span, _tl, state) =>
-      mkNode('False', ch as CSTNode['children'], span, state))
-    const Null = node('Null', literal('null'), (ch, _r, span, _tl, state) =>
-      mkNode('Null', ch as CSTNode['children'], span, state))
+    const StringVal = node('StringVal', stringRe, (ch, _r, span) =>
+      mkNode('StringVal', ch as CSTNode['children'], span))
+    const NumberVal = node('NumberVal', numberRe, (ch, _r, span) =>
+      mkNode('NumberVal', ch as CSTNode['children'], span))
+    const True = node('True', literal('true'), (ch, _r, span) =>
+      mkNode('True', ch as CSTNode['children'], span))
+    const False = node('False', literal('false'), (ch, _r, span) =>
+      mkNode('False', ch as CSTNode['children'], span))
+    const Null = node('Null', literal('null'), (ch, _r, span) =>
+      mkNode('Null', ch as CSTNode['children'], span))
     const Object = node(
       'Object',
       sequence(literal('{'), many(sequence(g.StringVal, literal(':'), g.Value)), literal('}')),
-      (ch, _r, span, _tl, state) => mkNode('Object', ch as CSTNode['children'], span, state),
+      (ch, _r, span) => mkNode('Object', ch as CSTNode['children'], span),
     )
     const Array = node(
       'Array',
       sequence(literal('['), many(g.Value), literal(']')),
-      (ch, _r, span, _tl, state) => mkNode('Array', ch as CSTNode['children'], span, state),
+      (ch, _r, span) => mkNode('Array', ch as CSTNode['children'], span),
     )
     const Value = node(
       'Value',
       choice(g.Object, g.Array, g.StringVal, g.NumberVal, g.True, g.False, g.Null),
-      (ch, _r, span, _tl, state) => mkNode('Value', ch as CSTNode['children'], span, state),
+      (ch, _r, span) => mkNode('Value', ch as CSTNode['children'], span),
     )
     return { Value, Object, Array, StringVal, NumberVal, True, False, Null }
   })
@@ -61,20 +60,23 @@ function makeCstJsonRoot(captureTrivia: boolean) {
   return parser({ trivia: ws, captureTrivia }, Value)
 }
 
+const cstJsonInterpTriv = makeCstJsonRoot(true)
+const cstJsonInterp = makeCstJsonRoot(false)
+const cstJsonCompiled = compile(cstJsonInterp)
+
+function parseOk<T>(r: { ok: boolean; value?: T }): T {
+  if (!r.ok) throw new Error('parse failed')
+  return r.value as T
+}
+
 export function buildParsermanCSTJSON(): (input: string) => unknown {
-  const root = makeCstJsonRoot(true)
-  return (input: string) => {
-    const r = root.parse(input)
-    if (!r.ok) throw new Error('parse failed')
-    return r.value
-  }
+  return (input: string) => parseOk(cstJsonInterpTriv.parse(input))
 }
 
 export function buildParsermanCSTJSONNoTriv(): (input: string) => unknown {
-  const root = makeCstJsonRoot(false)
-  return (input: string) => {
-    const r = root.parse(input)
-    if (!r.ok) throw new Error('parse failed')
-    return r.value
-  }
+  return (input: string) => parseOk(cstJsonInterp.parse(input))
+}
+
+export function buildParsermanCSTJSONCompiled(): (input: string) => unknown {
+  return (input: string) => parseOk(cstJsonCompiled.parse(input, 0))
 }

@@ -15,7 +15,7 @@
  *       OR: pnpm bench
  */
 import { parseJSON, jsonDoc } from '../examples/json/parser.ts'
-import { buildParsermanCSTJSON, buildParsermanCSTJSONNoTriv } from './parseman-cst-json.ts'
+import { buildParsermanCSTJSON, buildParsermanCSTJSONNoTriv, buildParsermanCSTJSONCompiled } from './parseman-cst-json.ts'
 import { parseCSV, compiledCSV, csvParser } from '../examples/csv/parser.ts'
 import { parseConfig, compiledConfig } from '../examples/toml-ish/parser.ts'
 import { parseGraphQL, graphqlDoc } from '../examples/graphql/parser.ts'
@@ -41,13 +41,14 @@ import { buildNearleyCSV, initNearleyCSV } from './nearley-csv.ts'
 import { buildNearleyGraphQL, initNearleyGraphQL } from './nearley-graphql.ts'
 import { buildJisonJSON, initJisonJSON } from './jison-json.ts'
 import { buildJisonGraphQL, initJisonGraphQL } from './jison-graphql.ts'
-import { buildLezerJSON } from './lezer-json.ts'
+import { buildLezerJSON, buildLezerJSONParseOnly } from './lezer-json.ts'
 
 // ---------------------------------------------------------------------------
 // Compiled parsers (built once, reused across bench runs)
 // ---------------------------------------------------------------------------
 const parsermanCSTJSON       = buildParsermanCSTJSON()
 const parsermanCSTJSONNoTriv = buildParsermanCSTJSONNoTriv()
+const parsermanCSTCompiled   = buildParsermanCSTJSONCompiled()
 const compiledJSON           = compile(jsonDoc)
 const compiledGraphQL   = compile(graphqlDoc)
 const chevrotainJSON    = buildChevrotainJSON()
@@ -65,6 +66,7 @@ const nearleyGQL        = buildNearleyGraphQL()
 const jisonJSON         = buildJisonJSON()
 const jisonGQL          = buildJisonGraphQL()
 const lezerJSON         = buildLezerJSON()
+const lezerJSONParse    = buildLezerJSONParseOnly()
 
 // ---------------------------------------------------------------------------
 // Fixtures (shared with parseman-perf.ts)
@@ -145,15 +147,17 @@ jsonGroup('large',  LARGE_JSON,  2_000)
 // ---------------------------------------------------------------------------
 // CST JSON benchmarks — measures trivia-capture overhead vs Chevrotain CstParser
 // ---------------------------------------------------------------------------
-console.log('\n=== CST JSON parsing (warm) — interpreter, tree-building ===')
-console.log('  (Parséman/Chevrotain build object trees; Lezer builds a compact buffer tree — see notes)')
+console.log('\n=== CST JSON parsing (warm) — syntax tree building ===')
+console.log('  (Parséman/Chevrotain: object CST + spans; Lezer: compact buffer tree)')
 
 function cstJsonGroup(label: string, input: string, iters: number) {
   console.log(`\n  [${label}] ${input.length} bytes`)
-  bench('Parséman CST (with trivia)',    () => parsermanCSTJSON(input),       iters)
-  bench('Parséman CST (no trivia)',      () => parsermanCSTJSONNoTriv(input), iters)
-  bench('Chevrotain CST',                () => chevrotainJSON(input),         iters)
-  bench('Lezer (syntax tree)',           () => lezerJSON(input),              iters)
+  bench('Parséman CST (macro build)',  () => parsermanCSTCompiled(input),     iters)
+  bench('Parséman CST (no compile)',   () => parsermanCSTJSONNoTriv(input),  iters)
+  bench('Parséman CST (with trivia)',  () => parsermanCSTJSON(input),       iters)
+  bench('Chevrotain CST',              () => chevrotainJSON(input),         iters)
+  bench('Lezer (parse only)',          () => lezerJSONParse(input),          iters)
+  bench('Lezer (parse + walk)',        () => lezerJSON(input),              iters)
 }
 
 cstJsonGroup('small',  SMALL_JSON,  50_000)

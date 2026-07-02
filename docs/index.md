@@ -43,7 +43,7 @@ features:
     linkText: Error recovery
   - icon: 🏎️
     title: Aged for speed
-    details: On JSON, CSV, and GraphQL the macro build beats Peggy at every fixture size, and the interpreter builds CSTs ~2× faster than Chevrotain. Sharp, not bitter.
+    details: On JSON, CSV, and GraphQL the macro build beats Peggy at every fixture size; compiled CST beats Lezer on tree-building too. Sharp, not bitter.
     link: /guide/benchmarks
     linkText: Benchmarks
   - icon: 🐛

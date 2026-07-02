@@ -5,8 +5,9 @@ parsers do, and it's the race Parséman is built to win: **the macro build is th
 general-purpose JS parser we benchmark**, beating Peggy, Parsimmon, Chevrotain, Nearley,
 and Jison at every grammar and size.
 
-(Building a bare syntax tree is a separate job — [Lezer](https://lezer.codemirror.net/) is
-excellent at it. See [parsing to a syntax tree](#parsing-to-a-syntax-tree).)
+For **syntax tree building**, Parséman's compiled CST path (macro build) beats
+[Lezer](https://lezer.codemirror.net/) too — while producing a richer object tree with
+spans and trivia. See [parsing to a syntax tree](#parsing-to-a-syntax-tree).
 
 Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster.
 
@@ -62,10 +63,10 @@ size in the charts above:
 
 | Fixture | Parséman macro | Peggy | Chevrotain | Native |
 | --- | --- | --- | --- | --- |
-| JSON large (12 kB) | **125 µs** | 483 | 1,936 | `JSON.parse` 38 µs |
-| JSON medium (1.8 kB) | **15 µs** | 67 | 243 | `JSON.parse` 4 µs |
-| CSV large (14.8 kB) | **69 µs** | 436 | 1,257 | — |
-| GraphQL large (7.8 kB) | **146 µs** | 379 | 743 | — |
+| JSON large (12 kB) | **125 µs** | 472 | 1,946 | `JSON.parse` 45 µs |
+| JSON medium (1.8 kB) | **15 µs** | 67 | 245 | `JSON.parse` 4 µs |
+| CSV large (14.8 kB) | **71 µs** | 447 | 1,301 | — |
+| GraphQL large (7.8 kB) | **154 µs** | 423 | 768 | — |
 
 Even the zero-setup **interpreter** beats all five libraries at the large sizes.
 
@@ -76,26 +77,33 @@ tree** instead — Chevrotain's `CstParser`, and Lezer, the incremental parser b
 CodeMirror 6. Parséman does this too via [`node()`](./ast) rules (with full trivia and
 span capture). Measured on the same JSON fixtures (`pnpm bench`, tree-building group):
 
+![JSON CST parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-cst-json.svg)
+
 | Parser | small (52 B) | medium (1.8 kB) | large (12 kB) | Output |
 | --- | --- | --- | --- | --- |
-| **Lezer** | **2.8 µs** | **78 µs** | **672 µs** | compact buffer tree |
-| Parséman CST (no trivia) | 4.3 µs | 173 µs | 1,007 µs | object tree + spans |
-| Parséman CST (with trivia) | 5.5 µs | 170 µs | 1,025 µs | object tree + spans + trivia |
-| Chevrotain CST | 8.0 µs | 236 µs | 1,817 µs | object CST |
+| **Parséman CST (macro build)** | **1.5 µs** | **50 µs** | **344 µs** | object tree + spans |
+| Lezer (parse only) | 2.3 µs | 70 µs | 587 µs | compact buffer tree |
+| Lezer (parse + walk) | 2.7 µs | 79 µs | 789 µs | compact buffer tree |
+| Parséman CST (no compile) | 2.8 µs | 103 µs | 655 µs | object tree + spans |
+| Parséman CST (with trivia) | 3.0 µs | 108 µs | 684 µs | object tree + spans + trivia |
+| Chevrotain CST | 7.6 µs | 251 µs | 1,950 µs | object CST |
 
-Parséman produces a **directly-usable object tree** — per-node spans, captured trivia,
-ready for formatters and refactors without a second walk — and builds it **~1.8× faster
-than Chevrotain**. [Lezer](https://lezer.codemirror.net/) is faster still at raw
-tree-building, but it emits a compact buffer tree rather than JS values or an object CST:
-a different job. Pick the output your consumer actually needs.
+**Compiled Parséman CST (macro build) beats Lezer at every fixture size** — ~1.7× at
+large — while building a directly-usable object tree with per-node spans and optional
+trivia capture. Lezer emits a compact buffer tree optimized for CodeMirror's incremental
+editor pipeline; Parséman emits JS objects ready for formatters and refactors without a
+second walk. Pick the output your consumer actually needs.
 
-## The headline
+The zero-setup **interpreter** CST is competitive with Lezer at small inputs and still
+~1.1× faster than Lezer parse-only at large, and **~2.8× faster than Chevrotain**.
+
+## Reproducing the numbers
 
 **When you're parsing to JS values — objects, rows, AST nodes — Parséman's macro build is
 the fastest general-purpose JS parser in this comparison, at every grammar and every input
-size**, with **zero initialization cost**. Even the setup-free interpreter beats every
-other library at realistic sizes. That's the workload most parsers actually do, and it's
-the one Parséman is built to win.
+size**, with **zero initialization cost**. For syntax trees, the same macro build beats
+Lezer and Chevrotain on the JSON CST fixture. Even the setup-free interpreter beats every
+other value-building library at realistic sizes.
 
 The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M2
 Pro / Node+V8, median of 15 samples. Got a parser you think belongs in the comparison?
