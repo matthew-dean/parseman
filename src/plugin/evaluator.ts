@@ -91,6 +91,24 @@ function scopeGet(scope: XScope, name: string, mfs?: string[]): Combinator<unkno
 // Core evaluators
 // ---------------------------------------------------------------------------
 
+/** Read a static `{ collapse: true }` opts literal → whether collapse is enabled. */
+function staticCollapseOption(expr: Expression): boolean {
+  if (expr.type !== 'ObjectExpression') return false
+  for (const prop of (expr as ObjectExpression).properties) {
+    const p = prop as unknown as ObjectProperty
+    if (p.computed) continue
+    const key = p.key as unknown as { type: string; name?: string; value?: unknown }
+    const name = key.type === 'Identifier' ? key.name
+      : key.type === 'Literal' ? String(key.value)
+      : undefined
+    if (name === 'collapse') {
+      const val = p.value as unknown as { type: string; value?: unknown }
+      return (val.type === 'Literal' || val.type === 'BooleanLiteral') && val.value === true
+    }
+  }
+  return false
+}
+
 /**
  * Evaluate a call expression to a Combinator.
  * `mfs` accumulates mapFn source texts in depth-first order — must match
@@ -148,10 +166,11 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     } catch { return null }
   }
 
-  // node(type, parser, build) — CST node rule. Capture the build callback source
-  // (like transform) so codegen inlines it; the inner parser carries the capture.
+  // node(type, parser, build, opts?) — CST node rule. Capture the build callback
+  // source (like transform) so codegen inlines it; the inner parser carries the
+  // capture. An optional 4th `{ collapse: true }` opts literal is read statically.
   if (callee.name === 'node' && code !== undefined) {
-    const [typeArg, parserArg, buildArg] = node.arguments
+    const [typeArg, parserArg, buildArg, optsArg] = node.arguments
     if (!typeArg || !parserArg || !buildArg
       || typeArg.type === 'SpreadElement' || parserArg.type === 'SpreadElement' || buildArg.type === 'SpreadElement') return null
     const typeVal = anyValue(typeArg as Expression, scope, code)
@@ -159,8 +178,11 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const inner = anyValue(parserArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null
     const buildSrc = code.slice((buildArg as Expression).start, (buildArg as Expression).end)
+    const collapse = optsArg !== undefined && optsArg.type !== 'SpreadElement'
+      ? staticCollapseOption(optsArg as Expression)
+      : false
     try {
-      const combi = parseman.node(typeVal, inner, () => null)
+      const combi = parseman.node(typeVal, inner, () => null, collapse ? { collapse: true } : undefined)
       if (combi._def.tag === 'node') combi._def.buildSrc = buildSrc
       return combi
     } catch { return null }

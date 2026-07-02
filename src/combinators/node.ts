@@ -25,16 +25,39 @@ export type BuildNode<N> = (
   state: unknown,
 ) => N
 
-export function node<N>(type: string, combinator: Combinator<unknown>, build: BuildNode<N>): Combinator<N> {
+/**
+ * Options for `node()`.
+ * - `collapse` — a structural wrapper rule (a selector list, an
+ *   expression-precedence level, …) that IS its single child when it captured
+ *   exactly one. With `collapse: true`, a one-child match returns that child
+ *   directly (a leaf unwrapped to its string value, a sub-node as-is) and
+ *   `build` is NOT called; zero or two-plus children go through `build`
+ *   normally. Lets a grammar keep readable layered rules without paying a build
+ *   call per collapsing layer — and without hand-writing
+ *   `if (children.length === 1) return children[0]` in every wrapper builder.
+ */
+export type NodeOptions = { collapse?: boolean }
+
+/** A captured child's value form: a leaf unwraps to its string value, else as-is. */
+function collapseChild(child: unknown): unknown {
+  return child !== null && typeof child === 'object' && (child as { _tag?: string })._tag === 'leaf'
+    ? (child as { value: unknown }).value
+    : child
+}
+
+export function node<N>(type: string, combinator: Combinator<unknown>, build: BuildNode<N>, opts?: NodeOptions): Combinator<N> {
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
+  const collapse = opts?.collapse === true
   return {
     _tag: 'node',
     _meta: meta,
-    _def: { tag: 'node', type, parser: combinator, build },
+    _def: collapse
+      ? { tag: 'node', type, parser: combinator, build, collapse: true }
+      : { tag: 'node', type, parser: combinator, build },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<N> {
       const saved = beginCstNodeCapture(ctx)
       const r = combinator.parse(input, pos, ctx)
@@ -42,10 +65,13 @@ export function node<N>(type: string, combinator: Combinator<unknown>, build: Bu
 
       if (!r.ok) return r
 
-      const state = ctx.state !== undefined
-        ? Object.assign({}, ctx.state as Record<string, unknown>)
-        : undefined
-      const built = build(children, rawChildren, r.span, triviaLog, state)
+      // collapse: a single captured child IS the value — skip build.
+      const built: unknown = collapse && children.length === 1
+        ? collapseChild(children[0])
+        : build(
+          children, rawChildren, r.span, triviaLog,
+          ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined,
+        )
       const isNodeLike = typeof built === 'object' && built !== null && (built as { _tag?: string })._tag === 'node'
       const rawEntry = isNodeLike
         ? built
@@ -53,7 +79,7 @@ export function node<N>(type: string, combinator: Combinator<unknown>, build: Bu
       if (saved.buf !== undefined || saved.ch !== undefined) {
         pushCstChild(ctx, built, rawEntry)
       }
-      return { ok: true, value: built, span: r.span }
+      return { ok: true, value: built as N, span: r.span }
     },
   }
 }

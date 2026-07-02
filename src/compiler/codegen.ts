@@ -1289,8 +1289,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const ndExpr = mkType
     ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
     : `_build[${buildIdx!}](${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV})`
+  // collapse: a single captured child IS the value (leaf → its string, else as-is);
+  // build is skipped (short-circuited by the ternary). Mirrors node.ts.
+  const finalExpr = def.collapse
+    ? `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
+    : ndExpr
   stmts.push(
-    `${i}const ${ndV} = ${ndExpr}`,
+    `${i}const ${ndV} = ${finalExpr}`,
     `${i}if (${sc}) ${sc}.push(${ndV})`,
     `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && ${ndV}._tag === 'node') ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
   )
