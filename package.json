@@ -1,6 +1,6 @@
 {
   "name": "parseman",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
   "type": "module",
   "author": "Matthew Dean <matthew-dean@users.noreply.github.com>",
