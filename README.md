@@ -4,7 +4,7 @@
 
 # Parséman (PAR-zə-mahn)
 
-Write parsers in TypeScript — fast enough to run as-is, and blazing fast when the bundler macro kicks in. Same code either way; no grammar files, no generated output to check in. Drop the plugin in tests or anywhere a bundler isn't around and everything still works.
+Write parsers in TypeScript — fast enough to run as-is, and blazing fast when the bundler macro kicks in. Same grammar either way; no grammar files, no generated output to check in. Drop the plugin in tests or anywhere a bundler isn't around and everything still works.
 
 > **📖 Full documentation: [matthew-dean.github.io/parseman](https://matthew-dean.github.io/parseman/)**
 

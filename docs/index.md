@@ -5,7 +5,7 @@ layout: home
 hero:
   name: Parséman
   text: 100% Pure Parsing
-  tagline: Parser combinators in TypeScript — fast enough to serve fresh, blazing fast once the bundler macro melts them into inline code. Same recipe either way. No grammar files, no generated output to check in.
+  tagline: Parser combinators in TypeScript — fast enough to run as-is, blazing fast once the bundler macro turns them into inline code. Same grammar either way. No grammar files, no generated output to check in.
   image:
     src: https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/parseman.png
     alt: Parséman
@@ -28,7 +28,7 @@ features:
     linkText: Macro mode
   - icon: 🧩
     title: Just functions, all the way down
-    details: literal, choice, sequence, many, node… compose plain functions. No DSL, no code-generation step to run, no generated files to commit. Grate them fine or leave them chunky — it all melts together.
+    details: literal, choice, sequence, many, node… compose plain functions. No DSL, no code-generation step to run, no generated files to commit.
     link: /guide/combinators
     linkText: Combinators
   - icon: 🌳
@@ -43,7 +43,7 @@ features:
     linkText: Error recovery
   - icon: 🏎️
     title: Aged for speed
-    details: On JSON, CSV, and GraphQL the macro build beats Peggy at every fixture size; compiled CST beats Lezer on tree-building too. Sharp, not bitter.
+    details: On JSON, CSV, and GraphQL the macro build beats Peggy at every fixture size; compiled CST beats Lezer on tree-building too.
     link: /guide/benchmarks
     linkText: Benchmarks
   - icon: 🐛

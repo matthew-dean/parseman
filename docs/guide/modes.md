@@ -10,7 +10,8 @@ turned into running code.
 | **Macro build** | Bundler plugin + `with { type: 'macro' }` | **Zero** — compiled to inline JS at build time | Production apps built with Vite/Rollup/webpack |
 | **`.compile()`** | Call `compile()` | One-time JIT, then flat JS | Grammars assembled dynamically at runtime |
 
-Most production use lands on one of the first two.
+Most production use lands on one of the first two; `.compile()` is there for dynamic
+grammars that need it.
 
 ## Interpreter (the default)
 

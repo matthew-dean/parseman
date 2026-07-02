@@ -4,8 +4,8 @@ Parséman is a parser-combinator library for TypeScript. You describe a grammar 
 composing small functions — `literal`, `choice`, `sequence`, `many`, and friends —
 and get back a parser you can run on any string.
 
-The name is a pun — parser + parmesan — and the conceit holds up: what sets Parséman
-apart is *how* it runs. The **same combinator code** works three ways:
+What sets Parséman apart is *how* it runs. The **same combinator code** works three
+ways:
 
 - **Interpreted** — zero setup, runs anywhere (including tests and REPLs).
 - **Compiled at build time** — a bundler plugin evaluates your grammar and replaces
