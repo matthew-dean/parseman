@@ -1,6 +1,6 @@
 {
   "name": "parseman",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
   "type": "module",
   "author": "Matthew Dean <matthew-dean@users.noreply.github.com>",
@@ -39,6 +39,9 @@
     "bench:baseline": "node --import tsx/esm bench/update-parseman-baseline.ts",
     "perf:guard": "node --import tsx/esm bench/perf-guard.ts",
     "prepare": "git config core.hooksPath scripts/git-hooks || true",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "bench:svg": "node --import tsx/esm bench/gen-svg.ts",
     "build:chevrotain-bench": "node --import tsx/esm scripts/build-chevrotain-bench.mjs",
     "bench:compile-grammars": "peggy --format es -o bench/json-parser.js bench/json.pegjs && peggy --format es -o bench/csv-parser.js bench/csv.pegjs && peggy --format es -o bench/graphql-parser.js bench/graphql.pegjs && nearleyc bench/vendor/nearley/json.ne -o bench/json-nearley.cjs && nearleyc bench/vendor/nearley/csv.ne -o bench/csv-nearley.cjs && nearleyc bench/vendor/nearley/graphql.ne -o bench/graphql-nearley.cjs && node bench/compile-jison.mjs"
@@ -52,6 +55,8 @@
   ],
   "license": "MIT",
   "devDependencies": {
+    "@lezer/common": "~1.5.2",
+    "@lezer/json": "~1.0.3",
     "@oxc-project/types": "~0.137.0",
     "@types/node": "~26.0.0",
     "@types/parsimmon": "~1.10.9",
@@ -67,6 +72,7 @@
     "tsx": "~4.22.4",
     "typescript": "7.0.1-rc",
     "vite": "~8.0.16",
+    "vitepress": "~1.6.4",
     "vitest": "~4.1.9",
     "xregexp": "~5.1.2"
   },

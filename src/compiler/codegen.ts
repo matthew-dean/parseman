@@ -19,6 +19,7 @@ import {
   labeledTriviaRegexArms,
 } from './trivia-fast-path.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
+import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
 import {
   transformFnSource,
   tryInlineUnaryTransform,
@@ -49,6 +50,8 @@ type Ctx = {
   runtimeParsers: Array<Combinator<unknown>>
   /** Whether any case-insensitive lit was emitted (needs collator) */
   needsCollator: boolean
+  /** Whether any node() elided trivia capture and needs the shared frozen empty log. */
+  needsEmptyTl?: boolean | undefined
   /** Lazy/ref parsers and trivia helpers: parser identity → generated function name */
   namedParsers: Map<Combinator<unknown>, string>
   /** Generated function declaration strings, prepended before the main body */
@@ -1269,22 +1272,38 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   }
   const i = ind(ctx)
 
+  // Arity-gated elision: when the build provably never reads the trivia (4th) or
+  // state (5th) arg, skip that capture entirely. The mk-inline path reads
+  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture.
+  const capturesTrivia = mkType !== null || buildReadsTrivia(def)
+  const clonesState = buildReadsState(def)
+
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
-  const tlV = v(ctx, '_tl')
+  const tlV = capturesTrivia ? v(ctx, '_tl') : '_EMPTY_TL'
+  if (!capturesTrivia) ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
+  const allocStmt = capturesTrivia
+    ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
+    : `${i}const ${chV} = [], ${rawV} = []`
+  // When not capturing, set _ctx._cstTriviaLog = undefined so inner trivia terminals'
+  // `if (_ctx._cstTriviaLog !== undefined)` guard short-circuits (no per-token push).
+  const innerTl = capturesTrivia ? tlV : 'undefined'
   const stmts: string[] = [
-    `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`,
+    allocStmt,
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog`,
-    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${tlV}`,
+    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}`,
   ]
   const { stmts: innerStmts, okVar, endVar } = emitFallible(def.parser, ctx, pos)
   stmts.push(...innerStmts)
   stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}`)
   stmts.push(...emitIfFail(ctx, `!${okVar}`, failBody(ctx, '"node"', pos)))
 
-  const stV = v(ctx, '_nst')
-  stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+  let stV = 'undefined'
+  if (clonesState) {
+    stV = v(ctx, '_nst')
+    stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+  }
   const ndV = v(ctx, '_nd')
   const ndExpr = mkType
     ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
@@ -1787,8 +1806,10 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     : ''
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
+  const emptyTlDecls = ctx.needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []
 
   const source = [
+    ...emptyTlDecls,
     ...ctx.regexDecls,
     '',
     ...namedPrelude,
@@ -1801,6 +1822,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
   ].join('\n')
 
   const fn = new Function('input', '_pos', '_rp', '_mf', '_build', '_ctx', [
+    ...emptyTlDecls,
     ...ctx.regexDecls,
     collatorDecl,
     ...namedPrelude,
@@ -1934,6 +1956,7 @@ export function compileRuleMap(
   const buildDecl = buildSources?.length ? `  const _build = [${buildSources.join(', ')}]` : ''
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
+    ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : '',
     ...ctx.regexDecls.map(d => `  ${d}`),
     collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,
@@ -1997,11 +2020,13 @@ function buildInlineExpression(
   const mfDecl = mapFnSources?.length ? `  const _mf = [${mapFnSources.join(', ')}]` : ''
   const buildDecl = buildSources?.length ? `  const _build = [${buildSources.join(', ')}]` : ''
 
-  const needsWrapper = ctx.regexDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl
+  const emptyTlDecl = ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : ''
+  const needsWrapper = ctx.regexDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
+    emptyTlDecl,
     ...ctx.regexDecls.map(d => `  ${d}`),
     collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,

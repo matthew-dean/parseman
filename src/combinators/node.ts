@@ -1,5 +1,6 @@
-import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
+import type { Combinator, ParseContext, ParseResult, ParserMeta, ParserDef } from '../types.ts'
 import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/capture-buffer.ts'
+import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
@@ -52,14 +53,23 @@ export function node<N>(type: string, combinator: Combinator<unknown>, build: Bu
     isTrivia: false,
   }
   const collapse = opts?.collapse === true
+  const def: Extract<ParserDef, { tag: 'node' }> = collapse
+    ? { tag: 'node', type, parser: combinator, build, collapse: true }
+    : { tag: 'node', type, parser: combinator, build }
+  // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
+  // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
+  // capture for the inner scope; when it never reads state (5th), skip the state clone.
+  const capturesTrivia = buildReadsTrivia(def)
+  const clonesState = buildReadsState(def)
   return {
     _tag: 'node',
     _meta: meta,
-    _def: collapse
-      ? { tag: 'node', type, parser: combinator, build, collapse: true }
-      : { tag: 'node', type, parser: combinator, build },
+    _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<N> {
       const saved = beginCstNodeCapture(ctx)
+      // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
+      // without touching the global _triviaLog, which is committed independently.
+      if (!capturesTrivia) ctx.captureTrivia = false
       const r = combinator.parse(input, pos, ctx)
       const { children, rawChildren, triviaLog } = endCstNodeCapture(ctx, saved)
 
@@ -70,7 +80,7 @@ export function node<N>(type: string, combinator: Combinator<unknown>, build: Bu
         ? collapseChild(children[0])
         : build(
           children, rawChildren, r.span, triviaLog,
-          ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined,
+          clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined,
         )
       const isNodeLike = typeof built === 'object' && built !== null && (built as { _tag?: string })._tag === 'node'
       const rawEntry = isNodeLike
