@@ -348,6 +348,20 @@ for (const [mode, registry] of [['interpreter', () => interpRegistry], ['macro',
       expect(aVal.text).toBe('42')
     })
 
+    it('length-changing edit shifts ancestor + following-sibling spans (== full reparse)', () => {
+      // Grow the first value by one char: the Object root span and the second
+      // pair (which sits after the edit) must both shift, matching a fresh parse.
+      const edited = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}').edit(3, 4, '42')
+      const fresh = makeFunctionalDoc<Node>(registry(), 'Object', '{a:42,b:2}')
+      expect(edited.tree).toEqual(fresh.tree)
+    })
+
+    it('shrinking edit also yields spans identical to a full reparse', () => {
+      const edited = makeFunctionalDoc<Node>(registry(), 'Object', '{a:42,b:2}').edit(3, 5, '1')
+      const fresh = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}')
+      expect(edited.tree).toEqual(fresh.tree)
+    })
+
     it('unaffected sibling subtree is shared by reference', () => {
       const doc1 = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}')
       const firstPairBefore = pairsOf(doc1.tree)[0]!

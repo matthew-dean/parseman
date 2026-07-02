@@ -98,6 +98,31 @@ const grammar   = rules(…)   // an object literal of compiled rules; grammar.v
 Parsers that close over external variables the evaluator can't resolve are left as-is —
 the plugin compiles what it can and quietly leaves the rest to the interpreter.
 
+## Code size — what to expect
+
+Compiling trades **bundle size for speed**: a compact combinator grammar expands into
+flat, inlined JavaScript, and that generated code ships in your bundle. Expect roughly
+**3–14× the source lines**, growing with grammar complexity. Measured on the bundled
+example grammars (`pnpm bench:size`):
+
+| Grammar | Source LOC | Generated LOC | Size | Gzip size | Line multiplier |
+| --- | --- | --- | --- | --- | --- |
+| JSON | 97 | 321 | 10.7 kB | 2.3 kB | 3.3× |
+| CSV | 39 | 423 | 16.1 kB | 3.1 kB | 10.8× |
+| GraphQL | 196 | 2,699 | 100.6 kB | 16.6 kB | 13.8× |
+
+Two things keep this in perspective:
+
+- **The `parseman` runtime import disappears.** Macro output has no external references, so
+  you're not shipping the combinator library *and* the generated code — just the code.
+- **Generated JS is repetitive, so it gzips hard.** GraphQL's 100 kB of source is ~16.6 kB
+  over the wire — the number your users actually download. Raw LOC looks large; the shipped
+  cost is a fraction of it.
+
+If bundle size matters more than raw throughput for a given grammar, use the
+**interpreter** (zero generated code, zero setup) or reach for `.compile()` at runtime
+instead of the macro. See [the three modes](./modes).
+
 ## Debugging still works
 
 The plugin emits a precise source map via

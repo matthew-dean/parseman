@@ -36,6 +36,13 @@ span end lands where the edit's delta predicts. Nodes unaffected by the edit are
 reference between the old and new docs — so a keystroke deep in a large file re-parses one
 small subtree, not the whole thing.
 
+Because spans are **absolute** offsets, a length-changing edit shifts every node that comes
+*after* it by the delta; nodes *before* the edit stay shared by reference. So an in-place
+value edit (overtype, or a character typed into an existing token) is close to free, while
+a structural edit costs in proportion to how much of the document follows it. See the
+[incremental re-parse benchmark](./benchmarks#incremental-re-parse) for how that compares to
+Lezer's buffer-tree reuse — the two engines have opposite sweet spots.
+
 Because docs are immutable, `edit()` returns a new doc and leaves the old one intact —
 convenient for undo stacks and time-travel debugging.
 
@@ -73,6 +80,11 @@ const doc = makeFunctionalDoc(registry, 'Program', src, {
   rebuild: (node, children) => node.withChildren(children),
 })
 ```
+
+With a custom `rebuild`, a **length-changing** edit falls back to a full reparse — shifting
+the absolute spans of a class instance can't be done safely by the graft, so correctness
+wins over the incremental fast path. Same-length edits still graft incrementally. Plain
+object trees (the default) get the incremental path for both.
 
 ## Pairs with error recovery
 

@@ -85,6 +85,47 @@ function defaultRebuild<N extends NodeLike>(node: N, children: ReadonlyArray<N |
   return { ...node, children } as N
 }
 
+type SpanChild = { span: { start: number; end: number }; children?: readonly unknown[] }
+
+/**
+ * Deep-shift every absolute span in a subtree by `delta`. Used for nodes that
+ * sit *after* a length-changing edit: their content didn't change but their
+ * offsets moved. Plain-object path only (see `graftAndShift`).
+ */
+function shiftSpans<T>(child: T, delta: number): T {
+  const c = child as unknown as SpanChild
+  const span = { start: c.span.start + delta, end: c.span.end + delta }
+  if (Array.isArray(c.children)) {
+    return { ...(c as object), span, children: c.children.map((g) => shiftSpans(g, delta)) } as unknown as T
+  }
+  return { ...(c as object), span } as unknown as T
+}
+
+/**
+ * Graft `newNode` at `path` for a length-changing edit (`delta !== 0`):
+ * children before the edit are shared by reference, the edited child is
+ * replaced, children after it are span-shifted by `delta`, and each ancestor's
+ * `span.end` grows by `delta`. Absolute-offset trees must touch every node after
+ * the edit — that's inherent — but everything before it is still shared.
+ */
+function graftAndShift<N extends NodeLike>(root: N, path: number[], newNode: N, delta: number): N {
+  if (path.length === 0) return newNode
+  const [idx, ...rest] = path as [number, ...number[]]
+  const oldChildren = root.children as ReadonlyArray<N | CSTLeaf | CSTError>
+  const newChildren = oldChildren.map((child, i) => {
+    if (i < idx) return child
+    if (i === idx) {
+      return rest.length === 0 ? newNode : graftAndShift(child as N, rest, newNode, delta)
+    }
+    return shiftSpans(child, delta)
+  })
+  return {
+    ...root,
+    span: { start: root.span.start, end: root.span.end + delta },
+    children: newChildren,
+  } as N
+}
+
 // ---------------------------------------------------------------------------
 // Document
 // ---------------------------------------------------------------------------
@@ -140,7 +181,17 @@ class FunctionalDocImpl<N extends NodeLike> implements FunctionalDoc<N> {
       const r = ruleFn(newInput, node.span.start, ctx)
       if (!r.ok) continue
       if (r.span.end === node.span.end + delta) {
-        const newTree = replaceAtPath(rebuild, this.tree, path, r.value)
+        // delta === 0: spans are unchanged, so the spine graft (sharing every
+        // untouched sibling by reference) is already correct.
+        if (delta === 0) {
+          const newTree = replaceAtPath(rebuild, this.tree, path, r.value)
+          return new FunctionalDocImpl(this._registry, this._rootRule, this._opts, newTree, [], newInput)
+        }
+        // Length-changing edit: nodes after the edit must have their absolute
+        // spans shifted. A custom `rebuild` can't have its spans shifted safely
+        // (it may be a class instance), so fall back to a full, correct reparse.
+        if (this._opts.rebuild) return reparse()
+        const newTree = graftAndShift(this.tree, path, r.value, delta)
         return new FunctionalDocImpl(this._registry, this._rootRule, this._opts, newTree, [], newInput)
       }
     }

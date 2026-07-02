@@ -68,7 +68,7 @@ Full API in the **[reference](https://matthew-dean.github.io/parseman/reference/
 
 **When parsing to JS values** — objects, row arrays, AST nodes — **Parséman's macro build is the fastest general-purpose JS parser we benchmark**, beating Peggy, Parsimmon, Chevrotain, Nearley, and Jison at every grammar and size. The only thing that edges it out is a purpose-built native like `JSON.parse`; for anything that *doesn't* have a built-in, Parséman is the one to beat.
 
-For **syntax tree building**, the compiled CST path (macro build) beats [Lezer](https://lezer.codemirror.net/) on the JSON CST fixture too — while producing a richer object tree with spans and trivia. Full breakdown in the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks).
+For **syntax tree building**, the compiled CST path (macro build) beats [Lezer](https://lezer.codemirror.net/) on the JSON CST fixture too — while producing a richer object tree with spans and trivia. For **incremental re-parse**, the two trade places by edit type: Parséman's `makeFunctionalDoc` is ~300× faster than a full reparse on in-place value edits (and ahead of Lezer), while Lezer's buffer reuse wins on structural edits. Full breakdown in the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks).
 
 Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster. Refresh: `pnpm bench`, then `pnpm bench:svg` (updates `assets/bench-*.svg`).
 
