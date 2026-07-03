@@ -362,6 +362,28 @@ describe('evaluator — transform / node / sepBy / oneOrMore', () => {
     }
   })
 
+  it('evaluateExpr resolves a bare ref() to a lazy slot and rejects ref(arg)', () => {
+    const slot = evaluateExpr(parseInit('ref()'), new Map())
+    expect(slot?._def.tag).toBe('lazy')
+    expect(evaluateExpr(parseInit('ref(1)'), new Map())).toBeNull()
+  })
+
+  it('evaluateExpr returns null when a parser() opts arg is not statically evaluable', () => {
+    const code = `parser(externalOpts, literal('a'))`
+    expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()
+  })
+
+  it('evaluateExpr returns null for a spread argument to a supported factory', () => {
+    const code = `sequence(...terms)`
+    expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()
+  })
+
+  it('evaluateExpr returns null when an argument is an unresolvable value node', () => {
+    // A template literal isn't a value anyValue can resolve, so literal(...) bails.
+    const code = 'literal(`x`)'
+    expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()
+  })
+
   it('sepBy and oneOrMore replay item mfSrcs to match codegen traversal', () => {
     const sepCode = `sepBy(transform(literal('a'), x => x), literal(','))`
     const sepMfs: string[] = []

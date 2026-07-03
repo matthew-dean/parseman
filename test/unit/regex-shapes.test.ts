@@ -73,6 +73,13 @@ describe('regex first-set — character classes', () => {
     const p = regex(/\w+/)
     expect(p._meta.firstSet.kind).toBe('any')
   })
+
+  it('a leading assertion (\\b, ^) falls through to a conservative "any" first-set', () => {
+    // Boundary/anchor assertions aren't modeled by extractFirstSet's switch, so
+    // the default arm returns `any` — the safe over-approximation.
+    expect(regex(/\bfoo/)._meta.firstSet.kind).toBe('any')
+    expect(regex(/^foo/)._meta.firstSet.kind).toBe('any')
+  })
 })
 
 describe('regex first-set — optional prefix', () => {

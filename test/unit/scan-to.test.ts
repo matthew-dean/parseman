@@ -48,6 +48,13 @@ describe('scanTo — basics', () => {
     expect(parse(p, 'no brace here').ok).toBe(false)
   })
 
+  it('reports a generic "sentinel" label when the sentinel is not a literal', () => {
+    const p = scanTo(regex(/;/))
+    const r = parse(p, 'no semicolon')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.expected).toEqual(['sentinel'])
+  })
+
   it('orEOF: succeeds when sentinel absent', () => {
     const p = scanTo(literal('{'), { orEOF: true })
     const r = parse(p, 'no brace')
@@ -121,6 +128,27 @@ describe('balanced()', () => {
     const r = parse(p, '(hello)')
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.value).toBe('(hello)')
+  })
+
+  it('falls back to a single-char content run when a skip has an unbounded first-set', () => {
+    // A skip whose firstSet is `any` (regex `.`) makes firstSetClassChars return
+    // null → `bounded = false` → the interior content run scans one char at a time
+    // so the skip arm always gets a chance to match at its position.
+    const anySkip = sequence(literal('@'), regex(/./))
+    const p = balanced('(', ')', { skip: [anySkip] })
+    const r = parse(p, '(a@)b)')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value).toBe('(a@)b)')
+  })
+
+  it('treats a wide-range skip first-set (>8 chars) as unbounded', () => {
+    // regex(/[a-z].../) has a first-set range wider than 8 code points, so
+    // firstSetClassChars returns null and the content run degrades to one char.
+    const wideSkip = sequence(regex(/[a-z]/), literal('!'))
+    const p = balanced('(', ')', { skip: [wideSkip] })
+    const r = parse(p, '(x!y)')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value).toBe('(x!y)')
   })
 
   it('balanced with skip — skips nested same-close inside skip', () => {

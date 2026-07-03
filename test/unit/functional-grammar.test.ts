@@ -432,4 +432,31 @@ describe('functional grammar — incremental over node()-built CST (leaf sibling
     expect(semicolon._tag).toBe('leaf')
     expect(semicolon.span).toEqual({ start: 4, end: 5 })
   })
+
+  it('throws when the root rule is not in the registry', () => {
+    expect(() => makeFunctionalDoc<Node>(leafRegistry, 'Missing', 'a:1;b:2')).toThrow(
+      "No rule 'Missing' in registry",
+    )
+  })
+
+  it('widens past a candidate node whose type has no registry rule', () => {
+    // Registry only knows 'Object'; the tree still contains 'Pair' subtrees.
+    // Editing inside a Pair finds it first, but with no 'Pair' rule the loop
+    // continues (line: `if (!ruleFn) continue`) and widens to reparse 'Object'.
+    const objectOnly: Record<string, RuleFn> = { Object: (i, p, c) => leafObject.parse(i, p, c) }
+    const doc = makeFunctionalDoc<Node>(objectOnly, 'Object', 'a:1;b:2').edit(2, 3, '42')
+    expect(doc.input).toBe('a:42;b:2')
+    const fresh = makeFunctionalDoc<Node>(objectOnly, 'Object', 'a:42;b:2')
+    expect(doc.tree).toEqual(fresh.tree)
+  })
+
+  it('falls back to a full reparse for a custom rebuild on a length-changing edit', () => {
+    // A custom rebuild can't have its spans safely shifted, so graftAndShift is
+    // skipped and edit() reparses from scratch (still correct, just not shared).
+    const rebuild = (n: Node, children: readonly unknown[]): Node => ({ ...n, children: children as Node[] })
+    const doc = makeFunctionalDoc<Node>(leafRegistry, 'Object', 'a:1;b:2', { rebuild }).edit(2, 3, '42')
+    expect(doc.input).toBe('a:42;b:2')
+    const fresh = makeFunctionalDoc<Node>(leafRegistry, 'Object', 'a:42;b:2', { rebuild })
+    expect(doc.tree).toEqual(fresh.tree)
+  })
 })
