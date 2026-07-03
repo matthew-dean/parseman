@@ -39,11 +39,30 @@ describe('parseScanShape — quantifier', () => {
     })
   })
 
-  it('expands \\d/\\w inside a char class (not treated as literal letters)', () => {
+  // `\s` (WhiteSpace + LineTerminator) is a fixed code-point set, unaffected by
+  // the `u` flag — unlike `\d`/`\w`, which are ASCII-only without `u`. PERF_IDEAS §8a.
+  const SPACE_RANGES = [
+    [9, 13], [32, 32], [160, 160], [5760, 5760], [8192, 8202],
+    [8232, 8232], [8233, 8233], [8239, 8239], [8287, 8287], [12288, 12288], [65279, 65279],
+  ]
+
+  it('recognizes shorthand-class runs (\\s)', () => {
+    expect(parseScanShape('\\s+')).toEqual({ kind: 'chars', ranges: SPACE_RANGES, minOne: true })
+    expect(parseScanShape('\\s*')).toEqual({ kind: 'chars', ranges: SPACE_RANGES, minOne: false })
+    expect(parseScanShape('[\\s]+')).toEqual({ kind: 'chars', ranges: SPACE_RANGES, minOne: true })
+  })
+
+  it('expands \\d/\\w/\\s inside a char class (not treated as literal letters)', () => {
     // `[\d.]+` must match digits or dot — NOT the letter "d".
     expect(parseScanShape('[\\d.]+')).toEqual({
       kind: 'chars',
       ranges: [[48, 57], [46, 46]],
+      minOne: true,
+    })
+    // `[\s,]+` must match whitespace or comma — NOT the letter "s".
+    expect(parseScanShape('[\\s,]+')).toEqual({
+      kind: 'chars',
+      ranges: [...SPACE_RANGES, [44, 44]],
       minOne: true,
     })
   })
@@ -58,13 +77,64 @@ describe('parseScanShape — quantifier', () => {
   })
 
   it('rejects non-scannable patterns', () => {
-    // `\s` includes Unicode whitespace → cannot lower to a fixed ASCII range.
-    expect(parseScanShape('\\s+')).toBeNull()
-    expect(parseScanShape('[\\s]+')).toBeNull()
-    // optional prefix not yet a shape.
-    expect(parseScanShape('-?[0-9]+')).toBeNull()
-    // negated head/tail can't become positive ranges.
-    expect(parseScanShape('[^a][b]*')).toBeNull()
+    // `\S`/`\D`/`\W` (negated shorthand classes) aren't a fixed set we lower.
+    expect(parseScanShape('\\S+')).toBeNull()
+    expect(parseScanShape('[\\S]+')).toBeNull()
+    // alternation / groups / `.` / bounded repeats are outside the chain category.
+    expect(parseScanShape('a|b')).toBeNull()
+    expect(parseScanShape('a.c')).toBeNull()
+    expect(parseScanShape('(ab)+')).toBeNull()
+    expect(parseScanShape('a{2,3}')).toBeNull()
+    // a bare negated `*` matches zero-width → no mandatory segment, not lowered.
+    expect(parseScanShape('[^"]*')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// General `seq` category — a linear chain of literals + char runs. This is the
+// GENERALIZATION of the CSS/Less token shapes (optional prefix, literal opener,
+// negated run, …); no specific byte value is hardcoded in the recognizer.
+// ---------------------------------------------------------------------------
+
+describe('parseScanShape — general seq category', () => {
+  const seqOf = (re: RegExp) => {
+    const s = parseScanShape(re.source)
+    return s && s.kind === 'seq' ? s.parts : s?.kind ?? null
+  }
+
+  it('optional literal prefix + run (e.g. -?[0-9]+)', () => {
+    expect(seqOf(/-?[0-9]+/)).toEqual([
+      { part: 'lit', cps: [45], optional: true },
+      { part: 'run', ranges: [[48, 57]], negated: false, min: 1, unbounded: true },
+    ])
+  })
+
+  it('literal opener + char run (e.g. CSS --custom-prop)', () => {
+    expect(parseScanShape(/--[-_a-zA-Z0-9\u0080-\uffff]*/.source)?.kind).toBe('seq')
+  })
+
+  it('literal + optional dash + ident head/tail (e.g. CSS @-webkit-…)', () => {
+    const parts = seqOf(/@-?[_a-zA-Z][-_a-zA-Z0-9]*/)
+    expect(Array.isArray(parts) && parts[0]).toEqual({ part: 'lit', cps: [64], optional: false })
+    expect(Array.isArray(parts) && parts[1]).toEqual({ part: 'lit', cps: [45], optional: true })
+  })
+
+  it('bare negated run: `+` lowers, `*` does not (zero-width)', () => {
+    expect(parseScanShape(/[^)"' \t\n\r\f]+/.source)?.kind).toBe('seq')
+    expect(parseScanShape(/[^)"' \t\n\r\f]*/.source)).toBeNull()
+  })
+
+  it('declines ambiguous greedy chains (overlapping adjacent runs)', () => {
+    // `[a-z]+[a-z]` — greedy run overlaps the following required char; a one-pass
+    // scan would diverge from the engine's backtracking, so we do NOT lower it.
+    expect(parseScanShape('[a-z]+[a-z]')).toBeNull()
+    // `-?[-a]+` — the optional `-` is also matchable by the following run, so
+    // greedy-take vs skip diverge; declined.
+    expect(parseScanShape('-?[-a]+')).toBeNull()
+    // `[A-Z]?P` — the optional run [A-Z] covers P (80 ∈ [65,90]); greedy-take
+    // diverges from backtracking (P consumed by run → required P fails). Must
+    // NOT be lowered. (This is the `rangeFirstCps` lower-bound-only bug.)
+    expect(parseScanShape('[A-Z]?P')).toBeNull()
   })
 })
 
@@ -91,9 +161,15 @@ describe('scannable regex — codegen', () => {
   })
 
   it('keeps RegExp.exec for non-scannable patterns', () => {
-    const { source } = compile(regex(/\s+/))
+    const { source } = compile(regex(/\S+/))
     expect(source).toMatch(/const _re\d+ = /)
     expect(source).toContain('.exec(input)')
+  })
+
+  it('lowers \\s+ to charCodeAt (fixed SPACE_RANGES set)', () => {
+    const { source } = compile(regex(/\s+/))
+    expect(source).toContain('charCodeAt')
+    expect(source).not.toContain('.exec(input)')
   })
 
   it('lowers \\d+ and \\w+ shorthand runs', () => {
@@ -107,9 +183,23 @@ describe('scannable regex — codegen', () => {
     expect(source).not.toContain('.exec(input)')
   })
 
-  it('does NOT lower case-insensitive/unicode/multiline patterns', () => {
-    // `i` folds case → a fixed ASCII range would be wrong; must stay on exec.
+  it('lowers CSS ident, customProp, atKeyword, urlInner, urlOpen', () => {
+    const cssIdent = regex(/-?[_a-zA-Z\u0080-\uffff][-_a-zA-Z0-9\u0080-\uffff]*/)
+    const cssCustom = regex(/--[-_a-zA-Z0-9\u0080-\uffff]*/)
+    const cssAt = regex(/@-?[_a-zA-Z\u0080-\uffff][-_a-zA-Z0-9\u0080-\uffff]*/)
+    const cssUrlInner = regex(/[^)"' \t\n\r\f]+/)
+    const cssUrlOpen = regex(/url\(/i)
+    for (const c of [cssIdent, cssCustom, cssAt, cssUrlInner, cssUrlOpen]) {
+      const { source } = compile(c)
+      expect(source, c.toString()).toContain('charCodeAt')
+      expect(source, c.toString()).not.toContain('.exec(input)')
+    }
+  })
+
+  it('does NOT lower case-insensitive class patterns (only pure literals)', () => {
+    // `i` on a char class must stay on exec; pure-literal `i` lowers via litFold.
     expect(compile(regex(/[a-z]+/i)).source).toContain('.exec(input)')
+    expect(compile(regex(/url\(/i)).source).not.toContain('.exec(input)')
     expect(compile(regex(/[a-z]+/u)).source).toContain('.exec(input)')
   })
 })
@@ -285,6 +375,84 @@ describe('scannable regex — \\d+ / \\w+ parity', () => {
       const r = run('a_1B-')
       expect(r.ok).toBe(true)
       expect(r.value).toBe('a_1B')
+    })
+  }
+})
+
+// `\s` (PERF_IDEAS §8a) — a fixed code-point set (WhiteSpace + LineTerminator),
+// unaffected by the `u` flag, so it lowers to a charCodeAt scan like \d/\w.
+const sRun = regex(/\s+/)
+
+describe('scannable regex — \\s+ parity', () => {
+  const sModes = modesFor(
+    sRun,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const sRun = regex(/\\s+/)`,
+    'sRun',
+  )
+  for (const [mode, run] of sModes) {
+    it(`${mode}: \\s+ matches ASCII + Unicode whitespace`, () => {
+      const r = run('  \t\n  x')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('  \t\n  ')
+    })
+    it(`${mode}: \\s+ fails on a non-space char`, () => {
+      expect(run('x').ok).toBe(false)
+    })
+  }
+
+  it('compiled output lowers to a charCodeAt scan, not exec', () => {
+    expect(compile(sRun).source).not.toContain('.exec(input)')
+  })
+})
+
+describe('scannable regex — CSS ident / atKeyword / url parity (seq)', () => {
+  const cssIdent = regex(/-?[_a-zA-Z][-_a-zA-Z0-9]*/)
+  const modes = modesFor(
+    cssIdent,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const cssIdent = regex(/-?[_a-zA-Z][-_a-zA-Z0-9]*/)`,
+    'cssIdent',
+  )
+  for (const [mode, run] of modes) {
+    it(`${mode}: -webkit-foo`, () => {
+      const r = run('-webkit-foo ')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('-webkit-foo')
+    })
+    it(`${mode}: plain ident`, () => {
+      const r = run('color:')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('color')
+    })
+    it(`${mode}: lone dash fails`, () => {
+      expect(run('-').ok).toBe(false)
+    })
+  }
+
+  const cssAt = regex(/@-?[_a-zA-Z][-_a-zA-Z0-9]*/)
+  const atModes = modesFor(
+    cssAt,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const cssAt = regex(/@-?[_a-zA-Z][-_a-zA-Z0-9]*/)`,
+    'cssAt',
+  )
+  for (const [mode, run] of atModes) {
+    it(`${mode}: @media`, () => {
+      expect(run('@media{').value).toBe('@media')
+    })
+    it(`${mode}: @-webkit-keyframes`, () => {
+      expect(run('@-webkit-keyframes ').value).toBe('@-webkit-keyframes')
+    })
+  }
+
+  const urlOpen = regex(/url\(/i)
+  const urlModes = modesFor(
+    urlOpen,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const urlOpen = regex(/url\\(/i)`,
+    'urlOpen',
+  )
+  for (const [mode, run] of urlModes) {
+    it(`${mode}: case-insensitive url(`, () => {
+      expect(run('URL(x)').value).toBe('URL(')
+      expect(run('Url(x)').value).toBe('Url(')
     })
   }
 })
@@ -467,24 +635,24 @@ export const wordRun = many(sequence(regex(/[a-z]+/), regex(/[0-9]*/)))`,
 // Non-scannable fallback parity (still uses exec — behavior unchanged)
 // ---------------------------------------------------------------------------
 
-const ws = regex(/\s+/)
+const notSpace = regex(/\S+/)
 
-describe('scannable regex — \\s+ fallback parity', () => {
+describe('scannable regex — \\S+ fallback parity', () => {
   const modes = modesFor(
-    ws,
-    `import { regex } from 'parseman' with { type: 'macro' }\nexport const ws = regex(/\\s+/)`,
-    'ws',
+    notSpace,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const notSpace = regex(/\\S+/)`,
+    'notSpace',
   )
   for (const [mode, run] of modes) {
-    it(`${mode}: whitespace via RegExp.exec`, () => {
-      const r = run('  \tx')
+    it(`${mode}: non-whitespace via RegExp.exec`, () => {
+      const r = run('abc x')
       expect(r.ok).toBe(true)
-      expect(r.value).toBe('  \t')
+      expect(r.value).toBe('abc')
     })
   }
 
   it('compiled output still uses exec', () => {
-    expect(compile(ws).source).toContain('.exec(input)')
+    expect(compile(notSpace).source).toContain('.exec(input)')
   })
 })
 
@@ -585,10 +753,14 @@ describe('parseScanShape — string shape', () => {
     expect(parseScanShape(/'(?:\\.|[^'\\])*'/.source)?.kind).toBe('string')
   })
 
-  it('rejects non-string quote patterns', () => {
-    // body class missing the backslash → not an escape-aware string.
-    expect(parseScanShape(/"[^"]*"/.source)).toBeNull()
-    // no closing quote match.
+  it('is not the escape-aware string shape when the body lacks a backslash', () => {
+    // `"[^"]*"` has no escape arm, so it is NOT the `string` shape. It is still a
+    // valid non-escaped quoted token, lowered via the general `seq` chain
+    // (lit `"` + negated run + lit `"`), which the native cross-check verifies.
+    const s = parseScanShape(/"[^"]*"/.source)
+    expect(s?.kind).toBe('seq')
+    expect(s?.kind).not.toBe('string')
+    // a mismatched closing quote can't be lowered as either shape.
     expect(parseScanShape(/"(?:[^"\\]|\\.)*'/.source)).toBeNull()
   })
 })

@@ -14,6 +14,7 @@ Library-level opportunities for faster compiled parsers. Grammar authors can onl
 - **Trivia loop specialization** — `trivia-fast-path.ts`: hand-rolled `charCodeAt` loop for `oneOrMore(choice(ws, blockComment))` and ASCII ws-only trivia; CSS bootstrap4 compiled **−52%** (25.8→12.3ms).
 - **Transform / build inlining** — `inline-callback.ts`: paste unary and `sequence`+destructure transform bodies at call sites; GraphQL large compiled **−6%**. `inline-build.ts`: emit `mk()` CST nodes literally (CSS-neutral).
 - **Labeled trivia kind capture** — `label(name, parser)` on trivia `choice` arms records per-chunk kind indices in `_triviaLog` / per-node `triviaLog`; `triviaEntries()` resolves kinds and text lazily. Interpreter + compiled parity in `test/parity/trivia-kinds.test.ts`.
+- **`\s` as a fixed code-point set** — `\s`/`[\s…]` now lower to a `charCodeAt` scan (`SPACE_RANGES` next to `shorthandRanges`'s `\d`/`\w`), same as `\d`/`\w`. `\s`'s set (WhiteSpace + LineTerminator) is fixed regardless of the `u` flag, so no ambiguity guard was needed. Unblocks `lang` `\s*` trivia, `graphql` ws, and any `\s`-based `seq` (e.g. `[^)"'\s]+`-style `urlInner`). See `test/unit/scannable-regex.test.ts` (`\s+` parity + codegen-uses-scan assertion) and `test/unit/trivia-fast-path.test.ts`.
 
 ---
 
@@ -103,18 +104,71 @@ data grammars (CSV, config, log formats).
 **Measure:** `csv/small` + `csv/large` speedup ratio; `test/unit/choice-dispatch.test.ts` +
 `test/parity/failure-diagnostics.test.ts` for parity.
 
+### 7c. Richer dispatch structures (beyond the flat first-char `switch`)
+
+Today `planDisjointDispatch` emits a `switch (codePointAt)` / `if-else` chain keyed on **one** first code point. Several grammars want more than that:
+
+1. **Keyword trie / char-by-char `switch`** — `choice(literal('||'), literal('>'), literal('+'), literal('~'), literal('|'))` (CSS `combinator`), `choice(kw('fragment'), kw('query'), …)` (GraphQL), `lang` keyword set. Build a small trie and emit nested `switch (charCodeAt(pos + k))`; leaves confirm the full literal. This is the runtime form of `makeWord()` (see cleanup table) and the *literal-alternation* case of 8e — `regex(/even|odd/)` and `choice(literal('even'), literal('odd'))` should share the emitter.
+2. **Second-char refinement** (already noted in §7b step 2) — nest `switch (charCodeAt(pos+1))` when arms collide on the first char (`\r\n` vs `\n`, `::` vs `:`, `>=` vs `>`).
+3. **Length + `switch` for fixed-width token sets** — when all arms are fixed-length keywords, switch on length first, then compare (branch-free memcmp-style). Good for large keyword tables.
+4. **Binary-search range dispatch** — for many *wide-char-class* arms (can't be a jump table), emit a sorted range `if` tree (O(log n)) instead of a linear `if-else if` chain. Helps grammars with dozens of class-keyed arms.
+5. **Perfect-hash for large keyword sets** — when a `choice`/alternation has many (>~16) distinct keywords, a generated perfect hash on (length, chars) can beat a deep trie. Measure before adopting; tries usually win at these sizes.
+
+**Guard:** all forms must preserve PEG ordered-choice semantics for overlapping arms (unique-key cases only for the O(1) paths). **Measure:** GraphQL (keyword-dense), CSS `combinator`/`pseudoColon`, `lang`.
+
 ### 8. Simple regex lowering ✅ (partial)
 
 `scanShapeFromRegex` shapes lower terminal `regex()` to `charCodeAt` scan loops in `emitRegex` (`scannable-terminal.ts`); trivia uses the same shapes via `trivia-fast-path.ts`. Supported:
 
 - `[X]+` / `[X]*` char-class runs (`chars`)
-- `\d`/`\w` runs and `\d`/`\w` **inside** classes (e.g. `[\d.]+`); `\s` stays on `exec` (Unicode whitespace)
+- `\d`/`\w`/`\s` runs and `\d`/`\w`/`\s` **inside** classes (e.g. `[\d.]+`, `[\s,]+`)
 - `[head][tail]*` identifier runs (`ident`), incl. shorthand head/tail
 - `<lit>[^X]*` open-until-terminator (`until`) and `<open>…<close>` delimited tokens
+- escape-aware quoted strings `<q>(?:[^q\\]|\\.)*<q>` (`string`), incl. `\uXXXX` in classes
+- **general linear chains** (`seq`): any sequence of literal segments (required or `x?` optional) and char-class runs (positive/negated, `?`/`*`/`+`). This is the categorical generalization that covers CSS/Less `ident` (`-?[…][…]*`), `customProp` (`--[…]*`), `atKeyword` (`@-?[…][…]*`), `pseudoColon` (`::?`), bare negated runs (`[^…]+`), and non-escaped quoted tokens (`"[^"]*"`) — with **no hardcoded byte values**. A `seq` is only lowered when greedy one-pass scanning provably equals the engine's backtracking (`seqIsUnambiguous`: optional segments must be disjoint from what follows; greedy unbounded runs must be disjoint from the next segment's first-set).
+- pure-literal case-insensitive tokens under `/i` (`litFold`, ASCII case-fold), e.g. CSS `url(`
 
-Lowering is disabled for `i`/`m`/`s`/`u` flags (case-fold / unicode / dot / anchor semantics can't be reproduced by a fixed code-point scan).
+Lowering is disabled for `m`/`s`/`u` flags and for `/i` on anything but a pure literal (case-folding a char class isn't a fixed code-point scan).
 
-**Still open:** optional prefixes (`-?[0-9]+`), merged alternation in one regex (GraphQL `ws`).
+**Still open — concrete classes (ordered by payoff × frequency across the example grammars).** Each is a self-contained shape or `seq` extension; the guard column is what keeps a greedy code-point scan provably equal to the engine.
+
+#### ~~8a. `\s` as a fixed code-point set (trivia hot path)~~ ✅
+
+Moved to **Already landed**.
+
+#### 8b. Trailing lookahead boundary guard `(?!class)` / `(?=class)` — HIGH
+
+A token followed by `(?!…)` / `(?=…)` with a **char-class** operand is just a post-match check on `charCodeAt(end)` — no backtracking. Extremely common as a keyword/number boundary:
+
+- `lang`: `if(?!\w)`, `then(?!\w)`, `else(?!\w)`, `true(?!\w)`, `false(?!\w)`
+- CSS: `colorHex` `#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])`, `Num` `…(?![a-zA-Z\u0080-\uffff%])`
+
+Lower the inner shape, then emit `if (end < len && (cls(charCodeAt(end)))) fail` for `(?!)` (or `!cls → fail` for `(?=)`). **Guard:** operand must be a char class (or literal), not a sub-pattern. **Measure:** `lang` (keyword-dense), CSS `Num`/`Color`.
+
+#### 8c. Bounded repeat `{n}` / `{n,}` / `{n,m}` on a class/literal — MED
+
+A counted run: `while (count<max && cls) { end++; count++ }; if (count<min) fail`. Unblocks CSS `colorHex` `[0-9a-fA-F]{3,8}` and the `\uXXXX` escapes inside JSON/GraphQL string bodies (`u[0-9a-fA-F]{4}`). Fits as a third `run` quantifier in `seq` (`min`, `max`). **Guard:** same greedy-disjoint rule as unbounded runs when followed by another segment. **Measure:** CSS `Color`; JSON/GraphQL string-heavy.
+
+#### 8d. `/i` on char classes (ASCII case-fold ranges) — MED
+
+Generalize `litFold` from literals to classes: for each range, add its ASCII-folded twin (`[a-z]→+[A-Z]`, etc.), then scan the widened range set. Unblocks CSS `attrMod` `[is]/i` and lets `/i` idents/keywords lower. **Guard:** only fold ASCII `A–Z`/`a–z`; a non-ASCII range under `/i` (Unicode case-fold, e.g. `ß`, `ﬀ`) stays on `exec`. **Measure:** CSS `AttributeSelector`.
+
+#### 8e. Top-level alternation `A|B|C` → ordered / first-char dispatch — HIGH (biggest CSS win)
+
+The largest remaining CSS bucket: `basicSel`, `nth`, `anyValueTok`, `numPart`, `Dimension`'s `ident|%`. Split a regex on **top-level `|`** (not inside `[]`/`()`), lower each alternative to a shape, then:
+
+1. If alternatives have **disjoint first-sets** → `switch (charCodeAt(pos))` / range-`if` chain to the one matching alt (reuses `planDisjointDispatch`, §7b).
+2. Otherwise → ordered `firstMatch` over the lowered alts (still far cheaper than `RegExp.exec` for short tokens, and PEG-faithful: first alt wins).
+
+This is the regex-internal twin of choice dispatch — a `regex(/a|b/)` and `choice(regex(/a/), regex(/b/))` should compile to the same code. **Guard:** each alt independently scannable; ordered semantics preserved for overlapping first-sets. **Measure:** CSS `SelectorList`/`value`; the two `numPart` sites.
+
+#### 8f. Non-capturing groups `(?:…)`, `(?:…)?`, `(?:…)+` → nested `seq` — MED
+
+Extends `seq` parts to allow a **sub-sequence** part (a group), with `?`/`*`/`+`. Composed with 8e (alternation-in-group) and 8c (counted group) this finally lowers the ubiquitous **number** pattern `-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?` shared by JSON, GraphQL, `lang`, TOML, and CSS. **Guard:** an optional/`*` group must be first-set-disjoint from what follows (same rule as `seqIsUnambiguous`, applied to the group's first-set); a `+`/`*` group whose body can match empty is rejected (would loop). **Measure:** JSON/GraphQL `number` (very hot), CSS `Num`/`Dimension`.
+
+#### 8g. Lazy-delimited `<open>[\s\S]*?<close>` — LOW
+
+`jsonc` block comment `/\*[\s\S]*?\*/` is "scan to first `<close>`" — the same core as `delimited` but lazy `*?` instead of the negated-body form. Recognize `<lit>[\s\S]*?<lit>` (and `.*?`) as a `delimited` variant. **Measure:** `jsonc` comment-heavy.
 
 ---
 
@@ -137,7 +191,7 @@ Lowering is disabled for `i`/`m`/`s`/`u` flags (case-fold / unicode / dot / anch
 - `pnpm bench:compile-grammars` — regenerate precompiled Peggy, Nearley, and Jison parsers in `bench/` after editing `bench/*.pegjs` or `bench/vendor/`.
 - `pnpm bench:svg` — regenerate `assets/bench-*.svg` for the README (update µs values in `bench/gen-svg.ts` from `pnpm bench` output first).
 - `pnpm bench:baseline` — refresh `bench/parseman-baseline.json` **and append** a snapshot to `bench/parseman-history.jsonl` (commit both to track the needle over time).
-- `test/perf/parseman-perf.test.ts` — smoke + CSS tight speedup-ratio guard (8%, robust median) + full-suite gross guard (30%, single-pass).
+- `test/perf/parseman-perf.test.ts` — smoke + CSS tight speedup-ratio guard (8%, robust median) + full-suite gross guard (30%, single-pass). Excluded from default `pnpm test` (heavy by design); run via `pnpm test:perf`.
 - `pnpm perf:guard` — pre-commit: CSS-only robust guard (~2s). `pnpm perf:guard --all` — every grammar.
 - `test/perf/codegen-ab.test.ts` + `bench/codegen-ab.ts` — within-process A/B that isolates the two codegen optimizations (machine-independent, no old-git-state needed):
   - **regex scan lowering** — a scannable `+`/`*` terminal (charCodeAt) vs the SAME grammar with `{1,}`/`{0,}` (identical matches, stays on `RegExp.exec`). Realistic many-short-token regime: **~2.3× faster**. Single very long token: scan loses to native exec (~0.3×, printed as contrast, not asserted). Uses `__setForceDisjointIf` / semantic-equivalent quantifiers so no production code changes.

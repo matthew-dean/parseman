@@ -80,8 +80,14 @@ describe('codegen — regex', () => {
     `)
   })
 
-  it('keeps sticky RegExp.exec for non-scannable shorthands', () => {
+  it('lowers \\s+ to a charCodeAt scan (fixed SPACE_RANGES)', () => {
     const code = inline(regex(/\s+/))
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('exec(input)')
+  })
+
+  it('keeps sticky RegExp.exec for non-scannable shorthands', () => {
+    const code = inline(regex(/\S+/))
     expect(code).toContain('const _re0 = /')
     expect(code).toContain('lastIndex')
     expect(code).toContain('exec(input)')

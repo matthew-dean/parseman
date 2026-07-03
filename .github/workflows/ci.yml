@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        # Version comes from the "packageManager" field in package.json, so CI
+        # always matches the lockfile format used locally.
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        # Excludes test/perf/parseman-perf.test.ts (see vitest.config.ts) — that
+        # suite benchmarks rather than unit-tests; the pre-commit hook already
+        # runs its CSS-only guard on commits touching compiler/codegen paths.
+        run: pnpm test

@@ -34,6 +34,7 @@
     "build": "node scripts/build.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:perf": "vitest run --config vitest.perf.config.ts",
     "typecheck": "tsc",
     "lint": "oxlint src test examples bench",
     "bench": "node --import tsx/esm bench/run.ts",

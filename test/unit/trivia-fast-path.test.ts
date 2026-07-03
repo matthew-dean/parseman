@@ -46,9 +46,12 @@ describe('trivia fast path — detection', () => {
     expect(kinds(trivia(oneOrMore(ws)))).toEqual(['chars'])
   })
 
+  it('detects \\s-based trivia (PERF_IDEAS §8a — fixed code-point set)', () => {
+    expect(kinds(trivia(regex(/\s+/)))).toEqual(['chars'])
+    expect(kinds(trivia(oneOrMore(regex(/\s+/))))).toEqual(['chars'])
+  })
+
   it('returns null for non-matching trivia', () => {
-    // `\s+` is a shorthand class the char-class parser doesn't model → null.
-    expect(analyzeTriviaFastPath(trivia(regex(/\s+/)))).toBeNull()
     // a direct non-run regex (leading `#` literal) is not a bare char-class run.
     expect(analyzeTriviaFastPath(trivia(regex(/#[0-9a-f]+/)))).toBeNull()
   })
