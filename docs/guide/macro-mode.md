@@ -114,8 +114,12 @@ const method = function (input, _pos, _ctx) {
 
 - **Disjoint first characters** → a single `codePointAt` dispatch instead of trying each
   arm.
-- **Regex parsers** → sticky `/pattern/y` hoisted to closure scope.
+- **Regex parsers** → lowered to a `charCodeAt` scan loop where provably equivalent,
+  otherwise a sticky `/pattern/y` hoisted to closure scope.
 - **Failure paths** allocate no objects.
+
+For a deep dive on which regex shapes become scan loops, into what, and why some stay on the
+engine, see [Under the hood: regex lowering](./regex-lowering).
 
 ## What gets compiled
 

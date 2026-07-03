@@ -14,11 +14,9 @@
  * Run:  node --import tsx bench/run.ts
  *       OR: pnpm bench
  */
-import { parseJSON, jsonDoc } from '../examples/json/parser.ts'
-import { buildParsermanCSTJSON, buildParsermanCSTJSONNoTriv, buildParsermanCSTJSONCompiled } from './parseman-cst-json.ts'
-import { parseCSV, compiledCSV, csvParser } from '../examples/csv/parser.ts'
-import { parseConfig, compiledConfig } from '../examples/toml-ish/parser.ts'
-import { parseGraphQL, graphqlDoc } from '../examples/graphql/parser.ts'
+import { jsonDoc } from '../examples/json/parser.ts'
+import { csvParser } from '../examples/csv/parser.ts'
+import { graphqlDoc } from '../examples/graphql/parser.ts'
 import { buildCombinatorInliningCases, benchCase } from './combinator-inlining.ts'
 import { printCodegenAb } from './codegen-ab.ts'
 import {
@@ -37,38 +35,14 @@ import { buildParsimmonGraphQL } from './parsimmon-graphql.ts'
 import { buildPeggyJSON } from './peggy-json.ts'
 import { buildPeggyCSV } from './peggy-csv.ts'
 import { buildPeggyGraphQL } from './peggy-graphql.ts'
-import { buildNearleyJSON, initNearleyJSON } from './nearley-json.ts'
-import { buildNearleyCSV, initNearleyCSV } from './nearley-csv.ts'
-import { buildNearleyGraphQL, initNearleyGraphQL } from './nearley-graphql.ts'
-import { buildJisonJSON, initJisonJSON } from './jison-json.ts'
-import { buildJisonGraphQL, initJisonGraphQL } from './jison-graphql.ts'
-import { buildLezerJSON, buildLezerJSONParseOnly } from './lezer-json.ts'
+import { initNearleyJSON } from './nearley-json.ts'
+import { initNearleyCSV } from './nearley-csv.ts'
+import { initNearleyGraphQL } from './nearley-graphql.ts'
+import { initJisonJSON } from './jison-json.ts'
+import { initJisonGraphQL } from './jison-graphql.ts'
 import { SCENARIOS as INC_SCENARIOS, makeParsemanIncremental, makeLezerIncremental } from './incremental.ts'
-
-// ---------------------------------------------------------------------------
-// Compiled parsers (built once, reused across bench runs)
-// ---------------------------------------------------------------------------
-const parsermanCSTJSON       = buildParsermanCSTJSON()
-const parsermanCSTJSONNoTriv = buildParsermanCSTJSONNoTriv()
-const parsermanCSTCompiled   = buildParsermanCSTJSONCompiled()
-const compiledJSON           = compile(jsonDoc)
-const compiledGraphQL   = compile(graphqlDoc)
-const chevrotainJSON    = buildChevrotainJSON()
-const chevrotainCSV     = buildChevrotainCSV()
-const chevrotainGQL     = buildChevrotainGraphQL()
-const parsimmonJSON     = buildParsimmonJSON()
-const parsimmonCSV      = buildParsimmonCSV()
-const parsimmonGQL      = buildParsimmonGraphQL()
-const peggyJSON         = buildPeggyJSON()
-const peggyCSV          = buildPeggyCSV()
-const peggyGQL          = buildPeggyGraphQL()
-const nearleyJSON       = buildNearleyJSON()
-const nearleyCSV        = buildNearleyCSV()
-const nearleyGQL        = buildNearleyGraphQL()
-const jisonJSON         = buildJisonJSON()
-const jisonGQL          = buildJisonGraphQL()
-const lezerJSON         = buildLezerJSON()
-const lezerJSONParse    = buildLezerJSONParseOnly()
+import { warmUs, setupUs } from './measure.ts'
+import * as P from './parsers.ts'
 
 // ---------------------------------------------------------------------------
 // Fixtures (shared with parseman-perf.ts)
@@ -78,21 +52,14 @@ const lezerJSONParse    = buildLezerJSONParseOnly()
 // Benchmark runners
 // ---------------------------------------------------------------------------
 function bench(name: string, fn: () => unknown, iterations = 10_000): number {
-  for (let i = 0; i < Math.min(iterations / 10, 1000); i++) fn()
-  const start = performance.now()
-  for (let i = 0; i < iterations; i++) fn()
-  const elapsed = performance.now() - start
-  const ops = Math.round(iterations / (elapsed / 1000))
-  const us = ((elapsed / iterations) * 1000).toFixed(2)
-  console.log(`  ${name.padEnd(36)} ${String(ops).padStart(9)} ops/s  (${us}µs/op)`)
+  const us = warmUs(fn, iterations)
+  const ops = Math.round(iterations / (us / 1000))
+  console.log(`  ${name.padEnd(36)} ${String(ops).padStart(9)} ops/s  (${us.toFixed(2)}µs/op)`)
   return ops
 }
 
 function setupBench(name: string, fn: () => unknown, iterations = 500): number {
-  for (let i = 0; i < Math.min(iterations / 10, 20); i++) fn()
-  const start = performance.now()
-  for (let i = 0; i < iterations; i++) fn()
-  const us = (performance.now() - start) / iterations * 1000
+  const us = setupUs(fn, iterations)
   console.log(`  ${name.padEnd(36)} ${us.toFixed(1)}µs`)
   return us
 }
@@ -132,13 +99,13 @@ console.log('\n=== JSON parsing (warm) ===')
 
 function jsonGroup(label: string, input: string, iters: number) {
   console.log(`\n  [${label}] ${input.length} bytes`)
-  bench('Parséman (macro build)',  () => compiledJSON.parse(input, 0), iters)
-  bench('Parséman (no compile)',   () => parseJSON(input), iters)
-  bench('Chevrotain',              () => chevrotainJSON(input), iters)
-  bench('Parsimmon',               () => parsimmonJSON(input), iters)
-  bench('Peggy',                   () => peggyJSON(input), iters)
-  bench('Nearley',                 () => nearleyJSON(input), iters)
-  bench('Jison',                   () => jisonJSON(input), iters)
+  bench('Parséman (macro build)',  () => P.compiledJSON.parse(input, 0), iters)
+  bench('Parséman (no compile)',   () => P.parseJSON(input), iters)
+  bench('Chevrotain',              () => P.chevrotainJSON(input), iters)
+  bench('Parsimmon',               () => P.parsimmonJSON(input), iters)
+  bench('Peggy',                   () => P.peggyJSON(input), iters)
+  bench('Nearley',                 () => P.nearleyJSON(input), iters)
+  bench('Jison',                   () => P.jisonJSON(input), iters)
   bench('JSON.parse (native)',     () => JSON.parse(input), iters)
 }
 
@@ -154,11 +121,11 @@ console.log('  (Parséman/Chevrotain: object CST + spans; Lezer: compact buffer 
 
 function cstJsonGroup(label: string, input: string, iters: number) {
   console.log(`\n  [${label}] ${input.length} bytes`)
-  bench('Parséman CST (macro build)', () => parsermanCSTCompiled(input),    iters)
-  bench('Parséman CST (interpreter)', () => parsermanCSTJSONNoTriv(input), iters)
-  bench('Chevrotain CST',             () => chevrotainJSON(input),        iters)
-  bench('Lezer (parse only)',         () => lezerJSONParse(input),         iters)
-  bench('Lezer (parse + walk)',       () => lezerJSON(input),             iters)
+  bench('Parséman CST (macro build)', () => P.parsermanCSTCompiled(input),    iters)
+  bench('Parséman CST (interpreter)', () => P.parsermanCSTJSONNoTriv(input), iters)
+  bench('Chevrotain CST',             () => P.chevrotainJSON(input),        iters)
+  bench('Lezer (parse only)',         () => P.lezerJSONParse(input),         iters)
+  bench('Lezer (parse + walk)',       () => P.lezerJSON(input),             iters)
 }
 
 cstJsonGroup('small',  SMALL_JSON,  50_000)
@@ -189,12 +156,12 @@ console.log('\n=== CSV parsing (warm) ===')
 function csvGroup(label: string, input: string, iters: number) {
   const rows = input.split('\n').length - 1
   console.log(`\n  [${label}] ${input.length} bytes, ${rows} rows`)
-  bench('Parséman (macro build)',  () => compiledCSV.parse(input), iters)
-  bench('Parséman (no compile)',   () => parseCSV(input), iters)
-  bench('Chevrotain',              () => chevrotainCSV(input), iters)
-  bench('Parsimmon',               () => parsimmonCSV(input), iters)
-  bench('Peggy',                   () => peggyCSV(input), iters)
-  bench('Nearley',                 () => nearleyCSV(input), iters)
+  bench('Parséman (macro build)',  () => P.compiledCSV.parse(input), iters)
+  bench('Parséman (no compile)',   () => P.parseCSV(input), iters)
+  bench('Chevrotain',              () => P.chevrotainCSV(input), iters)
+  bench('Parsimmon',               () => P.parsimmonCSV(input), iters)
+  bench('Peggy',                   () => P.peggyCSV(input), iters)
+  bench('Nearley',                 () => P.nearleyCSV(input), iters)
 }
 
 csvGroup('small', SMALL_CSV, 50_000)
@@ -207,13 +174,13 @@ console.log('\n=== GraphQL parsing (warm) ===')
 
 function gqlGroup(label: string, input: string, iters: number) {
   console.log(`\n  [${label}] ${input.length} bytes`)
-  bench('Parséman (macro build)',  () => compiledGraphQL.parse(input), iters)
-  bench('Parséman (no compile)',   () => parseGraphQL(input), iters)
-  bench('Chevrotain',              () => chevrotainGQL(input), iters)
-  bench('Parsimmon',               () => parsimmonGQL(input), iters)
-  bench('Peggy',                   () => peggyGQL(input), iters)
-  bench('Nearley',                 () => nearleyGQL(input), iters)
-  bench('Jison',                   () => jisonGQL(input), iters)
+  bench('Parséman (macro build)',  () => P.compiledGraphQL.parse(input), iters)
+  bench('Parséman (no compile)',   () => P.parseGraphQL(input), iters)
+  bench('Chevrotain',              () => P.chevrotainGQL(input), iters)
+  bench('Parsimmon',               () => P.parsimmonGQL(input), iters)
+  bench('Peggy',                   () => P.peggyGQL(input), iters)
+  bench('Nearley',                 () => P.nearleyGQL(input), iters)
+  bench('Jison',                   () => P.jisonGQL(input), iters)
 }
 
 gqlGroup('small',  SMALL_GQL,  50_000)
@@ -239,7 +206,10 @@ printCodegenAb()
 // ---------------------------------------------------------------------------
 // Parseman-only suite — interpreted vs compiled, all example grammars + baseline Δ
 // ---------------------------------------------------------------------------
-const parsemanRows = runParsemanSuite()
-printParsemanReport(parsemanRows, loadBaseline())
+console.log('\n=== Parseman perf — interpreted vs compiled (all example grammars) ===')
+const parsemanRows = runParsemanSuite({
+  onProgress: (id, mode) => process.stdout.write(`  measuring ${id} (${mode})…\r`),
+})
+printParsemanReport(parsemanRows, loadBaseline(), { skipTitle: true })
 
 console.log()
