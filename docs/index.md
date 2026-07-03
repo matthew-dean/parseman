@@ -48,7 +48,7 @@ features:
     linkText: Benchmarks
   - icon: 🐛
     title: Debuggable output
-    details: The plugin emits precise source maps via magic-string. Breakpoints on your choice(...) lines are hit when the compiled function runs — you step through combinator source, not charCode checks.
-    link: /guide/macro-mode
-    linkText: How debugging works
+    details: Interpreter mode runs your combinator source directly. Macro build compiles it away but keeps breakpoints working via source maps — you step through choice(...), not charCode dispatch.
+    link: /guide/modes#debugging-compiled-grammars
+    linkText: Debugging by mode
 ---

@@ -80,3 +80,27 @@ when you parse many inputs with the same compiled parser.
 
 Because all three produce identical results, you can develop against the interpreter and
 switch on the macro for production without touching grammar code.
+
+## Debugging compiled grammars
+
+How you debug depends on which mode you're running:
+
+| Mode | What you step through |
+| --- | --- |
+| **Interpreter** | Your combinator source directly — no compilation, no indirection |
+| **Macro build** | Your combinator source via source maps — breakpoints on `choice(...)` lines hit when the compiled function runs |
+| **`.compile()`** | Generated JS (`compiled.source`) — no IDE source maps today |
+
+**Interpreter** is the simplest path while you're writing a grammar: you're already
+running the combinator tree you wrote.
+
+**Macro build** compiles that tree away, but the [bundler plugin](./macro-mode) emits
+precise source maps via [magic-string](https://github.com/Rich-Harris/magic-string).
+Step-through in the debugger shows your original combinator source, not the emitted
+`codePointAt` dispatch. If `with { type: 'macro' }` is stripped (older bundlers, test
+runners), the attribute is silently ignored and the interpreter runs instead — identical
+results, no errors.
+
+**`.compile()`** gives you the generated source string for inspection, but does not
+currently wire up IDE source maps. Use the interpreter while developing, then macro or
+`.compile()` for speed once the grammar is stable.

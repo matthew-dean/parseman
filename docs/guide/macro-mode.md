@@ -123,15 +123,7 @@ If bundle size matters more than raw throughput for a given grammar, use the
 **interpreter** (zero generated code, zero setup) or reach for `.compile()` at runtime
 instead of the macro. See [the three modes](./modes).
 
-## Debugging still works
-
-The plugin emits a precise source map via
-[magic-string](https://github.com/Rich-Harris/magic-string). Breakpoints set on the
-original `choice(...)` lines are hit when the compiled function runs; step-through shows
-the original combinator source, not the emitted charCode checks.
-
-If `with { type: 'macro' }` is stripped (older bundlers, test runners), the attribute is
-silently ignored and the interpreter runs instead — identical results, no errors.
+Source maps and per-mode debugging are covered in [Debugging compiled grammars](./modes#debugging-compiled-grammars).
 
 ## When the plugin can't compile something
 
