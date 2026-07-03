@@ -19,7 +19,7 @@ import {
   buildLabeledScannableTriviaFnDecl,
   labeledTriviaRegexArms,
 } from './trivia-fast-path.ts'
-import { scanShapeFromRegex } from './scannable-run.ts'
+import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, type ScanShape, type Mint } from './scannable-run.ts'
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
@@ -760,7 +760,88 @@ function escapeKeywordRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/**
+ * Fast path for `keywords()`/`word()`/`makeWord()`: each word is a FIXED
+ * literal (optionally wrapped in the shared boundary lookahead), so this
+ * reuses the exact `seq`/`litFold`/`lookahead` `ScanShape` machinery from
+ * `scannable-run.ts` (PERF_IDEAS §8b) instead of one `RegExp.exec` alternation
+ * per match. Unconditionally ambiguity-safe: `trailingBacktrackClass` treats a
+ * single-literal `seq` and `litFold` as fixed-length (no quantifier to
+ * backtrack), so wrapping either in a lookahead is safe for ANY boundary class
+ * — no `seqIsUnambiguous`-style check is needed here.
+ *
+ * Declines (returns `null`, caller falls back to the regex alternation) for:
+ *   - an empty-string keyword (degenerate; not worth special-casing)
+ *   - a keyword containing an astral (surrogate-pair) code point — the `seq`/
+ *     `litFold` codegen advances one `charCodeAt` UTF-16 unit per code POINT,
+ *     which only holds for the BMP (same reason `scanShapeFromRegex` refuses
+ *     the `u` flag entirely); real keyword sets are BMP identifiers, so this
+ *     is a defensive, not a practical, limitation
+ *   - a boundary class this file can't parse (defensive; `parseClassRanges`
+ *     handles every realistic boundary string, e.g. `_0-9A-Za-z`)
+ *   - `caseInsensitive` combined with a boundary — the boundary class would
+ *     ALSO need ASCII case-folding to match the original regex's `/i` flag
+ *     (the general "`/i` on a char class" problem, PERF_IDEAS §8d, not yet
+ *     built), so this combination is left on the safe, slower path rather
+ *     than risk silently narrowing which chars the boundary excludes.
+ */
+function emitKeywordsFast(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, pos: string): ER | null {
+  if (def.words.length === 0 || def.words.some(w => w.length === 0)) return null
+  if (def.words.some(w => Array.from(w).length !== w.length)) return null
+  if (def.caseInsensitive && def.boundary) return null
+
+  let boundary: { ranges: Array<[number, number]>; negated: boolean } | null = null
+  if (def.boundary) {
+    let body = def.boundary
+    const negated = body.startsWith('^')
+    if (negated) body = body.slice(1)
+    const ranges = parseClassRanges(body)
+    if (!ranges) return null
+    boundary = { ranges, negated }
+  }
+
+  const mint: Mint = (prefix = '_v') => v(ctx, prefix)
+  const lbl = v(ctx, '_kwLbl')
+  const valV = v(ctx, '_kwv')
+  const endV = v(ctx, '_kwe')
+  const bodyInd = ind(ctx) + '  '
+
+  const tries: string[] = []
+  for (const w of def.words) {
+    const cps = Array.from(w, ch => ch.codePointAt(0)!)
+    let shape: ScanShape = def.caseInsensitive
+      ? { kind: 'litFold', open: cps }
+      : { kind: 'seq', parts: [{ part: 'lit', cps, optional: false }] }
+    if (boundary) {
+      shape = { kind: 'lookahead', inner: shape, ranges: boundary.ranges, classNegated: boundary.negated, negative: true }
+    }
+    const m = emitShapeMatch(shape, pos, mint, bodyInd)
+    tries.push(
+      ...m.setup,
+      // Slice from input rather than reusing the literal word: `caseInsensitive`
+      // must return the text as it actually appeared (e.g. "ABC" for keyword
+      // "abc"), matching what the original `RegExp.exec()[0]` returned.
+      `${bodyInd}if (${m.ok}) { ${valV} = input.slice(${pos}, ${m.end}); ${endV} = ${m.end}; break ${lbl} }`,
+    )
+  }
+
+  const stmts = [
+    `${ind(ctx)}let ${valV} = '', ${endV} = ${pos}`,
+    `${ind(ctx)}${lbl}: {`,
+    ...tries,
+    `${ind(ctx)}}`,
+    // Every word has length >= 1 (checked above), so a real match always
+    // advances past `pos` — `endV === pos` only happens when no candidate matched.
+    ...emitIfFail(ctx, `${endV} === ${pos}`, failBody(ctx, '"keyword"', pos)),
+  ]
+  stmts.push(...emitLeafCapture(ctx, valV, pos, endV))
+  return { stmts, valueVar: valV, endVar: endV }
+}
+
 function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, pos: string): ER {
+  const fast = emitKeywordsFast(def, ctx, pos)
+  if (fast) return fast
+
   const alt = def.words.map(escapeKeywordRe).join('|')
   const boundary = def.boundary ? `(?![${def.boundary}])` : ''
   const flags = def.caseInsensitive ? 'iuy' : 'uy'

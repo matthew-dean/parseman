@@ -12,7 +12,7 @@ import {
   node, parser, trivia, parse, compile,
 } from '../../src/index.ts'
 import type { Combinator, CSTLeaf } from '../../src/index.ts'
-import { parseScanShape, SPACE_RANGES } from '../../src/compiler/scannable-run.ts'
+import { parseScanShape, scanShapeFromRegex, SPACE_RANGES } from '../../src/compiler/scannable-run.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 // ---------------------------------------------------------------------------
@@ -76,13 +76,85 @@ describe('parseScanShape — quantifier', () => {
     // `\S`/`\D`/`\W` (negated shorthand classes) aren't a fixed set we lower.
     expect(parseScanShape('\\S+')).toBeNull()
     expect(parseScanShape('[\\S]+')).toBeNull()
-    // alternation / groups / `.` / bounded repeats are outside the chain category.
-    expect(parseScanShape('a|b')).toBeNull()
+    // top-level `a|b` now lowers (§8e, see dedicated describe block below) —
+    // groups / `.` / bounded repeats are still outside the chain category.
     expect(parseScanShape('a.c')).toBeNull()
     expect(parseScanShape('(ab)+')).toBeNull()
     expect(parseScanShape('a{2,3}')).toBeNull()
     // a bare negated `*` matches zero-width → no mandatory segment, not lowered.
     expect(parseScanShape('[^"]*')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Top-level alternation `A|B|C` (§8e) — split outside any `[]`/`()`, each arm
+// lowered independently, then either disjoint first-char dispatch or ordered
+// (first-success-wins) fallback, matching regex `|`'s own semantics exactly:
+// the first alternative that matches AT ALL wins on its own greedy length,
+// never compared against a later alternative's possibly-longer match.
+// ---------------------------------------------------------------------------
+
+describe('parseScanShape — top-level alternation (§8e)', () => {
+  it('splits two disjoint literal arms and dispatches by first char', () => {
+    const s = parseScanShape('GET|POST')
+    expect(s?.kind).toBe('alt')
+    if (s?.kind === 'alt') {
+      expect(s.disjoint).toBe(true)
+      expect(s.arms.map(a => a.kind)).toEqual(['seq', 'seq'])
+    }
+  })
+
+  it('falls back to ordered (non-disjoint) when first-sets overlap', () => {
+    // \d ⊆ \w, so the two arms' first-char sets overlap — must stay ordered.
+    const s = parseScanShape('\\d+|\\w+')
+    expect(s?.kind).toBe('alt')
+    if (s?.kind === 'alt') expect(s.disjoint).toBe(false)
+  })
+
+  it('recognizes disjoint arms with mixed shapes (ident-like vs single literal)', () => {
+    // The CSS Dimension unit tail: `-?ident|%` — real motivating pattern.
+    const s = parseScanShape('-?[_a-zA-Z][-_a-zA-Z0-9]*|%')
+    expect(s?.kind).toBe('alt')
+    if (s?.kind === 'alt') expect(s.disjoint).toBe(true)
+  })
+
+  it('handles a literal `|` and escaped brackets inside bracket classes without mis-splitting', () => {
+    // Real CSS `anyValueTok`: first arm's class body contains a literal `|`;
+    // second arm's negated class body contains escaped `[`/`]`/`(`/`)`. Both
+    // must be treated as atomic, non-split-point content.
+    const s = parseScanShape(String.raw`[+\-*/=<>|~^]+|[^\s;{}\[\]()'",!]+`)
+    expect(s?.kind).toBe('alt')
+    if (s?.kind === 'alt') {
+      expect(s.arms).toHaveLength(2)
+      // Overlaps on e.g. `+` (accepted by both), so must stay ordered.
+      expect(s.disjoint).toBe(false)
+    }
+  })
+
+  it('unwraps one redundant whole-string (?:…) wrapper before splitting', () => {
+    const s = parseScanShape('(?:GET|POST)')
+    expect(s?.kind).toBe('alt')
+  })
+
+  it('does NOT unwrap a group that has trailing content after it', () => {
+    // The `(?:…)` here doesn't span the whole source — a literal `%` follows —
+    // so unwrapping would silently change what the pattern means. No top-level
+    // `|` outside the group, so this must decline, not mis-split.
+    expect(parseScanShape('(?:a|b)%')).toBeNull()
+  })
+
+  it('declines when any arm contains an unsupported nested group (§8f gap)', () => {
+    // Real CSS `numPart`/`basicSel`: an arm has its own `(?:…)` group. A single
+    // unsupported arm must fail the WHOLE alternation, not partially lower.
+    expect(parseScanShape(String.raw`\d*\.\d+(?:[eE][+-]?\d+)?|\d+`)).toBeNull()
+  })
+
+  it('declines an empty alternative (zero-width arm, unmodeled)', () => {
+    expect(parseScanShape('a||b')).toBeNull()
+  })
+
+  it('rejects alternation under the /i flag (blocked upstream by scanShapeFromRegex)', () => {
+    expect(scanShapeFromRegex('even|odd', 'i')).toBeNull()
   })
 })
 
@@ -131,6 +203,92 @@ describe('parseScanShape — general seq category', () => {
     // diverges from backtracking (P consumed by run → required P fails). Must
     // NOT be lowered. (This is the `rangeFirstCps` lower-bound-only bug.)
     expect(parseScanShape('[A-Z]?P')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Trailing lookahead boundary guard (PERF_IDEAS §8b) — `<inner>(?!class)` /
+// `<inner>(?=class)`. Tested against a mix of shapes/operands that are NOT the
+// `lang` keyword set (`if`/`then`/`else`/`true`/`false`) the idea was framed
+// around, so the recognizer is verified as a general structural rule, not
+// something that happens to work for five specific strings.
+// ---------------------------------------------------------------------------
+
+describe('parseScanShape — trailing lookahead boundary (§8b)', () => {
+  it('wraps a chars-shape base with a negative shorthand-class lookahead', () => {
+    const s = parseScanShape('[a-z]+(?!\\w)')
+    expect(s?.kind).toBe('lookahead')
+    if (s?.kind === 'lookahead') {
+      expect(s.inner).toEqual({ kind: 'chars', ranges: [[97, 122]], minOne: true })
+      expect(s.ranges).toEqual([[48, 57], [65, 90], [97, 122], [95, 95]])
+      expect(s.negative).toBe(true)
+      expect(s.classNegated).toBe(false)
+    }
+  })
+
+  it('wraps a literal token (not a lang keyword) with a negative lookahead', () => {
+    // Generic "identifier-like literal must not be followed by a word char" —
+    // the same shape as `if(?!\w)` etc., but with an arbitrary literal to prove
+    // this isn't special-cased to the five `lang` keywords.
+    const s = parseScanShape('wombat(?!\\w)')
+    expect(s?.kind).toBe('lookahead')
+  })
+
+  it('wraps a bracket-class run with a positive single-char-literal lookahead', () => {
+    const s = parseScanShape('[0-9]+(?=%)')
+    expect(s?.kind).toBe('lookahead')
+    if (s?.kind === 'lookahead') {
+      expect(s.ranges).toEqual([[37, 37]])
+      expect(s.negative).toBe(false)
+      expect(s.classNegated).toBe(false)
+    }
+  })
+
+  it('wraps a run with a positive NEGATED bracket-class lookahead ([^…])', () => {
+    // Base and operand cover the SAME set (digits ⊆ "not-a-digit"'s underlying
+    // class) — provably safe (see `lookaheadUnambiguous`/§8b ambiguity guard).
+    const s = parseScanShape('[0-9]+(?=[^0-9])')
+    expect(s?.kind).toBe('lookahead')
+    if (s?.kind === 'lookahead') {
+      expect(s.ranges).toEqual([[48, 57]])
+      expect(s.classNegated).toBe(true)
+    }
+  })
+
+  it('declines an AMBIGUOUS lookahead where backtracking could rescue a shorter match', () => {
+    // `/^[0-9]+(?=[5-9])/.exec('12345')` really does return `["1234"]` in real
+    // regex (backtracks past the trailing '5', which the class ALSO matches) —
+    // a naive greedy-then-check-once lowering would get this wrong (either miss
+    // the shorter match or report total failure). Since [0-9] and [5-9] overlap
+    // (not disjoint), the guard declines this rather than risk it.
+    expect(parseScanShape('[0-9]+(?=[5-9])')).toBeNull()
+    // Same issue for negative lookahead: base [a-z] is NOT a subset of the
+    // single-char operand 'X' (disjoint alphabets), so shrinking the run could
+    // expose a char that changes the verdict — declined.
+    expect(parseScanShape('[a-z]+(?!X)')).toBeNull()
+  })
+
+  it('wraps a `seq` base (optional prefix + run) with a lookahead', () => {
+    const s = parseScanShape('-?[0-9]+(?!\\w)')
+    expect(s?.kind).toBe('lookahead')
+    if (s?.kind === 'lookahead') expect(s.inner.kind).toBe('seq')
+  })
+
+  it('generalizes the CSS colorHex-style boundary without hardcoding "Color"', () => {
+    // `[0-9a-fA-F]+(?![0-9a-fA-F])` — a hex run that must not extend further.
+    const s = parseScanShape('[0-9a-fA-F]+(?![0-9a-fA-F])')
+    expect(s?.kind).toBe('lookahead')
+  })
+
+  it('declines lookahead operands that are sub-patterns, not a class', () => {
+    // Alternation inside the lookahead — a sub-pattern, not a class.
+    expect(parseScanShape('foo(?!bar|baz)')).toBeNull()
+    // Nested group inside the lookahead.
+    expect(parseScanShape('foo(?!(?:x))')).toBeNull()
+    // Multi-char literal operand — not (yet) supported; falls back safely.
+    expect(parseScanShape('foo(?!barbaz)')).toBeNull()
+    // `.` (any-char) operand — a metachar, not a class.
+    expect(parseScanShape('foo(?=.)')).toBeNull()
   })
 })
 
@@ -197,6 +355,40 @@ describe('scannable regex — codegen', () => {
     expect(compile(regex(/[a-z]+/i)).source).toContain('.exec(input)')
     expect(compile(regex(/url\(/i)).source).not.toContain('.exec(input)')
     expect(compile(regex(/[a-z]+/u)).source).toContain('.exec(input)')
+  })
+
+  it('lowers a trailing lookahead boundary to charCodeAt, no exec (§8b)', () => {
+    // Deliberately not one of the `lang` keywords — a generic word-boundary check.
+    const code = compile(regex(/[a-z]+(?!\w)/)).source
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('.exec(input)')
+  })
+
+  it('an AMBIGUOUS lookahead still compiles correctly via the exec fallback', () => {
+    // Declined by the ambiguity guard (see the "declines an AMBIGUOUS lookahead"
+    // test above) — must fall back to RegExp.exec, not silently misbehave.
+    const code = compile(regex(/[0-9]+(?=[5-9])/)).source
+    expect(code).toContain('.exec(input)')
+  })
+
+  it('lowers a disjoint top-level alternation to charCodeAt, no exec (§8e)', () => {
+    const code = compile(regex(/GET|POST/)).source
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('.exec(input)')
+  })
+
+  it('lowers an overlapping (ordered-fallback) alternation to charCodeAt, no exec', () => {
+    // The real CSS `anyValueTok` arm — first-sets overlap on e.g. `+`, so this
+    // exercises the "try each arm in order" codegen path, not disjoint dispatch.
+    const code = compile(regex(/[+\-*/=<>|~^]+|[^\s;{}[\]()'",!]+/)).source
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('.exec(input)')
+  })
+
+  it('declines a basicSel-style alternation with a nested group in one arm (§8f gap)', () => {
+    const code = compile(regex(/(?:[.#]?-?[_a-zA-Z][-_a-zA-Z0-9]*|\d+(?:\.\d+)?%|\*)/)).source
+    expect(code).toMatch(/const _re\d+ = /)
+    expect(code).toContain('.exec(input)')
   })
 })
 
@@ -387,9 +579,9 @@ describe('scannable regex — \\s+ parity', () => {
   )
   for (const [mode, run] of sModes) {
     it(`${mode}: \\s+ matches ASCII + Unicode whitespace`, () => {
-      const r = run('  \t\n  x')
+      const r = run('  \t\n x')
       expect(r.ok).toBe(true)
-      expect(r.value).toBe('  \t\n  ')
+      expect(r.value).toBe('  \t\n ')
     })
     it(`${mode}: \\s+ fails on a non-space char`, () => {
       expect(run('x').ok).toBe(false)
@@ -398,6 +590,143 @@ describe('scannable regex — \\s+ parity', () => {
 
   it('compiled output lowers to a charCodeAt scan, not exec', () => {
     expect(compile(sRun).source).not.toContain('.exec(input)')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Parity — trailing lookahead boundary (§8b). Uses a generic word-run and a
+// digit-run, not the `lang` keyword literals, so this proves the mechanism
+// generalizes rather than happening to work for `if`/`then`/`else`/`true`/`false`.
+// ---------------------------------------------------------------------------
+
+const wordBoundary = regex(/[a-z]+(?!\w)/)
+const digitBeforePercent = regex(/[0-9]+(?=%)/)
+
+describe('scannable regex — negative lookahead parity ([a-z]+(?!\\w))', () => {
+  const modes = modesFor(
+    wordBoundary,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const wordBoundary = regex(/[a-z]+(?!\\w)/)`,
+    'wordBoundary',
+  )
+  for (const [mode, run] of modes) {
+    it(`${mode}: stops at a real word boundary`, () => {
+      const r = run('cat dog')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('cat')
+    })
+    it(`${mode}: matches to end of input (no char to violate the lookahead)`, () => {
+      const r = run('category')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('category')
+    })
+    it(`${mode}: fails entirely when every possible split is followed by a word char`, () => {
+      // Matches native RegExp exactly (verified empirically) — base [a-z] is a
+      // subset of \w, so no backtrack could ever rescue this.
+      expect(run('cat1').ok).toBe(false)
+    })
+  }
+})
+
+describe('scannable regex — positive lookahead parity ([0-9]+(?=%))', () => {
+  const modes = modesFor(
+    digitBeforePercent,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const digitBeforePercent = regex(/[0-9]+(?=%)/)`,
+    'digitBeforePercent',
+  )
+  for (const [mode, run] of modes) {
+    it(`${mode}: matches when the class char follows`, () => {
+      const r = run('50%')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('50')
+    })
+    it(`${mode}: fails at end of input (nothing there to satisfy (?=%))`, () => {
+      expect(run('50').ok).toBe(false)
+    })
+    it(`${mode}: fails when a different char follows`, () => {
+      expect(run('50x').ok).toBe(false)
+    })
+  }
+
+  it('span is zero-width for the lookahead itself — captured value excludes it', () => {
+    const r = digitBeforePercent.parse('50%', 0, { trackLines: false })
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.span).toEqual({ start: 0, end: 2 }) // "50", not "50%"
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Top-level alternation (§8e) — one parity block per dispatch strategy.
+// ---------------------------------------------------------------------------
+
+const methodAlt = regex(/GET|POST/)
+
+describe('scannable regex — disjoint alternation parity (GET|POST)', () => {
+  const modes = modesFor(
+    methodAlt,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const methodAlt = regex(/GET|POST/)`,
+    'methodAlt',
+  )
+  for (const [mode, run] of modes) {
+    it(`${mode}: matches the first arm`, () => {
+      const r = run('GET /x')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('GET')
+    })
+    it(`${mode}: matches the second arm`, () => {
+      const r = run('POST /x')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('POST')
+    })
+    it(`${mode}: fails when neither arm matches`, () => {
+      expect(run('PUT /x').ok).toBe(false)
+    })
+  }
+
+  it('all modes agree on mixed cases', () => {
+    for (const [input, pos] of [['GET', 0], ['POST', 0], ['xPOST', 1], ['', 0], ['G', 0]] as const) {
+      expectParity(modes, input, pos)
+    }
+  })
+})
+
+// The real CSS `anyValueTok` token — deliberately overlapping first-sets
+// (both arms accept e.g. `+`), so this exercises ordered (first-arm-wins)
+// dispatch, not the disjoint switch — and its first arm's class body has a
+// literal `|`, its second arm's negated class has escaped brackets/parens.
+const anyValueTok = regex(/[+\-*/=<>|~^]+|[^\s;{}[\]()'",!]+/)
+
+describe('scannable regex — ordered (overlapping) alternation parity (anyValueTok)', () => {
+  const modes = modesFor(
+    anyValueTok,
+    String.raw`import { regex } from 'parseman' with { type: 'macro' }
+export const anyValueTok = regex(/[+\-*/=<>|~^]+|[^\s;{}[\]()'",!]+/)`,
+    'anyValueTok',
+  )
+  for (const [mode, run] of modes) {
+    it(`${mode}: a punctuation run stays in the first arm even though the
+        second arm would also accept its leading char`, () => {
+      const r = run('+++abc')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('+++') // first arm wins, its own greedy length — not "+++abc"
+    })
+    it(`${mode}: falls through to the second arm for a non-punctuation run`, () => {
+      const r = run('hello world')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('hello')
+    })
+    it(`${mode}: fails on a char excluded by both arms (whitespace)`, () => {
+      expect(run(' leading').ok).toBe(false)
+    })
+  }
+
+  it('all modes agree on mixed cases, matching real RegExp order semantics', () => {
+    for (const [input, pos] of [
+      ['+abc', 0], ['a+b', 0], ['***', 0], ['', 0], ['   ', 0], ['x', 0], ["it's", 0],
+    ] as const) {
+      const expected = /^(?:[+\-*/=<>|~^]+|[^\s;{}[\]()'",!]+)/.exec(input.slice(pos))?.[0]
+      const r = expectParity(modes, input, pos)
+      expect(r.ok ? r.value : undefined).toBe(expected)
+    }
   })
 })
 

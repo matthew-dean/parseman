@@ -190,7 +190,10 @@ const kw = word('true')
     const result = transform(code)!
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain('_rp[')
-    expect(result.code).toMatch(/const _re\d+ = /)
+    // Fixed literal + boundary lowers to charCodeAt dispatch, not RegExp.exec —
+    // see emitKeywordsFast (PERF_IDEAS §8b follow-up).
+    expect(result.code).toContain('charCodeAt')
+    expect(result.code).not.toContain('.exec(input)')
   })
 
   it('inlines makeWord() factory calls', () => {
@@ -202,7 +205,8 @@ const ifKw = kw('if')
     const result = transform(code)!
     expect(result.code).not.toContain('_rp[')
     expect(result.code).toContain('const ifKw =')
-    expect(result.code).toMatch(/const _re\d+ = /)
+    expect(result.code).toContain('charCodeAt')
+    expect(result.code).not.toContain('.exec(input)')
   })
 
   it('inlines makeWord(boundary)(str) chained calls', () => {

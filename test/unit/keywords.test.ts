@@ -35,13 +35,29 @@ describe('keywords', () => {
 })
 
 describe('keywords compile', () => {
-  it('inlines keywords() to sticky regex (no runtime fallback)', () => {
+  it('inlines keywords() to a charCodeAt dispatch (no RegExp.exec, no runtime fallback)', () => {
+    // PERF_IDEAS §8b follow-up: each word is a fixed literal (+ shared boundary
+    // lookahead), so this reuses the scannable-run.ts lookahead machinery
+    // instead of one RegExp.exec alternation — see emitKeywordsFast.
     const kw = keywords(['true', 'false'], { boundary: '_0-9A-Za-z' })
     const compiled = compile(kw)
-    expect(compiled.source).toMatch(/const _re\d+ = /)
+    expect(compiled.source).toContain('charCodeAt')
+    expect(compiled.source).not.toContain('.exec(input)')
     expect(compiled.source).not.toContain('_rp[')
     expect(compiled.parse('true').ok).toBe(true)
     expect(compiled.parse('trueish').ok).toBe(false)
+  })
+
+  it('falls back to sticky regex for caseInsensitive + boundary (unsupported fast-path combo)', () => {
+    // Boundary class folding under caseInsensitive isn't implemented (PERF_IDEAS
+    // §8d, "/i on char classes" — general case, not yet built) — declines safely
+    // rather than risk narrowing which chars the boundary excludes.
+    const kw = keywords(['red'], { caseInsensitive: true, boundary: 'A-Za-z0-9_-' })
+    const compiled = compile(kw)
+    expect(compiled.source).toMatch(/const _re\d+ = /)
+    expect(compiled.source).toContain('.exec(input)')
+    expect(compiled.parse('RED').ok).toBe(true)
+    expect(compiled.parse('REDish').ok).toBe(false)
   })
 
   it('word() and makeWord() compile identically to keywords', () => {
@@ -49,6 +65,8 @@ describe('keywords compile', () => {
     const mw = makeWord()('query')
     expect(compile(w).source).not.toContain('_rp[')
     expect(compile(mw).source).not.toContain('_rp[')
+    expect(compile(w).source).toContain('charCodeAt')
+    expect(compile(mw).source).toContain('charCodeAt')
     expect(compile(w).parse('query').ok).toBe(true)
     expect(compile(mw).parse('queryish').ok).toBe(false)
   })
