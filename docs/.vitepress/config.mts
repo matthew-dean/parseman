@@ -44,6 +44,7 @@ export default defineConfig({
             { text: 'The three modes', link: '/guide/modes' },
             { text: 'Macro mode', link: '/guide/macro-mode' },
             { text: 'Benchmarks', link: '/guide/benchmarks' },
+            { text: 'How Parséman compares', link: '/guide/comparison' },
           ],
         },
         {

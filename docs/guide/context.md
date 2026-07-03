@@ -54,3 +54,15 @@ const stmt = choice(
 
 The gated arm is skipped entirely unless its gate returns true. See
 [Ordered choice & keywords](./keywords#gated-alternatives).
+
+## How this compares
+
+Expressing context *in the grammar* is a real dividing line between parsers. Parséman,
+[Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), and
+[Chevrotain](https://chevrotain.io/) all let the grammar consult parse-time state. The
+incremental editor parsers — [Lezer](https://lezer.codemirror.net/) and
+[tree-sitter](https://tree-sitter.github.io/tree-sitter/) — are context-free at the
+grammar level: context needs a hand-written external tokenizer (JS) or scanner (C).
+Parséman is unusual in combining in-grammar context *with* incremental re-parse, because
+each node snapshots the context it parsed under and [`edit()`](./incremental) replays it.
+See [How Parséman compares](./comparison#the-context-sensitivity-axis) for the full matrix.

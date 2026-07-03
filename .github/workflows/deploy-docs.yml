@@ -32,9 +32,9 @@ jobs:
           fetch-depth: 0 # needed for lastUpdated git timestamps
 
       - name: Install pnpm
+        # Version comes from the "packageManager" field in package.json, so CI
+        # always matches the lockfile format used locally.
         uses: pnpm/action-setup@v4
-        with:
-          version: 8
 
       - name: Setup Node
         uses: actions/setup-node@v4

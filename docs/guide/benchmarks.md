@@ -8,6 +8,10 @@ For **syntax tree building**, Parséman's compiled CST path (macro build) beats
 [Lezer](https://lezer.codemirror.net/) too — while producing a richer object tree with
 spans and trivia. See [parsing to a syntax tree](#parsing-to-a-syntax-tree).
 
+This page is about **speed**. For a feature-by-feature look at how these parsers differ —
+output shape, context-sensitive grammars, incremental re-parse, error recovery — see
+[How Parséman compares](./comparison).
+
 Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster.
 
 Compared parsers: **Parséman**, [Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) (plus [`JSON.parse`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/parse) on JSON). Each implements the same parsing work on the bench fixtures —
