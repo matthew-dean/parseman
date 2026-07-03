@@ -186,11 +186,8 @@ Parséman's bet is a small, JS-native core aimed at speed, an editor-grade CST, 
 context, and first-class incremental re-parse for value edits. That means it deliberately
 skips a lot of surface area other tools have.
 
-**[Chevrotain](https://chevrotain.io/)** is the most feature-dense toolkit here. Parséman
-has since closed the gap on two of its headline conveniences — tree-walking (runtime
-[`walk` / `createVisitor`](./ast#walking-the-tree)) and the common error-recovery case
-([`sepByRecover` / `manyRecover`](./error-recovery#tolerant-lists)) — but Chevrotain still
-offers several things Parséman doesn't:
+**[Chevrotain](https://chevrotain.io/)** is the most feature-dense toolkit here, with
+several things Parséman doesn't offer:
 
 - **Railroad / syntax-diagram generation** straight from the grammar.
 - **Grammar introspection** — a serializable grammar AST (from its self-analysis phase)
@@ -200,14 +197,15 @@ offers several things Parséman doesn't:
   applies (a simplification, but also a missing capability if you want it).
 - **Grammar inheritance** (subclass a grammar and `OVERRIDE_RULE`).
 - **Per-rule-typed CST visitor base classes** (`getBaseCstVisitor…`) generated from the
-  grammar. Parséman's `walk` / `createVisitor` cover the same traversal need at runtime,
-  dispatching on a node's `type`, but don't hand you a class typed per rule.
+  grammar. Parséman's [`walk` / `createVisitor`](./ast#walking-the-tree) cover the same
+  traversal at runtime, dispatching on a node's `type`, but don't hand you a class typed
+  per rule.
 - **Configurable LL(k) lookahead** and opt-in `BACKTRACK`.
 - **Grammar-wide automatic error recovery** (heuristic single-token insert/delete +
-  resync, with no annotation anywhere). Parséman now automates the common list/repetition
-  case (`sepByRecover` / `manyRecover`) and marks other resync points explicitly
-  (`recover` / `expect`) — a narrower gap than before, but Chevrotain still recovers across
-  the whole grammar for free.
+  resync, with no annotation anywhere). Parséman recovers at resync points you mark
+  explicitly (`recover` / `expect`), plus automatic tolerant lists
+  ([`sepByRecover` / `manyRecover`](./error-recovery#tolerant-lists)); it doesn't recover
+  across arbitrary rules on its own.
 
 (Chevrotain *removed* its syntactic content-assist API in v12, so that's no longer a
 point in its favor.)
