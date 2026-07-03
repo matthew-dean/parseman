@@ -5,6 +5,7 @@
 import { build } from 'esbuild'
 import { execSync } from 'child_process'
 import { readFileSync, rmSync } from 'fs'
+import { builtinModules } from 'module'
 
 rmSync('dist', { recursive: true, force: true })
 
@@ -12,6 +13,10 @@ const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
 const external = [
   ...Object.keys(pkg.dependencies ?? {}),
   ...Object.keys(pkg.peerDependencies ?? {}),
+  // Node built-ins used by the plugin (fs/path) — keep external so esbuild
+  // doesn't try to bundle them into the browser-agnostic library entry.
+  ...builtinModules,
+  ...builtinModules.map(m => `node:${m}`),
 ]
 
 const shared = {

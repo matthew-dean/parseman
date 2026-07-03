@@ -15,6 +15,9 @@ import {
   evaluateCombinatorArray,
   evaluateExpr,
   referencesAny,
+  asFragmentFactory,
+  type FactoryAst,
+  type FactoryResolver,
 } from '../../src/plugin/evaluator.ts'
 import { literal, parse, ref, sequence, optional } from '../../src/index.ts'
 
@@ -445,5 +448,134 @@ describe('evaluator — factory and define edge cases', () => {
     const map = evaluateParserFactory(factory, new Map(), code, [])
     expect(map?.get('kw')?._def.tag).toBe('lazy')
     expect(parse(map!.get('kw')!, 'if').ok).toBe(true)
+  })
+})
+
+function parseFragment(code: string): Expression {
+  return parseInit(`const frag = ${code}`)
+}
+
+function factoriesFrom(code: string): FactoryResolver {
+  const ast = parseSync('eval.ts', code)
+  const factories = new Map<string, FactoryAst>()
+  for (const stmt of ast.program.body) {
+    if (stmt.type !== 'VariableDeclaration') continue
+    for (const decl of stmt.declarations) {
+      const id = decl.id as { type: string; name?: string }
+      const init = (decl as { init?: Expression }).init
+      if (id.type === 'Identifier' && id.name && init) {
+        const frag = asFragmentFactory(init)
+        if (frag) factories.set(id.name, frag)
+      }
+    }
+  }
+  return (name) => {
+    const fn = factories.get(name)
+    return fn ? { fn, code } : null
+  }
+}
+
+function rulesFactoryFrom(code: string): Expression {
+  const call = parseInit(`const m = ${code}`)
+  return (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
+}
+
+describe('evaluator — grammar composition (fragment spreads)', () => {
+  it('asFragmentFactory accepts concise and block-body factories', () => {
+    expect(asFragmentFactory(parseFragment('(g) => ({ leaf: literal("x") })'))).not.toBeNull()
+    expect(asFragmentFactory(parseFragment(`(g) => {
+      const leaf = literal('x')
+      return { leaf }
+    }`))).not.toBeNull()
+  })
+
+  it('asFragmentFactory rejects non-factory shapes', () => {
+    expect(asFragmentFactory(parseInit('literal("x")'))).toBeNull()
+    expect(asFragmentFactory(parseFragment('(g) => 1'))).toBeNull()
+    expect(asFragmentFactory(parseFragment(`(g) => {
+      foo()
+      return { leaf: literal('x') }
+    }`))).toBeNull()
+    expect(asFragmentFactory(parseFragment(`(g) => {
+      return literal('x')
+    }`))).toBeNull()
+  })
+
+  it('evaluateParserFactory inlines a registered ...frag(g) spread', () => {
+    const prelude = `const numbers = (g) => ({ digit: regex(/[0-9]/), number: oneOrMore(g.digit) })`
+    const factories = factoriesFrom(prelude)
+    const code = `rules(g => ({ ...numbers(g), pair: sequence(g.number, literal(','), g.number) }))`
+    const map = evaluateParserFactory(rulesFactoryFrom(code), new Map(), `${prelude}\n${code}`, [], factories)
+    expect(map?.has('pair')).toBe(true)
+    expect(parse(map!.get('pair')!, '12,34').ok).toBe(true)
+    expect(parse(map!.get('pair')!, 'x,34').ok).toBe(false)
+  })
+
+  it('evaluateParserFactory inlines nested spreads and block-body fragment consts', () => {
+    const prelude = `
+const inner = (g) => ({ digit: regex(/[0-9]/) })
+const outer = (g) => {
+  const comma = literal(',')
+  return { ...inner(g), comma, pair: sequence(g.digit, comma, g.digit) }
+}`
+    const factories = factoriesFrom(prelude)
+    const code = `rules(g => ({ ...outer(g) }))`
+    const map = evaluateParserFactory(rulesFactoryFrom(code), new Map(), `${prelude}\n${code}`, [], factories)
+    expect(map?.has('pair')).toBe(true)
+    expect(parse(map!.get('pair')!, '1,2').ok).toBe(true)
+  })
+
+  it('evaluateParserFactory returns null for unregistered or cyclic spreads', () => {
+    const factories: FactoryResolver = () => null
+    const missing = `rules(g => ({ ...missing(g), leaf: literal('x') }))`
+    expect(evaluateParserFactory(rulesFactoryFrom(missing), new Map(), missing, [], factories)).toBeNull()
+
+    const cycle = `
+const a = (g) => ({ ...b(g), x: literal('a') })
+const b = (g) => ({ ...a(g), y: literal('b') })`
+    const cycleFactories = factoriesFrom(cycle)
+    const code = `rules(g => ({ ...a(g) }))`
+    expect(evaluateParserFactory(rulesFactoryFrom(code), new Map(), `${cycle}\n${code}`, [], cycleFactories)).toBeNull()
+  })
+
+  it('evaluateParserFactory returns null when a spread factory body is invalid', () => {
+    const prelude = `const bad = (g) => { foo(); return { leaf: literal('x') } }`
+    const factories = factoriesFrom(prelude)
+    const code = `rules(g => ({ ...bad(g) }))`
+    expect(evaluateParserFactory(rulesFactoryFrom(code), new Map(), `${prelude}\n${code}`, [], factories)).toBeNull()
+  })
+
+  it('evaluateParserFactory accepts string-literal rule keys in fragments', () => {
+    const prelude = `const frag = (g) => ({ "tok": literal('x') })`
+    const factories = factoriesFrom(prelude)
+    const code = `rules(g => ({ ...frag(g) }))`
+    const map = evaluateParserFactory(rulesFactoryFrom(code), new Map(), `${prelude}\n${code}`, [], factories)
+    expect(map?.has('tok')).toBe(true)
+    expect(parse(map!.get('tok')!, 'x').ok).toBe(true)
+  })
+})
+
+describe('transformMacro — grammar composition warnings', () => {
+  it('warns when a rules() spread references an unknown fragment factory', () => {
+    const code = `
+import { rules, regex } from 'parseman' with { type: 'macro' }
+export const { leaf } = rules(g => ({ ...missing(g), leaf: regex(/a/) }))
+`.trim()
+    const result = transform(code)!
+    expect(result.warnings.some(w => w.includes("isn't statically evaluable"))).toBe(true)
+  })
+
+  it('registers a fragment factory without warning and inlines a later spread', () => {
+    const code = `
+import { rules, regex, sequence, oneOrMore } from 'parseman' with { type: 'macro' }
+const numbers = (g) => ({ digit: regex(/[0-9]/), number: oneOrMore(g.digit) })
+export const { pair } = rules(g => ({
+  ...numbers(g),
+  pair: sequence(g.number, regex(/,/), g.number),
+}))
+`.trim()
+    const result = transform(code)!
+    expect(result.warnings).toEqual([])
+    expect(result.code).not.toContain("from 'parseman'")
   })
 })

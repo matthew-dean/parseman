@@ -423,6 +423,192 @@ export function evaluateCombinatorArray(
   return val as Combinator<unknown>[]
 }
 
+// ---------------------------------------------------------------------------
+// Grammar composition — inlining `...fragment(g)` spreads in a rules() map.
+//
+// A fragment is a factory `(g, deps?) => ({ rule: combinator, … })`. Spreading
+// its result into a rules() return object composes it in. To keep the compiled
+// (macro) fast path, the macro resolves the fragment's factory AST and inlines
+// its rules into the consumer's rule map — as if they'd been written inline —
+// evaluating them against the CONSUMER's `g` proxy so cross-fragment `g.*` refs
+// resolve. Spread order = override order (a later definition of a key wins).
+// ---------------------------------------------------------------------------
+
+/** A rules() fragment factory AST: an arrow / function returning an object literal. */
+export type FactoryAst = ArrowFunctionExpression | OxcFunction
+
+/**
+ * A resolved fragment factory + the source text its AST offsets index into. For a
+ * same-file factory that's the consumer's own `code`; for an imported one it's the
+ * exporting module's source (read by the plugin). The source MUST travel with the
+ * AST so callback capture (`node`/`transform` slice `code[start..end]`) reads the
+ * right bytes — a fragment's node offsets are meaningless against the consumer file.
+ */
+export type ResolvedFactory = { fn: FactoryAst; code: string }
+
+/**
+ * Resolve a fragment factory by name — a local same-file `const frag = …` OR an
+ * imported one whose source the plugin reads (tier 2). Returns null when the name
+ * isn't a resolvable fragment (→ the spread bails to the interpreter fallback).
+ */
+export type FactoryResolver = (name: string) => ResolvedFactory | null
+
+/**
+ * If `expr` is a fragment factory — an arrow/function whose body returns an object
+ * literal, e.g. `(g, deps) => ({ rule: combinator, … })` — return it (for the macro
+ * to register and inline into `...frag(g)` spreads). Otherwise null.
+ */
+export function asFragmentFactory(expr: Expression): FactoryAst | null {
+  if (expr.type !== 'ArrowFunctionExpression' && expr.type !== 'FunctionExpression' && expr.type !== 'FunctionDeclaration') return null
+  const fn = expr as unknown as FactoryAst
+  return factoryBodyAndReturn(fn) ? fn : null
+}
+
+const unwrapParen = (e: unknown): unknown =>
+  e && (e as { type?: string }).type === 'ParenthesizedExpression'
+    ? (e as { expression: unknown }).expression
+    : e
+
+/**
+ * A fragment factory's body statements (local `const`s) + its returned object
+ * literal. Supports concise `(g) => ({ … })` and block `(g) => { const … ; return { … } }`.
+ * Returns null for anything else (non-object body, no return, etc.).
+ */
+function factoryBodyAndReturn(fn: FactoryAst): { statements: VariableDeclaration[]; retObj: ObjectExpression } | null {
+  const body = (fn as unknown as { body?: unknown }).body
+  if (!body) return null
+  const b = unwrapParen(body) as { type: string; body?: unknown[] }
+  if (b.type === 'ObjectExpression') return { statements: [], retObj: b as unknown as ObjectExpression }
+  if (b.type === 'BlockStatement') {
+    const statements: VariableDeclaration[] = []
+    for (const stmt of b.body as Array<{ type: string; argument?: unknown }>) {
+      if (stmt.type === 'ReturnStatement') {
+        const a = unwrapParen(stmt.argument) as { type: string } | null
+        if (!a || a.type !== 'ObjectExpression') return null
+        return { statements, retObj: a as unknown as ObjectExpression }
+      }
+      if (stmt.type === 'VariableDeclaration') statements.push(stmt as unknown as VariableDeclaration)
+      else return null // unsupported statement in a fragment body
+    }
+  }
+  return null
+}
+
+/** Resolve a `...frag(args)` spread element to its registered factory + call args + source. */
+function spreadFactoryCall(
+  spread: { argument?: unknown }, resolve: FactoryResolver,
+): { fn: FactoryAst; args: Expression[]; code: string } | null {
+  const call = spread.argument as { type?: string; callee?: { type?: string; name?: string }; arguments?: unknown[] } | undefined
+  if (!call || call.type !== 'CallExpression') return null
+  if (!call.callee || call.callee.type !== 'Identifier' || !call.callee.name) return null
+  const resolved = resolve(call.callee.name)
+  return resolved ? { fn: resolved.fn, args: (call.arguments ?? []) as Expression[], code: resolved.code } : null
+}
+
+/** Bind a fragment's identifier params to the resolved call args (e.g. `g` → the proxy). */
+function factoryCallScope(fn: FactoryAst, args: Expression[], outer: XScope): XScope {
+  const s: XScope = new Map(outer)
+  const params = ((fn as unknown as { params?: Array<{ type: string; name?: string }> }).params) ?? []
+  for (let i = 0; i < params.length; i++) {
+    const pn = params[i]
+    if (!pn || pn.type !== 'Identifier' || !pn.name) continue
+    const arg = args[i] as { type?: string; name?: string } | undefined
+    // Only identifier args that name something in scope (the `g` proxy) are bound.
+    // Non-identifier args (e.g. a `{ build }` deps literal) are left unbound — their
+    // uses inside build callbacks are captured as source and resolve in the consumer.
+    if (arg && arg.type === 'Identifier' && arg.name && outer.has(arg.name)) {
+      s.set(pn.name, outer.get(arg.name))
+    }
+  }
+  return s
+}
+
+/** Extract just the property key of a rules() return `Property`, or null. */
+function propKey(prop: { type: string; computed?: boolean; key?: { type: string; name?: string; value?: unknown } }): string | null {
+  if (prop.type !== 'Property' || prop.computed || !prop.key) return null
+  if (prop.key.type === 'Identifier') return prop.key.name ?? null
+  if (prop.key.type === 'Literal') return String(prop.key.value)
+  return null
+}
+
+/** Collect every rule key from a rules() return object, flattening spreads. */
+function collectRuleKeys(retObj: ObjectExpression, resolve: FactoryResolver, seen: Set<FactoryAst>): string[] | null {
+  const out: string[] = []
+  for (const prop of (retObj as unknown as { properties: Array<{ type: string }> }).properties) {
+    if (prop.type === 'SpreadElement') {
+      const sf = spreadFactoryCall(prop as { argument?: unknown }, resolve)
+      if (!sf || seen.has(sf.fn)) return null
+      const br = factoryBodyAndReturn(sf.fn)
+      if (!br) return null
+      const nested = collectRuleKeys(br.retObj, resolve, new Set(seen).add(sf.fn))
+      if (!nested) return null
+      out.push(...nested)
+      continue
+    }
+    const key = propKey(prop as never)
+    if (!key) return null
+    out.push(key)
+  }
+  return out
+}
+
+type RuleEntry = { key: string; value: Expression; scope: XScope; code: string }
+
+/**
+ * Flatten a rules() return object into ordered (key, valueExpr, evalScope), inlining
+ * `...frag(g)` spreads. A fragment's body `const`s are evaluated into a fragment-local
+ * scope (params bound to the call args), so its rules resolve their locals + the shared
+ * `g` proxy. Returns null if any spread is unresolvable (→ interpreter fallback).
+ */
+function flattenRuleEntries(
+  retObj: ObjectExpression, scope: XScope, code: string,
+  resolve: FactoryResolver, seen: Set<FactoryAst>,
+): RuleEntry[] | null {
+  const out: RuleEntry[] = []
+  for (const prop of (retObj as unknown as { properties: Array<{ type: string; value?: unknown }> }).properties) {
+    if (prop.type === 'SpreadElement') {
+      const sf = spreadFactoryCall(prop as { argument?: unknown }, resolve)
+      if (!sf || seen.has(sf.fn)) return null
+      const br = factoryBodyAndReturn(sf.fn)
+      if (!br) return null
+      const fragScope = factoryCallScope(sf.fn, sf.args, scope)
+      // Evaluate the fragment against ITS OWN source (sf.code) — its AST offsets
+      // index into that, not the consumer's `code`. Same-file fragments pass the
+      // same string, so this is a no-op there.
+      if (!evalBodyStatements(br.statements, fragScope, sf.code)) return null
+      const nested = flattenRuleEntries(br.retObj, fragScope, sf.code, resolve, new Set(seen).add(sf.fn))
+      if (!nested) return null
+      out.push(...nested)
+      continue
+    }
+    const key = propKey(prop as never)
+    if (!key) return null
+    out.push({ key, value: (prop as { value: Expression }).value, scope, code })
+  }
+  return out
+}
+
+/** Evaluate a factory body's `const` declarations into `scope`. Returns false on failure. */
+function evalBodyStatements(statements: VariableDeclaration[], scope: XScope, code: string): boolean {
+  const bodyMfs: string[] = []
+  for (const stmt of statements) {
+    for (const d of stmt.declarations) {
+      const decl = d as unknown as VariableDeclarator
+      if (!decl.init) return false
+      const id = decl.id as unknown as { type: string; name?: string }
+      if (id.type !== 'Identifier' && id.type !== 'BindingIdentifier') return false
+      const name = id.name!
+      const before = bodyMfs.length
+      const val = anyValue(decl.init as unknown as Expression, scope, code, bodyMfs)
+      if (val === null) return false
+      const thisDeclMfSrcs = bodyMfs.slice(before)
+      if (isCombinator(val)) scope.set(name, { combi: val, mfSrcs: thisDeclMfSrcs } satisfies ScopeEntry)
+      else scope.set(name, val)
+    }
+  }
+  return true
+}
+
 /**
  * Evaluate a `parser(g => { ... return { ruleName: combinator, ... } })` call.
  * Returns a map of rule names → defined Combinators, or null if the factory
@@ -443,6 +629,7 @@ export function evaluateParserFactory(
   scope: Scope,
   code: string,
   mapFnSources: string[],  // receives ONLY the return-expression mfSrcs
+  resolveFactory: FactoryResolver = () => null,  // resolves `...frag(g)` spread factories (same-file + imported)
 ): Map<string, Combinator<unknown>> | null {
   if (factoryNode.type !== 'ArrowFunctionExpression' && factoryNode.type !== 'FunctionDeclaration' && factoryNode.type !== 'FunctionExpression') return null
 
@@ -486,17 +673,15 @@ export function evaluateParserFactory(
     : returnExpr
   if (retObj.type !== 'ObjectExpression') return null
 
-  // Pre-scan return object to get rule names and create refs
+  // Pre-scan return object to get rule names — flattening any `...frag(g)` spreads
+  // (composition). An unresolvable spread → null → the caller falls back to the
+  // interpreter. One ref per UNIQUE key (first occurrence); a later spread/property
+  // of the same name overrides the value in Phase 2, not the ref.
+  const keys = collectRuleKeys(retObj as unknown as ObjectExpression, resolveFactory, new Set())
+  if (!keys) return null
   const ruleRefs = new Map<string, Combinator<unknown> & { define(p: Combinator<unknown>): void }>()
-  for (const prop of (retObj as unknown as ObjectExpression).properties) {
-    if (prop.type !== 'Property') return null
-    if ((prop as unknown as ObjectProperty).computed) return null
-    const p = prop as unknown as ObjectProperty
-    const key = p.key.type === 'Identifier' ? (p.key as unknown as { name: string }).name
-      : p.key.type === 'Literal' ? String((p.key as unknown as { value: unknown }).value)
-      : null
-    if (!key) return null
-    ruleRefs.set(key, ref<unknown>() as Combinator<unknown> & { define(p: Combinator<unknown>): void })
+  for (const key of keys) {
+    if (!ruleRefs.has(key)) ruleRefs.set(key, ref<unknown>() as Combinator<unknown> & { define(p: Combinator<unknown>): void })
   }
 
   // Build local extended scope: outer scope (typed as XScope) + g proxy object.
@@ -505,44 +690,22 @@ export function evaluateParserFactory(
   const localScope: XScope = new Map(scope as XScope)
   localScope.set(proxyName, Object.fromEntries(ruleRefs))
 
-  // ── Phase 1: evaluate body statements ────────────────────────────────────
-  // Use a LOCAL accumulator so body-phase mfSrcs don't end up in mapFnSources.
-  // Each declaration's mfSrcs slice is stored on the localScope entry so it
-  // gets replayed when the return-phase references that declaration.
-  const bodyMfs: string[] = []
+  // ── Phase 1: evaluate the factory's own body statements ───────────────────
+  if (!evalBodyStatements(statements, localScope, code)) return null
 
-  for (const stmt of statements) {
-    for (const d of stmt.declarations) {
-      const decl = d as unknown as VariableDeclarator
-      if (!decl.init) return null
-      const id = decl.id as unknown as { type: string; name?: string }
-      if (id.type !== 'Identifier' && id.type !== 'BindingIdentifier') return null
-      const name = id.name!
-
-      const before = bodyMfs.length
-      const val = anyValue(decl.init as unknown as Expression, localScope, code, bodyMfs)
-      if (val === null) return null
-
-      const thisDeclMfSrcs = bodyMfs.slice(before)
-      if (isCombinator(val)) {
-        localScope.set(name, { combi: val, mfSrcs: thisDeclMfSrcs } satisfies ScopeEntry)
-      } else {
-        localScope.set(name, val)
-      }
-    }
-  }
-
-  // ── Phase 2: evaluate return values and define refs ───────────────────────
-  // Uses mapFnSources (the caller-provided accumulator) — only these entries
-  // will be in mapFnSources when compile() is called on the resulting rules.
-  // Scope replay ensures outer and body combinators contribute their mfSrcs.
-  for (const prop of (retObj as unknown as ObjectExpression).properties) {
-    const p = prop as unknown as ObjectProperty
-    const key = p.key.type === 'Identifier' ? (p.key as unknown as { name: string }).name
-      : String((p.key as unknown as { value: unknown }).value)
-    const val = anyValue(p.value as Expression, localScope, code, mapFnSources)
+  // ── Phase 2: flatten (inlining spreads) → dedup last-wins → eval + define ──
+  // flattenRuleEntries evaluates each fragment's body `const`s into a fragment-local
+  // scope (its params bound to the call args — `g` → this proxy) and returns the
+  // ordered (key, valueExpr, scope). Spread order = override order: the LAST value
+  // for a key wins (refs throw on double-define, so each key is defined exactly once).
+  const entries = flattenRuleEntries(retObj as unknown as ObjectExpression, localScope, code, resolveFactory, new Set())
+  if (!entries) return null
+  const finalByKey = new Map<string, RuleEntry>()
+  for (const e of entries) finalByKey.set(e.key, e) // set() keeps first insert position, updates value → last wins
+  for (const [key, e] of finalByKey) {
+    const val = anyValue(e.value, e.scope, e.code, mapFnSources)
     if (!isCombinator(val)) return null
-    ruleRefs.get(key)!.define(val)
+    ruleRefs.get(key)!.define(val as Combinator<unknown>)
   }
 
   return ruleRefs as Map<string, Combinator<unknown>>
