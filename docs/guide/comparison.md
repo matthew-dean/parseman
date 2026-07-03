@@ -207,9 +207,6 @@ several things Parséman doesn't offer:
   ([`sepByRecover` / `manyRecover`](./error-recovery#tolerant-lists)); it doesn't recover
   across arbitrary rules on its own.
 
-(Chevrotain *removed* its syntactic content-assist API in v12, so that's no longer a
-point in its favor.)
-
 **[Lezer](https://lezer.codemirror.net/) / [tree-sitter](https://tree-sitter.github.io/tree-sitter/)**
 win on **structural-edit incremental** (buffer-tree fragment reuse), **GLR / ambiguity**,
 and — especially tree-sitter — an enormous library of **existing, battle-tested grammars**

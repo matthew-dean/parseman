@@ -100,24 +100,46 @@
   stroke: var(--vp-c-brand-1);
 }
 
-/* Comparison page: the feature matrices have one wide "Parser" column and many
-   short capability cells, so content-driven widths look lopsided. Fix the layout
-   so the parser column gets a sensible share and the rest divide evenly. Scoped
-   to this page so the number-heavy benchmark tables keep their natural sizing. */
+/* Comparison page: the feature matrices are wide (up to 7 columns). Forcing them
+   to 100% width divides that space evenly and crushes cells on narrow viewports.
+   Instead, let each column keep a comfortable floor (min-width), size the table to
+   its content, and scroll horizontally when it can't fit. Scoped to this page so
+   the number-heavy benchmark tables keep their natural sizing.
+   `display: block` + `overflow-x: auto` matches the VitePress default and makes the
+   table its own horizontal scroll container. */
 .comparison-page .vp-doc table {
-  display: table;
-  width: 100%;
-  table-layout: fixed;
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  table-layout: auto;
+  overflow-x: auto;
 }
 
 .comparison-page .vp-doc th,
 .comparison-page .vp-doc td {
+  min-width: 9rem;
   overflow-wrap: anywhere;
-  hyphens: auto;
 }
 
-/* Give the first column (parser names) a bit more room than an even split. */
+/* Parser-name column: a bit narrower, and pinned so the row label stays visible
+   while the capability columns scroll. Backgrounds are set explicitly (matching
+   the default zebra striping) so the pinned cells stay opaque over scrolled ones. */
 .comparison-page .vp-doc th:first-child,
 .comparison-page .vp-doc td:first-child {
-  width: 16%;
+  min-width: 7.5rem;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.comparison-page .vp-doc td:first-child {
+  background-color: var(--vp-c-bg);
+}
+
+.comparison-page .vp-doc tr:nth-child(2n) td:first-child {
+  background-color: var(--vp-c-bg-soft);
+}
+
+.comparison-page .vp-doc th:first-child {
+  background-color: var(--vp-c-bg-soft);
 }
