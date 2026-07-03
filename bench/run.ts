@@ -15,7 +15,7 @@
  *       OR: pnpm bench
  */
 import { parseJSON, jsonDoc } from '../examples/json/parser.ts'
-import { buildParsermanCSTJSONNoTriv, buildParsermanCSTJSONCompiled } from './parseman-cst-json.ts'
+import { buildParsermanCSTJSON, buildParsermanCSTJSONNoTriv, buildParsermanCSTJSONCompiled } from './parseman-cst-json.ts'
 import { parseCSV, compiledCSV, csvParser } from '../examples/csv/parser.ts'
 import { parseConfig, compiledConfig } from '../examples/toml-ish/parser.ts'
 import { parseGraphQL, graphqlDoc } from '../examples/graphql/parser.ts'
