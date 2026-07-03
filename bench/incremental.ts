@@ -1,5 +1,5 @@
 /**
- * Incremental re-parse benchmark: Parséman `makeFunctionalDoc` vs Lezer's
+ * Incremental re-parse benchmark: Parséman `parseDoc` vs Lezer's
  * fragment-reuse incremental parse.
  *
  * Both engines support editing a parsed document and re-parsing only what
@@ -18,7 +18,7 @@
  */
 import {
   rules, node, regex, literal, choice, optional, sepBy, sequence,
-  makeFunctionalDoc,
+  parseDoc,
   type CSTNode, type CSTLeaf, type CSTError,
   type ParseContext, type ParseResult,
 } from '../src/index.ts'
@@ -28,7 +28,7 @@ import { LARGE_JSON } from './fixtures.ts'
 
 // ---------------------------------------------------------------------------
 // Parséman CST JSON grammar as a rule registry (no trivia; compact JSON).
-// Each node type is a registry key so makeFunctionalDoc().edit() can re-parse
+// Each node type is a registry key so parseDoc().edit() can re-parse
 // the smallest containing rule by type.
 // ---------------------------------------------------------------------------
 
@@ -130,12 +130,12 @@ export function makeParsemanIncremental(s: EditScenario): {
   incremental: () => unknown
   fullReparse: () => unknown
 } {
-  const base = makeFunctionalDoc<JNode>(registry, 'Value', s.input)
+  const base = parseDoc<JNode>(registry, 'Value', s.input)
   if (!base.tree) throw new Error(`Parséman failed to parse fixture: ${s.name}`)
   const newInput = applyEdit(s)
   return {
     incremental: () => base.edit(s.from, s.to, s.replacement),
-    fullReparse: () => makeFunctionalDoc<JNode>(registry, 'Value', newInput),
+    fullReparse: () => parseDoc<JNode>(registry, 'Value', newInput),
   }
 }
 

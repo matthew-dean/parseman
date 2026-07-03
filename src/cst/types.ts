@@ -6,7 +6,7 @@ import type { Span } from '../types.ts'
  * and `children` works — whether from `node()` build callbacks or custom ASTs.
  *
  * `children` only needs items with `_tag` so traversal can distinguish sub-nodes
- * from leaves. `makeFunctionalDoc` uses an optional `rebuild` callback (or a
+ * from leaves. `parseDoc` uses an optional `rebuild` callback (or a
  * shallow spread) when grafting a re-parsed subtree.
  */
 export type NodeLike = {

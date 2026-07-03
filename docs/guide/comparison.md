@@ -53,7 +53,7 @@ Two questions sort most of the field:
 
 | Parser | Author in JS/TS | Debuggable grammar | Context-sensitive grammar | Incremental re-parse | Error recovery | Trivia capture |
 | --- | --- | --- | --- | --- | --- | --- |
-| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `makeFunctionalDoc` | ✅ `recover` + auto lists | ✅ built-in `triviaLog` |
+| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `parseDoc` | ✅ `recover` + auto lists | ✅ built-in `triviaLog` |
 | [Peggy](https://peggyjs.org/) | ❌ text DSL | ⚠️ generated JS + trace | ✅ in-grammar | ❌ | ⚠️ location only | ❌ manual |
 | [Parsimmon](https://github.com/jneen/parsimmon) | ✅ | ✅ | ✅ in-grammar | ❌ | ❌ | ❌ manual |
 | [Chevrotain](https://chevrotain.io/) | ✅ | ✅ | ✅ in-grammar | ⚠️ DIY, no engine | ✅ strong (automatic) | ⚠️ tokens, manual |
@@ -139,7 +139,7 @@ general rule-level context.
 
 Editors re-parse on every keystroke, and here the buffer-tree generators shine — this is
 what Lezer and tree-sitter were built for. Parséman also re-parses incrementally
-([`makeFunctionalDoc`](./incremental)), but with a different cost profile: its plain
+([`parseDoc`](./incremental)), but with a different cost profile: its plain
 object tree with absolute spans makes **in-place value edits** (overtyping, extending a
 token — the common keystroke) close to free and ahead of Lezer, while **structural
 edits** in a large collection favor Lezer/tree-sitter fragment reuse. The

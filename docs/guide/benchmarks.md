@@ -116,7 +116,7 @@ Chevrotain** throughout. Compile it (macro build) and it moves ahead of Lezer ou
 ## Incremental re-parse
 
 Editors re-parse on every keystroke, so re-parsing only what changed matters. Both
-Parséman ([`makeFunctionalDoc`](./incremental)) and [Lezer](https://lezer.codemirror.net/)
+Parséman ([`parseDoc`](./incremental)) and [Lezer](https://lezer.codemirror.net/)
 support this — but their cost curves are shaped differently, so the winner flips with the
 *kind* of edit. Measured on the 12 kB nested JSON fixture; every row produces a
 span-correct tree (verified against a full reparse):

@@ -133,7 +133,7 @@ cstJsonGroup('medium', MEDIUM_JSON, 10_000)
 cstJsonGroup('large',  LARGE_JSON,  2_000)
 
 // ---------------------------------------------------------------------------
-// Incremental re-parse — Parséman makeFunctionalDoc vs Lezer fragment reuse
+// Incremental re-parse — Parséman parseDoc vs Lezer fragment reuse
 // ---------------------------------------------------------------------------
 console.log('\n=== Incremental re-parse (12 kB nested JSON) — edit + re-parse ===')
 console.log('  (both produce a span-correct tree; full reparse shown as the baseline)')

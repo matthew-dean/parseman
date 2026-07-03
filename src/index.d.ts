@@ -22,4 +22,5 @@ export { completionsAt } from './combinators/completions.ts';
 export { scanTo, balanced } from './combinators/scanTo.ts';
 export type { ScanToOptions } from './combinators/scanTo.ts';
 export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, NodeLike } from './cst/types.ts';
-export { makeFunctionalDoc } from './functional/doc.ts';
+export { parseDoc } from './functional/doc.ts';
+export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts';
