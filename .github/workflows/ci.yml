@@ -33,8 +33,24 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test
-        # Excludes test/perf/parseman-perf.test.ts (see vitest.config.ts) — that
-        # suite benchmarks rather than unit-tests; the pre-commit hook already
-        # runs its CSS-only guard on commits touching compiler/codegen paths.
-        run: pnpm test
+      - name: Test with coverage
+        # Uses vitest.coverage.config.ts, which excludes all of test/perf/ —
+        # those are timing-based benchmarks, not unit tests, and running them
+        # under coverage instrumentation only adds noise to their timings
+        # without adding any coverage. Plain `pnpm test` still runs them.
+        run: pnpm test:coverage
+
+      - name: Coverage guard
+        # Ratchet, not a fixed threshold: fails only if coverage drops below
+        # scripts/coverage-baseline.json (see that file / scripts/coverage-guard.mjs).
+        # No-ops with a warning until a baseline exists — run
+        # `pnpm coverage:baseline` locally and commit the result to turn this on.
+        run: pnpm coverage:guard
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14

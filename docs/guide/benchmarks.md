@@ -155,7 +155,7 @@ Lezer and Chevrotain on the JSON CST fixture. And the setup-free interpreter is
 remarkably competitive on its own — fastest after the macro build on JSON and CSV (ahead of
 every generator, including Peggy), with Peggy taking GraphQL.
 
-The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M2
+The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M4
 Pro / Node+V8, median of 15 samples. Got a parser you think belongs in the comparison?
 [Open an issue](https://github.com/matthew-dean/parseman/issues) — the harness
 (`bench/run.ts`) is built to add competitors.

@@ -393,3 +393,43 @@ for (const [mode, registry] of [['interpreter', () => interpRegistry], ['macro',
     })
   })
 }
+
+// ---------------------------------------------------------------------------
+// Incremental re-parse over a node()-built CST: siblings after a length-
+// changing edit can be CSTLeaf tokens (no `.children` array), not just
+// NodeLike subtrees. shiftSpans() must shift those leaves' spans too, taking
+// its "no children array" path instead of recursing.
+// ---------------------------------------------------------------------------
+
+describe('functional grammar — incremental over node()-built CST (leaf siblings)', () => {
+  const ident = regex(/[a-z]+/)
+  const digits = regex(/[0-9]+/)
+
+  const { Pair: leafPair, Object: leafObject } = rules<{ Pair: Combinator<any>; Object: Combinator<any> }>(g => {
+    const Pair = node('Pair', sequence(ident, literal(':'), digits), (c, _r, s) => ({
+      _tag: 'node', type: 'Pair', span: s, state: null, children: c,
+    }))
+    const Object = node('Object', sequence(g.Pair, literal(';'), g.Pair), (c, _r, s) => ({
+      _tag: 'node', type: 'Object', span: s, state: null, children: c,
+    }))
+    return { Pair, Object }
+  })
+
+  const leafRegistry: Record<string, RuleFn> = {
+    Pair: (i, p, c) => leafPair.parse(i, p, c),
+    Object: (i, p, c) => leafObject.parse(i, p, c),
+  }
+
+  it('shifts a trailing CSTLeaf sibling (e.g. the ";" separator) on a length-changing edit', () => {
+    // Growing the first Pair's value shifts everything after it: the ';'
+    // CSTLeaf sibling and the second Pair subtree both move by `delta`.
+    const doc = makeFunctionalDoc<Node>(leafRegistry, 'Object', 'a:1;b:2').edit(2, 3, '42')
+    expect(doc.input).toBe('a:42;b:2')
+    const fresh = makeFunctionalDoc<Node>(leafRegistry, 'Object', 'a:42;b:2')
+    expect(doc.tree).toEqual(fresh.tree)
+
+    const semicolon = doc.tree!.children[1] as unknown as { _tag: string; span: { start: number; end: number } }
+    expect(semicolon._tag).toBe('leaf')
+    expect(semicolon.span).toEqual({ start: 4, end: 5 })
+  })
+})

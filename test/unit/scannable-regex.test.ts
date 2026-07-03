@@ -136,17 +136,28 @@ describe('parseScanShape — top-level alternation (§8e)', () => {
     expect(s?.kind).toBe('alt')
   })
 
-  it('does NOT unwrap a group that has trailing content after it', () => {
+  it('does NOT unwrap a group that has trailing content after it (still lowers via §8f group support)', () => {
     // The `(?:…)` here doesn't span the whole source — a literal `%` follows —
-    // so unwrapping would silently change what the pattern means. No top-level
-    // `|` outside the group, so this must decline, not mis-split.
-    expect(parseScanShape('(?:a|b)%')).toBeNull()
+    // so unwrapping (treating it as a top-level alternation) would silently
+    // change what the pattern means, and correctly doesn't happen. It's NOT a
+    // top-level `alt` shape — instead it's a `seq` whose SECOND part is a
+    // `group` (§8f) wrapping the `a|b` alternation, followed by literal `%`.
+    const s = parseScanShape('(?:a|b)%')
+    expect(s?.kind).toBe('seq')
+    if (s?.kind === 'seq') {
+      expect(s.parts[0]).toMatchObject({ part: 'group' })
+      expect(s.parts[1]).toEqual({ part: 'lit', cps: [37], optional: false })
+    }
   })
 
-  it('declines when any arm contains an unsupported nested group (§8f gap)', () => {
-    // Real CSS `numPart`/`basicSel`: an arm has its own `(?:…)` group. A single
-    // unsupported arm must fail the WHOLE alternation, not partially lower.
-    expect(parseScanShape(String.raw`\d*\.\d+(?:[eE][+-]?\d+)?|\d+`)).toBeNull()
+  it('now lowers an arm with a nested group, since §8f closed that gap', () => {
+    // Real CSS `numPart`-style shape: one arm has its own `(?:…)` group. Both
+    // arms independently lower (§8f), and since their first-sets overlap on
+    // digits (arm1 can start with `\d` OR `.`; arm2 is `\d+`), the alt is
+    // correctly NOT disjoint — ordered dispatch, not switch dispatch.
+    const s = parseScanShape(String.raw`\d*\.\d+(?:[eE][+-]?\d+)?|\d+`)
+    expect(s?.kind).toBe('alt')
+    if (s?.kind === 'alt') expect(s.disjoint).toBe(false)
   })
 
   it('declines an empty alternative (zero-width arm, unmodeled)', () => {
@@ -155,6 +166,108 @@ describe('parseScanShape — top-level alternation (§8e)', () => {
 
   it('rejects alternation under the /i flag (blocked upstream by scanShapeFromRegex)', () => {
     expect(scanShapeFromRegex('even|odd', 'i')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Non-capturing groups `(?:…)`, `(?:…)?`, `(?:…)*`, `(?:…)+` as `seq` parts
+// (§8f). Composed with §8e (alternation-in-group) this lowers the "number"
+// pattern shared by JSON/GraphQL/lang/TOML/CSS: `-?(?:0|[1-9]\d*)(?:\.\d+)?…`.
+// `groupInnerSafe` restricts a group's body to shapes already proven to have
+// exactly one valid greedy match (chars/ident/seq/litFold, or a DISJOINT alt)
+// — a non-disjoint alt inside a group is declined outright (real backtracking
+// into a different arm is possible if something after the group fails; see
+// `/^(?:a|ab)c/.exec("abc")` → matches via the SECOND arm).
+// ---------------------------------------------------------------------------
+
+describe('parseScanShape — non-capturing groups (§8f)', () => {
+  it('recognizes a required group with no quantifier', () => {
+    const s = parseScanShape('a(?:bc)d')
+    expect(s?.kind).toBe('seq')
+    if (s?.kind === 'seq') {
+      expect(s.parts[1]).toMatchObject({ part: 'group', min: 1, unbounded: false })
+    }
+  })
+
+  it('recognizes optional / star / plus quantified groups', () => {
+    const opt = parseScanShape('a(?:bc)?')
+    const star = parseScanShape('a(?:bc)*')
+    const plus = parseScanShape('a(?:bc)+')
+    expect(opt?.kind === 'seq' && opt.parts[1]).toMatchObject({ part: 'group', min: 0, unbounded: false })
+    expect(star?.kind === 'seq' && star.parts[1]).toMatchObject({ part: 'group', min: 0, unbounded: true })
+    expect(plus?.kind === 'seq' && plus.parts[1]).toMatchObject({ part: 'group', min: 1, unbounded: true })
+  })
+
+  it('lowers the JSON/GraphQL "number" pattern in full: -?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?', () => {
+    const s = parseScanShape(String.raw`-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?`)
+    expect(s?.kind).toBe('seq')
+    if (s?.kind === 'seq') {
+      expect(s.parts).toHaveLength(4)
+      expect(s.parts[0]).toEqual({ part: 'lit', cps: [45], optional: true })
+      // group 1: required, disjoint alt of "0" vs "[1-9]\d*"
+      const part1 = s.parts[1]
+      expect(part1).toMatchObject({ part: 'group', min: 1, unbounded: false })
+      const g1 = part1?.part === 'group' ? part1.inner : null
+      expect(g1?.kind).toBe('alt')
+      if (g1?.kind === 'alt') expect(g1.disjoint).toBe(true)
+      // groups 2 and 3: both optional, disjoint from each other (`.` vs `e`/`E`)
+      expect(s.parts[2]).toMatchObject({ part: 'group', min: 0, unbounded: false })
+      expect(s.parts[3]).toMatchObject({ part: 'group', min: 0, unbounded: false })
+    }
+  })
+
+  it('lowers GraphQL float: -?(?:0|[1-9]\\d*)(?:\\.\\d+(?:[eE][+-]?\\d+)?|[eE][+-]?\\d+)', () => {
+    // Nested alternation-in-a-group-in-a-group: the second top-level group's
+    // body is ITSELF a disjoint 2-arm alt (`.`-led vs `e`/`E`-led), and one of
+    // those arms has its own further-nested optional group.
+    const s = parseScanShape(String.raw`-?(?:0|[1-9]\d*)(?:\.\d+(?:[eE][+-]?\d+)?|[eE][+-]?\d+)`)
+    expect(s?.kind).toBe('seq')
+    if (s?.kind === 'seq') {
+      const part2 = s.parts[2]
+      const g2 = part2?.part === 'group' ? part2.inner : null
+      expect(g2?.kind).toBe('alt')
+      if (g2?.kind === 'alt') expect(g2.disjoint).toBe(true)
+    }
+  })
+
+  it('rejects {n,m} on a group (§8c/§8f combination not modeled)', () => {
+    expect(parseScanShape('a(?:bc){2,3}')).toBeNull()
+  })
+
+  it('rejects a bare capturing group and a mid-pattern lookaround', () => {
+    expect(parseScanShape('a(bc)d')).toBeNull()
+    expect(parseScanShape('a(?=bc)d')).toBeNull()
+  })
+
+  it('rejects a `*`/`+` group whose body can match empty (would loop forever)', () => {
+    expect(parseScanShape('a(?:[0-9]*)+')).toBeNull()
+    expect(parseScanShape('a(?:[0-9]*)*')).toBeNull()
+  })
+
+  it('declines a group whose body is a non-disjoint alt (arm-switching hazard)', () => {
+    // `(?:a|ab)` genuinely needs real backtracking into the second arm if
+    // something after it fails — not modeled, must decline the WHOLE group.
+    expect(parseScanShape('x(?:a|ab)c')).toBeNull()
+    // But the SAME group content alone (nothing meaningful follows within
+    // this seq to force reconsideration) is allowed to be conservative and
+    // still decline — groupInnerSafe doesn't special-case "no trailing
+    // context", it always requires disjoint arms.
+    expect(parseScanShape('x(?:a|ab)')).toBeNull()
+  })
+
+  it('declines two consecutive optional groups whose first-sets overlap', () => {
+    // Both groups can start with 'a' — genuinely ambiguous which one (if
+    // either) should claim it.
+    expect(parseScanShape(String.raw`x(?:a[0-9]+)?(?:a[a-z]+)?`)).toBeNull()
+  })
+
+  it('allows a chain of 3 consecutive optional groups when pairwise disjoint', () => {
+    // Stress test for the generalized seqIsUnambiguous check: p is compared
+    // against seqFirstAccept of EVERYTHING that follows, not just the
+    // immediate next sibling.
+    const s = parseScanShape(String.raw`a(?:\.[0-9]+)?(?:![a-c]+)?(?:#[x-z]+)?`)
+    expect(s?.kind).toBe('seq')
+    if (s?.kind === 'seq') expect(s.parts).toHaveLength(4)
   })
 })
 
@@ -385,10 +498,34 @@ describe('scannable regex — codegen', () => {
     expect(code).not.toContain('.exec(input)')
   })
 
-  it('declines a basicSel-style alternation with a nested group in one arm (§8f gap)', () => {
+  it('lowers a basicSel-style alternation with a nested group in one arm (§8f)', () => {
+    // Previously declined (an arm's own `(?:\.\d+)?` group was unmodeled);
+    // §8f's `group` SeqPart now lowers it fully. Real CSS `basicSel`.
     const code = compile(regex(/(?:[.#]?-?[_a-zA-Z][-_a-zA-Z0-9]*|\d+(?:\.\d+)?%|\*)/)).source
-    expect(code).toMatch(/const _re\d+ = /)
-    expect(code).toContain('.exec(input)')
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('.exec(input)')
+  })
+
+  it('lowers an unbounded required group arm (§8f `+` quantifier)', () => {
+    const code = compile(regex(/a(?:bc)+d/)).source
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('.exec(input)')
+  })
+
+  it('lowers the JSON/GraphQL number pattern to charCodeAt, no exec (§8f)', () => {
+    const code = compile(regex(/-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)).source
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('.exec(input)')
+  })
+
+  it('still declines CSS numPart/Num (non-disjoint alt inside a group — real, documented gap)', () => {
+    // `\d*\.\d+(?:...)?` and `\d+(?:...)?` overlap on digits, so the group's
+    // body is a non-disjoint alt — groupInnerSafe correctly declines rather
+    // than risk the arm-switching hazard. Needs a smarter technique than
+    // plain group composition to close (not attempted here).
+    const numPart = compile(regex(/[+-]?(?:\d*\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|\d+)/)).source
+    expect(numPart).toMatch(/const _re\d+ = /)
+    expect(numPart).toContain('.exec(input)')
   })
 })
 
@@ -724,6 +861,62 @@ export const anyValueTok = regex(/[+\-*/=<>|~^]+|[^\s;{}[\]()'",!]+/)`,
       ['+abc', 0], ['a+b', 0], ['***', 0], ['', 0], ['   ', 0], ['x', 0], ["it's", 0],
     ] as const) {
       const expected = /^(?:[+\-*/=<>|~^]+|[^\s;{}[\]()'",!]+)/.exec(input.slice(pos))?.[0]
+      const r = expectParity(modes, input, pos)
+      expect(r.ok ? r.value : undefined).toBe(expected)
+    }
+  })
+})
+
+// The real JSON/GraphQL "number" pattern (§8f): a required disjoint-alt group
+// (`0` vs `[1-9]\d*`) followed by two chained optional groups (`.digits`,
+// `eE[+-]digits`) — exercises both group quantifier kinds and the
+// generalized (chain-aware) `seqIsUnambiguous` check in the same shape.
+const jsonNumber = regex(/-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)
+
+describe('scannable regex — JSON/GraphQL number pattern parity (§8f groups)', () => {
+  const modes = modesFor(
+    jsonNumber,
+    String.raw`import { regex } from 'parseman' with { type: 'macro' }
+export const jsonNumber = regex(/-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)`,
+    'jsonNumber',
+  )
+  for (const [mode, run] of modes) {
+    it(`${mode}: matches a bare integer`, () => {
+      const r = run('123')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('123')
+    })
+    it(`${mode}: matches zero without a leading-zero digit run`, () => {
+      const r = run('0abc')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('0') // "0" is its own arm — must not greedily read "0abc"'s digits
+    })
+    it(`${mode}: matches a negative decimal with exponent`, () => {
+      const r = run('-3.14e10')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('-3.14e10')
+    })
+    it(`${mode}: matches decimal-only (no exponent)`, () => {
+      const r = run('2.5x')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('2.5')
+    })
+    it(`${mode}: matches exponent-only (no decimal point)`, () => {
+      const r = run('7E-3;')
+      expect(r.ok).toBe(true)
+      expect(r.value).toBe('7E-3')
+    })
+    it(`${mode}: fails on non-digit input`, () => {
+      expect(run('abc').ok).toBe(false)
+    })
+  }
+
+  it('all modes agree on mixed cases, matching real RegExp exactly', () => {
+    for (const [input, pos] of [
+      ['0', 0], ['00', 0], ['10', 0], ['-0', 0], ['-', 0], ['3.', 0], ['.5', 0],
+      ['1e', 0], ['1e+', 0], ['1.2.3', 0], ['-1.5e-10rest', 0], ['', 0], ['9007199254740993', 0],
+    ] as const) {
+      const expected = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(input.slice(pos))?.[0]
       const r = expectParity(modes, input, pos)
       expect(r.ok ? r.value : undefined).toBe(expected)
     }

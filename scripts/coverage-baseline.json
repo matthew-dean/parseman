@@ -1,0 +1,10 @@
+{
+  "updatedAt": "2026-07-03",
+  "gitRev": "23159f0",
+  "metrics": {
+    "lines": 97.07,
+    "statements": 92.29,
+    "functions": 97.22,
+    "branches": 85.21
+  }
+}

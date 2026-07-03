@@ -76,6 +76,12 @@ When trivia is `oneOrMore(choice(ws, blockComment))` (CSS `rw`) or ASCII ws-only
 
 **Result:** CSS bootstrap4 compiled **−52%** (25.8→12.3ms); selector/decls **−43–47%**. See `src/compiler/trivia-fast-path.ts`, `test/unit/trivia-fast-path.test.ts`.
 
+### 6b. Generalize the trivia fast-path to value-capturing positions — MED
+
+`trivia-fast-path.ts`'s own doc comments (and `scannable-run.ts`'s: "Trivia … is just the value-discarded instance of this; nothing here is trivia-specific") already claim the underlying dispatch-loop technique is general-purpose — but that generalization only ever happened *within* trivia (see the file's git history: several rounds of "generalize to any scannable-shape set," all still inside the trivia codegen path). Today a plain, ordinary (value-capturing) `oneOrMore(choice(regex(...), regex(...)))` or `many(choice(...))` sitting in a normal grammar position gets **none** of this treatment — `scannable-terminal.ts` only fast-paths a single regex per call site, not a multi-arm choice-loop, and `trivia-fast-path.ts`'s builders (`buildFastTriviaFnDecl`, `buildLabeledScannableTriviaFnDecl`, …) are hardcoded to discard the match and return only the end position (`return _e`).
+
+The reusable ~60–70%: `analyzeTriviaFastPath`'s recognition logic (minus the trivia-specific unwrap) and `composeFastLoop`'s loop skeleton, plus all of `scannable-run.ts`'s shape/branch machinery (`scanShapeFromRegex`, `scanBranch`, `emitShapeMatch`) — none of that is trivia-specific already. The net-new ~30–40%: an emit path that builds a value (`input.slice(start, _e)`) or CST node per matched run instead of discarding it, threading capture-buffer/CST child-append calls per arm the way `emitLeafCapture`/`inline-build.ts` already do elsewhere — essentially a `buildValueScanFnDecl` sibling to `buildFastTriviaFnDecl`. **Guard:** identical to what's already proven for the trivia loop (`scanBranch`'s completion semantics: only advance/log on real progress) — no new ambiguity analysis needed, this is a codegen-target change, not a new safety proof. **Measure:** any grammar with a hot value-capturing `oneOrMore(choice(...))` of scannable regexes — CSS's `anyValueTok`-adjacent value-list loops are a plausible candidate once profiled.
+
 ### 7. Common-prefix choice factoring
 
 Arms like `ident '(' …` vs bare `ident` can't use disjoint dispatch. Generalize the CSS grammar hand-merge: parse shared prefix once, branch on lookahead. Complements existing `autoNot` (suffix rejection) but doesn't replace it.

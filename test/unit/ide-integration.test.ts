@@ -175,4 +175,12 @@ describe('completionsAt()', () => {
     expect(all).toContain('"false"')
     expect(all).toContain('"null"')
   })
+
+  it('prefers probe failure deeper than top-level after sepBy backtrack', () => {
+    // After `[1,2,` the list wants another number (probe @5) but the outer `]`
+    // arm fails earlier (@4) once optional(items) ends — completions must use the probe.
+    const completions = completionsAt(bracket, '[1,2,', 5)
+    expect(completions).toContain('/[0-9]+/')
+    expect(completions).not.toContain('"]"')
+  })
 })
