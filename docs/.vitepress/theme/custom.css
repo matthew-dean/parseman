@@ -83,3 +83,19 @@
 .VPButton {
   border-radius: 22px;
 }
+
+/* Feature-card icons: real stroke icons (Lucide) tinted with the basil→tomato
+   flag, sitting on a soft tinted tile instead of a bare emoji. */
+.VPFeature .icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--vp-c-tip-soft), var(--vp-c-brand-soft));
+  border: 1px solid var(--vp-c-divider);
+}
+
+.VPFeature .icon svg {
+  width: 24px;
+  height: 24px;
+  stroke: var(--vp-c-brand-1);
+}

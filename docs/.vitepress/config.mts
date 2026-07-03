@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitepress'
+import { faviconHead } from './head-icons'
 
 const { version } = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../package.json'), 'utf8'),
@@ -17,10 +18,8 @@ export default defineConfig({
   base: '/parseman/',
   lastUpdated: true,
   cleanUrls: true,
-  head: [
-    ['link', { rel: 'icon', href: '/parseman/favicon.ico' }],
-    ['meta', { name: 'theme-color', content: '#ce2b37' }],
-  ],
+  // Favicon set + PWA tags generated from assets/favicon.png (pnpm docs:favicons)
+  head: faviconHead,
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
     logo: 'https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/parseman.png',

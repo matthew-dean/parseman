@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'assets/favicon.png'
       - 'package.json'
       - '.github/workflows/deploy-docs.yml'
   # Allow manual runs from the Actions tab
@@ -43,6 +44,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Generate favicons from source
+        run: pnpm docs:favicons
 
       - name: Build docs
         run: pnpm docs:build
