@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest'
 import {
   literal, regex, sequence, choice, many, optional, sepBy,
   parse, parser, scanTo, balanced, guard, withCtx, node, rules,
-  makeFunctionalDoc,
+  parseDoc,
 } from '../../src/index.ts'
 import type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTRawChild, Span } from '../../src/index.ts'
 
@@ -249,7 +249,7 @@ describe('node() — context-sensitive rules', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Custom AST + makeFunctionalDoc
+// Custom AST + parseDoc
 // ---------------------------------------------------------------------------
 describe('node() — custom AST via build callback', () => {
   type MyNode = {
@@ -287,8 +287,8 @@ describe('node() — custom AST via build callback', () => {
     expect((r.value as MyNode).text).toBe('[Num:0-2]')
   })
 
-  it('makeFunctionalDoc edit works with custom AST', () => {
-    const doc = makeFunctionalDoc<MyNode>(registry, 'Num', '42')
+  it('parseDoc edit works with custom AST', () => {
+    const doc = parseDoc<MyNode>(registry, 'Num', '42')
     expect(doc.tree).not.toBeNull()
     expect(doc.tree!.text).toBe('[Num:0-2]')
 

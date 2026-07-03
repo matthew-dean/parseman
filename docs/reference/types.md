@@ -236,16 +236,16 @@ type VisitorHandlers<R, N extends Walkable = CSTChild> =
 ```ts
 type Registry<N>          = Record<string, RuleFn<N>>
 type RuleFn<N>            = (input: string, pos: number, ctx: ParseContext) => ParseResult<N>
-type FunctionalDocOptions<N> = {
+type ParseDocOptions<N> = {
   state?: unknown
   rebuild?: (node: N, children: ReadonlyArray<unknown>) => N
 }
 
-interface FunctionalDoc<N extends NodeLike> {
+interface ParseDoc<N extends NodeLike> {
   readonly tree: N | null
   readonly errors: ParseFail[]
   readonly input: string
-  edit(from: number, to: number, replacement: string): FunctionalDoc<N>
+  edit(from: number, to: number, replacement: string): ParseDoc<N>
 }
 ```
 

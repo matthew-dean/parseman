@@ -7,6 +7,13 @@
  *   [X]+ / [X]*            → run while the char ∈ X                (chars)
  *   <lit>[^X]*             → consume <lit>, run until char ∈ X     (until)
  *   <open>(?:…)*<close>    → consume <open>, run to <close> literal (delimited)
+ *   x?<lit><[X]*>…         → a general linear chain of lit/run     (seq)
+ *
+ * `seq` is the CATEGORY generalization: any chain of literal segments (required
+ * or optional `x?`) and char-class runs (positive/negated, `?`/`*`/`+`). It
+ * subsumes CSS/Less `-?ident`, `--custom`, `@-?keyword`, `[^…]+`, `::?`, etc.
+ * without hardcoding a single byte — lowered only when a greedy one-pass scan
+ * provably equals the engine's backtracking (see `seqIsUnambiguous`).
  *
  * A `oneOrMore(choice(a, b, …))` where every arm is one of these compiles to a
  * single char-dispatch loop with one branch per arm — any count/order, because
@@ -14,6 +21,29 @@
  * (whitespace + comments) is just the value-discarded instance of this; nothing
  * here is trivia-specific.
  */
+
+/**
+ * One segment of a `seq` shape. A `seq` is the general category "a fixed linear
+ * chain of literals and char-class runs" — no alternation, no groups, no
+ * backtracking. It subsumes every CSS/Less token that is "(optional prefix)?
+ * literal* char-run* …" without hardcoding any particular byte:
+ *
+ *   lit   — a run of fixed code points, optionally present (`x?`) or required.
+ *   run   — a char-class run: positive/negated ranges, min 0/1, bounded to one
+ *           char (`[x]`, `[x]?`) or unbounded (`[x]*`, `[x]+`).
+ *   group — a non-capturing sub-pattern `(?:…)` (§8f), quantified the same way
+ *           as `run` (`min`/`unbounded`). `inner` is any already-recognized
+ *           `ScanShape` for the group's body (so a group can itself contain
+ *           `seq`/`chars`/`alt`/… — including a nested alternation via §8e).
+ *           Only used when `groupInnerSafe(inner)` holds (see that function).
+ *
+ * We only lower a `seq` when greedy left-to-right scanning provably equals the
+ * regex engine's backtracking match (see `seqIsUnambiguous`).
+ */
+export type SeqPart =
+  | { part: 'lit'; cps: number[]; optional: boolean }
+  | { part: 'run'; ranges: Array<[number, number]>; negated: boolean; min: 0 | 1; unbounded: boolean }
+  | { part: 'group'; inner: ScanShape; min: 0 | 1; unbounded: boolean }
 
 export type ScanShape =
   | { kind: 'chars'; ranges: Array<[number, number]>; minOne: boolean }
@@ -25,6 +55,26 @@ export type ScanShape =
   // maybe a newline); `escLineTerm` = whether `\\` may be followed by a line
   // terminator (`\\[\s\S]` → true, `\\.` → false, since `.` excludes them).
   | { kind: 'string'; quote: number; excluded: Array<[number, number]>; escLineTerm: boolean }
+  // A linear chain of literal/char-run segments (optional prefixes, literal
+  // openers, negated runs, …) — the general CSS/Less token category.
+  | { kind: 'seq'; parts: SeqPart[] }
+  // A pure literal matched case-insensitively (`/i`): the general "ASCII
+  // case-fold literal" category (CSS `url(`, `@media` keywords under `i`, …).
+  | { kind: 'litFold'; open: number[] }
+  // `<inner>(?!class)` / `<inner>(?=class)` — a trailing lookahead boundary
+  // check on an already-lowered shape. Zero-width: `end` is `inner`'s end, never
+  // extended. `classNegated` is the bracket's OWN `[^…]` negation (e.g.
+  // `(?![0-9a-fA-F])` vs `(?=[^0-9])`), independent of `negative` (`!` vs `=`).
+  | { kind: 'lookahead'; inner: ScanShape; ranges: Array<[number, number]>; classNegated: boolean; negative: boolean }
+  // `A|B|C` — top-level alternation (§8e), split outside any `[]`/`()`, each arm
+  // independently lowered. `disjoint` is true iff every pair of arms has
+  // provably non-overlapping first-char sets (`firsts[i]` holds that arm's set,
+  // or `null` if it could start with any char — an unbounded-optional `chars`
+  // arm, or a non-disjoint mix). When `disjoint`, codegen dispatches straight to
+  // the one matching arm; otherwise it tries arms in order and takes the first
+  // that succeeds — the same ordered-choice semantics as regex `|` itself (see
+  // the ordered-vs-longest verification in PERF_IDEAS §8e).
+  | { kind: 'alt'; arms: ScanShape[]; disjoint: boolean; firsts: Array<CharSet | null> }
 
 /** Backslash (`\`) code point — the escape lead char in string shapes. */
 export const BACKSLASH = 92
@@ -33,15 +83,26 @@ const CLASS_ESCAPES: Record<string, number> = { t: 9, n: 10, r: 13, f: 12, v: 11
 const META = new Set('()[]{}*+?|^$.'.split(''))
 
 /**
+ * `\s`'s code-point set per the spec's `WhiteSpace` + `LineTerminator`
+ * productions — TAB/LF/VT/FF/CR, SPACE, NBSP, and the Unicode `Zs` space
+ * separators. This set is fixed regardless of the `u` flag (unlike `\d`/`\w`,
+ * which are ASCII-only without `u` but widen with it), so it's always safe to
+ * lower to a fixed range scan.
+ */
+export const SPACE_RANGES: Array<[number, number]> = [
+  [9, 13], [32, 32], [160, 160], [5760, 5760], [8192, 8202],
+  [8232, 8232], [8233, 8233], [8239, 8239], [8287, 8287], [12288, 12288], [65279, 65279],
+]
+
+/**
  * ASCII code-point ranges for the shorthand classes we can lower safely. `\d`
  * and `\w` are ASCII-only in the default (non-`u`) engine, so they map to fixed
- * ranges. `\s` is deliberately absent — it includes Unicode whitespace
- * (`\u00a0`, `\u1680`, …) that a fixed ASCII range would silently drop.
+ * ranges. `\s` maps to `SPACE_RANGES` — a fixed set unaffected by the `u` flag.
  */
-function shorthandRanges(ch: 'd' | 'w'): Array<[number, number]> {
-  return ch === 'd'
-    ? [[48, 57]]
-    : [[48, 57], [65, 90], [97, 122], [95, 95]]
+function shorthandRanges(ch: 'd' | 'w' | 's'): Array<[number, number]> {
+  if (ch === 'd') return [[48, 57]]
+  if (ch === 's') return SPACE_RANGES
+  return [[48, 57], [65, 90], [97, 122], [95, 95]]
 }
 
 type ClassAtom = { cp: number } | { set: Array<[number, number]> }
@@ -51,19 +112,31 @@ type ClassAtom = { cp: number } | { set: Array<[number, number]> }
  * `\d`/`\w` expand to their ASCII ranges; other letter escapes (`\s`, `\D`,
  * `\W`, `\S`, `\b`, …) return null rather than being mis-read as literal letters.
  */
-function parseClassRanges(body: string): Array<[number, number]> | null {
+function readUnicodeEscape(body: string, i: number): { cp: number; next: number } | null {
+  if (body[i] !== '\\' || body[i + 1] !== 'u') return null
+  const hex = body.slice(i + 2, i + 6)
+  if (!/^[0-9a-fA-F]{4}$/.test(hex)) return null
+  return { cp: Number.parseInt(hex, 16), next: i + 6 }
+}
+
+export function parseClassRanges(body: string): Array<[number, number]> | null {
   const ranges: Array<[number, number]> = []
   let i = 0
   const readAtom = (): ClassAtom | null => {
     const ch = body[i]
     if (ch === undefined) return null
     if (ch === '\\') {
+      const uni = readUnicodeEscape(body, i)
+      if (uni) {
+        i = uni.next
+        return { cp: uni.cp }
+      }
       const e = body[i + 1]
       if (e === undefined) return null
       i += 2
       if (e in CLASS_ESCAPES) return { cp: CLASS_ESCAPES[e]! }
-      if (e === 'd' || e === 'w') return { set: shorthandRanges(e) }
-      // Any other letter escape is a class we can't safely lower (\s, \D, …).
+      if (e === 'd' || e === 'w' || e === 's') return { set: shorthandRanges(e) }
+      // Any other letter escape is a class we can't safely lower (\D, \W, \S, …).
       if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) return null
       return { cp: e.codePointAt(0)! }
     }
@@ -93,9 +166,17 @@ function parseClassRanges(body: string): Array<[number, number]> | null {
 function classToRanges(cls: string): Array<[number, number]> | null {
   if (cls === '\\d') return shorthandRanges('d')
   if (cls === '\\w') return shorthandRanges('w')
+  if (cls === '\\s') return shorthandRanges('s')
   const body = cls.slice(1, -1)
   if (body.startsWith('^')) return null
   return parseClassRanges(body)
+}
+
+/** ASCII case-insensitive letter check for `i`-flag literal lowering. */
+const foldEq = (cVar: string, cp: number): string => {
+  if (cp >= 65 && cp <= 90) return `(${cVar} === ${cp} || ${cVar} === ${cp + 32})`
+  if (cp >= 97 && cp <= 122) return `(${cVar} === ${cp} || ${cVar} === ${cp - 32})`
+  return `${cVar} === ${cp}`
 }
 
 /** All-literal regex fragment (`\/\*`, `\/\/`, …) → its code points, or null on an unescaped metachar. */
@@ -151,30 +232,606 @@ function parseStringShape(source: string): ScanShape | null {
 }
 
 /**
+ * Parse a regex source into a linear chain of literal / char-run segments, or
+ * null if it uses any construct outside that category (alternation, groups,
+ * `.`, `{n,m}`, lookaround, unknown escapes). This is the STRUCTURAL recognizer
+ * for the `seq` shape — it encodes categories (optional prefix, literal opener,
+ * negated run, …), never any specific byte value.
+ */
+function parseSeqParts(source: string): SeqPart[] | null {
+  const parts: SeqPart[] = []
+  let lit: number[] = []
+  const flush = () => {
+    if (lit.length) { parts.push({ part: 'lit', cps: lit, optional: false }); lit = [] }
+  }
+  const runFrom = (ranges: Array<[number, number]>, negated: boolean, q: string | undefined) => {
+    if (q === '+') { parts.push({ part: 'run', ranges, negated, min: 1, unbounded: true }); return 1 }
+    if (q === '*') { parts.push({ part: 'run', ranges, negated, min: 0, unbounded: true }); return 1 }
+    if (q === '?') { parts.push({ part: 'run', ranges, negated, min: 0, unbounded: false }); return 1 }
+    parts.push({ part: 'run', ranges, negated, min: 1, unbounded: false })
+    return 0
+  }
+  let i = 0
+  while (i < source.length) {
+    const ch = source[i]!
+    if (ch === '[') {
+      // Read a char class, honoring `\]`.
+      let k = i + 1
+      const neg = source[k] === '^'
+      if (neg) k++
+      let body = ''
+      while (k < source.length && source[k] !== ']') {
+        if (source[k] === '\\') { body += source[k]! + (source[k + 1] ?? ''); k += 2 }
+        else { body += source[k]!; k++ }
+      }
+      if (source[k] !== ']') return null
+      const ranges = parseClassRanges(body)
+      if (!ranges) return null
+      flush()
+      i = k + 1
+      i += runFrom(ranges, neg, source[i])
+      continue
+    }
+    if (ch === '\\') {
+      const e = source[i + 1]
+      if (e === 'd' || e === 'w' || e === 's') {
+        flush()
+        i += 2
+        i += runFrom(shorthandRanges(e), false, source[i])
+        continue
+      }
+      // Escaped literal code point (incl. `\uXXXX`, `\t`, `\(`, …).
+      const uni = readUnicodeEscape(source, i)
+      let cp: number
+      if (uni) { cp = uni.cp; i = uni.next }
+      else if (e === undefined) return null
+      else if (e in CLASS_ESCAPES) { cp = CLASS_ESCAPES[e]!; i += 2 }
+      else if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) return null
+      else { cp = e.codePointAt(0)!; i += 2 }
+      if (source[i] === '?') { flush(); parts.push({ part: 'lit', cps: [cp], optional: true }); i++ }
+      else lit.push(cp)
+      continue
+    }
+    if (ch === '(') {
+      // Only a non-capturing group `(?:…)` is modeled (§8f) — a bare capturing
+      // group, or a lookaround appearing mid-pattern (a TRAILING one is peeled
+      // off separately by `stripTrailingLookahead` before we ever get here), is
+      // declined outright rather than risk misreading it.
+      if (source[i + 1] !== '?' || source[i + 2] !== ':') return null
+      let k = i + 3
+      let depth = 1
+      while (k < source.length && depth > 0) {
+        const c2 = source[k]
+        if (c2 === '\\') { k += 2; continue }
+        if (c2 === '[') {
+          let j = k + 1
+          if (source[j] === '^') j++
+          while (j < source.length && source[j] !== ']') {
+            if (source[j] === '\\') j += 2
+            else j++
+          }
+          if (source[j] !== ']') return null
+          k = j + 1
+          continue
+        }
+        if (c2 === '(') depth++
+        else if (c2 === ')') depth--
+        k++
+      }
+      if (depth !== 0) return null
+      const body = source.slice(i + 3, k - 1)
+      const inner = parseScanShape(body)
+      if (!inner || !groupInnerSafe(inner)) return null
+      const q = source[k]
+      // `{n,m}` on a group is a §8c/§8f combination not modeled — decline.
+      if (q === '{') return null
+      flush()
+      if (q === '+') {
+        if (shapeCanBeEmpty(inner)) return null // would loop forever — decline
+        parts.push({ part: 'group', inner, min: 1, unbounded: true })
+        i = k + 1
+      } else if (q === '*') {
+        if (shapeCanBeEmpty(inner)) return null
+        parts.push({ part: 'group', inner, min: 0, unbounded: true })
+        i = k + 1
+      } else if (q === '?') {
+        parts.push({ part: 'group', inner, min: 0, unbounded: false })
+        i = k + 1
+      } else {
+        parts.push({ part: 'group', inner, min: 1, unbounded: false })
+        i = k
+      }
+      continue
+    }
+    // A bare metachar (`|`, `.`, `{`, stray `*`/`+`/`?`, …) is outside the
+    // linear-chain category — bail to the RegExp fallback.
+    if (META.has(ch)) return null
+    const cp = ch.codePointAt(0)!
+    i += ch.length
+    if (source[i] === '?') { flush(); parts.push({ part: 'lit', cps: [cp], optional: true }); i++ }
+    else lit.push(cp)
+  }
+  flush()
+  return parts.length ? parts : null
+}
+
+/**
+ * Only lower a `seq` when greedy left-to-right scanning matches EXACTLY what the
+ * backtracking regex engine would. The dangerous cases are (a) an optional part
+ * that could also be consumed by what follows, and (b) an unbounded/repeated
+ * part whose accepted class overlaps what follows — both let the engine
+ * backtrack to a different boundary than a one-pass scan. We also require at
+ * least one mandatory segment (so the token can't match zero-width).
+ *
+ * A skippable/repeatable part `p` at index `k` is checked against
+ * `seqFirstAccept(parts.slice(k + 1))` — the accept-set of EVERYTHING that
+ * could start at the very next position, unioned through any further chain of
+ * optionals up to the next mandatory part (the exact same computation
+ * `seqFirstAccept` already does for a seq's OWN leading accept-set). This
+ * subsumes the simpler "check only the immediate neighbor" rule as the
+ * one-part-following case, while also correctly handling a CHAIN of several
+ * consecutive optional parts (e.g. two independent optional groups in a row,
+ * `(?:\.\d+)?(?:[eE][+-]?\d+)?` — JSON/GraphQL's number tail, §8f): each is
+ * safe precisely when disjoint from everything that could follow it, however
+ * many further optionals that spans. An empty tail (`p` is the last part)
+ * naturally resolves to a trivially-disjoint empty set — nothing to check.
+ *
+ * Uniform across `lit`/`run`/`group`: each part's own "first char it could
+ * start with" (`partFirstAccept`) is compared via `firstSetsDisjoint` — the
+ * same subset/disjoint math used everywhere else in this file (§8b's
+ * lookahead guard, §8e's alt-dispatch guard).
+ */
+function seqIsUnambiguous(parts: SeqPart[]): boolean {
+  let hasMandatory = false
+  for (let k = 0; k < parts.length; k++) {
+    const p = parts[k]!
+    const mandatory = p.part === 'lit' ? !p.optional : p.min === 1
+    if (mandatory) hasMandatory = true
+    const skippableSingle =
+      (p.part === 'lit' && p.optional) || (p.part !== 'lit' && !p.unbounded && p.min === 0)
+    const isUnboundedRepeat = p.part !== 'lit' && p.unbounded
+    if (skippableSingle || isUnboundedRepeat) {
+      const rest = seqFirstAccept(parts.slice(k + 1))
+      if (!firstSetsDisjoint(partFirstAccept(p), rest)) return false
+    }
+  }
+  return hasMandatory
+}
+
+function rangesOverlap(a: Array<[number, number]>, b: Array<[number, number]>): boolean {
+  return a.some(([lo, hi]) => b.some(([lo2, hi2]) => lo <= hi2 && lo2 <= hi))
+}
+
+/** Is every range in `sub` fully contained in some range of `sup`? */
+function rangesSubset(sub: Array<[number, number]>, sup: Array<[number, number]>): boolean {
+  return sub.every(([lo, hi]) => sup.some(([lo2, hi2]) => lo >= lo2 && hi <= hi2))
+}
+
+/**
+ * A `(?!X)`/`(?=X)` operand: a char class (`[...]`, incl. `[^...]`), a
+ * shorthand class (`\d`/`\w`/`\s`), or a single literal/escaped char — never a
+ * sub-pattern (no alternation, no nested groups). Returns the ranges to test
+ * membership against, and whether the bracket itself was negated (`[^...]`) —
+ * independent of the lookahead's own `!`/`=` polarity.
+ */
+function parseClassOperand(body: string): { ranges: Array<[number, number]>; negated: boolean } | null {
+  if (body === '\\d' || body === '\\w' || body === '\\s') {
+    return { ranges: shorthandRanges(body[1] as 'd' | 'w' | 's'), negated: false }
+  }
+  if (body.length >= 2 && body[0] === '[' && body[body.length - 1] === ']') {
+    let inner = body.slice(1, -1)
+    const negated = inner.startsWith('^')
+    if (negated) inner = inner.slice(1)
+    const ranges = parseClassRanges(inner)
+    return ranges ? { ranges, negated } : null
+  }
+  const cps = literalCodePoints(body)
+  if (cps && cps.length === 1) return { ranges: [[cps[0]!, cps[0]!]], negated: false }
+  return null
+}
+
+type TrailingLookahead = {
+  base: string
+  ranges: Array<[number, number]>
+  classNegated: boolean
+  negative: boolean
+}
+
+type CharSet = { ranges: Array<[number, number]>; negated: boolean }
+
+/** Is char-set `t` fully contained in char-set `u`? Handles all 4 sign combos. */
+function classSubset(t: CharSet, u: CharSet): boolean {
+  if (!t.negated && !u.negated) return rangesSubset(t.ranges, u.ranges)
+  if (!t.negated && u.negated) return !rangesOverlap(t.ranges, u.ranges) // t ⊆ ¬u ⟺ t ∩ u = ∅
+  if (t.negated && !u.negated) return false // ¬t ⊆ u is never true for finite ranges u
+  return rangesSubset(u.ranges, t.ranges) // ¬t ⊆ ¬u ⟺ u ⊆ t
+}
+
+/** Are char-sets `t` and `u` disjoint (no overlap)? Handles all 4 sign combos. */
+function classDisjoint(t: CharSet, u: CharSet): boolean {
+  if (!t.negated && !u.negated) return !rangesOverlap(t.ranges, u.ranges)
+  if (!t.negated && u.negated) return rangesSubset(t.ranges, u.ranges) // t ∩ ¬u = ∅ ⟺ t ⊆ u
+  if (t.negated && !u.negated) return rangesSubset(u.ranges, t.ranges) // symmetric
+  return false // ¬t ∩ ¬u = ∅ would require t ∪ u = every code point — can't prove with finite ranges
+}
+
+/** `classDisjoint`, `'any'`-aware: an empty-capable part's first-set degrades
+ * to `'any'` (see `shapeFirstAccept`), and `'any'` is never disjoint from
+ * anything (it could start with literally any char, including whatever the
+ * other side accepts). */
+function firstSetsDisjoint(a: CharSet | 'any', b: CharSet | 'any'): boolean {
+  if (a === 'any' || b === 'any') return false
+  return classDisjoint(a, b)
+}
+
+/**
+ * The char-class a backtracking engine could expose by shrinking `shape`'s
+ * OWN trailing quantifier by one position — i.e. the "wiggle room" a trailing
+ * lookahead could interact with. Returns `null` when `shape`'s matched length
+ * is fully fixed once it succeeds (no quantifier to shrink), which makes
+ * wrapping it in a lookahead unconditionally safe. Returns `'unsupported'` for
+ * shape kinds whose backtracking semantics aren't modeled here (declines the
+ * lookahead lowering rather than risking an unproven guard).
+ *
+ * Only the LAST quantifier matters: `seqIsUnambiguous` already proves every
+ * EARLIER part of a `seq` has exactly one valid parse (no alternate length),
+ * so the sole remaining freedom a backtracking engine has — once we attach an
+ * external trailing lookahead — is in whatever quantifier sits at the very end.
+ */
+function trailingBacktrackClass(shape: ScanShape): CharSet | null | 'unsupported' {
+  if (shape.kind === 'chars') return { ranges: shape.ranges, negated: false }
+  if (shape.kind === 'ident') return { ranges: shape.tail, negated: false }
+  if (shape.kind === 'litFold') return null // fixed-length literal — no quantifier at all
+  if (shape.kind === 'seq') {
+    const last = shape.parts[shape.parts.length - 1]!
+    if (last.part === 'lit') return null // fixed literal tail — no wiggle room
+    if (last.part === 'run') {
+      // unbounded (`+`/`*`) or optional-bounded (`[x]?`) both have a
+      // 1-position choice a backtracker could make; `[x]` (min 1, bounded) is
+      // a single required char — no choice, hence no risk.
+      if (last.unbounded || last.min === 0) return { ranges: last.ranges, negated: last.negated }
+      return null
+    }
+    // A trailing `group` (§8f): its own inner shape may have wiggle room
+    // (`innerWiggle`, e.g. the group's body itself ends in an unbounded run),
+    // AND — if the group is optional/repeated — dropping the group's presence
+    // entirely exposes its own first-char set (`dropExposed`) as the new
+    // boundary char. Both are real backtrack moves; a lookahead must be safe
+    // against whichever one could actually happen.
+    const innerWiggle = trailingBacktrackClass(last.inner)
+    if (innerWiggle === 'unsupported') return 'unsupported'
+    const requiredOnce = !last.unbounded && last.min === 1
+    if (requiredOnce) return innerWiggle // no "drop it" move possible — only inner's own wiggle matters
+    const dropExposed = shapeFirstAccept(last.inner)
+    if (dropExposed === 'any') return 'unsupported'
+    if (innerWiggle === null) return dropExposed
+    const unioned = unionCharSets([innerWiggle, dropExposed])
+    return unioned === 'any' ? 'unsupported' : unioned
+  }
+  if (shape.kind === 'alt') {
+    // Arm-switching hazard (see `groupInnerSafe`) applies here too: a
+    // non-disjoint alt can't be trusted to expose the right wiggle class,
+    // since which arm ultimately "wins" could itself change under backtrack.
+    // A disjoint alt has no such hazard — exactly one arm is ever reachable
+    // from a given starting char, so the union of every arm's OWN wiggle
+    // covers whichever one is actually taken.
+    if (!shape.disjoint) return 'unsupported'
+    const classes = shape.arms.map(trailingBacktrackClass)
+    if (classes.some(c => c === 'unsupported')) return 'unsupported'
+    const concrete = classes.filter((c): c is CharSet => c !== null)
+    if (concrete.length === 0) return null
+    const unioned = unionCharSets(concrete)
+    return unioned === 'any' ? 'unsupported' : unioned
+  }
+  // `until`/`delimited`/`string`/nested `lookahead` — not modeled; decline.
+  return 'unsupported'
+}
+
+/**
+ * Is it safe to lower `inner(?!ranges)` / `inner(?=ranges)` to a one-shot
+ * post-match check (vs. requiring real backtracking)? See PERF_IDEAS §8b.
+ */
+function lookaheadUnambiguous(inner: ScanShape, operand: CharSet, negative: boolean): boolean {
+  const tail = trailingBacktrackClass(inner)
+  if (tail === 'unsupported') return false
+  if (tail === null) return true // inner's length is fixed — no backtracking possible
+  // Negative `(?!op)`: safe iff every char the tail could expose is ALSO
+  // excluded by `op` (so shrinking never turns a failure into a pass).
+  // Positive `(?=op)`: safe iff the tail is disjoint from `op` (so shrinking
+  // could never expose a char that suddenly satisfies `op`).
+  return negative ? classSubset(tail, operand) : classDisjoint(tail, operand)
+}
+
+/**
+ * Strip a trailing `(?!class)` / `(?=class)` boundary assertion, if present.
+ * Only a TRAILING lookahead with a char-class/single-char operand is
+ * recognized — no sub-patterns, no nested groups. Anything else containing an
+ * unescaped `(` is left to the other recognizers, which reject it as a
+ * metachar (`META`) and fall back to `RegExp.exec`, so a false read here can
+ * only fail to lower, never mis-lower.
+ */
+function stripTrailingLookahead(source: string): TrailingLookahead | null {
+  if (!source.endsWith(')')) return null
+  for (const negative of [true, false] as const) {
+    const lead = negative ? '(?!' : '(?='
+    const idx = source.lastIndexOf(lead)
+    if (idx === -1) continue
+    const body = source.slice(idx + lead.length, -1)
+    const operand = body.length ? parseClassOperand(body) : null
+    if (!operand) continue
+    return { base: source.slice(0, idx), ranges: operand.ranges, classNegated: operand.negated, negative }
+  }
+  return null
+}
+
+/**
+ * Strip ONE redundant outer `(?:…)` wrapper, if it spans the ENTIRE source
+ * (nothing before it, nothing — not even a quantifier — after its matching
+ * close). A non-capturing group with no trailing quantifier is semantically
+ * identical to its bare contents, so this is always safe to unwrap; it's what
+ * lets `(?:a|b|c)` (a whole-token alternation written as idiomatic regex
+ * style, e.g. CSS `basicSel`) reach the top-level `|` split below. Bails
+ * (leaves `source` untouched) on anything that isn't a clean whole-string
+ * wrap: unbalanced parens, or a group that closes before the string ends
+ * (which would mean a quantifier or trailing content follows it).
+ */
+function unwrapOuterGroup(source: string): string {
+  while (source.startsWith('(?:')) {
+    let depth = 1
+    let i = 3
+    let ok = true
+    while (i < source.length && depth > 0) {
+      const ch = source[i]
+      if (ch === '\\') { i += 2; continue }
+      if (ch === '[') {
+        let j = i + 1
+        if (source[j] === '^') j++
+        while (j < source.length && source[j] !== ']') {
+          if (source[j] === '\\') j += 2
+          else j++
+        }
+        if (source[j] !== ']') { ok = false; break }
+        i = j + 1
+        continue
+      }
+      if (ch === '(') depth++
+      else if (ch === ')') depth--
+      i++
+    }
+    if (!ok || depth !== 0 || i !== source.length) break
+    source = source.slice(3, -1)
+  }
+  return source
+}
+
+/**
+ * Split a regex source on top-level `|` — i.e. `|` outside any `[]` bracket
+ * class and outside any `(...)` group (parens still count toward depth even
+ * though we don't otherwise understand groups; a `|` nested in one is never a
+ * split point). Returns null if there's no top-level `|` at all, if brackets/
+ * parens are unbalanced, or if any resulting alternative is empty (a
+ * zero-width arm — an unmodeled edge case, decline rather than mis-lower).
+ * One redundant whole-string `(?:…)` wrapper is stripped first (see
+ * `unwrapOuterGroup`) so `(?:a|b)` splits the same as bare `a|b`.
+ */
+function splitTopLevelAlternation(source: string): string[] | null {
+  const body = unwrapOuterGroup(source)
+  const parts: string[] = []
+  let depth = 0
+  let last = 0
+  let i = 0
+  while (i < body.length) {
+    const ch = body[i]
+    if (ch === '\\') { i += 2; continue }
+    if (ch === '[') {
+      let j = i + 1
+      if (body[j] === '^') j++
+      while (j < body.length && body[j] !== ']') {
+        if (body[j] === '\\') j += 2
+        else j++
+      }
+      if (body[j] !== ']') return null
+      i = j + 1
+      continue
+    }
+    if (ch === '(') { depth++; i++; continue }
+    if (ch === ')') { depth--; if (depth < 0) return null; i++; continue }
+    if (ch === '|' && depth === 0) {
+      parts.push(body.slice(last, i))
+      last = i + 1
+      i++
+      continue
+    }
+    i++
+  }
+  if (depth !== 0) return null
+  parts.push(body.slice(last))
+  if (parts.length < 2 || parts.some(p => p.length === 0)) return null
+  return parts
+}
+
+/** Can `shape` match the empty string? Only an unbounded `chars` run with no
+ * `+` (`[x]*`) can — every other shape requires at least one fixed/mandatory
+ * char (`seq` always has ≥1 mandatory part per `seqIsUnambiguous`; `ident`/
+ * `until`/`delimited`/`string`/`litFold` all require a fixed opening char). A
+ * `lookahead`/`alt` defer to what they wrap. */
+function shapeCanBeEmpty(shape: ScanShape): boolean {
+  if (shape.kind === 'chars') return !shape.minOne
+  if (shape.kind === 'lookahead') return shapeCanBeEmpty(shape.inner)
+  if (shape.kind === 'alt') return shape.arms.some(shapeCanBeEmpty)
+  return false
+}
+
+/** Exact union of char-sets when it's computable, else `'any'` (conservative:
+ * forces ordered dispatch rather than guessing at a mixed-polarity union, or
+ * when any input is already `'any'`). A single concrete-set list is returned
+ * as-is (including if negated) — the ambiguity is only in combining ≥2 sets
+ * of differing polarity. */
+function unionCharSets(sets: Array<CharSet | 'any'>): CharSet | 'any' {
+  if (sets.some(s => s === 'any')) return 'any'
+  const concrete = sets as CharSet[]
+  if (concrete.length === 1) return concrete[0]!
+  if (concrete.some(s => s.negated)) return 'any'
+  return { ranges: concrete.flatMap(s => s.ranges), negated: false }
+}
+
+/** A single seq part's own first-char set, ignoring whether it's skippable.
+ * A `group` part delegates to its inner shape's own first-set (§8f) —
+ * possibly `'any'` if the inner shape can match empty or is a non-disjoint
+ * `alt` (see `shapeFirstAccept`). */
+function partFirstAccept(part: SeqPart): CharSet | 'any' {
+  if (part.part === 'lit') return { ranges: [[part.cps[0]!, part.cps[0]!]], negated: false }
+  if (part.part === 'run') return { ranges: part.ranges, negated: part.negated }
+  return shapeFirstAccept(part.inner)
+}
+
+/** The char-set a `seq` can start with: union of each leading skippable part's
+ * own set up to and including the first mandatory part (after which later
+ * parts can no longer be what the very first input char matches). */
+function seqFirstAccept(parts: SeqPart[]): CharSet | 'any' {
+  const sets: Array<CharSet | 'any'> = []
+  for (const p of parts) {
+    const mandatory = p.part === 'lit' ? !p.optional : p.min === 1
+    sets.push(partFirstAccept(p))
+    if (mandatory) break
+  }
+  return unionCharSets(sets)
+}
+
+/**
+ * Is `inner` safe to use as a group's body (§8f)? `chars`/`ident`/`seq`/
+ * `litFold` are always safe: each is only ever constructed after proving (via
+ * `seqIsUnambiguous` or equivalent) that greedy resolution is the UNIQUE valid
+ * match at a given position — there is no alternate length for a backtracker
+ * to reconsider, so treating the group as an atomic, resolve-once unit is
+ * sound regardless of what follows it. A `lookahead` defers to what it wraps
+ * (zero-width, adds no new choice). An `alt` is safe ONLY when `disjoint`:
+ * a NON-disjoint alt (`(?:a|ab)`) genuinely can need real backtracking into a
+ * DIFFERENT arm if something after the group fails (verified: `/^(?:a|ab)c/`
+ * matches "abc" via the SECOND arm, only because the first arm's match left
+ * "c" unsatisfied) — our ordered-dispatch codegen resolves once and never
+ * reconsiders, so that case must decline. `until`/`delimited`/`string` are
+ * declined outright, same conservative call as `trailingBacktrackClass`.
+ */
+function groupInnerSafe(shape: ScanShape): boolean {
+  if (shape.kind === 'chars' || shape.kind === 'ident' || shape.kind === 'seq' || shape.kind === 'litFold') return true
+  if (shape.kind === 'lookahead') return groupInnerSafe(shape.inner)
+  if (shape.kind === 'alt') return shape.disjoint
+  return false
+}
+
+/**
+ * The set of first chars a NON-EMPTY match of `shape` could start with, or
+ * `'any'` if that can't be pinned down to a single char-set (used to decide
+ * whether `alt` arms have disjoint first-sets). A shape that can match empty
+ * degrades to `'any'`: since it could succeed with zero chars regardless of
+ * what follows, it would "accept" any first char by never actually needing one
+ * — treating that as disjoint from anything else would be unsound.
+ */
+function shapeFirstAccept(shape: ScanShape): CharSet | 'any' {
+  if (shapeCanBeEmpty(shape)) return 'any'
+  switch (shape.kind) {
+    case 'chars': return { ranges: shape.ranges, negated: false }
+    case 'ident': return { ranges: shape.head, negated: false }
+    case 'until': return { ranges: [[shape.open[0]!, shape.open[0]!]], negated: false }
+    case 'delimited': return { ranges: [[shape.open[0]!, shape.open[0]!]], negated: false }
+    case 'string': return { ranges: [[shape.quote, shape.quote]], negated: false }
+    case 'litFold': {
+      const cp = shape.open[0]!
+      if (cp >= 65 && cp <= 90) return { ranges: [[cp, cp], [cp + 32, cp + 32]], negated: false }
+      if (cp >= 97 && cp <= 122) return { ranges: [[cp, cp], [cp - 32, cp - 32]], negated: false }
+      return { ranges: [[cp, cp]], negated: false }
+    }
+    case 'seq': return seqFirstAccept(shape.parts)
+    case 'lookahead': return shapeFirstAccept(shape.inner) // zero-width — doesn't change first-char acceptance
+    case 'alt': {
+      if (!shape.disjoint) return 'any'
+      const sets = shape.firsts.filter((f): f is CharSet => f !== null)
+      return sets.length === shape.arms.length ? unionCharSets(sets) : 'any'
+    }
+  }
+}
+
+/** True iff every pair of `sets` is provably disjoint; `'any'` is disjoint from nothing. */
+function allPairsDisjoint(sets: Array<CharSet | 'any'>): boolean {
+  for (let i = 0; i < sets.length; i++) {
+    const a = sets[i]!
+    if (a === 'any') return false
+    for (let j = i + 1; j < sets.length; j++) {
+      const b = sets[j]!
+      if (b === 'any' || !classDisjoint(a, b)) return false
+    }
+  }
+  return true
+}
+
+/**
+ * Recognize top-level alternation `A|B|C` (§8e): split on `|` outside any
+ * `[]`/`()`, lower each arm independently (an arm may itself be a `seq`,
+ * `chars`, `lookahead`, …, or even nested alternation via one redundant
+ * `(?:…)` wrapper — see `unwrapOuterGroup`). Declines (null) unless EVERY arm
+ * independently lowers — a single unsupported arm (e.g. one with a nested
+ * capturing/non-capturing group, §8f) falls the whole alternation back to
+ * `RegExp.exec` rather than partially lowering.
+ */
+function parseAlternation(source: string): ScanShape | null {
+  const parts = splitTopLevelAlternation(source)
+  if (!parts) return null
+  const arms: ScanShape[] = []
+  for (const p of parts) {
+    const arm = parseScanShape(p)
+    if (!arm) return null
+    arms.push(arm)
+  }
+  const firstSets = arms.map(shapeFirstAccept)
+  const disjoint = allPairsDisjoint(firstSets)
+  return { kind: 'alt', arms, disjoint, firsts: firstSets.map(f => (f === 'any' ? null : f)) }
+}
+
+/**
  * Recognize one scannable arm from its regex source, or null if it isn't one of
- * the structural shapes. Order matters: char-class run, ident, string, then
- * open-until-terminator, then delimited.
+ * the structural shapes. Top-level alternation (§8e) is tried FIRST — `|` has
+ * the lowest precedence in regex, so splitting on it happens before anything
+ * else, with each arm then recursively re-entering this same function (so an
+ * arm's own trailing lookahead, or its own nested `(?:…)`-wrapped alternation,
+ * is still recognized). Failing that: char-class run, ident, string, then
+ * open-until-terminator, delimited, and finally the general linear `seq` chain.
+ * A trailing `(?!class)`/`(?=class)` is peeled off next (§8b) and re-wraps
+ * whatever shape the remaining base recognizes as.
  */
 export function parseScanShape(source: string): ScanShape | null {
-  // [X]+ / [X]* — a positive char-class run (a leading `^` negation is not one).
+  const alt = parseAlternation(source)
+  if (alt) return alt
+  const la = stripTrailingLookahead(source)
+  if (la) {
+    const inner = parseScanShapeCore(la.base)
+    if (!inner) return null
+    const operand: CharSet = { ranges: la.ranges, negated: la.classNegated }
+    if (!lookaheadUnambiguous(inner, operand, la.negative)) return null
+    return { kind: 'lookahead', inner, ranges: la.ranges, classNegated: la.classNegated, negative: la.negative }
+  }
+  return parseScanShapeCore(source)
+}
+
+function parseScanShapeCore(source: string): ScanShape | null {
+  // [X]+ / [X]* — a positive char-class run. A negated `[^X]+`/`[^X]*` is left to
+  // the general `seq` path (which lowers `[^X]+` and declines zero-width `[^X]*`).
   let m = /^\[((?:\\.|[^\]])+)\]([+*])$/.exec(source)
-  if (m) {
-    if (m[1]!.startsWith('^')) return null
+  if (m && !m[1]!.startsWith('^')) {
     const ranges = parseClassRanges(m[1]!)
     return ranges ? { kind: 'chars', ranges, minOne: m[2] === '+' } : null
   }
-  // \d+ / \w+ / \d* / \w* — a bare shorthand-class run.
-  m = /^\\([dw])([+*])$/.exec(source)
+  // \d+ / \w+ / \s+ / \d* / \w* / \s* — a bare shorthand-class run.
+  m = /^\\([dws])([+*])$/.exec(source)
   if (m) {
-    return { kind: 'chars', ranges: shorthandRanges(m[1] as 'd' | 'w'), minOne: m[2] === '+' }
+    return { kind: 'chars', ranges: shorthandRanges(m[1] as 'd' | 'w' | 's'), minOne: m[2] === '+' }
   }
   // <head><tail>* — identifier run: one head char, then a run of tail chars.
-  // Each of head/tail is a `[...]` class or a `\d`/`\w` shorthand.
-  m = /^(\[(?:\\.|[^\]])+\]|\\[dw])(\[(?:\\.|[^\]])+\]|\\[dw])\*$/.exec(source)
+  m = /^(\[(?:\\.|[^\]])+\]|\\[dws])(\[(?:\\.|[^\]])+\]|\\[dws])\*$/.exec(source)
   if (m) {
     const head = classToRanges(m[1]!)
     const tail = classToRanges(m[2]!)
-    return head && tail ? { kind: 'ident', head, tail } : null
+    if (head && tail) return { kind: 'ident', head, tail }
   }
   // <q>(?:[^q\\]|\\.)*<q> — a quote-delimited string with escapes.
   const str = parseStringShape(source)
@@ -185,7 +842,6 @@ export function parseScanShape(source: string): ScanShape | null {
     const open = literalCodePoints(m[1]!)
     const stop = parseClassRanges(m[2]!)
     if (open && stop) return { kind: 'until', open, stop }
-    return null
   }
   // <open>(?:…)*<close> — delimited token scanned to its first close literal.
   // Reject escape-aware bodies (a literal `\\` in the source ⇒ string-like), where
@@ -198,6 +854,10 @@ export function parseScanShape(source: string): ScanShape | null {
       if (open && close) return { kind: 'delimited', open, close }
     }
   }
+  // General category: a linear chain of literals + char runs (optional prefixes,
+  // literal openers, negated runs), lowered only when unambiguously greedy.
+  const parts = parseSeqParts(source)
+  if (parts && seqIsUnambiguous(parts)) return { kind: 'seq', parts }
   return null
 }
 
@@ -208,7 +868,11 @@ export function parseScanShape(source: string): ScanShape | null {
  * `g`/`y` are stickiness-only and safe.
  */
 export function scanShapeFromRegex(source: string, flags: string): ScanShape | null {
-  if (/[imsu]/.test(flags)) return null
+  if (/[msu]/.test(flags)) return null
+  if (/i/.test(flags)) {
+    const open = literalCodePoints(source)
+    return open ? { kind: 'litFold', open } : null
+  }
   return parseScanShape(source)
 }
 
@@ -269,6 +933,65 @@ export function emitShapeMatch(
   ind: string,
   firstChar?: string,
 ): ShapeMatch {
+  if (shape.kind === 'lookahead') {
+    const inner = emitShapeMatch(shape.inner, start, mint, ind, firstChar)
+    const okV = mint('_ok')
+    const endV = mint('_end')
+    // `charInClass` folds the operand's OWN `[^…]` negation in; `guardFails`
+    // then applies the lookahead's `!`/`=` polarity on top. Zero-width: `end`
+    // is always `inner.end` (on success) or `start` (on failure) — never past
+    // where `inner` itself stopped.
+    const rawIn = classCond(`input.charCodeAt(${inner.end})`, shape.ranges)
+    const charInClass = shape.classNegated ? `!(${rawIn})` : `(${rawIn})`
+    const hasMatchingChar = `${inner.end} < input.length && ${charInClass}`
+    const guardFails = shape.negative ? hasMatchingChar : `!(${hasMatchingChar})`
+    return {
+      setup: [
+        ...inner.setup,
+        `${ind}let ${okV} = ${inner.ok}`,
+        `${ind}let ${endV} = ${inner.end}`,
+        `${ind}if (${okV} && (${guardFails})) { ${okV} = false; ${endV} = ${start} }`,
+      ],
+      ok: okV,
+      end: endV,
+    }
+  }
+
+  if (shape.kind === 'alt') {
+    const okV = mint('_ok')
+    const endV = mint('_end')
+    const lines: string[] = [`${ind}let ${okV} = false`, `${ind}let ${endV} = ${start}`]
+    if (shape.disjoint) {
+      // Mutually exclusive first-sets: dispatch straight to the one matching
+      // arm, no ordering/backtracking concerns (§7b-style disjoint dispatch).
+      const c0 = codeAt(start, firstChar)
+      shape.arms.forEach((arm, k) => {
+        const fs = shape.firsts[k]! // non-null whenever `disjoint` is true
+        const cond = fs.negated ? `!(${classCond(c0, fs.ranges)})` : `(${classCond(c0, fs.ranges)})`
+        const m = emitShapeMatch(arm, start, mint, `${ind}  `, firstChar)
+        lines.push(`${ind}${k === 0 ? 'if' : 'else if'} (${start} < input.length && ${cond}) {`)
+        lines.push(...m.setup)
+        lines.push(`${ind}  ${okV} = ${m.ok}`)
+        lines.push(`${ind}  ${endV} = ${m.ok} ? ${m.end} : ${start}`)
+        lines.push(`${ind}}`)
+      })
+    } else {
+      // Overlapping first-sets: ordered choice — try each arm in turn and take
+      // the first that succeeds. This is exactly regex `|`'s own semantics:
+      // first alternative to match AT ALL wins on ITS OWN greedy length, never
+      // compared against a later alternative's (possibly longer) match.
+      const lbl = mint('_alt')
+      lines.push(`${ind}${lbl}: {`)
+      for (const arm of shape.arms) {
+        const m = emitShapeMatch(arm, start, mint, `${ind}  `, firstChar)
+        lines.push(...m.setup)
+        lines.push(`${ind}  if (${m.ok}) { ${okV} = true; ${endV} = ${m.end}; break ${lbl} }`)
+      }
+      lines.push(`${ind}}`)
+    }
+    return { setup: lines, ok: okV, end: endV }
+  }
+
   if (shape.kind === 'chars') {
     const cur = mint('_e')
     return {
@@ -294,6 +1017,88 @@ export function emitShapeMatch(
       ],
       ok: `${cur} > ${start}`,
       end: cur,
+    }
+  }
+
+  if (shape.kind === 'seq') {
+    const endV = mint('_e')
+    const okV = mint('_ok')
+    const runCond = (p: Extract<SeqPart, { part: 'run' }>, at: string) => {
+      const c = classCond(`input.charCodeAt(${at})`, p.ranges)
+      return p.negated ? `!(${c})` : `(${c})`
+    }
+    const lines = [`${ind}let ${endV} = ${start}`, `${ind}let ${okV} = false`, `${ind}do {`]
+    let first = true
+    for (const p of shape.parts) {
+      if (p.part === 'lit') {
+        const L = p.cps.length
+        const cond = litCond(endV, p.cps, first ? firstChar : undefined)
+        if (p.optional) {
+          lines.push(`${ind}  if (${endV} + ${L} <= input.length && (${cond})) ${endV} += ${L}`)
+        } else {
+          lines.push(`${ind}  if (!(${endV} + ${L} <= input.length && (${cond}))) break`)
+          lines.push(`${ind}  ${endV} += ${L}`)
+        }
+      } else if (p.part === 'run' && !p.unbounded) {
+        // Exactly one char: required (min 1) or optional (min 0).
+        if (p.min === 1) {
+          lines.push(`${ind}  if (!(${endV} < input.length && ${runCond(p, endV)})) break`)
+          lines.push(`${ind}  ${endV}++`)
+        } else {
+          lines.push(`${ind}  if (${endV} < input.length && ${runCond(p, endV)}) ${endV}++`)
+        }
+      } else if (p.part === 'run') {
+        const s = mint('_s')
+        lines.push(`${ind}  const ${s} = ${endV}`)
+        lines.push(`${ind}  while (${endV} < input.length && ${runCond(p, endV)}) ${endV}++`)
+        if (p.min === 1) lines.push(`${ind}  if (${endV} === ${s}) break`)
+      } else {
+        // `group` (§8f): the group's own body is just another `ScanShape` —
+        // recurse via `emitShapeMatch`, then splice its setup in as the body
+        // of a required-once check, an optional take, or a repeat loop.
+        const inner = emitShapeMatch(p.inner, endV, mint, `${ind}  `, first ? firstChar : undefined)
+        if (!p.unbounded) {
+          lines.push(...inner.setup)
+          if (p.min === 1) {
+            lines.push(`${ind}  if (!(${inner.ok})) break`)
+            lines.push(`${ind}  ${endV} = ${inner.end}`)
+          } else {
+            lines.push(`${ind}  if (${inner.ok}) ${endV} = ${inner.end}`)
+          }
+        } else {
+          const progV = mint('_prog')
+          lines.push(`${ind}  let ${progV} = false`)
+          lines.push(`${ind}  while (true) {`)
+          lines.push(...inner.setup)
+          lines.push(`${ind}    if (!(${inner.ok})) break`)
+          lines.push(`${ind}    ${endV} = ${inner.end}`)
+          lines.push(`${ind}    ${progV} = true`)
+          lines.push(`${ind}  }`)
+          if (p.min === 1) lines.push(`${ind}  if (!${progV}) break`)
+        }
+      }
+      first = false
+    }
+    lines.push(`${ind}  ${okV} = true`)
+    lines.push(`${ind}} while (false)`)
+    lines.push(`${ind}if (!${okV}) ${endV} = ${start}`)
+    return { setup: lines, ok: okV, end: endV }
+  }
+
+  if (shape.kind === 'litFold') {
+    const openLen = shape.open.length
+    const endV = mint('_end')
+    const checks = shape.open.map((cp, k) => {
+      const cVar = k === 0 && firstChar ? firstChar : `input.charCodeAt(${start} + ${k})`
+      return foldEq(cVar, cp)
+    })
+    return {
+      setup: [
+        `${ind}let ${endV} = ${start}`,
+        `${ind}if (${start} + ${openLen} <= input.length && (${checks.join(' && ')})) ${endV} = ${start} + ${openLen}`,
+      ],
+      ok: `${endV} > ${start}`,
+      end: endV,
     }
   }
 

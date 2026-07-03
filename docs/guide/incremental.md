@@ -1,16 +1,16 @@
 # Incremental re-parsing
 
 Editors re-parse on every keystroke. Re-parsing the whole document each time is wasteful
-when a single character changed. `makeFunctionalDoc` wraps a parse in a document that
+when a single character changed. `parseDoc` wraps a parse in a document that
 re-parses **incrementally** on edits, sharing untouched nodes by reference.
 
-## `makeFunctionalDoc`
+## `parseDoc`
 
 ```ts
-import { makeFunctionalDoc } from 'parseman'
+import { parseDoc } from 'parseman'
 
 const registry = { Expr, Num }              // straight from rules()
-let doc = makeFunctionalDoc(registry, 'Expr', src)
+let doc = parseDoc(registry, 'Expr', src)
 
 doc.tree    // your Node root, or null on failure
 doc.errors  // ParseFail[], empty on success
@@ -52,10 +52,10 @@ Keep one registry per language and one doc per open document. Each keystroke giv
 changed range as byte offsets — pass them straight to `edit()`:
 
 ```ts
-const docs = new Map<string, ReturnType<typeof makeFunctionalDoc<Node>>>()
+const docs = new Map<string, ReturnType<typeof parseDoc<Node>>>()
 
 vscode.workspace.onDidOpenTextDocument(d => {
-  docs.set(d.uri.toString(), makeFunctionalDoc(registry, 'Stylesheet', d.getText()))
+  docs.set(d.uri.toString(), parseDoc(registry, 'Stylesheet', d.getText()))
 })
 
 vscode.workspace.onDidChangeTextDocument(event => {
@@ -76,7 +76,7 @@ shallow-spread — class instances with private fields, say — pass `opts.rebui
 to control how a parent is reconstructed:
 
 ```ts
-const doc = makeFunctionalDoc(registry, 'Program', src, {
+const doc = parseDoc(registry, 'Program', src, {
   rebuild: (node, children) => node.withChildren(children),
 })
 ```

@@ -1,5 +1,5 @@
 /**
- * Functional incremental document — incremental re-parse over a rules() registry.
+ * Incremental parse document — incremental re-parse over a rules() registry.
  */
 import type { ParseContext, ParseFail, ParseResult } from '../types.ts'
 import type { NodeLike, CSTLeaf, CSTError } from '../cst/types.ts'
@@ -10,7 +10,7 @@ export type RuleFn<N> = (input: string, pos: number, ctx: ParseContext) => Parse
 /** Rule name → parser function. This is exactly the shape `rules()` returns. */
 export type Registry<N> = Record<string, RuleFn<N>>
 
-export type FunctionalDocOptions<N extends NodeLike> = {
+export type ParseDocOptions<N extends NodeLike> = {
   /** Initial grammar state threaded into ctx.state for the root parse. */
   state?: unknown
   /**
@@ -21,7 +21,7 @@ export type FunctionalDocOptions<N extends NodeLike> = {
   rebuild?: (node: N, children: ReadonlyArray<N | CSTLeaf | CSTError>) => N
 }
 
-export interface FunctionalDoc<N extends NodeLike> {
+export interface ParseDoc<N extends NodeLike> {
   readonly tree: N | null
   readonly errors: ParseFail[]
   readonly input: string
@@ -29,7 +29,7 @@ export interface FunctionalDoc<N extends NodeLike> {
    * Incrementally re-parse after a text change. `from`/`to` are byte offsets in
    * the OLD input; `replacement` fills that range (editor change-event shape).
    */
-  edit(from: number, to: number, replacement: string): FunctionalDoc<N>
+  edit(from: number, to: number, replacement: string): ParseDoc<N>
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ function ancestorsAt<N extends NodeLike>(root: N, path: number[]): N[] {
 }
 
 function replaceAtPath<N extends NodeLike>(
-  rebuild: NonNullable<FunctionalDocOptions<N>['rebuild']>,
+  rebuild: NonNullable<ParseDocOptions<N>['rebuild']>,
   root: N,
   path: number[],
   newNode: N,
@@ -130,10 +130,10 @@ function graftAndShift<N extends NodeLike>(root: N, path: number[], newNode: N, 
 // Document
 // ---------------------------------------------------------------------------
 
-class FunctionalDocImpl<N extends NodeLike> implements FunctionalDoc<N> {
+class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
   private readonly _registry: Registry<N>
   private readonly _rootRule: string
-  private readonly _opts: FunctionalDocOptions<N>
+  private readonly _opts: ParseDocOptions<N>
   readonly tree: N | null
   readonly errors: ParseFail[]
   readonly input: string
@@ -141,7 +141,7 @@ class FunctionalDocImpl<N extends NodeLike> implements FunctionalDoc<N> {
   constructor(
     registry: Registry<N>,
     rootRule: string,
-    opts: FunctionalDocOptions<N>,
+    opts: ParseDocOptions<N>,
     tree: N | null,
     errors: ParseFail[],
     input: string,
@@ -154,9 +154,9 @@ class FunctionalDocImpl<N extends NodeLike> implements FunctionalDoc<N> {
     this.input = input
   }
 
-  edit(from: number, to: number, replacement: string): FunctionalDoc<N> {
+  edit(from: number, to: number, replacement: string): ParseDoc<N> {
     const newInput = this.input.slice(0, from) + replacement + this.input.slice(to)
-    const reparse = () => makeFunctionalDoc(this._registry, this._rootRule, newInput, this._opts)
+    const reparse = () => parseDoc(this._registry, this._rootRule, newInput, this._opts)
 
     if (!this.tree) return reparse()
 
@@ -185,14 +185,14 @@ class FunctionalDocImpl<N extends NodeLike> implements FunctionalDoc<N> {
         // untouched sibling by reference) is already correct.
         if (delta === 0) {
           const newTree = replaceAtPath(rebuild, this.tree, path, r.value)
-          return new FunctionalDocImpl(this._registry, this._rootRule, this._opts, newTree, [], newInput)
+          return new ParseDocImpl(this._registry, this._rootRule, this._opts, newTree, [], newInput)
         }
         // Length-changing edit: nodes after the edit must have their absolute
         // spans shifted. A custom `rebuild` can't have its spans shifted safely
         // (it may be a class instance), so fall back to a full, correct reparse.
         if (this._opts.rebuild) return reparse()
         const newTree = graftAndShift(this.tree, path, r.value, delta)
-        return new FunctionalDocImpl(this._registry, this._rootRule, this._opts, newTree, [], newInput)
+        return new ParseDocImpl(this._registry, this._rootRule, this._opts, newTree, [], newInput)
       }
     }
 
@@ -201,21 +201,21 @@ class FunctionalDocImpl<N extends NodeLike> implements FunctionalDoc<N> {
 }
 
 /**
- * Parse `input` from `rootRule` and wrap the result in a FunctionalDoc that can
+ * Parse `input` from `rootRule` and wrap the result in a ParseDoc that can
  * be incrementally re-parsed via `.edit()`.
  */
-export function makeFunctionalDoc<N extends NodeLike>(
+export function parseDoc<N extends NodeLike>(
   registry: Registry<N>,
   rootRule: string,
   input: string,
-  opts: FunctionalDocOptions<N> = {},
-): FunctionalDoc<N> {
+  opts: ParseDocOptions<N> = {},
+): ParseDoc<N> {
   const ruleFn = registry[rootRule]
   if (!ruleFn) throw new Error(`No rule '${rootRule}' in registry`)
   const ctx: ParseContext = { trackLines: false, state: opts.state }
   const r: ParseResult<N> = ruleFn(input, 0, ctx)
   if (r.ok) {
-    return new FunctionalDocImpl(registry, rootRule, opts, r.value, [], input)
+    return new ParseDocImpl(registry, rootRule, opts, r.value, [], input)
   }
-  return new FunctionalDocImpl(registry, rootRule, opts, null, [{ ok: false, expected: r.expected, span: r.span }], input)
+  return new ParseDocImpl(registry, rootRule, opts, null, [{ ok: false, expected: r.expected, span: r.span }], input)
 }

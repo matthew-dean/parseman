@@ -19,7 +19,7 @@ import {
   buildLabeledScannableTriviaFnDecl,
   labeledTriviaRegexArms,
 } from './trivia-fast-path.ts'
-import { scanShapeFromRegex } from './scannable-run.ts'
+import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, type ScanShape, type Mint } from './scannable-run.ts'
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
@@ -699,6 +699,18 @@ function emitFallible(
 // Per-combinator emitters
 // ---------------------------------------------------------------------------
 
+/**
+ * Above this length, an unrolled `charCodeAt` chain stops paying for itself:
+ * measured crossover where native `startsWith` wins on runtime is ~256–512
+ * chars, but the unrolled chain's *generated source* grows ~4–30× faster than
+ * `startsWith`'s near-constant call site (see PERF_IDEAS.md). No literal in a
+ * real grammar (keywords, punctuation) gets remotely close to this — the
+ * longest in this repo's example grammars is `important` (9 chars) — so this
+ * threshold exists to cap codegen bloat on a pathological literal, not because
+ * `startsWith` is faster there.
+ */
+const CHARCODE_CHAIN_MAX = 16
+
 function emitLit(def: Extract<ParserDef, { tag: 'literal' }>, ctx: Ctx, pos: string): ER {
   const { value, caseInsensitive } = def
   const len = value.length
@@ -722,7 +734,7 @@ function emitLit(def: Extract<ParserDef, { tag: 'literal' }>, ctx: Ctx, pos: str
       ...emitIfFail(ctx, `${pos} >= input.length || input.charCodeAt(${pos}) !== ${code}`, failBody(ctx, expectedStr, pos)),
       `${ind(ctx)}const ${vv} = ${JSON.stringify(value)}`,
     )
-  } else if (len <= 4) {
+  } else if (len <= CHARCODE_CHAIN_MAX) {
     const checks = Array.from({ length: len }, (_, i) =>
       `input.charCodeAt(${pos}${i > 0 ? ` + ${i}` : ''}) !== ${value.codePointAt(i)!}`
     ).join(' || ')
@@ -748,7 +760,88 @@ function escapeKeywordRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/**
+ * Fast path for `keywords()`/`word()`/`makeWord()`: each word is a FIXED
+ * literal (optionally wrapped in the shared boundary lookahead), so this
+ * reuses the exact `seq`/`litFold`/`lookahead` `ScanShape` machinery from
+ * `scannable-run.ts` (PERF_IDEAS §8b) instead of one `RegExp.exec` alternation
+ * per match. Unconditionally ambiguity-safe: `trailingBacktrackClass` treats a
+ * single-literal `seq` and `litFold` as fixed-length (no quantifier to
+ * backtrack), so wrapping either in a lookahead is safe for ANY boundary class
+ * — no `seqIsUnambiguous`-style check is needed here.
+ *
+ * Declines (returns `null`, caller falls back to the regex alternation) for:
+ *   - an empty-string keyword (degenerate; not worth special-casing)
+ *   - a keyword containing an astral (surrogate-pair) code point — the `seq`/
+ *     `litFold` codegen advances one `charCodeAt` UTF-16 unit per code POINT,
+ *     which only holds for the BMP (same reason `scanShapeFromRegex` refuses
+ *     the `u` flag entirely); real keyword sets are BMP identifiers, so this
+ *     is a defensive, not a practical, limitation
+ *   - a boundary class this file can't parse (defensive; `parseClassRanges`
+ *     handles every realistic boundary string, e.g. `_0-9A-Za-z`)
+ *   - `caseInsensitive` combined with a boundary — the boundary class would
+ *     ALSO need ASCII case-folding to match the original regex's `/i` flag
+ *     (the general "`/i` on a char class" problem, PERF_IDEAS §8d, not yet
+ *     built), so this combination is left on the safe, slower path rather
+ *     than risk silently narrowing which chars the boundary excludes.
+ */
+function emitKeywordsFast(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, pos: string): ER | null {
+  if (def.words.length === 0 || def.words.some(w => w.length === 0)) return null
+  if (def.words.some(w => Array.from(w).length !== w.length)) return null
+  if (def.caseInsensitive && def.boundary) return null
+
+  let boundary: { ranges: Array<[number, number]>; negated: boolean } | null = null
+  if (def.boundary) {
+    let body = def.boundary
+    const negated = body.startsWith('^')
+    if (negated) body = body.slice(1)
+    const ranges = parseClassRanges(body)
+    if (!ranges) return null
+    boundary = { ranges, negated }
+  }
+
+  const mint: Mint = (prefix = '_v') => v(ctx, prefix)
+  const lbl = v(ctx, '_kwLbl')
+  const valV = v(ctx, '_kwv')
+  const endV = v(ctx, '_kwe')
+  const bodyInd = ind(ctx) + '  '
+
+  const tries: string[] = []
+  for (const w of def.words) {
+    const cps = Array.from(w, ch => ch.codePointAt(0)!)
+    let shape: ScanShape = def.caseInsensitive
+      ? { kind: 'litFold', open: cps }
+      : { kind: 'seq', parts: [{ part: 'lit', cps, optional: false }] }
+    if (boundary) {
+      shape = { kind: 'lookahead', inner: shape, ranges: boundary.ranges, classNegated: boundary.negated, negative: true }
+    }
+    const m = emitShapeMatch(shape, pos, mint, bodyInd)
+    tries.push(
+      ...m.setup,
+      // Slice from input rather than reusing the literal word: `caseInsensitive`
+      // must return the text as it actually appeared (e.g. "ABC" for keyword
+      // "abc"), matching what the original `RegExp.exec()[0]` returned.
+      `${bodyInd}if (${m.ok}) { ${valV} = input.slice(${pos}, ${m.end}); ${endV} = ${m.end}; break ${lbl} }`,
+    )
+  }
+
+  const stmts = [
+    `${ind(ctx)}let ${valV} = '', ${endV} = ${pos}`,
+    `${ind(ctx)}${lbl}: {`,
+    ...tries,
+    `${ind(ctx)}}`,
+    // Every word has length >= 1 (checked above), so a real match always
+    // advances past `pos` — `endV === pos` only happens when no candidate matched.
+    ...emitIfFail(ctx, `${endV} === ${pos}`, failBody(ctx, '"keyword"', pos)),
+  ]
+  stmts.push(...emitLeafCapture(ctx, valV, pos, endV))
+  return { stmts, valueVar: valV, endVar: endV }
+}
+
 function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, pos: string): ER {
+  const fast = emitKeywordsFast(def, ctx, pos)
+  if (fast) return fast
+
   const alt = def.words.map(escapeKeywordRe).join('|')
   const boundary = def.boundary ? `(?![${def.boundary}])` : ''
   const flags = def.caseInsensitive ? 'iuy' : 'uy'
@@ -1258,7 +1351,7 @@ function emitTransformChain(p: Combinator<unknown>, baseValue: string, endV: str
 function emitLiteralCondition(litVal: string, pos: string): string {
   const len = litVal.length
   if (len === 0) return 'true'
-  if (len > 4) return `input.startsWith(${JSON.stringify(litVal)}, ${pos})`
+  if (len > CHARCODE_CHAIN_MAX) return `input.startsWith(${JSON.stringify(litVal)}, ${pos})`
   // Short string: charCodeAt checks (same as emitLit)
   const checks = [`${pos} + ${len} <= input.length`]
   for (let i = 0; i < len; i++) {

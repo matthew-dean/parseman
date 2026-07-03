@@ -9,13 +9,13 @@
  *   1. AST construction inside transform() callbacks, with correct spans.
  *   2. Byte-identical output between the interpreter and the macro-compiled
  *      build (the same grammar source run both ways).
- *   3. Incremental re-parse via makeFunctionalDoc, driven by the rules() map as
+ *   3. Incremental re-parse via parseDoc, driven by the rules() map as
  *      a rule registry.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 import {
   literal, regex, sequence, optional, sepBy, transform, rules, parse, parser, trivia, node, oneOrMore, choice,
-  makeFunctionalDoc,
+  parseDoc,
 } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import type { Combinator, ParseContext, ParseResult } from '../../src/index.ts'
@@ -326,7 +326,7 @@ const { Num, Body } = rules(g => {
 for (const [mode, registry] of [['interpreter', () => interpRegistry], ['macro', () => macroRegistry]] as const) {
   describe(`functional grammar — incremental (${mode})`, () => {
     it('full parse produces an Object root', () => {
-      const doc = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1}')
+      const doc = parseDoc<Node>(registry(), 'Object', '{a:1}')
       expect(doc.tree).not.toBeNull()
       expect(doc.tree!.type).toBe('Object')
       expect(doc.input).toBe('{a:1}')
@@ -334,9 +334,9 @@ for (const [mode, registry] of [['interpreter', () => interpRegistry], ['macro',
 
     it('same-length value edit grafts and equals a full reparse', () => {
       // delta 0 → spans line up, so the incremental tree must equal a fresh parse.
-      const doc = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}').edit(7, 8, '9')
+      const doc = parseDoc<Node>(registry(), 'Object', '{a:1,b:2}').edit(7, 8, '9')
       expect(doc.input).toBe('{a:1,b:9}')
-      const fresh = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:9}')
+      const fresh = parseDoc<Node>(registry(), 'Object', '{a:1,b:9}')
       expect(doc.tree).toEqual(fresh.tree)
       // and the edited value really changed
       const bVal = pairsOf(doc.tree)[1]!.children[0]!
@@ -344,7 +344,7 @@ for (const [mode, registry] of [['interpreter', () => interpRegistry], ['macro',
     })
 
     it('growing value edit re-parses the containing rule', () => {
-      const doc = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}').edit(3, 4, '42')
+      const doc = parseDoc<Node>(registry(), 'Object', '{a:1,b:2}').edit(3, 4, '42')
       expect(doc.input).toBe('{a:42,b:2}')
       expect(doc.tree).not.toBeNull()
       const aVal = pairsOf(doc.tree)[0]!.children[0]!
@@ -354,19 +354,19 @@ for (const [mode, registry] of [['interpreter', () => interpRegistry], ['macro',
     it('length-changing edit shifts ancestor + following-sibling spans (== full reparse)', () => {
       // Grow the first value by one char: the Object root span and the second
       // pair (which sits after the edit) must both shift, matching a fresh parse.
-      const edited = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}').edit(3, 4, '42')
-      const fresh = makeFunctionalDoc<Node>(registry(), 'Object', '{a:42,b:2}')
+      const edited = parseDoc<Node>(registry(), 'Object', '{a:1,b:2}').edit(3, 4, '42')
+      const fresh = parseDoc<Node>(registry(), 'Object', '{a:42,b:2}')
       expect(edited.tree).toEqual(fresh.tree)
     })
 
     it('shrinking edit also yields spans identical to a full reparse', () => {
-      const edited = makeFunctionalDoc<Node>(registry(), 'Object', '{a:42,b:2}').edit(3, 5, '1')
-      const fresh = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}')
+      const edited = parseDoc<Node>(registry(), 'Object', '{a:42,b:2}').edit(3, 5, '1')
+      const fresh = parseDoc<Node>(registry(), 'Object', '{a:1,b:2}')
       expect(edited.tree).toEqual(fresh.tree)
     })
 
     it('unaffected sibling subtree is shared by reference', () => {
-      const doc1 = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}')
+      const doc1 = parseDoc<Node>(registry(), 'Object', '{a:1,b:2}')
       const firstPairBefore = pairsOf(doc1.tree)[0]!
       const doc2 = doc1.edit(7, 8, '9')
       const firstPairAfter = pairsOf(doc2.tree)[0]!
@@ -374,22 +374,89 @@ for (const [mode, registry] of [['interpreter', () => interpRegistry], ['macro',
     })
 
     it('edit does not mutate the original doc', () => {
-      const doc1 = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1,b:2}')
+      const doc1 = parseDoc<Node>(registry(), 'Object', '{a:1,b:2}')
       const before = JSON.stringify(doc1.tree)
       doc1.edit(7, 8, '9')
       expect(JSON.stringify(doc1.tree)).toBe(before)
     })
 
     it('edit to invalid input falls back to a null tree with errors', () => {
-      const doc = makeFunctionalDoc<Node>(registry(), 'Object', '{a:1}').edit(3, 5, '')
+      const doc = parseDoc<Node>(registry(), 'Object', '{a:1}').edit(3, 5, '')
       expect(doc.tree).toBeNull()
       expect(doc.errors.length).toBeGreaterThan(0)
     })
 
     it('edit on a failed parse re-parses from scratch', () => {
-      const doc = makeFunctionalDoc<Node>(registry(), 'Object', '').edit(0, 0, '{x:1}')
+      const doc = parseDoc<Node>(registry(), 'Object', '').edit(0, 0, '{x:1}')
       expect(doc.tree).not.toBeNull()
       expect(doc.tree!.type).toBe('Object')
     })
   })
 }
+
+// ---------------------------------------------------------------------------
+// Incremental re-parse over a node()-built CST: siblings after a length-
+// changing edit can be CSTLeaf tokens (no `.children` array), not just
+// NodeLike subtrees. shiftSpans() must shift those leaves' spans too, taking
+// its "no children array" path instead of recursing.
+// ---------------------------------------------------------------------------
+
+describe('functional grammar — incremental over node()-built CST (leaf siblings)', () => {
+  const ident = regex(/[a-z]+/)
+  const digits = regex(/[0-9]+/)
+
+  const { Pair: leafPair, Object: leafObject } = rules<{ Pair: Combinator<any>; Object: Combinator<any> }>(g => {
+    const Pair = node('Pair', sequence(ident, literal(':'), digits), (c, _r, s) => ({
+      _tag: 'node', type: 'Pair', span: s, state: null, children: c,
+    }))
+    const Object = node('Object', sequence(g.Pair, literal(';'), g.Pair), (c, _r, s) => ({
+      _tag: 'node', type: 'Object', span: s, state: null, children: c,
+    }))
+    return { Pair, Object }
+  })
+
+  const leafRegistry: Record<string, RuleFn> = {
+    Pair: (i, p, c) => leafPair.parse(i, p, c),
+    Object: (i, p, c) => leafObject.parse(i, p, c),
+  }
+
+  it('shifts a trailing CSTLeaf sibling (e.g. the ";" separator) on a length-changing edit', () => {
+    // Growing the first Pair's value shifts everything after it: the ';'
+    // CSTLeaf sibling and the second Pair subtree both move by `delta`.
+    const doc = parseDoc<Node>(leafRegistry, 'Object', 'a:1;b:2').edit(2, 3, '42')
+    expect(doc.input).toBe('a:42;b:2')
+    const fresh = parseDoc<Node>(leafRegistry, 'Object', 'a:42;b:2')
+    expect(doc.tree).toEqual(fresh.tree)
+
+    const semicolon = doc.tree!.children[1] as unknown as { _tag: string; span: { start: number; end: number } }
+    expect(semicolon._tag).toBe('leaf')
+    expect(semicolon.span).toEqual({ start: 4, end: 5 })
+  })
+
+  it('throws when the root rule is not in the registry', () => {
+    expect(() => parseDoc<Node>(leafRegistry, 'Missing', 'a:1;b:2')).toThrow(
+      "No rule 'Missing' in registry",
+    )
+  })
+
+  it('widens past a candidate node whose type has no registry rule', () => {
+    // Registry only knows 'Object'; the tree still contains 'Pair' subtrees.
+    // Editing inside a Pair finds it first, but with no 'Pair' rule the loop
+    // continues (line: `if (!ruleFn) continue`) and widens to reparse 'Object'.
+    const objectOnly: Record<string, RuleFn> = { Object: (i, p, c) => leafObject.parse(i, p, c) }
+    const doc = parseDoc<Node>(objectOnly, 'Object', 'a:1;b:2').edit(2, 3, '42')
+    expect(doc.input).toBe('a:42;b:2')
+    const fresh = parseDoc<Node>(objectOnly, 'Object', 'a:42;b:2')
+    expect(doc.tree).toEqual(fresh.tree)
+  })
+
+  it('falls back to a full reparse for a custom rebuild on a length-changing edit', () => {
+    // A custom rebuild can't have its spans safely shifted, so graftAndShift is
+    // skipped and edit() reparses from scratch (still correct, just not shared).
+    const rebuild = (n: Node, children: readonly unknown[]): Node => ({ ...n, children: children as Node[] })
+    const doc = parseDoc<Node>(leafRegistry, 'Object', 'a:1;b:2', { rebuild }).edit(2, 3, '42')
+    expect(doc.input).toBe('a:42;b:2')
+    const fresh = parseDoc<Node>(leafRegistry, 'Object', 'a:42;b:2', { rebuild })
+    expect(doc.tree).toEqual(fresh.tree)
+  })
+})

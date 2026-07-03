@@ -37,8 +37,8 @@ export { sepByRecover, manyRecover } from './combinators/recover-list.ts'
 
 export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, NodeLike } from './cst/types.ts'
 
-export { makeFunctionalDoc } from './functional/doc.ts'
-export type { FunctionalDoc, FunctionalDocOptions, Registry, RuleFn } from './functional/doc.ts'
+export { parseDoc } from './functional/doc.ts'
+export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts'
 export { buildTriviaIndex } from './cst/trivia-index.ts'
 export type { TriviaIndex, TriviaToken, TriviaIndexOptions } from './cst/trivia-index.ts'
 export { walk, createVisitor } from './cst/walk.ts'

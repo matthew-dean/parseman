@@ -66,12 +66,15 @@ for production so you pay the compile cost once, at build time.
 ## Measuring
 
 ```bash
-pnpm bench                  # Parséman vs Peggy, Parsimmon, Chevrotain, Nearley, Jison —
-                            # plus Parséman interpreted vs compiled across all examples
+pnpm bench                  # full cross-parser suite + Parseman regression report
+pnpm bench:svg              # chart-only benchmarks + regenerate assets/bench-*.svg
 pnpm bench:baseline         # refresh the regression baseline + append a history snapshot
-pnpm bench:svg              # regenerate assets/bench-*.svg (see guide/benchmarks)
 pnpm bench:compile-grammars # regenerate the precompiled Peggy/Nearley/Jison parsers
+pnpm perf:guard             # fast pre-commit CSS speedup ratio check
 ```
+
+See [Benchmarks → Refreshing the charts](./benchmarks#refreshing-the-charts) for when to
+use `bench:svg` vs the full `bench` suite.
 
 The benchmark reports each grammar's median µs/op interpreted and compiled, with a delta
 against the committed baseline — so a regression shows up immediately. See
@@ -79,8 +82,12 @@ against the committed baseline — so a regression shows up immediately. See
 
 ## Library-level ideas
 
-The lever above is what *grammar authors* control. For library-level codegen and macro
-optimizations (choice fast-paths, trivia loop specialization, transform/build inlining,
-and more), see
+The lever above is what *grammar authors* control. Below the grammar, the compiler also
+lowers many `regex(…)` terminals into `charCodeAt` scan loops — see
+[Under the hood: regex lowering](./regex-lowering) for what gets lowered, into what, and how
+it's kept correct and fast.
+
+For the full catalog of library-level codegen and macro optimizations (choice fast-paths,
+trivia loop specialization, transform/build inlining, and more), see
 [`PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/PERF_IDEAS.md) in the
 repo.

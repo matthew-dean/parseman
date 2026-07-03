@@ -3,3 +3,4 @@ dist/
 *.tsbuildinfo
 .claude/worktrees/
 docs/.vitepress/cache/
+coverage/

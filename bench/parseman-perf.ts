@@ -117,6 +117,8 @@ export type ParsemanSuiteOpts = {
   skipOptional?: boolean
   /** Only run cases whose id starts with one of these prefixes (e.g. ['css']). */
   only?: string[]
+  /** Called before each case/mode measurement (for long interactive runs). */
+  onProgress?: (id: string, mode: ParsemanMode) => void
 }
 
 function buildCases(): CaseDef[] {
@@ -196,6 +198,7 @@ export function runParsemanSuite(opts?: ParsemanSuiteOpts): ParsemanBenchRow[] {
     if (opts?.only && !opts.only.some(p => c.id.startsWith(p))) continue
     const iterations = Math.max(50, Math.floor(c.iterations * scale))
     for (const mode of ['interpreted', 'compiled'] as const) {
+      opts?.onProgress?.(c.id, mode)
       const fn = mode === 'interpreted' ? c.interpreted : c.compiled
       const medianUs = measureMedianUs(fn, iterations, opts?.measure)
       rows.push({
@@ -305,11 +308,17 @@ function fmtDelta(pct: number): string {
   return `${sign}${pct.toFixed(1)}%`
 }
 
-export function printParsemanReport(rows: ParsemanBenchRow[], baseline: ParsemanBaseline | null): void {
+export function printParsemanReport(
+  rows: ParsemanBenchRow[],
+  baseline: ParsemanBaseline | null,
+  opts?: { skipTitle?: boolean },
+): void {
   const history = loadHistory()
   const { origin, previous } = historyAnchors(history)
 
-  console.log('\n=== Parseman perf — interpreted vs compiled (all example grammars) ===')
+  if (!opts?.skipTitle) {
+    console.log('\n=== Parseman perf — interpreted vs compiled (all example grammars) ===')
+  }
   if (baseline) {
     console.log(`  baseline: ${baseline.updatedAt} @ ${baseline.gitRev}`)
   } else {

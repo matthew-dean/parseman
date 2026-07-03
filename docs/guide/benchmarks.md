@@ -72,7 +72,12 @@ size in the charts above:
 | CSV large (14.8 kB) | **71 µs** | 447 | 1,301 | — |
 | GraphQL large (7.8 kB) | **154 µs** | 423 | 768 | — |
 
-Even the zero-setup **interpreter** beats all five libraries at the large sizes.
+The zero-setup **interpreter** stays close behind with no compile step at all: on JSON and
+CSV it's the fastest of *any* option here except Parséman's own macro build — ahead of
+Peggy, and well ahead of Parsimmon, Chevrotain, Nearley, and Jison. On GraphQL, Peggy's
+generated parser edges out the interpreter (it's still ahead of the other four), so that's
+the one grammar where reaching for the macro build actually matters. Either way you pay
+nothing up front.
 
 ## Parsing to a syntax tree
 
@@ -103,13 +108,15 @@ Lezer emits a compact buffer tree optimized for CodeMirror's incremental
 editor pipeline; Parséman emits JS objects ready for formatters and refactors without a
 second walk. Pick the output your consumer actually needs.
 
-The zero-setup **interpreter** CST is competitive with Lezer at small inputs and still
-~1.1× faster than Lezer parse-only at large, and **~2.8× faster than Chevrotain**.
+Even the zero-setup **interpreter** CST holds its own against a purpose-built incremental
+generator: it's on par with Lezer parse-only at small inputs, within ~1.2× of it at large
+(689 µs vs 559 µs) while building a richer object tree, and **~2.8× faster than
+Chevrotain** throughout. Compile it (macro build) and it moves ahead of Lezer outright.
 
 ## Incremental re-parse
 
 Editors re-parse on every keystroke, so re-parsing only what changed matters. Both
-Parséman ([`makeFunctionalDoc`](./incremental)) and [Lezer](https://lezer.codemirror.net/)
+Parséman ([`parseDoc`](./incremental)) and [Lezer](https://lezer.codemirror.net/)
 support this — but their cost curves are shaped differently, so the winner flips with the
 *kind* of edit. Measured on the 12 kB nested JSON fixture; every row produces a
 span-correct tree (verified against a full reparse):
@@ -144,22 +151,35 @@ wins. Pick for your edit mix.
 **When you're parsing to JS values — objects, rows, AST nodes — Parséman's macro build is
 the fastest general-purpose JS parser in this comparison, at every grammar and every input
 size**, with **zero initialization cost**. For syntax trees, the same macro build beats
-Lezer and Chevrotain on the JSON CST fixture. Even the setup-free interpreter beats every
-other value-building library at realistic sizes.
+Lezer and Chevrotain on the JSON CST fixture. And the setup-free interpreter is
+remarkably competitive on its own — fastest after the macro build on JSON and CSV (ahead of
+every generator, including Peggy), with Peggy taking GraphQL.
 
-The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M2
+The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M4
 Pro / Node+V8, median of 15 samples. Got a parser you think belongs in the comparison?
 [Open an issue](https://github.com/matthew-dean/parseman/issues) — the harness
 (`bench/run.ts`) is built to add competitors.
 
 ## Refreshing the charts
 
+To update the comparison SVGs in `assets/` (used by this page):
+
 ```bash
-pnpm bench       # run all benchmarks, print µs/op table
-pnpm bench:svg   # regenerate assets/bench-*.svg from the latest bench output
+pnpm bench:svg    # run chart-only benchmarks, then write assets/bench-*.svg
 ```
 
-Update the µs values in `bench/gen-svg.ts` from `pnpm bench` output before running
-`bench:svg` if the chart labels need to change.
+That's the whole workflow — one command. It runs **only** the JSON / CSV / GraphQL /
+CST-JSON warm-parse timings the charts need (~30–60 s), not the full `pnpm bench` suite.
 
-For regression guarding and baseline history, see [Performance → Measuring](./performance#measuring).
+| Command | What it does |
+| --- | --- |
+| `pnpm bench:svg` | **Update charts** — benchmark chart parsers + write `assets/bench-*.svg` |
+| `pnpm bench` | **Full suite** — cross-parser comparison *plus* incremental re-parse, combinator inlining, codegen A/B, Parseman regression report |
+| `pnpm bench:baseline` | Refresh Parseman regression baseline + history snapshot |
+| `pnpm perf:guard` | Fast pre-commit CSS speedup ratio check |
+
+Init-cost bars on the charts (`.compile()` vs Chevrotain setup) are **pinned** in
+`bench/chart-types.ts` — they vary wildly by machine and aren't refreshed on each run.
+Warm-parse bars come from live measurement.
+
+For regression guarding, see [Performance → Measuring](./performance#measuring).

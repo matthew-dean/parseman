@@ -299,7 +299,7 @@ autocomplete. Probes the grammar at that position via a truncated parse.
 
 ## Incremental re-parsing
 
-### `makeFunctionalDoc(registry, rootRule, input, opts?)`
+### `parseDoc(registry, rootRule, input, opts?)`
 
 Wrap a parse in an immutable document that re-parses incrementally via `.edit(from, to,
 replacement)`. `registry` is the object `rules()` returns. See

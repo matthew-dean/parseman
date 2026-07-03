@@ -80,6 +80,18 @@ describe('parse with trackLines', () => {
     }
   })
 
+  it('parser({ trackLines: true }) annotates via the grammar wrapper', async () => {
+    const { literal, sequence, parser } = await import('../../src/index.ts')
+    const p = parser({ trackLines: true }, sequence(literal('foo'), literal('\n'), literal('bar')))
+    const r = p.parse('foo\nbar', 0, { trackLines: false })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.span.startLine).toBe(1)
+      expect(r.span.endLine).toBe(2)
+      expect(r.span.endColumn).toBe(4)
+    }
+  })
+
   it('no line/col without trackLines', async () => {
     const { literal, parse } = await import('../../src/index.ts')
     const r = parse(literal('foo'), 'foo')

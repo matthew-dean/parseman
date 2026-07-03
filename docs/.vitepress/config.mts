@@ -72,6 +72,7 @@ export default defineConfig({
           items: [
             { text: 'Error recovery', link: '/guide/error-recovery' },
             { text: 'Performance', link: '/guide/performance' },
+            { text: 'Under the hood: regex lowering', link: '/guide/regex-lowering' },
           ],
         },
       ],

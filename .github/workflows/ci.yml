@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        # Version comes from the "packageManager" field in package.json, so CI
+        # always matches the lockfile format used locally.
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test with coverage
+        # Uses vitest.coverage.config.ts, which excludes all of test/perf/ —
+        # those are timing-based benchmarks, not unit tests, and running them
+        # under coverage instrumentation only adds noise to their timings
+        # without adding any coverage. Plain `pnpm test` still runs them.
+        run: pnpm test:coverage
+
+      - name: Coverage guard
+        # Ratchet, not a fixed threshold: fails only if coverage drops below
+        # scripts/coverage-baseline.json (see that file / scripts/coverage-guard.mjs).
+        # No-ops with a warning until a baseline exists — run
+        # `pnpm coverage:baseline` locally and commit the result to turn this on.
+        run: pnpm coverage:guard
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14

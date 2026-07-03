@@ -13,7 +13,7 @@
 import { describe, it, expect as vexpect, beforeAll } from 'vitest'
 import {
   literal, regex, sequence, choice, many, optional, transform, parser, trivia,
-  expect, staticExpected, compile, parse, isParseError,
+  expect, staticExpected, compile, parse, isParseError, ref, keywords,
 } from '../../src/index.ts'
 import type { ParseError } from '../../src/index.ts'
 
@@ -100,6 +100,15 @@ describe('staticExpected() — derives the expected set from structure', () => {
   it('sequence → first term only', () => {
     vexpect(staticExpected(sequence(literal('('), literal(')')))).toEqual(['"("'])
   })
+
+  it('unwraps lazy refs and reads regex/keywords arms', () => {
+    const slot = ref<unknown>()
+    slot.define(literal('x'))
+    vexpect(staticExpected(slot)).toEqual(['"x"'])
+    vexpect(staticExpected(regex(/[0-9]+/))).toEqual(['/[0-9]+/'])
+    vexpect(staticExpected(keywords(['if', 'else']))).toEqual(['"else"', '"if"'])
+  })
+
   it('expect without a label uses the derived set', () => {
     const e = expect(choice(literal(';'), literal('}')))
     const r = parse(sequence(literal('@'), e), '@!', { recover: true })
