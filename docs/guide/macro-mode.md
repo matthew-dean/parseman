@@ -46,6 +46,52 @@ import { literal, sequence, choice, regex, transform } from 'parseman' with { ty
 Same combinators, no other changes. The plugin walks each initializer, evaluates it at
 build time, and replaces it with an inline function.
 
+### Import attributes
+
+The `with { … }` suffix is [**import attributes**](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import/with) —
+standard JavaScript syntax from the [TC39 import-attributes
+proposal](https://github.com/tc39/proposal-import-attributes). It attaches metadata to an
+`import` (or `export … from`) statement. The canonical standardized use is JSON modules:
+
+```ts
+import data from './config.json' with { type: 'json' }
+```
+
+`type: 'macro'` is **not** a TC39-defined module type. It's a **bundler convention** —
+the attribute tells the build tool to evaluate the import at compile time and inline the
+result, rather than bundling it for runtime. The same `with { type: 'macro' }` pattern is
+used by [Bun](https://bun.com/docs/bundler/macros),
+[Parcel](https://parceljs.org/features/macros/), and
+[unplugin-macros](https://github.com/unplugin/unplugin-macros). Parséman's plugin keys off
+it the same way: see the attribute, compile the combinator tree, strip the attribute so
+the import stays valid for the interpreter fallback.
+
+Older runtimes may still accept the earlier `assert { type: 'macro' }` spelling (import
+*assertions*, the predecessor syntax). TypeScript has parsed `with { … }` on imports since
+5.3.
+
+### TypeScript config
+
+TypeScript only accepts import-attribute syntax when
+[`module`](https://www.typescriptlang.org/tsconfig/#module) is set to `esnext`,
+`nodenext`, or `preserve`. With anything else you'll get:
+
+```
+TS2823: Import attributes are only supported when the --module option is set to
+esnext, nodenext, or preserve.
+```
+
+For a bundler-based project the usual pairing is:
+
+```json
+{
+  "compilerOptions": {
+    "module": "preserve",
+    "moduleResolution": "bundler"
+  }
+}
+```
+
 ## What gets emitted
 
 A `choice` over string literals with disjoint first characters compiles to a single

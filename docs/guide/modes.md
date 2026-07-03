@@ -32,9 +32,10 @@ their tooling isn't present.
 ## Macro build (zero runtime cost)
 
 Register the [bundler plugin](./macro-mode) and add `with { type: 'macro' }` to your
-`parseman` import. At build time the plugin evaluates your combinator declarations and
-replaces them with inline functions — the `parseman` import disappears from the output
-entirely.
+`parseman` import — standard [import-attributes](./macro-mode#import-attributes) syntax,
+with `macro` as the bundler convention for compile-time evaluation. At build time the
+plugin evaluates your combinator declarations and replaces them with inline functions — the
+`parseman` import disappears from the output entirely.
 
 ```ts
 import { literal, sequence, choice } from 'parseman' with { type: 'macro' }
