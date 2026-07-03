@@ -25,10 +25,11 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
+        # The `prepare` lifecycle script builds dist/ after install, so the
+        # package self-reference ('parseman') resolves for the typecheck step
+        # (test fixtures import it as a real consumer would). No separate build
+        # step needed here.
         run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
 
       - name: Typecheck
         run: pnpm typecheck

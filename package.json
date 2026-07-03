@@ -43,7 +43,7 @@
     "bench": "node --import tsx/esm bench/run.ts",
     "bench:baseline": "node --import tsx/esm bench/update-parseman-baseline.ts",
     "perf:guard": "node --import tsx/esm bench/perf-guard.ts",
-    "prepare": "git config core.hooksPath scripts/git-hooks || true",
+    "prepare": "git config core.hooksPath scripts/git-hooks || true; node scripts/build.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
