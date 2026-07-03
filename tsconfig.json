@@ -13,5 +13,8 @@
     "noEmit": true
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["node_modules", "dist"]
+  // test/fixtures holds macro *input source* (read as text by the plugin resolver
+  // and run via `new Function`), not app code: it imports bare 'parseman' and uses
+  // intentionally untyped callbacks, so it isn't type-checkable standalone.
+  "exclude": ["node_modules", "dist", "test/fixtures"]
 }
