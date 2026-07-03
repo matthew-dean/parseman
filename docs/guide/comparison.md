@@ -1,3 +1,7 @@
+---
+pageClass: comparison-page
+---
+
 # How Parséman compares
 
 There are a lot of JavaScript parsing tools, and they optimize for different things. This
@@ -47,29 +51,41 @@ Two questions sort most of the field:
 
 ## Capabilities
 
-| Parser | Context-sensitive grammar | Incremental re-parse | Error recovery | Trivia capture | Ambiguity |
-| --- | --- | --- | --- | --- | --- |
-| **Parséman** | ✅ in-grammar | ✅ `makeFunctionalDoc` | ✅ `recover` | ✅ built-in `triviaLog` | ordered choice |
-| [Peggy](https://peggyjs.org/) | ✅ in-grammar | ❌ | ⚠️ location only | ❌ manual | ordered choice |
-| [Parsimmon](https://github.com/jneen/parsimmon) | ✅ in-grammar | ❌ | ❌ | ❌ manual | ordered choice |
-| [Chevrotain](https://chevrotain.io/) | ✅ in-grammar | ❌ | ✅ strong | ⚠️ tokens, manual | LL(k) |
-| [Nearley](https://nearley.js.org/) | ❌ CFG only | ❌ | ❌ | ❌ manual | ✅ returns all parses |
-| [Jison](https://github.com/zaach/jison) | ⚠️ lexer states | ❌ | ⚠️ error token | ❌ manual | LALR(1) |
-| [Lezer](https://lezer.codemirror.net/) | ⚠️ external only | ✅✅ core strength | ✅ | ✅ contextual skip | opt-in GLR |
-| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | ⚠️ external only | ✅✅ core strength | ✅ | ⚠️ `extras` | GLR |
+| Parser | Author in JS/TS | Debuggable grammar | Context-sensitive grammar | Incremental re-parse | Error recovery | Trivia capture |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `makeFunctionalDoc` | ✅ `recover` + auto lists | ✅ built-in `triviaLog` |
+| [Peggy](https://peggyjs.org/) | ❌ text DSL | ⚠️ generated JS + trace | ✅ in-grammar | ❌ | ⚠️ location only | ❌ manual |
+| [Parsimmon](https://github.com/jneen/parsimmon) | ✅ | ✅ | ✅ in-grammar | ❌ | ❌ | ❌ manual |
+| [Chevrotain](https://chevrotain.io/) | ✅ | ✅ | ✅ in-grammar | ⚠️ DIY, no engine | ✅ strong (automatic) | ⚠️ tokens, manual |
+| [Nearley](https://nearley.js.org/) | ❌ text DSL | ❌ | ❌ CFG only | ❌ | ❌ | ❌ manual |
+| [Jison](https://github.com/zaach/jison) | ❌ text DSL | ❌ | ⚠️ lexer states | ❌ | ⚠️ error token | ❌ manual |
+| [Lezer](https://lezer.codemirror.net/) | ❌ text DSL | ❌ | ⚠️ external only | ✅✅ core strength | ✅ | ✅ contextual skip |
+| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | ⚠️ JS → C | ❌ | ⚠️ external only | ✅✅ core strength | ✅ | ⚠️ `extras` |
 
-**Legend — context-sensitive grammar:**
+**Legend:**
 
-- **✅ in-grammar** — you express context directly in the grammar: semantic predicates or
-  arbitrary parse-time state, no escape hatch required.
-- **⚠️ external only** — possible, but *only* by dropping to a hand-written tokenizer /
-  scanner (token-level state), or lexer start-conditions. Not expressible in the grammar
-  rules themselves.
-- **❌** — context-free grammars only.
+- **Author in JS/TS** — the grammar is written in JavaScript/TypeScript, not a separate
+  text-DSL file compiled by a generator. tree-sitter's `grammar.js` is JS, but it
+  *generates a C parser* (with C scanners), hence ⚠️.
+- **Debuggable grammar** — you can step the parse in your language's ordinary debugger
+  (breakpoints, real stack traces) and read the parser *as code*, rather than debugging a
+  generated state table or a parser in another language. Runtime combinator/DSL libraries
+  qualify; generators mostly don't — Peggy emits JS you *can* trace, hence ⚠️.
+- **Context-sensitive grammar** — **✅ in-grammar**: express context directly (semantic
+  predicates or arbitrary parse-time state), no escape hatch. **⚠️ external only**:
+  possible, but *only* via a hand-written tokenizer/scanner (token-level state) or lexer
+  start-conditions — not the grammar rules themselves. **❌**: context-free only.
+- **Incremental re-parse** — **✅✅** built for it (buffer-tree fragment reuse); **✅**
+  first-class API; **⚠️ DIY, no engine**: no built-in edit-reuse, but the pieces exist to
+  roll your own; **❌**: re-parses from scratch.
+- **Error recovery** — Parséman recovers at resync points you **mark explicitly**
+  (`recover` / `expect`), plus automatic tolerant lists (`sepByRecover` / `manyRecover`);
+  Chevrotain's is **automatic/heuristic across the whole grammar** (single-token
+  insert/delete, resync). Both report every error, not just the first.
 
 ## The context-sensitivity axis
 
-This is the axis that's easy to miss and hard to retrofit, so it's worth spelling out.
+This axis is easy to miss and hard to retrofit.
 
 Real languages aren't purely context-free: `return` is only legal inside a function body,
 a here-doc's terminator depends on its opening line, indentation changes meaning, a CSS
@@ -107,11 +123,10 @@ grammar and write code:
   ergonomic than C, but it's still token-level state living *outside* the grammar rules,
   and the context has to expose a `hash` so incremental reuse stays correct.
 
-So the intuition holds: **neither tree-sitter nor Lezer lets you write a context-sensitive
-*grammar*.** They let you write a context-sensitive *tokenizer* in a separate language
-(C) or module (JS), which is a different and lower-level tool. For token-level needs
-(indentation, heredocs) that's fine; for rule-level context (this construct is only legal
-*here*) it's a poor fit.
+**Neither tree-sitter nor Lezer lets you write a context-sensitive *grammar*.** Both let
+you write a context-sensitive *tokenizer* in a separate language (C) or module (JS) — a
+different and lower-level tool. For token-level needs (indentation, heredocs) that's fine;
+for rule-level context (a construct that's only legal *here*) it's a poor fit.
 
 ### Context-free only (Nearley, Jison)
 
@@ -129,20 +144,102 @@ object tree with absolute spans makes **in-place value edits** (overtyping, exte
 token — the common keystroke) close to free and ahead of Lezer, while **structural
 edits** in a large collection favor Lezer/tree-sitter fragment reuse. The
 [incremental benchmark](./benchmarks#incremental-re-parse) has the numbers and the
-tradeoff. None of the pure value/DSL parsers (Peggy, Parsimmon, Chevrotain, Nearley,
-Jison) re-parse incrementally at all.
+tradeoff.
+
+The other parsers don't ship an incremental **engine**. Chevrotain is the closest: it has
+no built-in edit-reuse (its incremental-parser tracking issues,
+[#843](https://github.com/Chevrotain/chevrotain/issues/843) /
+[#844](https://github.com/Chevrotain/chevrotain/issues/844), were closed unimplemented),
+but its stateful parser instance — individually invokable rules, `reset()`, and partial
+CSTs from error recovery — gives you the building blocks to hand-roll reuse externally.
+Peggy, Parsimmon, Nearley, and Jison offer nothing here and re-parse from scratch. Note
+that Chevrotain's real edit-time strength is a *different* axis — fault-tolerant error
+recovery in a single pass, covered below — not incremental re-parse.
+
+## The developer-experience axis
+
+Two related axes decide how a grammar *feels* to build and maintain: what language you
+write it in, and whether you can debug it with the tools you already have.
+
+Parser **generators** — Peggy, Nearley, Jison, Lezer, tree-sitter — take a grammar in a
+dedicated text DSL and emit a parser: JS for most, C for tree-sitter. That buys them
+speed and (for Lezer/tree-sitter) incremental buffer trees, but the artifact you run isn't
+the grammar you wrote. When something goes wrong you're reading a generated state table or
+stepping through code in another language; a breakpoint in the output rarely maps back to a
+grammar rule.
+
+Parser **libraries** authored in JS/TS — Parséman, Parsimmon, Chevrotain — keep the
+grammar *as code you run directly*. You set breakpoints in your own rules, read real stack
+traces, and print values inline, with no generator in the loop.
+
+Parséman sits in a spot of its own: it's authored and debugged in TypeScript **like a
+library**, but its [`.compile()` / macro build](./modes) reaches generator-class speed —
+and, unusually, the **compiled output stays readable JS you can still breakpoint**, so you
+don't trade away debuggability to go fast. See
+[Debugging compiled grammars](./modes#debugging-compiled-grammars). (tree-sitter's
+`grammar.js` is JavaScript, but it *describes* a parser that's generated in C — authoring
+in JS isn't the same as debugging in JS, which is why it's ⚠️/❌ on those two columns.)
+
+## Where other tools go further
+
+Parséman's bet is a small, JS-native core aimed at speed, an editor-grade CST, in-grammar
+context, and first-class incremental re-parse for value edits. That means it deliberately
+skips a lot of surface area other tools have.
+
+**[Chevrotain](https://chevrotain.io/)** is the most feature-dense toolkit here. Parséman
+has since closed the gap on two of its headline conveniences — tree-walking (runtime
+[`walk` / `createVisitor`](./ast#walking-the-tree)) and the common error-recovery case
+([`sepByRecover` / `manyRecover`](./error-recovery#tolerant-lists)) — but Chevrotain still
+offers several things Parséman doesn't:
+
+- **Railroad / syntax-diagram generation** straight from the grammar.
+- **Grammar introspection** — a serializable grammar AST (from its self-analysis phase)
+  that tooling can consume; Parséman has no equivalent reflection API.
+- A **separate, configurable lexer** with stack-based **modes**, **token categories**
+  (polymorphic tokens), and `longer_alt` — Parséman is scannerless, so none of this
+  applies (a simplification, but also a missing capability if you want it).
+- **Grammar inheritance** (subclass a grammar and `OVERRIDE_RULE`).
+- **Per-rule-typed CST visitor base classes** (`getBaseCstVisitor…`) generated from the
+  grammar. Parséman's `walk` / `createVisitor` cover the same traversal need at runtime,
+  dispatching on a node's `type`, but don't hand you a class typed per rule.
+- **Configurable LL(k) lookahead** and opt-in `BACKTRACK`.
+- **Grammar-wide automatic error recovery** (heuristic single-token insert/delete +
+  resync, with no annotation anywhere). Parséman now automates the common list/repetition
+  case (`sepByRecover` / `manyRecover`) and marks other resync points explicitly
+  (`recover` / `expect`) — a narrower gap than before, but Chevrotain still recovers across
+  the whole grammar for free.
+
+(Chevrotain *removed* its syntactic content-assist API in v12, so that's no longer a
+point in its favor.)
+
+**[Lezer](https://lezer.codemirror.net/) / [tree-sitter](https://tree-sitter.github.io/tree-sitter/)**
+win on **structural-edit incremental** (buffer-tree fragment reuse), **GLR / ambiguity**,
+and — especially tree-sitter — an enormous library of **existing, battle-tested grammars**
+reused across editors (Neovim, GitHub, and more). If a maintained grammar for your
+language already exists there, that's hard to beat.
+
+**[Nearley](https://nearley.js.org/)** does **true ambiguous parsing** (returns *every*
+valid parse), which ordered-choice parsers (Parséman, Peggy, Parsimmon) structurally
+cannot.
+
+If you need that breadth, reach for the tool that has it. Parséman optimizes for a
+different point: fewest moving parts, authored and debugged in TypeScript, fast, with a
+rich CST and context sensitivity.
 
 ## Which to reach for
 
 - **Parséman** — you want the **fastest** JS value parser *and* an editor-grade CST with
-  spans and trivia, with **context-sensitive rules** and incremental re-parse, all in
-  plain TypeScript with no build step required.
+  spans and trivia, with **context-sensitive rules** and incremental re-parse — authored
+  and **debugged in TypeScript** (no separate grammar file, no generated artifact to step
+  through), with no build step required and generator-class speed when you want it.
 - **[Peggy](https://peggyjs.org/)** — a quick, readable PEG DSL for a config language or
   small DSL where a text grammar file is the deliverable.
 - **[Parsimmon](https://github.com/jneen/parsimmon)** — a tiny combinator parser with no
   build step and modest performance needs.
-- **[Chevrotain](https://chevrotain.io/)** — a hand-tunable parser with best-in-class
-  error recovery and you don't need incremental re-parse.
+- **[Chevrotain](https://chevrotain.io/)** — a batteries-included toolkit (railroad
+  diagrams, grammar introspection, lexer modes, grammar-wide automatic error recovery,
+  grammar inheritance) with best-in-class fault tolerance, when you want breadth and don't
+  need incremental re-parse or full-fidelity trivia.
 - **[Nearley](https://nearley.js.org/)** — genuinely **ambiguous** or natural-language
   grammars where you want every valid parse.
 - **[Jison](https://github.com/zaach/jison)** — porting an existing Yacc/Bison LALR

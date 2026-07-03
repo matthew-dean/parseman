@@ -194,6 +194,43 @@ type ParseError = {
 }
 ```
 
+## Tree traversal
+
+The shapes accepted by [`walk` / `createVisitor`](../guide/ast#walking-the-tree). Both
+default their node type to [`CSTChild`](#cst-types); pass your own AST node as a generic to
+override.
+
+### `Walkable`
+
+The minimal contract these helpers traverse — a `_tag`, an optional rule `type`, and
+optional structural `children`. Built-in `CSTChild` satisfies it, and so does any custom
+AST node (the generic-override target).
+
+```ts
+type Walkable = {
+  readonly _tag: string
+  readonly type?: string
+  readonly children?: ReadonlyArray<Walkable>
+}
+```
+
+### `WalkVisitor` · `VisitApi` · `VisitorHandlers` {#walk-types}
+
+```ts
+interface WalkVisitor<N extends Walkable = CSTChild, C = undefined> {
+  enter?(node: N, parent: N | null, ctx: C): boolean | void  // false → skip subtree
+  leave?(node: N, parent: N | null, ctx: C): void
+}
+
+interface VisitApi<R, N extends Walkable = CSTChild> {
+  visit(node: N): R | undefined       // dispatch one node to its handler
+  visitChildren(node: N): R[]         // visit each child, collect defined results
+}
+
+type VisitorHandlers<R, N extends Walkable = CSTChild> =
+  Record<string, (node: N, api: VisitApi<R, N>) => R>
+```
+
 ## Incremental re-parsing
 
 ```ts

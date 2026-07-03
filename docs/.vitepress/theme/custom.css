@@ -99,3 +99,25 @@
   height: 24px;
   stroke: var(--vp-c-brand-1);
 }
+
+/* Comparison page: the feature matrices have one wide "Parser" column and many
+   short capability cells, so content-driven widths look lopsided. Fix the layout
+   so the parser column gets a sensible share and the rest divide evenly. Scoped
+   to this page so the number-heavy benchmark tables keep their natural sizing. */
+.comparison-page .vp-doc table {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.comparison-page .vp-doc th,
+.comparison-page .vp-doc td {
+  overflow-wrap: anywhere;
+  hyphens: auto;
+}
+
+/* Give the first column (parser names) a bit more room than an even split. */
+.comparison-page .vp-doc th:first-child,
+.comparison-page .vp-doc td:first-child {
+  width: 16%;
+}

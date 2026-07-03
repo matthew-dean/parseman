@@ -1,6 +1,6 @@
 {
   "name": "parseman",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "packageManager": "pnpm@10.15.1",
   "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
   "type": "module",
@@ -66,6 +66,7 @@
     "chevrotain": "~12.0.0",
     "esbuild": "~0.27.7",
     "favicons": "~7.3.0",
+    "sharp": "~0.34.5",
     "jison": "~0.4.18",
     "moo": "~0.5.3",
     "nearley": "~2.20.1",

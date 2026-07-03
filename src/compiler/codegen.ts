@@ -8,6 +8,7 @@
  */
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
+import { staticExpected } from '../combinators/expect.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
   analyzeLabeledScannableRun,
@@ -1417,7 +1418,7 @@ function emitRecover(def: Extract<ParserDef, { tag: 'recover' }>, ctx: Ctx, pos:
     `${ind0}    if (${sentOk}) break`,
     `${ind0}    ${scanV}++`,
     `${ind0}  }`,
-    `${ind0}  const ${errV} = { _tag: 'parseError', span: { start: ${pos}, end: ${scanV} }, expected: [] }`,
+    `${ind0}  const ${errV} = { _tag: 'parseError', span: { start: ${pos}, end: ${scanV} }, expected: ${JSON.stringify(staticExpected(def.parser))} }`,
     `${ind0}  if (_ctx._errors) _ctx._errors.push(${errV})`,
     `${ind0}  ${valVar} = ${errV}`,
     `${ind0}  ${endVar} = ${scanV}`,

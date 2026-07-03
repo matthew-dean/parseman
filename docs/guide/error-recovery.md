@@ -252,14 +252,44 @@ Recovery is never free, and it's never pretty. Be deliberate:
   through a broken keystroke; incremental re-parsing keeps re-parsing cheap. Together
   they're the foundation of a responsive language server.
 
+## Tolerant lists
+
+Wrapping every list element in `recover` by hand is the most common recovery chore, so
+`sepByRecover` and `manyRecover` do it for you. They behave like `sepBy` / `many`, but a
+malformed element is skipped to the next separator (or the list terminator) and recorded
+as a `ParseError` in the result — instead of truncating the list at the first bad item.
+
+```ts
+import { sepByRecover, literal } from 'parseman'
+
+const elements = sepByRecover(value, literal(','), literal(']'))
+const array = sequence(literal('['), elements, literal(']'))
+
+// "[1,,3]"  → [1, ParseError, 3]   (the hole is one recovered error)
+// "[]"      → []                    (empty list — no spurious error)
+```
+
+The third argument is the list's **terminator** (matched but not consumed). It's required:
+it's how an empty list is told apart from a malformed first element, so `[]` yields `[]`
+rather than a bogus error. The terminator must not overlap with what a valid element can
+start with.
+
+`manyRecover(item, until)` is the separator-less form: with no separator to resync on, a
+bad run is captured as a single `ParseError` up to the terminator. Both are built from
+`recover` under the hood, so the collected errors show up in `{ recover: true }` exactly
+like hand-written recovery, and the macro build behaves identically to the interpreter.
+
 ## Cheat sheet
 
 | I want to… | Use |
 | --- | --- |
 | Require a `}` / `)` / `;` but keep parsing if it's missing | `expect(literal('}'), '}')` |
 | Skip a broken statement and resume at the next `;` | `recover(stmt, literal(';'))` |
+| Parse a list, tolerating bad elements | `sepByRecover(item, literal(','), literal(']'))` |
+| Parse a repetition, tolerating junk | `manyRecover(item, literal('}'))` |
 | Consume everything up to a boundary token | `scanTo(sentinel, { skip: […] })` |
 | Match a whole `(…)` / `[…]` / `{…}` region as text | `balanced('(', ')')` |
 | Collect all errors from a parse | `parse(p, src, { recover: true }).errors` |
 | Know why a "successful" parse stopped short | `.furthestFail` |
 | Test a value for a recovered error | `isParseError(value)` |
+| Walk / visit the result tree | `walk(tree, …)` · `createVisitor({ … })` |

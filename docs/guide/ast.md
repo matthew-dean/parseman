@@ -123,6 +123,46 @@ The built-in CST leaf/node/error shapes are also exported as types — `CSTNode`
 `CSTLeaf`, `CSTError`, `CSTTrivia` — if you'd rather use them directly. See the
 [types reference](../reference/types#cst-types).
 
+## Walking the tree
+
+The tree is plain objects, so you can recurse it yourself — but two helpers save you
+writing the same traversal every time.
+
+`walk(root, visitor, ctx?)` is a depth-first traversal with `enter` / `leave` hooks.
+Return `false` from `enter` to skip a subtree:
+
+```ts
+import { walk } from 'parseman'
+
+const leaves: string[] = []
+walk(tree, {
+  enter(node) {
+    if (node._tag === 'leaf') leaves.push(node.value)
+  },
+})
+```
+
+`createVisitor(handlers)` dispatches on each node's `type` — the same shape as a generated
+CST-visitor class. Handlers receive an `api` with `visit` / `visitChildren` to recurse; a
+node whose `type` has no handler falls through to its children, so partial visitors work:
+
+```ts
+import { createVisitor } from 'parseman'
+
+const evalExpr = createVisitor<number>({
+  Num: (n) => Number((n as NumNode).value),
+  Add: (n, api) => api.visitChildren(n).reduce((a, b) => a + b, 0),
+})
+
+const total = evalExpr(tree)
+```
+
+Both default to the built-in CST shape (`CSTChild`), so with no annotation `node` is typed
+as the leaf/node/error union — narrow on `node._tag` to reach `value`, `children`, etc.
+Parsing to your own AST instead? Pass the node type as a generic — `walk<MyNode>(root, …)`
+or `createVisitor<number, MyNode>({ … })` — and the hooks are typed to your shape. Any node
+carrying a `_tag` (and optional `children` array) works.
+
 ## Next
 
 - Wire your rule registry into a live-editing document in

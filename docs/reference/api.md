@@ -119,6 +119,46 @@ flat `triviaLog` into a lookup table for whitespace-sensitive analysis.
 An indexed, allocation-free view over a flat trivia log: `.start(i)`, `.end(i)`,
 `.kind(i)`, `.text(i, input)`. Pass `{ nodeLog: true }` for per-node logs (stride 3/4).
 
+## Tree traversal
+
+The tree a grammar produces is plain objects, so you can recurse it yourself — these two
+helpers save writing the same traversal. Both default to the CST shape ([`CSTChild`](./types#cst-types))
+and accept a generic for custom AST shapes. See [Walking the tree](../guide/ast#walking-the-tree).
+
+### `walk(root, visitor, ctx?)`
+
+Depth-first traversal. Calls `visitor.enter(node, parent, ctx)` before a node's children and
+`visitor.leave(node, parent, ctx)` after. Return `false` from `enter` to skip that node's
+subtree (`leave` still runs). `ctx` is threaded to both hooks unchanged (use it as an
+accumulator). Override the node type with `walk<MyNode>(root, …)`.
+
+```ts
+const leaves: string[] = []
+walk(tree, {
+  enter(node) {
+    if (node._tag === 'leaf') leaves.push(node.value)
+  },
+})
+```
+
+### `createVisitor(handlers)`
+
+Build a visitor that dispatches on each node's `type` — the runtime analog of a generated
+CST-visitor base class. Handlers are keyed by rule name and receive an
+[`api`](./types#walk-types) with `visit` / `visitChildren` to recurse; a node whose `type`
+has no handler falls through to its children,
+so partial visitors work. Override the return and node types with
+`createVisitor<R, MyNode>({ … })`.
+
+```ts
+const evalExpr = createVisitor<number>({
+  Num: (n) => Number((n.children[0] as CSTLeaf).value),
+  Add: (n, api) => api.visitChildren(n).reduce((a, b) => a + b, 0),
+})
+
+const total = evalExpr(tree)
+```
+
 ## Whitespace
 
 ### `trivia(combinator)` <Badge type="tip" text="helper" />
@@ -193,6 +233,31 @@ On failure, scan forward to `sentinel` (not consumed) and return a
 Required token. On failure, record a zero-width `ParseError` and recover in place.
 `label` overrides the derived `expected` message. See
 [Error recovery](../guide/error-recovery#expect-required-tokens).
+
+### `sepByRecover(item, separator, until)`
+
+Tolerant `sepBy`: a malformed element is skipped to the next `separator` or the `until` terminator and
+recorded as a [`ParseError`](./types#parseerror) in the result array, instead of truncating
+the list. `until` (the closing delimiter, matched but **not** consumed) is what distinguishes
+an empty list from a malformed first element. Built from existing combinators, so `.compile()`
+and CST capture handle it with no special cases. See
+[Tolerant lists](../guide/error-recovery#tolerant-lists).
+
+```ts
+const elements = sepByRecover(value, literal(','), literal(']'))
+// "[1,,3]" → [1, ParseError, 3]
+```
+
+### `manyRecover(item, until)`
+
+Tolerant `many`: junk that is neither a valid `item` nor the `until` terminator is skipped up to `until` and
+recorded as a `ParseError`, instead of ending the repetition. With no separator to resync
+on, a bad run is captured as a single error up to the terminator. See
+[Tolerant lists](../guide/error-recovery#tolerant-lists).
+
+```ts
+const items = manyRecover(statement, literal('}'))
+```
 
 ### `staticExpected(combinator)` {#staticexpected}
 
