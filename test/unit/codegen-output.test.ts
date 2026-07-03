@@ -54,11 +54,32 @@ describe('codegen — literal', () => {
     expect(code).not.toContain('slice')
   })
 
-  it('long string (>4 chars): startsWith avoids allocation', () => {
+  it('5-16 chars: still an unrolled charCodeAt chain (cheaper than startsWith at this length)', () => {
     const code = inline(literal('Authorization'))
-    // startsWith handles bounds + comparison in one call, no slice allocation
-    expect(code).toContain('startsWith("Authorization"')
-    expect(code).toContain('"Authorization"')
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('startsWith')
+    expect(code).not.toContain('slice')
+  })
+
+  it('pins the exact charCodeAt/startsWith crossover at 16 chars', () => {
+    // See PERF_IDEAS.md: 16 chars caps the unrolled chain's generated-source
+    // size, well below the runtime crossover (~256-512 chars) since no literal
+    // in a real grammar gets remotely close to either.
+    const at16 = inline(literal('X-Request-Id-123')) // exactly 16 chars
+    expect(at16).toContain('charCodeAt')
+    expect(at16).not.toContain('startsWith')
+
+    const at17 = inline(literal('X-Request-Id-1234')) // exactly 17 chars
+    expect(at17).toContain('startsWith("X-Request-Id-1234"')
+    expect(at17).not.toContain('charCodeAt')
+  })
+
+  it('long string (>16 chars): startsWith caps codegen size', () => {
+    const code = inline(literal('Content-Disposition'))
+    // startsWith handles bounds + comparison in one call, no slice allocation,
+    // and keeps the generated source flat instead of an unrolled chain.
+    expect(code).toContain('startsWith("Content-Disposition"')
+    expect(code).toContain('"Content-Disposition"')
     expect(code).not.toContain('slice')
     expect(code).not.toContain('charCodeAt')
   })
@@ -138,7 +159,7 @@ describe('codegen — disjoint choice', () => {
           }
           case 68:
           {
-            if (!input.startsWith("DELETE", _pos)) {
+            if (_pos + 6 > input.length || input.charCodeAt(_pos) !== 68 || input.charCodeAt(_pos + 1) !== 69 || input.charCodeAt(_pos + 2) !== 76 || input.charCodeAt(_pos + 3) !== 69 || input.charCodeAt(_pos + 4) !== 84 || input.charCodeAt(_pos + 5) !== 69) {
               return { ok: false, expected: ["\\"DELETE\\""], span: { start: _pos, end: _pos } }
             }
             const _v5 = "DELETE"
@@ -220,7 +241,7 @@ describe('macro plugin output', () => {
     expect(result).not.toContain('literal(')   // call replaced
     expect(result).toContain('const greeting =')
     expect(result).toContain('function(input')
-    expect(result).toContain('startsWith("hello"')  // 5 chars → startsWith, no charCodeAt
+    expect(result).toContain('charCodeAt')  // 5 chars → unrolled chain, not startsWith
   })
 
   it('inlines cross-declaration references', () => {

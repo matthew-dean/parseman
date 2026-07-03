@@ -36,17 +36,18 @@ const greeting = literal('hello')
     // The declaration should be replaced with an inline function
     expect(result.code).toContain('const greeting =')
     expect(result.code).toContain('function(input')
-    // 'hello' is 5 chars → uses startsWith (no charCodeAt)
-    expect(result.code).toContain('startsWith("hello"')
+    // 'hello' is 5 chars → still an unrolled charCodeAt chain (≤16 threshold)
+    expect(result.code).toContain('charCodeAt')
+    expect(result.code).not.toContain('startsWith')
   })
 
-  it('inlines a long literal() (>4 chars uses startsWith)', () => {
+  it('inlines a long literal() (>16 chars uses startsWith)', () => {
     const code = `
 import { literal } from 'parseman' with { type: 'macro' }
-const kw = literal('Authorization')
+const kw = literal('Content-Disposition')
 `.trim()
     const result = transform(code)!
-    expect(result.code).toContain('"Authorization"')
+    expect(result.code).toContain('startsWith("Content-Disposition"')
     expect(result.code).not.toContain("from 'parseman'")
   })
 

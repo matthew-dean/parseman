@@ -699,6 +699,18 @@ function emitFallible(
 // Per-combinator emitters
 // ---------------------------------------------------------------------------
 
+/**
+ * Above this length, an unrolled `charCodeAt` chain stops paying for itself:
+ * measured crossover where native `startsWith` wins on runtime is ~256–512
+ * chars, but the unrolled chain's *generated source* grows ~4–30× faster than
+ * `startsWith`'s near-constant call site (see PERF_IDEAS.md). No literal in a
+ * real grammar (keywords, punctuation) gets remotely close to this — the
+ * longest in this repo's example grammars is `important` (9 chars) — so this
+ * threshold exists to cap codegen bloat on a pathological literal, not because
+ * `startsWith` is faster there.
+ */
+const CHARCODE_CHAIN_MAX = 16
+
 function emitLit(def: Extract<ParserDef, { tag: 'literal' }>, ctx: Ctx, pos: string): ER {
   const { value, caseInsensitive } = def
   const len = value.length
@@ -722,7 +734,7 @@ function emitLit(def: Extract<ParserDef, { tag: 'literal' }>, ctx: Ctx, pos: str
       ...emitIfFail(ctx, `${pos} >= input.length || input.charCodeAt(${pos}) !== ${code}`, failBody(ctx, expectedStr, pos)),
       `${ind(ctx)}const ${vv} = ${JSON.stringify(value)}`,
     )
-  } else if (len <= 4) {
+  } else if (len <= CHARCODE_CHAIN_MAX) {
     const checks = Array.from({ length: len }, (_, i) =>
       `input.charCodeAt(${pos}${i > 0 ? ` + ${i}` : ''}) !== ${value.codePointAt(i)!}`
     ).join(' || ')
@@ -1258,7 +1270,7 @@ function emitTransformChain(p: Combinator<unknown>, baseValue: string, endV: str
 function emitLiteralCondition(litVal: string, pos: string): string {
   const len = litVal.length
   if (len === 0) return 'true'
-  if (len > 4) return `input.startsWith(${JSON.stringify(litVal)}, ${pos})`
+  if (len > CHARCODE_CHAIN_MAX) return `input.startsWith(${JSON.stringify(litVal)}, ${pos})`
   // Short string: charCodeAt checks (same as emitLit)
   const checks = [`${pos} + ${len} <= input.length`]
   for (let i = 0; i < len; i++) {

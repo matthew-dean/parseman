@@ -93,7 +93,7 @@ describe('parseWithContext — compiled CST capture', () => {
 })
 
 describe('choice fast paths — codegen uses optimized emitters when capturing', () => {
-  it('literalsLongestFirst emits startsWith chain, not firstMatch rollback', () => {
+  it('literalsLongestFirst emits a literal check, not firstMatch rollback', () => {
     const ws = trivia(regex(/[ \t]+/))
     const p = node(
       'T',
@@ -101,7 +101,11 @@ describe('choice fast paths — codegen uses optimized emitters when capturing',
       (c, _r, s) => ({ _tag: 'node', type: 'T', span: s, c }),
     )
     const src = compile(p).source
-    expect(src).toContain('startsWith("instanceof"')
+    // 'instanceof' is 10 chars — an unrolled charCodeAt chain (≤16 threshold),
+    // not startsWith. The point of this test is literalsLongestFirst vs
+    // firstMatch (no `_crok` rollback state), not the literal-length threshold.
+    expect(src).toContain('"instanceof"')
+    expect(src).toContain('charCodeAt')
     expect(src).not.toContain('_crok')
   })
 
