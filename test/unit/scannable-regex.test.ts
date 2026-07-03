@@ -12,7 +12,7 @@ import {
   node, parser, trivia, parse, compile,
 } from '../../src/index.ts'
 import type { Combinator, CSTLeaf } from '../../src/index.ts'
-import { parseScanShape } from '../../src/compiler/scannable-run.ts'
+import { parseScanShape, SPACE_RANGES } from '../../src/compiler/scannable-run.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 // ---------------------------------------------------------------------------
@@ -41,11 +41,7 @@ describe('parseScanShape — quantifier', () => {
 
   // `\s` (WhiteSpace + LineTerminator) is a fixed code-point set, unaffected by
   // the `u` flag — unlike `\d`/`\w`, which are ASCII-only without `u`. PERF_IDEAS §8a.
-  const SPACE_RANGES = [
-    [9, 13], [32, 32], [160, 160], [5760, 5760], [8192, 8202],
-    [8232, 8232], [8233, 8233], [8239, 8239], [8287, 8287], [12288, 12288], [65279, 65279],
-  ]
-
+  // Import the production constant so this assertion can never drift from source.
   it('recognizes shorthand-class runs (\\s)', () => {
     expect(parseScanShape('\\s+')).toEqual({ kind: 'chars', ranges: SPACE_RANGES, minOne: true })
     expect(parseScanShape('\\s*')).toEqual({ kind: 'chars', ranges: SPACE_RANGES, minOne: false })

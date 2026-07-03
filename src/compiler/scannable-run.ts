@@ -69,7 +69,7 @@ const META = new Set('()[]{}*+?|^$.'.split(''))
  * which are ASCII-only without `u` but widen with it), so it's always safe to
  * lower to a fixed range scan.
  */
-const SPACE_RANGES: Array<[number, number]> = [
+export const SPACE_RANGES: Array<[number, number]> = [
   [9, 13], [32, 32], [160, 160], [5760, 5760], [8192, 8202],
   [8232, 8232], [8233, 8233], [8239, 8239], [8287, 8287], [12288, 12288], [65279, 65279],
 ]
