@@ -65,74 +65,94 @@ describe('codegen — literal', () => {
 })
 
 describe('codegen — regex', () => {
-  it('emits sticky regex hoisted to closure + lastIndex + exec', () => {
+  it('lowers scannable [0-9]+ to charCodeAt scan (no RegExp.exec)', () => {
     expect(inline(regex(/[0-9]+/))).toMatchInlineSnapshot(`
-      "/* @__PURE__ */ (() => {
-        const _re0 = /\\d+/y
-        return function(input, _pos, _ctx) {
+      "function(input, _pos, _ctx) {
         let pos = _pos
-        _re0.lastIndex = _pos
-        const _m0 = _re0.exec(input)
-        if (_m0 === null) {
+        let _e1 = _pos
+        while (_e1 < input.length && ((input.charCodeAt(_e1) >= 48 && input.charCodeAt(_e1) <= 57))) _e1++
+        if (!(_e1 > _pos)) {
           return { ok: false, expected: ["/[0-9]+/"], span: { start: _pos, end: _pos } }
         }
-        const _v1 = _m0[0]
-        return { ok: true, value: _v1, span: { start: _pos, end: _pos + _v1.length } }
-      }
-      })()"
+        const _v0 = input.slice(_pos, _e1)
+        return { ok: true, value: _v0, span: { start: _pos, end: _e1 } }
+      }"
     `)
+  })
+
+  it('keeps sticky RegExp.exec for non-scannable shorthands', () => {
+    const code = inline(regex(/\s+/))
+    expect(code).toContain('const _re0 = /')
+    expect(code).toContain('lastIndex')
+    expect(code).toContain('exec(input)')
   })
 })
 
 describe('codegen — disjoint choice', () => {
-  it('emits codePointAt dispatch with one branch per first char', () => {
+  it('emits a switch jump table keyed on each first char', () => {
     const code = inline(choice(literal('GET'), literal('POST'), literal('DELETE')))
     expect(code).toContain('codePointAt')
-    expect(code).toContain('=== 71')   // G
-    expect(code).toContain('=== 80')   // P
-    expect(code).toContain('=== 68')   // D
+    expect(code).toContain('switch (')
+    expect(code).toContain('case 71:')   // G
+    expect(code).toContain('case 80:')   // P
+    expect(code).toContain('case 68:')   // D
+    expect(code).toContain('default:')
     // Each branch only tries its own literal — no fallback loop
     expect(code).toContain('"GET"')
     expect(code).toContain('"POST"')
     expect(code).toContain('"DELETE"')
   })
 
-  it('full output — GET/POST/DELETE', () => {
+  it('full output — GET/POST/DELETE (switch dispatch)', () => {
     expect(inline(choice(literal('GET'), literal('POST'), literal('DELETE')))).toMatchInlineSnapshot(`
       "function(input, _pos, _ctx) {
         let pos = _pos
         const _code0 = _pos < input.length ? (input.codePointAt(_pos) ?? -1) : -1
         let _chv1, _che2 = _pos
-        if (_code0 === 71) {
-          if (_pos + 3 > input.length || input.charCodeAt(_pos) !== 71 || input.charCodeAt(_pos + 1) !== 69 || input.charCodeAt(_pos + 2) !== 84) {
-            return { ok: false, expected: ["\\"GET\\""], span: { start: _pos, end: _pos } }
+        switch (_code0) {
+          case 71:
+          {
+            if (_pos + 3 > input.length || input.charCodeAt(_pos) !== 71 || input.charCodeAt(_pos + 1) !== 69 || input.charCodeAt(_pos + 2) !== 84) {
+              return { ok: false, expected: ["\\"GET\\""], span: { start: _pos, end: _pos } }
+            }
+            const _v3 = "GET"
+            _chv1 = _v3
+            _che2 = _pos + 3
+            break
           }
-          const _v3 = "GET"
-          _chv1 = _v3
-          _che2 = _pos + 3
-        }
-        else if (_code0 === 80) {
-          if (_pos + 4 > input.length || input.charCodeAt(_pos) !== 80 || input.charCodeAt(_pos + 1) !== 79 || input.charCodeAt(_pos + 2) !== 83 || input.charCodeAt(_pos + 3) !== 84) {
-            return { ok: false, expected: ["\\"POST\\""], span: { start: _pos, end: _pos } }
+          case 80:
+          {
+            if (_pos + 4 > input.length || input.charCodeAt(_pos) !== 80 || input.charCodeAt(_pos + 1) !== 79 || input.charCodeAt(_pos + 2) !== 83 || input.charCodeAt(_pos + 3) !== 84) {
+              return { ok: false, expected: ["\\"POST\\""], span: { start: _pos, end: _pos } }
+            }
+            const _v4 = "POST"
+            _chv1 = _v4
+            _che2 = _pos + 4
+            break
           }
-          const _v4 = "POST"
-          _chv1 = _v4
-          _che2 = _pos + 4
-        }
-        else if (_code0 === 68) {
-          if (!input.startsWith("DELETE", _pos)) {
-            return { ok: false, expected: ["\\"DELETE\\""], span: { start: _pos, end: _pos } }
+          case 68:
+          {
+            if (!input.startsWith("DELETE", _pos)) {
+              return { ok: false, expected: ["\\"DELETE\\""], span: { start: _pos, end: _pos } }
+            }
+            const _v5 = "DELETE"
+            _chv1 = _v5
+            _che2 = _pos + 6
+            break
           }
-          const _v5 = "DELETE"
-          _chv1 = _v5
-          _che2 = _pos + 6
-        }
-        else {
-          return { ok: false, expected: ["\\"GET\\"","\\"POST\\"","\\"DELETE\\""], span: { start: _pos, end: _pos } }
+          default: return { ok: false, expected: ["\\"GET\\"","\\"POST\\"","\\"DELETE\\""], span: { start: _pos, end: _pos } }
         }
         return { ok: true, value: _chv1, span: { start: _pos, end: _che2 } }
       }"
     `)
+  })
+
+  it('keeps if/else range comparisons when an arm is a wide char-class', () => {
+    // digit run [0-9]+ (10-wide range) + literal → switch would enumerate 10
+    // cases just for the digits arm, so the if/else range form is kept.
+    const code = inline(choice(literal('x'), regex(/[0-9]+/)))
+    expect(code).toContain('>= 48 && ')     // range comparison for [0-9]
+    expect(code).not.toContain('switch (')
   })
 })
 
@@ -142,9 +162,10 @@ describe('codegen — sequence', () => {
     expect(code).toContain('"x="')
     expect(code).toContain('_cur1')        // cursor variable
     expect(code).toContain('_arr')          // result array
-    // Regex after literal
-    expect(code).toContain('lastIndex')
-    expect(code).toContain('exec(input)')
+    // Scannable digit run after literal — charCodeAt scan, not RegExp.exec
+    expect(code).toContain('charCodeAt')
+    expect(code).toContain('input.slice')
+    expect(code).not.toContain('exec(input)')
   })
 })
 

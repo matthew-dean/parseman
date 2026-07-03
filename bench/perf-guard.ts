@@ -16,10 +16,17 @@
  *
  * Exit code 0 = no regression, 1 = regression (blocks the commit).
  */
-import { runParsemanSuite, loadBaseline, findRegressions } from './parseman-perf.ts'
+import {
+  runParsemanSuiteRobust,
+  loadBaseline,
+  findRegressions,
+  PERF_SAMPLES,
+  GUARD_PASSES,
+  PERF_TOLERANCE,
+} from './parseman-perf.ts'
 
 const all = process.argv.includes('--all')
-const tolerance = Number(process.env.PARSEMAN_PERF_TOLERANCE ?? 18) // % below baseline ratio
+const tolerance = Number(process.env.PARSEMAN_PERF_TOLERANCE ?? PERF_TOLERANCE) // % below baseline ratio
 
 const baseline = loadBaseline()
 if (!baseline) {
@@ -27,14 +34,17 @@ if (!baseline) {
   process.exit(0)
 }
 
+// Measure IDENTICALLY to how the baseline was captured (same samples, robust
+// median across interleaved passes) so the comparison is apples-to-apples and an
+// 8% tolerance reflects real codegen drift, not measurement methodology.
 // CSS cases are the most codegen-sensitive (trivia + node capture); they catch a
-// 2× compiled regression with far fewer samples than the full 68s suite.
-const rows = runParsemanSuite({
+// 2× compiled regression without running the full suite.
+const rows = runParsemanSuiteRobust({
   scale: baseline.measurement?.scale ?? 1,
   skipOptional: true,
   only: all ? undefined : ['css'],
-  measure: { samples: all ? 7 : 9 },
-})
+  measure: { samples: PERF_SAMPLES },
+}, GUARD_PASSES)
 
 const regressions = findRegressions(rows, baseline, {
   checkSpeedup: true,

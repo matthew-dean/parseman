@@ -2,7 +2,13 @@ import type { Combinator } from '../types.ts'
 import { getCoreRegexDef } from '../combinators/choice.ts'
 import type { LabeledTriviaSpec } from '../cst/trivia-kinds.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
-import { type ScanShape, parseScanShape, scanBranch, scanBranchLabeled } from './scannable-run.ts'
+import { type ScanShape, type Mint, scanShapeFromRegex, scanBranch, scanBranchLabeled } from './scannable-run.ts'
+
+/** Fresh, collision-free local names for one generated scan function. */
+function makeMint(): Mint {
+  let n = 0
+  return (prefix = '_v') => `${prefix}${n++}`
+}
 
 function unwrapTrivia(p: Combinator<unknown>): Combinator<unknown> {
   let cur = p
@@ -24,8 +30,8 @@ function choiceArms(p: Combinator<unknown>): Combinator<unknown>[] | null {
 
 /** The scannable shape of one arm (a regex), or null if it isn't scannable. */
 function armShape(arm: Combinator<unknown>): ScanShape | null {
-  const src = getCoreRegexDef(arm)?.source
-  return src ? parseScanShape(src) : null
+  const d = getCoreRegexDef(arm)
+  return d ? scanShapeFromRegex(d.source, d.flags) : null
 }
 
 /**
@@ -40,9 +46,9 @@ function armShape(arm: Combinator<unknown>): ScanShape | null {
 export function analyzeTriviaFastPath(trivia: Combinator<unknown>): ScanShape[] | null {
   const core = unwrapTrivia(trivia)
 
-  const directSrc = getCoreRegexDef(core)?.source
-  if (directSrc) {
-    const shape = parseScanShape(directSrc)
+  const directDef = getCoreRegexDef(core)
+  if (directDef) {
+    const shape = scanShapeFromRegex(directDef.source, directDef.flags)
     return shape && shape.kind === 'chars' ? [shape] : null
   }
 
@@ -73,10 +79,11 @@ const CAP_RECORD = [
 
 /** One char-scan loop carrying a branch per scannable shape, dispatched on `c`. */
 function composeFastLoop(shapes: ScanShape[]): string {
+  const mint = makeMint()
   return [
     `  while (_e < input.length) {`,
     `    const c = input.charCodeAt(_e)`,
-    ...shapes.map(scanBranch),
+    ...shapes.map(s => scanBranch(s, mint)),
     `    break`,
     `  }`,
   ].join('\n')
@@ -108,8 +115,8 @@ export function analyzeLabeledScannableRun(
   if (!spec) return null
   const out: Array<{ shape: ScanShape; kindIndex: number }> = []
   for (const arm of spec.arms) {
-    const src = getCoreRegexDef(arm.parser)?.source
-    const shape = src ? parseScanShape(src) : null
+    const d = getCoreRegexDef(arm.parser)
+    const shape = d ? scanShapeFromRegex(d.source, d.flags) : null
     if (!shape) return null
     out.push({ shape, kindIndex: arm.kindIndex })
   }
@@ -121,12 +128,13 @@ export function buildLabeledScannableTriviaFnDecl(
   fnName: string,
   arms: ReadonlyArray<{ shape: ScanShape; kindIndex: number }>,
 ): string {
+  const mint = makeMint()
   return [
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
     `  let _e = _pos`,
     `  while (_e < input.length) {`,
     `    const c = input.charCodeAt(_e)`,
-    ...arms.map(a => scanBranchLabeled(a.shape, a.kindIndex)),
+    ...arms.map(a => scanBranchLabeled(a.shape, a.kindIndex, mint)),
     `    break`,
     `  }`,
     `  return _e`,

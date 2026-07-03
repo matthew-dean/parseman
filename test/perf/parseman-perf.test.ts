@@ -1,11 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import {
   runParsemanSuite,
+  runParsemanSuiteRobust,
   loadBaseline,
   findRegressions,
   measureMedianUs,
   loadHistory,
   historyAnchors,
+  PERF_SAMPLES,
+  GUARD_PASSES,
+  PERF_TOLERANCE,
 } from '../../bench/parseman-perf.ts'
 import { parseJSON, jsonDoc } from '../../examples/json/parser.ts'
 import { compile } from '../../src/index.ts'
@@ -48,26 +52,50 @@ describe('Parseman perf — history', () => {
 })
 
 describe('Parseman perf — baseline regression guard', () => {
-  it('no case regresses vs committed baseline', () => {
+  // TIGHT gate — the machine-independent compiled speedup ratio must stay within
+  // PERF_TOLERANCE (8%) of the committed baseline. Runs on the CSS subset (the
+  // most codegen-sensitive cases) measured IDENTICALLY to the baseline capture
+  // (same samples + robust median across interleaved passes), so 8% reflects real
+  // codegen drift, not measurement noise. Mirrors `pnpm perf:guard` (pre-commit).
+  it('css codegen ratio within tight tolerance vs baseline', () => {
     const baseline = loadBaseline()
     if (!baseline) return
 
-    // Same iteration scale as baseline; fewer outer samples for CI speed.
+    const rows = runParsemanSuiteRobust({
+      scale: baseline.measurement?.scale ?? 1,
+      skipOptional: true,
+      only: ['css'],
+      measure: { samples: PERF_SAMPLES },
+    }, GUARD_PASSES)
+    const regressions = findRegressions(rows, baseline, {
+      checkSpeedup: true,
+      tolerance: { speedup: PERF_TOLERANCE },
+    })
+    if (regressions.length > 0) {
+      console.log('\nParseman CSS perf regressions vs baseline:')
+      for (const m of regressions) console.log(`  ${m}`)
+    }
+    expect(regressions).toEqual([])
+  }, 120_000)
+
+  // WIDE net — cheap single-pass sweep of every grammar to catch a gross
+  // regression anywhere. Loose tolerance because a fast single pass is noisy on
+  // sub-µs cases; the authoritative tight gate is `pnpm perf:guard --all`.
+  it('no grammar grossly regresses vs committed baseline', () => {
+    const baseline = loadBaseline()
+    if (!baseline) return
+
     const rows = runParsemanSuite({
       scale: baseline.measurement?.scale ?? 1,
       skipOptional: true,
       measure: { samples: 5 },
     })
-    // Guard on the MACHINE-INDEPENDENT compiled speedup ratio (interp/comp): it
-    // cancels out CPU speed, so it fires only on real codegen regressions and
-    // stays green on any machine. Absolute-µs is hardware-dependent and only
-    // checked when PARSEMAN_PERF_ABSOLUTE is set (same machine as the baseline).
     const regressions = findRegressions(rows, baseline, {
       checkSpeedup: true,
-      tolerance: { speedup: 18, compiled: 25 },
+      tolerance: { speedup: 30 },
     })
     if (regressions.length > 0) {
-      console.log('\nParseman perf regressions vs baseline:')
+      console.log('\nParseman gross perf regressions vs baseline:')
       for (const m of regressions) console.log(`  ${m}`)
     }
     expect(regressions).toEqual([])

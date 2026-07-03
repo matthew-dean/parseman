@@ -129,12 +129,18 @@ export function scanFastWsCommentsChunks(
       continue
     }
     if (c === 47 && input.charCodeAt(pos + 1) === 42) {
-      const start = pos
       let j = pos + 2
       while (j + 1 < input.length && !(input.charCodeAt(j) === 42 && input.charCodeAt(j + 1) === 47)) j++
-      pos = j + 2 <= input.length ? j + 2 : input.length
-      chunks.push({ start, end: pos, kindIndex: commentKind })
-      continue
+      // Require the closing `*/`; an unterminated comment is NOT trivia (the
+      // `/\*…\*/` regex arm would fail), so stop here without consuming it —
+      // matching scanLabeledTriviaChunks and the compiled delimited scan.
+      if (j + 1 < input.length && input.charCodeAt(j) === 42 && input.charCodeAt(j + 1) === 47) {
+        const start = pos
+        pos = j + 2
+        chunks.push({ start, end: pos, kindIndex: commentKind })
+        continue
+      }
+      break
     }
     break
   }

@@ -19,6 +19,8 @@ import {
   buildLabeledScannableTriviaFnDecl,
   labeledTriviaRegexArms,
 } from './trivia-fast-path.ts'
+import { scanShapeFromRegex } from './scannable-run.ts'
+import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
 import {
@@ -37,6 +39,10 @@ type Ctx = {
   regexDecls: string[]
   /** Dedup map: "source/flags" → variable name (_re0 etc.) */
   regexMap: Map<string, string>
+  /** Frozen constant expected-set arrays hoisted to module scope (_fx0 etc.) */
+  expectedDecls: string[]
+  /** Dedup map: array source → hoisted const name */
+  expectedMap: Map<string, string>
   /** Map functions that need to be captured at compile time */
   mapFns: Array<(v: unknown, span: { start: number; end: number }) => unknown>
   /**
@@ -89,6 +95,14 @@ type Ctx = {
    */
   failLabel?: string | undefined
   /**
+   * Whether a leaf failure should record its payload into `_ctx._fe`/`_ctx._fx`
+   * for an enclosing reader (node/choice/ref/withCtx/runtime) to propagate.
+   * Swallowers (optional, many/sepBy loop bodies, not) set this false around the
+   * sub-parse whose failure they discard, so the hot path pays nothing. Default
+   * true (safe: always record). Only meaningful together with `failLabel`.
+   */
+  recordFail: boolean
+  /**
    * Precomputed by analyzeLazyUsage() before codegen starts. emitLazy consults
    * this to inline a single-use, non-recursive ref directly at its call site
    * instead of hoisting it into a named function. Undefined when compile()
@@ -122,14 +136,91 @@ function failReturnArr(expectedArr: string, posExpr: string): string {
   return `return { ok: false, expected: ${expectedArr}, span: { start: ${posExpr}, end: ${posExpr} } }`
 }
 
+/**
+ * Hoist a COMPILE-TIME-CONSTANT expected-set array to a shared module-level
+ * const and return its variable name. Leaf failures (literal, regex, keyword,
+ * not, …) have a fixed expected set, so recording it on the hot failure path
+ * must NOT allocate a fresh array every time — a choice arm that misses or a
+ * many/sepBy loop that terminates hits this on essentially every token. We store
+ * a reference to the shared array instead (one pointer write, zero allocation).
+ *
+ * The shared array is NEVER mutated in place by generated code, and every path
+ * that surfaces `_ctx._fx` as a user-facing ParseResult copies it first (see
+ * `resultFromRecorded` / the dynamic direct-return in `failArrBody`), so the
+ * public `expected` array stays fresh & independent. (We deliberately do NOT
+ * `Object.freeze` it: a user grammar may define a rule named `Object`, which —
+ * once inlined as a local — would shadow the global and break the freeze call.)
+ */
+function hoistExpected(ctx: Ctx, constArrSource: string): string {
+  let name = ctx.expectedMap.get(constArrSource)
+  if (name === undefined) {
+    name = `_fx${ctx.expectedDecls.length}`
+    ctx.expectedDecls.push(`const ${name} = ${constArrSource}`)
+    ctx.expectedMap.set(constArrSource, name)
+  }
+  return name
+}
+
 function failBody(ctx: Ctx, expected: string, posExpr: string): string {
-  if (ctx.failLabel) return `break ${ctx.failLabel}`
+  // Record the failure payload before breaking so an enclosing composite
+  // construct can propagate this (deepest) failure verbatim — parity with the
+  // interpreter, which returns the inner failure result. Recording is skipped
+  // when no consumer will read it (see `ctx.recordFail`): swallowers like
+  // optional/many/sepBy/not never inspect `_ctx._fx`, so a leaf failing inside
+  // them just breaks — the hot path (loop terminations, first-arm misses) pays
+  // nothing. The direct-return path is the final answer and needs no recording.
+  if (ctx.failLabel) {
+    if (!ctx.recordFail) return `break ${ctx.failLabel}`
+    return `{ _ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; break ${ctx.failLabel} }`
+  }
   return failReturn(expected, posExpr)
 }
 
-function failArrBody(ctx: Ctx, expectedArr: string, posExpr: string): string {
-  if (ctx.failLabel) return `break ${ctx.failLabel}`
+/**
+ * Like {@link failBody} but the caller already has an array source. When
+ * `constant` (the default), the array is hoisted+frozen (zero-alloc hot path).
+ * Pass `constant: false` for dynamic sources (e.g. `_ctx._fx`, a runtime concat)
+ * that must be assigned verbatim.
+ */
+function failArrBody(ctx: Ctx, expectedArr: string, posExpr: string, constant = true): string {
+  if (ctx.failLabel) {
+    if (!ctx.recordFail) return `break ${ctx.failLabel}`
+    const fx = constant ? hoistExpected(ctx, expectedArr) : expectedArr
+    return `{ _ctx._fe = ${posExpr}; _ctx._fx = ${fx}; break ${ctx.failLabel} }`
+  }
+  // Direct-return (no enclosing fail label). A dynamic source may reference the
+  // shared frozen `_ctx._fx`; copy it so the (possibly frozen) constant never
+  // escapes into a user-facing result. Constant sources are inline literals.
+  if (!constant) return `return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} } }`
   return failReturnArr(expectedArr, posExpr)
+}
+
+/** Build a ParseResult from the recorded deepest failure, copying `_fx` so the
+ * shared frozen array never escapes into user-facing results. */
+function resultFromRecorded(feExpr = '_ctx._fe', fxExpr = '_ctx._fx'): string {
+  return `return { ok: false, expected: [...${fxExpr}], span: { start: ${feExpr}, end: ${feExpr} } }`
+}
+
+/**
+ * Propagate the already-recorded deepest failure (`_ctx._fe`/`_ctx._fx`) rather
+ * than synthesizing a coarse `["node"]`-style placeholder. Used by composite
+ * constructs whose interpreter counterpart returns the inner failure verbatim
+ * (node, ref/lazy, withCtx, runtime fallback). `srcCtx` is the ctx var holding
+ * the payload (`_ctx`, or a spread child ctx for withCtx).
+ */
+function propagateFailBody(ctx: Ctx, srcCtx = '_ctx'): string {
+  if (srcCtx !== '_ctx') {
+    // withCtx ran on a spread child ctx; copy its recorded failure back (only
+    // when a consumer will read it) before propagating.
+    if (ctx.failLabel) {
+      if (!ctx.recordFail) return `break ${ctx.failLabel}`
+      return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; break ${ctx.failLabel} }`
+    }
+    return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; ${resultFromRecorded()} }`
+  }
+  // Same-ctx: `_ctx._fx` already holds the deepest failure — just break/return.
+  if (ctx.failLabel) return `break ${ctx.failLabel}`
+  return resultFromRecorded()
 }
 
 function emitIfFail(ctx: Ctx, cond: string, body: string): string[] {
@@ -179,13 +270,15 @@ function pushNamedFnDecl(
   ].join('\n'))
 }
 
-function emitNamedFnCall(ctx: Ctx, fnName: string, pos: string, failExpected: string): ER {
+function emitNamedFnCall(ctx: Ctx, fnName: string, pos: string): ER {
   const vv = v(ctx, '_pfv')
   const ev = v(ctx, '_pfe')
   return {
     stmts: [
       `${ind(ctx)}const ${vv} = ${fnName}(input, ${pos}, _ctx)`,
-      ...emitIfFail(ctx, `${vv} === ${NAMED_FN_FAIL}`, failBody(ctx, failExpected, pos)),
+      // ref/lazy returns the inner failure verbatim — propagate the recorded
+      // deepest failure (shares _ctx with the named fn), not a "parser" label.
+      ...emitIfFail(ctx, `${vv} === ${NAMED_FN_FAIL}`, propagateFailBody(ctx)),
       `${ind(ctx)}const ${ev} = ${NAMED_FN_END}`,
     ],
     valueVar: vv,
@@ -336,6 +429,46 @@ function firstSetCond(codeVar: string, fs: FirstSet): string {
       ? `${codeVar} === ${r.lo}`
       : `(${codeVar} >= ${r.lo} && ${codeVar} <= ${r.hi})`
   ).join(' || ')
+}
+
+// A first code point that keys a switch case is only worth enumerating when the
+// arm dispatches on a few DISCRETE points (keyword/operator first chars). A wide
+// range (a char-class arm like `[a-z]+`) would explode into dozens of `case`
+// labels, so those keep the if/else range-comparison form.
+const SWITCH_RANGE_LIMIT = 4
+const SWITCH_MAX_CASES = 48
+const SWITCH_MIN_CASES = 3
+
+// Benchmark/test-only hook: force the `if/else if` disjoint-dispatch form so it
+// can be A/B'd against the `switch` jump table in the same process. Defaults to
+// off — production always uses planDisjointDispatch. See bench/codegen-ab.ts.
+let _forceDisjointIf = false
+export function __setForceDisjointIf(on: boolean): void { _forceDisjointIf = on }
+
+/**
+ * Choose the dispatch form for a *disjoint* choice. Returns per-arm case code
+ * points for a `switch` (jump table) when every arm keys off a small discrete
+ * set, or `if` to keep the range-comparison `if/else if` chain. The arms are
+ * pairwise-disjoint by construction, so each code point maps to exactly one arm.
+ */
+function planDisjointDispatch(
+  parsers: ReadonlyArray<Combinator<unknown>>,
+): { kind: 'switch'; cases: number[][] } | { kind: 'if' } {
+  const cases: number[][] = []
+  let total = 0
+  for (const p of parsers) {
+    const fs = p._meta.firstSet
+    if (fs.kind !== 'ranges') return { kind: 'if' } // any/empty → no discrete keys
+    const pts: number[] = []
+    for (const r of fs.ranges) {
+      if (r.hi - r.lo + 1 > SWITCH_RANGE_LIMIT) return { kind: 'if' }
+      for (let cp = r.lo; cp <= r.hi; cp++) pts.push(cp)
+    }
+    total += pts.length
+    if (total > SWITCH_MAX_CASES) return { kind: 'if' }
+    cases.push(pts)
+  }
+  return total >= SWITCH_MIN_CASES ? { kind: 'switch', cases } : { kind: 'if' }
 }
 
 // ── CST/trivia capture rollback: cheap when no buffer is active ─────────────
@@ -500,6 +633,12 @@ function emitFallible(
   inner: Combinator<unknown>,
   ctx: Ctx,
   pos: string,
+  /**
+   * When true, the caller DISCARDS this failure (optional/many/sepBy/not) — the
+   * inner leaves need not record `_ctx._fx`, since nobody reads it. Suppresses
+   * the hot-path failure bookkeeping for the sub-parse.
+   */
+  swallow = false,
 ): { stmts: string[]; okVar: string; valVar: string; endVar: string } {
   const lbl  = v(ctx, '_lbl')
   const okV  = `${lbl}ok`
@@ -508,11 +647,14 @@ function emitFallible(
 
   const savedLabel  = ctx.failLabel
   const savedIndent = ctx.indent
+  const savedRecord = ctx.recordFail
   ctx.failLabel = lbl
   ctx.indent    = savedIndent + 1
+  if (swallow) ctx.recordFail = false
   const r = emit(inner, ctx, pos)
   ctx.failLabel = savedLabel
   ctx.indent    = savedIndent
+  ctx.recordFail = savedRecord
 
   const ind0 = ind(ctx)
   // In capturing mode, roll back any CST captures made by a FAILED attempt — a
@@ -633,6 +775,23 @@ function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, po
 }
 
 function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: string): ER {
+  const expectedStr = JSON.stringify(`/${def.source}/`)
+  const shape = scanShapeFromRegex(def.source, def.flags)
+  if (shape) {
+    const vv = v(ctx)
+    const scanned = emitScannableTerminal(shape, {
+      ind: ind(ctx),
+      pos,
+      valueVar: vv,
+      failIf: (cond: string) => emitIfFail(ctx, cond, failBody(ctx, expectedStr, pos)),
+      fresh: (prefix?: string) => v(ctx, prefix),
+    })
+    if (scanned) {
+      const stmts = [...scanned.stmts, ...emitLeafCapture(ctx, vv, pos, scanned.endVar)]
+      return { stmts, valueVar: vv, endVar: scanned.endVar }
+    }
+  }
+
   const flags = 'y' + def.flags.replace(/[gy]/g, '')
   const key = `${def.optimizedSource}/${flags}`
   let rName = ctx.regexMap.get(key)
@@ -644,7 +803,6 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
 
   const mv = v(ctx, '_m')
   const vv = v(ctx)
-  const expectedStr = JSON.stringify(`/${def.source}/`)
   const stmts = [
     `${ind(ctx)}${rName}.lastIndex = ${pos}`,
     `${ind(ctx)}const ${mv} = ${rName}.exec(input)`,
@@ -708,15 +866,94 @@ function emitSeq(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, pos: st
   return { stmts, valueVar: arrV, endVar }
 }
 
+/**
+ * Deep-first `expected` labels for a choice's arms — the concatenation of each
+ * arm's leftmost-leaf expected set, matching what the interpreter collects when
+ * no arm's first-set matches (choice.ts) and what expect()'s staticExpected()
+ * reports. Falls back to the arm's tag only for arms with no static expectation
+ * (e.g. runtime-fallback combinators), preserving the previous behaviour there.
+ */
+function staticExpectedArr(parsers: Combinator<unknown>[]): string {
+  return JSON.stringify(parsers.flatMap(p => {
+    const e = staticExpected(p)
+    return e.length > 0 ? e : [p._tag]
+  }))
+}
+
+/**
+ * True when `p` can only fail at its own start position (its failure span is
+ * `{pos,pos}` and its expected set is a fixed label). Such disjoint-choice arms
+ * can be emitted inline: their leaf failure already matches the interpreter's
+ * `{expected: <label>, span: {pos,pos}}`. Composite arms (sequence, node, …) can
+ * fail deeper, so they must be wrapped to re-anchor the span at the choice pos.
+ */
+function failsAtStart(p: Combinator<unknown>): boolean {
+  const d = p._def
+  switch (d.tag) {
+    case 'literal': case 'regex': case 'keywords': case 'guard': case 'not':
+      return true
+    case 'transform': case 'label':
+      return failsAtStart(d.parser)
+    default:
+      return false
+  }
+}
+
+/** Hoisted module-level const for one arm's static `expected` labels. */
+function armStaticExpected(ctx: Ctx, p: Combinator<unknown>): string {
+  return hoistExpected(ctx, staticExpectedArr([p]))
+}
+
+/**
+ * True when `p` can succeed at `pos` without consuming input (e.g. a starred
+ * regex, optional, many). Such arms must still be tried even when the current
+ * code point is outside their first-set — skipping them would change semantics.
+ */
+function canMatchEmptyAtStart(p: Combinator<unknown>): boolean {
+  const d = p._def
+  switch (d.tag) {
+    case 'regex':
+      return /(?:[*?]|\{0,|\{\d*,)/.test(d.source)
+    case 'optional': return true
+    case 'many': return true
+    case 'transform': case 'label':
+      return canMatchEmptyAtStart(d.parser)
+    case 'literal':
+      return d.value.length === 0
+    default:
+      return false
+  }
+}
+
+/** Emit a first-set guard when the arm cannot match empty and has a finite first-set. */
+function needsFirstSetGuard(p: Combinator<unknown>): boolean {
+  const fs = p._meta.firstSet
+  return fs.kind !== 'any' && !canMatchEmptyAtStart(p)
+}
+
+/**
+ * Emit one arm of a disjoint choice, assigning its value/end to `valV`/`endV`.
+ * Leaf arms (failsAtStart) are inlined — their leaf failure already matches the
+ * interpreter. Composite arms are wrapped so that on failure the choice reports
+ * the arm's deep `expected` (via _ctx._fx) but re-anchors the span at the choice
+ * position `pos` — exactly what the interpreter's disjoint dispatch returns.
+ */
+function emitDisjointArm(p: Combinator<unknown>, ctx: Ctx, pos: string, valV: string, endV: string): string[] {
+  if (failsAtStart(p)) {
+    const r = emit(p, ctx, pos)
+    return [...r.stmts, `${ind(ctx)}${valV} = ${r.valueVar}`, `${ind(ctx)}${endV} = ${r.endVar}`]
+  }
+  const { stmts, okVar, valVar, endVar } = emitFallible(p, ctx, pos)
+  return [
+    ...stmts,
+    ...emitIfFail(ctx, `!${okVar}`, failArrBody(ctx, '_ctx._fx', pos, false)),
+    `${ind(ctx)}${valV} = ${valVar}`,
+    `${ind(ctx)}${endV} = ${endVar}`,
+  ]
+}
+
 function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: string): ER {
-  const allExpected = JSON.stringify(
-    def.parsers.map(p => {
-      const d = p._def
-      if (d.tag === 'literal') return JSON.stringify(d.value)
-      if (d.tag === 'regex') return `/${d.source}/`
-      return p._tag
-    })
-  )
+  const allExpected = staticExpectedArr(def.parsers)
 
   // ── Disjoint: O(1) first-char dispatch ──────────────────────────────────
   if (def.disjoint) {
@@ -728,6 +965,31 @@ function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: s
       `${ind(ctx)}let ${valV}, ${endV} = ${pos}`,
     ]
 
+    const plan = _forceDisjointIf ? { kind: 'if' as const } : planDisjointDispatch(def.parsers)
+
+    // Switch (jump table) when arms key off a few discrete first code points.
+    if (plan.kind === 'switch') {
+      stmts.push(`${ind(ctx)}switch (${codeV}) {`)
+      ctx.indent++
+      for (let i = 0; i < def.parsers.length; i++) {
+        const p = def.parsers[i]!
+        for (const cp of plan.cases[i]!) stmts.push(`${ind(ctx)}case ${cp}:`)
+        stmts.push(`${ind(ctx)}{`)
+        ctx.indent++
+        stmts.push(
+          ...emitDisjointArm(p, ctx, pos, valV, endV),
+          `${ind(ctx)}break`,
+        )
+        ctx.indent--
+        stmts.push(`${ind(ctx)}}`)
+      }
+      stmts.push(`${ind(ctx)}default: ${failArrBody(ctx, allExpected, pos)}`)
+      ctx.indent--
+      stmts.push(`${ind(ctx)}}`)
+      return { stmts, valueVar: valV, endVar: endV }
+    }
+
+    // Otherwise if/else if with range comparisons (cheaper for char-class arms).
     let first = true
     for (const p of def.parsers) {
       const cond = firstSetCond(codeV, p._meta.firstSet)
@@ -735,10 +997,7 @@ function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: s
       first = false
       stmts.push(`${ind(ctx)}${kw} (${cond}) {`)
       ctx.indent++
-      const r = emit(p, ctx, pos)
-      stmts.push(...r.stmts)
-      stmts.push(`${ind(ctx)}${valV} = ${r.valueVar}`)
-      stmts.push(`${ind(ctx)}${endV} = ${r.endVar}`)
+      stmts.push(...emitDisjointArm(p, ctx, pos, valV, endV))
       ctx.indent--
       stmts.push(`${ind(ctx)}}`)
     }
@@ -754,7 +1013,6 @@ function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: s
 function emitGreedyClassify(
   def: Extract<ParserDef, { tag: 'choice' }>,
   superIndex: number,
-  allExpected: string,
   ctx: Ctx,
   pos: string,
 ): ER {
@@ -776,10 +1034,13 @@ function emitGreedyClassify(
   const endV   = v(ctx, '_ge')
   const valV   = v(ctx, '_gcv')
 
+  // On no-match the interpreter returns the super-regex arm's failure verbatim
+  // (choice.ts) — report only the regex's expected, not every classified literal.
+  const regexExpected = JSON.stringify(staticExpected(superParser))
   const stmts: string[] = [
     `${ind(ctx)}${reVar}.lastIndex = ${pos}`,
     `${ind(ctx)}const ${matchV} = ${reVar}.exec(input)`,
-    ...emitIfFail(ctx, `${matchV} === null`, failArrBody(ctx, allExpected, pos)),
+    ...emitIfFail(ctx, `${matchV} === null`, failArrBody(ctx, regexExpected, pos)),
     `${ind(ctx)}const ${wordV} = ${matchV}[0]`,
     `${ind(ctx)}const ${endV} = ${pos} + ${wordV}.length`,
     `${ind(ctx)}let ${valV}`,
@@ -861,22 +1122,36 @@ function emitLiteralsLongestFirst(
 // deoptimization from exception-based control flow.
 function emitFirstMatch(
   def: Extract<ParserDef, { tag: 'choice' }>,
-  allExpected: string,
   ctx: Ctx,
   pos: string,
 ): ER {
   const resValV = v(ctx, '_crv')
   const resEndV = v(ctx, '_cre')
   const resOkV  = v(ctx, '_crok')
+  const codeV   = v(ctx, '_chcode')
+  // For a TOTAL failure we report the concatenation of each tried arm's deep
+  // `expected` (interpreter parity). To keep the hot success path allocation-free
+  // (a choice that ultimately matches must NOT pay for error bookkeeping), each
+  // failed arm snapshots its expected into a scalar slot (a pointer store, no
+  // array/spread). Leaf arms that fail-at-start use a hoisted static const;
+  // composite arms snapshot `_ctx._fx`. The concat array is materialized only in
+  // the rare all-arms-failed branch. Auto-not-rejected arms leave their slot
+  // unset — matching choice.ts.
+  const slots = def.parsers.map(() => v(ctx, '_cfx'))
   const ind0 = ind(ctx)
   const stmts: string[] = [
     `${ind0}let ${resValV}, ${resEndV} = ${pos}, ${resOkV} = false`,
+    `${ind0}let ${slots.join(', ')}`,
+    `${ind0}const ${codeV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
   ]
 
   for (let i = 0; i < def.parsers.length; i++) {
     const p = def.parsers[i]!
     const gate    = def.gates[i]
     const autoNot = def.autoNot[i]
+    const atStart = failsAtStart(p)
+    const staticFx = armStaticExpected(ctx, p)
+    const fsGuard = needsFirstSetGuard(p) ? firstSetCond(codeV, p._meta.firstSet) : null
 
     // Gate: register predicate in mapFns; condition guards entire arm attempt
     let gateCond: string | null = null
@@ -887,11 +1162,6 @@ function emitFirstMatch(
     }
     const skipCond = gateCond ? `!${resOkV} && ${gateCond}` : `!${resOkV}`
 
-    // In capturing mode, save leaf-array lengths before the arm so we can roll
-    // back any leaves pushed by a failed or auto-not-rejected arm. Only needed
-    // when the arm can actually leave partial captures (a capture-then-fail), or
-    // when it captures and an auto-not check can reject an otherwise-successful
-    // match. Atomic/self-contained arms skip the save/restore entirely.
     const armHasAutoNot = !!(autoNot && autoNot.length > 0)
     const armNeedsRollback = ctx.capturing &&
       (mayLeavePartialCapture(p) || (armHasAutoNot && capturesLeaf(p)))
@@ -902,22 +1172,22 @@ function emitFirstMatch(
     const rollback   = markLeaves
       ? captureRestoreBody(markLeaves, markRaw!, markTl!, markLog!)
       : ''
+    const failSlot = atStart ? staticFx : '_ctx._fx'
 
     stmts.push(`${ind0}if (${skipCond}) {`)
+    if (fsGuard) stmts.push(`${ind(ctx)}if (${fsGuard}) {`)
+    ctx.indent += fsGuard ? 2 : 1
 
-    ctx.indent++
-    const ind1 = ind(ctx)
     if (markLeaves) {
       stmts.push(
-        `${ind1}const ${markLeaves} = _ctx._cstLeaves?.length ?? 0`,
-        `${ind1}const ${markRaw} = _ctx._cstRawChildren?.length ?? 0`,
-        `${ind1}const ${markTl} = _ctx._cstTriviaLog?.length ?? 0`,
-        `${ind1}const ${markLog} = _ctx._triviaLog?.length ?? 0`,
+        `${ind(ctx)}const ${markLeaves} = _ctx._cstLeaves?.length ?? 0`,
+        `${ind(ctx)}const ${markRaw} = _ctx._cstRawChildren?.length ?? 0`,
+        `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog?.length ?? 0`,
+        `${ind(ctx)}const ${markLog} = _ctx._triviaLog?.length ?? 0`,
       )
     }
-    const { stmts: armStmts, okVar, valVar, endVar } = emitFallible(p, ctx, pos)
+    const { stmts: armStmts, okVar, valVar, endVar } = emitFallible(p, ctx, pos, atStart)
     stmts.push(...armStmts)
-    ctx.indent--
 
     if (autoNot && autoNot.length > 0) {
       const anCode = v(ctx, '_anc')
@@ -926,22 +1196,27 @@ function emitFirstMatch(
           ? firstSetCond(anCode, check.set)
           : `input.startsWith(${JSON.stringify(check.value)}, ${endVar})`
       ).join(' || ')
-      stmts.push(`${ind0}  if (${okVar}) {`)
-      stmts.push(`${ind0}    const ${anCode} = ${endVar} < input.length ? input.charCodeAt(${endVar}) : -1`)
-      stmts.push(`${ind0}    if (!(${rejectCond})) {`)
-      stmts.push(`${ind0}      ${resValV} = ${valVar}`)
-      stmts.push(`${ind0}      ${resEndV} = ${endVar}`)
-      stmts.push(`${ind0}      ${resOkV} = true`)
-      stmts.push(`${ind0}    }`)
-      stmts.push(`${ind0}  }`)
-      if (rollback) stmts.push(`${ind0}  if (!${resOkV}) { ${rollback} }`)
+      stmts.push(`${ind(ctx)}if (${okVar}) {`)
+      stmts.push(`${ind(ctx)}  const ${anCode} = ${endVar} < input.length ? input.charCodeAt(${endVar}) : -1`)
+      stmts.push(`${ind(ctx)}  if (!(${rejectCond})) {`)
+      stmts.push(`${ind(ctx)}    ${resValV} = ${valVar}`)
+      stmts.push(`${ind(ctx)}    ${resEndV} = ${endVar}`)
+      stmts.push(`${ind(ctx)}    ${resOkV} = true`)
+      stmts.push(`${ind(ctx)}  }`)
+      stmts.push(`${ind(ctx)}}`)
+      stmts.push(`${ind(ctx)}else { ${slots[i]} = ${failSlot} }`)
+      if (rollback) stmts.push(`${ind(ctx)}if (!${resOkV}) { ${rollback} }`)
     } else {
-      stmts.push(`${ind0}  if (${okVar}) { ${resValV} = ${valVar}; ${resEndV} = ${endVar}; ${resOkV} = true }`)
-      if (rollback) stmts.push(`${ind0}  else { ${rollback} }`)
+      stmts.push(`${ind(ctx)}if (${okVar}) { ${resValV} = ${valVar}; ${resEndV} = ${endVar}; ${resOkV} = true }`)
+      stmts.push(`${ind(ctx)}else { ${slots[i]} = ${failSlot}${rollback ? `; ${rollback}` : ''} }`)
     }
+
+    ctx.indent -= fsGuard ? 2 : 1
+    if (fsGuard) stmts.push(`${ind(ctx)}} else { ${slots[i]} = ${staticFx} }`)
     stmts.push(`${ind0}}`)
   }
-  stmts.push(...emitIfFail(ctx, `!${resOkV}`, failArrBody(ctx, allExpected, pos)))
+  const concatExpr = `[${slots.map(s => `...(${s} || [])`).join(', ')}]`
+  stmts.push(...emitIfFail(ctx, `!${resOkV}`, failArrBody(ctx, concatExpr, pos, false)))
   return { stmts, valueVar: resValV, endVar: resEndV }
 }
 
@@ -953,10 +1228,10 @@ function emitNonDisjoint(
   pos: string,
 ): ER {
   if (strategy.tag === 'greedyClassify')
-    return emitGreedyClassify(def, strategy.superIndex, allExpected, ctx, pos)
+    return emitGreedyClassify(def, strategy.superIndex, ctx, pos)
   if (strategy.tag === 'literalsLongestFirst')
     return emitLiteralsLongestFirst(def, strategy.sortedIndices, allExpected, ctx, pos)
-  return emitFirstMatch(def, allExpected, ctx, pos)
+  return emitFirstMatch(def, ctx, pos)
 }
 
 // ── helpers for emitGreedyClassify / emitLiteralsLongestFirst ────────────────
@@ -1042,7 +1317,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     }
   }
 
-  const { stmts: iterStmts, okVar: iterOk, valVar: iterVal, endVar: iterEnd } = emitFallible(def.parser, ctx, itemPos)
+  const { stmts: iterStmts, okVar: iterOk, valVar: iterVal, endVar: iterEnd } = emitFallible(def.parser, ctx, itemPos, true)
   stmts.push(
     ...iterStmts,
     `${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`,
@@ -1059,7 +1334,7 @@ function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, po
   const valV = v(ctx, '_opt')
   const endV = v(ctx, '_opte')
 
-  const { stmts: lblStmts, okVar, valVar, endVar } = emitFallible(def.parser, ctx, pos)
+  const { stmts: lblStmts, okVar, valVar, endVar } = emitFallible(def.parser, ctx, pos, true)
 
   const ind0 = ind(ctx)
   const stmts = [
@@ -1075,7 +1350,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   const curV = v(ctx, '_cur')
 
   const { stmts: firstStmts, okVar: firstOk, valVar: firstVal, endVar: firstEnd } =
-    emitFallible(def.parser, ctx, pos)
+    emitFallible(def.parser, ctx, pos, true)
 
   const stmts: string[] = [
     `${ind(ctx)}const ${arrV} = []`,
@@ -1113,13 +1388,13 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       )
       sepAtPos = spV
       const rollbackToSep = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; `
-      const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos)
+      const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}break }`)
 
       const npV = v(ctx, '_np')
       stmts.push(`${ind(ctx)}const ${npV} = ${capFn}(input, ${sepEnd}, _ctx, 1)`)
       const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
-        emitFallible(def.parser, ctx, npV)
+        emitFallible(def.parser, ctx, npV, true)
       stmts.push(
         ...nextStmts,
         // item failed → unwind the separator too, back to the end of the last item
@@ -1132,13 +1407,13 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       const spV = v(ctx, '_sp')
       stmts.push(`${ind(ctx)}const ${spV} = ${trivFn}(input, ${curV}, _ctx)`)
       sepAtPos = spV
-      const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos)
+      const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) break`)
 
       const npV = v(ctx, '_np')
       stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${sepEnd}, _ctx)`)
       const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
-        emitFallible(def.parser, ctx, npV)
+        emitFallible(def.parser, ctx, npV, true)
       stmts.push(
         ...nextStmts,
         `${ind(ctx)}if (!${nextOk}) break`,
@@ -1157,13 +1432,13 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         `${ind(ctx)}const ${markRw} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
       )
     }
-    const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos)
+    const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
     stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) break`)
     const nextRb = markLv
       ? `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markRw}; `
       : ''
     const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
-      emitFallible(def.parser, ctx, sepEnd)
+      emitFallible(def.parser, ctx, sepEnd, true)
     stmts.push(
       ...nextStmts,
       `${ind(ctx)}if (!${nextOk}) { ${nextRb}break }`,
@@ -1247,11 +1522,16 @@ function emitScanTo(
  * fail; if it fails, succeed consuming nothing (value null, end === pos).
  */
 function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string): ER {
-  const { stmts, okVar } = emitFallible(def.parser, ctx, pos)
+  // not() discards the inner failure (inner failing = not succeeding), so the
+  // inner sub-parse need not record — swallow it.
+  const { stmts, okVar } = emitFallible(def.parser, ctx, pos, true)
+  // not() fails (at its own pos) when the inner parser SUCCEEDS; the interpreter
+  // reports `not(<innerTag>)` as the expected token — match that label exactly.
+  const label = JSON.stringify(`not(${def.parser._tag})`)
   return {
     stmts: [
       ...stmts,
-      ...emitIfFail(ctx, okVar, failBody(ctx, '"not"', pos)),
+      ...emitIfFail(ctx, okVar, failBody(ctx, label, pos)),
     ],
     valueVar: 'null',
     endVar: pos,
@@ -1298,7 +1578,9 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const { stmts: innerStmts, okVar, endVar } = emitFallible(def.parser, ctx, pos)
   stmts.push(...innerStmts)
   stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}`)
-  stmts.push(...emitIfFail(ctx, `!${okVar}`, failBody(ctx, '"node"', pos)))
+  // node() returns the inner failure verbatim (interpreter parity) — propagate
+  // the recorded deepest failure, not a coarse ["node"] at the node's start.
+  stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
 
   let stV = 'undefined'
   if (clonesState) {
@@ -1329,9 +1611,17 @@ function emitRuntimeFallback(parser: Combinator<unknown>, ctx: Ctx, pos: string)
   const rv = v(ctx, '_rt')
   const vv = v(ctx, '_rtv')
   const ev = v(ctx, '_rte')
+  // The runtime parser IS the real combinator, so its result is exactly the
+  // interpreter's — record its failure payload and propagate it verbatim (only
+  // when a consumer will read it).
+  const failStmt = ctx.failLabel
+    ? (ctx.recordFail
+        ? `{ _ctx._fe = ${rv}.span.start; _ctx._fx = ${rv}.expected; break ${ctx.failLabel} }`
+        : `break ${ctx.failLabel}`)
+    : `return { ok: false, expected: ${rv}.expected, span: ${rv}.span }`
   const stmts = [
     `${ind(ctx)}const ${rv} = _rp[${idx}].parse(input, ${pos}, _ctx)`,
-    ...emitIfFail(ctx, `!${rv}.ok`, failBody(ctx, '"runtime"', pos)),
+    ...emitIfFail(ctx, `!${rv}.ok`, failStmt),
     `${ind(ctx)}const ${vv} = ${rv}.value`,
     `${ind(ctx)}const ${ev} = ${rv}.span.end`,
   ]
@@ -1384,17 +1674,25 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
 
     const savedIndent    = ctx.indent
     const savedFailLabel = ctx.failLabel
+    const savedRecord    = ctx.recordFail
     ctx.indent    = 1
     ctx.failLabel = '_pfail'  // failures break _pfail (labeled block in fn body)
+    // A named fn is compiled ONCE but shared across every call site, so its body
+    // must always record `_ctx._fx` — the caller (emitNamedFnCall) decides via
+    // its own recordFail whether to propagate. Baking the first caller's
+    // (possibly swallowed) recordFail into the shared body would leave `_ctx._fx`
+    // unset for other callers that DO read it.
+    ctx.recordFail = true
     const r = emit(resolved, ctx, '_pos')
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
+    ctx.recordFail = savedRecord
 
     pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar)
   }
 
   const fnName = ctx.namedParsers.get(p)!
-  return emitNamedFnCall(ctx, fnName, pos, '"parser"')
+  return emitNamedFnCall(ctx, fnName, pos)
 }
 
 // ── recover: try inner; on failure scan to sentinel, emit ParseError node ────
@@ -1573,11 +1871,14 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         ctx.namedParsers.set(innerParser, fnName)
         const savedIndent    = ctx.indent
         const savedFailLabel = ctx.failLabel
+        const savedRecord    = ctx.recordFail
         ctx.indent    = 1
         ctx.failLabel = '_pfail'  // failures break _pfail (same as emitLazy)
+        ctx.recordFail = true     // shared body always records (see emitLazy)
         const innerR = emit(innerParser, ctx, '_pos')
         ctx.indent    = savedIndent
         ctx.failLabel = savedFailLabel
+        ctx.recordFail = savedRecord
         pushNamedFnDecl(ctx, fnName, innerR.stmts, innerR.valueVar, innerR.endVar)
       }
       const fn = ctx.namedParsers.get(innerParser)!
@@ -1589,7 +1890,9 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         stmts: [
           `${ind(ctx)}const ${rv} = { ..._ctx, state: _mf[${evIdx}]() }`,
           `${ind(ctx)}const ${vv} = ${fn}(input, ${pos}, ${rv})`,
-          ...emitIfFail(ctx, `${vv} === ${NAMED_FN_FAIL}`, failBody(ctx, '"withCtx"', pos)),
+          // withCtx runs on a spread child ctx — copy its recorded failure back
+          // and propagate the inner failure verbatim (interpreter parity).
+          ...emitIfFail(ctx, `${vv} === ${NAMED_FN_FAIL}`, propagateFailBody(ctx, rv)),
           `${ind(ctx)}const ${ev} = ${NAMED_FN_END}`,
         ],
         valueVar: vv,
@@ -1786,6 +2089,9 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     indent: 1,
     regexDecls: [],
     regexMap: new Map(),
+    expectedDecls: [],
+    expectedMap: new Map(),
+    recordFail: true,
     mapFns: [],
     mapFnSrcs: [],
     buildFns: [],
@@ -1812,6 +2118,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
   const source = [
     ...emptyTlDecls,
     ...ctx.regexDecls,
+    ...ctx.expectedDecls,
     '',
     ...namedPrelude,
     ctx.namedFnDecls.join('\n\n'),
@@ -1825,6 +2132,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
   const fn = new Function('input', '_pos', '_rp', '_mf', '_build', '_ctx', [
     ...emptyTlDecls,
     ...ctx.regexDecls,
+    ...ctx.expectedDecls,
     collatorDecl,
     ...namedPrelude,
     ...ctx.namedFnDecls.flatMap((decl, i) => (i > 0 ? ['', decl] : [decl])),
@@ -1924,6 +2232,9 @@ export function compileRuleMap(
     indent: 1,
     regexDecls: [],
     regexMap: new Map(),
+    expectedDecls: [],
+    expectedMap: new Map(),
+    recordFail: true,
     mapFns: [],
     mapFnSrcs: [],
     buildFns: [],
@@ -1959,6 +2270,7 @@ export function compileRuleMap(
   const hoistedDecls = [
     ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : '',
     ...ctx.regexDecls.map(d => `  ${d}`),
+    ...ctx.expectedDecls.map(d => `  ${d}`),
     collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,
     buildDecl,
@@ -2022,13 +2334,14 @@ function buildInlineExpression(
   const buildDecl = buildSources?.length ? `  const _build = [${buildSources.join(', ')}]` : ''
 
   const emptyTlDecl = ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : ''
-  const needsWrapper = ctx.regexDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl
+  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     emptyTlDecl,
     ...ctx.regexDecls.map(d => `  ${d}`),
+    ...ctx.expectedDecls.map(d => `  ${d}`),
     collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,
     buildDecl,

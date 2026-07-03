@@ -74,9 +74,47 @@ When trivia is `oneOrMore(choice(ws, blockComment))` (CSS `rw`) or ASCII ws-only
 
 Arms like `ident '(' …` vs bare `ident` can't use disjoint dispatch. Generalize the CSS grammar hand-merge: parse shared prefix once, branch on lookahead. Complements existing `autoNot` (suffix rejection) but doesn't replace it.
 
-### 8. Simple regex lowering
+### 7b. Partial first-char choice dispatch (switch + fallback)
 
-Patterns like `\d+`, `[A-Za-z_]\w*`, single char classes — emit hand-rolled scan loops instead of `RegExp.exec` when `regexp-tree` analysis proves it's safe.
+**Problem:** `choice(quotedField, unquotedField)` in CSV is *not* marked `disjoint` because
+`unquotedField`'s first set (`[^,\r\n]*`) includes `"` — same as `quotedField`'s leading
+literal. So codegen emits **`firstMatch`**: on every unquoted field it still enters the full
+`quotedField` arm, fails at `charCodeAt !== 34`, records the miss, then tries `unquotedField`.
+That's correct PEG semantics but wasteful on the hot path (almost every field is unquoted).
+
+**Already landed for the fully-disjoint case:** `emitChoice` → `planDisjointDispatch` emits a
+`switch (codePointAt(pos))` (or `if/else if` range chain) when *all* arms have pairwise-
+disjoint first sets. Keyword/operator grammars get O(1) dispatch today.
+
+**Idea (circle back after CSV perf is stable):**
+
+1. **Partition arms** by first-set overlap:
+   - **Unique keys** — exactly one arm can start at code point `c` → `switch` case → try only that arm.
+   - **Ambiguous / wide-class arms** — collect into a small fallback `firstMatch` (or `greedyClassify`) subset.
+2. **Second-char refinement** — when two arms share a first char but diverge on the second
+   (e.g. `\r\n` vs `\n`), nest a switch on `charCodeAt(pos+1)` inside the first-char case.
+3. **CSV-specific win without new machinery:** at `"` → quoted only; else → unquoted only.
+   Semantically safe: non-`"` inputs never succeed on `quotedField` anyway.
+
+Complements §7 (shared-prefix factoring) and `autoNot` (suffix rejection). Does **not**
+replace them — handles the "wide regex arm overlaps a literal-prefix arm" pattern common in
+data grammars (CSV, config, log formats).
+
+**Measure:** `csv/small` + `csv/large` speedup ratio; `test/unit/choice-dispatch.test.ts` +
+`test/parity/failure-diagnostics.test.ts` for parity.
+
+### 8. Simple regex lowering ✅ (partial)
+
+`scanShapeFromRegex` shapes lower terminal `regex()` to `charCodeAt` scan loops in `emitRegex` (`scannable-terminal.ts`); trivia uses the same shapes via `trivia-fast-path.ts`. Supported:
+
+- `[X]+` / `[X]*` char-class runs (`chars`)
+- `\d`/`\w` runs and `\d`/`\w` **inside** classes (e.g. `[\d.]+`); `\s` stays on `exec` (Unicode whitespace)
+- `[head][tail]*` identifier runs (`ident`), incl. shorthand head/tail
+- `<lit>[^X]*` open-until-terminator (`until`) and `<open>…<close>` delimited tokens
+
+Lowering is disabled for `i`/`m`/`s`/`u` flags (case-fold / unicode / dot / anchor semantics can't be reproduced by a fixed code-point scan).
+
+**Still open:** optional prefixes (`-?[0-9]+`), merged alternation in one regex (GraphQL `ws`).
 
 ---
 
@@ -87,7 +125,7 @@ Patterns like `\d+`, `[A-Za-z_]\w*`, single char classes — emit hand-rolled sc
 | `emitSkip` | Still uses `try/catch {}` | `emitFallible` |
 | `withCtx` | `{ ..._ctx, state: … }` allocates | Save/restore `_ctx.state` |
 | ASCII-only grammars | `codePointAt` in disjoint dispatch | `charCodeAt` when first-set proves BMP-only |
-| Dense disjoint choices | Long `if/else if` chains | `switch` or lookup table |
+| ~~Dense disjoint choices~~ ✅ | ~~Long `if/else if` chains~~ | `switch` jump table when arms key off ≤48 discrete first code points; if/else kept for wide char-class arms (`emitChoice` → `planDisjointDispatch`) |
 | `makeWord()` at macro time | Expands to regex per keyword | Expand to charCode / `literal+not` where cheap |
 | Macro build time | Sequential `compile()` per rule | Parallel compile; cache by combinator-tree hash |
 
@@ -99,7 +137,11 @@ Patterns like `\d+`, `[A-Za-z_]\w*`, single char classes — emit hand-rolled sc
 - `pnpm bench:compile-grammars` — regenerate precompiled Peggy, Nearley, and Jison parsers in `bench/` after editing `bench/*.pegjs` or `bench/vendor/`.
 - `pnpm bench:svg` — regenerate `assets/bench-*.svg` for the README (update µs values in `bench/gen-svg.ts` from `pnpm bench` output first).
 - `pnpm bench:baseline` — refresh `bench/parseman-baseline.json` **and append** a snapshot to `bench/parseman-history.jsonl` (commit both to track the needle over time).
-- `test/perf/parseman-perf.test.ts` — smoke + compiled absolute (25%) and speedup-ratio (15%) regression guard vs baseline (interpreted absolute skipped in CI — vitest/JIT noise).
+- `test/perf/parseman-perf.test.ts` — smoke + CSS tight speedup-ratio guard (8%, robust median) + full-suite gross guard (30%, single-pass).
+- `pnpm perf:guard` — pre-commit: CSS-only robust guard (~2s). `pnpm perf:guard --all` — every grammar.
+- `test/perf/codegen-ab.test.ts` + `bench/codegen-ab.ts` — within-process A/B that isolates the two codegen optimizations (machine-independent, no old-git-state needed):
+  - **regex scan lowering** — a scannable `+`/`*` terminal (charCodeAt) vs the SAME grammar with `{1,}`/`{0,}` (identical matches, stays on `RegExp.exec`). Realistic many-short-token regime: **~2.3× faster**. Single very long token: scan loses to native exec (~0.3×, printed as contrast, not asserted). Uses `__setForceDisjointIf` / semantic-equivalent quantifiers so no production code changes.
+  - **switch vs if/else disjoint dispatch** — same choice compiled both ways via `__setForceDisjointIf`. ~1.0× (neutral; switch is cleaner for many arms, no perf cost).
 - `test/perf/css-parser.test.ts` — CSS correctness + bootstrap timing when fixture available.
 - `test/parity/trivia-kinds.test.ts` — labeled trivia kind indices: interpreted vs compiled parity.
 - `test/parity/trivia-log-regression.test.ts` — interpreted/compiled `_triviaLog` golden parity.

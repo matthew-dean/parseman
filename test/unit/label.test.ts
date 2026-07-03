@@ -46,9 +46,10 @@ describe('label()', () => {
     )))
     const p = parser({ trivia: rw }, sequence(literal('a'), literal('b')))
     const src = compile(p).source
-    // labeled scannable loop captures [start, end, kind] per chunk, via char-scan
-    expect(src).toContain('_ctx._triviaLog.push(_cs, _e, 0)')
-    expect(src).toContain('_ctx._triviaLog.push(_cs, _e, 1)')
+    // labeled scannable loop captures [start=_e, end, kind] per chunk, via char-scan
+    // (end is a minted local, so match its shape rather than an exact name).
+    expect(src).toMatch(/_ctx\._triviaLog\.push\(_e, \w+, 0\)/)
+    expect(src).toMatch(/_ctx\._triviaLog\.push\(_e, \w+, 1\)/)
     expect(src).not.toMatch(/function _tf0[\s\S]*\.exec\(input\)/) // no regex dispatch
   })
 

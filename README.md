@@ -70,7 +70,7 @@ Full API in the **[reference](https://matthew-dean.github.io/parseman/reference/
 
 For **syntax tree building**, the compiled CST path (macro build) beats [Lezer](https://lezer.codemirror.net/) on the JSON CST fixture too — while producing a richer object tree with spans and trivia. For **incremental re-parse**, the two trade places by edit type: Parséman's `makeFunctionalDoc` is ~300× faster than a full reparse on in-place value edits (and ahead of Lezer), while Lezer's buffer reuse wins on structural edits. Full breakdown in the [benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks).
 
-Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster. Refresh: `pnpm bench`, then `pnpm bench:svg` (updates `assets/bench-*.svg`).
+Measured on Apple M4 Pro. Bars show µs per parse — shorter is faster. Refresh: `pnpm bench`, then `pnpm bench:svg` (updates `assets/bench-*.svg`).
 
 Compared parsers: **Parséman**, [Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) (plus `JSON.parse` on JSON). Each implements the same parsing work on the bench fixtures — building JS values / row arrays / GraphQL AST nodes, not syntax-only validation. Peggy grammars in `bench/*.pegjs` are the reference; Nearley JSON uses [kach/nearley `examples/json.ne`](https://github.com/kach/nearley/blob/master/examples/json.ne); other Nearley and Jison grammars are ports of those Peggy files (`bench/vendor/`).
 

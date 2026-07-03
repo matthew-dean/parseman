@@ -20,6 +20,7 @@ import { parseCSV, compiledCSV, csvParser } from '../examples/csv/parser.ts'
 import { parseConfig, compiledConfig } from '../examples/toml-ish/parser.ts'
 import { parseGraphQL, graphqlDoc } from '../examples/graphql/parser.ts'
 import { buildCombinatorInliningCases, benchCase } from './combinator-inlining.ts'
+import { printCodegenAb } from './codegen-ab.ts'
 import {
   SMALL_JSON, MEDIUM_JSON, LARGE_JSON,
   SMALL_CSV, LARGE_CSV,
@@ -229,6 +230,11 @@ for (const c of buildCombinatorInliningCases()) {
     `  ${c.name.padEnd(32)} interp ${interpretedUs.toFixed(2)}µs  compiled ${compiledUs.toFixed(2)}µs  ${speedup.toFixed(2)}×`,
   )
 }
+
+// ---------------------------------------------------------------------------
+// Codegen A/B — isolate regex scan lowering + switch dispatch (same process)
+// ---------------------------------------------------------------------------
+printCodegenAb()
 
 // ---------------------------------------------------------------------------
 // Parseman-only suite — interpreted vs compiled, all example grammars + baseline Δ

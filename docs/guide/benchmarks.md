@@ -12,7 +12,7 @@ This page is about **speed**. For a feature-by-feature look at how these parsers
 output shape, context-sensitive grammars, incremental re-parse, error recovery — see
 [How Parséman compares](./comparison).
 
-Measured on Apple M2 Pro. Bars show µs per parse — shorter is faster.
+Measured on Apple M4 Pro. Bars show µs per parse — shorter is faster.
 
 Compared parsers: **Parséman**, [Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) (plus [`JSON.parse`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/parse) on JSON). Each implements the same parsing work on the bench fixtures —
 building JS values / row arrays / GraphQL AST nodes, not syntax-only validation.

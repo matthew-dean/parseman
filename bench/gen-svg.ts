@@ -168,7 +168,7 @@ function buildSvg(chart: Chart): string {
 
 // ── JSON data ─────────────────────────────────────────────────────────────────
 
-// Init bars: pinned from a stable M2 Pro snapshot (highly environment-sensitive — do not
+// Init bars: pinned from a stable snapshot (highly environment-sensitive — do not
 // overwrite from `pnpm bench` output; warm-parse bars below are what we refresh).
 
 const jsonChart: Chart = {

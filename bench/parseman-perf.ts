@@ -28,6 +28,25 @@ export const BASELINE_PATH = resolve(__dir, 'parseman-baseline.json')
 /** Append-only time series — one JSON object per line, written by pnpm bench:baseline. */
 export const HISTORY_PATH = resolve(__dir, 'parseman-history.jsonl')
 
+/**
+ * Shared measurement profile — the baseline capture and the regression guard
+ * MUST use the same numbers, otherwise the guard compares medians taken under
+ * different conditions and you're forced to widen the tolerance to hide the
+ * methodology gap (this is exactly why the tolerance used to be 18%).
+ */
+export const PERF_SAMPLES = 9
+/**
+ * Interleaved passes for a robust baseline (manual, thoroughness over speed).
+ * Robustness against thermal/GC blips comes mostly from spreading measurement
+ * across independent passes over time, so a moderate sample count × several
+ * passes beats one big sample window while keeping total wall-time sane.
+ */
+export const BASELINE_PASSES = 3
+/** Interleaved passes for the guard — MUST match BASELINE_PASSES so ratio comparisons are apples-to-apples. */
+export const GUARD_PASSES = 3
+/** Hard regression gate: max % the compiled speedup ratio may fall below baseline. */
+export const PERF_TOLERANCE = 8
+
 const compiledJSON = compile(jsonDoc)
 const compiledGraphQL = compile(graphqlDoc)
 const compiledExpr = compile(exprParser)
@@ -190,6 +209,35 @@ export function runParsemanSuite(opts?: ParsemanSuiteOpts): ParsemanBenchRow[] {
         opsPerSec: Math.round(1_000_000 / medianUs),
       })
     }
+  }
+  return rows
+}
+
+/**
+ * Run the suite `passes` times and keep the per-case/mode MEDIAN of the
+ * per-pass medians. A single pass of a sub-microsecond case (e.g. `toml/small`
+ * at ~0.5µs) can land ~15% off due to a thermal/GC blip inside its sample
+ * window; taking the median across several independent, interleaved passes makes
+ * both the stored baseline AND the guard reading reproducible, which is what lets
+ * the regression tolerance be tight (≈8%) instead of absorbing measurement junk.
+ * Passes are interleaved (whole suite per pass) so slow drift spreads across all
+ * cases rather than biasing whichever case happened to run during a hiccup.
+ */
+export function runParsemanSuiteRobust(opts?: ParsemanSuiteOpts, passes = 5): ParsemanBenchRow[] {
+  if (passes <= 1) return runParsemanSuite(opts)
+  const acc = new Map<string, { row: ParsemanBenchRow; us: number[] }>()
+  for (let p = 0; p < passes; p++) {
+    for (const r of runParsemanSuite(opts)) {
+      const key = `${r.id}/${r.mode}`
+      const e = acc.get(key)
+      if (e) e.us.push(r.medianUs)
+      else acc.set(key, { row: r, us: [r.medianUs] })
+    }
+  }
+  const rows: ParsemanBenchRow[] = []
+  for (const { row, us } of acc.values()) {
+    const m = median(us)
+    rows.push({ ...row, medianUs: m, opsPerSec: Math.round(1_000_000 / m) })
   }
   return rows
 }
@@ -365,7 +413,7 @@ export function findRegressions(
 ): string[] {
   const tolCompiled = opts?.tolerance?.compiled ?? 25
   const tolInterpreted = opts?.tolerance?.interpreted ?? 100
-  const tolSpeedup = opts?.tolerance?.speedup ?? 15
+  const tolSpeedup = opts?.tolerance?.speedup ?? PERF_TOLERANCE
   const modes = opts?.modes ?? ['interpreted', 'compiled']
   const checkAbsolute = opts?.checkAbsolute ?? (process.env.PARSEMAN_PERF_ABSOLUTE !== undefined)
   const msgs: string[] = []

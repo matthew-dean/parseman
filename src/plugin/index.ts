@@ -20,7 +20,7 @@
 import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap } from '../compiler/codegen.ts'
 import type { Combinator } from '../types.ts'
 import type {
@@ -312,6 +312,14 @@ export function transformMacro(
           const wordFactory = evaluateWordFactory(init, scope, code)
           if (wordFactory) {
             ;(scope as Map<string, unknown>).set(varName, wordFactory)
+            continue
+          }
+          // A shared array-of-combinators const (e.g. a reusable `skip` set) — store
+          // it in scope so `{ skip: name }` on a later scanTo/balanced resolves the
+          // array. Left in the emitted output; it references other emitted consts.
+          const combiArray = evaluateCombinatorArray(init, scope, code)
+          if (combiArray) {
+            ;(scope as Map<string, unknown>).set(varName, combiArray)
             continue
           }
           warn(init.start, `"${varName}" references a parseman macro import but isn't a statically-evaluable combinator`)

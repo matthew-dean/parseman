@@ -91,6 +91,16 @@ export type ParseContext = {
   /** When set, recover() nodes push their ParseError here instead of (only) embedding it in the tree. */
   _errors?: ParseError[]
   /**
+   * Framework-internal (compiled/macro output only): the deepest failure recorded
+   * while a fallible sub-parser was running — position (`_fe`) and expected set
+   * (`_fx`). Composite constructs (node, ref, withCtx, …) read these to propagate
+   * the inner failure verbatim instead of a coarse structural placeholder, keeping
+   * failure diagnostics at parity with the interpreter. Overwritten on each leaf
+   * failure; only meaningful immediately after a sub-parse reports failure.
+   */
+  _fe?: number
+  _fx?: string[]
+  /**
    * When set by completionsAt(), tracks the highest-position ParseFail seen
    * during parsing up to _probe.offset. Used to return completions at the cursor
    * even when sepBy/many backtracked past the cursor position.

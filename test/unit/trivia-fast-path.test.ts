@@ -33,7 +33,7 @@ describe('trivia fast path — detection', () => {
   it('derives a char-class run structurally (any class, not a hardcoded ws set)', () => {
     // digits: not whitespace, still lowers to a char-scan run.
     const shapes = analyzeTriviaFastPath(trivia(oneOrMore(regex(/[0-9]+/))))
-    expect(shapes).toEqual([{ kind: 'chars', ranges: [[48, 57]] }])
+    expect(shapes).toEqual([{ kind: 'chars', ranges: [[48, 57]], minOne: true }])
   })
 
   it('does not fast-path merged alternation regex (one arm per parse)', () => {
@@ -51,8 +51,13 @@ describe('trivia fast path — detection', () => {
     expect(analyzeTriviaFastPath(trivia(regex(/\s+/)))).toBeNull()
     // a direct non-run regex (leading `#` literal) is not a bare char-class run.
     expect(analyzeTriviaFastPath(trivia(regex(/#[0-9a-f]+/)))).toBeNull()
-    // an escape-aware string arm is rejected (scan-to-close would be wrong)
-    expect(analyzeTriviaFastPath(trivia(oneOrMore(choice(ws, regex(/'(?:[^'\\]|\\.)*'/)))))).toBeNull()
+  })
+
+  it('accepts an escape-aware string arm (shared completion-checked match)', () => {
+    // Strings are now safe in a trivia loop: the scan is completion-checked, so
+    // an unterminated string leaves `end === start` and the loop stops (parity
+    // with the interpreter) instead of consuming to EOF.
+    expect(kinds(trivia(oneOrMore(choice(ws, regex(/'(?:[^'\\]|\\.)*'/)))))).toEqual(['chars', 'string'])
   })
 })
 

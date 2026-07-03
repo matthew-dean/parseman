@@ -301,7 +301,10 @@ const { Num, Body } = rules(g => {
     // fully compiled → import removed, no runtime fallback combinators left
     expect(result!.code).not.toContain("from 'parseman'")
     expect(result!.code).not.toContain('scanTo(')
-    expect(result!.code).not.toContain('not(')
+    // No runtime `not(...)` combinator call remains. (The inlined failure label
+    // `"not(literal)"` legitimately contains the substring `not(` inside a
+    // string, so match only a bare identifier call, not the quoted label.)
+    expect(result!.code).not.toMatch(/(^|[\s(,=])not\(/m)
 
     const fnBody = result!.code.replace(/\bconst\b/g, 'var') + '\nreturn { Num, Body }'
     const reg = new Function(fnBody)() as Record<string, RuleFn>

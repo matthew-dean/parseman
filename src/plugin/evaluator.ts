@@ -405,6 +405,25 @@ export function evaluateExpr(
 }
 
 /**
+ * Evaluate a `const X = [combinator, …]` array literal into an array of
+ * Combinators. Lets a shared option array (e.g. a `skip` set reused across
+ * `scanTo`/`balanced` calls) be referenced by name — `{ skip: X }` — instead of
+ * inlining the array at every call site. Returns null when `node` isn't an array
+ * literal of statically-resolvable combinators.
+ */
+export function evaluateCombinatorArray(
+  node: Expression,
+  scope: Scope,
+  code?: string,
+): Combinator<unknown>[] | null {
+  if (node.type !== 'ArrayExpression') return null
+  const val = anyValue(node, scope as XScope, code, [])
+  if (!Array.isArray(val) || val.length === 0) return null
+  if (!val.every(isCombinator)) return null
+  return val as Combinator<unknown>[]
+}
+
+/**
  * Evaluate a `parser(g => { ... return { ruleName: combinator, ... } })` call.
  * Returns a map of rule names → defined Combinators, or null if the factory
  * can't be statically evaluated.
