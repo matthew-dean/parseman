@@ -197,9 +197,9 @@ const jsonChart: Chart = {
     {
       title: 'warm parse — medium  (1.8 kB)',
       bars: [
-        { label: 'Parséman (macro build)', us: 15.29,  color: C.macroBuild },
+        { label: 'Parséman (macro build)', us: 16.49,  color: C.macroBuild },
         { label: 'Peggy',                  us: 67.12,  color: C.peggy },
-        { label: 'Parséman (interpreter)',  us: 54.10,  color: C.noCompile },
+        { label: 'Parséman (interpreter)',  us: 53.95,  color: C.noCompile },
         { label: 'Jison',                  us: 201.23, color: C.jison },
         { label: 'Parsimmon',              us: 187.96, color: C.parsimmon },
         { label: 'Nearley',                us: 301.32, color: C.nearley },
@@ -210,9 +210,9 @@ const jsonChart: Chart = {
     {
       title: 'warm parse — large  (12 kB)',
       bars: [
-        { label: 'Parséman (macro build)', us: 124.83, color: C.macroBuild },
+        { label: 'Parséman (macro build)', us: 134.05, color: C.macroBuild },
         { label: 'Peggy',                  us: 471.55, color: C.peggy },
-        { label: 'Parséman (interpreter)',  us: 472.12, color: C.noCompile },
+        { label: 'Parséman (interpreter)',  us: 469.10, color: C.noCompile },
         { label: 'Jison',                  us: 1640.98,color: C.jison },
         { label: 'Parsimmon',              us: 1496.35,color: C.parsimmon },
         { label: 'Nearley',                us: 2578.40,color: C.nearley },
@@ -240,7 +240,7 @@ const csvChart: Chart = {
       bars: [
         { label: 'Parséman (macro build)', us: 0.33,  color: C.macroBuild },
         { label: 'Peggy',                  us: 2.06,  color: C.peggy },
-        { label: 'Parséman (interpreter)',  us: 2.50,  color: C.noCompile },
+        { label: 'Parséman (interpreter)',  us: 2.01,  color: C.noCompile },
         { label: 'Parsimmon',              us: 3.69,  color: C.parsimmon },
         { label: 'Chevrotain',             us: 6.75,  color: C.chevrotain },
         { label: 'Nearley',                us: 7.98,  color: C.nearley },
@@ -249,10 +249,10 @@ const csvChart: Chart = {
     {
       title: 'warm parse — large  (14.8 kB, 500 rows)',
       bars: [
-        { label: 'Parséman (macro build)', us: 71.06,  color: C.macroBuild },
+        { label: 'Parséman (macro build)', us: 67.18,  color: C.macroBuild },
         { label: 'Peggy',                  us: 446.74, color: C.peggy },
         { label: 'Parsimmon',              us: 461.80, color: C.parsimmon },
-        { label: 'Parséman (interpreter)',  us: 411.02, color: C.noCompile },
+        { label: 'Parséman (interpreter)',  us: 356.76, color: C.noCompile },
         { label: 'Chevrotain',             us: 1300.56,color: C.chevrotain },
         { label: 'Nearley',                us: 2860.16,color: C.nearley },
       ],
@@ -275,9 +275,9 @@ const gqlChart: Chart = {
     {
       title: 'warm parse — small  (27 bytes)',
       bars: [
-        { label: 'Parséman (macro build)', us: 0.86,  color: C.macroBuild },
+        { label: 'Parséman (macro build)', us: 0.74,  color: C.macroBuild },
         { label: 'Peggy',                  us: 2.45,  color: C.peggy },
-        { label: 'Parséman (interpreter)',  us: 4.36,  color: C.noCompile },
+        { label: 'Parséman (interpreter)',  us: 3.90,  color: C.noCompile },
         { label: 'Chevrotain',             us: 4.53,  color: C.chevrotain },
         { label: 'Nearley',                us: 7.05,  color: C.nearley },
         { label: 'Jison',                  us: 6.81,  color: C.jison },
@@ -287,9 +287,9 @@ const gqlChart: Chart = {
     {
       title: 'warm parse — medium  (336 bytes)',
       bars: [
-        { label: 'Parséman (macro build)', us: 5.76,  color: C.macroBuild },
+        { label: 'Parséman (macro build)', us: 5.17,  color: C.macroBuild },
         { label: 'Peggy',                  us: 16.53, color: C.peggy },
-        { label: 'Parséman (interpreter)',  us: 26.17, color: C.noCompile },
+        { label: 'Parséman (interpreter)',  us: 23.45, color: C.noCompile },
         { label: 'Chevrotain',             us: 27.07, color: C.chevrotain },
         { label: 'Jison',                  us: 43.75, color: C.jison },
         { label: 'Nearley',                us: 43.68, color: C.nearley },
@@ -299,9 +299,9 @@ const gqlChart: Chart = {
     {
       title: 'warm parse — large  (7.8 kB)',
       bars: [
-        { label: 'Parséman (macro build)', us: 154.23, color: C.macroBuild },
+        { label: 'Parséman (macro build)', us: 127.88, color: C.macroBuild },
         { label: 'Peggy',                  us: 422.98, color: C.peggy },
-        { label: 'Parséman (interpreter)',  us: 685.60, color: C.noCompile },
+        { label: 'Parséman (interpreter)',  us: 604.99, color: C.noCompile },
         { label: 'Chevrotain',             us: 768.40, color: C.chevrotain },
         { label: 'Jison',                  us: 1346.83,color: C.jison },
         { label: 'Parsimmon',              us: 1671.12,color: C.parsimmon },
@@ -323,29 +323,29 @@ const cstJsonChart: Chart = {
     {
       title: 'warm parse — small  (52 bytes)',
       bars: [
-        { label: 'Parséman CST (macro build)', us: 1.51,  color: C.macroBuild },
+        { label: 'Parséman CST (macro build)', us: 0.98,  color: C.macroBuild },
         { label: 'Lezer (parse only)',         us: 2.34,  color: C.lezer },
         { label: 'Lezer (parse + walk)',       us: 2.66,  color: C.lezerWalk },
-        { label: 'Parséman CST (interpreter)', us: 2.84,  color: C.noCompile },
+        { label: 'Parséman CST (interpreter)', us: 3.03,  color: C.noCompile },
         { label: 'Chevrotain CST',             us: 7.62,  color: C.chevrotain },
       ],
     },
     {
       title: 'warm parse — medium  (1.8 kB)',
       bars: [
-        { label: 'Parséman CST (macro build)', us: 49.91, color: C.macroBuild },
+        { label: 'Parséman CST (macro build)', us: 30.50, color: C.macroBuild },
         { label: 'Lezer (parse only)',         us: 69.76, color: C.lezer },
         { label: 'Lezer (parse + walk)',       us: 79.42, color: C.lezerWalk },
-        { label: 'Parséman CST (interpreter)', us: 103.33,color: C.noCompile },
+        { label: 'Parséman CST (interpreter)', us: 112.61,color: C.noCompile },
         { label: 'Chevrotain CST',             us: 250.98,color: C.chevrotain },
       ],
     },
     {
       title: 'warm parse — large  (12 kB)',
       bars: [
-        { label: 'Parséman CST (macro build)', us: 343.64, color: C.macroBuild },
+        { label: 'Parséman CST (macro build)', us: 277.45, color: C.macroBuild },
         { label: 'Lezer (parse only)',         us: 586.71, color: C.lezer },
-        { label: 'Parséman CST (interpreter)', us: 655.41, color: C.noCompile },
+        { label: 'Parséman CST (interpreter)', us: 730.43, color: C.noCompile },
         { label: 'Lezer (parse + walk)',       us: 788.85, color: C.lezerWalk },
         { label: 'Chevrotain CST',             us: 1949.50,color: C.chevrotain },
       ],
