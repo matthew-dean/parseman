@@ -34,7 +34,12 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
       if (typeof key !== 'string') return undefined
       const record = target as Record<string, Combinator<unknown>>
       if (!(key in record)) {
-        record[key] = ref()
+        const r = ref()
+        // Tag the placeholder with its rule name so the linkable compiler can
+        // emit a by-name `_r_<key>` call for a reference to a rule defined in
+        // ANOTHER artifact (resolved at fuse time) — see compileLinkable.
+        ;(r as unknown as { _ruleName?: string })._ruleName = key
+        record[key] = r
       }
       return record[key]
     },

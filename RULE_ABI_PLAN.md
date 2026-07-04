@@ -54,14 +54,43 @@ Not TS source, not a sealed IIFE — a **compiled linkable artifact**:
   result per call and **break the zero-speed guarantee** — so we don't.
 - **Namespaced names** — canonical rule fns are `_r_<Name>` (not bare `<Name>`) so a
   rule called `Object` / `value` / `input` can't shadow a global or a generated var
-  (`Object.freeze`, `pos`, `_ctx`). Preludes get package-unique names (`_css_re0`)
-  so fusion can't collide them. Still fully fusable-by-name.
+  (`Object.freeze`, `pos`, `_ctx`). Hoisted closure-level names (`_re`, `_fx`,
+  `_pf`, `_mf`, `_build`) get a **required, stable, per-artifact namespace prefix**
+  so fusion can't collide them — derived from the artifact's identity (package +
+  short content hash / hashed module path), so it's unique-by-construction and
+  **reproducible across rebuilds** (never a monotonic counter). The sentinel
+  protocol (`_NAMED_FN_*`), `_EMPTY_TL`, `_collator` are **shared** across fused
+  packages (a namespaced sentinel would break cross-package calls), so they are
+  left un-prefixed. `_r_<Name>` is the composition surface (intended collision =
+  override) and is never prefixed. The standalone self-contained IIFE keeps
+  `ns=''` (never fused → no collision → byte-identical to today, preserving the
+  perf baseline and snapshot tests); only the linkable form carries a namespace.
 - **A dependency manifest** — per rule, the set of rule names it references, for
   dep-closure selection and the compose-time name-check.
 
 Each package compiles **once** to this form. `_pfN` per-reference duplication
 (a rule compiled once as its map entry and again as each caller's `_pfN`) goes
 away — one `_r_<Name>` per rule, referenced by name.
+
+## 3b. Namespace is automatic + all three modes
+
+The author writes only `rules()` and composes with a **spread** (`rules(g => ({
+...cssRules(g), ...lessRules(g) }))`) — uniform across modes; the namespace is
+*never* author-visible:
+
+- **interpreter** — composes at the **combinator** level (plain map merge). No
+  compilation, no namespace; the linkable/fusion machinery does not apply. Works
+  today.
+- **compile()** — fuses the linkable pieces at **runtime** (`new Function`);
+  `ns` auto-derived from an internal per-process **counter** (process-unique is
+  enough).
+- **macro** — fuses at **build**; `ns` auto-derived from **module identity**
+  (hashed resolved path / content) → stable + reproducible across rebuilds; also
+  **exports** the linkable pieces so a downstream package fuses without source.
+
+Namespacing is **runtime-free** (longer identifiers don't change speed → no perf
+backslide; only source text differs). `compileLinkable(ruleMap, ns)` is an
+internal seam — each mode supplies `ns`.
 
 ## 4. The linker (build-time fusion)
 

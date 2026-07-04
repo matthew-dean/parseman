@@ -70,6 +70,17 @@ type Ctx = {
    * for single-combinator `compile()` (no rule map → today's `_pfN` naming).
    */
   ruleNames?: Map<Combinator<unknown>, string> | undefined
+  /**
+   * Namespace prefix for HOISTED closure-level names (`_re`, `_fx`, `_pf`, `_mf`,
+   * `_build`) so two independently-compiled rule maps fuse into one scope without
+   * colliding (the linkable form). Empty by default → byte-identical output.
+   * Function-local vars (`_v`/`_e`/…) are per-scope and never namespaced; the
+   * sentinel protocol (`_NAMED_FN_*`), `_EMPTY_TL`, `_collator` are SHARED across
+   * fused packages (a namespaced sentinel would break cross-package calls) and so
+   * are also left un-prefixed; `_r_<Name>` is the composition surface (intended
+   * collision = override) and is never prefixed.
+   */
+  ns?: string | undefined
   /** Generated function declaration strings, prepended before the main body */
   namedFnDecls: string[]
   /** Active trivia parser (set by grammar() wrappers, cleared on exit) */
@@ -128,6 +139,13 @@ type Ctx = {
 function v(ctx: Ctx, prefix = '_v'): string { return `${prefix}${ctx.vars++}` }
 function ind(ctx: Ctx): string { return '  '.repeat(ctx.indent) }
 
+/** Namespace prefix for hoisted closure-level names (empty unless linkable). */
+function nsp(ctx: Ctx): string { return ctx.ns ?? '' }
+/** Hoisted map-fn array name (`_mf`, namespaced in linkable mode). */
+function mfRef(ctx: Ctx): string { return `${nsp(ctx)}_mf` }
+/** Hoisted build-fn array name (`_build`, namespaced in linkable mode). */
+function buildRef(ctx: Ctx): string { return `${nsp(ctx)}_build` }
+
 /** Re-indent emitted lines to an absolute depth while preserving relative nesting. */
 function reindentStmts(stmts: string[], targetLevels: number): string[] {
   const nonEmpty = stmts.filter(s => s.trim().length > 0)
@@ -163,7 +181,7 @@ function failReturnArr(expectedArr: string, posExpr: string): string {
 function hoistExpected(ctx: Ctx, constArrSource: string): string {
   let name = ctx.expectedMap.get(constArrSource)
   if (name === undefined) {
-    name = `_fx${ctx.expectedDecls.length}`
+    name = `${nsp(ctx)}_fx${ctx.expectedDecls.length}`
     ctx.expectedDecls.push(`const ${name} = ${constArrSource}`)
     ctx.expectedMap.set(constArrSource, name)
   }
@@ -320,7 +338,7 @@ function ensureRegexDecl(ctx: Ctx, source: string, flags: string): string {
   const key = `${source}/${f}`
   let rName = ctx.regexMap.get(key)
   if (rName === undefined) {
-    rName = `_re${ctx.regexDecls.length}`
+    rName = `${nsp(ctx)}_re${ctx.regexDecls.length}`
     ctx.regexDecls.push(`const ${rName} = /${source}/${f}`)
     ctx.regexMap.set(key, rName)
   }
@@ -858,7 +876,7 @@ function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, po
   const key = `${source}/${flags}`
   let rName = ctx.regexMap.get(key)
   if (rName === undefined) {
-    rName = `_re${ctx.regexDecls.length}`
+    rName = `${nsp(ctx)}_re${ctx.regexDecls.length}`
     ctx.regexDecls.push(`const ${rName} = /${source}/${flags}`)
     ctx.regexMap.set(key, rName)
   }
@@ -898,7 +916,7 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
   const key = `${def.source}/${flags}`
   let rName = ctx.regexMap.get(key)
   if (rName === undefined) {
-    rName = `_re${ctx.regexDecls.length}`
+    rName = `${nsp(ctx)}_re${ctx.regexDecls.length}`
     ctx.regexDecls.push(`const ${rName} = /${def.source}/${flags}`)
     ctx.regexMap.set(key, rName)
   }
@@ -1126,7 +1144,7 @@ function emitGreedyClassify(
   const reKey = `${regexDef.source}/${cleanFlags}`
   let reVar = ctx.regexMap.get(reKey)
   if (reVar === undefined) {
-    reVar = `_re${ctx.regexDecls.length}`
+    reVar = `${nsp(ctx)}_re${ctx.regexDecls.length}`
     ctx.regexDecls.push(`const ${reVar} = /${regexDef.source}/${cleanFlags}`)
     ctx.regexMap.set(reKey, reVar)
   }
@@ -1260,7 +1278,7 @@ function emitFirstMatch(
     if (gate) {
       const gateIdx = ctx.mapFns.length
       ctx.mapFns.push(gate as (v: unknown, span: unknown) => unknown)
-      gateCond = `_mf[${gateIdx}](_ctx.state)`
+      gateCond = `${mfRef(ctx)}[${gateIdx}](_ctx.state)`
     }
     const skipCond = gateCond ? `!${resOkV} && ${gateCond}` : `!${resOkV}`
 
@@ -1348,7 +1366,7 @@ function emitTransformChain(p: Combinator<unknown>, baseValue: string, endV: str
     ctx.mapFnSrcs.push(def.fnSrc ?? null)
     const vv = v(ctx)
     return {
-      stmts: [...innerR.stmts, `${ind(ctx)}const ${vv} = _mf[${fnIdx}](${innerR.valueVar}, { start: ${startPos}, end: ${endV} })`],
+      stmts: [...innerR.stmts, `${ind(ctx)}const ${vv} = ${mfRef(ctx)}[${fnIdx}](${innerR.valueVar}, { start: ${startPos}, end: ${endV} })`],
       valueVar: vv,
       endVar: endV,
     }
@@ -1692,7 +1710,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const ndV = v(ctx, '_nd')
   const ndExpr = mkType
     ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
-    : `_build[${buildIdx!}](${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV})`
+    : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV})`
   // collapse: a single captured child IS the value (leaf → its string, else as-is);
   // build is skipped (short-circuited by the ternary). Mirrors node.ts.
   const finalExpr = def.collapse
@@ -1766,7 +1784,7 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
   }
 
   if (!ctx.namedParsers.has(p)) {
-    const fnName = canonical ?? `_pf${ctx.namedParsers.size}`
+    const fnName = canonical ?? `${nsp(ctx)}_pf${ctx.namedParsers.size}`
     ctx.namedParsers.set(p, fnName)   // register FIRST so recursive refs see it
 
     let resolved: Combinator<unknown>
@@ -1898,7 +1916,7 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       return {
         stmts: [
           ...inner.stmts,
-          `${ind(ctx)}const ${mv} = _mf[${fnIdx}](${inner.valueVar}, { start: ${pos}, end: ${inner.endVar} })`,
+          `${ind(ctx)}const ${mv} = ${mfRef(ctx)}[${fnIdx}](${inner.valueVar}, { start: ${pos}, end: ${inner.endVar} })`,
         ],
         valueVar: mv,
         endVar: inner.endVar,
@@ -1955,7 +1973,7 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       const vv = v(ctx)
       return {
         stmts: [
-          ...emitIfFail(ctx, `!_mf[${fnIdx}](_ctx.state)`, failBody(ctx, '"gate"', pos)),
+          ...emitIfFail(ctx, `!${mfRef(ctx)}[${fnIdx}](_ctx.state)`, failBody(ctx, '"gate"', pos)),
           `${ind(ctx)}const ${vv} = null`,
         ],
         valueVar: vv,
@@ -1994,7 +2012,7 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       const ev = v(ctx, '_wce')
       return {
         stmts: [
-          `${ind(ctx)}const ${rv} = { ..._ctx, state: _mf[${evIdx}]() }`,
+          `${ind(ctx)}const ${rv} = { ..._ctx, state: ${mfRef(ctx)}[${evIdx}]() }`,
           `${ind(ctx)}const ${vv} = ${fn}(input, ${pos}, ${rv})`,
           // withCtx runs on a spread child ctx — copy its recorded failure back
           // and propagate the inner failure verbatim (interpreter parity).
@@ -2199,11 +2217,16 @@ export function ruleDependencies(
     const found = new Set<string>()
     const seen = new Set<Combinator<unknown>>()
     const walk = (p: Combinator<unknown>, isRoot: boolean): void => {
-      const boundary = nameOf.get(p)
+      const def = p._def
+      // A named `ref` (local OR external) is a rule boundary: record the edge and
+      // don't descend. `_ruleName` (set by rules()) also catches EXTERNAL refs —
+      // rules referenced by name but defined in another artifact.
+      const boundary = def.tag === 'lazy'
+        ? ((p as unknown as { _ruleName?: string })._ruleName ?? nameOf.get(p))
+        : nameOf.get(p)
       if (!isRoot && boundary !== undefined) { found.add(boundary); return }
       if (seen.has(p)) return
       seen.add(p)
-      const def = p._def
       if (def.tag === 'lazy') {
         let resolved: Combinator<unknown>
         try { resolved = def.thunk() } catch { return }
@@ -2422,8 +2445,8 @@ export function compileRuleMap(
   const canInline = ctx.runtimeParsers.length === 0 && mfCovered && buildCovered
   if (!canInline) return null
 
-  const mfDecl = derivedSrcs?.length ? `  const _mf = [${derivedSrcs.join(', ')}]` : ''
-  const buildDecl = buildSources?.length ? `  const _build = [${buildSources.join(', ')}]` : ''
+  const mfDecl = derivedSrcs?.length ? `  const ${mfRef(ctx)} = [${derivedSrcs.join(', ')}]` : ''
+  const buildDecl = buildSources?.length ? `  const ${buildRef(ctx)} = [${buildSources.join(', ')}]` : ''
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : '',
@@ -2465,6 +2488,181 @@ export function compileRuleMap(
   ].join('\n')
 
   return { keys: perEntry.map(e => e.key), replacement }
+}
+
+/**
+ * The linkable form of a rule map (RULE_ABI_PLAN §3): the same compiled rule
+ * bodies as `compileRuleMap`, but returned as **splice-able pieces** under a
+ * namespace `ns` so multiple independently-compiled maps fuse into one scope
+ * (see `fuseRules`). `ns` MUST be non-empty and unique per artifact (the caller
+ * derives it — module identity in the macro, a counter in `compile()`).
+ *
+ *   prelude  — namespaced hoisted decls (regexes, expected, `_mf`/`_build`, and
+ *              private `_pf` helper fns). Sentinels / `_EMPTY_TL` / `_collator`
+ *              are NOT here — they are SHARED, emitted once by the linker.
+ *   ruleFns  — name → `function _r_<Name>(…) { … }` source (the composition
+ *              surface; siblings call these by name).
+ *   wrappers — name → public `(input,pos,ctx) => ParseResult` wrapper source.
+ *   deps     — name → referenced rule names (from `ruleDependencies`).
+ *
+ * Returns null on the same "can't inline" conditions as `compileRuleMap`.
+ */
+export type LinkablePieces = {
+  ns: string
+  keys: string[]
+  prelude: string[]
+  ruleFns: Map<string, string>
+  wrappers: Map<string, string>
+  deps: Map<string, string[]>
+  needsEmptyTl: boolean
+  needsCollator: boolean
+}
+
+export function compileLinkable(
+  ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  ns: string,
+): LinkablePieces | null {
+  if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
+  // Drop EXTERNAL entries: `rules(g => …)` returns a cache that also holds every
+  // `g.X` that was ACCESSED, so an accessed-but-not-defined rule (defined in
+  // another artifact) leaks into `Object.entries` as an undefined `ref`. Those
+  // are not local rules — they're by-name references resolved at fuse time (the
+  // pre-scan below emits their calls). A rule is local iff its value is non-lazy
+  // or a `ref` that resolves.
+  const ruleMap = ruleMapArg.filter(([, val]) => {
+    const d = val._def
+    if (d.tag !== 'lazy') return true
+    try { d.thunk(); return true } catch { return false }
+  })
+  const ctx: Ctx = {
+    vars: 0, indent: 1, regexDecls: [], regexMap: new Map(),
+    expectedDecls: [], expectedMap: new Map(), recordFail: true,
+    mapFns: [], mapFnSrcs: [], buildFns: [], buildSrcs: [], runtimeParsers: [],
+    needsCollator: false, namedParsers: new Map(), triviaCaptureNames: new Map(),
+    triviaFnNames: new Map(), namedFnDecls: [],
+    capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
+    lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
+    ns,
+  }
+  // Canonical name per rule. Register in BOTH ruleNames (so sibling `emitLazy`
+  // refs resolve by name) AND namedParsers up-front (so a rule emitted before a
+  // recursive back-edge still finds itself). Unlike `compileRuleMap`, EVERY rule
+  // is force-emitted as a named fn — even one referenced by nobody but its own
+  // entry (its map value is the bare combinator, not a `ref`, so it would
+  // otherwise inline and never get a name).
+  const seen = new Map<string, number>()
+  const ruleNames = new Map<Combinator<unknown>, string>()
+  const fnNameToKey = new Map<string, string>()
+  for (const [key, rule] of ruleMap) {
+    const base = `_r_${key.replace(/[^A-Za-z0-9_$]/g, '_')}`
+    const n = seen.get(base) ?? 0
+    seen.set(base, n + 1)
+    const fn = n === 0 ? base : `${base}$${n}`
+    ruleNames.set(rule, fn)
+    fnNameToKey.set(fn, key)
+  }
+  ctx.ruleNames = ruleNames
+
+  // Pre-register EXTERNAL rule references: a named `ref` placeholder that doesn't
+  // resolve locally (defined in ANOTHER artifact). Emit a by-name `_r_<Name>`
+  // call for it — no body here; it's provided at fuse time. This is what lets a
+  // fragment reference a consumer/base rule (`g.value`, `g.Digits`) without its
+  // source.
+  {
+    const scanned = new Set<Combinator<unknown>>()
+    const scanExternal = (p: Combinator<unknown>): void => {
+      if (scanned.has(p)) return
+      scanned.add(p)
+      const def = p._def
+      if (def.tag === 'lazy') {
+        let resolved: Combinator<unknown> | undefined
+        try { resolved = def.thunk() } catch { resolved = undefined }
+        if (resolved === undefined) {
+          const name = (p as unknown as { _ruleName?: string })._ruleName
+          if (name && !ctx.namedParsers.has(p)) {
+            const fn = `_r_${name.replace(/[^A-Za-z0-9_$]/g, '_')}`
+            ruleNames.set(p, fn)
+            ctx.namedParsers.set(p, fn)
+          }
+          return
+        }
+        scanExternal(resolved)
+        return
+      }
+      for (const child of childrenOf(def)) scanExternal(child)
+    }
+    for (const [, rule] of ruleMap) scanExternal(rule)
+  }
+
+  // Emit each rule's body as its `_r_<Name>` fn (resolving a `ref` placeholder to
+  // its target), then build a public wrapper that calls it.
+  const perEntry: Array<{ key: string; r: ER }> = []
+  for (const [key, rule] of ruleMap) {
+    const fn = ruleNames.get(rule)!
+    if (!ctx.namedParsers.has(rule)) {
+      ctx.namedParsers.set(rule, fn)
+      let resolved: Combinator<unknown> = rule
+      const def = rule._def
+      if (def.tag === 'lazy') {
+        try { resolved = def.thunk() } catch { return null }
+      }
+      const savedIndent = ctx.indent, savedFail = ctx.failLabel, savedRec = ctx.recordFail
+      ctx.indent = 1; ctx.failLabel = '_pfail'; ctx.recordFail = true
+      const body = emit(resolved, ctx, '_pos')
+      ctx.indent = savedIndent; ctx.failLabel = savedFail; ctx.recordFail = savedRec
+      pushNamedFnDecl(ctx, fn, body.stmts, body.valueVar, body.endVar)
+    }
+    // Public wrapper: call the named fn, adapt sentinel → ParseResult.
+    perEntry.push({ key, r: emitNamedFnCall(ctx, fn, '_pos') })
+  }
+
+  const derivedSrcs = ctx.mapFnSrcs.length === ctx.mapFns.length && ctx.mapFnSrcs.every((s): s is string => s !== null)
+    ? ctx.mapFnSrcs as string[] : undefined
+  const buildCovered = ctx.buildFns.length === 0 || ctx.buildSrcs.every((s): s is string => s !== null)
+  const buildSources = ctx.buildFns.length === 0 ? undefined : (ctx.buildSrcs as string[])
+  const mfCovered = ctx.mapFns.length === 0 || derivedSrcs !== undefined
+  if (!(ctx.runtimeParsers.length === 0 && mfCovered && buildCovered)) return null
+
+  // Split named fns: `_r_<Name>` are the composition surface (ruleFns), everything
+  // else (`_ns_pf…` private helpers) is private prelude bundled with the artifact.
+  const ruleFns = new Map<string, string>()
+  const privateFns: string[] = []
+  for (const decl of ctx.namedFnDecls) {
+    const fnName = decl.match(/^function (\S+?)\(/)?.[1]
+    const key = fnName ? fnNameToKey.get(fnName) : undefined
+    if (key !== undefined) ruleFns.set(key, decl)
+    else privateFns.push(decl)
+  }
+
+  const prelude = [
+    ...ctx.regexDecls,
+    ...ctx.expectedDecls,
+    derivedSrcs?.length ? `const ${mfRef(ctx)} = [${derivedSrcs.join(', ')}]` : '',
+    buildSources?.length ? `const ${buildRef(ctx)} = [${buildSources.join(', ')}]` : '',
+    ...privateFns,
+  ].filter(Boolean)
+
+  const wrappers = new Map<string, string>()
+  for (const { key, r } of perEntry) {
+    wrappers.set(key, [
+      `function(input, _pos, _ctx) {`,
+      `  let pos = _pos`,
+      ...r.stmts,
+      `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+      `}`,
+    ].join('\n'))
+  }
+
+  return {
+    ns,
+    keys: perEntry.map(e => e.key),
+    prelude,
+    ruleFns,
+    wrappers,
+    deps: ruleDependencies(ruleMap),
+    needsEmptyTl: !!ctx.needsEmptyTl,
+    needsCollator: ctx.needsCollator,
+  }
 }
 
 function buildInlineExpression(
