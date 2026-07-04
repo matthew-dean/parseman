@@ -93,6 +93,23 @@ the absolute spans of a class instance can't be done safely by the graft, so cor
 wins over the incremental fast path. Same-length edits still graft incrementally. Plain
 object trees (the default) get the incremental path for both.
 
+## Build a CST from a composed grammar
+
+If your grammar is [composed](./extending) from `node()` rules that build an evaluator AST,
+you usually want a plain **positioned CST** for editor features. Pass a build host with
+`opts.build` and it's threaded into every (re)parse — so `.edit()` produces the same CST
+your fresh parse does, on the same grammar:
+
+```ts
+import { parseDoc, cstBuildHost } from 'parseman'
+
+let doc = parseDoc(registry, 'Stylesheet', src, { build: cstBuildHost })
+doc = doc.edit(from, to, text)   // re-parsed subtrees are CST nodes too
+```
+
+Leave `build` unset to use the grammar's own builders. (This is the same `ctx.build` host
+`compose()` grammars accept — see [`cstBuildHost`](../reference/api#cstbuildhost).)
+
 ## Pairs with error recovery
 
 Incremental docs are most useful on *broken* input — the code an editor sees mid-keystroke

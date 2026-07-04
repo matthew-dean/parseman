@@ -220,6 +220,38 @@ JIT-compile a combinator tree to an optimized JS function at runtime. Returns a
 Requires `new Function` (won't run under a strict CSP). See
 [The three modes](../guide/modes#compile-runtime-jit).
 
+## Composing grammars
+
+Fuse grammars into one parser, with override, à la carte selection, and no base-grammar
+source required. See [Extending grammars](../guide/extending).
+
+### `compose(items)`
+
+`compose([base, ext, …])` fuses grammars/artifacts into one runnable map of parse
+functions. Later entries **override** earlier ones by rule name, and because fusion
+re-binds every rule reference in one shared scope, an override reroutes the base's *own*
+calls too (open recursion). Each item is a grammar (a `rules()` result) or an
+already-compiled artifact.
+
+- **With the macro (build time):** `compose([...])` is fused into **static source** — a
+  plain closure of direct calls. **No `new Function`, no eval** in the emitted code.
+- **Without the macro (runtime):** `compose([...])` fuses when it runs, via `new Function`
+  — the same JIT `compile()` uses (so, like `compile()`, it needs `'unsafe-eval'` under a
+  strict CSP). Parsing is never eval; only the one-time fuse is.
+
+### `pick(grammar, names)`
+
+Restrict a grammar/artifact to `names` plus their transitive rule-dependency closure
+(à la carte). Returns an artifact for `compose()`:
+`compose([css, pick(less, ['MixinCall'])])`.
+
+### `cstBuildHost(type, children, rawChildren, span)` {#cstbuildhost}
+
+A generic positioned-CST build host. Pass as `ctx.build` (e.g.
+`parser.Rule(input, 0, { build: cstBuildHost })`, or `parseDoc(..., { build: cstBuildHost })`)
+to make any grammar produce a uniform CST — `{ _tag:'node', type, span, state, children }` —
+instead of its own AST builders. Left unset, a grammar uses its own builders.
+
 ## Error recovery
 
 ### `recover(combinator, sentinel)`

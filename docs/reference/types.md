@@ -239,6 +239,9 @@ type RuleFn<N>            = (input: string, pos: number, ctx: ParseContext) => P
 type ParseDocOptions<N> = {
   state?: unknown
   rebuild?: (node: N, children: ReadonlyArray<unknown>) => N
+  // Mode host: threaded into ctx.build on every (re)parse, so a composed grammar
+  // builds a positioned CST / language-service tree instead of its own AST.
+  build?: ParseContext['build']
 }
 
 interface ParseDoc<N extends NodeLike> {

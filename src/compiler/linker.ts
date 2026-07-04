@@ -65,11 +65,20 @@ export type FusedRule = (
 ) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
 
 /**
- * Restrict a linkable artifact to `names` plus their transitive rule-dependency
- * closure (à la carte selection). A picked rule pulls in every rule name it
- * references, so the result is always self-consistent within the artifact.
+ * Restrict a grammar/artifact to `names` plus their transitive rule-dependency
+ * closure (à la carte selection) — e.g. Jess taking parts of Less and parts of
+ * Sass: `compose([pick(less, ['MixinCall']), pick(sass, ['EachFor']), css])`. A
+ * picked rule pulls in every rule name it references, so the result is always
+ * self-consistent within the artifact. Accepts a grammar (`rules()` result) or a
+ * compiled artifact; returns an artifact for `compose()`.
  */
-export function pick(p: LinkablePieces, names: string[]): LinkablePieces {
+export function pick(
+  grammar: LinkablePieces | Record<string, Combinator<unknown>>,
+  names: string[],
+): LinkablePieces {
+  const p = (grammar as LinkablePieces).ruleFns instanceof Map
+    ? (grammar as LinkablePieces)
+    : linkable(grammar as Record<string, Combinator<unknown>>)
   const keep = new Set<string>()
   const has = new Set(p.keys)
   const visit = (n: string): void => {
