@@ -42,6 +42,15 @@ export interface ParseDoc<N extends NodeLike> {
 // Tree navigation (generic over NodeLike — no class, no CST assumptions)
 // ---------------------------------------------------------------------------
 
+/**
+ * A reentry candidate is only worth reparsing if it's meaningfully smaller than
+ * the whole document — reparsing a rule that spans (say) >half the input costs
+ * about as much as a full reparse with none of the reuse. Above this fraction of
+ * the input length, `.edit()` skips straight to a full reparse. Keeps the worst
+ * case (a structural edit near the front) at ~1× full reparse, never several.
+ */
+const REENTRY_MAX_SPAN_FRACTION = 0.5
+
 type FoundNode<N extends NodeLike> = { node: N; path: number[] }
 
 function isNode(x: unknown): x is NodeLike {
@@ -253,6 +262,14 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
 
     const rebuild = this._opts.rebuild ?? defaultRebuild
     for (const { node, path } of candidates) {
+      // Reentry only pays off when the re-parsed rule is substantially smaller
+      // than the whole document. Candidates widen deepest→root (monotonically
+      // growing span), so once one covers most of the input, reparsing it — and
+      // every larger ancestor after it — can't beat a full reparse and would just
+      // be wasted work before the fallback. Bail to the full reparse NOW. This
+      // caps `.edit()` at ~one full reparse in the worst case (e.g. a structural
+      // insert near the front) instead of stacking several near-full reparses.
+      if (node.span.end - node.span.start > this.input.length * REENTRY_MAX_SPAN_FRACTION) break
       const ruleFn = this._registry[node.type]
       if (!ruleFn) continue
       // The reused subtree must FULLY CONTAIN the edited range (old coords).
