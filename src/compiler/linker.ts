@@ -85,6 +85,14 @@ export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
   const wrapperEntries = [...winner].map(([k, p]) => `${JSON.stringify(k)}: ${p.wrappers.get(k)!}`)
   const body = [...lines, 'return {', wrapperEntries.join(',\n'), '}'].join('\n')
 
+  // Inject each artifact's transform/build callback FUNCTIONS (when they weren't
+  // inlined from source — runtime `compile()` mode). Keyed `<ns>mf` / `<ns>build`.
+  const env: Record<string, unknown> = {}
+  for (const p of contributing) {
+    if (p.mfFns.length) env[`${p.ns}mf`] = p.mfFns
+    if (p.buildFns.length) env[`${p.ns}build`] = p.buildFns
+  }
+
   // eslint-disable-next-line no-new-func
-  return new Function(body)() as Record<string, FusedRule>
+  return new Function('_env', body)(env) as Record<string, FusedRule>
 }

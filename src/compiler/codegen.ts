@@ -1708,9 +1708,17 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
   const ndV = v(ctx, '_nd')
-  const ndExpr = mkType
+  const buildExpr = mkType
     ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
     : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV})`
+  // Modes (RULE_ABI_PLAN §7): in the linkable form, a per-parse `_ctx.build` host
+  // (keyed by node type) may override construction — so ONE fused grammar serves
+  // eval-AST vs positioned-CST modes. Unset (default/eval) → the grammar's own
+  // builder, exactly as the standalone path. Emitted only when `ctx.ns` (linkable)
+  // so the standalone output stays byte-identical.
+  const ndExpr = ctx.ns
+    ? `_ctx.build !== undefined ? _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV}) : (${buildExpr})`
+    : buildExpr
   // collapse: a single captured child IS the value (leaf → its string, else as-is);
   // build is skipped (short-circuited by the ternary). Mirrors node.ts.
   const finalExpr = def.collapse
@@ -2516,6 +2524,14 @@ export type LinkablePieces = {
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsCollator: boolean
+  /**
+   * Transform (`_mf`) / build (`_build`) callback FUNCTIONS, injected into the
+   * fused scope via `_env` when their SOURCE isn't available (runtime `compile()`
+   * mode). Empty when the callbacks were inlined from source (macro mode). Keyed
+   * for `_env` as `<ns>mf` / `<ns>build`.
+   */
+  mfFns: ReadonlyArray<(...args: unknown[]) => unknown>
+  buildFns: ReadonlyArray<(...args: unknown[]) => unknown>
 }
 
 export function compileLinkable(
@@ -2616,12 +2632,14 @@ export function compileLinkable(
     perEntry.push({ key, r: emitNamedFnCall(ctx, fn, '_pos') })
   }
 
-  const derivedSrcs = ctx.mapFnSrcs.length === ctx.mapFns.length && ctx.mapFnSrcs.every((s): s is string => s !== null)
-    ? ctx.mapFnSrcs as string[] : undefined
-  const buildCovered = ctx.buildFns.length === 0 || ctx.buildSrcs.every((s): s is string => s !== null)
-  const buildSources = ctx.buildFns.length === 0 ? undefined : (ctx.buildSrcs as string[])
-  const mfCovered = ctx.mapFns.length === 0 || derivedSrcs !== undefined
-  if (!(ctx.runtimeParsers.length === 0 && mfCovered && buildCovered)) return null
+  // A runtime-parser fallback can't be fused (no source AND no stable identity to
+  // inject). Callback fns, by contrast, ARE fusable — inline their source when
+  // available (macro), else inject the fn objects via `_env` (runtime).
+  if (ctx.runtimeParsers.length !== 0) return null
+  const mfSrcs = ctx.mapFns.length > 0 && ctx.mapFnSrcs.every((s): s is string => s !== null)
+    ? ctx.mapFnSrcs as string[] : null
+  const buildSrcs = ctx.buildFns.length > 0 && ctx.buildSrcs.every((s): s is string => s !== null)
+    ? ctx.buildSrcs as string[] : null
 
   // Split named fns: `_r_<Name>` are the composition surface (ruleFns), everything
   // else (`_ns_pf…` private helpers) is private prelude bundled with the artifact.
@@ -2634,11 +2652,17 @@ export function compileLinkable(
     else privateFns.push(decl)
   }
 
+  const mfDecl = ctx.mapFns.length === 0 ? ''
+    : mfSrcs ? `const ${mfRef(ctx)} = [${mfSrcs.join(', ')}]`
+    : `const ${mfRef(ctx)} = _env[${JSON.stringify(nsp(ctx) + 'mf')}]`
+  const buildDecl = ctx.buildFns.length === 0 ? ''
+    : buildSrcs ? `const ${buildRef(ctx)} = [${buildSrcs.join(', ')}]`
+    : `const ${buildRef(ctx)} = _env[${JSON.stringify(nsp(ctx) + 'build')}]`
   const prelude = [
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
-    derivedSrcs?.length ? `const ${mfRef(ctx)} = [${derivedSrcs.join(', ')}]` : '',
-    buildSources?.length ? `const ${buildRef(ctx)} = [${buildSources.join(', ')}]` : '',
+    mfDecl,
+    buildDecl,
     ...privateFns,
   ].filter(Boolean)
 
@@ -2662,6 +2686,8 @@ export function compileLinkable(
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsCollator: ctx.needsCollator,
+    mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
+    buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
   }
 }
 

@@ -4,8 +4,8 @@
  * (open recursion), à la carte selection, and a name-closure check.
  */
 import { describe, it, expect } from 'vitest'
-import { rules, regex, choice, sequence, literal, optional, sepBy, compile, parse } from '../../src/index.ts'
-import type { Combinator } from '../../src/index.ts'
+import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile, parseDoc } from '../../src/index.ts'
+import type { Combinator, Registry, NodeLike } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { fuseRules, pick } from '../../src/compiler/linker.ts'
 
@@ -80,5 +80,47 @@ describe('fusion — parity with monolithic compile()', () => {
     const R = fuseRules([link(g1, '_p_'), link(g2, '_q_')])
     expect(ok(R.Tagged!('#42', 0, {}))).toBe(3)
     expect(ok(R.Tagged!('#', 0, {}))).toBe(-1)
+  })
+})
+
+describe('fusion — modes over one grammar (RULE_ABI_PLAN §7)', () => {
+  const mk = () => rules(g => ({
+    Pair: node('Pair', sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/)),
+      (_c, _r, s) => ({ kind: 'PairAST', span: s })),
+  }))
+
+  it('ctx.build host swaps eval-AST vs positioned-CST on the SAME fused grammar', () => {
+    const R = fuseRules([link(mk(), '_m_')])
+    // default (no host) → the grammar's own builder (eval AST):
+    expect((R.Pair!('a:1', 0, {}).value as { kind: string }).kind).toBe('PairAST')
+    // ctx.build host → positioned CST for every node type:
+    const cstHost = (type: string, children: readonly unknown[]) =>
+      ({ _tag: 'node', type, children: [...children] })
+    const v = R.Pair!('a:1', 0, { build: cstHost }).value as { _tag: string; type: string; children: unknown[] }
+    expect(v._tag).toBe('node')
+    expect(v.type).toBe('Pair')
+    expect(v.children).toHaveLength(3)
+  })
+})
+
+describe('fusion — incremental over a fused map (the map IS the registry)', () => {
+  it('parseDoc().edit() re-enters fused rules by name', () => {
+    const g = rules(gg => ({
+      Obj: node('Obj', sequence(literal('{'), optional(sepBy(gg.Pair, literal(','))), literal('}')),
+        (c, _r, s) => ({ _tag: 'node', type: 'Obj', span: s, state: null, children: [...c] })),
+      Pair: node('Pair', sequence(gg.Key, literal(':'), gg.Val),
+        (c, _r, s) => ({ _tag: 'node', type: 'Pair', span: s, state: null, children: [...c] })),
+      Key: node('Key', regex(/[a-z]+/), (c, _r, s) => ({ _tag: 'node', type: 'Key', span: s, state: null, children: [...c] })),
+      Val: node('Val', regex(/[0-9]+/), (c, _r, s) => ({ _tag: 'node', type: 'Val', span: s, state: null, children: [...c] })),
+    }))
+    const R = fuseRules([link(g, '_i_')]) as unknown as Registry<NodeLike>
+    const doc = parseDoc(R, 'Obj', '{a:1,b:2}')
+    expect(doc.tree).toBeTruthy()
+    // Overtype the value '2' at index 7 → '9' (same-length edit re-enters a fused
+    // rule by name and grafts).
+    const edited = doc.edit(7, 8, '9')
+    expect(edited.input).toBe('{a:1,b:9}')
+    const fresh = parseDoc(R, 'Obj', edited.input)
+    expect(JSON.stringify(edited.tree)).toBe(JSON.stringify(fresh.tree))
   })
 })
