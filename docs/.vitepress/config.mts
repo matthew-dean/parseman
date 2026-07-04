@@ -55,6 +55,7 @@ export default defineConfig({
             { text: 'Whitespace & trivia', link: '/guide/trivia' },
             { text: 'Ordered choice & keywords', link: '/guide/keywords' },
             { text: 'Recursive rules', link: '/guide/recursive-rules' },
+            { text: 'Extending grammars', link: '/guide/extending' },
           ],
         },
         {

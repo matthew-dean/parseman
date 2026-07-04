@@ -7,6 +7,13 @@
 set -e
 
 if [ "$SKIP_TYPECHECK" != "1" ]; then
+  # typecheck needs dist/ present: test fixtures import bare 'parseman', which
+  # only resolves via the package self-reference once built. Build on first
+  # clone (or after a clean) so a fresh checkout doesn't fail on TS2307.
+  if [ ! -f dist/index.d.ts ]; then
+    echo "[pre-commit] dist missing — building first…"
+    pnpm build
+  fi
   echo "[pre-commit] running tsc…"
   pnpm typecheck
 fi
