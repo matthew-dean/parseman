@@ -4,6 +4,13 @@ export { literal } from './combinators/literal.ts'
 export type { LiteralOptions } from './combinators/literal.ts'
 
 export { regex } from './combinators/regex.ts'
+// Wire the `regexp-tree`-backed first-set analyzer into `regex()`. Importing the
+// library entry opts you into precise choice-dispatch fast paths; consumers who
+// ship only compiled grammars never import this entry, so `regexp-tree` stays
+// out of their bundle (see `regex-analyze.ts` for the full rationale).
+import { registerRegexAnalyzer } from './combinators/regex.ts'
+import { firstSetFromRegex } from './combinators/regex-analyze.ts'
+registerRegexAnalyzer(firstSetFromRegex)
 export { keywords, word, makeWord } from './combinators/keywords.ts'
 export type { KeywordsOptions } from './combinators/keywords.ts'
 

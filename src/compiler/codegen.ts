@@ -306,13 +306,13 @@ function emitLeafCapture(ctx: Ctx, valExpr: string, startExpr: string, endExpr: 
   ]
 }
 
-function ensureRegexDecl(ctx: Ctx, optimizedSource: string, flags: string): string {
+function ensureRegexDecl(ctx: Ctx, source: string, flags: string): string {
   const f = 'y' + flags.replace(/[gy]/g, '')
-  const key = `${optimizedSource}/${f}`
+  const key = `${source}/${f}`
   let rName = ctx.regexMap.get(key)
   if (rName === undefined) {
     rName = `_re${ctx.regexDecls.length}`
-    ctx.regexDecls.push(`const ${rName} = /${optimizedSource}/${f}`)
+    ctx.regexDecls.push(`const ${rName} = /${source}/${f}`)
     ctx.regexMap.set(key, rName)
   }
   return rName
@@ -358,7 +358,7 @@ function ensureTriviaFn(ctx: Ctx): string {
       for (const arm of regexSpec.arms) {
         const def = arm.parser._def
         if (def.tag !== 'regex') break
-        reNames.push(ensureRegexDecl(ctx, def.optimizedSource, def.flags))
+        reNames.push(ensureRegexDecl(ctx, def.source, def.flags))
       }
       if (reNames.length === regexSpec.arms.length) {
         ctx.namedFnDecls.push(buildLabeledRegexTriviaFnDecl(fnName, regexSpec, reNames))
@@ -886,11 +886,11 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
   }
 
   const flags = 'y' + def.flags.replace(/[gy]/g, '')
-  const key = `${def.optimizedSource}/${flags}`
+  const key = `${def.source}/${flags}`
   let rName = ctx.regexMap.get(key)
   if (rName === undefined) {
     rName = `_re${ctx.regexDecls.length}`
-    ctx.regexDecls.push(`const ${rName} = /${def.optimizedSource}/${flags}`)
+    ctx.regexDecls.push(`const ${rName} = /${def.source}/${flags}`)
     ctx.regexMap.set(key, rName)
   }
 

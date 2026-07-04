@@ -37,7 +37,7 @@ export type ParseResult<T> = ParseOk<T> | ParseFail
 // ---------------------------------------------------------------------------
 export type ParserDef =
   | { tag: 'literal';   value: string; caseInsensitive: boolean }
-  | { tag: 'regex';     source: string; flags: string; optimizedSource: string }
+  | { tag: 'regex';     source: string; flags: string }
   | { tag: 'sequence';  parsers: Combinator<unknown>[] }
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
   | { tag: 'many';      parser: Combinator<unknown>; min: 0 }

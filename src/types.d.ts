@@ -28,7 +28,6 @@ export type ParserDef = {
     tag: 'regex';
     source: string;
     flags: string;
-    optimizedSource: string;
 } | {
     tag: 'sequence';
     parsers: Combinator<unknown>[];
