@@ -1,153 +1,109 @@
-# Composable compiled rules — the rule ABI
+# Composable compiled rules — linkable pieces + build-time fusion
 
-Status: **plan** — dispatch A/B measured (§9): by-name dispatch costs ~5–10% in
-dispatch-saturated code. **Decision: fused (sealed, direct-call) is the DEFAULT;
-composable (by-name map) is opt-in via a `composable` flag.**
+Status: **plan.** Model settled: compile each package's rules to **linkable
+pieces**, **fuse selected pieces into one closure at build time**. Zero runtime
+dispatch cost, composable, no source dependency, one authoring API. Modes and
+incremental ride on top.
 
 ## 1. The problem
 
-Two things we want are in tension today:
+Two things are in tension today:
 
-1. **Speed** — the macro compiles a `rules()` map into generated JS (`charCodeAt`
-   scans, `if`/`switch` dispatch, hoisted sticky regexes). Fast.
+1. **Speed** — the macro compiles a `rules()` map into a sealed IIFE closure
+   (`charCodeAt` scans, `if`/`switch` dispatch, hoisted sticky regexes, direct
+   sibling calls). Fast.
 2. **Reusable pieces** — write a rule once, share it across packages
    (css → less → scss → jess), overriding a few rules per dialect.
 
-The macro dissolves (1) at the cost of (2). When `rules()` compiles, every rule
-becomes an entry in **one sealed IIFE closure**, referencing that closure's
-hoisted state, with sibling calls bound at compile time to that closure's
-siblings. In that form an individual compiled rule is **not a value** — you
-can't import it, spread it, override it, or re-enter it by name. The only
-surviving reusable form is the **combinator source**, which is why sharing today
-means **re-inlining source and re-compiling into every consumer** (the tier-2
-fragment machinery). The compiled artifact is a dead end for reuse.
+The macro dissolves (2) to get (1). A compiled rule is an entry in one sealed
+closure, bound at compile time to that closure's siblings — **not a value** you
+can import, override, or re-enter by name. So sharing today means the consumer's
+macro **re-reads the fragment's TS source and re-compiles it** into the
+consumer's closure (the tier-2 machinery). It works and it's fast — but it
+requires **macro source access** and **recompiles the base per consumer**.
 
-**The fix:** make the *compiled rule* the reusable unit, by giving it a stable
-identity (its name in a map) and **late-binding cross-rule references by name**
-through a composed map. The combinator's composability is replaced by
-*map composability + name late-binding*.
+## 2. The model: linkable pieces + build-time fusion
 
-**But not by default.** By-name dispatch costs ~5–10% in dispatch-heavy code
-(§9), and most grammars are standalone leaves compiled for eval. So the **default
-compile output stays fused** (sealed closure, direct sibling calls — today's form
-and speed). A grammar opts into the composable form with a **`composable` flag**;
-only then does it pay the dispatch cost, and only then does it gain export/merge,
-override, à la carte, and by-name re-entry (linter/IDE/incremental). The flag is
-the single switch between the two output forms; authoring is one `rules()` API.
+Emit each package's `rules()` as **splice-able compiled pieces**, and **fuse the
+selected pieces into one closure at build time.** The fused closure is
+byte-identical to today's fast output — direct local calls, zero dispatch — but
+it's assembled by *stitching precompiled pieces*, not by re-reading source.
 
-## 2. Goals / requirements
+The one idea that makes it free: **sibling calls are emitted as bare names**
+(`value(input, pos, ctx)`). Fusing all rules into one scope makes those names
+**locals → direct calls (0%)**. (A *runtime* merge would make them object
+*properties* → a ~5% dispatch; measured in §9. We do not do that — we fuse.)
 
-- **Modes over one grammar** — the same compiled grammar serves three drivers,
-  no fork, no recompile:
-  1. **eval** — parse once, fail on first error, build the eval AST.
-  2. **linter** — parse once, recover + collect all errors, build a CST.
-  3. **IDE** — incremental parse/edit, recover, positioned CST.
-- **Cross-package reuse of *compiled* code** — a package ships its compiled rule
-  map; consumers import and merge it. No consumer-side source resolution, no
-  "self-contained fragment" constraint.
-- **Open recursion / override** — overriding a rule (`value`, `parenBody`, …)
-  reroutes *every* reference to it, including references inside the base
-  package's own rules. This is what "Less extends CSS" actually needs.
-- **À la carte assembly** — a grammar can pick *individual* rules from several
-  compiled maps at runtime (e.g. Jess uses PARTS of Less and PARTS of Sass), not
-  just merge whole packages. Because each rule is a named map entry, selection is
-  per-name. Impossible with the sealed closure (rules are hard-bound to their own
-  package's siblings); by-name binding is what unlocks it. The one obligation: a
-  picked rule's referenced names must all resolve in the final `R` — a
-  **name-dependency contract** checkable at compose time (§5).
-- **Lightning-fast** — rule bodies unchanged; only cross-rule dispatch changes,
-  and it stays within a few % of a direct call.
-- **Incremental for free** — the composed map *is* the re-entry registry.
+## 3. What each package ships (the linkable form)
 
-## 3. The rule ABI
+Not TS source, not a sealed IIFE — a **compiled linkable artifact**:
 
-Every compiled rule is a free-standing function, same signature combinators use:
+- **Named rule functions** — each rule as `function RuleName(input, pos, ctx) { … }`,
+  its rule bodies identical to today's compiled output, **calling sibling rules by
+  canonical name** (`Dimension(input, p, ctx)`), never inlining them (inlining a
+  rule would bake it and defeat override; private `const` helpers still inline).
+- **Namespaced preludes** — hoisted regexes / helpers with package-unique names
+  (`_css_re0`) so fusion can't collide them.
+- **A dependency manifest** — per rule, the set of rule names it references, for
+  dep-closure selection and the compose-time name-check.
+
+Each package compiles **once** to this form.
+
+## 4. The linker (build-time fusion)
+
+Retarget the existing macro/plugin to consume **linkable artifacts** instead of
+TS source. Given imported packages + a selection/override spec it:
+
+1. **Selects** the winning rule per name (later package wins) and pulls the
+   **dependency closure** of the selection (à la carte: include only chosen rules
+   + their transitive name-deps).
+2. **Dedupes / renames** preludes.
+3. **Concatenates** the selected rule functions + preludes into **one closure**
+   and returns `{ RuleName: fn, … }`.
+
+Because all rules share one scope, `value` is a single local: overriding it
+reroutes **every** call to it (open recursion), and calls stay **direct (0%)**.
+This is *less* work than today's inliner — it stitches already-compiled JS, it
+does **not** re-run combinator→JS compilation.
 
 ```js
-// (input, pos, ctx) => ParseResult
-function Num(input, pos, ctx) { … }
+// consumer build output — one fused closure, assembled from imported pieces
+export const R = (() => {
+  const _css_re0 = /…/y, _less_re0 = /…/y;                 // deduped, namespaced
+  function Num(input, pos, ctx)   { … _css_re0 …; return ctx.build('Num', …) }
+  function value(input, pos, ctx) { …; return Num(input, pos, ctx) }   // DIRECT, 0%
+  function MixinCall(input, pos, ctx) { … }                            // picked from less
+  return { Num, value, MixinCall, … };
+})();
 ```
 
-All mode/composition state rides on `ctx`:
+## 5. Composition surface
+
+- **Merge / override** — later package wins per name; open recursion via the
+  shared scope.
+- **À la carte** — `pick(pkg, ['MixinCall', 'Guard'])`; the linker adds the
+  dependency closure automatically. Jess assembling parts of Less + Sass is just
+  a selection spec.
+- **Name-dependency check** — the manifest lets the linker assert every
+  referenced name resolves in the final set and list any missing (dev-time error,
+  not a runtime surprise).
+
+## 6. The rule ABI
+
+Every rule: `(input, pos, ctx) => ParseResult`. All mode/driver state on `ctx`:
 
 ```js
 ctx = {
-  R,           // composed rule map — the late-binding table
-  build,       // build host: eval-AST vs positioned-CST (was a module singleton)
+  build,       // build host: eval-AST vs positioned-CST  (was a module singleton)
   recover,     // error policy: false = fail-fast, true = collect
   _triviaLog, _errors, …   // unchanged
 }
 ```
 
-The single structural change from today: a reused / cross-package sibling
-reference compiles to a **by-name lookup through `ctx.R`**:
+No `ctx.R` in the hot path — siblings are fused locals. (`ctx` still carries the
+map reference for the *incremental driver's* by-name re-entry; see §8.)
 
-```js
-// today (sealed): direct closure-var call, bound at compile time
-return value(input, p, ctx)
-// ABI: resolved by name at call time, against the composed map
-return ctx.R.value(input, p, ctx)
-```
-
-Single-use, intra-package refs still **inline** (unchanged) — the `ctx.R` hop is
-paid only at reused / cross-package boundaries, exactly where late binding is
-required.
-
-## 4. The compiled artifact per package
-
-A `rules()` call compiles to a **map factory** — hoisted state inside, rules out
-as a plain object of `(input,pos,ctx)` functions:
-
-```js
-// @jesscss/css-parser/rules — shipped COMPILED
-export function makeCssRules() {
-  const _re0 = /…/y, _re1 = /…/y, _EMPTY_TL = Object.freeze([]);   // hoisted, per-instance
-  return {
-    Num(input, pos, ctx)   { …; return ctx.build('Num', c, r, s) },
-    value(input, pos, ctx) { …; return ctx.R.Dimension(input, p, ctx) },
-    // …
-  };
-}
-```
-
-Byte-identical rule bodies to today — just lifted out of the sealed IIFE, with
-reused sibling calls routed through `ctx.R`.
-
-## 5. Composition (spread — build once, never mutate the key set)
-
-```js
-import { makeCssRules }  from '@jesscss/css-parser/rules';   // compiled artifact
-import { makeLessRules } from './rules';
-
-const R = { ...makeCssRules(), ...makeLessRules() };   // spread order = override
-```
-
-- **No `Object.freeze`.** Monomorphic dispatch comes from **shape stability**
-  (build once, never add/delete keys), not immutability. Freeze adds write-guard
-  cost with zero read benefit. (Optional dev-only freeze behind a debug flag.)
-- **Open recursion:** because every reference is `ctx.R.value`, the fixpoint is
-  taken over the *merged* map. Override `value` in Less → CSS's rules that call
-  `value` now call Less's. The sealed closure cannot do this.
-- **À la carte:** compose from cherry-picked names across maps —
-  `const R = { ...makeCss(), ...pick(makeLess(), ['MixinCall','Guard']), ...pick(makeSass(), ['EachFor']), ...makeJess() }`.
-  A `pick(map, names)` is a trivial key filter. **Name-dependency contract:** each
-  rule reaches siblings via `ctx.R.name`, so every referenced name must exist in
-  the final `R`. Emit each rule's set of referenced names (codegen knows them) so
-  a dev-only compose-time check can assert closure and list any missing names.
-
-## 6. Why it stays lightning-fast
-
-- `R` is shape-stable → `ctx.R.name` is **monomorphic** → V8 inline-caches it to
-  a fixed-offset field load, not a hash lookup. Load + call ≈ direct call.
-- **Merge once** at construction; zero per-parse composition cost.
-- **Intra-package single-use inlining preserved** — hot inner loops unchanged.
-- **Rule bodies identical** — scannable-regex / dispatch-table / trivia fast-path
-  all intact.
-
-The one measurable delta: a monomorphic field load at rule-call boundaries that
-were already function calls. See §9.
-
-## 7. Modes = `ctx` settings over one map
+## 7. Modes = `ctx` settings over one fused map
 
 | mode | driver | `ctx.recover` | `ctx.build` |
 |---|---|---|---|
@@ -155,64 +111,52 @@ were already function calls. See §9.
 | linter | one-shot | `true` | CST host |
 | IDE | incremental `.edit` | `true` | positioned-CST host |
 
-- `ctx.build` on `ctx` dissolves the module-singleton host (old Blocker B):
-  per-parse, concurrency-safe.
+- `ctx.build` dissolves the module-singleton host (old Blocker B): per-parse,
+  concurrency-safe. `node()` rules already end in `ctx.build(type, …)`.
 - `ctx.recover` is the existing recover option (`recover()`/`expect()` read it).
-- Same `R`, three `ctx`es.
+- Same fused map; three `ctx`es. No hot-path change for any mode.
 
-## 8. Incremental = the map is the registry
+## 8. Incremental = the fused map is the registry
 
-`parseDoc().edit()` already re-parses a changed node **by name**:
-`registry[node.type](input, pos, ctx)`. Under the ABI, `registry` **is** `R`.
-Every compiled rule is addressable and re-enterable by name → incremental works
-over compiled grammars with no extra machinery. Relative-span storage +
-queried-absolute positions (old Blocker C) live entirely in the *driver*,
-orthogonal to the ABI.
+The fused closure returns `{ name: fn }`, so it's **by-name addressable**.
+`parseDoc().edit()` re-enters a changed node by name: `R[node.type](input, pos, ctx)`
+— **one property read per edit, not per call**; internal sibling calls stay
+direct. So incremental adds ~nothing to the hot path. Relative-span storage +
+queried-absolute positions (old Blocker C) live entirely in the driver.
 
-**One artifact, four jobs:** composition unit = mode-dispatch table = incremental
-registry = parse-entry table.
+**One artifact, four jobs:** the fused map is the composition target, the
+mode-dispatch table (via `ctx`), the incremental registry, and the parse-entry
+table.
 
-## 9. Risk & the gating prototype
+## 9. Why not runtime merge (the ~5% path, rejected)
 
-**Measured** (`bench/dispatch-ab.mjs + bench/dispatch-ab-alloc.mjs`, recursion-heavy JSON, identical rule
-bodies, only the sibling-call mechanism differs):
+Measured (`bench/dispatch-ab.mjs` + `bench/dispatch-ab-alloc.mjs`, recursion-heavy
+JSON, identical rule bodies): merging function *objects* at runtime and calling
+siblings via `ctx.R.name` costs **~5–10%** (property lookup per call). Build-time
+fusion avoids it entirely by making names **locals**. The only reason to keep a
+runtime-merge path would be composition decided at **runtime** (dynamically loaded
+rules) — not a current requirement, so it's out of scope.
 
-- dispatch-only (near-zero work/rule): B/A ≈ **1.01–1.06×**
-- with node allocation (realistic work): B/A ≈ **1.08–1.11×**
+## 10. What retires
 
-So by-name dispatch (B) costs **~5–10%** in dispatch-saturated code — real, modest,
-and an upper bound (JSON is dispatch-dominated; regex-heavy real grammars dilute
-it). A pure-runtime "link pass" back to direct calls does **not** work: recursion
-makes destructure-to-local circular, so the only route to direct calls is a
-codegen-time fused closure — i.e. form A itself.
-
-**Decision:** fused (A) is the default output; `composable: true` opts into B.
-You pay the ~5–10% only when you need export/merge, override, à la carte, or
-by-name re-entry (linter/IDE/incremental) — none of which A can do at all.
-
-## 10. Codegen changes (behind the `composable` flag)
-
-Default (no flag) → **unchanged**: today's sealed IIFE, direct sibling calls.
-
-`composable: true` →
-1. Emit `makeXRules()` **factory returning `{name: fn}`** instead of a sealed IIFE.
-2. Compile a **named-rule** `ref` to **`ctx.R.name(…)`** (local/private `const`
-   refs still inline — the `ctx.R` hop is only for the map's own named rules).
-3. Emit each rule's **referenced-name set** for the compose-time name-dependency
-   check (§5). Cross-package consumers import compiled `make*Rules` and spread.
-
-**Only in composable mode does** tier-2 fragment source resolution + the
-self-contained-fragment constraint become unnecessary; the module-singleton build
-host is replaced by `ctx.build` regardless of form.
+- **Tier-2 fragment *source* resolution** + the self-contained-fragment
+  constraint (docs/guide/extending.md) — the linker eats compiled pieces.
+- **Per-consumer recompilation** of a base grammar.
+- **The module-singleton build host** — replaced by `ctx.build`.
+- Once landed, the docs' "the macro needs source access" caveats become false and
+  come out. (Hold that doc edit until then — today they are accurate.)
 
 ## 11. Sequence
 
-1. ~~Dispatch A/B prototype (§9)~~ — **done**; ~5–10% → fused default + `composable` flag.
-2. Codegen: emit the `composable` form (factory + `ctx.R` dispatch + referenced-name
-   sets) behind the flag; **default output unchanged**. Parity tests (fused vs
-   composable produce structurally identical parses) + perf-guard on the default.
-3. Composition surface: `pick(map, names)`, spread merge, dev-only name-closure check.
-4. `ctx.build` host injection; retire the module singleton (jess side).
-5. Incremental driver on relative spans + queried absolute (old Blocker C), over a
-   composed map (`R` = the registry).
-6. Wire the three drivers (eval / linter / IDE) over one composed map.
+1. **Codegen: emit the linkable form** — named rule functions (siblings by
+   canonical name, not inlined), namespaced preludes, dependency manifest. Default
+   standalone build still produces a fused closure (link with only itself), so
+   existing output/speed is preserved. Parity + perf-guard. ← start here
+2. **Linker** — retarget the plugin to fuse imported linkable artifacts (select
+   winner-per-name + dep-closure + prelude dedupe + name-check) instead of
+   re-reading TS source.
+3. **`ctx.build` host injection + `ctx.recover`** — unblock modes; retire the
+   singleton (jess side).
+4. **Incremental driver** — relative spans + queried absolute over the fused map
+   (old Blocker C).
+5. **Wire the three drivers** (eval / linter / IDE) over one fused map.
