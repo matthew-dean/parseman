@@ -244,15 +244,23 @@ describe('parseScanShape — non-capturing groups (§8f)', () => {
     expect(parseScanShape('a(?:[0-9]*)*')).toBeNull()
   })
 
-  it('declines a group whose body is a non-disjoint alt (arm-switching hazard)', () => {
-    // `(?:a|ab)` genuinely needs real backtracking into the second arm if
-    // something after it fails — not modeled, must decline the WHOLE group.
+  it('declines a NON-TRAILING group whose body is a non-disjoint alt (arm-switching hazard)', () => {
+    // `(?:a|ab)` genuinely needs real backtracking into the second arm when
+    // the trailing `c` fails against the first arm's shorter match
+    // (`/^(?:a|ab)c/.exec("abc")` matches via the SECOND arm) — ordered-commit
+    // can't model that, so a non-trailing non-disjoint-alt group is declined.
     expect(parseScanShape('x(?:a|ab)c')).toBeNull()
-    // But the SAME group content alone (nothing meaningful follows within
-    // this seq to force reconsideration) is allowed to be conservative and
-    // still decline — groupInnerSafe doesn't special-case "no trailing
-    // context", it always requires disjoint arms.
-    expect(parseScanShape('x(?:a|ab)')).toBeNull()
+  })
+
+  // §8h: a non-disjoint-alt group IS lowerable when it's the trailing,
+  // matched-once part — nothing follows to force an arm switch, so ordered
+  // commit equals the engine. `x(?:a|ab)` matches "xa" both ways.
+  it('lowers a TRAILING group whose body is a non-disjoint alt (§8h)', () => {
+    expect(parseScanShape('x(?:a|ab)')?.kind).toBe('seq')
+    // But still declined when trailing-yet-optional/repeated (a "drop the
+    // group" or "repeat" choice reintroduces the arm-switch hazard).
+    expect(parseScanShape('x(?:a|ab)?')).toBeNull()
+    expect(parseScanShape('x(?:a|ab)+')).toBeNull()
   })
 
   it('declines two consecutive optional groups whose first-sets overlap', () => {
@@ -518,14 +526,33 @@ describe('scannable regex — codegen', () => {
     expect(code).not.toContain('.exec(input)')
   })
 
-  it('still declines CSS numPart/Num (non-disjoint alt inside a group — real, documented gap)', () => {
+  it('lowers CSS numPart to charCodeAt, no exec (§8h — trailing non-disjoint alt)', () => {
     // `\d*\.\d+(?:...)?` and `\d+(?:...)?` overlap on digits, so the group's
-    // body is a non-disjoint alt — groupInnerSafe correctly declines rather
-    // than risk the arm-switching hazard. Needs a smarter technique than
-    // plain group composition to close (not attempted here).
+    // body is a non-disjoint alt. It's the TRAILING part of the seq, so
+    // ordered-choice-commit provably equals the engine (nothing follows to
+    // force an arm switch) and it lowers. See the differential parity test.
     const numPart = compile(regex(/[+-]?(?:\d*\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|\d+)/)).source
-    expect(numPart).toMatch(/const _re\d+ = /)
-    expect(numPart).toContain('.exec(input)')
+    expect(numPart).toContain('charCodeAt')
+    expect(numPart).not.toContain('.exec(input)')
+  })
+
+  // Exhaustive differential parity: the lowered CSS numPart scan must consume
+  // exactly what the raw RegExp matches, over every short combination of the
+  // structurally-relevant chars (sign, dot, exp marker, digits, and boundary
+  // chars a unit/`%` could start with).
+  it('CSS numPart: lowered scan == RegExp.exec across all short inputs (§8h)', () => {
+    const src = String.raw`[+-]?(?:\d*\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|\d+)`
+    const re = new RegExp('^(?:' + src + ')')
+    const p = regex(new RegExp(src))
+    const alph = ['', '+', '-', '.', 'e', 'E', '0', '1', '9', 'x', '%', ' ']
+    for (const a of alph) for (const b of alph) for (const c of alph) for (const d of alph) {
+      const s = a + b + c + d
+      const m = re.exec(s)
+      const want = m ? m[0].length : -1
+      const r = parse(p, s)
+      const got = r.ok ? (r.value as string).length : -1
+      expect(got, JSON.stringify(s)).toBe(want)
+    }
   })
 })
 

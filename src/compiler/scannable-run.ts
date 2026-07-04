@@ -387,6 +387,18 @@ function seqIsUnambiguous(parts: SeqPart[]): boolean {
     const p = parts[k]!
     const mandatory = p.part === 'lit' ? !p.optional : p.min === 1
     if (mandatory) hasMandatory = true
+    // §8h — a group whose inner is a NON-disjoint (overlapping-arm) alternation
+    // is lowered by ordered-choice-commit (emitShapeMatch's `alt` else-branch):
+    // it picks the first arm that matches locally and never reconsiders. That
+    // equals the regex engine ONLY when nothing following the group could reject
+    // the committed arm and force backtracking into a different one — i.e. when
+    // the group is the LAST part and matched exactly once (no continuation, so
+    // no arm-switch hazard; cf. `/^(?:a|ab)c/` needing the second arm). A
+    // trailing optional/repeated group, or any non-trailing one, is declined.
+    if (p.part === 'group' && p.inner.kind === 'alt' && !p.inner.disjoint) {
+      const trailingOnce = k === parts.length - 1 && p.min === 1 && !p.unbounded
+      if (!trailingOnce) return false
+    }
     const skippableSingle =
       (p.part === 'lit' && p.optional) || (p.part !== 'lit' && !p.unbounded && p.min === 0)
     const isUnboundedRepeat = p.part !== 'lit' && p.unbounded
@@ -716,7 +728,11 @@ function seqFirstAccept(parts: SeqPart[]): CharSet | 'any' {
 function groupInnerSafe(shape: ScanShape): boolean {
   if (shape.kind === 'chars' || shape.kind === 'ident' || shape.kind === 'seq' || shape.kind === 'litFold') return true
   if (shape.kind === 'lookahead') return groupInnerSafe(shape.inner)
-  if (shape.kind === 'alt') return shape.disjoint
+  // A disjoint alt is safe anywhere. A NON-disjoint alt is admitted here too,
+  // but its ordered-choice-commit is only sound in the trailing-once position —
+  // `seqIsUnambiguous` (§8h) enforces that positional constraint; a non-trailing
+  // or optional/repeated non-disjoint-alt group is rejected there.
+  if (shape.kind === 'alt') return true
   return false
 }
 
@@ -745,9 +761,12 @@ function shapeFirstAccept(shape: ScanShape): CharSet | 'any' {
     case 'seq': return seqFirstAccept(shape.parts)
     case 'lookahead': return shapeFirstAccept(shape.inner) // zero-width — doesn't change first-char acceptance
     case 'alt': {
-      if (!shape.disjoint) return 'any'
-      const sets = shape.firsts.filter((f): f is CharSet => f !== null)
-      return sets.length === shape.arms.length ? unionCharSets(sets) : 'any'
+      // The set of first chars is the union of every arm's own first-set,
+      // independent of whether the arms are mutually disjoint (that flag only
+      // governs dispatch, not what the shape can start with). Any arm whose
+      // first-set is itself `'any'` (stored as `null`) makes the union `'any'`.
+      const sets = shape.firsts.map((f): CharSet | 'any' => (f === null ? 'any' : f))
+      return unionCharSets(sets)
     }
   }
 }
