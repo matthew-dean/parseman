@@ -227,6 +227,21 @@ rules) — not a current requirement, so it's out of scope.
   earlier `.edit()` work on this branch).
 - Standalone/`compile()` output byte-identical (ns=''), snapshot + perf-guard hold.
 
+**Also landed — macro build-time composition, no source (the headline goal):**
+
+- **`compose()` is the only public composition API** — no `linkable()` opt-in; a
+  grammar is composable by default. `compose()` accepts grammars (`rules()`
+  results) or compiled artifacts.
+- **The macro fuses `compose([...])` at BUILD into static source** (`emitFusedSource`)
+  — a plain `(() => {…})()` of direct-call rule fns, **no `new Function`**. Macro
+  output stays eval-free.
+- **Cross-package with no base source**: an exported `rules()` also emits a
+  `<name>__pieces` **sidecar** (stable hash ns). A consumer's
+  `compose([importedGrammar, …])` resolves the imported COMPILED module, reads its
+  sidecar, build-evals it, and fuses — never reading or recompiling the base's TS
+  source. Override reroutes open-recursively across packages; output is eval-free.
+  Runtime `compose()` (no macro, like `compile()`) still works via `new Function`.
+
 **Deferred, with rationale (not required for the capability, large + cross-cutting):**
 
 - **Relative-span storage (step 4 / old Blocker C).** Incremental already works
@@ -236,9 +251,6 @@ rules) — not a current requirement, so it's out of scope.
   cases) and which is neutral-or-worse for the common edit-then-read pattern unless
   consumers also migrate to cursor-based navigation. Deferred as a self-contained
   optimization; design in §8 stands.
-- **Macro build-time emit/consume of linkable artifacts.** The plugin still fuses
-  via source-inlining (`compileRuleMap`), which works and is fast. Wiring it to
-  emit an exported linkable artifact + resolve+fuse imported artifacts at build
-  (so cross-package composition needs no source) is a large plugin change; the
-  runtime linker proves the mechanism end-to-end. Until this lands, the
-  "macro needs source" docs stay accurate (so §10's doc edit is also deferred).
+- **Docs sweep** — the `extending` guide and examples still describe source-based
+  extension; they need rewriting for the `compose()` model (tracked as follow-up,
+  and separately requested).
