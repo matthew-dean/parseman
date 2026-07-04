@@ -45,3 +45,26 @@ export { walk, createVisitor } from './cst/walk.ts'
 export type { Walkable, WalkVisitor, VisitApi, VisitorHandlers } from './cst/walk.ts'
 export { triviaEntries } from './cst/trivia-entries.ts'
 export type { TriviaEntriesView } from './cst/trivia-entries.ts'
+
+export {
+  OffsetIndex,
+  buildOffsetIndex,
+  collectLeafSlots,
+  gapText,
+  lineBreaksIn,
+  blankLinesIn,
+  lineStartWithin,
+  indentWidth,
+  indentMixed,
+  commentsIn,
+  gapIsSignificant,
+} from './cst/offset-model.ts'
+export type { Slot, Gap } from './cst/offset-model.ts'
+export {
+  relativize,
+  absolutize,
+  absoluteSpanAt,
+  shiftAbsolute,
+  applyEdit,
+} from './cst/relative-spans.ts'
+export type { AbsNode, RelNode } from './cst/relative-spans.ts'
