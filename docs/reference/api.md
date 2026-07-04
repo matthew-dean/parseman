@@ -302,9 +302,7 @@ autocomplete. Probes the grammar at that position via a truncated parse.
 ### `parseDoc(registry, rootRule, input, opts?)`
 
 ::: warning Experimental
-Incremental re-parsing is **experimental** and its API may change — see the
-[guide](../guide/incremental) for the graduation criteria (a real Jess language service /
-IDE extension built on it).
+Incremental re-parsing is **experimental** and its API may still change. Pin your version.
 :::
 
 Wrap a parse in an immutable document that re-parses incrementally via `.edit(from, to,
