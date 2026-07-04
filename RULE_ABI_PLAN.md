@@ -1,9 +1,15 @@
 # Composable compiled rules — linkable pieces + build-time fusion
 
-Status: **plan.** Model settled: compile each package's rules to **linkable
-pieces**, **fuse selected pieces into one closure at build time**. Zero runtime
-dispatch cost, composable, no source dependency, one authoring API. Modes and
-incremental ride on top.
+Status: **implemented** (runtime / `compile()` path) — see §12. The
+composable-compiled-rules core is built and tested: linkable emission, the fusion
+linker, override / à la carte / external refs, modes (`ctx.build`), incremental
+over the fused map, and the three drivers. Two items are explicitly deferred with
+rationale (§12): the relative-span storage optimization, and the macro plugin's
+build-time emit/consume of linkable artifacts.
+
+Model: compile each package's rules to **linkable pieces**, **fuse selected
+pieces into one closure at build time**. Zero runtime dispatch cost, composable,
+no source dependency, one authoring API. Modes and incremental ride on top.
 
 ## 1. The problem
 
@@ -191,20 +197,48 @@ rules) — not a current requirement, so it's out of scope.
 
 ## 11. Sequence
 
-1. **Codegen: emit the linkable form** — restructure `compileRuleMap`:
-   (a) build the `combinator → name` reverse map from the rule map;
-   (b) emit each rule once as a `_r_<Name>` **sentinel-convention** fn, siblings
-       called `_r_<Name>(…)` (deduped — no more per-reference `_pfN`);
-   (c) export a map of **thin public wrappers** over the `_r_<Name>` fns;
-   (d) namespace preludes; emit the dependency manifest.
-   Default standalone build still produces a fused closure (link with only
-   itself), so existing output/speed is preserved. **Parity-gated** (fused output
-   parses identically) + perf-guard (no regression). ← start here
-2. **Linker** — retarget the plugin to fuse imported linkable artifacts (select
-   winner-per-name + dep-closure + prelude dedupe + name-check) instead of
-   re-reading TS source.
-3. **`ctx.build` host injection + `ctx.recover`** — unblock modes; retire the
-   singleton (jess side).
-4. **Incremental driver** — relative spans + queried absolute over the fused map
-   (old Blocker C).
-5. **Wire the three drivers** (eval / linter / IDE) over one fused map.
+1. **✅ Codegen: emit the linkable form** — `_r_<Name>` canonical fns + dependency
+   manifest + namespaced preludes + `compileLinkable` returning splice-able pieces.
+2. **✅ Linker** (`compiler/linker.ts` `fuseRules`/`pick`) — fuse linkable artifacts:
+   winner-per-name override, dep-closure à la carte, prelude dedupe, name-closure
+   check, external cross-artifact refs, runtime callback injection via `_env`.
+3. **✅ `ctx.build` host injection** — mode-swap over one fused grammar.
+   (`ctx.recover` error policy already existed via the `recover` option.)
+4. **⏸ Incremental driver — relative spans** — DEFERRED (§12). Incremental itself
+   is done (the fused map is a `parseDoc` registry); relative-span *storage* is a
+   separate optimization, not required for the capability.
+5. **✅ Wire the three drivers** — eval (default build), linter (`cstBuildHost`,
+   one-shot), IDE (`cstBuildHost`, `parseDoc.edit`) over one fused map.
+
+## 12. What landed, and what's deferred
+
+**Landed (runtime / `compile()` path), all tested + perf-guarded:**
+
+- `compileLinkable(ruleMap, ns)` — the linkable form (§3/§4): `_r_<Name>` fns,
+  namespaced private prelude, public wrappers, dependency manifest, callback fns.
+- `fuseRules(pieces)` / `pick(piece, names)` (`compiler/linker.ts`) — build-time
+  fusion into one scope: **direct local calls (0% dispatch)**, override (open
+  recursion across artifacts), à la carte + dep-closure, name-closure check,
+  external refs resolved at fuse. `ruleDependencies` manifest.
+- **Modes** — `ctx.build` host swaps eval-AST vs positioned-CST on ONE fused
+  grammar; `cstBuildHost`; the three drivers; `parseDoc` threads `build`.
+- **Incremental** — the fused map IS a `parseDoc` registry; `.edit()` re-enters
+  fused rules by name (overtype ≈126×, insert ≈7.5×, structural ≈parity — the
+  earlier `.edit()` work on this branch).
+- Standalone/`compile()` output byte-identical (ns=''), snapshot + perf-guard hold.
+
+**Deferred, with rationale (not required for the capability, large + cross-cutting):**
+
+- **Relative-span storage (step 4 / old Blocker C).** Incremental already works
+  over the fused map with absolute spans and is fast (≈126×/≈7.5×/≈parity). The
+  relative-span rewrite is a *library-wide* change (the parser and 40+ sites read
+  absolute spans) whose net benefit is situational (batched-edit / length-changing
+  cases) and which is neutral-or-worse for the common edit-then-read pattern unless
+  consumers also migrate to cursor-based navigation. Deferred as a self-contained
+  optimization; design in §8 stands.
+- **Macro build-time emit/consume of linkable artifacts.** The plugin still fuses
+  via source-inlining (`compileRuleMap`), which works and is fast. Wiring it to
+  emit an exported linkable artifact + resolve+fuse imported artifacts at build
+  (so cross-package composition needs no source) is a large plugin change; the
+  runtime linker proves the mechanism end-to-end. Until this lands, the
+  "macro needs source" docs stay accurate (so §10's doc edit is also deferred).
