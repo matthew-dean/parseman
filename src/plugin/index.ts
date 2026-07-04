@@ -22,7 +22,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, asFragmentFactory, type Scope, type ScopeEntry, type FactoryAst, type FactoryResolver, type ResolvedFactory } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource } from '../compiler/linker.ts'
@@ -44,26 +44,6 @@ export type ParsecraftPluginOptions = {
 
 const PARSEMAN_MODULE = 'parseman'
 
-// Shared, lazily-created module resolver for tier-2 fragment inlining. oxc-resolver
-// caches filesystem access internally, so one instance is reused across files.
-// Source-oriented condition/main fields are tried first so a package that ships its
-// `.ts` (via a `source`/`development` export condition) resolves to source rather
-// than compiled dist — the macro can only inline a fragment it can read as source.
-let _fragmentResolver: ResolverFactory | null = null
-function getFragmentResolver(): ResolverFactory {
-  return _fragmentResolver ??= new ResolverFactory({
-    extensions: ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'],
-    // TS/NodeNext style: a `./x.js` import may point at `./x.ts` source.
-    extensionAlias: {
-      '.js': ['.ts', '.tsx', '.js', '.jsx'],
-      '.mjs': ['.mts', '.mjs'],
-      '.cjs': ['.cts', '.cjs'],
-    },
-    conditionNames: ['source', 'development', 'import', 'require', 'default'],
-    mainFields: ['source', 'module', 'main'],
-  })
-}
-
 // A grammar's carried linkable pieces live ONLY in its COMPILED output (the macro
 // embeds them there), never in its `.ts` source. So resolving an imported grammar
 // to read its pieces must prefer the built `import`/`require` entry — NOT the
@@ -77,12 +57,12 @@ function getCompiledResolver(): ResolverFactory {
   })
 }
 
-// Module-level parse cache for imported fragment sources, keyed by absolute file
-// path. Shared across transformMacro invocations so a fragment imported by many
-// consumer files is read + parsed once per build, not once per consumer. The
-// mtime guard invalidates a stale entry so a watch-mode rebuild picks up an edited
-// fragment. A null `parsed` (unreadable / parse error) is cached too, to avoid
-// retrying a known-bad file for every consumer.
+// Module-level parse cache for imported COMPILED grammar modules (read to recover
+// a grammar's carried pieces for compose()), keyed by absolute file path. Shared
+// across transformMacro invocations so a grammar imported by many consumer files
+// is read + parsed once per build. The mtime guard invalidates a stale entry so a
+// watch-mode rebuild picks up a rebuilt module. A null `parsed` (unreadable / parse
+// error) is cached too, to avoid retrying a known-bad file for every consumer.
 type ParsedModule = { body: unknown[]; src: string }
 const _moduleParseCache = new Map<string, { mtimeMs: number; parsed: ParsedModule | null }>()
 
@@ -300,91 +280,6 @@ export function transformMacro(
   // Scope stores enriched ScopeEntry objects so evaluateParserFactory can
   // replay mfSrcs when outer-scope combinators are referenced inside factories.
   const scope: Scope = new Map<string, ScopeEntry>()
-  // Same-file fragment factories `const frag = (g, deps) => ({ … })`, registered as
-  // the main loop reaches them (in source order, so a factory is known before the
-  // rules() call that spreads it). evaluateParserFactory inlines `...frag(g)` spreads.
-  const factories = new Map<string, FactoryAst>()
-
-  // ── Tier-2 composition: resolve IMPORTED fragment factories from source ──
-  // A `...frag(g)` spread whose factory is imported (not same-file) is inlined by
-  // reading the exporting module's SOURCE at build time. Resolution goes through
-  // oxc-resolver (see getFragmentResolver) rather than a hand-rolled path walk, so
-  // it honors package `exports`/`imports` maps, tsconfig path aliases, and TS
-  // extensions, and prefers a package's declared source. A combinator can only be
-  // re-composed from source, so if resolution still lands on built output we try a
-  // sibling `src` tree. Parsed fragment modules are cached at module scope
-  // (parseModuleCached), so a fragment shared by many consumer files is read +
-  // parsed once per build. Anything unresolvable → the spread bails to the
-  // interpreter fallback (never crashes).
-  const resolver = getFragmentResolver()
-  // Per-file, keyed by local import name (the parsed-module bytes are cached at
-  // module scope via parseModuleCached, so this only memoizes the cheap AST walk).
-  const importedFactoryCache = new Map<string, ResolvedFactory | null>()
-
-  // Compiled-output dir segments we know how to map back to a sibling source tree.
-  // The resolver already prefers real source when a package declares it (a `source`
-  // export condition / main field, or a co-located `src/` reached via extensionAlias);
-  // this rewrite is only a best-effort fallback for packages that ship compiled output
-  // under a conventional dir with a parallel `src/`. Non-standard dirs simply don't
-  // match → the spread stays on the (correct) interpreter fallback.
-  const OUTPUT_DIR = /([\\/])(dist|lib|build|out|output|compiled|cjs|esm|es)([\\/])/
-
-  const resolveSourcePath = (spec: string): string | null => {
-    let resolved: string | null = null
-    try { resolved = resolver.resolveFileSync(id, spec).path ?? null } catch { /* unresolved */ }
-    if (!resolved) return null
-    // Resolved to compiled output? Prefer the co-located source if present — a
-    // compiled parse function isn't a re-composable definition tree.
-    if (OUTPUT_DIR.test(resolved)) {
-      const srcCandidate = resolved
-        .replace(OUTPUT_DIR, '$1src$3')
-        .replace(/\.(c|m)?js$/, '.ts')
-      try { if (fs.statSync(srcCandidate).isFile()) return srcCandidate } catch { /* fall through */ }
-    }
-    return resolved
-  }
-
-  const resolveImportedFactory = (name: string): ResolvedFactory | null => {
-    if (importedFactoryCache.has(name)) return importedFactoryCache.get(name)!
-    let result: ResolvedFactory | null = null
-    const binding = importBindings.get(name)
-    if (binding) {
-      const filePath = resolveSourcePath(binding.source)
-      const mod = filePath ? parseModuleCached(filePath) : null
-      if (mod) {
-        for (const st of mod.body as Array<{ type: string; declaration?: { type: string; name?: string; id?: { type: string; name?: string }; declarations?: unknown[] } }>) {
-          if (st.type !== 'ExportNamedDeclaration' || !st.declaration) continue
-          const decl = st.declaration
-          // export const frag = (g, deps) => ({ … })
-          if (decl.type === 'VariableDeclaration') {
-            for (const d of (decl.declarations ?? []) as Array<{ id?: { type: string; name?: string }; init?: unknown }>) {
-              if (d.id?.type === 'Identifier' && d.id.name === binding.imported && d.init) {
-                const fac = asFragmentFactory(d.init as Expression)
-                // Carry the fragment's OWN source so callback capture slices it, not `code`.
-                if (fac) { result = { fn: fac, code: mod.src }; break }
-              }
-            }
-          // export function frag(g, deps) { return { … } }
-          } else if (decl.type === 'FunctionDeclaration' && decl.id?.type === 'Identifier' && decl.id.name === binding.imported) {
-            const fac = asFragmentFactory(decl as unknown as Expression)
-            if (fac) result = { fn: fac, code: mod.src }
-          }
-          if (result) break
-        }
-      }
-    }
-    importedFactoryCache.set(name, result)
-    return result
-  }
-
-  // Same-file factories win (their AST offsets index into the consumer's `code`);
-  // otherwise fall through to imported-source resolution.
-  const resolveFactory: FactoryResolver = (n) => {
-    const local = factories.get(n)
-    if (local) return { fn: local, code }
-    return resolveImportedFactory(n)
-  }
-
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
   let anyUnresolved = false
@@ -420,7 +315,7 @@ export function transformMacro(
     const factoryArg = args[0] as Expression | undefined
     if (!factoryArg) { warn(init.start, `${label}: rules() needs a factory argument`); return null }
 
-    const ruleMap = evaluateParserFactory(factoryArg, scope, code, [], resolveFactory)
+    const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
     if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
 
     const compiled = compileRuleMap([...ruleMap])
@@ -523,7 +418,7 @@ export function transformMacro(
     // Inline `rules(g => …)`.
     if (isRulesCall(arg)) {
       const factory = (arg as unknown as { arguments: unknown[] }).arguments[0] as Expression | undefined
-      const rm = factory ? evaluateParserFactory(factory, scope, code, [], resolveFactory) : null
+      const rm = factory ? evaluateParserFactory(factory, scope, code, []) : null
       const p = rm ? compileLinkable([...rm], nsFor(label)) : null
       return p ? [p] : null
     }
@@ -717,17 +612,6 @@ export function transformMacro(
             ? withCarriedPieces(fused.replacement, fused.pieces)
             : fused.replacement
           replacements.push({ start: init.start, end: init.end, replacement })
-          continue
-        }
-
-        // const frag = (g, deps) => ({ … }) — a rules() fragment factory. Register it
-        // (in source order) so a later `...frag(g)` spread inlines it, and leave the
-        // declaration as-is: after inlining it's referenced only by the (already
-        // replaced) rules() call, so it's dead and tree-shaken. Not warned — it's a
-        // recognized macro shape, not an unresolvable one.
-        const frag = asFragmentFactory(init)
-        if (frag) {
-          factories.set(varName, frag)
           continue
         }
 
