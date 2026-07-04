@@ -122,9 +122,11 @@ correct-but-interpreted path.
   **source** at build time, parses it (cached per module), finds the exported factory, and inlines
   it exactly as it would a same-file one. Resolution uses [`oxc-resolver`](https://github.com/oxc-project/oxc-resolver)
   — the same resolver family as the parser — so it honors package `exports`/`imports` maps, tsconfig
-  path aliases, and TypeScript extensions, and prefers a package's source (e.g. a `source` export
-  condition, or a co-located `src/` tree) over compiled `dist`. If the source can't be found, the
-  spread takes the interpreter fallback (correct, not compiled).
+  path aliases, and TypeScript extensions, and prefers a package's declared source (e.g. a `source`
+  export condition or main field). If resolution still lands on compiled output under a conventional
+  build directory (`dist`, `lib`, `build`, `out`, `compiled`, `cjs`, `esm`, …), the macro looks for a
+  co-located `src/` tree as a best-effort fallback. If no source can be found, the spread takes the
+  interpreter fallback (correct, not compiled).
 
 ### The self-contained-fragment constraint
 

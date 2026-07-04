@@ -61,6 +61,34 @@ function getFragmentResolver(): ResolverFactory {
   })
 }
 
+// Module-level parse cache for imported fragment sources, keyed by absolute file
+// path. Shared across transformMacro invocations so a fragment imported by many
+// consumer files is read + parsed once per build, not once per consumer. The
+// mtime guard invalidates a stale entry so a watch-mode rebuild picks up an edited
+// fragment. A null `parsed` (unreadable / parse error) is cached too, to avoid
+// retrying a known-bad file for every consumer.
+type ParsedModule = { body: unknown[]; src: string }
+const _moduleParseCache = new Map<string, { mtimeMs: number; parsed: ParsedModule | null }>()
+
+function parseModuleCached(filePath: string): ParsedModule | null {
+  let mtimeMs: number
+  try {
+    mtimeMs = fs.statSync(filePath).mtimeMs
+  } catch {
+    return null  // file vanished — don't cache under a stale key
+  }
+  const hit = _moduleParseCache.get(filePath)
+  if (hit && hit.mtimeMs === mtimeMs) return hit.parsed
+  let parsed: ParsedModule | null = null
+  try {
+    const src = fs.readFileSync(filePath, 'utf8')
+    const r = parseSync(filePath, src)
+    if (r.errors.length === 0) parsed = { body: r.program.body as unknown[], src }
+  } catch { /* leave null */ }
+  _moduleParseCache.set(filePath, { mtimeMs, parsed })
+  return parsed
+}
+
 export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
   name: 'parseman',
   // Run BEFORE the bundler's TS/JS transform — otherwise esbuild (Vite) strips
@@ -174,12 +202,24 @@ export function transformMacro(
   // reading the exporting module's SOURCE at build time. Resolution goes through
   // oxc-resolver (see getFragmentResolver) rather than a hand-rolled path walk, so
   // it honors package `exports`/`imports` maps, tsconfig path aliases, and TS
-  // extensions. A combinator can only be re-composed from source, so if resolution
-  // lands on built output we prefer a sibling `src` tree. Anything unresolvable →
-  // the spread bails to the interpreter fallback (never crashes).
+  // extensions, and prefers a package's declared source. A combinator can only be
+  // re-composed from source, so if resolution still lands on built output we try a
+  // sibling `src` tree. Parsed fragment modules are cached at module scope
+  // (parseModuleCached), so a fragment shared by many consumer files is read +
+  // parsed once per build. Anything unresolvable → the spread bails to the
+  // interpreter fallback (never crashes).
   const resolver = getFragmentResolver()
-  const moduleCache = new Map<string, { body: unknown[]; src: string } | null>()  // filePath -> parsed module (or null)
+  // Per-file, keyed by local import name (the parsed-module bytes are cached at
+  // module scope via parseModuleCached, so this only memoizes the cheap AST walk).
   const importedFactoryCache = new Map<string, ResolvedFactory | null>()
+
+  // Compiled-output dir segments we know how to map back to a sibling source tree.
+  // The resolver already prefers real source when a package declares it (a `source`
+  // export condition / main field, or a co-located `src/` reached via extensionAlias);
+  // this rewrite is only a best-effort fallback for packages that ship compiled output
+  // under a conventional dir with a parallel `src/`. Non-standard dirs simply don't
+  // match → the spread stays on the (correct) interpreter fallback.
+  const OUTPUT_DIR = /([\\/])(dist|lib|build|out|output|compiled|cjs|esm|es)([\\/])/
 
   const resolveSourcePath = (spec: string): string | null => {
     let resolved: string | null = null
@@ -187,25 +227,13 @@ export function transformMacro(
     if (!resolved) return null
     // Resolved to compiled output? Prefer the co-located source if present — a
     // compiled parse function isn't a re-composable definition tree.
-    if (/[\\/](dist|lib)[\\/]/.test(resolved)) {
+    if (OUTPUT_DIR.test(resolved)) {
       const srcCandidate = resolved
-        .replace(/([\\/])(dist|lib)([\\/])/, '$1src$3')
+        .replace(OUTPUT_DIR, '$1src$3')
         .replace(/\.(c|m)?js$/, '.ts')
       try { if (fs.statSync(srcCandidate).isFile()) return srcCandidate } catch { /* fall through */ }
     }
     return resolved
-  }
-
-  const parseModule = (filePath: string): { body: unknown[]; src: string } | null => {
-    if (moduleCache.has(filePath)) return moduleCache.get(filePath)!
-    let out: { body: unknown[]; src: string } | null = null
-    try {
-      const src = fs.readFileSync(filePath, 'utf8')
-      const r = parseSync(filePath, src)
-      if (r.errors.length === 0) out = { body: r.program.body as unknown[], src }
-    } catch { /* leave null */ }
-    moduleCache.set(filePath, out)
-    return out
   }
 
   const resolveImportedFactory = (name: string): ResolvedFactory | null => {
@@ -214,18 +242,24 @@ export function transformMacro(
     const binding = importBindings.get(name)
     if (binding) {
       const filePath = resolveSourcePath(binding.source)
-      const mod = filePath ? parseModule(filePath) : null
+      const mod = filePath ? parseModuleCached(filePath) : null
       if (mod) {
-        for (const st of mod.body as Array<{ type: string; declaration?: { type: string; declarations?: unknown[] } }>) {
-          const vd = st.type === 'ExportNamedDeclaration' && st.declaration?.type === 'VariableDeclaration'
-            ? st.declaration : null
-          if (!vd) continue
-          for (const d of (vd.declarations ?? []) as Array<{ id?: { type: string; name?: string }; init?: unknown }>) {
-            if (d.id?.type === 'Identifier' && d.id.name === binding.imported && d.init) {
-              const fac = asFragmentFactory(d.init as Expression)
-              // Carry the fragment's OWN source so callback capture slices it, not `code`.
-              if (fac) { result = { fn: fac, code: mod.src }; break }
+        for (const st of mod.body as Array<{ type: string; declaration?: { type: string; name?: string; id?: { type: string; name?: string }; declarations?: unknown[] } }>) {
+          if (st.type !== 'ExportNamedDeclaration' || !st.declaration) continue
+          const decl = st.declaration
+          // export const frag = (g, deps) => ({ … })
+          if (decl.type === 'VariableDeclaration') {
+            for (const d of (decl.declarations ?? []) as Array<{ id?: { type: string; name?: string }; init?: unknown }>) {
+              if (d.id?.type === 'Identifier' && d.id.name === binding.imported && d.init) {
+                const fac = asFragmentFactory(d.init as Expression)
+                // Carry the fragment's OWN source so callback capture slices it, not `code`.
+                if (fac) { result = { fn: fac, code: mod.src }; break }
+              }
             }
+          // export function frag(g, deps) { return { … } }
+          } else if (decl.type === 'FunctionDeclaration' && decl.id?.type === 'Identifier' && decl.id.name === binding.imported) {
+            const fac = asFragmentFactory(decl as unknown as Expression)
+            if (fac) result = { fn: fac, code: mod.src }
           }
           if (result) break
         }

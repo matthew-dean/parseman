@@ -146,6 +146,23 @@ describe('grammar composition (macro-inlined) — imported fragments (tier 2)', 
     expect(m.parse('x,34', 0, {}).ok).toBe(false)
   })
 
+  it('inlines an imported fragment exported as a `function` declaration', () => {
+    const src = `
+      import { rules, regex, sequence } from 'parseman' with { type: 'macro' };
+      import { numbersFn } from './numbers-fn-fragment';
+      export const { pair } = rules((g) => ({
+        ...numbersFn(g),
+        pair: sequence(g.number, regex(/,/), g.number),
+      }));
+    `
+    const m = makeMacroParser(src, 'pair', path.join(FRAG_DIR, 'consumer.ts'))
+    // Fully compiled — the `export function` form must inline, not fall back.
+    expect(m.warnings).toEqual([])
+    expect(m.code).not.toContain("from 'parseman'")
+    expect(m.parse('12,34', 0, {}).ok).toBe(true)
+    expect(m.parse('x,34', 0, {}).ok).toBe(false)
+  })
+
   it('warns and falls back when the imported fragment path is unresolvable', () => {
     const src = `
       import { rules, regex, sequence } from 'parseman' with { type: 'macro' };
