@@ -145,7 +145,7 @@ type Runnable =
 type RunOptions = {
   build?: ParseContext['build']   // ctx.build host (structural node() → CST/AST)
   state?: unknown                 // initial ctx.state
-  trailingTrivia?: Runnable       // skip trailing trivia before computing leftoverAt
+  trivia?: Runnable       // skip trailing trivia before computing unconsumedFrom
 }
 
 type RunResult = {
@@ -155,7 +155,7 @@ type RunResult = {
   expected: string[]                   // when the top-level parse failed
   errors: ParseError[]                 // recover()/expect() diagnostics
   triviaLog: number[]                  // flat [start, end] pairs
-  leftoverAt: number | null            // first non-trivia offset left unconsumed, else null
+  unconsumedFrom: number | null            // first non-trivia offset left unconsumed, else null
 }
 ```
 

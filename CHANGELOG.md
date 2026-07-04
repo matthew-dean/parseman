@@ -5,14 +5,24 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.14.0 — 2026-07-04
 
-- **Composition without a base source.** `compose()` now fuses grammars across
-  packages at build time via a "pieces" sidecar, emitting static, `eval`-free
-  source. `linkable()`/`compose()` are the public runtime API for extending a
-  grammar you don't own the source of, and compose chains are re-composable.
+- **`compose()` is the one composition API — no base source needed.** A grammar
+  carries its compiled, composable "pieces" **on the exported value** (under a
+  well-known symbol), so `import { grammar }` is all a downstream package needs.
+  The macro fuses `compose([...])` at build time into static, `eval`-free source
+  (open-recursive override, `pick()` à la carte); chains are re-composable.
+- **Removed fragment-spread composition** (added in 0.13.0). `...frag(g)` spreads
+  and the build-time **source resolver** that read a fragment's `.ts` are gone —
+  `compose()` replaces both. `linkable()` is internal, not a public API.
 - **Rule ABI / build-time linker.** Rule-map rules compile to canonical
-  `_r_<Name>` functions (the "linkable form") with a dependency manifest, wired
-  through a build-time fusion linker so compiled rules stay composable.
-- **Structural `node()`** with optional build step; `pick()` now accepts grammars.
+  `_r_<Name>` functions with a dependency manifest, fused into one closure of
+  direct calls. All hoisted names (incl. trivia fns) are namespaced per piece so
+  two composed grammars can't collide.
+- **`run(entry, input, opts?)`** — a generic driver: invoke a compiled-fn or
+  combinator entry, thread the framework ctx, and report unconsumed input after
+  the grammar's own trivia. Closes the "run a rule + require full input" gap.
+- **Structural `node()`** — the `build` callback is optional; omit it to build via
+  the injected `ctx.build` host (one grammar → its own AST or a positioned CST).
+  `pick()` now accepts grammars.
 - **Sound incremental re-parsing.** `parseDoc().edit()` re-enters at rule
   boundaries with a lookahead guard and is capped at roughly one full reparse
   (near-whole-document edits skip re-entry). Backed by a new

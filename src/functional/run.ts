@@ -26,13 +26,16 @@ export type RunOptions = {
   /** Initial grammar state threaded into `ctx.state`. */
   state?: unknown
   /**
-   * The grammar's trivia parser. When given, trailing trivia after the parse is
-   * skipped before computing `leftoverAt`, so trailing whitespace/comments aren't
-   * mistaken for leftover — and an UNTERMINATED comment (which the trivia parser
-   * won't match) surfaces at its start. Encodes dialect differences for free:
-   * pass the CSS trivia and `//` is leftover; pass the Less trivia and it isn't.
+   * The grammar's trivia rule. A root rule consumes trivia BETWEEN terms but not
+   * after the last one, so trailing whitespace/comments would otherwise look like
+   * unparsed input. Given the trivia rule, `run` skips that tail before computing
+   * `unconsumedFrom` — so only real leftover is reported. Also encodes dialect
+   * differences for free: pass the CSS trivia and a trailing `//` counts as
+   * leftover; pass the Less trivia (which treats `//` as a line comment) and it
+   * doesn't. An UNTERMINATED comment (which the trivia rule won't match) surfaces
+   * at its start. Omit to require the parse to reach the exact end itself.
    */
-  trailingTrivia?: Runnable
+  trivia?: Runnable
 }
 
 export type RunResult = {
@@ -46,10 +49,12 @@ export type RunResult = {
   errors: ParseError[]
   /** Flat trivia log — `[start, end]` pairs — for building a trivia map. */
   triviaLog: number[]
-  /** First offset of non-trivia input left unconsumed after the parse (trailing
-   * trivia skipped when `trailingTrivia` is given), or null if fully consumed.
-   * Only meaningful on success — a failed parse reports its own `span`/`expected`. */
-  leftoverAt: number | null
+  /** Offset where unparsed input begins — the first non-trivia character the parse
+   * left unconsumed (trailing trivia skipped when `trivia` is given), or null if
+   * the whole input was consumed. This is how you detect "the grammar stopped short,
+   * there's junk here". Only meaningful on success — a failed parse reports its own
+   * `span`/`expected`. */
+  unconsumedFrom: number | null
 }
 
 const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): ParseResult<unknown> =>
@@ -67,15 +72,15 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
   }
   const r = invoke(entry, input, 0, ctx)
 
-  let leftoverAt: number | null = null
+  let unconsumedFrom: number | null = null
   if (r.ok) {
     let pos = r.span?.end ?? 0
-    if (options.trailingTrivia && pos < input.length) {
+    if (options.trivia && pos < input.length) {
       // Throwaway ctx: trailing trivia must NOT pollute the parse's trivia log.
-      const t = invoke(options.trailingTrivia, input, pos, { trackLines: false })
+      const t = invoke(options.trivia, input, pos, { trackLines: false })
       if (t.ok && t.span.end > pos) pos = t.span.end
     }
-    leftoverAt = pos < input.length ? pos : null
+    unconsumedFrom = pos < input.length ? pos : null
   }
 
   return {
@@ -85,6 +90,6 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
     expected: r.ok ? [] : ((r as { expected?: string[] }).expected ?? []),
     errors,
     triviaLog,
-    leftoverAt,
+    unconsumedFrom,
   }
 }

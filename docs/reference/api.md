@@ -219,15 +219,15 @@ Run a grammar **entry** — a rule function from a `compose()` / `compile()` map
 interpreter combinator — against `input`, threading the standard ctx (trivia log,
 `recover`/`expect` errors, the `ctx.build` host, grammar state) so a tool doesn't hand-build
 it or branch on function-vs-combinator. Returns a [`RunResult`](./types#runresult):
-`{ ok, value, span, expected, errors, triviaLog, leftoverAt }`. Pass `opts.build` for a
-[CST host](#cstbuildhost), `opts.state` for initial grammar state, and `opts.trailingTrivia`
+`{ ok, value, span, expected, errors, triviaLog, unconsumedFrom }`. Pass `opts.build` for a
+[CST host](#cstbuildhost), `opts.state` for initial grammar state, and `opts.trivia`
 (the grammar's trivia rule) to skip trailing whitespace/comments before reporting
-`leftoverAt` — so the dialect's own trivia decides what counts as leftover input.
+`unconsumedFrom` — so the dialect's own trivia decides what counts as leftover input.
 
 ```ts
 const g = compose([base])
-run(g.Value, '12  ', { trailingTrivia: g.rw })  // { ok: true, …, leftoverAt: null }
-run(g.Value, '12 x', { trailingTrivia: g.rw })  // leftoverAt → offset of 'x'
+run(g.Value, '12  ', { trivia: g.rw })  // { ok: true, …, unconsumedFrom: null }
+run(g.Value, '12 x', { trivia: g.rw })  // unconsumedFrom → offset of 'x'
 ```
 
 ## Compilation

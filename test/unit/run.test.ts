@@ -17,40 +17,40 @@ describe('run() — generic grammar-entry driver', () => {
   it('invokes an interpreter combinator and reports full consumption', () => {
     const r = run(g.Doc as never, 'a b c')
     expect(r.ok).toBe(true)
-    expect(r.leftoverAt).toBe(null)
+    expect(r.unconsumedFrom).toBe(null)
   })
 
   it('invokes a compiled function entry the same way', () => {
     const c = compile(g.Doc)
     const r = run(c.parse as never, 'a b c')
     expect(r.ok).toBe(true)
-    expect(r.leftoverAt).toBe(null)
+    expect(r.unconsumedFrom).toBe(null)
   })
 
   it('reports leftover at the first non-trivia offset', () => {
     // `!` is not a word and not trivia → leftover after "a b ".
-    const r = run(g.Doc as never, 'a b !', { trailingTrivia: blockTrivia as never })
-    expect(r.leftoverAt).toBe(4)
+    const r = run(g.Doc as never, 'a b !', { trivia: blockTrivia as never })
+    expect(r.unconsumedFrom).toBe(4)
   })
 
   it('trailing trivia is NOT leftover (dialect encoded by which trivia is passed)', () => {
     const src = 'a b // tail\n'
     // CSS-style trivia: `//` is not trivia → leftover at the `//`.
-    expect(run(g.Doc as never, src, { trailingTrivia: blockTrivia as never }).leftoverAt).toBe(4)
+    expect(run(g.Doc as never, src, { trivia: blockTrivia as never }).unconsumedFrom).toBe(4)
     // Less-style trivia: `//` line comment IS trivia → fully consumed.
-    expect(run(g.Doc as never, src, { trailingTrivia: lineTrivia as never }).leftoverAt).toBe(null)
+    expect(run(g.Doc as never, src, { trivia: lineTrivia as never }).unconsumedFrom).toBe(null)
   })
 
   it('surfaces an unterminated comment as leftover at its start', () => {
-    const r = run(g.Doc as never, 'a /* oops', { trailingTrivia: blockTrivia as never })
-    expect(r.leftoverAt).toBe(2)   // the unterminated comment never matches trivia
+    const r = run(g.Doc as never, 'a /* oops', { trivia: blockTrivia as never })
+    expect(r.unconsumedFrom).toBe(2)   // the unterminated comment never matches trivia
   })
 
   it('collects recover()/expect() errors and the trivia log', () => {
     const g2 = rules(() => ({
       Doc: parser({ trivia: blockTrivia }, many(recover(literal('x'), literal(';')))),
     }))
-    const r = run(g2.Doc as never, 'x y', { trailingTrivia: blockTrivia as never })
+    const r = run(g2.Doc as never, 'x y', { trivia: blockTrivia as never })
     expect(Array.isArray(r.errors)).toBe(true)
     expect(Array.isArray(r.triviaLog)).toBe(true)
   })
