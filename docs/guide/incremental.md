@@ -4,6 +4,16 @@ Editors re-parse on every keystroke. Re-parsing the whole document each time is 
 when a single character changed. `parseDoc` wraps a parse in a document that
 re-parses **incrementally** on edits, sharing untouched nodes by reference.
 
+::: warning Experimental
+`parseDoc` / `edit()` is **experimental** and its API may change. It's correct — every
+`edit()` returns a tree structurally identical to a full re-parse, and reuse falls back to
+a full re-parse whenever it can't be proven safe — but it hasn't yet been exercised by a
+real language service end to end. It graduates to stable once the **Jess language service
+and IDE extension** are built on it, which is what will validate the API surface (edit
+batching, diagnostics, folding / semantic-token walks) against production editor use. Until
+then, expect rough edges and pin your version.
+:::
+
 ## `parseDoc`
 
 ```ts

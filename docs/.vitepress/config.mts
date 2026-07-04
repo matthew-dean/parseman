@@ -63,7 +63,7 @@ export default defineConfig({
           collapsed: false,
           items: [
             { text: 'CST / AST nodes', link: '/guide/ast' },
-            { text: 'Incremental re-parsing', link: '/guide/incremental' },
+            { text: 'Incremental re-parsing (experimental)', link: '/guide/incremental' },
             { text: 'Context-sensitive parsing', link: '/guide/context' },
           ],
         },
