@@ -18,7 +18,29 @@
  * strict CSP; a build-time variant that emits fused source instead is a later
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
+import { compileLinkable } from './codegen.ts'
 import type { LinkablePieces } from './codegen.ts'
+import type { Combinator } from '../types.ts'
+
+/**
+ * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
+ * form (RULE_ABI_PLAN §4). A package exports `linkable(rules(g => …))`; consumers
+ * import that artifact and `fuse([...])` it — **no source of the base grammar is
+ * ever read**. Under the macro this is precompiled to static pieces; in the
+ * interpreter it compiles here at load (like `compile()`).
+ *
+ * `ns` is a per-artifact namespace; omit it to auto-assign a process-unique one
+ * (fine at runtime — the macro supplies a stable module-derived ns instead).
+ */
+let _nsCounter = 0
+export function linkable(
+  rulesMap: Record<string, Combinator<unknown>>,
+  ns?: string,
+): LinkablePieces {
+  const pieces = compileLinkable([...Object.entries(rulesMap)], ns ?? `_lk${_nsCounter++}_`)
+  if (!pieces) throw new Error('linkable(): this grammar cannot be compiled to a linkable artifact (contains a runtime-only parser fallback)')
+  return pieces
+}
 
 /**
  * A generic positioned-CST build host (RULE_ABI_PLAN §7). Pass as `ctx.build`
@@ -112,3 +134,12 @@ export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
   // eslint-disable-next-line no-new-func
   return new Function('_env', body)(env) as Record<string, FusedRule>
 }
+
+/**
+ * Compose linkable artifacts into a parser map — the extension entry point.
+ * `compose([base, ext, …])`: later artifacts override earlier ones by rule name,
+ * and because fusion re-binds every reference in one shared scope, an override
+ * reroutes the base's OWN calls too (open recursion). The friendly name for
+ * `fuseRules`.
+ */
+export const compose = fuseRules
