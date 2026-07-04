@@ -1,5 +1,21 @@
 # Composable compiled rules — linkable pieces + build-time fusion
 
+> **Historical design doc.** This captures the original design. The feature
+> **shipped in 0.14.0**, but with differences from what's written below — for the
+> shipped behavior see [`docs/guide/extending.md`](../docs/guide/extending.md) and
+> the `0.14.0` [CHANGELOG](../CHANGELOG.md) entry. Key deltas:
+> - **Build-time macro fusion shipped** (listed as deferred in §12 below).
+> - **Pieces are carried ON the exported grammar value** (under a `Symbol.for`
+>   key), not a detached `__pieces` sidecar export — so `import { grammar }` is all
+>   a consumer needs.
+> - **`linkable()` is internal**, not public API — `compose()` is the sole entry.
+> - **The fragment-spread / tier-2 TS-source-resolution machinery this doc treats
+>   as the baseline was removed.** `compose()` is the only composition mechanism;
+>   grammars never read a base's `.ts` source.
+>
+> The `RULE_ABI_PLAN §N` citations in code comments still refer to the numbered
+> sections here for design rationale.
+
 Status: **implemented** (runtime / `compile()` path) — see §12. The
 composable-compiled-rules core is built and tested: linkable emission, the fusion
 linker, override / à la carte / external refs, modes (`ctx.build`), incremental
