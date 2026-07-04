@@ -35,6 +35,35 @@ export const parser = compose([cssRules, lessRules])`
   })
 })
 
+describe('macro: cross-package compose() with NO base source (sidecar)', () => {
+  it('a consumer composes an imported COMPILED grammar — build-fused, eval-free', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    const os = await import('node:os'); const fs = await import('node:fs'); const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-xpkg-'))
+    // "css package" compiled → ships cssRules + its cssRules__pieces sidecar.
+    const cssOut = transformMacro(
+      `import { rules, regex, choice } from 'parseman' with { type: 'macro' }
+export const cssRules = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))`,
+      path.join(dir, 'css.js'), new Set(['parseman']))!
+    expect(cssOut.code).toMatch(/export const cssRules__pieces = \{/)
+    fs.writeFileSync(path.join(dir, 'css.js'), cssOut.code)
+    // "less package" imports the COMPILED css (no css source) and composes.
+    const lessOut = transformMacro(
+      `import { rules, regex, compose } from 'parseman' with { type: 'macro' }
+import { cssRules } from './css.js'
+export const parser = compose([cssRules, rules(g => ({ Num: regex(/[0-9]+Z/) }))])`,
+      path.join(dir, 'less.js'), new Set(['parseman']))!
+    expect(lessOut.warnings).toEqual([])
+    expect(/\bcompose\s*\(/.test(lessOut.code)).toBe(false)   // build-fused
+    expect(/new Function/.test(lessOut.code)).toBe(false)     // eval-free
+    const parser = new Function(lessOut.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    expect(parser.Value!('abc', 0, {}).span.end).toBe(3)      // css.Word
+    expect(parser.Value!('12Z', 0, {}).span.end).toBe(3)      // css.Value → less.Num (override across packages)
+    expect(parser.Value!('12', 0, {}).ok).toBe(false)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
 describe('extending a grammar via compose() — no base source, no opt-in', () => {
   it('a consumer extends a base grammar with compose([base, ext]) — override reroutes', () => {
     // A base grammar (a plain rules() result — no `linkable()` wrapper, composable

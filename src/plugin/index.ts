@@ -343,6 +343,57 @@ export function transformMacro(
   const nsFor = (label: string): string =>
     `_${createHash('sha1').update(`${id}#${label}`).digest('hex').slice(0, 8)}_`
 
+  /** Serialize `LinkablePieces` to an object-literal source string (the sidecar). */
+  const serializePieces = (p: NonNullable<ReturnType<typeof compileLinkable>>): string => {
+    const mapLit = (m: Map<string, unknown>): string =>
+      `new Map([${[...m].map(([k, v]) => `[${JSON.stringify(k)}, ${JSON.stringify(v)}]`).join(', ')}])`
+    return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
+      + `prelude: ${JSON.stringify(p.prelude)}, ruleFns: ${mapLit(p.ruleFns)}, `
+      + `wrappers: ${mapLit(p.wrappers)}, deps: ${mapLit(p.deps)}, `
+      + `needsEmptyTl: ${p.needsEmptyTl}, needsCollator: ${p.needsCollator}, mfFns: [], buildFns: [] }`
+  }
+
+  // Sidecar exports to append (a `<name>__pieces` per exported grammar), so a
+  // downstream package can compose it WITHOUT its source.
+  const sidecarAppends: Array<{ pos: number; text: string }> = []
+
+  // Cache of pieces read from imported COMPILED modules' `<name>__pieces` sidecars.
+  const importedPiecesCache = new Map<string, NonNullable<ReturnType<typeof compileLinkable>> | null>()
+
+  /** Read an imported grammar's linkable pieces from its COMPILED module's
+   * `<imported>__pieces` sidecar — no TS source, no recompile. null if absent. */
+  const importedPieces = (localName: string): NonNullable<ReturnType<typeof compileLinkable>> | null => {
+    if (importedPiecesCache.has(localName)) return importedPiecesCache.get(localName)!
+    let result: NonNullable<ReturnType<typeof compileLinkable>> | null = null
+    const binding = importBindings.get(localName)
+    if (binding) {
+      // Resolve the COMPILED module (prefer built output — that's where the
+      // sidecar lives), read + parse it, find `export const <imported>__pieces = { … }`.
+      let file: string | null = null
+      try { file = getFragmentResolver().resolveFileSync(id, binding.source).path ?? null } catch { /* unresolved */ }
+      const mod = file ? parseModuleCached(file) : null
+      const wantName = `${binding.imported}__pieces`
+      if (mod) {
+        for (const st of mod.body as Array<{ type: string; declaration?: { type: string; declarations?: Array<{ id?: { name?: string }; init?: { start: number; end: number } }> } }>) {
+          if (st.type !== 'ExportNamedDeclaration' || st.declaration?.type !== 'VariableDeclaration') continue
+          for (const dd of st.declaration.declarations ?? []) {
+            if (dd.id?.name === wantName && dd.init) {
+              const literal = mod.src.slice(dd.init.start, dd.init.end)
+              try {
+                // Build-time eval of a self-contained data literal (strings/arrays/
+                // Map) — NOT runtime; the fused output never carries this.
+                // eslint-disable-next-line no-new-func
+                result = new Function(`return (${literal})`)() as NonNullable<ReturnType<typeof compileLinkable>>
+              } catch { result = null }
+            }
+          }
+        }
+      }
+    }
+    importedPiecesCache.set(localName, result)
+    return result
+  }
+
   /** Resolve one `compose([...])` argument to its `LinkablePieces`. */
   const argPieces = (arg: Expression, label: string): ReturnType<typeof compileLinkable> => {
     // Inline `rules(g => …)`.
@@ -351,12 +402,15 @@ export function transformMacro(
       const rm = factory ? evaluateParserFactory(factory, scope, code, [], resolveFactory) : null
       return rm ? compileLinkable([...rm], nsFor(label)) : null
     }
-    // Local grammar var (`const myRules = rules(...)`).
     if (arg.type === 'Identifier') {
-      const rm = localRuleMaps.get((arg as unknown as { name: string }).name)
-      return rm ? compileLinkable([...rm], nsFor(label)) : null
+      const name = (arg as unknown as { name: string }).name
+      // Local grammar var (`const myRules = rules(...)`).
+      const rm = localRuleMaps.get(name)
+      if (rm) return compileLinkable([...rm], nsFor(label))
+      // Imported grammar — read its compiled `<name>__pieces` sidecar (no source).
+      return importedPieces(name)
     }
-    return null // imported artifact — build-time cross-module linking is the next slice
+    return null
   }
 
   /** Compile `compose([...])` to STATIC fused source (eval-free). null → leave
@@ -511,6 +565,14 @@ export function transformMacro(
             end: init.end,
             replacement: compiledRules.replacement,
           })
+          // If EXPORTED, also emit a `<name>__pieces` sidecar so a downstream
+          // package can compose this grammar without its source.
+          if (exportPrefix) {
+            const pieces = compileLinkable([...compiledRules.ruleMap], nsFor(varName))
+            if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
+              sidecarAppends.push({ pos: stmt.end, text: `\nexport const ${varName}__pieces = ${serializePieces(pieces)}` })
+            }
+          }
           continue
         }
 
@@ -673,6 +735,9 @@ export function transformMacro(
   for (const { start, end, replacement } of [...replacements].sort((a, b) => b.start - a.start)) {
     ms.overwrite(start, end, replacement)
   }
+
+  // Sidecar exports (`<name>__pieces`) appended after their grammar's statement.
+  for (const { pos, text } of sidecarAppends) ms.appendRight(pos, text)
 
   return {
     code: ms.toString(),
