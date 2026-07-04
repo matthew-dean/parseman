@@ -45,7 +45,7 @@ describe('macro: cross-package compose() with NO base source (sidecar)', () => {
       `import { rules, regex, choice } from 'parseman' with { type: 'macro' }
 export const cssRules = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))`,
       path.join(dir, 'css.js'), new Set(['parseman']))!
-    expect(cssOut.code).toMatch(/export const cssRules__pieces = \{/)
+    expect(cssOut.code).toMatch(/export const cssRules__pieces = \[\{/)
     fs.writeFileSync(path.join(dir, 'css.js'), cssOut.code)
     // "less package" imports the COMPILED css (no css source) and composes.
     const lessOut = transformMacro(
@@ -60,6 +60,39 @@ export const parser = compose([cssRules, rules(g => ({ Num: regex(/[0-9]+Z/) }))
     expect(parser.Value!('abc', 0, {}).span.end).toBe(3)      // css.Word
     expect(parser.Value!('12Z', 0, {}).span.end).toBe(3)      // css.Value → less.Num (override across packages)
     expect(parser.Value!('12', 0, {}).ok).toBe(false)
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('macro: 3-level compose() chain across packages (re-composable sidecar)', () => {
+  it('scss composes less composes css — each imported COMPILED, override chains', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    const os = await import('node:os'); const fs = await import('node:fs'); const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-chain-'))
+    const build = (name: string, src: string) => {
+      const out = transformMacro(src, path.join(dir, `${name}.js`), new Set(['parseman']))!
+      expect(out.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, `${name}.js`), out.code)
+      return out.code
+    }
+    build('css', `import { rules, regex, choice } from 'parseman' with { type: 'macro' }
+export const cssGrammar = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))`)
+    // less composes the COMPILED css and overrides Num → ships its own sidecar.
+    const lessCode = build('less', `import { rules, regex, compose } from 'parseman' with { type: 'macro' }
+import { cssGrammar } from './css.js'
+export const lessGrammar = compose([cssGrammar, rules(g => ({ Num: regex(/[0-9]+L/) }))])`)
+    expect(lessCode).toMatch(/export const lessGrammar__pieces = \[/)   // re-composable sidecar
+    expect(/new Function/.test(lessCode)).toBe(false)
+    // scss composes the COMPILED less (a composed grammar) and overrides Num.
+    const scssCode = build('scss', `import { rules, regex, compose } from 'parseman' with { type: 'macro' }
+import { lessGrammar } from './less.js'
+export const scssGrammar = compose([lessGrammar, rules(g => ({ Num: regex(/[0-9]+S/) }))])`)
+    expect(/\bcompose\s*\(/.test(scssCode)).toBe(false)
+    expect(/new Function/.test(scssCode)).toBe(false)
+    const scss = new Function(scssCode.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn scssGrammar')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    expect(scss.Value!('12S', 0, {}).span.end).toBe(3)  // scss.Num overrides less overrides css
+    expect(scss.Value!('12L', 0, {}).ok).toBe(false)     // less's Num was overridden by scss
+    expect(scss.Value!('abc', 0, {}).span.end).toBe(3)   // css.Word inherited through the chain
     fs.rmSync(dir, { recursive: true, force: true })
   })
 })

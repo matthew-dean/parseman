@@ -61,6 +61,7 @@ export function confirmedBuildArity(src: string): number | null {
 
 /** Build reads the 4th (triviaLog) arg? Unknown/unparseable → true (keep capture). */
 export function buildReadsTrivia(def: NodeDef): boolean {
+  if (!def.build) return true // structural node: host may read trivia — keep capture
   const src = def.buildSrc ?? def.build.toString()
   const arity = confirmedBuildArity(src)
   if (arity === null) return true
@@ -69,6 +70,7 @@ export function buildReadsTrivia(def: NodeDef): boolean {
 
 /** Build reads the 5th (state) arg? Unknown/unparseable → true (keep state clone). */
 export function buildReadsState(def: NodeDef): boolean {
+  if (!def.build) return true // structural node: host may read state — keep clone
   const src = def.buildSrc ?? def.build.toString()
   const arity = confirmedBuildArity(src)
   if (arity === null) return true

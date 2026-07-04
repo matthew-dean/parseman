@@ -184,13 +184,25 @@ export function emitFusedSource(pieces: LinkablePieces[]): string {
  * The macro compiles `compose([...])` to STATIC fused source (no `new Function`).
  * Called at runtime (no macro, like `compile()`) it fuses via `new Function`.
  */
+/** A composed parser carries its flattened source pieces (non-enumerable) so it
+ * can be composed AGAIN — `compose([lessGrammar, delta])` where `lessGrammar` is
+ * itself a `compose([...])` result. */
+const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
+
+/** Flatten one `compose()` item to its pieces: a prior composed result → its
+ * carried list; an artifact → itself; a grammar (`rules()` map) → linkable-ified. */
+function itemPieces(item: LinkablePieces | Record<string, unknown>): LinkablePieces[] {
+  const carried = (item as Record<symbol, unknown>)[COMPOSED_PIECES]
+  if (Array.isArray(carried)) return carried as LinkablePieces[]
+  if ((item as LinkablePieces).ruleFns instanceof Map) return [item as LinkablePieces]
+  return [linkable(item as Record<string, Combinator<unknown>>)]
+}
+
 export function compose(
-  items: Array<LinkablePieces | Record<string, Combinator<unknown>>>,
+  items: Array<LinkablePieces | Record<string, unknown>>,
 ): Record<string, FusedRule> {
-  const pieces = items.map(it =>
-    (it as LinkablePieces).ruleFns instanceof Map
-      ? (it as LinkablePieces)
-      : linkable(it as Record<string, Combinator<unknown>>),
-  )
-  return fuseRules(pieces)
+  const pieces = items.flatMap(itemPieces)
+  const map = fuseRules(pieces)
+  Object.defineProperty(map, COMPOSED_PIECES, { value: pieces, enumerable: false })
+  return map
 }

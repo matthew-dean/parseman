@@ -1664,20 +1664,24 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
  * calls the build fn, then records the node in the enclosing node()'s collectors.
  */
 function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: string): ER {
-  const mkType = analyzeMkInlineBuild(def)
+  // A STRUCTURAL node has no own build — it builds via the `ctx.build` host at
+  // parse time, else a default positioned CST. No build fn is captured.
+  const structural = def.build === undefined
+  const mkType = structural ? null : analyzeMkInlineBuild(def)
   let buildIdx: number | null = null
-  if (!mkType) {
+  if (!mkType && !structural) {
     buildIdx = ctx.buildFns.length
-    ctx.buildFns.push(def.build)
+    ctx.buildFns.push(def.build!)
     ctx.buildSrcs.push(def.buildSrc ?? null)
   }
   const i = ind(ctx)
 
   // Arity-gated elision: when the build provably never reads the trivia (4th) or
   // state (5th) arg, skip that capture entirely. The mk-inline path reads
-  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture.
-  const capturesTrivia = mkType !== null || buildReadsTrivia(def)
-  const clonesState = buildReadsState(def)
+  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture. A
+  // structural node's host may read either → capture both.
+  const capturesTrivia = mkType !== null || structural || buildReadsTrivia(def)
+  const clonesState = structural || buildReadsState(def)
 
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
@@ -1708,15 +1712,19 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
   const ndV = v(ctx, '_nd')
-  const buildExpr = mkType
-    ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
-    : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV})`
-  // Modes (RULE_ABI_PLAN §7): in the linkable form, a per-parse `_ctx.build` host
-  // (keyed by node type) may override construction — so ONE fused grammar serves
-  // eval-AST vs positioned-CST modes. Unset (default/eval) → the grammar's own
-  // builder, exactly as the standalone path. Emitted only when `ctx.ns` (linkable)
-  // so the standalone output stays byte-identical.
-  const ndExpr = ctx.ns
+  // A structural node's own "builder" is a default positioned CST; a built node's
+  // is its inline-mk expr or captured build fn.
+  const buildExpr = structural
+    ? `{ _tag: 'node', type: ${JSON.stringify(def.type)}, span: { start: ${pos}, end: ${endVar} }, state: ${stV} ?? null, children: ${chV} }`
+    : mkType
+      ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
+      : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV})`
+  // Modes (RULE_ABI_PLAN §7): a per-parse `_ctx.build` host (keyed by node type)
+  // may override construction — so ONE fused grammar serves eval-AST vs
+  // positioned-CST modes. Emitted when `ctx.ns` (linkable) OR for a structural
+  // node (whose whole point is the injected host). A built standalone node stays
+  // byte-identical (no `_ctx.build` branch).
+  const ndExpr = ctx.ns || structural
     ? `_ctx.build !== undefined ? _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV}) : (${buildExpr})`
     : buildExpr
   // collapse: a single captured child IS the value (leaf → its string, else as-is);
