@@ -23,7 +23,9 @@ import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, asFragmentFactory, type Scope, type ScopeEntry, type FactoryAst, type FactoryResolver, type ResolvedFactory } from './evaluator.ts'
-import { compile, compileRuleMap } from '../compiler/codegen.ts'
+import { compile, compileRuleMap, compileLinkable } from '../compiler/codegen.ts'
+import { emitFusedSource } from '../compiler/linker.ts'
+import { createHash } from 'node:crypto'
 import type { Combinator } from '../types.ts'
 import type {
   ImportDeclaration,
@@ -325,6 +327,62 @@ export function transformMacro(
     (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
     (init as unknown as { callee: { name?: string } }).callee.name === 'rules'
 
+  const isComposeCall = (init: Expression): boolean =>
+    init.type === 'CallExpression' &&
+    (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
+    (init as unknown as { callee: { name?: string } }).callee.name === 'compose'
+
+  // Local `rules()` grammars, so a same-file `compose([myRules, …])` can recover
+  // the pieces to fuse (name → the rule map evaluated at build). A grammar stays a
+  // usable parser AND is composable — no opt-in wrapper.
+  const localRuleMaps = new Map<string, Map<string, Combinator<unknown>>>()
+
+  // Stable, reproducible per-artifact namespace: hash of module id + a label
+  // (binding name / arg position) — never a counter, so rebuilds are byte-stable
+  // and two artifacts never collide when fused.
+  const nsFor = (label: string): string =>
+    `_${createHash('sha1').update(`${id}#${label}`).digest('hex').slice(0, 8)}_`
+
+  /** Resolve one `compose([...])` argument to its `LinkablePieces`. */
+  const argPieces = (arg: Expression, label: string): ReturnType<typeof compileLinkable> => {
+    // Inline `rules(g => …)`.
+    if (isRulesCall(arg)) {
+      const factory = (arg as unknown as { arguments: unknown[] }).arguments[0] as Expression | undefined
+      const rm = factory ? evaluateParserFactory(factory, scope, code, [], resolveFactory) : null
+      return rm ? compileLinkable([...rm], nsFor(label)) : null
+    }
+    // Local grammar var (`const myRules = rules(...)`).
+    if (arg.type === 'Identifier') {
+      const rm = localRuleMaps.get((arg as unknown as { name: string }).name)
+      return rm ? compileLinkable([...rm], nsFor(label)) : null
+    }
+    return null // imported artifact — build-time cross-module linking is the next slice
+  }
+
+  /** Compile `compose([...])` to STATIC fused source (eval-free). null → leave
+   * the runtime `compose()` in place (correct, just not build-fused). */
+  const compileComposeCall = (init: Expression): string | null => {
+    const args = (init as unknown as { arguments: Expression[] }).arguments
+    const arr = args[0]
+    if (!arr || arr.type !== 'ArrayExpression') {
+      warn(init.start, 'compose(): expected a static array of grammars/artifacts')
+      return null
+    }
+    const elements = (arr as unknown as { elements: Expression[] }).elements
+    const pieces: NonNullable<ReturnType<typeof compileLinkable>>[] = []
+    for (let i = 0; i < elements.length; i++) {
+      const p = argPieces(elements[i]!, `compose${init.start}_${i}`)
+      if (!p) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
+      pieces.push(p)
+    }
+    try {
+      return emitFusedSource(pieces)
+    } catch (e) {
+      warn(init.start, `compose(): ${(e as Error).message}; falling back to runtime`)
+      return null
+    }
+  }
+
   // --- Pre-pass: resolve standalone ref() recursion clusters ---
   // `const x = ref()` … `x.define(expr)` is the interpreter/compile() recursion
   // mechanism. The macro must support it for parity: evaluate every ref slot and
@@ -446,11 +504,22 @@ export function transformMacro(
         if (isRulesCall(init)) {
           const compiledRules = compileRulesFactory(init, varName)
           if (!compiledRules) continue
+          // Remember the rule map so a same-file `compose([varName, …])` can fuse it.
+          localRuleMaps.set(varName, compiledRules.ruleMap)
           replacements.push({
             start: init.start,
             end: init.end,
             replacement: compiledRules.replacement,
           })
+          continue
+        }
+
+        // const name = compose([...]) → STATIC fused source (eval-free); the macro
+        // fuses at build, never emitting `new Function`.
+        if (isComposeCall(init)) {
+          const fused = compileComposeCall(init)
+          if (!fused) continue // leave the runtime compose() call in place
+          replacements.push({ start: init.start, end: init.end, replacement: fused })
           continue
         }
 

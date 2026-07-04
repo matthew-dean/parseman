@@ -27,9 +27,9 @@ export { transform, skip, trivia, label } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
 
-export { compile, compileLinkable, ruleDependencies } from './compiler/codegen.ts'
+export { compile } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'
-export { fuseRules, compose, linkable, pick, cstBuildHost } from './compiler/linker.ts'
+export { compose, pick, cstBuildHost } from './compiler/linker.ts'
 export type { FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, offsetToLineCol, annotateSpan } from './compiler/line-index.ts'

@@ -93,7 +93,13 @@ export function pick(p: LinkablePieces, names: string[]): LinkablePieces {
  * per rule name (spread-order override). Throws if a surviving rule references a
  * name absent from the fused set (the compose-time name-closure check).
  */
-export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
+/**
+ * Build the fused-closure body (shared by the runtime `fuseRules` and the
+ * build-time `emitFusedSource`). Returns the closure body (which reads `_env`
+ * for any non-inlined callbacks) and the `_env` to bind. In macro mode callbacks
+ * are inlined from source, so `_env` is empty and the body is fully static.
+ */
+function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string, unknown> } {
   // Winner per rule name — later pieces override earlier ones.
   const winner = new Map<string, LinkablePieces>()
   for (const p of pieces) for (const k of p.keys) winner.set(k, p)
@@ -101,7 +107,7 @@ export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
   // Name-closure check: every referenced rule must resolve in the fused set.
   for (const [k, p] of winner) {
     for (const d of p.deps.get(k) ?? []) {
-      if (!winner.has(d)) throw new Error(`fuseRules: rule "${k}" references missing rule "${d}"`)
+      if (!winner.has(d)) throw new Error(`compose: rule "${k}" references missing rule "${d}"`)
     }
   }
 
@@ -123,23 +129,59 @@ export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
   const wrapperEntries = [...winner].map(([k, p]) => `${JSON.stringify(k)}: ${p.wrappers.get(k)!}`)
   const body = [...lines, 'return {', wrapperEntries.join(',\n'), '}'].join('\n')
 
-  // Inject each artifact's transform/build callback FUNCTIONS (when they weren't
-  // inlined from source — runtime `compile()` mode). Keyed `<ns>mf` / `<ns>build`.
+  // Non-inlined callbacks (runtime compile() mode), keyed `<ns>mf` / `<ns>build`.
   const env: Record<string, unknown> = {}
   for (const p of contributing) {
     if (p.mfFns.length) env[`${p.ns}mf`] = p.mfFns
     if (p.buildFns.length) env[`${p.ns}build`] = p.buildFns
   }
+  return { body, env }
+}
 
+/** Fuse at RUNTIME (via `new Function`) — used by `compose()` when not compiled
+ * by the macro (like `compile()`). The macro path uses `emitFusedSource` instead. */
+export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
+  const { body, env } = fusedBody(pieces)
   // eslint-disable-next-line no-new-func
   return new Function('_env', body)(env) as Record<string, FusedRule>
 }
 
 /**
- * Compose linkable artifacts into a parser map — the extension entry point.
- * `compose([base, ext, …])`: later artifacts override earlier ones by rule name,
- * and because fusion re-binds every reference in one shared scope, an override
- * reroutes the base's OWN calls too (open recursion). The friendly name for
- * `fuseRules`.
+ * Fuse at BUILD time — emit the fused closure as a self-contained SOURCE
+ * expression (`(() => { … })()`), with **no `new Function`**. This is what the
+ * macro splices in for a `compose([...])` call, so macro output stays eval-free.
+ * Requires every callback to be inlined from source (macro mode); throws if any
+ * artifact carries runtime-only callback functions.
  */
-export const compose = fuseRules
+export function emitFusedSource(pieces: LinkablePieces[]): string {
+  const { body, env } = fusedBody(pieces)
+  if (Object.keys(env).length > 0) {
+    throw new Error('emitFusedSource: artifact carries non-static callbacks (runtime-only); cannot emit static source')
+  }
+  return `/* @__PURE__ */ (() => {\n${body}\n})()`
+}
+
+/**
+ * Compose grammars/artifacts into a runnable parser map — the ONLY public
+ * composition entry point. `compose([base, ext, …])`: later entries override
+ * earlier ones by rule name, and because fusion re-binds every reference in one
+ * shared scope, an override reroutes the base's OWN calls too (open recursion).
+ *
+ * Each entry may be a **grammar** (a `rules()` result — a map of combinators,
+ * linkable-ified here) OR an already-compiled **linkable artifact** (what the
+ * macro emits and a package ships). So a package needs no opt-in wrapper to be
+ * composable — `compose([importedGrammar, myRules])` just works.
+ *
+ * The macro compiles `compose([...])` to STATIC fused source (no `new Function`).
+ * Called at runtime (no macro, like `compile()`) it fuses via `new Function`.
+ */
+export function compose(
+  items: Array<LinkablePieces | Record<string, Combinator<unknown>>>,
+): Record<string, FusedRule> {
+  const pieces = items.map(it =>
+    (it as LinkablePieces).ruleFns instanceof Map
+      ? (it as LinkablePieces)
+      : linkable(it as Record<string, Combinator<unknown>>),
+  )
+  return fuseRules(pieces)
+}

@@ -6,24 +6,45 @@
 import { describe, it, expect } from 'vitest'
 import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile, parseDoc } from '../../src/index.ts'
 import type { Combinator, Registry, NodeLike } from '../../src/index.ts'
+import { compose } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { fuseRules, compose, linkable, pick, cstBuildHost } from '../../src/compiler/linker.ts'
+import { fuseRules, pick, cstBuildHost } from '../../src/compiler/linker.ts'
 
 const link = (g: Record<string, Combinator<unknown>>, ns: string) =>
   compileLinkable([...Object.entries(g)], ns)!
 
 const ok = (r: { ok: boolean; span: { end: number } }) => (r.ok ? r.span.end : -1)
 
-describe('extending a grammar via linkable()/compose() — no base source', () => {
-  it('a consumer extends a base by fusing COMPILED artifacts (never source)', () => {
-    // "css package": ships a compiled linkable artifact (this object is all a
-    // consumer imports — no source of css is ever read).
-    const cssArtifact = linkable(rules(g => ({
+describe('macro: compose() fuses to STATIC source (eval-free)', () => {
+  it('compiles compose([...]) at build with no new Function, and it parses', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    const src = `import { rules, regex, choice, compose } from 'parseman' with { type: 'macro' }
+const cssRules = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))
+const lessRules = rules(g => ({ Num: regex(/[0-9]+X/) }))
+export const parser = compose([cssRules, lessRules])`
+    const out = transformMacro(src, '/pkg/less.ts', new Set(['parseman']))!
+    expect(out.warnings).toEqual([])
+    // Build-time fused: no compose() call and NO new Function anywhere.
+    expect(/\bcompose\s*\(/.test(out.code)).toBe(false)
+    expect(/new Function/.test(out.code)).toBe(false)
+    // The emitted parser works, and the override reroutes (open recursion).
+    const parser = new Function(out.code.replace(/^import[^\n]*\n/m, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    expect(parser.Value!('abc', 0, {}).span.end).toBe(3)    // css.Word
+    expect(parser.Value!('12X', 0, {}).span.end).toBe(3)    // css.Value → less.Num (override)
+    expect(parser.Value!('12', 0, {}).ok).toBe(false)       // less.Num needs 'X'
+  })
+})
+
+describe('extending a grammar via compose() — no base source, no opt-in', () => {
+  it('a consumer extends a base grammar with compose([base, ext]) — override reroutes', () => {
+    // A base grammar (a plain rules() result — no `linkable()` wrapper, composable
+    // by default) and an extension that overrides Num. compose() takes grammars
+    // directly (linkable-ifies them internally).
+    const cssRules = rules(g => ({
       Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/),
-    })), '_css_')
-    // "less package": its own artifact overriding Num, fused with the imported css one.
-    const lessArtifact = linkable(rules(() => ({ Num: regex(/[0-9]+!/) })), '_less_')
-    const R = compose([cssArtifact, lessArtifact])
+    }))
+    const lessRules = rules(() => ({ Num: regex(/[0-9]+!/) }))
+    const R = compose([cssRules, lessRules])
     expect(ok(R.Value!('abc', 0, {}))).toBe(3)   // css.Word
     expect(ok(R.Value!('12!', 0, {}))).toBe(3)   // css.Value reroutes to less.Num (open recursion)
     expect(ok(R.Value!('12', 0, {}))).toBe(-1)   // less.Num needs '!'; Word fails
