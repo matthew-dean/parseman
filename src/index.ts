@@ -75,9 +75,3 @@ export {
   applyEdit,
 } from './cst/relative-spans.ts'
 export type { AbsNode, RelNode } from './cst/relative-spans.ts'
-export {
-  incrementalReparse,
-  collectRules,
-  structurallyEqual,
-} from './cst/incremental.ts'
-export type { Edit, IncrementalResult, IncrementalOptions } from './cst/incremental.ts'
