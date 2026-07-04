@@ -280,6 +280,71 @@ describe('parseScanShape — non-capturing groups (§8f)', () => {
 })
 
 // ---------------------------------------------------------------------------
+// §8i — the general (non-trailing) form of the §8h overlapping-alt work, plus
+// the group-trailing-exposure soundness fix it is built on.
+//
+// (1) `seqIsUnambiguous` now checks EVERY `group` part's right-edge exposure
+//     (`groupPartExposure`) against what follows — not only optional/repeated
+//     parts. This closes a pre-existing §8f over-lowering: a required-once group
+//     whose body ends in an unbounded run, followed by a continuation that could
+//     consume the same chars (`(?:\d+)\d`), was lowered but is UNSOUND (a
+//     one-pass greedy scan reports no-match on "12" where the engine backtracks
+//     `\d+` to "1" and matches "12"). It must now fall back to `exec`.
+//
+// (2) A NON-disjoint alt whose arms are fixed-length and pairwise MUTUALLY
+//     EXCLUSIVE (`altFixedMutuallyExclusive`) has no arm to switch to and a fixed
+//     end — so it lowers at ANY position, not just trailing (unlike the general
+//     non-disjoint alt, e.g. `(?:a|ab)`, which still needs the §8h trailing-once
+//     gate because arm `a` is a prefix of arm `ab`).
+// ---------------------------------------------------------------------------
+
+describe('parseScanShape — group trailing-exposure fix + non-trailing mutually-exclusive alt (§8i)', () => {
+  it('DECLINES a required-once group whose body ends in an unbounded run when the continuation overlaps', () => {
+    // `(?:\d+)\d`: greedy `\d+` swallows every digit, leaving nothing for the
+    // trailing `\d` — but the engine backtracks the run by one. Ordered greedy
+    // scanning can't reproduce that, so this must NOT lower. (Pre-§8i this was
+    // silently mis-lowered — a real soundness bug the exposure check fixes.)
+    expect(parseScanShape(String.raw`(?:\d+)\d`)).toBeNull()
+    // Same hazard through a disjoint-alt body whose taken arm ends in `\d*`.
+    expect(parseScanShape(String.raw`(?:\d+|x)\d`)).toBeNull()
+  })
+
+  it('still lowers a required-once group whose exposure is disjoint from what follows', () => {
+    // `(?:0|[1-9]\d*)` can end in a digit run, but the continuation `x` (or the
+    // JSON number tail `.`/`e`) is disjoint from digits — so it stays lowered.
+    expect(parseScanShape(String.raw`(?:0|[1-9]\d*)x`)?.kind).toBe('seq')
+  })
+
+  it('lowers a NON-trailing mutually-exclusive fixed alt group (arms share no prefix)', () => {
+    // `(?:ab|ac)` — neither arm is a prefix of the other (they diverge at
+    // position 1), so at most one matches any input and the group has a single
+    // fixed end. Sound even with a continuation `x` following.
+    const s = parseScanShape('(?:ab|ac)x')
+    expect(s?.kind).toBe('seq')
+    if (s?.kind === 'seq') {
+      expect(s.parts[0]).toMatchObject({ part: 'group' })
+      const g = s.parts[0]?.part === 'group' ? s.parts[0].inner : null
+      expect(g?.kind).toBe('alt')
+      if (g?.kind === 'alt') expect(g.disjoint).toBe(false) // overlaps on 'a' → ordered, but mutually exclusive
+    }
+    // Different lengths are fine too, as long as the shorter isn't a prefix.
+    expect(parseScanShape('(?:foo|barn)z')?.kind).toBe('seq')
+    expect(parseScanShape('(?:ax|ab)c')?.kind).toBe('seq')
+  })
+
+  it('still DECLINES a non-trailing non-disjoint alt where one arm IS a prefix of another (§8h boundary)', () => {
+    // `(?:a|ab)` — arm `a` is a proper prefix of arm `ab`, so the engine can
+    // switch arms when the continuation rejects the shorter match. Not mutually
+    // exclusive → declines at non-trailing position, exactly as before.
+    expect(parseScanShape('x(?:a|ab)c')).toBeNull()
+    expect(parseScanShape('(?:a|ab)[c-z]')).toBeNull()
+    // The §8h trailing-once case is unchanged (nothing follows to force a switch).
+    expect(parseScanShape('x(?:a|ab)')?.kind).toBe('seq')
+    expect(parseScanShape('x(?:a|ab)?')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // General `seq` category — a linear chain of literals + char runs. This is the
 // GENERALIZATION of the CSS/Less token shapes (optional prefix, literal opener,
 // negated run, …); no specific byte value is hardcoded in the recognizer.
@@ -553,6 +618,123 @@ describe('scannable regex — codegen', () => {
       const got = r.ok ? (r.value as string).length : -1
       expect(got, JSON.stringify(s)).toBe(want)
     }
+  })
+
+  // §8i — a required-once group whose body ends in an unbounded run, followed by
+  // a continuation that overlaps that run, is UNSOUND to lower and must fall
+  // back to exec. (Regression guard for the pre-existing `(?:\d+)\d` bug.)
+  it('keeps RegExp.exec for a group whose trailing run overlaps the continuation (§8i)', () => {
+    const code = compile(regex(/(?:\d+)\d/)).source
+    expect(code).toContain('.exec(input)')
+  })
+
+  it('lowers a non-trailing mutually-exclusive fixed alt group, no exec (§8i)', () => {
+    const code = compile(regex(/(?:ab|ac)x/)).source
+    expect(code).toContain('charCodeAt')
+    expect(code).not.toContain('.exec(input)')
+  })
+
+  // Exhaustive differential against the COMPILED (lowered) output — NOT the
+  // interpreter, which trivially equals RegExp. This is what actually exercises
+  // the ordered-choice codegen for a non-trailing overlapping-but-mutually-
+  // exclusive alt group. Every arm (`ab`/`ac`) shares its first char, so this
+  // takes the ordered "try each arm" path, and the trailing `x` follows.
+  it('non-trailing mutually-exclusive alt: COMPILED scan == RegExp across all short inputs (§8i)', () => {
+    const src = '(?:ab|ac)x'
+    const re = new RegExp('^(?:' + src + ')')
+    const compiled = compile(regex(new RegExp(src)))
+    expect(compiled.source).not.toContain('.exec(input)') // guard: we're testing the lowered path
+    const alph = ['', 'a', 'b', 'c', 'x', 'y']
+    const rec = (s: string, depth: number) => {
+      if (s.length) {
+        const m = re.exec(s)
+        const want = m ? m[0].length : -1
+        const r = compiled.parse(s, 0)
+        const got = r.ok ? (r.value as string).length : -1
+        expect(got, JSON.stringify(s)).toBe(want)
+      }
+      if (depth < 6) for (const a of alph) rec(s + a, depth + 1)
+    }
+    rec('', 0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// delimited soundness: `X(?:…)*Y` only lowers when the body provably can't
+// contain the close literal (block-comment idiom). A structured alternation
+// body whose arms can consume the close must NOT lower (pre-existing bug).
+// ---------------------------------------------------------------------------
+
+describe('scannable regex — delimited soundness', () => {
+  // The block-comment idiom stays lowered.
+  it('still lowers the block-comment idiom', () => {
+    expect(parseScanShape('/\\*(?:[^*]|\\*(?!/))*\\*/')?.kind).toBe('delimited')
+    expect(parseScanShape('z(?:[^z])*z')?.kind).toBe('delimited') // single-char close
+    expect(compile(regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)).source).not.toContain('.exec(input)')
+  })
+
+  // Structured bodies whose repetition can consume the close (or overlap the
+  // continuation) must decline to RegExp.exec rather than mis-lower.
+  const unsound = [
+    String.raw`z(?:a|[0-2]+)*a`,
+    String.raw`z(?:d|d|b)*\d`,
+    String.raw`z(?:[^q])*z`,     // bulk excludes q, not the close z
+    String.raw`z(?:[^z]|zz)*z`,  // extra arm can consume close
+  ]
+  for (const src of unsound) {
+    it(`declines to exec: /${src}/`, () => {
+      expect(parseScanShape(src)?.kind).not.toBe('delimited')
+      expect(compile(regex(new RegExp(src))).source).toContain('.exec(input)')
+    })
+  }
+
+  // Exhaustive differential of the COMPILED parser vs native RegExp across a
+  // randomized family of `X(?:alt)*Y` patterns — target 0 diffs. Catches any
+  // mis-lowering directly (a lowered scan that disagrees with the engine) and
+  // confirms the declined patterns fall back correctly. Uses a seeded LCG so
+  // it's deterministic (no Date.now/Math.random, which scripts/tests avoid).
+  it('COMPILED == RegExp across a randomized X(?:alt)*Y family (0 diffs)', () => {
+    let seed = 0x9e3779b1
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff)
+    const pick = <T,>(xs: readonly T[]) => xs[Math.floor(rnd() * xs.length) % xs.length]!
+    const armChars = ['a', 'b', 'c', 'd', '0', '1', '2', 'z', 'x'] as const
+    const classes = ['[a-c]', '[0-2]', '[^z]', '[ab]', 'd', '\\d'] as const
+    const genArm = () => {
+      const kind = Math.floor(rnd() * 3)
+      if (kind === 0) return pick(armChars)                       // literal
+      if (kind === 1) return pick(classes) + pick(['', '+', '*']) // class run
+      return pick(armChars) + pick(armChars)                      // 2-char literal
+    }
+    const genPattern = () => {
+      const nArms = 1 + Math.floor(rnd() * 3)
+      const arms = Array.from({ length: nArms }, genArm).join('|')
+      const open = pick(armChars)
+      const close = rnd() < 0.5 ? pick(armChars) : pick(armChars) + pick(armChars)
+      return `${open}(?:${arms})*${close}`
+    }
+    const alph = ['', 'a', 'b', 'c', 'd', '0', '1', '2', 'z', 'x']
+    let diffs = 0
+    for (let t = 0; t < 200; t++) {
+      const src = genPattern()
+      let re: RegExp
+      try { re = new RegExp('^(?:' + src + ')') } catch { continue }
+      const compiled = compile(regex(new RegExp(src)))
+      for (let a = 0; a < alph.length; a++)
+        for (let b = 0; b < alph.length; b++)
+          for (let c = 0; c < alph.length; c++)
+            for (let d = 0; d < alph.length; d++) {
+              const s = alph[a]! + alph[b]! + alph[c]! + alph[d]!
+              const m = re.exec(s)
+              const want = m ? m[0].length : -1
+              const r = compiled.parse(s, 0)
+              const got = r.ok ? (r.value as string).length : -1
+              if (got !== want) {
+                diffs++
+                expect(got, `pattern /${src}/ input ${JSON.stringify(s)}`).toBe(want)
+              }
+            }
+    }
+    expect(diffs).toBe(0)
   })
 })
 
@@ -945,6 +1127,40 @@ export const jsonNumber = regex(/-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)`,
     ] as const) {
       const expected = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(input.slice(pos))?.[0]
       const r = expectParity(modes, input, pos)
+      expect(r.ok ? r.value : undefined).toBe(expected)
+    }
+  })
+})
+
+// A NON-trailing overlapping-but-mutually-exclusive alt group (§8i): the two
+// arms `ab`/`ac` share their first char (ordered dispatch, not disjoint), but
+// neither is a prefix of the other, so the group has a single fixed end and the
+// trailing `x` composes safely. All three modes must agree with real RegExp.
+const mutExAlt = regex(/(?:ab|ac)x/)
+
+describe('scannable regex — non-trailing mutually-exclusive alt parity (§8i)', () => {
+  const modes = modesFor(
+    mutExAlt,
+    `import { regex } from 'parseman' with { type: 'macro' }\nexport const mutExAlt = regex(/(?:ab|ac)x/)`,
+    'mutExAlt',
+  )
+  for (const [mode, run] of modes) {
+    it(`${mode}: matches via the first arm`, () => {
+      expect(run('abx!').value).toBe('abx')
+    })
+    it(`${mode}: falls through to the second arm`, () => {
+      expect(run('acx!').value).toBe('acx')
+    })
+    it(`${mode}: fails when the continuation is missing`, () => {
+      expect(run('aby').ok).toBe(false)
+      expect(run('ab').ok).toBe(false)
+    })
+  }
+
+  it('all modes agree on mixed cases, matching real RegExp exactly', () => {
+    for (const input of ['abx', 'acx', 'aby', 'adx', 'ab', 'axx', 'x', '']) {
+      const expected = /^(?:(?:ab|ac)x)/.exec(input)?.[0]
+      const r = expectParity(modes, input, 0)
       expect(r.ok ? r.value : undefined).toBe(expected)
     }
   })

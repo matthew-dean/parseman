@@ -387,17 +387,29 @@ function seqIsUnambiguous(parts: SeqPart[]): boolean {
     const p = parts[k]!
     const mandatory = p.part === 'lit' ? !p.optional : p.min === 1
     if (mandatory) hasMandatory = true
-    // §8h — a group whose inner is a NON-disjoint (overlapping-arm) alternation
-    // is lowered by ordered-choice-commit (emitShapeMatch's `alt` else-branch):
-    // it picks the first arm that matches locally and never reconsiders. That
-    // equals the regex engine ONLY when nothing following the group could reject
-    // the committed arm and force backtracking into a different one — i.e. when
-    // the group is the LAST part and matched exactly once (no continuation, so
-    // no arm-switch hazard; cf. `/^(?:a|ab)c/` needing the second arm). A
-    // trailing optional/repeated group, or any non-trailing one, is declined.
-    if (p.part === 'group' && p.inner.kind === 'alt' && !p.inner.disjoint) {
-      const trailingOnce = k === parts.length - 1 && p.min === 1 && !p.unbounded
-      if (!trailingOnce) return false
+    // A `group` part has a right-edge exposure (`groupPartExposure`): the chars a
+    // backtracking engine could give back by shrinking the body's own trailing
+    // quantifier, dropping the group (if optional/repeated), or — for a
+    // non-disjoint alt body — switching arms. Ordered-choice greedy scanning
+    // matches the engine only when NONE of those relinquished chars could also
+    // start what follows the group (else the scan and the engine disagree on
+    // where the group ends). Two outcomes:
+    //   - a concrete class → must be disjoint from `seqFirstAccept(rest)`. This
+    //     is the general fix for a group whose body ends in an unbounded run
+    //     (`(?:\d+)\d` must NOT lower), and it lets a mutually-exclusive fixed
+    //     alt (§8i, exposure `null`) lower at ANY position, not just trailing.
+    //   - `'unsupported'` → the exposure can't be bounded (e.g. a non-disjoint
+    //     alt like `(?:a|ab)` that genuinely needs arm-switching). Sound only
+    //     when nothing follows to force reconsideration — the group must be the
+    //     trailing, matched-exactly-once part (§8h); otherwise decline.
+    if (p.part === 'group') {
+      const exposure = groupPartExposure(p)
+      if (exposure === 'unsupported') {
+        const trailingOnce = k === parts.length - 1 && p.min === 1 && !p.unbounded
+        if (!trailingOnce) return false
+      } else if (exposure !== null) {
+        if (!firstSetsDisjoint(exposure, seqFirstAccept(parts.slice(k + 1)))) return false
+      }
     }
     const skippableSingle =
       (p.part === 'lit' && p.optional) || (p.part !== 'lit' && !p.unbounded && p.min === 0)
@@ -477,6 +489,91 @@ function firstSetsDisjoint(a: CharSet | 'any', b: CharSet | 'any'): boolean {
 }
 
 /**
+ * A shape's match as a fixed-length list of per-position char-sets, or `null`
+ * if its match length is NOT fixed. Only a `seq` of mandatory `lit`s (each code
+ * point is one fixed position) and mandatory single-char runs (`[x]`, min 1,
+ * bounded) qualifies — anything with an optional part, an unbounded/optional
+ * run, or a nested group has a variable length and returns `null`. Used to
+ * decide when a non-disjoint alternation's arms are mutually exclusive (§8i).
+ */
+function fixedClassSeq(shape: ScanShape): CharSet[] | null {
+  if (shape.kind !== 'seq') return null
+  const out: CharSet[] = []
+  for (const p of shape.parts) {
+    if (p.part === 'lit') {
+      if (p.optional) return null
+      for (const cp of p.cps) out.push({ ranges: [[cp, cp]], negated: false })
+    } else if (p.part === 'run' && !p.unbounded && p.min === 1) {
+      out.push({ ranges: p.ranges, negated: p.negated })
+    } else {
+      return null // optional/unbounded run, or a nested group — length not fixed
+    }
+  }
+  return out.length ? out : null
+}
+
+/**
+ * §8i — is a NON-disjoint `alt` shape one whose arms are pairwise MUTUALLY
+ * EXCLUSIVE fixed-length token sets? Every arm must be a `fixedClassSeq`, and no
+ * arm's match may ever be a prefix (proper, or an equal-length overlap) of
+ * another arm's — i.e. for every ordered pair (A, B) with `A.length <= B.length`
+ * there is a position within A where their classes are DISJOINT. That property
+ * guarantees at most one arm matches at any input position, so ordered-choice
+ * commit lands on the SAME arm (and the SAME fixed end) the engine would, with
+ * no arm to switch to under backtracking — sound in ANY position, not just
+ * trailing (unlike the general non-disjoint alt, which needs the trailing-once
+ * gate in `seqIsUnambiguous`). `(?:ab|ac)` and `(?:foo|barn)` qualify;
+ * `(?:a|ab)` (arm `a` is a prefix of `ab`) does NOT.
+ */
+function altFixedMutuallyExclusive(shape: ScanShape): boolean {
+  if (shape.kind !== 'alt' || shape.disjoint) return false
+  const lists: CharSet[][] = []
+  for (const arm of shape.arms) {
+    const f = fixedClassSeq(arm)
+    if (!f) return false
+    lists.push(f)
+  }
+  for (let i = 0; i < lists.length; i++) {
+    for (let j = 0; j < lists.length; j++) {
+      if (i === j) continue
+      const a = lists[i]!
+      const b = lists[j]!
+      if (a.length > b.length) continue // only check the shorter (a) as a prefix of the longer (b)
+      let disjointAt = false
+      for (let p = 0; p < a.length; p++) {
+        if (classDisjoint(a[p]!, b[p]!)) { disjointAt = true; break }
+      }
+      if (!disjointAt) return false // `a` could be a prefix of `b` — not mutually exclusive
+    }
+  }
+  return true
+}
+
+/**
+ * The char-set a backtracking engine could relinquish at a `group` PART's right
+ * edge — its "trailing exposure". Combines two independent backtrack moves: the
+ * group body's OWN trailing wiggle (`trailingBacktrackClass(inner)`, e.g. the
+ * body ends in an unbounded run), and — if the group is optional (`min 0`) or
+ * repeated (`unbounded`) — the "drop the last occurrence" move, which exposes
+ * the body's own first-char set. A required-once group (`min 1`, bounded) has
+ * only the first move. Returns `'unsupported'` if either component can't be
+ * pinned to a concrete set. This is the single computation used everywhere a
+ * group's right boundary matters: `trailingBacktrackClass` (a `seq` ending in a
+ * group) and `seqIsUnambiguous` (a group at ANY position, followed by more).
+ */
+function groupPartExposure(part: Extract<SeqPart, { part: 'group' }>): CharSet | null | 'unsupported' {
+  const innerWiggle = trailingBacktrackClass(part.inner)
+  if (innerWiggle === 'unsupported') return 'unsupported'
+  const requiredOnce = !part.unbounded && part.min === 1
+  if (requiredOnce) return innerWiggle // no "drop it" move possible — only inner's own wiggle matters
+  const dropExposed = shapeFirstAccept(part.inner)
+  if (dropExposed === 'any') return 'unsupported'
+  if (innerWiggle === null) return dropExposed
+  const unioned = unionCharSets([innerWiggle, dropExposed])
+  return unioned === 'any' ? 'unsupported' : unioned
+}
+
+/**
  * The char-class a backtracking engine could expose by shrinking `shape`'s
  * OWN trailing quantifier by one position — i.e. the "wiggle room" a trailing
  * lookahead could interact with. Returns `null` when `shape`'s matched length
@@ -504,21 +601,10 @@ function trailingBacktrackClass(shape: ScanShape): CharSet | null | 'unsupported
       if (last.unbounded || last.min === 0) return { ranges: last.ranges, negated: last.negated }
       return null
     }
-    // A trailing `group` (§8f): its own inner shape may have wiggle room
-    // (`innerWiggle`, e.g. the group's body itself ends in an unbounded run),
-    // AND — if the group is optional/repeated — dropping the group's presence
-    // entirely exposes its own first-char set (`dropExposed`) as the new
-    // boundary char. Both are real backtrack moves; a lookahead must be safe
-    // against whichever one could actually happen.
-    const innerWiggle = trailingBacktrackClass(last.inner)
-    if (innerWiggle === 'unsupported') return 'unsupported'
-    const requiredOnce = !last.unbounded && last.min === 1
-    if (requiredOnce) return innerWiggle // no "drop it" move possible — only inner's own wiggle matters
-    const dropExposed = shapeFirstAccept(last.inner)
-    if (dropExposed === 'any') return 'unsupported'
-    if (innerWiggle === null) return dropExposed
-    const unioned = unionCharSets([innerWiggle, dropExposed])
-    return unioned === 'any' ? 'unsupported' : unioned
+    // A trailing `group` (§8f): its trailing exposure combines its body's own
+    // wiggle and (if optional/repeated) the "drop it" move — see
+    // `groupPartExposure`, shared with `seqIsUnambiguous`.
+    return groupPartExposure(last)
   }
   if (shape.kind === 'alt') {
     // Arm-switching hazard (see `groupInnerSafe`) applies here too: a
@@ -526,8 +612,10 @@ function trailingBacktrackClass(shape: ScanShape): CharSet | null | 'unsupported
     // since which arm ultimately "wins" could itself change under backtrack.
     // A disjoint alt has no such hazard — exactly one arm is ever reachable
     // from a given starting char, so the union of every arm's OWN wiggle
-    // covers whichever one is actually taken.
-    if (!shape.disjoint) return 'unsupported'
+    // covers whichever one is actually taken. A non-disjoint alt whose arms are
+    // fixed-length and mutually exclusive (§8i) also has no wiggle — exactly one
+    // arm matches at any position and its length is fixed, so `null`.
+    if (!shape.disjoint) return altFixedMutuallyExclusive(shape) ? null : 'unsupported'
     const classes = shape.arms.map(trailingBacktrackClass)
     if (classes.some(c => c === 'unsupported')) return 'unsupported'
     const concrete = classes.filter((c): c is CharSet => c !== null)
@@ -832,6 +920,150 @@ export function parseScanShape(source: string): ScanShape | null {
   return parseScanShapeCore(source)
 }
 
+/**
+ * Split a regex fragment on top-level `|` (outside `[]`/`()`), escape-aware.
+ * Unlike `splitTopLevelAlternation` this allows a SINGLE arm (no `|` at all) and
+ * does not unwrap an outer group — it's used to enumerate the arms of a
+ * `delimited` body, which may legitimately be one bare arm (`[^x]`). Returns
+ * null on unbalanced brackets/parens.
+ */
+function splitDelimArms(body: string): string[] | null {
+  const arms: string[] = []
+  let depth = 0
+  let last = 0
+  let i = 0
+  while (i < body.length) {
+    const ch = body[i]
+    if (ch === '\\') { i += 2; continue }
+    if (ch === '[') {
+      let j = i + 1
+      if (body[j] === '^') j++
+      while (j < body.length && body[j] !== ']') {
+        if (body[j] === '\\') j += 2
+        else j++
+      }
+      if (body[j] !== ']') return null
+      i = j + 1
+      continue
+    }
+    if (ch === '(') { depth++; i++; continue }
+    if (ch === ')') { depth--; if (depth < 0) return null; i++; continue }
+    if (ch === '|' && depth === 0) { arms.push(body.slice(last, i)); last = i + 1 }
+    i++
+  }
+  if (depth !== 0) return null
+  arms.push(body.slice(last))
+  return arms
+}
+
+/**
+ * Prove that the `delimited` lowering — "scan the raw input to the first full
+ * `close` literal, ignoring the body entirely" — is EQUIVALENT to the real regex
+ * `<open>(?:body)*<close>`. That equivalence holds iff `(?:body)*` can never
+ * match a string that contains the `close` literal: then greedy repetition stops
+ * exactly before the first `close`, which is where the scan lands too.
+ *
+ * We only PROVE this for the block-comment idiom (the sole shape that expresses
+ * "any char that doesn't form the close"):
+ *
+ *   n === 1 (`close` is one char l0):   body must be exactly `[^l0]`.
+ *   n === 2 (`close` is `l0 l1`):       body must be exactly `[^l0] | l0(?!l1)`.
+ *
+ * In both the bulk arm `[^l0]` consumes every char except l0, and the guard arm
+ * (n === 2) consumes l0 only when it is NOT followed by l1 — so the body admits
+ * l0 but never the full `l0 l1`, and rejects NOTHING else (a body that excluded
+ * some non-close char would stop early while the raw scan skipped ahead to the
+ * next close, diverging). Anything outside this template — an alternation whose
+ * arms can consume the close (`z(?:a|[0-2]+)*a`), a bulk class narrower/wider
+ * than `[^l0]`, a longer close, extra arms — is declined, falling through to
+ * `RegExp.exec`. Sound-by-construction: we only ever return true for a body we
+ * can prove never contains `close`.
+ */
+function delimitedBodySound(body: string, close: number[]): boolean {
+  const l0 = close[0]!
+  if (close.length > 2) return false
+  const arms = splitDelimArms(body)
+  if (!arms) return false
+  let bulkSeen = false
+  let guardSeen = false
+  for (const arm of arms) {
+    // Bulk arm: a bare negated class `[^l0]` — excluded set is exactly {l0}.
+    const bulk = /^\[\^((?:\\.|[^\]])+)\]$/.exec(arm)
+    if (bulk) {
+      if (bulkSeen) return false
+      const ranges = parseClassRanges(bulk[1]!)
+      if (!ranges || ranges.length !== 1 || ranges[0]![0] !== l0 || ranges[0]![1] !== l0) return false
+      bulkSeen = true
+      continue
+    }
+    // Guard arm (n === 2 only): `l0(?!l1)` — consume l0 unless it starts the close.
+    if (close.length === 2 && arm.endsWith(')')) {
+      const idx = arm.indexOf('(?!')
+      if (idx === -1) return false
+      const prefix = literalCodePoints(arm.slice(0, idx))
+      const op = parseClassOperand(arm.slice(idx + 3, -1))
+      const prefixIsL0 = prefix?.length === 1 && prefix[0] === l0
+      const forbidsL1 = op && !op.negated && op.ranges.length === 1 &&
+        op.ranges[0]![0] === close[1] && op.ranges[0]![1] === close[1]
+      if (!prefixIsL0 || !forbidsL1 || guardSeen) return false
+      guardSeen = true
+      continue
+    }
+    return false
+  }
+  // Require the exact arm set: bulk always; guard iff the close is two chars.
+  return bulkSeen && guardSeen === (close.length === 2)
+}
+
+/**
+ * Structurally recognize `<openLit>(?:<body>)*<closeLit>` — literal opener, a
+ * single non-capturing `*`-repeated group, literal closer — and lower it to a
+ * `delimited` scan ONLY when `delimitedBodySound` proves the body can't contain
+ * the close. Returns null (→ fall through to `seq`/`RegExp.exec`) otherwise.
+ */
+function parseDelimited(source: string): ScanShape | null {
+  // An escape-aware body (a literal `\\` in the source ⇒ string-like) is handled
+  // by `parseStringShape`; here "scan to first close" would wrongly stop at an
+  // escaped delimiter, so decline.
+  if (source.includes('\\\\')) return null
+  // Opener: literal chars up to the first unescaped `(`, which must open `(?:`.
+  let i = 0
+  while (i < source.length && source[i] !== '(') {
+    i += source[i] === '\\' ? 2 : 1
+  }
+  if (source[i] !== '(' || source[i + 1] !== '?' || source[i + 2] !== ':') return null
+  const openFrag = source.slice(0, i)
+  // Balanced scan of the group body to its matching `)`.
+  let k = i + 3
+  let depth = 1
+  while (k < source.length && depth > 0) {
+    const ch = source[k]
+    if (ch === '\\') { k += 2; continue }
+    if (ch === '[') {
+      let j = k + 1
+      if (source[j] === '^') j++
+      while (j < source.length && source[j] !== ']') {
+        if (source[j] === '\\') j += 2
+        else j++
+      }
+      if (source[j] !== ']') return null
+      k = j + 1
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    k++
+  }
+  if (depth !== 0) return null
+  const body = source.slice(i + 3, k - 1)
+  if (source[k] !== '*') return null
+  const closeFrag = source.slice(k + 1)
+  const open = literalCodePoints(openFrag)
+  const close = literalCodePoints(closeFrag)
+  if (!open || !close || !delimitedBodySound(body, close)) return null
+  return { kind: 'delimited', open, close }
+}
+
 function parseScanShapeCore(source: string): ScanShape | null {
   // [X]+ / [X]* — a positive char-class run. A negated `[^X]+`/`[^X]*` is left to
   // the general `seq` path (which lowers `[^X]+` and declines zero-width `[^X]*`).
@@ -863,16 +1095,11 @@ function parseScanShapeCore(source: string): ScanShape | null {
     if (open && stop) return { kind: 'until', open, stop }
   }
   // <open>(?:…)*<close> — delimited token scanned to its first close literal.
-  // Reject escape-aware bodies (a literal `\\` in the source ⇒ string-like), where
-  // "scan to first close" would wrongly stop at an escaped delimiter.
-  if (!source.includes('\\\\')) {
-    m = /^(.*?)\((?:\?:)?[\s\S]*\)\*(.*?)$/.exec(source)
-    if (m && m[1] && m[2]) {
-      const open = literalCodePoints(m[1])
-      const close = literalCodePoints(m[2])
-      if (open && close) return { kind: 'delimited', open, close }
-    }
-  }
+  // Only lowered when the body provably can't contain the close (see
+  // `parseDelimited` / `delimitedBodySound`); any other `X(?:…)*Y` declines here
+  // and falls through to the `seq` path / `RegExp.exec`.
+  const delim = parseDelimited(source)
+  if (delim) return delim
   // General category: a linear chain of literals + char runs (optional prefixes,
   // literal openers, negated runs), lowered only when unambiguously greedy.
   const parts = parseSeqParts(source)
