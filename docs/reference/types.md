@@ -133,6 +133,32 @@ type CompiledParser<T> = {
 }
 ```
 
+### `Runnable` · `RunOptions` · `RunResult` {#runresult}
+
+What [`run()`](./api#run-entry-input-opts) accepts and returns:
+
+```ts
+type Runnable =
+  | ((input: string, pos: number, ctx: ParseContext) => ParseResult<unknown>)  // a compiled rule fn
+  | Combinator<unknown>                                                          // or an interpreter combinator
+
+type RunOptions = {
+  build?: ParseContext['build']   // ctx.build host (structural node() → CST/AST)
+  state?: unknown                 // initial ctx.state
+  trailingTrivia?: Runnable       // skip trailing trivia before computing leftoverAt
+}
+
+type RunResult = {
+  ok: boolean
+  value: unknown                       // the entry's value (undefined on failure)
+  span: { start: number; end: number }
+  expected: string[]                   // when the top-level parse failed
+  errors: ParseError[]                 // recover()/expect() diagnostics
+  triviaLog: number[]                  // flat [start, end] pairs
+  leftoverAt: number | null            // first non-trivia offset left unconsumed, else null
+}
+```
+
 ## Building nodes
 
 ### `BuildNode<N>`

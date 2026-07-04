@@ -80,9 +80,9 @@ an editor.
 ## No base source required
 
 The important part for reuse: **composing a grammar never needs the base grammar's source.**
-When you build with the [macro](./macro-mode), an exported grammar automatically ships a
-compiled, composable artifact alongside it. A downstream package just imports the compiled
-grammar and composes it:
+When you build with the [macro](./macro-mode), an exported grammar automatically **carries
+its compiled, composable form on the value** (so `import { base }` is all a consumer needs).
+A downstream package just imports the compiled grammar and composes it:
 
 ```ts
 // @scope/base  →  ships a compiled grammar
@@ -95,9 +95,9 @@ import { base } from '@scope/base'
 export const parser = compose([base, rules(() => ({ Num: regex(/[0-9]+!/) }))])
 ```
 
-The dialect's build reads the base's **compiled** artifact — never its TypeScript source,
-and never recompiles it. There is no "ship your source for speed" tradeoff and no
-self-contained-fragment constraint; a published, compiled-only package composes fine.
+The dialect's build reads the base's **compiled** grammar — never its TypeScript source,
+and never recompiles it. There is no "ship your source for speed" tradeoff; a published,
+compiled-only package composes fine.
 
 ## How this behaves in each execution mode
 
