@@ -2181,6 +2181,44 @@ function analyzeLazyUsageMulti(roots: Iterable<Combinator<unknown>>): {
 }
 
 /**
+ * Dependency manifest for the linkable form: for each rule in the map, the set
+ * of OTHER rule names its body references (by name). A referenced rule is a
+ * boundary — we record the edge and do NOT descend into it (its own deps are its
+ * own entry). Used by the linker for à la carte dep-closure selection and the
+ * compose-time name-closure check (every referenced name must resolve in the
+ * final set). Self-references are included (a recursive rule depends on itself).
+ */
+export function ruleDependencies(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+): Map<string, string[]> {
+  const nameOf = new Map<Combinator<unknown>, string>()
+  for (const [name, comb] of ruleMap) nameOf.set(comb, name)
+
+  const deps = new Map<string, string[]>()
+  for (const [name, comb] of ruleMap) {
+    const found = new Set<string>()
+    const seen = new Set<Combinator<unknown>>()
+    const walk = (p: Combinator<unknown>, isRoot: boolean): void => {
+      const boundary = nameOf.get(p)
+      if (!isRoot && boundary !== undefined) { found.add(boundary); return }
+      if (seen.has(p)) return
+      seen.add(p)
+      const def = p._def
+      if (def.tag === 'lazy') {
+        let resolved: Combinator<unknown>
+        try { resolved = def.thunk() } catch { return }
+        walk(resolved, false)
+        return
+      }
+      for (const child of childrenOf(def)) walk(child, false)
+    }
+    walk(comb, true)
+    deps.set(name, [...found])
+  }
+  return deps
+}
+
+/**
  * Compile a combinator tree into an optimized parse function at runtime.
  *
  * Uses `new Function` internally, so it will fail in environments with a strict
