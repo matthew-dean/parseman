@@ -38,16 +38,30 @@ The one idea that makes it free: **sibling calls are emitted as bare names**
 
 Not TS source, not a sealed IIFE — a **compiled linkable artifact**:
 
-- **Named rule functions** — each rule as `function RuleName(input, pos, ctx) { … }`,
-  its rule bodies identical to today's compiled output, **calling sibling rules by
-  canonical name** (`Dimension(input, p, ctx)`), never inlining them (inlining a
-  rule would bake it and defeat override; private `const` helpers still inline).
-- **Namespaced preludes** — hoisted regexes / helpers with package-unique names
-  (`_css_re0`) so fusion can't collide them.
+- **Named rule functions** — each rule compiled **once** as
+  `function _r_<Name>(input, pos, ctx) { … }`, bodies identical to today's compiled
+  output, **calling sibling rules by canonical name** (`_r_Dimension(input, p, ctx)`),
+  never inlining them (inlining a rule would bake it and defeat override; private
+  `const` helpers still inline).
+- **Two calling conventions, on purpose (this is the speed guarantee).** Codegen
+  today already emits internal sibling fns (`_pfN`) with a **sentinel + shared-end**
+  convention that allocates **no result object per rule-to-rule call**, distinct
+  from map entries which return the public `{ ok, value, span }`. The linkable form
+  keeps that split: `_r_<Name>` are **sentinel-convention** fns (fusable, zero-alloc
+  internal calls); the exported map holds **thin public wrappers**
+  (`{ Num: (i,p,c) => adapt(_r_Num) }`) for external entry / incremental re-entry.
+  Routing internal calls through the public entry fns instead would allocate a
+  result per call and **break the zero-speed guarantee** — so we don't.
+- **Namespaced names** — canonical rule fns are `_r_<Name>` (not bare `<Name>`) so a
+  rule called `Object` / `value` / `input` can't shadow a global or a generated var
+  (`Object.freeze`, `pos`, `_ctx`). Preludes get package-unique names (`_css_re0`)
+  so fusion can't collide them. Still fully fusable-by-name.
 - **A dependency manifest** — per rule, the set of rule names it references, for
   dep-closure selection and the compose-time name-check.
 
-Each package compiles **once** to this form.
+Each package compiles **once** to this form. `_pfN` per-reference duplication
+(a rule compiled once as its map entry and again as each caller's `_pfN`) goes
+away — one `_r_<Name>` per rule, referenced by name.
 
 ## 4. The linker (build-time fusion)
 
@@ -148,10 +162,15 @@ rules) — not a current requirement, so it's out of scope.
 
 ## 11. Sequence
 
-1. **Codegen: emit the linkable form** — named rule functions (siblings by
-   canonical name, not inlined), namespaced preludes, dependency manifest. Default
-   standalone build still produces a fused closure (link with only itself), so
-   existing output/speed is preserved. Parity + perf-guard. ← start here
+1. **Codegen: emit the linkable form** — restructure `compileRuleMap`:
+   (a) build the `combinator → name` reverse map from the rule map;
+   (b) emit each rule once as a `_r_<Name>` **sentinel-convention** fn, siblings
+       called `_r_<Name>(…)` (deduped — no more per-reference `_pfN`);
+   (c) export a map of **thin public wrappers** over the `_r_<Name>` fns;
+   (d) namespace preludes; emit the dependency manifest.
+   Default standalone build still produces a fused closure (link with only
+   itself), so existing output/speed is preserved. **Parity-gated** (fused output
+   parses identically) + perf-guard (no regression). ← start here
 2. **Linker** — retarget the plugin to fuse imported linkable artifacts (select
    winner-per-name + dep-closure + prelude dedupe + name-check) instead of
    re-reading TS source.

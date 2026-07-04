@@ -61,6 +61,15 @@ type Ctx = {
   needsEmptyTl?: boolean | undefined
   /** Lazy/ref parsers and trivia helpers: parser identity → generated function name */
   namedParsers: Map<Combinator<unknown>, string>
+  /**
+   * Rule-map composition (linkable form): the `ref` placeholder for each named
+   * rule → its canonical `_r_<Name>` function name. When a `lazy`/`ref` in
+   * `emitLazy` is one of these, it is emitted once as `_r_<Name>` (never inlined,
+   * so it stays addressable/overridable by name) and siblings call it by that
+   * name — so the whole map fuses into one scope with direct local calls. Unset
+   * for single-combinator `compile()` (no rule map → today's `_pfN` naming).
+   */
+  ruleNames?: Map<Combinator<unknown>, string> | undefined
   /** Generated function declaration strings, prepended before the main body */
   namedFnDecls: string[]
   /** Active trivia parser (set by grammar() wrappers, cleared on exit) */
@@ -1741,8 +1750,12 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
   // indent/failLabel (unlike the named-function path below, which resets
   // both for a fresh function scope) — the resolved combinator is emitted
   // exactly as if the grammar author had written it inline directly.
+  // A named rule (in the rule map) is NEVER inlined: it must stay a standalone
+  // `_r_<Name>` function so it's addressable and overridable by name (the
+  // linkable/fusable form). Only private (non-map) single-use refs inline.
+  const canonical = ctx.ruleNames?.get(p)
   const usage = ctx.lazyUsage
-  if (usage && (usage.counts.get(p) ?? 0) <= 1 && !usage.recursive.has(p)) {
+  if (!canonical && usage && (usage.counts.get(p) ?? 0) <= 1 && !usage.recursive.has(p)) {
     let resolved: Combinator<unknown>
     try {
       resolved = def.thunk()
@@ -1753,7 +1766,7 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
   }
 
   if (!ctx.namedParsers.has(p)) {
-    const fnName = `_pf${ctx.namedParsers.size}`
+    const fnName = canonical ?? `_pf${ctx.namedParsers.size}`
     ctx.namedParsers.set(p, fnName)   // register FIRST so recursive refs see it
 
     let resolved: Combinator<unknown>
@@ -2341,6 +2354,20 @@ export function compileRuleMap(
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
   }
+
+  // Reverse map: each rule's `ref` placeholder → its canonical `_r_<Name>` fn
+  // name. `emitLazy` uses this so every reference to a named rule (sibling call
+  // OR the map entry itself) resolves to one shared `_r_<Name>` function — the
+  // linkable form that fuses into a single scope with direct local calls.
+  const seenNames = new Map<string, number>()
+  const ruleNames = new Map<Combinator<unknown>, string>()
+  for (const [key, rule] of ruleMap) {
+    const base = `_r_${key.replace(/[^A-Za-z0-9_$]/g, '_')}`
+    const n = seenNames.get(base) ?? 0
+    seenNames.set(base, n + 1)
+    ruleNames.set(rule, n === 0 ? base : `${base}$${n}`)
+  }
+  ctx.ruleNames = ruleNames
 
   const perEntry = ruleMap.map(([key, rule]) => ({ key, r: emit(rule, ctx, '_pos') }))
 
