@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest'
 import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile, parseDoc } from '../../src/index.ts'
 import type { Combinator, Registry, NodeLike } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { fuseRules, pick } from '../../src/compiler/linker.ts'
+import { fuseRules, pick, cstBuildHost } from '../../src/compiler/linker.ts'
 
 const link = (g: Record<string, Combinator<unknown>>, ns: string) =>
   compileLinkable([...Object.entries(g)], ns)!
@@ -121,6 +121,34 @@ describe('fusion — incremental over a fused map (the map IS the registry)', ()
     const edited = doc.edit(7, 8, '9')
     expect(edited.input).toBe('{a:1,b:9}')
     const fresh = parseDoc(R, 'Obj', edited.input)
+    expect(JSON.stringify(edited.tree)).toBe(JSON.stringify(fresh.tree))
+  })
+})
+
+describe('fusion — the three drivers over one fused map (RULE_ABI_PLAN §7, step 5)', () => {
+  // A grammar whose node() builder produces an EVAL AST (not a CST).
+  const g = rules(gg => ({
+    Sum: node('Sum', sequence(gg.Num, optional(sequence(literal('+'), gg.Num))),
+      (c) => ({ kind: 'Sum', terms: c.filter(x => (x as { kind?: string }).kind === 'Num') })),
+    Num: node('Num', regex(/[0-9]+/), (_c, _r, s) => ({ kind: 'Num', at: s.start })),
+  }))
+  const R = fuseRules([link(g, '_d_')]) as unknown as Registry<NodeLike>
+
+  it('eval driver (default build) → the grammar’s eval AST', () => {
+    const r = (R.Sum as unknown as (i: string, p: number, c: object) => { ok: boolean; value?: unknown })('1+2', 0, {})
+    expect((r.value as { kind: string }).kind).toBe('Sum')
+  })
+
+  it('linter/IDE driver (cstBuildHost) → a positioned CST from the SAME grammar', () => {
+    // One-shot CST (linter):
+    const r = (R.Sum as unknown as (i: string, p: number, c: object) => { ok: boolean; value?: { _tag: string; type: string } })('1+2', 0, { build: cstBuildHost })
+    expect(r.value!._tag).toBe('node')
+    expect(r.value!.type).toBe('Sum')
+    // Incremental CST (IDE): parseDoc threads the same host into every reparse.
+    const doc = parseDoc(R, 'Sum', '1+2', { build: cstBuildHost })
+    expect((doc.tree as unknown as { _tag: string })._tag).toBe('node')
+    const edited = doc.edit(0, 1, '9') // 1+2 -> 9+2
+    const fresh = parseDoc(R, 'Sum', '9+2', { build: cstBuildHost })
     expect(JSON.stringify(edited.tree)).toBe(JSON.stringify(fresh.tree))
   })
 })

@@ -29,7 +29,7 @@ export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/
 
 export { compile, compileLinkable, ruleDependencies } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'
-export { fuseRules, pick } from './compiler/linker.ts'
+export { fuseRules, pick, cstBuildHost } from './compiler/linker.ts'
 export type { FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, offsetToLineCol, annotateSpan } from './compiler/line-index.ts'

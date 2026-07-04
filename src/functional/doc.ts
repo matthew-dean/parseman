@@ -19,6 +19,13 @@ export type ParseDocOptions<N extends NodeLike> = {
    * works for plain-object nodes; class-instance ASTs should supply their own.
    */
   rebuild?: (node: N, children: ReadonlyArray<N | CSTLeaf | CSTError>) => N
+  /**
+   * Mode host for a linkable/fused grammar (RULE_ABI_PLAN §7): threaded into
+   * `ctx.build` on every (re)parse so `node()` rules build a positioned CST /
+   * language-service tree instead of their own eval-AST. Unset → the grammar's
+   * own builders (eval mode).
+   */
+  build?: ParseContext['build']
 }
 
 export interface ParseDoc<N extends NodeLike> {
@@ -193,6 +200,7 @@ function boundaryIsSafe<N extends NodeLike>(
   start: number,
   boundary: number,
   state: unknown,
+  build: ParseContext['build'],
   produced: ParseResult<N>,
 ): boolean {
   if (!produced.ok) return false
@@ -200,7 +208,7 @@ function boundaryIsSafe<N extends NodeLike>(
   for (const sentinel of [' ', '￿']) {
     if (newInput[boundary] === sentinel) continue
     const probed = newInput.slice(0, boundary) + sentinel.repeat(newInput.length - boundary)
-    const ctx: ParseContext = { trackLines: false, state }
+    const ctx: ParseContext = { trackLines: false, state, build }
     let r: ParseResult<N>
     try {
       r = ruleFn(probed, start, ctx)
@@ -278,7 +286,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       // reusing the untouched suffix would be unsound — widen to an ancestor
       // that does span the whole edit (ultimately a full reparse).
       if (!(node.span.start <= from && to <= node.span.end)) continue
-      const ctx: ParseContext = { trackLines: false, state: node.state }
+      const ctx: ParseContext = { trackLines: false, state: node.state, build: this._opts.build }
       const r = ruleFn(newInput, node.span.start, ctx)
       if (!r.ok) continue
       if (r.span.end !== node.span.end + delta) continue
@@ -287,7 +295,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       // provably read no input past its own end (else a lookahead/backtrack
       // crossed the splice). Widen to the next candidate — ultimately a full
       // reparse — when it can't be proven.
-      if (!boundaryIsSafe(ruleFn, newInput, node.span.start, node.span.end + delta, node.state, r)) {
+      if (!boundaryIsSafe(ruleFn, newInput, node.span.start, node.span.end + delta, node.state, this._opts.build, r)) {
         continue
       }
 
@@ -321,7 +329,7 @@ export function parseDoc<N extends NodeLike>(
 ): ParseDoc<N> {
   const ruleFn = registry[rootRule]
   if (!ruleFn) throw new Error(`No rule '${rootRule}' in registry`)
-  const ctx: ParseContext = { trackLines: false, state: opts.state }
+  const ctx: ParseContext = { trackLines: false, state: opts.state, build: opts.build }
   const r: ParseResult<N> = ruleFn(input, 0, ctx)
   if (r.ok) {
     return new ParseDocImpl(registry, rootRule, opts, r.value, [], input)

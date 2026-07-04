@@ -88,6 +88,20 @@ export type ParseContext = {
   trackLines: boolean
   /** Grammar-author-provided state, scoped with withCtx() and read in guard(). */
   state?: unknown
+  /**
+   * Mode host (RULE_ABI_PLAN §7): when set, a linkable/fused grammar's `node()`
+   * rules build via `build(type, children, rawChildren, span, triviaLog, state)`
+   * instead of their own builder — so ONE grammar serves eval-AST (unset) vs
+   * positioned-CST / language-service (set) modes. Ignored by non-linkable output.
+   */
+  build?: ((
+    type: string,
+    children: ReadonlyArray<unknown>,
+    rawChildren: ReadonlyArray<unknown>,
+    span: { start: number; end: number },
+    triviaLog: readonly number[],
+    state: unknown,
+  ) => unknown) | undefined
   /** When set, recover() nodes push their ParseError here instead of (only) embedding it in the tree. */
   _errors?: ParseError[]
   /**

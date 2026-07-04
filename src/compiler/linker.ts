@@ -20,6 +20,22 @@
  */
 import type { LinkablePieces } from './codegen.ts'
 
+/**
+ * A generic positioned-CST build host (RULE_ABI_PLAN §7). Pass as `ctx.build`
+ * (or `parseDoc(..., { build: cstBuildHost })`) to make ANY linkable/fused
+ * grammar produce a uniform CST — `{ _tag:'node', type, span, state, children }`
+ * — instead of its own eval-AST builders. This is the host the linter and IDE
+ * drivers use; the eval driver leaves `ctx.build` unset (grammar's own builders).
+ */
+export function cstBuildHost(
+  type: string,
+  children: ReadonlyArray<unknown>,
+  _rawChildren: ReadonlyArray<unknown>,
+  span: { start: number; end: number },
+): unknown {
+  return { _tag: 'node', type, span: { start: span.start, end: span.end }, state: null, children: [...children] }
+}
+
 export type FusedRule = (
   input: string,
   pos: number,
