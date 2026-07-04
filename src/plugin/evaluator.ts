@@ -171,19 +171,25 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
   // capture. An optional 4th `{ collapse: true }` opts literal is read statically.
   if (callee.name === 'node' && code !== undefined) {
     const [typeArg, parserArg, buildArg, optsArg] = node.arguments
-    if (!typeArg || !parserArg || !buildArg
-      || typeArg.type === 'SpreadElement' || parserArg.type === 'SpreadElement' || buildArg.type === 'SpreadElement') return null
+    if (!typeArg || !parserArg
+      || typeArg.type === 'SpreadElement' || parserArg.type === 'SpreadElement') return null
     const typeVal = anyValue(typeArg as Expression, scope, code)
     if (typeof typeVal !== 'string') return null
     const inner = anyValue(parserArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null
-    const buildSrc = code.slice((buildArg as Expression).start, (buildArg as Expression).end)
+    // `build` is OPTIONAL — a structural node() omits it (or passes the literal
+    // `undefined` to reach the 4th opts arg). Structural nodes build via the
+    // injected `ctx.build` host; codegen keys that off `def.build === undefined`.
+    const be = buildArg as { type: string; start: number; end: number; name?: string } | undefined
+    const hasBuild = be !== undefined && be.type !== 'SpreadElement'
+      && !(be.type === 'Identifier' && be.name === 'undefined')
+    const buildSrc = hasBuild ? code.slice(be!.start, be!.end) : undefined
     const collapse = optsArg !== undefined && optsArg.type !== 'SpreadElement'
       ? staticCollapseOption(optsArg as Expression)
       : false
     try {
-      const combi = parseman.node(typeVal, inner, () => null, collapse ? { collapse: true } : undefined)
-      if (combi._def.tag === 'node') combi._def.buildSrc = buildSrc
+      const combi = parseman.node(typeVal, inner, hasBuild ? () => null : undefined, collapse ? { collapse: true } : undefined)
+      if (combi._def.tag === 'node' && buildSrc !== undefined) combi._def.buildSrc = buildSrc
       return combi
     } catch { return null }
   }
@@ -680,15 +686,36 @@ export function evaluateParserFactory(
   const keys = collectRuleKeys(retObj as unknown as ObjectExpression, resolveFactory, new Set())
   if (!keys) return null
   const ruleRefs = new Map<string, Combinator<unknown> & { define(p: Combinator<unknown>): void }>()
+  const tagRef = (r: Combinator<unknown>, name: string): void => { (r as unknown as { _ruleName?: string })._ruleName = name }
   for (const key of keys) {
-    if (!ruleRefs.has(key)) ruleRefs.set(key, ref<unknown>() as Combinator<unknown> & { define(p: Combinator<unknown>): void })
+    if (!ruleRefs.has(key)) {
+      const r = ref<unknown>() as Combinator<unknown> & { define(p: Combinator<unknown>): void }
+      tagRef(r, key)
+      ruleRefs.set(key, r)
+    }
   }
 
-  // Build local extended scope: outer scope (typed as XScope) + g proxy object.
+  // Build local extended scope: outer scope (typed as XScope) + g proxy.
+  // The proxy returns a rule ref for ANY name: LOCAL keys get the ref defined in
+  // Phase 2; any OTHER name is an EXTERNAL ref — a rule this grammar references
+  // but doesn't define, provided by a base grammar it's `compose()`d over. Tagged
+  // with `_ruleName`, codegen emits a by-name `_r_<Name>` call (resolved at
+  // fusion) instead of trying to inline it. This is what lets an inline delta
+  // reference the composed base's rules (`g.Num`, `g.Quoted`, …).
+  const externalRefs = new Map<string, Combinator<unknown>>()
+  const gProxy = new Proxy(Object.fromEntries(ruleRefs) as Record<string, Combinator<unknown>>, {
+    get(target, prop): unknown {
+      if (typeof prop !== 'string' || prop in target) return (target as Record<string, unknown>)[prop as string]
+      let ext = externalRefs.get(prop)
+      if (!ext) { ext = ref<unknown>() as Combinator<unknown>; tagRef(ext, prop); externalRefs.set(prop, ext) }
+      return ext
+    },
+  })
+
   // Note: outer ScopeEntry values carry their mfSrcs and will be replayed by
   // scopeGet() when body statements or return expressions reference them.
   const localScope: XScope = new Map(scope as XScope)
-  localScope.set(proxyName, Object.fromEntries(ruleRefs))
+  localScope.set(proxyName, gProxy)
 
   // ── Phase 1: evaluate the factory's own body statements ───────────────────
   if (!evalBodyStatements(statements, localScope, code)) return null

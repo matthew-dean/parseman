@@ -48,6 +48,8 @@ export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, Node
 
 export { parseDoc } from './functional/doc.ts'
 export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts'
+export { run } from './functional/run.ts'
+export type { RunResult, RunOptions, Runnable } from './functional/run.ts'
 export { buildTriviaIndex } from './cst/trivia-index.ts'
 export type { TriviaIndex, TriviaToken, TriviaIndexOptions } from './cst/trivia-index.ts'
 export { walk, createVisitor } from './cst/walk.ts'

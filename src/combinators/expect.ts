@@ -33,7 +33,14 @@ export function staticExpected(c: Combinator<unknown>): string[] {
     case 'oneOrMore':
     case 'transform':
     case 'not':       return staticExpected(def.parser)
-    case 'lazy':      return staticExpected(def.thunk())
+    case 'lazy': {
+      // An EXTERNAL ref (a rule from a composed base grammar) has no local
+      // definition yet — its `thunk()` throws until fusion supplies it. Fall back
+      // to the rule name as the expected label instead of descending.
+      const name = (c as { _ruleName?: string })._ruleName
+      try { return staticExpected(def.thunk()) }
+      catch { return name ? [name] : [] }
+    }
     default:          return []
   }
 }

@@ -4,7 +4,7 @@
  * (open recursion), à la carte selection, and a name-closure check.
  */
 import { describe, it, expect } from 'vitest'
-import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile, parseDoc } from '../../src/index.ts'
+import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile, parseDoc, many, parser, trivia } from '../../src/index.ts'
 import type { Combinator, Registry, NodeLike } from '../../src/index.ts'
 import { compose } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
@@ -45,7 +45,10 @@ describe('macro: cross-package compose() with NO base source (sidecar)', () => {
       `import { rules, regex, choice } from 'parseman' with { type: 'macro' }
 export const cssRules = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))`,
       path.join(dir, 'css.js'), new Set(['parseman']))!
-    expect(cssOut.code).toMatch(/export const cssRules__pieces = \[\{/)
+    // Pieces travel ON the exported grammar value (Symbol-keyed), NOT a separate
+    // `__pieces` export — `import { cssRules }` carries everything.
+    expect(cssOut.code).toMatch(/Symbol\.for\('parseman\.composedPieces'\)/)
+    expect(/__pieces\b/.test(cssOut.code)).toBe(false)
     fs.writeFileSync(path.join(dir, 'css.js'), cssOut.code)
     // "less package" imports the COMPILED css (no css source) and composes.
     const lessOut = transformMacro(
@@ -81,7 +84,7 @@ export const cssGrammar = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex
     const lessCode = build('less', `import { rules, regex, compose } from 'parseman' with { type: 'macro' }
 import { cssGrammar } from './css.js'
 export const lessGrammar = compose([cssGrammar, rules(g => ({ Num: regex(/[0-9]+L/) }))])`)
-    expect(lessCode).toMatch(/export const lessGrammar__pieces = \[/)   // re-composable sidecar
+    expect(lessCode).toMatch(/Symbol\.for\('parseman\.composedPieces'\)/)   // re-composable: pieces on the value
     expect(/new Function/.test(lessCode)).toBe(false)
     // scss composes the COMPILED less (a composed grammar) and overrides Num.
     const scssCode = build('scss', `import { rules, regex, compose } from 'parseman' with { type: 'macro' }
@@ -110,6 +113,62 @@ describe('extending a grammar via compose() — no base source, no opt-in', () =
     expect(ok(R.Value!('abc', 0, {}))).toBe(3)   // css.Word
     expect(ok(R.Value!('12!', 0, {}))).toBe(3)   // css.Value reroutes to less.Num (open recursion)
     expect(ok(R.Value!('12', 0, {}))).toBe(-1)   // less.Num needs '!'; Word fails
+  })
+})
+
+describe('fusion — each grammar keeps its OWN trivia (no _tf collision)', () => {
+  // Regression: hoisted trivia-skip functions (`_tf<N>`) were NOT namespaced, so
+  // two fused pieces each defined `_tf0` and the last one hoisted won — a delta's
+  // rules silently ran the BASE's trivia skipper. Here the base skips only block
+  // comments; the delta overrides Doc to also skip `//` line comments. If the
+  // delta's Doc gets the base's `_tf0`, the line comment isn't skipped and the
+  // second word never parses. (This is exactly how Less line comments broke.)
+  const blockTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))
+  const lineTrivia  = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//), regex(/\/\/[^\n]*/))))
+  const base  = rules(g => ({ Doc: parser({ trivia: blockTrivia }, many(g.W)), W: regex(/[a-z]+/) }))
+  const delta = rules(g => ({ Doc: parser({ trivia: lineTrivia }, many(g.W)) }))
+
+  it('runtime compose(): the delta rule skips line comments, base rule inherited', () => {
+    const R = compose([base, delta])
+    expect(ok(R.Doc!('a // c\nb', 0, {}))).toBe(8)  // delta trivia skips `// c`
+    expect(ok(R.Doc!('a /* c */ b', 0, {}))).toBe(11)
+  })
+
+  it('macro build: fused trivia fns are namespaced, line comments skipped, eval-free', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    const src = `import { rules, regex, choice, many, parser, trivia, compose } from 'parseman' with { type: 'macro' }
+const blockTrivia = trivia(many(choice(regex(/[ \\t\\n]+/), regex(/\\/\\*[^]*?\\*\\//))))
+const lineTrivia = trivia(many(choice(regex(/[ \\t\\n]+/), regex(/\\/\\*[^]*?\\*\\//), regex(/\\/\\/[^\\n]*/))))
+const base = rules(g => ({ Doc: parser({ trivia: blockTrivia }, many(g.W)), W: regex(/[a-z]+/) }))
+export const grammar = compose([base, rules(g => ({ Doc: parser({ trivia: lineTrivia }, many(g.W)) }))])`
+    const out = transformMacro(src, '/pkg/g.ts', new Set(['parseman']))!
+    expect(out.warnings).toEqual([])
+    expect(/new Function/.test(out.code)).toBe(false)
+    const g = new Function(out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    // Behavioral guard: if the fused Doc ran the base's (block-only) `_tf0` the
+    // `// c` wouldn't be skipped and parsing would stop after `a` (end 1).
+    expect(g.Doc!('a // c\nb', 0, {}).span.end).toBe(8)   // line comment skipped by the delta's trivia
+  })
+})
+
+describe('fusion — structural node() builds through ctx.build across a compose()', () => {
+  it('macro: a base with a structural node() composes and builds via ctx.build', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    // Base ships a structural node() (NO build callback) — it must build via the
+    // injected ctx.build host. The delta overrides a leaf. This is the css/less
+    // shape (structural node + host); a build-callback-less node() must macro-compile.
+    const src = `import { rules, regex, choice, node, compose } from 'parseman' with { type: 'macro' }
+const base = rules(g => ({ Item: node('Item', choice(g.Num, g.Word)), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))
+export const grammar = compose([base, rules(g => ({ Word: regex(/[A-Z]+/) }))])`
+    const out = transformMacro(src, '/pkg/n.ts', new Set(['parseman']))!
+    expect(out.warnings).toEqual([])
+    expect(/new Function/.test(out.code)).toBe(false)
+    const g = new Function(out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar')() as Record<string, (i: string, p: number, c: Record<string, unknown>) => { ok: boolean; value: unknown; span: { end: number } }>
+    // ctx.build host turns the structural node into a tagged object.
+    const built: string[] = []
+    const ctx = { build: (type: string) => { built.push(type); return { type } } }
+    expect(g.Item!('AB', 0, ctx).span.end).toBe(2)   // delta's Word (override) matches upper-case
+    expect(built).toContain('Item')
   })
 })
 

@@ -354,7 +354,11 @@ function ensureTriviaFn(ctx: Ctx): string {
   const trivia = ctx.activeTrivia!
   const existing = ctx.triviaFnNames.get(trivia)
   if (existing) return existing
-  const fnName = `_tf${ctx.triviaFnNames.size}`
+  // Namespaced like every other hoisted name (`_re`/`_pf`/`_fx`): two fused pieces
+  // each define their own `_tf0` (e.g. CSS block-only vs Less block+line trivia),
+  // so without the ns prefix they collide in the fused scope and the wrong trivia
+  // skipper wins. `nsp(ctx)` is '' for standalone output (byte-identical).
+  const fnName = `${nsp(ctx)}_tf${ctx.triviaFnNames.size}`
   ctx.triviaFnNames.set(trivia, fnName)
   ctx.triviaCaptureNames.set(trivia, fnName)
 
