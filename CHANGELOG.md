@@ -3,6 +3,29 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.15.0 — 2026-07-05
+
+- **First-char dispatch for composed grammars.** A `choice` arm that references a
+  rule in another `compose()`d artifact used to carry an `any` first-set, so every
+  arm was tried per token (a value/selector rule walked all its alternatives). The
+  compiler now emits a fuse-time-resolved dispatch guard for such arms — resolved
+  against the **winning** rule's first-set, so it stays correct even when a later
+  artifact **overrides** a rule with a different first-set (open recursion). Each
+  linkable artifact carries a per-rule first-set table; `fusedBody` substitutes the
+  guards at fuse time. Measured ~30% faster parse on a macro-compiled Less grammar
+  (15-arm value rule + many selector choices); see `bench/compose-dispatch.ts`.
+- **fix: sound sequence first-set.** `sequence()` computed its first-set from the
+  first term alone, ignoring that a **nullable leading term** (`optional(…)` /
+  `many(…)`) lets a later term's first char start the whole sequence. That
+  under-approximated the first-set, so first-char dispatch could silently drop a
+  valid parse (e.g. a Less `@{x}{}` interpolated selector). Now unions through the
+  nullable prefix (`matchesEmpty` + `sequenceFirstSet`), a sound over-approximation.
+- **perf: dead-value elision.** A `many` / `oneOrMore` / `sequence` / `optional`
+  whose aggregate value is only discarded under a `node()` (which builds from
+  captured children) no longer builds that array/tuple — on both the interpreter
+  and the compiled path (shared `markUnusedValues` analysis). Trees are identical;
+  ~7% less transient allocation on a real Less parse.
+
 ## 0.14.1 — 2026-07-05
 
 - `run()` throws a clear `TypeError` when the start production isn't a rule

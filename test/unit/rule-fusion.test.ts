@@ -59,6 +59,18 @@ export const parser = compose([cssRules, rules(g => ({ Num: regex(/[0-9]+Z/) }))
     expect(lessOut.warnings).toEqual([])
     expect(/\bcompose\s*\(/.test(lessOut.code)).toBe(false)   // build-fused
     expect(/new Function/.test(lessOut.code)).toBe(false)     // eval-free
+    // The cross-package `Value = choice(Num, Word)` arms have disjoint first chars
+    // (digit vs letter). Their dispatch guard is a placeholder in css.js resolved at
+    // FUSE time from css's serialized `firstSets` (carried in the pieces). Verify it
+    // survived the artifact boundary. The ACTIVE fused code (before the carried
+    // `composedPieces` literal) must have a resolved code-point guard and no leftover
+    // placeholder; the carried pieces DO retain the placeholder — they resolve at the
+    // next fuse (re-composability). Guards a serializePieces regression that would
+    // silently disable cross-file dispatch.
+    const activeCode = lessOut.code.split('composedPieces')[0]!
+    expect(/@FS:/.test(activeCode)).toBe(false)                       // active guard resolved
+    expect(/_chcode\w*\s*(?:>=|===|<=)/.test(activeCode)).toBe(true)  // …to a real code-point check
+    expect(/firstSets:/.test(lessOut.code)).toBe(true)               // carried for the next fuse
     const parser = new Function(lessOut.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
     expect(parser.Value!('abc', 0, {}).span.end).toBe(3)      // css.Word
     expect(parser.Value!('12Z', 0, {}).span.end).toBe(3)      // css.Value → less.Num (override across packages)
