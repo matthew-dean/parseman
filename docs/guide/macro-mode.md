@@ -114,6 +114,13 @@ const method = function (input, _pos, _ctx) {
 
 - **Disjoint first characters** → a single `codePointAt` dispatch instead of trying each
   arm.
+- **Composed grammars dispatch too.** When you [`compose([...])`](./extending) separately
+  compiled grammars, a `choice` arm that references a rule in *another* artifact keeps its
+  first-char dispatch. Because each artifact is compiled on its own, the referenced rule's
+  first-set isn't known yet — so the guard is emitted as a placeholder and resolved at
+  **fuse time** against the *final* rule's first-set. That stays correct even when a later
+  artifact **overrides** a rule with a different first-set (open recursion). Without this,
+  cross-artifact `choice` arms fell back to trying every arm per token.
 - **Regex parsers** → lowered to a `charCodeAt` scan loop where provably equivalent,
   otherwise a sticky `/pattern/y` hoisted to closure scope.
 - **Failure paths** allocate no objects.
