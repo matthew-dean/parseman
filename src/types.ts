@@ -46,7 +46,7 @@ export type ParserDef =
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
   | { tag: 'many';      parser: Combinator<unknown>; min: 0; valueUnused?: boolean }
   | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean }
-  | { tag: 'optional';  parser: Combinator<unknown>; valueUnused?: boolean }
+  | { tag: 'optional';  parser: Combinator<unknown> }
   | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown> }
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }

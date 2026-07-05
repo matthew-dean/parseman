@@ -40,8 +40,14 @@ export function markUnusedValues(root: Combinator<unknown>): void {
     switch (def.tag) {
       case 'many':
       case 'oneOrMore':
-      case 'optional':
         mark(def, consumed)
+        visit(def.parser, consumed)
+        return
+      case 'optional':
+        // `optional` returns `inner | null` — no aggregate array/tuple to elide, so
+        // it carries no valueUnused flag. Still descend so an inner many/sequence
+        // under a node() is analyzed (it benefits even when its optional wrapper
+        // doesn't).
         visit(def.parser, consumed)
         return
       case 'sequence':

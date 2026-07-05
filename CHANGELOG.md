@@ -20,11 +20,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   under-approximated the first-set, so first-char dispatch could silently drop a
   valid parse (e.g. a Less `@{x}{}` interpolated selector). Now unions through the
   nullable prefix (`matchesEmpty` + `sequenceFirstSet`), a sound over-approximation.
-- **perf: dead-value elision.** A `many` / `oneOrMore` / `sequence` / `optional`
-  whose aggregate value is only discarded under a `node()` (which builds from
-  captured children) no longer builds that array/tuple — on both the interpreter
-  and the compiled path (shared `markUnusedValues` analysis). Trees are identical;
-  ~7% less transient allocation on a real Less parse.
+- **perf: dead-value elision.** A `many` / `oneOrMore` / `sequence` whose aggregate
+  value is only discarded under a `node()` (which builds from captured children) no
+  longer builds that array/tuple — on both the interpreter and the compiled path
+  (shared `markUnusedValues` analysis). Trees are identical; ~7% less transient
+  allocation on a real Less parse. (`optional` builds no aggregate, so it's a
+  no-op there — but a `many`/`sequence` *inside* an `optional` under a node still
+  elides.)
 
 ## 0.14.1 — 2026-07-05
 

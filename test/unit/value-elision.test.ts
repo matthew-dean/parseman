@@ -19,7 +19,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  literal, regex, sequence, many, oneOrMore, sepBy, transform,
+  literal, regex, sequence, many, oneOrMore, optional, sepBy, transform,
   parse, parser, node, rules, ref,
 } from '../../src/index.ts'
 import type { Combinator, ParserDef, CSTNode, Span } from '../../src/index.ts'
@@ -60,6 +60,18 @@ describe('markUnusedValues — analysis contract', () => {
     const inner = many(digits)
     markUnusedValues(inner as Combinator<unknown>)
     expect(unused(inner)).toBe(false)
+  })
+
+  it('optional carries no valueUnused flag, but its inner container still elides', () => {
+    // `optional` returns `inner | null` — no aggregate to elide, so it's never
+    // marked; the `many` INSIDE it under a node() is still elided.
+    const innerMany = many(digits)
+    const opt = optional(innerMany)
+    const N = node('N', parser({}, opt), (ch, _r, span, _tl, st) =>
+      mkCst('N', ch as CSTNode['children'], span, st))
+    markUnusedValues(N as Combinator<unknown>)
+    expect(unused(opt)).toBeUndefined()   // optional never carries the flag
+    expect(unused(innerMany)).toBe(true)  // its inner many is still elided
   })
 
   it('does NOT mark a sepBy item parser (sepBy always builds its array)', () => {

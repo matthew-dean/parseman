@@ -42,7 +42,13 @@ export function empty(): FirstSet {
  * set, which stays sound; under-estimating would drop valid start chars and make
  * first-char dispatch skip a matching arm.
  */
-export function matchesEmpty(p: Combinator<unknown>): boolean {
+export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  // Cycle guard: a mutually-nullable ref cycle (e.g. `A = oneOrMore(B); B = oneOrMore(A)`)
+  // would recurse forever. Treat a re-entered node as nullable — the safe (`true`)
+  // default, consistent with the err-toward-true contract below.
+  if (seen.has(p)) return true
+  seen.add(p)
+  const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen)
   const d = p._def as ParserDef
   switch (d.tag) {
     case 'literal':   return d.value.length === 0
@@ -54,10 +60,10 @@ export function matchesEmpty(p: Combinator<unknown>): boolean {
     case 'many':
     case 'optional':
     case 'not':       return true          // zero repetitions / absent / lookahead
-    case 'oneOrMore': return matchesEmpty(d.parser)
-    case 'sequence':  return d.parsers.every(matchesEmpty)
+    case 'oneOrMore': return me(d.parser)
+    case 'sequence':  return d.parsers.every(me)
     case 'choice':
-      return d.parsers.some(matchesEmpty)
+      return d.parsers.some(me)
     case 'transform':
     case 'label':
     case 'trivia':
@@ -65,10 +71,10 @@ export function matchesEmpty(p: Combinator<unknown>): boolean {
     case 'withCtx':
     case 'node':
     case 'grammar':
-    case 'recover':   return matchesEmpty(d.parser)
-    case 'skip':      return matchesEmpty(d.main)
+    case 'recover':   return me(d.parser)
+    case 'skip':      return me(d.main)
     case 'lazy':
-      try { return matchesEmpty(d.thunk()) } catch { return true }
+      try { return me(d.thunk()) } catch { return true }
     default:          return true          // sepBy / scanTo / guard / unknown → assume nullable (safe)
   }
 }

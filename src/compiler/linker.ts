@@ -153,7 +153,10 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
   const finalFS = new Map<string, FirstSet>()
   for (const [k, p] of winner) { const fs = p.firstSets?.get(k); if (fs) finalFS.set(k, fs) }
   const body = rawBody.replace(
-    /\/\*@FS:([A-Za-z0-9_$]+):([A-Za-z0-9_$]+)@\*\/true/g,
+    // Rule name may contain hyphens / dots etc. — match any char up to the `:`
+    // that precedes the (identifier) code-point variable, so those arms still
+    // resolve instead of silently falling through to always-try.
+    /\/\*@FS:([^:@]+):([A-Za-z0-9_$]+)@\*\/true/g,
     (_m, name: string, codevar: string) => {
       const fs = finalFS.get(name)
       if (!fs || fs.kind === 'any' || fs.kind === 'empty') return 'true'
