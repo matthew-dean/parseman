@@ -9,6 +9,7 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { staticExpected } from '../combinators/expect.ts'
+import { markUnusedValues } from './value-usage.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
   analyzeLabeledScannableRun,
@@ -985,6 +986,9 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
 
 function emitSeq(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, pos: string): ER {
   const { stmts, endVar, valueVars } = emitSeqValues(def, ctx, pos)
+  // The tuple is never observed (markUnusedValues) — terms still parse + capture;
+  // skip allocating `[v1, v2, …]`.
+  if (def.valueUnused) return { stmts, valueVar: 'undefined', endVar }
   const arrV = v(ctx, '_arr')
   stmts.push(`${ind(ctx)}const ${arrV} = [${valueVars.join(', ')}]`)
   return { stmts, valueVar: arrV, endVar }
@@ -1393,10 +1397,14 @@ function emitLiteralCondition(litVal: string, pos: string): string {
 }
 
 function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: Ctx, pos: string): ER {
+  // `valueUnused` (markUnusedValues): the array is never observed (this many sits
+  // under a node() that builds from captured children). Skip building it — the
+  // loop still runs and items self-capture. Value is `undefined` (unread).
+  const wantValue = !def.valueUnused
   const arrV = v(ctx, '_arr')
   const curV = v(ctx, '_cur')
   const stmts: string[] = [
-    `${ind(ctx)}const ${arrV} = []`,
+    ...(wantValue ? [`${ind(ctx)}const ${arrV} = []`] : []),
     `${ind(ctx)}let ${curV} = ${pos}`,
   ]
 
@@ -1404,10 +1412,8 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     // Inline first mandatory match with early-return on failure
     const firstR = emit(def.parser, ctx, curV)
     stmts.push(...firstR.stmts)
-    stmts.push(
-      `${ind(ctx)}${arrV}.push(${firstR.valueVar})`,
-      `${ind(ctx)}${curV} = ${firstR.endVar}`,
-    )
+    if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${firstR.valueVar})`)
+    stmts.push(`${ind(ctx)}${curV} = ${firstR.endVar}`)
   }
 
   stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
@@ -1445,13 +1451,13 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   stmts.push(
     ...iterStmts,
     `${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`,
-    `${ind(ctx)}${arrV}.push(${iterVal})`,
-    `${ind(ctx)}${curV} = ${iterEnd}`,
   )
+  if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${iterVal})`)
+  stmts.push(`${ind(ctx)}${curV} = ${iterEnd}`)
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
 
-  return { stmts, valueVar: arrV, endVar: curV }
+  return { stmts, valueVar: wantValue ? arrV : 'undefined', endVar: curV }
 }
 
 function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, pos: string): ER {
@@ -2271,6 +2277,7 @@ export function ruleDependencies(
  * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
  */
 export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): CompiledParser<T> {
+  markUnusedValues(combinator)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -2414,6 +2421,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
 ): { keys: string[]; replacement: string } | null {
+  for (const [, rule] of ruleMap) markUnusedValues(rule)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -2551,6 +2559,7 @@ export function compileLinkable(
   ns: string,
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
+  for (const [, rule] of ruleMapArg) markUnusedValues(rule)
   // Drop EXTERNAL entries: `rules(g => …)` returns a cache that also holds every
   // `g.X` that was ACCESSED, so an accessed-but-not-defined rule (defined in
   // another artifact) leaks into `Object.entries` as an undefined `ref`. Those
