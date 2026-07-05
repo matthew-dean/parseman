@@ -82,6 +82,15 @@ type Ctx = {
    * collision = override) and is never prefixed.
    */
   ns?: string | undefined
+  /**
+   * Linkable (compose) mode: a `choice` arm that is a named rule REF must not bake
+   * an inline first-set dispatch guard — the referenced rule can be overridden at
+   * fuse time, changing its first-set. Instead emit a `/*@FS:rule:codevar@*​/true`
+   * placeholder that fusedBody() substitutes with the WINNING rule's first-set
+   * condition (or leaves `true` = always-try when unknown). Off for monolithic
+   * compile() / compileRuleMap where rules are final.
+   */
+  deferFirstSetRefs?: boolean | undefined
   /** Generated function declaration strings, prepended before the main body */
   namedFnDecls: string[]
   /** Active trivia parser (set by grammar() wrappers, cleared on exit) */
@@ -453,7 +462,7 @@ type ER = { stmts: string[]; valueVar: string; endVar: string }
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-function firstSetCond(codeVar: string, fs: FirstSet): string {
+export function firstSetCond(codeVar: string, fs: FirstSet): string {
   if (fs.kind === 'any') return 'true'
   if (fs.kind === 'empty') return 'false'
   return fs.ranges.map(r =>
@@ -1279,7 +1288,15 @@ function emitFirstMatch(
     const autoNot = def.autoNot[i]
     const atStart = failsAtStart(p)
     const staticFx = armStaticExpected(ctx, p)
-    const fsGuard = needsFirstSetGuard(p) ? firstSetCond(codeV, p._meta.firstSet) : null
+    // A named rule REF in linkable mode: defer its first-char guard to fuse time
+    // (the rule can be overridden). Emit a placeholder that fusedBody() rewrites
+    // with the WINNING rule's first-set — `true` (always-try) if left unresolved.
+    const deferRuleName = ctx.deferFirstSetRefs
+      ? (p as unknown as { _ruleName?: string })._ruleName
+      : undefined
+    const fsGuard = deferRuleName !== undefined
+      ? `/*@FS:${deferRuleName}:${codeV}@*/true`
+      : needsFirstSetGuard(p) ? firstSetCond(codeV, p._meta.firstSet) : null
 
     // Gate: register predicate in mapFns; condition guards entire arm attempt
     let gateCond: string | null = null
@@ -2541,6 +2558,12 @@ export type LinkablePieces = {
   prelude: string[]
   ruleFns: Map<string, string>
   wrappers: Map<string, string>
+  /**
+   * Per-rule first-set (this artifact's own rules). fusedBody() uses the WINNING
+   * artifact's entry to resolve `/*@FS:rule:codevar@*​/true` dispatch placeholders
+   * emitted for rule-ref choice arms — sound under compose override.
+   */
+  firstSets: Map<string, FirstSet>
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsCollator: boolean
@@ -2580,6 +2603,7 @@ export function compileLinkable(
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
+    deferFirstSetRefs: true,
   }
   // Canonical name per rule. Register in BOTH ruleNames (so sibling `emitLazy`
   // refs resolve by name) AND namedParsers up-front (so a rule emitted before a
@@ -2698,12 +2722,25 @@ export function compileLinkable(
     ].join('\n'))
   }
 
+  // Per-rule first-set table for fuse-time dispatch: fusedBody() substitutes each
+  // `/*@FS:rule:codevar@*​/true` placeholder (emitted for rule-ref choice arms)
+  // with the WINNING rule's condition. Resolve each rule to its real first-set;
+  // a rule that can match empty at start gets `any` (→ no guard, always try).
+  const firstSets = new Map<string, FirstSet>()
+  for (const [key, rule] of ruleMap) {
+    let resolved: Combinator<unknown> = rule
+    const d = rule._def
+    if (d.tag === 'lazy') { try { resolved = d.thunk() } catch { resolved = rule } }
+    firstSets.set(key, canMatchEmptyAtStart(resolved) ? { kind: 'any' } : resolved._meta.firstSet)
+  }
+
   return {
     ns,
     keys: perEntry.map(e => e.key),
     prelude,
     ruleFns,
     wrappers,
+    firstSets,
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsCollator: ctx.needsCollator,

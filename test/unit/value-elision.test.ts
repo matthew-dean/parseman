@@ -105,13 +105,16 @@ describe('markUnusedValues — analysis contract', () => {
 // ---------------------------------------------------------------------------
 describe('markUnusedValues — ref-rooted rules (rules()/compose shape)', () => {
   it('elides a many inside a node whose rule root is a ref (forward reference)', () => {
-    // `Doc` references `Item` before it is defined → Item's slot is a ref; Doc's
-    // own body is reached through the ref that rules() stores for it.
+    // `Wrapper` references `Doc` → Doc's cache slot becomes a ref()/lazy, so
+    // markUnusedValues(Doc) hits the root lazy and MUST resolve it to reach the
+    // `many` in Doc's body. Without resolveRoot the many is never walked (RED).
     let itemMany: Combinator<unknown> | undefined
-    const g = rules<{ Doc: Combinator<unknown>; Item: Combinator<unknown> }>(r => {
+    const g = rules<{ Wrapper: Combinator<unknown>; Doc: Combinator<unknown>; Item: Combinator<unknown> }>(r => {
       const inner = many(r.Item)
       itemMany = inner
       return {
+        Wrapper: node('Wrapper', parser({}, r.Doc), (ch, _r, span, _tl, st) =>
+          mkCst('Wrapper', ch as CSTNode['children'], span, st)),
         Doc: node('Doc', parser({}, inner), (ch, _r, span, _tl, st) =>
           mkCst('Doc', ch as CSTNode['children'], span, st)),
         Item: node('Item', digits, (ch, _r, span, _tl, st) =>
@@ -119,7 +122,7 @@ describe('markUnusedValues — ref-rooted rules (rules()/compose shape)', () => 
       }
     })
     void g
-    // rules() runs markUnusedValues per rule; the many under Doc's node must be marked.
+    // rules() runs markUnusedValues per rule; the many under Doc's (ref-rooted) node must be marked.
     expect(unused(itemMany!)).toBe(true)
   })
 

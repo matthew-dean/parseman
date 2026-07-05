@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseFail } from '../types.ts'
-import { empty } from './first-set.ts'
+import { sequenceFirstSet } from './first-set.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
 
 type UnwrapParsers<T extends Combinator<unknown>[]> = {
@@ -10,7 +10,9 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
   ...parsers: T
 ): Combinator<UnwrapParsers<T>> {
   const meta: ParserMeta = {
-    firstSet: parsers[0]?._meta.firstSet ?? empty(),
+    // Union through the nullable prefix — a leading optional()/many() lets a later
+    // term's first char start the sequence. Just `parsers[0]` under-approximates.
+    firstSet: sequenceFirstSet(parsers),
     canMatchNewline: parsers.some(p => p._meta.canMatchNewline),
     isTrivia: false,
   }

@@ -18,9 +18,9 @@
  * strict CSP; a build-time variant that emits fused source instead is a later
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
-import { compileLinkable } from './codegen.ts'
+import { compileLinkable, firstSetCond } from './codegen.ts'
 import type { LinkablePieces } from './codegen.ts'
-import type { Combinator } from '../types.ts'
+import type { Combinator, FirstSet } from '../types.ts'
 
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
@@ -142,7 +142,24 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
     ...[...winner].map(([k, p]) => p.ruleFns.get(k)!),
   ]
   const wrapperEntries = [...winner].map(([k, p]) => `${JSON.stringify(k)}: ${p.wrappers.get(k)!}`)
-  const body = [...lines, 'return {', wrapperEntries.join(',\n'), '}'].join('\n')
+  const rawBody = [...lines, 'return {', wrapperEntries.join(',\n'), '}'].join('\n')
+
+  // Fuse-time first-set dispatch: a rule-ref choice arm was emitted (in linkable
+  // mode) as `/*@FS:rule:codevar@*​/true`. Resolve it now against the WINNING
+  // rule's first-set — sound under override, since we use the final rule, not the
+  // one visible when the referencing rule was compiled. Unknown / `any` /
+  // empty-matching rule → leave `true` (always try the arm; correctness over
+  // pruning). Non-composed callers with no `firstSets` table also fall through.
+  const finalFS = new Map<string, FirstSet>()
+  for (const [k, p] of winner) { const fs = p.firstSets?.get(k); if (fs) finalFS.set(k, fs) }
+  const body = rawBody.replace(
+    /\/\*@FS:([A-Za-z0-9_$]+):([A-Za-z0-9_$]+)@\*\/true/g,
+    (_m, name: string, codevar: string) => {
+      const fs = finalFS.get(name)
+      if (!fs || fs.kind === 'any' || fs.kind === 'empty') return 'true'
+      return `(${firstSetCond(codevar, fs)})`
+    },
+  )
 
   // Non-inlined callbacks (runtime compile() mode), keyed `<ns>mf` / `<ns>build`.
   const env: Record<string, unknown> = {}
