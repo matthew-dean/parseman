@@ -51,16 +51,16 @@ Two questions sort most of the field:
 
 ## Capabilities
 
-| Parser | Author in JS/TS | Debuggable grammar | Context-sensitive grammar | Incremental re-parse | Error recovery | Trivia capture |
-| --- | --- | --- | --- | --- | --- | --- |
-| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `parseDoc` | ✅ `recover` + auto lists | ✅ built-in `triviaLog` |
-| [Peggy](https://peggyjs.org/) | ❌ text DSL | ⚠️ generated JS + trace | ✅ in-grammar | ❌ | ⚠️ location only | ❌ manual |
-| [Parsimmon](https://github.com/jneen/parsimmon) | ✅ | ✅ | ✅ in-grammar | ❌ | ❌ | ❌ manual |
-| [Chevrotain](https://chevrotain.io/) | ✅ | ✅ | ✅ in-grammar | ⚠️ DIY, no engine | ✅ strong (automatic) | ⚠️ tokens, manual |
-| [Nearley](https://nearley.js.org/) | ❌ text DSL | ❌ | ❌ CFG only | ❌ | ❌ | ❌ manual |
-| [Jison](https://github.com/zaach/jison) | ❌ text DSL | ❌ | ⚠️ lexer states | ❌ | ⚠️ error token | ❌ manual |
-| [Lezer](https://lezer.codemirror.net/) | ❌ text DSL | ❌ | ⚠️ external only | ✅✅ core strength | ✅ | ✅ contextual skip |
-| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | ⚠️ JS → C | ❌ | ⚠️ external only | ✅✅ core strength | ✅ | ⚠️ `extras` |
+| Parser | Author in JS/TS | Debuggable grammar | Context-sensitive grammar | Grammar composition | Incremental re-parse | Error recovery | Trivia capture |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `compose()` | ✅ `parseDoc` | ✅ `recover` + auto lists | ✅ built-in `triviaLog` |
+| [Peggy](https://peggyjs.org/) | ❌ text DSL | ⚠️ generated JS + trace | ✅ in-grammar | ❌ | ❌ | ⚠️ location only | ❌ manual |
+| [Parsimmon](https://github.com/jneen/parsimmon) | ✅ | ✅ | ✅ in-grammar | ⚠️ values | ❌ | ❌ | ❌ manual |
+| [Chevrotain](https://chevrotain.io/) | ✅ | ✅ | ✅ in-grammar | ✅ inheritance | ⚠️ DIY, no engine | ✅ strong (automatic) | ⚠️ tokens, manual |
+| [Nearley](https://nearley.js.org/) | ❌ text DSL | ❌ | ❌ CFG only | ❌ | ❌ | ❌ | ❌ manual |
+| [Jison](https://github.com/zaach/jison) | ❌ text DSL | ❌ | ⚠️ lexer states | ❌ | ❌ | ⚠️ error token | ❌ manual |
+| [Lezer](https://lezer.codemirror.net/) | ❌ text DSL | ❌ | ⚠️ external only | ⚠️ `@dialect` | ✅✅ core strength | ✅ | ✅ contextual skip |
+| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | ⚠️ JS → C | ❌ | ⚠️ external only | ❌ | ✅✅ core strength | ✅ | ⚠️ `extras` |
 
 **Legend:**
 
@@ -75,6 +75,12 @@ Two questions sort most of the field:
   predicates or arbitrary parse-time state), no escape hatch. **⚠️ external only**:
   possible, but *only* via a hand-written tokenizer/scanner (token-level state) or lexer
   start-conditions — not the grammar rules themselves. **❌**: context-free only.
+- **Grammar composition** — build a grammar by extending/overriding another's rules.
+  **✅** first-class: Parséman [`compose([base, delta])`](./extending) overrides rules by
+  name — across packages, with no base source needed; Chevrotain subclasses a grammar and
+  `OVERRIDE_RULE`. **⚠️**: Parsimmon parsers are values you can combine, but there's no
+  named-rule override; Lezer `@dialect` toggles token sets, not rule composition. **❌**:
+  no mechanism — each grammar stands alone.
 - **Incremental re-parse** — **✅✅** built for it (buffer-tree fragment reuse); **✅**
   first-class API; **⚠️ DIY, no engine**: no built-in edit-reuse, but the pieces exist to
   roll your own; **❌**: re-parses from scratch.
@@ -195,7 +201,6 @@ several things Parséman doesn't offer:
 - A **separate, configurable lexer** with stack-based **modes**, **token categories**
   (polymorphic tokens), and `longer_alt` — Parséman is scannerless, so none of this
   applies (a simplification, but also a missing capability if you want it).
-- **Grammar inheritance** (subclass a grammar and `OVERRIDE_RULE`).
 - **Per-rule-typed CST visitor base classes** (`getBaseCstVisitor…`) generated from the
   grammar. Parséman's [`walk` / `createVisitor`](./ast#walking-the-tree) cover the same
   traversal at runtime, dispatching on a node's `type`, but don't hand you a class typed
@@ -232,9 +237,9 @@ rich CST and context sensitivity.
 - **[Parsimmon](https://github.com/jneen/parsimmon)** — a tiny combinator parser with no
   build step and modest performance needs.
 - **[Chevrotain](https://chevrotain.io/)** — a batteries-included toolkit (railroad
-  diagrams, grammar introspection, lexer modes, grammar-wide automatic error recovery,
-  grammar inheritance) with best-in-class fault tolerance, when you want breadth and don't
-  need incremental re-parse or full-fidelity trivia.
+  diagrams, grammar introspection, lexer modes, grammar-wide automatic error recovery)
+  with best-in-class fault tolerance, when you want breadth and don't need incremental
+  re-parse or full-fidelity trivia.
 - **[Nearley](https://nearley.js.org/)** — genuinely **ambiguous** or natural-language
   grammars where you want every valid parse.
 - **[Jison](https://github.com/zaach/jison)** — porting an existing Yacc/Bison LALR

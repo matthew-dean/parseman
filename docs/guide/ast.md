@@ -1,13 +1,19 @@
 # CST / AST nodes
 
 For grammars that produce a typed syntax tree, support incremental re-parsing, or care
-about trivia, wrap each rule in `node(type, combinator, build, opts?)`.
+about trivia, wrap each rule in `node(type, combinator, build?, opts?)`. There are two ways
+to get a tree out:
 
-Parséman captures the rule's terminals into `children` / `rawChildren` and records trivia
-as flat `[start, end, insertIdx, …]` entries in `triviaLog`, then hands all of it to your
-`build` callback. **Capture is the library's job** — you don't wrap terminals to recover
-their spans, and you don't reconstruct trivia. It's collected as the parser runs, in both
-the interpreter and the compiled build.
+- **A plain CST** — omit `build` and let the library build a uniform positioned node for
+  every rule. Fastest to write; see [Just want a plain CST?](#just-want-a-plain-cst) below.
+- **Your own AST** — pass a `build` callback that constructs whatever node shape you want
+  from the captured children. Covered first.
+
+Either way, Parséman captures the rule's terminals into `children` / `rawChildren` and
+records trivia as flat `[start, end, insertIdx, …]` entries in `triviaLog`. **Capture is
+the library's job** — you don't wrap terminals to recover their spans, and you don't
+reconstruct trivia. It's collected as the parser runs, in both the interpreter and the
+compiled build.
 
 ```ts
 import { rules, parser, node, regex, literal, sequence, many, trivia } from 'parseman'
@@ -56,6 +62,45 @@ capture) away to flat JS.
 > `transform(p, fn)` is still the tool for plain value-mapping (no children/trivia).
 > `node()` is for CST/AST rules — it adds the capture `transform` doesn't. Both compile
 > under the macro.
+
+## Just want a plain CST? {#just-want-a-plain-cst}
+
+If you don't need a custom AST, **omit `build`**. A `node(type, combinator)` with no build
+callback is *structural*: it constructs its node through a **host** you supply via
+`ctx.build`, so the same grammar produces a plain CST for tooling (host set) and its own
+AST for evaluation (host unset, or a `build` callback). Pass the built-in `cstBuildHost`
+and every rule becomes a uniform positioned node:
+
+```ts
+import { rules, node, regex, literal, sequence, many, parser, trivia, run, cstBuildHost } from 'parseman'
+
+const ws = trivia(regex(/\s+/))
+const g = rules(gg => ({
+  Expr: node('Expr', parser({ trivia: ws }, sequence(gg.Num, many(sequence(literal('+'), gg.Num))))),
+  Num:  node('Num', regex(/[0-9]+/)),
+}))
+
+const r = run(g.Expr, '1 + 2', { build: cstBuildHost })
+```
+
+`r.value` is the CST — every node the same [`NodeLike`](../reference/types#node-types) shape,
+terminals as `CSTLeaf`:
+
+```ts
+{
+  _tag: 'node', type: 'Expr', span: { start: 0, end: 5 }, state: null,
+  children: [
+    { _tag: 'node', type: 'Num', span: { start: 0, end: 1 }, state: null,
+      children: [{ _tag: 'leaf', value: '1', span: { start: 0, end: 1 } }] },
+    { _tag: 'leaf', value: '+', span: { start: 2, end: 3 } },
+    { _tag: 'node', type: 'Num', span: { start: 4, end: 5 }, state: null,
+      children: [{ _tag: 'leaf', value: '2', span: { start: 4, end: 5 } }] },
+  ],
+}
+```
+
+Walk it with [`walk` / `createVisitor`](#walking-the-tree), and turn its trivia into a
+`before`/`after` lookup with [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
 ## Collapsing wrapper rules
 

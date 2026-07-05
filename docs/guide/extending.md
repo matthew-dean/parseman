@@ -105,12 +105,13 @@ compiled-only package composes fine.
 macro](./modes):
 
 - **Macro (build):** `compose([...])` is fused at **build time** into one static parser —
-  a plain closure of direct calls, **no `new Function` / eval** in the output. This is the
-  fast, eval-free path, and the one that needs no base source (above).
+  a plain closure of direct rule calls, emitted as ordinary source. It needs no base
+  grammar source (the pieces travel on the imported value) and runs under any CSP, so it
+  ships in strict-CSP contexts (browser extensions, some CDNs) with no configuration.
 - **`compile()` / interpreter (runtime):** `compose([...])` fuses when it's called, using
-  the same code-generation `compile()` uses (so, like `compile()`, it needs
-  `'unsafe-eval'` under a strict CSP). Correct and full-speed once constructed; parsing is
-  never eval.
+  the same code generation `compile()` uses — so, like `compile()`, it builds the fused
+  parser via `new Function` (which needs `'unsafe-eval'` under a strict CSP). Construction
+  happens once; parsing afterward is full speed.
 
 Either way the parse is identical — a single fused scope of direct rule calls, override
 resolved across the whole set.
