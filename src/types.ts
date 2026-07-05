@@ -37,7 +37,7 @@ export type ParseResult<T> = ParseOk<T> | ParseFail
 // ---------------------------------------------------------------------------
 export type ParserDef =
   | { tag: 'literal';   value: string; caseInsensitive: boolean }
-  | { tag: 'regex';     source: string; flags: string; optimizedSource: string }
+  | { tag: 'regex';     source: string; flags: string }
   | { tag: 'sequence';  parsers: Combinator<unknown>[] }
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
   | { tag: 'many';      parser: Combinator<unknown>; min: 0 }
@@ -51,7 +51,7 @@ export type ParserDef =
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; trackLines: boolean }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
-  | { tag: 'node';     type: string; parser: Combinator<unknown>; build: (children: ReadonlyArray<unknown>, rawChildren: ReadonlyArray<unknown>, span: { start: number; end: number }, triviaLog: readonly number[], state: unknown) => unknown; buildSrc?: string; collapse?: boolean }
+  | { tag: 'node';     type: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, rawChildren: ReadonlyArray<unknown>, span: { start: number; end: number }, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; collapse?: boolean }
   | { tag: 'guard';    predicate: (state: unknown) => boolean }
   | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown> }
   | { tag: 'recover';  parser: Combinator<unknown>; sentinel: Combinator<unknown> }
@@ -88,6 +88,20 @@ export type ParseContext = {
   trackLines: boolean
   /** Grammar-author-provided state, scoped with withCtx() and read in guard(). */
   state?: unknown
+  /**
+   * Mode host (RULE_ABI_PLAN §7): when set, a linkable/fused grammar's `node()`
+   * rules build via `build(type, children, rawChildren, span, triviaLog, state)`
+   * instead of their own builder — so ONE grammar serves eval-AST (unset) vs
+   * positioned-CST / language-service (set) modes. Ignored by non-linkable output.
+   */
+  build?: ((
+    type: string,
+    children: ReadonlyArray<unknown>,
+    rawChildren: ReadonlyArray<unknown>,
+    span: { start: number; end: number },
+    triviaLog: readonly number[],
+    state: unknown,
+  ) => unknown) | undefined
   /** When set, recover() nodes push their ParseError here instead of (only) embedding it in the tree. */
   _errors?: ParseError[]
   /**

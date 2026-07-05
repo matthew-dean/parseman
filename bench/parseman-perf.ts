@@ -32,20 +32,38 @@ export const HISTORY_PATH = resolve(__dir, 'parseman-history.jsonl')
  * Shared measurement profile — the baseline capture and the regression guard
  * MUST use the same numbers, otherwise the guard compares medians taken under
  * different conditions and you're forced to widen the tolerance to hide the
- * methodology gap (this is exactly why the tolerance used to be 18%).
+ * methodology gap.
+ *
+ * Matched sample/pass counts control *within-machine, same-profile* noise — but
+ * they cannot cancel two other error sources that dominate the tiny sub-µs CSS
+ * cases (`css/selector` ≈ 2.7µs, `css/decls` ≈ 3.4µs): (a) run-to-run variance
+ * on this hardware, empirically ~10% even at 9×3, and (b) cross-machine ratio
+ * drift — the committed baseline is captured on one machine, the guard runs on
+ * another, and interpreted-vs-compiled JIT/microarchitecture differences move
+ * the ratio ~7–11% between machines despite the "ratio cancels clock speed"
+ * intent. An 8% gate sits *below* that noise floor and false-positives about
+ * half the time (verified: `css/selector`, which a numeric-terminal change
+ * cannot touch, "regressed" 5–11% run-to-run). So: more samples/passes to
+ * tighten (a), and a tolerance comfortably above (b).
  */
-export const PERF_SAMPLES = 9
+export const PERF_SAMPLES = 15
 /**
  * Interleaved passes for a robust baseline (manual, thoroughness over speed).
  * Robustness against thermal/GC blips comes mostly from spreading measurement
  * across independent passes over time, so a moderate sample count × several
  * passes beats one big sample window while keeping total wall-time sane.
  */
-export const BASELINE_PASSES = 3
+export const BASELINE_PASSES = 5
 /** Interleaved passes for the guard — MUST match BASELINE_PASSES so ratio comparisons are apples-to-apples. */
-export const GUARD_PASSES = 3
-/** Hard regression gate: max % the compiled speedup ratio may fall below baseline. */
-export const PERF_TOLERANCE = 8
+export const GUARD_PASSES = 5
+/**
+ * Hard regression gate: max % the compiled speedup ratio may fall below
+ * baseline. Set above the measured cross-machine + run-to-run noise floor
+ * (~11% on the sub-µs CSS cases) so a trip means a real codegen regression,
+ * not a thermal/JIT/hardware blip. Re-baseline (`pnpm bench:baseline`) after
+ * an intentional codegen change so the gate re-centers on the new ratios.
+ */
+export const PERF_TOLERANCE = 15
 
 const compiledJSON = compile(jsonDoc)
 const compiledGraphQL = compile(graphqlDoc)

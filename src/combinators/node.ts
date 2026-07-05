@@ -46,7 +46,7 @@ function collapseChild(child: unknown): unknown {
     : child
 }
 
-export function node<N>(type: string, combinator: Combinator<unknown>, build: BuildNode<N>, opts?: NodeOptions): Combinator<N> {
+export function node<N>(type: string, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions): Combinator<N> {
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,
@@ -59,8 +59,10 @@ export function node<N>(type: string, combinator: Combinator<unknown>, build: Bu
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
   // capture for the inner scope; when it never reads state (5th), skip the state clone.
-  const capturesTrivia = buildReadsTrivia(def)
-  const clonesState = buildReadsState(def)
+  // A STRUCTURAL node (no own build) defers to `ctx.build` / a default CST, which
+  // may read either, so capture both.
+  const capturesTrivia = build ? buildReadsTrivia(def) : true
+  const clonesState = build ? buildReadsState(def) : true
   return {
     _tag: 'node',
     _meta: meta,
@@ -76,12 +78,15 @@ export function node<N>(type: string, combinator: Combinator<unknown>, build: Bu
       if (!r.ok) return r
 
       // collapse: a single captured child IS the value — skip build.
+      const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const built: unknown = collapse && children.length === 1
         ? collapseChild(children[0])
-        : build(
-          children, rawChildren, r.span, triviaLog,
-          clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined,
-        )
+        : build
+          ? build(children, rawChildren, r.span, triviaLog, st)
+          // Structural node: a `ctx.build` host if present, else a default CST.
+          : ctx.build
+            ? ctx.build(type, children, rawChildren, r.span, triviaLog, st)
+            : { _tag: 'node', type, span: { start: r.span.start, end: r.span.end }, state: st ?? null, children }
       const isNodeLike = typeof built === 'object' && built !== null && (built as { _tag?: string })._tag === 'node'
       const rawEntry = isNodeLike
         ? built

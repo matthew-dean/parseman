@@ -102,12 +102,15 @@ method. Prefer `rules()`.
 
 ## Trees
 
-### `node(type, combinator, build, opts?)`
+### `node(type, combinator, build?, opts?)`
 
-CST/AST rule. Captures the combinator's terminals into `children` / `rawChildren` and
-trivia into `triviaLog`, then calls `build(children, rawChildren, span, triviaLog, state)`.
-`opts.collapse` returns the single child directly for one-child matches (skipping `build`).
-See [CST / AST nodes](../guide/ast).
+CST/AST rule. Captures the combinator's terminals into `children` / `rawChildren` and trivia
+into `triviaLog`. With a `build` callback it calls `build(children, rawChildren, span,
+triviaLog, state)` to construct the node; **omit `build`** to make it a *structural* node
+that builds through the injected [`ctx.build`](#cstbuildhost) host instead — so one grammar
+serves its own AST (host unset) and a positioned CST / language-service tree (host set).
+`opts.collapse` returns the single child directly for one-child matches. See
+[CST / AST nodes](../guide/ast).
 
 ### `buildTriviaIndex(root, input?, opts?)` {#buildtriviaindex}
 
@@ -210,6 +213,23 @@ Line lookup is O(log n) via binary search on a newline index built once per inpu
 When `trackLines` is false (the default), no index is built and spans carry only byte
 offsets.
 
+### `run(entry, input, opts?)`
+
+Run a grammar **entry** — a rule function from a `compose()` / `compile()` map, or an
+interpreter combinator — against `input`, threading the standard ctx (trivia log,
+`recover`/`expect` errors, the `ctx.build` host, grammar state) so a tool doesn't hand-build
+it or branch on function-vs-combinator. Returns a [`RunResult`](./types#runresult):
+`{ ok, value, span, expected, errors, triviaLog, unconsumedFrom }`. Pass `opts.build` for a
+[CST host](#cstbuildhost), `opts.state` for initial grammar state, and `opts.trivia`
+(the grammar's trivia rule) to skip trailing whitespace/comments before reporting
+`unconsumedFrom` — so the dialect's own trivia decides what counts as leftover input.
+
+```ts
+const g = compose([base])
+run(g.Value, '12  ', { trivia: g.rw })  // { ok: true, …, unconsumedFrom: null }
+run(g.Value, '12 x', { trivia: g.rw })  // unconsumedFrom → offset of 'x'
+```
+
 ## Compilation
 
 ### `compile(combinator, mapFnSources?)`
@@ -219,6 +239,38 @@ JIT-compile a combinator tree to an optimized JS function at runtime. Returns a
 `.parseWithErrors()`, plus the generated `.source` and `.inlineExpression` strings.
 Requires `new Function` (won't run under a strict CSP). See
 [The three modes](../guide/modes#compile-runtime-jit).
+
+## Composing grammars
+
+Fuse grammars into one parser, with override, à la carte selection, and no base-grammar
+source required. See [Extending grammars](../guide/extending).
+
+### `compose(items)`
+
+`compose([base, ext, …])` fuses grammars/artifacts into one runnable map of parse
+functions. Later entries **override** earlier ones by rule name, and because fusion
+re-binds every rule reference in one shared scope, an override reroutes the base's *own*
+calls too (open recursion). Each item is a grammar (a `rules()` result) or an
+already-compiled artifact.
+
+- **With the macro (build time):** `compose([...])` is fused into **static source** — a
+  plain closure of direct calls. **No `new Function`, no eval** in the emitted code.
+- **Without the macro (runtime):** `compose([...])` fuses when it runs, via `new Function`
+  — the same JIT `compile()` uses (so, like `compile()`, it needs `'unsafe-eval'` under a
+  strict CSP). Parsing is never eval; only the one-time fuse is.
+
+### `pick(grammar, names)`
+
+Restrict a grammar/artifact to `names` plus their transitive rule-dependency closure
+(à la carte). Returns an artifact for `compose()`:
+`compose([css, pick(less, ['MixinCall'])])`.
+
+### `cstBuildHost(type, children, rawChildren, span)` {#cstbuildhost}
+
+A generic positioned-CST build host. Pass as `ctx.build` (e.g.
+`parser.Rule(input, 0, { build: cstBuildHost })`, or `parseDoc(..., { build: cstBuildHost })`)
+to make any grammar produce a uniform CST — `{ _tag:'node', type, span, state, children }` —
+instead of its own AST builders. Left unset, a grammar uses its own builders.
 
 ## Error recovery
 
@@ -300,6 +352,10 @@ autocomplete. Probes the grammar at that position via a truncated parse.
 ## Incremental re-parsing
 
 ### `parseDoc(registry, rootRule, input, opts?)`
+
+::: warning Experimental
+Incremental re-parsing is **experimental** and its API may still change. Pin your version.
+:::
 
 Wrap a parse in an immutable document that re-parses incrementally via `.edit(from, to,
 replacement)`. `registry` is the object `rules()` returns. See

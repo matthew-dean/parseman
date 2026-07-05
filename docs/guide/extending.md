@@ -1,153 +1,116 @@
 # Extending grammars
 
 Two grammars often overlap almost entirely: a base language and a dialect that adds or
-tweaks a few rules. JSON and a lenient JSON that allows comments and trailing commas; a
-small expression language and one with extra operators; a query language and a vendor
-superset. Rather than copy the base grammar and edit it, factor the shared rules into a
-**fragment** and extend it.
+tweaks a few rules — JSON and a lenient JSON with comments and trailing commas; CSS and a
+Less/Sass superset; a query language and a vendor variant. Rather than copy the base and
+edit it, **compose** it: take the base grammar and fuse your changes on top.
 
-A fragment is nothing new — it's just a factory that returns a slice of a rule map:
+## `compose()`
 
-```ts
-// numbers.ts — a shared fragment
-import { regex, oneOrMore } from 'parseman'
-
-export const numbers = (g: any) => ({
-  digit: regex(/[0-9]/),
-  number: oneOrMore(g.digit),
-})
-```
-
-Extend a grammar by **spreading** the fragment into its `rules()` map:
+`compose([...])` fuses grammars into one runnable parser. Later entries **override**
+earlier ones by rule name:
 
 ```ts
-import { rules, sequence, regex } from 'parseman'
-import { numbers } from './numbers'
+import { rules, regex, choice, compose } from 'parseman'
 
-export const { pair } = rules(g => ({
-  ...numbers(g),                                   // fragment's rules merged in
-  pair: sequence(g.number, regex(/,/), g.number),  // your rule uses g.number
+const base = rules(g => ({
+  Value: choice(g.Num, g.Word),
+  Num:   regex(/[0-9]+/),
+  Word:  regex(/[a-z]+/),
 }))
+
+// A dialect that only redefines Num (must end with '!').
+const dialect = rules(() => ({ Num: regex(/[0-9]+!/) }))
+
+const parser = compose([base, dialect])
+parser.Value('12!', 0, {})   // ✅ matches — via the overridden Num
+parser.Value('12',  0, {})   // ✗ no match — dialect's Num needs '!'
+parser.Value('abc', 0, {})   // ✅ Word still works
 ```
 
-That's it. The same `g` proxy is threaded into the fragment, so `g.number` inside the
-fragment and `g.number` in your grammar refer to the *same* rule. Extension is plain
-JavaScript object spread — no special combinator, no build step required.
+A grammar (`rules(...)` result) is composable **as-is** — there's no wrapper to opt into,
+no special export. Every unlisted rule is inherited; the listed ones override.
 
-## Overriding
+### Override is open-recursive
 
-Spread order wins, exactly like `Object.assign`. To specialize a base grammar, spread it
-first and redefine the rules you want to change. Here a strict grammar is extended into a
-lenient dialect by relaxing one rule — the array now allows a trailing comma:
+This is the key property, and it's what a plain object merge can't give you: overriding a
+rule reroutes **every reference to it, including references inside the base's own rules.**
+Above, `base.Value` calls `g.Num` — and after `compose`, that call resolves to the
+*dialect's* `Num`. Composition re-binds all rule references in one shared scope, so the
+base's internals see your overrides too.
+
+## À la carte with `pick`
+
+Take only the rules you want (plus their dependency closure). Handy when you're assembling
+one grammar from parts of several:
 
 ```ts
-export const { value } = rules(g => ({
-  ...strictJson(g),   // the base grammar
-  array: sequence(literal('['), sepBy(g.value, comma), optional(comma), literal(']')),
-}))
+import { compose, pick } from 'parseman'
+
+// e.g. a grammar that borrows a mixin rule from Less and a loop from Sass:
+const parser = compose([
+  css,                          // whole base
+  pick(less, ['MixinCall']),    // just MixinCall + everything it references
+  pick(sass, ['EachLoop']),
+])
 ```
 
-Every unlisted rule is inherited; the listed ones override. This is how a dialect *extends*
-a base grammar instead of copying it.
+`pick(grammar, names)` keeps `names` and their transitive rule dependencies and drops the
+rest. If a kept rule references a name that isn't present in the final `compose([...])`,
+you get a clear compose-time error rather than a runtime surprise.
 
-## Injecting the tree builder (and other hosts)
+## Building trees: swap the output shape
 
-If your rules build AST nodes, the build step is often grammar-specific — two dialects can
-produce different nodes for the same rule. Don't let a rule's build callback close over a
-module-level function; that would bind it to the *fragment's* module, not the grammar that's
-extending it. **Inject the host explicitly** as a second fragment argument:
+If your grammar's `node()` rules build an AST, `compose()` still lets a caller choose a
+**different tree** at parse time without changing the grammar — pass a build host as
+`ctx.build`. `cstBuildHost` yields a uniform positioned CST from any grammar:
 
 ```ts
-// fragment
-export const values = (g, { build }) => ({
-  sum: node('Sum', sequence(g.term, /* … */), (c, r, s) => build('Sum', c, r, s)),
-})
+import { compose, cstBuildHost } from 'parseman'
 
-// grammar that extends it
-export const { … } = rules(g => ({
-  ...values(g, { build }),   // ← this grammar passes ITS build
-}))
+const parser = compose([base])
+parser.Value('12', 0, {})                      // → the grammar's own AST
+parser.Value('12', 0, { build: cstBuildHost }) // → a positioned CST node
 ```
 
-Now the fragment's `sum` rule is built by *this* grammar's `build`. Anything
-grammar-specific — the builder host, feature flags — flows in through that injected object.
+This is how the same composed grammar serves an evaluator (its own AST) and a language
+service (a CST with spans). See [incremental re-parsing](./incremental) for driving it in
+an editor.
 
-## How this behaves in each mode
+## No base source required
 
-Parséman [runs the same grammar two ways](./modes) — interpreted, or compiled by the macro.
-Extension works in **both**, but with a caveat worth understanding:
+The important part for reuse: **composing a grammar never needs the base grammar's source.**
+When you build with the [macro](./macro-mode), an exported grammar automatically **carries
+its compiled, composable form on the value** (so `import { base }` is all a consumer needs).
+A downstream package just imports the compiled grammar and composes it:
 
-- **Interpreted (no macro): fully supported.** `...fragment(g)` is ordinary JS — the fragment
-  runs, returns its rules, they merge. Nothing to configure.
-- **Macro (compiled): the fragment is inlined when its source is available at build time;
-  otherwise it falls back to the interpreter.** When the macro can see a fragment's source
-  (see below), it inlines the whole extension into one compiled parser — full fast path.
-  When it can't, it emits a warning and that grammar runs interpreted (correct, just not
-  compiled). It never crashes and never silently mis-parses.
+```ts
+// @scope/base  →  ships a compiled grammar
+import { rules, regex, choice } from 'parseman' with { type: 'macro' }
+export const base = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))
 
-::: warning The macro is a build-time *source* transform
-The macro can only inline a fragment it can **read as source** at the extending grammar's build time.
-It cannot inline a fragment that reaches it only as compiled output (a published `dist`),
-because a compiled combinator is an optimized parse function, not a re-composable definition
-tree. This is inherent — the same reason `babel-plugin-macros` needs a macro's source, not
-its build.
-:::
+// @scope/dialect  →  extends it, importing the COMPILED base
+import { rules, regex, compose } from 'parseman' with { type: 'macro' }
+import { base } from '@scope/base'
+export const parser = compose([base, rules(() => ({ Num: regex(/[0-9]+!/) }))])
+```
 
-### What "source is available" means in practice
+The dialect's build reads the base's **compiled** grammar — never its TypeScript source,
+and never recompiles it. There is no "ship your source for speed" tradeoff; a published,
+compiled-only package composes fine.
 
-- **Same package / monorepo** — the fragment is a source file the grammar imports
-  (`./fragments/numbers.ts`, or a workspace package resolved to its `src`). Source is present
-  at build time → inlined. This is the common case, since a dialect and its base are usually
-  developed together.
-- **Published library** — ship the fragment as **parseman source** (a source subpath export),
-  the same way macro libraries ship their source. Consumers with the macro inline it; consumers
-  without it run the identical source interpreted.
-- **Compiled-only dependency** — no source, no inlining. Extension still *works* via the
-  interpreter fallback; it just doesn't get the compiled fast path.
+## How this behaves in each execution mode
 
-The tradeoff to remember: **source for speed, runtime for portability.** Ship source (or a
-source subpath) if you want consumers to compile your fragment; otherwise they get the
-correct-but-interpreted path.
+`compose()` works whether a grammar [runs interpreted, via `compile()`, or via the
+macro](./modes):
 
-## Status
+- **Macro (build):** `compose([...])` is fused at **build time** into one static parser —
+  a plain closure of direct calls, **no `new Function` / eval** in the output. This is the
+  fast, eval-free path, and the one that needs no base source (above).
+- **`compile()` / interpreter (runtime):** `compose([...])` fuses when it's called, using
+  the same code-generation `compile()` uses (so, like `compile()`, it needs
+  `'unsafe-eval'` under a strict CSP). Correct and full-speed once constructed; parsing is
+  never eval.
 
-- **Interpreted extension** — available. Nothing to enable.
-- **Macro inlining of same-file fragments** — available. A `const frag = (g, deps) => ({ … })`
-  in the same file, spread as `...frag(g)` in a `rules()` return, is inlined into the compiled
-  rule map: the macro evaluates the fragment's body and return object against the extending
-  grammar's `g` proxy and merges its rules (spread order = override order, so a later definition
-  of a key wins). Nested spreads and fragment-local `const`s are supported.
-- **Macro inlining of *imported* fragments (cross-file / cross-package)** — available. When a
-  `...frag(g)` spread's factory is *imported*, the macro resolves the exporting module, reads its
-  **source** at build time, parses it (cached per module), finds the exported factory, and inlines
-  it exactly as it would a same-file one. Resolution uses [`oxc-resolver`](https://github.com/oxc-project/oxc-resolver)
-  — the same resolver family as the parser — so it honors package `exports`/`imports` maps, tsconfig
-  path aliases, and TypeScript extensions, and prefers a package's declared source (e.g. a `source`
-  export condition or main field). If resolution still lands on compiled output under a conventional
-  build directory (`dist`, `lib`, `build`, `out`, `compiled`, `cjs`, `esm`, …), the macro looks for a
-  co-located `src/` tree as a best-effort fallback. If no source can be found, the spread takes the
-  interpreter fallback (correct, not compiled).
-
-### The self-contained-fragment constraint
-
-For the macro to inline an *imported* fragment, that fragment must be **self-contained**: its rule
-parsers may reference only
-
-- **parseman combinators** (resolved by name — `regex`, `sequence`, `node`, …),
-- **`g`** (the shared proxy passed in by the extending grammar),
-- **injected `deps`** used inside `build`/`transform`/`node` callbacks (captured as source text and
-  resolved in the *consumer's* scope — this is why you [inject the host](#injecting-the-tree-builder-and-other-hosts)
-  instead of closing over a module-level function), and
-- the fragment's **own block-body `const`s** (`(g) => { const comma = literal(','); return { … } }`).
-
-If a fragment references a **module-level `const` of its own module** (not a body-local), the macro
-can't resolve it and returns `null` → that spread degrades to the interpreter fallback. Fully
-evaluating the exporting module's module-level combinator `const`s into the fragment scope is a
-later enhancement. For now, keep shared fragments self-contained (inline the helper into the
-factory body, or pass it in via `deps`).
-
-Every tier preserves the "runs identically interpreted" guarantee: the macro only ever *inlines
-what the interpreter would have computed*. Anything it can't resolve — an imported factory with
-no available source, a fragment that reaches out to its module's top-level consts, a shape it
-doesn't recognize — degrades to the interpreter with an actionable warning, never a crash or a
-mis-parse.
+Either way the parse is identical — a single fused scope of direct rule calls, override
+resolved across the whole set.

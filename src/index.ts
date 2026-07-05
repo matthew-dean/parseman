@@ -4,6 +4,13 @@ export { literal } from './combinators/literal.ts'
 export type { LiteralOptions } from './combinators/literal.ts'
 
 export { regex } from './combinators/regex.ts'
+// Wire the `regexp-tree`-backed first-set analyzer into `regex()`. Importing the
+// library entry opts you into precise choice-dispatch fast paths; consumers who
+// ship only compiled grammars never import this entry, so `regexp-tree` stays
+// out of their bundle (see `regex-analyze.ts` for the full rationale).
+import { registerRegexAnalyzer } from './combinators/regex.ts'
+import { firstSetFromRegex } from './combinators/regex-analyze.ts'
+registerRegexAnalyzer(firstSetFromRegex)
 export { keywords, word, makeWord } from './combinators/keywords.ts'
 export type { KeywordsOptions } from './combinators/keywords.ts'
 
@@ -21,7 +28,9 @@ export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
 
 export { compile } from './compiler/codegen.ts'
-export type { CompiledParser } from './compiler/codegen.ts'
+export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'
+export { compose, pick, cstBuildHost } from './compiler/linker.ts'
+export type { FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, offsetToLineCol, annotateSpan } from './compiler/line-index.ts'
 export type { LineIndex } from './compiler/line-index.ts'
@@ -39,9 +48,34 @@ export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, Node
 
 export { parseDoc } from './functional/doc.ts'
 export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts'
+export { run } from './functional/run.ts'
+export type { RunResult, RunOptions, Runnable } from './functional/run.ts'
 export { buildTriviaIndex } from './cst/trivia-index.ts'
 export type { TriviaIndex, TriviaToken, TriviaIndexOptions } from './cst/trivia-index.ts'
 export { walk, createVisitor } from './cst/walk.ts'
 export type { Walkable, WalkVisitor, VisitApi, VisitorHandlers } from './cst/walk.ts'
 export { triviaEntries } from './cst/trivia-entries.ts'
 export type { TriviaEntriesView } from './cst/trivia-entries.ts'
+
+export {
+  OffsetIndex,
+  buildOffsetIndex,
+  collectLeafSlots,
+  gapText,
+  lineBreaksIn,
+  blankLinesIn,
+  lineStartWithin,
+  indentWidth,
+  indentMixed,
+  commentsIn,
+  gapIsSignificant,
+} from './cst/offset-model.ts'
+export type { Slot, Gap } from './cst/offset-model.ts'
+export {
+  relativize,
+  absolutize,
+  absoluteSpanAt,
+  shiftAbsolute,
+  applyEdit,
+} from './cst/relative-spans.ts'
+export type { AbsNode, RelNode } from './cst/relative-spans.ts'

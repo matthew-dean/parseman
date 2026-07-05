@@ -22,8 +22,11 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, asFragmentFactory, type Scope, type ScopeEntry, type FactoryAst, type FactoryResolver, type ResolvedFactory } from './evaluator.ts'
-import { compile, compileRuleMap } from '../compiler/codegen.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
+import { compile, compileRuleMap, compileLinkable } from '../compiler/codegen.ts'
+import type { LinkablePieces } from '../compiler/codegen.ts'
+import { emitFusedSource } from '../compiler/linker.ts'
+import { createHash } from 'node:crypto'
 import type { Combinator } from '../types.ts'
 import type {
   ImportDeclaration,
@@ -41,32 +44,25 @@ export type ParsecraftPluginOptions = {
 
 const PARSEMAN_MODULE = 'parseman'
 
-// Shared, lazily-created module resolver for tier-2 fragment inlining. oxc-resolver
-// caches filesystem access internally, so one instance is reused across files.
-// Source-oriented condition/main fields are tried first so a package that ships its
-// `.ts` (via a `source`/`development` export condition) resolves to source rather
-// than compiled dist — the macro can only inline a fragment it can read as source.
-let _fragmentResolver: ResolverFactory | null = null
-function getFragmentResolver(): ResolverFactory {
-  return _fragmentResolver ??= new ResolverFactory({
-    extensions: ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'],
-    // TS/NodeNext style: a `./x.js` import may point at `./x.ts` source.
-    extensionAlias: {
-      '.js': ['.ts', '.tsx', '.js', '.jsx'],
-      '.mjs': ['.mts', '.mjs'],
-      '.cjs': ['.cts', '.cjs'],
-    },
-    conditionNames: ['source', 'development', 'import', 'require', 'default'],
-    mainFields: ['source', 'module', 'main'],
+// A grammar's carried linkable pieces live ONLY in its COMPILED output (the macro
+// embeds them there), never in its `.ts` source. So resolving an imported grammar
+// to read its pieces must prefer the built `import`/`require` entry — NOT the
+// `source` condition (which would land on un-compiled `.ts` with no pieces).
+let _compiledResolver: ResolverFactory | null = null
+function getCompiledResolver(): ResolverFactory {
+  return _compiledResolver ??= new ResolverFactory({
+    extensions: ['.js', '.mjs', '.cjs'],
+    conditionNames: ['import', 'require', 'default'],
+    mainFields: ['module', 'main'],
   })
 }
 
-// Module-level parse cache for imported fragment sources, keyed by absolute file
-// path. Shared across transformMacro invocations so a fragment imported by many
-// consumer files is read + parsed once per build, not once per consumer. The
-// mtime guard invalidates a stale entry so a watch-mode rebuild picks up an edited
-// fragment. A null `parsed` (unreadable / parse error) is cached too, to avoid
-// retrying a known-bad file for every consumer.
+// Module-level parse cache for imported COMPILED grammar modules (read to recover
+// a grammar's carried pieces for compose()), keyed by absolute file path. Shared
+// across transformMacro invocations so a grammar imported by many consumer files
+// is read + parsed once per build. The mtime guard invalidates a stale entry so a
+// watch-mode rebuild picks up a rebuilt module. A null `parsed` (unreadable / parse
+// error) is cached too, to avoid retrying a known-bad file for every consumer.
 type ParsedModule = { body: unknown[]; src: string }
 const _moduleParseCache = new Map<string, { mtimeMs: number; parsed: ParsedModule | null }>()
 
@@ -115,6 +111,98 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
     return { code: result.code, map: result.map }
   },
 }))
+
+// ---------------------------------------------------------------------------
+// Reading carried pieces back out of a COMPILED grammar module
+// ---------------------------------------------------------------------------
+// The macro embeds a grammar's linkable pieces inside its exported const's
+// initializer (see `withCarriedPieces`). To compose an imported grammar we parse
+// its compiled module, find that const, and pull the pieces literal back out —
+// these three pure helpers do exactly that (no runtime, no source recompile).
+
+type AnyNode = { type: string; start: number; end: number } & Record<string, unknown>
+
+/** Map an export NAME → the local binding it refers to. Handles both
+ * `export const X = …` (local === exported) and a bundler's rename
+ * `const X$1 = …; export { X$1 as X }`. */
+function exportLocalName(body: AnyNode[], exported: string): string | null {
+  for (const st of body) {
+    if (st.type !== 'ExportNamedDeclaration') continue
+    const decl = st.declaration as AnyNode | undefined
+    if (decl?.type === 'VariableDeclaration') {
+      for (const d of (decl.declarations as AnyNode[] | undefined) ?? []) {
+        const idn = d.id as { type?: string; name?: string } | undefined
+        if (idn?.type === 'Identifier' && idn.name === exported) return exported
+      }
+    }
+    for (const sp of (st.specifiers as AnyNode[] | undefined) ?? []) {
+      const exp = (sp.exported as { name?: string } | undefined)?.name
+      const loc = (sp.local as { name?: string } | undefined)?.name
+      if (exp === exported && loc) return loc
+    }
+  }
+  return null
+}
+
+/** Find the top-level `const <name> = <init>` initializer node. */
+function topLevelInit(body: AnyNode[], name: string): AnyNode | null {
+  for (const st of body) {
+    const vd = st.type === 'VariableDeclaration' ? st
+      : st.type === 'ExportNamedDeclaration' && (st.declaration as AnyNode | undefined)?.type === 'VariableDeclaration'
+        ? (st.declaration as AnyNode) : null
+    if (!vd) continue
+    for (const d of (vd.declarations as AnyNode[] | undefined) ?? []) {
+      const idn = d.id as { type?: string; name?: string } | undefined
+      if (idn?.type === 'Identifier' && idn.name === name && d.init) return d.init as AnyNode
+    }
+  }
+  return null
+}
+
+/** `Symbol.for('parseman.composedPieces')` ? */
+function isComposedPiecesSymbol(n: AnyNode | undefined): boolean {
+  if (!n || n.type !== 'CallExpression') return false
+  const callee = n.callee as AnyNode | undefined
+  const obj = (callee?.object as { name?: string } | undefined)?.name
+  const prop = (callee?.property as { name?: string } | undefined)?.name
+  const arg0 = (n.arguments as AnyNode[] | undefined)?.[0] as { value?: unknown } | undefined
+  return obj === 'Symbol' && prop === 'for' && arg0?.value === 'parseman.composedPieces'
+}
+
+/** Walk an initializer subtree for the `Object.defineProperty(_,
+ * Symbol.for('parseman.composedPieces'), { value: <LITERAL> })` the macro emits,
+ * and return the source range of <LITERAL>. */
+function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number } | null {
+  let found: { start: number; end: number } | null = null
+  const visit = (n: unknown): void => {
+    if (found || !n || typeof n !== 'object') return
+    if (Array.isArray(n)) { for (const c of n) visit(c); return }
+    const node = n as AnyNode
+    if (node.type === 'CallExpression') {
+      const callee = node.callee as AnyNode | undefined
+      const obj = (callee?.object as { name?: string } | undefined)?.name
+      const prop = (callee?.property as { name?: string } | undefined)?.name
+      const args = node.arguments as AnyNode[] | undefined
+      if (obj === 'Object' && prop === 'defineProperty' && args && isComposedPiecesSymbol(args[1])) {
+        const descriptor = args[2] as AnyNode | undefined
+        for (const p of (descriptor?.properties as AnyNode[] | undefined) ?? []) {
+          const key = p.key as { name?: string; value?: string } | undefined
+          if ((key?.name === 'value' || key?.value === 'value') && p.value) {
+            found = { start: (p.value as AnyNode).start, end: (p.value as AnyNode).end }
+            return
+          }
+        }
+      }
+    }
+    for (const k in node) {
+      if (k === 'type' || k === 'start' || k === 'end') continue
+      const v = (node as Record<string, unknown>)[k]
+      if (v && typeof v === 'object') visit(v)
+    }
+  }
+  visit(root)
+  return found
+}
 
 // ---------------------------------------------------------------------------
 // Core transform (exported for testing)
@@ -192,91 +280,6 @@ export function transformMacro(
   // Scope stores enriched ScopeEntry objects so evaluateParserFactory can
   // replay mfSrcs when outer-scope combinators are referenced inside factories.
   const scope: Scope = new Map<string, ScopeEntry>()
-  // Same-file fragment factories `const frag = (g, deps) => ({ … })`, registered as
-  // the main loop reaches them (in source order, so a factory is known before the
-  // rules() call that spreads it). evaluateParserFactory inlines `...frag(g)` spreads.
-  const factories = new Map<string, FactoryAst>()
-
-  // ── Tier-2 composition: resolve IMPORTED fragment factories from source ──
-  // A `...frag(g)` spread whose factory is imported (not same-file) is inlined by
-  // reading the exporting module's SOURCE at build time. Resolution goes through
-  // oxc-resolver (see getFragmentResolver) rather than a hand-rolled path walk, so
-  // it honors package `exports`/`imports` maps, tsconfig path aliases, and TS
-  // extensions, and prefers a package's declared source. A combinator can only be
-  // re-composed from source, so if resolution still lands on built output we try a
-  // sibling `src` tree. Parsed fragment modules are cached at module scope
-  // (parseModuleCached), so a fragment shared by many consumer files is read +
-  // parsed once per build. Anything unresolvable → the spread bails to the
-  // interpreter fallback (never crashes).
-  const resolver = getFragmentResolver()
-  // Per-file, keyed by local import name (the parsed-module bytes are cached at
-  // module scope via parseModuleCached, so this only memoizes the cheap AST walk).
-  const importedFactoryCache = new Map<string, ResolvedFactory | null>()
-
-  // Compiled-output dir segments we know how to map back to a sibling source tree.
-  // The resolver already prefers real source when a package declares it (a `source`
-  // export condition / main field, or a co-located `src/` reached via extensionAlias);
-  // this rewrite is only a best-effort fallback for packages that ship compiled output
-  // under a conventional dir with a parallel `src/`. Non-standard dirs simply don't
-  // match → the spread stays on the (correct) interpreter fallback.
-  const OUTPUT_DIR = /([\\/])(dist|lib|build|out|output|compiled|cjs|esm|es)([\\/])/
-
-  const resolveSourcePath = (spec: string): string | null => {
-    let resolved: string | null = null
-    try { resolved = resolver.resolveFileSync(id, spec).path ?? null } catch { /* unresolved */ }
-    if (!resolved) return null
-    // Resolved to compiled output? Prefer the co-located source if present — a
-    // compiled parse function isn't a re-composable definition tree.
-    if (OUTPUT_DIR.test(resolved)) {
-      const srcCandidate = resolved
-        .replace(OUTPUT_DIR, '$1src$3')
-        .replace(/\.(c|m)?js$/, '.ts')
-      try { if (fs.statSync(srcCandidate).isFile()) return srcCandidate } catch { /* fall through */ }
-    }
-    return resolved
-  }
-
-  const resolveImportedFactory = (name: string): ResolvedFactory | null => {
-    if (importedFactoryCache.has(name)) return importedFactoryCache.get(name)!
-    let result: ResolvedFactory | null = null
-    const binding = importBindings.get(name)
-    if (binding) {
-      const filePath = resolveSourcePath(binding.source)
-      const mod = filePath ? parseModuleCached(filePath) : null
-      if (mod) {
-        for (const st of mod.body as Array<{ type: string; declaration?: { type: string; name?: string; id?: { type: string; name?: string }; declarations?: unknown[] } }>) {
-          if (st.type !== 'ExportNamedDeclaration' || !st.declaration) continue
-          const decl = st.declaration
-          // export const frag = (g, deps) => ({ … })
-          if (decl.type === 'VariableDeclaration') {
-            for (const d of (decl.declarations ?? []) as Array<{ id?: { type: string; name?: string }; init?: unknown }>) {
-              if (d.id?.type === 'Identifier' && d.id.name === binding.imported && d.init) {
-                const fac = asFragmentFactory(d.init as Expression)
-                // Carry the fragment's OWN source so callback capture slices it, not `code`.
-                if (fac) { result = { fn: fac, code: mod.src }; break }
-              }
-            }
-          // export function frag(g, deps) { return { … } }
-          } else if (decl.type === 'FunctionDeclaration' && decl.id?.type === 'Identifier' && decl.id.name === binding.imported) {
-            const fac = asFragmentFactory(decl as unknown as Expression)
-            if (fac) result = { fn: fac, code: mod.src }
-          }
-          if (result) break
-        }
-      }
-    }
-    importedFactoryCache.set(name, result)
-    return result
-  }
-
-  // Same-file factories win (their AST offsets index into the consumer's `code`);
-  // otherwise fall through to imported-source resolution.
-  const resolveFactory: FactoryResolver = (n) => {
-    const local = factories.get(n)
-    if (local) return { fn: local, code }
-    return resolveImportedFactory(n)
-  }
-
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
   let anyUnresolved = false
@@ -312,7 +315,7 @@ export function transformMacro(
     const factoryArg = args[0] as Expression | undefined
     if (!factoryArg) { warn(init.start, `${label}: rules() needs a factory argument`); return null }
 
-    const ruleMap = evaluateParserFactory(factoryArg, scope, code, [], resolveFactory)
+    const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
     if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
 
     const compiled = compileRuleMap([...ruleMap])
@@ -324,6 +327,139 @@ export function transformMacro(
     init.type === 'CallExpression' &&
     (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
     (init as unknown as { callee: { name?: string } }).callee.name === 'rules'
+
+  const isComposeCall = (init: Expression): boolean =>
+    init.type === 'CallExpression' &&
+    (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
+    (init as unknown as { callee: { name?: string } }).callee.name === 'compose'
+
+  // Local `rules()` grammars, so a same-file `compose([myRules, …])` can recover
+  // the pieces to fuse (name → the rule map evaluated at build). A grammar stays a
+  // usable parser AND is composable — no opt-in wrapper.
+  const localRuleMaps = new Map<string, Map<string, Combinator<unknown>>>()
+
+  // Stable, reproducible per-artifact namespace: hash of module id + a label
+  // (binding name / arg position) — never a counter, so rebuilds are byte-stable
+  // and two artifacts never collide when fused.
+  const nsFor = (label: string): string =>
+    `_${createHash('sha1').update(`${id}#${label}`).digest('hex').slice(0, 8)}_`
+
+  /** Serialize one `LinkablePieces` to an object-literal source string. */
+  const serializePieces = (p: LinkablePieces): string => {
+    const mapLit = (m: Map<string, unknown>): string =>
+      `new Map([${[...m].map(([k, v]) => `[${JSON.stringify(k)}, ${JSON.stringify(v)}]`).join(', ')}])`
+    return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
+      + `prelude: ${JSON.stringify(p.prelude)}, ruleFns: ${mapLit(p.ruleFns)}, `
+      + `wrappers: ${mapLit(p.wrappers)}, deps: ${mapLit(p.deps)}, `
+      + `needsEmptyTl: ${p.needsEmptyTl}, needsCollator: ${p.needsCollator}, mfFns: [], buildFns: [] }`
+  }
+  /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
+   * list for a `compose()` result. */
+  const serializeList = (list: LinkablePieces[]): string => `[${list.map(serializePieces).join(', ')}]`
+
+  /**
+   * Wrap a compiled grammar expression so it CARRIES its own linkable pieces on
+   * the value, under `Symbol.for('parseman.composedPieces')` — the same symbol
+   * `compose()` reads at runtime. This is why `import { cssGrammar }` is all a
+   * downstream package needs: the pieces travel WITH the grammar (no detached,
+   * tree-shakeable `__pieces` export). The literal lives inside the exported
+   * const's initializer, so it can't be shaken off without dropping the grammar.
+   * `importedPieces()` reads it straight back out of the compiled module.
+   */
+  const withCarriedPieces = (grammarExpr: string, list: LinkablePieces[]): string =>
+    `/* @__PURE__ */ (() => { const _g = ${grammarExpr}; `
+    + `Object.defineProperty(_g, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)} }); `
+    + `return _g })()`
+  // Same-file `const X = compose([...])` → its flattened pieces, so a later
+  // same-file compose can chain it.
+  const localComposedPieces = new Map<string, LinkablePieces[]>()
+
+  // Cache of pieces LISTS read from imported COMPILED grammars' carried pieces.
+  const importedPiecesCache = new Map<string, LinkablePieces[] | null>()
+
+  /**
+   * Read an imported grammar's pieces LIST straight off its COMPILED value —
+   * the `Symbol.for('parseman.composedPieces')` literal the macro embeds inside
+   * the exported const's initializer (see `withCarriedPieces`). No `__pieces`
+   * export, no TS source, no recompile. `import { <name> }` carries everything.
+   * null if the grammar wasn't macro-compiled (or isn't source-free composable).
+   */
+  const importedPieces = (localName: string): LinkablePieces[] | null => {
+    if (importedPiecesCache.has(localName)) return importedPiecesCache.get(localName)!
+    let result: LinkablePieces[] | null = null
+    const binding = importBindings.get(localName)
+    if (binding) {
+      let file: string | null = null
+      try { file = getCompiledResolver().resolveFileSync(id, binding.source).path ?? null } catch { /* unresolved */ }
+      const mod = file ? parseModuleCached(file) : null
+      if (mod) {
+        // Map the imported export name → its local binding (handles both
+        // `export const X = …` and a bundler's `const X$1 = …; export { X$1 as X }`).
+        const localFor = exportLocalName(mod.body as AnyNode[], binding.imported)
+        const initNode = localFor ? topLevelInit(mod.body as AnyNode[], localFor) : null
+        const literalRange = initNode ? findCarriedPiecesLiteral(initNode) : null
+        if (literalRange) {
+          const literal = mod.src.slice(literalRange.start, literalRange.end)
+          try {
+            // Build-time eval of a self-contained data literal (strings/arrays/
+            // Map) — NOT runtime; the fused output never carries this.
+            // eslint-disable-next-line no-new-func
+            result = new Function(`return (${literal})`)() as LinkablePieces[]
+          } catch { result = null }
+        }
+      }
+    }
+    importedPiecesCache.set(localName, result)
+    return result
+  }
+
+  /** Resolve one `compose([...])` argument to its pieces LIST (flattened). */
+  const argPieces = (arg: Expression, label: string): LinkablePieces[] | null => {
+    // Inline `rules(g => …)`.
+    if (isRulesCall(arg)) {
+      const factory = (arg as unknown as { arguments: unknown[] }).arguments[0] as Expression | undefined
+      const rm = factory ? evaluateParserFactory(factory, scope, code, []) : null
+      const p = rm ? compileLinkable([...rm], nsFor(label)) : null
+      return p ? [p] : null
+    }
+    if (arg.type === 'Identifier') {
+      const name = (arg as unknown as { name: string }).name
+      // Local grammar var (`const myRules = rules(...)`).
+      const rm = localRuleMaps.get(name)
+      if (rm) { const p = compileLinkable([...rm], nsFor(label)); return p ? [p] : null }
+      // Local composed var (`const g = compose([...])`) → its flattened pieces.
+      const composed = localComposedPieces.get(name)
+      if (composed) return composed
+      // Imported grammar/composed grammar — its compiled `<name>__pieces` sidecar.
+      return importedPieces(name)
+    }
+    return null
+  }
+
+  /** Compile `compose([...])` to STATIC fused source (eval-free) + its flattened
+   * pieces (for a sidecar / same-file chaining). null → leave the runtime
+   * `compose()` in place (correct, just not build-fused). */
+  const compileComposeCall = (init: Expression): { replacement: string; pieces: LinkablePieces[] } | null => {
+    const args = (init as unknown as { arguments: Expression[] }).arguments
+    const arr = args[0]
+    if (!arr || arr.type !== 'ArrayExpression') {
+      warn(init.start, 'compose(): expected a static array of grammars/artifacts')
+      return null
+    }
+    const elements = (arr as unknown as { elements: Expression[] }).elements
+    const pieces: LinkablePieces[] = []
+    for (let i = 0; i < elements.length; i++) {
+      const list = argPieces(elements[i]!, `compose${init.start}_${i}`)
+      if (!list) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
+      pieces.push(...list)
+    }
+    try {
+      return { replacement: emitFusedSource(pieces), pieces }
+    } catch (e) {
+      warn(init.start, `compose(): ${(e as Error).message}; falling back to runtime`)
+      return null
+    }
+  }
 
   // --- Pre-pass: resolve standalone ref() recursion clusters ---
   // `const x = ref()` … `x.define(expr)` is the interpreter/compile() recursion
@@ -446,22 +582,36 @@ export function transformMacro(
         if (isRulesCall(init)) {
           const compiledRules = compileRulesFactory(init, varName)
           if (!compiledRules) continue
-          replacements.push({
-            start: init.start,
-            end: init.end,
-            replacement: compiledRules.replacement,
-          })
+          // Remember the rule map so a same-file `compose([varName, …])` can fuse it.
+          localRuleMaps.set(varName, compiledRules.ruleMap)
+          // If EXPORTED, carry the grammar's linkable pieces ON the value so a
+          // downstream package composes it via `import { <name> }` alone. Only when
+          // the pieces are fully static (no runtime-only callbacks) — otherwise the
+          // grammar isn't source-free composable and we ship it as a plain map.
+          let replacement = compiledRules.replacement
+          if (exportPrefix) {
+            const pieces = compileLinkable([...compiledRules.ruleMap], nsFor(varName))
+            if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
+              replacement = withCarriedPieces(replacement, [pieces])
+            }
+          }
+          replacements.push({ start: init.start, end: init.end, replacement })
           continue
         }
 
-        // const frag = (g, deps) => ({ … }) — a rules() fragment factory. Register it
-        // (in source order) so a later `...frag(g)` spread inlines it, and leave the
-        // declaration as-is: after inlining it's referenced only by the (already
-        // replaced) rules() call, so it's dead and tree-shaken. Not warned — it's a
-        // recognized macro shape, not an unresolvable one.
-        const frag = asFragmentFactory(init)
-        if (frag) {
-          factories.set(varName, frag)
+        // const name = compose([...]) → STATIC fused source (eval-free); the macro
+        // fuses at build, never emitting `new Function`.
+        if (isComposeCall(init)) {
+          const fused = compileComposeCall(init)
+          if (!fused) continue // leave the runtime compose() call in place
+          // Remember for a same-file downstream compose, and (if exported) carry the
+          // FLATTENED pieces on the value so another package can compose this composed
+          // grammar via `import { <name> }` (re-composition, no source).
+          localComposedPieces.set(varName, fused.pieces)
+          const replacement = exportPrefix
+            ? withCarriedPieces(fused.replacement, fused.pieces)
+            : fused.replacement
+          replacements.push({ start: init.start, end: init.end, replacement })
           continue
         }
 
