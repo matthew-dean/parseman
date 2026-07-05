@@ -54,8 +54,12 @@ export function cstBuildHost(
   children: ReadonlyArray<unknown>,
   _rawChildren: ReadonlyArray<unknown>,
   span: { start: number; end: number },
+  _triviaLog?: readonly number[],
+  state?: unknown,
 ): unknown {
-  return { _tag: 'node', type, span: { start: span.start, end: span.end }, state: null, children: [...children] }
+  // Carry the grammar's `ctx.state` snapshot onto the node (null when unset) — the
+  // CST contract includes `state` and incremental re-parse replays it on edit.
+  return { _tag: 'node', type, span: { start: span.start, end: span.end }, state: state ?? null, children: [...children] }
 }
 
 export type FusedRule = (
@@ -81,7 +85,14 @@ export function pick(
     : linkable(grammar as Record<string, Combinator<unknown>>)
   const keep = new Set<string>()
   const has = new Set(p.keys)
+  // A requested name that isn't in the grammar is a typo — fail here, not later
+  // with a confusing name-closure error at compose() time.
+  for (const n of names) {
+    if (!has.has(n)) throw new Error(`pick: rule "${n}" is not in this grammar (available: ${p.keys.join(', ')})`)
+  }
   const visit = (n: string): void => {
+    // `!has.has(n)` skips EXTERNAL deps (rules from a base grammar) — they resolve
+    // at compose() time, not here. Top-level `names` were already validated above.
     if (keep.has(n) || !has.has(n)) return
     keep.add(n)
     for (const d of p.deps.get(n) ?? []) visit(d)
@@ -97,11 +108,6 @@ export function pick(
   }
 }
 
-/**
- * Fuse linkable artifacts into one map of parse functions. Later artifacts win
- * per rule name (spread-order override). Throws if a surviving rule references a
- * name absent from the fused set (the compose-time name-closure check).
- */
 /**
  * Build the fused-closure body (shared by the runtime `fuseRules` and the
  * build-time `emitFusedSource`). Returns the closure body (which reads `_env`

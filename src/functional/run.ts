@@ -47,7 +47,13 @@ export type RunResult = {
   expected: string[]
   /** `recover()` / `expect()` diagnostics collected during the parse (in order). */
   errors: ParseError[]
-  /** Flat trivia log — `[start, end]` pairs — for building a trivia map. */
+  /**
+   * Flat trivia log for building a trivia map. Entry width depends on whether the
+   * grammar uses labeled trivia: 2 numbers per entry (`start, end`) for plain
+   * trivia, 3 numbers per entry (`start, end, kindIndex`) for labeled trivia
+   * (grammars with `label()` arms in their trivia choice). Use `buildTriviaIndex`
+   * / `triviaEntries` to consume it format-agnostically rather than iterating raw.
+   */
   triviaLog: number[]
   /** Offset where unparsed input begins — the first non-trivia character the parse
    * left unconsumed (trailing trivia skipped when `trivia` is given), or null if
