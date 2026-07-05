@@ -98,7 +98,8 @@ export default defineConfig({
       provider: 'local',
     },
     footer: {
-      message: 'Released under the MIT License.',
+      message:
+        'Released under the MIT License. <a href="https://github.com/matthew-dean/parseman/issues">Commercial support</a> available on request.',
       copyright: 'Copyright © Matthew Dean',
     },
   },
