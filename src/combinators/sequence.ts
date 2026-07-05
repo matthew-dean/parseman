@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseFail } from '../types.ts'
-import { empty } from './first-set.ts'
+import { sequenceFirstSet } from './first-set.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
 
 type UnwrapParsers<T extends Combinator<unknown>[]> = {
@@ -10,17 +10,24 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
   ...parsers: T
 ): Combinator<UnwrapParsers<T>> {
   const meta: ParserMeta = {
-    firstSet: parsers[0]?._meta.firstSet ?? empty(),
+    // Union through the nullable prefix — a leading optional()/many() lets a later
+    // term's first char start the sequence. Just `parsers[0]` under-approximates.
+    firstSet: sequenceFirstSet(parsers),
     canMatchNewline: parsers.some(p => p._meta.canMatchNewline),
     isTrivia: false,
   }
 
+  const def: { tag: 'sequence'; parsers: Combinator<unknown>[]; valueUnused?: boolean } =
+    { tag: 'sequence', parsers: parsers as Combinator<unknown>[] }
+
   return {
     _tag: 'sequence',
     _meta: meta,
-    _def: { tag: 'sequence', parsers: parsers as Combinator<unknown>[] },
+    _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnwrapParsers<T>> {
-      const values: unknown[] = []
+      // Skip the tuple when it's never observed (markUnusedValues): terms still
+      // parse (and self-capture) — only the array of their values is elided.
+      const values: unknown[] | undefined = def.valueUnused ? undefined : []
       let cur = pos
 
       for (let i = 0; i < parsers.length; i++) {
@@ -46,19 +53,20 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
           } else {
             rollbackTrivia(ctx, mark)
           }
-          values.push(result.value)
+          if (values !== undefined) values.push(result.value)
           continue
         }
 
         const result = parsers[i]!.parse(input, cur, ctx)
         if (!result.ok) return result as ParseFail
-        values.push(result.value)
+        if (values !== undefined) values.push(result.value)
         cur = result.span.end
       }
 
       return {
         ok: true,
-        value: values as UnwrapParsers<T>,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+        value: (values ?? undefined) as UnwrapParsers<T>,
         span: { start: pos, end: cur },
       }
     },

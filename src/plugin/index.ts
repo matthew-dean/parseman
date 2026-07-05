@@ -350,7 +350,7 @@ export function transformMacro(
       `new Map([${[...m].map(([k, v]) => `[${JSON.stringify(k)}, ${JSON.stringify(v)}]`).join(', ')}])`
     return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
       + `prelude: ${JSON.stringify(p.prelude)}, ruleFns: ${mapLit(p.ruleFns)}, `
-      + `wrappers: ${mapLit(p.wrappers)}, deps: ${mapLit(p.deps)}, `
+      + `wrappers: ${mapLit(p.wrappers)}, firstSets: ${mapLit(p.firstSets)}, deps: ${mapLit(p.deps)}, `
       + `needsEmptyTl: ${p.needsEmptyTl}, needsCollator: ${p.needsCollator}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened

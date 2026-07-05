@@ -221,3 +221,218 @@ Moved to **Already landed** (closes the CSS `numPart` gap §8f left open).
 **Parseman baseline** (`bench/parseman-baseline.json`): CI regression anchor — median µs/op for interpreted **and** compiled on JSON, CSV, GraphQL, TOML-ish, lang, and CSS fixtures. Updated deliberately when you accept a new perf level.
 
 **Parseman history** (`bench/parseman-history.jsonl`): append-only time series (one JSON line per `bench:baseline`). `pnpm bench` reports Δ vs baseline plus Δc↓prev / Δc↓origin from history. `printHistoryIndex()` lists bootstrap4 compiled µs across all snapshots.
+
+---
+
+# Jess parser hotspots (from @jesscss render profiling) — 2026-07-05
+
+**Source of this section:** the @jesscss/core render re-profile flagged PARSE as
+the #1 render hotspot (~42% of a render). Investigating *inside* the parser
+subsystem (parseman 0.14.0 compiled grammars + the @jesscss builder hosts) to
+find where that parse time goes, with measured evidence. **Ideas only — nothing
+here has been implemented.** Owner: leave core alone; these are parser-team
+candidates.
+
+## Honesty caveat: parse-once vs parse-per-render
+
+`@jesscss` `Compiler.render()` **re-parses the source on every render**
+(`Compiler.render` → `context.parseString(...)`; no AST cache keyed by input —
+`packages/jess/src/index.ts:1026`). So the render re-profile that put PARSE at
+~42% is measuring parse-per-render. Real-world usage parses a stylesheet **once**
+and can render/re-render the AST many times; against a parse-once/render-many
+baseline, parse's amortized share is far lower. **Treat the numbers below as the
+per-parse cost, not the steady-state render weight** — they matter most for
+cold-start / single-render / watch-mode-edit-a-file scenarios, and for the
+`Compiler` re-parse itself (an AST cache would erase most of it, but that's a
+jess-side change, out of scope for the parser team).
+
+## Measurement setup
+
+- Corpus (Less): `packages/jess/benchmark/benchmark.less` — 106,802 chars,
+  **12,984 AST nodes** (~8.2 source chars / node), ~8.8 MB retained AST / parse.
+- Corpus (CSS): synthetic value/selector-dense sheet, 248,040 chars.
+- Driver: functional Less/CSS parser (`parseLessFn` / `parseCssFn`) run under
+  parseman's macro register hook (`--import scripts/parseman-macro-register.mjs`),
+  V8 CPU sampling profiler (50 µs interval, 40 parses), `--trace-gc`, and the
+  compiled-grammar source (via `parseman/plugin` `transform`) for static
+  allocation-site counts.
+- Parse median: **Less 55.6 ms** (106 KB), **CSS 58.5 ms** (248 KB).
+
+## Aggregate self-time split (Less benchmark.less, 40 parses)
+
+| Bucket | self-time | % |
+|--------|-----------|---|
+| **reify `_r_*` (compiled grammar rule fns)** | **2400 ms** | **61.9%** |
+| provenance `ensureProv` (per-node WeakMap side-table) | 280 ms | 7.2% |
+| GC (garbage collector) | 277 ms | 7.1% |
+| build\* (CST→AST host: `buildNode`/`_dispatchBuild`/`_build*`) | 271 ms | 7.0% |
+
+The compiled reify layer dominates. On the value/decl-dense **CSS** corpus the
+mix shifts: **GC 28.2%**, **`ensureProv` 12.5%**, reify 35.6%, `_dispatchBuild`
+2.4% — i.e. the per-node allocation + side-table cost climbs sharply when nodes
+are small and numerous (Num/Dimension/Color).
+
+## Hotspot ranking with evidence
+
+Self-time %, from the Less CPU profile unless noted. `_r_<Rule>` = the compiled
+reify function parseman emits for that grammar rule.
+
+| # | fn | self % | where | note |
+|---|----|--------|-------|------|
+| 1 | `_r_value` | 6.3% | less `grammar.ts:249` region / css `grammar.ts:152` | value disjunction `choice(Dimension,Num,Color,Url,CalcCall,Call,Paren,Quoted,anyValue)` run per value token |
+| 2 | `ensureProv` | 5.6% (Less) / 12.5% (CSS) | core `provenance.ts:46` | **per-node `{}` alloc + `WeakMap.set`** via `setSourceSpan` in every Node ctor |
+| 3 | `_r_InterpolatedSelector` | 4.9% | less `grammar.ts:249` | `sequence(optional(regex),many(regex),lessInterp,many(choice(...)))` — two `many` arrays + interp scan per interpolated selector |
+| 4 | `_r_ComplexSelector` | 3.8% | less `grammar.ts` selectors | combinator run |
+| 5 | `_1533bf42__tf0` | 3.2% | compiled trivia-skip fn | whitespace/comment skip called at every `many`/`sequence` boundary |
+| 6 | `_r_LessAmpersand` | 2.9% | less `grammar.ts:247` | `sequence(ampToken, optional(sequence(literal('('), scanTo(...), literal(')'))))` per `&` |
+| 7 | `_r_simpleSelector` / `_r_CompoundSelector` | 2.8% / 2.2% | less selectors | inner selector-run reifiers |
+| 8 | `_r_topProduct` / `_r_topSum` | 2.7% / 2.2% | less math | operation folding per value |
+| 9 | `_r_PseudoSelector`, `_r_SelectorList`, `_r_AttributeSelector`, `_r_Declaration`, `_r_Ruleset`, `_r_Dimension`, `_r_Call`, `_r_Reference`, `_r_valueList`, … | 0.9–2.5% ea. | grammar | the long reify tail — collectively the bulk of the 61.9% |
+| 10 | `buildNode`/`_dispatchBuild`/`_buildLessDeclaration`/`_buildDeclaration` | ~7% combined | less+css `builders.ts` | CST→AST host; per-node `loc` + filtered child arrays |
+
+### Static allocation-site counts in the compiled Less grammar (3.99 M chars emitted)
+
+| pattern | count | meaning |
+|---------|-------|---------|
+| `const _arr = []` | 465 | a fresh array per `many(...)` / repetition, even when 0–1 matches |
+| `.push(` | 2520 | per-child CST collection |
+| `.build(` | 207 | AST node construction call sites |
+| `_cstRawChildren?` length marks | 1810 | CST raw-child bookkeeping |
+| `_cstLeaves?.` length marks | 1052 | CST leaf bookkeeping |
+| `_triviaLog?` length marks | 1105 | trivia-log bookkeeping |
+| `charCodeAt` | 5213 | scan sites (mostly fine; noted for scale) |
+
+`--trace-gc` shows a Scavenge roughly every ~33 ms during a parse loop
+(reclaiming ~58 MB each) — confirming the transient CST allocation is the GC
+driver, on top of the ~8.8 MB retained AST.
+
+## Optimization IDEAS (evidence-backed; NOT implemented)
+
+1. **Reify per-`many` array pre-sizing / lazy alloc.** Every `many(...)` emits
+   `const _arr = []` then `.push()` per match (465 arrays, 2520 pushes in the Less
+   grammar). For the *common* selector/value runs the arity is 0, 1, or 2. IDEA:
+   emit a lazy/scalar fast path in `emitMany`/`emitSequence` — keep a single-element
+   scalar until a 2nd match forces array promotion. Sub-idea: when a `many` feeds
+   directly into a `.build()` whose builder only iterates, pass the CST child cursor
+   range (start/end indices into a shared buffer) instead of materializing a fresh
+   array — no intermediate array at all.
+
+   **⚠ MEASURED OUTCOME (2026-07-05): the *dead-value* subset of this — eliding the
+   aggregate array/tuple of a `many`/`sequence`/`optional` whose value is only ever
+   discarded under a `node()` — has LANDED (parseman `markUnusedValues`, both the
+   interpreter and the compiled emitter; see `src/compiler/value-usage.ts`). On the
+   real macro-compiled Less grammar it cut `const _arr = []` 258→172 (−33% of the
+   value arrays) but moved transient allocation only 47.3 → 43.9 MB/pass (~7%) and
+   parse time NOT AT ALL (57 ms both). So the value-array building is NOT the 61.9%
+   — it is a small slice of allocation and off the hot CPU path. The reify self-time
+   is dominated by choice dispatch, trivia-skip, and CST-buffer bookkeeping (see #2,
+   #5, #6), NOT array construction. Do not expect a big win from the remaining
+   lazy/scalar-promotion part of this idea either.** The full lazy/scalar promotion
+   would only help the arrays that ARE consumed-but-tiny; given the dead ones gave
+   ~7% alloc / 0% time, size the expectation accordingly.
+
+2. **Pool/reuse the CST bookkeeping marks.** ~3967 `_cstRawChildren?` /
+   `_cstLeaves?.` / `_triviaLog?` length-mark reads per compiled grammar, each a
+   property-existence check + length read at every rule entry/backtrack point.
+   IDEA: hoist the three length snapshots into locals once per rule frame
+   (many are re-read inside the same `many` loop body), and/or skip the
+   raw-children/leaf tracking entirely for rules whose builder never consults
+   `rawChildren` (a compile-time flag per `node()` — many builders use only
+   `children`). This is the parseman-side complement to the `_dispatchBuild`
+   host cost.
+
+3. **`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%).** Every parsed
+   node does `ensureProv(node)` → allocate a `{}` Provenance + `WeakMap.set`
+   (core `provenance.ts:77-82`, called from the Node ctor's `setSourceSpan`). At
+   12,984 nodes/parse that's 12,984 object allocs + WeakMap inserts. IDEA (for
+   the parser/host boundary, not core internals): let the build host hand
+   parseman a single span pair and defer provenance materialization — e.g. store
+   `spanStart/spanEnd` inline on the CST leaf/frame and only populate the
+   side-table lazily on first `sourceSpanOf`/`fieldSpansOf` read (many nodes are
+   never queried for spans during a render). Even batching the WeakMap writes, or
+   using a parse-scoped dense array keyed by a node-index instead of a WeakMap,
+   would cut the per-node hash insert. (Flagging as parser-adjacent evidence; the
+   actual `ensureProv` body is core-owned — hand to core only if they want it.)
+
+4. **`buildNode` host: kill the per-node `loc` object and per-build filtered
+   arrays.** `_dispatchBuild` calls `spanToLocation(span)` → `{start,end}` per
+   node (12,984/parse), and `nodeChildren`/`leafText` do `children.filter(...)`
+   (fresh array) per build (css/less `builders.ts:102-113,366`). IDEA: pass
+   `span.start`/`span.end` as two numbers into the node ctors (no wrapper
+   object), and replace `.filter()` child partitioning with a single pass that
+   the reifier already knows the shape of (the grammar knows which children are
+   leaves vs nodes at compile time — emit typed positional access instead of a
+   runtime filter). This is a jess-builders change but is driven entirely by how
+   parseman hands children to `ctx.build`, so it's worth co-designing.
+
+5. **Trivia-skip fn (`_tf0`, 3.2%) call-site reduction.** The compiled
+   trivia-skip runs at every `many`/`sequence` boundary. IDEA: for rules whose
+   grammar proves adjacent tokens cannot be separated by trivia (e.g. glued
+   selector runs, number+unit in `Dimension`), skip emitting the trivia call
+   entirely (a `noTrivia` combinator or first-set proof), rather than calling
+   `_tf0` and having it immediately return the same position.
+
+6. **`_r_value` disjunction ordering / first-char dispatch.** `_r_value`'s
+   `choice(Dimension,Num,Color,Url,CalcCall,Call,Paren,Quoted,anyValue)` is
+   entered per value token and is #1 self-time. The "disjoint first-char
+   dispatch" fast path (Already-landed section) may not be firing here because
+   several arms share ambiguous first chars (a digit starts both Dimension and
+   Num; `.` starts Num and a class). IDEA: verify whether `_r_value` compiled to
+   a jump-table dispatch or an if/else chain, and if the latter, split the
+   digit-led arms into a sub-dispatch keyed on the char *after* the numeric run.
+
+### Top ideas in one line each
+
+- **#1 lazy/scalar `many` in the compiled reifier** — ⚠ the dead-value part landed
+  and measured at only ~7% alloc / 0% time; array building is NOT the 61.9%. Not
+  the big lever. The real reify cost is dispatch + trivia + CST bookkeeping (#2/#5/#6).
+- **#2 hoist/skip CST length-mark bookkeeping** for builders that ignore
+  `rawChildren` — cheap, broad.
+- **#3 defer/dense-array `ensureProv`** — 12,984 per-node `{}`+WeakMap inserts is
+  the 2nd hotspot and the main GC driver (worse on CSS: 12.5%).
+- **#4 drop per-node `loc` object + filtered child arrays in `buildNode`.**
+- Remember the **parse-once/render-many** caveat: an AST cache in `Compiler` (jess
+  side) would amortize all of the above for the common re-render case.
+
+## Design note: Trivia API — don't overfit `hasComment` (owner-flagged)
+
+**Not a perf item.** A design caution for whoever evolves the trivia primitive.
+
+`makeTrivia` (jess core `packages/core/src/tree/util/trivia.ts:52`) derives
+`hasComment` as "the run contains any non-whitespace char" — a `charCodeAt` scan
+that trips on the first char that isn't space/`\t`/`\n`/`\r`/`\f`. So it is really
+**`hasNonWhitespace`**; it only *equals* "has a comment" by virtue of the grammar
+invariant that `trivia = whitespace | comment` (nothing else can appear in a
+trivia run today).
+
+Why that's a lossy bit to build on:
+
+- It **cannot distinguish `//` line comments from `/* */` block comments**. That
+  matters for output: `printableTriviaText` (`trivia.ts:86`) blanket-strips
+  `//[^\n\r]*` whenever `hasComment` is set in a compressed context — because a
+  `//` can't survive line-collapse, whereas an inline `/* */` can. One bit can't
+  carry that distinction; it works only because the strip regex happens to be a
+  no-op on block comments.
+- It would **mislabel any future erasable-but-meaningful trivia as a "comment"** —
+  e.g. a directive/pragma trivia, a preserved-annotation token, or a
+  significant-newline marker — the moment the grammar admits trivia that isn't
+  purely whitespace-or-comment. Consumers keying off `hasComment` would then
+  silently mis-handle it.
+
+**Guidance (owner): don't overfit the trivia primitive to "comment."** We don't
+yet know what trivia consumers will want to skip vs. preserve vs. classify. Keep
+it general:
+
+- The run already exposes **position + raw range** (`{ start, end, src }`) — that
+  is the durable, lossless contract; let consumers classify the slice themselves
+  when they need to.
+- If a classification bit/field is warranted, carry a **`kind`** (or per-segment
+  kinds, matching the labeled-trivia-kind capture already landed for `_triviaLog`)
+  rather than a boolean that conflates categories.
+- Treat the existing boolean as **`hasNonWhitespace`** semantically (rename or at
+  least document it as such), and don't add new call sites that assume
+  `hasComment === "there is a comment here"`.
+
+This keeps the trivia layer forward-compatible with trivia kinds the grammar
+doesn't emit yet, instead of baking today's `ws|comment`-only assumption into the
+API surface.

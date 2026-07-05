@@ -9,6 +9,7 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { staticExpected } from '../combinators/expect.ts'
+import { markUnusedValues } from './value-usage.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
   analyzeLabeledScannableRun,
@@ -81,6 +82,15 @@ type Ctx = {
    * collision = override) and is never prefixed.
    */
   ns?: string | undefined
+  /**
+   * Linkable (compose) mode: a `choice` arm that is a named rule REF must not bake
+   * an inline first-set dispatch guard — the referenced rule can be overridden at
+   * fuse time, changing its first-set. Instead emit a `/*@FS:rule:codevar@*​/true`
+   * placeholder that fusedBody() substitutes with the WINNING rule's first-set
+   * condition (or leaves `true` = always-try when unknown). Off for monolithic
+   * compile() / compileRuleMap where rules are final.
+   */
+  deferFirstSetRefs?: boolean | undefined
   /** Generated function declaration strings, prepended before the main body */
   namedFnDecls: string[]
   /** Active trivia parser (set by grammar() wrappers, cleared on exit) */
@@ -452,7 +462,7 @@ type ER = { stmts: string[]; valueVar: string; endVar: string }
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-function firstSetCond(codeVar: string, fs: FirstSet): string {
+export function firstSetCond(codeVar: string, fs: FirstSet): string {
   if (fs.kind === 'any') return 'true'
   if (fs.kind === 'empty') return 'false'
   return fs.ranges.map(r =>
@@ -985,6 +995,9 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
 
 function emitSeq(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, pos: string): ER {
   const { stmts, endVar, valueVars } = emitSeqValues(def, ctx, pos)
+  // The tuple is never observed (markUnusedValues) — terms still parse + capture;
+  // skip allocating `[v1, v2, …]`.
+  if (def.valueUnused) return { stmts, valueVar: 'undefined', endVar }
   const arrV = v(ctx, '_arr')
   stmts.push(`${ind(ctx)}const ${arrV} = [${valueVars.join(', ')}]`)
   return { stmts, valueVar: arrV, endVar }
@@ -1275,7 +1288,15 @@ function emitFirstMatch(
     const autoNot = def.autoNot[i]
     const atStart = failsAtStart(p)
     const staticFx = armStaticExpected(ctx, p)
-    const fsGuard = needsFirstSetGuard(p) ? firstSetCond(codeV, p._meta.firstSet) : null
+    // A named rule REF in linkable mode: defer its first-char guard to fuse time
+    // (the rule can be overridden). Emit a placeholder that fusedBody() rewrites
+    // with the WINNING rule's first-set — `true` (always-try) if left unresolved.
+    const deferRuleName = ctx.deferFirstSetRefs
+      ? (p as unknown as { _ruleName?: string })._ruleName
+      : undefined
+    const fsGuard = deferRuleName !== undefined
+      ? `/*@FS:${deferRuleName}:${codeV}@*/true`
+      : needsFirstSetGuard(p) ? firstSetCond(codeV, p._meta.firstSet) : null
 
     // Gate: register predicate in mapFns; condition guards entire arm attempt
     let gateCond: string | null = null
@@ -1393,10 +1414,14 @@ function emitLiteralCondition(litVal: string, pos: string): string {
 }
 
 function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: Ctx, pos: string): ER {
+  // `valueUnused` (markUnusedValues): the array is never observed (this many sits
+  // under a node() that builds from captured children). Skip building it — the
+  // loop still runs and items self-capture. Value is `undefined` (unread).
+  const wantValue = !def.valueUnused
   const arrV = v(ctx, '_arr')
   const curV = v(ctx, '_cur')
   const stmts: string[] = [
-    `${ind(ctx)}const ${arrV} = []`,
+    ...(wantValue ? [`${ind(ctx)}const ${arrV} = []`] : []),
     `${ind(ctx)}let ${curV} = ${pos}`,
   ]
 
@@ -1404,10 +1429,8 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     // Inline first mandatory match with early-return on failure
     const firstR = emit(def.parser, ctx, curV)
     stmts.push(...firstR.stmts)
-    stmts.push(
-      `${ind(ctx)}${arrV}.push(${firstR.valueVar})`,
-      `${ind(ctx)}${curV} = ${firstR.endVar}`,
-    )
+    if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${firstR.valueVar})`)
+    stmts.push(`${ind(ctx)}${curV} = ${firstR.endVar}`)
   }
 
   stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
@@ -1445,13 +1468,13 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   stmts.push(
     ...iterStmts,
     `${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`,
-    `${ind(ctx)}${arrV}.push(${iterVal})`,
-    `${ind(ctx)}${curV} = ${iterEnd}`,
   )
+  if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${iterVal})`)
+  stmts.push(`${ind(ctx)}${curV} = ${iterEnd}`)
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
 
-  return { stmts, valueVar: arrV, endVar: curV }
+  return { stmts, valueVar: wantValue ? arrV : 'undefined', endVar: curV }
 }
 
 function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, pos: string): ER {
@@ -2271,6 +2294,7 @@ export function ruleDependencies(
  * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
  */
 export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): CompiledParser<T> {
+  markUnusedValues(combinator)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -2411,9 +2435,27 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
  * uncaptured transform/build closure source. The plugin's existing "warn and
  * leave this rules() call interpreted" fallback covers this case unchanged.
  */
+/**
+ * Grammar rule names compile to `_r_<Name>` functions and `@FS:<name>` dispatch
+ * placeholders, so they MUST be valid JS identifiers. A non-identifier name (e.g.
+ * `'my-rule'`) is a grammar-authoring error — throw rather than silently mangle it
+ * to `_r_my_rule`, which could collide with a real `my_rule` rule.
+ */
+const RULE_NAME_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/
+function assertRuleName(name: string): void {
+  if (!RULE_NAME_RE.test(name)) {
+    throw new Error(
+      `parseman: grammar rule name ${JSON.stringify(name)} is not a valid JS identifier. ` +
+      `Rule names compile to _r_<Name> functions and dispatch guards — use letters, digits, ` +
+      `_ or $ (and don't start with a digit).`,
+    )
+  }
+}
+
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
 ): { keys: string[]; replacement: string } | null {
+  for (const [, rule] of ruleMap) markUnusedValues(rule)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -2443,7 +2485,8 @@ export function compileRuleMap(
   const seenNames = new Map<string, number>()
   const ruleNames = new Map<Combinator<unknown>, string>()
   for (const [key, rule] of ruleMap) {
-    const base = `_r_${key.replace(/[^A-Za-z0-9_$]/g, '_')}`
+    assertRuleName(key)
+    const base = `_r_${key}`
     const n = seenNames.get(base) ?? 0
     seenNames.set(base, n + 1)
     ruleNames.set(rule, n === 0 ? base : `${base}$${n}`)
@@ -2533,6 +2576,12 @@ export type LinkablePieces = {
   prelude: string[]
   ruleFns: Map<string, string>
   wrappers: Map<string, string>
+  /**
+   * Per-rule first-set (this artifact's own rules). fusedBody() uses the WINNING
+   * artifact's entry to resolve `/*@FS:rule:codevar@*​/true` dispatch placeholders
+   * emitted for rule-ref choice arms — sound under compose override.
+   */
+  firstSets: Map<string, FirstSet>
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsCollator: boolean
@@ -2551,6 +2600,7 @@ export function compileLinkable(
   ns: string,
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
+  for (const [, rule] of ruleMapArg) markUnusedValues(rule)
   // Drop EXTERNAL entries: `rules(g => …)` returns a cache that also holds every
   // `g.X` that was ACCESSED, so an accessed-but-not-defined rule (defined in
   // another artifact) leaks into `Object.entries` as an undefined `ref`. Those
@@ -2571,6 +2621,7 @@ export function compileLinkable(
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
+    deferFirstSetRefs: true,
   }
   // Canonical name per rule. Register in BOTH ruleNames (so sibling `emitLazy`
   // refs resolve by name) AND namedParsers up-front (so a rule emitted before a
@@ -2582,7 +2633,8 @@ export function compileLinkable(
   const ruleNames = new Map<Combinator<unknown>, string>()
   const fnNameToKey = new Map<string, string>()
   for (const [key, rule] of ruleMap) {
-    const base = `_r_${key.replace(/[^A-Za-z0-9_$]/g, '_')}`
+    assertRuleName(key)
+    const base = `_r_${key}`
     const n = seen.get(base) ?? 0
     seen.set(base, n + 1)
     const fn = n === 0 ? base : `${base}$${n}`
@@ -2608,7 +2660,8 @@ export function compileLinkable(
         if (resolved === undefined) {
           const name = (p as unknown as { _ruleName?: string })._ruleName
           if (name && !ctx.namedParsers.has(p)) {
-            const fn = `_r_${name.replace(/[^A-Za-z0-9_$]/g, '_')}`
+            assertRuleName(name)
+            const fn = `_r_${name}`
             ruleNames.set(p, fn)
             ctx.namedParsers.set(p, fn)
           }
@@ -2689,12 +2742,25 @@ export function compileLinkable(
     ].join('\n'))
   }
 
+  // Per-rule first-set table for fuse-time dispatch: fusedBody() substitutes each
+  // `/*@FS:rule:codevar@*​/true` placeholder (emitted for rule-ref choice arms)
+  // with the WINNING rule's condition. Resolve each rule to its real first-set;
+  // a rule that can match empty at start gets `any` (→ no guard, always try).
+  const firstSets = new Map<string, FirstSet>()
+  for (const [key, rule] of ruleMap) {
+    let resolved: Combinator<unknown> = rule
+    const d = rule._def
+    if (d.tag === 'lazy') { try { resolved = d.thunk() } catch { resolved = rule } }
+    firstSets.set(key, canMatchEmptyAtStart(resolved) ? { kind: 'any' } : resolved._meta.firstSet)
+  }
+
   return {
     ns,
     keys: perEntry.map(e => e.key),
     prelude,
     ruleFns,
     wrappers,
+    firstSets,
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsCollator: ctx.needsCollator,

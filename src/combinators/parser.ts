@@ -1,5 +1,6 @@
 import type { Combinator } from '../types.ts'
 import { ref } from './ref.ts'
+import { markUnusedValues } from '../compiler/value-usage.ts'
 
 /**
  * Define named grammar rules without forward declarations.
@@ -62,6 +63,13 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
     } else {
       ;(cache as Record<string, Combinator<unknown>>)[key] = parser
     }
+  }
+
+  // Dead-value analysis: mark container aggregates that only feed a node()'s
+  // capture so the interpreter (and, via the same flag, the compiled output) skips
+  // building them. Each rule is its own root — refs are boundaries (see value-usage).
+  for (const key of Object.keys(definitions)) {
+    markUnusedValues((cache as Record<string, Combinator<unknown>>)[key]!)
   }
 
   return cache as T

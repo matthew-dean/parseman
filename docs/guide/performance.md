@@ -71,10 +71,24 @@ pnpm bench:svg              # chart-only benchmarks + regenerate assets/bench-*.
 pnpm bench:baseline         # refresh the regression baseline + append a history snapshot
 pnpm bench:compile-grammars # regenerate the precompiled Peggy/Nearley/Jison parsers
 pnpm perf:guard             # fast pre-commit CSS speedup ratio check
+
+node --import tsx bench/compose-dispatch.ts   # composed-grammar first-char dispatch A/B
 ```
 
 See [Benchmarks → Refreshing the charts](./benchmarks#refreshing-the-charts) for when to
 use `bench:svg` vs the full `bench` suite.
+
+### Composed grammars
+
+The cross-parser charts measure **single** grammars compiled whole. A grammar built by
+[`compose([...])`](./extending) gets first-char dispatch across artifacts too (see
+[macro mode](./macro-mode#what-gets-emitted)) — `bench/compose-dispatch.ts` isolates that:
+a CSS-value-shaped composed grammar whose `value` is a `choice` over many cross-rule ref
+arms. With fuse-time dispatch the compiled parser skips arms whose first char can't match
+instead of trying each per token. Check it out across a change to A/B it — the win scales
+with arm count and how many `choice` rules a grammar has (a real stylesheet grammar, with
+a 15-arm value rule plus many selector choices, sees appreciably more than one 6-arm
+choice in isolation).
 
 The benchmark reports each grammar's median µs/op interpreted and compiled, with a delta
 against the committed baseline — so a regression shows up immediately. See

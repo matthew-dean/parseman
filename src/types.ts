@@ -38,10 +38,14 @@ export type ParseResult<T> = ParseOk<T> | ParseFail
 export type ParserDef =
   | { tag: 'literal';   value: string; caseInsensitive: boolean }
   | { tag: 'regex';     source: string; flags: string }
-  | { tag: 'sequence';  parsers: Combinator<unknown>[] }
+  // `valueUnused` (set by markUnusedValues): the container's aggregate value is
+  // consumed by nothing but capture (it sits directly under a node() that reads
+  // children, not this value). When true, the interpreter and codegen skip
+  // building the array/tuple — the elements still parse + self-capture.
+  | { tag: 'sequence';  parsers: Combinator<unknown>[]; valueUnused?: boolean }
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
-  | { tag: 'many';      parser: Combinator<unknown>; min: 0 }
-  | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1 }
+  | { tag: 'many';      parser: Combinator<unknown>; min: 0; valueUnused?: boolean }
+  | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean }
   | { tag: 'optional';  parser: Combinator<unknown> }
   | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown> }
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }

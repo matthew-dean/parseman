@@ -54,21 +54,26 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
+  const def: { tag: 'many'; parser: Combinator<unknown>; min: 0; valueUnused?: boolean } =
+    { tag: 'many', parser: combinator as Combinator<unknown>, min: 0 }
 
   return {
     _tag: 'many',
     _meta: meta,
-    _def: { tag: 'many', parser: combinator as Combinator<unknown>, min: 0 },
+    _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
-      const values: T[] = []
+      // When the aggregate is never observed (markUnusedValues), skip the array:
+      // items still parse and self-capture into the enclosing node's children.
+      const values: T[] | undefined = def.valueUnused ? undefined : []
       let cur = pos
       while (cur < input.length) {
         const item = repItem(combinator, input, cur, ctx)
         if (item === 'stop' || 'fail' in item) break
-        values.push(item.value)
+        if (values !== undefined) values.push(item.value)
         cur = item.end
       }
-      return { ok: true, value: values, span: { start: pos, end: cur } }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      return { ok: true, value: (values ?? undefined) as T[], span: { start: pos, end: cur } }
     },
   }
 }
@@ -79,25 +84,29 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
+  const def: { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean } =
+    { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min: 1 }
 
   return {
     _tag: 'oneOrMore',
     _meta: meta,
-    _def: { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min: 1 },
+    _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       // First item is mandatory (parsed at pos directly — leading trivia is the
       // enclosing context's responsibility); subsequent items skip leading trivia.
       const first = combinator.parse(input, pos, ctx)
       if (!first.ok) return first
-      const values: T[] = [first.value]
+      // Aggregate skipped when never observed (see `many`).
+      const values: T[] | undefined = def.valueUnused ? undefined : [first.value]
       let cur = first.span.end
       while (cur < input.length) {
         const item = repItem(combinator, input, cur, ctx)
         if (item === 'stop' || 'fail' in item) break
-        values.push(item.value)
+        if (values !== undefined) values.push(item.value)
         cur = item.end
       }
-      return { ok: true, value: values, span: { start: pos, end: cur } }
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      return { ok: true, value: (values ?? undefined) as T[], span: { start: pos, end: cur } }
     },
   }
 }

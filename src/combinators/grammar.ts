@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParseFail } from '../types.ts'
 import { buildLineIndex, annotateSpan } from '../compiler/line-index.ts'
+import { markUnusedValues } from '../compiler/value-usage.ts'
 
 export type ParseOptions = {
   trackLines?: boolean
@@ -98,11 +99,20 @@ export function noTrivia<T>(root: Combinator<T>): ParsemanParser<T> {
   return parser({ trivia: null }, root)
 }
 
+// Roots already run through dead-value analysis, so a hot parse loop doesn't
+// re-walk the tree. (A `rules()` grammar was analyzed at build; a bare combinator
+// passed straight to parse() is analyzed once here.)
+const _analyzed = new WeakSet<Combinator<unknown>>()
+
 export function parse<T>(
   combinator: Combinator<T>,
   input: string,
   opts: ParseOptions = {}
 ): ParseResult<T> {
+  if (!_analyzed.has(combinator)) {
+    _analyzed.add(combinator)
+    markUnusedValues(combinator)
+  }
   const trackLines = opts.trackLines ?? false
   const _errors = opts.recover ? [] : undefined
   // In recovery mode also track the furthest-position failure, so the caller can
