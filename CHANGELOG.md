@@ -3,6 +3,12 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.14.1 — 2026-07-05
+
+- `run()` throws a clear `TypeError` when the start production isn't a rule
+  (e.g. a missing grammar rule name resolves to `undefined`), instead of the
+  opaque "Cannot read properties of undefined (reading 'parse')".
+
 ## 0.14.0 — 2026-07-04
 
 - **`compose()` is the one composition API — no base source needed.** A grammar

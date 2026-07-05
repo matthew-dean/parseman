@@ -61,4 +61,12 @@ describe('run() — generic grammar-entry driver', () => {
     expect(r.ok).toBe(true)
     expect(built).toContain('W')
   })
+
+  it('throws a clear TypeError when the start production is not a rule', () => {
+    // e.g. a missing grammar rule: `grammar[name]` came back undefined.
+    expect(() => run(undefined as never, 'a b c')).toThrow(TypeError)
+    expect(() => run(undefined as never, 'a b c')).toThrow(/not a rule|does not exist/)
+    // A valid entry still parses — no regression.
+    expect(run(g.Doc as never, 'a b c').ok).toBe(true)
+  })
 })

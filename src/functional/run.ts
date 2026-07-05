@@ -67,6 +67,11 @@ const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): Par
   typeof r === 'function' ? r(input, pos, ctx) : r.parse(input, pos, ctx)
 
 export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
+  if (typeof entry !== 'function' && typeof (entry as Combinator<unknown> | undefined)?.parse !== 'function') {
+    throw new TypeError(
+      `run(): start production is ${entry === null ? 'null' : typeof entry}, not a rule — the requested grammar rule does not exist (check the rule name).`,
+    )
+  }
   const triviaLog: number[] = []
   const errors: ParseError[] = []
   const ctx: ParseContext = {
