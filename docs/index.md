@@ -5,7 +5,7 @@ layout: home
 hero:
   name: Parséman
   text: 100% Pure Parsing
-  tagline: Parser combinators in TypeScript — fast enough to run as-is, blazing fast once the bundler macro turns them into inline code. Same grammar either way. No grammar files, no generated output to check in.
+  tagline: Write parsers as TypeScript functions. Ship them like hand-written parsers. Same grammar interpreted in tests, macro-compiled in production. No grammar files, no generated output to check in.
   image:
     src: https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/parseman.png
     alt: Parséman

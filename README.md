@@ -4,9 +4,28 @@
 
 # Parséman (PAR-zə-mahn)
 
-Write parsers in TypeScript — fast enough to run as-is, and blazing fast when the bundler macro kicks in. Same grammar either way; no grammar files, no generated output to check in. Drop the plugin in tests or anywhere a bundler isn't around and everything still works.
+Write parsers as TypeScript functions. Ship them like hand-written parsers.
+
+Parséman is a TypeScript parser-combinator library with an optional compiler/macro path that turns your grammar into flat JavaScript. Use the same grammar interpreted in tests and REPLs, macro-compiled at build time in production, or `.compile()`d on demand at runtime.
+
+Use Parséman when you want:
+
+- normal TypeScript instead of grammar files
+- parser-combinator ergonomics without parser-combinator slowness
+- CST/AST nodes with spans and trivia
+- error recovery for editor tooling
+- incremental re-parsing
+- fast parsers for DSLs, config languages, formatters, linters, and language servers
 
 > **📖 Full documentation: [matthew-dean.github.io/parseman](https://matthew-dean.github.io/parseman/)**
+
+## Why Parséman?
+
+Most parser tools make you choose between ergonomics and performance.
+
+Parser combinators are pleasant to write, but often slow. Parser generators can be fast, but usually involve grammar files, generated code, and extra tooling. Hand-written parsers are fast, but expensive to design and maintain.
+
+Parséman aims for the useful middle: write your parser as ordinary TypeScript, then compile it into code that behaves more like a hand-written parser.
 
 ---
 
@@ -64,7 +83,27 @@ Full API in the **[reference](https://matthew-dean.github.io/parseman/reference/
 
 ---
 
+## Compared to other parser tools
+
+Wondering how Parséman compares to Peggy, Chevrotain, Lezer, tree-sitter, Parsimmon, Nearley, or hand-written parsers?
+
+See the full comparison: **[How Parséman compares](https://matthew-dean.github.io/parseman/guide/comparison)**
+
+## Real grammar example: GraphQL
+
+Parséman includes a [GraphQL grammar](./examples/graphql/parser.ts) used in the benchmark suite. It parses executable GraphQL documents (queries, mutations, subscriptions, fragments, directives, variables, all value types) into typed AST nodes — not just syntax-validating them.
+
+This is a real-world example of Parséman on a non-trivial, spec-shaped language, not a toy grammar.
+
+- Source: [`examples/graphql/parser.ts`](./examples/graphql/parser.ts)
+- Benchmark results: [GraphQL benchmarks](https://matthew-dean.github.io/parseman/guide/benchmarks#graphql)
+- Benchmark runner: [`bench/run.ts`](./bench/run.ts)
+
+---
+
 ## Benchmarks
+
+Parséman includes benchmarks against several JavaScript/TypeScript parser libraries across JSON, CSV, and GraphQL fixtures. Benchmarks are not universal truth tablets — results depend on grammar shape, input size, runtime, and what each parser is asked to produce. The benchmark suite is included so results can be inspected and reproduced (see [Reproducing the numbers](https://matthew-dean.github.io/parseman/guide/benchmarks#reproducing-the-numbers)).
 
 **When parsing to JS values** — objects, row arrays, AST nodes — **Parséman's macro build is the fastest general-purpose JS parser we benchmark**, beating [Peggy](https://peggyjs.org/), [Parsimmon](https://github.com/jneen/parsimmon), [Chevrotain](https://chevrotain.io/), [Nearley](https://nearley.js.org/), and [Jison](https://github.com/zaach/jison) at every grammar and size. The only thing that edges it out is a purpose-built native like `JSON.parse`; for anything that *doesn't* have a built-in, Parséman is the one to beat.
 
@@ -84,7 +123,7 @@ Compared parsers: **Parséman**, [Peggy](https://peggyjs.org/), [Parsimmon](http
 
 Parséman has three modes — **interpreter** (zero setup, works anywhere), **macro build** (compiled by the bundler plugin at build time, zero runtime cost), and **`.compile()`** (optional runtime JIT). Most production use lands on one of the first two. The initialization section only shows parsers with a nonzero setup cost: `.compile()` costs 75–650 µs depending on grammar size; Chevrotain always costs 840–1,400 µs. Parsers not listed there start for free. (Init numbers are pinned on the charts — they're noisy run-to-run; warm-parse bars are the meaningful comparison.)
 
-On JSON, CSV, and GraphQL, Parséman macro beats every other library at every fixture size in the charts above — e.g. GraphQL large **154 µs** vs Peggy **423 µs**, JSON large **125 µs** vs Peggy **472 µs** / Chevrotain **1,946 µs**. Native `JSON.parse` is the one thing faster on JSON (**45 µs** large). Even the zero-setup interpreter is highly competitive: on JSON and CSV it's the fastest option after the macro build — ahead of Peggy and every other generator — with Peggy edging it out only on GraphQL. On the CST chart, macro build beats Lezer at every size (**344 µs** vs **587 µs** large, parse-only). Full write-up and how to refresh the charts: **[benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks)**. Grammar-level speed levers: [performance guide](https://matthew-dean.github.io/parseman/guide/performance); library-level codegen: [PERF_IDEAS.md](./PERF_IDEAS.md).
+On JSON, CSV, and GraphQL, Parséman macro beats every other library at every fixture size in the charts above — e.g. GraphQL large **154 µs** vs Peggy **423 µs**, JSON large **125 µs** vs Peggy **472 µs** / Chevrotain **1,946 µs**. Native `JSON.parse` is the one thing faster on JSON (**45 µs** large). Even the zero-setup interpreter is highly competitive: on JSON and CSV it's the fastest option after the macro build — ahead of Peggy and every other generator — with Peggy edging it out only on GraphQL. On the CST chart, macro build beats Lezer at every size (**344 µs** vs **587 µs** large, parse-only). Full write-up and how to refresh the charts: **[benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks)**. Grammar-level speed levers: [performance guide](https://matthew-dean.github.io/parseman/guide/performance); library-level codegen: [PERF_IDEAS.md](./notes/PERF_IDEAS.md).
 
 ---
 
