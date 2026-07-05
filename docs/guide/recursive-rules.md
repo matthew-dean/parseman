@@ -10,6 +10,12 @@ Pass a factory that receives all rule names as ready-to-use references and retur
 definitions. Any rule can reference any other through the `g` argument, regardless of
 declaration order.
 
+> **Rule names must be valid JavaScript identifiers** (`Value`, `valueList`, `$foo_1`).
+> They compile to `_r_<Name>` functions and cross-artifact dispatch guards, so a
+> non-identifier key like `'my-rule'` is rejected at compile time with a clear error
+> rather than silently mangled. (This is about the *grammar's* rule names — not the
+> text your grammar parses, which can be anything.)
+
 ```ts
 import { rules, parser, choice, sequence, literal, sepBy, transform, trivia, regex } from 'parseman'
 import type { Combinator } from 'parseman'

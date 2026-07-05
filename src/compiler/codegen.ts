@@ -2435,6 +2435,23 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
  * uncaptured transform/build closure source. The plugin's existing "warn and
  * leave this rules() call interpreted" fallback covers this case unchanged.
  */
+/**
+ * Grammar rule names compile to `_r_<Name>` functions and `@FS:<name>` dispatch
+ * placeholders, so they MUST be valid JS identifiers. A non-identifier name (e.g.
+ * `'my-rule'`) is a grammar-authoring error — throw rather than silently mangle it
+ * to `_r_my_rule`, which could collide with a real `my_rule` rule.
+ */
+const RULE_NAME_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/
+function assertRuleName(name: string): void {
+  if (!RULE_NAME_RE.test(name)) {
+    throw new Error(
+      `parseman: grammar rule name ${JSON.stringify(name)} is not a valid JS identifier. ` +
+      `Rule names compile to _r_<Name> functions and dispatch guards — use letters, digits, ` +
+      `_ or $ (and don't start with a digit).`,
+    )
+  }
+}
+
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
 ): { keys: string[]; replacement: string } | null {
@@ -2468,7 +2485,8 @@ export function compileRuleMap(
   const seenNames = new Map<string, number>()
   const ruleNames = new Map<Combinator<unknown>, string>()
   for (const [key, rule] of ruleMap) {
-    const base = `_r_${key.replace(/[^A-Za-z0-9_$]/g, '_')}`
+    assertRuleName(key)
+    const base = `_r_${key}`
     const n = seenNames.get(base) ?? 0
     seenNames.set(base, n + 1)
     ruleNames.set(rule, n === 0 ? base : `${base}$${n}`)
@@ -2615,7 +2633,8 @@ export function compileLinkable(
   const ruleNames = new Map<Combinator<unknown>, string>()
   const fnNameToKey = new Map<string, string>()
   for (const [key, rule] of ruleMap) {
-    const base = `_r_${key.replace(/[^A-Za-z0-9_$]/g, '_')}`
+    assertRuleName(key)
+    const base = `_r_${key}`
     const n = seen.get(base) ?? 0
     seen.set(base, n + 1)
     const fn = n === 0 ? base : `${base}$${n}`
@@ -2641,7 +2660,8 @@ export function compileLinkable(
         if (resolved === undefined) {
           const name = (p as unknown as { _ruleName?: string })._ruleName
           if (name && !ctx.namedParsers.has(p)) {
-            const fn = `_r_${name.replace(/[^A-Za-z0-9_$]/g, '_')}`
+            assertRuleName(name)
+            const fn = `_r_${name}`
             ruleNames.set(p, fn)
             ctx.namedParsers.set(p, fn)
           }

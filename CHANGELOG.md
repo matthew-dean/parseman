@@ -5,6 +5,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.15.0 — 2026-07-05
 
+- **Grammar rule names must be valid JS identifiers.** They compile to `_r_<Name>`
+  functions and dispatch guards, so a non-identifier key (e.g. `'my-rule'`) is now
+  rejected at compile time with a clear error instead of being silently mangled to
+  `_r_my_rule` (which could collide with a real `my_rule` rule). Only affects
+  grammars that used non-identifier rule names — none in practice.
 - **First-char dispatch for composed grammars.** A `choice` arm that references a
   rule in another `compose()`d artifact used to carry an `any` first-set, so every
   arm was tried per token (a value/selector rule walked all its alternatives). The

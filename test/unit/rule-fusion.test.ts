@@ -112,6 +112,20 @@ export const scssGrammar = compose([lessGrammar, rules(g => ({ Num: regex(/[0-9]
   })
 })
 
+describe('rule names must be valid JS identifiers', () => {
+  it('compiling a grammar with a non-identifier rule name throws a clear error', () => {
+    // Rule names become `_r_<Name>` functions + `@FS:<name>` dispatch guards, so a
+    // hyphenated key would silently mangle (and risk a `_r_` collision). Reject it.
+    const bad = rules(() => ({ 'my-rule': regex(/x/) }))
+    expect(() => compose([bad])).toThrow(/not a valid JS identifier/)
+  })
+
+  it('accepts $/_ and mixed-case identifiers', () => {
+    const okGrammar = rules(() => ({ $Foo_bar1: regex(/x/) }))
+    expect(() => compose([okGrammar])).not.toThrow()
+  })
+})
+
 describe('extending a grammar via compose() — no base source, no opt-in', () => {
   it('a consumer extends a base grammar with compose([base, ext]) — override reroutes', () => {
     // A base grammar (a plain rules() result — no `linkable()` wrapper, composable
