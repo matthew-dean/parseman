@@ -52,7 +52,7 @@ a class of patterns to an emit strategy:
 | `seq` | `-?[0-9]+`, `--[-\w]*`, `::?` | a linear chain of literal segments and char runs |
 | `until` | `//[^\n]*` (line comment) | consume opener, run until a stop char |
 | `delimited` | `/*(?:…)*\*/` (block comment) | consume opener, run to a closing literal |
-| `string` | `"(?:[^"\\]|\\.)*"` | quote-delimited scan with backslash-escape handling |
+| `string` | `"(?:[^"\\]\|\\.)*"` | quote-delimited scan with backslash-escape handling |
 | `litFold` | `url\(` under `/i` | fixed literal compared case-insensitively |
 | `lookahead` | `[a-z]+(?!\w)` (keyword boundary) | inner shape + a zero-width `charCodeAt(end)` check |
 | `alt` | `-?[a-z]+\|%` | first-char dispatch, or ordered choice |
@@ -219,10 +219,11 @@ engine. Two decisions keep that in check.
 unrolled `charCodeAt` chain (`c(pos)===… && c(pos+1)===…`) or as a `String.prototype.startsWith`
 call. Measurement showed the unrolled chain is faster or tied out to surprisingly long
 literals — but its *generated source* grows linearly with length while `startsWith` is a
-near-constant call site. So the crossover is set at **16 characters**: short literals (which
-is essentially all of them — the longest terminal in the example grammars is `important`, 9
-chars) get the fast unrolled form, and anything longer falls back to `startsWith` to cap
-worst-case codegen bloat.
+near-constant call site. So the crossover is set at **16 characters**: a literal of 16
+chars or fewer gets the fast unrolled form, and anything longer falls back to `startsWith`
+to cap worst-case codegen bloat. Most grammar terminals sit well under that — keywords,
+operators, and punctuation are short (the longest in the example grammars is `important`,
+9 chars) — so the unrolled path is what almost every literal actually takes.
 
 **Decline rather than emit sprawl.** The shapes deliberately stop where the generated code
 would get large or the equivalence proof would get shaky (bounded repeats `{n,m}`, nested

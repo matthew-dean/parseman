@@ -58,8 +58,9 @@ the "rule registry" that incremental re-parsing needs.
 
 ## `rules()` and the macro
 
-The plugin fully compiles `rules()` factories, **including recursive ones**. It emits
-mutually recursive named functions (`_pf0`, …) so the cycle is broken. Add
+The plugin fully compiles `rules()` factories, **including recursive ones**. Each rule
+becomes a named function derived from its rule name (`_r_<Name>`) and mutual references
+are direct calls to those names, so the cycle is broken with zero dispatch. Add
 `with { type: 'macro' }` to your import and the entire grammar — recursive rules
 included — is inlined at build time. Both binding forms compile:
 
@@ -91,10 +92,13 @@ value.define(choice(object, array, str, num, bool, nil))
 Prefer `rules()` in almost all cases — it's clearer and it's what the macro is tuned to
 compile.
 
-## Reusing and extending grammars
+## Reusing one factory with different config
 
-Don't copy a `rules()` factory to make a variant — export what stays the same and pass in
-(or wrap) what changes. The `examples/json/` directory is the template:
+This is a different lever from [extending a grammar](./extending): there you take an
+existing grammar and **override its rules by name** with `compose()`. Here you have a
+*single* factory you want to reuse with a different setting (trivia, document shape) —
+don't copy it, export what stays the same and pass in (or wrap) what changes. The
+`examples/json/` directory is the template:
 
 | File | What changes |
 | --- | --- |
