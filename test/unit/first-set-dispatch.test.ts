@@ -16,7 +16,7 @@
  * Both are RED before the `sequenceFirstSet` nullable-prefix fix and GREEN after.
  */
 import { describe, it, expect } from 'vitest'
-import { sequence, optional, many, choice, literal, regex, node, rules, compile, parse, transform, compose } from '../../src/index.ts'
+import { sequence, optional, oneOrMore, many, choice, literal, regex, node, rules, compile, parse, transform, compose } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import type { Combinator, FirstSet } from '../../src/index.ts'
 
@@ -54,6 +54,36 @@ describe('sequence first-set — nullable prefix', () => {
     const fs = seq._meta.firstSet
     expect(inFirstSet(fs, 120)).toBe(true)  // 'x'
     expect(inFirstSet(fs, 64)).toBe(false)  // '@' must NOT be included
+  })
+
+  // matchesEmpty (nullable) edge cases, exercised through the sequence union.
+  it('a `?`-quantified regex leader is nullable → unions the next term', () => {
+    const seq = sequence(regex(/[.#]?/), regex(/@\{y\}/))
+    const fs = seq._meta.firstSet
+    expect(inFirstSet(fs, 46)).toBe(true)   // '.'
+    expect(inFirstSet(fs, 64)).toBe(true)   // '@' reached through the nullable regex
+  })
+
+  it('a regex with an INTERNAL `?` but no empty match is NOT nullable (precise empty-test)', () => {
+    // `@\{-?[a-z]+\}` contains `?` (in `-?`) but cannot match empty — a crude
+    // "source contains ? or *" heuristic would wrongly treat it nullable and leak
+    // the next term's first char. The precise empty-test keeps the set tight.
+    const seq = sequence(regex(/@\{-?[a-z]+\}/), literal(';'))
+    const fs = seq._meta.firstSet
+    expect(inFirstSet(fs, 64)).toBe(true)   // '@'
+    expect(inFirstSet(fs, 59)).toBe(false)  // ';' must NOT leak
+  })
+
+  it('oneOrMore(optional(x)) is nullable → unions past it; literal("") is nullable', () => {
+    const seq1 = sequence(oneOrMore(optional(regex(/x/))), regex(/@\{y\}/))
+    expect(inFirstSet(seq1._meta.firstSet, 64)).toBe(true)   // '@' reached (inner optional nullable)
+    const seq2 = sequence(literal(''), regex(/@\{y\}/))
+    expect(inFirstSet(seq2._meta.firstSet, 64)).toBe(true)   // empty literal is nullable
+  })
+
+  it('a choice with a nullable arm is nullable → the sequence unions past it', () => {
+    const seq = sequence(choice(literal('x'), optional(regex(/y/))), regex(/@\{z\}/))
+    expect(inFirstSet(seq._meta.firstSet, 64)).toBe(true)    // '@' reached (choice can match empty)
   })
 })
 
