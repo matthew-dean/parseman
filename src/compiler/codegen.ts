@@ -20,7 +20,7 @@ import {
   buildLabeledScannableTriviaFnDecl,
   labeledTriviaRegexArms,
 } from './trivia-fast-path.ts'
-import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, type ScanShape, type Mint } from './scannable-run.ts'
+import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type ScanShape, type Mint } from './scannable-run.ts'
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
@@ -92,8 +92,6 @@ type Ctx = {
   mapFnSrcs: Array<string | null>
   /** Runtime parser fallbacks (for unknown/_def-less parsers) */
   runtimeParsers: Array<Combinator<unknown>>
-  /** Whether any case-insensitive lit was emitted (needs collator) */
-  needsCollator: boolean
   /** Whether any node() elided trivia capture and needs the shared frozen empty log. */
   needsEmptyTl?: boolean | undefined
   /** Whether any structural node() arity-gates host capture and needs the `_hostReads` helper. */
@@ -114,7 +112,7 @@ type Ctx = {
    * `_build`) so two independently-compiled rule maps fuse into one scope without
    * colliding (the linkable form). Empty by default → byte-identical output.
    * Function-local vars (`_v`/`_e`/…) are per-scope and never namespaced; the
-   * sentinel protocol (`_NAMED_FN_*`), `_EMPTY_TL`, `_collator` are SHARED across
+   * sentinel protocol (`_NAMED_FN_*`), `_EMPTY_TL` are SHARED across
    * fused packages (a namespaced sentinel would break cross-package calls) and so
    * are also left un-prefixed; `_r_<Name>` is the composition surface (intended
    * collision = override) and is never prefixed.
@@ -797,13 +795,18 @@ function emitLit(def: Extract<ParserDef, { tag: 'literal' }>, ctx: Ctx, pos: str
   const expectedStr = JSON.stringify(JSON.stringify(value))
   const stmts: string[] = []
 
-  if (caseInsensitive) {
-    ctx.needsCollator = true
+  if (caseInsensitive && len > 0) {
+    // ASCII case fold, the same `(c | 32) === lower` bit-OR compare that `/i`-flag
+    // regex lowering uses (foldEq) — NOT Intl.Collator (measured ~9× slower, and
+    // its Unicode accent-folding is the wrong semantic for a parser anyway). Folds
+    // ASCII letters, exact-matches everything else. The captured value is the
+    // input's own casing (slice), not the pattern's.
+    const match = Array.from({ length: len }, (_, i) =>
+      `(${foldEq(`input.charCodeAt(${pos}${i > 0 ? ` + ${i}` : ''})`, value.charCodeAt(i))})`
+    ).join(' && ')
     stmts.push(
-      ...emitIfFail(ctx, `${pos} + ${len} > input.length`, failBody(ctx, expectedStr, pos)),
-      `${ind(ctx)}const ${vv}_s = input.slice(${pos}, ${pos} + ${len})`,
-      ...emitIfFail(ctx, `_collator.compare(${vv}_s, ${JSON.stringify(value)}) !== 0`, failBody(ctx, expectedStr, pos)),
-      `${ind(ctx)}const ${vv} = ${vv}_s`,
+      ...emitIfFail(ctx, `${pos} + ${len} > input.length || !(${match})`, failBody(ctx, expectedStr, pos)),
+      `${ind(ctx)}const ${vv} = input.slice(${pos}, ${pos} + ${len})`,
     )
   } else if (len === 0) {
     stmts.push(`${ind(ctx)}const ${vv} = ''`)
@@ -2368,7 +2371,6 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     buildFns: [],
     buildSrcs: [],
     runtimeParsers: [],
-    needsCollator: false,
     namedParsers: new Map(),
     triviaCaptureNames: new Map(),
     triviaFnNames: new Map(),
@@ -2378,10 +2380,6 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
   }
 
   const r = emit(combinator as Combinator<unknown>, ctx, '_pos')
-
-  const collatorDecl = ctx.needsCollator
-    ? `const _collator = new Intl.Collator(undefined, { sensitivity: 'accent' })\n`
-    : ''
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
   const emptyTlDecls = ctx.needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []
@@ -2395,7 +2393,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     '',
     ...namedPrelude,
     ctx.namedFnDecls.join('\n\n'),
-    `${collatorDecl}function _parse(input, _pos, _rp, _mf, _build, _ctx) {`,
+    `function _parse(input, _pos, _rp, _mf, _build, _ctx) {`,
     `  let pos = _pos`,
     ...r.stmts,
     `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
@@ -2407,7 +2405,6 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     ...hostReadsDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
-    collatorDecl,
     ...namedPrelude,
     ...ctx.namedFnDecls.flatMap((decl, i) => (i > 0 ? ['', decl] : [decl])),
     `let pos = _pos`,
@@ -2445,7 +2442,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
   // no map-function closures or their source text has been provided for injection.
   const mfCovered = ctx.mapFns.length === 0 || (effectiveSources !== undefined && effectiveSources.length === ctx.mapFns.length)
   const canInline = ctx.runtimeParsers.length === 0 && mfCovered && buildCovered
-  const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, collatorDecl, effectiveSources, buildSources) : null
+  const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, effectiveSources, buildSources) : null
 
   return {
     source,
@@ -2532,7 +2529,6 @@ export function compileRuleMap(
     buildFns: [],
     buildSrcs: [],
     runtimeParsers: [],
-    needsCollator: false,
     namedParsers: new Map(),
     triviaCaptureNames: new Map(),
     triviaFnNames: new Map(),
@@ -2558,10 +2554,6 @@ export function compileRuleMap(
 
   const perEntry = ruleMap.map(([key, rule]) => ({ key, r: emit(rule, ctx, '_pos') }))
 
-  const collatorDecl = ctx.needsCollator
-    ? `const _collator = new Intl.Collator(undefined, { sensitivity: 'accent' })\n`
-    : ''
-
   const derivedSrcs = ctx.mapFnSrcs.length === ctx.mapFns.length && ctx.mapFnSrcs.every((s): s is string => s !== null)
     ? ctx.mapFnSrcs as string[]
     : undefined
@@ -2579,7 +2571,6 @@ export function compileRuleMap(
     ctx.needsHostReads ? `  ${HOST_READS_DECL}` : '',
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
-    collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,
     buildDecl,
     ...namedPrelude.map(l => `  ${l}`),
@@ -2625,7 +2616,7 @@ export function compileRuleMap(
  * derives it — module identity in the macro, a counter in `compile()`).
  *
  *   prelude  — namespaced hoisted decls (regexes, expected, `_mf`/`_build`, and
- *              private `_pf` helper fns). Sentinels / `_EMPTY_TL` / `_collator`
+ *              private `_pf` helper fns). Sentinels / `_EMPTY_TL`
  *              are NOT here — they are SHARED, emitted once by the linker.
  *   ruleFns  — name → `function _r_<Name>(…) { … }` source (the composition
  *              surface; siblings call these by name).
@@ -2649,7 +2640,6 @@ export type LinkablePieces = {
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
-  needsCollator: boolean
   /**
    * Transform (`_mf`) / build (`_build`) callback FUNCTIONS, injected into the
    * fused scope via `_env` when their SOURCE isn't available (runtime `compile()`
@@ -2681,7 +2671,7 @@ export function compileLinkable(
     vars: 0, indent: 1, regexDecls: [], regexMap: new Map(),
     expectedDecls: [], expectedMap: new Map(), recordFail: true,
     mapFns: [], mapFnSrcs: [], buildFns: [], buildSrcs: [], runtimeParsers: [],
-    needsCollator: false, namedParsers: new Map(), triviaCaptureNames: new Map(),
+    namedParsers: new Map(), triviaCaptureNames: new Map(),
     triviaFnNames: new Map(), namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
@@ -2829,7 +2819,6 @@ export function compileLinkable(
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
-    needsCollator: ctx.needsCollator,
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
     buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
   }
@@ -2838,7 +2827,6 @@ export function compileLinkable(
 function buildInlineExpression(
   ctx: Ctx,
   r: ER,
-  collatorDecl: string,
   mapFnSources?: string[],
   buildSources?: string[],
 ): string {
@@ -2861,7 +2849,7 @@ function buildInlineExpression(
 
   const emptyTlDecl = ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : ''
   const hostReadsDecl = ctx.needsHostReads ? `  ${HOST_READS_DECL}` : ''
-  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl
+  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
@@ -2870,7 +2858,6 @@ function buildInlineExpression(
     hostReadsDecl,
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
-    collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,
     buildDecl,
     ...namedPrelude.map(l => `  ${l}`),

@@ -361,7 +361,7 @@ export function transformMacro(
     return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
       + `prelude: ${JSON.stringify(p.prelude)}, ruleFns: ${mapLit(p.ruleFns)}, `
       + `wrappers: ${mapLit(p.wrappers)}, firstSets: ${mapLit(p.firstSets)}, deps: ${mapLit(p.deps)}, `
-      + `needsEmptyTl: ${p.needsEmptyTl}, needsCollator: ${p.needsCollator}, mfFns: [], buildFns: [] }`
+      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
    * list for a `compose()` result. */

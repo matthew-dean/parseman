@@ -3,12 +3,23 @@ import { fromChar, empty } from './first-set.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 
-let _collatorCache: Intl.Collator | null = null
-function collator(): Intl.Collator {
-  if (_collatorCache === null) {
-    _collatorCache = new Intl.Collator(undefined, { sensitivity: 'accent' })
+/**
+ * ASCII case-fold equality — the interpreter twin of the compiler's `foldEq`
+ * (and `/i`-flag regex lowering). Folds ASCII letters via bit 0x20, exact-matches
+ * everything else. Deliberately NOT `Intl.Collator` (measured ~9× slower, and its
+ * Unicode accent-folding is the wrong semantic for a parser). Keeps interpreter /
+ * compiled / macro output identical for case-insensitive `literal()`.
+ */
+function asciiFoldEq(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    let ca = a.charCodeAt(i)
+    let cb = b.charCodeAt(i)
+    if (ca >= 65 && ca <= 90) ca += 32
+    if (cb >= 65 && cb <= 90) cb += 32
+    if (ca !== cb) return false
   }
-  return _collatorCache
+  return true
 }
 
 export type LiteralOptions = {
@@ -51,7 +62,7 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
       }
       const slice = input.slice(pos, end)
       const matched = caseInsensitive
-        ? collator().compare(slice, value) === 0
+        ? asciiFoldEq(slice, value)
         : slice === value
       if (matched) {
         const span = { start: pos, end }

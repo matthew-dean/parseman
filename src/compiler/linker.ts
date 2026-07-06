@@ -11,7 +11,7 @@
  *   - **à la carte** — `pick(artifact, names)` keeps only those rules + their
  *     transitive dependency closure.
  * Private per-artifact state (`_ns_re`, `_ns_pf`, …) is namespaced so it can't
- * collide; the sentinel protocol / `_EMPTY_TL` / `_collator` are shared and
+ * collide; the sentinel protocol / `_EMPTY_TL` are shared and
  * emitted once.
  *
  * Uses `new Function` (like `compile()`), so it needs `'unsafe-eval'` under a
@@ -129,7 +129,6 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
   const contributing = new Set(winner.values())
   const needsEmptyTl = [...contributing].some(p => p.needsEmptyTl)
   const needsHostReads = [...contributing].some(p => p.needsHostReads)
-  const needsCollator = [...contributing].some(p => p.needsCollator)
 
   const lines: string[] = [
     // Shared sentinel protocol (must match NAMED_FN_FAIL / NAMED_FN_END in codegen).
@@ -137,7 +136,6 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
     'let _pfEnd',
     ...(needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []),
     ...(needsHostReads ? [HOST_READS_DECL] : []),
-    ...(needsCollator ? ["const _collator = new Intl.Collator(undefined, { sensitivity: 'accent' })"] : []),
     // Each contributing artifact's namespaced private prelude (regexes, _pf, …).
     ...[...contributing].flatMap(p => p.prelude),
     // The winning `_r_<Name>` function for each rule (one per name → no redeclare).

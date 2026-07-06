@@ -178,7 +178,9 @@ function classToRanges(cls: string): Array<[number, number]> | null {
 // two cases (nothing else) — one OR + one compare, ~1.75× faster than the
 // two-compare `(c===U || c===L)` form (measured). `(… | 32)` is parenthesized
 // because `===` binds tighter than `|`. Non-letters keep an exact compare.
-const foldEq = (cVar: string, cp: number): string => {
+// Exported so the case-insensitive `literal()` emitter (codegen) shares the exact
+// same ASCII fold as `/i`-flag regex lowering — no `Intl.Collator` on any path.
+export const foldEq = (cVar: string, cp: number): string => {
   if (cp >= 65 && cp <= 90) return `(${cVar} | 32) === ${cp + 32}`
   if (cp >= 97 && cp <= 122) return `(${cVar} | 32) === ${cp}`
   return `${cVar} === ${cp}`
