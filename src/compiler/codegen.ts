@@ -20,7 +20,7 @@ import {
   buildLabeledScannableTriviaFnDecl,
   labeledTriviaRegexArms,
 } from './trivia-fast-path.ts'
-import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, type ScanShape, type Mint } from './scannable-run.ts'
+import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type ScanShape, type Mint } from './scannable-run.ts'
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
@@ -29,6 +29,42 @@ import {
   tryInlineUnaryTransform,
   tryInlineDestructureTransform,
 } from './inline-callback.ts'
+
+/**
+ * Runtime prelude helper for the structural-node capture gate. Answers "does the
+ * injected `_ctx.build` host read its (n+1)th positional arg?" — `.length` alone
+ * under-counts with rest/default params and can't see through a bound fn, so a
+ * rest/default param or an `arguments` reference forces full capture (output-safe).
+ * Plain positional and bound-native hosts (the common case) trust `.length`.
+ * Emitted (memoized on `_ctx._pmCapTL`/`_pmCapST`) wherever a structural node()
+ * arity-gates host capture; shared, un-namespaced, mirrors `_EMPTY_TL` placement.
+ */
+export const HOST_READS_DECL =
+  'const _hostReads = (b, n) => { if (b === undefined) return false; let s; try { s = Function.prototype.toString.call(b) } catch (e) { return true } if (/\\barguments\\b/.test(s)) return true; const m = /^[^(]*\\(([\\s\\S]*?)\\)/.exec(s); if (m && /\\.\\.\\.|=/.test(m[1])) return true; return b.length > n }'
+
+// ---------------------------------------------------------------------------
+// Regex-lowering diagnostics
+//
+// A regex terminal "lowers" when `scanShapeFromRegex` recognizes it and it emits
+// a tight `charCodeAt` scan loop. When it can't, emitRegex falls back to a real
+// `RegExp.exec` call — correct, but slower. Compilation is single-module and
+// synchronous, so a module-level capture sink (opened per transform, drained
+// after) records the un-lowered patterns without threading a field through every
+// Ctx and compile*() return. Keyed by regex source → one entry per unique pattern.
+// ---------------------------------------------------------------------------
+let _loweringSink: Set<string> | null = null
+
+/** Begin capturing regexes that fall back to `RegExp.exec` (didn't lower). */
+export function beginLoweringCapture(): void {
+  _loweringSink = new Set()
+}
+
+/** Stop capturing and return the un-lowered regex sources seen since begin. */
+export function endLoweringCapture(): string[] {
+  const misses = _loweringSink ? [..._loweringSink] : []
+  _loweringSink = null
+  return misses
+}
 
 // ---------------------------------------------------------------------------
 // Codegen context
@@ -56,10 +92,10 @@ type Ctx = {
   mapFnSrcs: Array<string | null>
   /** Runtime parser fallbacks (for unknown/_def-less parsers) */
   runtimeParsers: Array<Combinator<unknown>>
-  /** Whether any case-insensitive lit was emitted (needs collator) */
-  needsCollator: boolean
   /** Whether any node() elided trivia capture and needs the shared frozen empty log. */
   needsEmptyTl?: boolean | undefined
+  /** Whether any structural node() arity-gates host capture and needs the `_hostReads` helper. */
+  needsHostReads?: boolean | undefined
   /** Lazy/ref parsers and trivia helpers: parser identity → generated function name */
   namedParsers: Map<Combinator<unknown>, string>
   /**
@@ -76,7 +112,7 @@ type Ctx = {
    * `_build`) so two independently-compiled rule maps fuse into one scope without
    * colliding (the linkable form). Empty by default → byte-identical output.
    * Function-local vars (`_v`/`_e`/…) are per-scope and never namespaced; the
-   * sentinel protocol (`_NAMED_FN_*`), `_EMPTY_TL`, `_collator` are SHARED across
+   * sentinel protocol (`_NAMED_FN_*`), `_EMPTY_TL` are SHARED across
    * fused packages (a namespaced sentinel would break cross-package calls) and so
    * are also left un-prefixed; `_r_<Name>` is the composition surface (intended
    * collision = override) and is never prefixed.
@@ -759,13 +795,18 @@ function emitLit(def: Extract<ParserDef, { tag: 'literal' }>, ctx: Ctx, pos: str
   const expectedStr = JSON.stringify(JSON.stringify(value))
   const stmts: string[] = []
 
-  if (caseInsensitive) {
-    ctx.needsCollator = true
+  if (caseInsensitive && len > 0) {
+    // ASCII case fold, the same `(c | 32) === lower` bit-OR compare that `/i`-flag
+    // regex lowering uses (foldEq) — NOT Intl.Collator (measured ~9× slower, and
+    // its Unicode accent-folding is the wrong semantic for a parser anyway). Folds
+    // ASCII letters, exact-matches everything else. The captured value is the
+    // input's own casing (slice), not the pattern's.
+    const match = Array.from({ length: len }, (_, i) =>
+      `(${foldEq(`input.charCodeAt(${pos}${i > 0 ? ` + ${i}` : ''})`, value.charCodeAt(i))})`
+    ).join(' && ')
     stmts.push(
-      ...emitIfFail(ctx, `${pos} + ${len} > input.length`, failBody(ctx, expectedStr, pos)),
-      `${ind(ctx)}const ${vv}_s = input.slice(${pos}, ${pos} + ${len})`,
-      ...emitIfFail(ctx, `_collator.compare(${vv}_s, ${JSON.stringify(value)}) !== 0`, failBody(ctx, expectedStr, pos)),
-      `${ind(ctx)}const ${vv} = ${vv}_s`,
+      ...emitIfFail(ctx, `${pos} + ${len} > input.length || !(${match})`, failBody(ctx, expectedStr, pos)),
+      `${ind(ctx)}const ${vv} = input.slice(${pos}, ${pos} + ${len})`,
     )
   } else if (len === 0) {
     stmts.push(`${ind(ctx)}const ${vv} = ''`)
@@ -925,6 +966,9 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
       return { stmts, valueVar: vv, endVar: scanned.endVar }
     }
   }
+
+  // Didn't lower to the fast charCodeAt scan — record it and fall back to RegExp.
+  _loweringSink?.add(`/${def.source}/${def.flags}`)
 
   const flags = 'y' + def.flags.replace(/[gy]/g, '')
   const key = `${def.source}/${flags}`
@@ -1705,22 +1749,38 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
 
   // Arity-gated elision: when the build provably never reads the trivia (4th) or
   // state (5th) arg, skip that capture entirely. The mk-inline path reads
-  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture. A
-  // structural node's host may read either → capture both.
-  const capturesTrivia = mkType !== null || structural || buildReadsTrivia(def)
-  const clonesState = structural || buildReadsState(def)
+  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture.
+  //
+  // A STRUCTURAL node builds via the injected `_ctx.build` host, whose arity is
+  // only known at parse time — so instead of defensively capturing both (the old
+  // behaviour), gate on what the host reads via the `_hostReads` helper (memoized
+  // once per parse on `_ctx._pmCapTL`/`_pmCapST`). Host sig is
+  // `(type, children, rawChildren, span, triviaLog, state)`: not reading arg 4
+  // (index) means no trivia log, arg 5 means no state (when no host, the default
+  // CST embeds `state` → keep the clone). `_hostReads` is conservative — a
+  // rest/default param or `arguments` forces full capture, so a spread host never
+  // silently loses data. jess hosts are all plain arity-4 → both captures are dead
+  // (the cstTriviaLog per-token push dominates — ~28% of a real jess parse).
+  const capturesTrivia = mkType !== null || (!structural && buildReadsTrivia(def))
+  const clonesState = !structural && buildReadsState(def)
 
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
-  const tlV = capturesTrivia ? v(ctx, '_tl') : '_EMPTY_TL'
+  const capTLv = structural ? v(ctx, '_ctl') : null
+  const capSTv = structural ? v(ctx, '_cst') : null
+  const tlV = capturesTrivia || structural ? v(ctx, '_tl') : '_EMPTY_TL'
   if (!capturesTrivia) ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
-  const allocStmt = capturesTrivia
-    ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
-    : `${i}const ${chV} = [], ${rawV} = []`
+  if (structural) ctx.needsHostReads = true
+  const allocStmt = structural
+    ? `${i}const ${capTLv} = _ctx._pmCapTL ??= _hostReads(_ctx.build, 4), ${capSTv} = _ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 5))\n`
+      + `${i}const ${chV} = [], ${rawV} = [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
+    : capturesTrivia
+      ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
+      : `${i}const ${chV} = [], ${rawV} = []`
   // When not capturing, set _ctx._cstTriviaLog = undefined so inner trivia terminals'
   // `if (_ctx._cstTriviaLog !== undefined)` guard short-circuits (no per-token push).
-  const innerTl = capturesTrivia ? tlV : 'undefined'
+  const innerTl = structural ? `${capTLv} ? ${tlV} : undefined` : capturesTrivia ? tlV : 'undefined'
   const stmts: string[] = [
     allocStmt,
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog`,
@@ -1734,7 +1794,10 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
 
   let stV = 'undefined'
-  if (clonesState) {
+  if (structural) {
+    stV = v(ctx, '_nst')
+    stmts.push(`${i}const ${stV} = ${capSTv} && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+  } else if (clonesState) {
     stV = v(ctx, '_nst')
     stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
@@ -2308,7 +2371,6 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     buildFns: [],
     buildSrcs: [],
     runtimeParsers: [],
-    needsCollator: false,
     namedParsers: new Map(),
     triviaCaptureNames: new Map(),
     triviaFnNames: new Map(),
@@ -2319,21 +2381,19 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
 
   const r = emit(combinator as Combinator<unknown>, ctx, '_pos')
 
-  const collatorDecl = ctx.needsCollator
-    ? `const _collator = new Intl.Collator(undefined, { sensitivity: 'accent' })\n`
-    : ''
-
   const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
   const emptyTlDecls = ctx.needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []
+  const hostReadsDecls = ctx.needsHostReads ? [HOST_READS_DECL] : []
 
   const source = [
     ...emptyTlDecls,
+    ...hostReadsDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     '',
     ...namedPrelude,
     ctx.namedFnDecls.join('\n\n'),
-    `${collatorDecl}function _parse(input, _pos, _rp, _mf, _build, _ctx) {`,
+    `function _parse(input, _pos, _rp, _mf, _build, _ctx) {`,
     `  let pos = _pos`,
     ...r.stmts,
     `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
@@ -2342,9 +2402,9 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
 
   const fn = new Function('input', '_pos', '_rp', '_mf', '_build', '_ctx', [
     ...emptyTlDecls,
+    ...hostReadsDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
-    collatorDecl,
     ...namedPrelude,
     ...ctx.namedFnDecls.flatMap((decl, i) => (i > 0 ? ['', decl] : [decl])),
     `let pos = _pos`,
@@ -2382,7 +2442,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
   // no map-function closures or their source text has been provided for injection.
   const mfCovered = ctx.mapFns.length === 0 || (effectiveSources !== undefined && effectiveSources.length === ctx.mapFns.length)
   const canInline = ctx.runtimeParsers.length === 0 && mfCovered && buildCovered
-  const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, collatorDecl, effectiveSources, buildSources) : null
+  const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, effectiveSources, buildSources) : null
 
   return {
     source,
@@ -2469,7 +2529,6 @@ export function compileRuleMap(
     buildFns: [],
     buildSrcs: [],
     runtimeParsers: [],
-    needsCollator: false,
     namedParsers: new Map(),
     triviaCaptureNames: new Map(),
     triviaFnNames: new Map(),
@@ -2495,10 +2554,6 @@ export function compileRuleMap(
 
   const perEntry = ruleMap.map(([key, rule]) => ({ key, r: emit(rule, ctx, '_pos') }))
 
-  const collatorDecl = ctx.needsCollator
-    ? `const _collator = new Intl.Collator(undefined, { sensitivity: 'accent' })\n`
-    : ''
-
   const derivedSrcs = ctx.mapFnSrcs.length === ctx.mapFns.length && ctx.mapFnSrcs.every((s): s is string => s !== null)
     ? ctx.mapFnSrcs as string[]
     : undefined
@@ -2513,9 +2568,9 @@ export function compileRuleMap(
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : '',
+    ctx.needsHostReads ? `  ${HOST_READS_DECL}` : '',
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
-    collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,
     buildDecl,
     ...namedPrelude.map(l => `  ${l}`),
@@ -2561,7 +2616,7 @@ export function compileRuleMap(
  * derives it — module identity in the macro, a counter in `compile()`).
  *
  *   prelude  — namespaced hoisted decls (regexes, expected, `_mf`/`_build`, and
- *              private `_pf` helper fns). Sentinels / `_EMPTY_TL` / `_collator`
+ *              private `_pf` helper fns). Sentinels / `_EMPTY_TL`
  *              are NOT here — they are SHARED, emitted once by the linker.
  *   ruleFns  — name → `function _r_<Name>(…) { … }` source (the composition
  *              surface; siblings call these by name).
@@ -2584,7 +2639,7 @@ export type LinkablePieces = {
   firstSets: Map<string, FirstSet>
   deps: Map<string, string[]>
   needsEmptyTl: boolean
-  needsCollator: boolean
+  needsHostReads: boolean
   /**
    * Transform (`_mf`) / build (`_build`) callback FUNCTIONS, injected into the
    * fused scope via `_env` when their SOURCE isn't available (runtime `compile()`
@@ -2616,7 +2671,7 @@ export function compileLinkable(
     vars: 0, indent: 1, regexDecls: [], regexMap: new Map(),
     expectedDecls: [], expectedMap: new Map(), recordFail: true,
     mapFns: [], mapFnSrcs: [], buildFns: [], buildSrcs: [], runtimeParsers: [],
-    needsCollator: false, namedParsers: new Map(), triviaCaptureNames: new Map(),
+    namedParsers: new Map(), triviaCaptureNames: new Map(),
     triviaFnNames: new Map(), namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
@@ -2763,7 +2818,7 @@ export function compileLinkable(
     firstSets,
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
-    needsCollator: ctx.needsCollator,
+    needsHostReads: !!ctx.needsHostReads,
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
     buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
   }
@@ -2772,7 +2827,6 @@ export function compileLinkable(
 function buildInlineExpression(
   ctx: Ctx,
   r: ER,
-  collatorDecl: string,
   mapFnSources?: string[],
   buildSources?: string[],
 ): string {
@@ -2794,15 +2848,16 @@ function buildInlineExpression(
   const buildDecl = buildSources?.length ? `  const _build = [${buildSources.join(', ')}]` : ''
 
   const emptyTlDecl = ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : ''
-  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl
+  const hostReadsDecl = ctx.needsHostReads ? `  ${HOST_READS_DECL}` : ''
+  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     emptyTlDecl,
+    hostReadsDecl,
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
-    collatorDecl ? `  ${collatorDecl.trim()}` : '',
     mfDecl,
     buildDecl,
     ...namedPrelude.map(l => `  ${l}`),

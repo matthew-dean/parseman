@@ -173,9 +173,16 @@ function classToRanges(cls: string): Array<[number, number]> | null {
 }
 
 /** ASCII case-insensitive letter check for `i`-flag literal lowering. */
-const foldEq = (cVar: string, cp: number): string => {
-  if (cp >= 65 && cp <= 90) return `(${cVar} === ${cp} || ${cVar} === ${cp + 32})`
-  if (cp >= 97 && cp <= 122) return `(${cVar} === ${cp} || ${cVar} === ${cp - 32})`
+// ASCII case-insensitive char compare. For a letter, upper/lower differ only in
+// bit 0x20, and `(c | 32) === <lowercase>` is satisfied by EXACTLY that letter's
+// two cases (nothing else) — one OR + one compare, ~1.75× faster than the
+// two-compare `(c===U || c===L)` form (measured). `(… | 32)` is parenthesized
+// because `===` binds tighter than `|`. Non-letters keep an exact compare.
+// Exported so the case-insensitive `literal()` emitter (codegen) shares the exact
+// same ASCII fold as `/i`-flag regex lowering — no `Intl.Collator` on any path.
+export const foldEq = (cVar: string, cp: number): string => {
+  if (cp >= 65 && cp <= 90) return `(${cVar} | 32) === ${cp + 32}`
+  if (cp >= 97 && cp <= 122) return `(${cVar} | 32) === ${cp}`
   return `${cVar} === ${cp}`
 }
 
@@ -497,6 +504,17 @@ function firstSetsDisjoint(a: CharSet | 'any', b: CharSet | 'any'): boolean {
  * decide when a non-disjoint alternation's arms are mutually exclusive (§8i).
  */
 function fixedClassSeq(shape: ScanShape): CharSet[] | null {
+  // A case-fold literal is fixed-length: each code point becomes a single-char
+  // class holding BOTH ASCII cases (so mutual-exclusivity is judged on what the
+  // `/i` match actually accepts — `and` vs `or` are disjoint at position 0).
+  if (shape.kind === 'litFold') {
+    return shape.open.map(cp => {
+      const other = cp >= 65 && cp <= 90 ? cp + 32 : cp >= 97 && cp <= 122 ? cp - 32 : cp
+      return other === cp
+        ? { ranges: [[cp, cp]] as Array<[number, number]>, negated: false }
+        : { ranges: [[Math.min(cp, other), Math.min(cp, other)], [Math.max(cp, other), Math.max(cp, other)]] as Array<[number, number]>, negated: false }
+    })
+  }
   if (shape.kind !== 'seq') return null
   const out: CharSet[] = []
   for (const p of shape.parts) {
@@ -1115,11 +1133,55 @@ function parseScanShapeCore(source: string): ScanShape | null {
  */
 export function scanShapeFromRegex(source: string, flags: string): ScanShape | null {
   if (/[msu]/.test(flags)) return null
-  if (/i/.test(flags)) {
-    const open = literalCodePoints(source)
-    return open ? { kind: 'litFold', open } : null
-  }
+  if (/i/.test(flags)) return caseFoldShape(source)
   return parseScanShape(source)
+}
+
+/**
+ * Case-insensitive (`/i`) scannable shapes. Beyond a pure case-fold literal
+ * (`litFold`), this recognizes a top-level alternation of literals (an ordered
+ * `alt` of litFolds — CSS `(?:and|or)`, `(?:media|container|supports)`), each
+ * optionally wrapped in a trailing lookahead boundary (`(?![-\w])`, `(?=\()`).
+ * That last form is the regex spelling of `makeWord` — a keyword plus a word
+ * boundary — the common CSS at-rule/keyword dispatcher. Anything else declines
+ * (→ `RegExp.exec`); a false read here can only fail to lower, never mis-lower.
+ */
+function caseFoldShape(source: string): ScanShape | null {
+  const la = stripTrailingLookahead(source)
+  if (la) {
+    const inner = caseFoldLiteralOrAlt(la.base)
+    if (!inner) return null
+    const operand: CharSet = { ranges: la.ranges, negated: la.classNegated }
+    if (!lookaheadUnambiguous(inner, operand, la.negative)) return null
+    return { kind: 'lookahead', inner, ranges: la.ranges, classNegated: la.classNegated, negative: la.negative }
+  }
+  return caseFoldLiteralOrAlt(source)
+}
+
+/** A case-fold literal, or a top-level `a|b|c` alternation of pure literals. */
+function caseFoldLiteralOrAlt(source: string): ScanShape | null {
+  // `foldEq` only folds ASCII letters (65–90 / 97–122). A non-ASCII code point
+  // with a Unicode case pair (é/É, ä/Ä, …) would be emitted as an exact compare
+  // and silently miss its alternate case — a mis-lower, not just a failed lower.
+  // Decline those so they fall back to `RegExp.exec` (correct Unicode folding),
+  // preserving this file's "a false read can only fail to lower, never mis-lower".
+  const asciiOnly = (cps: number[]): boolean => cps.every(cp => cp <= 127)
+
+  const open = literalCodePoints(source)
+  if (open) return asciiOnly(open) ? { kind: 'litFold', open } : null
+  // `splitTopLevelAlternation` unwraps the outer group itself, so no pre-strip.
+  const arms = splitTopLevelAlternation(source)
+  if (!arms || arms.length < 2) return null
+  const litArms: ScanShape[] = []
+  for (const arm of arms) {
+    const cp = literalCodePoints(arm)
+    if (!cp || !asciiOnly(cp)) return null
+    litArms.push({ kind: 'litFold', open: cp })
+  }
+  // Ordered choice: each litFold arm case-folds on its own, so skipping the
+  // first-char dispatch guard (disjoint:false, firsts:null) is always correct —
+  // it just tries arms in order, exactly like regex `|`.
+  return { kind: 'alt', arms: litArms, disjoint: false, firsts: litArms.map(() => null) }
 }
 
 export const classCond = (cVar: string, ranges: Array<[number, number]>): string =>
@@ -1172,6 +1234,37 @@ export type ShapeMatch = { setup: string[]; ok: string; end: string }
 const codeAt = (start: string, firstChar?: string): string =>
   firstChar ?? `input.charCodeAt(${start})`
 
+// Dispatch-planning thresholds for a disjoint alt's first-char `switch` — same
+// tuning as codegen's `planDisjointDispatch` (kept local to avoid a scannable-run
+// → codegen import cycle): only worth a jump table when every arm keys off a few
+// DISCRETE points; a wide range (`[a-z]+`) would explode into dozens of cases.
+const ALT_SWITCH_RANGE_LIMIT = 4
+const ALT_SWITCH_MAX_CASES = 48
+const ALT_SWITCH_MIN_CASES = 3
+
+/**
+ * A `switch` jump table for a *disjoint* alt when every arm's first-set is a few
+ * discrete code points (operator/keyword first chars); else `{ kind: 'if' }` to
+ * keep the range-comparison `if/else if` chain. Arms are pairwise-disjoint, so
+ * each code point maps to exactly one arm.
+ */
+function planAltSwitch(firsts: Array<CharSet | null>): { kind: 'switch'; cases: number[][] } | { kind: 'if' } {
+  const cases: number[][] = []
+  let total = 0
+  for (const fs of firsts) {
+    if (!fs || fs.negated) return { kind: 'if' } // any / negated → no discrete keys
+    const pts: number[] = []
+    for (const [lo, hi] of fs.ranges) {
+      if (hi - lo + 1 > ALT_SWITCH_RANGE_LIMIT) return { kind: 'if' }
+      for (let cp = lo; cp <= hi; cp++) pts.push(cp)
+    }
+    total += pts.length
+    if (total > ALT_SWITCH_MAX_CASES) return { kind: 'if' }
+    cases.push(pts)
+  }
+  return total >= ALT_SWITCH_MIN_CASES ? { kind: 'switch', cases } : { kind: 'if' }
+}
+
 export function emitShapeMatch(
   shape: ScanShape,
   start: string,
@@ -1207,20 +1300,68 @@ export function emitShapeMatch(
     const okV = mint('_ok')
     const endV = mint('_end')
     const lines: string[] = [`${ind}let ${okV} = false`, `${ind}let ${endV} = ${start}`]
+    // Fast path: an alternation of case-fold literals (CSS keyword lists like
+    // `@media|@container|@supports`, `even|odd`) → a `switch` on the first char
+    // that jumps straight to the matching group, tails compared with the bit-OR
+    // fold. Measured ~2.4x over the ordered if-chain / ~1.4x over per-arm bit-OR.
+    // Ordered-choice is preserved: arms are grouped by their FOLDED first code
+    // point and, within a group, emitted in source order (first match wins);
+    // arms in different groups can't both match a given first char.
+    if (shape.arms.length >= 2 && shape.arms.every(a => a.kind === 'litFold' && a.open.length >= 1)) {
+      const groups = new Map<number, number[][]>()
+      for (const a of shape.arms) {
+        const open = (a as Extract<ScanShape, { kind: 'litFold' }>).open
+        const f = open[0]!
+        const lower = f >= 65 && f <= 90 ? f + 32 : f
+        ;(groups.get(lower) ?? groups.set(lower, []).get(lower)!).push(open)
+      }
+      lines.push(`${ind}if (${start} < input.length) switch (${codeAt(start, firstChar)}) {`)
+      for (const [lower, arms] of groups) {
+        const labels = lower >= 97 && lower <= 122 ? `case ${lower}: case ${lower - 32}:` : `case ${lower}:`
+        lines.push(`${ind}  ${labels} {`)
+        for (const open of arms) {
+          const tail = open.slice(1).map((cp, i) => foldEq(`input.charCodeAt(${start} + ${i + 1})`, cp))
+          const cond = tail.length ? ` && ${tail.join(' && ')}` : ''
+          lines.push(`${ind}    if (${start} + ${open.length} <= input.length${cond}) { ${okV} = true; ${endV} = ${start} + ${open.length}; break }`)
+        }
+        lines.push(`${ind}    break`)
+        lines.push(`${ind}  }`)
+      }
+      lines.push(`${ind}}`)
+      return { setup: lines, ok: okV, end: endV }
+    }
     if (shape.disjoint) {
       // Mutually exclusive first-sets: dispatch straight to the one matching
-      // arm, no ordering/backtracking concerns (§7b-style disjoint dispatch).
-      const c0 = codeAt(start, firstChar)
-      shape.arms.forEach((arm, k) => {
-        const fs = shape.firsts[k]! // non-null whenever `disjoint` is true
-        const cond = fs.negated ? `!(${classCond(c0, fs.ranges)})` : `(${classCond(c0, fs.ranges)})`
-        const m = emitShapeMatch(arm, start, mint, `${ind}  `, firstChar)
-        lines.push(`${ind}${k === 0 ? 'if' : 'else if'} (${start} < input.length && ${cond}) {`)
-        lines.push(...m.setup)
-        lines.push(`${ind}  ${okV} = ${m.ok}`)
-        lines.push(`${ind}  ${endV} = ${m.ok} ? ${m.end} : ${start}`)
+      // arm, no ordering/backtracking concerns (§7b-style disjoint dispatch). A
+      // `switch` jump table when arms key off discrete first chars, else the
+      // range-comparison `if/else if` chain (same plan as codegen's choice()).
+      const plan = planAltSwitch(shape.firsts)
+      if (plan.kind === 'switch') {
+        lines.push(`${ind}if (${start} < input.length) switch (${codeAt(start, firstChar)}) {`)
+        shape.arms.forEach((arm, k) => {
+          const labels = plan.cases[k]!.map(cp => `case ${cp}:`).join(' ')
+          const m = emitShapeMatch(arm, start, mint, `${ind}    `, firstChar)
+          lines.push(`${ind}  ${labels} {`)
+          lines.push(...m.setup)
+          lines.push(`${ind}    ${okV} = ${m.ok}`)
+          lines.push(`${ind}    ${endV} = ${m.ok} ? ${m.end} : ${start}`)
+          lines.push(`${ind}    break`)
+          lines.push(`${ind}  }`)
+        })
         lines.push(`${ind}}`)
-      })
+      } else {
+        const c0 = codeAt(start, firstChar)
+        shape.arms.forEach((arm, k) => {
+          const fs = shape.firsts[k]! // non-null whenever `disjoint` is true
+          const cond = fs.negated ? `!(${classCond(c0, fs.ranges)})` : `(${classCond(c0, fs.ranges)})`
+          const m = emitShapeMatch(arm, start, mint, `${ind}  `, firstChar)
+          lines.push(`${ind}${k === 0 ? 'if' : 'else if'} (${start} < input.length && ${cond}) {`)
+          lines.push(...m.setup)
+          lines.push(`${ind}  ${okV} = ${m.ok}`)
+          lines.push(`${ind}  ${endV} = ${m.ok} ? ${m.end} : ${start}`)
+          lines.push(`${ind}}`)
+        })
+      }
     } else {
       // Overlapping first-sets: ordered choice — try each arm in turn and take
       // the first that succeeds. This is exactly regex `|`'s own semantics:

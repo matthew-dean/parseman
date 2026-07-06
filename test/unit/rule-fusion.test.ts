@@ -167,6 +167,9 @@ const blockTrivia = trivia(many(choice(regex(/[ \\t\\n]+/), regex(/\\/\\*[^]*?\\
 const lineTrivia = trivia(many(choice(regex(/[ \\t\\n]+/), regex(/\\/\\*[^]*?\\*\\//), regex(/\\/\\/[^\\n]*/))))
 const base = rules(g => ({ Doc: parser({ trivia: blockTrivia }, many(g.W)), W: regex(/[a-z]+/) }))
 export const grammar = compose([base, rules(g => ({ Doc: parser({ trivia: lineTrivia }, many(g.W)) }))])`
+    // Lowering diagnostics are opt-in (off by default), so the block-comment
+    // trivia regex's un-lowered status doesn't add noise here — `warnings` is the
+    // fusion-warning channel only.
     const out = transformMacro(src, '/pkg/g.ts', new Set(['parseman']))!
     expect(out.warnings).toEqual([])
     expect(/new Function/.test(out.code)).toBe(false)

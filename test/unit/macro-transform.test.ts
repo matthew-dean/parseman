@@ -57,7 +57,11 @@ import { literal } from 'parseman' with { type: 'macro' }
 const method = literal('GET', { caseInsensitive: true })
 `.trim()
     const result = transform(code)!
-    expect(result.code).toContain('_collator')
+    // Case-insensitive literals lower to the ASCII bit-OR fold `(c | 32) === …`,
+    // NOT Intl.Collator (removed — measured ~9× slower).
+    expect(result.code).toContain('| 32) ===')
+    expect(result.code).not.toContain('_collator')
+    expect(result.code).not.toContain('Intl.Collator')
     expect(result.code).not.toContain("from 'parseman'")
   })
 })

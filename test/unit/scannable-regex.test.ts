@@ -164,8 +164,20 @@ describe('parseScanShape — top-level alternation (§8e)', () => {
     expect(parseScanShape('a||b')).toBeNull()
   })
 
-  it('rejects alternation under the /i flag (blocked upstream by scanShapeFromRegex)', () => {
-    expect(scanShapeFromRegex('even|odd', 'i')).toBeNull()
+  it('lowers a top-level alternation of literals under the /i flag', () => {
+    // A case-fold alternation of pure literals → ordered `alt` of `litFold` arms
+    // (the CSS keyword-list dispatcher `even|odd`, `media|container|supports`).
+    expect(scanShapeFromRegex('even|odd', 'i')).toEqual({
+      kind: 'alt',
+      disjoint: false,
+      arms: [
+        { kind: 'litFold', open: [...'even'].map(c => c.charCodeAt(0)) },
+        { kind: 'litFold', open: [...'odd'].map(c => c.charCodeAt(0)) },
+      ],
+      firsts: [null, null],
+    })
+    // A non-literal arm still declines (nth's `[-+]?\d*n…`).
+    expect(scanShapeFromRegex('even|[-+]?\\d+', 'i')).toBeNull()
   })
 })
 

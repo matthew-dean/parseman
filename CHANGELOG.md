@@ -3,6 +3,31 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.16.0 — 2026-07-06
+
+- **Case-insensitive (`/i`) regex lowering.** The scannable fast path (regexes that
+  compile to a `charCodeAt` scan instead of `RegExp.exec`) now covers `/i`. Two
+  extensions: (1) keyword-plus-boundary regexes under `/i` — e.g. an
+  `/(if|else)(?!\w)/i` keyword set — now lower to a scan, where previously only a
+  pure case-insensitive *literal* (`litFold`, e.g. CSS `url(`) did. (2) the case-fold
+  itself is now a branch-free ASCII bit-OR (`c | 0x20`) rather than `toLowerCase` /
+  `Intl.Collator` — **`Intl.Collator` is removed from the codegen path entirely**.
+  ~1.75× on `litFold` scans. (`/i` on char *classes* — folding `[a-z]`↔`[A-Z]`
+  ranges — still declines to `exec`; that's the remaining `/i` gap, tracked as §8d.)
+- **Switch-dispatch for scannable alternations.** A `choice`/alternation whose arms
+  are all scannable now compiles to a `switch` (jump table) on the first code point
+  instead of trying each arm in sequence: disjoint scannable alts dispatch straight
+  to the one matching arm, and an alt-of-`litFold` (case-insensitive keyword set)
+  folds each arm's first char before the switch. ~2.4× on alt-of-`litFold`.
+- **Codegen: arity-gated CST/trivia bookkeeping in structural `node()`.** The
+  `_cstTriviaLog` append and parse-state capture inside a structural `node()` are now
+  emitted only when the node's arity actually needs them — a node that can't carry
+  trivia or child state no longer pays for the bookkeeping.
+- **Plugin: opt-in un-lowered-regex warning.** The bundler plugin can now warn when a
+  `regex()` in your grammar falls back to `RegExp.exec` instead of lowering to a
+  `charCodeAt` scan — a diagnostic for finding fallback hot spots (e.g. a pattern
+  that would lower if respelled). **Default off**; enable it via the plugin option.
+
 ## 0.15.0 — 2026-07-05
 
 - **Grammar rule names must be valid JS identifiers.** They compile to `_r_<Name>`
