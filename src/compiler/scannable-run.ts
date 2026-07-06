@@ -497,6 +497,17 @@ function firstSetsDisjoint(a: CharSet | 'any', b: CharSet | 'any'): boolean {
  * decide when a non-disjoint alternation's arms are mutually exclusive (§8i).
  */
 function fixedClassSeq(shape: ScanShape): CharSet[] | null {
+  // A case-fold literal is fixed-length: each code point becomes a single-char
+  // class holding BOTH ASCII cases (so mutual-exclusivity is judged on what the
+  // `/i` match actually accepts — `and` vs `or` are disjoint at position 0).
+  if (shape.kind === 'litFold') {
+    return shape.open.map(cp => {
+      const other = cp >= 65 && cp <= 90 ? cp + 32 : cp >= 97 && cp <= 122 ? cp - 32 : cp
+      return other === cp
+        ? { ranges: [[cp, cp]] as Array<[number, number]>, negated: false }
+        : { ranges: [[Math.min(cp, other), Math.min(cp, other)], [Math.max(cp, other), Math.max(cp, other)]] as Array<[number, number]>, negated: false }
+    })
+  }
   if (shape.kind !== 'seq') return null
   const out: CharSet[] = []
   for (const p of shape.parts) {
@@ -1115,11 +1126,47 @@ function parseScanShapeCore(source: string): ScanShape | null {
  */
 export function scanShapeFromRegex(source: string, flags: string): ScanShape | null {
   if (/[msu]/.test(flags)) return null
-  if (/i/.test(flags)) {
-    const open = literalCodePoints(source)
-    return open ? { kind: 'litFold', open } : null
-  }
+  if (/i/.test(flags)) return caseFoldShape(source)
   return parseScanShape(source)
+}
+
+/**
+ * Case-insensitive (`/i`) scannable shapes. Beyond a pure case-fold literal
+ * (`litFold`), this recognizes a top-level alternation of literals (an ordered
+ * `alt` of litFolds — CSS `(?:and|or)`, `(?:media|container|supports)`), each
+ * optionally wrapped in a trailing lookahead boundary (`(?![-\w])`, `(?=\()`).
+ * That last form is the regex spelling of `makeWord` — a keyword plus a word
+ * boundary — the common CSS at-rule/keyword dispatcher. Anything else declines
+ * (→ `RegExp.exec`); a false read here can only fail to lower, never mis-lower.
+ */
+function caseFoldShape(source: string): ScanShape | null {
+  const la = stripTrailingLookahead(source)
+  if (la) {
+    const inner = caseFoldLiteralOrAlt(la.base)
+    if (!inner) return null
+    const operand: CharSet = { ranges: la.ranges, negated: la.classNegated }
+    if (!lookaheadUnambiguous(inner, operand, la.negative)) return null
+    return { kind: 'lookahead', inner, ranges: la.ranges, classNegated: la.classNegated, negative: la.negative }
+  }
+  return caseFoldLiteralOrAlt(source)
+}
+
+/** A case-fold literal, or a top-level `a|b|c` alternation of pure literals. */
+function caseFoldLiteralOrAlt(source: string): ScanShape | null {
+  const open = literalCodePoints(source)
+  if (open) return { kind: 'litFold', open }
+  const arms = splitTopLevelAlternation(unwrapOuterGroup(source))
+  if (!arms || arms.length < 2) return null
+  const litArms: ScanShape[] = []
+  for (const arm of arms) {
+    const cp = literalCodePoints(arm)
+    if (!cp) return null
+    litArms.push({ kind: 'litFold', open: cp })
+  }
+  // Ordered choice: each litFold arm case-folds on its own, so skipping the
+  // first-char dispatch guard (disjoint:false, firsts:null) is always correct —
+  // it just tries arms in order, exactly like regex `|`.
+  return { kind: 'alt', arms: litArms, disjoint: false, firsts: litArms.map(() => null) }
 }
 
 export const classCond = (cVar: string, ranges: Array<[number, number]>): string =>

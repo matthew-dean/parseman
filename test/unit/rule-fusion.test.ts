@@ -167,7 +167,10 @@ const blockTrivia = trivia(many(choice(regex(/[ \\t\\n]+/), regex(/\\/\\*[^]*?\\
 const lineTrivia = trivia(many(choice(regex(/[ \\t\\n]+/), regex(/\\/\\*[^]*?\\*\\//), regex(/\\/\\/[^\\n]*/))))
 const base = rules(g => ({ Doc: parser({ trivia: blockTrivia }, many(g.W)), W: regex(/[a-z]+/) }))
 export const grammar = compose([base, rules(g => ({ Doc: parser({ trivia: lineTrivia }, many(g.W)) }))])`
-    const out = transformMacro(src, '/pkg/g.ts', new Set(['parseman']))!
+    // `warnUnloweredRegex: false` — this test asserts no *fusion* warnings; the
+    // block-comment trivia regex legitimately can't lower and would otherwise add
+    // an (unrelated) lowering diagnostic.
+    const out = transformMacro(src, '/pkg/g.ts', new Set(['parseman']), false)!
     expect(out.warnings).toEqual([])
     expect(/new Function/.test(out.code)).toBe(false)
     const g = new Function(out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
