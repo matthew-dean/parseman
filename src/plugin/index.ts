@@ -23,7 +23,7 @@ import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile, compileRuleMap, compileLinkable } from '../compiler/codegen.ts'
+import { compile, compileRuleMap, compileLinkable, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource } from '../compiler/linker.ts'
 import { createHash } from 'node:crypto'
@@ -40,6 +40,12 @@ import type {
 export type ParsecraftPluginOptions = {
   /** Extra module specifiers to treat as parseman re-exports */
   moduleAliases?: string[]
+  /**
+   * Warn when a regex terminal can't LOWER to a fast `charCodeAt` scan and falls
+   * back to `RegExp.exec` (correct, but slower). Default `true`. Set `false` to
+   * silence the (potentially large) volume of these diagnostics.
+   */
+  warnUnloweredRegex?: boolean
 }
 
 const PARSEMAN_MODULE = 'parseman'
@@ -100,7 +106,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
     if (!code.includes('parseman')) return null
     if (!code.includes('macro')) return null
     const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
-    const result = transformMacro(code, id, moduleAliases)
+    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex !== false)
     if (result?.warnings.length) {
       for (const w of result.warnings) {
         if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -226,6 +232,7 @@ export function transformMacro(
   code: string,
   id: string,
   moduleAliases = new Set([PARSEMAN_MODULE]),
+  warnUnloweredRegex = true,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -282,6 +289,7 @@ export function transformMacro(
   const scope: Scope = new Map<string, ScopeEntry>()
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
+  beginLoweringCapture()
   let anyUnresolved = false
   // Unique per rules() call site in this file — holds the ONE shared compiled
   // rule-map object; each destructured local name reads its property off it.
@@ -753,6 +761,13 @@ export function transformMacro(
 
   for (const { start, end, replacement } of [...replacements].sort((a, b) => b.start - a.start)) {
     ms.overwrite(start, end, replacement)
+  }
+
+  const unlowered = endLoweringCapture()
+  if (warnUnloweredRegex) {
+    for (const src of unlowered) {
+      warnings.push(`${id}: regex ${src} did not lower to a fast charCodeAt scan (RegExp.exec fallback)`)
+    }
   }
 
   return {

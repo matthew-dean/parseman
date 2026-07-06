@@ -31,6 +31,30 @@ import {
 } from './inline-callback.ts'
 
 // ---------------------------------------------------------------------------
+// Regex-lowering diagnostics
+//
+// A regex terminal "lowers" when `scanShapeFromRegex` recognizes it and it emits
+// a tight `charCodeAt` scan loop. When it can't, emitRegex falls back to a real
+// `RegExp.exec` call — correct, but slower. Compilation is single-module and
+// synchronous, so a module-level capture sink (opened per transform, drained
+// after) records the un-lowered patterns without threading a field through every
+// Ctx and compile*() return. Keyed by regex source → one entry per unique pattern.
+// ---------------------------------------------------------------------------
+let _loweringSink: Set<string> | null = null
+
+/** Begin capturing regexes that fall back to `RegExp.exec` (didn't lower). */
+export function beginLoweringCapture(): void {
+  _loweringSink = new Set()
+}
+
+/** Stop capturing and return the un-lowered regex sources seen since begin. */
+export function endLoweringCapture(): string[] {
+  const misses = _loweringSink ? [..._loweringSink] : []
+  _loweringSink = null
+  return misses
+}
+
+// ---------------------------------------------------------------------------
 // Codegen context
 // ---------------------------------------------------------------------------
 type Ctx = {
@@ -925,6 +949,9 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
       return { stmts, valueVar: vv, endVar: scanned.endVar }
     }
   }
+
+  // Didn't lower to the fast charCodeAt scan — record it and fall back to RegExp.
+  _loweringSink?.add(`/${def.source}/${def.flags}`)
 
   const flags = 'y' + def.flags.replace(/[gy]/g, '')
   const key = `${def.source}/${flags}`
