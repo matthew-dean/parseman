@@ -1160,14 +1160,22 @@ function caseFoldShape(source: string): ScanShape | null {
 
 /** A case-fold literal, or a top-level `a|b|c` alternation of pure literals. */
 function caseFoldLiteralOrAlt(source: string): ScanShape | null {
+  // `foldEq` only folds ASCII letters (65–90 / 97–122). A non-ASCII code point
+  // with a Unicode case pair (é/É, ä/Ä, …) would be emitted as an exact compare
+  // and silently miss its alternate case — a mis-lower, not just a failed lower.
+  // Decline those so they fall back to `RegExp.exec` (correct Unicode folding),
+  // preserving this file's "a false read can only fail to lower, never mis-lower".
+  const asciiOnly = (cps: number[]): boolean => cps.every(cp => cp <= 127)
+
   const open = literalCodePoints(source)
-  if (open) return { kind: 'litFold', open }
-  const arms = splitTopLevelAlternation(unwrapOuterGroup(source))
+  if (open) return asciiOnly(open) ? { kind: 'litFold', open } : null
+  // `splitTopLevelAlternation` unwraps the outer group itself, so no pre-strip.
+  const arms = splitTopLevelAlternation(source)
   if (!arms || arms.length < 2) return null
   const litArms: ScanShape[] = []
   for (const arm of arms) {
     const cp = literalCodePoints(arm)
-    if (!cp) return null
+    if (!cp || !asciiOnly(cp)) return null
     litArms.push({ kind: 'litFold', open: cp })
   }
   // Ordered choice: each litFold arm case-folds on its own, so skipping the

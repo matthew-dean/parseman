@@ -40,3 +40,29 @@ describe('/i case-fold + trailing lookahead lowering', () => {
     })
   }
 })
+
+// A non-ASCII letter with a Unicode case pair must NOT lower — `foldEq` only
+// folds ASCII (65–122), so a lowered scan would emit an exact compare and miss
+// the alternate case (`café` would silently fail to match `CAFÉ`). It must fall
+// back to `RegExp.exec`, which folds Unicode correctly.
+describe('/i non-ASCII case pairs decline to lower (never mis-lower)', () => {
+  const NON_ASCII: Array<{ re: RegExp; inputs: string[] }> = [
+    { re: /café/i,          inputs: ['café', 'CAFÉ', 'Café', 'cafe', 'caf'] },
+    { re: /straße/i,        inputs: ['straße', 'STRAßE', 'Straße', 'strasse'] },
+    { re: /(?:über|oder)/i, inputs: ['über', 'ÜBER', 'oder', 'ODER', 'ober'] },
+  ]
+  for (const { re, inputs } of NON_ASCII) {
+    it(`${re} stays on RegExp.exec`, () => {
+      expect(compile(regex(re)).source).toContain('.exec(input)')
+    })
+    it(`${re} matches the engine (case variants included)`, () => {
+      const compiled = compile(regex(re))
+      for (const input of inputs) {
+        const i = parse(regex(re), input)
+        const c = compiled.parse(input)
+        const norm = (r: typeof i) => ({ ok: r.ok, value: r.ok ? r.value : undefined, end: r.span.end })
+        expect(norm(c), `input ${JSON.stringify(input)} for ${re}`).toEqual(norm(i))
+      }
+    })
+  }
+})

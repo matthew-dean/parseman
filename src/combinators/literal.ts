@@ -44,10 +44,16 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
     const lower = value.toLowerCase()
     const firstUpper = upper.codePointAt(0)
     const firstLower = lower.codePointAt(0)
+    // Two discrete points, not one spanning range — `asciiFoldEq` accepts only
+    // the char and its fold twin, so `[min, max]` would over-approximate (e.g.
+    // 'a'/'A' → the whole 65..97 span, pulling B–Z/`[\]^_\`` into dispatch).
     meta.firstSet = firstLower !== undefined && firstUpper !== undefined
-      ? { kind: 'ranges', ranges: [
-          { lo: Math.min(firstLower, firstUpper), hi: Math.max(firstLower, firstUpper) }
-        ]}
+      ? firstLower === firstUpper
+        ? { kind: 'ranges', ranges: [{ lo: firstLower, hi: firstLower }] }
+        : { kind: 'ranges', ranges: [
+            { lo: firstLower, hi: firstLower },
+            { lo: firstUpper, hi: firstUpper },
+          ]}
       : firstSet
   }
 
