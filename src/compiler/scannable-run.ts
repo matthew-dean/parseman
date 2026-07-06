@@ -42,7 +42,10 @@
  */
 export type SeqPart =
   | { part: 'lit'; cps: number[]; optional: boolean }
-  | { part: 'run'; ranges: Array<[number, number]>; negated: boolean; min: 0 | 1; unbounded: boolean }
+  // `escapes`: each position is a class char OR a CSS escape (`\` + 1–6 hex +
+  // optional ws, or `\` + one non-newline char) — the css/less/scss/jess
+  // `ident`/`basicSel`/`propName` shape. `negated` is always false when escapes.
+  | { part: 'run'; ranges: Array<[number, number]>; negated: boolean; min: 0 | 1; unbounded: boolean; escapes?: boolean }
   | { part: 'group'; inner: ScanShape; min: 0 | 1; unbounded: boolean }
 
 export type ScanShape =
@@ -243,6 +246,26 @@ function parseStringShape(source: string): ScanShape | null {
  * for the `seq` shape — it encodes categories (optional prefix, literal opener,
  * negated run, …), never any specific byte value.
  */
+// The CSS escape as it appears in the ident/selector/prop-name regexes —
+// computed from the SAME literal so a match is exact, never drifts. A run whose
+// every position is `[class] | <this escape>` lowers to an escape-aware scan.
+const CSS_ESCAPE_SRC = /\\(?:[0-9a-fA-F]{1,6}[ \t\n\r\f]?|[^\n])/.source
+
+/**
+ * Recognize a `(?:…)` group body of the form `[class]|\\(?:[0-9a-fA-F]{1,6}[ …]?|[^\n])`
+ * (one CSS ident position: a class char OR a CSS escape). Returns the class
+ * ranges, or null. The escape tail is matched against `CSS_ESCAPE_SRC` verbatim.
+ */
+function matchCssEscapeClassAlt(body: string): Array<[number, number]> | null {
+  const tail = '|' + CSS_ESCAPE_SRC
+  if (!body.endsWith(tail)) return null
+  const classPart = body.slice(0, body.length - tail.length)
+  if (classPart.length < 2 || classPart[0] !== '[' || classPart[classPart.length - 1] !== ']') return null
+  const inner = classPart.slice(1, -1)
+  if (inner.startsWith('^')) return null
+  return parseClassRanges(inner)
+}
+
 function parseSeqParts(source: string): SeqPart[] | null {
   const parts: SeqPart[] = []
   let lit: number[] = []
@@ -325,6 +348,17 @@ function parseSeqParts(source: string): SeqPart[] | null {
       }
       if (depth !== 0) return null
       const body = source.slice(i + 3, k - 1)
+      // CSS ident position: `(?:[class]|\\<esc>)` → an escape-aware `run`.
+      const escRanges = matchCssEscapeClassAlt(body)
+      if (escRanges) {
+        flush()
+        const q2 = source[k]
+        if (q2 === '+') { parts.push({ part: 'run', ranges: escRanges, negated: false, min: 1, unbounded: true, escapes: true }); i = k + 1 }
+        else if (q2 === '*') { parts.push({ part: 'run', ranges: escRanges, negated: false, min: 0, unbounded: true, escapes: true }); i = k + 1 }
+        else if (q2 === '?') { parts.push({ part: 'run', ranges: escRanges, negated: false, min: 0, unbounded: false, escapes: true }); i = k + 1 }
+        else { parts.push({ part: 'run', ranges: escRanges, negated: false, min: 1, unbounded: false, escapes: true }); i = k }
+        continue
+      }
       const inner = parseScanShape(body)
       if (!inner || !groupInnerSafe(inner)) return null
       const q = source[k]
@@ -519,7 +553,8 @@ function fixedClassSeq(shape: ScanShape): CharSet[] | null {
     if (p.part === 'lit') {
       if (p.optional) return null
       for (const cp of p.cps) out.push({ ranges: [[cp, cp]], negated: false })
-    } else if (p.part === 'run' && !p.unbounded && p.min === 1) {
+    } else if (p.part === 'run' && !p.unbounded && p.min === 1 && !p.escapes) {
+      // (an escapes run is NOT fixed-length — a `\` escape spans several chars)
       out.push({ ranges: p.ranges, negated: p.negated })
     } else {
       return null // optional/unbounded run, or a nested group — length not fixed
@@ -614,7 +649,11 @@ function trailingBacktrackClass(shape: ScanShape): CharSet | null | 'unsupported
       // unbounded (`+`/`*`) or optional-bounded (`[x]?`) both have a
       // 1-position choice a backtracker could make; `[x]` (min 1, bounded) is
       // a single required char — no choice, hence no risk.
-      if (last.unbounded || last.min === 0) return { ranges: last.ranges, negated: last.negated }
+      if (last.unbounded || last.min === 0) {
+        // An escapes run's right edge can also expose a `\` (escape lead).
+        const ranges = last.escapes ? [...last.ranges, [92, 92] as [number, number]] : last.ranges
+        return { ranges, negated: last.negated }
+      }
       return null
     }
     // A trailing `group` (§8f): its trailing exposure combines its body's own
@@ -797,7 +836,11 @@ function unionCharSets(sets: Array<CharSet | 'any'>): CharSet | 'any' {
  * `alt` (see `shapeFirstAccept`). */
 function partFirstAccept(part: SeqPart): CharSet | 'any' {
   if (part.part === 'lit') return { ranges: [[part.cps[0]!, part.cps[0]!]], negated: false }
-  if (part.part === 'run') return { ranges: part.ranges, negated: part.negated }
+  if (part.part === 'run') {
+    // An escapes run can also START with a `\` (escape lead).
+    const ranges = part.escapes ? [...part.ranges, [92, 92] as [number, number]] : part.ranges
+    return { ranges, negated: part.negated }
+  }
   return shapeFirstAccept(part.inner)
 }
 
@@ -1404,6 +1447,24 @@ export function emitShapeMatch(
       const c = classCond(`input.charCodeAt(${at})`, p.ranges)
       return p.negated ? `!(${c})` : `(${c})`
     }
+    // ── escape-aware run helpers (CSS ident position: class char OR CSS escape) ──
+    const HEX = (c: string) => `((${c} >= 48 && ${c} <= 57) || (${c} >= 65 && ${c} <= 70) || (${c} >= 97 && ${c} <= 102))`
+    const WS = (c: string) => `(${c} === 32 || ${c} === 9 || ${c} === 10 || ${c} === 12 || ${c} === 13)`
+    // A valid escape starts at `at` when it's `\` followed by a non-newline char.
+    const escStart = (at: string) => `input.charCodeAt(${at}) === 92 && ${at} + 1 < input.length && input.charCodeAt(${at} + 1) !== 10`
+    // Statements (indent `bi`) that consume a CSS escape once `endV` points at `\`:
+    // 1–6 hex + optional single whitespace, else one non-newline char.
+    const escConsume = (bi: string): string[] => {
+      const hv = mint('_h')
+      return [
+        `${bi}${endV}++`,
+        `${bi}if (${HEX(`input.charCodeAt(${endV})`)}) {`,
+        `${bi}  let ${hv} = 0`,
+        `${bi}  while (${hv} < 6 && ${endV} < input.length && ${HEX(`input.charCodeAt(${endV})`)}) { ${endV}++; ${hv}++ }`,
+        `${bi}  if (${endV} < input.length && ${WS(`input.charCodeAt(${endV})`)}) ${endV}++`,
+        `${bi}} else { ${endV}++ }`,
+      ]
+    }
     const lines = [`${ind}let ${endV} = ${start}`, `${ind}let ${okV} = false`, `${ind}do {`]
     let first = true
     for (const p of shape.parts) {
@@ -1415,6 +1476,26 @@ export function emitShapeMatch(
         } else {
           lines.push(`${ind}  if (!(${endV} + ${L} <= input.length && (${cond}))) break`)
           lines.push(`${ind}  ${endV} += ${L}`)
+        }
+      } else if (p.part === 'run' && p.escapes) {
+        // One position (bounded) or a run (unbounded) of class-char-OR-CSS-escape.
+        if (!p.unbounded) {
+          lines.push(`${ind}  if (${endV} < input.length && ${runCond(p, endV)}) ${endV}++`)
+          lines.push(`${ind}  else if (${escStart(endV)}) {`)
+          lines.push(...escConsume(`${ind}    `))
+          lines.push(`${ind}  }${p.min === 1 ? ' else break' : ''}`)
+        } else {
+          const s = mint('_s')
+          lines.push(`${ind}  const ${s} = ${endV}`)
+          lines.push(`${ind}  while (${endV} < input.length) {`)
+          lines.push(`${ind}    if (${runCond(p, endV)}) { ${endV}++; continue }`)
+          lines.push(`${ind}    if (${escStart(endV)}) {`)
+          lines.push(...escConsume(`${ind}      `))
+          lines.push(`${ind}      continue`)
+          lines.push(`${ind}    }`)
+          lines.push(`${ind}    break`)
+          lines.push(`${ind}  }`)
+          if (p.min === 1) lines.push(`${ind}  if (${endV} === ${s}) break`)
         }
       } else if (p.part === 'run' && !p.unbounded) {
         // Exactly one char: required (min 1) or optional (min 0).
