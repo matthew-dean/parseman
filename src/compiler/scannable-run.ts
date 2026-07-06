@@ -1224,6 +1224,37 @@ export type ShapeMatch = { setup: string[]; ok: string; end: string }
 const codeAt = (start: string, firstChar?: string): string =>
   firstChar ?? `input.charCodeAt(${start})`
 
+// Dispatch-planning thresholds for a disjoint alt's first-char `switch` — same
+// tuning as codegen's `planDisjointDispatch` (kept local to avoid a scannable-run
+// → codegen import cycle): only worth a jump table when every arm keys off a few
+// DISCRETE points; a wide range (`[a-z]+`) would explode into dozens of cases.
+const ALT_SWITCH_RANGE_LIMIT = 4
+const ALT_SWITCH_MAX_CASES = 48
+const ALT_SWITCH_MIN_CASES = 3
+
+/**
+ * A `switch` jump table for a *disjoint* alt when every arm's first-set is a few
+ * discrete code points (operator/keyword first chars); else `{ kind: 'if' }` to
+ * keep the range-comparison `if/else if` chain. Arms are pairwise-disjoint, so
+ * each code point maps to exactly one arm.
+ */
+function planAltSwitch(firsts: Array<CharSet | null>): { kind: 'switch'; cases: number[][] } | { kind: 'if' } {
+  const cases: number[][] = []
+  let total = 0
+  for (const fs of firsts) {
+    if (!fs || fs.negated) return { kind: 'if' } // any / negated → no discrete keys
+    const pts: number[] = []
+    for (const [lo, hi] of fs.ranges) {
+      if (hi - lo + 1 > ALT_SWITCH_RANGE_LIMIT) return { kind: 'if' }
+      for (let cp = lo; cp <= hi; cp++) pts.push(cp)
+    }
+    total += pts.length
+    if (total > ALT_SWITCH_MAX_CASES) return { kind: 'if' }
+    cases.push(pts)
+  }
+  return total >= ALT_SWITCH_MIN_CASES ? { kind: 'switch', cases } : { kind: 'if' }
+}
+
 export function emitShapeMatch(
   shape: ScanShape,
   start: string,
@@ -1291,18 +1322,36 @@ export function emitShapeMatch(
     }
     if (shape.disjoint) {
       // Mutually exclusive first-sets: dispatch straight to the one matching
-      // arm, no ordering/backtracking concerns (§7b-style disjoint dispatch).
-      const c0 = codeAt(start, firstChar)
-      shape.arms.forEach((arm, k) => {
-        const fs = shape.firsts[k]! // non-null whenever `disjoint` is true
-        const cond = fs.negated ? `!(${classCond(c0, fs.ranges)})` : `(${classCond(c0, fs.ranges)})`
-        const m = emitShapeMatch(arm, start, mint, `${ind}  `, firstChar)
-        lines.push(`${ind}${k === 0 ? 'if' : 'else if'} (${start} < input.length && ${cond}) {`)
-        lines.push(...m.setup)
-        lines.push(`${ind}  ${okV} = ${m.ok}`)
-        lines.push(`${ind}  ${endV} = ${m.ok} ? ${m.end} : ${start}`)
+      // arm, no ordering/backtracking concerns (§7b-style disjoint dispatch). A
+      // `switch` jump table when arms key off discrete first chars, else the
+      // range-comparison `if/else if` chain (same plan as codegen's choice()).
+      const plan = planAltSwitch(shape.firsts)
+      if (plan.kind === 'switch') {
+        lines.push(`${ind}if (${start} < input.length) switch (${codeAt(start, firstChar)}) {`)
+        shape.arms.forEach((arm, k) => {
+          const labels = plan.cases[k]!.map(cp => `case ${cp}:`).join(' ')
+          const m = emitShapeMatch(arm, start, mint, `${ind}    `, firstChar)
+          lines.push(`${ind}  ${labels} {`)
+          lines.push(...m.setup)
+          lines.push(`${ind}    ${okV} = ${m.ok}`)
+          lines.push(`${ind}    ${endV} = ${m.ok} ? ${m.end} : ${start}`)
+          lines.push(`${ind}    break`)
+          lines.push(`${ind}  }`)
+        })
         lines.push(`${ind}}`)
-      })
+      } else {
+        const c0 = codeAt(start, firstChar)
+        shape.arms.forEach((arm, k) => {
+          const fs = shape.firsts[k]! // non-null whenever `disjoint` is true
+          const cond = fs.negated ? `!(${classCond(c0, fs.ranges)})` : `(${classCond(c0, fs.ranges)})`
+          const m = emitShapeMatch(arm, start, mint, `${ind}  `, firstChar)
+          lines.push(`${ind}${k === 0 ? 'if' : 'else if'} (${start} < input.length && ${cond}) {`)
+          lines.push(...m.setup)
+          lines.push(`${ind}  ${okV} = ${m.ok}`)
+          lines.push(`${ind}  ${endV} = ${m.ok} ? ${m.end} : ${start}`)
+          lines.push(`${ind}}`)
+        })
+      }
     } else {
       // Overlapping first-sets: ordered choice — try each arm in turn and take
       // the first that succeeds. This is exactly regex `|`'s own semantics:
