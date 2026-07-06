@@ -42,8 +42,10 @@ export type ParsecraftPluginOptions = {
   moduleAliases?: string[]
   /**
    * Warn when a regex terminal can't LOWER to a fast `charCodeAt` scan and falls
-   * back to `RegExp.exec` (correct, but slower). Default `true`. Set `false` to
-   * silence the (potentially large) volume of these diagnostics.
+   * back to `RegExp.exec`. **Default `false` (opt-in).** `RegExp.exec` is an
+   * accepted, JIT-fast compiled path — most un-lowered regexes are perfectly fine
+   * and lowering them often shows no real gain — so this is a diagnostic you turn
+   * ON when specifically auditing lowering coverage, not a build-time nag.
    */
   warnUnloweredRegex?: boolean
 }
@@ -106,7 +108,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
     if (!code.includes('parseman')) return null
     if (!code.includes('macro')) return null
     const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
-    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex !== false)
+    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true)
     if (result?.warnings.length) {
       for (const w of result.warnings) {
         if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -232,7 +234,7 @@ export function transformMacro(
   code: string,
   id: string,
   moduleAliases = new Set([PARSEMAN_MODULE]),
-  warnUnloweredRegex = true,
+  warnUnloweredRegex = false,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
