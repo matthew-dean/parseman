@@ -6,8 +6,9 @@
  */
 import { describe, it, expect } from 'vitest'
 import { regex, parse, compile } from '../../src/index.ts'
+import type { ParseResult } from '../../src/types.ts'
 
-const norm = (r) => ({ ok: r.ok, value: r.ok ? r.value : undefined, end: r.span.end })
+const norm = (r: ParseResult<unknown>) => ({ ok: r.ok, value: r.ok ? r.value : undefined, end: r.span.end })
 
 describe('disjoint-alt switch dispatch', () => {
   it('discrete first chars → switch, parity with the engine', () => {

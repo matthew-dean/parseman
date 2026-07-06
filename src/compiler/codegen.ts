@@ -30,6 +30,18 @@ import {
   tryInlineDestructureTransform,
 } from './inline-callback.ts'
 
+/**
+ * Runtime prelude helper for the structural-node capture gate. Answers "does the
+ * injected `_ctx.build` host read its (n+1)th positional arg?" — `.length` alone
+ * under-counts with rest/default params and can't see through a bound fn, so a
+ * rest/default param or an `arguments` reference forces full capture (output-safe).
+ * Plain positional and bound-native hosts (the common case) trust `.length`.
+ * Emitted (memoized on `_ctx._pmCapTL`/`_pmCapST`) wherever a structural node()
+ * arity-gates host capture; shared, un-namespaced, mirrors `_EMPTY_TL` placement.
+ */
+export const HOST_READS_DECL =
+  'const _hostReads = (b, n) => { if (b === undefined) return false; let s; try { s = Function.prototype.toString.call(b) } catch (e) { return true } if (/\\barguments\\b/.test(s)) return true; const m = /^[^(]*\\(([\\s\\S]*?)\\)/.exec(s); if (m && /\\.\\.\\.|=/.test(m[1])) return true; return b.length > n }'
+
 // ---------------------------------------------------------------------------
 // Regex-lowering diagnostics
 //
@@ -84,6 +96,8 @@ type Ctx = {
   needsCollator: boolean
   /** Whether any node() elided trivia capture and needs the shared frozen empty log. */
   needsEmptyTl?: boolean | undefined
+  /** Whether any structural node() arity-gates host capture and needs the `_hostReads` helper. */
+  needsHostReads?: boolean | undefined
   /** Lazy/ref parsers and trivia helpers: parser identity → generated function name */
   namedParsers: Map<Combinator<unknown>, string>
   /**
@@ -1732,22 +1746,38 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
 
   // Arity-gated elision: when the build provably never reads the trivia (4th) or
   // state (5th) arg, skip that capture entirely. The mk-inline path reads
-  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture. A
-  // structural node's host may read either → capture both.
-  const capturesTrivia = mkType !== null || structural || buildReadsTrivia(def)
-  const clonesState = structural || buildReadsState(def)
+  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture.
+  //
+  // A STRUCTURAL node builds via the injected `_ctx.build` host, whose arity is
+  // only known at parse time — so instead of defensively capturing both (the old
+  // behaviour), gate on what the host reads via the `_hostReads` helper (memoized
+  // once per parse on `_ctx._pmCapTL`/`_pmCapST`). Host sig is
+  // `(type, children, rawChildren, span, triviaLog, state)`: not reading arg 4
+  // (index) means no trivia log, arg 5 means no state (when no host, the default
+  // CST embeds `state` → keep the clone). `_hostReads` is conservative — a
+  // rest/default param or `arguments` forces full capture, so a spread host never
+  // silently loses data. jess hosts are all plain arity-4 → both captures are dead
+  // (the cstTriviaLog per-token push dominates — ~28% of a real jess parse).
+  const capturesTrivia = mkType !== null || (!structural && buildReadsTrivia(def))
+  const clonesState = !structural && buildReadsState(def)
 
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
-  const tlV = capturesTrivia ? v(ctx, '_tl') : '_EMPTY_TL'
+  const capTLv = structural ? v(ctx, '_ctl') : null
+  const capSTv = structural ? v(ctx, '_cst') : null
+  const tlV = capturesTrivia || structural ? v(ctx, '_tl') : '_EMPTY_TL'
   if (!capturesTrivia) ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
-  const allocStmt = capturesTrivia
-    ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
-    : `${i}const ${chV} = [], ${rawV} = []`
+  if (structural) ctx.needsHostReads = true
+  const allocStmt = structural
+    ? `${i}const ${capTLv} = _ctx._pmCapTL ??= _hostReads(_ctx.build, 4), ${capSTv} = _ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 5))\n`
+      + `${i}const ${chV} = [], ${rawV} = [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
+    : capturesTrivia
+      ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
+      : `${i}const ${chV} = [], ${rawV} = []`
   // When not capturing, set _ctx._cstTriviaLog = undefined so inner trivia terminals'
   // `if (_ctx._cstTriviaLog !== undefined)` guard short-circuits (no per-token push).
-  const innerTl = capturesTrivia ? tlV : 'undefined'
+  const innerTl = structural ? `${capTLv} ? ${tlV} : undefined` : capturesTrivia ? tlV : 'undefined'
   const stmts: string[] = [
     allocStmt,
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog`,
@@ -1761,7 +1791,10 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
 
   let stV = 'undefined'
-  if (clonesState) {
+  if (structural) {
+    stV = v(ctx, '_nst')
+    stmts.push(`${i}const ${stV} = ${capSTv} && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+  } else if (clonesState) {
     stV = v(ctx, '_nst')
     stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
@@ -2352,9 +2385,11 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
   const emptyTlDecls = ctx.needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []
+  const hostReadsDecls = ctx.needsHostReads ? [HOST_READS_DECL] : []
 
   const source = [
     ...emptyTlDecls,
+    ...hostReadsDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     '',
@@ -2369,6 +2404,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
 
   const fn = new Function('input', '_pos', '_rp', '_mf', '_build', '_ctx', [
     ...emptyTlDecls,
+    ...hostReadsDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     collatorDecl,
@@ -2540,6 +2576,7 @@ export function compileRuleMap(
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : '',
+    ctx.needsHostReads ? `  ${HOST_READS_DECL}` : '',
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
     collatorDecl ? `  ${collatorDecl.trim()}` : '',
@@ -2611,6 +2648,7 @@ export type LinkablePieces = {
   firstSets: Map<string, FirstSet>
   deps: Map<string, string[]>
   needsEmptyTl: boolean
+  needsHostReads: boolean
   needsCollator: boolean
   /**
    * Transform (`_mf`) / build (`_build`) callback FUNCTIONS, injected into the
@@ -2790,6 +2828,7 @@ export function compileLinkable(
     firstSets,
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
+    needsHostReads: !!ctx.needsHostReads,
     needsCollator: ctx.needsCollator,
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
     buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
@@ -2821,12 +2860,14 @@ function buildInlineExpression(
   const buildDecl = buildSources?.length ? `  const _build = [${buildSources.join(', ')}]` : ''
 
   const emptyTlDecl = ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : ''
-  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl
+  const hostReadsDecl = ctx.needsHostReads ? `  ${HOST_READS_DECL}` : ''
+  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || !!collatorDecl || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     emptyTlDecl,
+    hostReadsDecl,
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
     collatorDecl ? `  ${collatorDecl.trim()}` : '',

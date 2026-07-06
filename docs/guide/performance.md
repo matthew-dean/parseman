@@ -101,6 +101,11 @@ lowers many `regex(…)` terminals into `charCodeAt` scan loops — see
 [Under the hood: regex lowering](./regex-lowering) for what gets lowered, into what, and how
 it's kept correct and fast.
 
+Node capture is arity-driven: a `build` (or injected `ctx.build` host) that doesn't declare
+`triviaLog` / `state` params pays nothing to capture them — often a large slice of parse
+time on value-dense grammars. See
+[Capture follows your `build`'s arity](./ast#capture-follows-arity).
+
 For the full catalog of library-level codegen and macro optimizations (choice fast-paths,
 trivia loop specialization, transform/build inlining, and more), see
 [`PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/PERF_IDEAS.md) in the

@@ -18,7 +18,7 @@
  * strict CSP; a build-time variant that emits fused source instead is a later
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
-import { compileLinkable, firstSetCond } from './codegen.ts'
+import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
 import type { LinkablePieces } from './codegen.ts'
 import type { Combinator, FirstSet } from '../types.ts'
 
@@ -128,6 +128,7 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
 
   const contributing = new Set(winner.values())
   const needsEmptyTl = [...contributing].some(p => p.needsEmptyTl)
+  const needsHostReads = [...contributing].some(p => p.needsHostReads)
   const needsCollator = [...contributing].some(p => p.needsCollator)
 
   const lines: string[] = [
@@ -135,6 +136,7 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
     'const _pfFail = {}',
     'let _pfEnd',
     ...(needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []),
+    ...(needsHostReads ? [HOST_READS_DECL] : []),
     ...(needsCollator ? ["const _collator = new Intl.Collator(undefined, { sensitivity: 'accent' })"] : []),
     // Each contributing artifact's namespaced private prelude (regexes, _pf, …).
     ...[...contributing].flatMap(p => p.prelude),

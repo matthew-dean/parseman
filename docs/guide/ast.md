@@ -59,6 +59,29 @@ Wrap a rule's inner combinator in `parser({ trivia }, combinator)` so trivia-ski
 baked in regardless of which rule you start from; the macro compiles the wrapper (and all
 capture) away to flat JS.
 
+### Capture follows your `build`'s arity {#capture-follows-arity}
+
+Building `triviaLog` and cloning `state` per node isn't free — on a value-dense grammar
+the per-token trivia-log push alone is a large slice of parse time. Parséman **skips the
+capture your `build` never asks for**: a `build` that declares only `(children, raw, span)`
+gets no trivia log or state clone; one that also declares `triviaLog` keeps the log; one
+that declares `state` keeps the clone. This is inferred from the function's parameter list
+at compile time — you don't opt in.
+
+The same inference runs at **parse time** for a [structural `node(type, parser)`](#just-want-a-plain-cst)
+whose AST is built by an injected [`ctx.build` host](#the-nodelike-contract): Parséman
+reads the host's arity (`build(type, children, rawChildren, span, triviaLog, state)`) and
+elides the trivia/state capture the host doesn't take.
+
+::: warning Keep build hosts plain-positional
+The arity check is conservative-by-necessity: `Function.length` under-counts a **rest**
+(`(...args) =>`) or **default** (`(a, b = 1) =>`) parameter, and can't see through a bound
+function. Parséman detects rest/default params and `arguments` and falls back to **full
+capture** (correct, just not the fast path). So a host written `(type, ...args) =>` that
+reads `args[4]` still gets its trivia — but to keep the elision, declare plain positional
+parameters and drop the ones you don't use.
+:::
+
 > `transform(p, fn)` is still the tool for plain value-mapping (no children/trivia).
 > `node()` is for CST/AST rules — it adds the capture `transform` doesn't. Both compile
 > under the macro.
