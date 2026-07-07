@@ -70,7 +70,9 @@ export const parser = compose([cssRules, rules(g => ({ Num: regex(/[0-9]+Z/) }))
     const activeCode = lessOut.code.split('composedPieces')[0]!
     expect(/@FS:/.test(activeCode)).toBe(false)                       // active guard resolved
     expect(/_chcode\w*\s*(?:>=|===|<=)/.test(activeCode)).toBe(true)  // …to a real code-point check
-    expect(/firstSets:/.test(lessOut.code)).toBe(true)               // carried for the next fuse
+    // The delta rides as compact IR (a `rules(...)` expression re-lowered at the next
+    // fuse — first sets recomputed then), not lowered `firstSets`/ruleFns.
+    expect(/\bir:\s*"rules\(/.test(lessOut.code)).toBe(true)
     // Mimic the ES import: at runtime `cssRules` is the live imported value, and
     // less's carried pieces spread its `composedPieces` off it. Provide it here.
     const cssRules = new Function(cssOut.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn cssRules')()

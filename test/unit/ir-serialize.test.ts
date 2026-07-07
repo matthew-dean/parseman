@@ -23,22 +23,18 @@ function run(rm: ReadonlyArray<readonly [string, unknown]>): RunMap {
   return fuseRules([pieces]) as unknown as RunMap
 }
 
-// Evaluate a serialized rule-map expression back into entries, with every
-// combinator constructor in scope (as the runtime/plugin does at fuse time).
-function evalRuleMap(src: string): ReadonlyArray<readonly [string, unknown]> {
-  const ctorNames = ['rules', 'regex', 'literal', 'sequence', 'choice', 'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'scanTo', 'parser', 'trivia', 'expect', 'node', 'ref', 'label', 'skip', 'keywords', 'transform']
-  // eslint-disable-next-line no-new-func
-  const ctors = ctorNames.map(n => (allCtors as Record<string, unknown>)[n])
-  const map = new Function(...ctorNames, `return (${src})`)(...ctors)
-  return Object.entries(map)
-}
-
-import * as allCtors from '../../src/index.ts'
+import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 
 function roundTrip(rm: ReadonlyArray<readonly [string, unknown]>, rule: string, inputs: string[]) {
   const src = serializeRuleMap(rm as never)
   expect(src, 'serializable').not.toBeNull()
-  const rebuilt = run(evalRuleMap(src!))
+  const entries = evalRuleMapIR(src!)
+  // The re-lowered pieces must be STATICALLY fusable (callbacks inlined from
+  // fnSrc/buildSrc) — a plain runtime callback would break emitFusedSource, the
+  // macro path. fuseRules below tolerates them, so assert it explicitly.
+  const pieces = compileLinkable(entries as never, '_t_')!
+  expect(pieces.mfFns.length + pieces.buildFns.length, 'statically fusable (callbacks inlined)').toBe(0)
+  const rebuilt = run(entries)
   const original = run(rm)
   for (const input of inputs) {
     const a = original[rule]!(input, 0, {})

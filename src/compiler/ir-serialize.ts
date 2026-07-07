@@ -81,7 +81,10 @@ export function serializeRuleMap(
   try {
     return new Serializer(ruleMap).run()
   } catch (e) {
-    if (e instanceof Unserializable) return null
+    if (e instanceof Unserializable) {
+      if (process.env.PARSEMAN_IR_DEBUG) console.error(`[ir] fallback: ${(e as Error).message}`)
+      return null
+    }
     throw e
   }
 }
@@ -90,17 +93,35 @@ export function serializeRuleMap(
  * evaluate the combinator-construction expression with every constructor in scope.
  * Used at fuse time (runtime linker + build-time plugin) to re-lower carried IR. */
 export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
+  // `_tf`/`_nd` reconstruct a transform/node AND restore its captured callback
+  // source (`_def.fnSrc`/`buildSrc`) so re-lowering inlines it statically. The live
+  // fn is only needed for interpreted mode; a self-contained transform source is
+  // eval'd, a node build (which may reference imported AST classes) is left to its
+  // source only.
+  const _tf = (child: Comb, src: string): Comb => {
+    let fn: (...a: unknown[]) => unknown
+    // eslint-disable-next-line no-eval
+    try { fn = (0, eval)(`(${src})`) } catch { fn = () => { throw new Error('IR transform fn not materialized') } }
+    const t = transform(child as never, fn as never)
+    ;(t._def as { fnSrc?: string }).fnSrc = src
+    return t as Comb
+  }
+  const _nd = (type: string, child: Comb, src: string, opts?: unknown): Comb => {
+    const n = node(type, child as never, undefined, opts as never)
+    ;(n._def as { buildSrc?: string }).buildSrc = src
+    return n as Comb
+  }
   // eslint-disable-next-line no-new-func
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'node', 'parser',
-    'scanTo', 'transform', 'skip', 'trivia', 'label', 'expect',
+    'scanTo', 'transform', 'skip', 'trivia', 'label', 'expect', '_tf', '_nd',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice,
     many, oneOrMore, optional, sepBy, not, node, parser,
-    scanTo, transform, skip, trivia, label, expectC,
+    scanTo, transform, skip, trivia, label, expectC, _tf, _nd,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -230,15 +251,17 @@ class Serializer {
         return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}], orEOF: ${def.orEOF} })`
       case 'transform': {
         if (def.fnSrc === undefined) throw new Unserializable('transform without fnSrc')
-        return `transform(${kid(def.parser)}, ${def.fnSrc})`
+        // `_tf` sets `_def.fnSrc` so re-lowering INLINES the callback (a plain
+        // `transform(child, fn)` would leave fnSrc unset → a non-static runtime
+        // callback that emitFusedSource can't inline).
+        return `_tf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)})`
       }
       case 'node': {
-        const build = def.buildSrc !== undefined ? `, ${def.buildSrc}` : def.build !== undefined ? undefined : ''
-        if (build === undefined) throw new Unserializable('node build without buildSrc')
+        if (def.build !== undefined && def.buildSrc === undefined) throw new Unserializable('node build without buildSrc')
         const opts = def.collapse ? `, { collapse: true }` : ''
-        // node(type, comb, build?, opts?) — opts only valid when build present.
-        if (opts && !build) return `node(${JSON.stringify(def.type)}, ${kid(def.parser)}, undefined${opts})`
-        return `node(${JSON.stringify(def.type)}, ${kid(def.parser)}${build}${opts})`
+        // `_nd` sets `_def.buildSrc` (same reason as `_tf`). No build → plain node.
+        if (def.buildSrc !== undefined) return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts})`
+        return opts ? `node(${JSON.stringify(def.type)}, ${kid(def.parser)}, undefined${opts})` : `node(${JSON.stringify(def.type)}, ${kid(def.parser)})`
       }
       case 'grammar': {
         const trivia = def.clearTrivia ? 'null' : def.triviaParser ? kid(def.triviaParser) : 'undefined'

@@ -25,7 +25,8 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
-import { emitFusedSource } from '../compiler/linker.ts'
+import { emitFusedSource, materializePiece } from '../compiler/linker.ts'
+import { serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { createHash } from 'node:crypto'
 import type { Combinator } from '../types.ts'
 import type {
@@ -418,12 +419,19 @@ export function transformMacro(
   // the ancestor isn't re-serialized. `local` is the binding name as it appears in
   // THIS module's source (the bundler renames import + references together).
   type ImportSpread = { __spreadLocal: string }
-  type CarriedItem = LinkablePieces | ImportSpread
+  type IRItem = { ns: string; ir: string }
+  type CarriedItem = LinkablePieces | ImportSpread | IRItem
   const isSpread = (it: CarriedItem): it is ImportSpread => '__spreadLocal' in it
+  const isIR = (it: CarriedItem): it is IRItem => 'ir' in it && !('ruleFns' in it)
+  // A carried entry is: an import SPREAD (live ref to an ancestor's pieces), an IR
+  // PIECE (this grammar's own rules as a compact combinator expression, re-lowered
+  // at fuse), or full LinkablePieces (fallback when a map can't be serialized).
   const serializeItem = (it: CarriedItem): string =>
     isSpread(it)
       ? `...(${it.__spreadLocal}[Symbol.for('parseman.composedPieces')] ?? [])`
-      : serializePieces(it)
+      : isIR(it)
+        ? `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)} }`
+        : serializePieces(it)
   const serializeList = (list: CarriedItem[]): string => `[${list.map(serializeItem).join(', ')}]`
 
   /**
@@ -489,7 +497,10 @@ export function transformMacro(
       // Build-time eval of the carried literal with ancestor spreads stubbed — NOT
       // runtime. `Symbol.for`/`Map` are globals; `stubNames` provide the imports.
       // eslint-disable-next-line no-new-func
-      return new Function(...stubNames, `return (${literal})`)(...stubVals) as LinkablePieces[]
+      const list = new Function(...stubNames, `return (${literal})`)(...stubVals) as Array<Parameters<typeof materializePiece>[0]>
+      // The delta rides as compact IR ({ns, ir}); re-lower it to full pieces (ancestor
+      // spreads were already materialized by the recursion above).
+      return list.map(materializePiece)
     } catch { return null }
   }
 
@@ -509,19 +520,29 @@ export function transformMacro(
   /** Resolve one `compose([...])` argument to its (flattened) pieces for FUSING,
    * plus — when the argument is an imported grammar — the import identity so the
    * carried list can reference it with a marker instead of re-serializing it. */
-  const argPieces = (arg: Expression, label: string): { pieces: LinkablePieces[]; spreadLocal?: string } | null => {
+  // A local rule map → its fuse pieces PLUS its compact IR (for carrying). The IR
+  // is null when the map can't be faithfully serialized — the caller then carries
+  // the full lowered pieces instead.
+  const localArg = (rm: Iterable<readonly [string, unknown]>, label: string): { pieces: LinkablePieces[]; ir?: IRItem } | null => {
+    const entries = [...rm]
+    const ns = nsFor(label)
+    const p = compileLinkable(entries as never, ns)
+    if (!p) return null
+    const ir = serializeRuleMap(entries as never)
+    return ir ? { pieces: [p], ir: { ns, ir } } : { pieces: [p] }
+  }
+  const argPieces = (arg: Expression, label: string): { pieces: LinkablePieces[]; spreadLocal?: string; ir?: IRItem } | null => {
     // Inline `rules(g => …)`.
     if (isRulesCall(arg)) {
       const factory = (arg as unknown as { arguments: unknown[] }).arguments[0] as Expression | undefined
       const rm = factory ? evaluateParserFactory(factory, scope, code, []) : null
-      const p = rm ? compileLinkable([...rm], nsFor(label)) : null
-      return p ? { pieces: [p] } : null
+      return rm ? localArg(rm, label) : null
     }
     if (arg.type === 'Identifier') {
       const name = (arg as unknown as { name: string }).name
       // Local grammar var (`const myRules = rules(...)`).
       const rm = localRuleMaps.get(name)
-      if (rm) { const p = compileLinkable([...rm], nsFor(label)); return p ? { pieces: [p] } : null }
+      if (rm) return localArg(rm, label)
       // Local composed var (`const g = compose([...])`) → its flattened pieces
       // (defined in THIS module, so carry them in full — no spread).
       const composed = localComposedPieces.get(name)
@@ -553,6 +574,7 @@ export function transformMacro(
       if (!r) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
       pieces.push(...r.pieces)
       if (r.spreadLocal) carried.push({ __spreadLocal: r.spreadLocal })
+      else if (r.ir) carried.push(r.ir)
       else carried.push(...r.pieces)
     }
     try {
@@ -692,9 +714,12 @@ export function transformMacro(
           // grammar isn't source-free composable and we ship it as a plain map.
           let replacement = compiledRules.replacement
           if (exportPrefix) {
-            const pieces = compileLinkable([...compiledRules.ruleMap], nsFor(varName))
+            const ns = nsFor(varName)
+            const pieces = compileLinkable([...compiledRules.ruleMap], ns)
             if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
-              replacement = withCarriedPieces(replacement, [pieces])
+              // Carry the compact IR when serializable; else the full lowered pieces.
+              const ir = serializeRuleMap([...compiledRules.ruleMap] as never)
+              replacement = withCarriedPieces(replacement, [ir ? { ns, ir } : pieces])
             }
           }
           replacements.push({ start: init.start, end: init.end, replacement })
