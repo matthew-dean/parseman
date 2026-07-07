@@ -340,18 +340,17 @@ function pushNamedFnDecl(
   valueVar: string,
   endVar: string,
 ): void {
+  // Success path returns the value DIRECTLY (setting the shared end slot first);
+  // failure breaks `_pfail` and falls through to the sentinel return. No `_pfok`
+  // flag / post-block check — fewer ops on the hot (matched) path, and smaller.
   ctx.namedFnDecls.push([
     `function ${fnName}(input, _pos, _ctx) {`,
-    `  let _pfok = false, _pfv, _pfe = _pos`,
     `  _pfail: {`,
     ...reindentStmts(bodyStmts, 2),
-    `    _pfv = ${valueVar}`,
-    `    _pfe = ${endVar}`,
-    `    _pfok = true`,
+    `    ${NAMED_FN_END} = ${endVar}`,
+    `    return ${valueVar}`,
     `  }`,
-    `  if (!_pfok) return ${NAMED_FN_FAIL}`,
-    `  ${NAMED_FN_END} = _pfe`,
-    `  return _pfv`,
+    `  return ${NAMED_FN_FAIL}`,
     `}`,
   ].join('\n'))
 }
