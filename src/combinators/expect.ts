@@ -28,6 +28,7 @@ export function staticExpected(c: Combinator<unknown>): string[] {
     case 'node':
     case 'grammar':
     case 'trivia':
+    case 'token':
     case 'optional':
     case 'many':
     case 'oneOrMore':
@@ -56,7 +57,7 @@ export function staticExpected(c: Combinator<unknown>): string[] {
  * block) so a missing one is reported with position + expectation rather than
  * aborting the whole parse or being silently swallowed by a catch-all.
  *
- *   sequence(literal('{'), declList, expect(literal('}'), '}'))
+ *   sequence(literal('{'), declList, expect(literal('}')))
  *
  * Errors are only collected when the parse runs with `{ recover: true }`; without
  * it, expect() still recovers in place but records nothing (zero overhead beyond

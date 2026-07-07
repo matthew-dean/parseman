@@ -61,7 +61,7 @@ token were present.
 import { sequence, literal, expect } from 'parseman'
 
 // A block that must close with `}`.
-const block = sequence(literal('{'), declList, expect(literal('}'), '}'))
+const block = sequence(literal('{'), declList, expect(literal('}')))
 ```
 
 ::: code-group
@@ -84,8 +84,8 @@ Parséman derives the expected set from the combinator's structure via
 [`staticExpected`](../reference/api#staticexpected):
 
 ```ts
-expect(literal('}'))                 // expected: ['"}"']  (derived)
-expect(literal('}'), '}')            // expected: ['}']    (your label)
+expect(literal('}'))                 // expected: ['"}"']  (derived literal)
+expect(literal('identifier'), 'id')  // expected: ['id']   (your label)
 expect(choice(a, b))                 // expected: union of a's and b's expected sets
 ```
 
@@ -283,7 +283,7 @@ like hand-written recovery, and the macro build behaves identically to the inter
 
 | I want to… | Use |
 | --- | --- |
-| Require a `}` / `)` / `;` but keep parsing if it's missing | `expect(literal('}'), '}')` |
+| Require a `}` / `)` / `;` but keep parsing if it's missing | `expect(literal('}'))` |
 | Skip a broken statement and resume at the next `;` | `recover(stmt, literal(';'))` |
 | Parse a list, tolerating bad elements | `sepByRecover(item, literal(','), literal(']'))` |
 | Parse a repetition, tolerating junk | `manyRecover(item, literal('}'))` |

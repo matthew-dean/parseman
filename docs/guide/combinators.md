@@ -32,6 +32,7 @@ Three words that sound alike but play different roles:
 | `sepBy(combinator, sep)` | Zero or more `combinator` matches separated by `sep`. |
 | `transform(combinator, fn)` | Map the result: `fn(value, span) → newValue`. |
 | `skip(main, skipped)` | Match `main` then `skipped`; return `main`'s value. |
+| `token(combinator)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
 | `label(name, combinator)` | Attach a string label to a combinator arm (metadata; used for per-chunk trivia kinds). |
 | `not(combinator)` | Negative lookahead — succeeds (consuming nothing) when `combinator` fails. |
 | `node(type, combinator, build?, opts?)` | CST/AST rule: captures terminals + trivia. With `build` it constructs the node; omit `build` to build through the `ctx.build` host. See [CST / AST nodes](./ast). |

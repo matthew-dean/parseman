@@ -51,6 +51,7 @@ export type ParserDef =
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
+  | { tag: 'token';     parser: Combinator<unknown> }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; trackLines: boolean }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }

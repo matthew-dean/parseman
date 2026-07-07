@@ -608,6 +608,7 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     case 'guard':
     case 'not':
     case 'trivia':
+    case 'token':
     case 'scanTo':
     case 'unknown':
       return false
@@ -668,6 +669,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'regex':
     case 'keywords':
     case 'node':
+    case 'token':
       return true
     case 'not':
     case 'guard':
@@ -1767,6 +1769,119 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
   }
 }
 
+function escapeTokenLiteral(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
+}
+
+function regexMatchesEmpty(source: string, flags: string): boolean {
+  try { return new RegExp(`^(?:${source})$`, flags).test('') }
+  catch { return true }
+}
+
+function tokenTerminalSource(p: Combinator<unknown>): { source: string; caseInsensitive: boolean; rawCaseSensitive: string } | null {
+  const def = p._def
+  switch (def.tag) {
+    case 'literal':
+      if (def.value.length === 0) return null
+      return {
+        source: escapeTokenLiteral(def.value),
+        caseInsensitive: def.caseInsensitive,
+        rawCaseSensitive: def.caseInsensitive ? '' : def.value,
+      }
+    case 'regex': {
+      if (def.flags.replace(/i/g, '') !== '') return null
+      if (regexMatchesEmpty(def.source, def.flags)) return null
+      return {
+        source: `(?:${def.source})`,
+        caseInsensitive: def.flags.includes('i'),
+        rawCaseSensitive: def.flags.includes('i') ? '' : def.source,
+      }
+    }
+    default:
+      return null
+  }
+}
+
+function tokenSequenceSource(p: Combinator<unknown>): { source: string; flags: string; hasCaseSensitiveLetters: boolean } | null {
+  const def = p._def
+  const parts = def.tag === 'sequence'
+    ? def.parsers.map(tokenTerminalSource)
+    : [tokenTerminalSource(p)]
+  if (parts.some(part => part === null)) return null
+  const typed = parts as Array<{ source: string; caseInsensitive: boolean; rawCaseSensitive: string }>
+  const flags = typed.some(part => part.caseInsensitive) ? 'i' : ''
+  if (flags.includes('i') && typed.some(part => /[A-Za-z]/.test(part.rawCaseSensitive))) return null
+  return {
+    source: typed.map(part => part.source).join(''),
+    flags,
+    hasCaseSensitiveLetters: typed.some(part => /[A-Za-z]/.test(part.rawCaseSensitive)),
+  }
+}
+
+function combineTokenRegexSources(parts: Array<{ source: string; flags: string; hasCaseSensitiveLetters: boolean }>): { source: string; flags: string } | null {
+  const flags = parts.some(part => part.flags.includes('i')) ? 'i' : ''
+  if (flags.includes('i') && parts.some(part => part.flags === '' && part.hasCaseSensitiveLetters)) return null
+  return { source: parts.map(part => part.source).join(''), flags }
+}
+
+function tokenNullableRegex(def: Extract<ParserDef, { tag: 'token' }>): Extract<ParserDef, { tag: 'regex' }> | null {
+  const inner = def.parser._def
+  if (inner.tag === 'many') {
+    const seq = tokenSequenceSource(inner.parser)
+    if (!seq) return null
+    return { tag: 'regex', source: `(?:${seq.source})*`, flags: seq.flags }
+  }
+  if (inner.tag === 'optional') {
+    const seq = tokenSequenceSource(inner.parser)
+    if (!seq) return null
+    return { tag: 'regex', source: `(?:${seq.source})?`, flags: seq.flags }
+  }
+  if (inner.tag === 'sepBy') {
+    const item = tokenSequenceSource(inner.parser)
+    const sep = tokenSequenceSource(inner.separator)
+    if (!item || !sep) return null
+    const combined = combineTokenRegexSources([item, sep])
+    if (!combined) return null
+    return { tag: 'regex', source: `(?:${item.source}(?:${sep.source}${item.source})*)?`, flags: combined.flags }
+  }
+  return null
+}
+
+function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: string): ER {
+  const lowered = tokenNullableRegex(def)
+  if (lowered) return emitRegex(lowered, ctx, pos)
+
+  const savedTrivia = ctx.activeTrivia
+  const savedKindLabels = ctx.triviaKindLabels
+  ctx.activeTrivia = undefined
+  ctx.triviaKindLabels = undefined
+  const inner = emitFallible(def.parser, ctx, pos)
+  ctx.activeTrivia = savedTrivia
+  ctx.triviaKindLabels = savedKindLabels
+
+  const i = ind(ctx)
+  const sc = v(ctx, '_tokCh')
+  const sl = v(ctx, '_tokLv')
+  const sr = v(ctx, '_tokRaw')
+  const stl = v(ctx, '_tokTl')
+  const sb = v(ctx, '_tokBuf')
+  const valV = v(ctx, '_tok')
+
+  return {
+    stmts: [
+      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${stl} = _ctx._cstTriviaLog, ${sb} = _ctx._cstBuf`,
+      `${i}_ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._cstBuf = undefined`,
+      ...inner.stmts,
+      `${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._cstBuf = ${sb}`,
+      ...emitIfFail(ctx, `!${inner.okVar}`, propagateFailBody(ctx)),
+      `${i}const ${valV} = input.slice(${pos}, ${inner.endVar})`,
+      ...emitLeafCapture(ctx, valV, pos, inner.endVar),
+    ],
+    valueVar: valV,
+    endVar: inner.endVar,
+  }
+}
+
 /**
  * CST node rule. Collects the inner parse's terminals/trivia into fresh local
  * arrays (capture is emitted inline by the terminals while capChildren is set),
@@ -2132,6 +2247,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     }
     case 'lazy':     return emitLazy(p, def, ctx, pos)
     case 'trivia':   return emit(def.parser, ctx, pos)
+    case 'token':    return emitToken(def, ctx, pos)
     case 'label':    return emit(def.parser, ctx, pos)
     case 'grammar': {
       const savedTrivia = ctx.activeTrivia
@@ -2257,6 +2373,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'lazy':      { try { return hasNodeDef(d.thunk(), seen) } catch { return false } }
     case 'grammar':
     case 'trivia':
+    case 'token':
     case 'label':
     case 'optional':
     case 'many':
@@ -2284,6 +2401,7 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'optional':
     case 'transform':
     case 'trivia':
+    case 'token':
     case 'label':
     case 'grammar':
     case 'not':

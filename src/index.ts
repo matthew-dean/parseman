@@ -26,6 +26,7 @@ export type { BuildNode, NodeOptions } from './combinators/node.ts'
 export { transform, skip, trivia, label } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
+export { token } from './combinators/token.ts'
 
 export { compile } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'

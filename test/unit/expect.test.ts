@@ -21,7 +21,7 @@ import type { ParseError } from '../../src/index.ts'
 const block = sequence(
   literal('{'),
   optional(regex(/[a-z]+/)),
-  expect(literal('}'), '}'),
+  expect(literal('}')),
 )
 const compiled = compile(block)
 
@@ -34,7 +34,7 @@ import { literal, regex, sequence, optional, expect } from 'parseman' with { typ
 const block = sequence(
   literal('{'),
   optional(regex(/[a-z]+/)),
-  expect(literal('}'), '}'),
+  expect(literal('}')),
 )
 `.trim()
 
@@ -83,7 +83,7 @@ describe('expect() — across modes', () => {
       vexpect(r.ok).toBe(true)
       vexpect(r.span.end).toBe(4)        // zero-width recover, stops at EOF
       vexpect(errors).toHaveLength(1)
-      vexpect(errors[0]!.expected).toContain('}')
+      vexpect(errors[0]!.expected).toContain('"}"')
       vexpect(errors[0]!.span.start).toBe(4)  // error logged where the closer was due
       vexpect(isParseError(errors[0])).toBe(true)
     })
