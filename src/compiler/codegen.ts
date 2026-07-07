@@ -1369,6 +1369,7 @@ function emitFirstMatch(
     if (gate) {
       const gateIdx = ctx.mapFns.length
       ctx.mapFns.push(gate as (v: unknown, span: unknown) => unknown)
+      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a gate predicate has no captured source)
       gateCond = `${mfRef(ctx)}[${gateIdx}](_ctx.state)`
     }
     const skipCond = gateCond ? `!${resOkV} && ${gateCond}` : `!${resOkV}`
@@ -1449,9 +1450,11 @@ function emitNonDisjoint(
 
 /** Apply transform chain only — no parsing, value already known. */
 /** Register a map fn, INTERNING by source so identical callbacks (e.g. every
- * balanced()'s merge closure) share one `_mf` slot. Only dedups while `mapFns`
- * and `mapFnSrcs` are parallel — a gate/guard/withCtx pushes to `mapFns` without a
- * source, diverging them, after which source inlining is off anyway. */
+ * balanced()'s merge closure) share one `_mf` slot. Relies on `mapFns` and
+ * `mapFnSrcs` staying parallel — gate/guard/withCtx push a `null` source alongside
+ * their `mapFns` entry to preserve that invariant, so interning keeps firing after
+ * one of them (a `null` never matches a real source, so their slots are never
+ * aliased). */
 function pushMapFn(ctx: Ctx, fn: Ctx['mapFns'][number], src: string | null): number {
   if (src !== null && ctx.mapFns.length === ctx.mapFnSrcs.length) {
     const hit = ctx.mapFnSrcs.indexOf(src)
@@ -2156,6 +2159,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'guard': {
       const fnIdx = ctx.mapFns.length
       ctx.mapFns.push(def.predicate as (v: unknown, span: unknown) => unknown)
+      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a guard predicate has no captured source)
       const vv = v(ctx)
       return {
         stmts: [
@@ -2171,6 +2175,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       const evIdx = ctx.mapFns.length
       const extra = def.extra
       ctx.mapFns.push((() => extra) as (v: unknown, span: unknown) => unknown)
+      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a withCtx value getter has no captured source)
 
       // Wrap inner parser as a named function so it receives _ctx as a parameter.
       // That lets us call it with a modified ctx (user changed) without polluting

@@ -192,7 +192,8 @@ function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number }
       const obj = (callee?.object as { name?: string } | undefined)?.name
       const prop = (callee?.property as { name?: string } | undefined)?.name
       const args = node.arguments as AnyNode[] | undefined
-      // Current form: `Object.assign(_g, { [Symbol.for('…composedPieces')]: <literal> })`.
+      // Also accepted: `Object.assign(_g, { [Symbol.for('…composedPieces')]: <literal> })`
+      // (transitional; the current emitter uses the non-enumerable defineProperty form below).
       if (obj === 'Object' && prop === 'assign' && args && (args[1] as AnyNode | undefined)?.type === 'ObjectExpression') {
         for (const p of ((args[1] as AnyNode).properties as AnyNode[] | undefined) ?? []) {
           if ((p as { computed?: boolean }).computed && isComposedPiecesSymbol(p.key as AnyNode) && p.value) {
@@ -201,7 +202,7 @@ function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number }
           }
         }
       }
-      // Legacy form (older compiled artifacts): `Object.defineProperty(_g, sym, { value: … })`.
+      // Current form: `Object.defineProperty(_g, sym, { value: …, enumerable: false })`.
       if (obj === 'Object' && prop === 'defineProperty' && args && isComposedPiecesSymbol(args[1])) {
         const descriptor = args[2] as AnyNode | undefined
         for (const p of (descriptor?.properties as AnyNode[] | undefined) ?? []) {
@@ -439,11 +440,14 @@ export function transformMacro(
    * `Symbol.for('parseman.composedPieces')` — the same symbol `compose()` reads at
    * runtime. This is why `import { cssGrammar }` is all a downstream package needs:
    * the pieces travel WITH the grammar (no detached, tree-shakeable `__pieces`
-   * export). One `Object.assign` expression, so it can't be shaken off the exported
-   * const without dropping the grammar; `importedPieces()` reads it back out.
+   * export). `Object.defineProperty` returns the grammar, so it stays one
+   * expression that can't be shaken off the exported const without dropping the
+   * grammar; `importedPieces()` reads it back out. The descriptor mirrors the
+   * runtime attach (`linker.ts`) — `enumerable: false` so the (large) carried IR
+   * isn't dragged along by `Object.assign(target, grammar)` or `{ ...grammar }`.
    */
   const withCarriedPieces = (grammarExpr: string, list: CarriedItem[]): string =>
-    `/* @__PURE__ */ Object.assign(${grammarExpr}, { [Symbol.for('parseman.composedPieces')]: ${serializeList(list)} })`
+    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
   // Same-file `const X = compose([...])` → its flattened pieces, so a later
   // same-file compose can chain it.
   const localComposedPieces = new Map<string, LinkablePieces[]>()
