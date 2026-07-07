@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest'
 import {
   rules, regex, literal, sequence, choice, many, oneOrMore, optional, sepBy,
   not, scanTo, balanced, parser, trivia, expect as expectC, node,
+  keywords, label, skip, transform,
 } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { fuseRules } from '../../src/compiler/linker.ts'
@@ -93,5 +94,36 @@ describe('IR serialize round-trip', () => {
       Item: sequence(optional(literal('-')), regex(/[a-z]+/), not(literal('!'))),
     })))
     roundTrip(rm, 'Doc', ['a', 'a b c', '-a  -b', 'a-'])
+  })
+
+  it('the remaining leaf/wrapper arms: keywords, oneOrMore, trivia, label, expect, skip, scanTo', () => {
+    const rm = Object.entries(rules((g: any) => ({
+      // keywords with both option branches (caseInsensitive + boundary); a
+      // case-insensitive literal; oneOrMore; the trivia()/label()/expect()/skip()
+      // wrapper arms; and a scanTo() that actually reaches the scanTo serializer.
+      Doc: sequence(g.Kw, g.Digits, g.Named, g.Semi, g.Word, g.ToEnd),
+      Kw: keywords(['if', 'else'], { caseInsensitive: true, boundary: '\\w' }),
+      Digits: oneOrMore(regex(/[0-9]/)),
+      Named: label('ident', regex(/[a-z]+/)),
+      Semi: expectC(literal(';'), 'semicolon'),
+      Word: skip(regex(/[a-z]+/), literal('_')),
+      ToEnd: trivia(scanTo(literal('.'), { skip: [regex(/\s+/)], orEOF: true })),
+      Ci: literal('url(', { caseInsensitive: true }),
+    })))
+    roundTrip(rm, 'Kw', ['if', 'else', 'iffy'])
+    roundTrip(rm, 'Digits', ['1', '123', 'x'])
+    roundTrip(rm, 'Named', ['abc', '9'])
+    roundTrip(rm, 'ToEnd', ['a b.', 'xyz', ''])
+    roundTrip(rm, 'Ci', ['url(', 'URL(', 'nope'])
+  })
+
+  it('returns null when a construct carries no static source (runtime transform fn)', () => {
+    // A `transform` authored with a live fn (no captured `fnSrc`) can't be
+    // serialized — the serializer throws Unserializable and the caller falls back
+    // to lowered source, surfaced here as a null return.
+    const rm = Object.entries(rules((g: any) => ({
+      Doc: transform(regex(/[0-9]+/), (v: unknown) => v),
+    })))
+    expect(serializeRuleMap(rm as never)).toBeNull()
   })
 })
