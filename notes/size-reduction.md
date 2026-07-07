@@ -62,10 +62,14 @@ regresses (19× vs 2× expansion). Round-trip gate: `test/unit/ir-serialize.test
   expression; a name-preserving minify (it's re-`eval`'d, not read) could ~halve it.
   Small absolute win (30 KB) — low priority.
 - [x] ~~Intern the 40 identical `_mf` merge closures~~ — **DONE** (see Landed #6, −5.8 KB).
-- [ ] **De-duplicate regex triple-encoding.** Each terminal regex appears as a compiled
-  `/…/y` literal, an escaped `_fx` first-set string, and inside rule bodies; derive the
-  `_fx` string from `.source` at load. Color-name alternation still appears 3×. Est.
-  ~20–40 KB. Low risk.
+- [ ] **De-duplicate regex triple-encoding.** ~~Est. 20–40 KB~~ — **measured: only ~4 KB.**
+  The `_fx` first-set arrays are already interned by `expectedMap` (5.3 KB total, 65
+  regex entries); only the regex *source* inside those 65 duplicates the `_re` literal.
+  Deriving `_fx` from `_re.source` at load would save ~4 KB for added runtime concat.
+  **Low priority** (not worth the complexity).
+- [ ] **Shorter ns-hash prefix.** `_<8hex>_` (~10 chars) is on ~3080 identifiers in less
+  (~34 KB raw; gzips well). A 4-hex prefix is still collision-safe for a handful of
+  artifacts and byte-stable (module-derived). Est. ~12 KB raw. Low risk, low priority.
 - [ ] **Ship a minified build.** `tsdown` currently emits unminified. Minifying the
   executable (names + whitespace) could take ~982 KB → ~500 KB *raw* (gzip already
   captures most). Won't touch the IR strings. Cheap; changes the shipped artifact's
