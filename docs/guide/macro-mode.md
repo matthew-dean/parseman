@@ -133,7 +133,8 @@ engine, see [Under the hood: regex lowering](./regex-lowering).
 The plugin compiles combinator trees end to end:
 
 - All the core combinators — `literal`, `regex`, `sequence`, `choice`, `many`,
-  `oneOrMore`, `optional`, `sepBy`, `transform`, `skip`, `not`, `scanTo`, `balanced`.
+  `oneOrMore`, `optional`, `sepBy`, `transform`, `skip`, `token`, `not`, `scanTo`,
+  `balanced`.
 - `rules()` factories, **including mutually recursive ones** — emitted as mutually
   recursive named functions (`_pf0`, …) so the cycle is broken.
 - `parser({ trivia })` / `noTrivia()` wrappers.

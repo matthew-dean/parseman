@@ -39,6 +39,14 @@ Only where the CST treats the group as opaque text — a dimension `\d+px`, a he
 `nth` expression, a simple ident-run. A single regex yields **one leaf**, not structured
 sub-nodes.
 
+If the shape is easier to write as combinators but should still be one source token, wrap
+it in [`token()`](../reference/api#token-combinator). `token()` clears internal trivia,
+returns the matched source text, and contributes one CST leaf inside `node()`. The compiler
+can collapse safe nullable terminal runs inside it (`many`, `optional`, `sepBy` over
+literals/regexes) to one regex. That is an optimization opportunity, not a promise that
+retrofitting `token()` onto an already tuned grammar will make it faster — benchmark the
+actual grammar.
+
 ### When *not* to collapse
 
 Keep the parts as separate combinators wherever the builder needs them as distinct CST
@@ -51,7 +59,7 @@ children:
 Correctness first; collapse only the genuinely opaque runs.
 
 ::: tip Not to be confused with node collapse
-This is a *performance* technique — folding tokens into one regex. There's a separate,
+This is a *performance* technique — folding an opaque source token into one matcher. There's a separate,
 unrelated `node(…, { collapse: true })` option about **tree shape** (a wrapper rule
 becoming its single child). See [CST / AST nodes](./ast#collapsing-wrapper-rules).
 :::

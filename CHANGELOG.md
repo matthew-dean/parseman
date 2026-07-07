@@ -3,6 +3,18 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.18.0 — 2026-07-07
+
+- **`token()` combinator.** Treat a contiguous parser region as one source-text token:
+  internal trivia is disabled, the value is the matched source string, and `node()`
+  captures one CST leaf for the full span. The macro compiler can collapse safe
+  nullable terminal runs inside `token()` (`many`, `optional`, `sepBy` over
+  literals/regexes) to one regex, while keeping the one-token value/CST contract.
+- **`expect()` derives literal labels.** `expect(literal('}'))` now derives the same
+  expected text you would have written by hand; custom labels remain unquoted
+  user-facing labels. The old `staticExpected` export was removed from the public API;
+  expected-label derivation is internal.
+
 ## 0.17.0 — 2026-07-06
 
 Theme: **macro-compiled parser size reduction.** Reference target is the Jess
@@ -174,7 +186,7 @@ corpus.
 
 ## 0.8.0 — 2026-06-26
 
-- **`expect()`** required-token combinator with `staticExpected` and
+- **`expect()`** required-token combinator with derived expected labels and
   furthest-fail reporting.
 - **`balanced()`** is now predictive: it cuts after the open delimiter and
   reports an unmatched close instead of char-walking via `scanTo`.

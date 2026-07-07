@@ -71,7 +71,7 @@ See **[The three modes](https://matthew-dean.github.io/parseman/guide/modes)** f
 
 ## What's in the box
 
-- **[Combinators](https://matthew-dean.github.io/parseman/guide/combinators)** — `literal`, `regex`, `sequence`, `choice`, `many`, `sepBy`, `not`, and more.
+- **[Combinators](https://matthew-dean.github.io/parseman/guide/combinators)** — `literal`, `regex`, `sequence`, `choice`, `many`, `sepBy`, `token`, `not`, and more.
 - **[Whitespace & trivia](https://matthew-dean.github.io/parseman/guide/trivia)** — grammar-defined filler skipping, with per-chunk kind capture.
 - **[Recursive rules](https://matthew-dean.github.io/parseman/guide/recursive-rules)** — `rules()` for mutually recursive grammars; fully macro-compilable.
 - **[CST / AST nodes](https://matthew-dean.github.io/parseman/guide/ast)** — `node()` captures terminals and trivia for you, with a `collapse` option for transparent wrapper rules.

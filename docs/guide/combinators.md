@@ -91,6 +91,15 @@ const assign = transform(
 
 The `,` gaps in the destructure skip terms you don't need (here the `=`).
 
+### `token`
+
+`token(combinator)` runs a contiguous parser region with trivia disabled, returns the
+matched source text, and contributes one CST leaf inside `node()`.
+
+Use it when the grammar is clearer as combinators but the result is semantically one
+source token. Keep the parts exposed when a builder needs distinct leaves or per-part
+spans.
+
 ### `choice`
 
 Ordered alternatives with PEG semantics: **first match wins**. Order matters, and when

@@ -90,7 +90,8 @@ token(sequence(literal('!'), regex(/important/i)))
 
 The compiler may lower safe nullable terminal runs inside `token()` — `many`,
 `optional`, and `sepBy` forms whose pieces are literals/regexes — to one regex while
-preserving the one-token value/CST shape.
+preserving the one-token value/CST shape. Use it for source-text regions that should be
+semantically opaque; keep ordinary combinators when builders need the internal leaves.
 
 ### `not(combinator)`
 
