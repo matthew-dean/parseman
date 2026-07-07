@@ -25,7 +25,8 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
-import { emitFusedSource } from '../compiler/linker.ts'
+import { emitFusedSource, materializePiece } from '../compiler/linker.ts'
+import { serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { createHash } from 'node:crypto'
 import type { Combinator } from '../types.ts'
 import type {
@@ -191,6 +192,17 @@ function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number }
       const obj = (callee?.object as { name?: string } | undefined)?.name
       const prop = (callee?.property as { name?: string } | undefined)?.name
       const args = node.arguments as AnyNode[] | undefined
+      // Also accepted: `Object.assign(_g, { [Symbol.for('…composedPieces')]: <literal> })`
+      // (transitional; the current emitter uses the non-enumerable defineProperty form below).
+      if (obj === 'Object' && prop === 'assign' && args && (args[1] as AnyNode | undefined)?.type === 'ObjectExpression') {
+        for (const p of ((args[1] as AnyNode).properties as AnyNode[] | undefined) ?? []) {
+          if ((p as { computed?: boolean }).computed && isComposedPiecesSymbol(p.key as AnyNode) && p.value) {
+            found = { start: (p.value as AnyNode).start, end: (p.value as AnyNode).end }
+            return
+          }
+        }
+      }
+      // Current form: `Object.defineProperty(_g, sym, { value: …, enumerable: false })`.
       if (obj === 'Object' && prop === 'defineProperty' && args && isComposedPiecesSymbol(args[1])) {
         const descriptor = args[2] as AnyNode | undefined
         for (const p of (descriptor?.properties as AnyNode[] | undefined) ?? []) {
@@ -210,6 +222,24 @@ function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number }
   }
   visit(root)
   return found
+}
+
+/** Local-binding → { source, imported } for every `import { … }` in a parsed
+ * module body. Used to resolve an ancestor-pieces spread (`...(binding[Symbol…])`)
+ * in a compiled grammar back to the module that binding was imported from. */
+function extractImportBindings(body: AnyNode[]): Map<string, { source: string; imported: string }> {
+  const out = new Map<string, { source: string; imported: string }>()
+  for (const stmt of body) {
+    if (stmt.type !== 'ImportDeclaration') continue
+    const s = stmt as unknown as ImportDeclaration
+    for (const spec of s.specifiers) {
+      if (spec.type === 'ImportSpecifier') {
+        const imported = (spec.imported as { name?: string }).name ?? spec.local.name
+        out.set(spec.local.name, { source: s.source.value, imported })
+      }
+    }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -354,32 +384,70 @@ export function transformMacro(
   const nsFor = (label: string): string =>
     `_${createHash('sha1').update(`${id}#${label}`).digest('hex').slice(0, 8)}_`
 
-  /** Serialize one `LinkablePieces` to an object-literal source string. */
+  /** Serialize one `LinkablePieces` to an object-literal source string.
+   *
+   * The carried rule/wrapper/prelude source is machine-consumed only (the linker
+   * concatenates it at fuse time — see fusedBody), never human-read, so we strip
+   * the pretty-printer's per-line indentation before embedding it. Only LEADING
+   * whitespace after a newline is removed: statement-separating newlines stay (ASI
+   * intact) and mid-line tokens — including the `/*@FS:…@*​/` first-set placeholders
+   * the linker rewrites — are untouched. ~16% off the carried payload, zero runtime
+   * cost (this path feeds the macro's carried literal, not runtime fuseRules). */
+  const stripIndent = (s: string): string => s.replace(/\n[ \t]+/g, '\n')
   const serializePieces = (p: LinkablePieces): string => {
-    const mapLit = (m: Map<string, unknown>): string =>
-      `new Map([${[...m].map(([k, v]) => `[${JSON.stringify(k)}, ${JSON.stringify(v)}]`).join(', ')}])`
+    const mapLit = (m: Map<string, unknown>, stripVals = false): string =>
+      `new Map([${[...m].map(([k, v]) =>
+        `[${JSON.stringify(k)}, ${JSON.stringify(stripVals && typeof v === 'string' ? stripIndent(v) : v)}]`,
+      ).join(', ')}])`
     return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
-      + `prelude: ${JSON.stringify(p.prelude)}, ruleFns: ${mapLit(p.ruleFns)}, `
-      + `wrappers: ${mapLit(p.wrappers)}, firstSets: ${mapLit(p.firstSets)}, deps: ${mapLit(p.deps)}, `
+      + `prelude: ${JSON.stringify(p.prelude.map(stripIndent))}, ruleFns: ${mapLit(p.ruleFns, true)}, `
+      + `wrappers: ${mapLit(p.wrappers, true)}, firstSets: ${mapLit(p.firstSets)}, deps: ${mapLit(p.deps)}, `
       + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
    * list for a `compose()` result. */
-  const serializeList = (list: LinkablePieces[]): string => `[${list.map(serializePieces).join(', ')}]`
+  // A carried list entry is either a grammar's own pieces (serialized in full) or
+  // an IMPORT MARKER standing in for an imported ancestor grammar's pieces. The
+  // marker keeps a descendant from re-serializing everything it imported (Less
+  // re-shipping CSS, SCSS re-shipping css+less, …): at read time the marker is
+  // resolved back to the ancestor's compiled file transitively. Build-time only —
+  // importedPieces resolves it via the module resolver; runtime never reads it.
+  // An imported ancestor is referenced by SPREADING its live carried pieces off the
+  // imported binding — `...(cssGrammar[Symbol.for('parseman.composedPieces')] ?? [])`.
+  // At runtime the ES import is a live value, so this self-resolves (transitively:
+  // the ancestor's own value already spread ITS ancestors). At macro-compile time
+  // the plugin resolves the spread statically by following the import. Either way
+  // the ancestor isn't re-serialized. `local` is the binding name as it appears in
+  // THIS module's source (the bundler renames import + references together).
+  type ImportSpread = { __spreadLocal: string }
+  type IRItem = { ns: string; ir: string }
+  type CarriedItem = LinkablePieces | ImportSpread | IRItem
+  const isSpread = (it: CarriedItem): it is ImportSpread => '__spreadLocal' in it
+  const isIR = (it: CarriedItem): it is IRItem => 'ir' in it && !('ruleFns' in it)
+  // A carried entry is: an import SPREAD (live ref to an ancestor's pieces), an IR
+  // PIECE (this grammar's own rules as a compact combinator expression, re-lowered
+  // at fuse), or full LinkablePieces (fallback when a map can't be serialized).
+  const serializeItem = (it: CarriedItem): string =>
+    isSpread(it)
+      ? `...(${it.__spreadLocal}[Symbol.for('parseman.composedPieces')] ?? [])`
+      : isIR(it)
+        ? `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)} }`
+        : serializePieces(it)
+  const serializeList = (list: CarriedItem[]): string => `[${list.map(serializeItem).join(', ')}]`
 
   /**
-   * Wrap a compiled grammar expression so it CARRIES its own linkable pieces on
-   * the value, under `Symbol.for('parseman.composedPieces')` — the same symbol
-   * `compose()` reads at runtime. This is why `import { cssGrammar }` is all a
-   * downstream package needs: the pieces travel WITH the grammar (no detached,
-   * tree-shakeable `__pieces` export). The literal lives inside the exported
-   * const's initializer, so it can't be shaken off without dropping the grammar.
-   * `importedPieces()` reads it straight back out of the compiled module.
+   * Attach a compiled grammar's linkable pieces onto the value, under
+   * `Symbol.for('parseman.composedPieces')` — the same symbol `compose()` reads at
+   * runtime. This is why `import { cssGrammar }` is all a downstream package needs:
+   * the pieces travel WITH the grammar (no detached, tree-shakeable `__pieces`
+   * export). `Object.defineProperty` returns the grammar, so it stays one
+   * expression that can't be shaken off the exported const without dropping the
+   * grammar; `importedPieces()` reads it back out. The descriptor mirrors the
+   * runtime attach (`linker.ts`) — `enumerable: false` so the (large) carried IR
+   * isn't dragged along by `Object.assign(target, grammar)` or `{ ...grammar }`.
    */
-  const withCarriedPieces = (grammarExpr: string, list: LinkablePieces[]): string =>
-    `/* @__PURE__ */ (() => { const _g = ${grammarExpr}; `
-    + `Object.defineProperty(_g, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)} }); `
-    + `return _g })()`
+  const withCarriedPieces = (grammarExpr: string, list: CarriedItem[]): string =>
+    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
   // Same-file `const X = compose([...])` → its flattened pieces, so a later
   // same-file compose can chain it.
   const localComposedPieces = new Map<string, LinkablePieces[]>()
@@ -394,6 +462,52 @@ export function transformMacro(
    * export, no TS source, no recompile. `import { <name> }` carries everything.
    * null if the grammar wasn't macro-compiled (or isn't source-free composable).
    */
+  // Resolve the FULLY-EXPANDED pieces list from a compiled grammar's carried
+  // literal. The literal may SPREAD imported ancestors' pieces —
+  // `...(binding[Symbol.for('parseman.composedPieces')] ?? [])` — which the runtime
+  // resolves off the live import. Here (build time, no live module) we resolve each
+  // spread by following that module's own import of `binding` to its compiled file
+  // and recursing, then eval the literal with the resolved ancestors stubbed in so
+  // the spreads splice their pieces. `seen` guards against an import cycle.
+  const resolveModulePieces = (file: string, exportName: string, seen: Set<string>): LinkablePieces[] | null => {
+    const mod = parseModuleCached(file)
+    if (!mod) return null
+    const localFor = exportLocalName(mod.body as AnyNode[], exportName)
+    const initNode = localFor ? topLevelInit(mod.body as AnyNode[], localFor) : null
+    const literalRange = initNode ? findCarriedPiecesLiteral(initNode) : null
+    if (!literalRange) return null
+    const literal = mod.src.slice(literalRange.start, literalRange.end)
+
+    const imports = extractImportBindings(mod.body as AnyNode[])
+    const stubNames: string[] = []
+    const stubVals: unknown[] = []
+    const spreadRe = /\.\.\.\s*\(?\s*([A-Za-z_$][\w$]*)\s*\[\s*Symbol\s*\.\s*for\s*\(\s*['"]parseman\.composedPieces['"]/g
+    const done = new Set<string>()
+    for (let m: RegExpExecArray | null; (m = spreadRe.exec(literal)); ) {
+      const local = m[1]!
+      if (done.has(local)) continue
+      done.add(local)
+      const b = imports.get(local)
+      let subPieces: LinkablePieces[] = []
+      if (b) {
+        let subFile: string | null = null
+        try { subFile = getCompiledResolver().resolveFileSync(file, b.source).path ?? null } catch { /* unresolved */ }
+        if (subFile && !seen.has(subFile)) subPieces = resolveModulePieces(subFile, b.imported, new Set(seen).add(subFile)) ?? []
+      }
+      stubNames.push(local)
+      stubVals.push({ [Symbol.for('parseman.composedPieces')]: subPieces })
+    }
+    try {
+      // Build-time eval of the carried literal with ancestor spreads stubbed — NOT
+      // runtime. `Symbol.for`/`Map` are globals; `stubNames` provide the imports.
+      // eslint-disable-next-line no-new-func
+      const list = new Function(...stubNames, `return (${literal})`)(...stubVals) as Array<Parameters<typeof materializePiece>[0]>
+      // The delta rides as compact IR ({ns, ir}); re-lower it to full pieces (ancestor
+      // spreads were already materialized by the recursion above).
+      return list.map(materializePiece)
+    } catch { return null }
+  }
+
   const importedPieces = (localName: string): LinkablePieces[] | null => {
     if (importedPiecesCache.has(localName)) return importedPiecesCache.get(localName)!
     let result: LinkablePieces[] | null = null
@@ -401,47 +515,47 @@ export function transformMacro(
     if (binding) {
       let file: string | null = null
       try { file = getCompiledResolver().resolveFileSync(id, binding.source).path ?? null } catch { /* unresolved */ }
-      const mod = file ? parseModuleCached(file) : null
-      if (mod) {
-        // Map the imported export name → its local binding (handles both
-        // `export const X = …` and a bundler's `const X$1 = …; export { X$1 as X }`).
-        const localFor = exportLocalName(mod.body as AnyNode[], binding.imported)
-        const initNode = localFor ? topLevelInit(mod.body as AnyNode[], localFor) : null
-        const literalRange = initNode ? findCarriedPiecesLiteral(initNode) : null
-        if (literalRange) {
-          const literal = mod.src.slice(literalRange.start, literalRange.end)
-          try {
-            // Build-time eval of a self-contained data literal (strings/arrays/
-            // Map) — NOT runtime; the fused output never carries this.
-            // eslint-disable-next-line no-new-func
-            result = new Function(`return (${literal})`)() as LinkablePieces[]
-          } catch { result = null }
-        }
-      }
+      result = file ? resolveModulePieces(file, binding.imported, new Set([file])) : null
     }
     importedPiecesCache.set(localName, result)
     return result
   }
 
-  /** Resolve one `compose([...])` argument to its pieces LIST (flattened). */
-  const argPieces = (arg: Expression, label: string): LinkablePieces[] | null => {
+  /** Resolve one `compose([...])` argument to its (flattened) pieces for FUSING,
+   * plus — when the argument is an imported grammar — the import identity so the
+   * carried list can reference it with a marker instead of re-serializing it. */
+  // A local rule map → its fuse pieces PLUS its compact IR (for carrying). The IR
+  // is null when the map can't be faithfully serialized — the caller then carries
+  // the full lowered pieces instead.
+  const localArg = (rm: Iterable<readonly [string, unknown]>, label: string): { pieces: LinkablePieces[]; ir?: IRItem } | null => {
+    const entries = [...rm]
+    const ns = nsFor(label)
+    const p = compileLinkable(entries as never, ns)
+    if (!p) return null
+    const ir = serializeRuleMap(entries as never)
+    return ir ? { pieces: [p], ir: { ns, ir } } : { pieces: [p] }
+  }
+  const argPieces = (arg: Expression, label: string): { pieces: LinkablePieces[]; spreadLocal?: string; ir?: IRItem } | null => {
     // Inline `rules(g => …)`.
     if (isRulesCall(arg)) {
       const factory = (arg as unknown as { arguments: unknown[] }).arguments[0] as Expression | undefined
       const rm = factory ? evaluateParserFactory(factory, scope, code, []) : null
-      const p = rm ? compileLinkable([...rm], nsFor(label)) : null
-      return p ? [p] : null
+      return rm ? localArg(rm, label) : null
     }
     if (arg.type === 'Identifier') {
       const name = (arg as unknown as { name: string }).name
       // Local grammar var (`const myRules = rules(...)`).
       const rm = localRuleMaps.get(name)
-      if (rm) { const p = compileLinkable([...rm], nsFor(label)); return p ? [p] : null }
-      // Local composed var (`const g = compose([...])`) → its flattened pieces.
+      if (rm) return localArg(rm, label)
+      // Local composed var (`const g = compose([...])`) → its flattened pieces
+      // (defined in THIS module, so carry them in full — no spread).
       const composed = localComposedPieces.get(name)
-      if (composed) return composed
-      // Imported grammar/composed grammar — its compiled `<name>__pieces` sidecar.
-      return importedPieces(name)
+      if (composed) return { pieces: composed }
+      // Imported grammar — fuse its (transitively expanded) pieces now, but CARRY a
+      // live spread of the imported binding, so we don't re-serialize an ancestor.
+      const pieces = importedPieces(name)
+      if (!pieces) return null
+      return importBindings.has(name) ? { pieces, spreadLocal: name } : { pieces }
     }
     return null
   }
@@ -449,7 +563,7 @@ export function transformMacro(
   /** Compile `compose([...])` to STATIC fused source (eval-free) + its flattened
    * pieces (for a sidecar / same-file chaining). null → leave the runtime
    * `compose()` in place (correct, just not build-fused). */
-  const compileComposeCall = (init: Expression): { replacement: string; pieces: LinkablePieces[] } | null => {
+  const compileComposeCall = (init: Expression): { replacement: string; pieces: LinkablePieces[]; carried: CarriedItem[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -457,14 +571,18 @@ export function transformMacro(
       return null
     }
     const elements = (arr as unknown as { elements: Expression[] }).elements
-    const pieces: LinkablePieces[] = []
+    const pieces: LinkablePieces[] = []     // flattened, for FUSING now
+    const carried: CarriedItem[] = []       // for SERIALIZING onto the value (markers for imports)
     for (let i = 0; i < elements.length; i++) {
-      const list = argPieces(elements[i]!, `compose${init.start}_${i}`)
-      if (!list) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
-      pieces.push(...list)
+      const r = argPieces(elements[i]!, `compose${init.start}_${i}`)
+      if (!r) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
+      pieces.push(...r.pieces)
+      if (r.spreadLocal) carried.push({ __spreadLocal: r.spreadLocal })
+      else if (r.ir) carried.push(r.ir)
+      else carried.push(...r.pieces)
     }
     try {
-      return { replacement: emitFusedSource(pieces), pieces }
+      return { replacement: emitFusedSource(pieces), pieces, carried }
     } catch (e) {
       warn(init.start, `compose(): ${(e as Error).message}; falling back to runtime`)
       return null
@@ -600,9 +718,12 @@ export function transformMacro(
           // grammar isn't source-free composable and we ship it as a plain map.
           let replacement = compiledRules.replacement
           if (exportPrefix) {
-            const pieces = compileLinkable([...compiledRules.ruleMap], nsFor(varName))
+            const ns = nsFor(varName)
+            const pieces = compileLinkable([...compiledRules.ruleMap], ns)
             if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
-              replacement = withCarriedPieces(replacement, [pieces])
+              // Carry the compact IR when serializable; else the full lowered pieces.
+              const ir = serializeRuleMap([...compiledRules.ruleMap] as never)
+              replacement = withCarriedPieces(replacement, [ir ? { ns, ir } : pieces])
             }
           }
           replacements.push({ start: init.start, end: init.end, replacement })
@@ -619,7 +740,7 @@ export function transformMacro(
           // grammar via `import { <name> }` (re-composition, no source).
           localComposedPieces.set(varName, fused.pieces)
           const replacement = exportPrefix
-            ? withCarriedPieces(fused.replacement, fused.pieces)
+            ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
           replacements.push({ start: init.start, end: init.end, replacement })
           continue

@@ -9,6 +9,7 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { staticExpected } from '../combinators/expect.ts'
+import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
 import { markUnusedValues } from './value-usage.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
@@ -143,6 +144,14 @@ type Ctx = {
   capturing?: boolean
   /** Inside the trivia-capture fn: terminals emit CSTTrivia tokens, not leaves. */
   capAsTrivia?: boolean | undefined
+  /**
+   * Set on a transient probe ctx (e.g. scanTo's `capturing: false` sentinel/skip
+   * probe) where emitted code must have NO capture side effects. Suppresses
+   * shared-combinator hoisting so a probe never defines — nor reuses — a named
+   * function compiled in the surrounding capturing context (whose runtime-gated
+   * `_cstLeaves` push would fire during the probe).
+   */
+  noHoist?: boolean | undefined
   /** Trivia parser → name of its capturing variant fn (separate from namedParsers). */
   triviaCaptureNames: Map<Combinator<unknown>, string>
   /**
@@ -179,6 +188,10 @@ type Ctx = {
   lazyUsage?: {
     counts: Map<Combinator<unknown>, number>
     recursive: Set<Combinator<unknown>>
+    /** Approx subtree node count (lazy refs counted as 1 leaf), memoized. Gates
+     * shared-combinator hoisting: only subtrees big enough that de-duplicating
+     * them beats the added call cost are hoisted; tiny shared wrappers stay inline. */
+    sizes: Map<Combinator<unknown>, number>
   }
 }
 
@@ -327,18 +340,17 @@ function pushNamedFnDecl(
   valueVar: string,
   endVar: string,
 ): void {
+  // Success path returns the value DIRECTLY (setting the shared end slot first);
+  // failure breaks `_pfail` and falls through to the sentinel return. No `_pfok`
+  // flag / post-block check — fewer ops on the hot (matched) path, and smaller.
   ctx.namedFnDecls.push([
     `function ${fnName}(input, _pos, _ctx) {`,
-    `  let _pfok = false, _pfv, _pfe = _pos`,
     `  _pfail: {`,
     ...reindentStmts(bodyStmts, 2),
-    `    _pfv = ${valueVar}`,
-    `    _pfe = ${endVar}`,
-    `    _pfok = true`,
+    `    ${NAMED_FN_END} = ${endVar}`,
+    `    return ${valueVar}`,
     `  }`,
-    `  if (!_pfok) return ${NAMED_FN_FAIL}`,
-    `  ${NAMED_FN_END} = _pfe`,
-    `  return _pfv`,
+    `  return ${NAMED_FN_FAIL}`,
     `}`,
   ].join('\n'))
 }
@@ -1338,15 +1350,26 @@ function emitFirstMatch(
     const deferRuleName = ctx.deferFirstSetRefs
       ? (p as unknown as { _ruleName?: string })._ruleName
       : undefined
+    // Non-defer (monolithic, refs are final): if the arm's CACHED first-set is `any`
+    // only because it was built over `ref()`s (which cache `any()` at construction),
+    // recover a real guard from the DEEP, ref-resolving first-set. Sound here because
+    // refs can't be overridden; the compose path defers instead (above).
     const fsGuard = deferRuleName !== undefined
       ? `/*@FS:${deferRuleName}:${codeV}@*/true`
-      : needsFirstSetGuard(p) ? firstSetCond(codeV, p._meta.firstSet) : null
+      : needsFirstSetGuard(p)
+        ? firstSetCond(codeV, p._meta.firstSet)
+        : (() => {
+            if (p._meta.firstSet.kind !== 'any' || matchesEmpty(p)) return null
+            const deep = firstSetOf(p)
+            return deep.kind === 'ranges' ? firstSetCond(codeV, deep) : null
+          })()
 
     // Gate: register predicate in mapFns; condition guards entire arm attempt
     let gateCond: string | null = null
     if (gate) {
       const gateIdx = ctx.mapFns.length
       ctx.mapFns.push(gate as (v: unknown, span: unknown) => unknown)
+      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a gate predicate has no captured source)
       gateCond = `${mfRef(ctx)}[${gateIdx}](_ctx.state)`
     }
     const skipCond = gateCond ? `!${resOkV} && ${gateCond}` : `!${resOkV}`
@@ -1426,13 +1449,28 @@ function emitNonDisjoint(
 // ── helpers for emitGreedyClassify / emitLiteralsLongestFirst ────────────────
 
 /** Apply transform chain only — no parsing, value already known. */
+/** Register a map fn, INTERNING by source so identical callbacks (e.g. every
+ * balanced()'s merge closure) share one `_mf` slot. Relies on `mapFns` and
+ * `mapFnSrcs` staying parallel — gate/guard/withCtx push a `null` source alongside
+ * their `mapFns` entry to preserve that invariant, so interning keeps firing after
+ * one of them (a `null` never matches a real source, so their slots are never
+ * aliased). */
+function pushMapFn(ctx: Ctx, fn: Ctx['mapFns'][number], src: string | null): number {
+  if (src !== null && ctx.mapFns.length === ctx.mapFnSrcs.length) {
+    const hit = ctx.mapFnSrcs.indexOf(src)
+    if (hit !== -1) return hit
+  }
+  const idx = ctx.mapFns.length
+  ctx.mapFns.push(fn)
+  ctx.mapFnSrcs.push(src)
+  return idx
+}
+
 function emitTransformChain(p: Combinator<unknown>, baseValue: string, endV: string, startPos: string, ctx: Ctx): ER {
   const def = p._def
   if (def.tag === 'transform') {
     const innerR = emitTransformChain(def.parser, baseValue, endV, startPos, ctx)
-    const fnIdx = ctx.mapFns.length
-    ctx.mapFns.push(def.fn)
-    ctx.mapFnSrcs.push(def.fnSrc ?? null)
+    const fnIdx = pushMapFn(ctx, def.fn, def.fnSrc ?? null)
     const vv = v(ctx)
     return {
       stmts: [...innerR.stmts, `${ind(ctx)}const ${vv} = ${mfRef(ctx)}[${fnIdx}](${innerR.valueVar}, { start: ${startPos}, end: ${endV} })`],
@@ -1661,7 +1699,7 @@ function emitScanTo(
 
   // Sentinel check and skippers must not emit CST leaves — they are pure position
   // probes. Use a non-capturing ctx so their literal()/regex() don't push leaves.
-  const probeCtx: Ctx = { ...ctx, capturing: false }
+  const probeCtx: Ctx = { ...ctx, capturing: false, noHoist: true }
 
   // Sentinel check — labeled block, no IIFE
   const { stmts: sentStmts, okVar: sentOk } = emitFallible(def.sentinel, probeCtx, curV)
@@ -1977,7 +2015,54 @@ function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: s
 // ---------------------------------------------------------------------------
 // Main dispatch
 // ---------------------------------------------------------------------------
+
+/**
+ * Object-identity de-duplication wrapper around `emitDispatch`. A COMPOUND
+ * combinator referenced from more than one place (a shared `const value =
+ * choice(...)`, or a sub-parser reached from two positions within one rule) is
+ * emitted ONCE as a private named function and CALLED at every reference —
+ * instead of pasting its full lowered body at each site, which multiplies
+ * combinatorially through nested `many`/`sepBy`/`sequence`. Mirrors emitLazy's
+ * named-function path (same `_pf` naming, same recordFail/scope reset). Leaf
+ * terminals and `lazy` refs are handled elsewhere; named rules keep their own
+ * `_r_<Name>` path; probe/ trivia-capture contexts opt out (see `noHoist`).
+ */
 function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
+  const usage = ctx.lazyUsage
+  if (
+    usage &&
+    !ctx.noHoist &&
+    !ctx.capAsTrivia &&
+    !ctx.ruleNames?.has(p) &&
+    isHoistableTag(p._def.tag) &&
+    (usage.counts.get(p) ?? 0) > 1 &&
+    // Only hoist subtrees big enough that de-duplicating them beats the call
+    // overhead. A tiny shared wrapper (e.g. `optional(literal(';'))`) inlines
+    // faster than it calls and barely moves the byte count; the size explosion
+    // is all in LARGE choices/sequences referenced from many positions.
+    (usage.sizes.get(p) ?? 0) >= HOIST_MIN_SUBTREE
+  ) {
+    const existing = ctx.namedParsers.get(p)
+    if (existing !== undefined) return emitNamedFnCall(ctx, existing, pos)
+    const fnName = `${nsp(ctx)}_pf${ctx.namedParsers.size}`
+    ctx.namedParsers.set(p, fnName)   // register FIRST (defensive; a compound ref never self-recurses)
+    const savedIndent    = ctx.indent
+    const savedFailLabel = ctx.failLabel
+    const savedRecord    = ctx.recordFail
+    ctx.indent    = 1
+    ctx.failLabel = '_pfail'  // failures break _pfail (labeled block in the fn body)
+    ctx.recordFail = true     // shared body always records; each caller decides propagation
+    const r = emitDispatch(p, ctx, '_pos')
+    ctx.indent    = savedIndent
+    ctx.failLabel = savedFailLabel
+    ctx.recordFail = savedRecord
+    pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar)
+    return emitNamedFnCall(ctx, fnName, pos)
+  }
+  return emitDispatch(p, ctx, pos)
+}
+
+function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
   const def = p._def
   switch (def.tag) {
     case 'literal':   return emitLit(def, ctx, pos)
@@ -2015,9 +2100,7 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
           }
         }
       }
-      const fnIdx = ctx.mapFns.length
-      ctx.mapFns.push(def.fn)
-      ctx.mapFnSrcs.push(def.fnSrc ?? null)
+      const fnIdx = pushMapFn(ctx, def.fn, def.fnSrc ?? null)
       const mv = v(ctx, '_mapped')
       return {
         stmts: [
@@ -2076,6 +2159,7 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'guard': {
       const fnIdx = ctx.mapFns.length
       ctx.mapFns.push(def.predicate as (v: unknown, span: unknown) => unknown)
+      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a guard predicate has no captured source)
       const vv = v(ctx)
       return {
         stmts: [
@@ -2091,6 +2175,7 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       const evIdx = ctx.mapFns.length
       const extra = def.extra
       ctx.mapFns.push((() => extra) as (v: unknown, span: unknown) => unknown)
+      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a withCtx value getter has no captured source)
 
       // Wrap inner parser as a named function so it receives _ctx as a parameter.
       // That lets us call it with a modified ctx (user changed) without polluting
@@ -2225,6 +2310,27 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
 }
 
 /**
+ * Compound combinators worth hoisting into a shared named function when the SAME
+ * object is referenced more than once. Leaf terminals (`literal`/`regex`/
+ * `keywords`/`guard`) aren't worth a call; `lazy` is owned by emitLazy; the
+ * context-bearing wrappers (`grammar`/`trivia`/`label`/`withCtx`/`expect`/`skip`/
+ * `recover`/`scanTo`) are excluded so no per-site context (active trivia, capture
+ * mode) can be baked into a shared body.
+ */
+const HOISTABLE_TAGS: ReadonlySet<ParserDef['tag']> = new Set<ParserDef['tag']>([
+  'sequence', 'choice', 'many', 'oneOrMore', 'optional', 'sepBy', 'transform', 'node', 'not',
+])
+function isHoistableTag(tag: ParserDef['tag']): boolean {
+  return HOISTABLE_TAGS.has(tag)
+}
+
+/** Minimum approximate subtree size (see `subtreeSizes`) for a shared combinator
+ * to be hoisted into a named function rather than inlined at each reference.
+ * Small enough to catch every real explosion (a value `choice` is ~12+), large
+ * enough that trivial shared wrappers stay inline and keep the hot path fast. */
+const HOIST_MIN_SUBTREE = 3
+
+/**
  * Static-occurrence analysis for `lazy` (ref()) combinators, ahead of codegen.
  * `emitLazy` currently hoists EVERY lazy ref into its own named function
  * (_pfN), even when it's referenced from exactly one place — necessary for
@@ -2250,11 +2356,57 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
  * `g.xxx` convention but not disallowed — is revisited per occurrence, same
  * cost class as compilation already pays for it today).
  */
-function analyzeLazyUsage(root: Combinator<unknown>): {
+type LazyUsage = {
   counts: Map<Combinator<unknown>, number>
   recursive: Set<Combinator<unknown>>
-} {
+  sizes: Map<Combinator<unknown>, number>
+}
+
+function analyzeLazyUsage(root: Combinator<unknown>): LazyUsage {
   return analyzeLazyUsageMulti([root])
+}
+
+/**
+ * Memoized approximate subtree size: number of combinator nodes reachable from
+ * `p` WITHOUT crossing a `lazy` boundary (a ref counts as 1 leaf — it lowers to a
+ * call, not an inline expansion). This is the size that would be DUPLICATED if the
+ * subtree were pasted at another reference, so it's the right quantity to gate
+ * hoisting on. Cycles (only possible through a `lazy`, which is a leaf here) can't
+ * recur. */
+function subtreeSizes(roots: Iterable<Combinator<unknown>>): Map<Combinator<unknown>, number> {
+  const sizes = new Map<Combinator<unknown>, number>()
+  // A node's inline-expansion size: itself + each child's size, but a `lazy` child
+  // counts as 1 (it lowers to a call, so it isn't part of the duplicated bytes).
+  // Never crosses a lazy, so it can't cycle (compound nodes don't cycle alone).
+  const sz = (p: Combinator<unknown>): number => {
+    const cached = sizes.get(p)
+    if (cached !== undefined) return cached
+    const def = p._def
+    let s = 1
+    if (def.tag !== 'lazy') {
+      for (const child of childrenOf(def)) s += child._def.tag === 'lazy' ? 1 : sz(child)
+    }
+    sizes.set(p, s)
+    return s
+  }
+  // Visit crosses lazy boundaries (the roots ARE lazy rule-refs) so every reachable
+  // compound node gets a size entry; sz() then fills the whole non-lazy subtree.
+  const visitedLazy = new Set<Combinator<unknown>>()
+  const visit = (p: Combinator<unknown>): void => {
+    const def = p._def
+    if (def.tag === 'lazy') {
+      if (visitedLazy.has(p)) return
+      visitedLazy.add(p)
+      let resolved: Combinator<unknown>
+      try { resolved = def.thunk() } catch { return }
+      visit(resolved)
+      return
+    }
+    sz(p)
+    for (const child of childrenOf(def)) visit(child)
+  }
+  for (const root of roots) visit(root)
+  return sizes
 }
 
 /**
@@ -2267,10 +2419,7 @@ function analyzeLazyUsage(root: Combinator<unknown>): {
  * count 2 (stays a named function, shared correctly), not two independent 1s
  * from two unrelated single-root analyses.
  */
-function analyzeLazyUsageMulti(roots: Iterable<Combinator<unknown>>): {
-  counts: Map<Combinator<unknown>, number>
-  recursive: Set<Combinator<unknown>>
-} {
+function analyzeLazyUsageMulti(roots: Iterable<Combinator<unknown>>): LazyUsage {
   const counts = new Map<Combinator<unknown>, number>()
   const recursive = new Set<Combinator<unknown>>()
   const descended = new Set<Combinator<unknown>>()
@@ -2297,11 +2446,27 @@ function analyzeLazyUsageMulti(roots: Iterable<Combinator<unknown>>): {
       active.delete(p)
       return
     }
+    // A non-lazy COMPOUND combinator shared by object identity (e.g. a
+    // `const value = choice(...)` referenced from several rules, or a sub-parser
+    // reached through nested `many`/`sepBy`) is counted per reference edge, so
+    // codegen can hoist a multiply-referenced subtree into ONE named function
+    // instead of pasting its full lowered body at every reference — the
+    // multiplication that makes nested value grammars explode. We intentionally do
+    // NOT memoize the descent here: cycle detection for `lazy` relies on fully
+    // traversing every active path (a compound `descended` short-circuit would let
+    // the walker return before re-reaching an active `self` ref and marking it
+    // recursive → emitLazy would then inline a recursive ref forever). Non-lazy
+    // nodes never form a cycle without passing through a `lazy` (which has its own
+    // active/descended guards), so the re-walk stays finite — same cost as before.
+    if (isHoistableTag(def.tag)) {
+      counts.set(p, (counts.get(p) ?? 0) + 1)
+    }
     for (const child of childrenOf(def)) walk(child)
   }
 
-  for (const root of roots) walk(root)
-  return { counts, recursive }
+  const rootsArr = [...roots]
+  for (const root of rootsArr) walk(root)
+  return { counts, recursive, sizes: subtreeSizes(rootsArr) }
 }
 
 /**

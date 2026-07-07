@@ -3,6 +3,47 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.17.0 — 2026-07-06
+
+Theme: **macro-compiled parser size reduction.** Reference target is the Jess
+`less-parser`, which fell from **5.30 MB to 1.07 MB (−79.8%)** across this line of
+work — the fused `rules()` source it compiles is only ~32 KB, so this closes most of
+the gap between compiled artifact and grammar source. Parse speed sits ~12% under the
+pre-hoist baseline (the accepted hoist trade) and is still 6–7× the interpreter; the
+full Jess CSS parse measured **~24% faster than 0.16.0** on a 220-file / 492 KB
+corpus.
+
+- **Identity-hoist shared combinators.** A compound combinator referenced from many
+  places is now emitted once as a shared `_pf` fn and referenced, instead of pasted
+  inline at every reference — killing the worst inlining explosions (e.g. the 786 KB
+  `calcBody` blowup in Less). less-parser 5.30 → 2.50 MB. Costs a one-time ~11% parse
+  hit (the hoisted call); gated by `test/unit/hoist-shared-explosion.test.ts`, which
+  trips if expansion regresses from ~2× back toward the old ~19×.
+- **Carry compact IR, re-lower at fuse.** `compose()`d artifacts now carry the
+  compact `rules(g => …)` combinator expression as `{ ns, ir }` and re-lower it at
+  fuse time, instead of carrying ~1 MB of already-lowered `_r_<Name>` source. Two
+  supporting pieces: an IR serializer for rule maps, and emitting shared consts
+  *inside* the `rules()` factory scope so the round-trip is self-contained
+  (`test/unit/ir-serialize.test.ts`). less-parser 1.98 → 1.22 MB — build-time only,
+  no runtime cost.
+- **Live-spread ancestor pieces.** An imported grammar's compose-pieces are now
+  referenced off its live binding (`[...cssGrammar[Sym], delta]`) rather than
+  re-serialized into the deriving grammar; works in both interpreted and macro mode.
+  less-parser 2.29 → 1.98 MB, free.
+- **Strip carried-pieces indentation.** Dead pretty-printer whitespace in the
+  machine-consumed carried source is dropped. less-parser 2.50 → 2.29 MB, free.
+- **Drop `_pfok` flag from named-fn wrappers.** A named-fn wrapper now returns the
+  value directly on success and falls through to `_pfFail` on failure, instead of
+  threading a `_pfok` success flag. Neutral perf.
+- **Intern identical `_mf` map closures.** `balanced()` merge closures with
+  byte-identical source now share one `_mf` slot (40 → 2 in Less) instead of emitting
+  one per call site. Free.
+- **fix: recover first-char dispatch from a deep, ref-resolving first-set.** A
+  `choice` arm whose first-set is only knowable after resolving through a chain of
+  rule references used to fall back to an `any` first-set (every token tried). The
+  compiler now resolves through the reference chain and recovers the dispatch guard.
+  Correctness + dispatch fix; +2 tests.
+
 ## 0.16.0 — 2026-07-06
 
 - **Case-insensitive (`/i`) regex lowering.** The scannable fast path (regexes that

@@ -70,8 +70,13 @@ export const parser = compose([cssRules, rules(g => ({ Num: regex(/[0-9]+Z/) }))
     const activeCode = lessOut.code.split('composedPieces')[0]!
     expect(/@FS:/.test(activeCode)).toBe(false)                       // active guard resolved
     expect(/_chcode\w*\s*(?:>=|===|<=)/.test(activeCode)).toBe(true)  // …to a real code-point check
-    expect(/firstSets:/.test(lessOut.code)).toBe(true)               // carried for the next fuse
-    const parser = new Function(lessOut.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    // The delta rides as compact IR (a `rules(...)` expression re-lowered at the next
+    // fuse — first sets recomputed then), not lowered `firstSets`/ruleFns.
+    expect(/\bir:\s*"rules\(/.test(lessOut.code)).toBe(true)
+    // Mimic the ES import: at runtime `cssRules` is the live imported value, and
+    // less's carried pieces spread its `composedPieces` off it. Provide it here.
+    const cssRules = new Function(cssOut.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn cssRules')()
+    const parser = new Function('cssRules', lessOut.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')(cssRules) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
     expect(parser.Value!('abc', 0, {}).span.end).toBe(3)      // css.Word
     expect(parser.Value!('12Z', 0, {}).span.end).toBe(3)      // css.Value → less.Num (override across packages)
     expect(parser.Value!('12', 0, {}).ok).toBe(false)
@@ -90,7 +95,7 @@ describe('macro: 3-level compose() chain across packages (re-composable sidecar)
       fs.writeFileSync(path.join(dir, `${name}.js`), out.code)
       return out.code
     }
-    build('css', `import { rules, regex, choice } from 'parseman' with { type: 'macro' }
+    const cssCode = build('css', `import { rules, regex, choice } from 'parseman' with { type: 'macro' }
 export const cssGrammar = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))`)
     // less composes the COMPILED css and overrides Num → ships its own sidecar.
     const lessCode = build('less', `import { rules, regex, compose } from 'parseman' with { type: 'macro' }
@@ -104,10 +109,51 @@ import { lessGrammar } from './less.js'
 export const scssGrammar = compose([lessGrammar, rules(g => ({ Num: regex(/[0-9]+S/) }))])`)
     expect(/\bcompose\s*\(/.test(scssCode)).toBe(false)
     expect(/new Function/.test(scssCode)).toBe(false)
-    const scss = new Function(scssCode.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn scssGrammar')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    // Mimic the ES import chain: each grammar's carried pieces spread its imported
+    // ancestor's live value, so evaluate the chain css → less(css) → scss(less).
+    const strip = (c: string) => c.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
+    const cssGrammar = new Function(strip(cssCode) + '\nreturn cssGrammar')()
+    const lessGrammar = new Function('cssGrammar', strip(lessCode) + '\nreturn lessGrammar')(cssGrammar)
+    const scss = new Function('lessGrammar', strip(scssCode) + '\nreturn scssGrammar')(lessGrammar) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
     expect(scss.Value!('12S', 0, {}).span.end).toBe(3)  // scss.Num overrides less overrides css
     expect(scss.Value!('12L', 0, {}).ok).toBe(false)     // less's Num was overridden by scss
     expect(scss.Value!('abc', 0, {}).span.end).toBe(3)   // css.Word inherited through the chain
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+})
+
+describe('macro-compiled grammar re-composes at RUNTIME (both modes, no macro required)', () => {
+  it('the library compose() can further-compose an imported macro-compiled grammar', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    const { compose, rules, regex } = await import('../../src/index.ts')
+    const os = await import('node:os'); const fs = await import('node:fs'); const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-rt-'))
+    const strip = (c: string) => c.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
+
+    const cssOut = transformMacro(
+      `import { rules, regex, choice } from 'parseman' with { type: 'macro' }
+export const cssGrammar = rules(g => ({ Value: choice(g.Num, g.Word), Num: regex(/[0-9]+/), Word: regex(/[a-z]+/) }))`,
+      path.join(dir, 'css.js'), new Set(['parseman']))!
+    fs.writeFileSync(path.join(dir, 'css.js'), cssOut.code)
+    const lessOut = transformMacro(
+      `import { rules, regex, compose } from 'parseman' with { type: 'macro' }
+import { cssGrammar } from './css.js'
+export const lessGrammar = compose([cssGrammar, rules(g => ({ Num: regex(/[0-9]+L/) }))])`,
+      path.join(dir, 'less.js'), new Set(['parseman']))!
+
+    // Evaluate the COMPILED modules as the ES runtime would: `cssGrammar` is a live
+    // import whose value carries its pieces; less's carried pieces spread them off it.
+    const cssGrammar = new Function(strip(cssOut.code) + '\nreturn cssGrammar')()
+    const lessGrammar = new Function('cssGrammar', strip(lessOut.code) + '\nreturn lessGrammar')(cssGrammar)
+
+    // NOW re-compose it at RUNTIME with the library compose() — NO macro, no build
+    // step. This is the DX guarantee: an imported macro-compiled grammar is a normal
+    // composable value. (Fails loudly for a static-marker design that needs a
+    // build-time file resolver; passes because pieces are spread off the live import.)
+    const extended = compose([lessGrammar, rules(g => ({ Word: regex(/[A-Z]+/) }))]) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    expect(extended.Value!('ABC', 0, {}).span.end).toBe(3)  // runtime override of css.Word
+    expect(extended.Value!('12L', 0, {}).span.end).toBe(3)  // less.Num inherited across the boundary
+    expect(extended.Value!('abc', 0, {}).ok).toBe(false)    // lowercase no longer matches (Word overridden)
     fs.rmSync(dir, { recursive: true, force: true })
   })
 })

@@ -19,6 +19,7 @@
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
 import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
+import { evalRuleMapIR } from './ir-serialize.ts'
 import type { LinkablePieces } from './codegen.ts'
 import type { Combinator, FirstSet } from '../types.ts'
 
@@ -215,11 +216,34 @@ export function emitFusedSource(pieces: LinkablePieces[]): string {
  * itself a `compose([...])` result. */
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
+/** The compact IR form a grammar carries instead of its lowered rule source: the
+ * combinator-construction expression, re-lowered here at fuse time. */
+export type IRPiece = { ns: string; ir: string }
+
+function isIRPiece(p: unknown): p is IRPiece {
+  return !!p && typeof p === 'object'
+    && typeof (p as IRPiece).ir === 'string' && typeof (p as IRPiece).ns === 'string'
+    && !('ruleFns' in (p as object))
+}
+
+/** Materialize a carried item to full `LinkablePieces`: an IR piece is evaluated
+ * back to a rule map and re-lowered; a full piece passes through. */
+export function materializePiece(p: LinkablePieces | IRPiece): LinkablePieces {
+  if (!isIRPiece(p)) return p
+  const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns)
+  if (!pieces) throw new Error(`compose: carried IR for ns "${p.ns}" could not be re-lowered`)
+  return pieces
+}
+
 /** Flatten one `compose()` item to its pieces: a prior composed result → its
  * carried list; an artifact → itself; a grammar (`rules()` map) → linkable-ified. */
 function itemPieces(item: LinkablePieces | Record<string, unknown>): LinkablePieces[] {
   const carried = (item as Record<symbol, unknown>)[COMPOSED_PIECES]
-  if (Array.isArray(carried)) return carried as LinkablePieces[]
+  // A macro-compiled grammar carries its ancestors as live spreads off the imported
+  // bindings and its own rules as compact IR — `[...cssGrammar[COMPOSED_PIECES],
+  // {ns, ir}]`. At runtime the array is already expanded (live imports); each entry
+  // is re-lowered from IR to full pieces here.
+  if (Array.isArray(carried)) return (carried as Array<LinkablePieces | IRPiece>).map(materializePiece)
   if ((item as LinkablePieces).ruleFns instanceof Map) return [item as LinkablePieces]
   return [linkable(item as Record<string, Combinator<unknown>>)]
 }
