@@ -30,6 +30,7 @@ import { not } from '../combinators/not.ts'
 import { node } from '../combinators/node.ts'
 import { parser } from '../combinators/grammar.ts'
 import { scanTo } from '../combinators/scanTo.ts'
+import { token } from '../combinators/token.ts'
 import { transform, skip, trivia, label } from '../combinators/map.ts'
 import { expect as expectC } from '../combinators/expect.ts'
 
@@ -45,6 +46,7 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'optional':
     case 'transform':
     case 'trivia':
+    case 'token':
     case 'label':
     case 'not':
     case 'node':
@@ -115,13 +117,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'node', 'parser',
-    'scanTo', 'transform', 'skip', 'trivia', 'label', 'expect', '_tf', '_nd',
+    'scanTo', 'token', 'transform', 'skip', 'trivia', 'label', 'expect', '_tf', '_nd',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice,
     many, oneOrMore, optional, sepBy, not, node, parser,
-    scanTo, transform, skip, trivia, label, expectC, _tf, _nd,
+    scanTo, token, transform, skip, trivia, label, expectC, _tf, _nd,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -244,6 +246,7 @@ class Serializer {
       case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)})`
       case 'not':       return `not(${kid(def.parser)})`
       case 'trivia':    return `trivia(${kid(def.parser)})`
+      case 'token':     return `token(${kid(def.parser)})`
       case 'label':     return `label(${JSON.stringify(def.label)}, ${kid(def.parser)})`
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`
       case 'skip':      return `skip(${kid(def.main)}, ${kid(def.skipped)})`

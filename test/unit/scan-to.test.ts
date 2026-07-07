@@ -313,7 +313,7 @@ describe('balanced() — unmatched open reports an error', () => {
     expect(r.ok).toBe(true)
     if (r.ok) {
       expect((r.errors as _PE[]).length).toBeGreaterThanOrEqual(1)
-      expect((r.errors as _PE[])[0]!.expected).toContain(')')
+      expect((r.errors as _PE[])[0]!.expected).toContain('")"')
     }
   })
 

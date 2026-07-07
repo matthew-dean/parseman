@@ -78,6 +78,21 @@ use [`node`](#node-type-combinator-build-opts) for tree building.
 
 Match `main` then `skipped`; return `main`'s value, with the span extended across both.
 
+### `token(combinator)`
+
+Run `combinator` with active trivia cleared and return the matched source text as a
+single token. Inside a `node()`, the wrapped parser contributes one CST leaf for the full
+span instead of exposing its internal terminal leaves.
+
+```ts
+token(sequence(literal('!'), regex(/important/i)))
+```
+
+The compiler may lower safe nullable terminal runs inside `token()` — `many`,
+`optional`, and `sepBy` forms whose pieces are literals/regexes — to one regex while
+preserving the one-token value/CST shape. Use it for source-text regions that should be
+semantically opaque; keep ordinary combinators when builders need the internal leaves.
+
 ### `not(combinator)`
 
 Negative lookahead — succeeds consuming nothing when `combinator` fails.
@@ -310,12 +325,6 @@ on, a bad run is captured as a single error up to the terminator. See
 ```ts
 const items = manyRecover(statement, literal('}'))
 ```
-
-### `staticExpected(combinator)` {#staticexpected}
-
-Statically derive the `expected` string set from a combinator's structure (literals →
-quoted, choice → union of arms, sequence → first term, etc.). This is what lets `expect`
-report an identical expectation in the interpreter and the compiled output.
 
 ### `isParseError(value)`
 

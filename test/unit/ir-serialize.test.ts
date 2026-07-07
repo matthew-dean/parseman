@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest'
 import {
   rules, regex, literal, sequence, choice, many, oneOrMore, optional, sepBy,
   not, scanTo, balanced, parser, trivia, expect as expectC, node,
-  keywords, label, skip, transform,
+  keywords, label, skip, token, transform,
 } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { fuseRules } from '../../src/compiler/linker.ts'
@@ -108,12 +108,14 @@ describe('IR serialize round-trip', () => {
       Semi: expectC(literal(';'), 'semicolon'),
       Word: skip(regex(/[a-z]+/), literal('_')),
       ToEnd: trivia(scanTo(literal('.'), { skip: [regex(/\s+/)], orEOF: true })),
+      Tok: token(sequence(literal('!'), regex(/important/i))),
       Ci: literal('url(', { caseInsensitive: true }),
     })))
     roundTrip(rm, 'Kw', ['if', 'else', 'iffy'])
     roundTrip(rm, 'Digits', ['1', '123', 'x'])
     roundTrip(rm, 'Named', ['abc', '9'])
     roundTrip(rm, 'ToEnd', ['a b.', 'xyz', ''])
+    roundTrip(rm, 'Tok', ['!important', '!IMPORTANT', '! important'])
     roundTrip(rm, 'Ci', ['url(', 'URL(', 'nope'])
   })
 

@@ -144,7 +144,7 @@ export function balanced(
     : regex(new RegExp(`[^${escapeClassChar(open)}${escapeClassChar(close)}]`))
   const inner = many(choice(self, ...skips, content))
   const combi = transform(
-    sequence(literal(open), inner, expect(literal(close), close)),
+    sequence(literal(open), inner, expect(literal(close))),
     // parts: strings (content/self) or arrays (a sequence-shaped skip) or a
     // ParseError (recovered close). `c` is the close string or a ParseError.
     ([o, parts, c]) => o + (parts as unknown[]).map(p => typeof p === 'string' ? p : Array.isArray(p) ? p.join('') : '').join('') + (typeof c === 'string' ? c : ''),

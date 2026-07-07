@@ -28,9 +28,9 @@ import type { ParseError } from '../../src/index.ts'
 const G = rules((g: any) => {
   const content = regex(/[^()[\]{}'"]+/)
   const str = sequence(literal("'"), regex(/[^']*/), literal("'"))
-  const paren = sequence(literal('('), g.region, expect(literal(')'), ')'))
-  const square = sequence(literal('['), g.region, expect(literal(']'), ']'))
-  const curly = sequence(literal('{'), g.region, expect(literal('}'), '}'))
+  const paren = sequence(literal('('), g.region, expect(literal(')')))
+  const square = sequence(literal('['), g.region, expect(literal(']')))
+  const curly = sequence(literal('{'), g.region, expect(literal('}')))
   const region = many(choice(content, str, paren, square, curly))
   return { region }
 })
@@ -45,9 +45,9 @@ import { literal, regex, sequence, choice, many, expect, rules } from 'parseman'
 export const { region } = rules((g) => {
   const content = regex(/[^()[\\]{}'"]+/)
   const str = sequence(literal("'"), regex(/[^']*/), literal("'"))
-  const paren = sequence(literal('('), g.region, expect(literal(')'), ')'))
-  const square = sequence(literal('['), g.region, expect(literal(']'), ']'))
-  const curly = sequence(literal('{'), g.region, expect(literal('}'), '}'))
+  const paren = sequence(literal('('), g.region, expect(literal(')')))
+  const square = sequence(literal('['), g.region, expect(literal(']')))
+  const curly = sequence(literal('{'), g.region, expect(literal('}')))
   const region = many(choice(content, str, paren, square, curly))
   return { region }
 })
@@ -91,13 +91,13 @@ describe('predictive bracket region', () => {
       const r = run('(a[b]')
       vexpect(r.ok).toBe(true)
       vexpect(r.errors.length).toBeGreaterThanOrEqual(1)
-      vexpect(r.errors.some(e => e.expected.includes(')'))).toBe(true)
+      vexpect(r.errors.some(e => e.expected.includes('")"'))).toBe(true)
     })
 
     it(`${mode}: cross-type close (a] → "expected )" reported`, () => {
       const r = run('(a]')
       vexpect(r.ok).toBe(true)
-      vexpect(r.errors.some(e => e.expected.includes(')'))).toBe(true)
+      vexpect(r.errors.some(e => e.expected.includes('")"'))).toBe(true)
     })
 
     it(`${mode}: stray close a)b → region HALTS (no swallow)`, () => {

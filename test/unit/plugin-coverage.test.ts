@@ -362,6 +362,14 @@ describe('evaluator — transform / node / sepBy / oneOrMore', () => {
     }
   })
 
+  it('evaluateExpr builds keyword parsers through the macro environment', () => {
+    const code = `keywords(['if', 'else'], { caseInsensitive: true, boundary: 'A-Za-z' })`
+    const combi = evaluateExpr(parseInit(code), new Map(), code)
+    expect(combi?._def.tag).toBe('keywords')
+    expect(parse(combi!, 'ELSE').ok).toBe(true)
+    expect(parse(combi!, 'elsewhere').ok).toBe(false)
+  })
+
   it('evaluateExpr resolves a bare ref() to a lazy slot and rejects ref(arg)', () => {
     const slot = evaluateExpr(parseInit('ref()'), new Map())
     expect(slot?._def.tag).toBe('lazy')

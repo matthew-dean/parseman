@@ -67,6 +67,7 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'transform':
     case 'label':
     case 'trivia':
+    case 'token':
     case 'expect':
     case 'withCtx':
     case 'node':
@@ -137,6 +138,7 @@ export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>
     case 'transform':
     case 'label':
     case 'trivia':
+    case 'token':
     case 'node':
     case 'grammar':
     case 'expect':    return fs(d.parser)

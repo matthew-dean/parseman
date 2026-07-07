@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseError } from '../types.ts'
-import { staticExpected } from './expect.ts'
+import { deriveExpected } from './expect.ts'
 
 export type { ParseError }
 
@@ -30,7 +30,7 @@ export function recover<T>(
   // Precompute the expected set from the combinator's structure so the ParseError
   // reports the same expectation in the interpreter and the compiled build (the
   // compiled path can't rebuild the runtime `expected` array — same design as expect()).
-  const expected = staticExpected(combinator)
+  const expected = deriveExpected(combinator)
   return {
     _tag: 'recover',
     _meta: meta,

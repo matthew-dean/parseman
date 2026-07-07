@@ -32,6 +32,7 @@ Three words that sound alike but play different roles:
 | `sepBy(combinator, sep)` | Zero or more `combinator` matches separated by `sep`. |
 | `transform(combinator, fn)` | Map the result: `fn(value, span) → newValue`. |
 | `skip(main, skipped)` | Match `main` then `skipped`; return `main`'s value. |
+| `token(combinator)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
 | `label(name, combinator)` | Attach a string label to a combinator arm (metadata; used for per-chunk trivia kinds). |
 | `not(combinator)` | Negative lookahead — succeeds (consuming nothing) when `combinator` fails. |
 | `node(type, combinator, build?, opts?)` | CST/AST rule: captures terminals + trivia. With `build` it constructs the node; omit `build` to build through the `ctx.build` host. See [CST / AST nodes](./ast). |
@@ -55,7 +56,7 @@ Three words that sound alike but play different roles:
 | `triviaEntries(log, labels?, opts?)` | Indexed view over a trivia log. See [Whitespace & trivia](./trivia). |
 
 For the full list of exports — including error/IDE helpers like `completionsAt`,
-`isParseError`, `staticExpected`, and the line-index utilities — see the
+`isParseError`, and the line-index utilities — see the
 [API reference](../reference/api).
 
 ## The essentials, up close
@@ -89,6 +90,15 @@ const assign = transform(
 ```
 
 The `,` gaps in the destructure skip terms you don't need (here the `=`).
+
+### `token`
+
+`token(combinator)` runs a contiguous parser region with trivia disabled, returns the
+matched source text, and contributes one CST leaf inside `node()`.
+
+Use it when the grammar is clearer as combinators but the result is semantically one
+source token. Keep the parts exposed when a builder needs distinct leaves or per-part
+spans.
 
 ### `choice`
 

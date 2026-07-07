@@ -90,6 +90,7 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         return
       case 'label':
       case 'trivia':
+      case 'token':
       case 'withCtx':
       case 'expect':
         visit(def.parser, consumed) // single-child pass-through wrappers
