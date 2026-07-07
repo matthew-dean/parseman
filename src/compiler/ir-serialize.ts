@@ -138,9 +138,10 @@ class Serializer {
     const body = this.ruleMap
       .map(([name, c]) => `  ${JSON.stringify(name)}: ${this.wrap(this.body(c))}`)
       .join(',\n')
-    const rulesExpr = `rules((g) => ({\n${body}\n}))`
-    if (this.decls.length === 0) return rulesExpr
-    return `(() => {\n${this.decls.map(d => '  ' + d).join('\n')}\n  return ${rulesExpr}\n})()`
+    // Shared consts go INSIDE the factory: they can reference `g[name]` rule refs,
+    // and `g` only exists in the factory scope.
+    if (this.decls.length === 0) return `rules((g) => ({\n${body}\n}))`
+    return `rules((g) => {\n${this.decls.map(d => '  ' + d).join('\n')}\n  return ({\n${body}\n})\n})`
   }
 
   /** Count identity references and flag self-referential subtrees. `active` is the

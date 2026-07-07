@@ -80,6 +80,16 @@ describe('IR serialize round-trip', () => {
     roundTrip(rm, 'Pair', ['()=()', '(a)=(b(c))'])
   })
 
+  it('a shared const that itself references a rule (must stay in the factory scope)', () => {
+    const rm = Object.entries(rules((g: any) => {
+      // `pair` is a shared const AND references g.Term — the const must be emitted
+      // inside `rules((g) => {…})` where `g` is in scope, not hoisted above it.
+      const pair = sequence(g.Term, literal(':'), g.Term)
+      return { Doc: sequence(pair, many(sequence(literal(','), pair))), Term: regex(/[a-z]+/) }
+    }))
+    roundTrip(rm, 'Doc', ['a:b', 'a:b,c:d', 'x:y,z:w'])
+  })
+
   it('nested trivia/parser scopes, optional, not, scanTo', () => {
     const ws = regex(/\s+/)
     const rm = Object.entries(rules((g: any) => ({
