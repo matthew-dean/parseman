@@ -31,6 +31,8 @@ const optionalToken = token(optional(sequence(literal('$.*['), regex(/[0-9]+/), 
 const optionalCompiled = compile(optionalToken)
 const sepToken = token(sepBy(regex(/[a-z]+/), literal('|.$|')))
 const sepCompiled = compile(sepToken)
+const fallbackToken = token(optional(regex(/a/g)))
+const fallbackCompiled = compile(fallbackToken)
 type ParseFn = (input: string, pos: number, ctx: object) =>
   { ok: boolean; value?: unknown; span: { start: number; end: number } }
 let macroFn: ParseFn
@@ -152,5 +154,12 @@ describe('token()', () => {
     expect(parse(sepToken, 'alpha|.$|')).toMatchObject({ ok: true, value: 'alpha', span: { start: 0, end: 5 } })
     expect(sepCompiled.parse('alpha|.$|', 0)).toMatchObject({ ok: true, value: 'alpha', span: { start: 0, end: 5 } })
     expect(sepCompiled.source).toContain(String.raw`\|\.\$\|`)
+  })
+
+  it('falls back to compiled inner parsing when token body is not regex-collapsible', () => {
+    expect(parse(fallbackToken, 'a')).toMatchObject({ ok: true, value: 'a', span: { start: 0, end: 1 } })
+    expect(fallbackCompiled.parse('a', 0)).toMatchObject({ ok: true, value: 'a', span: { start: 0, end: 1 } })
+    expect(parse(fallbackToken, 'b')).toMatchObject({ ok: true, value: '', span: { start: 0, end: 0 } })
+    expect(fallbackCompiled.parse('b', 0)).toMatchObject({ ok: true, value: '', span: { start: 0, end: 0 } })
   })
 })
