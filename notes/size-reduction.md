@@ -36,6 +36,7 @@ executable** and the **123 KB legacy parser**.
 | 3 | **Live-spread ancestor pieces** — reference an imported grammar's pieces off its live binding (`[...cssGrammar[Sym], delta]`) instead of re-serializing; works in interpreted + macro mode | `3c7edcf` | 2.29 → 1.98 MB | free |
 | 4 | **Carry compact IR** — carry the `rules(g=>…)` combinator expression (`{ns, ir}`) and re-lower at fuse, instead of ~1 MB of lowered `_r_` source | `cfa50d7` | 1.98 → 1.22 MB | free (build-time only) |
 | 5 | **Drop `_pfok` flag from named-fn wrappers** — direct `return value` on success, fall-through `_pfFail` on failure | `a9137f6` | 1.22 → 1.21 MB | neutral |
+| 6 | **Intern identical `_mf` map closures** — dedup by source so every `balanced()` merge closure shares one `_mf` slot (40 → 2) | (pending) | −5.8 KB | free |
 | — | (deep first-set, `a1cd248` — a *correctness* fix, +2 tests, not size) | | | |
 
 CI gate: `test/unit/hoist-shared-explosion.test.ts` trips if the inlining explosion
@@ -60,8 +61,7 @@ regresses (19× vs 2× expansion). Round-trip gate: `test/unit/ir-serialize.test
 - [ ] **Minify the carried IR further.** The 30 KB IR is a readable `rules(…)`
   expression; a name-preserving minify (it's re-`eval`'d, not read) could ~halve it.
   Small absolute win (30 KB) — low priority.
-- [ ] **Intern the 40 identical `_mf` merge closures** into one shared fn. ~6 KB, but
-  a clean codegen fix (per-callsite emission of an identical closure). Low risk.
+- [x] ~~Intern the 40 identical `_mf` merge closures~~ — **DONE** (see Landed #6, −5.8 KB).
 - [ ] **De-duplicate regex triple-encoding.** Each terminal regex appears as a compiled
   `/…/y` literal, an escaped `_fx` first-set string, and inside rule bodies; derive the
   `_fx` string from `.source` at load. Color-name alternation still appears 3×. Est.

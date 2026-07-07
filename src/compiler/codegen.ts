@@ -1448,13 +1448,26 @@ function emitNonDisjoint(
 // ── helpers for emitGreedyClassify / emitLiteralsLongestFirst ────────────────
 
 /** Apply transform chain only — no parsing, value already known. */
+/** Register a map fn, INTERNING by source so identical callbacks (e.g. every
+ * balanced()'s merge closure) share one `_mf` slot. Only dedups while `mapFns`
+ * and `mapFnSrcs` are parallel — a gate/guard/withCtx pushes to `mapFns` without a
+ * source, diverging them, after which source inlining is off anyway. */
+function pushMapFn(ctx: Ctx, fn: Ctx['mapFns'][number], src: string | null): number {
+  if (src !== null && ctx.mapFns.length === ctx.mapFnSrcs.length) {
+    const hit = ctx.mapFnSrcs.indexOf(src)
+    if (hit !== -1) return hit
+  }
+  const idx = ctx.mapFns.length
+  ctx.mapFns.push(fn)
+  ctx.mapFnSrcs.push(src)
+  return idx
+}
+
 function emitTransformChain(p: Combinator<unknown>, baseValue: string, endV: string, startPos: string, ctx: Ctx): ER {
   const def = p._def
   if (def.tag === 'transform') {
     const innerR = emitTransformChain(def.parser, baseValue, endV, startPos, ctx)
-    const fnIdx = ctx.mapFns.length
-    ctx.mapFns.push(def.fn)
-    ctx.mapFnSrcs.push(def.fnSrc ?? null)
+    const fnIdx = pushMapFn(ctx, def.fn, def.fnSrc ?? null)
     const vv = v(ctx)
     return {
       stmts: [...innerR.stmts, `${ind(ctx)}const ${vv} = ${mfRef(ctx)}[${fnIdx}](${innerR.valueVar}, { start: ${startPos}, end: ${endV} })`],
@@ -2084,9 +2097,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
           }
         }
       }
-      const fnIdx = ctx.mapFns.length
-      ctx.mapFns.push(def.fn)
-      ctx.mapFnSrcs.push(def.fnSrc ?? null)
+      const fnIdx = pushMapFn(ctx, def.fn, def.fnSrc ?? null)
       const mv = v(ctx, '_mapped')
       return {
         stmts: [
