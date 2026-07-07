@@ -219,6 +219,10 @@ const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
  * carried list; an artifact → itself; a grammar (`rules()` map) → linkable-ified. */
 function itemPieces(item: LinkablePieces | Record<string, unknown>): LinkablePieces[] {
   const carried = (item as Record<symbol, unknown>)[COMPOSED_PIECES]
+  // A macro-compiled grammar that imported ancestors carries them as live spreads
+  // off the imported bindings — `[...cssGrammar[COMPOSED_PIECES], …delta]` — so at
+  // runtime this array is already the fully-expanded pieces (the ES imports are
+  // live values). No markers to resolve here.
   if (Array.isArray(carried)) return carried as LinkablePieces[]
   if ((item as LinkablePieces).ruleFns instanceof Map) return [item as LinkablePieces]
   return [linkable(item as Record<string, Combinator<unknown>>)]
