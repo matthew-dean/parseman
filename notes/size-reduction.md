@@ -1,7 +1,7 @@
 # Macro-compiled parser size reduction
 
 Tracking the effort to shrink the size of macro-compiled parsers. Reference target:
-the Jess `less-parser`, which was **5.30 MB** and is now **1.21 MB (−77%)**.
+the Jess `less-parser`, which was **5.30 MB** and is now **1.07 MB (−79.8%)**.
 Grammar *source* (the `rules()` the macro compiles) is ~32 KB, so we've gone from
 ~166× source to ~38× source. Aim: keep pushing toward 5–7× without wrecking parse
 speed (currently ~12% under the pre-hoist baseline — the accepted hoist trade —
@@ -12,18 +12,18 @@ All sizes below are `less-parser/lib/index.js` (the ESM the jess stack resolves)
 (a real copy, not a symlink). After `node scripts/build.mjs`, sync it:
 `for pv in 0.16.0 0.14.0; do d=jess/node_modules/.pnpm/parseman@$pv/node_modules/parseman/dist; rm -rf "$d" && cp -R dist "$d"; done`
 
-## Current byte map (less-parser, 1.21 MB, gzip 199 KB)
+## Current byte map (less-parser, 1.07 MB, gzip ~175 KB)
 
 | region | bytes | notes |
 |---|---:|---|
-| `src/grammar.ts` (**executable fused grammar**) | **982 KB (81%)** | the lowered `_r_<Name>` fns — now the dominant cost |
-| `src/builders.ts` | 81 KB | hand-written AST builders |
-| `productions/*` (legacy class parser) | 123 KB | `LessRecursiveParser` — separate, still exported |
+| `src/grammar.ts` (**executable fused grammar**) | **982 KB (~92%)** | the lowered `_r_<Name>` fns — the dominant cost |
+| `src/builders.ts` | 81 KB | hand-written AST builders (kept — functional parser + scss use it) |
 | carried IR (`{ns, ir}`) | 30 KB | was ~1 MB of lowered source before carry-IR |
 | tokens / runtime / rest | ~25 KB | |
+| ~~`productions/*` (legacy class parser)~~ | ~~133 KB~~ | **removed** — tree-shaken (Landed #7) |
 
-The carried-source problem is **solved** (30 KB). The frontier is now the **982 KB
-executable** and the **123 KB legacy parser**.
+The carried-source problem is **solved** (30 KB) and the legacy parser is **gone**.
+The frontier is now essentially the single **982 KB executable fused grammar**.
 
 ---
 
@@ -36,7 +36,8 @@ executable** and the **123 KB legacy parser**.
 | 3 | **Live-spread ancestor pieces** — reference an imported grammar's pieces off its live binding (`[...cssGrammar[Sym], delta]`) instead of re-serializing; works in interpreted + macro mode | `3c7edcf` | 2.29 → 1.98 MB | free |
 | 4 | **Carry compact IR** — carry the `rules(g=>…)` combinator expression (`{ns, ir}`) and re-lower at fuse, instead of ~1 MB of lowered `_r_` source | `cfa50d7` | 1.98 → 1.22 MB | free (build-time only) |
 | 5 | **Drop `_pfok` flag from named-fn wrappers** — direct `return value` on success, fall-through `_pfFail` on failure | `a9137f6` | 1.22 → 1.21 MB | neutral |
-| 6 | **Intern identical `_mf` map closures** — dedup by source so every `balanced()` merge closure shares one `_mf` slot (40 → 2) | (pending) | −5.8 KB | free |
+| 6 | **Intern identical `_mf` map closures** — dedup by source so every `balanced()` merge closure shares one `_mf` slot (40 → 2) | `dfd07c4` | −5.8 KB | free |
+| 7 | **Stop exporting the legacy Chevrotain parser** (jess-side) — drop `lessRecursiveParser`/`lessParser`/`LessParserChevrotain` re-exports; the bundler tree-shakes `productions/*` + the old parser out | jess `f1fc4aaff` | **−133 KB** | free |
 | — | (deep first-set, `a1cd248` — a *correctness* fix, +2 tests, not size) | | | |
 
 CI gate: `test/unit/hoist-shared-explosion.test.ts` trips if the inlining explosion
@@ -75,14 +76,16 @@ regresses (19× vs 2× expansion). Round-trip gate: `test/unit/ir-serialize.test
   captures most). Won't touch the IR strings. Cheap; changes the shipped artifact's
   readability. Consider a separate `.min` entry.
 
-### High — the 123 KB legacy class parser
+### ~~High — the 123 KB legacy class parser~~ → DONE (Landed #7)
 
-- [ ] **Split / lazy-load `LessRecursiveParser`.** `productions/*` (123 KB) + much of
-  `builders.ts` are the legacy class-based recursive parser, still bundled and
-  exported. If the functional (macro) parser is the primary path, move the recursive
-  parser behind a separate entry (`@jesscss/less-parser/recursive`) so `import { LessParser }`
-  (functional) doesn't pull it. Est. up to ~123 KB off the default bundle. Risk: API
-  shape / consumer coordination.
+- [x] ~~Stop shipping `LessRecursiveParser` / `productions/*`~~ — **DONE.** The old
+  Chevrotain parser was still re-exported from the package index, so the bundler kept
+  it. Dropping the re-exports tree-shakes it out (−133 KB). `builders.ts` (the AST
+  builder `LessGrammar`, used by the functional parser AND scss) is independent and
+  stays. **Follow-up:** delete the now-dead source (`lessRecursiveParser.ts`,
+  `lessParser.ts`, `productions/*`) + their 2 tests — a source cleanup, no further
+  bundle impact. Same pattern applies to scss/jess (they still export their own
+  `*ParserChevrotain`).
 
 ### Medium — structural / cross-package
 
