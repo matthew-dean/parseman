@@ -26,6 +26,7 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       const savedLeaves = ctx._cstLeaves
       const savedRaw = ctx._cstRawChildren
       const savedTriviaLog = ctx._cstTriviaLog
+      const savedOuterTriviaLog = ctx._triviaLog
       const wasCapturing = cstCaptureActive(ctx)
 
       ctx.trivia = undefined
@@ -35,16 +36,22 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       ctx._cstLeaves = undefined
       ctx._cstRawChildren = undefined
       ctx._cstTriviaLog = undefined
+      delete ctx._triviaLog
 
-      const result = root.parse(input, pos, ctx)
-
-      ctx.trivia = savedTrivia
-      ctx.triviaKindLabels = savedKinds
-      ctx._cstBuf = savedBuf
-      ctx._cstChildren = savedChildren
-      ctx._cstLeaves = savedLeaves
-      ctx._cstRawChildren = savedRaw
-      ctx._cstTriviaLog = savedTriviaLog
+      let result: ParseResult<unknown>
+      try {
+        result = root.parse(input, pos, ctx)
+      } finally {
+        ctx.trivia = savedTrivia
+        ctx.triviaKindLabels = savedKinds
+        ctx._cstBuf = savedBuf
+        ctx._cstChildren = savedChildren
+        ctx._cstLeaves = savedLeaves
+        ctx._cstRawChildren = savedRaw
+        ctx._cstTriviaLog = savedTriviaLog
+        if (savedOuterTriviaLog === undefined) delete ctx._triviaLog
+        else ctx._triviaLog = savedOuterTriviaLog
+      }
 
       if (!result.ok) return result
 

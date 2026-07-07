@@ -1863,16 +1863,22 @@ function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: str
   const sc = v(ctx, '_tokCh')
   const sl = v(ctx, '_tokLv')
   const sr = v(ctx, '_tokRaw')
+  const sv = v(ctx, '_tokTr')
+  const sk = v(ctx, '_tokKinds')
   const stl = v(ctx, '_tokTl')
+  const sol = v(ctx, '_tokLog')
   const sb = v(ctx, '_tokBuf')
   const valV = v(ctx, '_tok')
 
   return {
     stmts: [
-      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${stl} = _ctx._cstTriviaLog, ${sb} = _ctx._cstBuf`,
-      `${i}_ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._cstBuf = undefined`,
-      ...inner.stmts,
-      `${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._cstBuf = ${sb}`,
+      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${sv} = _ctx.trivia, ${sk} = _ctx.triviaKindLabels, ${stl} = _ctx._cstTriviaLog, ${sol} = _ctx._triviaLog, ${sb} = _ctx._cstBuf`,
+      `${i}_ctx.trivia = undefined; _ctx.triviaKindLabels = undefined; _ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._triviaLog = undefined; _ctx._cstBuf = undefined`,
+      `${i}try {`,
+      ...reindentStmts(inner.stmts, ctx.indent + 1).map(stmt => stmt.replace(/^(\s*)(?:const|let)\s+/, '$1var ')),
+      `${i}} finally {`,
+      `${i}  _ctx.trivia = ${sv}; _ctx.triviaKindLabels = ${sk}; _ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._triviaLog = ${sol}; _ctx._cstBuf = ${sb}`,
+      `${i}}`,
       ...emitIfFail(ctx, `!${inner.okVar}`, propagateFailBody(ctx)),
       `${i}const ${valV} = input.slice(${pos}, ${inner.endVar})`,
       ...emitLeafCapture(ctx, valV, pos, inner.endVar),

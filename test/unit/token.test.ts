@@ -1,9 +1,9 @@
 import { beforeAll, describe, it, expect } from 'vitest'
 import {
   compile, literal, many, node, optional, parse, parser, regex, sequence, token, trivia,
-  sepBy,
+  sepBy, transform,
 } from '../../src/index.ts'
-import type { CSTLeaf } from '../../src/index.ts'
+import type { CSTLeaf, ParseContext } from '../../src/index.ts'
 
 type CstNode = {
   _tag: 'node'
@@ -33,6 +33,10 @@ const sepToken = token(sepBy(regex(/[a-z]+/), literal('|.$|')))
 const sepCompiled = compile(sepToken)
 const fallbackToken = token(optional(regex(/a/g)))
 const fallbackCompiled = compile(fallbackToken)
+const throwingToken = token(transform(literal('a'), () => { throw new Error('boom') }))
+const throwingCompiled = compile(throwingToken)
+const nestedTriviaToken = token(sequence(literal('a'), parser({ trivia: ws }, sequence(literal('['), literal(']')))))
+const nestedTriviaCompiled = compile(nestedTriviaToken)
 type ParseFn = (input: string, pos: number, ctx: object) =>
   { ok: boolean; value?: unknown; span: { start: number; end: number } }
 let macroFn: ParseFn
@@ -161,5 +165,48 @@ describe('token()', () => {
     expect(fallbackCompiled.parse('a', 0)).toMatchObject({ ok: true, value: 'a', span: { start: 0, end: 1 } })
     expect(parse(fallbackToken, 'b')).toMatchObject({ ok: true, value: '', span: { start: 0, end: 0 } })
     expect(fallbackCompiled.parse('b', 0)).toMatchObject({ ok: true, value: '', span: { start: 0, end: 0 } })
+  })
+
+  it('restores context when the token body throws', () => {
+    for (const run of [
+      (ctx: ParseContext) => throwingToken.parse('a', 0, ctx),
+      (ctx: ParseContext) => throwingCompiled.parseWithContext('a', ctx, 0),
+    ]) {
+      const cstChildren: unknown[] = []
+      const cstLeaves: unknown[] = []
+      const rawChildren: unknown[] = []
+      const cstTriviaLog: number[] = []
+      const triviaLog: number[] = []
+      const ctx: ParseContext = {
+        trackLines: false,
+        trivia: ws,
+        _cstChildren: cstChildren,
+        _cstLeaves: cstLeaves,
+        _cstRawChildren: rawChildren,
+        _cstTriviaLog: cstTriviaLog,
+        _triviaLog: triviaLog,
+      }
+
+      expect(() => run(ctx)).toThrow('boom')
+      expect(ctx.trivia).toBe(ws)
+      expect(ctx._cstChildren).toBe(cstChildren)
+      expect(ctx._cstLeaves).toBe(cstLeaves)
+      expect(ctx._cstRawChildren).toBe(rawChildren)
+      expect(ctx._cstTriviaLog).toBe(cstTriviaLog)
+      expect(ctx._triviaLog).toBe(triviaLog)
+    }
+  })
+
+  it('does not leak nested parser trivia into the outer trivia log', () => {
+    for (const run of [
+      (ctx: ParseContext) => nestedTriviaToken.parse('a[ ]', 0, ctx),
+      (ctx: ParseContext) => nestedTriviaCompiled.parseWithContext('a[ ]', ctx, 0),
+    ]) {
+      const triviaLog: number[] = []
+      const ctx: ParseContext = { trackLines: false, _triviaLog: triviaLog }
+      expect(run(ctx)).toMatchObject({ ok: true, value: 'a[ ]', span: { start: 0, end: 4 } })
+      expect(ctx._triviaLog).toBe(triviaLog)
+      expect(triviaLog).toEqual([])
+    }
   })
 })
