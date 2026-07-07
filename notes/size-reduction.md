@@ -37,7 +37,7 @@ The frontier is now essentially the single **982 KB executable fused grammar**.
 | 4 | **Carry compact IR** — carry the `rules(g=>…)` combinator expression (`{ns, ir}`) and re-lower at fuse, instead of ~1 MB of lowered `_r_` source | `cfa50d7` | 1.98 → 1.22 MB | free (build-time only) |
 | 5 | **Drop `_pfok` flag from named-fn wrappers** — direct `return value` on success, fall-through `_pfFail` on failure | `a9137f6` | 1.22 → 1.21 MB | neutral |
 | 6 | **Intern identical `_mf` map closures** — dedup by source so every `balanced()` merge closure shares one `_mf` slot (40 → 2) | `dfd07c4` | −5.8 KB | free |
-| 7 | **Stop exporting the legacy Chevrotain parser** (jess-side) — drop `lessRecursiveParser`/`lessParser`/`LessParserChevrotain` re-exports; the bundler tree-shakes `productions/*` + the old parser out | jess `f1fc4aaff` | **−133 KB** | free |
+| 7 | **Stop exporting the legacy Chevrotain parsers** (jess-side) — drop the `*RecursiveParser`/`*ParserChevrotain` re-exports so the bundler tree-shakes the old parsers out. less: `f1fc4aaff` (−133 KB); scss: `28e028bf1` (−97 KB). jess already Chevrotain-free. **css blocked** — see follow-up. | jess `f1fc4aaff`, `28e028bf1` | **−230 KB** | free |
 | — | (deep first-set, `a1cd248` — a *correctness* fix, +2 tests, not size) | | | |
 
 CI gate: `test/unit/hoist-shared-explosion.test.ts` trips if the inlining explosion
@@ -78,14 +78,16 @@ regresses (19× vs 2× expansion). Round-trip gate: `test/unit/ir-serialize.test
 
 ### ~~High — the 123 KB legacy class parser~~ → DONE (Landed #7)
 
-- [x] ~~Stop shipping `LessRecursiveParser` / `productions/*`~~ — **DONE.** The old
-  Chevrotain parser was still re-exported from the package index, so the bundler kept
-  it. Dropping the re-exports tree-shakes it out (−133 KB). `builders.ts` (the AST
-  builder `LessGrammar`, used by the functional parser AND scss) is independent and
-  stays. **Follow-up:** delete the now-dead source (`lessRecursiveParser.ts`,
-  `lessParser.ts`, `productions/*`) + their 2 tests — a source cleanup, no further
-  bundle impact. Same pattern applies to scss/jess (they still export their own
-  `*ParserChevrotain`).
+- [x] ~~Stop shipping the Chevrotain parsers~~ — **less & scss DONE** (−230 KB). The AST
+  builder chain is `ScssGrammar → LessGrammar → CssParser` (a standalone class in css
+  `builders.ts`, NOT the Chevrotain parser), so the old parsers are pure dead weight.
+- [ ] **css Chevrotain un-export — BLOCKED on source deletion.** Removing css's
+  `cssRecursiveParser`/`cssParser`/`productions` exports drops another **−105 KB** and
+  the functional stack is fine — BUT the still-present dead source files
+  (`less/scss/src/*RecursiveParser.ts` + `productions/*`) `import { CssRecursiveParser }`
+  from css, so un-exporting it breaks *their* typecheck + tests. **Unblock:** delete
+  the dead Chevrotain source + its tests across css/less/scss (they're dead weight
+  anyway), THEN un-export css. That's the "remove fully" step, deferred for now.
 
 ### Medium — structural / cross-package
 
