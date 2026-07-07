@@ -56,7 +56,7 @@ Three words that sound alike but play different roles:
 | `triviaEntries(log, labels?, opts?)` | Indexed view over a trivia log. See [Whitespace & trivia](./trivia). |
 
 For the full list of exports — including error/IDE helpers like `completionsAt`,
-`isParseError`, `staticExpected`, and the line-index utilities — see the
+`isParseError`, and the line-index utilities — see the
 [API reference](../reference/api).
 
 ## The essentials, up close

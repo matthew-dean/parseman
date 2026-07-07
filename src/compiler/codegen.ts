@@ -8,7 +8,7 @@
  */
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
-import { staticExpected } from '../combinators/expect.ts'
+import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
 import { markUnusedValues } from './value-usage.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
@@ -1064,13 +1064,13 @@ function emitSeq(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, pos: st
 /**
  * Deep-first `expected` labels for a choice's arms — the concatenation of each
  * arm's leftmost-leaf expected set, matching what the interpreter collects when
- * no arm's first-set matches (choice.ts) and what expect()'s staticExpected()
+ * no arm's first-set matches (choice.ts) and what expect()'s deriveExpected()
  * reports. Falls back to the arm's tag only for arms with no static expectation
  * (e.g. runtime-fallback combinators), preserving the previous behaviour there.
  */
-function staticExpectedArr(parsers: Combinator<unknown>[]): string {
+function deriveExpectedArr(parsers: Combinator<unknown>[]): string {
   return JSON.stringify(parsers.flatMap(p => {
-    const e = staticExpected(p)
+    const e = deriveExpected(p)
     return e.length > 0 ? e : [p._tag]
   }))
 }
@@ -1096,7 +1096,7 @@ function failsAtStart(p: Combinator<unknown>): boolean {
 
 /** Hoisted module-level const for one arm's static `expected` labels. */
 function armStaticExpected(ctx: Ctx, p: Combinator<unknown>): string {
-  return hoistExpected(ctx, staticExpectedArr([p]))
+  return hoistExpected(ctx, deriveExpectedArr([p]))
 }
 
 /**
@@ -1148,7 +1148,7 @@ function emitDisjointArm(p: Combinator<unknown>, ctx: Ctx, pos: string, valV: st
 }
 
 function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: string): ER {
-  const allExpected = staticExpectedArr(def.parsers)
+  const allExpected = deriveExpectedArr(def.parsers)
 
   // ── Disjoint: O(1) first-char dispatch ──────────────────────────────────
   if (def.disjoint) {
@@ -1231,7 +1231,7 @@ function emitGreedyClassify(
 
   // On no-match the interpreter returns the super-regex arm's failure verbatim
   // (choice.ts) — report only the regex's expected, not every classified literal.
-  const regexExpected = JSON.stringify(staticExpected(superParser))
+  const regexExpected = JSON.stringify(deriveExpected(superParser))
   const stmts: string[] = [
     `${ind(ctx)}${reVar}.lastIndex = ${pos}`,
     `${ind(ctx)}const ${matchV} = ${reVar}.exec(input)`,
@@ -2099,7 +2099,7 @@ function emitRecover(def: Extract<ParserDef, { tag: 'recover' }>, ctx: Ctx, pos:
     `${ind0}    if (${sentOk}) break`,
     `${ind0}    ${scanV}++`,
     `${ind0}  }`,
-    `${ind0}  const ${errV} = { _tag: 'parseError', span: { start: ${pos}, end: ${scanV} }, expected: ${JSON.stringify(staticExpected(def.parser))} }`,
+    `${ind0}  const ${errV} = { _tag: 'parseError', span: { start: ${pos}, end: ${scanV} }, expected: ${JSON.stringify(deriveExpected(def.parser))} }`,
     `${ind0}  if (_ctx._errors) _ctx._errors.push(${errV})`,
     `${ind0}  ${valVar} = ${errV}`,
     `${ind0}  ${endVar} = ${scanV}`,

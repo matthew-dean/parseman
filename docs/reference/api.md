@@ -325,12 +325,6 @@ on, a bad run is captured as a single error up to the terminator. See
 const items = manyRecover(statement, literal('}'))
 ```
 
-### `staticExpected(combinator)` {#staticexpected}
-
-Statically derive the `expected` string set from a combinator's structure (literals →
-quoted, choice → union of arms, sequence → first term, etc.). This is what lets `expect`
-report an identical expectation in the interpreter and the compiled output.
-
 ### `isParseError(value)`
 
 Type guard: `value is ParseError` (`_tag === 'parseError'`).

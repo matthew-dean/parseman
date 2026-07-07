@@ -16,15 +16,15 @@ export type { ParseError }
  * the interpreter and the compiled output (the compiled path does not rebuild the
  * runtime `expected` array, so it reads this precomputed set instead).
  */
-export function staticExpected(c: Combinator<unknown>): string[] {
+export function deriveExpected(c: Combinator<unknown>): string[] {
   const def = c._def
   switch (def.tag) {
     case 'literal':   return [JSON.stringify(def.value)]
     case 'regex':     return [`/${def.source}/`]
     case 'keywords':  return def.words.map(w => JSON.stringify(w))
     case 'label':     return [def.label]
-    case 'choice':    return def.parsers.flatMap(staticExpected)
-    case 'sequence':  return def.parsers.length > 0 ? staticExpected(def.parsers[0]!) : []
+    case 'choice':    return def.parsers.flatMap(deriveExpected)
+    case 'sequence':  return def.parsers.length > 0 ? deriveExpected(def.parsers[0]!) : []
     case 'node':
     case 'grammar':
     case 'trivia':
@@ -33,13 +33,13 @@ export function staticExpected(c: Combinator<unknown>): string[] {
     case 'many':
     case 'oneOrMore':
     case 'transform':
-    case 'not':       return staticExpected(def.parser)
+    case 'not':       return deriveExpected(def.parser)
     case 'lazy': {
       // An EXTERNAL ref (a rule from a composed base grammar) has no local
       // definition yet — its `thunk()` throws until fusion supplies it. Fall back
       // to the rule name as the expected label instead of descending.
       const name = (c as { _ruleName?: string })._ruleName
-      try { return staticExpected(def.thunk()) }
+      try { return deriveExpected(def.thunk()) }
       catch { return name ? [name] : [] }
     }
     default:          return []
@@ -64,7 +64,7 @@ export function staticExpected(c: Combinator<unknown>): string[] {
  * the inner attempt).
  */
 export function expect<T>(combinator: Combinator<T>, label?: string): Combinator<T | ParseError> {
-  const expected = label !== undefined ? [label] : staticExpected(combinator)
+  const expected = label !== undefined ? [label] : deriveExpected(combinator)
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,

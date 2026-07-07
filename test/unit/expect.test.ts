@@ -8,14 +8,15 @@
  *
  * Verified across interpreter, compile(), and macro modes — the recover-in-place
  * and error-push live in separate code paths (runtime ctx vs codegen emit) that
- * can drift. staticExpected() and furthestFail are exercised separately.
+ * can drift. deriveExpected() and furthestFail are exercised separately.
  */
 import { describe, it, expect as vexpect, beforeAll } from 'vitest'
 import {
-  literal, regex, sequence, choice, many, optional, transform, parser, trivia,
-  expect, staticExpected, compile, parse, isParseError, ref, keywords,
+  literal, regex, sequence, choice, many, optional,
+  expect, compile, parse, isParseError, ref, keywords,
 } from '../../src/index.ts'
 import type { ParseError } from '../../src/index.ts'
+import { deriveExpected } from '../../src/combinators/expect.ts'
 
 // `{` then optional letters then a REQUIRED `}`. Missing `}` → recover in place.
 const block = sequence(
@@ -90,23 +91,23 @@ describe('expect() — across modes', () => {
   }
 })
 
-describe('staticExpected() — derives the expected set from structure', () => {
+describe('deriveExpected() — derives the expected set from structure', () => {
   it('literal → quoted value', () => {
-    vexpect(staticExpected(literal('}'))).toEqual(['"}"'])
+    vexpect(deriveExpected(literal('}'))).toEqual(['"}"'])
   })
   it('choice → all alternatives', () => {
-    vexpect(staticExpected(choice(literal(';'), literal('}')))).toEqual(['";"', '"}"'])
+    vexpect(deriveExpected(choice(literal(';'), literal('}')))).toEqual(['";"', '"}"'])
   })
   it('sequence → first term only', () => {
-    vexpect(staticExpected(sequence(literal('('), literal(')')))).toEqual(['"("'])
+    vexpect(deriveExpected(sequence(literal('('), literal(')')))).toEqual(['"("'])
   })
 
   it('unwraps lazy refs and reads regex/keywords arms', () => {
     const slot = ref<unknown>()
     slot.define(literal('x'))
-    vexpect(staticExpected(slot)).toEqual(['"x"'])
-    vexpect(staticExpected(regex(/[0-9]+/))).toEqual(['/[0-9]+/'])
-    vexpect(staticExpected(keywords(['if', 'else']))).toEqual(['"else"', '"if"'])
+    vexpect(deriveExpected(slot)).toEqual(['"x"'])
+    vexpect(deriveExpected(regex(/[0-9]+/))).toEqual(['/[0-9]+/'])
+    vexpect(deriveExpected(keywords(['if', 'else']))).toEqual(['"else"', '"if"'])
   })
 
   it('expect without a label uses the derived set', () => {

@@ -80,8 +80,7 @@ const block = sequence(literal('{'), declList, expect(literal('}')))
 :::
 
 The second argument is an optional **label** for the `expected` message. Without it,
-Parséman derives the expected set from the combinator's structure via
-[`staticExpected`](../reference/api#staticexpected):
+Parséman derives the expected set from the combinator's structure:
 
 ```ts
 expect(literal('}'))                 // expected: ['"}"']  (derived literal)
