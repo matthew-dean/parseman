@@ -9,6 +9,7 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { staticExpected } from '../combinators/expect.ts'
+import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
 import { markUnusedValues } from './value-usage.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
@@ -1350,9 +1351,19 @@ function emitFirstMatch(
     const deferRuleName = ctx.deferFirstSetRefs
       ? (p as unknown as { _ruleName?: string })._ruleName
       : undefined
+    // Non-defer (monolithic, refs are final): if the arm's CACHED first-set is `any`
+    // only because it was built over `ref()`s (which cache `any()` at construction),
+    // recover a real guard from the DEEP, ref-resolving first-set. Sound here because
+    // refs can't be overridden; the compose path defers instead (above).
     const fsGuard = deferRuleName !== undefined
       ? `/*@FS:${deferRuleName}:${codeV}@*/true`
-      : needsFirstSetGuard(p) ? firstSetCond(codeV, p._meta.firstSet) : null
+      : needsFirstSetGuard(p)
+        ? firstSetCond(codeV, p._meta.firstSet)
+        : (() => {
+            if (p._meta.firstSet.kind !== 'any' || matchesEmpty(p)) return null
+            const deep = firstSetOf(p)
+            return deep.kind === 'ranges' ? firstSetCond(codeV, deep) : null
+          })()
 
     // Gate: register predicate in mapFns; condition guards entire arm attempt
     let gateCond: string | null = null

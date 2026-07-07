@@ -95,6 +95,57 @@ export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): First
   return fs
 }
 
+/**
+ * Deep first-set that RESOLVES `lazy`/`ref` combinators to their targets. The
+ * combinators bake `_meta.firstSet` at CONSTRUCTION, when a `ref()` still reads
+ * `any()` (define() never updates it) — so a `choice`/`sequence` built over refs
+ * caches a spuriously-`any` first-set and loses first-char dispatch. Recomputing
+ * here, following refs, recovers the real set. Over-approximates on cycles /
+ * unknown constructs (returns `any`) — always sound: a wider set only means "try
+ * this arm for more first chars", never skips a real match.
+ *
+ * SOUND ONLY where refs are FINAL (monolithic compile). Under compose OVERRIDE a
+ * referenced rule can be replaced with a WIDER first-set, so a baked deep set
+ * would wrongly skip valid input — the compose path defers dispatch to fuse time.
+ */
+export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): FirstSet {
+  if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
+  seen.add(p)
+  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen)
+  const d = p._def as ParserDef
+  switch (d.tag) {
+    case 'literal':
+    case 'regex':
+    case 'keywords':  return p._meta.firstSet  // terminals: no refs, cached set is exact
+    case 'lazy':
+      try { return fs(d.thunk()) } catch { return any() }
+    case 'choice': {
+      let out: FirstSet = empty()
+      for (const arm of d.parsers) out = union(out, fs(arm))
+      return out
+    }
+    case 'sequence': {
+      // Union through the nullable prefix (a leading nullable term lets a later
+      // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
+      let out: FirstSet = empty()
+      for (const term of d.parsers) { out = union(out, fs(term)); if (!matchesEmpty(term)) return out }
+      return out
+    }
+    case 'oneOrMore':
+    case 'many':
+    case 'optional':
+    case 'transform':
+    case 'label':
+    case 'trivia':
+    case 'node':
+    case 'grammar':
+    case 'expect':    return fs(d.parser)
+    case 'sepBy':     return fs(d.parser)
+    case 'skip':      return fs(d.main)
+    default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
+  }
+}
+
 function mergeRanges(ranges: CharRange[]): CharRange[] {
   if (ranges.length === 0) return []
   const sorted = [...ranges].sort((a, b) => a.lo - b.lo)
