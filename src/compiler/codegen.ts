@@ -2254,7 +2254,17 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'lazy':     return emitLazy(p, def, ctx, pos)
     case 'trivia':   return emit(def.parser, ctx, pos)
     case 'token':    return emitToken(def, ctx, pos)
-    case 'label':    return emit(def.parser, ctx, pos)
+    case 'label': {
+      const inner = emitFallible(def.parser, ctx, pos, true)
+      return {
+        stmts: [
+          ...inner.stmts,
+          ...emitIfFail(ctx, `!${inner.okVar}`, failBody(ctx, JSON.stringify(def.label), pos)),
+        ],
+        valueVar: inner.valVar,
+        endVar: inner.endVar,
+      }
+    }
     case 'grammar': {
       const savedTrivia = ctx.activeTrivia
       const savedKindLabels = ctx.triviaKindLabels

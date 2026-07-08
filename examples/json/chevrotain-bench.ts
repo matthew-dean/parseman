@@ -9,14 +9,14 @@
  */
 import {
   literal, regex, sequence, choice, optional, sepBy,
-  transform, trivia, parser, rules,
+  transform, trivia, parser, rules, label,
   type Combinator,
 } from '../../src/index.ts'
 
 const ws = trivia(regex(/[ \t\n\r]*/))
 
-const stringToken = regex(/"(?:[^\\"]|\\(?:[bfnrtv"\\/]|u[0-9a-fA-F]{4}))*"/)
-const numberToken = regex(/-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)
+const stringToken = label('string', regex(/"(?:[^\\"]|\\(?:[bfnrtv"\\/]|u[0-9a-fA-F]{4}))*"/))
+const numberToken = label('number', regex(/-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/))
 
 const voidOf = <T>(c: Combinator<T>): Combinator<undefined> =>
   transform(c, () => undefined)

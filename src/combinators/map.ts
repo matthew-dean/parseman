@@ -56,6 +56,10 @@ export function label<T>(name: string, combinator: Combinator<T>): Combinator<T>
     _tag: combinator._tag,
     _meta: combinator._meta,
     _def: { tag: 'label', label: name, parser: combinator as Combinator<unknown> },
-    parse: combinator.parse.bind(combinator),
+    parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
+      const result = combinator.parse(input, pos, ctx)
+      if (!result.ok) return { ...result, expected: [name] }
+      return result
+    },
   }
 }

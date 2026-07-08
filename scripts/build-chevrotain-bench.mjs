@@ -41,6 +41,7 @@ window.parse = function parse_json_parseman_compiled(input) {
       ': expected ' + result.expected.join(' or '),
     )
   }
+  return result
 }
 `,
     mfCount,
