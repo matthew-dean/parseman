@@ -84,23 +84,23 @@ nothing up front.
 The numbers above build **JS values**. A separate class of parser builds a **syntax
 tree** instead — [Chevrotain](https://chevrotain.io/)'s `CstParser`, and [Lezer](https://lezer.codemirror.net/), the incremental parser behind
 [CodeMirror 6](https://codemirror.net/). Parséman does this too via [`node()`](./ast) rules (with full trivia and
-span capture). Measured on the same JSON fixtures (`pnpm bench`, tree-building group):
+span capture). Measured on the same JSON fixtures (`pnpm bench:svg`, tree-building group):
 
 ![JSON CST parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-cst-json.svg)
 
 | Parser | small (52 B) | medium (1.8 kB) | large (12 kB) | Output |
 | --- | --- | --- | --- | --- |
-| **Parséman CST (macro build)** | **1.5 µs** | **50 µs** | **344 µs** | object tree + spans |
-| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.3 µs | 70 µs | 587 µs | compact buffer tree |
-| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.7 µs | 79 µs | 789 µs | compact buffer tree |
-| Parséman CST (interpreter) | 2.8 µs | 103 µs | 655 µs | object tree + spans |
-| [Chevrotain](https://chevrotain.io/) CST | 7.6 µs | 251 µs | 1,950 µs | object CST |
+| **Parséman CST (macro build)** | **0.94 µs** | **27.5 µs** | **226 µs** | object tree + spans |
+| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.31 µs | 76.6 µs | 626 µs | compact buffer tree |
+| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.87 µs | 84.9 µs | 708 µs | compact buffer tree |
+| Parséman CST (interpreter) | 2.76 µs | 102 µs | 623 µs | object tree + spans |
+| [Chevrotain](https://chevrotain.io/) CST | 7.38 µs | 231 µs | 1.78 ms | object CST |
 
 **Macro build** = compiled by the bundler plugin at build time (zero runtime setup).
 **Interpreter** = default combinator runtime, no `.compile()` or macro. These are the two
 ways to run Parséman; the chart shows both against Lezer and Chevrotain.
 
-**Compiled Parséman CST (macro build) beats Lezer at every fixture size** — ~1.7× at
+**Compiled Parséman CST (macro build) beats Lezer at every fixture size** — ~2.8× at
 large — while building a directly-usable object tree with per-node spans. Optional
 [`captureTrivia`](./trivia) (`parser({ captureTrivia: true })`) also logs whitespace
 between tokens for formatters — it adds ~5% on this fixture, so it isn't a separate bar.
@@ -109,8 +109,8 @@ editor pipeline; Parséman emits JS objects ready for formatters and refactors w
 second walk. Pick the output your consumer actually needs.
 
 Even the zero-setup **interpreter** CST holds its own against a purpose-built incremental
-generator: it's on par with Lezer parse-only at small inputs, within ~1.2× of it at large
-(689 µs vs 559 µs) while building a richer object tree, and **~2.8× faster than
+generator: it's within ~1.2× of Lezer parse-only at small inputs, slightly ahead at large
+(623 µs vs 626 µs) while building a richer object tree, and **~2.9× faster than
 Chevrotain** throughout. Compile it (macro build) and it moves ahead of Lezer outright.
 
 ## Incremental re-parse
@@ -174,7 +174,8 @@ CST-JSON warm-parse timings the charts need (~30–60 s), not the full `pnpm ben
 | Command | What it does |
 | --- | --- |
 | `pnpm bench:svg` | **Update charts** — benchmark chart parsers + write `assets/bench-*.svg` |
-| `pnpm bench` | **Full suite** — cross-parser comparison *plus* incremental re-parse, combinator inlining, codegen A/B, Parseman regression report |
+| `pnpm bench` | Parser-to-parser comparison |
+| `pnpm bench:parseman` | Parseman interpreted vs compiled regression report |
 | `pnpm bench:baseline` | Refresh Parseman regression baseline + history snapshot |
 | `pnpm perf:guard` | Fast pre-commit CSS speedup ratio check |
 
