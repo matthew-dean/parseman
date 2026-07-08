@@ -3,6 +3,17 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.18.2 — 2026-07-08
+
+- **Interpreter hot-path pass.** Faster regex/literal matching, choice dispatch,
+  trivia skipping, wrapper combinators, and optional misses improve interpreted
+  parser timings across the example grammars.
+- **Benchmark guard cleanup.** The perf guard now checks actual median speed
+  regressions instead of treating a smaller compiled-vs-interpreted ratio as a
+  failure when the interpreter gets faster.
+- **Benchmark refresh.** Updated README/docs and SVG charts for the refreshed
+  parser and CST comparison numbers.
+
 ## 0.18.1 — 2026-07-07
 
 - **Friendlier labeled failures.** `label()` now controls the expected text for
