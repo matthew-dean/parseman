@@ -1,12 +1,9 @@
 /**
- * Fast, machine-robust perf regression guard — intended for a git pre-commit hook.
+ * Fast perf regression guard — intended for a git pre-commit hook.
  *
- * Compares the **machine-independent compiled speedup ratio** (interpreted/compiled
- * per case) against the committed baseline ratio. Because both modes are timed in
- * the same process, the ratio cancels out CPU speed — a ratio drop is a genuine
- * codegen regression, not a slow machine. Absolute µs is NOT checked here (it is
- * hardware-dependent; enable it only on the baseline machine via
- * PARSEMAN_PERF_ABSOLUTE=1 when running the full vitest perf test).
+ * Compares measured median µs against the committed baseline for each mode.
+ * Ratios are reported for context only; they are not a regression signal because
+ * interpreter wins lower the compiled/interpreted ratio.
  *
  * Usage:
  *   node --import tsx/esm bench/perf-guard.ts            # css cases only (fast, ~a few s)
@@ -26,7 +23,7 @@ import {
 } from './parseman-perf.ts'
 
 const all = process.argv.includes('--all')
-const tolerance = Number(process.env.PARSEMAN_PERF_TOLERANCE ?? PERF_TOLERANCE) // % below baseline ratio
+const tolerance = Number(process.env.PARSEMAN_PERF_TOLERANCE ?? PERF_TOLERANCE) // % slower than baseline
 
 const baseline = loadBaseline()
 if (!baseline) {
@@ -47,12 +44,12 @@ const rows = runParsemanSuiteRobust({
 }, GUARD_PASSES)
 
 const regressions = findRegressions(rows, baseline, {
-  checkSpeedup: true,
-  checkAbsolute: false, // machine-independent guard only
-  tolerance: { speedup: tolerance },
+  checkSpeedup: false,
+  checkAbsolute: true,
+  tolerance: { compiled: tolerance, interpreted: tolerance },
 })
 
-// Report the ratios we measured so the dev sees the headroom.
+// Report speed deltas and ratios so the dev sees both signal and headroom.
 const byId = new Map<string, { i?: number; c?: number }>()
 for (const r of rows) {
   const g = byId.get(r.id) ?? {}
@@ -60,15 +57,17 @@ for (const r of rows) {
   else g.c = r.medianUs
   byId.set(r.id, g)
 }
-console.log(`perf-guard: compiled speedup ratio vs baseline @ ${baseline.gitRev} (tolerance ${tolerance}% drop)`)
+console.log(`perf-guard: median speed vs baseline @ ${baseline.gitRev} (tolerance ${tolerance}% slower)`)
 for (const [id, { i, c }] of [...byId.entries()].sort()) {
   if (i === undefined || c === undefined) continue
   const bi = baseline.cases[`${id}/interpreted`]?.medianUs
   const bc = baseline.cases[`${id}/compiled`]?.medianUs
   const speedup = i / c
   const base = bi !== undefined && bc !== undefined ? bi / bc : NaN
-  const drop = Number.isNaN(base) ? '' : `  (baseline ${base.toFixed(2)}×, ${(((base - speedup) / base) * 100).toFixed(1)}% drop)`
-  console.log(`  ${id.padEnd(16)} ${speedup.toFixed(2)}×${drop}`)
+  const interp = bi === undefined ? '' : `  interp ${i.toFixed(2)}µs (${(((i - bi) / bi) * 100).toFixed(1)}%)`
+  const comp = bc === undefined ? '' : `  compiled ${c.toFixed(2)}µs (${(((c - bc) / bc) * 100).toFixed(1)}%)`
+  const ratio = Number.isNaN(base) ? '' : `  ratio ${speedup.toFixed(2)}× (baseline ${base.toFixed(2)}×)`
+  console.log(`  ${id.padEnd(16)}${interp}${comp}${ratio}`)
 }
 
 if (regressions.length > 0) {

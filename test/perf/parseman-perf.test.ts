@@ -52,12 +52,9 @@ describe('Parseman perf — history', () => {
 })
 
 describe('Parseman perf — baseline regression guard', () => {
-  // TIGHT gate — the machine-independent compiled speedup ratio must stay within
-  // PERF_TOLERANCE (8%) of the committed baseline. Runs on the CSS subset (the
-  // most codegen-sensitive cases) measured IDENTICALLY to the baseline capture
-  // (same samples + robust median across interleaved passes), so 8% reflects real
-  // codegen drift, not measurement noise. Mirrors `pnpm perf:guard` (pre-commit).
-  it('css codegen ratio within tight tolerance vs baseline', () => {
+  // TIGHT gate — measured median speed must stay within PERF_TOLERANCE of the
+  // committed baseline. Runs on the CSS subset, mirroring `pnpm perf:guard`.
+  it('css median speed within tight tolerance vs baseline', () => {
     const baseline = loadBaseline()
     if (!baseline) return
 
@@ -68,8 +65,9 @@ describe('Parseman perf — baseline regression guard', () => {
       measure: { samples: PERF_SAMPLES },
     }, GUARD_PASSES)
     const regressions = findRegressions(rows, baseline, {
-      checkSpeedup: true,
-      tolerance: { speedup: PERF_TOLERANCE },
+      checkSpeedup: false,
+      checkAbsolute: true,
+      tolerance: { compiled: PERF_TOLERANCE, interpreted: PERF_TOLERANCE },
     })
     if (regressions.length > 0) {
       console.log('\nParseman CSS perf regressions vs baseline:')
@@ -91,8 +89,9 @@ describe('Parseman perf — baseline regression guard', () => {
       measure: { samples: 5 },
     })
     const regressions = findRegressions(rows, baseline, {
-      checkSpeedup: true,
-      tolerance: { speedup: 30 },
+      checkSpeedup: false,
+      checkAbsolute: true,
+      tolerance: { compiled: 50, interpreted: 50 },
     })
     if (regressions.length > 0) {
       console.log('\nParseman gross perf regressions vs baseline:')

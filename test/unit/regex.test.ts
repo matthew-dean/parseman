@@ -37,4 +37,40 @@ describe('regex', () => {
     const p = regex(/[0-9]+/)
     expect(p._meta.canMatchNewline).toBe(false)
   })
+
+  it('uses a short-run interpreter scanner and bails to exec for long runs', () => {
+    const p = regex(/[0-9]+/)
+    const exec = RegExp.prototype.exec
+    let calls = 0
+    RegExp.prototype.exec = function patchedExec(this: RegExp, input: string) {
+      calls++
+      return exec.call(this, input)
+    }
+
+    try {
+      expect(p.parse('123abc', 0, { trackLines: false })).toMatchObject({
+        ok: true,
+        value: '123',
+        span: { start: 0, end: 3 },
+      })
+      expect(calls).toBe(0)
+
+      const long = `${'9'.repeat(200)}abc`
+      expect(p.parse(long, 0, { trackLines: false })).toMatchObject({
+        ok: true,
+        value: '9'.repeat(200),
+        span: { start: 0, end: 200 },
+      })
+      expect(calls).toBe(1)
+    } finally {
+      RegExp.prototype.exec = exec
+    }
+  })
+
+  it('falls back to native exec for unicode-set regexes', () => {
+    const hexLetter = regex(new RegExp('[\\w&&[A-F]]+', 'v'))
+    expect(parse(hexLetter, '&')).toMatchObject({ ok: false })
+    expect(parse(hexLetter, 'A')).toMatchObject({ ok: true, value: 'A' })
+  })
+
 })

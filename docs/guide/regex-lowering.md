@@ -201,9 +201,10 @@ engine) and "what compiled code does".
 **Perf guards and benchmarks.**
 
 ```bash
-pnpm perf:guard   # fast pre-commit check: CSS speedup ratio vs a committed baseline
-pnpm bench        # full cross-parser suite (JSON/CSV/GraphQL) + interpreted vs compiled
-pnpm test:perf    # the heavier Parséman-only perf suite
+pnpm perf:guard      # fast pre-commit check: CSS speed vs a committed baseline
+pnpm bench           # parser-to-parser comparison (JSON/CSV/GraphQL)
+pnpm bench:parseman  # interpreted vs compiled Parseman suite
+pnpm test:perf       # heavier perf assertions
 ```
 
 `perf:guard` runs on every commit and fails if the compiled-vs-interpreted speedup on the

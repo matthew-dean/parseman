@@ -38,14 +38,11 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
     : parsers.map(() => null)
 
   // Runtime state for each strategy (built once, reused on every parse call):
-  let greedyRe: RegExp | null = null
   let greedyLitMap: Map<string, number> | null = null
   let sortedParsers: Combinator<unknown>[] | null = null
+  const asciiDispatch = disjoint ? buildAsciiDispatch(parsers) : null
 
   if (strategy?.tag === 'greedyClassify') {
-    const regexDef = getCoreRegexDef(parsers[strategy.superIndex]!)!
-    const flags = 'y' + regexDef.flags.replace(/[gy]/g, '')
-    greedyRe = new RegExp(regexDef.source, flags)
     greedyLitMap = new Map()
     for (let i = 0; i < parsers.length; i++) {
       if (i === strategy.superIndex) continue
@@ -73,13 +70,20 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       // ── Disjoint: O(1) first-char dispatch (never has gates) ──────────────
       if (disjoint && pos < input.length) {
         const code = input.codePointAt(pos)!
-        for (const parser of parsers) {
-          if (inFirstSet(code, parser._meta.firstSet)) {
-            const result = parser.parse(input, pos, ctx)
-            if (result.ok) return result as ParseResult<UnionArms<T>>
-            expected.push(...result.expected)
-            return { ok: false, expected, span: { start: pos, end: pos } }
+        let parser = code < 128 ? asciiDispatch?.[code] ?? null : null
+        if (!parser) {
+          for (const p of parsers) {
+            if (inFirstSet(code, p._meta.firstSet)) {
+              parser = p
+              break
+            }
           }
+        }
+        if (parser) {
+          const result = parser.parse(input, pos, ctx)
+          if (result.ok) return result as ParseResult<UnionArms<T>>
+          expected.push(...result.expected)
+          return { ok: false, expected, span: { start: pos, end: pos } }
         }
         return {
           ok: false,
@@ -304,4 +308,18 @@ function areDisjoint(sets: FirstSet[]): boolean {
     for (let j = i + 1; j < sets.length; j++)
       if (intersects(sets[i]!, sets[j]!)) return false
   return true
+}
+
+function buildAsciiDispatch(parsers: Combinator<unknown>[]): (Combinator<unknown> | null)[] {
+  const table = Array<Combinator<unknown> | null>(128).fill(null)
+  for (const parser of parsers) {
+    const fs = parser._meta.firstSet
+    if (fs.kind !== 'ranges') continue
+    for (const { lo, hi } of fs.ranges) {
+      for (let code = Math.max(0, lo); code <= Math.min(127, hi); code++) {
+        table[code] = parser
+      }
+    }
+  }
+  return table
 }

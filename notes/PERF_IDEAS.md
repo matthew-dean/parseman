@@ -2,6 +2,8 @@
 
 Library-level opportunities for faster compiled parsers. Grammar authors can only reach some of these via hand-merging or collapsing shapes (see README § "collapse opaque shapes into one regex").
 
+Interpreter-side ideas are split out to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRETER_PERF_IDEAS.md) so this file can stay focused on compiled/macro output.
+
 ## Already landed
 
 - **Flat trivia log** — `_cstTriviaLog` as `[start, end, insertIdx, …]` per trivia entry; no per-entry `CSTTrivia` objects.
@@ -10,7 +12,6 @@ Library-level opportunities for faster compiled parsers. Grammar authors can onl
 - **Choice fast paths (non-CST)** — `greedyClassify`, `literalsLongestFirst`, disjoint first-char dispatch, `autoNot` for `firstMatch`.
 - **Choice fast paths in CST grammars** — `emitGreedyClassify` / `emitLiteralsLongestFirst` with `emitLeafCapture` in capturing compiles.
 - **Log-only compiled trivia capture** — merged `_tcN` into `_tfN(…, cap?)`; ~6% bootstrap4 vs duplicate-tree `_tc`.
-- **Interpreter `node()` lazy capture** — `capture-buffer.ts`: defer `children`/`raw`/`tl` array alloc until first push; single-child scalar fast path.
 - **Trivia loop specialization** — `trivia-fast-path.ts`: hand-rolled `charCodeAt` loop for `oneOrMore(choice(ws, blockComment))` and ASCII ws-only trivia; CSS bootstrap4 compiled **−52%** (25.8→12.3ms).
 - **Transform / build inlining** — `inline-callback.ts`: paste unary and `sequence`+destructure transform bodies at call sites; GraphQL large compiled **−6%**. `inline-build.ts`: emit `mk()` CST nodes literally (CSS-neutral).
 - **Labeled trivia kind capture** — `label(name, parser)` on trivia `choice` arms records per-chunk kind indices in `_triviaLog` / per-node `triviaLog`; `triviaEntries()` resolves kinds and text lazily. Interpreter + compiled parity in `test/parity/trivia-kinds.test.ts`.
@@ -35,9 +36,7 @@ Moved to **Already landed**.
 
 ### ~~2. `node()` per-invocation overhead~~ (partial — interpreter only)
 
-**Landed (interpreter):**
-
-- Lazy array allocation + single-child scalar (`capture-buffer.ts`).
+Interpreter-only `node()` capture work moved to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRETER_PERF_IDEAS.md).
 
 **Rejected (compiled — do not retry without a new approach):**
 
@@ -202,11 +201,14 @@ Moved to **Already landed** (closes the CSS `numPart` gap §8f left open).
 
 ## Measuring
 
-- `pnpm bench` — external parser comparison (Peggy, Parsimmon, Chevrotain, Nearley, Jison) **plus** Parseman interpreted vs compiled across all example grammars (with baseline Δ).
+- `pnpm bench` — external parser comparison only (Peggy, Parsimmon, Chevrotain, Nearley, Jison, native JSON).
+- `pnpm bench:parseman` — Parseman interpreted vs compiled across all example grammars (with baseline Δ). For tweak loops, narrow it: `pnpm bench:parseman -- --only=json --scale=0.5 --samples=7`.
+- `pnpm bench:literal` — literal-match A/B (`slice` vs `startsWith(value, pos)` vs `charCodeAt`) for interpreter `literal()` work.
+- `pnpm bench:codegen` — codegen A/B micro-benchmarks.
 - `pnpm bench:compile-grammars` — regenerate precompiled Peggy, Nearley, and Jison parsers in `bench/` after editing `bench/*.pegjs` or `bench/vendor/`.
 - `pnpm bench:svg` — chart-only benchmarks (JSON/CSV/GraphQL/CST-JSON) + regenerate `assets/bench-*.svg` for the README. Much faster than `pnpm bench`; init bars stay pinned in `bench/chart-types.ts`.
 - `pnpm bench:baseline` — refresh `bench/parseman-baseline.json` **and append** a snapshot to `bench/parseman-history.jsonl` (commit both to track the needle over time).
-- `test/perf/parseman-perf.test.ts` — smoke + CSS tight speedup-ratio guard (8%, robust median) + full-suite gross guard (30%, single-pass). Excluded from default `pnpm test` (heavy by design); run via `pnpm test:perf`.
+- `test/perf/parseman-perf.test.ts` — smoke + CSS tight speed regression guard (robust median) + full-suite gross guard (single-pass). Excluded from default `pnpm test` (heavy by design); run via `pnpm test:perf`.
 - `pnpm perf:guard` — pre-commit: CSS-only robust guard (~2s). `pnpm perf:guard --all` — every grammar.
 - `test/perf/codegen-ab.test.ts` + `bench/codegen-ab.ts` — within-process A/B that isolates the two codegen optimizations (machine-independent, no old-git-state needed):
   - **regex scan lowering** — a scannable `+`/`*` terminal (charCodeAt) vs the SAME grammar with `{1,}`/`{0,}` (identical matches, stays on `RegExp.exec`). Realistic many-short-token regime: **~2.3× faster**. Single very long token: scan loses to native exec (~0.3×, printed as contrast, not asserted). Uses `__setForceDisjointIf` / semantic-equivalent quantifiers so no production code changes.
@@ -220,7 +222,7 @@ Moved to **Already landed** (closes the CSS `numPart` gap §8f left open).
 
 **Parseman baseline** (`bench/parseman-baseline.json`): CI regression anchor — median µs/op for interpreted **and** compiled on JSON, CSV, GraphQL, TOML-ish, lang, and CSS fixtures. Updated deliberately when you accept a new perf level.
 
-**Parseman history** (`bench/parseman-history.jsonl`): append-only time series (one JSON line per `bench:baseline`). `pnpm bench` reports Δ vs baseline plus Δc↓prev / Δc↓origin from history. `printHistoryIndex()` lists bootstrap4 compiled µs across all snapshots.
+**Parseman history** (`bench/parseman-history.jsonl`): append-only time series (one JSON line per `bench:baseline`). `pnpm bench:parseman` reports Δ vs baseline plus Δc↓prev / Δc↓origin from history. `printHistoryIndex()` lists bootstrap4 compiled µs across all snapshots.
 
 ---
 

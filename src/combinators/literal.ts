@@ -66,15 +66,12 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
       if (end > input.length) {
         return failAt(ctx, [JSON.stringify(value)], pos)
       }
-      const slice = input.slice(pos, end)
-      const matched = caseInsensitive
-        ? asciiFoldEq(slice, value)
-        : slice === value
-      if (matched) {
+      const matchedValue = caseInsensitive ? input.slice(pos, end) : value
+      if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
         const span = { start: pos, end }
-        const leaf = { _tag: 'leaf', value: slice, span }
+        const leaf = { _tag: 'leaf', value: matchedValue, span }
         if (cstCaptureActive(ctx)) pushCstLeaf(ctx, leaf)
-        return { ok: true, value: slice, span }
+        return { ok: true, value: matchedValue, span }
       }
       return failAt(ctx, [JSON.stringify(value)], pos)
     },

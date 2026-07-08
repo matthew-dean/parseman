@@ -48,6 +48,34 @@ describe('optional', () => {
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.value).toBeNull()
   })
+
+  it('skips impossible first-set misses without parsing the child', () => {
+    const child = literal('hi')
+    let calls = 0
+    const parseChild = child.parse.bind(child)
+    child.parse = (input, pos, ctx) => {
+      calls++
+      return parseChild(input, pos, ctx)
+    }
+    const r = parse(optional(child), 'bye')
+    expect(r.ok).toBe(true)
+    expect(calls).toBe(0)
+  })
+
+  it('still parses impossible first-set misses while probing', () => {
+    const child = literal('hi')
+    let calls = 0
+    const parseChild = child.parse.bind(child)
+    child.parse = (input, pos, ctx) => {
+      calls++
+      return parseChild(input, pos, ctx)
+    }
+    const probe = { offset: 0, best: null }
+    const r = optional(child).parse('bye', 0, { trackLines: false, _probe: probe })
+    expect(r.ok).toBe(true)
+    expect(calls).toBe(1)
+    expect((probe.best as { expected: string[] } | null)?.expected).toContain('"hi"')
+  })
 })
 
 describe('sepBy', () => {

@@ -1,4 +1,4 @@
-import type { ParseContext } from '../types.ts'
+import type { Combinator, ParseContext } from '../types.ts'
 import {
   analyzeLabeledTrivia,
   recordTriviaChunks,
@@ -25,6 +25,8 @@ export type TriviaScan = { end: number; commit: () => void }
 export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; log: number }
 
 const NOOP_COMMIT = () => {}
+type FastTriviaScanner = (input: string, cur: number) => number
+const fastTriviaCache = new WeakMap<Combinator<unknown>, FastTriviaScanner | null>()
 
 /** True when trivia recording must be deferred until the following term commits. */
 export function needsDeferredTriviaCommit(ctx: ParseContext): boolean {
@@ -63,6 +65,8 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaSc
 export function advanceTrivia(input: string, cur: number, ctx: ParseContext): number {
   const triviaP = ctx.trivia
   if (!triviaP) return cur
+  const fast = fastTriviaScanner(triviaP)
+  if (fast) return fast(input, cur)
   if (ctx.triviaKindLabels) {
     const scan = scanWithLabels(input, cur, ctx)
     return scan.end
@@ -81,6 +85,11 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
 
   const log = ctx._triviaLog
   const captureTl = ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)
+
+  const fast = !ctx.triviaKindLabels ? fastTriviaScanner(triviaP) : null
+  if (fast && log === undefined && !captureTl) {
+    return { end: fast(input, cur), commit: NOOP_COMMIT }
+  }
 
   if (ctx.triviaKindLabels && (log !== undefined || captureTl)) {
     return scanWithLabels(input, cur, ctx)
@@ -115,4 +124,89 @@ export function consumeTrivia(input: string, cur: number, ctx: ParseContext): nu
   const scan = scanTrivia(input, cur, ctx)
   scan.commit()
   return scan.end
+}
+
+function fastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner | null {
+  const cached = fastTriviaCache.get(trivia)
+  if (cached !== undefined) return cached
+  const scanner = buildFastTriviaScanner(trivia)
+  fastTriviaCache.set(trivia, scanner)
+  return scanner
+}
+
+function buildFastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner | null {
+  const core = trivia._def.tag === 'trivia' ? trivia._def.parser : trivia
+  const direct = regexTriviaScanner(core)
+  if (direct) return direct
+
+  const repeat = core._def.tag === 'oneOrMore' || (core._def.tag === 'many' && core._def.min >= 1)
+    ? core._def.parser
+    : null
+  if (!repeat) return null
+
+  const one = regexTriviaScanner(repeat)
+  if (one) return loopScanner([one])
+
+  if (repeat._def.tag !== 'choice') return null
+  const arms = repeat._def.parsers.map(regexTriviaScanner)
+  if (arms.some(s => s === null)) return null
+  return loopScanner(arms as FastTriviaScanner[])
+}
+
+function loopScanner(arms: FastTriviaScanner[]): FastTriviaScanner {
+  return (input, cur) => {
+    let pos = cur
+    scan: while (pos < input.length) {
+      for (const arm of arms) {
+        const end = arm(input, pos)
+        if (end > pos) {
+          pos = end
+          continue scan
+        }
+      }
+      break
+    }
+    return pos
+  }
+}
+
+function regexTriviaScanner(parser: Combinator<unknown>): FastTriviaScanner | null {
+  if (parser._def.tag !== 'regex' || parser._def.flags) return null
+  const ws = whitespaceSource(parser._def.source)
+  if (ws) return ws
+  return blockCommentSource(parser._def.source) ? scanBlockComment : null
+}
+
+function whitespaceSource(source: string): FastTriviaScanner | null {
+  const m = /^\[([ \\tnrf]+)\][*+]$/.exec(source)
+  if (!m) return null
+  const chars = new Set<number>()
+  for (let i = 0; i < m[1]!.length; i++) {
+    const ch = m[1]![i]!
+    if (ch !== '\\') {
+      chars.add(ch.charCodeAt(0))
+      continue
+    }
+    const esc = m[1]![++i]
+    if (esc === 't') chars.add(9)
+    else if (esc === 'n') chars.add(10)
+    else if (esc === 'r') chars.add(13)
+    else if (esc === 'f') chars.add(12)
+    else return null
+  }
+  return (input, cur) => {
+    let pos = cur
+    while (pos < input.length && chars.has(input.charCodeAt(pos))) pos++
+    return pos
+  }
+}
+
+function blockCommentSource(source: string): boolean {
+  return source === '\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/' || source === '\\/\\*[^]*?\\*\\/'
+}
+
+function scanBlockComment(input: string, cur: number): number {
+  if (input.charCodeAt(cur) !== 47 || input.charCodeAt(cur + 1) !== 42) return cur
+  const close = input.indexOf('*/', cur + 2)
+  return close === -1 ? cur : close + 2
 }
