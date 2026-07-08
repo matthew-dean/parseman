@@ -31,6 +31,9 @@ jobs:
         # step needed here.
         run: pnpm install --frozen-lockfile
 
+      - name: Changelog entry
+        run: pnpm check:changelog
+
       - name: Typecheck
         run: pnpm typecheck
 
