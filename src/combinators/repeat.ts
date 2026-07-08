@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
+import { matchesEmpty } from './first-set.ts'
 
 /**
  * Parse one repetition item at `cur`, first skipping (and, in capture mode,
@@ -16,7 +17,7 @@ function repItem<T>(
   combinator: Combinator<T>,
   input: string,
   cur: number,
-  ctx: ParseContext
+  ctx: ParseContext,
 ): { value: T; end: number } | { fail: ParseResult<T> } | 'stop' {
   const mark = saveTriviaMark(ctx)
   let pos = cur
@@ -117,12 +118,16 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
+  const firstSetSkippable = !matchesEmpty(combinator)
 
   return {
     _tag: 'optional',
     _meta: meta,
     _def: { tag: 'optional', parser: combinator as Combinator<unknown> },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T | null> {
+      if (firstSetSkippable && ctx._probe === undefined && !startsFirstSet(combinator, input, pos)) {
+        return { ok: true, value: null, span: { start: pos, end: pos } }
+      }
       const mark = saveTriviaMark(ctx)
       const result = combinator.parse(input, pos, ctx)
       if (result.ok) return result as ParseResult<T>
@@ -131,6 +136,16 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
       return { ok: true, value: null, span: { start: pos, end: pos } }
     },
   }
+}
+
+function startsFirstSet(combinator: Combinator<unknown>, input: string, pos: number): boolean {
+  const fs = combinator._meta.firstSet
+  if (fs.kind === 'any') return true
+  if (fs.kind === 'empty') return false
+  const code = input.codePointAt(pos)
+  if (code === undefined) return false
+  for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
+  return false
 }
 
 export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>): Combinator<T[]> {

@@ -10,6 +10,7 @@ Library-level opportunities for faster interpreted parsers. Keep this separate f
 - **Runtime choice strategies** — `choice()` already has disjoint first-set dispatch, `greedyClassify`, `literalsLongestFirst`, and `autoNot`. The interpreter is not purely naive ordered choice anymore.
 - **Short-run regex scanner for char-class runs** — `regex()` now recognizes only simple `[class]+/*` and `\d`/`\w`/`\s` run shapes locally, with a 64-char cutoff back to native `RegExp.exec`. Same-session `pnpm bench:parseman -- --only=json,csv,graphql,toml,lang,css --scale=0.2 --samples=7` before → after: JSON large **493→422µs**, TOML medium **78→68µs**, CSV large **363→352µs**, GraphQL large **592→598µs** (noise/slight loss), lang medium **21.3→20.1µs**, CSS bootstrap **54.0→52.7ms**, CSS decls **25.1→23.6µs**. A broader recursive `ScanShape` interpreter was tried first and rejected: measured against the committed baseline it regressed many interpreter rows, especially CSS, and importing `scannable-run.ts` bloated a lean `regex` bundle to ~28 KB, so this landed as the smaller local chars-only version (~5.5 KB lean bundle, no `regexp-tree`).
 - **Literal/choice/trivia wrapper pass** — `literal()` now uses `startsWith(value, pos)` for case-sensitive probes and slices only after success; `choice()` precomputes an ASCII dispatch table for already-disjoint arms; unlabeled trivia gets a tiny cached scanner for whitespace and CSS block comments; wrapper spreads in `transform()` / `skip()` / failed `label()` are explicit objects now. Fresh baseline before this pass → kept set: JSON large **433→369µs**, TOML medium **68.2→62.6µs**, GraphQL large **604.6→589.8µs**, CSS bootstrap **54.3→52.8ms**, lang medium **20.45→20.34µs**, CSV large **357→360µs** (noise/slight loss).
+- **Optional first-set miss shortcut** — `optional()` skips parsing a non-nullable child when the current code point cannot start it, except while `_probe` completion tracking is active. Fresh baseline → optional-only: CSS bootstrap **50.1→49.1ms**, CSV large **339→329µs**, GraphQL large **555→489µs**, JSON large **364→363µs**, lang medium **19.1→19.0µs**, TOML medium **60.3→62.1µs** (small loss). The same shortcut in `many()` / `oneOrMore()` was rejected: repeat-only kept the lang win but regressed GraphQL/CSS/TOML.
 
 ## High priority
 
@@ -80,6 +81,8 @@ Idea: add a parse-scoped scratch trivia context on `ParseContext`, mutate its `t
 Guard: only for no-capture trivia scans. Capture/logging paths need the real context because they commit side effects.
 
 Rejected: a parse-scoped scratch context for no-capture trivia was tried after the trivia scanner. It regressed CSS and GraphQL (`css/bootstrap4` **52.8→57.4ms**, GraphQL large **589.8→620.3µs**) while only preserving the JSON/TOML wins from the scanner, so it was backed out.
+
+Related rejected follow-up: nested `parser()` context spread was replaced with save/mutate/restore on the incoming context. It also regressed the main suites (CSS bootstrap **50.1→52.0ms**, GraphQL large **555→568µs**, TOML medium **60.3→62.2µs**) for no meaningful win, so the simpler allocation path stays.
 
 ## Low priority / probably skip
 
