@@ -1894,6 +1894,9 @@ function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: str
  * calls the build fn, then records the node in the enclosing node()'s collectors.
  */
 function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: string): ER {
+  if (def.type === undefined) {
+    throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
+  }
   // A STRUCTURAL node has no own build — it builds via the `ctx.build` host at
   // parse time, else a default positioned CST. No build fn is captured.
   const structural = def.build === undefined
@@ -1976,15 +1979,18 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const ndExpr = ctx.ns || structural
     ? `_ctx.build !== undefined ? _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV}) : (${buildExpr})`
     : buildExpr
-  // collapse: a single captured child IS the value (leaf → its string, else as-is);
+  // unwrap: a single captured child IS the value (leaf → its string, else as-is);
   // build is skipped (short-circuited by the ternary). Mirrors node.ts.
-  const finalExpr = def.collapse
-    ? `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
+  const hostCollapseExpr = (ctx.ns || structural)
+    ? `_ctx.build !== undefined && _ctx.build._parsemanCstCollapse !== undefined && ${chV}.length === 1 && ${rawV}.length === 1 && _ctx.build._parsemanCstCollapse(${JSON.stringify(def.type)}, ${chV}[0], ${chV}, ${rawV}) ? ${chV}[0] : (${ndExpr})`
     : ndExpr
+  const finalExpr = def.unwrap || def.collapse
+    ? `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
+    : hostCollapseExpr
   stmts.push(
     `${i}const ${ndV} = ${finalExpr}`,
     `${i}if (${sc}) ${sc}.push(${ndV})`,
-    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && ${ndV}._tag === 'node') ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'error')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
   )
 
   return { stmts, valueVar: ndV, endVar }

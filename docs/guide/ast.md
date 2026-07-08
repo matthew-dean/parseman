@@ -1,7 +1,7 @@
 # CST / AST nodes
 
 For grammars that produce a typed syntax tree, support incremental re-parsing, or care
-about trivia, wrap each rule in `node(type, combinator, build?, opts?)`. There are two ways
+about trivia, wrap each named rule in `node(combinator, build?, opts?)`. There are two ways
 to get a tree out:
 
 - **A plain CST** — omit `build` and let the library build a uniform positioned node for
@@ -24,10 +24,10 @@ type N = { _tag: 'node'; type: string; span: { start: number; end: number }; sta
 const ws = trivia(regex(/\s+/))
 
 export const { Expr, Num } = rules<{ Expr: Combinator<N>; Num: Combinator<N> }>(g => {
-  const num = node('Num', regex(/[0-9]+/),
+  const num = node(regex(/[0-9]+/),
     (children, raw, span) => ({ _tag: 'node', type: 'Num', span, state: null, children: [...children] }))
 
-  const expr = node('Expr',
+  const expr = node(
     parser({ trivia: ws }, sequence(g.Num, many(sequence(literal('+'), g.Num)))),
     (children, raw, span) => ({ _tag: 'node', type: 'Expr', span, state: null, children: [...children] }))
 
@@ -68,7 +68,7 @@ gets no trivia log or state clone; one that also declares `triviaLog` keeps the 
 that declares `state` keeps the clone. This is inferred from the function's parameter list
 at compile time — you don't opt in.
 
-The same inference runs at **parse time** for a [structural `node(type, parser)`](#just-want-a-plain-cst)
+The same inference runs at **parse time** for a [structural `node(parser)`](#just-want-a-plain-cst)
 whose AST is built by an injected [`ctx.build` host](#the-nodelike-contract): Parséman
 reads the host's arity (`build(type, children, rawChildren, span, triviaLog, state)`) and
 elides the trivia/state capture the host doesn't take.
@@ -88,19 +88,19 @@ parameters and drop the ones you don't use.
 
 ## Just want a plain CST? {#just-want-a-plain-cst}
 
-If you don't need a custom AST, **omit `build`**. A `node(type, combinator)` with no build
+If you don't need a custom AST, **omit `build`**. A `node(combinator)` with no build
 callback is *structural*: it constructs its node through a **host** you supply via
 `ctx.build`, so the same grammar produces a plain CST for tooling (host set) and its own
-AST for evaluation (host unset, or a `build` callback). Pass the built-in `cstBuildHost`
-and every rule becomes a uniform positioned node:
+AST for evaluation (host unset, or a `build` callback). Inside `rules()`, the object key is
+the node type. Pass the built-in `cstBuildHost` and every rule becomes a uniform positioned node:
 
 ```ts
 import { rules, node, regex, literal, sequence, many, parser, trivia, run, cstBuildHost } from 'parseman'
 
 const ws = trivia(regex(/\s+/))
 const g = rules(gg => ({
-  Expr: node('Expr', parser({ trivia: ws }, sequence(gg.Num, many(sequence(literal('+'), gg.Num))))),
-  Num:  node('Num', regex(/[0-9]+/)),
+  Expr: node(parser({ trivia: ws }, sequence(gg.Num, many(sequence(literal('+'), gg.Num))))),
+  Num:  node(regex(/[0-9]+/)),
 }))
 
 const r = run(g.Expr, '1 + 2', { build: cstBuildHost })
@@ -108,6 +108,9 @@ const r = run(g.Expr, '1 + 2', { build: cstBuildHost })
 
 `r.value` is the CST — every node the same [`NodeLike`](../reference/types#node-types) shape,
 terminals as `CSTLeaf`:
+
+Use `node('Type', parser)` when a rule needs an explicit public type or when the node is a
+local/manual helper outside `rules()`.
 
 ```ts
 {
@@ -125,16 +128,16 @@ terminals as `CSTLeaf`:
 Walk it with [`walk` / `createVisitor`](#walking-the-tree), and turn its trivia into a
 `before`/`after` lookup with [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
-## Collapsing wrapper rules
+## Unwrapping wrapper rules
 
 Layered grammars accumulate "wrapper" rules that exist only for structure — an expression
 precedence ladder (`Sum` → `Product` → `Primary`), or a selector-list rule that wraps a
 single selector. When such a rule matches just **one** child, the wrapper node is noise:
 you want to *be* that child, not box it.
 
-The `collapse` option does exactly that. With `{ collapse: true }`, a **one-child** match
-returns that child directly and `build` is **not called**; zero or two-plus children go
-through `build` as normal.
+The `unwrap` option does exactly that for AST/value-building rules. With
+`{ unwrap: true }`, a **one-child** match returns that child value directly and
+`build` is **not called**; zero or two-plus children go through `build` as normal.
 
 ```ts
 import { node, choice, sequence, literal, regex } from 'parseman'
@@ -143,7 +146,7 @@ import { node, choice, sequence, literal, regex } from 'parseman'
 const sum = node('Sum',
   sequence(product, many(sequence(literal('+'), product))),
   (children, raw, span) => ({ _tag: 'node', type: 'Sum', span, state: null, children: [...children] }),
-  { collapse: true },
+  { unwrap: true },
 )
 ```
 
@@ -155,18 +158,51 @@ const sum = node('Sum',
 
 So `2` parses to a bare `Product` node (no redundant `Sum` wrapper), while `2 + 3`
 produces a real `Sum` node with its children. You get readable layered rules without
-paying a `build` call per collapsing layer — and without hand-writing
+paying a `build` call per unwrapping layer — and without hand-writing
 `if (children.length === 1) return children[0]` in every wrapper builder.
 
-`collapse` has full **interpreter, `.compile()`, and macro** parity: the compiled output
+`unwrap` has full **interpreter, `.compile()`, and macro** parity: the compiled output
 emits a `children.length === 1 ? <unwrap> : build(…)` ternary, and the plugin reads a
-static `{ collapse: true }` literal as the 4th argument.
+static `{ unwrap: true }` literal as the 4th argument.
 
-::: tip Two different "collapses"
-This option is about **tree shape**. There's a separate, unrelated *performance* technique
-also called collapsing — folding a fixed multi-token shape into a single `regex` to cut
-combinator boundaries. That one is covered in [Performance](./performance#collapse-opaque-shapes-into-one-regex).
+::: tip CST collapse is different
+`unwrap` is for AST/value rules: a captured leaf becomes its string value. For public
+CSTs, use `cstBuildHost({ collapse })` instead; it collapses transparent wrapper nodes
+while preserving CST leaf objects and spans.
 :::
+
+## Collapsing public CST wrappers
+
+When a structural grammar is also a public CST parser, you may want the same transparent
+wrapper policy without changing AST/value behavior. Pass a configured CST host:
+
+```ts
+import { cstBuildHost, run } from 'parseman'
+
+const r = run(g.Stylesheet, source, {
+  build: cstBuildHost({ collapse: ['SelectorList', 'ComponentValue'] }),
+})
+```
+
+This is CST-shaped collapse, not value unwrap:
+
+| Option | Use it for | One-child leaf result |
+| --- | --- | --- |
+| `node(..., { unwrap: true })` | AST/value wrapper rules | the leaf's string value |
+| `cstBuildHost({ collapse })` | public CST wrapper rules | the original `CSTLeaf` object, span included |
+
+`collapse` only considers successful one-child nodes whose raw child list is also one
+item, so trivia-only matches and multi-token nodes keep their wrapper. The policy can be:
+
+- `true` — collapse every one-child structural CST wrapper.
+- `['RuleName', ...]` — collapse only named node types.
+- `(type, child, children, rawChildren) => boolean` — decide from the grammar type and
+  captured CST children.
+
+Because the policy lives on the build host, a composed grammar can expose a compact public
+CST while the evaluator keeps using the grammar's own AST builders. The interpreter,
+`.compile()`, and macro output all check the policy while the node is being built, so
+there is no separate tree-normalization pass.
 
 ## The `NodeLike` contract
 

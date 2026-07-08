@@ -117,6 +117,7 @@ method. Prefer `rules()`.
 
 ## Trees
 
+### `node(combinator, build?, opts?)`
 ### `node(type, combinator, build?, opts?)`
 
 CST/AST rule. Captures the combinator's terminals into `children` / `rawChildren` and trivia
@@ -124,8 +125,40 @@ into `triviaLog`. With a `build` callback it calls `build(children, rawChildren,
 triviaLog, state)` to construct the node; **omit `build`** to make it a *structural* node
 that builds through the injected [`ctx.build`](#cstbuildhost) host instead — so one grammar
 serves its own AST (host unset) and a positioned CST / language-service tree (host set).
-`opts.collapse` returns the single child directly for one-child matches. See
-[CST / AST nodes](../guide/ast).
+Inside [`rules()`](#rulesfactory), `node(combinator, ...)` infers its node type from the
+containing rule key. Use `node(type, combinator, ...)` for an explicit public type or for
+local/manual nodes outside `rules()`.
+`opts.unwrap` returns the single child value directly for one-child AST/value matches.
+`opts.collapse` is still accepted as a legacy alias for `unwrap`, but new grammars should
+use `unwrap` so it is not confused with CST host collapse. See [CST / AST nodes](../guide/ast).
+
+### `cstBuildHost(opts?)` {#cstbuildhost}
+
+Generic CST host for structural `node()` grammars. Pass the default host directly:
+
+```ts
+run(rule, input, { build: cstBuildHost })
+```
+
+or create a configured host:
+
+```ts
+run(rule, input, { build: cstBuildHost({ collapse: ['SelectorList'] }) })
+```
+
+The default host returns uniform positioned CST nodes:
+`{ _tag: 'node', type, span, state, children }`, with terminals as `CSTLeaf` objects.
+`cstBuildHost({ collapse })` removes transparent one-child wrappers while the CST is being
+built, so public syntax trees do not need a second normalization walk.
+
+`collapse` accepts:
+
+- `true` — collapse any one-child wrapper whose raw child list also has one item.
+- `readonly string[]` — collapse only those named grammar node types.
+- `CstCollapsePredicate` — decide from `(type, child, children, rawChildren)`.
+
+Unlike `node(..., { unwrap: true })`, CST collapse preserves the child object exactly. A
+single captured leaf remains a `CSTLeaf` with its span, not a bare string.
 
 ### `buildTriviaIndex(root, input?, opts?)` {#buildtriviaindex}
 
@@ -279,13 +312,6 @@ already-compiled artifact.
 Restrict a grammar/artifact to `names` plus their transitive rule-dependency closure
 (à la carte). Returns an artifact for `compose()`:
 `compose([css, pick(less, ['MixinCall'])])`.
-
-### `cstBuildHost(type, children, rawChildren, span)` {#cstbuildhost}
-
-A generic positioned-CST build host. Pass as `ctx.build` (e.g.
-`parser.Rule(input, 0, { build: cstBuildHost })`, or `parseDoc(..., { build: cstBuildHost })`)
-to make any grammar produce a uniform CST — `{ _tag:'node', type, span, state, children }` —
-instead of its own AST builders. Left unset, a grammar uses its own builders.
 
 ## Error recovery
 

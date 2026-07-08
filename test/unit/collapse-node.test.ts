@@ -1,5 +1,5 @@
 /**
- * node(..., { collapse: true }) — a structural wrapper rule that IS its single
+ * node(..., { unwrap: true }) — a structural wrapper rule that IS its single
  * child (skips build) but wraps 2+ children. Covers interpreter, compile(), and
  * macro-plugin parity, leaf-vs-node children, nesting, and that build is skipped.
  */
@@ -9,15 +9,15 @@ import {
 } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
-// ── A precedence-ladder-style collapsing rule ───────────────────────────────
+// ── A precedence-ladder-style unwrapping rule ───────────────────────────────
 const num = regex(/[0-9]+/)
 function makeSum(build: (ch: readonly unknown[]) => unknown) {
-  // `5` → one child → collapses to the bare leaf value "5"; `5+3` → 3 children → build.
-  return node('Sum', sequence(num, many(sequence(literal('+'), num))), (ch) => build(ch), { collapse: true })
+  // `5` → one child → unwraps to the bare leaf value "5"; `5+3` → 3 children → build.
+  return node('Sum', sequence(num, many(sequence(literal('+'), num))), (ch) => build(ch), { unwrap: true })
 }
 const sumBuild = (ch: readonly unknown[]) => ({ t: 'sum', n: ch.length })
 
-describe('collapse — interpreter', () => {
+describe('unwrap — interpreter', () => {
   it('single leaf child → the bare string, build NOT called', () => {
     const build = vi.fn(sumBuild)
     const r = parse(makeSum(build), '5')
@@ -35,14 +35,14 @@ describe('collapse — interpreter', () => {
   it('single SUB-NODE child → the node itself (not unwrapped), build NOT called', () => {
     const Inner = node('Inner', num, (_ch, _r, span) => ({ t: 'inner', span }))
     const build = vi.fn((ch: readonly unknown[]) => ({ t: 'outer', ch }))
-    const Outer = node('Outer', Inner, build, { collapse: true })
+    const Outer = node('Outer', Inner, build, { unwrap: true })
     const r = parse(Outer, '7')
     expect(r.ok && r.value).toEqual({ t: 'inner', span: { start: 0, end: 1 } })
     expect(build).not.toHaveBeenCalled()
   })
 })
 
-describe('collapse — default (no option) is unchanged', () => {
+describe('unwrap — default (no option) is unchanged', () => {
   it('build ALWAYS called, even for a single child', () => {
     const build = vi.fn(sumBuild)
     const Sum = node('Sum', sequence(num, many(sequence(literal('+'), num))), (ch) => build(ch))
@@ -52,7 +52,7 @@ describe('collapse — default (no option) is unchanged', () => {
   })
 })
 
-describe('collapse — interpreter vs compile() parity', () => {
+describe('unwrap — interpreter vs compile() parity', () => {
   const Sum = makeSum(sumBuild)
   const compiled = compile(Sum)
   for (const input of ['5', '5+3', '10+20+30']) {
@@ -63,38 +63,38 @@ describe('collapse — interpreter vs compile() parity', () => {
     })
   }
 
-  it('compiled: single child collapses to the string', () => {
+  it('compiled: single child unwraps to the string', () => {
     expect(compiled.parse('42')).toEqual({ ok: true, value: '42', span: { start: 0, end: 2 } })
   })
 
   it('compiled emits the single-child short-circuit (no build call for 1 child)', () => {
-    // the collapse ternary guards the build expression
+    // the unwrap ternary guards the build expression
     expect(compiled.source).toMatch(/length === 1 \?/)
   })
 })
 
-describe('collapse — nesting (precedence ladder collapses straight through)', () => {
+describe('unwrap — nesting (precedence ladder unwraps straight through)', () => {
   // product binds tighter than sum; a bare number should pass through BOTH levels.
   const grammar = rules((g: any) => {
     const Primary = node('Primary', num, (_c, _r, span) => ({ t: 'num', span }))
     const Product = node('Product', sequence(g.Primary, many(sequence(literal('*'), g.Primary))),
-      (ch: readonly unknown[]) => ({ t: 'product', n: ch.length }), { collapse: true })
+      (ch: readonly unknown[]) => ({ t: 'product', n: ch.length }), { unwrap: true })
     const Sum = node('Sum', sequence(g.Product, many(sequence(literal('+'), g.Product))),
-      (ch: readonly unknown[]) => ({ t: 'sum', n: ch.length }), { collapse: true })
+      (ch: readonly unknown[]) => ({ t: 'sum', n: ch.length }), { unwrap: true })
     return { Primary, Product, Sum }
   })
 
-  it('interpreter: bare number collapses through Sum→Product→Primary', () => {
+  it('interpreter: bare number unwraps through Sum→Product→Primary', () => {
     const r = parse(grammar.Sum, '9')
     expect(r.ok && r.value).toEqual({ t: 'num', span: { start: 0, end: 1 } })
   })
 
-  it('interpreter: 2*3 collapses Sum but builds Product', () => {
+  it('interpreter: 2*3 unwraps Sum but builds Product', () => {
     const r = parse(grammar.Sum, '2*3')
     expect(r.ok && r.value).toEqual({ t: 'product', n: 3 })
   })
 
-  it('interpreter: 2+3 builds Sum, each side collapses to num', () => {
+  it('interpreter: 2+3 builds Sum, each side unwraps to num', () => {
     const r = parse(grammar.Sum, '2+3')
     expect(r.ok && r.value).toEqual({ t: 'sum', n: 3 })
   })
@@ -107,11 +107,11 @@ describe('collapse — nesting (precedence ladder collapses straight through)', 
   })
 })
 
-describe('collapse — selector-like collapse to bare string', () => {
+describe('unwrap — selector-like unwrap to bare string', () => {
   // mimics CompoundSelector: a run of simple tokens that is its single token.
   const simple = regex(/[.#]?[a-z][\w-]*/)
   const Compound = node('Compound', sequence(simple, many(simple)),
-    (ch: readonly unknown[]) => ({ t: 'compound', n: ch.length }), { collapse: true })
+    (ch: readonly unknown[]) => ({ t: 'compound', n: ch.length }), { unwrap: true })
   it('single simple selector → the bare string', () => {
     const r = parse(Compound, '.btn')
     expect(r.ok && r.value).toBe('.btn')
@@ -122,18 +122,23 @@ describe('collapse — selector-like collapse to bare string', () => {
   })
 })
 
-describe('collapse — macro plugin', () => {
+describe('unwrap — macro plugin', () => {
   const code = `
 import { regex, sequence, many, literal, node } from 'parseman' with { type: 'macro' }
-export const Sum = node('Sum', sequence(regex(/[0-9]+/), many(sequence(literal('+'), regex(/[0-9]+/)))), (ch) => ({ t: 'sum', n: ch.length }), { collapse: true })
+export const Sum = node('Sum', sequence(regex(/[0-9]+/), many(sequence(literal('+'), regex(/[0-9]+/)))), (ch) => ({ t: 'sum', n: ch.length }), { unwrap: true })
 `.trim()
 
-  it('compiles the collapse option (import removed, single-child short-circuit emitted)', () => {
+  it('compiles the unwrap option (import removed, single-child short-circuit emitted)', () => {
     const result = transformMacro(code, 'test.ts')!
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain('node(')
-    // the compiled inline expression must carry the collapse ternary
+    // the compiled inline expression must carry the unwrap ternary
     expect(result.code).toMatch(/length === 1 \?/)
     expect(result.warnings).toEqual([])
+  })
+
+  it('keeps collapse as a legacy alias', () => {
+    const Legacy = node('Legacy', num, sumBuild, { collapse: true })
+    expect(parse(Legacy, '1')).toEqual({ ok: true, value: '1', span: { start: 0, end: 1 } })
   })
 })

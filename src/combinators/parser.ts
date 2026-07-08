@@ -2,6 +2,11 @@ import type { Combinator } from '../types.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 
+function tagRule(r: Combinator<unknown>, key: string): void {
+  ;(r as unknown as { _ruleName?: string })._ruleName = key
+  if (r._def.tag === 'node' && r._def.type === undefined) r._def.type = key
+}
+
 /**
  * Define named grammar rules without forward declarations.
  *
@@ -39,7 +44,7 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
         // Tag the placeholder with its rule name so the linkable compiler can
         // emit a by-name `_r_<key>` call for a reference to a rule defined in
         // ANOTHER artifact (resolved at fuse time) — see compileLinkable.
-        ;(r as unknown as { _ruleName?: string })._ruleName = key
+        tagRule(r, key)
         record[key] = r
       }
       return record[key]
@@ -56,11 +61,13 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
     const placeholder = (cache as Record<string, Combinator<unknown>>)[key]
     const parser = (definitions as Record<string, Combinator<unknown>>)[key]!
     if (placeholder !== undefined && typeof (placeholder as any).define === 'function') {
+      tagRule(parser, key)
       ;(placeholder as any).define(parser)
       // Propagate actual first-set so later choices wrapping this ref get correct dispatch.
       placeholder._meta.firstSet = parser._meta.firstSet
       placeholder._meta.canMatchNewline = parser._meta.canMatchNewline
     } else {
+      tagRule(parser, key)
       ;(cache as Record<string, Combinator<unknown>>)[key] = parser
     }
   }

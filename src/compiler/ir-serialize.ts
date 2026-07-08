@@ -261,8 +261,9 @@ class Serializer {
       }
       case 'node': {
         if (def.build !== undefined && def.buildSrc === undefined) throw new Unserializable('node build without buildSrc')
-        const opts = def.collapse ? `, { collapse: true }` : ''
+        const opts = def.unwrap || def.collapse ? `, { unwrap: true }` : ''
         // `_nd` sets `_def.buildSrc` (same reason as `_tf`). No build → plain node.
+        if (def.type === undefined) return opts ? `node(${kid(def.parser)}, undefined${opts})` : `node(${kid(def.parser)})`
         if (def.buildSrc !== undefined) return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts})`
         return opts ? `node(${JSON.stringify(def.type)}, ${kid(def.parser)}, undefined${opts})` : `node(${JSON.stringify(def.type)}, ${kid(def.parser)})`
       }

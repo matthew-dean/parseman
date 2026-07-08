@@ -98,10 +98,16 @@ type KeywordsOptions = { caseInsensitive?: boolean; boundary?: string }
 ### `NodeOptions`
 
 ```ts
-type NodeOptions = { collapse?: boolean }
+type NodeOptions = {
+  unwrap?: boolean
+  collapse?: boolean // legacy alias for unwrap
+}
 ```
 
-See [collapsing wrapper rules](../guide/ast#collapsing-wrapper-rules).
+`unwrap` is the preferred name for AST/value wrapper rules that should return their
+single child directly. `collapse` remains a compatibility alias, but new code should use
+`unwrap` to avoid confusion with [`cstBuildHost({ collapse })`](./api#cstbuildhost).
+See [unwrapping wrapper rules](../guide/ast#unwrapping-wrapper-rules).
 
 ### `ScanToOptions`
 
@@ -158,6 +164,29 @@ type RunResult = {
   unconsumedFrom: number | null            // first non-trivia offset left unconsumed, else null
 }
 ```
+
+### `CstBuildHostOptions`
+
+```ts
+type CstCollapsePredicate = (
+  type: string,
+  child: unknown,
+  children: readonly unknown[],
+  rawChildren: readonly unknown[],
+) => boolean
+
+type CstBuildHostOptions = {
+  collapse?: boolean | readonly string[] | CstCollapsePredicate
+}
+```
+
+`cstBuildHost({ collapse })` collapses transparent one-child CST wrappers during
+node construction. `true` collapses any one-child wrapper whose raw child list is
+also one item; an array limits collapse to named grammar node types; a predicate
+lets a language define its public CST policy. The returned child is still the original
+CST child object; leaves are not unwrapped to strings. The predicate is typed over
+`unknown` because `ctx.build` is a general host hook, but with the built-in
+`cstBuildHost` those values are CST children.
 
 ## Building nodes
 

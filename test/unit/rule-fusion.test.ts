@@ -8,12 +8,38 @@ import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile
 import type { Combinator, Registry, NodeLike } from '../../src/index.ts'
 import { compose } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
+import type { LinkablePieces } from '../../src/compiler/codegen.ts'
 import { fuseRules, pick, cstBuildHost } from '../../src/compiler/linker.ts'
 
 const link = (g: Record<string, Combinator<unknown>>, ns: string) =>
   compileLinkable([...Object.entries(g)], ns)!
 
 const ok = (r: { ok: boolean; span: { end: number } }) => (r.ok ? r.span.end : -1)
+
+describe('compose() namespace allocation', () => {
+  it('avoids carried artifact namespaces when linkable-ifying raw rules', () => {
+    const sym = Symbol.for('parseman.composedPieces')
+    const probe = compose([rules(() => ({ Probe: regex(/p/) }))]) as Record<symbol, LinkablePieces[]>
+    const ns = probe[sym]![0]!.ns
+    const next = `_lk${Number(ns.match(/^_lk(\d+)_$/)?.[1] ?? 0) + 1}_`
+    const carried: LinkablePieces = {
+      ns: next,
+      keys: ['Fake'],
+      prelude: [`const ${next}_re0 = /x/y`],
+      ruleFns: new Map([['Fake', 'function _r_Fake(input, pos, _ctx) { return { ok: false, expected: ["fake"], span: { start: pos, end: pos } } }']]),
+      wrappers: new Map([['Fake', '(input, pos, ctx) => _r_Fake(input, pos, ctx)']]),
+      firstSets: new Map(),
+      deps: new Map([['Fake', []]]),
+      needsEmptyTl: false,
+      needsHostReads: false,
+      mfFns: [],
+      buildFns: [],
+    }
+    const carrier = { [sym]: [carried] }
+    const fused = compose([carrier, rules(() => ({ Actual: regex(/a/) }))])
+    expect(ok(fused.Actual!('a', 0, { trackLines: false }))).toBe(1)
+  })
+})
 
 describe('macro: compose() fuses to STATIC source (eval-free)', () => {
   it('compiles compose([...]) at build with no new Function, and it parses', async () => {

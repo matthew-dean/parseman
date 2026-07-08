@@ -59,8 +59,8 @@ entries.kind(0)         // 'whitespace'
 entries.text(0, input)  // slice on demand
 ```
 
-`label(name, combinator)` names a trivia arm; `node('Ruleset', …)` names a CST node —
-different namespaces, no conflict.
+`label(name, combinator)` names a trivia arm; `Ruleset: node(…)` names a CST node through
+`rules()` — different namespaces, no conflict.
 
 ### The trivia log format
 

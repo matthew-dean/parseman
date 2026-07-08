@@ -56,7 +56,7 @@ export type ParserDef =
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; trackLines: boolean }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
-  | { tag: 'node';     type: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, rawChildren: ReadonlyArray<unknown>, span: { start: number; end: number }, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; collapse?: boolean }
+  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, rawChildren: ReadonlyArray<unknown>, span: { start: number; end: number }, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; unwrap?: boolean; collapse?: boolean }
   | { tag: 'guard';    predicate: (state: unknown) => boolean }
   | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown> }
   | { tag: 'recover';  parser: Combinator<unknown>; sentinel: Combinator<unknown> }
@@ -73,6 +73,25 @@ export type Combinator<T> = {
 }
 
 import type { CstCaptureBuf } from './cst/capture-buffer.ts'
+
+export type CstCollapsePredicate = (
+  type: string,
+  child: unknown,
+  children: ReadonlyArray<unknown>,
+  rawChildren: ReadonlyArray<unknown>,
+) => boolean
+
+export type BuildHost = ((
+  type: string,
+  children: ReadonlyArray<unknown>,
+  rawChildren: ReadonlyArray<unknown>,
+  span: { start: number; end: number },
+  triviaLog: readonly number[],
+  state: unknown,
+) => unknown) & {
+  /** Framework-internal: optional syntax-CST wrapper collapse policy. */
+  _parsemanCstCollapse?: CstCollapsePredicate | undefined
+}
 
 export type ParseContext = {
   // `| undefined` (matching captureTrivia/_cst* below): a nested scope may
@@ -99,14 +118,7 @@ export type ParseContext = {
    * instead of their own builder — so ONE grammar serves eval-AST (unset) vs
    * positioned-CST / language-service (set) modes. Ignored by non-linkable output.
    */
-  build?: ((
-    type: string,
-    children: ReadonlyArray<unknown>,
-    rawChildren: ReadonlyArray<unknown>,
-    span: { start: number; end: number },
-    triviaLog: readonly number[],
-    state: unknown,
-  ) => unknown) | undefined
+  build?: BuildHost | undefined
   /** When set, recover() nodes push their ParseError here instead of (only) embedding it in the tree. */
   _errors?: ParseError[]
   /**

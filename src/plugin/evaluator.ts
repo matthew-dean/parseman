@@ -92,8 +92,8 @@ function scopeGet(scope: XScope, name: string, mfs?: string[]): Combinator<unkno
 // Core evaluators
 // ---------------------------------------------------------------------------
 
-/** Read a static `{ collapse: true }` opts literal → whether collapse is enabled. */
-function staticCollapseOption(expr: Expression): boolean {
+/** Read a static `{ unwrap: true }` opts literal (`collapse` is a compat alias). */
+function staticUnwrapOption(expr: Expression): boolean {
   if (expr.type !== 'ObjectExpression') return false
   for (const prop of (expr as ObjectExpression).properties) {
     const p = prop as unknown as ObjectProperty
@@ -102,7 +102,7 @@ function staticCollapseOption(expr: Expression): boolean {
     const name = key.type === 'Identifier' ? key.name
       : key.type === 'Literal' ? String(key.value)
       : undefined
-    if (name === 'collapse') {
+    if (name === 'unwrap' || name === 'collapse') {
       const val = p.value as unknown as { type: string; value?: unknown }
       return (val.type === 'Literal' || val.type === 'BooleanLiteral') && val.value === true
     }
@@ -167,15 +167,18 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     } catch { return null }
   }
 
-  // node(type, parser, build, opts?) — CST node rule. Capture the build callback
+  // node(parser, build?, opts?) / node(type, parser, build?, opts?) — CST node rule. Capture the build callback
   // source (like transform) so codegen inlines it; the inner parser carries the
-  // capture. An optional 4th `{ collapse: true }` opts literal is read statically.
+  // capture. An optional `{ unwrap: true }` opts literal is read statically.
   if (callee.name === 'node' && code !== undefined) {
-    const [typeArg, parserArg, buildArg, optsArg] = node.arguments
-    if (!typeArg || !parserArg
-      || typeArg.type === 'SpreadElement' || parserArg.type === 'SpreadElement') return null
-    const typeVal = anyValue(typeArg as Expression, scope, code)
-    if (typeof typeVal !== 'string') return null
+    const [firstArg, secondArg, thirdArg, fourthArg] = node.arguments
+    if (!firstArg || firstArg.type === 'SpreadElement') return null
+    const firstVal = anyValue(firstArg as Expression, scope, code, mfs)
+    const explicitType = typeof firstVal === 'string' ? firstVal : undefined
+    const parserArg = explicitType !== undefined ? secondArg : firstArg
+    const buildArg = explicitType !== undefined ? thirdArg : secondArg
+    const optsArg = explicitType !== undefined ? fourthArg : thirdArg
+    if (!parserArg || parserArg.type === 'SpreadElement') return null
     const inner = anyValue(parserArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null
     // `build` is OPTIONAL — a structural node() omits it (or passes the literal
@@ -185,11 +188,13 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const hasBuild = be !== undefined && be.type !== 'SpreadElement'
       && !(be.type === 'Identifier' && be.name === 'undefined')
     const buildSrc = hasBuild ? code.slice(be!.start, be!.end) : undefined
-    const collapse = optsArg !== undefined && optsArg.type !== 'SpreadElement'
-      ? staticCollapseOption(optsArg as Expression)
+    const unwrap = optsArg !== undefined && optsArg.type !== 'SpreadElement'
+      ? staticUnwrapOption(optsArg as Expression)
       : false
     try {
-      const combi = parseman.node(typeVal, inner, hasBuild ? () => null : undefined, collapse ? { collapse: true } : undefined)
+      const combi = explicitType !== undefined
+        ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, unwrap ? { unwrap: true } : undefined)
+        : parseman.node(inner, hasBuild ? () => null : undefined, unwrap ? { unwrap: true } : undefined)
       if (combi._def.tag === 'node' && buildSrc !== undefined) combi._def.buildSrc = buildSrc
       return combi
     } catch { return null }
@@ -562,7 +567,10 @@ export function evaluateParserFactory(
   const keys = collectRuleKeys(retObj as unknown as ObjectExpression)
   if (!keys) return null
   const ruleRefs = new Map<string, Combinator<unknown> & { define(p: Combinator<unknown>): void }>()
-  const tagRef = (r: Combinator<unknown>, name: string): void => { (r as unknown as { _ruleName?: string })._ruleName = name }
+  const tagRef = (r: Combinator<unknown>, name: string): void => {
+    ;(r as unknown as { _ruleName?: string })._ruleName = name
+    if (r._def.tag === 'node' && r._def.type === undefined) r._def.type = name
+  }
   for (const key of keys) {
     if (!ruleRefs.has(key)) {
       const r = ref<unknown>() as Combinator<unknown> & { define(p: Combinator<unknown>): void }
@@ -606,6 +614,7 @@ export function evaluateParserFactory(
   for (const [key, e] of finalByKey) {
     const val = anyValue(e.value, e.scope, e.code, mapFnSources)
     if (!isCombinator(val)) return null
+    tagRef(val as Combinator<unknown>, key)
     ruleRefs.get(key)!.define(val as Combinator<unknown>)
   }
 

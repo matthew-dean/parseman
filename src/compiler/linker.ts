@@ -21,7 +21,7 @@
 import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
 import { evalRuleMapIR } from './ir-serialize.ts'
 import type { LinkablePieces } from './codegen.ts'
-import type { Combinator, FirstSet } from '../types.ts'
+import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet } from '../types.ts'
 
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
@@ -43,14 +43,27 @@ export function linkable(
   return pieces
 }
 
-/**
- * A generic positioned-CST build host (RULE_ABI_PLAN §7). Pass as `ctx.build`
- * (or `parseDoc(..., { build: cstBuildHost })`) to make ANY linkable/fused
- * grammar produce a uniform CST — `{ _tag:'node', type, span, state, children }`
- * — instead of its own eval-AST builders. This is the host the linter and IDE
- * drivers use; the eval driver leaves `ctx.build` unset (grammar's own builders).
- */
-export function cstBuildHost(
+export type CstBuildHostOptions = {
+  /**
+   * Collapse transparent one-child CST wrapper nodes at build time.
+   * - `true`: collapse any one-child node whose rawChildren also has exactly one
+   *   entry, so trivia/error boundaries are not silently dropped.
+   * - `string[]`: collapse only these grammar node types.
+   * - predicate: final policy hook for language-specific public CSTs.
+   */
+  collapse?: boolean | readonly string[] | CstCollapsePredicate
+}
+
+function normalizeCstCollapse(collapse: CstBuildHostOptions['collapse']): CstCollapsePredicate | undefined {
+  if (collapse === true) return () => true
+  if (Array.isArray(collapse)) {
+    const types = new Set(collapse)
+    return type => types.has(type)
+  }
+  return typeof collapse === 'function' ? collapse : undefined
+}
+
+function buildCstNode(
   type: string,
   children: ReadonlyArray<unknown>,
   _rawChildren: ReadonlyArray<unknown>,
@@ -61,6 +74,50 @@ export function cstBuildHost(
   // Carry the grammar's `ctx.state` snapshot onto the node (null when unset) — the
   // CST contract includes `state` and incremental re-parse replays it on edit.
   return { _tag: 'node', type, span: { start: span.start, end: span.end }, state: state ?? null, children: [...children] }
+}
+
+/**
+ * A generic positioned-CST build host (RULE_ABI_PLAN §7). Pass as `ctx.build`
+ * (or `parseDoc(..., { build: cstBuildHost })`) to make ANY linkable/fused
+ * grammar produce a uniform CST — `{ _tag:'node', type, span, state, children }`
+ * — instead of its own eval-AST builders. This is the host the linter and IDE
+ * drivers use; the eval driver leaves `ctx.build` unset (grammar's own builders).
+ *
+ * For public syntax trees, call `cstBuildHost({ collapse })`: Parseman will skip
+ * allocating wrapper CST nodes whose single child should stand in for the rule.
+ */
+export function cstBuildHost(options?: CstBuildHostOptions): BuildHost
+export function cstBuildHost(
+  type: string,
+  children: ReadonlyArray<unknown>,
+  rawChildren: ReadonlyArray<unknown>,
+  span: { start: number; end: number },
+  triviaLog?: readonly number[],
+  state?: unknown,
+): unknown
+export function cstBuildHost(
+  typeOrOptions?: string | CstBuildHostOptions,
+  children?: ReadonlyArray<unknown>,
+  rawChildren?: ReadonlyArray<unknown>,
+  span?: { start: number; end: number },
+  triviaLog?: readonly number[],
+  state?: unknown,
+): unknown {
+  if (typeof typeOrOptions === 'string') {
+    return buildCstNode(typeOrOptions, children ?? [], rawChildren ?? [], span ?? { start: 0, end: 0 }, triviaLog, state)
+  }
+  const collapse = normalizeCstCollapse(typeOrOptions?.collapse)
+  if (!collapse) return buildCstNode
+  const host: BuildHost = (
+    type: string,
+    children: ReadonlyArray<unknown>,
+    rawChildren: ReadonlyArray<unknown>,
+    span: { start: number; end: number },
+    triviaLog: readonly number[],
+    state: unknown,
+  ) => buildCstNode(type, children, rawChildren, span, triviaLog, state)
+  if (collapse) host._parsemanCstCollapse = collapse
+  return host
 }
 
 export type FusedRule = (
@@ -128,8 +185,9 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
   }
 
   const contributing = new Set(winner.values())
-  const needsEmptyTl = [...contributing].some(p => p.needsEmptyTl)
-  const needsHostReads = [...contributing].some(p => p.needsHostReads)
+  const contributingPieces = [...contributing]
+  const needsEmptyTl = contributingPieces.some(p => p.needsEmptyTl)
+  const needsHostReads = contributingPieces.some(p => p.needsHostReads)
 
   const lines: string[] = [
     // Shared sentinel protocol (must match NAMED_FN_FAIL / NAMED_FN_END in codegen).
@@ -138,7 +196,7 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
     ...(needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []),
     ...(needsHostReads ? [HOST_READS_DECL] : []),
     // Each contributing artifact's namespaced private prelude (regexes, _pf, …).
-    ...[...contributing].flatMap(p => p.prelude),
+    ...[...new Set(contributingPieces.flatMap(p => p.prelude))],
     // The winning `_r_<Name>` function for each rule (one per name → no redeclare).
     ...[...winner].map(([k, p]) => p.ruleFns.get(k)!),
   ]
@@ -167,7 +225,7 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
 
   // Non-inlined callbacks (runtime compile() mode), keyed `<ns>mf` / `<ns>build`.
   const env: Record<string, unknown> = {}
-  for (const p of contributing) {
+  for (const p of contributingPieces) {
     if (p.mfFns.length) env[`${p.ns}mf`] = p.mfFns
     if (p.buildFns.length) env[`${p.ns}build`] = p.buildFns
   }
@@ -237,21 +295,33 @@ export function materializePiece(p: LinkablePieces | IRPiece): LinkablePieces {
 
 /** Flatten one `compose()` item to its pieces: a prior composed result → its
  * carried list; an artifact → itself; a grammar (`rules()` map) → linkable-ified. */
-function itemPieces(item: LinkablePieces | Record<string, unknown>): LinkablePieces[] {
+function nextComposeNs(used: Set<string>): string {
+  let ns: string
+  do { ns = `_lk${_nsCounter++}_` } while (used.has(ns))
+  used.add(ns)
+  return ns
+}
+
+function itemPieces(item: LinkablePieces | Record<string, unknown>, used: Set<string>): LinkablePieces[] {
   const carried = (item as Record<symbol, unknown>)[COMPOSED_PIECES]
   // A macro-compiled grammar carries its ancestors as live spreads off the imported
   // bindings and its own rules as compact IR — `[...cssGrammar[COMPOSED_PIECES],
   // {ns, ir}]`. At runtime the array is already expanded (live imports); each entry
   // is re-lowered from IR to full pieces here.
-  if (Array.isArray(carried)) return (carried as Array<LinkablePieces | IRPiece>).map(materializePiece)
-  if ((item as LinkablePieces).ruleFns instanceof Map) return [item as LinkablePieces]
-  return [linkable(item as Record<string, Combinator<unknown>>)]
+  const pieces = Array.isArray(carried)
+    ? (carried as Array<LinkablePieces | IRPiece>).map(materializePiece)
+    : (item as LinkablePieces).ruleFns instanceof Map
+      ? [item as LinkablePieces]
+      : [linkable(item as Record<string, Combinator<unknown>>, nextComposeNs(used))]
+  for (const p of pieces) used.add(p.ns)
+  return pieces
 }
 
 export function compose(
   items: Array<LinkablePieces | Record<string, unknown>>,
 ): Record<string, FusedRule> {
-  const pieces = items.flatMap(itemPieces)
+  const used = new Set<string>()
+  const pieces = items.flatMap(item => itemPieces(item, used))
   const map = fuseRules(pieces)
   Object.defineProperty(map, COMPOSED_PIECES, { value: pieces, enumerable: false })
   return map

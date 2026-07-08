@@ -21,6 +21,7 @@ function looseMkBuildRe(type: string): RegExp {
  */
 export function analyzeMkInlineBuild(def: Extract<ParserDef, { tag: 'node' }>): string | null {
   if (!def.build) return null // structural node — no own build to inline
+  if (def.type === undefined) return null
   const src = (def.buildSrc ?? def.build.toString()).trim()
   const strict = src.match(MK_BUILD_RE)
   if (strict) {

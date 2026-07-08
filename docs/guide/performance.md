@@ -58,10 +58,11 @@ children:
 
 Correctness first; collapse only the genuinely opaque runs.
 
-::: tip Not to be confused with node collapse
-This is a *performance* technique — folding an opaque source token into one matcher. There's a separate,
-unrelated `node(…, { collapse: true })` option about **tree shape** (a wrapper rule
-becoming its single child). See [CST / AST nodes](./ast#collapsing-wrapper-rules).
+::: tip Not to be confused with node unwrap or CST collapse
+This is a *performance* technique — folding an opaque source token into one matcher. It is
+separate from `node(…, { unwrap: true })`, which changes **AST/value shape**, and from
+`cstBuildHost({ collapse })`, which changes **public CST shape**. See
+[CST / AST nodes](./ast#unwrapping-wrapper-rules).
 :::
 
 ## `.compile()` stacks on top
