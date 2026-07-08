@@ -100,14 +100,15 @@ type KeywordsOptions = { caseInsensitive?: boolean; boundary?: string }
 ```ts
 type NodeOptions = {
   unwrap?: boolean
-  collapse?: boolean // legacy alias for unwrap
+  collapse?: boolean
 }
 ```
 
-`unwrap` is the preferred name for AST/value wrapper rules that should return their
-single child directly. `collapse` remains a compatibility alias, but new code should use
-`unwrap` to avoid confusion with [`cstBuildHost({ collapse })`](./api#cstbuildhost).
-See [unwrapping wrapper rules](../guide/ast#unwrapping-wrapper-rules).
+`unwrap` is for AST/value wrapper rules: when exactly one child is captured, `build` is
+skipped and a captured leaf becomes its string value. `collapse` is for structural/CST
+wrapper rules: when exactly one child is captured, `build` is skipped and that child is
+returned exactly. Set at most one option. See
+[unwrapping and collapsing wrapper rules](../guide/ast#unwrapping-and-collapsing-wrapper-rules).
 
 ### `ScanToOptions`
 

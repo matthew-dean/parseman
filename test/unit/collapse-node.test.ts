@@ -1,11 +1,12 @@
 /**
- * node(..., { unwrap: true }) — a structural wrapper rule that IS its single
- * child (skips build) but wraps 2+ children. Covers interpreter, compile(), and
- * macro-plugin parity, leaf-vs-node children, nesting, and that build is skipped.
+ * node(..., { unwrap/collapse }) — structural wrapper rules that ARE their
+ * single child (skipping build) but wrap 2+ children. Covers interpreter,
+ * compile(), and macro-plugin parity, leaf-vs-node children, nesting, and that
+ * build is skipped.
  */
 import { describe, it, expect, vi } from 'vitest'
 import {
-  literal, regex, sequence, many, choice, optional, node, rules, compile, parse,
+  literal, regex, sequence, many, node, rules, compile, parse,
 } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
@@ -136,9 +137,47 @@ export const Sum = node('Sum', sequence(regex(/[0-9]+/), many(sequence(literal('
     expect(result.code).toMatch(/length === 1 \?/)
     expect(result.warnings).toEqual([])
   })
+})
 
-  it('keeps collapse as a legacy alias', () => {
-    const Legacy = node('Legacy', num, sumBuild, { collapse: true })
-    expect(parse(Legacy, '1')).toEqual({ ok: true, value: '1', span: { start: 0, end: 1 } })
+describe('collapse — exact child passthrough', () => {
+  it('rejects ambiguous unwrap+collapse options', () => {
+    expect(() => node('Ambiguous', num, sumBuild, { unwrap: true, collapse: true }))
+      .toThrow('node() options cannot set both unwrap and collapse')
+  })
+
+  it('collapse returns the single child exactly, not a leaf string', () => {
+    const Collapsed = node('Collapsed', num, sumBuild, { collapse: true })
+    expect(parse(Collapsed, '1')).toEqual({
+      ok: true,
+      value: { _tag: 'leaf', value: '1', span: { start: 0, end: 1 } },
+      span: { start: 0, end: 1 },
+    })
+  })
+
+  it('collapse keeps sub-nodes exactly', () => {
+    const Inner = node('Inner', num, (_ch, _r, span) => ({ _tag: 'node', type: 'Inner', span, children: [] }))
+    const Outer = node('Outer', Inner, sumBuild, { collapse: true })
+    expect(parse(Outer, '1')).toEqual({
+      ok: true,
+      value: { _tag: 'node', type: 'Inner', span: { start: 0, end: 1 }, children: [] },
+      span: { start: 0, end: 1 },
+    })
+  })
+
+  it('compile() parity for a single leaf child', () => {
+    const Collapsed = node('Collapsed', num, sumBuild, { collapse: true })
+    expect(compile(Collapsed).parse('1')).toEqual(parse(Collapsed, '1'))
+  })
+
+  it('macro plugin compiles the collapse option', () => {
+    const code = `
+import { regex, node } from 'parseman' with { type: 'macro' }
+export const Collapsed = node('Collapsed', regex(/[0-9]+/), (ch) => ({ t: 'collapsed', n: ch.length }), { collapse: true })
+`.trim()
+    const result = transformMacro(code, 'test.ts')!
+    expect(result.code).not.toContain("from 'parseman'")
+    expect(result.code).not.toContain('node(')
+    expect(result.code).toMatch(/length === 1 \?/)
+    expect(result.warnings).toEqual([])
   })
 })

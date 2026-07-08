@@ -74,7 +74,7 @@ See **[The three modes](https://matthew-dean.github.io/parseman/guide/modes)** f
 - **[Combinators](https://matthew-dean.github.io/parseman/guide/combinators)** — `literal`, `regex`, `sequence`, `choice`, `many`, `sepBy`, `token`, `not`, and more.
 - **[Whitespace & trivia](https://matthew-dean.github.io/parseman/guide/trivia)** — grammar-defined filler skipping, with per-chunk kind capture.
 - **[Recursive rules](https://matthew-dean.github.io/parseman/guide/recursive-rules)** — `rules()` for mutually recursive grammars; fully macro-compilable.
-- **[CST / AST nodes](https://matthew-dean.github.io/parseman/guide/ast)** — `node()` captures terminals and trivia for you, with `unwrap` for AST/value wrappers and `cstBuildHost({ collapse })` for public CST wrappers.
+- **[CST / AST nodes](https://matthew-dean.github.io/parseman/guide/ast)** — `node()` captures terminals and trivia for you, with `unwrap` for AST/value wrappers, `collapse` for grammar-local CST wrappers, and `cstBuildHost({ collapse })` for public CST policies.
 - **[Incremental re-parsing](https://matthew-dean.github.io/parseman/guide/incremental)** — `parseDoc` re-parses just the edited subtree on each keystroke.
 - **[Error recovery](https://matthew-dean.github.io/parseman/guide/error-recovery)** — `recover`, `expect`, and a `{ recover: true }` channel keep parsing broken input and report every error.
 - **[Context-sensitive parsing](https://matthew-dean.github.io/parseman/guide/context)** — `withCtx` / `guard` without mutating shared state.

@@ -1979,13 +1979,17 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const ndExpr = ctx.ns || structural
     ? `_ctx.build !== undefined ? _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV}) : (${buildExpr})`
     : buildExpr
-  // unwrap: a single captured child IS the value (leaf → its string, else as-is);
-  // build is skipped (short-circuited by the ternary). Mirrors node.ts.
+  // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
+  // into its string, collapse returns the child exactly. Mirrors node.ts.
   const hostCollapseExpr = (ctx.ns || structural)
     ? `_ctx.build !== undefined && _ctx.build._parsemanCstCollapse !== undefined && ${chV}.length === 1 && ${rawV}.length === 1 && _ctx.build._parsemanCstCollapse(${JSON.stringify(def.type)}, ${chV}[0], ${chV}, ${rawV}) ? ${chV}[0] : (${ndExpr})`
     : ndExpr
-  const finalExpr = def.unwrap || def.collapse
-    ? `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
+  const unwrapExpr = `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
+  const collapseExpr = `${chV}.length === 1 ? ${chV}[0] : (${ndExpr})`
+  const finalExpr = def.unwrap
+    ? unwrapExpr
+    : def.collapse
+      ? collapseExpr
     : hostCollapseExpr
   stmts.push(
     `${i}const ${ndV} = ${finalExpr}`,

@@ -128,9 +128,12 @@ serves its own AST (host unset) and a positioned CST / language-service tree (ho
 Inside [`rules()`](#rulesfactory), `node(combinator, ...)` infers its node type from the
 containing rule key. Use `node(type, combinator, ...)` for an explicit public type or for
 local/manual nodes outside `rules()`.
-`opts.unwrap` returns the single child value directly for one-child AST/value matches.
-`opts.collapse` is still accepted as a legacy alias for `unwrap`, but new grammars should
-use `unwrap` so it is not confused with CST host collapse. See [CST / AST nodes](../guide/ast).
+
+`opts.unwrap` skips `build` for one-child AST/value matches and returns the single child
+in value form: a captured leaf becomes its string value; a sub-node is returned as-is.
+`opts.collapse` also skips `build` for one-child matches, but returns the captured child
+exactly, so a leaf remains a `CSTLeaf` with its span. Set at most one of `unwrap` and
+`collapse`. See [CST / AST nodes](../guide/ast).
 
 ### `cstBuildHost(opts?)` {#cstbuildhost}
 
@@ -157,8 +160,9 @@ built, so public syntax trees do not need a second normalization walk.
 - `readonly string[]` — collapse only those named grammar node types.
 - `CstCollapsePredicate` — decide from `(type, child, children, rawChildren)`.
 
-Unlike `node(..., { unwrap: true })`, CST collapse preserves the child object exactly. A
-single captured leaf remains a `CSTLeaf` with its span, not a bare string.
+Like `node(..., { collapse: true })`, CST host collapse preserves the child object exactly.
+The difference is scope: `node(..., { collapse: true })` is a grammar-local rule decision,
+while `cstBuildHost({ collapse })` is a caller-selected public CST policy.
 
 ### `buildTriviaIndex(root, input?, opts?)` {#buildtriviaindex}
 

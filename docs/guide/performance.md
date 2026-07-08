@@ -58,11 +58,12 @@ children:
 
 Correctness first; collapse only the genuinely opaque runs.
 
-::: tip Not to be confused with node unwrap or CST collapse
+::: tip Not to be confused with node unwrap or CST wrapper collapse
 This is a *performance* technique — folding an opaque source token into one matcher. It is
-separate from `node(…, { unwrap: true })`, which changes **AST/value shape**, and from
-`cstBuildHost({ collapse })`, which changes **public CST shape**. See
-[CST / AST nodes](./ast#unwrapping-wrapper-rules).
+separate from `node(…, { unwrap: true })`, which changes **AST/value shape**, from
+`node(..., { collapse: true })`, which changes one grammar wrapper's **CST-like shape**,
+and from `cstBuildHost({ collapse })`, which changes **public CST shape**. See
+[CST / AST nodes](./ast#unwrapping-and-collapsing-wrapper-rules).
 :::
 
 ## `.compile()` stacks on top

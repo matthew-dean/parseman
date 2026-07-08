@@ -128,16 +128,21 @@ local/manual helper outside `rules()`.
 Walk it with [`walk` / `createVisitor`](#walking-the-tree), and turn its trivia into a
 `before`/`after` lookup with [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
-## Unwrapping wrapper rules
+## Unwrapping and collapsing wrapper rules
 
 Layered grammars accumulate "wrapper" rules that exist only for structure — an expression
 precedence ladder (`Sum` → `Product` → `Primary`), or a selector-list rule that wraps a
 single selector. When such a rule matches just **one** child, the wrapper node is noise:
 you want to *be* that child, not box it.
 
-The `unwrap` option does exactly that for AST/value-building rules. With
-`{ unwrap: true }`, a **one-child** match returns that child value directly and
-`build` is **not called**; zero or two-plus children go through `build` as normal.
+The `unwrap` and `collapse` options do that for grammar-local wrapper rules. Both skip
+`build` for a **one-child** match; zero or two-plus children go through `build` as normal.
+The difference is the shape of a single captured leaf:
+
+- `{ unwrap: true }` returns the leaf's string value.
+- `{ collapse: true }` returns the original `CSTLeaf` object, span included.
+
+Set at most one of the two options on a given `node()`.
 
 ```ts
 import { node, choice, sequence, literal, regex } from 'parseman'
@@ -153,22 +158,23 @@ const sum = node('Sum',
 | Children captured | Result |
 | --- | --- |
 | **0** | `build` runs normally |
-| **1** | `build` **skipped** — the single child is returned directly (a leaf unwraps to its string value; a sub-node is returned as-is) |
+| **1** | `build` **skipped** — `unwrap` returns a leaf's string value; `collapse` returns the child exactly; sub-nodes are returned as-is |
 | **2+** | `build` runs normally |
 
 So `2` parses to a bare `Product` node (no redundant `Sum` wrapper), while `2 + 3`
 produces a real `Sum` node with its children. You get readable layered rules without
-paying a `build` call per unwrapping layer — and without hand-writing
+paying a `build` call per transparent layer — and without hand-writing
 `if (children.length === 1) return children[0]` in every wrapper builder.
 
-`unwrap` has full **interpreter, `.compile()`, and macro** parity: the compiled output
-emits a `children.length === 1 ? <unwrap> : build(…)` ternary, and the plugin reads a
-static `{ unwrap: true }` literal as the 4th argument.
+`unwrap` and `collapse` have full **interpreter, `.compile()`, and macro** parity: the
+compiled output emits a `children.length === 1 ? <single-child> : build(…)` ternary, and
+the plugin reads static `{ unwrap: true }` / `{ collapse: true }` literals as the 4th
+argument.
 
-::: tip CST collapse is different
-`unwrap` is for AST/value rules: a captured leaf becomes its string value. For public
-CSTs, use `cstBuildHost({ collapse })` instead; it collapses transparent wrapper nodes
-while preserving CST leaf objects and spans.
+::: tip Grammar collapse vs host collapse
+`node(..., { collapse: true })` is a grammar-local decision for one wrapper rule. For a
+public CST parser, `cstBuildHost({ collapse })` lets the caller apply a host-wide collapse
+policy without changing the grammar's AST/value behavior.
 :::
 
 ## Collapsing public CST wrappers
@@ -189,7 +195,8 @@ This is CST-shaped collapse, not value unwrap:
 | Option | Use it for | One-child leaf result |
 | --- | --- | --- |
 | `node(..., { unwrap: true })` | AST/value wrapper rules | the leaf's string value |
-| `cstBuildHost({ collapse })` | public CST wrapper rules | the original `CSTLeaf` object, span included |
+| `node(..., { collapse: true })` | grammar-local structural wrapper rules | the original `CSTLeaf` object, span included |
+| `cstBuildHost({ collapse })` | caller-selected public CST wrapper policy | the original `CSTLeaf` object, span included |
 
 `collapse` only considers successful one-child nodes whose raw child list is also one
 item, so trivia-only matches and multi-token nodes keep their wrapper. The policy can be:

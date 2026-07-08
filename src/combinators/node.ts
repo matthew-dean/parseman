@@ -29,10 +29,12 @@ export type BuildNode<N> = (
 /**
  * Options for `node()`.
  * - `unwrap` — an AST/value wrapper rule that IS its single child when it
- *   captured exactly one. With `unwrap: true`, a one-child match returns that
- *   child directly (a leaf unwrapped to its string value, a sub-node as-is) and
- *   `build` is NOT called; zero or two-plus children go through `build`
- *   normally. `collapse` is kept as a compat alias; prefer `unwrap`.
+ *   captured exactly one. A leaf unwraps to its string value; a sub-node is
+ *   returned as-is.
+ * - `collapse` — a structural wrapper rule that returns its single child exactly
+ *   as captured. A leaf stays a CSTLeaf; a node stays a node.
+ * Both skip `build` only for a one-child match; zero or two-plus children go
+ * through `build` normally.
  */
 export type NodeOptions = { unwrap?: boolean; collapse?: boolean }
 
@@ -74,9 +76,13 @@ export function node<N>(
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
-  const unwrap = opts?.unwrap === true || opts?.collapse === true
-  const def: Extract<ParserDef, { tag: 'node' }> = unwrap
-    ? { ...baseDef, unwrap: true }
+  const unwrap = opts?.unwrap === true
+  const collapse = opts?.collapse === true
+  if (unwrap && collapse) {
+    throw new Error('node() options cannot set both unwrap and collapse')
+  }
+  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse
+    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}) }
     : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
@@ -99,11 +105,13 @@ export function node<N>(
 
       if (!r.ok) return r
 
-      // unwrap: a single captured child IS the value — skip build.
+      // unwrap/collapse: a single captured child IS the value — skip build.
       const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const nodeType = def.type ?? missingInferredType()
       const built: unknown = unwrap && children.length === 1
         ? unwrapChild(children[0])
+        : collapse && children.length === 1
+          ? children[0]
         : !build
           && ctx.build?._parsemanCstCollapse
           && children.length === 1

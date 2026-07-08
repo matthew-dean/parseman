@@ -92,9 +92,10 @@ function scopeGet(scope: XScope, name: string, mfs?: string[]): Combinator<unkno
 // Core evaluators
 // ---------------------------------------------------------------------------
 
-/** Read a static `{ unwrap: true }` opts literal (`collapse` is a compat alias). */
-function staticUnwrapOption(expr: Expression): boolean {
-  if (expr.type !== 'ObjectExpression') return false
+/** Read static `{ unwrap: true }` / `{ collapse: true }` node opts. */
+function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
+  if (expr.type !== 'ObjectExpression') return undefined
+  const opts: parseman.NodeOptions = {}
   for (const prop of (expr as ObjectExpression).properties) {
     const p = prop as unknown as ObjectProperty
     if (p.computed) continue
@@ -104,10 +105,10 @@ function staticUnwrapOption(expr: Expression): boolean {
       : undefined
     if (name === 'unwrap' || name === 'collapse') {
       const val = p.value as unknown as { type: string; value?: unknown }
-      return (val.type === 'Literal' || val.type === 'BooleanLiteral') && val.value === true
+      if ((val.type === 'Literal' || val.type === 'BooleanLiteral') && val.value === true) opts[name] = true
     }
   }
-  return false
+  return opts.unwrap || opts.collapse ? opts : undefined
 }
 
 /**
@@ -169,7 +170,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
 
   // node(parser, build?, opts?) / node(type, parser, build?, opts?) — CST node rule. Capture the build callback
   // source (like transform) so codegen inlines it; the inner parser carries the
-  // capture. An optional `{ unwrap: true }` opts literal is read statically.
+  // capture. Optional `{ unwrap: true }` / `{ collapse: true }` opts are read statically.
   if (callee.name === 'node' && code !== undefined) {
     const [firstArg, secondArg, thirdArg, fourthArg] = node.arguments
     if (!firstArg || firstArg.type === 'SpreadElement') return null
@@ -188,13 +189,13 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const hasBuild = be !== undefined && be.type !== 'SpreadElement'
       && !(be.type === 'Identifier' && be.name === 'undefined')
     const buildSrc = hasBuild ? code.slice(be!.start, be!.end) : undefined
-    const unwrap = optsArg !== undefined && optsArg.type !== 'SpreadElement'
-      ? staticUnwrapOption(optsArg as Expression)
-      : false
+    const opts = optsArg !== undefined && optsArg.type !== 'SpreadElement'
+      ? staticNodeOptions(optsArg as Expression)
+      : undefined
     try {
       const combi = explicitType !== undefined
-        ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, unwrap ? { unwrap: true } : undefined)
-        : parseman.node(inner, hasBuild ? () => null : undefined, unwrap ? { unwrap: true } : undefined)
+        ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, opts)
+        : parseman.node(inner, hasBuild ? () => null : undefined, opts)
       if (combi._def.tag === 'node' && buildSrc !== undefined) combi._def.buildSrc = buildSrc
       return combi
     } catch { return null }

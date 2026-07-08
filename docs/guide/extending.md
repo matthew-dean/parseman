@@ -74,8 +74,9 @@ parser.Value('12', 0, { build: cstBuildHost }) // → a positioned CST node
 ```
 
 This is how the same composed grammar serves an evaluator (its own AST) and a language
-service (a CST with spans). For a public CST, use `cstBuildHost({ collapse })` to hide
-transparent one-child wrapper rules without a post-processing walk. See
+service (a CST with spans). Use `node(..., { collapse: true })` for a grammar-local
+transparent wrapper, or `cstBuildHost({ collapse })` for a caller-selected public CST
+policy that hides one-child wrapper rules without a post-processing walk. See
 [incremental re-parsing](./incremental) for driving it in an editor.
 
 ## No base source required
