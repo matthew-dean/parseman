@@ -17,6 +17,17 @@ import { describe, it, expect } from 'vitest'
 import { node, sequence, regex, compile, parse } from '../../src/index.ts'
 import type { ParserDef } from '../../src/index.ts'
 import { confirmedBuildArity, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
+import { transformMacro } from '../../src/plugin/index.ts'
+
+type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
+
+function macroParser(code: string, name: string): { fn: ParseFn; source: string } {
+  const result = transformMacro(code.trim(), `${name}.ts`, new Set(['parseman']))
+  if (!result) throw new Error('macro transform returned null')
+  if (result.code.includes("from 'parseman'")) throw new Error('macro transform did not remove parseman import')
+  const fnBody = result.code.replace(/\bexport\s+/g, '').replace(/\bconst\b/g, 'var') + `\nreturn ${name}`
+  return { fn: new Function(fnBody)() as ParseFn, source: result.code }
+}
 
 describe('confirmedBuildArity — plain identifier params', () => {
   const cases: Array<[string, number | null]> = [
@@ -108,5 +119,48 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
     // both should produce { n: 2 } regardless of capture
     expect(compile(typed3).parse('ab')).toEqual(parse(typed3, 'ab'))
     expect((compile(typed3).parse('ab') as { ok: boolean; value: unknown }).value).toEqual({ n: 2 })
+  })
+})
+
+describe('macro output preserves build argument slots while eliding captures', () => {
+  it('arity-3 macro build gets fields as undefined and span as the third arg', () => {
+    const { fn, source } = macroParser(`
+import { literal, node, sequence } from 'parseman' with { type: 'macro' }
+export const P = node('P', sequence(literal('a'), literal('b')), (children, fields, span) => ({
+  childCount: children.length,
+  fieldsIsUndefined: fields === undefined,
+  span,
+}))
+`, 'P')
+
+    expect(source).toContain('_EMPTY_TL')
+    expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start:/)
+    expect(source).toMatch(/_EMPTY_TL, undefined\)/)
+    expect(fn('ab', 0, {}).value).toEqual({
+      childCount: 2,
+      fieldsIsUndefined: true,
+      span: { start: 0, end: 2 },
+    })
+  })
+
+  it('arity-6 macro build still receives undefined fields/state in their fixed slots', () => {
+    const { fn } = macroParser(`
+import { literal, node, sequence } from 'parseman' with { type: 'macro' }
+export const P = node('P', sequence(literal('a'), literal('b')), (children, fields, span, rawChildren, triviaLog, state) => ({
+  fieldsIsUndefined: fields === undefined,
+  stateIsUndefined: state === undefined,
+  rawCount: rawChildren.length,
+  triviaCount: triviaLog.length,
+  span,
+}))
+`, 'P')
+
+    expect(fn('ab', 0, {}).value).toEqual({
+      fieldsIsUndefined: true,
+      stateIsUndefined: true,
+      rawCount: 2,
+      triviaCount: 0,
+      span: { start: 0, end: 2 },
+    })
   })
 })

@@ -144,4 +144,11 @@ describe('IR serialize round-trip', () => {
     })))
     expect(serializeRuleMap(rm as never)).toBeNull()
   })
+
+  it('returns null instead of dropping buildSrc for an inferred node without a rule type', () => {
+    const Doc = node(regex(/[a-z]+/), (_children: readonly unknown[]) => null)
+    if (Doc._def.tag === 'node') Doc._def.buildSrc = '(_children) => null'
+
+    expect(serializeRuleMap([['Doc', Doc]] as never)).toBeNull()
+  })
 })

@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import {
-  literal, regex, sequence, many, node, rules, compile, parse,
+  literal, regex, sequence, many, optional, node, rules, compile, parse,
 } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
@@ -40,6 +40,15 @@ describe('unwrap — interpreter', () => {
     const r = parse(Outer, '7')
     expect(r.ok && r.value).toEqual({ t: 'inner', span: { start: 0, end: 1 } })
     expect(build).not.toHaveBeenCalled()
+  })
+
+  it('zero children → build IS called', () => {
+    const build = vi.fn(sumBuild)
+    const Empty = node('Empty', optional(literal('a')), build, { unwrap: true })
+    const r = parse(Empty, '')
+
+    expect(r.ok && r.value).toEqual({ t: 'sum', n: 0 })
+    expect(build).toHaveBeenCalledOnce()
   })
 })
 
@@ -152,6 +161,15 @@ describe('collapse — exact child passthrough', () => {
       value: { _tag: 'leaf', value: '1', span: { start: 0, end: 1 } },
       span: { start: 0, end: 1 },
     })
+  })
+
+  it('zero children → build IS called', () => {
+    const build = vi.fn(sumBuild)
+    const Empty = node('Empty', optional(literal('a')), build, { collapse: true })
+    const r = parse(Empty, '')
+
+    expect(r.ok && r.value).toEqual({ t: 'sum', n: 0 })
+    expect(build).toHaveBeenCalledOnce()
   })
 
   it('collapse keeps sub-nodes exactly', () => {

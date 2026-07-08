@@ -36,6 +36,9 @@ npm install parseman
 # pnpm add parseman
 ```
 
+Parseman is pre-1.0. Minor versions may include breaking changes; check the
+[changelog](./CHANGELOG.md) before upgrading.
+
 ## Quick start
 
 ```ts

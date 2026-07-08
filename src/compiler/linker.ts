@@ -66,8 +66,9 @@ function normalizeCstCollapse(collapse: CstBuildHostOptions['collapse']): CstCol
 function buildCstNode(
   type: string,
   children: ReadonlyArray<unknown>,
-  _rawChildren: ReadonlyArray<unknown>,
+  _fields: unknown,
   span: { start: number; end: number },
+  _rawChildren?: ReadonlyArray<unknown>,
   _triviaLog?: readonly number[],
   state?: unknown,
 ): unknown {
@@ -106,19 +107,18 @@ export function cstBuildHost(
   state?: unknown,
 ): unknown {
   if (typeof typeOrOptions === 'string') {
-    return buildCstNode(typeOrOptions, children ?? [], rawChildren ?? [], span ?? { start: 0, end: 0 }, triviaLog, state)
+    return buildCstNode(typeOrOptions, children ?? [], _fields, span ?? { start: 0, end: 0 }, rawChildren, triviaLog, state)
   }
   const collapse = normalizeCstCollapse(typeOrOptions?.collapse)
-  if (!collapse) return buildCstNode
   const host: BuildHost = (
     type: string,
     children: ReadonlyArray<unknown>,
-    _fields: unknown,
+    fields: unknown,
     span: { start: number; end: number },
     rawChildren: ReadonlyArray<unknown>,
     triviaLog: readonly number[],
     state: unknown,
-  ) => buildCstNode(type, children, rawChildren, span, triviaLog, state)
+  ) => buildCstNode(type, children, fields, span, rawChildren, triviaLog, state)
   if (collapse) host._parsemanCstCollapse = collapse
   return host
 }

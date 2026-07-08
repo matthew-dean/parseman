@@ -267,7 +267,10 @@ class Serializer {
           ? `, { ${def.unwrap ? 'unwrap: true' : 'collapse: true'} }`
           : ''
         // `_nd` sets `_def.buildSrc` (same reason as `_tf`). No build → plain node.
-        if (def.type === undefined) return opts ? `node(${kid(def.parser)}, undefined${opts})` : `node(${kid(def.parser)})`
+        if (def.type === undefined) {
+          if (def.buildSrc !== undefined) throw new Unserializable('inferred node build without inferred type')
+          return opts ? `node(${kid(def.parser)}, undefined${opts})` : `node(${kid(def.parser)})`
+        }
         if (def.buildSrc !== undefined) return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts})`
         return opts ? `node(${JSON.stringify(def.type)}, ${kid(def.parser)}, undefined${opts})` : `node(${JSON.stringify(def.type)}, ${kid(def.parser)})`
       }
