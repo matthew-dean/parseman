@@ -93,6 +93,8 @@ export type BuildHost = ((
 ) => unknown) & {
   /** Framework-internal: optional syntax-CST wrapper collapse policy. */
   _parsemanCstCollapse?: CstCollapsePredicate | undefined
+  /** Framework-internal: node types whose structural host wants triviaLog. */
+  _parsemanCaptureTrivia?: ((type: string) => boolean) | undefined
 }
 
 export type FieldCapture<T = unknown> = {

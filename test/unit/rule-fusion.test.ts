@@ -59,6 +59,21 @@ export const parser = compose([cssRules, lessRules])`
     expect(parser.Value!('12X', 0, {}).span.end).toBe(3)    // css.Value → less.Num (override)
     expect(parser.Value!('12', 0, {}).ok).toBe(false)       // less.Num needs 'X'
   })
+
+  it('preserves labeled trivia metadata on fused public rule wrappers', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    const src = `import { rules, regex, choice, compose, trivia, label, oneOrMore } from 'parseman' with { type: 'macro' }
+export const grammar = compose([rules(g => ({
+  rw: trivia(oneOrMore(choice(label('whitespace', regex(/[ ]+/)), label('blockComment', regex(/\\/\\*x\\*\\//))))),
+}))])`
+    const out = transformMacro(src, '/pkg/trivia.ts', new Set(['parseman']))!
+    expect(out.warnings).toEqual([])
+
+    const grammar = new Function(out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar')() as {
+      rw: { _meta?: { triviaKindLabels?: readonly string[] } }
+    }
+    expect(grammar.rw._meta?.triviaKindLabels).toEqual(['whitespace', 'blockComment'])
+  })
 })
 
 describe('macro: cross-package compose() with NO base source (sidecar)', () => {

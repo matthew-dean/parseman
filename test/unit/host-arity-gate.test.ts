@@ -76,4 +76,28 @@ describe('structural-node capture gate — host-arity inference', () => {
     if (!a.ok || !b.ok) return
     expect(JSON.stringify(a.value)).toBe(JSON.stringify(b.value))
   })
+
+  it('a host predicate narrows trivia capture by node type', () => {
+    const { Doc: TypedDoc } = rules((g: any) => ({
+      Doc: node('Doc', parser({ trivia: rw }, sequence(g.A, g.B))),
+      A: node('A', literal('a')),
+      B: node('B', parser({ trivia: rw }, sequence(literal('b'), literal('c')))),
+    }))
+    const typed = compile(TypedDoc)
+    const logs = new Map<string, readonly number[]>()
+    const host = Object.assign(
+      (type: string, _children: readonly unknown[], _fields: unknown, _span: unknown, _raw: readonly unknown[], triviaLog: readonly number[]) => {
+        logs.set(type, triviaLog)
+        return { type }
+      },
+      { _parsemanCaptureTrivia: (type: string) => type === 'B' }
+    )
+
+    const r = typed.parseWithContext('a b c', { trackLines: false, build: host }, 0)
+    expect(r.ok).toBe(true)
+    expect(logs.get('B')?.length).toBeGreaterThan(0)
+    expect(logs.get('A')?.length).toBe(0)
+    expect(logs.get('Doc')?.length).toBe(0)
+    expect(typed.source).toContain('_parsemanCaptureTrivia')
+  })
 })

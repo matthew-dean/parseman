@@ -1947,8 +1947,9 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   if (!capturesTrivia) ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
   if (structural) ctx.needsHostReads = true
+  const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
   const allocStmt = structural
-    ? `${i}const ${capTLv} = _ctx._pmCapTL ??= _hostReads(_ctx.build, 5), ${capSTv} = _ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6))${capFv ? `, ${capFv} = _ctx.build !== undefined && _hostReads(_ctx.build, 2)` : ''}\n`
+    ? `${i}const ${capTLv} = ${hostTriviaGate}, ${capSTv} = _ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6))${capFv ? `, ${capFv} = _ctx.build !== undefined && _hostReads(_ctx.build, 2)` : ''}\n`
       + `${i}const ${chV} = [], ${rawV} = [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
     : capturesTrivia
       ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
@@ -2870,6 +2871,12 @@ function assertRuleName(name: string): void {
   }
 }
 
+function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): string {
+  const labels = rule._meta.triviaKindLabels
+  if (labels === undefined) return fnSource
+  return `Object.assign(${fnSource}, { _meta: { triviaKindLabels: ${JSON.stringify(labels)} } })`
+}
+
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
 ): { keys: string[]; replacement: string } | null {
@@ -2910,7 +2917,7 @@ export function compileRuleMap(
   }
   ctx.ruleNames = ruleNames
 
-  const perEntry = ruleMap.map(([key, rule]) => ({ key, r: emit(rule, ctx, '_pos') }))
+  const perEntry = ruleMap.map(([key, rule]) => ({ key, rule, r: emit(rule, ctx, '_pos') }))
 
   const derivedSrcs = ctx.mapFnSrcs.length === ctx.mapFns.length && ctx.mapFnSrcs.every((s): s is string => s !== null)
     ? ctx.mapFnSrcs as string[]
@@ -2952,7 +2959,10 @@ export function compileRuleMap(
   // a separately-built object literal, which would either re-run the shared
   // prelude per entry or duplicate its text per entry — both defeat the point).
   const objBody = perEntry
-    .map(({ key, r }) => `    ${JSON.stringify(key)}: ${entryFnText(r).split('\n').join('\n    ')}`)
+    .map(({ key, rule, r }) => {
+      const src = publicRuleWrapperSource(rule, entryFnText(r))
+      return `    ${JSON.stringify(key)}: ${src.split('\n').join('\n    ')}`
+    })
     .join(',\n')
   const replacement = [
     `/* @__PURE__ */ (() => {`,
@@ -3090,7 +3100,7 @@ export function compileLinkable(
 
   // Emit each rule's body as its `_r_<Name>` fn (resolving a `ref` placeholder to
   // its target), then build a public wrapper that calls it.
-  const perEntry: Array<{ key: string; r: ER }> = []
+  const perEntry: Array<{ key: string; rule: Combinator<unknown>; r: ER }> = []
   for (const [key, rule] of ruleMap) {
     const fn = ruleNames.get(rule)!
     if (!ctx.namedParsers.has(rule)) {
@@ -3107,7 +3117,7 @@ export function compileLinkable(
       pushNamedFnDecl(ctx, fn, body.stmts, body.valueVar, body.endVar)
     }
     // Public wrapper: call the named fn, adapt sentinel → ParseResult.
-    perEntry.push({ key, r: emitNamedFnCall(ctx, fn, '_pos') })
+    perEntry.push({ key, rule, r: emitNamedFnCall(ctx, fn, '_pos') })
   }
 
   // A runtime-parser fallback can't be fused (no source AND no stable identity to
@@ -3145,14 +3155,14 @@ export function compileLinkable(
   ].filter(Boolean)
 
   const wrappers = new Map<string, string>()
-  for (const { key, r } of perEntry) {
-    wrappers.set(key, [
+  for (const { key, rule, r } of perEntry) {
+    wrappers.set(key, publicRuleWrapperSource(rule, [
       `function(input, _pos, _ctx) {`,
       `  let pos = _pos`,
       ...r.stmts,
       `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
       `}`,
-    ].join('\n'))
+    ].join('\n')))
   }
 
   // Per-rule first-set table for fuse-time dispatch: fusedBody() substitutes each
