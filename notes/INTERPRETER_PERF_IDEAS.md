@@ -36,7 +36,7 @@ Idea: compare short case-sensitive literals with `charCodeAt` before slicing. On
 
 Guard: keep the current path for long literals and case-insensitive literals until measured. The compiler crossover is source-size constrained; the interpreter crossover is not, so measure independently.
 
-Landed: case-sensitive `literal()` now probes with `input.startsWith(value, pos)` and slices only after a match succeeds. `charCodeAt` was tried too and lost to `startsWith` on the parser suite.
+Landed: case-sensitive `literal()` now probes with `input.startsWith(value, pos)` and returns the literal value directly. Case-insensitive matches still slice the input so captures preserve source casing. `charCodeAt` was tried too and lost to `startsWith` on the parser suite. Immediate no-slice check: JSON large **379.8→366.1µs**, CSV large **347.0→344.1µs**, GraphQL large **520.9→531.3µs**, CSS bootstrap **51.3→52.2ms** (single-run noise, kept for simpler allocation behavior).
 
 Measure: `pnpm bench:literal` still compares `slice(pos,end)`, `startsWith(value,pos)`, and `charCodeAt`; keep it for future crossover checks.
 
