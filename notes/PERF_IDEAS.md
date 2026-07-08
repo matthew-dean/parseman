@@ -208,7 +208,7 @@ Moved to **Already landed** (closes the CSS `numPart` gap §8f left open).
 - `pnpm bench:compile-grammars` — regenerate precompiled Peggy, Nearley, and Jison parsers in `bench/` after editing `bench/*.pegjs` or `bench/vendor/`.
 - `pnpm bench:svg` — chart-only benchmarks (JSON/CSV/GraphQL/CST-JSON) + regenerate `assets/bench-*.svg` for the README. Much faster than `pnpm bench`; init bars stay pinned in `bench/chart-types.ts`.
 - `pnpm bench:baseline` — refresh `bench/parseman-baseline.json` **and append** a snapshot to `bench/parseman-history.jsonl` (commit both to track the needle over time).
-- `test/perf/parseman-perf.test.ts` — smoke + CSS tight speedup-ratio guard (8%, robust median) + full-suite gross guard (30%, single-pass). Excluded from default `pnpm test` (heavy by design); run via `pnpm test:perf`.
+- `test/perf/parseman-perf.test.ts` — smoke + CSS tight speed regression guard (robust median) + full-suite gross guard (single-pass). Excluded from default `pnpm test` (heavy by design); run via `pnpm test:perf`.
 - `pnpm perf:guard` — pre-commit: CSS-only robust guard (~2s). `pnpm perf:guard --all` — every grammar.
 - `test/perf/codegen-ab.test.ts` + `bench/codegen-ab.ts` — within-process A/B that isolates the two codegen optimizations (machine-independent, no old-git-state needed):
   - **regex scan lowering** — a scannable `+`/`*` terminal (charCodeAt) vs the SAME grammar with `{1,}`/`{0,}` (identical matches, stays on `RegExp.exec`). Realistic many-short-token regime: **~2.3× faster**. Single very long token: scan loses to native exec (~0.3×, printed as contrast, not asserted). Uses `__setForceDisjointIf` / semantic-equivalent quantifiers so no production code changes.

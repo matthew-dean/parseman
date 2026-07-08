@@ -56,13 +56,7 @@ export const PERF_SAMPLES = 15
 export const BASELINE_PASSES = 5
 /** Interleaved passes for the guard — MUST match BASELINE_PASSES so ratio comparisons are apples-to-apples. */
 export const GUARD_PASSES = 5
-/**
- * Hard regression gate: max % the compiled speedup ratio may fall below
- * baseline. Set above the measured cross-machine + run-to-run noise floor
- * (~11% on the sub-µs CSS cases) so a trip means a real codegen regression,
- * not a thermal/JIT/hardware blip. Re-baseline (`pnpm bench:baseline`) after
- * an intentional codegen change so the gate re-centers on the new ratios.
- */
+/** Hard regression gate: max % a measured case may get slower than baseline. */
 export const PERF_TOLERANCE = 15
 
 const compiledJSON = compile(jsonDoc)
@@ -407,42 +401,28 @@ export function printHistoryIndex(caseId = 'css/bootstrap4'): void {
 /**
  * Detect perf regressions vs the committed baseline.
  *
- * PRIMARY check — **machine-independent compiled speedup ratio**. The ratio
- * `interpreted/compiled` is measured for both modes in the *same* process, so a
- * slow or fast CPU scales both numerator and denominator equally and cancels
- * out. A ratio drop therefore signals a genuine *compiled-codegen* regression,
- * not a hardware difference. This guard runs on every machine and is the one we
- * block commits on. (The 2.3× compiled-CSS regression showed up here as a
- * ratio collapse 3.4× → 1.6× while the old absolute-µs guard fired on every
- * non-baseline machine and was therefore ignored.)
- *
- * SECONDARY check — absolute median µs. Hardware-dependent, so it's OFF by
- * default and only enabled on the same machine that captured the baseline via
- * `PARSEMAN_PERF_ABSOLUTE=1` (or `opts.checkAbsolute`). Useful in a pinned CI
- * runner; useless and noisy anywhere else.
+ * PRIMARY check — absolute median µs per measured mode. Ratios are useful
+ * reporting, but not a regression signal: making the interpreter faster lowers
+ * the compiled/interpreted ratio without making anything slower.
  */
 export function findRegressions(
   rows: ParsemanBenchRow[],
   baseline: ParsemanBaseline,
   opts?: {
     tolerance?: { compiled?: number; interpreted?: number; speedup?: number }
-    /** Which modes to check absolutely (default both). Only used when checkAbsolute is on. */
+    /** Which modes to check (default both). */
     modes?: ParsemanMode[]
-    /** Run the machine-independent speedup-ratio check (default true). */
+    /** Run the speedup-ratio check (default false; ratios are usually informational). */
     checkSpeedup?: boolean
-    /**
-     * Run the machine-DEPENDENT absolute-µs check. Defaults to the
-     * `PARSEMAN_PERF_ABSOLUTE` env var being set — only turn this on when the
-     * current machine captured the baseline.
-     */
+    /** Run the absolute-µs speed check (default true). */
     checkAbsolute?: boolean
   },
 ): string[] {
-  const tolCompiled = opts?.tolerance?.compiled ?? 25
-  const tolInterpreted = opts?.tolerance?.interpreted ?? 100
+  const tolCompiled = opts?.tolerance?.compiled ?? PERF_TOLERANCE
+  const tolInterpreted = opts?.tolerance?.interpreted ?? PERF_TOLERANCE
   const tolSpeedup = opts?.tolerance?.speedup ?? PERF_TOLERANCE
   const modes = opts?.modes ?? ['interpreted', 'compiled']
-  const checkAbsolute = opts?.checkAbsolute ?? (process.env.PARSEMAN_PERF_ABSOLUTE !== undefined)
+  const checkAbsolute = opts?.checkAbsolute ?? true
   const msgs: string[] = []
 
   const byId = new Map<string, { interp?: ParsemanBenchRow; comp?: ParsemanBenchRow }>()
@@ -453,8 +433,8 @@ export function findRegressions(
     byId.set(r.id, g)
   }
 
-  // ── PRIMARY: machine-independent compiled speedup ratio ───────────────────
-  if (opts?.checkSpeedup !== false) {
+  // ── Optional: speedup ratio — informational for normal guard use ──────────
+  if (opts?.checkSpeedup === true) {
     for (const [id, { interp, comp }] of byId) {
       if (!interp || !comp) continue
       const bi = baseline.cases[`${id}/interpreted`]?.medianUs
@@ -464,12 +444,12 @@ export function findRegressions(
       const baseSpeedup = bi / bc
       const dropPct = ((baseSpeedup - speedup) / baseSpeedup) * 100
       if (dropPct > tolSpeedup) {
-        msgs.push(`${id}/speedup: ${speedup.toFixed(2)}× vs baseline ${baseSpeedup.toFixed(2)}× (${dropPct.toFixed(1)}% below baseline ratio — compiled codegen regressed)`)
+        msgs.push(`${id}/speedup: ${speedup.toFixed(2)}× vs baseline ${baseSpeedup.toFixed(2)}× (${dropPct.toFixed(1)}% below baseline ratio)`)
       }
     }
   }
 
-  // ── SECONDARY: absolute µs — same-machine only, opt-in ────────────────────
+  // ── Primary: absolute speed regression ────────────────────────────────────
   if (checkAbsolute) {
     for (const r of rows) {
       if (!modes.includes(r.mode)) continue

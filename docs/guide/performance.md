@@ -79,7 +79,7 @@ pnpm bench:parseman         # Parseman interpreted vs compiled regression report
 pnpm bench:svg              # chart-only benchmarks + regenerate assets/bench-*.svg
 pnpm bench:baseline         # refresh the regression baseline + append a history snapshot
 pnpm bench:compile-grammars # regenerate the precompiled Peggy/Nearley/Jison parsers
-pnpm perf:guard             # fast pre-commit CSS speedup ratio check
+pnpm perf:guard             # fast pre-commit CSS speed regression check
 
 node --import tsx bench/compose-dispatch.ts   # composed-grammar first-char dispatch A/B
 ```

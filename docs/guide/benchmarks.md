@@ -177,7 +177,7 @@ CST-JSON warm-parse timings the charts need (~30–60 s), not the full `pnpm ben
 | `pnpm bench` | Parser-to-parser comparison |
 | `pnpm bench:parseman` | Parseman interpreted vs compiled regression report |
 | `pnpm bench:baseline` | Refresh Parseman regression baseline + history snapshot |
-| `pnpm perf:guard` | Fast pre-commit CSS speedup ratio check |
+| `pnpm perf:guard` | Fast pre-commit CSS speed regression check |
 
 Init-cost bars on the charts (`.compile()` vs Chevrotain setup) are **pinned** in
 `bench/chart-types.ts` — they vary wildly by machine and aren't refreshed on each run.
