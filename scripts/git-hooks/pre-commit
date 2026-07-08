@@ -31,7 +31,7 @@ fi
 CHANGED=$(git diff --cached --name-only)
 echo "$CHANGED" | grep -qE '^(src/compiler/|src/combinators/|src/cst/|examples/.*/parser\.ts|bench/parseman-perf\.ts)' || exit 0
 
-echo "[pre-commit] running parseman perf guard (css ratio)…"
+echo "[pre-commit] running parseman perf guard (css speed)…"
 node --import tsx/esm bench/perf-guard.ts
 status=$?
 if [ $status -ne 0 ]; then
