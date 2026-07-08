@@ -6,11 +6,11 @@ import { jsonRecognize } from '../examples/json/chevrotain-bench.ts'
 
 declare global {
   interface Window {
-    parse: (input: string) => void
+    parse: (input: string) => ReturnType<typeof jsonRecognize.parse>
   }
 }
 
-window.parse = function parse_json_parseman_interpreted(input: string): void {
+window.parse = function parse_json_parseman_interpreted(input: string): ReturnType<typeof jsonRecognize.parse> {
   const result = jsonRecognize.parse(input)
   if (!result.ok) {
     throw new SyntaxError(
@@ -18,4 +18,5 @@ window.parse = function parse_json_parseman_interpreted(input: string): void {
       ': expected ' + result.expected.join(' or '),
     )
   }
+  return result
 }

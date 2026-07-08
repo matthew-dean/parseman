@@ -3,6 +3,15 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.18.1 — 2026-07-07
+
+- **Friendlier labeled failures.** `label()` now controls the expected text for
+  normal parse failures in both interpreter and compiled modes, so user-facing
+  errors can say `string` or `number` instead of leaking raw regex source.
+- **Diagnostics parity coverage.** Added interpreter-vs-compiled tests for
+  expected sets, literal quoting, custom `expect()` labels, and `recover()`
+  parse-error spans.
+
 ## 0.18.0 — 2026-07-07
 
 - **`token()` combinator.** Treat a contiguous parser region as one source-text token:

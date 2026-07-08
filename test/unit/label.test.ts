@@ -19,6 +19,18 @@ describe('label()', () => {
     expect(p._def.tag === 'label' && p._def.label).toBe('letters')
   })
 
+  it('uses the label as the failure expectation', () => {
+    const p = label('letters', regex(/a+/))
+    expect(p.parse('123', 0, { trackLines: false })).toMatchObject({
+      ok: false,
+      expected: ['letters'],
+    })
+    expect(compile(p).parse('123')).toMatchObject({
+      ok: false,
+      expected: ['letters'],
+    })
+  })
+
   it('trivia() collects kind labels from labeled choice arms', () => {
     const rw = trivia(oneOrMore(choice(
       label('whitespace', regex(/[ \t]+/)),
