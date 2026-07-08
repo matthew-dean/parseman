@@ -93,6 +93,19 @@ Related rejected follow-up: nested `parser()` context spread was replaced with s
 | New regex analysis | The compiler already has the hard correctness work. Reuse it before writing a second analyzer. |
 | New public API for interpreter tuning | No knobs until a measured hot path needs one. |
 
+## Runtime bundle-size follow-up
+
+- **Split a lean interpreter/runtime entry from compiler APIs.** The Chevrotain
+  interpreted browser bundle showed that importing the public `src/index.ts`
+  entry pulls in `regexp-tree` and some compiler-adjacent helpers even when the
+  grammar only interprets combinators. Keep `compile()` / macro / linker APIs as
+  separately imported functions, not methods or runtime-default imports, and add
+  a runtime-only entry for interpreted/browser use. Target shape:
+  `import { literal, regex, ... } from 'parseman/runtime'`; opt into
+  `compile()` from `parseman/compiler` or the existing top-level convenience
+  entry. Measure with the Chevrotain interpreted bundle before/after; do not
+  trade away normal top-level ergonomics unless the size drop is real.
+
 ## Measuring
 
 - `pnpm bench:parseman` — check interpreted and compiled rows together; interpreter wins must not quietly regress compiled output.
