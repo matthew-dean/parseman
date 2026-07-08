@@ -34,8 +34,9 @@ Three words that sound alike but play different roles:
 | `skip(main, skipped)` | Match `main` then `skipped`; return `main`'s value. |
 | `token(combinator)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
 | `label(name, combinator)` | Attach a string label to a combinator arm (metadata; used for per-chunk trivia kinds). |
+| `field(name, combinator)` | Capture a named value/span for the nearest enclosing `node()` builder. |
 | `not(combinator)` | Negative lookahead — succeeds (consuming nothing) when `combinator` fails. |
-| `node(type, combinator, build?, opts?)` | CST/AST rule: captures terminals + trivia. With `build` it constructs the node; omit `build` to build through the `ctx.build` host. See [CST / AST nodes](./ast). |
+| `node(combinator, build?, opts?)` / `node(type, combinator, build?, opts?)` | CST/AST rule: captures terminals + trivia. Inside `rules()`, the node type is inferred from the rule key; pass `type` for explicit/local nodes. See [CST / AST nodes](./ast). |
 | `ref<T>()` | Low-level forward-declaration slot (prefer `rules()`). |
 | `guard(predicate)` | Succeeds only when `predicate(ctx)` is true; for context-sensitive rules. See [Context](./context). |
 | `withCtx(extra, combinator)` | Merge `extra` into the user context for the duration of `combinator`. |

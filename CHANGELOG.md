@@ -3,6 +3,20 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.19.0 — 2026-07-08
+
+- **Clearer wrapper-node DX.** `node(..., { unwrap: true })` is now the preferred
+  spelling for AST/value wrappers whose one-child match should return the child
+  value directly; the old `collapse` option remains as a compatibility alias.
+- **CST host collapse.** `cstBuildHost({ collapse })` now collapses transparent
+  one-child CST wrappers during node construction while preserving CST leaf
+  objects and spans.
+- **Named node captures.** `field(name, parser)` captures named values and spans
+  for the nearest `node()` builder or structural build host without forcing
+  trivia/state capture.
+- **Macro/codegen parity.** `unwrap` and CST-host collapse work across the
+  interpreter, compiled parsers, and macro output.
+
 ## 0.18.2 — 2026-07-08
 
 - **Interpreter hot-path pass.** Faster regex/literal matching, choice dispatch,

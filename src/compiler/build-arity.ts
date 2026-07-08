@@ -1,7 +1,7 @@
 import type { ParserDef } from '../types.ts'
 
 /**
- * Per-node CST-trivia (4th build arg) and state-clone (5th build arg) capture is
+ * Per-node CST-trivia (5th build arg) and state-clone (6th build arg) capture is
  * dead work when the build never declares those formal params. This module derives
  * a build's *confirmed* formal-parameter arity so all three eval paths (interpreter,
  * compiler, macro) can elide that capture identically.
@@ -59,20 +59,20 @@ export function confirmedBuildArity(src: string): number | null {
   return parts.length
 }
 
-/** Build reads the 4th (triviaLog) arg? Unknown/unparseable → true (keep capture). */
+/** Build reads the 5th (triviaLog) arg? Unknown/unparseable → true (keep capture). */
 export function buildReadsTrivia(def: NodeDef): boolean {
   if (!def.build) return true // structural node: host may read trivia — keep capture
   const src = def.buildSrc ?? def.build.toString()
   const arity = confirmedBuildArity(src)
   if (arity === null) return true
-  return arity >= 4
+  return arity >= 5
 }
 
-/** Build reads the 5th (state) arg? Unknown/unparseable → true (keep state clone). */
+/** Build reads the 6th (state) arg? Unknown/unparseable → true (keep state clone). */
 export function buildReadsState(def: NodeDef): boolean {
   if (!def.build) return true // structural node: host may read state — keep clone
   const src = def.buildSrc ?? def.build.toString()
   const arity = confirmedBuildArity(src)
   if (arity === null) return true
-  return arity >= 5
+  return arity >= 6
 }

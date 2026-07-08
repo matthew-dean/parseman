@@ -35,9 +35,9 @@ const ident = regex(/[a-z]{3}/)
 const triviaPat = regex(/[ \t\n]+|\/\*[^]*?\*\//)
 
 const { Ident, Pair } = rules(g => {
-  const Ident = node('Ident', ident, (ch, raw, span, tl, state) =>
+  const Ident = node('Ident', ident, (ch, _fields, span, raw, tl, state) =>
     mkRich('Ident', ch as RichNode[], raw as CSTRawChild[], span, tl, state))
-  const Pair = node('Pair', sequence(g.Ident, g.Ident), (ch, raw, span, tl, state) =>
+  const Pair = node('Pair', sequence(g.Ident, g.Ident), (ch, _fields, span, raw, tl, state) =>
     mkRich('Pair', ch as RichNode[], raw as CSTRawChild[], span, tl, state))
   return { Ident, Pair }
 })

@@ -52,16 +52,18 @@ actual grammar.
 Keep the parts as separate combinators wherever the builder needs them as distinct CST
 children:
 
-- for per-field source spans (`fieldSpans` / `valueSpans`),
+- for named values/spans consumed by a builder (`field(name, parser)`),
 - for trivia recovered *between* the parts,
 - for distinct typed nodes.
 
 Correctness first; collapse only the genuinely opaque runs.
 
-::: tip Not to be confused with node collapse
-This is a *performance* technique — folding an opaque source token into one matcher. There's a separate,
-unrelated `node(…, { collapse: true })` option about **tree shape** (a wrapper rule
-becoming its single child). See [CST / AST nodes](./ast#collapsing-wrapper-rules).
+::: tip Not to be confused with node unwrap or CST wrapper collapse
+This is a *performance* technique — folding an opaque source token into one matcher. It is
+separate from `node(…, { unwrap: true })`, which changes **AST/value shape**, from
+`node(..., { collapse: true })`, which changes one grammar wrapper's **CST-like shape**,
+and from `cstBuildHost({ collapse })`, which changes **public CST shape**. See
+[CST / AST nodes](./ast#unwrapping-and-collapsing-wrapper-rules).
 :::
 
 ## `.compile()` stacks on top

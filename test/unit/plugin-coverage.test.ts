@@ -16,7 +16,7 @@ import {
   evaluateExpr,
   referencesAny,
 } from '../../src/plugin/evaluator.ts'
-import { literal, parse, ref, sequence, optional } from '../../src/index.ts'
+import { cstBuildHost, literal, parse, ref, run, sequence, optional } from '../../src/index.ts'
 
 function transform(code: string, aliases = new Set(['parseman'])) {
   return transformMacro(code, 'plugin-coverage.ts', aliases)
@@ -352,6 +352,16 @@ describe('evaluator — transform / node / sepBy / oneOrMore', () => {
     }
   })
 
+  it('evaluateExpr builds node() rules with optional unwrap', () => {
+    const code = `node('X', literal('a'), () => null, { unwrap: true })`
+    const combi = evaluateExpr(parseInit(code), new Map(), code)
+    expect(combi?._def.tag).toBe('node')
+    if (combi?._def.tag === 'node') {
+      expect(combi._def.unwrap).toBe(true)
+      expect(combi._def.buildSrc).toBe('() => null')
+    }
+  })
+
   it('evaluateExpr builds node() rules with optional collapse', () => {
     const code = `node('X', literal('a'), () => null, { collapse: true })`
     const combi = evaluateExpr(parseInit(code), new Map(), code)
@@ -360,6 +370,29 @@ describe('evaluator — transform / node / sepBy / oneOrMore', () => {
       expect(combi._def.collapse).toBe(true)
       expect(combi._def.buildSrc).toBe('() => null')
     }
+  })
+
+  it('evaluateExpr rejects ambiguous node() unwrap+collapse options', () => {
+    const code = `node('X', literal('a'), () => null, { unwrap: true, collapse: true })`
+    expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()
+  })
+
+  it('evaluateExpr covers wrapper factories used by macro grammars', () => {
+    const code = `label('item', noTrivia(token(expect(literal('a'), 'a'))))`
+    const combi = evaluateExpr(parseInit(code), new Map(), code)
+    expect(combi?._def.tag).toBe('label')
+    expect(parse(combi!, 'a').ok).toBe(true)
+  })
+
+  it('evaluateParserFactory infers node() types from rule keys', () => {
+    const code = `rules(g => ({ Ident: node(regex(/[a-z]+/)) }))`
+    const call = parseInit(`const m = ${code}`)
+    const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
+    const map = evaluateParserFactory(factory, new Map(), code, [])
+    const ident = map?.get('Ident')
+    expect(ident?._def.tag).toBe('lazy')
+    const result = run(ident!, 'abc', { build: cstBuildHost() })
+    expect(result.value).toMatchObject({ _tag: 'node', type: 'Ident' })
   })
 
   it('evaluateExpr builds keyword parsers through the macro environment', () => {

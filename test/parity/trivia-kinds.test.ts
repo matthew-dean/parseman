@@ -3,6 +3,7 @@ import {
   sequence, many, literal, regex, trivia, label, parser, node, compile, rules,
   oneOrMore, choice, triviaEntries,
 } from '../../src/index.ts'
+import { compileRuleMap } from '../../src/compiler/codegen.ts'
 import {
   expectTriviaLogParity,
   runTriviaLogParity,
@@ -130,5 +131,17 @@ describe('label() vs node() — no conflict', () => {
     })
     expect(built.ok && built.value).toMatchObject({ type: 'Expr' })
     expect(rw._meta.triviaKindLabels).toEqual([...KIND_LABELS])
+  })
+})
+
+describe('labeled trivia kinds — macro metadata', () => {
+  it('compileRuleMap preserves triviaKindLabels on public rule wrappers', () => {
+    const rw = labeledRw()
+    const compiled = compileRuleMap([['rw', rw]])!
+    const grammar = new Function(`return ${compiled.replacement}`)() as {
+      rw: { _meta?: { triviaKindLabels?: readonly string[] } }
+    }
+
+    expect(grammar.rw._meta?.triviaKindLabels).toEqual([...KIND_LABELS])
   })
 })

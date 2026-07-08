@@ -34,18 +34,18 @@ function mk(
 
 describe('inline mk build', () => {
   it('detects mk wrapper from runtime build fn', () => {
-    const p = node('Ruleset', literal('x'), (c, r, s, tl) => mk('Ruleset', c, r, s, tl))
+    const p = node('Ruleset', literal('x'), (c, _fields, s, r, tl) => mk('Ruleset', c, r, s, tl))
     expect(analyzeMkInlineBuild(p._def as Extract<typeof p._def, { tag: 'node' }>)).toBe('Ruleset')
   })
 
   it('rejects callee type mismatch', () => {
-    const p = node('Ruleset', literal('x'), (c, r, s, tl) => localMk('Other', c, r, s, tl))
+    const p = node('Ruleset', literal('x'), (c, _fields, s, r, tl) => localMk('Other', c, r, s, tl))
     expect(analyzeMkInlineBuild(p._def as Extract<typeof p._def, { tag: 'node' }>)).toBeNull()
   })
 
   it('accepts loose callee shape (e.g. bundled import alias)', () => {
     const alias = { mk: localMk }
-    const p = node('Ruleset', literal('x'), (c, r, s, tl) => alias.mk('Ruleset', c, r, s, tl))
+    const p = node('Ruleset', literal('x'), (c, _fields, s, r, tl) => alias.mk('Ruleset', c, r, s, tl))
     expect(analyzeMkInlineBuild(p._def as Extract<typeof p._def, { tag: 'node' }>)).toBe('Ruleset')
   })
 
@@ -55,7 +55,7 @@ describe('inline mk build', () => {
     // e.g. copy-pasted build fn with a stale type string. Must return null (the
     // `mkType === def.type ? def.type : null` ternary's else branch), not silently
     // accept the mismatched type.
-    const p = node('Foo', literal('x'), (c, r, s, tl) => localMk('Bar', c, r, s, tl))
+    const p = node('Foo', literal('x'), (c, _fields, s, r, tl) => localMk('Bar', c, r, s, tl))
     expect(analyzeMkInlineBuild(p._def as Extract<typeof p._def, { tag: 'node' }>)).toBeNull()
   })
 
@@ -66,7 +66,7 @@ describe('inline mk build', () => {
   })
 
   it('emits object literal for a single node rule', () => {
-    const p = node('Num', literal('1'), (c, r, s, tl) => localMk('Num', c, r, s, tl))
+    const p = node('Num', literal('1'), (c, _fields, s, r, tl) => localMk('Num', c, r, s, tl))
     const src = compile(p).source
     expect(src).toContain('type: "Num"')
     expect(src).toContain('rawCount: _raw')

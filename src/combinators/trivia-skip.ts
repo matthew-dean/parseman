@@ -22,7 +22,7 @@ import {
 export type TriviaScan = { end: number; commit: () => void }
 
 /** Saved lengths for rolling back speculative trivia commits. */
-export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; log: number }
+export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; log: number }
 
 const NOOP_COMMIT = () => {}
 type FastTriviaScanner = (input: string, cur: number) => number
@@ -35,11 +35,11 @@ export function needsDeferredTriviaCommit(ctx: ParseContext): boolean {
 
 export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
   const m = saveCstMark(ctx)
-  return { raw: m.raw, tlog: m.tlog, leaves: m.leaves, log: ctx._triviaLog ? ctx._triviaLog.length : 0 }
+  return { raw: m.raw, tlog: m.tlog, leaves: m.leaves, fields: m.fields, log: ctx._triviaLog ? ctx._triviaLog.length : 0 }
 }
 
 export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): void {
-  rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves })
+  rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields })
   if (ctx._triviaLog) ctx._triviaLog.length = mark.log
 }
 

@@ -1,4 +1,4 @@
-export type { Combinator, ParseResult, ParseOk, ParseFail, ParseContext, ParseError, Span, ParserMeta, FirstSet, CharRange, ParserDef, ChoiceStrategy, AutoNotCheck, GatedArm } from './types.ts'
+export type { Combinator, ParseResult, ParseOk, ParseFail, ParseContext, ParseError, Span, ParserMeta, FirstSet, CharRange, ParserDef, ChoiceStrategy, AutoNotCheck, GatedArm, BuildHost, CstCollapsePredicate, FieldCapture, FieldMap } from './types.ts'
 
 export { literal } from './combinators/literal.ts'
 export type { LiteralOptions } from './combinators/literal.ts'
@@ -23,7 +23,7 @@ export { not } from './combinators/not.ts'
 export { node } from './combinators/node.ts'
 export type { BuildNode, NodeOptions } from './combinators/node.ts'
 // lazy() is intentionally NOT exported.
-export { transform, skip, trivia, label } from './combinators/map.ts'
+export { transform, skip, trivia, label, field } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
 export { token } from './combinators/token.ts'
@@ -31,7 +31,7 @@ export { token } from './combinators/token.ts'
 export { compile } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'
 export { compose, pick, cstBuildHost } from './compiler/linker.ts'
-export type { FusedRule } from './compiler/linker.ts'
+export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, offsetToLineCol, annotateSpan } from './compiler/line-index.ts'
 export type { LineIndex } from './compiler/line-index.ts'

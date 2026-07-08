@@ -103,6 +103,25 @@ Attach a metadata label (used for per-chunk trivia kinds; see
 [Whitespace & trivia](../guide/trivia#capturing-trivia-kinds)). Parse behavior is
 unchanged.
 
+### `field(name, combinator)`
+
+Capture the wrapped parser's value and span for the nearest enclosing `node()` build
+callback. Parse behavior and the normal returned value are unchanged.
+
+```ts
+const AttributeSelector = node(sequence(
+  literal('['),
+  field('name', ident),
+  field('op', attrOp),
+  field('value', ident),
+  literal(']'),
+), (_children, fields) => fields)
+```
+
+`fields.name` is `{ value, span }`; repeated field names become arrays. Field capture is
+emitted only for node subtrees containing `field()` and only when the callback/host can
+read fields.
+
 ## Recursion
 
 ### `rules(factory)` <Badge type="tip" text="helper" />
@@ -117,15 +136,52 @@ method. Prefer `rules()`.
 
 ## Trees
 
+### `node(combinator, build?, opts?)`
 ### `node(type, combinator, build?, opts?)`
 
 CST/AST rule. Captures the combinator's terminals into `children` / `rawChildren` and trivia
-into `triviaLog`. With a `build` callback it calls `build(children, rawChildren, span,
-triviaLog, state)` to construct the node; **omit `build`** to make it a *structural* node
+into `triviaLog`. With a `build` callback it calls `build(children, fields, span,
+rawChildren, triviaLog, state)` to construct the node; **omit `build`** to make it a *structural* node
 that builds through the injected [`ctx.build`](#cstbuildhost) host instead — so one grammar
 serves its own AST (host unset) and a positioned CST / language-service tree (host set).
-`opts.collapse` returns the single child directly for one-child matches. See
-[CST / AST nodes](../guide/ast).
+Inside [`rules()`](#rulesfactory), `node(combinator, ...)` infers its node type from the
+containing rule key. Use `node(type, combinator, ...)` for an explicit public type or for
+local/manual nodes outside `rules()`.
+
+`opts.unwrap` skips `build` for one-child AST/value matches and returns the single child
+in value form: a captured leaf becomes its string value; a sub-node is returned as-is.
+`opts.collapse` also skips `build` for one-child matches, but returns the captured child
+exactly, so a leaf remains a `CSTLeaf` with its span. Set at most one of `unwrap` and
+`collapse`. See [CST / AST nodes](../guide/ast).
+
+### `cstBuildHost(opts?)` {#cstbuildhost}
+
+Generic CST host for structural `node()` grammars. Pass the default host directly:
+
+```ts
+run(rule, input, { build: cstBuildHost })
+```
+
+or create a configured host:
+
+```ts
+run(rule, input, { build: cstBuildHost({ collapse: ['SelectorList'] }) })
+```
+
+The default host returns uniform positioned CST nodes:
+`{ _tag: 'node', type, span, state, children }`, with terminals as `CSTLeaf` objects.
+`cstBuildHost({ collapse })` removes transparent one-child wrappers while the CST is being
+built, so public syntax trees do not need a second normalization walk.
+
+`collapse` accepts:
+
+- `true` — collapse any one-child wrapper whose raw child list also has one item.
+- `readonly string[]` — collapse only those named grammar node types.
+- `CstCollapsePredicate` — decide from `(type, child, children, rawChildren)`.
+
+Like `node(..., { collapse: true })`, CST host collapse preserves the child object exactly.
+The difference is scope: `node(..., { collapse: true })` is a grammar-local rule decision,
+while `cstBuildHost({ collapse })` is a caller-selected public CST policy.
 
 ### `buildTriviaIndex(root, input?, opts?)` {#buildtriviaindex}
 
@@ -279,13 +335,6 @@ already-compiled artifact.
 Restrict a grammar/artifact to `names` plus their transitive rule-dependency closure
 (à la carte). Returns an artifact for `compose()`:
 `compose([css, pick(less, ['MixinCall'])])`.
-
-### `cstBuildHost(type, children, rawChildren, span)` {#cstbuildhost}
-
-A generic positioned-CST build host. Pass as `ctx.build` (e.g.
-`parser.Rule(input, 0, { build: cstBuildHost })`, or `parseDoc(..., { build: cstBuildHost })`)
-to make any grammar produce a uniform CST — `{ _tag:'node', type, span, state, children }` —
-instead of its own AST builders. Left unset, a grammar uses its own builders.
 
 ## Error recovery
 

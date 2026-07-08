@@ -40,6 +40,13 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
     define(p: Combinator<T>): void {
       if (resolved) throw new Error('ref<T>() already defined')
       resolved = p
+      meta.firstSet = p._meta.firstSet
+      meta.canMatchNewline = p._meta.canMatchNewline
+      meta.isTrivia = p._meta.isTrivia
+      if (p._meta.triviaKindLabels !== undefined) meta.triviaKindLabels = p._meta.triviaKindLabels
+      else delete meta.triviaKindLabels
+      if (p._meta.disjoint !== undefined) meta.disjoint = p._meta.disjoint
+      else delete meta.disjoint
     },
   }
 

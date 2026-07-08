@@ -225,9 +225,9 @@ describe('functional grammar — node() CST capture', () => {
   })
 
   const { Pair: interpPair } = rules<{ Pair: Combinator<any> }>(g => {
-    const Num = node('Num', regex(/[0-9]+/), (c, r, s, tl) => ({ _tag: 'node', type: 'Num', span: s, ...summarize(c, r, s, tl) }))
+    const Num = node('Num', regex(/[0-9]+/), (c, _fields, s, r, tl) => ({ _tag: 'node', type: 'Num', span: s, ...summarize(c, r, s, tl) }))
     const Pair = node('Pair', parser({ trivia: ws }, sequence(regex(/[a-z]+/), literal(':'), g.Num)),
-      (c, r, s, tl) => ({ _tag: 'node', type: 'Pair', span: s, ...summarize(c, r, s, tl) }))
+      (c, _fields, s, r, tl) => ({ _tag: 'node', type: 'Pair', span: s, ...summarize(c, r, s, tl) }))
     return { Pair, Num }
   })
 
@@ -235,9 +235,9 @@ describe('functional grammar — node() CST capture', () => {
 import { node, regex, literal, sequence, parser, trivia, oneOrMore, choice, rules } from 'parseman' with { type: 'macro' }
 const ws = trivia(oneOrMore(choice(regex(/[ \\t\\n]+/), regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//))))
 const { Pair } = rules(g => {
-  const Num = node('Num', regex(/[0-9]+/), (c, r, s, tl) => ({ _tag: 'node', type: 'Num', span: s, ...summarize(c, r, s, tl) }))
+  const Num = node('Num', regex(/[0-9]+/), (c, _fields, s, r, tl) => ({ _tag: 'node', type: 'Num', span: s, ...summarize(c, r, s, tl) }))
   const Pair = node('Pair', parser({ trivia: ws }, sequence(regex(/[a-z]+/), literal(':'), g.Num)),
-    (c, r, s, tl) => ({ _tag: 'node', type: 'Pair', span: s, ...summarize(c, r, s, tl) }))
+    (c, _fields, s, r, tl) => ({ _tag: 'node', type: 'Pair', span: s, ...summarize(c, r, s, tl) }))
   return { Pair, Num }
 })
 `.trim()

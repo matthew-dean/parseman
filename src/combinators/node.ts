@@ -1,11 +1,12 @@
-import type { Combinator, ParseContext, ParseResult, ParserMeta, ParserDef } from '../types.ts'
+import type { Combinator, FieldMap, ParseContext, ParseResult, ParserMeta, ParserDef } from '../types.ts'
 import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/capture-buffer.ts'
 import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
+import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
  * `children` / `rawChildren` arrays and trivia spans into `triviaLog`, then
- * calls `build(children, rawChildren, span, triviaLog)` to produce the node.
+ * calls `build(children, fields, span, rawChildren, triviaLog, state)` to produce the node.
  *
  *   - `children`    — structural items in source order: spanned CSTLeaf terminals
  *                     and sub-nodes (whatever `build` returned for inner nodes).
@@ -15,47 +16,76 @@ import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
  *                     before which the trivia was consumed. Use `buildTriviaIndex`
  *                     to turn this into a before/after lookup table.
  *
- * If `build` returns a non-node value (e.g. a bare string for a collapsed rule),
+ * If `build` returns a non-node value (e.g. a bare string for an unwrapped rule),
  * the parent records it as a spanned leaf so its source span is still recoverable.
  */
 export type BuildNode<N> = (
   children: ReadonlyArray<unknown>,
-  rawChildren: ReadonlyArray<unknown>,
+  fields: FieldMap | undefined,
   span: { start: number; end: number },
+  rawChildren: ReadonlyArray<unknown>,
   triviaLog: readonly number[],
   state: unknown,
 ) => N
 
 /**
  * Options for `node()`.
- * - `collapse` — a structural wrapper rule (a selector list, an
- *   expression-precedence level, …) that IS its single child when it captured
- *   exactly one. With `collapse: true`, a one-child match returns that child
- *   directly (a leaf unwrapped to its string value, a sub-node as-is) and
- *   `build` is NOT called; zero or two-plus children go through `build`
- *   normally. Lets a grammar keep readable layered rules without paying a build
- *   call per collapsing layer — and without hand-writing
- *   `if (children.length === 1) return children[0]` in every wrapper builder.
+ * - `unwrap` — an AST/value wrapper rule that IS its single child when it
+ *   captured exactly one. A leaf unwraps to its string value; a sub-node is
+ *   returned as-is.
+ * - `collapse` — a structural wrapper rule that returns its single child exactly
+ *   as captured. A leaf stays a CSTLeaf; a node stays a node.
+ * Both skip `build` only for a one-child match; zero or two-plus children go
+ * through `build` normally.
  */
-export type NodeOptions = { collapse?: boolean }
+export type NodeOptions = { unwrap?: boolean; collapse?: boolean }
 
 /** A captured child's value form: a leaf unwraps to its string value, else as-is. */
-function collapseChild(child: unknown): unknown {
+function unwrapChild(child: unknown): unknown {
   return child !== null && typeof child === 'object' && (child as { _tag?: string })._tag === 'leaf'
     ? (child as { value: unknown }).value
     : child
 }
 
-export function node<N>(type: string, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions): Combinator<N> {
+function isCstChild(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && ((value as { _tag?: string })._tag === 'node'
+      || (value as { _tag?: string })._tag === 'leaf'
+      || (value as { _tag?: string })._tag === 'error')
+}
+
+function missingInferredType(): never {
+  throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
+}
+
+export function node<N>(combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions): Combinator<N>
+export function node<N>(type: string, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions): Combinator<N>
+export function node<N>(
+  typeOrCombinator: string | Combinator<unknown>,
+  combinatorOrBuild?: Combinator<unknown> | BuildNode<N>,
+  buildOrOpts?: BuildNode<N> | NodeOptions,
+  maybeOpts?: NodeOptions,
+): Combinator<N> {
+  const hasExplicitType = typeof typeOrCombinator === 'string'
+  const type = hasExplicitType ? typeOrCombinator : undefined
+  const combinator = (hasExplicitType ? combinatorOrBuild : typeOrCombinator) as Combinator<unknown>
+  const build = (hasExplicitType ? buildOrOpts : combinatorOrBuild) as BuildNode<N> | undefined
+  const opts = (hasExplicitType ? maybeOpts : buildOrOpts) as NodeOptions | undefined
+  const baseDef = { tag: 'node' as const, parser: combinator, ...(type === undefined ? {} : { type }), ...(build === undefined ? {} : { build }) }
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
+  const unwrap = opts?.unwrap === true
   const collapse = opts?.collapse === true
-  const def: Extract<ParserDef, { tag: 'node' }> = collapse
-    ? { tag: 'node', type, parser: combinator, build, collapse: true }
-    : { tag: 'node', type, parser: combinator, build }
+  if (unwrap && collapse) {
+    throw new Error('node() options cannot set both unwrap and collapse')
+  }
+  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse
+    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}) }
+    : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
   // capture for the inner scope; when it never reads state (5th), skip the state clone.
@@ -63,32 +93,45 @@ export function node<N>(type: string, combinator: Combinator<unknown>, build?: B
   // may read either, so capture both.
   const capturesTrivia = build ? buildReadsTrivia(def) : true
   const clonesState = build ? buildReadsState(def) : true
+  const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
   return {
     _tag: 'node',
     _meta: meta,
     _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<N> {
       const saved = beginCstNodeCapture(ctx)
+      const savedFields = ctx._fields
+      ctx._fields = capturesFields ? [] : undefined
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
       // without touching the global _triviaLog, which is committed independently.
       if (!capturesTrivia) ctx.captureTrivia = false
       const r = combinator.parse(input, pos, ctx)
+      const fields = capturesFields ? buildFieldMap(ctx._fields) : undefined
+      ctx._fields = savedFields
       const { children, rawChildren, triviaLog } = endCstNodeCapture(ctx, saved)
 
       if (!r.ok) return r
 
-      // collapse: a single captured child IS the value — skip build.
+      // unwrap/collapse: a single captured child IS the value — skip build.
       const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
-      const built: unknown = collapse && children.length === 1
-        ? collapseChild(children[0])
+      const nodeType = def.type ?? missingInferredType()
+      const built: unknown = unwrap && children.length === 1
+        ? unwrapChild(children[0])
+        : collapse && children.length === 1
+          ? children[0]
+        : !build
+          && ctx.build?._parsemanCstCollapse
+          && children.length === 1
+          && rawChildren.length === 1
+          && ctx.build._parsemanCstCollapse(nodeType, children[0], children, rawChildren)
+          ? children[0]
         : build
-          ? build(children, rawChildren, r.span, triviaLog, st)
+          ? build(children, fields, r.span, rawChildren, triviaLog, st)
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build
-            ? ctx.build(type, children, rawChildren, r.span, triviaLog, st)
-            : { _tag: 'node', type, span: { start: r.span.start, end: r.span.end }, state: st ?? null, children }
-      const isNodeLike = typeof built === 'object' && built !== null && (built as { _tag?: string })._tag === 'node'
-      const rawEntry = isNodeLike
+              ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, st)
+              : { _tag: 'node', type: nodeType, span: { start: r.span.start, end: r.span.end }, state: st ?? null, children }
+      const rawEntry = isCstChild(built)
         ? built
         : { _tag: 'leaf', value: typeof built === 'string' ? built : '', span: r.span }
       if (saved.buf !== undefined || saved.ch !== undefined) {

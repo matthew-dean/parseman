@@ -98,10 +98,17 @@ type KeywordsOptions = { caseInsensitive?: boolean; boundary?: string }
 ### `NodeOptions`
 
 ```ts
-type NodeOptions = { collapse?: boolean }
+type NodeOptions = {
+  unwrap?: boolean
+  collapse?: boolean
+}
 ```
 
-See [collapsing wrapper rules](../guide/ast#collapsing-wrapper-rules).
+`unwrap` is for AST/value wrapper rules: when exactly one child is captured, `build` is
+skipped and a captured leaf becomes its string value. `collapse` is for structural/CST
+wrapper rules: when exactly one child is captured, `build` is skipped and that child is
+returned exactly. Set at most one option. See
+[unwrapping and collapsing wrapper rules](../guide/ast#unwrapping-and-collapsing-wrapper-rules).
 
 ### `ScanToOptions`
 
@@ -159,6 +166,29 @@ type RunResult = {
 }
 ```
 
+### `CstBuildHostOptions`
+
+```ts
+type CstCollapsePredicate = (
+  type: string,
+  child: unknown,
+  children: readonly unknown[],
+  rawChildren: readonly unknown[],
+) => boolean
+
+type CstBuildHostOptions = {
+  collapse?: boolean | readonly string[] | CstCollapsePredicate
+}
+```
+
+`cstBuildHost({ collapse })` collapses transparent one-child CST wrappers during
+node construction. `true` collapses any one-child wrapper whose raw child list is
+also one item; an array limits collapse to named grammar node types; a predicate
+lets a language define its public CST policy. The returned child is still the original
+CST child object; leaves are not unwrapped to strings. The predicate is typed over
+`unknown` because `ctx.build` is a general host hook, but with the built-in
+`cstBuildHost` those values are CST children.
+
 ## Building nodes
 
 ### `BuildNode<N>`
@@ -168,11 +198,21 @@ The `build` callback signature for [`node()`](../guide/ast):
 ```ts
 type BuildNode<N> = (
   children: ReadonlyArray<unknown>,
-  rawChildren: ReadonlyArray<unknown>,
+  fields: FieldMap | undefined,
   span: { start: number; end: number },
+  rawChildren: ReadonlyArray<unknown>,
   triviaLog: readonly number[],
   state: unknown,
 ) => N
+```
+
+```ts
+type FieldCapture<T = unknown> = {
+  value: T
+  span: Span
+}
+
+type FieldMap = Record<string, FieldCapture | FieldCapture[]>
 ```
 
 ### `NodeLike`

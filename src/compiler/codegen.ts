@@ -6,7 +6,7 @@
  * `break <label>` rather than an IIFE return — no function call, no result
  * object allocation per node.
  */
-import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy } from '../types.ts'
+import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
@@ -25,6 +25,7 @@ import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type Scan
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
+import { buildReadsFields, parserHasOwnFields } from './fields.ts'
 import {
   transformFnSource,
   tryInlineUnaryTransform,
@@ -161,7 +162,7 @@ type Ctx = {
    */
   triviaFnNames: Map<Combinator<unknown>, string>
   /** node() build functions captured at compile time (parallel to buildSrcs). */
-  buildFns: Array<(children: ReadonlyArray<unknown>, raw: ReadonlyArray<unknown>, span: { start: number; end: number }, triviaLog: readonly number[], state: unknown) => unknown>
+  buildFns: Array<(children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, raw: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown>
   /** Source text of each build fn (set from def.buildSrc; null when unavailable). */
   buildSrcs: Array<string | null>
   /**
@@ -570,8 +571,9 @@ function planDisjointDispatch(
 // (compiled CSS regressed ~2.3×). We gate the whole save/restore on a single
 // boolean: when no buffer is live the marks are 0 and the restore is one test.
 /** Body of a capture restore — resets each live buffer to its saved length. */
-function captureRestoreBody(mL: string, mR: string, mTl: string, mLg: string | null): string {
-  const base = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${mL}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${mR}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${mTl}`
+function captureRestoreBody(mL: string, mR: string, mTl: string, mLg: string | null, mF: string | null = null): string {
+  const fieldRestore = mF ? `; if (_ctx._fields) _ctx._fields.length = ${mF}` : ''
+  const base = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${mL}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${mR}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${mTl}${fieldRestore}`
   // `_triviaLog` is the standalone diagnostic trivia log. The interpreter only
   // rewinds it on a failed *choice* arm (choice.ts), NOT on a failed sequence
   // term — a sequence returns the failure with earlier trivia still logged. To
@@ -642,6 +644,7 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     // Delegating wrappers: defer to the wrapped parser.
     case 'transform':
     case 'label':
+    case 'field':
     case 'expect':
     case 'withCtx':
     case 'grammar':
@@ -686,6 +689,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'optional':
     case 'transform':
     case 'label':
+    case 'field':
     case 'expect':
     case 'withCtx':
     case 'grammar':
@@ -764,22 +768,25 @@ function emitFallible(
   // A failed sequence term does NOT rewind `_triviaLog` (the interpreter leaves
   // earlier trivia logged) — only the CST child buffers are restored here.
   const needsRollback = ctx.capturing && mayLeavePartialCapture(inner)
+  const needsFieldRollback = needsRollback && parserHasOwnFields(inner)
   const mL  = needsRollback ? v(ctx, '_fcl')  : null
   const mR  = needsRollback ? v(ctx, '_fcr')  : null
   const mTl = needsRollback ? v(ctx, '_fctl') : null
+  const mF  = needsFieldRollback ? v(ctx, '_fcf')  : null
   const stmts = [
     `${ind0}let ${okV} = false, ${valV}, ${endV} = ${pos}`,
     ...(mL ? [
       `${ind0}const ${mL} = _ctx._cstLeaves?.length ?? 0`,
       `${ind0}const ${mR} = _ctx._cstRawChildren?.length ?? 0`,
       `${ind0}const ${mTl} = _ctx._cstTriviaLog?.length ?? 0`,
+      ...(mF ? [`${ind0}const ${mF} = _ctx._fields?.length ?? 0`] : []),
     ] : []),
     `${ind0}${lbl}: {`,
     ...r.stmts,
     `${ind0}  ${valV} = ${r.valueVar}; ${endV} = ${r.endVar}; ${okV} = true`,
     `${ind0}}`,
     ...(mL ? [
-      `${ind0}if (!${okV}) { ${captureRestoreBody(mL, mR!, mTl!, null)} }`,
+      `${ind0}if (!${okV}) { ${captureRestoreBody(mL, mR!, mTl!, null, mF)} }`,
     ] : []),
   ]
   return { stmts, okVar: okV, valVar: valV, endVar: endV }
@@ -1087,7 +1094,7 @@ function failsAtStart(p: Combinator<unknown>): boolean {
   switch (d.tag) {
     case 'literal': case 'regex': case 'keywords': case 'guard': case 'not':
       return true
-    case 'transform': case 'label':
+    case 'transform': case 'label': case 'field':
       return failsAtStart(d.parser)
     default:
       return false
@@ -1111,7 +1118,7 @@ function canMatchEmptyAtStart(p: Combinator<unknown>): boolean {
       return /(?:[*?]|\{0,|\{\d*,)/.test(d.source)
     case 'optional': return true
     case 'many': return true
-    case 'transform': case 'label':
+    case 'transform': case 'label': case 'field':
       return canMatchEmptyAtStart(d.parser)
     case 'literal':
       return d.value.length === 0
@@ -1379,12 +1386,14 @@ function emitFirstMatch(
     const armHasAutoNot = !!(autoNot && autoNot.length > 0)
     const armNeedsRollback = ctx.capturing &&
       (mayLeavePartialCapture(p) || (armHasAutoNot && capturesLeaf(p)))
+    const armNeedsFieldRollback = armNeedsRollback && parserHasOwnFields(p)
     const markLeaves = armNeedsRollback ? v(ctx, '_cml') : null
     const markRaw    = armNeedsRollback ? v(ctx, '_cmr') : null
     const markTl     = armNeedsRollback ? v(ctx, '_cmtl') : null
     const markLog    = armNeedsRollback ? v(ctx, '_cmlg') : null
+    const markFields = armNeedsFieldRollback ? v(ctx, '_cmf') : null
     const rollback   = markLeaves
-      ? captureRestoreBody(markLeaves, markRaw!, markTl!, markLog!)
+      ? captureRestoreBody(markLeaves, markRaw!, markTl!, markLog!, markFields)
       : ''
     const failSlot = atStart ? staticFx : '_ctx._fx'
 
@@ -1398,6 +1407,7 @@ function emitFirstMatch(
         `${ind(ctx)}const ${markRaw} = _ctx._cstRawChildren?.length ?? 0`,
         `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog?.length ?? 0`,
         `${ind(ctx)}const ${markLog} = _ctx._triviaLog?.length ?? 0`,
+        ...(markFields ? [`${ind(ctx)}const ${markFields} = _ctx._fields?.length ?? 0`] : []),
       )
     }
     const { stmts: armStmts, okVar, valVar, endVar } = emitFallible(p, ctx, pos, atStart)
@@ -1894,6 +1904,9 @@ function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: str
  * calls the build fn, then records the node in the enclosing node()'s collectors.
  */
 function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: string): ER {
+  if (def.type === undefined) {
+    throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
+  }
   // A STRUCTURAL node has no own build — it builds via the `ctx.build` host at
   // parse time, else a default positioned CST. No build fn is captured.
   const structural = def.build === undefined
@@ -1914,25 +1927,29 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // only known at parse time — so instead of defensively capturing both (the old
   // behaviour), gate on what the host reads via the `_hostReads` helper (memoized
   // once per parse on `_ctx._pmCapTL`/`_pmCapST`). Host sig is
-  // `(type, children, rawChildren, span, triviaLog, state)`: not reading arg 4
-  // (index) means no trivia log, arg 5 means no state (when no host, the default
+  // `(type, children, fields, span, rawChildren, triviaLog, state)`: not reading arg 5
+  // (index) means no trivia log, arg 6 means no state (when no host, the default
   // CST embeds `state` → keep the clone). `_hostReads` is conservative — a
   // rest/default param or `arguments` forces full capture, so a spread host never
-  // silently loses data. jess hosts are all plain arity-4 → both captures are dead
+  // silently loses data. jess hosts can ask for fields with arity 3 while trivia/state stay dead
   // (the cstTriviaLog per-token push dominates — ~28% of a real jess parse).
   const capturesTrivia = mkType !== null || (!structural && buildReadsTrivia(def))
   const clonesState = !structural && buildReadsState(def)
+  const hasFields = parserHasOwnFields(def.parser)
+  const capturesFields = hasFields && !structural && buildReadsFields(def)
 
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
   const capTLv = structural ? v(ctx, '_ctl') : null
   const capSTv = structural ? v(ctx, '_cst') : null
+  const capFv = structural && hasFields ? v(ctx, '_cf') : null
   const tlV = capturesTrivia || structural ? v(ctx, '_tl') : '_EMPTY_TL'
   if (!capturesTrivia) ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
   if (structural) ctx.needsHostReads = true
+  const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
   const allocStmt = structural
-    ? `${i}const ${capTLv} = _ctx._pmCapTL ??= _hostReads(_ctx.build, 4), ${capSTv} = _ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 5))\n`
+    ? `${i}const ${capTLv} = ${hostTriviaGate}, ${capSTv} = _ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6))${capFv ? `, ${capFv} = _ctx.build !== undefined && _hostReads(_ctx.build, 2)` : ''}\n`
       + `${i}const ${chV} = [], ${rawV} = [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
     : capturesTrivia
       ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
@@ -1940,14 +1957,21 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // When not capturing, set _ctx._cstTriviaLog = undefined so inner trivia terminals'
   // `if (_ctx._cstTriviaLog !== undefined)` guard short-circuits (no per-token push).
   const innerTl = structural ? `${capTLv} ? ${tlV} : undefined` : capturesTrivia ? tlV : 'undefined'
+  const fieldsOn = structural ? (capFv ?? 'false') : capturesFields ? 'true' : 'false'
+  const sf = hasFields ? v(ctx, '_sf') : null
+  const fArr = hasFields ? v(ctx, '_fa') : null
+  const fObj = hasFields ? v(ctx, '_fields') : 'undefined'
   const stmts: string[] = [
     allocStmt,
-    `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog`,
-    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}`,
+    `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${sf ? `, ${sf} = _ctx._fields` : ''}`,
+    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
   ]
   const { stmts: innerStmts, okVar, endVar } = emitFallible(def.parser, ctx, pos)
   stmts.push(...innerStmts)
-  stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}`)
+  if (sf && fArr) {
+    stmts.push(`${i}const ${fArr} = _ctx._fields`)
+  }
+  stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${sf ? `; _ctx._fields = ${sf}` : ''}`)
   // node() returns the inner failure verbatim (interpreter parity) — propagate
   // the recorded deepest failure, not a coarse ["node"] at the node's start.
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
@@ -1960,6 +1984,22 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     stV = v(ctx, '_nst')
     stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
+  if (sf && fArr) {
+    const fe = v(ctx, '_fe')
+    const cur = v(ctx, '_fc')
+    stmts.push(
+      `${i}let ${fObj} = undefined`,
+      `${i}if (${fArr} && ${fArr}.length) {`,
+      `${i}  ${fObj} = {}`,
+      `${i}  for (const ${fe} of ${fArr}) {`,
+      `${i}    const ${cur} = ${fObj}[${fe}.name], _entry = { value: ${fe}.value, span: ${fe}.span }`,
+      `${i}    if (${cur} === undefined) ${fObj}[${fe}.name] = _entry`,
+      `${i}    else if (Array.isArray(${cur})) ${cur}.push(_entry)`,
+      `${i}    else ${fObj}[${fe}.name] = [${cur}, _entry]`,
+      `${i}  }`,
+      `${i}}`,
+    )
+  }
   const ndV = v(ctx, '_nd')
   // A structural node's own "builder" is a default positioned CST; a built node's
   // is its inline-mk expr or captured build fn.
@@ -1967,24 +2007,31 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? `{ _tag: 'node', type: ${JSON.stringify(def.type)}, span: { start: ${pos}, end: ${endVar} }, state: ${stV} ?? null, children: ${chV} }`
     : mkType
       ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
-      : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV})`
+      : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
   // Modes (RULE_ABI_PLAN §7): a per-parse `_ctx.build` host (keyed by node type)
   // may override construction — so ONE fused grammar serves eval-AST vs
   // positioned-CST modes. Emitted when `ctx.ns` (linkable) OR for a structural
   // node (whose whole point is the injected host). A built standalone node stays
   // byte-identical (no `_ctx.build` branch).
   const ndExpr = ctx.ns || structural
-    ? `_ctx.build !== undefined ? _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${rawV}, { start: ${pos}, end: ${endVar} }, ${tlV}, ${stV}) : (${buildExpr})`
+    ? `_ctx.build !== undefined ? _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV}) : (${buildExpr})`
     : buildExpr
-  // collapse: a single captured child IS the value (leaf → its string, else as-is);
-  // build is skipped (short-circuited by the ternary). Mirrors node.ts.
-  const finalExpr = def.collapse
-    ? `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
+  // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
+  // into its string, collapse returns the child exactly. Mirrors node.ts.
+  const hostCollapseExpr = (ctx.ns || structural)
+    ? `_ctx.build !== undefined && _ctx.build._parsemanCstCollapse !== undefined && ${chV}.length === 1 && ${rawV}.length === 1 && _ctx.build._parsemanCstCollapse(${JSON.stringify(def.type)}, ${chV}[0], ${chV}, ${rawV}) ? ${chV}[0] : (${ndExpr})`
     : ndExpr
+  const unwrapExpr = `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
+  const collapseExpr = `${chV}.length === 1 ? ${chV}[0] : (${ndExpr})`
+  const finalExpr = def.unwrap
+    ? unwrapExpr
+    : def.collapse
+      ? collapseExpr
+    : hostCollapseExpr
   stmts.push(
     `${i}const ${ndV} = ${finalExpr}`,
     `${i}if (${sc}) ${sc}.push(${ndV})`,
-    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && ${ndV}._tag === 'node') ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'error')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
   )
 
   return { stmts, valueVar: ndV, endVar }
@@ -2265,6 +2312,17 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         endVar: inner.endVar,
       }
     }
+    case 'field': {
+      const inner = emit(def.parser, ctx, pos)
+      return {
+        stmts: [
+          ...inner.stmts,
+          `${ind(ctx)}if (_ctx._fields) _ctx._fields.push({ name: ${JSON.stringify(def.name)}, value: ${inner.valueVar}, span: { start: ${pos}, end: ${inner.endVar} } })`,
+        ],
+        valueVar: inner.valueVar,
+        endVar: inner.endVar,
+      }
+    }
     case 'grammar': {
       const savedTrivia = ctx.activeTrivia
       const savedKindLabels = ctx.triviaKindLabels
@@ -2391,6 +2449,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'trivia':
     case 'token':
     case 'label':
+    case 'field':
     case 'optional':
     case 'many':
     case 'oneOrMore':
@@ -2419,6 +2478,7 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'trivia':
     case 'token':
     case 'label':
+    case 'field':
     case 'grammar':
     case 'not':
     case 'node':
@@ -2811,6 +2871,12 @@ function assertRuleName(name: string): void {
   }
 }
 
+function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): string {
+  const labels = rule._meta.triviaKindLabels
+  if (labels === undefined) return fnSource
+  return `Object.assign(${fnSource}, { _meta: { triviaKindLabels: ${JSON.stringify(labels)} } })`
+}
+
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
 ): { keys: string[]; replacement: string } | null {
@@ -2851,7 +2917,7 @@ export function compileRuleMap(
   }
   ctx.ruleNames = ruleNames
 
-  const perEntry = ruleMap.map(([key, rule]) => ({ key, r: emit(rule, ctx, '_pos') }))
+  const perEntry = ruleMap.map(([key, rule]) => ({ key, rule, r: emit(rule, ctx, '_pos') }))
 
   const derivedSrcs = ctx.mapFnSrcs.length === ctx.mapFns.length && ctx.mapFnSrcs.every((s): s is string => s !== null)
     ? ctx.mapFnSrcs as string[]
@@ -2893,7 +2959,10 @@ export function compileRuleMap(
   // a separately-built object literal, which would either re-run the shared
   // prelude per entry or duplicate its text per entry — both defeat the point).
   const objBody = perEntry
-    .map(({ key, r }) => `    ${JSON.stringify(key)}: ${entryFnText(r).split('\n').join('\n    ')}`)
+    .map(({ key, rule, r }) => {
+      const src = publicRuleWrapperSource(rule, entryFnText(r))
+      return `    ${JSON.stringify(key)}: ${src.split('\n').join('\n    ')}`
+    })
     .join(',\n')
   const replacement = [
     `/* @__PURE__ */ (() => {`,
@@ -3031,7 +3100,7 @@ export function compileLinkable(
 
   // Emit each rule's body as its `_r_<Name>` fn (resolving a `ref` placeholder to
   // its target), then build a public wrapper that calls it.
-  const perEntry: Array<{ key: string; r: ER }> = []
+  const perEntry: Array<{ key: string; rule: Combinator<unknown>; r: ER }> = []
   for (const [key, rule] of ruleMap) {
     const fn = ruleNames.get(rule)!
     if (!ctx.namedParsers.has(rule)) {
@@ -3048,7 +3117,7 @@ export function compileLinkable(
       pushNamedFnDecl(ctx, fn, body.stmts, body.valueVar, body.endVar)
     }
     // Public wrapper: call the named fn, adapt sentinel → ParseResult.
-    perEntry.push({ key, r: emitNamedFnCall(ctx, fn, '_pos') })
+    perEntry.push({ key, rule, r: emitNamedFnCall(ctx, fn, '_pos') })
   }
 
   // A runtime-parser fallback can't be fused (no source AND no stable identity to
@@ -3086,14 +3155,14 @@ export function compileLinkable(
   ].filter(Boolean)
 
   const wrappers = new Map<string, string>()
-  for (const { key, r } of perEntry) {
-    wrappers.set(key, [
+  for (const { key, rule, r } of perEntry) {
+    wrappers.set(key, publicRuleWrapperSource(rule, [
       `function(input, _pos, _ctx) {`,
       `  let pos = _pos`,
       ...r.stmts,
       `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
       `}`,
-    ].join('\n'))
+    ].join('\n')))
   }
 
   // Per-rule first-set table for fuse-time dispatch: fusedBody() substitutes each

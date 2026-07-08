@@ -66,6 +66,10 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         // the map fn reads the value → always consumed.
         visit(def.parser, true)
         return
+      case 'field':
+        // the field capture records the parsed value → always consumed.
+        visit(def.parser, true)
+        return
       case 'skip':
         visit(def.main, consumed)   // returns main's value
         visit(def.skipped, false)   // skipped value is discarded
