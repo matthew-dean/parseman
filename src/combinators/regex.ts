@@ -90,7 +90,7 @@ function readClassRanges(body: string): Array<[number, number]> | null {
 }
 
 function shortScanner(source: string, flags: string): ShortScanner | null {
-  if (/[imsuy]/.test(flags)) return null
+  if (/[imsuvy]/.test(flags)) return null
   let ranges: Array<[number, number]> | null = null
   let quant = ''
   if (source[0] === '[') {

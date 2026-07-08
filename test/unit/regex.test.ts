@@ -67,4 +67,10 @@ describe('regex', () => {
     }
   })
 
+  it('falls back to native exec for unicode-set regexes', () => {
+    const hexLetter = regex(new RegExp('[\\w&&[A-F]]+', 'v'))
+    expect(parse(hexLetter, '&')).toMatchObject({ ok: false })
+    expect(parse(hexLetter, 'A')).toMatchObject({ ok: true, value: 'A' })
+  })
+
 })
