@@ -2255,11 +2255,11 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'trivia':   return emit(def.parser, ctx, pos)
     case 'token':    return emitToken(def, ctx, pos)
     case 'label': {
-      const inner = emitFallible(def.parser, ctx, pos, true)
+      const inner = emitFallible(def.parser, ctx, pos)
       return {
         stmts: [
           ...inner.stmts,
-          ...emitIfFail(ctx, `!${inner.okVar}`, failBody(ctx, JSON.stringify(def.label), pos)),
+          ...emitIfFail(ctx, `!${inner.okVar}`, failBody(ctx, JSON.stringify(def.label), '_ctx._fe')),
         ],
         valueVar: inner.valVar,
         endVar: inner.endVar,

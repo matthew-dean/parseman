@@ -55,6 +55,18 @@ describe('diagnostics parity — interpreter vs compiled', () => {
     }
   })
 
+  it('preserves the inner failure offset for labeled composite parsers', () => {
+    const p = label('pair', sequence(literal('a'), literal('b')))
+
+    for (const { mode, result } of parseModes(p, 'ac')) {
+      expect(result.ok, mode).toBe(false)
+      if (!result.ok) {
+        expect(result.expected, mode).toEqual(['pair'])
+        expect(result.span, mode).toEqual({ start: 1, end: 1 })
+      }
+    }
+  })
+
   it('combines friendly labels and literals through choice failures', () => {
     const p = choice(
       label('identifier', regex(/[a-z_][a-z0-9_]*/i)),
