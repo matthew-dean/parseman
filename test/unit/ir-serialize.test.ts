@@ -119,11 +119,27 @@ describe('IR serialize round-trip', () => {
     roundTrip(rm, 'Ci', ['url(', 'URL(', 'nope'])
   })
 
+  it('round-trips captured transform/node callbacks and node collapse opts', () => {
+    const mapped = transform(regex(/[0-9]+/), (v: unknown) => v)
+    if (mapped._def.tag === 'transform') mapped._def.fnSrc = '(v) => v'
+
+    const collapsed = node('Collapsed', regex(/[a-z]+/), (_children: readonly unknown[]) => null, { collapse: true })
+    if (collapsed._def.tag === 'node') collapsed._def.buildSrc = '(_children) => null'
+
+    const rm = Object.entries(rules(() => ({
+      Mapped: mapped,
+      Collapsed: collapsed,
+    })))
+
+    roundTrip(rm, 'Mapped', ['1', '123', 'a'])
+    roundTrip(rm, 'Collapsed', ['a', 'abc', '1'])
+  })
+
   it('returns null when a construct carries no static source (runtime transform fn)', () => {
     // A `transform` authored with a live fn (no captured `fnSrc`) can't be
     // serialized — the serializer throws Unserializable and the caller falls back
     // to lowered source, surfaced here as a null return.
-    const rm = Object.entries(rules((g: any) => ({
+    const rm = Object.entries(rules(() => ({
       Doc: transform(regex(/[0-9]+/), (v: unknown) => v),
     })))
     expect(serializeRuleMap(rm as never)).toBeNull()

@@ -155,6 +155,20 @@ const sum = node('Sum',
 )
 ```
 
+Use `collapse` for the same grammar-local wrapper behavior when the single child must stay
+in CST form:
+
+```ts
+const componentValue = node('ComponentValue',
+  choice(g.Function, g.Block, regex(/[^\s{}()[\];]+/)),
+  (children, raw, span) => ({ _tag: 'node', type: 'ComponentValue', span, state: null, children: [...children] }),
+  { collapse: true },
+)
+```
+
+If the regex arm matches alone, `unwrap` would return the bare token string;
+`collapse` returns `{ _tag: 'leaf', value, span }`.
+
 | Children captured | Result |
 | --- | --- |
 | **0** | `build` runs normally |

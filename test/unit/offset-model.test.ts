@@ -66,6 +66,14 @@ describe('OffsetIndex — gap queries', () => {
     expect(idx.gapIndexAt(7)).toBe(2) // inside "\n  " between slot 1 and 2
   })
 
+  it('exposes slots and empty-gap checks', () => {
+    expect(idx.slot(1)).toEqual({ start: 4, end: 6 })
+    expect(idx.slot(-1)).toBeUndefined()
+    expect(idx.slot(3)).toBeUndefined()
+    expect(idx.isEmpty({ start: 2, end: 2 })).toBe(true)
+    expect(idx.isEmpty(idx.gapAfter(2)!)).toBe(false)
+  })
+
   it('rejects overlapping / out-of-order slots', () => {
     expect(() => new OffsetIndex([{ start: 0, end: 5 }, { start: 3, end: 8 }])).toThrow(/overlap/i)
   })

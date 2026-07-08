@@ -362,6 +362,28 @@ describe('evaluator — transform / node / sepBy / oneOrMore', () => {
     }
   })
 
+  it('evaluateExpr builds node() rules with optional collapse', () => {
+    const code = `node('X', literal('a'), () => null, { collapse: true })`
+    const combi = evaluateExpr(parseInit(code), new Map(), code)
+    expect(combi?._def.tag).toBe('node')
+    if (combi?._def.tag === 'node') {
+      expect(combi._def.collapse).toBe(true)
+      expect(combi._def.buildSrc).toBe('() => null')
+    }
+  })
+
+  it('evaluateExpr rejects ambiguous node() unwrap+collapse options', () => {
+    const code = `node('X', literal('a'), () => null, { unwrap: true, collapse: true })`
+    expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()
+  })
+
+  it('evaluateExpr covers wrapper factories used by macro grammars', () => {
+    const code = `label('item', noTrivia(token(expect(literal('a'), 'a'))))`
+    const combi = evaluateExpr(parseInit(code), new Map(), code)
+    expect(combi?._def.tag).toBe('label')
+    expect(parse(combi!, 'a').ok).toBe(true)
+  })
+
   it('evaluateParserFactory infers node() types from rule keys', () => {
     const code = `rules(g => ({ Ident: node(regex(/[a-z]+/)) }))`
     const call = parseInit(`const m = ${code}`)
