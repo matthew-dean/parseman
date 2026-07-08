@@ -12,7 +12,7 @@ export function transform<T, U>(
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<U> {
       const result = combinator.parse(input, pos, ctx)
       if (!result.ok) return result
-      return { ...result, value: fn(result.value, result.span) }
+      return { ok: true, value: fn(result.value, result.span), span: result.span }
     },
   }
 }
@@ -27,7 +27,7 @@ export function skip<T, S>(main: Combinator<T>, skipped: Combinator<S>): Combina
       if (!result.ok) return result
       const s = skipped.parse(input, result.span.end, ctx)
       if (!s.ok) return result
-      return { ...result, span: { start: result.span.start, end: s.span.end } }
+      return { ok: true, value: result.value, span: { start: result.span.start, end: s.span.end } }
     },
   }
 }
@@ -58,7 +58,7 @@ export function label<T>(name: string, combinator: Combinator<T>): Combinator<T>
     _def: { tag: 'label', label: name, parser: combinator as Combinator<unknown> },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
       const result = combinator.parse(input, pos, ctx)
-      if (!result.ok) return { ...result, expected: [name] }
+      if (!result.ok) return { ok: false, expected: [name], span: result.span }
       return result
     },
   }

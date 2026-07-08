@@ -39,6 +39,22 @@ describe('choice', () => {
     expect(parse(p, 'cherry').ok).toBe(true)
   })
 
+  it('dispatches disjoint ASCII choices without probing earlier arms', () => {
+    const a = literal('a')
+    const b = literal('b')
+    const c = literal('c')
+    const calls: [number, number, number] = [0, 0, 0]
+    const ap = a.parse.bind(a)
+    const bp = b.parse.bind(b)
+    const cp = c.parse.bind(c)
+    a.parse = (input, pos, ctx) => { calls[0]++; return ap(input, pos, ctx) }
+    b.parse = (input, pos, ctx) => { calls[1]++; return bp(input, pos, ctx) }
+    c.parse = (input, pos, ctx) => { calls[2]++; return cp(input, pos, ctx) }
+    const r = parse(choice(a, b, c), 'c')
+    expect(r.ok).toBe(true)
+    expect(calls).toEqual([0, 0, 1])
+  })
+
   it('collects expected labels on failure', () => {
     const p = choice(literal('foo'), literal('bar'))
     const r = parse(p, 'baz')

@@ -28,6 +28,26 @@ describe('advanceTrivia()', () => {
     // No trivia at the cursor → position unchanged.
     expect(advanceTrivia('y', 0, ctx)).toBe(0)
   })
+
+  it('fast-skips unlabeled whitespace and block-comment trivia without regex exec', () => {
+    const rw = trivia(oneOrMore(choice(
+      regex(/[ \t\n\r\f]+/),
+      regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+    )))
+    expect(advanceTrivia('', 0, { trackLines: false, trivia: rw })).toBe(0)
+    const exec = RegExp.prototype.exec
+    let calls = 0
+    RegExp.prototype.exec = function patchedExec(input: string) {
+      calls++
+      return exec.call(this, input)
+    }
+    try {
+      expect(advanceTrivia('  /*x*/  y', 0, { trackLines: false, trivia: rw })).toBe(9)
+      expect(calls).toBe(0)
+    } finally {
+      RegExp.prototype.exec = exec
+    }
+  })
 })
 
 describe('scanTrivia()', () => {
