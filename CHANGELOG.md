@@ -11,6 +11,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **CST host collapse.** `cstBuildHost({ collapse })` now collapses transparent
   one-child CST wrappers during node construction while preserving CST leaf
   objects and spans.
+- **Named node captures.** `field(name, parser)` captures named values and spans
+  for the nearest `node()` builder or structural build host without forcing
+  trivia/state capture.
 - **Macro/codegen parity.** `unwrap` and CST-host collapse work across the
   interpreter, compiled parsers, and macro output.
 

@@ -53,10 +53,11 @@ export type ParserDef =
   | { tag: 'trivia';    parser: Combinator<unknown> }
   | { tag: 'token';     parser: Combinator<unknown> }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
+  | { tag: 'field';     name: string; parser: Combinator<unknown> }
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; trackLines: boolean }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
-  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, rawChildren: ReadonlyArray<unknown>, span: { start: number; end: number }, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; unwrap?: boolean; collapse?: boolean }
+  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; unwrap?: boolean; collapse?: boolean }
   | { tag: 'guard';    predicate: (state: unknown) => boolean }
   | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown> }
   | { tag: 'recover';  parser: Combinator<unknown>; sentinel: Combinator<unknown> }
@@ -84,14 +85,22 @@ export type CstCollapsePredicate = (
 export type BuildHost = ((
   type: string,
   children: ReadonlyArray<unknown>,
-  rawChildren: ReadonlyArray<unknown>,
+  fields: FieldMap | undefined,
   span: { start: number; end: number },
+  rawChildren: ReadonlyArray<unknown>,
   triviaLog: readonly number[],
   state: unknown,
 ) => unknown) & {
   /** Framework-internal: optional syntax-CST wrapper collapse policy. */
   _parsemanCstCollapse?: CstCollapsePredicate | undefined
 }
+
+export type FieldCapture<T = unknown> = {
+  value: T
+  span: Span
+}
+
+export type FieldMap = Record<string, FieldCapture | FieldCapture[]>
 
 export type ParseContext = {
   // `| undefined` (matching captureTrivia/_cst* below): a nested scope may
@@ -114,7 +123,7 @@ export type ParseContext = {
   state?: unknown
   /**
    * Mode host (RULE_ABI_PLAN §7): when set, a linkable/fused grammar's `node()`
-   * rules build via `build(type, children, rawChildren, span, triviaLog, state)`
+   * rules build via `build(type, children, fields, span, rawChildren, triviaLog, state)`
    * instead of their own builder — so ONE grammar serves eval-AST (unset) vs
    * positioned-CST / language-service (set) modes. Ignored by non-linkable output.
    */
@@ -172,6 +181,8 @@ export type ParseContext = {
    * Zero object allocations — replaces the CSTTrivia object path entirely.
    */
   _cstTriviaLog?: number[] | undefined
+  /** Framework-internal: active node() field captures, enabled only when needed. */
+  _fields?: Array<{ name: string; value: unknown; span: Span }> | undefined
   /** Framework-internal: lazy capture buffer for active node() parse. */
   _cstBuf?: CstCaptureBuf | undefined
 }

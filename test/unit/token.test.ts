@@ -13,7 +13,7 @@ type CstNode = {
 }
 
 const mkNode = (type: string) =>
-  (children: readonly unknown[], _raw: readonly unknown[], span: { start: number; end: number }): CstNode =>
+  (children: readonly unknown[], _fields: unknown, span: { start: number; end: number }, _raw: readonly unknown[]): CstNode =>
     ({ _tag: 'node', type, span, children: [...children] })
 
 const ws = trivia(regex(/[ \t\n]+/))
@@ -47,7 +47,7 @@ const ws = trivia(regex(/[ \\t\\n]+/))
 const important = token(sequence(literal('!'), regex(/important/i)))
 const decl = parser(
   { trivia: ws },
-  node('Decl', sequence(literal('color'), literal(':'), optional(important)), (children, _raw, span) => ({ _tag: 'node', type: 'Decl', span, children: [...children] })),
+  node('Decl', sequence(literal('color'), literal(':'), optional(important)), (children, _fields, span, _raw) => ({ _tag: 'node', type: 'Decl', span, children: [...children] })),
 )
 `.trim()
 

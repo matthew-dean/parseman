@@ -52,7 +52,7 @@ actual grammar.
 Keep the parts as separate combinators wherever the builder needs them as distinct CST
 children:
 
-- for per-field source spans (`fieldSpans` / `valueSpans`),
+- for named values/spans consumed by a builder (`field(name, parser)`),
 - for trivia recovered *between* the parts,
 - for distinct typed nodes.
 

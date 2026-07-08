@@ -55,6 +55,7 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   sepBy:     (...a) => parseman.sepBy(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>),
   trivia:    (...a) => parseman.trivia(a[0] as Combinator<unknown>),
   label:     (...a) => parseman.label(a[0] as string, a[1] as Combinator<unknown>),
+  field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),
   noTrivia:  (...a) => parseman.noTrivia(a[0] as Combinator<unknown>),
   token:     (...a) => parseman.token(a[0] as Combinator<unknown>),
   expect:    (...a) => parseman.expect(a[0] as Combinator<unknown>, a[1] as string | undefined),

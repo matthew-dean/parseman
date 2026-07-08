@@ -1,11 +1,12 @@
-import type { Combinator, ParseContext, ParseResult, ParserMeta, ParserDef } from '../types.ts'
+import type { Combinator, FieldMap, ParseContext, ParseResult, ParserMeta, ParserDef } from '../types.ts'
 import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/capture-buffer.ts'
 import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
+import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
  * `children` / `rawChildren` arrays and trivia spans into `triviaLog`, then
- * calls `build(children, rawChildren, span, triviaLog)` to produce the node.
+ * calls `build(children, fields, span, rawChildren, triviaLog, state)` to produce the node.
  *
  *   - `children`    — structural items in source order: spanned CSTLeaf terminals
  *                     and sub-nodes (whatever `build` returned for inner nodes).
@@ -20,8 +21,9 @@ import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
  */
 export type BuildNode<N> = (
   children: ReadonlyArray<unknown>,
-  rawChildren: ReadonlyArray<unknown>,
+  fields: FieldMap | undefined,
   span: { start: number; end: number },
+  rawChildren: ReadonlyArray<unknown>,
   triviaLog: readonly number[],
   state: unknown,
 ) => N
@@ -91,16 +93,21 @@ export function node<N>(
   // may read either, so capture both.
   const capturesTrivia = build ? buildReadsTrivia(def) : true
   const clonesState = build ? buildReadsState(def) : true
+  const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
   return {
     _tag: 'node',
     _meta: meta,
     _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<N> {
       const saved = beginCstNodeCapture(ctx)
+      const savedFields = ctx._fields
+      ctx._fields = capturesFields ? [] : undefined
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
       // without touching the global _triviaLog, which is committed independently.
       if (!capturesTrivia) ctx.captureTrivia = false
       const r = combinator.parse(input, pos, ctx)
+      const fields = capturesFields ? buildFieldMap(ctx._fields) : undefined
+      ctx._fields = savedFields
       const { children, rawChildren, triviaLog } = endCstNodeCapture(ctx, saved)
 
       if (!r.ok) return r
@@ -119,10 +126,10 @@ export function node<N>(
           && ctx.build._parsemanCstCollapse(nodeType, children[0], children, rawChildren)
           ? children[0]
         : build
-          ? build(children, rawChildren, r.span, triviaLog, st)
+          ? build(children, fields, r.span, rawChildren, triviaLog, st)
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build
-              ? ctx.build(nodeType, children, rawChildren, r.span, triviaLog, st)
+              ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, st)
               : { _tag: 'node', type: nodeType, span: { start: r.span.start, end: r.span.end }, state: st ?? null, children }
       const rawEntry = isCstChild(built)
         ? built

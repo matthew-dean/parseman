@@ -198,11 +198,21 @@ The `build` callback signature for [`node()`](../guide/ast):
 ```ts
 type BuildNode<N> = (
   children: ReadonlyArray<unknown>,
-  rawChildren: ReadonlyArray<unknown>,
+  fields: FieldMap | undefined,
   span: { start: number; end: number },
+  rawChildren: ReadonlyArray<unknown>,
   triviaLog: readonly number[],
   state: unknown,
 ) => N
+```
+
+```ts
+type FieldCapture<T = unknown> = {
+  value: T
+  span: Span
+}
+
+type FieldMap = Record<string, FieldCapture | FieldCapture[]>
 ```
 
 ### `NodeLike`

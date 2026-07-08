@@ -90,16 +90,18 @@ export function cstBuildHost(options?: CstBuildHostOptions): BuildHost
 export function cstBuildHost(
   type: string,
   children: ReadonlyArray<unknown>,
-  rawChildren: ReadonlyArray<unknown>,
+  fields: unknown,
   span: { start: number; end: number },
+  rawChildren?: ReadonlyArray<unknown>,
   triviaLog?: readonly number[],
   state?: unknown,
 ): unknown
 export function cstBuildHost(
   typeOrOptions?: string | CstBuildHostOptions,
   children?: ReadonlyArray<unknown>,
-  rawChildren?: ReadonlyArray<unknown>,
+  _fields?: unknown,
   span?: { start: number; end: number },
+  rawChildren?: ReadonlyArray<unknown>,
   triviaLog?: readonly number[],
   state?: unknown,
 ): unknown {
@@ -111,8 +113,9 @@ export function cstBuildHost(
   const host: BuildHost = (
     type: string,
     children: ReadonlyArray<unknown>,
-    rawChildren: ReadonlyArray<unknown>,
+    _fields: unknown,
     span: { start: number; end: number },
+    rawChildren: ReadonlyArray<unknown>,
     triviaLog: readonly number[],
     state: unknown,
   ) => buildCstNode(type, children, rawChildren, span, triviaLog, state)

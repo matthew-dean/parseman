@@ -68,21 +68,21 @@ export const {
 
   const Stylesheet = node('Stylesheet',
     parser({ trivia: rw }, many(choice(g.AtRuleBlock, g.AtRuleStatement, g.Ruleset, unknownTok))),
-    (c, r, s, tl) => mk('Stylesheet', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('Stylesheet', c, r, s, tl))
 
   const Ruleset = node('Ruleset',
     parser({ trivia: rw }, sequence(g.SelectorList, literal('{'), g.declarationList, literal('}'))),
-    (c, r, s, tl) => mk('Ruleset', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('Ruleset', c, r, s, tl))
 
   const SelectorList = node('SelectorList',
     parser({ trivia: rw }, sequence(g.ComplexSelector, many(sequence(literal(','), g.ComplexSelector)))),
-    (c, r, s, tl) => mk('SelectorList', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('SelectorList', c, r, s, tl))
   const ComplexSelector = node('ComplexSelector',
     parser({ trivia: rw }, sequence(g.CompoundSelector, many(sequence(optional(combinator), g.CompoundSelector)))),
-    (c, r, s, tl) => mk('ComplexSelector', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('ComplexSelector', c, r, s, tl))
   const CompoundSelector = node('CompoundSelector',
     parser({ trivia: rw }, oneOrMore(g.simpleSelector)),
-    (c, r, s, tl) => mk('CompoundSelector', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('CompoundSelector', c, r, s, tl))
   const simpleSelector = choice(g.AttributeSelector, g.PseudoSelector, basicSel)
 
   const AttributeSelector = node('AttributeSelector',
@@ -91,10 +91,10 @@ export const {
       optional(sequence(attrOp, choice(singleStr, doubleStr, ident), optional(attrMod))),
       literal(']'),
     )),
-    (c, r, s, tl) => mk('AttributeSelector', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('AttributeSelector', c, r, s, tl))
   const PseudoSelector = node('PseudoSelector',
     parser({ trivia: rw }, sequence(pseudoColon, ident, optional(sequence(literal('('), g.pseudoArg, literal(')'))))),
-    (c, r, s, tl) => mk('PseudoSelector', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('PseudoSelector', c, r, s, tl))
   const pseudoArg = choice(nth, g.SelectorList, scanTo(literal(')'), { skip: [balanced('(', ')')] }))
 
   const declarationList = parser({ trivia: rw }, many(choice(
@@ -106,29 +106,29 @@ export const {
 
   const Declaration = node('Declaration',
     parser({ trivia: rw }, sequence(ident, literal(':'), g.valueList, optional(important), optional(literal(';')))),
-    (c, r, s, tl) => mk('Declaration', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('Declaration', c, r, s, tl))
   const CustomDeclaration = node('CustomDeclaration',
     parser({ trivia: rw }, sequence(
       customProp, literal(':'),
       scanTo(choice(literal(';'), literal('}')), { skip: [balanced('(', ')'), balanced('[', ']'), balanced('{', '}')] }),
       optional(literal(';')),
     )),
-    (c, r, s, tl) => mk('CustomDeclaration', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('CustomDeclaration', c, r, s, tl))
 
   const valueList = parser({ trivia: rw }, sequence(g.valueSequence, many(sequence(literal(','), g.valueSequence))))
   const valueSequence = parser({ trivia: rw }, oneOrMore(g.value))
   const value = choice(g.Dimension, g.Num, g.Color, g.Url, g.Call, g.Paren, g.Quoted, g.anyValue)
 
-  const Dimension = node('Dimension', sequence(numPart, regex(/-?[_a-zA-Z\u0080-\uffff][-_a-zA-Z0-9\u0080-\uffff]*|%/)), (c, r, s, tl) => mk('Dimension', c, r, s, tl))
-  const Num = node('Num', regex(/[+-]?(?:\d*\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|\d+)(?![a-zA-Z\u0080-\uffff%])/), (c, r, s, tl) => mk('Num', c, r, s, tl))
-  const Color = node('Color', colorHex, (c, r, s, tl) => mk('Color', c, r, s, tl))
+  const Dimension = node('Dimension', sequence(numPart, regex(/-?[_a-zA-Z\u0080-\uffff][-_a-zA-Z0-9\u0080-\uffff]*|%/)), (c, _fields, s, r, tl) => mk('Dimension', c, r, s, tl))
+  const Num = node('Num', regex(/[+-]?(?:\d*\.\d+(?:[eE][+-]?\d+)?|\d+(?:[eE][+-]?\d+)?|\d+)(?![a-zA-Z\u0080-\uffff%])/), (c, _fields, s, r, tl) => mk('Num', c, r, s, tl))
+  const Color = node('Color', colorHex, (c, _fields, s, r, tl) => mk('Color', c, r, s, tl))
   const Url = node('Url',
     parser({ trivia: rw }, sequence(urlOpen, optional(choice(singleStr, doubleStr, urlInner)), literal(')'))),
-    (c, r, s, tl) => mk('Url', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('Url', c, r, s, tl))
   const parenBody = parser({ trivia: rw }, sequence(optional(g.valueList), literal(')')))
-  const Call = node('Call', parser({ trivia: rw }, sequence(ident, optional(sequence(literal('('), g.parenBody)))), (c, r, s, tl) => mk('Call', c, r, s, tl))
-  const Paren = node('Paren', parser({ trivia: rw }, sequence(literal('('), g.parenBody)), (c, r, s, tl) => mk('Paren', c, r, s, tl))
-  const Quoted = node('Quoted', choice(singleStr, doubleStr), (c, r, s, tl) => mk('Quoted', c, r, s, tl))
+  const Call = node('Call', parser({ trivia: rw }, sequence(ident, optional(sequence(literal('('), g.parenBody)))), (c, _fields, s, r, tl) => mk('Call', c, r, s, tl))
+  const Paren = node('Paren', parser({ trivia: rw }, sequence(literal('('), g.parenBody)), (c, _fields, s, r, tl) => mk('Paren', c, r, s, tl))
+  const Quoted = node('Quoted', choice(singleStr, doubleStr), (c, _fields, s, r, tl) => mk('Quoted', c, r, s, tl))
   const anyValue = anyValueTok
 
   const atPrelude = optional(scanTo(choice(literal('{'), literal(';')), {
@@ -136,10 +136,10 @@ export const {
   }))
   const AtRuleBlock = node('AtRuleBlock',
     parser({ trivia: rw }, sequence(atKeyword, atPrelude, literal('{'), g.atRuleBody, literal('}'))),
-    (c, r, s, tl) => mk('AtRuleBlock', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('AtRuleBlock', c, r, s, tl))
   const AtRuleStatement = node('AtRuleStatement',
     parser({ trivia: rw }, sequence(atKeyword, atPrelude, literal(';'))),
-    (c, r, s, tl) => mk('AtRuleStatement', c, r, s, tl))
+    (c, _fields, s, r, tl) => mk('AtRuleStatement', c, r, s, tl))
   const atRuleBody = parser({ trivia: rw }, many(choice(
     g.AtRuleBlock, g.AtRuleStatement, g.Ruleset, g.Declaration, g.CustomDeclaration, literal(';'),
   )))

@@ -45,7 +45,7 @@ const pick = <T>(r: Rng, xs: readonly T[]): T => xs[int(r, xs.length)]!
 
 // ── CST builder that captures real state (for correct re-entry) ──────────────
 function cst(type: string) {
-  return (children: readonly unknown[], _raw: readonly unknown[], span: { start: number; end: number }, _tl: readonly number[], state: unknown): CSTNode =>
+  return (children: readonly unknown[], _fields: unknown, span: { start: number; end: number }, _raw: readonly unknown[], _tl: readonly number[], state: unknown): CSTNode =>
     ({ _tag: 'node', type, span: { start: span.start, end: span.end }, state, children: [...children] as CSTChild[] })
 }
 

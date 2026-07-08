@@ -40,12 +40,16 @@ Expr.parse('1 + 2 + 3', 0, { trackLines: false })
 
 ## What `build` receives
 
-`build(children, rawChildren, span, triviaLog, state)`:
+`build(children, fields, span, rawChildren, triviaLog, state)`:
 
 - **`children`** — structural items in source order: spanned `CSTLeaf` terminals
   (`{ _tag: 'leaf', value, span }`) and sub-nodes (whatever a nested `node()`'s `build`
   returned). A `build` that returns a bare string is recorded by the parent as a spanned
   leaf, so single-item "collapsing" rules keep their source span.
+- **`fields`** — named captures from `field(name, parser)` inside this node, or
+  `undefined` when the node has no captured fields or the build does not declare this
+  parameter. A repeated field name becomes an array of captures.
+- **`span`** — the full source span matched by this node.
 - **`rawChildren`** — structural children only (same items as `children`, without trivia
   tokens).
 - **`triviaLog`** — flat `[start, end, insertIdx, …]` entries for whitespace/comments
@@ -61,17 +65,18 @@ capture) away to flat JS.
 
 ### Capture follows your `build`'s arity {#capture-follows-arity}
 
-Building `triviaLog` and cloning `state` per node isn't free — on a value-dense grammar
-the per-token trivia-log push alone is a large slice of parse time. Parséman **skips the
-capture your `build` never asks for**: a `build` that declares only `(children, raw, span)`
-gets no trivia log or state clone; one that also declares `triviaLog` keeps the log; one
-that declares `state` keeps the clone. This is inferred from the function's parameter list
-at compile time — you don't opt in.
+Building `fields`, `triviaLog`, and cloning `state` per node isn't free — on a value-dense
+grammar the per-token trivia-log push alone is a large slice of parse time. Parséman
+**skips the capture your `build` never asks for**: a `build` that declares only
+`(children)` gets no fields, trivia log, or state clone; `(children, fields, span)` gets
+named fields and spans but still skips raw children, trivia, and state; declaring
+`triviaLog` keeps the log; declaring `state` keeps the clone. This is inferred from the
+function's parameter list at compile time — you don't opt in.
 
 The same inference runs at **parse time** for a [structural `node(parser)`](#just-want-a-plain-cst)
 whose AST is built by an injected [`ctx.build` host](#the-nodelike-contract): Parséman
-reads the host's arity (`build(type, children, rawChildren, span, triviaLog, state)`) and
-elides the trivia/state capture the host doesn't take.
+reads the host's arity (`build(type, children, fields, span, rawChildren, triviaLog, state)`) and
+elides the trivia/state/field capture the host doesn't take.
 
 ::: warning Keep build hosts plain-positional
 The arity check is conservative-by-necessity: `Function.length` under-counts a **rest**

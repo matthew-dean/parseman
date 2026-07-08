@@ -31,7 +31,7 @@ import { node } from '../combinators/node.ts'
 import { parser } from '../combinators/grammar.ts'
 import { scanTo } from '../combinators/scanTo.ts'
 import { token } from '../combinators/token.ts'
-import { transform, skip, trivia, label } from '../combinators/map.ts'
+import { transform, skip, trivia, label, field } from '../combinators/map.ts'
 import { expect as expectC } from '../combinators/expect.ts'
 
 type Comb = Combinator<unknown>
@@ -48,6 +48,7 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'trivia':
     case 'token':
     case 'label':
+    case 'field':
     case 'not':
     case 'node':
     case 'expect':    return [def.parser]
@@ -117,13 +118,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'node', 'parser',
-    'scanTo', 'token', 'transform', 'skip', 'trivia', 'label', 'expect', '_tf', '_nd',
+    'scanTo', 'token', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_nd',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice,
     many, oneOrMore, optional, sepBy, not, node, parser,
-    scanTo, token, transform, skip, trivia, label, expectC, _tf, _nd,
+    scanTo, token, transform, skip, trivia, label, field, expectC, _tf, _nd,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -248,6 +249,7 @@ class Serializer {
       case 'trivia':    return `trivia(${kid(def.parser)})`
       case 'token':     return `token(${kid(def.parser)})`
       case 'label':     return `label(${JSON.stringify(def.label)}, ${kid(def.parser)})`
+      case 'field':     return `field(${JSON.stringify(def.name)}, ${kid(def.parser)})`
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`
       case 'skip':      return `skip(${kid(def.main)}, ${kid(def.skipped)})`
       case 'scanTo':

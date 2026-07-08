@@ -23,19 +23,19 @@ const ident = regex(/[a-zA-Z_]\w*/)
 
 function makeExprGrammar() {
   return rules(g => {
-    const Number = node('Number', digits, (ch, _r, span, _tl, state) =>
+    const Number = node('Number', digits, (ch, _fields, span, _r, _tl, state) =>
       mkCst('Number', ch as CSTNode['children'], span, state))
-    const Ident = node('Ident', ident, (ch, _r, span, _tl, state) =>
+    const Ident = node('Ident', ident, (ch, _fields, span, _r, _tl, state) =>
       mkCst('Ident', ch as CSTNode['children'], span, state))
     const Add = node(
       'Add',
       sequence(g.Number, many(sequence(literal('+'), g.Number))),
-      (ch, _r, span, _tl, state) => mkCst('Add', ch as CSTNode['children'], span, state),
+      (ch, _fields, span, _r, _tl, state) => mkCst('Add', ch as CSTNode['children'], span, state),
     )
     const Expr = node(
       'Expr',
       choice(g.Add, g.Number, g.Ident),
-      (ch, _r, span, _tl, state) => mkCst('Expr', ch as CSTNode['children'], span, state),
+      (ch, _fields, span, _r, _tl, state) => mkCst('Expr', ch as CSTNode['children'], span, state),
     )
     return { Number, Ident, Add, Expr }
   })
@@ -155,13 +155,13 @@ describe('node() — state', () => {
 // ---------------------------------------------------------------------------
 describe('node() — mutual recursion', () => {
   const listGrammar = rules(g => {
-    const Item = node('Item', regex(/[a-z]+/), (ch, _r, span, _tl, state) =>
+    const Item = node('Item', regex(/[a-z]+/), (ch, _fields, span, _r, _tl, state) =>
       mkCst('Item', ch as CSTNode['children'], span, state))
     const items = sepBy(g.Item, literal(','))
     const List = node(
       'List',
       sequence(literal('['), items, literal(']')),
-      (ch, _r, span, _tl, state) => mkCst('List', ch as CSTNode['children'], span, state),
+      (ch, _fields, span, _r, _tl, state) => mkCst('List', ch as CSTNode['children'], span, state),
     )
     return { Item, List }
   })
@@ -202,16 +202,16 @@ describe('node() — context-sensitive rules', () => {
         guard((u: unknown) => (u as { inFn?: boolean } | undefined)?.inFn === true),
         literal('return'),
       ),
-      (ch, _r, span, _tl, state) => mkCst('Return', ch as CSTNode['children'], span, state),
+      (ch, _fields, span, _r, _tl, state) => mkCst('Return', ch as CSTNode['children'], span, state),
     )
-    const Expr = node('Expr', regex(/[a-z]+/), (ch, _r, span, _tl, state) =>
+    const Expr = node('Expr', regex(/[a-z]+/), (ch, _fields, span, _r, _tl, state) =>
       mkCst('Expr', ch as CSTNode['children'], span, state))
-    const Stmt = node('Stmt', choice(g.Return, g.Expr), (ch, _r, span, _tl, state) =>
+    const Stmt = node('Stmt', choice(g.Return, g.Expr), (ch, _fields, span, _r, _tl, state) =>
       mkCst('Stmt', ch as CSTNode['children'], span, state))
     const Body = node(
       'Body',
       withCtx({ inFn: true }, many(sequence(g.Stmt, literal(';')))),
-      (ch, _r, span, _tl, state) => mkCst('Body', ch as CSTNode['children'], span, state),
+      (ch, _fields, span, _r, _tl, state) => mkCst('Body', ch as CSTNode['children'], span, state),
     )
     return { Return, Expr, Stmt, Body }
   })
@@ -262,7 +262,7 @@ describe('node() — custom AST via build callback', () => {
   }
 
   const { Num } = rules(() => {
-    const Num = node('Num', digits, (ch, _r, span, _tl, state) => ({
+    const Num = node('Num', digits, (ch, _fields, span, _r, _tl, state) => ({
       _tag: 'node',
       type: 'Num',
       span,
@@ -314,19 +314,19 @@ describe('node() — CSS-style scanner', () => {
     const Property = regex(/[a-z-]+/)
     const Selector = node('Selector', scanTo(literal('{'), {
       skip: [comment, string, parenGroup, bracketGroup],
-    }), (ch, _r, span, _tl, state) => mkCst('Selector', ch as CSTNode['children'], span, state))
+    }), (ch, _fields, span, _r, _tl, state) => mkCst('Selector', ch as CSTNode['children'], span, state))
     const Value = node('Value', scanTo(choice(literal(';'), literal('}')), {
       skip: [string, parenGroup],
-    }), (ch, _r, span, _tl, state) => mkCst('Value', ch as CSTNode['children'], span, state))
+    }), (ch, _fields, span, _r, _tl, state) => mkCst('Value', ch as CSTNode['children'], span, state))
     const Declaration = node(
       'Declaration',
       sequence(g.Property, regex(/\s*/), literal(':'), regex(/\s*/), g.Value, optional(literal(';'))),
-      (ch, _r, span, _tl, state) => mkCst('Declaration', ch as CSTNode['children'], span, state),
+      (ch, _fields, span, _r, _tl, state) => mkCst('Declaration', ch as CSTNode['children'], span, state),
     )
     const Rule = node(
       'Rule',
       sequence(g.Selector, literal('{'), regex(/\s*/), many(sequence(g.Declaration, regex(/\s*/))), literal('}')),
-      (ch, _r, span, _tl, state) => mkCst('Rule', ch as CSTNode['children'], span, state),
+      (ch, _fields, span, _r, _tl, state) => mkCst('Rule', ch as CSTNode['children'], span, state),
     )
     return { Selector, Value, Declaration, Rule, Property }
   })
@@ -381,9 +381,9 @@ describe('node() — rawChildren/triviaLog', () => {
 
   const identRe = regex(/[a-zA-Z][a-zA-Z0-9-]*/)
   const { Ident, Selectors } = rules(g => {
-    const Ident = node('Ident', identRe, (ch, raw, span, tl, state) =>
+    const Ident = node('Ident', identRe, (ch, _fields, span, raw, tl, state) =>
       mkRich('Ident', ch as CSTChild[], raw as CSTRawChild[], span, tl, state))
-    const Selectors = node('Selectors', sequence(g.Ident, g.Ident), (ch, raw, span, tl, state) =>
+    const Selectors = node('Selectors', sequence(g.Ident, g.Ident), (ch, _fields, span, raw, tl, state) =>
       mkRich('Selectors', ch as CSTChild[], raw as CSTRawChild[], span, tl, state))
     return { Ident, Selectors }
   })
@@ -416,7 +416,7 @@ describe('node() — rawChildren/triviaLog', () => {
       const Pair = node(
         'Pair',
         sequence(regex(/[a-zA-Z]+/), literal(':'), regex(/[a-zA-Z]+/)),
-        (ch, raw, span, tl, state) => mkRich('Pair', ch as CSTChild[], raw as CSTRawChild[], span, tl, state),
+        (ch, _fields, span, raw, tl, state) => mkRich('Pair', ch as CSTChild[], raw as CSTRawChild[], span, tl, state),
       )
       return { Pair }
     })

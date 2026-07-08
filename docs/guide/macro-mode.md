@@ -138,8 +138,8 @@ The plugin compiles combinator trees end to end:
 - `rules()` factories, **including mutually recursive ones** — emitted as mutually
   recursive named functions (`_pf0`, …) so the cycle is broken.
 - `parser({ trivia })` / `noTrivia()` wrappers.
-- `node()` rules — CST capture, trivia logging, `unwrap` / `collapse`, and all — with
-  every `build` / `transform` callback inlined at its source span.
+- `node()` rules — CST capture, named `field()` capture, trivia logging, `unwrap` /
+  `collapse`, and all — with every `build` / `transform` callback inlined at its source span.
 
 A full grammar built as a `rules()` factory of `node()` rules compiles end to end: each
 rule becomes an independently-callable function, terminal/trivia capture is emitted

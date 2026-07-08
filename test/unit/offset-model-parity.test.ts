@@ -14,8 +14,8 @@ const mk = (type: string, ch: unknown[], raw: unknown, span: unknown, tl: unknow
   ({ _tag: 'node', type, span, children: ch, rawChildren: raw, triviaLog: tl, state })
 
 const { Ident, Doc } = rules((g) => {
-  const Ident = node('Ident', ident, (ch, raw, span, tl, state) => mk('Ident', ch as unknown[], raw, span, tl, state))
-  const Doc = node('Doc', many(g.Ident), (ch, raw, span, tl, state) => mk('Doc', ch as unknown[], raw, span, tl, state))
+  const Ident = node('Ident', ident, (ch, _fields, span, raw, tl, state) => mk('Ident', ch as unknown[], raw, span, tl, state))
+  const Doc = node('Doc', many(g.Ident), (ch, _fields, span, raw, tl, state) => mk('Doc', ch as unknown[], raw, span, tl, state))
   return { Ident, Doc }
 })
 

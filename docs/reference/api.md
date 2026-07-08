@@ -103,6 +103,25 @@ Attach a metadata label (used for per-chunk trivia kinds; see
 [Whitespace & trivia](../guide/trivia#capturing-trivia-kinds)). Parse behavior is
 unchanged.
 
+### `field(name, combinator)`
+
+Capture the wrapped parser's value and span for the nearest enclosing `node()` build
+callback. Parse behavior and the normal returned value are unchanged.
+
+```ts
+const AttributeSelector = node(sequence(
+  literal('['),
+  field('name', ident),
+  field('op', attrOp),
+  field('value', ident),
+  literal(']'),
+), (_children, fields) => fields)
+```
+
+`fields.name` is `{ value, span }`; repeated field names become arrays. Field capture is
+emitted only for node subtrees containing `field()` and only when the callback/host can
+read fields.
+
 ## Recursion
 
 ### `rules(factory)` <Badge type="tip" text="helper" />
@@ -121,8 +140,8 @@ method. Prefer `rules()`.
 ### `node(type, combinator, build?, opts?)`
 
 CST/AST rule. Captures the combinator's terminals into `children` / `rawChildren` and trivia
-into `triviaLog`. With a `build` callback it calls `build(children, rawChildren, span,
-triviaLog, state)` to construct the node; **omit `build`** to make it a *structural* node
+into `triviaLog`. With a `build` callback it calls `build(children, fields, span,
+rawChildren, triviaLog, state)` to construct the node; **omit `build`** to make it a *structural* node
 that builds through the injected [`ctx.build`](#cstbuildhost) host instead — so one grammar
 serves its own AST (host unset) and a positioned CST / language-service tree (host set).
 Inside [`rules()`](#rulesfactory), `node(combinator, ...)` infers its node type from the

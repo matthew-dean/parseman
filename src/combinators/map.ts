@@ -63,3 +63,21 @@ export function label<T>(name: string, combinator: Combinator<T>): Combinator<T>
     },
   }
 }
+
+/**
+ * Capture a named parse result for the nearest enclosing node() builder.
+ * Parse behavior and the normal returned value are unchanged.
+ */
+export function field<T>(name: string, combinator: Combinator<T>): Combinator<T> {
+  return {
+    _tag: combinator._tag,
+    _meta: combinator._meta,
+    _def: { tag: 'field', name, parser: combinator as Combinator<unknown> },
+    parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
+      const result = combinator.parse(input, pos, ctx)
+      if (!result.ok) return result
+      ctx._fields?.push({ name, value: result.value, span: result.span })
+      return result
+    },
+  }
+}

@@ -115,13 +115,14 @@ export function cstTlLen(ctx: ParseContext): number {
   return ctx._cstTriviaLog?.length ?? 0
 }
 
-export type CstRollbackMark = { raw: number; tlog: number; leaves: number }
+export type CstRollbackMark = { raw: number; tlog: number; leaves: number; fields: number }
 
 export function saveCstMark(ctx: ParseContext): CstRollbackMark {
   return {
     raw: cstRawLen(ctx),
     tlog: cstTlLen(ctx),
     leaves: cstLeavesLen(ctx),
+    fields: ctx._fields?.length ?? 0,
   }
 }
 
@@ -150,11 +151,13 @@ export function rollbackCstCapture(ctx: ParseContext, mark: CstRollbackMark): vo
       if (mark.tlog === 0) b.tl = undefined
       else b.tl.length = mark.tlog
     }
+    if (ctx._fields) ctx._fields.length = mark.fields
     return
   }
   if (ctx._cstRawChildren) ctx._cstRawChildren.length = mark.raw
   if (ctx._cstTriviaLog) ctx._cstTriviaLog.length = mark.tlog
   if (ctx._cstLeaves) ctx._cstLeaves.length = mark.leaves
+  if (ctx._fields) ctx._fields.length = mark.fields
 }
 
 export function pushCstTriviaEntry(
