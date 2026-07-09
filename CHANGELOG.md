@@ -3,6 +3,23 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.20.0 — 2026-07-08
+
+- **Dropped the `regexp-tree` dependency.** A regex terminal's first-set — used
+  only to drive `choice()` first-char dispatch, never to decide a match — is now
+  computed by a small, dependency-free hand-rolled analyzer instead of
+  `regexp-tree` (~264 KB). The interpreter bundle drops ~82% (324 KB → 55 KB) and
+  ships with no runtime dependencies pulled in by the library entry. Parse
+  results and compiled output are byte-identical; interpreter speed is unchanged
+  (the win is bundle size, not throughput). The analyzer over-approximates
+  soundly — a nullable pattern widens to "any" so dispatch never skips an
+  empty-matching arm — and is fuzz-checked against the real `RegExp` engine.
+- **Shared regex primitives.** Char-class parsing (`parseClassRanges`, shorthand
+  ranges, …) is now one module shared by the interpreter analyzer, codegen's
+  scannable lowering, and `regex()`'s scan fast path, replacing three copies.
+- **Docs.** `compile()` is written as the free function it is (not a `.compile()`
+  method) throughout.
+
 ## 0.19.0 — 2026-07-08
 
 - **Clearer wrapper-node DX.** `node(..., { unwrap: true })` is now the preferred
