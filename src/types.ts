@@ -232,6 +232,16 @@ export type ParserMeta = {
   triviaKindLabels?: readonly string[]
   /** choice(): true when all alternative first sets are pairwise disjoint */
   disjoint?: boolean
+  /**
+   * Grammar-level ambient trivia declared via `rules(factory, { trivia })`. When
+   * a rule carrying this is parsed as an ENTRY (run()/parse()/compile with no
+   * more-local trivia already active), the framework installs it as `ctx.trivia`
+   * so it is ambient for the whole parse — "set once, inherited everywhere",
+   * including incremental parsing of a single rule. `parser({ trivia })` /
+   * `noTrivia` still override it locally. The compiled path bakes it as the
+   * seed `activeTrivia` for every rule in the map.
+   */
+  grammarTrivia?: Combinator<unknown> | undefined
 }
 
 /** A first set is either "any" (unknown/unbounded) or a list of char code ranges */

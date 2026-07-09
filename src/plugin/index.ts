@@ -352,13 +352,30 @@ export function transformMacro(
     label: string,
   ): { replacement: string; ruleMap: Map<string, Combinator<unknown>> } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
-    const factoryArg = args[0] as Expression | undefined
+    // Options-first: rules({ trivia }, factory). Disambiguate by type — an
+    // ObjectExpression first arg means options lead; otherwise the factory leads
+    // (bare rules(factory), or the tolerated legacy rules(factory, { trivia })).
+    const arg0 = args[0] as AnyNode | undefined
+    const arg1 = args[1] as AnyNode | undefined
+    const optionsFirst = arg0?.type === 'ObjectExpression'
+    const factoryArg = (optionsFirst ? arg1 : arg0) as Expression | undefined
     if (!factoryArg) { warn(init.start, `${label}: rules() needs a factory argument`); return null }
 
     const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
     if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
 
-    const compiled = compileRuleMap([...ruleMap])
+    // Grammar-level options object — evaluate its `trivia` so the compiled map
+    // seeds it as the ambient default (build-time mirror of rules() tagging
+    // grammarTrivia at runtime).
+    const optionsArg = (optionsFirst ? arg0 : arg1) as AnyNode | undefined
+    const triviaValue = optionsArg?.type === 'ObjectExpression'
+      ? (((optionsArg.properties as AnyNode[] | undefined) ?? []).find(
+          p => (p as { key?: { name?: string } }).key?.name === 'trivia',
+        ) as { value?: Expression } | undefined)?.value
+      : undefined
+    const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
+
+    const compiled = compileRuleMap([...ruleMap], gTrivia ? { trivia: gTrivia } : undefined)
     if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
     return { replacement: compiled.replacement, ruleMap }
   }

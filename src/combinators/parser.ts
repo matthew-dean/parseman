@@ -29,9 +29,29 @@ function tagRule(r: Combinator<unknown>, key: string): void {
  *   rules<{ value: Combinator<JSONValue>; array: Combinator<JSONValue[]> }>(g => ({ ... }))
  * Without it, `g.*` accesses are typed as `any` but the return is still inferred.
  */
+/**
+ * Grammar-level options for `rules()`. Parity with `parser({...})`, but declared
+ * ONCE for the whole grammar instead of wrapped around a scope. `trivia` becomes
+ * the ambient trivia for every rule (installed at the parse entry, inherited
+ * everywhere, incremental parse included); `parser({trivia})` / `noTrivia` still
+ * override it locally for a sub-region.
+ */
+export type RulesOptions = {
+  /** Ambient trivia for the whole grammar. See `parser({ trivia })` for the shape. */
+  trivia?: Combinator<unknown>
+}
+
+// Options-first, mirroring `parser({ opts }, combinator)` — set once on the grammar
+// vs scope it locally, same options in the same position. The bare `rules(factory)`
+// form is unchanged. The impl also tolerates the legacy `rules(factory, opts)` order.
+export function rules<T extends Record<string, Combinator<unknown>>>(factory: (self: any) => T): T
+export function rules<T extends Record<string, Combinator<unknown>>>(options: RulesOptions, factory: (self: any) => T): T
 export function rules<T extends Record<string, Combinator<unknown>>>(
-  factory: (self: any) => T
+  a: ((self: any) => T) | RulesOptions,
+  b?: (self: any) => T,
 ): T {
+  const factory = (typeof a === 'function' ? a : b) as (self: any) => T
+  const options = (typeof a === 'function' ? b : a) as RulesOptions | undefined
   const cache: Partial<T> = {}
 
   // Proxy: accessing any property creates a ref() placeholder on first touch.
@@ -69,6 +89,19 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
     } else {
       tagRule(parser, key)
       ;(cache as Record<string, Combinator<unknown>>)[key] = parser
+    }
+  }
+
+  // Declare the grammar-level ambient trivia on every rule, so parsing ANY rule
+  // as an entry installs it (run()/parse() read this), and the macro can seed the
+  // compiled map. `parser({trivia})` / `noTrivia` still override it locally.
+  if (options?.trivia !== undefined) {
+    for (const key of Object.keys(definitions)) {
+      const rule = (cache as Record<string, Combinator<unknown>>)[key]
+      // Skip trivia rules (e.g. the grammar's `rw`, returned so the driver can
+      // reach it as `g.rw`): a trivia rule must never carry ambient trivia, or it
+      // would recursively skip trivia within itself. Mirrors the codegen guard.
+      if (rule && !rule._meta.isTrivia) (rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = options.trivia
     }
   }
 

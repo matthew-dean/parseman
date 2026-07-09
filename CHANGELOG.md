@@ -3,6 +3,23 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.22.0 — 2026-07-09
+
+- **Grammar-level trivia — `rules({ trivia }, factory)`.** Declare a grammar's ambient trivia
+  ONCE, on the grammar, instead of wrapping individual rules in `parser({ trivia }, …)`. It is
+  installed at the parse entry and inherited by every rule — including incremental parsing of a
+  single rule — identically across the interpreter, `compile()`, and the macro. `parser({ trivia })`
+  / `noTrivia` remain **local overrides** for a sub-region. Options-first mirrors
+  `parser({ opts }, combinator)`: same options object, same position, so "set once on the grammar"
+  and "scope it locally" read the same way — you don't need both. The bare `rules(factory)` form is
+  unchanged. A `trivia()` rule returned from the factory (e.g. `g.rw`) is automatically excluded from
+  the grammar trivia, so it never recursively skips filler within itself.
+- **Trivia docs rewritten** around "set once, override when needed": `rules({ trivia })` for the
+  whole grammar, `parser({ trivia })` / `noTrivia` as sparing local overrides (glue static tokens
+  with one `regex`/`literal`, not `noTrivia`). Documents the one compiled limitation — a single
+  **shared** rule can't be both trivia-skipping and contiguous, since the compiler bakes one trivia
+  decision per rule (the interpreter reads it per call).
+
 ## 0.21.0 — 2026-07-09
 
 - **Per-node trivia capture kind-filter.** A node's captured `triviaLog` can now be

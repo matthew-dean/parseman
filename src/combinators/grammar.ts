@@ -137,8 +137,14 @@ export function parse<T>(
   // rule succeeds with unconsumed trailing input. Off by default (it adds
   // bookkeeping to every failed alternative).
   const _probe = opts.recover ? { offset: input.length, best: null as ParseFail | null } : undefined
+  // Grammar-level ambient trivia declared via rules(factory, { trivia }): install
+  // it as ctx.trivia so it's ambient (interpreter). parser/noTrivia override locally.
+  const grammarTrivia = combinator._meta.grammarTrivia
   const ctx: ParseContext = {
     trackLines,
+    ...(grammarTrivia !== undefined
+      ? { trivia: grammarTrivia, ...(grammarTrivia._meta.triviaKindLabels ? { triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}) }
+      : {}),
     ...(_errors !== undefined ? { _errors } : {}),
     ...(_probe !== undefined ? { _probe } : {}),
   }

@@ -2721,6 +2721,11 @@ export function ruleDependencies(
  */
 export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): CompiledParser<T> {
   markUnusedValues(combinator)
+  // Grammar-level ambient trivia declared via rules(factory, { trivia }): seed it
+  // as the default activeTrivia so every rule bakes it (unless a local
+  // parser({trivia}) / noTrivia overrides). This is the compiled mirror of the
+  // interpreter installing it as ctx.trivia at the entry.
+  const grammarTrivia = (combinator._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -2740,6 +2745,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     namedFnDecls: [],
     capturing: hasNodeDef(combinator as Combinator<unknown>),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
+    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }
 
   const r = emit(combinator as Combinator<unknown>, ctx, '_pos')
@@ -2883,8 +2889,14 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opts?: { trivia?: Combinator<unknown> },
 ): { keys: string[]; replacement: string } | null {
   for (const [, rule] of ruleMap) markUnusedValues(rule)
+  // Grammar-level ambient trivia declared via rules(factory, { trivia }): seed it
+  // as the default activeTrivia so every rule in the map bakes it (unless a local
+  // parser({trivia}) / noTrivia overrides). Mirrors the interpreter installing it
+  // as ctx.trivia at the entry, and compile()'s single-entry seed.
+  const grammarTrivia = opts?.trivia
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -2904,6 +2916,7 @@ export function compileRuleMap(
     namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
+    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }
 
   // Reverse map: each rule's `ref` placeholder → its canonical `_r_<Name>` fn
@@ -2921,7 +2934,17 @@ export function compileRuleMap(
   }
   ctx.ruleNames = ruleNames
 
-  const perEntry = ruleMap.map(([key, rule]) => ({ key, rule, r: emit(rule, ctx, '_pos') }))
+  // A trivia rule (e.g. the grammar's `rw`, returned from the factory so the
+  // driver can reach it as `g.rw`) must NOT bake the grammar-level ambient trivia
+  // into itself — it would recursively skip trivia between its own terms and stop
+  // short. Emit it with activeTrivia cleared, matching the inline-trivia guard.
+  const perEntry = ruleMap.map(([key, rule]) => {
+    const savedTrivia = ctx.activeTrivia
+    if (rule._meta.isTrivia) ctx.activeTrivia = undefined
+    const r = emit(rule, ctx, '_pos')
+    ctx.activeTrivia = savedTrivia
+    return { key, rule, r }
+  })
 
   const derivedSrcs = ctx.mapFnSrcs.length === ctx.mapFns.length && ctx.mapFnSrcs.every((s): s is string => s !== null)
     ? ctx.mapFnSrcs as string[]
