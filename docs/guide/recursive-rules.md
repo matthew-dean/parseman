@@ -62,7 +62,7 @@ jsonParser.parse('{ "a": 1 }')
 Each rule returned from the factory is independently callable — that returned object *is*
 the "rule registry" that incremental re-parsing needs.
 
-## Grammar-level options — `rules(factory, { trivia })`
+## Grammar-level options — `rules({ trivia }, factory)`
 
 Pass an **options object first** — mirroring `parser({ trivia }, combinator)` — to set
 options **once for the whole grammar**, instead of wrapping rules individually. Today that's

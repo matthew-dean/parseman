@@ -19,7 +19,7 @@ terms.
 
 2. **Install** — there are two ways, depending on scope. **Pick one; you don't need both.**
 
-### Install once for a whole grammar — `rules(factory, { trivia })`
+### Install once for a whole grammar — `rules({ trivia }, factory)`
 
 This is what you want for a real grammar. Declare the trivia **once**, on the grammar, and
 it is ambient for **every rule** — including when you parse a single rule on its own

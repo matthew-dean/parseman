@@ -2721,7 +2721,7 @@ export function ruleDependencies(
  */
 export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): CompiledParser<T> {
   markUnusedValues(combinator)
-  // Grammar-level ambient trivia declared via rules(factory, { trivia }): seed it
+  // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule bakes it (unless a local
   // parser({trivia}) / noTrivia overrides). This is the compiled mirror of the
   // interpreter installing it as ctx.trivia at the entry.
@@ -2892,7 +2892,7 @@ export function compileRuleMap(
   opts?: { trivia?: Combinator<unknown> },
 ): { keys: string[]; replacement: string } | null {
   for (const [, rule] of ruleMap) markUnusedValues(rule)
-  // Grammar-level ambient trivia declared via rules(factory, { trivia }): seed it
+  // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule in the map bakes it (unless a local
   // parser({trivia}) / noTrivia overrides). Mirrors the interpreter installing it
   // as ctx.trivia at the entry, and compile()'s single-entry seed.

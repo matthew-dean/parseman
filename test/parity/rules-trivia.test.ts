@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  rules, trivia, sequence, literal, oneOrMore, regex, compile, run, parser, noTrivia,
+  rules, trivia, sequence, literal, oneOrMore, regex, compile, run, parse, parser, noTrivia,
 } from '../../src/index.ts'
 
 const rw = trivia(oneOrMore(regex(/[ \t\n]+/)))
@@ -16,7 +16,7 @@ function grammar() {
 
 const end = (res: any) => (res.ok ? res.span.end : `FAIL@${res.span?.start}`)
 
-describe('rules(factory, { trivia }) — ambient grammar trivia', () => {
+describe('rules({ trivia }, factory) — ambient grammar trivia', () => {
   it('run() makes trivia ambient through the whole rule chain (no parser() wraps)', () => {
     const g = grammar()
     expect(run(g.A, 'a b c d').ok).toBe(true)
@@ -39,10 +39,17 @@ describe('rules(factory, { trivia }) — ambient grammar trivia', () => {
     }
   })
 
-  it('parse()/run() entry both install the grammar trivia', () => {
+  it('parse() and run() entry points both install the grammar trivia', () => {
     const g = grammar()
-    // parse() (grammar.ts) entry
-    expect(g.A.parse('a b c d', 0, { trackLines: false } as any) === undefined).toBe(false)
+    // parse() (grammar.ts) reads _meta.grammarTrivia and installs it as ctx.trivia.
+    // Calling the raw combinator .parse() with a bare ctx would NOT, and would fail
+    // on the spaces — so a successful, fully-consumed parse proves the install works.
+    const viaParse = parse(g.A, 'a b c d')
+    expect(viaParse.ok).toBe(true)
+    expect(viaParse.ok && viaParse.span.end).toBe(7)
+    // control: raw .parse() with no trivia in the ctx fails on the first space.
+    expect(g.A.parse('a b c d', 0, { trackLines: false }).ok).toBe(false)
+    // run() entry
     expect(run(g.A, 'a b c d').ok).toBe(true)
   })
 

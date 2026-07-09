@@ -233,7 +233,7 @@ export type ParserMeta = {
   /** choice(): true when all alternative first sets are pairwise disjoint */
   disjoint?: boolean
   /**
-   * Grammar-level ambient trivia declared via `rules(factory, { trivia })`. When
+   * Grammar-level ambient trivia declared via `rules({ trivia }, factory)`. When
    * a rule carrying this is parsed as an ENTRY (run()/parse()/compile with no
    * more-local trivia already active), the framework installs it as `ctx.trivia`
    * so it is ambient for the whole parse — "set once, inherited everywhere",

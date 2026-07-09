@@ -83,7 +83,7 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
   }
   const triviaLog: number[] = []
   const errors: ParseError[] = []
-  // Grammar-level ambient trivia declared via rules(factory, { trivia }): install
+  // Grammar-level ambient trivia declared via rules({ trivia }, factory): install
   // it as ctx.trivia so it's ambient for the whole parse (the interpreter path;
   // a compiled entry has it baked in and carries no _meta). parser/noTrivia still
   // override locally.
