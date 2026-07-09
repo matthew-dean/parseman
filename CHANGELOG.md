@@ -3,6 +3,25 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.21.0 — 2026-07-09
+
+- **Per-node trivia capture kind-filter.** A node's captured `triviaLog` can now be
+  filtered by trivia kind, so a host that only consumes (say) comments no longer pays to
+  log every whitespace run. `ctx._triviaCaptureMask` is a bitmask over the trivia's
+  `triviaKindLabels` (bit `k` = keep kind `k`; unset = keep every kind) and gates only the
+  per-node CST log — the global `_triviaLog` stays complete, so a downstream trivia map is
+  unaffected. Set it per parse via `parser({ captureTriviaKinds: ['comment'] })` (interpreter,
+  resolves names→mask) or `run(entry, input, { triviaCaptureMask })` (compiled host), or
+  **per node type** via the new `_parsemanTriviaKinds(type)` build-host hook — so a host can
+  ask `Ruleset`/`Stylesheet` for comments-only while `CompoundSelector` still captures the
+  whitespace that marks a descendant combinator. Build a mask with the exported
+  `triviaKindMask(labels, keep)`. Interpreter and compiled output honor the mask identically
+  (parity-tested), with zero overhead when a parse sets no mask. This lets a grammar host read
+  comment runs straight from parseman's trivia instead of re-scanning source, without the
+  whitespace-capture cost that made that a regression before. General by design (any kind
+  set, not comment-specific), so a future erasable-but-meaningful trivia kind is one more
+  label, not a new capture path.
+
 ## 0.20.0 — 2026-07-08
 
 - **Dropped the `regexp-tree` dependency.** A regex terminal's first-set — used

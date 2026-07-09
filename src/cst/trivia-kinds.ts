@@ -174,10 +174,45 @@ export function tryFastLabeledScan(
 
 export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChunk[]): void {
   const kinds = ctx.triviaKindLabels
+  const mask = ctx._triviaCaptureMask
   for (const ch of chunks) {
+    // Global trivia log: always complete (never kind-filtered).
     pushTriviaLogEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
+    // Per-node CST log: honour the kind mask when both a mask and labels are
+    // present, so a host can capture (e.g.) comments only without logging every
+    // whitespace run. No mask / no labels → capture everything, as before.
     if (ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)) {
-      pushCstTriviaEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
+      if (mask === undefined || kinds === undefined || (mask & (1 << ch.kindIndex)) !== 0) {
+        pushCstTriviaEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
+      }
     }
   }
+}
+
+/**
+ * Resolve a per-node trivia capture mask (`ctx._triviaCaptureMask`) from a trivia
+ * label table and the kind names a host wants to keep. Returns `undefined` when
+ * `labels` is absent (nothing to key on → capture everything).
+ *
+ * Names in `keep` that aren't in `labels` are **ignored by design**: `keep` is
+ * often a dialect-independent list (e.g. `['blockComment', 'lineComment']`) applied
+ * to a grammar whose trivia only defines some of them (CSS has no `lineComment`) —
+ * so an unknown name is a normal cross-dialect no-op, not necessarily a typo, and
+ * is not worth a warning that would cry wolf on legitimate superset lists. An empty
+ * `keep` (or one where nothing matches) yields `0`, which means "capture NO trivia
+ * into per-node logs" — an intentional, valid state (the global `_triviaLog` is
+ * unaffected either way). If you expect comments and get an empty per-node log,
+ * check the name against the grammar's `triviaKindLabels`.
+ */
+export function triviaKindMask(
+  labels: readonly string[] | undefined,
+  keep: readonly string[],
+): number | undefined {
+  if (!labels) return undefined
+  let mask = 0
+  for (const name of keep) {
+    const idx = labels.indexOf(name)
+    if (idx >= 0) mask |= 1 << idx
+  }
+  return mask
 }

@@ -95,6 +95,16 @@ export type BuildHost = ((
   _parsemanCstCollapse?: CstCollapsePredicate | undefined
   /** Framework-internal: node types whose structural host wants triviaLog. */
   _parsemanCaptureTrivia?: ((type: string) => boolean) | undefined
+  /**
+   * Framework-internal: per-node-type trivia-kind filter for the captured
+   * `triviaLog`. Returns a bitmask over the trivia's `triviaKindLabels` (bit `k`
+   * = keep kind `k`); `undefined` = keep every kind (default). Lets a host ask
+   * one node type for comments-only while another still gets whitespace — e.g.
+   * `Ruleset`/`Stylesheet` want comment runs, `CompoundSelector` needs the
+   * whitespace that marks a descendant combinator. Scoped to the node and
+   * restored on exit. Build a mask with `triviaKindMask(labels, keep)`.
+   */
+  _parsemanTriviaKinds?: ((type: string) => number | undefined) | undefined
 }
 
 export type FieldCapture<T = unknown> = {
@@ -120,6 +130,18 @@ export type ParseContext = {
    * comment). When false/unset, trivia is skipped silently. Default: skip.
    */
   captureTrivia?: boolean | undefined
+  /**
+   * Kind-filter for PER-NODE CST trivia capture (`triviaLog` handed to a node's
+   * builder). A bitmask over the active `triviaKindLabels` indices: bit `k` set
+   * means "record kind `k`"; `undefined` means record every kind (default). Only
+   * the per-node CST log is filtered — the global `_triviaLog` stays complete, so
+   * a downstream trivia map is unaffected. Lets a host that only consumes, say,
+   * comments enable per-node capture WITHOUT paying to log every whitespace run.
+   * Requires labeled trivia (indices align with `triviaKindLabels`); with no
+   * labels the mask can't apply and all trivia is captured. Build a mask with
+   * `triviaKindMask(labels, keep)`.
+   */
+  _triviaCaptureMask?: number | undefined
   trackLines: boolean
   /** Grammar-author-provided state, scoped with withCtx() and read in guard(). */
   state?: unknown

@@ -102,12 +102,20 @@ export function node<N>(
       const saved = beginCstNodeCapture(ctx)
       const savedFields = ctx._fields
       ctx._fields = capturesFields ? [] : undefined
+      // Per-node-type trivia-kind mask: a structural (host-built) node may want
+      // only certain kinds captured (comments for Ruleset, whitespace for
+      // CompoundSelector). Scoped here, restored below — matches the compiled path.
+      const savedMask = ctx._triviaCaptureMask
+      if (build === undefined && ctx.build?._parsemanTriviaKinds !== undefined && def.type !== undefined) {
+        ctx._triviaCaptureMask = ctx.build._parsemanTriviaKinds(def.type)
+      }
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
       // without touching the global _triviaLog, which is committed independently.
       if (!capturesTrivia) ctx.captureTrivia = false
       const r = combinator.parse(input, pos, ctx)
       const fields = capturesFields ? buildFieldMap(ctx._fields) : undefined
       ctx._fields = savedFields
+      ctx._triviaCaptureMask = savedMask
       const { children, rawChildren, triviaLog } = endCstNodeCapture(ctx, saved)
 
       if (!r.ok) return r

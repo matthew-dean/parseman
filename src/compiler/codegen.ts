@@ -1946,6 +1946,10 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const tlV = capturesTrivia || structural ? v(ctx, '_tl') : '_EMPTY_TL'
   if (!capturesTrivia) ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
+  // Per-node-type trivia-kind mask (structural/host nodes only): a host may want
+  // one node type captured comments-only and another whitespace-and-all. Scoped
+  // here and restored after the inner parse, exactly like captureTrivia/_cstTriviaLog.
+  const smk = structural ? v(ctx, '_smk') : null
   if (structural) ctx.needsHostReads = true
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
   const allocStmt = structural
@@ -1963,15 +1967,15 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const fObj = hasFields ? v(ctx, '_fields') : 'undefined'
   const stmts: string[] = [
     allocStmt,
-    `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${sf ? `, ${sf} = _ctx._fields` : ''}`,
-    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
+    `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${smk ? `, ${smk} = _ctx._triviaCaptureMask` : ''}${sf ? `, ${sf} = _ctx._fields` : ''}`,
+    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
   ]
   const { stmts: innerStmts, okVar, endVar } = emitFallible(def.parser, ctx, pos)
   stmts.push(...innerStmts)
   if (sf && fArr) {
     stmts.push(`${i}const ${fArr} = _ctx._fields`)
   }
-  stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${sf ? `; _ctx._fields = ${sf}` : ''}`)
+  stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}${sf ? `; _ctx._fields = ${sf}` : ''}`)
   // node() returns the inner failure verbatim (interpreter parity) — propagate
   // the recorded deepest failure, not a coarse ["node"] at the node's start.
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
