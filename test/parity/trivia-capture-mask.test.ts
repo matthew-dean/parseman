@@ -153,6 +153,23 @@ describe('per-node trivia capture kind-filter (_triviaCaptureMask)', () => {
     expect(cRes.get('Outer')).toEqual(iRes.get('Outer'))
   })
 
+  it('captureTriviaKinds resolves INHERITED trivia labels (trivia not re-declared here)', () => {
+    // Outer parser owns the labeled trivia; an inner parser sets captureTriviaKinds
+    // WITHOUT re-declaring trivia. The mask must resolve from the inherited labels,
+    // not silently no-op. (Regression: PR #18 review — inherited-trivia case.)
+    const rw = labeledRw()
+    const inner = node(
+      'Root',
+      sequence(regex(/a/), many(regex(/b/))),
+      (_c, _f, _s, _r, triviaLog) => ({ tl: [...triviaLog] as number[] }),
+    )
+    const innerP = parser({ captureTrivia: true, captureTriviaKinds: ['blockComment'] }, inner)
+    const outerP = parser({ trivia: rw }, innerP)
+    const r = outerP.parse(INPUT, 0, { trackLines: false })
+    expect(r.ok).toBe(true)
+    expect(kindsOf((r as { value: unknown }).value)).toEqual([COMMENT, COMMENT])
+  })
+
   it('triviaKindMask ignores unknown names and returns undefined without labels', () => {
     expect(triviaKindMask(KIND_LABELS, ['nope'])).toBe(0)
     expect(triviaKindMask(KIND_LABELS, ['whitespace', 'nope'])).toBe(1 << WS)

@@ -73,9 +73,12 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
         } : {}),
         ...(opts.captureTrivia || _ctx?.captureTrivia ? { captureTrivia: true } : {}),
         // Kind-filter for per-node capture. Resolve against this scope's trivia
-        // labels; falls through (undefined = capture all) without labels.
+        // labels — this parser's own trivia if it declares one, else the INHERITED
+        // labels (`_ctx.triviaKindLabels`), so captureTriviaKinds still applies when
+        // trivia is inherited rather than re-declared here. No labels → undefined
+        // (capture all).
         ...(opts.captureTriviaKinds && !clearTrivia
-          ? { _triviaCaptureMask: triviaKindMask(opts.trivia?._meta.triviaKindLabels, opts.captureTriviaKinds) }
+          ? { _triviaCaptureMask: triviaKindMask(opts.trivia?._meta.triviaKindLabels ?? _ctx?.triviaKindLabels, opts.captureTriviaKinds) }
           : {}),
       }
       const result = root.parse(input, pos ?? 0, ctx)

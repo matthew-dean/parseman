@@ -192,8 +192,17 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
 /**
  * Resolve a per-node trivia capture mask (`ctx._triviaCaptureMask`) from a trivia
  * label table and the kind names a host wants to keep. Returns `undefined` when
- * `labels` is absent (nothing to key on → capture everything). Unknown names are
- * ignored; an empty `keep` yields `0` (capture no trivia into per-node logs).
+ * `labels` is absent (nothing to key on → capture everything).
+ *
+ * Names in `keep` that aren't in `labels` are **ignored by design**: `keep` is
+ * often a dialect-independent list (e.g. `['blockComment', 'lineComment']`) applied
+ * to a grammar whose trivia only defines some of them (CSS has no `lineComment`) —
+ * so an unknown name is a normal cross-dialect no-op, not necessarily a typo, and
+ * is not worth a warning that would cry wolf on legitimate superset lists. An empty
+ * `keep` (or one where nothing matches) yields `0`, which means "capture NO trivia
+ * into per-node logs" — an intentional, valid state (the global `_triviaLog` is
+ * unaffected either way). If you expect comments and get an empty per-node log,
+ * check the name against the grammar's `triviaKindLabels`.
  */
 export function triviaKindMask(
   labels: readonly string[] | undefined,
