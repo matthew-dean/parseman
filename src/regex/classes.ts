@@ -31,7 +31,11 @@ export const SPACE_RANGES: Array<[number, number]> = [
 export function shorthandRanges(ch: 'd' | 'w' | 's'): Array<[number, number]> {
   if (ch === 'd') return [[48, 57]]
   if (ch === 's') return SPACE_RANGES
-  return [[48, 57], [65, 90], [95, 95], [97, 122]]
+  // Order matches the canonical `scannable-run` lowering (underscore last), so
+  // `ScanShape` output and generated code stay byte-identical. Membership is
+  // order-independent (ranges are iterated / the FirstSet union sorts), so the
+  // non-sorted order is purely representational — see PR #16 discussion.
+  return [[48, 57], [65, 90], [97, 122], [95, 95]]
 }
 
 /** `\uXXXX` at `body[i]` → its code point and the index past it, or null. */
