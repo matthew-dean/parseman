@@ -4,30 +4,64 @@
 usually want to skip but sometimes need to preserve (formatters, editors). Parséman
 treats trivia as a first-class, grammar-defined concept.
 
-## The two-step setup
+## Two steps: define, then install
 
-Skipping filler between tokens is a two-step setup:
+Skipping filler is always: **define** what counts as filler, then **install** it as the
+ambient trivia so `sequence` / `sepBy` / `many` / `choice` skip it automatically between
+terms.
 
-1. **Define** what counts as filler — usually `regex(/\s+/)`, comments, or both — and
-   wrap it with `trivia()`. This only sets a metadata flag (`isTrivia`); it does *not*
-   change when the parser runs.
-2. **Activate** skipping by passing that combinator to `parser({ trivia }, combinator)`.
-   That installs it on the parse context so `sequence`, `sepBy`, `choice`, etc. consume
-   matching filler automatically between terms.
+1. **Define** — wrap your filler pattern with `trivia()`. This only sets a metadata flag
+   (`isTrivia`); it does *not* skip anything yet.
+
+   ```ts
+   const ws = trivia(regex(/\s+/))   // "this pattern is filler"
+   ```
+
+2. **Install** — there are two ways, depending on scope. **Pick one; you don't need both.**
+
+### Install once for a whole grammar — `rules({ trivia }, factory)`
+
+This is what you want for a real grammar. Declare the trivia **once**, on the grammar, and
+it is ambient for **every rule** — including when you parse a single rule on its own
+(incremental parsing). You do **not** wrap individual rules.
+
+```ts
+import { rules, node, sequence, literal, regex, trivia, oneOrMore, run } from 'parseman'
+
+const rw = trivia(oneOrMore(regex(/\s+/)))
+
+const g = rules({ trivia: rw }, (r) => ({   // ← set once, ambient in every rule
+  List:  sequence(literal('['), r.items, literal(']')),
+  items: sepBy(r.value, literal(',')),
+  value: choice(r.List, regex(/[a-z]+/)),
+}))
+
+run(g.List, '[ a , [ b , c ] ]')   // trivia skipped everywhere
+run(g.value, '  a')                // even parsing one rule on its own
+```
+
+Every rule reached from any entry inherits `rw`. No per-rule `parser({ trivia })`. This is
+the "set once" half of **set once, override when needed**.
+
+### Install for a single combinator or a local scope — `parser({ trivia }, combinator)`
+
+`parser()` wraps *one* combinator with scope options. Use it for a small standalone parser,
+or to **override** the grammar's trivia inside a sub-region (see
+[overrides](#local-overrides-set-once-override-when-needed) below).
 
 ```ts
 import { parser, regex, trivia, sepBy, literal } from 'parseman'
 
-const ws   = trivia(regex(/\s*/))   // "this pattern is filler" — not skipped yet
-const word = regex(/[a-z]+/)
-const list = parser({ trivia: ws }, sepBy(word, literal(',')))  // skipping on
+const ws   = trivia(regex(/\s*/))
+const list = parser({ trivia: ws }, sepBy(regex(/[a-z]+/), literal(',')))  // one-off
 
-list.parse('foo ,  bar , baz')
-// { ok: true, value: ['foo', 'bar', 'baz'], … }
+list.parse('foo ,  bar , baz')   // { ok: true, value: ['foo','bar','baz'], … }
 ```
 
-`parser()` also gives you the `.parse(input)` convenience method and controls
-line tracking (`trackLines`) and trivia capture (`captureTrivia`).
+`rules({ ... })` and `parser({ ... })` accept the same **grammar-level** options — `trivia`
+today — so you can set it once on the grammar or scope it locally with `parser()`; they are
+not both required. `parser()` additionally carries per-scope knobs (`captureTrivia`,
+`trackLines`) and the `.parse(input)` convenience method.
 
 ## Combining multiple trivia types
 
@@ -77,11 +111,40 @@ run of consecutive numbers, so entry `i` starts at `i * stride`:
 (trivia before/after each node), pass the tree to
 [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
+## Local overrides — "set once, override when needed" {#local-overrides-set-once-override-when-needed}
+
+Once trivia is installed (grammar-wide via `rules({ trivia })`, or on a scope via
+`parser({ trivia })`), skipping is **ambient**: `sequence` / `many` / `choice` skip filler
+between **every** term, in every rule reached from there — you do not re-declare it. When you
+need *different* trivia for a sub-region, wrap just that region:
+
+- **`noTrivia(child)`** — turn skipping **off** for a contiguous region (`child` and its terms
+  must touch).
+- **`parser({ trivia: other }, child)`** — swap in a *different* trivia for `child`. Innermost
+  wins; the outer trivia resumes on exit.
+
+These are **overrides**, meant to be rare. If you find yourself wrapping many rules to
+re-establish the *same* trivia, that's a smell — the grammar-level `rules({ trivia })` already
+covers them; delete the wrappers.
+
+> **Don't reach for `noTrivia` to glue static tokens.** A decimal is `regex(/[0-9]+\.[0-9]+/)`,
+> an operator is `literal('>=')` — one pattern, no override needed. `noTrivia` earns its keep
+> only when a glued part is itself a **structured sub-rule** you can't fold into one pattern
+> (recursive, or with its own trivia-enabled interior).
+
+### One compiled limitation to know
+
+A single **shared rule** cannot be both trivia-skipping *and* contiguous at the same time in
+the **compiled/macro** build. The compiler bakes one trivia decision per rule; the interpreter
+reads it dynamically per call, so the two would disagree. In practice: don't reference the
+*same* rule from both a normal (trivia) context and a `noTrivia` context — give the glued case
+its own rule (or a plain `regex`/`literal`). This is rare and only affects rule *reuse across a
+trivia boundary*; ordinary `noTrivia`/`parser({ trivia })` overrides around distinct sub-rules
+are fine.
+
 ## Contiguous tokens (turning trivia off)
 
-Trivia skipping is ambient: once `parser({ trivia })` installs it, `sequence` / `many` /
-`choice` skip filler between **every** term. Sometimes you need the opposite — parts that
-must touch.
+Sometimes you need parts that must touch.
 
 If the whole thing is *static*, don't reach for `noTrivia` — just write one
 `literal`/`regex`: a decimal is `regex(/[0-9]+\.[0-9]+/)`, an operator is `literal('>=')`.

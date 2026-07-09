@@ -62,6 +62,36 @@ jsonParser.parse('{ "a": 1 }')
 Each rule returned from the factory is independently callable — that returned object *is*
 the "rule registry" that incremental re-parsing needs.
 
+## Grammar-level options — `rules({ trivia }, factory)`
+
+Pass an **options object first** — mirroring `parser({ trivia }, combinator)` — to set
+options **once for the whole grammar**, instead of wrapping rules individually. Today that's
+`trivia`, the ambient whitespace/comment skipping:
+
+```ts
+const rw = trivia(oneOrMore(choice(ws, comment)))
+
+const grammar = rules({ trivia: rw }, (g) => ({
+  Stylesheet: many(g.Rule),
+  Rule:       sequence(g.Selector, literal('{'), many(g.Declaration), literal('}')),
+  // …every rule below skips `rw` between its terms, automatically…
+}))
+```
+
+Every rule inherits `rw` — reached from any entry, **including incremental parsing of a
+single rule** (`run(grammar.Rule, …)` skips trivia too). You do **not** wrap individual rules
+in `parser({ trivia: rw })`; doing so is redundant. Reach for `parser({ trivia })` /
+`noTrivia` only to *override* the grammar trivia inside a sub-region — see
+[Whitespace & trivia → local overrides](./trivia#local-overrides-set-once-override-when-needed).
+
+This is the same option `parser({ trivia }, combinator)` takes; `rules()` applies it to the
+whole grammar, `parser()` applies it to one wrapped combinator. Use whichever matches the
+scope — you don't need both.
+
+It's fine to return your trivia rule itself from the factory (e.g. `rw`, so a driver can
+reach it as `g.rw`): a `trivia()` rule is automatically **excluded** from the grammar-level
+trivia, so it never recursively skips filler within itself.
+
 ## `rules()` and the macro
 
 The plugin fully compiles `rules()` factories, **including recursive ones**. Each rule

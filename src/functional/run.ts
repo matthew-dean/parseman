@@ -83,12 +83,20 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
   }
   const triviaLog: number[] = []
   const errors: ParseError[] = []
+  // Grammar-level ambient trivia declared via rules({ trivia }, factory): install
+  // it as ctx.trivia so it's ambient for the whole parse (the interpreter path;
+  // a compiled entry has it baked in and carries no _meta). parser/noTrivia still
+  // override locally.
+  const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
   const ctx: ParseContext = {
     trackLines: false,
     _triviaLog: triviaLog,
     _errors: errors,
     build: options.build,
     state: options.state,
+    ...(grammarTrivia !== undefined
+      ? { trivia: grammarTrivia, ...(grammarTrivia._meta.triviaKindLabels ? { triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}) }
+      : {}),
     ...(options.triviaCaptureMask !== undefined ? { _triviaCaptureMask: options.triviaCaptureMask } : {}),
   }
   const r = invoke(entry, input, 0, ctx)

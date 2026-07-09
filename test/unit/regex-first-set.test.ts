@@ -170,5 +170,8 @@ describe('regex first-set — soundness vs the RegExp engine (fuzz)', () => {
     expect(checked).toBeGreaterThan(1000)
     expect(unsound).toEqual([])
     expect(nullableViolations).toEqual([])
-  })
+    // Deterministic but heavy (2000+ generated patterns × RegExp-oracle checks):
+    // ~1.3s locally but spikes past the 5s default on loaded CI runners. Generous
+    // timeout so this soundness fuzz doesn't flake on machine load.
+  }, 30000)
 })
