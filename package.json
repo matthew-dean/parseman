@@ -2,7 +2,7 @@
   "name": "parseman",
   "version": "0.19.0",
   "packageManager": "pnpm@10.15.1",
-  "description": "Parser combinators that compile to optimized JavaScript \u2014 use as a library or as a build-time macro",
+  "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
   "type": "module",
   "author": "Matthew Dean <matthew-dean@users.noreply.github.com>",
   "repository": {
@@ -95,7 +95,6 @@
     "magic-string": "~0.30.21",
     "oxc-parser": "~0.137.0",
     "oxc-resolver": "~11.23.0",
-    "regexp-tree": "~0.1.27",
     "unplugin": "~3.0.0"
   }
 }
