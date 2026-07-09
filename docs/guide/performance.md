@@ -66,7 +66,7 @@ and from `cstBuildHost({ collapse })`, which changes **public CST shape**. See
 [CST / AST nodes](./ast#unwrapping-and-collapsing-wrapper-rules).
 :::
 
-## `.compile()` stacks on top
+## `compile()` stacks on top
 
 Collapsing reduces the *number* of combinators; [`compile()`](./modes#compile-runtime-jit)
 (or the macro build) makes each remaining combinator cheaper by emitting flat JS. The two

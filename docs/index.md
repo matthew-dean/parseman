@@ -14,9 +14,6 @@ hero:
       text: Get started
       link: /guide/getting-started
     - theme: alt
-      text: Why three modes?
-      link: /guide/modes
-    - theme: alt
       text: View on GitHub
       link: https://github.com/matthew-dean/parseman
 

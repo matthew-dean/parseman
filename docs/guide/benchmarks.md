@@ -49,11 +49,11 @@ Parséman appears as up to three bars:
 | Bar | What it is |
 | --- | --- |
 | **interpreted** | The default combinator interpreter — zero setup |
-| **compiled** | `.compile()` at runtime — costs **75–650 µs** once, depending on grammar size |
+| **compiled** | `compile()` at runtime — costs **75–650 µs** once, depending on grammar size |
 | **macro** | Build-time compilation via the bundler plugin — zero runtime cost |
 
 Most production use lands on **interpreted** (tests, REPLs) or **macro** (shipped apps).
-See [The three modes](./modes). Speed isn't free: `.compile()` and **macro** expand a
+See [The three modes](./modes). Speed isn't free: `compile()` and **macro** expand a
 grammar into flat generated JS — roughly **3–14× the source lines** (gzips to a fraction).
 See [macro code size](./macro-mode#code-size-what-to-expect).
 
@@ -97,7 +97,7 @@ span capture). Measured on the same JSON fixtures (`pnpm bench:svg`, tree-buildi
 | [Chevrotain](https://chevrotain.io/) CST | 7.38 µs | 231 µs | 1.78 ms | object CST |
 
 **Macro build** = compiled by the bundler plugin at build time (zero runtime setup).
-**Interpreter** = default combinator runtime, no `.compile()` or macro. These are the two
+**Interpreter** = default combinator runtime, no `compile()` or macro. These are the two
 ways to run Parséman; the chart shows both against Lezer and Chevrotain.
 
 **Compiled Parséman CST (macro build) beats Lezer at every fixture size** — ~2.8× at
@@ -179,7 +179,7 @@ CST-JSON warm-parse timings the charts need (~30–60 s), not the full `pnpm ben
 | `pnpm bench:baseline` | Refresh Parseman regression baseline + history snapshot |
 | `pnpm perf:guard` | Fast pre-commit CSS speed regression check |
 
-Init-cost bars on the charts (`.compile()` vs Chevrotain setup) are **pinned** in
+Init-cost bars on the charts (`compile()` vs Chevrotain setup) are **pinned** in
 `bench/chart-types.ts` — they vary wildly by machine and aren't refreshed on each run.
 Warm-parse bars come from live measurement.
 

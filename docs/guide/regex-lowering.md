@@ -1,6 +1,6 @@
 # Under the hood: regex lowering
 
-When you compile a grammar — with [`.compile()`](./modes#compile-runtime-jit) or the
+When you compile a grammar — with [`compile()`](./modes#compile-runtime-jit) or the
 [macro build](./macro-mode) — Parséman doesn't just wrap your `regex(…)` terminals in
 `RegExp.exec`. Where it can *prove* the result is identical, it rewrites the pattern into a
 tight `charCodeAt` scan loop with no regex engine, no match object, and no allocation on
@@ -193,7 +193,7 @@ and keyword fast paths were each fuzzed this way (100k+ inputs, zero mismatches)
 crucially, we also keep a **deliberately-bypassed** case that *does* mismatch, to prove the
 safety guard is load-bearing and not just decorative.
 
-**Cross-mode parity.** The same grammar is run through the interpreter, `.compile()`, and
+**Cross-mode parity.** The same grammar is run through the interpreter, `compile()`, and
 the macro build, and the outputs are asserted identical. Lowering lives in the compiled
 paths, so this catches any drift between "what the interpreter does" (always the regex
 engine) and "what compiled code does".
