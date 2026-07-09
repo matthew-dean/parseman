@@ -4,7 +4,7 @@
  * Exported factories:
  *   buildParsermanCSTJSON()           — interpreted, captureTrivia: true
  *   buildParsermanCSTJSONNoTriv()     — interpreted, captureTrivia: false
- *   buildParsermanCSTJSONCompiled()   — macro/.compile() output, captureTrivia: false
+ *   buildParsermanCSTJSONCompiled()   — macro/compile() output, captureTrivia: false
  *
  * Build callbacks use three parameters `(ch, _r, span)` so arity-gated elision
  * skips per-node trivia logging and state cloning on the hot path.

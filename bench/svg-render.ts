@@ -55,7 +55,7 @@ export function buildSvg(chart: Chart): string {
   ])
   const allLegend = [
     { color: C.macroBuild, label: 'Parséman (macro build)' },
-    { color: C.compile,    label: 'Parséman (.compile())' },
+    { color: C.compile,    label: 'Parséman (compile())' },
     { color: C.noCompile,  label: 'Parséman (interpreter)' },
     { color: C.peggy,      label: 'Peggy' },
     { color: C.parsimmon,  label: 'Parsimmon' },

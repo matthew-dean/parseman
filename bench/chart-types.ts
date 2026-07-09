@@ -27,15 +27,15 @@ export type Chart = {
 /** Init bars pinned from a stable snapshot — highly environment-sensitive. */
 export const PINNED_INIT = {
   json: [
-    { label: 'Parséman (.compile())', us: 111.4,  color: CHART_COLORS.compile },
+    { label: 'Parséman (compile())', us: 111.4,  color: CHART_COLORS.compile },
     { label: 'Chevrotain',             us: 745.3, color: CHART_COLORS.chevrotain },
   ],
   csv: [
-    { label: 'Parséman (.compile())', us: 144.0,  color: CHART_COLORS.compile },
+    { label: 'Parséman (compile())', us: 144.0,  color: CHART_COLORS.compile },
     { label: 'Chevrotain',             us: 833.1, color: CHART_COLORS.chevrotain },
   ],
   graphql: [
-    { label: 'Parséman (.compile())', us: 602.7,  color: CHART_COLORS.compile },
+    { label: 'Parséman (compile())', us: 602.7,  color: CHART_COLORS.compile },
     { label: 'Chevrotain',             us: 1339.8, color: CHART_COLORS.chevrotain },
   ],
 } satisfies Record<string, Bar[]>
