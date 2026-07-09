@@ -8,8 +8,8 @@
  * pin down widens to `any()` (— "could start with anything" —), which only
  * disables a dispatch fast path, never changes a parse. Under-approximating
  * (dropping a real start char) WOULD be a bug: dispatch would skip a matching
- * arm. The differential fuzz test (`test/regex-first-set.test.ts`) checks this
- * against `regexp-tree` as an oracle.
+ * arm. The soundness fuzz test (`test/unit/regex-first-set.test.ts`) checks this
+ * against the real `RegExp` engine as an oracle.
  *
  * It parses the regex into a tiny AST (single-char matchers, sequence,
  * alternation, repetition, zero-width) reusing the shared char-class primitives

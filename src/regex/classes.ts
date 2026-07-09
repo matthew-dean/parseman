@@ -31,7 +31,7 @@ export const SPACE_RANGES: Array<[number, number]> = [
 export function shorthandRanges(ch: 'd' | 'w' | 's'): Array<[number, number]> {
   if (ch === 'd') return [[48, 57]]
   if (ch === 's') return SPACE_RANGES
-  return [[48, 57], [65, 90], [97, 122], [95, 95]]
+  return [[48, 57], [65, 90], [95, 95], [97, 122]]
 }
 
 /** `\uXXXX` at `body[i]` → its code point and the index past it, or null. */
