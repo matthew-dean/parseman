@@ -68,17 +68,30 @@ describe('regex first-set — character classes', () => {
     expect(p._meta.firstSet.kind).toBe('any')
   })
 
-  it('\\w includes digits, letters, underscore → any (engine treats as any)', () => {
-    // \w = [0-9a-zA-Z_] which our first-set extractor conservatively treats as 'any'
+  it('\\w resolves to its precise digit/letter/underscore ranges', () => {
+    // \w = [0-9A-Za-z_]. The hand-rolled analyzer lowers it precisely (the old
+    // regexp-tree path coarsely widened it to `any`); `\w+` requires ≥1 char, so
+    // its first-set is exactly those ranges.
     const p = regex(/\w+/)
-    expect(p._meta.firstSet.kind).toBe('any')
+    expect(p._meta.firstSet.kind).toBe('ranges')
+    if (p._meta.firstSet.kind === 'ranges') {
+      const has = (c: string) => p._meta.firstSet.kind === 'ranges' &&
+        p._meta.firstSet.ranges.some(r => c.charCodeAt(0) >= r.lo && c.charCodeAt(0) <= r.hi)
+      expect(has('a') && has('Z') && has('0') && has('_')).toBe(true)
+      expect(has('-')).toBe(false)
+    }
   })
 
-  it('a leading assertion (\\b, ^) falls through to a conservative "any" first-set', () => {
-    // Boundary/anchor assertions aren't modeled by extractFirstSet's switch, so
-    // the default arm returns `any` — the safe over-approximation.
-    expect(regex(/\bfoo/)._meta.firstSet.kind).toBe('any')
-    expect(regex(/^foo/)._meta.firstSet.kind).toBe('any')
+  it('a leading zero-width assertion (\\b, ^) flows the first-set to the next term', () => {
+    // Boundary/anchor assertions are nullable zero-width nodes, so the first-set
+    // is that of the following term — `foo` starts with `f` (the old regexp-tree
+    // path widened to `any` here). Still sound: `f` is the only possible start.
+    for (const p of [regex(/\bfoo/), regex(/^foo/)]) {
+      expect(p._meta.firstSet.kind).toBe('ranges')
+      if (p._meta.firstSet.kind === 'ranges') {
+        expect(p._meta.firstSet.ranges).toEqual([{ lo: 'f'.charCodeAt(0), hi: 'f'.charCodeAt(0) }])
+      }
+    }
   })
 })
 

@@ -110,12 +110,29 @@ export function measureMedianUs(
 ): number {
   const warm = opts?.warmup ?? Math.min(Math.floor(iterations / 10), 500)
   const samples = opts?.samples ?? 15
+  // Warm up, timing it to estimate per-op cost, then bound the timed work by a
+  // wall-clock budget instead of the raw configured counts. The configured
+  // `iterations × samples` are tuned so a sub-µs case swamps timer jitter, but
+  // applied literally to a medium/large fixture (csv/large ≈ 0.35 ms × 5000, or
+  // bootstrap4 ≈ 60 ms) one sample takes ~1 s — and `× robust-passes` turned a
+  // full baseline into minutes for medians that are stable in a handful of reads.
+  //   effIter    — cap each sample to ~SAMPLE_BUDGET_MS of parses.
+  //   effSamples — a slow op (per-op already ≫ jitter) needs far fewer samples;
+  //                15 reads of a 60 ms parse is pure waste.
+  // Both are no-ops for the sub-ms cases, so their jitter margin is untouched.
+  const SAMPLE_BUDGET_MS = 5
+  const wStart = performance.now()
   for (let i = 0; i < warm; i++) fn()
+  const perOpMs = warm > 0 ? (performance.now() - wStart) / warm : 0
+  const effIter = perOpMs > 0
+    ? Math.min(iterations, Math.max(1, Math.ceil(SAMPLE_BUDGET_MS / perOpMs)))
+    : iterations
+  const effSamples = perOpMs > 1 ? Math.min(samples, 5) : samples
   const perOpUs: number[] = []
-  for (let s = 0; s < samples; s++) {
+  for (let s = 0; s < effSamples; s++) {
     const t0 = performance.now()
-    for (let i = 0; i < iterations; i++) fn()
-    perOpUs.push((performance.now() - t0) / iterations * 1000)
+    for (let i = 0; i < effIter; i++) fn()
+    perOpUs.push((performance.now() - t0) / effIter * 1000)
   }
   return median(perOpUs)
 }

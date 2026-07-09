@@ -6,7 +6,7 @@
 
 Write parsers as TypeScript functions. Ship them like hand-written parsers.
 
-Parséman is a TypeScript parser-combinator library with an optional compiler/macro path that turns your grammar into flat JavaScript. Use the same grammar interpreted in tests and REPLs, macro-compiled at build time in production, or `.compile()`d on demand at runtime.
+Parséman is a TypeScript parser-combinator library with an optional compiler/macro path that turns your grammar into flat JavaScript. Use the same grammar interpreted in tests and REPLs, macro-compiled at build time in production, or compiled on demand at runtime with `compile()`.
 
 Use Parséman when you want:
 
@@ -63,7 +63,7 @@ The same combinator code runs three ways, with identical results:
 
 - **Interpreter** — zero setup, works anywhere (tests, REPLs, dynamic grammars).
 - **Macro build** — a [bundler plugin](https://matthew-dean.github.io/parseman/guide/macro-mode) evaluates your grammar at build time and replaces it with inline JS. Zero runtime cost; the `parseman` import disappears from the bundle.
-- **`.compile()`** — the same optimizer, run on demand at runtime.
+- **`compile()`** — the same optimizer, run on demand at runtime.
 
 ```ts
 // Add the plugin (vite.config.ts) and one import attribute — that's the whole change:
@@ -124,7 +124,7 @@ Compared parsers: **Parséman**, [Peggy](https://peggyjs.org/), [Parsimmon](http
 
 ![JSON CST parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-cst-json.svg)
 
-Parséman has three modes — **interpreter** (zero setup, works anywhere), **macro build** (compiled by the bundler plugin at build time, zero runtime cost), and **`.compile()`** (optional runtime JIT). Most production use lands on one of the first two. The initialization section only shows parsers with a nonzero setup cost: `.compile()` costs 75–650 µs depending on grammar size; Chevrotain always costs 840–1,400 µs. Parsers not listed there start for free. (Init numbers are pinned on the charts — they're noisy run-to-run; warm-parse bars are the meaningful comparison.)
+Parséman has three modes — **interpreter** (zero setup, works anywhere), **macro build** (compiled by the bundler plugin at build time, zero runtime cost), and **`compile()`** (optional runtime JIT). Most production use lands on one of the first two. The initialization section only shows parsers with a nonzero setup cost: `compile()` costs 75–650 µs depending on grammar size; Chevrotain always costs 840–1,400 µs. Parsers not listed there start for free. (Init numbers are pinned on the charts — they're noisy run-to-run; warm-parse bars are the meaningful comparison.)
 
 On JSON, CSV, and GraphQL, Parséman macro beats every other library at every fixture size in the charts above — e.g. GraphQL large **154 µs** vs Peggy **423 µs**, JSON large **125 µs** vs Peggy **472 µs** / Chevrotain **1,946 µs**. Native `JSON.parse` is the one thing faster on JSON (**45 µs** large). Even the zero-setup interpreter is highly competitive: on JSON and CSV it's the fastest option after the macro build — ahead of Peggy and every other generator — with Peggy edging it out only on GraphQL. On the CST chart, macro build beats Lezer at every size (**226 µs** vs **626 µs** large, parse-only). Full write-up and how to refresh the charts: **[benchmarks guide](https://matthew-dean.github.io/parseman/guide/benchmarks)**. Grammar-level speed levers: [performance guide](https://matthew-dean.github.io/parseman/guide/performance); library-level codegen: [PERF_IDEAS.md](./notes/PERF_IDEAS.md).
 

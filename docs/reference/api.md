@@ -355,7 +355,7 @@ Required token. On failure, record a zero-width `ParseError` and recover in plac
 Tolerant `sepBy`: a malformed element is skipped to the next `separator` or the `until` terminator and
 recorded as a [`ParseError`](./types#parseerror) in the result array, instead of truncating
 the list. `until` (the closing delimiter, matched but **not** consumed) is what distinguishes
-an empty list from a malformed first element. Built from existing combinators, so `.compile()`
+an empty list from a malformed first element. Built from existing combinators, so `compile()`
 and CST capture handle it with no special cases. See
 [Tolerant lists](../guide/error-recovery#tolerant-lists).
 

@@ -8,9 +8,9 @@ turned into running code.
 | --- | --- | --- | --- |
 | **Interpreter** | None | Walks the combinator tree per parse | Tests, REPLs, dynamic grammars, anywhere a bundler isn't around |
 | **Macro build** | Bundler plugin + `with { type: 'macro' }` | **Zero** — compiled to inline JS at build time | Production apps built with Vite/Rollup/webpack |
-| **`.compile()`** | Call `compile()` | One-time JIT, then flat JS | Grammars assembled dynamically at runtime |
+| **`compile()`** | Call `compile()` | One-time JIT, then flat JS | Grammars assembled dynamically at runtime |
 
-Most production use lands on one of the first two; `.compile()` is there for dynamic
+Most production use lands on one of the first two; `compile()` is there for dynamic
 grammars that need it.
 
 ## Interpreter (the default)
@@ -46,7 +46,7 @@ test runners), it's silently ignored and the interpreter runs instead — identi
 results, no errors. This is the recommended path for shipping apps. Full details in
 [Macro mode](./macro-mode).
 
-## `.compile()` (runtime JIT)
+## `compile()` (runtime JIT)
 
 `compile()` runs the *same* optimizer as the plugin, but at runtime. Reach for it when
 you assemble a grammar dynamically and can't rely on a build step, or when you just
@@ -90,7 +90,7 @@ How you debug depends on which mode you're running:
 | --- | --- |
 | **Interpreter** | Your combinator source directly — no compilation, no indirection |
 | **Macro build** | Your combinator source via source maps — breakpoints on `choice(...)` lines hit when the compiled function runs |
-| **`.compile()`** | Generated JS (`compiled.source`) — no IDE source maps today |
+| **`compile()`** | Generated JS (`compiled.source`) — no IDE source maps today |
 
 **Interpreter** is the simplest path while you're writing a grammar: you're already
 running the combinator tree you wrote.
@@ -102,6 +102,6 @@ Step-through in the debugger shows your original combinator source, not the emit
 runners), the attribute is silently ignored and the interpreter runs instead — identical
 results, no errors.
 
-**`.compile()`** gives you the generated source string for inspection, but does not
+**`compile()`** gives you the generated source string for inspection, but does not
 currently wire up IDE source maps. Use the interpreter while developing, then macro or
-`.compile()` for speed once the grammar is stable.
+`compile()` for speed once the grammar is stable.

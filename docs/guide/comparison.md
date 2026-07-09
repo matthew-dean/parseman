@@ -20,7 +20,7 @@ Two questions sort most of the field:
 ## The parsers
 
 - **[Parséman](https://github.com/matthew-dean/parseman)** — parser combinators in JS/TS
-  that compile to flat JS (as a library, at runtime with `.compile()`, or build-time via
+  that compile to flat JS (as a library, at runtime with `compile()`, or build-time via
   the [macro](./macro-mode)).
 - **[Peggy](https://peggyjs.org/)** — the maintained successor to PEG.js; a PEG grammar
   DSL that generates a parser.
@@ -40,7 +40,7 @@ Two questions sort most of the field:
 
 | Parser | Grammar style | Algorithm | Delivery | Output |
 | --- | --- | --- | --- | --- |
-| **Parséman** | JS/TS combinators | PEG-style ordered choice | library · `.compile()` · build macro | object CST/AST **+ spans + trivia**, or plain JS values |
+| **Parséman** | JS/TS combinators | PEG-style ordered choice | library · `compile()` · build macro | object CST/AST **+ spans + trivia**, or plain JS values |
 | [Peggy](https://peggyjs.org/) | PEG text DSL | PEG (packrat opt-in) | codegen | whatever your actions return |
 | [Parsimmon](https://github.com/jneen/parsimmon) | JS combinators | PEG-style ordered choice | runtime library | whatever you build |
 | [Chevrotain](https://chevrotain.io/) | JS imperative DSL | LL(k) + backtracking | runtime library | automatic CST, or visitor output |
@@ -179,7 +179,7 @@ grammar *as code you run directly*. You set breakpoints in your own rules, read 
 traces, and print values inline, with no generator in the loop.
 
 Parséman sits in a spot of its own: it's authored and debugged in TypeScript **like a
-library**, but its [`.compile()` / macro build](./modes) reaches generator-class speed —
+library**, but its [`compile()` / macro build](./modes) reaches generator-class speed —
 and, unusually, the **compiled output stays readable JS you can still breakpoint**, so you
 don't trade away debuggability to go fast. See
 [Debugging compiled grammars](./modes#debugging-compiled-grammars). (tree-sitter's

@@ -4,12 +4,14 @@ export { literal } from './combinators/literal.ts'
 export type { LiteralOptions } from './combinators/literal.ts'
 
 export { regex } from './combinators/regex.ts'
-// Wire the `regexp-tree`-backed first-set analyzer into `regex()`. Importing the
-// library entry opts you into precise choice-dispatch fast paths; consumers who
-// ship only compiled grammars never import this entry, so `regexp-tree` stays
-// out of their bundle (see `regex-analyze.ts` for the full rationale).
+// Wire the hand-rolled first-set analyzer into `regex()`. Importing the library
+// entry opts you into precise choice-dispatch fast paths; a deep-path
+// `import { regex }` (no library entry) gets a permissive fallback, so the
+// analyzer tree-shakes out entirely. The analyzer is a small dependency-free
+// regex parser (`./regex/first-set.ts`) — no `regexp-tree`, no codegen — so
+// interpreter-only bundles stay lean.
 import { registerRegexAnalyzer } from './combinators/regex.ts'
-import { firstSetFromRegex } from './combinators/regex-analyze.ts'
+import { firstSetFromRegex } from './regex/first-set.ts'
 registerRegexAnalyzer(firstSetFromRegex)
 export { keywords, word, makeWord } from './combinators/keywords.ts'
 export type { KeywordsOptions } from './combinators/keywords.ts'

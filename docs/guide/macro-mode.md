@@ -178,7 +178,7 @@ Two things keep this in perspective:
   cost is a fraction of it.
 
 If bundle size matters more than raw throughput for a given grammar, use the
-**interpreter** (zero generated code, zero setup) or reach for `.compile()` at runtime
+**interpreter** (zero generated code, zero setup) or reach for `compile()` at runtime
 instead of the macro. See [the three modes](./modes).
 
 Source maps and per-mode debugging are covered in [Debugging compiled grammars](./modes#debugging-compiled-grammars).

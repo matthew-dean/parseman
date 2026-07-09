@@ -79,88 +79,14 @@ export type ScanShape =
 /** Backslash (`\`) code point — the escape lead char in string shapes. */
 export const BACKSLASH = 92
 
-const CLASS_ESCAPES: Record<string, number> = { t: 9, n: 10, r: 13, f: 12, v: 11, '0': 0 }
 const META = new Set('()[]{}*+?|^$.'.split(''))
 
-/**
- * `\s`'s code-point set per the spec's `WhiteSpace` + `LineTerminator`
- * productions — TAB/LF/VT/FF/CR, SPACE, NBSP, and the Unicode `Zs` space
- * separators. This set is fixed regardless of the `u` flag (unlike `\d`/`\w`,
- * which are ASCII-only without `u` but widen with it), so it's always safe to
- * lower to a fixed range scan.
- */
-export const SPACE_RANGES: Array<[number, number]> = [
-  [9, 13], [32, 32], [160, 160], [5760, 5760], [8192, 8202],
-  [8232, 8232], [8233, 8233], [8239, 8239], [8287, 8287], [12288, 12288], [65279, 65279],
-]
-
-/**
- * ASCII code-point ranges for the shorthand classes we can lower safely. `\d`
- * and `\w` are ASCII-only in the default (non-`u`) engine, so they map to fixed
- * ranges. `\s` maps to `SPACE_RANGES` — a fixed set unaffected by the `u` flag.
- */
-function shorthandRanges(ch: 'd' | 'w' | 's'): Array<[number, number]> {
-  if (ch === 'd') return [[48, 57]]
-  if (ch === 's') return SPACE_RANGES
-  return [[48, 57], [65, 90], [97, 122], [95, 95]]
-}
-
-type ClassAtom = { cp: number } | { set: Array<[number, number]> }
-
-/**
- * Parse a regex char-class body (chars between `[` and `]`) to code-point ranges.
- * `\d`/`\w` expand to their ASCII ranges; other letter escapes (`\s`, `\D`,
- * `\W`, `\S`, `\b`, …) return null rather than being mis-read as literal letters.
- */
-function readUnicodeEscape(body: string, i: number): { cp: number; next: number } | null {
-  if (body[i] !== '\\' || body[i + 1] !== 'u') return null
-  const hex = body.slice(i + 2, i + 6)
-  if (!/^[0-9a-fA-F]{4}$/.test(hex)) return null
-  return { cp: Number.parseInt(hex, 16), next: i + 6 }
-}
-
-export function parseClassRanges(body: string): Array<[number, number]> | null {
-  const ranges: Array<[number, number]> = []
-  let i = 0
-  const readAtom = (): ClassAtom | null => {
-    const ch = body[i]
-    if (ch === undefined) return null
-    if (ch === '\\') {
-      const uni = readUnicodeEscape(body, i)
-      if (uni) {
-        i = uni.next
-        return { cp: uni.cp }
-      }
-      const e = body[i + 1]
-      if (e === undefined) return null
-      i += 2
-      if (e in CLASS_ESCAPES) return { cp: CLASS_ESCAPES[e]! }
-      if (e === 'd' || e === 'w' || e === 's') return { set: shorthandRanges(e) }
-      // Any other letter escape is a class we can't safely lower (\D, \W, \S, …).
-      if ((e >= 'a' && e <= 'z') || (e >= 'A' && e <= 'Z')) return null
-      return { cp: e.codePointAt(0)! }
-    }
-    i += ch.length
-    return { cp: ch.codePointAt(0)! }
-  }
-  while (i < body.length) {
-    const lo = readAtom()
-    if (lo === null) return null
-    if ('set' in lo) {
-      ranges.push(...lo.set)
-      continue
-    }
-    if (body[i] === '-' && body[i + 1] !== undefined && body[i + 1] !== ']') {
-      i += 1
-      const hi = readAtom()
-      if (hi === null || 'set' in hi) return null
-      ranges.push([lo.cp, hi.cp])
-    } else {
-      ranges.push([lo.cp, lo.cp])
-    }
-  }
-  return ranges.length ? ranges : null
-}
+// Regex char-class primitives are shared with the interpreter's first-set
+// analyzer and `regex()`'s scanner — see `../regex/classes.ts`. `SPACE_RANGES`
+// and `parseClassRanges` are re-exported here because codegen's boundary-class
+// lowering imports them from this module.
+import { CLASS_ESCAPES, SPACE_RANGES, shorthandRanges, readUnicodeEscape, parseClassRanges } from '../regex/classes.ts'
+export { SPACE_RANGES, parseClassRanges }
 
 /** A single class token (`[...]` or `\d`/`\w`) to ranges, or null. Rejects negation. */
 function classToRanges(cls: string): Array<[number, number]> | null {

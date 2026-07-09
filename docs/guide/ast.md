@@ -185,7 +185,7 @@ produces a real `Sum` node with its children. You get readable layered rules wit
 paying a `build` call per transparent layer — and without hand-writing
 `if (children.length === 1) return children[0]` in every wrapper builder.
 
-`unwrap` and `collapse` have full **interpreter, `.compile()`, and macro** parity: the
+`unwrap` and `collapse` have full **interpreter, `compile()`, and macro** parity: the
 compiled output emits a `children.length === 1 ? <single-child> : build(…)` ternary, and
 the plugin reads static `{ unwrap: true }` / `{ collapse: true }` literals as the 4th
 argument.
@@ -227,7 +227,7 @@ item, so trivia-only matches and multi-token nodes keep their wrapper. The polic
 
 Because the policy lives on the build host, a composed grammar can expose a compact public
 CST while the evaluator keeps using the grammar's own AST builders. The interpreter,
-`.compile()`, and macro output all check the policy while the node is being built, so
+`compile()`, and macro output all check the policy while the node is being built, so
 there is no separate tree-normalization pass.
 
 ## The `NodeLike` contract
