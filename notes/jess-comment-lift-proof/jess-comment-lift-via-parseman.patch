@@ -1,0 +1,175 @@
+--- a/packages/css-parser/src/builders.ts	2026-07-09 00:11:48
++++ b/packages/css-parser/src/builders.ts	2026-07-09 00:23:46
+@@ -443,8 +443,8 @@
+   ) {
+     const loc = spanToLocation(span);
+     switch (type) {
+-      case 'Stylesheet':        return this._buildStylesheet(children, loc);
+-      case 'Ruleset':           return this._buildRuleset(children, rawChildren, loc) as unknown as JessNode;
++      case 'Stylesheet':        return this._buildStylesheet(children, loc, triviaLog);
++      case 'Ruleset':           return this._buildRuleset(children, rawChildren, loc, triviaLog) as unknown as JessNode;
+       case 'SelectorList':      return this._buildSelectorList(rawChildren, loc);
+       case 'ComplexSelector':   return this._buildComplexSelector(rawChildren, loc);
+       case 'CompoundSelector':  return this._buildCompoundSelector(rawChildren, span, triviaLog);
+@@ -508,10 +508,36 @@
+     bodyStart: number,
+     bodyEnd: number,
+     loc: LocationInfo,
+-    atRoot = false
++    atRoot = false,
++    triviaLog: readonly number[] = []
+   ): JessNode[] {
+     const src = this._source;
+     const out: JessNode[] = [];
++    // parseman hands this node a COMMENT-ONLY trivia log (whitespace filtered by
++    // the per-node kind mask): flat [start, end, insertIdx, kind] × N, in source
++    // order. The inter-node body gaps' comments are all here — so we read them
++    // straight from the log instead of re-scanning `src` char-by-char (the old
++    // hot path). The one gap the log can't cover is the TRAILING gap after the
++    // last node: run() consumes trailing trivia with a throwaway ctx, so it never
++    // reaches this log — that single small gap still uses the source scan.
++    const STRIDE = 4;
++    let ci = 0;
++    const emitLoggedGap = (
++      gapStart: number,
++      gapEnd: number,
++      followingStart: number | undefined,
++      followingIsNestedRule: boolean
++    ) => {
++      while (ci < triviaLog.length && triviaLog[ci]! < gapStart) {
++        ci += STRIDE;
++      }
++      while (ci < triviaLog.length && triviaLog[ci]! < gapEnd) {
++        const start = triviaLog[ci]!;
++        const end = triviaLog[ci + 1]!;
++        ci += STRIDE;
++        this._maybeEmitComment(src, start, end, followingStart, followingIsNestedRule, out, loc);
++      }
++    };
+     let gapStart = bodyStart;
+     for (const rule of orderedRuleNodes) {
+       const nextStart = sourceSpanOf(rule)?.start;
+@@ -520,13 +546,14 @@
+         // trivia map at serialize time — but ONLY inside another rule's body.
+         // At the stylesheet root, eval drops that trivia, so lift there instead.
+         const followingIsNestedRule = !atRoot && (rule as { type?: string }).type === 'Ruleset';
+-        out.push(...this._scanStandaloneComments(src, gapStart, nextStart, nextStart, followingIsNestedRule, loc));
++        emitLoggedGap(gapStart, nextStart, nextStart, followingIsNestedRule);
+         const nextEnd = sourceSpanOf(rule)?.end;
+         gapStart = typeof nextEnd === 'number' ? nextEnd : nextStart;
+       }
+       out.push(rule);
+     }
+     // Trailing gap (after the last node): no following node → always standalone.
++    // Not in the per-node log (see above), so scan source for just this tail.
+     out.push(...this._scanStandaloneComments(src, gapStart, bodyEnd, undefined, false, loc));
+     return out;
+   }
+@@ -621,20 +648,21 @@
+     return true;
+   }
+ 
+-  protected _buildStylesheet(children: ReadonlyArray<Child>, loc: LocationInfo) {
++  protected _buildStylesheet(children: ReadonlyArray<Child>, loc: LocationInfo, triviaLog: readonly number[] = []) {
+     const nodes = nodeChildren(children);
+     // The Stylesheet node's span ends at the last consumed statement, so trailing
+     // trivia (a comment on the last line) sits past `loc.end`. Scan to the true
+     // source end so a trailing standalone comment is lifted like any other.
+     const bodyEnd = Math.max(loc.end, this._source.length);
+-    const lifted = this._liftStandaloneComments(nodes, loc.start, bodyEnd, loc, true);
++    const lifted = this._liftStandaloneComments(nodes, loc.start, bodyEnd, loc, true, triviaLog);
+     return new Rules(lifted, undefined, loc);
+   }
+ 
+   protected _buildRuleset(
+     children: ReadonlyArray<Child>,
+     rawChildren: ReadonlyArray<{ _tag: string }>,
+-    loc: LocationInfo
++    loc: LocationInfo,
++    triviaLog: readonly number[] = []
+   ) {
+     const selector = readRulesetSelector(children);
+     const sel = spannedComponents(rawChildren)[0];
+@@ -644,7 +672,7 @@
+     const bodyStart = braceIdx >= 0 ? braceIdx + 1 : loc.start;
+     const closeIdx = this._source.lastIndexOf('}', loc.end - 1);
+     const bodyEnd = closeIdx >= bodyStart ? closeIdx : loc.end;
+-    const rules = this._liftStandaloneComments(rawRules, bodyStart, bodyEnd, loc);
++    const rules = this._liftStandaloneComments(rawRules, bodyStart, bodyEnd, loc, false, triviaLog);
+     const node = new Ruleset({ selector, rules }, undefined, loc);
+     if (selectorSpan) {
+       const { index, count } = fieldIndexOf(node as unknown as JessNode, 'selector');
+--- a/packages/css-parser/src/functional-parser.ts	2026-07-09 00:11:48
++++ b/packages/css-parser/src/functional-parser.ts	2026-07-09 00:23:46
+@@ -37,9 +37,18 @@
+    * (spans, `!important`, declaration splitting, selector collapse) verbatim.
+    */
+   captureTriviaForNode(type: string) {
+-    return type === 'CompoundSelector';
++    return type === 'CompoundSelector' || type === 'Stylesheet' || type === 'Ruleset';
+   }
+ 
++  /**
++   * Stylesheet/Ruleset lift standalone comments from their body gaps; they want
++   * the comment runs, not whitespace. CompoundSelector is deliberately absent —
++   * it needs the whitespace trivia that marks a descendant combinator.
++   */
++  commentOnlyTriviaForNode(type: string) {
++    return type === 'Stylesheet' || type === 'Ruleset';
++  }
++
+   build(type: string, children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[]): unknown {
+     /* eslint-disable @typescript-eslint/no-unsafe-type-assertion */
+     return (this as unknown as {
+--- a/packages/css-parser/src/functional-driver.ts	2026-07-09 00:11:48
++++ b/packages/css-parser/src/functional-driver.ts	2026-07-09 00:23:46
+@@ -8,7 +8,7 @@
+  * building the trivia map. Every functional grammar reuses it, so their
+  * `{ tree, errors, warnings, trivia }` output is identical in shape and semantics.
+  */
+-import { run, type FieldMap } from 'parseman';
++import { run, triviaKindMask, type FieldMap } from 'parseman';
+ import { Node, Rules, nil, makeJessError, type TriviaMap, type JessError } from '@jesscss/core';
+ import { buildLazyTriviaMap } from './builders.js';
+ 
+@@ -34,6 +34,16 @@
+   getErrors(): Array<{ message: string; offset?: number }>;
+   getLiftedCommentRanges(): ReadonlyArray<readonly [number, number]>;
+   captureTriviaForNode?(type: string): boolean;
++  /**
++   * Node types whose captured `triviaLog` should hold COMMENTS ONLY (whitespace
++   * skipped) — e.g. `Stylesheet`/`Ruleset`, whose builders lift standalone
++   * comments but never consult whitespace. Returning true here (with a
++   * comment-bearing trivia grammar) lets the builder read comments straight from
++   * the log instead of re-scanning source, without paying to log every space.
++   * Types NOT listed keep capturing every kind (e.g. `CompoundSelector` needs the
++   * whitespace that marks a descendant combinator).
++   */
++  commentOnlyTriviaForNode?(type: string): boolean;
+   /** `ctx.build` host: construct the AST node for a structural `node(type, …)`. */
+   build(
+     type: string,
+@@ -102,13 +112,20 @@
+   // (a rule fn or combinator); loosely typing them keeps the call sites a plain
+   // widening cast rather than an unsafe one here.
+   /* eslint-disable @typescript-eslint/no-unsafe-type-assertion */
++  const triviaKindLabels = (options.trivia as { _meta?: { triviaKindLabels?: readonly string[] } } | undefined)?._meta?.triviaKindLabels;
++  // Mask keeping every non-whitespace trivia kind (block + line comments, and any
++  // future non-ws kind) — the per-node-type filter for comment-only capture.
++  const commentMask = triviaKindLabels
++    ? triviaKindMask(triviaKindLabels, triviaKindLabels.filter(l => l !== 'whitespace'))
++    : undefined;
+   const build = Object.assign(
+     (type: string, children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[]) =>
+       host.build(type, children, fields, span, rawChildren, triviaLog),
+-    host.captureTriviaForNode ? { _parsemanCaptureTrivia: host.captureTriviaForNode.bind(host) } : {}
++    host.captureTriviaForNode ? { _parsemanCaptureTrivia: host.captureTriviaForNode.bind(host) } : {},
++    host.commentOnlyTriviaForNode && commentMask !== undefined
++      ? { _parsemanTriviaKinds: (type: string) => host.commentOnlyTriviaForNode!(type) ? commentMask : undefined }
++      : {}
+   );
+-
+-  const triviaKindLabels = (options.trivia as { _meta?: { triviaKindLabels?: readonly string[] } } | undefined)?._meta?.triviaKindLabels;
+   const res = run(entry as Entry, input, {
+     build,
+     trivia: options.trivia ? (options.trivia as Entry) : undefined
