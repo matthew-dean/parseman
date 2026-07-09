@@ -59,6 +59,7 @@ export { walk, createVisitor } from './cst/walk.ts'
 export type { Walkable, WalkVisitor, VisitApi, VisitorHandlers } from './cst/walk.ts'
 export { triviaEntries } from './cst/trivia-entries.ts'
 export type { TriviaEntriesView } from './cst/trivia-entries.ts'
+export { triviaKindMask } from './cst/trivia-kinds.ts'
 
 export {
   OffsetIndex,

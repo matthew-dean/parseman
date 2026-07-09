@@ -1,6 +1,7 @@
 import type { Combinator, ParseContext, ParseResult, ParseFail } from '../types.ts'
 import { buildLineIndex, annotateSpan } from '../compiler/line-index.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
+import { triviaKindMask } from '../cst/trivia-kinds.ts'
 
 export type ParseOptions = {
   trackLines?: boolean
@@ -25,6 +26,14 @@ export type ParserOptions = ParseOptions & {
   trivia?: Combinator<unknown> | null
   /** Record consumed trivia as CSTTrivia tokens in rawChildren. Default: skip. */
   captureTrivia?: boolean
+  /**
+   * Restrict PER-NODE CST trivia capture to these trivia kinds (label names from
+   * the trivia's `label()` arms). Whitespace and any other unlisted kind is still
+   * skipped over but NOT recorded into a node's `triviaLog` — so a host that only
+   * consumes (say) comments pays nothing to log every whitespace run. The global
+   * trivia log is unaffected. Requires labeled trivia; ignored otherwise.
+   */
+  captureTriviaKinds?: readonly string[]
 }
 
 export interface ParsemanParser<T> extends Combinator<T> {
@@ -63,6 +72,11 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
             : {}),
         } : {}),
         ...(opts.captureTrivia || _ctx?.captureTrivia ? { captureTrivia: true } : {}),
+        // Kind-filter for per-node capture. Resolve against this scope's trivia
+        // labels; falls through (undefined = capture all) without labels.
+        ...(opts.captureTriviaKinds && !clearTrivia
+          ? { _triviaCaptureMask: triviaKindMask(opts.trivia?._meta.triviaKindLabels, opts.captureTriviaKinds) }
+          : {}),
       }
       const result = root.parse(input, pos ?? 0, ctx)
       if (trackLines) {

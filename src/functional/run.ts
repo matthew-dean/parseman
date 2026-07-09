@@ -36,6 +36,15 @@ export type RunOptions = {
    * at its start. Omit to require the parse to reach the exact end itself.
    */
   trivia?: Runnable
+  /**
+   * Restrict PER-NODE CST trivia capture (the `triviaLog` a node's builder sees)
+   * to these trivia kinds — a bitmask over the grammar's `triviaKindLabels`
+   * indices (build it with `triviaKindMask(labels, ['comment', …])`). Unlisted
+   * kinds (e.g. whitespace) are skipped over but not recorded per node, so a host
+   * that only reads comments doesn't pay to log every whitespace run. The global
+   * `triviaLog` returned by `run()` is unaffected. Omit to capture every kind.
+   */
+  triviaCaptureMask?: number
 }
 
 export type RunResult = {
@@ -80,6 +89,7 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
     _errors: errors,
     build: options.build,
     state: options.state,
+    ...(options.triviaCaptureMask !== undefined ? { _triviaCaptureMask: options.triviaCaptureMask } : {}),
   }
   const r = invoke(entry, input, 0, ctx)
 
