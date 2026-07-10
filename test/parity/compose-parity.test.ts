@@ -32,7 +32,10 @@ const TRIVIA = String.raw`
 const ws  = trivia(oneOrMore(regex(/[ \t\n]+/)))
 const wsc = trivia(oneOrMore(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))`
 
-const IMPORTS = `import { rules, compose, pick, parser, noTrivia, trivia, sequence, literal, oneOrMore, choice, regex } from 'parseman' with { type: 'macro' }`
+// NB: `pick` is deliberately NOT imported here — it's internal (not a public 'parseman'
+// export). The macro recognises `pick(…)` by callee name, and the runtime path injects
+// `pick` separately (see evalModule), so the pick cases run without a public import.
+const IMPORTS = `import { rules, compose, parser, noTrivia, trivia, sequence, literal, oneOrMore, choice, regex } from 'parseman' with { type: 'macro' }`
 
 type Case = { name: string; src: string; entry: string; inputs: string[]; pick?: boolean; expect?: Record<string, string | number> }
 
