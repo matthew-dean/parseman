@@ -20,6 +20,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   ([tabatkins/railroad-diagrams](https://github.com/tabatkins/railroad-diagrams), CC0) and its CSS
   are inlined. `buildSpecModel` exposes the notation-agnostic model for custom emitters. See the
   [Grammar spec generation](https://github.com/matthew-dean/parseman) guide and `examples/spec-gen.ts`.
+- **Faster interpreted parsing of punctuation- and trivia-heavy grammars.** The runtime combinators
+  gained two allocation-free fast paths, both interpreter-only (the `compile()` output was already
+  lowering these). Single-character case-sensitive `literal()` now matches with a `charCodeAt`
+  compare instead of the generic `startsWith` builtin — the bulk of grammars like GraphQL
+  (`{ } ( ) : $ @ [ ] ! =`), JSON, and CSS. And the fast trivia scanner now recognizes any positive
+  char-class run (not just ` \t\n\r\f`) and `(?:[class]|C[^\n\r]*)*` line-comment trivia, so
+  comma/`#`-comment trivia (GraphQL, TOML-style configs) skips in a tight `charCodeAt` loop instead
+  of falling back to `RegExp.exec` at every token boundary. Arm classification is order-independent
+  and compiles to one fused loop; a comment marker that also sits inside a class falls back to an
+  ordered scan. Measured (`bench:parseman`, interpreted): GraphQL large **~537→354µs**, medium
+  **~20.5→15.0µs**, small **~3.4→2.2µs** — the interpreter now edges out Peggy on all three
+  (Peggy 377 / 16.1 / 2.4µs); CSV large ~347→253µs and lang medium ~20.8→16.2µs also improved. No
+  API or behavior change; differential-tested against the `RegExp` oracle.
 
 ## 0.23.0 — 2026-07-09
 
