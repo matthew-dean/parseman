@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import * as P from '../../src/index.ts'
+// `pick` is internal (not in the public API — see test/unit/pick-not-public.test.ts), so
+// import it directly for the harness that still exercises pick()'s composition behavior.
+import { pick } from '../../src/compiler/linker.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 /**
@@ -17,9 +20,10 @@ import { transformMacro } from '../../src/plugin/index.ts'
  */
 function evalModule(code: string, ...want: string[]): Record<string, any> {
   const body = code.replace(/^\s*import[^\n]*\n/gm, '').replace(/\bexport\s+/g, '')
-  const names = Object.keys(P)
+  const lib: Record<string, unknown> = { ...P, pick }  // pick is internal; inject it for the harness
+  const names = Object.keys(lib)
   // eslint-disable-next-line no-new-func
-  return new Function(...names, `${body}\nreturn { ${want.join(', ')} }`)(...names.map(n => (P as any)[n]))
+  return new Function(...names, `${body}\nreturn { ${want.join(', ')} }`)(...names.map(n => lib[n]))
 }
 const end = (r: any): string | number => (r.ok ? r.span.end : 'FAIL')
 

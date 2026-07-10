@@ -5,7 +5,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.23.0 — 2026-07-09
 
-- **Grammar-level trivia carries through `compose()` and `pick()`.** A grammar's ambient trivia
+- **Grammar-level trivia carries through `compose()`.** A grammar's ambient trivia
   (declared once via `rules({ trivia }, …)`, 0.22.0) now flows across composition boundaries. When
   you `compose([base, delta])`, the **composing** grammar's trivia governs every fused rule —
   including rules inherited from `base` — the way an overriding method wins over the one it shadows:
@@ -13,11 +13,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   grammar's own `rules({ trivia })`. A delta that declares no trivia of its own inherits the base
   grammar's; multi-level composition adopts the outermost grammar's trivia all the way down.
   `noTrivia` / `parser({ trivia })` remain local overrides and survive fusion.
-- **Identical on all three execution paths.** The composing-wins behavior is byte-for-byte identical
-  across the interpreter, `compile()`, and the macro, at every composition depth — including
-  `pick()` of a plain grammar or of a composed grammar. A parity harness fuses each shape both ways
-  from a single source and asserts the *executed* parse results match, so the interpreter and the
-  macro can't silently diverge.
+- **Identical on the interpreter, `compile()`, and the macro.** The composing-wins behavior is
+  byte-for-byte identical across all three, at every composition depth. A parity harness fuses each
+  shape both ways from a single source and asserts the *executed* parse results match, so the
+  interpreter and the macro can't silently diverge.
+- **`pick()` is withdrawn from the public API.** Build-inlining a `pick()` of an *imported* grammar
+  can't yet carry that grammar's ambient trivia across the module boundary, so the macro would
+  diverge from the interpreter. `compose()` is the composition primitive: author reusable bits as
+  small `rules({ trivia })` grammars and compose them — a piece references shared rules by name, so
+  it adopts the composing grammar's versions (and its trivia) automatically. `pick()` stays internal
+  for later exploration of that lowering and may return once it lowers identically on both paths.
 
 ## 0.22.0 — 2026-07-09
 
