@@ -94,6 +94,33 @@ describe('spec — options', () => {
   })
 })
 
+describe('spec — ordering', () => {
+  // `expr` is DECLARED first, but references `call`/`list`, so the rules() record's
+  // own key order leads with `call` (a Proxy artifact). The spec must recover the
+  // author's declaration order regardless.
+  it('defaults to declaration order (entry rule leads)', () => {
+    const model = buildSpecModel(demoGrammar())
+    expect(model.productions.map(p => p.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg'])
+  })
+
+  it("sort: 'reachable' introduces each rule at its first reference; unreachable rules trail", () => {
+    const g = rules(self => ({
+      expr: sequence(self.term as Combinator<unknown>, optional(sequence(literal('+'), self.expr as Combinator<unknown>))),
+      zzz: literal('z'), // declared 2nd, referenced by nobody
+      term: regex(/[0-9]+/), // declared 3rd, referenced by expr
+    }))
+    expect(buildSpecModel(g).productions.map(p => p.name)).toEqual(['expr', 'zzz', 'term'])
+    expect(buildSpecModel(g, { sort: 'reachable' }).productions.map(p => p.name)).toEqual(['expr', 'term', 'zzz'])
+  })
+
+  it('explicit order and root override sort', () => {
+    const g = demoGrammar()
+    expect(buildSpecModel(g, { sort: 'reachable', order: ['kw', 'expr'] }).productions[0]!.name).toBe('kw')
+    expect(buildSpecModel(g, { sort: 'source', root: 'list' }).productions.map(p => p.name).sort())
+      .toEqual(['call', 'expr', 'list'])
+  })
+})
+
 describe('spec — trivia handling', () => {
   const g = rules(self => ({
     ws: trivia(regex(/\s+/)),

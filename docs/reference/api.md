@@ -319,7 +319,8 @@ from the `parseman/spec` subpath. See [Grammar spec generation](../guide/spec-ge
 ### `toEBNF(grammar, options?)`
 
 Render W3C-style EBNF text — one production per named rule. `grammar` is a `rules()` record
-(or a single combinator). Options: `root`, `order`, `includeTrivia`, `terminals`,
+(or a single combinator). Options: `sort` (`'source'` — declaration order, default — or
+`'reachable'` — top-down from the entry rule), `root`, `order`, `includeTrivia`, `terminals`,
 `regexDisplay`.
 
 ### `toRailroadHtml(grammar, options?)`

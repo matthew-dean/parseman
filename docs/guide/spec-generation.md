@@ -98,6 +98,7 @@ toEBNF(g, { terminals: { Ident: 'identifier' } })
 
 | Option | Effect |
 |---|---|
+| `sort` | Ordering when neither `order` nor `root` is set. `'source'` (default) or `'reachable'`. |
 | `root` | Start rule(s). Only these and the rules they reach are emitted. |
 | `order` | Explicit rule order (and subset). |
 | `includeTrivia` | Include trivia (whitespace/comment) rules. Default: elided. |
@@ -107,6 +108,24 @@ even internal helpers that weren't returned from the factory.
 
 ```ts
 buildSpecModel(g, { root: 'expr' })   // only expr, call, list
+```
+
+### Ordering
+
+By default productions are emitted in **declaration order** — the order you wrote the rules in
+the `rules()` factory. This is the most predictable ordering, includes every rule, and leads
+with the entry rule (you write it first). It matters because a `rules()` grammar internally
+returns its rules in *reference-creation* order, not the order you declared them — the spec
+recovers your declared order.
+
+Pass `sort: 'reachable'` for a top-down "grammar reference" ordering instead: the entry rule
+(first declared) leads, each rule is introduced the first time it's referenced, and any rules
+unreachable from the entry trail at the end.
+
+```ts
+// rules declared as [expr, zzz, term], where expr references term:
+toEBNF(g)                      // expr, zzz, term   (declaration order)
+toEBNF(g, { sort: 'reachable' })  // expr, term, zzz   (term introduced at first use)
 ```
 
 ## Railroad diagrams

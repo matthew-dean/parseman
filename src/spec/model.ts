@@ -7,6 +7,7 @@
  * actually parses. See `docs/proposals/grammar-spec-generation.md`.
  */
 import type { Combinator, ParserDef } from '../types.ts'
+import { RULE_ORDER } from '../combinators/parser.ts'
 
 // ---------------------------------------------------------------------------
 // Spec node tree
@@ -50,11 +51,26 @@ export type SpecModel = {
 
 export type SpecOptions = {
   /**
+   * How to order the emitted productions when neither `order` nor `root` is given:
+   *   - `'source'` (default) — the order the rules were **declared** in the
+   *     `rules()` factory. Predictable, includes every rule, and leads with the
+   *     entry rule (authors write it first). Internal-but-referenced helper rules
+   *     follow, in first-reference order.
+   *   - `'reachable'` — BFS from the entry rule: the first-declared rule leads,
+   *     then each rule appears the first time it is referenced; any rules not
+   *     reachable from the entry are appended in declaration order.
+   * Ignored when `order` or `root` is set.
+   */
+  sort?: 'source' | 'reachable'
+  /**
    * Explicit rule order (and subset). When given, only these rules are emitted,
-   * in this order, plus any rules they reach. Defaults to the record's key order.
+   * in this order, plus any rules they reach. Overrides `sort`.
    */
   order?: string[]
-  /** Start rule(s) for reachability. Defaults to every record key. */
+  /**
+   * Start rule(s). When given, only these and the rules they reach are emitted
+   * (a pruned, reachability-ordered spec). Overrides `sort`.
+   */
   root?: string | string[]
   /** Include trivia rules (whitespace/comment) in the output. Default: false. */
   includeTrivia?: boolean
@@ -119,11 +135,25 @@ class Builder {
     this.pending.push({ name, comb })
   }
 
-  run(seedOrder: string[]): SpecModel {
-    for (const name of seedOrder) {
-      const comb = this.record[name]
-      if (comb) this.enqueue(name, comb)
+  /**
+   * Seed and drain in phases. Each phase seeds its names, then BFS-drains the
+   * queue (following references) before the next phase seeds. This lets callers
+   * express "entry first, then its reachable closure, then any leftovers" by
+   * splitting the seed across phases; a single phase with every rule yields plain
+   * declaration order (references, already queued, keep their declared slot).
+   */
+  run(phases: string[][]): SpecModel {
+    for (const phase of phases) {
+      for (const name of phase) {
+        const comb = this.record[name]
+        if (comb) this.enqueue(name, comb)
+      }
+      this.drain()
     }
+    return { productions: this.productions }
+  }
+
+  private drain(): void {
     while (this.pending.length > 0) {
       const { name, comb } = this.pending.shift()!
       if (this.seen.has(name)) continue
@@ -131,7 +161,6 @@ class Builder {
       const expr = this.ruleBody(comb, name)
       this.productions.push({ name, expr, trivia: comb._meta.isTrivia === true })
     }
-    return { productions: this.productions }
   }
 
   /** Walk a rule's top-level combinator, transparently unwrapping its own self-ref. */
@@ -292,18 +321,38 @@ function isCombinator(x: unknown): x is Combinator<unknown> {
   )
 }
 
+/** Declaration order recorded by `rules()`; falls back to the record's key order. */
+function declarationOrder(record: Record<string, Combinator<unknown>>): string[] {
+  const declared = (record as Record<string, unknown>)[RULE_ORDER]
+  if (Array.isArray(declared)) return declared.filter(k => k in record)
+  return Object.keys(record)
+}
+
 /**
  * Build the notation-agnostic spec model from a `rules()` grammar (or a single
- * combinator). Reachability starts from `root`/`order`/record keys and follows
- * every referenced named rule, so the closure is complete.
+ * combinator). Following every referenced named rule keeps the closure complete;
+ * ordering is controlled by `order` / `root` / `sort` (see {@link SpecOptions}).
  */
 export function buildSpecModel(grammar: GrammarInput, options: SpecOptions = {}): SpecModel {
   const record = toRecord(grammar)
-  const keys = Object.keys(record)
-  const seed =
-    options.order ??
-    (options.root ? (Array.isArray(options.root) ? options.root : [options.root]) : keys)
-  const model = new Builder({ ...record }, options).run(seed)
+  const decl = declarationOrder(record)
+
+  // Seed phases (see Builder.run). Priority: explicit `order` > `root` (pruned) >
+  // `sort`. Default `sort` = 'source' (declaration order, every rule).
+  let phases: string[][]
+  if (options.order) {
+    phases = [options.order]
+  } else if (options.root !== undefined) {
+    phases = [Array.isArray(options.root) ? options.root : [options.root]]
+  } else if (options.sort === 'reachable') {
+    // Entry (first-declared) leads; BFS discovers the rest in first-reference
+    // order; unreachable rules trail in declaration order.
+    phases = decl.length > 0 ? [[decl[0]!], decl.slice(1)] : [decl]
+  } else {
+    phases = [decl]
+  }
+
+  const model = new Builder({ ...record }, options).run(phases)
   if (!options.includeTrivia) {
     model.productions = model.productions.filter(p => !p.trivia)
   }

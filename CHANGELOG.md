@@ -12,8 +12,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   compiler consume, so a generated spec is a single source of truth: it cannot disagree with what
   actually parses. Every combinator maps to an EBNF construct (`sequence`→concatenation,
   `choice`→alternation, `many`/`optional`/`oneOrMore`→`* ? +`, `sepBy`→`x (sep x)*`, rule
-  references→non-terminals), with precedence-correct parenthesization. Options: `root`/`order`
-  (reachability + emission order), `terminals`/`regexDisplay` (readable terminals),
+  references→non-terminals), with precedence-correct parenthesization. Productions emit in
+  **declaration order** by default (the order rules were written in the factory, so the entry
+  rule leads); `sort: 'reachable'` switches to top-down order (each rule introduced at its first
+  reference). Options: `sort`, `root`/`order` (reachability + emission order),
+  `terminals`/`regexDisplay` (readable terminals),
   `includeTrivia`, and `title`/`showEbnf` for the HTML page. Semantic-only wrappers (`transform`,
   `node`, `token`, `field`, …) are transparent; trivia and guards are elided by default. The
   railroad HTML has no external dependencies — the diagram library
