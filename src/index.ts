@@ -85,5 +85,8 @@ export {
   absoluteSpanAt,
   shiftAbsolute,
   applyEdit,
+  relativizeCST,
+  absolutizeCST,
+  absoluteSpanCST,
 } from './cst/relative-spans.ts'
 export type { AbsNode, RelNode } from './cst/relative-spans.ts'

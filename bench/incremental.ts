@@ -130,12 +130,16 @@ export function makeParsemanIncremental(s: EditScenario): {
   incremental: () => unknown
   fullReparse: () => unknown
 } {
-  const base = parseDoc<JNode>(registry, 'Value', s.input)
+  // JSON arrays/objects are genuine repetitions, so structural list-reuse is sound
+  // here — opt in so a structural insert reuses the untouched tail instead of
+  // reparsing the whole collection.
+  const opts = { structuralReuse: true } as const
+  const base = parseDoc<JNode>(registry, 'Value', s.input, opts)
   if (!base.tree) throw new Error(`Parséman failed to parse fixture: ${s.name}`)
   const newInput = applyEdit(s)
   return {
     incremental: () => base.edit(s.from, s.to, s.replacement),
-    fullReparse: () => parseDoc<JNode>(registry, 'Value', newInput),
+    fullReparse: () => parseDoc<JNode>(registry, 'Value', newInput, opts),
   }
 }
 
