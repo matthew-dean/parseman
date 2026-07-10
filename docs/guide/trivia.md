@@ -19,49 +19,44 @@ terms.
 
 2. **Install** — there are two ways, depending on scope. **Pick one; you don't need both.**
 
-### Install once for a whole grammar — `rules({ trivia }, factory)`
+### For a whole grammar — `rules({ trivia }, factory)`
 
-This is what you want for a real grammar. Declare the trivia **once**, on the grammar, and
-it is ambient for **every rule** — including when you parse a single rule on its own
-(incremental parsing). You do **not** wrap individual rules.
+Set the grammar's trivia here and every rule skips it between terms — the rule you start at
+and every rule it reaches. Parse a single rule directly and it skips trivia too.
 
 ```ts
-import { rules, node, sequence, literal, regex, trivia, oneOrMore, run } from 'parseman'
+import { rules, sequence, sepBy, choice, literal, regex, trivia, oneOrMore, run } from 'parseman'
 
 const rw = trivia(oneOrMore(regex(/\s+/)))
 
-const g = rules({ trivia: rw }, (r) => ({   // ← set once, ambient in every rule
+const g = rules({ trivia: rw }, (r) => ({
   List:  sequence(literal('['), r.items, literal(']')),
   items: sepBy(r.value, literal(',')),
   value: choice(r.List, regex(/[a-z]+/)),
 }))
 
-run(g.List, '[ a , [ b , c ] ]')   // trivia skipped everywhere
-run(g.value, '  a')                // even parsing one rule on its own
+run(g.List, '[ a , [ b , c ] ]')   // spaces skipped between every term
+run(g.value, '  a')                // …and when you parse one rule on its own
 ```
 
-Every rule reached from any entry inherits `rw`. No per-rule `parser({ trivia })`. This is
-the "set once" half of **set once, override when needed**.
+### For one combinator — `parser({ trivia }, combinator)`
 
-### Install for a single combinator or a local scope — `parser({ trivia }, combinator)`
-
-`parser()` wraps *one* combinator with scope options. Use it for a small standalone parser,
-or to **override** the grammar's trivia inside a sub-region (see
-[overrides](#local-overrides-set-once-override-when-needed) below).
+Set the trivia for a single wrapped combinator. Reach for this to build a small standalone
+parser, or when one region of a larger grammar needs *different* trivia than the rest (see
+[local overrides](#local-overrides) below).
 
 ```ts
 import { parser, regex, trivia, sepBy, literal } from 'parseman'
 
 const ws   = trivia(regex(/\s*/))
-const list = parser({ trivia: ws }, sepBy(regex(/[a-z]+/), literal(',')))  // one-off
+const list = parser({ trivia: ws }, sepBy(regex(/[a-z]+/), literal(',')))
 
 list.parse('foo ,  bar , baz')   // { ok: true, value: ['foo','bar','baz'], … }
 ```
 
-`rules({ ... })` and `parser({ ... })` accept the same **grammar-level** options — `trivia`
-today — so you can set it once on the grammar or scope it locally with `parser()`; they are
-not both required. `parser()` additionally carries per-scope knobs (`captureTrivia`,
-`trackLines`) and the `.parse(input)` convenience method.
+`rules({ … })` and `parser({ … })` take the same options — `trivia` today; `rules()` applies
+them to the whole grammar, `parser()` to the one combinator it wraps. `parser()` also carries
+`captureTrivia` / `trackLines` and gives the wrapped combinator a `.parse(input)` method.
 
 ## Combining multiple trivia types
 
@@ -111,26 +106,55 @@ run of consecutive numbers, so entry `i` starts at `i * stride`:
 (trivia before/after each node), pass the tree to
 [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
-## Local overrides — "set once, override when needed" {#local-overrides-set-once-override-when-needed}
+## Local overrides {#local-overrides}
 
-Once trivia is installed (grammar-wide via `rules({ trivia })`, or on a scope via
-`parser({ trivia })`), skipping is **ambient**: `sequence` / `many` / `choice` skip filler
-between **every** term, in every rule reached from there — you do not re-declare it. When you
-need *different* trivia for a sub-region, wrap just that region:
+Trivia skipping is ambient: wherever it's installed, `sequence` / `many` / `choice` skip filler
+between every term, in that rule and every rule it reaches. To change that for one region, wrap
+it:
 
-- **`noTrivia(child)`** — turn skipping **off** for a contiguous region (`child` and its terms
-  must touch).
-- **`parser({ trivia: other }, child)`** — swap in a *different* trivia for `child`. Innermost
-  wins; the outer trivia resumes on exit.
+- **`parser({ trivia: other }, child)`** — use a *different* trivia for `child`. It applies to
+  `child` and everything below it; the surrounding trivia resumes when `child` finishes. A
+  `url()` body, for example, treats whitespace as significant and allows no comments, so it gets
+  its own trivia — [more on that below](#no-separate-tokenization-step).
+- **`noTrivia(child)`** — skip nothing inside `child`, so its terms must touch. Use it when a
+  glued part is a **structured sub-rule** — recursive, or with its own trivia-enabled interior.
+  For a static glued token, write one pattern instead: a decimal is `regex(/[0-9]+\.[0-9]+/)`,
+  an operator is `literal('>=')`.
 
-These are **overrides**, meant to be rare. If you find yourself wrapping many rules to
-re-establish the *same* trivia, that's a smell — the grammar-level `rules({ trivia })` already
-covers them; delete the wrappers.
+### No separate tokenization step
 
-> **Don't reach for `noTrivia` to glue static tokens.** A decimal is `regex(/[0-9]+\.[0-9]+/)`,
-> an operator is `literal('>=')` — one pattern, no override needed. `noTrivia` earns its keep
-> only when a glued part is itself a **structured sub-rule** you can't fold into one pattern
-> (recursive, or with its own trivia-enabled interior).
+Most parsers split work in two: a **lexer** turns source into a token stream, then a **parser**
+turns tokens into a tree. Parséman skips the first phase and scans characters directly. That's
+deliberate — a separate tokenization pass buys less than it's assumed to, especially in JS.
+
+**Token boundaries depend on grammar context, but the lexer runs before the grammar.** A lexer
+has to decide "what's a token" with no idea where it is. Real languages fight this constantly:
+in CSS, a `url(…)` body, a `calc()` interior, and whitespace-as-a-descendant-combinator each
+want a *different* token shape; and the canonical case — in JS itself, a bare `/` is division or
+the start of a regex, and **only the parser knows which**. A context-blind lexer either commits
+wrong or grows *modes* and carried state to recover the context — which is the parser's job,
+relocated to a phase that can't see the grammar.
+
+**The two classic justifications for a lexer are weak here.** *Separation of concerns* is exactly
+what breaks down for the languages above — you end up threading lexer state anyway, so the split
+is leaky, not clean. *Speed* is the other claim, but in a JS parser the token stream is an
+allocation-heavy intermediate — an array of token objects, i.e. GC pressure — that a character
+scan never creates; and a **compiled** scannerless parser lowers rules to tight `charCodeAt`
+loops that are competitive with tokenizing parsers on throughput (see [benchmarks](./benchmarks)).
+So you pay for a separate pass without reliably getting either thing it promised.
+
+**What you get instead:** a token's shape is a *grammar* decision, made right where the context
+is obvious — which is exactly what scoped trivia (above) is. `url()`'s body gets its own
+whitespace rule on the `Url` rule and nothing else has to know:
+
+```ts
+const Url = node(parser({ trivia: urlWs }, sequence(urlOpen, urlInner, literal(')'))))
+```
+
+None of this is unique to Parséman — any scannerless combinator library skips the lexer — but
+it's a concrete reason CSS-family and other context-sensitive grammars come out simpler here.
+(Tokenization isn't worthless: for genuinely regular lexical structure, or when a downstream
+tool wants a token stream, it's fine. It just isn't a good *default*.)
 
 ### One compiled limitation to know
 

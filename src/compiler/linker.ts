@@ -19,7 +19,7 @@
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
 import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
-import { evalRuleMapIR } from './ir-serialize.ts'
+import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import type { LinkablePieces } from './codegen.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet } from '../types.ts'
 
@@ -37,8 +37,9 @@ let _nsCounter = 0
 export function linkable(
   rulesMap: Record<string, Combinator<unknown>>,
   ns?: string,
+  trivia?: Combinator<unknown>,
 ): LinkablePieces {
-  const pieces = compileLinkable([...Object.entries(rulesMap)], ns ?? `_lk${_nsCounter++}_`)
+  const pieces = compileLinkable(Object.entries(rulesMap), ns ?? `_lk${_nsCounter++}_`, trivia ? { trivia } : undefined)
   if (!pieces) throw new Error('linkable(): this grammar cannot be compiled to a linkable artifact (contains a runtime-only parser fallback)')
   return pieces
 }
@@ -141,32 +142,59 @@ export function pick(
   grammar: LinkablePieces | Record<string, Combinator<unknown>>,
   names: string[],
 ): LinkablePieces {
+  // A COMPOSED grammar (`compose([...])` result): it has no single rule map — its rules
+  // live across several carried pieces. Materialize them under the composing trivia it
+  // was built with (so the selection keeps composing-wins trivia), then filter across
+  // pieces to `names` + their transitive dep closure, keeping each rule in the piece
+  // that WINS it (compose override order = last wins). Return a composed-like value so a
+  // downstream `compose([pick(composed, …)])` flattens it the same way.
+  const carried = (grammar as Record<symbol, unknown>)[COMPOSED_PIECES]
+  if (Array.isArray(carried)) {
+    const trivia = (grammar as Record<symbol, unknown>)[COMPOSED_TRIVIA] as Combinator<unknown> | undefined
+    const pieces = (carried as Array<LinkablePieces | IRPiece>).map(pc => materializePiece(pc, trivia))
+    const filtered = pickPieces(pieces, names)
+    // A composed-like value (carries COMPOSED_PIECES, no single rule map). It is only
+    // ever consumed through compose()'s COMPOSED_PIECES branch — which is checked before
+    // any LinkablePieces field — so this masquerades as LinkablePieces for the signature.
+    const out: Record<string, unknown> = {}
+    Object.defineProperty(out, COMPOSED_PIECES, { value: filtered, enumerable: false })
+    if (trivia) Object.defineProperty(out, COMPOSED_TRIVIA, { value: trivia, enumerable: false })
+    return out as unknown as LinkablePieces
+  }
+
   const p = (grammar as LinkablePieces).ruleFns instanceof Map
     ? (grammar as LinkablePieces)
     : linkable(grammar as Record<string, Combinator<unknown>>)
-  const keep = new Set<string>()
-  const has = new Set(p.keys)
-  // A requested name that isn't in the grammar is a typo — fail here, not later
-  // with a confusing name-closure error at compose() time.
+  return pickPieces([p], names)[0] ?? { ...p, keys: [], ruleFns: new Map(), wrappers: new Map(), deps: new Map() }
+}
+
+/** Restrict a set of linkable pieces to `names` + their transitive dep closure,
+ * keeping each surviving rule in the piece that WINS it (later piece wins, matching
+ * compose override order). Shared by `pick()` (runtime) and the macro's build-time
+ * `pick(...)` handling, so à-la-carte selection is identical on both paths. */
+export function pickPieces(pieces: LinkablePieces[], names: string[]): LinkablePieces[] {
+  const winner = new Map<string, LinkablePieces>()
+  for (const pc of pieces) for (const k of pc.keys) winner.set(k, pc)
+  // A requested name that isn't in the grammar is a typo — fail here, not later with a
+  // confusing name-closure error at compose() time.
   for (const n of names) {
-    if (!has.has(n)) throw new Error(`pick: rule "${n}" is not in this grammar (available: ${p.keys.join(', ')})`)
+    if (!winner.has(n)) throw new Error(`pick: rule "${n}" is not in this grammar (available: ${[...winner.keys()].join(', ')})`)
   }
+  const keep = new Set<string>()
   const visit = (n: string): void => {
-    // `!has.has(n)` skips EXTERNAL deps (rules from a base grammar) — they resolve
-    // at compose() time, not here. Top-level `names` were already validated above.
-    if (keep.has(n) || !has.has(n)) return
+    // A missing winner is an EXTERNAL dep (a base-grammar rule) — it resolves at
+    // compose() time, not here. Top-level `names` were already validated above.
+    const w = winner.get(n)
+    if (keep.has(n) || !w) return
     keep.add(n)
-    for (const d of p.deps.get(n) ?? []) visit(d)
+    for (const d of w.deps.get(n) ?? []) visit(d)
   }
   for (const n of names) visit(n)
-  const filt = <V>(m: Map<string, V>): Map<string, V> => new Map([...m].filter(([k]) => keep.has(k)))
-  return {
-    ...p,
-    keys: [...keep],
-    ruleFns: filt(p.ruleFns),
-    wrappers: filt(p.wrappers),
-    deps: filt(p.deps),
-  }
+  const filt = <V>(m: Map<string, V>, pc: LinkablePieces): Map<string, V> =>
+    new Map([...m].filter(([k]) => keep.has(k) && winner.get(k) === pc))
+  return pieces
+    .map(pc => ({ ...pc, keys: pc.keys.filter(k => keep.has(k) && winner.get(k) === pc), ruleFns: filt(pc.ruleFns, pc), wrappers: filt(pc.wrappers, pc), deps: filt(pc.deps, pc) }))
+    .filter(pc => pc.keys.length > 0)
 }
 
 /**
@@ -199,7 +227,7 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
     ...(needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []),
     ...(needsHostReads ? [HOST_READS_DECL] : []),
     // Each contributing artifact's namespaced private prelude (regexes, _pf, …).
-    ...[...new Set(contributingPieces.flatMap(p => p.prelude))],
+    ...new Set(contributingPieces.flatMap(p => p.prelude)),
     // The winning `_r_<Name>` function for each rule (one per name → no redeclare).
     ...[...winner].map(([k, p]) => p.ruleFns.get(k)!),
   ]
@@ -277,6 +305,13 @@ export function emitFusedSource(pieces: LinkablePieces[]): string {
  * itself a `compose([...])` result. */
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
+/** The composing (outermost) trivia a runtime `compose()` applied — stored so a
+ * later `pick(composedGrammar, …)` can re-lower the selected rules under the SAME
+ * trivia (composing-wins survives à-la-carte selection). The carried IR pieces hold
+ * no trivia of their own, so it must be remembered separately. Not serialized by the
+ * macro (which delegates pick to the runtime linker). */
+const COMPOSED_TRIVIA = Symbol.for('parseman.composedTrivia')
+
 /** The compact IR form a grammar carries instead of its lowered rule source: the
  * combinator-construction expression, re-lowered here at fuse time. */
 export type IRPiece = { ns: string; ir: string }
@@ -289,9 +324,9 @@ function isIRPiece(p: unknown): p is IRPiece {
 
 /** Materialize a carried item to full `LinkablePieces`: an IR piece is evaluated
  * back to a rule map and re-lowered; a full piece passes through. */
-export function materializePiece(p: LinkablePieces | IRPiece): LinkablePieces {
+export function materializePiece(p: LinkablePieces | IRPiece, trivia?: Combinator<unknown>): LinkablePieces {
   if (!isIRPiece(p)) return p
-  const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns)
+  const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns, trivia ? { trivia } : undefined)
   if (!pieces) throw new Error(`compose: carried IR for ns "${p.ns}" could not be re-lowered`)
   return pieces
 }
@@ -305,27 +340,84 @@ function nextComposeNs(used: Set<string>): string {
   return ns
 }
 
-function itemPieces(item: LinkablePieces | Record<string, unknown>, used: Set<string>): LinkablePieces[] {
+/** Flatten one `compose()` item to its RE-LOWERABLE carried items — the form stored
+ * on the composed result so it can be composed AGAIN under a NEW composing trivia.
+ * A grammar (`rules()` map) is carried as compact IR (`{ns, ir}`), NOT baked source,
+ * so a later `compose([thisResult, delta])` re-lowers it with the delta's trivia
+ * (multi-level composing-wins). A prior composed result contributes its OWN carried
+ * items (already IR); a pre-compiled artifact has no source, so it stays baked. */
+function itemCarried(
+  item: LinkablePieces | Record<string, unknown>,
+  used: Set<string>,
+  trivia?: Combinator<unknown>,
+): Array<LinkablePieces | IRPiece> {
   const carried = (item as Record<symbol, unknown>)[COMPOSED_PIECES]
-  // A macro-compiled grammar carries its ancestors as live spreads off the imported
-  // bindings and its own rules as compact IR — `[...cssGrammar[COMPOSED_PIECES],
-  // {ns, ir}]`. At runtime the array is already expanded (live imports); each entry
-  // is re-lowered from IR to full pieces here.
-  const pieces = Array.isArray(carried)
-    ? (carried as Array<LinkablePieces | IRPiece>).map(materializePiece)
-    : (item as LinkablePieces).ruleFns instanceof Map
-      ? [item as LinkablePieces]
-      : [linkable(item as Record<string, Combinator<unknown>>, nextComposeNs(used))]
-  for (const p of pieces) used.add(p.ns)
-  return pieces
+  // A prior composed result (runtime or macro-compiled): its carried list is already
+  // re-lowerable (IR pieces, plus any pre-compiled artifacts). Pass it through so THIS
+  // compose re-lowers it under its own composing trivia. Reserve its namespaces so a
+  // sibling grammar map can't collide with them.
+  if (Array.isArray(carried)) {
+    const items = carried as Array<LinkablePieces | IRPiece>
+    for (const p of items) used.add(p.ns)
+    return items
+  }
+  // A pre-compiled artifact (`linkable()`/`pick()`): no source to re-lower — its trivia
+  // was baked when it was compiled. Keep it as-is.
+  if ((item as LinkablePieces).ruleFns instanceof Map) {
+    const p = item as LinkablePieces
+    used.add(p.ns)
+    return [p]
+  }
+  // A grammar (`rules()` map): carry it as compact IR so a later compose re-lowers it
+  // under ITS trivia. Unserializable → bake now with this compose's trivia (can't
+  // re-lower later; acceptable fallback, mirrors the macro's full-pieces fallback).
+  const map = item as Record<string, Combinator<unknown>>
+  const ns = nextComposeNs(used)
+  // Drop EXTERNAL entries first (same filter as compileLinkable): a `rules()` cache
+  // also holds every ACCESSED-but-undefined `g.X` as an unresolved-lazy entry. Left in,
+  // serializeRuleMap would emit `X: g["X"]` — a self-referential rule that shadows the
+  // sibling artifact defining X and recurses forever. They resolve by name at fuse time.
+  const entries = Object.entries(map).filter(([, val]) => {
+    const d = val._def
+    if (d.tag !== 'lazy') return true
+    try { d.thunk(); return true } catch { return false }
+  })
+  const ir = serializeRuleMap(entries)
+  return ir ? [{ ns, ir }] : [linkable(map, ns, trivia)]
+}
+
+/** The composed grammar's ambient trivia = the LAST composed item that declares a
+ * grammar-level trivia (via `rules({ trivia }, …)`, which tags `grammarTrivia` on its
+ * rules). Outermost wins: the composing grammar's trivia applies to every fused rule,
+ * including those inherited from a base — so e.g. an SCSS `rw` (which extends Less's)
+ * governs the inherited Less/CSS rules too. `parser`/`noTrivia` still override locally. */
+function composingTriviaOf(items: Array<LinkablePieces | Record<string, unknown>>): Combinator<unknown> | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i] as Record<string, unknown> | undefined
+    if (!item || (item as LinkablePieces).ruleFns instanceof Map || (item as Record<symbol, unknown>)[COMPOSED_PIECES]) continue
+    for (const v of Object.values(item)) {
+      const t = (v as Combinator<unknown> | undefined)?._meta?.grammarTrivia
+      if (t) return t
+    }
+  }
+  return undefined
 }
 
 export function compose(
   items: Array<LinkablePieces | Record<string, unknown>>,
 ): Record<string, FusedRule> {
   const used = new Set<string>()
-  const pieces = items.flatMap(item => itemPieces(item, used))
+  // The composed grammar's ambient trivia comes from the composing grammar itself —
+  // whatever the last piece declared via rules({ trivia }, …). No separate option:
+  // the trivia rides with the grammar that declared it.
+  const trivia = composingTriviaOf(items)
+  // Carried items are RE-LOWERABLE (IR); materialize them ONCE with this compose's
+  // trivia for the now-fuse, but STORE the un-materialized carried list so a later
+  // compose can re-lower it under a different trivia (multi-level composing-wins).
+  const carried = items.flatMap(item => itemCarried(item, used, trivia))
+  const pieces = carried.map(p => materializePiece(p, trivia))
   const map = fuseRules(pieces)
-  Object.defineProperty(map, COMPOSED_PIECES, { value: pieces, enumerable: false })
+  Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })
+  if (trivia) Object.defineProperty(map, COMPOSED_TRIVIA, { value: trivia, enumerable: false })
   return map
 }

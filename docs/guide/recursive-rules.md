@@ -78,15 +78,13 @@ const grammar = rules({ trivia: rw }, (g) => ({
 }))
 ```
 
-Every rule inherits `rw` — reached from any entry, **including incremental parsing of a
-single rule** (`run(grammar.Rule, …)` skips trivia too). You do **not** wrap individual rules
-in `parser({ trivia: rw })`; doing so is redundant. Reach for `parser({ trivia })` /
-`noTrivia` only to *override* the grammar trivia inside a sub-region — see
-[Whitespace & trivia → local overrides](./trivia#local-overrides-set-once-override-when-needed).
+Every rule skips `rw` between its terms — the rule you start at and every rule it reaches —
+and a single rule parsed on its own (`run(grammar.Rule, …)`) skips it too. To use *different*
+trivia in one region, wrap it with `parser({ trivia })` or `noTrivia` — see
+[Whitespace & trivia → local overrides](./trivia#local-overrides).
 
-This is the same option `parser({ trivia }, combinator)` takes; `rules()` applies it to the
-whole grammar, `parser()` applies it to one wrapped combinator. Use whichever matches the
-scope — you don't need both.
+`rules()` and `parser({ trivia }, combinator)` take the same option; `rules()` applies it to
+the whole grammar, `parser()` to the one combinator it wraps.
 
 It's fine to return your trivia rule itself from the factory (e.g. `rw`, so a driver can
 reach it as `g.rw`): a `trivia()` rule is automatically **excluded** from the grammar-level

@@ -25,7 +25,7 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
-import { emitFusedSource, materializePiece } from '../compiler/linker.ts'
+import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
 import { serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { createHash } from 'node:crypto'
 import type { Combinator } from '../types.ts'
@@ -350,7 +350,7 @@ export function transformMacro(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>> } | null => {
+  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
     // Options-first: rules({ trivia }, factory). Disambiguate by type — an
     // ObjectExpression first arg means options lead; otherwise the factory leads
@@ -377,7 +377,7 @@ export function transformMacro(
 
     const compiled = compileRuleMap([...ruleMap], gTrivia ? { trivia: gTrivia } : undefined)
     if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
-    return { replacement: compiled.replacement, ruleMap }
+    return { replacement: compiled.replacement, ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}) }
   }
 
   const isRulesCall = (init: Expression): boolean =>
@@ -390,10 +390,20 @@ export function transformMacro(
     (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
     (init as unknown as { callee: { name?: string } }).callee.name === 'compose'
 
+  const isPickCall = (init: Expression): boolean =>
+    init.type === 'CallExpression' &&
+    (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
+    (init as unknown as { callee: { name?: string } }).callee.name === 'pick'
+
   // Local `rules()` grammars, so a same-file `compose([myRules, …])` can recover
   // the pieces to fuse (name → the rule map evaluated at build). A grammar stays a
   // usable parser AND is composable — no opt-in wrapper.
   const localRuleMaps = new Map<string, Map<string, Combinator<unknown>>>()
+  // Local plain grammars (`const g = rules({ trivia }, …)`) that declared a
+  // grammar-level trivia — read by composingTrivia() so a same-file
+  // `compose([…, g])` can adopt g's trivia (composing-wins). A grammar declared
+  // WITHOUT trivia is absent here, so composingTrivia keeps scanning earlier items.
+  const localGrammarTrivia = new Map<string, Combinator<unknown>>()
 
   // Stable, reproducible per-artifact namespace: hash of module id + a label
   // (binding name / arg position) — never a counter, so rebuilds are byte-stable
@@ -465,12 +475,19 @@ export function transformMacro(
    */
   const withCarriedPieces = (grammarExpr: string, list: CarriedItem[]): string =>
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
-  // Same-file `const X = compose([...])` → its flattened pieces, so a later
-  // same-file compose can chain it.
-  const localComposedPieces = new Map<string, LinkablePieces[]>()
+  // Same-file `const X = compose([...])` → its carried (re-lowerable) list, so a
+  // later same-file compose can chain it AND re-lower it under that compose's own
+  // composing trivia (composing-wins holds at every level).
+  const localComposedCarried = new Map<string, CarriedItem[]>()
+  // …and each local composed grammar's OWN composing trivia, so `pick(g, …)` bakes
+  // that trivia (pick freezes its grammar's trivia, like the runtime).
+  const localComposedTrivia = new Map<string, Combinator<unknown>>()
 
-  // Cache of pieces LISTS read from imported COMPILED grammars' carried pieces.
-  const importedPiecesCache = new Map<string, LinkablePieces[] | null>()
+  // Cache of RE-LOWERABLE pieces lists read from imported COMPILED grammars'
+  // carried pieces (IR pieces + spreads left un-materialized, so the composing
+  // grammar's trivia can be applied when they are finally lowered).
+  type RawItem = Parameters<typeof materializePiece>[0]  // LinkablePieces | IRPiece
+  const importedPiecesCache = new Map<string, RawItem[] | null>()
 
   /**
    * Read an imported grammar's pieces LIST straight off its COMPILED value —
@@ -486,7 +503,7 @@ export function transformMacro(
   // spread by following that module's own import of `binding` to its compiled file
   // and recursing, then eval the literal with the resolved ancestors stubbed in so
   // the spreads splice their pieces. `seen` guards against an import cycle.
-  const resolveModulePieces = (file: string, exportName: string, seen: Set<string>): LinkablePieces[] | null => {
+  const resolveModulePieces = (file: string, exportName: string, seen: Set<string>): RawItem[] | null => {
     const mod = parseModuleCached(file)
     if (!mod) return null
     const localFor = exportLocalName(mod.body as AnyNode[], exportName)
@@ -505,7 +522,7 @@ export function transformMacro(
       if (done.has(local)) continue
       done.add(local)
       const b = imports.get(local)
-      let subPieces: LinkablePieces[] = []
+      let subPieces: RawItem[] = []
       if (b) {
         let subFile: string | null = null
         try { subFile = getCompiledResolver().resolveFileSync(file, b.source).path ?? null } catch { /* unresolved */ }
@@ -517,17 +534,18 @@ export function transformMacro(
     try {
       // Build-time eval of the carried literal with ancestor spreads stubbed — NOT
       // runtime. `Symbol.for`/`Map` are globals; `stubNames` provide the imports.
+      // The result stays RE-LOWERABLE: IR pieces ({ns, ir}) are NOT materialized here,
+      // so the composing grammar's trivia can be seeded when they are finally lowered
+      // (materializeCarried). Ancestor spreads were already resolved (also un-lowered).
       // eslint-disable-next-line no-new-func
-      const list = new Function(...stubNames, `return (${literal})`)(...stubVals) as Array<Parameters<typeof materializePiece>[0]>
-      // The delta rides as compact IR ({ns, ir}); re-lower it to full pieces (ancestor
-      // spreads were already materialized by the recursion above).
-      return list.map(materializePiece)
+      const list = new Function(...stubNames, `return (${literal})`)(...stubVals) as RawItem[]
+      return list
     } catch { return null }
   }
 
-  const importedPieces = (localName: string): LinkablePieces[] | null => {
+  const importedPieces = (localName: string): RawItem[] | null => {
     if (importedPiecesCache.has(localName)) return importedPiecesCache.get(localName)!
-    let result: LinkablePieces[] | null = null
+    let result: RawItem[] | null = null
     const binding = importBindings.get(localName)
     if (binding) {
       let file: string | null = null
@@ -538,49 +556,157 @@ export function transformMacro(
     return result
   }
 
-  /** Resolve one `compose([...])` argument to its (flattened) pieces for FUSING,
-   * plus — when the argument is an imported grammar — the import identity so the
-   * carried list can reference it with a marker instead of re-serializing it. */
-  // A local rule map → its fuse pieces PLUS its compact IR (for carrying). The IR
-  // is null when the map can't be faithfully serialized — the caller then carries
-  // the full lowered pieces instead.
-  const localArg = (rm: Iterable<readonly [string, unknown]>, label: string): { pieces: LinkablePieces[]; ir?: IRItem } | null => {
+  /** Lower a compose() carried list to fused `LinkablePieces`, seeding the composing
+   * grammar's `trivia` into EVERY re-lowerable item (composing-wins B): an IR piece
+   * is re-lowered with that trivia; an import spread's re-lowerable items are re-lowered
+   * with it too; a full baked piece (the un-serializable fallback) passes through. */
+  const materializeCarried = (items: CarriedItem[], composing?: Combinator<unknown>): LinkablePieces[] => {
+    const out: LinkablePieces[] = []
+    for (const it of items) {
+      if (isSpread(it)) {
+        for (const p of importedPieces(it.__spreadLocal) ?? []) out.push(materializePiece(p, composing))
+      } else if (isIR(it)) {
+        out.push(materializePiece(it as RawItem, composing))
+      } else {
+        out.push(it)
+      }
+    }
+    return out
+  }
+
+  /** Resolve one `compose([...])` argument to its RE-LOWERABLE carried items (IR
+   * pieces / import spreads / baked-pieces fallback). The composing grammar's trivia
+   * is applied later, uniformly, in materializeCarried — never per-piece here. */
+  // A local rule map → its compact IR ({ns, ir}) for carrying; the trivia is NOT baked
+  // into the IR (it is seeded at re-lower time). When the map can't be faithfully
+  // serialized, fall back to full lowered pieces WITH the composing trivia baked in.
+  const localCarried = (rm: Iterable<readonly [string, unknown]>, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[] } | null => {
     const entries = [...rm]
     const ns = nsFor(label)
-    const p = compileLinkable(entries as never, ns)
-    if (!p) return null
     const ir = serializeRuleMap(entries as never)
-    return ir ? { pieces: [p], ir: { ns, ir } } : { pieces: [p] }
+    if (ir) return { carried: [{ ns, ir }] }
+    const p = compileLinkable(entries as never, ns, composing ? { trivia: composing } : undefined)
+    return p ? { carried: [p] } : null
   }
-  const argPieces = (arg: Expression, label: string): { pieces: LinkablePieces[]; spreadLocal?: string; ir?: IRItem } | null => {
-    // Inline `rules(g => …)`.
+
+  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[] } | null => {
+    // `pick(grammar, ['A', 'B'])` — à-la-carte selection. Resolve the inner grammar's
+    // carried items, materialize them under the INNER grammar's OWN trivia (pick freezes
+    // its grammar's trivia — it runs standalone, BEFORE any compose, so the outer
+    // composing trivia does NOT reach it; mirrors the runtime pick), then filter to the
+    // picked names + their transitive dep closure (same pickPieces() the runtime uses).
+    if (isPickCall(arg)) {
+      const pargs = (arg as unknown as { arguments: Expression[] }).arguments
+      const inner = pargs[0]
+      const namesArg = pargs[1] as AnyNode | undefined
+      if (!inner || namesArg?.type !== 'ArrayExpression') return null
+      const names: string[] = []
+      for (const el of (namesArg.elements as AnyNode[] | undefined) ?? []) {
+        // oxc emits array string elements as `Literal` (object keys as `StringLiteral`).
+        const v = (el as { type?: string; value?: unknown } | undefined)?.value
+        if ((el?.type === 'Literal' || el?.type === 'StringLiteral') && typeof v === 'string') names.push(v)
+        else return null
+      }
+      // NOTE: `pick()` is withdrawn from the public API and kept internal/experimental
+      // (see src/index.ts + docs/guide/extending.md). Its build-time lowering has known
+      // edges — an IMPORTED grammar's ambient trivia can't be carried across the module
+      // boundary here, and a picked composed grammar's trivia is frozen against a later
+      // outer compose — which is why it's held back. These are not exercised by any
+      // public grammar; they'll be resolved if/when pick is re-exposed.
+      const innerArg = argPieces(inner, `${label}_pick`)
+      if (!innerArg) return null
+      try {
+        return { carried: pickPieces(materializeCarried(innerArg.carried, ownTrivia(inner)), names) }
+      } catch (e) { warn(arg.start, `pick(): ${(e as Error).message}`); return null }
+    }
+    // Inline `rules(g => …)` or `rules({ trivia }, g => …)` (options-first). The
+    // element's OWN trivia option is ignored for lowering — composing-wins means the
+    // composing grammar's trivia (computed once, in compileComposeCall) governs every
+    // fused rule, this element's included. It only matters as a CANDIDATE for the
+    // composing trivia itself, which composingTrivia() reads directly off the AST.
     if (isRulesCall(arg)) {
-      const factory = (arg as unknown as { arguments: unknown[] }).arguments[0] as Expression | undefined
+      const rulesArgs = (arg as unknown as { arguments: unknown[] }).arguments
+      const a0 = rulesArgs[0] as AnyNode | undefined
+      const a1 = rulesArgs[1] as AnyNode | undefined
+      const optionsFirst = a0?.type === 'ObjectExpression'
+      const factory = (optionsFirst ? a1 : a0) as Expression | undefined
       const rm = factory ? evaluateParserFactory(factory, scope, code, []) : null
-      return rm ? localArg(rm, label) : null
+      return rm ? localCarried(rm, label, composing) : null
     }
     if (arg.type === 'Identifier') {
       const name = (arg as unknown as { name: string }).name
       // Local grammar var (`const myRules = rules(...)`).
       const rm = localRuleMaps.get(name)
-      if (rm) return localArg(rm, label)
-      // Local composed var (`const g = compose([...])`) → its flattened pieces
-      // (defined in THIS module, so carry them in full — no spread).
-      const composed = localComposedPieces.get(name)
-      if (composed) return { pieces: composed }
-      // Imported grammar — fuse its (transitively expanded) pieces now, but CARRY a
-      // live spread of the imported binding, so we don't re-serialize an ancestor.
+      if (rm) return localCarried(rm, label, composing)
+      // Local composed var (`const g = compose([...])`) → its own carried list, which
+      // materializeCarried re-lowers under THIS compose's composing trivia.
+      const composed = localComposedCarried.get(name)
+      if (composed) return { carried: composed }
+      // Imported grammar — carry a live spread of the imported binding (so we don't
+      // re-serialize an ancestor); resolved + re-lowered in materializeCarried.
       const pieces = importedPieces(name)
       if (!pieces) return null
-      return importBindings.has(name) ? { pieces, spreadLocal: name } : { pieces }
+      return { carried: importBindings.has(name) ? [{ __spreadLocal: name }] : [...pieces] }
     }
     return null
   }
 
-  /** Compile `compose([...])` to STATIC fused source (eval-free) + its flattened
-   * pieces (for a sidecar / same-file chaining). null → leave the runtime
-   * `compose()` in place (correct, just not build-fused). */
-  const compileComposeCall = (init: Expression): { replacement: string; pieces: LinkablePieces[]; carried: CarriedItem[] } | null => {
+  /** The composing (outermost) grammar's trivia: the LAST array element that is a
+   * plain grammar declaring `trivia` — an inline `rules({ trivia }, …)` (options-first
+   * OR legacy trailing-options) or a local `const g = rules({ trivia }, …)`. Composed
+   * sub-results and imported compiled grammars do NOT contribute (they carry no
+   * re-surfaced trivia identity) — mirrors runtime composingTriviaOf skipping
+   * COMPOSED_PIECES / already-compiled artifacts. */
+  const rulesCallTrivia = (el: Expression): Combinator<unknown> | undefined => {
+    const rulesArgs = (el as unknown as { arguments: unknown[] }).arguments
+    const a0 = rulesArgs[0] as AnyNode | undefined
+    const a1 = rulesArgs[1] as AnyNode | undefined
+    const optExpr = (a0?.type === 'ObjectExpression' ? a0 : a1?.type === 'ObjectExpression' ? a1 : undefined) as AnyNode | undefined
+    const triviaProp = ((optExpr?.properties as AnyNode[] | undefined) ?? []).find(
+      p => (p as { key?: { name?: string } }).key?.name === 'trivia',
+    ) as { value?: Expression } | undefined
+    if (!triviaProp?.value) return undefined
+    return (evaluateExpr(triviaProp.value, scope, code, []) as Combinator<unknown> | null) ?? undefined
+  }
+  const composingTrivia = (elements: ReadonlyArray<Expression | null>): Combinator<unknown> | undefined => {
+    for (let i = elements.length - 1; i >= 0; i--) {
+      const el = elements[i]
+      if (!el) continue
+      if (isRulesCall(el)) {
+        const t = rulesCallTrivia(el)
+        if (t) return t
+        continue
+      }
+      if (el.type === 'Identifier') {
+        const t = localGrammarTrivia.get((el as unknown as { name: string }).name)
+        if (t) return t
+        // local composed / imported compiled grammar → contributes rules, not trivia.
+      }
+      // a pick(...) element carries a frozen artifact → contributes rules, not trivia.
+    }
+    return undefined
+  }
+
+  /** A single grammar element's OWN declared trivia (used by pick, which freezes it):
+   * an inline `rules({ trivia }, …)`, a local `rules({ trivia }, …)`, a local composed
+   * grammar's composing trivia, or (recursively) the grammar inside a nested pick. */
+  const ownTrivia = (arg: Expression): Combinator<unknown> | undefined => {
+    if (isRulesCall(arg)) return rulesCallTrivia(arg)
+    if (isPickCall(arg)) {
+      const inner = (arg as unknown as { arguments: Expression[] }).arguments[0]
+      return inner ? ownTrivia(inner) : undefined
+    }
+    if (arg.type === 'Identifier') {
+      const name = (arg as unknown as { name: string }).name
+      return localGrammarTrivia.get(name) ?? localComposedTrivia.get(name)
+    }
+    return undefined
+  }
+
+  /** Compile `compose([...])` to STATIC fused source (eval-free) + its carried
+   * (re-lowerable) list (for a sidecar / same-file chaining). null → leave the
+   * runtime `compose()` in place (correct, just not build-fused). */
+  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown> } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -588,18 +714,20 @@ export function transformMacro(
       return null
     }
     const elements = (arr as unknown as { elements: Expression[] }).elements
-    const pieces: LinkablePieces[] = []     // flattened, for FUSING now
-    const carried: CarriedItem[] = []       // for SERIALIZING onto the value (markers for imports)
+    // Composing-wins (B): ONE composing trivia, from the last plain grammar in the
+    // list that declares one, governs EVERY fused rule — including inherited ones.
+    const composing = composingTrivia(elements)
+    const carried: CarriedItem[] = []       // re-lowerable; also SERIALIZED onto the value
     for (let i = 0; i < elements.length; i++) {
-      const r = argPieces(elements[i]!, `compose${init.start}_${i}`)
+      const r = argPieces(elements[i]!, `compose${init.start}_${i}`, composing)
       if (!r) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
-      pieces.push(...r.pieces)
-      if (r.spreadLocal) carried.push({ __spreadLocal: r.spreadLocal })
-      else if (r.ir) carried.push(r.ir)
-      else carried.push(...r.pieces)
+      carried.push(...r.carried)
     }
+    // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
+    // piece (composing-wins), then fuse.
+    const pieces = materializeCarried(carried, composing)
     try {
-      return { replacement: emitFusedSource(pieces), pieces, carried }
+      return { replacement: emitFusedSource(pieces), carried, ...(composing ? { trivia: composing } : {}) }
     } catch (e) {
       warn(init.start, `compose(): ${(e as Error).message}; falling back to runtime`)
       return null
@@ -727,8 +855,10 @@ export function transformMacro(
         if (isRulesCall(init)) {
           const compiledRules = compileRulesFactory(init, varName)
           if (!compiledRules) continue
-          // Remember the rule map so a same-file `compose([varName, …])` can fuse it.
+          // Remember the rule map so a same-file `compose([varName, …])` can fuse it,
+          // and its grammar-level trivia so that compose can adopt it (composing-wins).
           localRuleMaps.set(varName, compiledRules.ruleMap)
+          if (compiledRules.trivia) localGrammarTrivia.set(varName, compiledRules.trivia)
           // If EXPORTED, carry the grammar's linkable pieces ON the value so a
           // downstream package composes it via `import { <name> }` alone. Only when
           // the pieces are fully static (no runtime-only callbacks) — otherwise the
@@ -753,9 +883,11 @@ export function transformMacro(
           const fused = compileComposeCall(init)
           if (!fused) continue // leave the runtime compose() call in place
           // Remember for a same-file downstream compose, and (if exported) carry the
-          // FLATTENED pieces on the value so another package can compose this composed
-          // grammar via `import { <name> }` (re-composition, no source).
-          localComposedPieces.set(varName, fused.pieces)
+          // re-lowerable list on the value so another package can compose this composed
+          // grammar via `import { <name> }` (re-composition, no source) and re-lower it
+          // under ITS composing trivia.
+          localComposedCarried.set(varName, fused.carried)
+          if (fused.trivia) localComposedTrivia.set(varName, fused.trivia)
           const replacement = exportPrefix
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement

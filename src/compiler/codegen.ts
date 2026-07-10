@@ -3048,9 +3048,16 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
+  opts?: { trivia?: Combinator<unknown> },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
+  // Grammar-level ambient trivia through compose(): a piece from rules({ trivia },
+  // …) tags `grammarTrivia` on its rules (runtime path), or the macro threads it via
+  // `opts.trivia`. Seed it as the default activeTrivia so every fused rule bakes it —
+  // the compose mirror of compileRuleMap's seed. `parser`/`noTrivia` still override.
+  const grammarTrivia = opts?.trivia
+    ?? ruleMapArg.map(([, r]) => (r._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia).find(Boolean)
   // Drop EXTERNAL entries: `rules(g => …)` returns a cache that also holds every
   // `g.X` that was ACCESSED, so an accessed-but-not-defined rule (defined in
   // another artifact) leaks into `Object.entries` as an undefined `ref`. Those
@@ -3072,6 +3079,7 @@ export function compileLinkable(
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
     deferFirstSetRefs: true,
+    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }
   // Canonical name per rule. Register in BOTH ruleNames (so sibling `emitLazy`
   // refs resolve by name) AND namedParsers up-front (so a rule emitted before a
@@ -3139,7 +3147,12 @@ export function compileLinkable(
       }
       const savedIndent = ctx.indent, savedFail = ctx.failLabel, savedRec = ctx.recordFail
       ctx.indent = 1; ctx.failLabel = '_pfail'; ctx.recordFail = true
+      // A trivia rule must never carry the ambient trivia (it would recursively
+      // skip trivia within itself). Mirrors compileRuleMap's guard.
+      const savedTrivia = ctx.activeTrivia
+      if (rule._meta.isTrivia) ctx.activeTrivia = undefined
       const body = emit(resolved, ctx, '_pos')
+      ctx.activeTrivia = savedTrivia
       ctx.indent = savedIndent; ctx.failLabel = savedFail; ctx.recordFail = savedRec
       pushNamedFnDecl(ctx, fn, body.stmts, body.valueVar, body.endVar)
     }

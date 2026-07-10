@@ -39,25 +39,35 @@ Above, `base.Value` calls `g.Num` — and after `compose`, that call resolves to
 *dialect's* `Num`. Composition re-binds all rule references in one shared scope, so the
 base's internals see your overrides too.
 
-## À la carte with `pick`
+## Assembling one grammar from parts of several
 
-Take only the rules you want (plus their dependency closure). Handy when you're assembling
-one grammar from parts of several:
+To borrow a piece of another grammar — say a mixin rule from one dialect and a loop from
+another — factor the reusable bit into its own small `rules({ trivia })` grammar and
+`compose()` it in. A piece only needs to define *its own* rules; anything it references by
+name (values, identifiers, whitespace) resolves to the composing grammar's versions, so a
+borrowed rule automatically adopts the host grammar's syntax and trivia:
 
 ```ts
-import { compose, pick } from 'parseman'
+// A package exports the mixin machinery as a standalone composable grammar…
+export const mixins = rules({ trivia }, (g) => ({
+  MixinCall: sequence(g.Selector, literal('('), g.args, literal(')')),
+  // …references g.Selector / g.args by name — the composing grammar supplies them.
+}))
 
-// e.g. a grammar that borrows a mixin rule from Less and a loop from Sass:
-const parser = compose([
-  css,                          // whole base
-  pick(less, ['MixinCall']),    // just MixinCall + everything it references
-  pick(sass, ['EachLoop']),
-])
+// …and a consumer composes just that piece in:
+const parser = compose([css, mixins, myDelta])
 ```
 
-`pick(grammar, names)` keeps `names` and their transitive rule dependencies and drops the
-rest. If a kept rule references a name that isn't present in the final `compose([...])`,
-you get a clear compose-time error rather than a runtime surprise.
+Because references resolve by name across `compose()`, you don't extract a dependency
+closure — you name the shared rules and the host grammar provides them (along with its
+trivia, via composing-wins).
+
+> **`pick()` is not currently public.** An earlier `pick(grammar, names)` selected a subset
+> of a grammar's rules plus their transitive closure. It's withdrawn while its build-time
+> lowering is worked out: a `pick()` of an *imported* grammar can't yet carry that grammar's
+> ambient trivia across the module boundary, so the macro would diverge from the interpreter.
+> Prefer small composable pieces (above); `pick()` may return once it lowers identically on
+> both the interpreter and the macro.
 
 ## Building trees: swap the output shape
 

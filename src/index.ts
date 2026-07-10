@@ -32,7 +32,11 @@ export { token } from './combinators/token.ts'
 
 export { compile } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'
-export { compose, pick, cstBuildHost } from './compiler/linker.ts'
+// `pick()` is deliberately NOT re-exported: build-inlining a `pick()` of an imported
+// grammar can't yet carry that grammar's ambient trivia across the module boundary, so
+// the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)
+// for later exploration of that lowering; `compose()` is the public composition primitive.
+export { compose, cstBuildHost } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, offsetToLineCol, annotateSpan } from './compiler/line-index.ts'
