@@ -607,6 +607,21 @@ export function transformMacro(
         if ((el?.type === 'Literal' || el?.type === 'StringLiteral') && typeof v === 'string') names.push(v)
         else return null
       }
+      // A pick of an IMPORTED grammar: its ambient trivia lives in the separately
+      // compiled module and is not resolvable here (ownTrivia() returns undefined for an
+      // imported identifier), so build-inlining would re-lower the picked rules WITHOUT
+      // that trivia — diverging from the runtime pick(), which reads the grammar's
+      // `_meta.grammarTrivia`. Rather than emit output that silently drops it, leave the
+      // runtime pick() in place (correct, just not build-fused). Full build-inlining of
+      // imported pick (carrying the grammar's trivia across the module boundary) is a
+      // later addition; local picks below still inline, with their own trivia frozen.
+      if (inner.type === 'Identifier') {
+        const nm = (inner as unknown as { name: string }).name
+        if (importBindings.has(nm) && !localRuleMaps.has(nm) && !localComposedCarried.has(nm)) {
+          warn(arg.start, 'pick() of an imported grammar is not build-inlined (its ambient trivia is only available at runtime); leaving the runtime pick() so the macro matches the interpreter')
+          return null
+        }
+      }
       const innerArg = argPieces(inner, `${label}_pick`)
       if (!innerArg) return null
       try {
