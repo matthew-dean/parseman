@@ -3,6 +3,24 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.24.0 — 2026-07-10
+
+- **Grammar spec generation (`parseman/spec`).** Generate a formal grammar spec directly from a
+  `rules()` grammar — `toEBNF(grammar)` for W3C-style EBNF text, and `toRailroadHtml(grammar)`
+  for a self-contained HTML page of SVG railroad (syntax) diagrams, one per production, each with
+  its EBNF caption. The emitter walks the SAME `_def` combinator tree the interpreter and macro
+  compiler consume, so a generated spec is a single source of truth: it cannot disagree with what
+  actually parses. Every combinator maps to an EBNF construct (`sequence`→concatenation,
+  `choice`→alternation, `many`/`optional`/`oneOrMore`→`* ? +`, `sepBy`→`x (sep x)*`, rule
+  references→non-terminals), with precedence-correct parenthesization. Options: `root`/`order`
+  (reachability + emission order), `terminals`/`regexDisplay` (readable terminals),
+  `includeTrivia`, and `title`/`showEbnf` for the HTML page. Semantic-only wrappers (`transform`,
+  `node`, `token`, `field`, …) are transparent; trivia and guards are elided by default. The
+  railroad HTML has no external dependencies — the diagram library
+  ([tabatkins/railroad-diagrams](https://github.com/tabatkins/railroad-diagrams), CC0) and its CSS
+  are inlined. `buildSpecModel` exposes the notation-agnostic model for custom emitters. See the
+  [Grammar spec generation](https://github.com/matthew-dean/parseman) guide and `examples/spec-gen.ts`.
+
 ## 0.23.0 — 2026-07-09
 
 - **Grammar-level trivia carries through `compose()`.** A grammar's ambient trivia

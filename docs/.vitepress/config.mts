@@ -76,6 +76,13 @@ export default defineConfig({
             { text: 'Under the hood: regex lowering', link: '/guide/regex-lowering' },
           ],
         },
+        {
+          text: 'Tooling',
+          collapsed: false,
+          items: [
+            { text: 'Grammar spec generation', link: '/guide/spec-generation' },
+          ],
+        },
       ],
       '/reference/': [
         {
