@@ -72,12 +72,13 @@ size in the charts above:
 | CSV large (14.8 kB) | **71 µs** | 447 | 1,301 | — |
 | GraphQL large (7.8 kB) | **154 µs** | 423 | 768 | — |
 
-The zero-setup **interpreter** stays close behind with no compile step at all: on JSON and
-CSV it's the fastest of *any* option here except Parséman's own macro build — ahead of
-Peggy, and well ahead of Parsimmon, Chevrotain, Nearley, and Jison. On GraphQL, Peggy's
-generated parser edges out the interpreter (it's still ahead of the other four), so that's
-the one grammar where reaching for the macro build actually matters. Either way you pay
-nothing up front.
+The zero-setup **interpreter** stays close behind with no compile step at all — and after
+recent interpreter fast-paths (single-char literals, comma/line-comment trivia) it's roughly
+**2× faster than before**. On JSON, CSV, *and* GraphQL it's now the fastest of *any* option
+here except Parséman's own macro build: ahead of Peggy (a near tie at the smallest GraphQL
+input, clearly ahead at medium and large), and well ahead of Parsimmon, Chevrotain, Nearley,
+and Jison. Reach for the macro build when you want the last 2–3×; either way you pay nothing
+up front.
 
 ## Parsing to a syntax tree
 
@@ -152,8 +153,8 @@ wins. Pick for your edit mix.
 the fastest general-purpose JS parser in this comparison, at every grammar and every input
 size**, with **zero initialization cost**. For syntax trees, the same macro build beats
 Lezer and Chevrotain on the JSON CST fixture. And the setup-free interpreter is
-remarkably competitive on its own — fastest after the macro build on JSON and CSV (ahead of
-every generator, including Peggy), with Peggy taking GraphQL.
+remarkably competitive on its own — after its recent ~2× speedup it's the fastest after the
+macro build on JSON, CSV, **and** GraphQL, ahead of every generator including Peggy.
 
 The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M4
 Pro / Node+V8, median of 15 samples. Got a parser you think belongs in the comparison?
