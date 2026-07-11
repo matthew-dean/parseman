@@ -83,3 +83,8 @@ export function expect<T>(combinator: Combinator<T>, label?: string): Combinator
     },
   }
 }
+
+/** True when `value` is a recovery {@link ParseError} node. */
+export function isParseError(value: unknown): value is ParseError {
+  return typeof value === 'object' && value !== null && (value as ParseError)._tag === 'parseError'
+}

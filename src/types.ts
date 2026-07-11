@@ -163,14 +163,15 @@ export type ParseContext = {
    */
   _tolerant?: boolean | undefined
   /**
-   * Framework-internal: the inferred sync sentinel propagated DOWN by an enclosing
-   * `sequence` in tolerant mode (layer C). It is a lightweight combinator that
-   * matches (zero-width) when the input could start any of the sequence's remaining
-   * terms — i.e. the enclosing delimiter/close a nested list should resync to. A
-   * nested `many`/`sepBy` reads it as its recovery terminator. `undefined` when no
-   * enclosing delimiter is locally inferable. A B-hint (`{ recover }`) overrides it.
+   * Framework-internal: per-list recovery sync map, installed when tolerant. Keyed
+   * by the `many`/`oneOrMore`/`sepBy` combinator itself; the value is that list's
+   * sync sentinel — a zero-width combinator matching the enclosing delimiter/close
+   * the list should resync to. Populated automatically by grammar-structure
+   * inference (follow sets) and overridable by the language service, so the grammar
+   * carries no recovery config. A list reads `ctx._listSync?.get(self)` on element
+   * failure; `undefined` (or an absent entry) ⇒ that list behaves strictly.
    */
-  _sync?: Combinator<unknown> | undefined
+  _listSync?: WeakMap<Combinator<unknown>, Combinator<unknown>> | undefined
   /**
    * Framework-internal (compiled/macro output only): the deepest failure recorded
    * while a fallible sub-parser was running — position (`_fe`) and expected set

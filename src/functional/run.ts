@@ -46,14 +46,14 @@ export type RunOptions = {
    */
   triviaCaptureMask?: number
   /**
-   * Activate layered list recovery (the "C+B" model). When true, tolerant
-   * `many`/`sepBy`/`oneOrMore` recover from a failed element — skip to a sync point
-   * (inferred from the enclosing combinator, or an explicit `{ recover }` hint),
-   * emit a `ParseError` over the skipped span (collected in `errors`), and keep
-   * parsing the rest of the list — instead of stopping at the first bad element.
-   * Omit (the default) for the strict "one clean error and stop" behavior, which is
-   * byte-identical to a run with no recovery. Recovery is a cold path: on
-   * well-formed input nothing fails, so none of the machinery runs.
+   * Activate automatic list recovery. When true, `many`/`sepBy`/`oneOrMore` recover
+   * from a failed element — skip to a sync point (a resume token inferred from the
+   * grammar's structure; the grammar carries no recovery config), emit a
+   * `ParseError` over the skipped span (collected in `errors`), and keep parsing the
+   * rest of the list — instead of stopping at the first bad element. Omit (the
+   * default) for the strict "one clean error and stop" behavior, byte-identical to a
+   * run with no recovery. Recovery is a cold path: on well-formed input nothing
+   * fails, so none of the machinery runs.
    */
   tolerant?: boolean
 }

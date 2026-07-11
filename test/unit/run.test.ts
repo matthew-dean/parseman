@@ -6,7 +6,7 @@
  * grammar's own trivia.
  */
 import { describe, it, expect } from 'vitest'
-import { rules, regex, many, choice, parser, trivia, literal, node, compile, run } from '../../src/index.ts'
+import { rules, regex, many, choice, parser, trivia, node, compile, run } from '../../src/index.ts'
 
 const blockTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))
 const lineTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//), regex(/\/\/[^\n]*/))))
@@ -44,26 +44,6 @@ describe('run() — generic grammar-entry driver', () => {
   it('surfaces an unterminated comment as leftover at its start', () => {
     const r = run(g.Doc as never, 'a /* oops', { trivia: blockTrivia as never })
     expect(r.unconsumedFrom).toBe(2)   // the unterminated comment never matches trivia
-  })
-
-  it('collects list-recovery errors and the trivia log in tolerant mode', () => {
-    const g2 = rules(() => ({
-      // A `many` of `x` items with a `;` recovery hint: junk between items is
-      // skipped to the hint and recorded as a ParseError, collected on run.errors.
-      Doc: parser({ trivia: blockTrivia }, many(literal('x'), { recover: literal(';') })),
-    }))
-    const r = run(g2.Doc as never, 'x y', { trivia: blockTrivia as never, tolerant: true })
-    expect(Array.isArray(r.errors)).toBe(true)
-    expect(r.errors.length).toBeGreaterThanOrEqual(1)
-    expect(Array.isArray(r.triviaLog)).toBe(true)
-  })
-
-  it('is strict by default: no recovery, list stops at the first bad element', () => {
-    const g2 = rules(() => ({
-      Doc: parser({ trivia: blockTrivia }, many(literal('x'), { recover: literal(';') })),
-    }))
-    const r = run(g2.Doc as never, 'x y', { trivia: blockTrivia as never })
-    expect(r.errors).toHaveLength(0)
   })
 
   it('threads the ctx.build host to structural node() rules', () => {

@@ -1,6 +1,16 @@
 import type { Combinator, FirstSet, ParseContext, ParseError, ParseResult } from '../types.ts'
 
 /**
+ * Recovery MECHANISM — sync-source-agnostic. These primitives implement "scan
+ * forward to a sync token and emit a ParseError" and "is the sync token here?".
+ * They are deliberately independent of WHERE the sync sentinel comes from: the
+ * grammar never carries recovery config. Sync points are inferred automatically
+ * from grammar structure (see `infer.ts`) and may be overridden externally by the
+ * language service via `ctx._listSync`. This is the salvaged core of the old
+ * `combinators/recover-scan.ts`.
+ */
+
+/**
  * Run `sentinel` at `pos` as PURE lookahead: succeed/fail only, with every
  * side-effecting sink suppressed (CST leaves/children/trivia, the trivia log,
  * the recovery error sink, and the completions probe). A recovery scan probes the
@@ -49,11 +59,10 @@ export function orSentinel(
 
 /**
  * A lightweight zero-width sentinel that "matches" (succeeds, consuming nothing)
- * when the input code point at `pos` starts the given first set. Used by layer C:
- * an enclosing `sequence` builds one from its remaining terms' first set and
- * publishes it as `ctx._sync` so a nested list can resync to the enclosing
- * delimiter with no author annotation. Returns `null` when the first set is `any`
- * or `empty` (no usable local inference).
+ * when the input code point at `pos` starts the given first set. Sync inference
+ * builds one from a list's follow set so a nested list can resync to the enclosing
+ * delimiter with no grammar annotation. Returns `null` when the first set is `any`
+ * or `empty` (no usable inference).
  */
 export function firstSetSentinel(fs: FirstSet): Combinator<null> | null {
   if (fs.kind !== 'ranges' || fs.ranges.length === 0) return null
@@ -75,12 +84,11 @@ export function firstSetSentinel(fs: FirstSet): Combinator<null> | null {
 }
 
 /**
- * Cold-path recovery scan shared by tolerant `many()` / `sepBy()` (layered C+B
- * recovery). Scans forward from `from` until `sync` matches (or EOF) — probing the
- * sentinel as pure lookahead — emits a {@link ParseError} spanning the skipped
- * range, and pushes it to `ctx._errors`. The sync token is NOT consumed; the
- * caller's loop resumes from `end`. Only ever reached after an element has failed,
- * so it is entirely off the hot path.
+ * Cold-path recovery scan shared by tolerant `many()` / `sepBy()`. Scans forward
+ * from `from` until `sync` matches (or EOF) — probing the sentinel as pure
+ * lookahead — emits a {@link ParseError} spanning the skipped range, and pushes it
+ * to `ctx._errors`. The sync token is NOT consumed; the caller's loop resumes from
+ * `end`. Only ever reached after an element has failed, so entirely off the hot path.
  *
  * The caller owns the loop guard: `sepBy` progress is driven by its separator (a
  * zero-width error for a missing element is fine); `many` checks `matchesAt(sync)`
@@ -113,9 +121,4 @@ export function matchesAt(
   ctx: ParseContext,
 ): boolean {
   return probeAt(sentinel, input, pos, ctx)
-}
-
-/** True when `value` is a recovery {@link ParseError} node. */
-export function isParseError(value: unknown): value is ParseError {
-  return typeof value === 'object' && value !== null && (value as ParseError)._tag === 'parseError'
 }
