@@ -72,10 +72,9 @@ size in the charts above:
 | CSV large (14.8 kB) | **74 µs** | 430 | 1,045 | — |
 | GraphQL large (7.8 kB) | **131 µs** | 373 | 342 | — |
 
-The zero-setup **interpreter** stays close behind with no compile step at all — and after
-recent interpreter fast-paths (single-char literals, comma/line-comment trivia) it's roughly
-**2× faster than before**. On **CSV** it's the fastest option after the macro build, well
-ahead of every generator. On **JSON** and **GraphQL** it runs in the leading pack: ahead of
+The zero-setup **interpreter** stays close behind with no compile step at all. On **CSV** it's
+the fastest option after the macro build, well ahead of every generator. On **JSON** and
+**GraphQL** it runs in the leading pack: ahead of
 Peggy, and roughly neck-and-neck with a well-tuned [Chevrotain](https://chevrotain.io/)
 (Chevrotain edges it on large JSON; the two trade places within noise on GraphQL) — and well
 ahead of Parsimmon, Nearley, and Jison throughout. Reach for the macro build when you want the
@@ -154,9 +153,9 @@ wins. Pick for your edit mix.
 the fastest general-purpose JS parser in this comparison, at every grammar and every input
 size**, with **zero initialization cost**. For syntax trees, the same macro build beats
 Lezer and Chevrotain on the JSON CST fixture. And the setup-free interpreter is
-remarkably competitive on its own — after its recent ~2× speedup it's the fastest option
-after the macro build on CSV, and runs with the leading generators on JSON and GraphQL
-(ahead of Peggy; trading the lead with a well-tuned Chevrotain).
+remarkably competitive on its own — the fastest option after the macro build on CSV, and
+running with the leading generators on JSON and GraphQL (ahead of Peggy; trading the lead
+with a well-tuned Chevrotain).
 
 The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M4
 Pro / Node+V8, median of 15 samples. Got a parser you think belongs in the comparison?
