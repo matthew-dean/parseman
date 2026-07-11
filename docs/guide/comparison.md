@@ -95,8 +95,9 @@ Two questions sort most of the field:
   self-contained **railroad diagrams**; Chevrotain (`createSyntaxDiagramsCode`) and Nearley
   (`nearley-railroad`) ship railroad generators that read the grammar directly. **⚠️**:
   Peggy has `peggy-tracks` (maintained under the peggyjs org, but a separate package).
-  **❌**: no first-class generator — Jison, Lezer, and tree-sitter only reach diagrams by
-  converting to EBNF and feeding an external tool.
+  **❌**: no first-class generator — Parsimmon has no grammar artifact to walk in the
+  first place, and Jison, Lezer, and tree-sitter reach diagrams only by converting to EBNF
+  and feeding an external tool.
 
 ## The context-sensitivity axis
 
