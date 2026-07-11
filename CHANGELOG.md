@@ -5,6 +5,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.26.0 — 2026-07-11
 
+- **Bounded counted-repeat regex lowering (`{n}` / `{n,}` / `{n,m}`).** A terminal
+  `regex()` whose shape includes a counted class/shorthand run now compiles to a
+  `charCodeAt` scan loop instead of `RegExp.exec`, the same as `+`/`*`/`?` already did.
+  The compiler generalizes its internal run model to real `min`/`max` bounds and only
+  lowers when a greedy one-pass scan provably equals the backtracking engine — a run has
+  exploitable "wiggle" exactly when `max > min`, so a fixed `{n}` run lowers even before
+  an overlapping continuation, while a variable `{n,m}` lowers only when its class is
+  disjoint from what follows (`[0-9]{2,4}[0-9]` correctly stays on `exec`). The headline
+  beneficiary is CSS `colorHex` (`#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])`), which now fully
+  lowers — bounded run plus its trailing boundary lookahead. Purely additive: every
+  previously-lowered pattern is byte-identical. Verified with compiled-scan-vs-native
+  differentials (0 diffs over ~2M inputs, including adversarial decline cases).
 - **Tolerant-mode list recovery (layered "C+B").** A run-level `tolerant` flag turns
   `many` / `oneOrMore` / `sepBy` into recovering lists: a malformed element is skipped to a
   **sync point**, recorded as a `ParseError`, and the rest of the list still parses —
