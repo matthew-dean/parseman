@@ -61,7 +61,7 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
     { tag: 'many', parser: combinator as Combinator<unknown>, min: 0 }
   let expected: string[] | undefined
 
-  const self: Combinator<T[]> = {
+  return {
     _tag: 'many',
     _meta: meta,
     _def: def,
@@ -75,11 +75,10 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
         if (item === 'stop') break
         if ('fail' in item) {
           // Cold path: only reached on an element failure. Strict mode ⇒ `break`.
-          // Tolerant ⇒ resync to this list's sync sentinel (installed in
-          // ctx._listSync by grammar-structure inference / language-service
-          // override — the grammar itself carries no recovery config). No sync
-          // available ⇒ nothing to skip to → break.
-          const sync = ctx._tolerant ? ctx._listSync?.get(self) : undefined
+          // Tolerant ⇒ resync to the sync sentinel the enclosing sequence inferred
+          // and published as ctx._sync (the grammar carries no recovery config). No
+          // sync available ⇒ nothing to skip to → break.
+          const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
           // Sync token already here ⇒ clean list end, not junk. (Also the loop
           // guard: the scan below always advances ≥1 since sync fails at `cur`.)
@@ -97,7 +96,6 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
       return { ok: true, value: (values ?? undefined) as T[], span: { start: pos, end: cur } }
     },
   }
-  return self
 }
 
 export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
@@ -110,7 +108,7 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
     { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min: 1 }
   let expected: string[] | undefined
 
-  const self: Combinator<T[]> = {
+  return {
     _tag: 'oneOrMore',
     _meta: meta,
     _def: def,
@@ -127,7 +125,7 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
         if (item === 'stop') break
         if ('fail' in item) {
           // Cold path (element failure). Strict: break. Tolerant: resync — see many().
-          const sync = ctx._tolerant ? ctx._listSync?.get(self) : undefined
+          const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
           if (matchesAt(sync, input, cur, ctx)) break
           expected ??= deriveExpected(combinator)
@@ -143,7 +141,6 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
       return { ok: true, value: (values ?? undefined) as T[], span: { start: pos, end: cur } }
     },
   }
-  return self
 }
 
 export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
@@ -190,7 +187,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
   }
   let expected: string[] | undefined
 
-  const self: Combinator<T[]> = {
+  return {
     _tag: 'sepBy',
     _meta: meta,
     _def: { tag: 'sepBy', parser: combinator as Combinator<unknown>, separator: separator as Combinator<unknown> },
@@ -206,7 +203,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
         // Tolerant: if the first element is JUNK (a terminator is inferable and we
         // are not already sitting on it) recover it and enter the loop; otherwise
         // it is a genuine empty list.
-        const term = ctx._tolerant ? ctx._listSync?.get(self) : undefined
+        const term = ctx._tolerant ? ctx._sync : undefined
         if (term === undefined || matchesAt(term, input, pos, ctx)) {
           return { ok: true, value: [], span: { start: pos, end: pos } }
         }
@@ -251,7 +248,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
           // the separator we just consumed is real, so resync the bad element after
           // it. If a terminator is inferable and already present at nextPos, the
           // separator was a trailing one (e.g. `a;}`) → roll it back and stop.
-          const term = ctx._tolerant ? ctx._listSync?.get(self) : undefined
+          const term = ctx._tolerant ? ctx._sync : undefined
           if (term !== undefined && !matchesAt(term, input, nextPos, ctx)) {
             expected ??= deriveExpected(combinator)
             const rec = recoverScan(input, nextPos, ctx, orSentinel(separator, term), expected)
@@ -268,5 +265,4 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
       return { ok: true, value: values, span: { start: pos, end: cur } }
     },
   }
-  return self
 }
