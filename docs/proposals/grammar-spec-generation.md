@@ -54,7 +54,7 @@ combinator maps to an EBNF construct:
 |---|---|
 | `sequence(a, b, …)` | concatenation `a b …` |
 | `choice(a, b, …)` | alternation `a \| b \| …` |
-| `star(x)` / `opt(x)` / `plus(x)` | `x*` / `x?` / `x+` |
+| `many(x)` / `optional(x)` / `oneOrMore(x)` | `x*` / `x?` / `x+` |
 | named rule reference | non-terminal by name |
 | `token` / `regex` / literal | terminal (see "readable terminals" below) |
 | `node(…)` | named production (the node's rule name) |
