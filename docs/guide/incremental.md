@@ -75,14 +75,20 @@ O(list) into O(edit + trailing siblings):
 let doc = parseDoc(registry, 'Stylesheet', src, { structuralReuse: true })
 ```
 
-It's **off by default** because it's sound only when a rule whose CST children form a
-homogeneous, separator-delimited element list is a genuine repetition (`many` / `sepBy` /
-`oneOrMore`) — not a fixed-arity sequence of same-typed tokens (e.g. `Triple = Num ',' Num
-',' Num`), which is structurally indistinguishable without the grammar. Turn it on when your
-list rules are true repetitions (JSON arrays/objects, CSS value lists, argument lists — the
-common case). Every splice is still guarded (exact tiling of the reparsed span, a lookahead
-probe, a stateless-tail check) and falls back to a full, correct reparse when unproven; the
-flag only authorises *attempting* the reuse. See the
+This stays **sound automatically** — you don't have to promise anything about your grammar.
+`parseDoc` reads the grammar and **only ever splices a rule it can prove is a genuine
+repetition** (`many` / `sepBy` / `oneOrMore`). A fixed-arity sequence of same-typed tokens
+(e.g. `Triple = Num ',' Num ',' Num`) has CST children that look *exactly* like a 3-element
+list, but its grammar is a plain `sequence` with no repetition — so it is never spliced and
+falls back to a full, correct reparse. The result of `edit()` is always structurally
+identical to a fresh parse, flag or no flag.
+
+For that proof, pass the **`rules()` combinators** as the registry (what the examples above
+do) — parseDoc inspects their grammar. If you instead pass bare parse *functions*, there's
+no grammar to inspect, so structural reuse simply doesn't engage (still correct, just no
+speedup). It's off by default only because it's a newer, opt-in optimization — not because
+it's unsafe. On top of the grammar check, every splice is still guarded (exact tiling of the
+reparsed span, a lookahead probe, a stateless-tail check). See the
 [incremental re-parse benchmark](./benchmarks#incremental-re-parse) for how the three edit
 kinds compare to Lezer.
 

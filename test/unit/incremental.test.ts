@@ -24,7 +24,7 @@ import { describe, it, expect } from 'vitest'
 import {
   node, regex, literal, sequence, optional, sepBy, choice, not, rules, parseDoc,
 } from '../../src/index.ts'
-import type { Combinator, ParseContext, ParseResult } from '../../src/index.ts'
+import type { Combinator, ParseResult } from '../../src/index.ts'
 import type { Registry, RuleFn } from '../../src/functional/doc.ts'
 import { structurallyEqual, relTreeOf } from '../../src/functional/doc.ts'
 import type { CSTChild, CSTNode } from '../../src/cst/types.ts'
@@ -49,8 +49,17 @@ function cst(type: string) {
     ({ _tag: 'node', type, span: { start: span.start, end: span.end }, state, children: [...children] as CSTChild[] })
 }
 
-/** Turn a `rules()` record into a parseDoc registry keyed by node type. */
+/**
+ * Registry keyed by node type. By default we pass the `rules()` COMBINATORS
+ * straight through — parseDoc reads their grammar defs to prove which rules are
+ * genuine repetitions (the only ones structural reuse will splice).
+ */
 function toRegistry(g: Record<string, Combinator<unknown>>): Registry<CSTNode> {
+  return g as unknown as Registry<CSTNode>
+}
+
+/** Bare-function registry (no combinator defs) — used to check the safe fallback. */
+function toFnRegistry(g: Record<string, Combinator<unknown>>): Registry<CSTNode> {
   const reg: Record<string, RuleFn<CSTNode>> = {}
   for (const [k, comb] of Object.entries(g)) reg[k] = (i, p, c) => comb.parse(i, p, c) as ParseResult<CSTNode>
   return reg
@@ -346,6 +355,68 @@ describe('parseDoc().edit() — structural list-reuse', () => {
     expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
     const { shared, total } = sharedByIdentity(relTreeOf(base), relTreeOf(inc))
     expect(shared / total).toBeGreaterThan(0.4)
+  })
+})
+
+// ── Soundness: structural reuse is refused unless the GRAMMAR proves a repetition ─
+describe('parseDoc().edit() — structural reuse is grammar-verified (no footgun)', () => {
+  // `Triple` is a FIXED-ARITY sequence of same-typed, comma-delimited elements. Its
+  // CST children — [N, ',', N, ',', N] — are byte-for-byte indistinguishable from a
+  // 3-element `sepBy` list, so the CST-level splice checks alone would happily add a
+  // 4th element. Only the grammar def (a `sequence`, no `sepBy`/`many`/`oneOrMore`)
+  // reveals it's not a repetition. This is the case that would be UNSOUND without
+  // def-based detection.
+  function makeTripleGrammar() {
+    const g = rules(self => ({
+      Triple: node('Triple', sequence(self.N, literal(','), self.N, literal(','), self.N), cst('Triple')),
+      N: node('N', regex(/[0-9]+/), cst('N')),
+    }))
+    return { registry: toRegistry(g), root: 'Triple' }
+  }
+
+  it('a fixed-arity same-typed sequence is NEVER spliced — falls back to a correct reparse', () => {
+    const { registry, root } = makeTripleGrammar()
+    const base = parseDoc<CSTNode>(registry, root, '1,2,3', REUSE) // structuralReuse ON
+    // Insert a 4th element at the front. A splice would produce Triple[9,1,2,3];
+    // a real reparse yields Triple[9,1,2] (the rule takes exactly three).
+    const inc = base.edit(0, 0, '9,')
+    const fresh = parseDoc<CSTNode>(registry, root, '9,1,2,3')
+    // Sound: identical to a full reparse …
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+    // … and it got there by FALLING BACK (no splice): a full reparse shares no
+    // node identity with the pre-edit tree, so zero reuse ⟺ the splice was refused.
+    expect(sharedByIdentity(relTreeOf(base), relTreeOf(inc)).shared).toBe(0)
+  })
+
+  it('a real sepBy list of the SAME shape IS spliced (detection is not just "off")', () => {
+    // Same element/separator shape, but a genuine repetition — must reuse the tail.
+    const g = rules(self => ({
+      List: node('List', sepBy(self.N, literal(',')), cst('List')),
+      N: node('N', regex(/[0-9]+/), cst('N')),
+    }))
+    const registry = toRegistry(g)
+    const src = Array.from({ length: 40 }, (_, i) => String(i)).join(',')
+    const base = parseDoc<CSTNode>(registry, 'List', src, REUSE)
+    const inc = base.edit(0, 0, '99,')
+    const fresh = parseDoc<CSTNode>(registry, 'List', '99,' + src)
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+    expect(sharedByIdentity(relTreeOf(base), relTreeOf(inc)).shared).toBeGreaterThan(0)
+  })
+
+  it('a bare-function registry (no grammar defs) safely declines to splice', () => {
+    // Without combinator defs parseDoc can't prove anything is a repetition, so
+    // structuralReuse becomes a no-op — still correct, just not reused.
+    const g = rules(self => ({
+      List: node('List', sepBy(self.N, literal(',')), cst('List')),
+      N: node('N', regex(/[0-9]+/), cst('N')),
+    }))
+    const fn = toFnRegistry(g) // wrapped as bare functions — defs stripped
+    const src = Array.from({ length: 20 }, (_, i) => String(i)).join(',')
+    const base = parseDoc<CSTNode>(fn, 'List', src, REUSE)
+    const inc = base.edit(0, 0, '99,')
+    const fresh = parseDoc<CSTNode>(fn, 'List', '99,' + src)
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true) // still correct
+    expect(sharedByIdentity(relTreeOf(base), relTreeOf(inc)).shared).toBe(0) // just declined
   })
 })
 

@@ -1,15 +1,85 @@
 /**
  * Incremental parse document — incremental re-parse over a rules() registry.
  */
-import type { ParseContext, ParseFail, ParseResult, Span } from '../types.ts'
+import type { Combinator, ParseContext, ParseFail, ParseResult, ParserDef, Span } from '../types.ts'
 import type { NodeLike, CSTLeaf, CSTError } from '../cst/types.ts'
 import { relativizeCST, absoluteSpanCST } from '../cst/relative-spans.ts'
 
 /** A single compiled (or interpreted) rule: parse from `pos`, producing node `N`. */
 export type RuleFn<N> = (input: string, pos: number, ctx: ParseContext) => ParseResult<N>
 
-/** Rule name → parser function. This is exactly the shape `rules()` returns. */
-export type Registry<N> = Record<string, RuleFn<N>>
+/**
+ * Rule name → parser. Each entry is either a bare parse function or a
+ * `Combinator` (what `rules()` returns). Passing the `rules()` combinators
+ * directly lets `.edit()` inspect the grammar — required for **sound** structural
+ * list-reuse (see `structuralReuse`): only a rule the grammar proves is a genuine
+ * repetition is ever spliced. A bare-function registry still parses correctly; it
+ * just can't be structurally reused (the splice is skipped, never guessed).
+ */
+export type Registry<N> = Record<string, RuleFn<N> | Combinator<N>>
+
+/** Normalize a registry entry to a callable parse function. */
+function asRuleFn<N>(entry: RuleFn<N> | Combinator<N>): RuleFn<N> {
+  return typeof entry === 'function' ? entry : (input, pos, ctx) => entry.parse(input, pos, ctx)
+}
+
+/** The combinator def behind a registry entry, if it carries one (bare functions don't). */
+function defOf(entry: unknown): ParserDef | undefined {
+  return typeof entry === 'object' && entry !== null && '_def' in entry
+    ? (entry as { _def: ParserDef })._def
+    : undefined
+}
+
+/**
+ * Does this rule's grammar produce its element children via a genuine, unbounded
+ * **repetition** (`sepBy` / `many` / `oneOrMore`) — as opposed to a fixed-arity
+ * sequence of same-typed tokens (e.g. `Triple = Num ',' Num ',' Num`)? Only the
+ * former is sound to structurally reuse: a full reparse accepts any element count,
+ * so splicing one in or out matches it; a fixed-arity rule would not. We walk the
+ * def, transparently unwrapping semantic wrappers (`node`, `transform`, …) and
+ * looking through a top-level `sequence` / `optional` (the `[ (sepBy)? ]` shape),
+ * and return true iff a repetition combinator is reachable that way. Structurally
+ * indistinguishable-from-the-CST cases (fixed sequences) return false and fall
+ * back to a full, correct reparse. This is what makes `structuralReuse` sound
+ * rather than a promise the caller has to keep.
+ */
+function producesRepetition(def: ParserDef | undefined, depth = 0): boolean {
+  if (!def || depth > 24) return false
+  const d = def as ParserDef & Record<string, unknown>
+  switch (d.tag) {
+    case 'sepBy':
+    case 'many':
+    case 'oneOrMore':
+      return true
+    // Rule entries and `ref`s wrap their body in a `lazy` thunk — resolve it. The
+    // `depth` cap bounds any self-referential cycle (a repetition, if present, is
+    // found shallowly before recursion goes deep).
+    case 'lazy': {
+      const thunk = d.thunk as (() => { _def?: ParserDef }) | undefined
+      let inner: { _def?: ParserDef } | undefined
+      try { inner = typeof thunk === 'function' ? thunk() : undefined } catch { return false }
+      return producesRepetition(inner?._def, depth + 1)
+    }
+    // Transparent wrappers — look through to the inner parser.
+    case 'node':
+    case 'transform':
+    case 'token':
+    case 'label':
+    case 'field':
+    case 'expect':
+    case 'withCtx':
+    case 'grammar':
+    case 'optional':
+      return producesRepetition(defOf(d.parser), depth + 1)
+    case 'skip':
+      return producesRepetition(defOf(d.main), depth + 1)
+    // A bracketed/anchored list is a sequence whose element run is a repetition.
+    case 'sequence':
+      return (d.parsers as unknown[]).some(p => producesRepetition(defOf(p), depth + 1))
+    default:
+      return false
+  }
+}
 
 export type ParseDocOptions<N extends NodeLike> = {
   /** Initial grammar state threaded into ctx.state for the root parse. */
@@ -283,7 +353,7 @@ function tryListSplice<N extends NodeLike>(
   from: number,
   to: number,
   delta: number,
-  registry: Registry<N>,
+  registry: Record<string, RuleFn<N>>,
   build: ParseContext['build'],
 ): N | null {
   const kids = C.children as ReadonlyArray<AnyChild>
@@ -470,6 +540,10 @@ function boundaryIsSafe<N extends NodeLike>(
 
 class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
   private readonly _registry: Registry<N>
+  /** Registry entries normalized to callable parse functions (memoized once). */
+  private readonly _fns: Record<string, RuleFn<N>>
+  /** Rule names the grammar proves are genuine repetitions — the ONLY splice-safe types. */
+  private readonly _reps: Set<string>
   private readonly _rootRule: string
   private readonly _opts: ParseDocOptions<N>
   /**
@@ -495,6 +569,12 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
     input: string,
   ) {
     this._registry = registry
+    this._fns = {}
+    this._reps = new Set()
+    for (const [name, entry] of Object.entries(registry)) {
+      this._fns[name] = asRuleFn(entry)
+      if (producesRepetition(defOf(entry))) this._reps.add(name)
+    }
     this._rootRule = rootRule
     this._opts = opts
     this._abs = trees.abs
@@ -561,7 +641,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       // caps `.edit()` at ~one full reparse in the worst case (e.g. a structural
       // insert near the front) instead of stacking several near-full reparses.
       if (absEnd - absStart > this.input.length * REENTRY_MAX_SPAN_FRACTION) break
-      const ruleFn = this._registry[node.type]
+      const ruleFn = this._fns[node.type]
       if (!ruleFn) continue
       // The reused subtree must FULLY CONTAIN the edited range (old coords).
       // `findContaining` only locates `from`; if the edit's end `to` spills past
@@ -604,18 +684,23 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
 
     // No localized rule reparse converged — the edit is structural. Before paying
     // a full reparse, try reusing the untouched tail of a containing collection
-    // (add/remove an element in a list). Innermost containing collection first; a
-    // candidate whose disturbed middle doesn't tile cleanly returns null and we
-    // widen. Sound by the guards in `tryListSplice`; correctness net is the fuzz.
+    // (add/remove an element in a list). We only ever splice a rule the GRAMMAR
+    // proves is a genuine repetition (`this._reps`, from its combinator def) — a
+    // fixed-arity same-typed sequence is structurally indistinguishable from a list
+    // by its CST alone, so splicing it could accept a wrong element count; it's
+    // excluded here and falls back to a full, correct reparse. Innermost containing
+    // collection first; a candidate whose disturbed middle doesn't tile cleanly
+    // returns null and we widen. Correctness net is the incremental oracle fuzz.
     if (this._opts.structuralReuse && delta !== 0 && !this._opts.rebuild) {
       // Candidates run innermost→ancestor but never include the root itself; the
       // splice-able collection can BE the root (e.g. a top-level `sepBy` list), so
       // consider it last.
       const spliceCandidates: FoundNode<N>[] = [...candidates, { node: root, path: [] }]
       for (const { node, path } of spliceCandidates) {
+        if (!this._reps.has(node.type)) continue // grammar didn't prove this rule a repetition
         const { start: cStart, end: cEnd } = absoluteSpanCST(root as unknown as { span: Span; children?: readonly unknown[] }, path)
         if (!(cStart <= from && to <= cEnd)) continue
-        const spliced = tryListSplice(root, path, node, cStart, newInput, from, to, delta, this._registry, this._opts.build)
+        const spliced = tryListSplice(root, path, node, cStart, newInput, from, to, delta, this._fns, this._opts.build)
         if (spliced) return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: spliced }, [], newInput)
       }
     }
@@ -643,10 +728,10 @@ export function parseDoc<N extends NodeLike>(
   input: string,
   opts: ParseDocOptions<N> = {},
 ): ParseDoc<N> {
-  const ruleFn = registry[rootRule]
-  if (!ruleFn) throw new Error(`No rule '${rootRule}' in registry`)
+  const entry = registry[rootRule]
+  if (!entry) throw new Error(`No rule '${rootRule}' in registry`)
   const ctx: ParseContext = { trackLines: false, state: opts.state, build: opts.build }
-  const r: ParseResult<N> = ruleFn(input, 0, ctx)
+  const r: ParseResult<N> = asRuleFn(entry)(input, 0, ctx)
   if (r.ok) {
     // A fresh parse is ABSOLUTE; the relative form is materialized lazily on the
     // first edit/spanAt, so a parse that's never edited pays no conversion.

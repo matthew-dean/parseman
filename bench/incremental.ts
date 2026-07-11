@@ -63,9 +63,10 @@ const grammar = rules(g => {
   return { Value, Object, Array, Member, Str, Num, True, False, Null }
 })
 
-const registry: Record<string, RuleFn> = Object.fromEntries(
-  Object.entries(grammar).map(([k, comb]) => [k, (i, p, c) => comb.parse(i, p, c)]),
-) as Record<string, RuleFn>
+// Pass the rules() combinators straight through — parseDoc reads their grammar
+// defs to prove Array/Object are genuine repetitions (so structural reuse is
+// sound, not a caller promise).
+const registry = grammar as unknown as Record<string, RuleFn>
 
 // ---------------------------------------------------------------------------
 // Fixtures + edit scenarios

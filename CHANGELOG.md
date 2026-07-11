@@ -21,14 +21,17 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   landing near full-reparse cost (the "insert a line at the top of a large array" case). With
   `structuralReuse` on, `edit()` re-parses only the disturbed span and reuses the collection's
   untouched tail elements by identity, taking a front-of-200-element-array insert from
-  **~590 µs to ~29 µs** — within a few × of Lezer's fragment reuse. It's **off by default** because
-  it's sound only when a rule whose CST children form a homogeneous, separator-delimited element
-  list is a genuine repetition (`many`/`sepBy`/`oneOrMore`), not a fixed-arity sequence of
-  same-typed tokens (e.g. `Triple = Num ',' Num ',' Num`), which is structurally indistinguishable
-  without the grammar. Every splice is still guarded (exact tiling of the reparsed span, a
-  lookahead probe, a stateless-tail check) and falls back to a full, correct reparse when unproven;
-  the result is always structurally identical to a fresh parse (verified by the incremental oracle
-  fuzz across list grammars).
+  **~590 µs to ~29 µs** — within a few × of Lezer's fragment reuse. It stays **sound
+  automatically**: parseDoc inspects the grammar and only ever splices a rule it can prove is a
+  genuine repetition (`many`/`sepBy`/`oneOrMore`). A fixed-arity sequence of same-typed tokens
+  (e.g. `Triple = Num ',' Num ',' Num`) has CST children indistinguishable from a list but a
+  non-repetition grammar, so it's never spliced — it falls back to a full, correct reparse. This
+  requires passing the `rules()` **combinators** as the registry (so `Registry` now accepts
+  combinators alongside bare functions); a bare-function registry carries no grammar to inspect, so
+  structural reuse simply doesn't engage. Off by default only as a newer opt-in optimization, not
+  for safety. Every splice is additionally guarded (exact tiling, lookahead probe, stateless-tail
+  check); `edit()` is always structurally identical to a fresh parse (verified by the incremental
+  oracle fuzz, including a fixed-arity grammar that must decline to splice).
 - **Static railroad SVGs for embedding (`parseman/spec`).** `toRailroadSvg(grammar)` /
   `renderRailroadSvg(model)` render each production to a self-contained **static SVG string** —
   built headlessly (no DOM, no client script) — so a single diagram drops straight into an existing
