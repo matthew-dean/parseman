@@ -384,6 +384,52 @@ driver, on top of the ~8.8 MB retained AST.
    a jump-table dispatch or an if/else chain, and if the latter, split the
    digit-led arms into a sub-dispatch keyed on the char *after* the numeric run.
 
+7. **Value / math-expression grammar backtracking (operator-precedence descent).**
+   *Parked — a bounded constant-factor parse win, not the dominant scaling cost.*
+
+   **Evidence (distinct from the `benchmark.less` profile above).** A controlled
+   CPU profile (`node:inspector`, 50 µs sampling interval) of **jess-alpha
+   `bb3b31863` compiling the real Less `functions.less`**, compared against
+   Less 4.6.7, ranks the value-expression grammar rules very differently from the
+   `benchmark.less` run in the hotspot table (§ "Hotspot ranking with evidence",
+   where `_r_value` was #1 and `_r_topProduct`/`_r_topSum` sat at #8, 2.7%/2.2%).
+   On this value/function-heavy file:
+
+   - **`_r_topSum` (grammar.js) and `_r_topProduct` are the #1 and #2 hottest
+     self-time functions in the *entire* jess compile.** `_r_value` and the
+     condition-arg rules (`_r_CondArgAndOp` / `_r_CondArgAnd` / `_r_CondArgTermOp`)
+     are close behind.
+   - The operator-precedence descent (`topSum → topProduct → value`) is re-entered
+     with heavy retry/backtracking on **every value token**.
+   - On value/function-heavy Less this value-expression grammar is **~30–40% of
+     parse time** (and parse is ≈ 60% of a small-file compile).
+
+   This is workload-dependent: the same rules are a modest slice on selector-heavy
+   `benchmark.less` but dominate on value-dense `functions.less`.
+
+   **Why parked (not urgent).** Parse cost is roughly **LINEAR** in input size
+   (~6–7× Less 4.x, and flat) — so this is a bounded constant-factor win, not the
+   dominant scaling cost. The dominant scaling cost is eval, not parse (see the
+   cross-reference below). Worth doing eventually; not the strategic lever.
+
+   **Directions to explore (options, not prescriptions):**
+
+   - Memoize / pack the operator-precedence descent to cut backtracking.
+   - Reduce re-entry on the common **no-operator value** case (the overwhelmingly
+     common shape — a bare value with no `+`/`-`/`*`/`/` following).
+   - Profile whether the condition-arg rules (`_r_CondArg*`) can **share** the
+     value descent instead of re-deriving it.
+   - Compare against **Less 4.x's** cheaper `expression` / `operand` / `addition`
+     scanner approach. Note that Less 4.x's parser matches regexes against source
+     slices and builds the AST directly (**no separate CST-capture layer**), which
+     is a large part of why its value/math path is far cheaper in absolute terms —
+     any parseman equivalent still pays the CST-capture bookkeeping (§2, §5).
+
+   **Cross-reference.** This is the **parse-side** lever. The bigger strategic
+   target is the **eval-side** allocation/GC gap (~85× Less 4.x), which is being
+   worked separately on the jess core side (object-reduction / spine render
+   architecture) — not here.
+
 ### Top ideas in one line each
 
 - **#1 lazy/scalar `many` in the compiled reifier** — ⚠ the dead-value part landed
@@ -394,6 +440,9 @@ driver, on top of the ~8.8 MB retained AST.
 - **#3 defer/dense-array `ensureProv`** — 12,984 per-node `{}`+WeakMap inserts is
   the 2nd hotspot and the main GC driver (worse on CSS: 12.5%).
 - **#4 drop per-node `loc` object + filtered child arrays in `buildNode`.**
+- **#7 value/math operator-precedence backtracking** (`_r_topSum`/`_r_topProduct`)
+  — #1/#2 self-time on value-heavy Less (`functions.less`); ~30–40% of parse.
+  Parked: linear-in-size, a bounded constant factor, not the eval-side scaling gap.
 - Remember the **parse-once/render-many** caveat: an AST cache in `Compiler` (jess
   side) would amortize all of the above for the common re-render case.
 
