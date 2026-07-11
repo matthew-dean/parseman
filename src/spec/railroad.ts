@@ -140,7 +140,7 @@ ${RAILROAD_JS}
 ${builders}
   ];
   rules.forEach(function (r) {
-    var host = document.querySelector('.diagram[data-rule="' + r.name.replace(/"/g, '\\\\"') + '"]');
+    var host = document.querySelector('.diagram[data-rule=' + CSS.escape(r.name) + ']');
     if (!host) return;
     try { r.dsl().addTo(host); }
     catch (e) { host.textContent = 'diagram error: ' + e.message; }

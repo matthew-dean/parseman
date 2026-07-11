@@ -120,6 +120,7 @@ function defaultRegexDisplay(source: string): string {
 class Builder {
   private seen = new Set<string>()
   private pending: Array<{ name: string; comb: Combinator<unknown> }> = []
+  private pendingNames = new Set<string>()
   private record: Record<string, Combinator<unknown>>
   private opts: SpecOptions
   productions: Production[] = []
@@ -131,7 +132,8 @@ class Builder {
 
   enqueue(name: string, comb: Combinator<unknown>): void {
     if (this.seen.has(name)) return
-    if (this.pending.some(p => p.name === name)) return
+    if (this.pendingNames.has(name)) return
+    this.pendingNames.add(name)
     this.pending.push({ name, comb })
   }
 
@@ -156,6 +158,7 @@ class Builder {
   private drain(): void {
     while (this.pending.length > 0) {
       const { name, comb } = this.pending.shift()!
+      this.pendingNames.delete(name)
       if (this.seen.has(name)) continue
       this.seen.add(name)
       const expr = this.ruleBody(comb, name)
