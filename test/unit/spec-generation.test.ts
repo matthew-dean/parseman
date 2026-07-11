@@ -92,6 +92,18 @@ describe('spec — options', () => {
     expect(model.productions[0]!.name).toBe('list')
     expect(model.productions.map(p => p.name)).toContain('call')
   })
+
+  it('throws (not silently empty) on an unknown rule name in root/order', () => {
+    // Regression: an unknown name — or a stray string like order:'source' where a
+    // string[] is meant — used to seed a phase that reached nothing and returned an
+    // EMPTY model with no error. It must fail loudly, naming the offender.
+    expect(() => buildSpecModel(demoGrammar(), { root: 'nope' })).toThrow(/unknown rule name.*root.*"nope"/)
+    expect(() => buildSpecModel(demoGrammar(), { order: ['expr', 'nope'] })).toThrow(/unknown rule name.*order.*"nope"/)
+    // A string passed where string[] is expected is normalized then rejected by name.
+    expect(() => buildSpecModel(demoGrammar(), { order: 'source' as unknown as string[] })).toThrow(/unknown rule name.*order.*"source"/)
+    // The error lists the known rules to guide the fix.
+    expect(() => buildSpecModel(demoGrammar(), { root: 'nope' })).toThrow(/Known rules:.*"expr"/)
+  })
 })
 
 describe('spec — ordering', () => {

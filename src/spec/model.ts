@@ -340,13 +340,33 @@ export function buildSpecModel(grammar: GrammarInput, options: SpecOptions = {})
   const record = toRecord(grammar)
   const decl = declarationOrder(record)
 
+  // Validate rule names in `order` / `root` up front. Left unchecked, an unknown
+  // name (or a stray string like `order: 'source'` where a `string[]` is meant)
+  // seeds a phase that reaches nothing and silently yields an EMPTY model — a
+  // confusing footgun. Fail loudly with the offending names and the known rules.
+  const known = new Set(decl)
+  const asList = (v: string | string[]): string[] => (Array.isArray(v) ? v : [v])
+  const requireKnown = (names: string[], opt: string): void => {
+    const bad = names.filter(n => !known.has(n))
+    if (bad.length > 0) {
+      throw new Error(
+        `buildSpecModel: unknown rule name(s) in \`${opt}\`: ${bad.map(n => JSON.stringify(n)).join(', ')}. ` +
+        `Known rules: ${decl.map(n => JSON.stringify(n)).join(', ')}.`,
+      )
+    }
+  }
+
   // Seed phases (see Builder.run). Priority: explicit `order` > `root` (pruned) >
   // `sort`. Default `sort` = 'source' (declaration order, every rule).
   let phases: string[][]
-  if (options.order) {
-    phases = [options.order]
+  if (options.order !== undefined) {
+    const order = asList(options.order as string | string[])
+    requireKnown(order, 'order')
+    phases = [order]
   } else if (options.root !== undefined) {
-    phases = [Array.isArray(options.root) ? options.root : [options.root]]
+    const root = asList(options.root)
+    requireKnown(root, 'root')
+    phases = [root]
   } else if (options.sort === 'reachable') {
     // Entry (first-declared) leads; BFS discovers the rest in first-reference
     // order; unreachable rules trail in declaration order.
