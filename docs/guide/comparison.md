@@ -51,16 +51,16 @@ Two questions sort most of the field:
 
 ## Capabilities
 
-| Parser | Author in JS/TS | Debuggable grammar | Context-sensitive grammar | Grammar composition | Incremental re-parse | Error recovery | Trivia capture |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `compose()` | ✅ `parseDoc` | ✅ `recover` + auto lists | ✅ built-in `triviaLog` |
-| [Peggy](https://peggyjs.org/) | ❌ text DSL | ⚠️ generated JS + trace | ✅ in-grammar | ❌ | ❌ | ⚠️ location only | ❌ manual |
-| [Parsimmon](https://github.com/jneen/parsimmon) | ✅ | ✅ | ✅ in-grammar | ⚠️ values | ❌ | ❌ | ❌ manual |
-| [Chevrotain](https://chevrotain.io/) | ✅ | ✅ | ✅ in-grammar | ✅ inheritance | ⚠️ DIY, no engine | ✅ strong (automatic) | ⚠️ tokens, manual |
-| [Nearley](https://nearley.js.org/) | ❌ text DSL | ❌ | ❌ CFG only | ❌ | ❌ | ❌ | ❌ manual |
-| [Jison](https://github.com/zaach/jison) | ❌ text DSL | ❌ | ⚠️ lexer states | ❌ | ❌ | ⚠️ error token | ❌ manual |
-| [Lezer](https://lezer.codemirror.net/) | ❌ text DSL | ❌ | ⚠️ external only | ⚠️ `@dialect` | ✅✅ core strength | ✅ | ✅ contextual skip |
-| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | ⚠️ JS → C | ❌ | ⚠️ external only | ❌ | ✅✅ core strength | ✅ | ⚠️ `extras` |
+| Parser | Author in JS/TS | Debuggable grammar | Context-sensitive grammar | Grammar composition | Incremental re-parse | Error recovery | Trivia capture | Diagrams / EBNF |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `compose()` | ✅ `parseDoc` | ✅ `recover` + auto lists | ✅ built-in `triviaLog` | ✅ railroad + EBNF (`parseman/spec`) |
+| [Peggy](https://peggyjs.org/) | ❌ text DSL | ⚠️ generated JS + trace | ✅ in-grammar | ❌ | ❌ | ⚠️ location only | ❌ manual | ⚠️ railroad (`peggy-tracks`, separate pkg) |
+| [Parsimmon](https://github.com/jneen/parsimmon) | ✅ | ✅ | ✅ in-grammar | ⚠️ values | ❌ | ❌ | ❌ manual | ❌ |
+| [Chevrotain](https://chevrotain.io/) | ✅ | ✅ | ✅ in-grammar | ✅ inheritance | ⚠️ DIY, no engine | ✅ strong (automatic) | ⚠️ tokens, manual | ✅ railroad |
+| [Nearley](https://nearley.js.org/) | ❌ text DSL | ❌ | ❌ CFG only | ❌ | ❌ | ❌ | ❌ manual | ✅ railroad (`nearley-railroad`) |
+| [Jison](https://github.com/zaach/jison) | ❌ text DSL | ❌ | ⚠️ lexer states | ❌ | ❌ | ⚠️ error token | ❌ manual | ❌ |
+| [Lezer](https://lezer.codemirror.net/) | ❌ text DSL | ❌ | ⚠️ external only | ⚠️ `@dialect` | ✅✅ core strength | ✅ | ✅ contextual skip | ❌ |
+| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | ⚠️ JS → C | ❌ | ⚠️ external only | ❌ | ✅✅ core strength | ✅ | ⚠️ `extras` | ❌ |
 
 **Legend:**
 
@@ -88,6 +88,15 @@ Two questions sort most of the field:
   (`recover` / `expect`), plus automatic tolerant lists (`sepByRecover` / `manyRecover`);
   Chevrotain's is **automatic/heuristic across the whole grammar** (single-token
   insert/delete, resync). Both report every error, not just the first.
+- **Diagrams / EBNF** — can the tool emit a human-readable grammar artifact *from the
+  grammar itself*? (Any grammar can be hand-translated to EBNF and pasted into a generic
+  online generator; that doesn't count.) **✅**: Parséman's
+  [`parseman/spec`](./spec-generation) generates both W3C-style **EBNF** text and
+  self-contained **railroad diagrams**; Chevrotain (`createSyntaxDiagramsCode`) and Nearley
+  (`nearley-railroad`) ship railroad generators that read the grammar directly. **⚠️**:
+  Peggy has `peggy-tracks` (maintained under the peggyjs org, but a separate package).
+  **❌**: no first-class generator — Jison, Lezer, and tree-sitter only reach diagrams by
+  converting to EBNF and feeding an external tool.
 
 ## The context-sensitivity axis
 
@@ -196,9 +205,14 @@ skips a lot of surface area other tools have.
 **[Chevrotain](https://chevrotain.io/)** is the most feature-dense toolkit here, with
 several things Parséman doesn't offer:
 
-- **Railroad / syntax-diagram generation** straight from the grammar.
-- **Grammar introspection** — a serializable grammar AST (from its self-analysis phase)
-  that tooling can consume; Parséman has no equivalent reflection API.
+- **Fuller grammar serialization** — Chevrotain's self-analysis emits a complete,
+  stable serialized grammar AST (`getSerializedGastProductions()`), carrying token
+  metadata and positioned as a public format tooling can round-trip. Parséman isn't
+  empty here — [`buildSpecModel`](./spec-generation) returns a public, serializable,
+  notation-agnostic grammar tree (`{ productions: { name, expr }[] }`, a full recursive
+  `SpecNode` for each rule), and the raw `_def` tree the interpreter and compiler walk is
+  reachable too — but that model is normalized for spec/diagram emission (semantic
+  wrappers collapsed, trivia elided), not billed as a round-trippable grammar format.
 - A **separate, configurable lexer** with stack-based **modes**, **token categories**
   (polymorphic tokens), and `longer_alt` — Parséman is scannerless, so none of this
   applies (a simplification, but also a missing capability if you want it).
@@ -217,7 +231,23 @@ several things Parséman doesn't offer:
 win on **structural-edit incremental** (buffer-tree fragment reuse), **GLR / ambiguity**,
 and — especially tree-sitter — an enormous library of **existing, battle-tested grammars**
 reused across editors (Neovim, GitHub, and more). If a maintained grammar for your
-language already exists there, that's hard to beat.
+language already exists there, that's hard to beat, and for **editor tooling over an
+existing language** — highlighting, folding, incremental re-highlight — they're the right
+default.
+
+It's worth being deliberate about *when* that default applies, though. These two have
+become a reflexive go-to for parsing in general ("just grab a tree-sitter grammar"), but
+that reflex is earned for **reusing an existing grammar inside an editor**, which isn't the
+same task as **authoring a new general-purpose grammar that turns text into your own values
+or AST**. Point them at the latter and three editor-first tradeoffs come along: the grammar
+is context-*free*, so any real context sensitivity (indentation, heredocs, a construct
+legal only *here*) drops you into a hand-written external scanner — **C** for tree-sitter —
+*outside* the grammar; the artifact you actually run is generated, so you debug a state
+table or C rather than the rules you wrote; and the output is a compact **buffer tree**
+tuned for an editor's cursor, not the ergonomic JS objects and arrays a parse-to-values job
+wants. None of that is a knock on them — it's a sign they were built for a different job
+than the one a from-scratch value grammar is. That job (in-grammar context, debug-in-TS,
+JS values out) is exactly the middle of Parséman's target.
 
 **[Nearley](https://nearley.js.org/)** does **true ambiguous parsing** (returns *every*
 valid parse), which ordered-choice parsers (Parséman, Peggy, Parsimmon) structurally
@@ -237,8 +267,8 @@ rich CST and context sensitivity.
   small DSL where a text grammar file is the deliverable.
 - **[Parsimmon](https://github.com/jneen/parsimmon)** — a tiny combinator parser with no
   build step and modest performance needs.
-- **[Chevrotain](https://chevrotain.io/)** — a batteries-included toolkit (railroad
-  diagrams, grammar introspection, lexer modes, grammar-wide automatic error recovery)
+- **[Chevrotain](https://chevrotain.io/)** — a batteries-included toolkit (grammar
+  introspection, lexer modes, grammar-wide automatic error recovery)
   with best-in-class fault tolerance, when you want breadth and don't need incremental
   re-parse or full-fidelity trivia.
 - **[Nearley](https://nearley.js.org/)** — genuinely **ambiguous** or natural-language
