@@ -44,8 +44,9 @@ function tagRule(r: Combinator<unknown>, key: string): void {
  * override it locally for a sub-region.
  */
 export type RulesOptions = {
-  /** Ambient trivia for the whole grammar. See `parser({ trivia })` for the shape. */
-  trivia?: Combinator<unknown>
+  /** Ambient trivia for the whole grammar. See `parser({ trivia })` for the shape
+   * (`null` clears it — equivalent to omitting it at the grammar level). */
+  trivia?: Combinator<unknown> | null
 }
 
 // Options-first, mirroring `parser({ opts }, combinator)` — set once on the grammar
@@ -102,7 +103,9 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
   // Declare the grammar-level ambient trivia on every rule, so parsing ANY rule
   // as an entry installs it (run()/parse() read this), and the macro can seed the
   // compiled map. `parser({trivia})` / `noTrivia` still override it locally.
-  if (options?.trivia !== undefined) {
+  // `!= null`: a `trivia: null` grammar clears trivia — same as omitting it at the
+  // grammar level — so store nothing (and never write null, which has no `_meta`).
+  if (options?.trivia != null) {
     for (const key of Object.keys(definitions)) {
       const rule = (cache as Record<string, Combinator<unknown>>)[key]
       // Skip trivia rules (e.g. the grammar's `rw`, returned so the driver can

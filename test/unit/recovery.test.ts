@@ -14,9 +14,9 @@
 import { describe, it, expect } from 'vitest'
 import {
   literal, regex, sequence, oneOrMore, many, sepBy, optional,
-  run, completionsAt, isParseError,
+  run, parse, completionsAt, isParseError, trivia, rules,
 } from '../../src/index.ts'
-import type { Combinator } from '../../src/index.ts'
+import type { Combinator, ParseContext } from '../../src/index.ts'
 
 // ── Compact (trivia-free) grammar: `{ a:1 ; b:2 }`-ish declaration blocks ──────
 const ident = regex(/[a-z]+/)
@@ -190,5 +190,94 @@ describe('completionsAt — recovery records the cursor failure', () => {
 
   it('tolerant: a fully valid prefix still returns no completions', () => {
     expect(completionsAt(sheet as Combinator<unknown>, 'a:1', 3, { tolerant: true })).toEqual([])
+  })
+})
+
+// ── Tolerant sequences over ambient trivia (parseTolerant, sequence.ts) ────────
+// The compact grammars above are trivia-free, so the tolerant sequence's
+// between-terms trivia branch (`ctx.trivia && i > 0`) never runs. A real grammar
+// declares ambient trivia via `rules({ trivia })`; run tolerantly, its sequences
+// skip trivia around every term while publishing layer-C sync sentinels.
+const tws = trivia(oneOrMore(regex(/[ \t\n]+/)))
+const tgram = rules({ trivia: tws }, () => ({
+  triple: sequence(ident, literal(':'), num),           // 3 terms, trivia between
+  trailingOpt: sequence(ident, optional(literal('!'))), // optional tail → empty match after trivia
+}))
+
+describe('tolerant sequences over ambient trivia (parseTolerant)', () => {
+  it('skips ambient trivia between terms on the tolerant path (deferred-commit)', () => {
+    // run() always sets ctx._triviaLog, so needsDeferredTriviaCommit is true and
+    // the scan+commit branch is exercised.
+    const r = run(tgram.triple as Combinator<unknown>, 'a  :\t1', { tolerant: true, trivia: tws })
+    expect(r.ok).toBe(true)
+    expect(r.unconsumedFrom).toBe(null)
+    expect(r.value).toEqual(['a', ':', '1'])
+  })
+
+  it('propagates a term failure after trivia (tolerant == strict on well-formed prefixes)', () => {
+    const r = run(tgram.triple as Combinator<unknown>, 'a : x', { tolerant: true, trivia: tws })
+    expect(r.ok).toBe(false)
+  })
+
+  it('rolls back scanned trivia when a post-trivia term consumes nothing', () => {
+    // The trailing optional matches empty at the post-space position, so the space
+    // must be rolled back (not folded into the sequence span / trivia attribution).
+    const r = run(tgram.trailingOpt as Combinator<unknown>, 'a  ', { tolerant: true, trivia: tws })
+    expect(r.ok).toBe(true)
+    expect(r.value).toEqual(['a', null])
+    expect(r.unconsumedFrom).toBe(null) // trailing space skipped by run()'s trivia
+  })
+
+  it('takes the immediate advanceTrivia branch when no trivia/CST log is active', () => {
+    // Direct parse() with a minimal ctx (no _triviaLog/_cstBuf/_cstTriviaLog) makes
+    // needsDeferredTriviaCommit false → the non-deferred advanceTrivia path.
+    const ctx = { trackLines: false, trivia: tws, _tolerant: true } as unknown as ParseContext
+    const r = tgram.triple.parse('a : 1', 0, ctx)
+    expect(r.ok).toBe(true)
+    expect(r.ok && r.value).toEqual(['a', ':', '1'])
+  })
+})
+
+describe('oneOrMore tolerant recovery (repeat.ts cold path)', () => {
+  // Existing recovery tests exercise sepBy/many; oneOrMore's tolerant resync loop
+  // (an element that STARTS then fails partway) needs its own coverage.
+  const fenced = sequence(oneOrMore(decl), literal('%'))
+
+  it('resyncs over an element that starts then fails, up to the enclosing sync', () => {
+    // `b:` begins a decl (ident + `:`) but the number is missing → partial fail →
+    // recover to the sequence's `%` sync, emit one error, finish the parse.
+    const r = run(fenced as Combinator<unknown>, 'a:1b:%', { tolerant: true })
+    expect(r.ok).toBe(true)
+    expect(r.errors).toHaveLength(1)
+    const list = (r.value as unknown[])[0] as unknown[]
+    expect(countErrors(list)).toBe(1)
+    expect(list.length).toBe(2) // [decl a:1, error]
+  })
+
+  it('strict oneOrMore still fails hard on the same input (recovery is tolerant-only)', () => {
+    expect(run(fenced as Combinator<unknown>, 'a:1b:%').ok).toBe(false)
+  })
+})
+
+describe('run() over a trivia-clearing grammar (rules({ trivia: null }))', () => {
+  // Regression: run() read `grammarTrivia._meta` whenever grammarTrivia !== undefined,
+  // but `rules({ trivia: null })` makes it null → a crash. `!= null` now skips it.
+  const cleared = rules({ trivia: null }, () => ({ pair: sequence(ident, literal(':'), num) }))
+
+  it('parses contiguously with no ambient trivia, without throwing', () => {
+    const r = run(cleared.pair as Combinator<unknown>, 'a:1')
+    expect(r.ok).toBe(true)
+    expect(r.value).toEqual(['a', ':', '1'])
+  })
+
+  it('a space between terms is NOT skipped (trivia is cleared)', () => {
+    const r = run(cleared.pair as Combinator<unknown>, 'a : 1')
+    expect(r.ok).toBe(false)
+  })
+
+  it('the direct parse() entry also handles a null grammarTrivia', () => {
+    // Same guard bug existed in grammar.ts parse(); assert it too.
+    const r = parse(cleared.pair as Combinator<unknown>, 'a:1')
+    expect(r.ok).toBe(true)
   })
 })
