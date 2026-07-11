@@ -344,6 +344,24 @@ driver, on top of the ~8.8 MB retained AST.
    `children`). This is the parseman-side complement to the `_dispatchBuild`
    host cost.
 
+   **⚠ LARGELY LANDED (verified in `src/compiler/codegen.ts`, 2026-07-11) — do not
+   treat as an available "cheap, broad" win.** Both halves of this idea now exist:
+   the **skip** half is `armNeedsRollback = ctx.capturing && (mayLeavePartialCapture(p)
+   || (armHasAutoNot && capturesLeaf(p)))` (`codegen.ts:1387`) — the leaf/raw/trivia
+   marks are only *emitted* when the arm can actually leave a partial capture — plus
+   the builder-consults-it gates `capturesTrivia`/`buildReadsTrivia` and the runtime
+   `_hostReads(build, n)` arity probe and the per-type `_parsemanCaptureTrivia` hook.
+   The **hoist / don't-read-`?.length`-4×-on-the-hot-path** half was also already
+   done and is documented in the `captureRestoreBody` comment (`codegen.ts:564-583`):
+   the exact regression this idea fears ("reading `_x?.length ?? 0` four times per
+   fallible block … compiled CSS regressed ~2.3×") was found and fixed by gating the
+   whole save/restore on a single boolean and only reading when a buffer is live.
+   What remains unlanded is a marginal intra-frame **buffer-reference** hoist (`const
+   _rc = _ctx._cstRawChildren` to cut repeated `_ctx.` reads) — but the length itself
+   mutates as children push, so only the *reference* is hoistable, and it only touches
+   the **cold CST-capture path** (most runtime callers request only the value, no CST).
+   Micro-opt, not the broad lever the ~3967-count implied.
+
 3. **`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%).** Every parsed
    node does `ensureProv(node)` → allocate a `{}` Provenance + `WeakMap.set`
    (core `provenance.ts:77-82`, called from the Node ctor's `setSourceSpan`). At
@@ -464,7 +482,9 @@ driver, on top of the ~8.8 MB retained AST.
   and measured at only ~7% alloc / 0% time; array building is NOT the 61.9%. Not
   the big lever. The real reify cost is dispatch + trivia + CST bookkeeping (#2/#5/#6).
 - **#2 hoist/skip CST length-mark bookkeeping** for builders that ignore
-  `rawChildren` — cheap, broad.
+  `rawChildren` — ⚠ **largely LANDED** (`mayLeavePartialCapture`/`capturesTrivia`/
+  `_hostReads` skip + the single-boolean save/restore gate in `codegen.ts`); only a
+  cold-path buffer-reference hoist remains. NOT an available cheap/broad win.
 - **#3 defer/dense-array `ensureProv`** — 12,984 per-node `{}`+WeakMap inserts is
   the 2nd hotspot and the main GC driver (worse on CSS: 12.5%).
 - **#4 drop per-node `loc` object + filtered child arrays in `buildNode`.**
