@@ -345,6 +345,24 @@ driver, on top of the ~8.8 MB retained AST.
    `children`). This is the parseman-side complement to the `_dispatchBuild`
    host cost.
 
+   **⚠ LARGELY LANDED (verified in `src/compiler/codegen.ts`, 2026-07-11) — do not
+   treat as an available "cheap, broad" win.** Both halves of this idea now exist:
+   the **skip** half is `armNeedsRollback = ctx.capturing && (mayLeavePartialCapture(p)
+   || (armHasAutoNot && capturesLeaf(p)))` (`codegen.ts:1387`) — the leaf/raw/trivia
+   marks are only *emitted* when the arm can actually leave a partial capture — plus
+   the builder-consults-it gates `capturesTrivia`/`buildReadsTrivia` and the runtime
+   `_hostReads(build, n)` arity probe and the per-type `_parsemanCaptureTrivia` hook.
+   The **hoist / don't-read-`?.length`-4×-on-the-hot-path** half was also already
+   done and is documented in the `captureRestoreBody` comment (`codegen.ts:564-583`):
+   the exact regression this idea fears ("reading `_x?.length ?? 0` four times per
+   fallible block … compiled CSS regressed ~2.3×") was found and fixed by gating the
+   whole save/restore on a single boolean and only reading when a buffer is live.
+   What remains unlanded is a marginal intra-frame **buffer-reference** hoist (`const
+   _rc = _ctx._cstRawChildren` to cut repeated `_ctx.` reads) — but the length itself
+   mutates as children push, so only the *reference* is hoistable, and it only touches
+   the **cold CST-capture path** (most runtime callers request only the value, no CST).
+   Micro-opt, not the broad lever the ~3967-count implied.
+
 3. **`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%).** Every parsed
    node does `ensureProv(node)` → allocate a `{}` Provenance + `WeakMap.set`
    (core `provenance.ts:77-82`, called from the Node ctor's `setSourceSpan`). At
@@ -385,16 +403,97 @@ driver, on top of the ~8.8 MB retained AST.
    a jump-table dispatch or an if/else chain, and if the latter, split the
    digit-led arms into a sub-dispatch keyed on the char *after* the numeric run.
 
+7. **Value / math-expression precedence-chain descent cost (operator-precedence rules).**
+   *Parked — a bounded constant-factor parse win, not the dominant scaling cost.*
+
+   **Evidence (distinct from the `benchmark.less` profile above).** A controlled
+   CPU profile (`node:inspector`, 50 µs sampling interval) of **jess-alpha
+   `bb3b31863` compiling the real Less `functions.less`**, compared against
+   Less 4.6.7, ranks the value-expression grammar rules very differently from the
+   `benchmark.less` run in the hotspot table (§ "Hotspot ranking with evidence",
+   where `_r_value` was #1 and `_r_topProduct`/`_r_topSum` sat at #8, 2.7%/2.2%).
+   On this value/function-heavy file:
+
+   - **`_r_topSum` (grammar.js) and `_r_topProduct` are the #1 and #2 hottest
+     self-time functions in the *entire* jess compile.** `_r_value` and the
+     condition-arg rules (`_r_CondArgAndOp` / `_r_CondArgAnd` / `_r_CondArgTermOp`)
+     are close behind.
+   - On value/function-heavy Less this value-expression grammar is **~30–40% of
+     parse time** (and parse is ≈ 60% of a small-file compile).
+
+   This is workload-dependent: the same rules are a modest slice on selector-heavy
+   `benchmark.less` but dominate on value-dense `functions.less`.
+
+   **What the cost actually is (NOT backtracking).** The precedence chain is
+   `sequence(base, many(sequence(opParser, base)))` stacked N levels deep — the
+   `leftAssoc` shape, identical to this repo's `examples/lang/parser.ts` (7 levels:
+   `unary→mul→add→cmp→eq→and→or`). On the overwhelmingly common **bare value with no
+   operator**, a token descends *every* level, and at each one pays: enter a
+   rule/node scope, allocate an empty `_arr` for the `many`, try the operator
+   `choice` (fails on the **first char**), then fold the transform over an empty
+   `rest`. That is a **fixed-depth descent with a single failed first-char lookahead
+   per level**, not retry/backtracking — each position is parsed at most once on the
+   success path. It tops the profile because it runs once per value token on
+   value-dense input (O(tokens)), not because of superlinear re-derivation. The cost
+   is the per-level node scope + empty-array + fold — the same reify/CST-bookkeeping
+   story as #2/#5, restricted to the value path.
+
+   **Why parked (not urgent).** Parse cost is roughly **LINEAR** in input size
+   (~6–7× Less 4.x, and flat) — so this is a bounded constant-factor win, not the
+   dominant scaling cost. The dominant scaling cost is eval, not parse (see the
+   cross-reference below). Worth doing eventually; not the strategic lever.
+
+   **Directions to explore (options, not prescriptions):**
+
+   - **Collapse the no-operator level — the real lever.** When
+     `many(sequence(opParser, base))` provably matches zero times (the operator
+     `choice`'s first-char set is absent) and the level's transform is identity on
+     the single-operand case, the whole level should collapse to its `base`: no node
+     scope, no empty `_arr`, no fold. This is **§2.3 "compile-time transparent-wrapper
+     elimination when `buildSrc` is `(c) => c[0]`"** combined with a first-set-guarded
+     no-op `many` elision — a pure shape-collapse guarded by first-set disjointness
+     (the same proof discipline §8 already uses), reusable across *every* precedence
+     grammar, not jess-specific.
+   - ~~Memoize / packrat the descent to cut backtracking.~~ **Rejected direction** —
+     there is no re-derivation at a position to memoize; a clean precedence descent
+     visits each position once per level. A memo table would put per-position writes
+     on a path that already visits each position once → net-negative, exactly the
+     "helper prelude / table indirection" class measured at **+32–50%** in §2. Don't.
+   - Profile whether the condition-arg rules (`_r_CondArg*`) can **share** the
+     value descent instead of re-deriving it.
+   - Compare against **Less 4.x's** cheaper `expression` / `operand` / `addition`
+     scanner approach. Note that Less 4.x's parser matches regexes against source
+     slices and builds the AST directly (**no separate CST-capture layer**), which
+     is a large part of why its value/math path is far cheaper in absolute terms —
+     any parseman equivalent still pays the CST-capture bookkeeping (§2, §5).
+
+   **Local measurement target.** The jess-alpha profile isn't reproducible in this
+   repo, but `examples/lang/parser.ts` has the identical 7-level `leftAssoc` chain
+   and is value/expression-heavy — use it (not the retired alpha) as the in-repo A/B
+   for any implementation of the level-collapse above.
+
+   **Cross-reference.** This is the **parse-side** lever. The bigger strategic
+   target is the **eval-side** allocation/GC gap (~85× Less 4.x), which is being
+   worked separately on the jess core side (object-reduction / spine render
+   architecture) — not here.
+
 ### Top ideas in one line each
 
 - **#1 lazy/scalar `many` in the compiled reifier** — ⚠ the dead-value part landed
   and measured at only ~7% alloc / 0% time; array building is NOT the 61.9%. Not
   the big lever. The real reify cost is dispatch + trivia + CST bookkeeping (#2/#5/#6).
 - **#2 hoist/skip CST length-mark bookkeeping** for builders that ignore
-  `rawChildren` — cheap, broad.
+  `rawChildren` — ⚠ **largely LANDED** (`mayLeavePartialCapture`/`capturesTrivia`/
+  `_hostReads` skip + the single-boolean save/restore gate in `codegen.ts`); only a
+  cold-path buffer-reference hoist remains. NOT an available cheap/broad win.
 - **#3 defer/dense-array `ensureProv`** — 12,984 per-node `{}`+WeakMap inserts is
   the 2nd hotspot and the main GC driver (worse on CSS: 12.5%).
 - **#4 drop per-node `loc` object + filtered child arrays in `buildNode`.**
+- **#7 value/math precedence-chain descent** (`_r_topSum`/`_r_topProduct`) — #1/#2
+  self-time on value-heavy Less (`functions.less`); ~30–40% of parse. Fixed-depth
+  descent + one failed first-char lookahead per level (NOT backtracking); the lever
+  is §2.3 transparent-wrapper elimination + first-set no-op `many` elision, not
+  memoization. Parked: linear-in-size, bounded constant factor, not the eval gap.
 - Remember the **parse-once/render-many** caveat: an AST cache in `Compiler` (jess
   side) would amortize all of the above for the common re-render case.
 
