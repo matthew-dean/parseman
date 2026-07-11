@@ -83,7 +83,7 @@ performAction: function anonymous(yytext, yyleng, yylineno, yy, yystate /* actio
 
 var $0 = $$.length - 1;
 switch (yystate) {
-case 1: case 4: case 5: case 6: case 14: case 21: case 22: case 26: case 27: case 28: case 34: case 43: case 45: case 47: case 57: case 58: case 59: case 60: case 61: case 62: case 63: case 64: case 65: case 73:
+case 1: case 4: case 5: case 14: case 21: case 22: case 26: case 27: case 28: case 34: case 43: case 45: case 47: case 57: case 58: case 59: case 60: case 61: case 62: case 63: case 64: case 65: case 73:
 this.$ = $$[$0]
 break;
 case 2: case 16: case 24: case 36: case 48: case 76: case 80:
@@ -92,8 +92,11 @@ break;
 case 3: case 17: case 25: case 37: case 49: case 77: case 81:
 this.$ = $$[$0-1].concat([$$[$0]])
 break;
+case 6:
+this.$ = { kind: "OperationDefinition", operation: "query", name: null, variables: [], directives: [], selectionSet: $$[$0] }
+break;
 case 7:
-this.$ = { operation: $$[$0-1], name: $$[$0].name, variables: $$[$0].variables, directives: $$[$0].directives, selectionSet: $$[$0].selectionSet }
+this.$ = { kind: "OperationDefinition", operation: $$[$0-1], name: $$[$0].name, variables: $$[$0].variables, directives: $$[$0].directives, selectionSet: $$[$0].selectionSet }
 break;
 case 8:
 this.$ = { name: $$[$0-3], variables: $$[$0-2] || [], directives: $$[$0-1] || [], selectionSet: $$[$0] }
@@ -117,7 +120,7 @@ case 15: case 23: case 35: case 75:
 this.$ = $$[$0-1]
 break;
 case 18:
-this.$ = { variable: $$[$0-3], type: $$[$0-1], defaultValue: $$[$0] }
+this.$ = { variable: $$[$0-3].name, type: $$[$0-1], defaultValue: $$[$0] }
 break;
 case 19:
 this.$ = { kind: "Variable", name: $$[$0] }

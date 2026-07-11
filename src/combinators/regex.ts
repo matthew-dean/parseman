@@ -99,8 +99,7 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
         if (scanEnd === null) return failAt(ctx, [`/${source}/`], pos)
         const value = input.slice(pos, scanEnd)
         const span = { start: pos, end: scanEnd }
-        const leaf = { _tag: 'leaf', value, span }
-        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, leaf)
+        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
         return { ok: true, value, span }
       }
       anchored.lastIndex = pos
@@ -109,8 +108,7 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
         return failAt(ctx, [`/${source}/`], pos)
       }
       const span = { start: pos, end: pos + m[0]!.length }
-      const leaf = { _tag: 'leaf', value: m[0]!, span }
-      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, leaf)
+      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: m[0]!, span })
       return { ok: true, value: m[0]!, span }
     },
   }

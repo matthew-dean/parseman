@@ -8,6 +8,7 @@ import { parseCSV, compiledCSV, csvParser } from '../examples/csv/parser.ts'
 import { parseGraphQL, graphqlDoc } from '../examples/graphql/parser.ts'
 import { compile } from '../src/index.ts'
 import { buildChevrotainJSON } from './chevrotain-json.ts'
+import { buildChevrotainCSTJSON } from './chevrotain-cst-json.ts'
 import { buildChevrotainCSV } from './chevrotain-csv.ts'
 import { buildChevrotainGraphQL } from './chevrotain-graphql.ts'
 import { buildParsimmonJSON } from './parsimmon-json.ts'
@@ -28,6 +29,7 @@ export const parsermanCSTJSONNoTriv = buildParsermanCSTJSONNoTriv()
 export const compiledJSON           = compile(jsonDoc)
 export const compiledGraphQL        = compile(graphqlDoc)
 export const chevrotainJSON         = buildChevrotainJSON()
+export const chevrotainCSTJSON      = buildChevrotainCSTJSON()
 export const chevrotainCSV          = buildChevrotainCSV()
 export const chevrotainGQL          = buildChevrotainGraphQL()
 export const parsimmonJSON          = buildParsimmonJSON()

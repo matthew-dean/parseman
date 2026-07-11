@@ -311,6 +311,30 @@ JIT-compile a combinator tree to an optimized JS function at runtime. Returns a
 Requires `new Function` (won't run under a strict CSP). See
 [The three modes](../guide/modes#compile-runtime-jit).
 
+## Spec generation
+
+Generate a formal grammar spec (EBNF + railroad diagrams) from a `rules()` grammar. Imported
+from the `parseman/spec` subpath. See [Grammar spec generation](../guide/spec-generation).
+
+### `toEBNF(grammar, options?)`
+
+Render W3C-style EBNF text — one production per named rule. `grammar` is a `rules()` record
+(or a single combinator). Options: `sort` (`'source'` — declaration order, default — or
+`'reachable'` — top-down from the entry rule), `root`, `order`, `includeTrivia`, `terminals`,
+`regexDisplay`.
+
+### `toRailroadHtml(grammar, options?)`
+
+Render a self-contained HTML page of SVG railroad diagrams, one per production. Accepts every
+`toEBNF` option plus `title` and `showEbnf`. No external dependencies — the diagram library
+(tabatkins/railroad-diagrams, CC0) and CSS are inlined.
+
+### `buildSpecModel(grammar, options?)`
+
+Return the notation-agnostic model (`{ productions: { name, expr }[] }`) that `toEBNF` and
+`toRailroadHtml` consume — walk it to emit a custom notation. `renderEBNF` / `renderExpr` are
+also exported for rendering a model or a single `SpecNode`.
+
 ## Composing grammars
 
 Fuse grammars into one parser, with override, à la carte selection, and no base-grammar

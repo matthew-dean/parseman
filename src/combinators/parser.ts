@@ -2,6 +2,13 @@ import type { Combinator } from '../types.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 
+/**
+ * Non-enumerable key on a `rules()` result holding the factory's declaration
+ * order (the returned object's key order), which differs from the result's own
+ * reference-creation key order. Read by `parseman/spec` for source-order output.
+ */
+export const RULE_ORDER = '__parsemanRuleOrder'
+
 function tagRule(r: Combinator<unknown>, key: string): void {
   ;(r as unknown as { _ruleName?: string })._ruleName = key
   if (r._def.tag === 'node' && r._def.type === undefined) r._def.type = key
@@ -111,6 +118,18 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
   for (const key of Object.keys(definitions)) {
     markUnusedValues((cache as Record<string, Combinator<unknown>>)[key]!)
   }
+
+  // Record the factory's DECLARATION order (the returned object's key order).
+  // `cache`'s own key order is reference-creation order — a Proxy artifact — so
+  // it can lead with an internal rule instead of the entry rule. Consumers that
+  // want the order the author actually wrote (e.g. `parseman/spec`) read this.
+  // Non-enumerable, so Object.keys / spread / for-in over the grammar are
+  // unaffected and every existing consumer sees exactly the rules it did before.
+  Object.defineProperty(cache, RULE_ORDER, {
+    value: Object.keys(definitions),
+    enumerable: false,
+    configurable: true,
+  })
 
   return cache as T
 }

@@ -1,11 +1,13 @@
 /**
  * Chevrotain JSON parser for benchmark comparison.
- * Implements the same JSON subset as examples/json/parser.ts.
+ *
+ * Builds the JS value directly in a single pass via `EmbeddedActionsParser` —
+ * NOT a CST that a second pass then traverses. This matches what the other bench
+ * parsers do (recognize + build the value), so Chevrotain isn't charged for an
+ * extra CST-construction + CST→value traversal the others never perform. Same
+ * JSON subset as examples/json/parser.ts. See bench/PARITY.md.
  */
-import {
-  createToken, Lexer, CstParser, tokenMatcher,
-  type IToken, type CstNode,
-} from 'chevrotain'
+import { createToken, Lexer, EmbeddedActionsParser, type IOrAlt } from 'chevrotain'
 
 // ---------------------------------------------------------------------------
 // Tokens
@@ -28,100 +30,64 @@ const allTokens = [WhiteSpace, True, False, Null, LCurly, RCurly, LSquare, RSqua
 const lexer = new Lexer(allTokens)
 
 // ---------------------------------------------------------------------------
-// Combinator
+// Parser — builds the JS value directly (no CST)
 // ---------------------------------------------------------------------------
-class JsonParser extends CstParser {
+class JsonParser extends EmbeddedActionsParser {
   constructor() {
-    super(allTokens)
+    super(allTokens, { recoveryEnabled: false })
     this.performSelfAnalysis()
   }
 
-  json = this.RULE('json', () => {
-    this.SUBRULE(this.value)
-  })
+  json = this.RULE('json', (): unknown => this.SUBRULE(this.value))
 
-  object = this.RULE('object', () => {
+  object = this.RULE('object', (): Record<string, unknown> => {
+    const obj: Record<string, unknown> = {}
     this.CONSUME(LCurly)
     this.OPTION(() => {
-      this.SUBRULE(this.objectItem)
+      this.SUBRULE(this.objectItem, { ARGS: [obj] })
       this.MANY(() => {
         this.CONSUME(Comma)
-        this.SUBRULE2(this.objectItem)
+        this.SUBRULE2(this.objectItem, { ARGS: [obj] })
       })
     })
     this.CONSUME(RCurly)
+    return obj
   })
 
-  objectItem = this.RULE('objectItem', () => {
-    this.CONSUME(StringLit)
+  objectItem = this.RULE('objectItem', (obj: Record<string, unknown>): void => {
+    const keyImage = this.CONSUME(StringLit).image
     this.CONSUME(Colon)
-    this.SUBRULE(this.value)
+    const value = this.SUBRULE(this.value)
+    this.ACTION(() => { obj[JSON.parse(keyImage) as string] = value })
   })
 
-  array = this.RULE('array', () => {
+  array = this.RULE('array', (): unknown[] => {
+    const arr: unknown[] = []
     this.CONSUME(LSquare)
     this.OPTION(() => {
-      this.SUBRULE(this.value)
+      const first = this.SUBRULE(this.value)
+      this.ACTION(() => arr.push(first))
       this.MANY(() => {
         this.CONSUME(Comma)
-        this.SUBRULE2(this.value)
+        const v = this.SUBRULE2(this.value)
+        this.ACTION(() => arr.push(v))
       })
     })
     this.CONSUME(RSquare)
+    return arr
   })
 
-  value = this.RULE('value', () => {
-    this.OR([
+  private cValue?: IOrAlt<unknown>[]
+  value = this.RULE('value', (): unknown =>
+    this.OR(this.cValue ??= [
       { ALT: () => this.SUBRULE(this.object) },
       { ALT: () => this.SUBRULE(this.array) },
-      { ALT: () => this.CONSUME(StringLit) },
-      { ALT: () => this.CONSUME(NumberLit) },
-      { ALT: () => this.CONSUME(True) },
-      { ALT: () => this.CONSUME(False) },
-      { ALT: () => this.CONSUME(Null) },
-    ])
-  })
-}
-
-// ---------------------------------------------------------------------------
-// Visitor (CST → JS value)
-// ---------------------------------------------------------------------------
-function cstToValue(node: CstNode | IToken): unknown {
-  if ('image' in node) {
-    // IToken
-    if (tokenMatcher(node, StringLit)) return JSON.parse(node.image)
-    if (tokenMatcher(node, NumberLit)) return parseFloat(node.image)
-    if (tokenMatcher(node, True)) return true
-    if (tokenMatcher(node, False)) return false
-    if (tokenMatcher(node, Null)) return null
-    return node.image
-  }
-  // CstNode
-  const n = node as CstNode
-  if (n.name === 'json') return cstToValue((n.children['value']![0]) as CstNode)
-  if (n.name === 'value') {
-    const child = Object.values(n.children).flat()[0]
-    if (child) return cstToValue(child as CstNode | IToken)
-    return null
-  }
-  if (n.name === 'object') {
-    const items = (n.children['objectItem'] ?? []) as CstNode[]
-    const obj: Record<string, unknown> = {}
-    for (const item of items) {
-      const key = JSON.parse((item.children['StringLit']![0] as IToken).image)
-      const val = cstToValue(item.children['value']![0] as CstNode)
-      obj[key] = val
-    }
-    return obj
-  }
-  if (n.name === 'array') {
-    const values = (n.children['value'] ?? []) as CstNode[]
-    return values.map(v => cstToValue(v))
-  }
-  if (n.name === 'objectItem') {
-    return null // handled above
-  }
-  return null
+      { ALT: () => { const s = this.CONSUME(StringLit).image; return this.ACTION(() => JSON.parse(s)) } },
+      { ALT: () => parseFloat(this.CONSUME(NumberLit).image) },
+      { ALT: () => { this.CONSUME(True); return true } },
+      { ALT: () => { this.CONSUME(False); return false } },
+      { ALT: () => { this.CONSUME(Null); return null } },
+    ]))
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +98,8 @@ export function buildChevrotainJSON(): (input: string) => unknown {
   return (input: string) => {
     const lexResult = lexer.tokenize(input)
     parser.input = lexResult.tokens
-    const cst = parser.json()
-    return cstToValue(cst)
+    const result = parser.json()
+    if (parser.errors.length) throw new Error(parser.errors[0]!.message)
+    return result
   }
 }

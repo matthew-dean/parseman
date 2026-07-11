@@ -95,10 +95,22 @@ var grammar = {
     {"name": "document", "symbols": ["document$ebnf$1"], "postprocess": function(d) { return d[0] }},
     {"name": "definition", "symbols": ["operationDefinition"], "postprocess": id},
     {"name": "definition", "symbols": ["fragmentDefinition"], "postprocess": id},
-    {"name": "operationDefinition", "symbols": ["selectionSet"], "postprocess": id},
+    {"name": "operationDefinition", "symbols": ["selectionSet"], "postprocess": 
+        function(d) {
+          return {
+            kind: 'OperationDefinition',
+            operation: 'query',
+            name: null,
+            variables: [],
+            directives: [],
+            selectionSet: d[0],
+          }
+        }
+          },
     {"name": "operationDefinition", "symbols": ["operationType", "namedOperation"], "postprocess": 
         function(d) {
           return {
+            kind: 'OperationDefinition',
             operation: d[0],
             name: d[1].name,
             variables: d[1].variables,
@@ -134,7 +146,7 @@ var grammar = {
     {"name": "variableDefinitions$ebnf$1", "symbols": ["variableDefinitions$ebnf$1", "variableDefinition"], "postprocess": function arrpush(d) {return d[0].concat([d[1]]);}},
     {"name": "variableDefinitions", "symbols": [(lexer.has("lparen") ? {type: "lparen"} : lparen), "variableDefinitions$ebnf$1", (lexer.has("rparen") ? {type: "rparen"} : rparen)], "postprocess": function(d) { return d[1] }},
     {"name": "variableDefinition", "symbols": ["variable", (lexer.has("colon") ? {type: "colon"} : colon), "type", "defaultValueOpt"], "postprocess":  function(d) {
-          return { variable: d[0], type: d[2], defaultValue: d[3] }
+          return { variable: d[0].name, type: d[2], defaultValue: d[3] }
         } },
     {"name": "variable", "symbols": [(lexer.has("dollar") ? {type: "dollar"} : dollar), (lexer.has("name") ? {type: "name"} : name)], "postprocess": function(d) { return { kind: 'Variable', name: nameOf(d[1]) } }},
     {"name": "defaultValue", "symbols": [(lexer.has("equals") ? {type: "equals"} : equals), "value"], "postprocess": function(d) { return d[1] }},

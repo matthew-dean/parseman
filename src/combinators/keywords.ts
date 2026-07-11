@@ -93,8 +93,7 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
       }
       const value = m[0]!
       const span = { start: pos, end: pos + value.length }
-      const leaf = { _tag: 'leaf', value, span }
-      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, leaf)
+      if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
       return { ok: true, value, span }
     },
   }

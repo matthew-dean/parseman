@@ -3,6 +3,50 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.24.0 — 2026-07-10
+
+- **Grammar spec generation (`parseman/spec`).** Generate a formal grammar spec directly from a
+  `rules()` grammar — `toEBNF(grammar)` for W3C-style EBNF text, and `toRailroadHtml(grammar)`
+  for a self-contained HTML page of SVG railroad (syntax) diagrams, one per production, each with
+  its EBNF caption. The emitter walks the SAME `_def` combinator tree the interpreter and macro
+  compiler consume, so a generated spec is a single source of truth: it cannot disagree with what
+  actually parses. Every combinator maps to an EBNF construct (`sequence`→concatenation,
+  `choice`→alternation, `many`/`optional`/`oneOrMore`→`* ? +`, `sepBy`→`x (sep x)*`, rule
+  references→non-terminals), with precedence-correct parenthesization. Productions emit in
+  **declaration order** by default (the order rules were written in the factory, so the entry
+  rule leads); `sort: 'reachable'` switches to top-down order (each rule introduced at its first
+  reference). Options: `sort`, `root`/`order` (reachability + emission order),
+  `terminals`/`regexDisplay` (readable terminals),
+  `includeTrivia`, and `title`/`showEbnf` for the HTML page. Semantic-only wrappers (`transform`,
+  `node`, `token`, `field`, …) are transparent; trivia and guards are elided by default. The
+  railroad HTML has no external dependencies — the diagram library
+  ([tabatkins/railroad-diagrams](https://github.com/tabatkins/railroad-diagrams), CC0) and its CSS
+  are inlined. `buildSpecModel` exposes the notation-agnostic model for custom emitters. See the
+  [Grammar spec generation](https://github.com/matthew-dean/parseman) guide and `examples/spec-gen.ts`.
+- **Faster interpreted parsing of punctuation- and trivia-heavy grammars.** The runtime combinators
+  gained two allocation-free fast paths, both interpreter-only (the `compile()` output was already
+  lowering these). Single-character case-sensitive `literal()` now matches with a `charCodeAt`
+  compare instead of the generic `startsWith` builtin — the bulk of grammars like GraphQL
+  (`{ } ( ) : $ @ [ ] ! =`), JSON, and CSS. And the fast trivia scanner now recognizes any positive
+  char-class run (not just ` \t\n\r\f`) and `(?:[class]|C[^\n\r]*)*` line-comment trivia, so
+  comma/`#`-comment trivia (GraphQL, TOML-style configs) skips in a tight `charCodeAt` loop instead
+  of falling back to `RegExp.exec` at every token boundary. Arm classification is order-independent
+  and compiles to one fused loop; a comment marker that also sits inside a class falls back to an
+  ordered scan. Measured (`bench:parseman`, interpreted): GraphQL large **~537→354µs**, medium
+  **~20.5→15.0µs**, small **~3.4→2.2µs** — the interpreter now edges out Peggy on all three
+  (Peggy 377 / 16.1 / 2.4µs); CSV large ~347→253µs and lang medium ~20.8→16.2µs also improved. No
+  API or behavior change; differential-tested against the `RegExp` oracle.
+- **Fairer cross-library benchmarks (`bench/`).** Prompted by
+  [Chevrotain#2189](https://github.com/Chevrotain/chevrotain/pull/2189): the
+  Chevrotain JSON/GraphQL benches built a CST (JSON then traversed it to a value)
+  while every other parser built the value in one pass — not apples-to-apples.
+  Both are now `EmbeddedActionsParser`s that build the same value directly, and
+  every bench parser's output is pinned to a shared reference by a new parity
+  test (`test/parity/bench-parsers.test.ts`). Measured effect on Chevrotain: JSON
+  large ~1820→270µs (dropping the CST traversal) and GraphQL large ~815→460µs
+  (caching the `OR`-alternatives arrays — the dominant cost once the CST was
+  gone). Methodology is documented in `bench/PARITY.md`. Library code unchanged.
+
 ## 0.23.0 — 2026-07-09
 
 - **Grammar-level trivia carries through `compose()`.** A grammar's ambient trivia

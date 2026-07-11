@@ -57,23 +57,42 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
       : firstSet
   }
 
+  const expected = [JSON.stringify(value)]
+
+  // Single-char case-sensitive literals are the bulk of punctuation-heavy
+  // grammars (GraphQL `{ } ( ) : $ @ [ ] ! =`, JSON, CSS). A bare `charCodeAt`
+  // compare beats the generic `startsWith` builtin call, and an out-of-bounds
+  // `charCodeAt` returns NaN — so the length check folds into the compare.
+  const parse = !caseInsensitive && value.length === 1
+    ? (() => {
+        const code = value.charCodeAt(0)
+        return function parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
+          if (input.charCodeAt(pos) === code) {
+            const span = { start: pos, end: pos + 1 }
+            if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
+            return { ok: true, value, span }
+          }
+          return failAt(ctx, expected, pos)
+        }
+      })()
+    : function parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
+        const end = pos + value.length
+        if (end > input.length) {
+          return failAt(ctx, expected, pos)
+        }
+        const matchedValue = caseInsensitive ? input.slice(pos, end) : value
+        if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
+          const span = { start: pos, end }
+          if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: matchedValue, span })
+          return { ok: true, value: matchedValue, span }
+        }
+        return failAt(ctx, expected, pos)
+      }
+
   return {
     _tag: 'literal',
     _meta: meta,
     _def: { tag: 'literal', value, caseInsensitive },
-    parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
-      const end = pos + value.length
-      if (end > input.length) {
-        return failAt(ctx, [JSON.stringify(value)], pos)
-      }
-      const matchedValue = caseInsensitive ? input.slice(pos, end) : value
-      if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
-        const span = { start: pos, end }
-        const leaf = { _tag: 'leaf', value: matchedValue, span }
-        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, leaf)
-        return { ok: true, value: matchedValue, span }
-      }
-      return failAt(ctx, [JSON.stringify(value)], pos)
-    },
+    parse,
   }
 }

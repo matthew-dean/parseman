@@ -13,5 +13,9 @@
     "noEmit": true
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["node_modules", "dist"]
+  // `bench/` is benchmark glue over loosely-typed third-party parsers (Parsimmon,
+  // generated Peggy/Jison) and is intentionally outside the typecheck. The bench
+  // parity test imports bench/*, so exclude it here to keep bench out of tsc's
+  // graph — it still runs under vitest (esbuild), which is what guards it.
+  "exclude": ["node_modules", "dist", "test/parity/bench-parsers.test.ts"]
 }

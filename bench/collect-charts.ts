@@ -97,7 +97,7 @@ export function collectChartData(): Chart[] {
       bar('Lezer (parse only)',         warmUs(() => P.lezerJSONParse(input), iters), CHART_COLORS.lezer),
       bar('Lezer (parse + walk)',       warmUs(() => P.lezerJSON(input), iters), CHART_COLORS.lezerWalk),
       bar('Parséman CST (interpreter)', warmUs(() => P.parsermanCSTJSONNoTriv(input), iters), CHART_COLORS.noCompile),
-      bar('Chevrotain CST',             warmUs(() => P.chevrotainJSON(input), iters), CHART_COLORS.chevrotain),
+      bar('Chevrotain CST',             warmUs(() => P.chevrotainCSTJSON(input), iters), CHART_COLORS.chevrotain),
     ]
     for (const b of bars) console.log(`    ${b.label.padEnd(28)} ${b.us.toFixed(2)} µs`)
     return { title, bars }
