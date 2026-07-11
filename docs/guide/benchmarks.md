@@ -67,17 +67,19 @@ size in the charts above:
 
 | Fixture | Parséman macro | [Peggy](https://peggyjs.org/) | [Chevrotain](https://chevrotain.io/) | Native |
 | --- | --- | --- | --- | --- |
-| JSON large (12 kB) | **125 µs** | 472 | 1,783 | `JSON.parse` 44 µs |
-| JSON medium (1.8 kB) | **16 µs** | 68 | 232 | `JSON.parse` 4 µs |
+| JSON large (12 kB) | **125 µs** | 472 | 312 | `JSON.parse` 44 µs |
+| JSON medium (1.8 kB) | **16 µs** | 68 | 30 | `JSON.parse` 4 µs |
 | CSV large (14.8 kB) | **74 µs** | 430 | 1,045 | — |
-| GraphQL large (7.8 kB) | **131 µs** | 373 | 671 | — |
+| GraphQL large (7.8 kB) | **131 µs** | 373 | 342 | — |
 
 The zero-setup **interpreter** stays close behind with no compile step at all — and after
 recent interpreter fast-paths (single-char literals, comma/line-comment trivia) it's roughly
-**2× faster than before**. On JSON, CSV, *and* GraphQL it's now the fastest of *any* option
-here except Parséman's own macro build: ahead of Peggy at every size (comfortably on JSON and
-CSV, narrowly on GraphQL), and well ahead of Parsimmon, Chevrotain, Nearley, and Jison. Reach
-for the macro build when you want the last 2–3×; either way you pay nothing up front.
+**2× faster than before**. On **CSV** it's the fastest option after the macro build, well
+ahead of every generator. On **JSON** and **GraphQL** it runs in the leading pack: ahead of
+Peggy, and roughly neck-and-neck with a well-tuned [Chevrotain](https://chevrotain.io/)
+(Chevrotain edges it on large JSON; the two trade places within noise on GraphQL) — and well
+ahead of Parsimmon, Nearley, and Jison throughout. Reach for the macro build when you want the
+last 2–3×; either way you pay nothing up front.
 
 ## Parsing to a syntax tree
 
@@ -152,8 +154,9 @@ wins. Pick for your edit mix.
 the fastest general-purpose JS parser in this comparison, at every grammar and every input
 size**, with **zero initialization cost**. For syntax trees, the same macro build beats
 Lezer and Chevrotain on the JSON CST fixture. And the setup-free interpreter is
-remarkably competitive on its own — after its recent ~2× speedup it's the fastest after the
-macro build on JSON, CSV, **and** GraphQL, ahead of every generator including Peggy.
+remarkably competitive on its own — after its recent ~2× speedup it's the fastest option
+after the macro build on CSV, and runs with the leading generators on JSON and GraphQL
+(ahead of Peggy; trading the lead with a well-tuned Chevrotain).
 
 The numbers come from a reproducible suite you can run yourself (`pnpm bench`) on one M4
 Pro / Node+V8, median of 15 samples. Got a parser you think belongs in the comparison?
