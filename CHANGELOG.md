@@ -36,6 +36,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   **~20.5→15.0µs**, small **~3.4→2.2µs** — the interpreter now edges out Peggy on all three
   (Peggy 377 / 16.1 / 2.4µs); CSV large ~347→253µs and lang medium ~20.8→16.2µs also improved. No
   API or behavior change; differential-tested against the `RegExp` oracle.
+- **Fairer cross-library benchmarks (`bench/`).** Prompted by
+  [Chevrotain#2189](https://github.com/Chevrotain/chevrotain/pull/2189): the
+  Chevrotain JSON/GraphQL benches built a CST (JSON then traversed it to a value)
+  while every other parser built the value in one pass — not apples-to-apples.
+  Both are now `EmbeddedActionsParser`s that build the same value directly, and
+  every bench parser's output is pinned to a shared reference by a new parity
+  test (`test/parity/bench-parsers.test.ts`). Measured effect on Chevrotain: JSON
+  large ~1820→270µs (dropping the CST traversal) and GraphQL large ~815→460µs
+  (caching the `OR`-alternatives arrays — the dominant cost once the CST was
+  gone). Methodology is documented in `bench/PARITY.md`. Library code unchanged.
 
 ## 0.23.0 — 2026-07-09
 

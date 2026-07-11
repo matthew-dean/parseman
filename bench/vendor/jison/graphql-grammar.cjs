@@ -77,8 +77,8 @@ function parseBlockString(s) {
     ],
 
     OperationDefinition: [
-      ['SelectionSet', '$$ = $1'],
-      ['OperationType NamedOperation', '$$ = { operation: $1, name: $2.name, variables: $2.variables, directives: $2.directives, selectionSet: $2.selectionSet }'],
+      ['SelectionSet', '$$ = { kind: "OperationDefinition", operation: "query", name: null, variables: [], directives: [], selectionSet: $1 }'],
+      ['OperationType NamedOperation', '$$ = { kind: "OperationDefinition", operation: $1, name: $2.name, variables: $2.variables, directives: $2.directives, selectionSet: $2.selectionSet }'],
     ],
 
     NamedOperation: [
@@ -105,7 +105,7 @@ function parseBlockString(s) {
     ],
 
     VariableDefinition: [
-      ['Variable COLON Type DefaultValueOpt', '$$ = { variable: $1, type: $3, defaultValue: $4 }'],
+      ['Variable COLON Type DefaultValueOpt', '$$ = { variable: $1.name, type: $3, defaultValue: $4 }'],
     ],
 
     Variable: [['DOLLAR NAME', '$$ = { kind: "Variable", name: $2 }']],

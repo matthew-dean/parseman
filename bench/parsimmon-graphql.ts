@@ -21,14 +21,15 @@ const GQL: P.Language = P.createLanguage({
 
   OperationDefinition: r =>
     P.alt(
-      r.SelectionSet,
+      r.SelectionSet.map(selectionSet =>
+        ({ kind: 'OperationDefinition', operation: 'query', name: null, variables: [], directives: [], selectionSet })),
       P.seqMap(
         r.OperationType, r.Name.trim(_).fallback(null),
         r.VariableDefinitions.fallback([]),
         r.Directives.fallback([]),
         r.SelectionSet,
         (operation, name, variables, directives, selectionSet) =>
-          ({ operation, name, variables, directives, selectionSet }),
+          ({ kind: 'OperationDefinition', operation, name, variables, directives, selectionSet }),
       ),
     ),
 
@@ -39,7 +40,7 @@ const GQL: P.Language = P.createLanguage({
     r.VariableDefinition.trim(_).atLeast(1).wrap(P.string('(').trim(_), P.string(')').trim(_)),
 
   VariableDefinition: r =>
-    P.seqMap(r.Variable, P.string(':').trim(_), r.Type, r.DefaultValue.fallback(null),
+    P.seqMap(P.string('$').then(r.Name.trim(_)), P.string(':').trim(_), r.Type, r.DefaultValue.fallback(null),
       (variable, _, type, defaultValue) => ({ variable, type, defaultValue })),
 
   Variable: r =>

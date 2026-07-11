@@ -1,9 +1,13 @@
 /**
  * Chevrotain GraphQL executable-document parser for benchmark comparison.
- * Implements the same grammar as the official Chevrotain GraphQL example,
- * restricted to executable definitions (operations + fragments).
+ *
+ * Builds the SAME value AST the other bench parsers produce (matching
+ * examples/graphql/parser.ts), via `EmbeddedActionsParser` — NOT a CST. This
+ * keeps the comparison apples-to-apples: every parser here does the equivalent
+ * "recognize + build a plain-object AST" work, so Chevrotain isn't penalised by
+ * an extra CST-construction/traversal pass. See bench/PARITY.md.
  */
-import { CstParser, Lexer, createToken } from 'chevrotain'
+import { createToken, Lexer, EmbeddedActionsParser, type IOrAlt } from 'chevrotain'
 import XRegExp from 'xregexp'
 
 // ---------------------------------------------------------------------------
@@ -17,7 +21,7 @@ const Comma          = createToken({ name: 'Comma',          pattern: ',',      
 const Name = createToken({ name: 'Name', pattern: /[_A-Za-z][_0-9A-Za-z]*/ })
 
 function keyword(word: string) {
-  const cap = word[0].toUpperCase() + word.slice(1)
+  const cap = word[0]!.toUpperCase() + word.slice(1)
   return createToken({ name: cap, pattern: new RegExp(word), longer_alt: Name })
 }
 
@@ -66,216 +70,251 @@ const allTokens = [
 const GraphQLLexer = new Lexer(allTokens)
 
 // ---------------------------------------------------------------------------
-// Parser
+// AST value types (mirror examples/graphql/parser.ts)
 // ---------------------------------------------------------------------------
-class GQLParser extends CstParser {
+type Value = unknown
+type Arg = { name: string; value: Value }
+type Directive = { name: string; arguments: Arg[] }
+type GQLType =
+  | { kind: 'NamedType'; name: string }
+  | { kind: 'ListType'; type: GQLType }
+  | { kind: 'NonNull'; type: GQLType }
+
+/** Unescape a regular `"..."` string body exactly like examples/graphql/parser.ts. */
+function unescapeString(raw: string): string {
+  if (raw.startsWith('"""')) return raw.slice(3, -3)
+  return raw.slice(1, -1)
+    .replace(/\\"/g, '"').replace(/\\\\/g, '\\').replace(/\\\//g, '/')
+    .replace(/\\b/g, '\b').replace(/\\f/g, '\f').replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r').replace(/\\t/g, '\t')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+}
+
+// ---------------------------------------------------------------------------
+// Parser — builds the value AST directly (no CST)
+// ---------------------------------------------------------------------------
+class GQLParser extends EmbeddedActionsParser {
   constructor() {
-    super(allTokens)
-    const $ = this
-
-    $.RULE('Document', () => {
-      $.AT_LEAST_ONE(() => $.SUBRULE($.Definition))
-    })
-
-    $.RULE('Definition', () => {
-      $.OR([
-        { ALT: () => $.SUBRULE($.OperationDefinition) },
-        { ALT: () => $.SUBRULE($.FragmentDefinition) },
-      ])
-    })
-
-    $.RULE('OperationDefinition', () => {
-      $.OR([
-        { ALT: () => $.SUBRULE($.SelectionSet) },
-        { ALT: () => {
-          $.SUBRULE($.OperationType)
-          $.OPTION(() => $.CONSUME(Name))
-          $.OPTION2(() => $.SUBRULE($.VariableDefinitions))
-          $.OPTION3(() => $.SUBRULE($.Directives))
-          $.SUBRULE2($.SelectionSet)
-        }},
-      ])
-    })
-
-    $.RULE('OperationType', () => {
-      $.OR([
-        { ALT: () => $.CONSUME(Query) },
-        { ALT: () => $.CONSUME(Mutation) },
-        { ALT: () => $.CONSUME(Subscription) },
-      ])
-    })
-
-    $.RULE('SelectionSet', () => {
-      $.CONSUME(LCurly)
-      $.AT_LEAST_ONE(() => $.SUBRULE($.Selection))
-      $.CONSUME(RCurly)
-    })
-
-    $.RULE('Selection', () => {
-      $.OR([
-        { ALT: () => $.SUBRULE($.Field) },
-        { ALT: () => $.SUBRULE($.FragmentSpread) },
-        { ALT: () => $.SUBRULE($.InlineFragment) },
-      ])
-    })
-
-    $.RULE('Field', () => {
-      $.OPTION(() => $.SUBRULE($.Alias))
-      $.CONSUME(Name)
-      $.OPTION2(() => $.SUBRULE($.Arguments))
-      $.OPTION3(() => $.SUBRULE($.Directives))
-      $.OPTION4(() => $.SUBRULE($.SelectionSet))
-    })
-
-    $.RULE('Alias', () => {
-      $.CONSUME(Name)
-      $.CONSUME(Colon)
-    })
-
-    $.RULE('Arguments', () => {
-      $.CONSUME(LParen)
-      $.AT_LEAST_ONE(() => $.SUBRULE($.Argument))
-      $.CONSUME(RParen)
-    })
-
-    $.RULE('Argument', () => {
-      $.CONSUME(Name)
-      $.CONSUME(Colon)
-      $.SUBRULE($.Value)
-    })
-
-    $.RULE('FragmentSpread', () => {
-      $.CONSUME(DotDotDot)
-      $.CONSUME(Name)
-      $.OPTION(() => $.SUBRULE($.Directives))
-    })
-
-    $.RULE('InlineFragment', () => {
-      $.CONSUME(DotDotDot)
-      $.OPTION(() => $.SUBRULE($.TypeCondition))
-      $.OPTION2(() => $.SUBRULE($.Directives))
-      $.SUBRULE($.SelectionSet)
-    })
-
-    $.RULE('FragmentDefinition', () => {
-      $.CONSUME(Fragment)
-      $.CONSUME(Name)
-      $.SUBRULE($.TypeCondition)
-      $.OPTION(() => $.SUBRULE($.Directives))
-      $.SUBRULE($.SelectionSet)
-    })
-
-    $.RULE('TypeCondition', () => {
-      $.CONSUME(On)
-      $.CONSUME(Name)
-    })
-
-    $.RULE('Value', () => {
-      $.OR([
-        { ALT: () => $.SUBRULE($.Variable) },
-        { ALT: () => $.CONSUME(IntValue) },
-        { ALT: () => $.CONSUME(FloatValue) },
-        { ALT: () => $.CONSUME(StringValue) },
-        { ALT: () => $.CONSUME(True) },
-        { ALT: () => $.CONSUME(False) },
-        { ALT: () => $.CONSUME(Null) },
-        { ALT: () => $.CONSUME(Name) },
-        { ALT: () => $.SUBRULE($.ListValue) },
-        { ALT: () => $.SUBRULE($.ObjectValue) },
-      ])
-    })
-
-    $.RULE('ListValue', () => {
-      $.CONSUME(LSquare)
-      $.MANY(() => $.SUBRULE($.Value))
-      $.CONSUME(RSquare)
-    })
-
-    $.RULE('ObjectValue', () => {
-      $.CONSUME(LCurly)
-      $.MANY(() => $.SUBRULE($.ObjectField))
-      $.CONSUME(RCurly)
-    })
-
-    $.RULE('ObjectField', () => {
-      $.CONSUME(Name)
-      $.CONSUME(Colon)
-      $.SUBRULE($.Value)
-    })
-
-    $.RULE('VariableDefinitions', () => {
-      $.CONSUME(LParen)
-      $.AT_LEAST_ONE(() => $.SUBRULE($.VariableDefinition))
-      $.CONSUME(RParen)
-    })
-
-    $.RULE('VariableDefinition', () => {
-      $.SUBRULE($.Variable)
-      $.CONSUME(Colon)
-      $.SUBRULE($.Type)
-      $.OPTION(() => $.SUBRULE($.DefaultValue))
-    })
-
-    $.RULE('Variable', () => {
-      $.CONSUME(Dollar)
-      $.CONSUME(Name)
-    })
-
-    $.RULE('DefaultValue', () => {
-      $.CONSUME(Equals)
-      $.SUBRULE($.Value)
-    })
-
-    $.RULE('Type', () => {
-      $.OR([
-        { ALT: () => { $.CONSUME(Name); $.OPTION(() => $.CONSUME(Exclamation)) } },
-        { ALT: () => {
-          $.CONSUME(LSquare)
-          $.SUBRULE($.Type)
-          $.CONSUME(RSquare)
-          $.OPTION2(() => $.CONSUME2(Exclamation))
-        }},
-      ])
-    })
-
-    $.RULE('Directives', () => {
-      $.AT_LEAST_ONE(() => $.SUBRULE($.Directive))
-    })
-
-    $.RULE('Directive', () => {
-      $.CONSUME(At)
-      $.CONSUME(Name)
-      $.OPTION(() => $.SUBRULE($.Arguments))
-    })
-
+    super(allTokens, { recoveryEnabled: false })
     this.performSelfAnalysis()
   }
 
-  Document!: () => unknown
-  Definition!: () => unknown
-  OperationDefinition!: () => unknown
-  OperationType!: () => unknown
-  SelectionSet!: () => unknown
-  Selection!: () => unknown
-  Field!: () => unknown
-  Alias!: () => unknown
-  Arguments!: () => unknown
-  Argument!: () => unknown
-  FragmentSpread!: () => unknown
-  InlineFragment!: () => unknown
-  FragmentDefinition!: () => unknown
-  TypeCondition!: () => unknown
-  Value!: () => unknown
-  ListValue!: () => unknown
-  ObjectValue!: () => unknown
-  ObjectField!: () => unknown
-  VariableDefinitions!: () => unknown
-  VariableDefinition!: () => unknown
-  Variable!: () => unknown
-  DefaultValue!: () => unknown
-  Type!: () => unknown
-  Directives!: () => unknown
-  Directive!: () => unknown
+  Document = this.RULE('Document', (): unknown[] => {
+    const defs: unknown[] = []
+    this.AT_LEAST_ONE(() => {
+      const d = this.SUBRULE(this.Definition)
+      this.ACTION(() => defs.push(d))
+    })
+    return defs
+  })
+
+  private cDefinition?: IOrAlt<unknown>[]
+  Definition = this.RULE('Definition', (): unknown =>
+    this.OR(this.cDefinition ??= [
+      { ALT: () => this.SUBRULE(this.OperationDefinition) },
+      { ALT: () => this.SUBRULE(this.FragmentDefinition) },
+    ]))
+
+  private cOpDef?: IOrAlt<unknown>[]
+  OperationDefinition = this.RULE('OperationDefinition', (): unknown =>
+    this.OR(this.cOpDef ??= [
+      { ALT: () => {
+        const selectionSet = this.SUBRULE(this.SelectionSet)
+        return { kind: 'OperationDefinition', operation: 'query', name: null, variables: [], directives: [], selectionSet }
+      }},
+      { ALT: () => {
+        const operation = this.SUBRULE(this.OperationType)
+        const name = this.OPTION(() => this.CONSUME(Name).image)
+        const variables = this.OPTION2(() => this.SUBRULE(this.VariableDefinitions))
+        const directives = this.OPTION3(() => this.SUBRULE(this.Directives))
+        const selectionSet = this.SUBRULE2(this.SelectionSet)
+        return { kind: 'OperationDefinition', operation, name: name ?? null, variables: variables ?? [], directives: directives ?? [], selectionSet }
+      }},
+    ]))
+
+  private cOpType?: IOrAlt<string>[]
+  OperationType = this.RULE('OperationType', (): string =>
+    this.OR(this.cOpType ??= [
+      { ALT: () => this.CONSUME(Query).image },
+      { ALT: () => this.CONSUME(Mutation).image },
+      { ALT: () => this.CONSUME(Subscription).image },
+    ]))
+
+  SelectionSet = this.RULE('SelectionSet', (): unknown[] => {
+    const sels: unknown[] = []
+    this.CONSUME(LCurly)
+    this.AT_LEAST_ONE(() => {
+      const s = this.SUBRULE(this.Selection)
+      this.ACTION(() => sels.push(s))
+    })
+    this.CONSUME(RCurly)
+    return sels
+  })
+
+  // OR alternatives arrays are cached (allocated once, not per-invocation) per
+  // https://chevrotain.io/docs/guide/performance.html#caching-arrays-of-alternatives
+  private cSelection?: IOrAlt<unknown>[]
+  Selection = this.RULE('Selection', (): unknown =>
+    this.OR(this.cSelection ??= [
+      { GATE: () => this.LA(1).tokenType === DotDotDot, ALT: () => this.SUBRULE(this.FragmentLike) },
+      { ALT: () => this.SUBRULE(this.Field) },
+    ]))
+
+  // FragmentSpread / InlineFragment share the `...` prefix.
+  private cFrag?: IOrAlt<unknown>[]
+  FragmentLike = this.RULE('FragmentLike', (): unknown => {
+    this.CONSUME(DotDotDot)
+    return this.OR(this.cFrag ??= [
+      // `... FragmentName [directives]` — a spread (name is never the `on` keyword).
+      { GATE: () => this.LA(1).tokenType === Name, ALT: () => {
+        const name = this.CONSUME(Name).image
+        const directives = this.OPTION(() => this.SUBRULE(this.Directives))
+        return { kind: 'FragmentSpread', name, directives: directives ?? [] }
+      }},
+      // `... [on Type] [directives] SelectionSet` — an inline fragment.
+      { ALT: () => {
+        const typeCondition = this.OPTION2(() => { this.CONSUME(On); return this.CONSUME2(Name).image })
+        const directives = this.OPTION3(() => this.SUBRULE2(this.Directives))
+        const selectionSet = this.SUBRULE(this.SelectionSet)
+        return { kind: 'InlineFragment', typeCondition: typeCondition ?? null, directives: directives ?? [], selectionSet }
+      }},
+    ] as IOrAlt<unknown>[])
+  })
+
+  Field = this.RULE('Field', (): unknown => {
+    const alias = this.OPTION({
+      GATE: () => this.LA(2).tokenType === Colon,
+      DEF: () => { const a = this.CONSUME(Name).image; this.CONSUME(Colon); return a },
+    })
+    const name = this.CONSUME2(Name).image
+    const args = this.OPTION2(() => this.SUBRULE(this.Arguments))
+    const directives = this.OPTION3(() => this.SUBRULE(this.Directives))
+    const selectionSet = this.OPTION4(() => this.SUBRULE(this.SelectionSet))
+    return { alias: alias ?? null, name, arguments: args ?? [], directives: directives ?? [], selectionSet: selectionSet ?? null }
+  })
+
+  FragmentDefinition = this.RULE('FragmentDefinition', (): unknown => {
+    this.CONSUME(Fragment)
+    const name = this.CONSUME(Name).image
+    this.CONSUME(On)
+    const typeCondition = this.CONSUME2(Name).image
+    const directives = this.OPTION(() => this.SUBRULE(this.Directives))
+    const selectionSet = this.SUBRULE(this.SelectionSet)
+    return { kind: 'FragmentDefinition', name, typeCondition, directives: directives ?? [], selectionSet }
+  })
+
+  Arguments = this.RULE('Arguments', (): Arg[] => {
+    const args: Arg[] = []
+    this.CONSUME(LParen)
+    this.AT_LEAST_ONE(() => {
+      const a = this.SUBRULE(this.Argument)
+      this.ACTION(() => args.push(a))
+    })
+    this.CONSUME(RParen)
+    return args
+  })
+
+  Argument = this.RULE('Argument', (): Arg => {
+    const name = this.CONSUME(Name).image
+    this.CONSUME(Colon)
+    const value = this.SUBRULE(this.Value)
+    return { name, value }
+  })
+
+  Directives = this.RULE('Directives', (): Directive[] => {
+    const dirs: Directive[] = []
+    this.AT_LEAST_ONE(() => {
+      const d = this.SUBRULE(this.Directive)
+      this.ACTION(() => dirs.push(d))
+    })
+    return dirs
+  })
+
+  Directive = this.RULE('Directive', (): Directive => {
+    this.CONSUME(At)
+    const name = this.CONSUME(Name).image
+    const args = this.OPTION(() => this.SUBRULE(this.Arguments))
+    return { name, arguments: args ?? [] }
+  })
+
+  VariableDefinitions = this.RULE('VariableDefinitions', (): unknown[] => {
+    const defs: unknown[] = []
+    this.CONSUME(LParen)
+    this.AT_LEAST_ONE(() => {
+      const d = this.SUBRULE(this.VariableDefinition)
+      this.ACTION(() => defs.push(d))
+    })
+    this.CONSUME(RParen)
+    return defs
+  })
+
+  VariableDefinition = this.RULE('VariableDefinition', (): unknown => {
+    this.CONSUME(Dollar)
+    const variable = this.CONSUME(Name).image
+    this.CONSUME(Colon)
+    const type = this.SUBRULE(this.Type)
+    const defaultValue = this.OPTION(() => { this.CONSUME(Equals); return this.SUBRULE(this.Value) })
+    return { variable, type, defaultValue: defaultValue ?? null }
+  })
+
+  private cType?: IOrAlt<GQLType>[]
+  Type = this.RULE('Type', (): GQLType => {
+    const inner: GQLType = this.OR(this.cType ??= [
+      { ALT: () => ({ kind: 'NamedType' as const, name: this.CONSUME(Name).image }) },
+      { ALT: () => {
+        this.CONSUME(LSquare)
+        const t = this.SUBRULE(this.Type)
+        this.CONSUME(RSquare)
+        return { kind: 'ListType' as const, type: t }
+      }},
+    ])
+    const bang = this.OPTION(() => this.CONSUME(Exclamation))
+    return bang ? { kind: 'NonNull', type: inner } : inner
+  })
+
+  private cValue?: IOrAlt<Value>[]
+  Value = this.RULE('Value', (): Value =>
+    this.OR(this.cValue ??= [
+      { ALT: () => { this.CONSUME(Dollar); return { kind: 'Variable', name: this.CONSUME(Name).image } } },
+      { ALT: () => parseFloat(this.CONSUME(FloatValue).image) },
+      { ALT: () => parseInt(this.CONSUME(IntValue).image, 10) },
+      { ALT: () => unescapeString(this.CONSUME(StringValue).image) },
+      { ALT: () => { this.CONSUME(True); return true } },
+      { ALT: () => { this.CONSUME(False); return false } },
+      { ALT: () => { this.CONSUME(Null); return null } },
+      { ALT: () => this.SUBRULE(this.ListValue) },
+      { ALT: () => this.SUBRULE(this.ObjectValue) },
+      { ALT: () => ({ kind: 'EnumValue', value: this.CONSUME2(Name).image }) },
+    ]))
+
+  ListValue = this.RULE('ListValue', (): Value[] => {
+    const items: Value[] = []
+    this.CONSUME(LSquare)
+    this.MANY(() => {
+      const v = this.SUBRULE(this.Value)
+      this.ACTION(() => items.push(v))
+    })
+    this.CONSUME(RSquare)
+    return items
+  })
+
+  ObjectValue = this.RULE('ObjectValue', (): Record<string, Value> => {
+    const fields: [string, Value][] = []
+    this.CONSUME(LCurly)
+    this.MANY(() => {
+      const f = this.SUBRULE(this.ObjectField)
+      this.ACTION(() => fields.push(f))
+    })
+    this.CONSUME(RCurly)
+    return Object.fromEntries(fields)
+  })
+
+  ObjectField = this.RULE('ObjectField', (): [string, Value] => {
+    const name = this.CONSUME(Name).image
+    this.CONSUME(Colon)
+    const value = this.SUBRULE(this.Value)
+    return [name, value]
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -285,10 +324,10 @@ export function buildChevrotainGraphQL(): (input: string) => unknown {
   const parser = new GQLParser()
   return (input: string) => {
     const { tokens, errors } = GraphQLLexer.tokenize(input)
-    if (errors.length) throw new Error(errors[0].message)
+    if (errors.length) throw new Error(errors[0]!.message)
     parser.input = tokens
     const result = parser.Document()
-    if (parser.errors.length) throw new Error(parser.errors[0].message)
+    if (parser.errors.length) throw new Error(parser.errors[0]!.message)
     return result
   }
 }

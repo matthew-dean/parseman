@@ -12,9 +12,10 @@ Definition
 // ── Operations ───────────────────────────────────────────────────────────────
 
 OperationDefinition
-  = SelectionSet
+  = sel:SelectionSet
+  { return { kind: "OperationDefinition", operation: "query", name: null, variables: [], directives: [], selectionSet: sel } }
   / op:OperationType _ name:Name? _ vars:VariableDefinitions? _ dirs:Directives? _ sel:SelectionSet
-  { return { operation: op, name, variables: vars || [], directives: dirs || [], selectionSet: sel } }
+  { return { kind: "OperationDefinition", operation: op, name, variables: vars || [], directives: dirs || [], selectionSet: sel } }
 
 OperationType
   = "query"        { return "query" }
@@ -28,7 +29,7 @@ VariableDefinitions
   { return defs }
 
 VariableDefinition
-  = v:Variable _ ":" _ t:Type _ def:DefaultValue? _ ","? _
+  = "$" v:Name _ ":" _ t:Type _ def:DefaultValue? _ ","? _
   { return { variable: v, type: t, defaultValue: def } }
 
 Variable

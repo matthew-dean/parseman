@@ -95,10 +95,22 @@ document -> definition:+ {% function(d) { return d[0] } %}
 definition -> operationDefinition {% id %}
   | fragmentDefinition {% id %}
 
-operationDefinition -> selectionSet {% id %}
+operationDefinition -> selectionSet {%
+    function(d) {
+      return {
+        kind: 'OperationDefinition',
+        operation: 'query',
+        name: null,
+        variables: [],
+        directives: [],
+        selectionSet: d[0],
+      }
+    }
+  %}
   | operationType namedOperation {%
     function(d) {
       return {
+        kind: 'OperationDefinition',
         operation: d[0],
         name: d[1].name,
         variables: d[1].variables,
@@ -136,7 +148,7 @@ operationType -> %query {% function() { return 'query' } %}
 variableDefinitions -> %lparen variableDefinition:+ %rparen {% function(d) { return d[1] } %}
 
 variableDefinition -> variable %colon type defaultValueOpt {% function(d) {
-  return { variable: d[0], type: d[2], defaultValue: d[3] }
+  return { variable: d[0].name, type: d[2], defaultValue: d[3] }
 } %}
 
 variable -> %dollar %name {% function(d) { return { kind: 'Variable', name: nameOf(d[1]) } } %}
