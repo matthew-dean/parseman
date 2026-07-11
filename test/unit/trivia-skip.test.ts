@@ -74,3 +74,54 @@ describe('consumeTrivia()', () => {
     expect(log).toEqual([0, 2])
   })
 })
+
+// The alternation-star fast scanner `(?:[class]|#[^\n\r]*)*` (GraphQL-style ws +
+// line-comment trivia). These branches — the fused scanner's comment-to-EOL
+// consume, and the ordered fallback when a marker also sits inside a class —
+// were previously exercised only by an uncommitted dev-time differential.
+describe('advanceTrivia() — alternation-star scanner (line comments)', () => {
+  // `#` is disjoint from the ws class → one fused merged-range scanner whose
+  // comment arm consumes to the next newline.
+  const wsHash = trivia(regex(/(?:[ \t\n\r]|#[^\n\r]*)*/))
+
+  it('skips whitespace and #-line-comments on the fast path (no regex exec)', () => {
+    // Warm the scanner cache first — building it classifies arms via RegExp.exec.
+    advanceTrivia('', 0, { trackLines: false, trivia: wsHash })
+    const exec = RegExp.prototype.exec
+    let calls = 0
+    RegExp.prototype.exec = function patchedExec(this: RegExp, s: string) { calls++; return exec.call(this, s) }
+    try {
+      expect(advanceTrivia('#c1\n  #c2\n x', 0, { trackLines: false, trivia: wsHash })).toBe(11)
+      expect(advanceTrivia('  # to the end', 0, { trackLines: false, trivia: wsHash })).toBe(14) // comment runs to EOF
+      expect(calls).toBe(0) // proves the fused scanner ran, not RegExp.exec
+    } finally {
+      RegExp.prototype.exec = exec
+    }
+  })
+
+  it('matches native RegExp across mixed ws/comment inputs', () => {
+    const re = /^(?:[ \t\n\r]|#[^\n\r]*)*/
+    for (const s of ['', ' ', '#x', '#x\ny', ' #a\n#b\n z', '#no newline', '\n\n#c', 'x', '# a b c']) {
+      const want = (s.match(re) as RegExpMatchArray)[0].length
+      expect(advanceTrivia(s, 0, { trackLines: false, trivia: wsHash }), s).toBe(want)
+    }
+  })
+})
+
+describe('advanceTrivia() — marker-inside-a-class overlap uses ordered arms', () => {
+  // `#` is BOTH in the class `[ #]` AND the comment marker. Arm order is then
+  // load-bearing: the class arm is first, so `#` is a single trivia char, NOT a
+  // comment start. A fused scan would wrongly eat the rest of the line, so this
+  // must fall back to the ordered loopScanner.
+  const overlap = trivia(regex(/(?:[ #]|#[^\n\r]*)*/))
+
+  it('treats `#` per arm order (ordered fallback), matching RegExp', () => {
+    const re = /^(?:[ #]|#[^\n\r]*)*/
+    for (const s of ['#abc', '# #', '  ## x', '#', 'ab', ' # \n', '###z']) {
+      const want = (s.match(re) as RegExpMatchArray)[0].length
+      expect(advanceTrivia(s, 0, { trackLines: false, trivia: overlap }), s).toBe(want)
+    }
+    // Concretely: only the leading `#` is trivia (class char); `abc` stops it.
+    expect(advanceTrivia('#abc', 0, { trackLines: false, trivia: overlap })).toBe(1)
+  })
+})
