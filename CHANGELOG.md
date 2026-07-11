@@ -3,6 +3,40 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.26.0 — 2026-07-11
+
+- **Tolerant-mode list recovery (layered "C+B").** A run-level `tolerant` flag turns
+  `many` / `oneOrMore` / `sepBy` into recovering lists: a malformed element is skipped to a
+  **sync point**, recorded as a `ParseError`, and the rest of the list still parses —
+  instead of the whole list truncating at the first bad element. The sync point comes from
+  two layers. **C (inference, no annotation):** a `sepBy` resyncs to its separator, and a
+  list inside `sequence(open, …, close)` resyncs to the enclosing delimiter (the `sequence`
+  publishes the first set of its following terms as the sync point while parsing each
+  term). **B (hint):** an optional `{ recover }` sentinel on `many` / `oneOrMore` / `sepBy`
+  supplies the sync where it isn't locally inferable, or overrides the inferred one. Both
+  emit the existing `ParseError` node (collected on `run().errors` / via `{ recover: true }`)
+  and are guarded by a must-consume-≥1-token loop so a zero-width failure can never spin.
+  Recovery is a **cold path**: on well-formed input nothing fails, and the strict default
+  (no `tolerant`) is byte-identical to a parser with no recovery.
+- **`completionsAt(comb, input, offset, { tolerant })`.** With `tolerant: true`, list
+  recovery keeps the enclosing node parsing to the cursor and records the failure there, so
+  completions are returned even when a permissive top rule would otherwise "succeed" with an
+  unconsumed tail (previously an empty set). New optional 4th argument; the default behavior
+  is unchanged.
+- **`RunOptions.tolerant` and the `{ recover }` option on `many` / `oneOrMore` / `sepBy`**
+  are additive — no existing signature changes.
+- **Ambient-trivia `.edit()` oracle tests.** `parseDoc().edit()`'s `edit() ≡ full-reparse`
+  fuzz now also covers grammars that declare ambient trivia via `rules({ trivia })` (a
+  CSS-ish block / declaration-list / value-list grammar with whitespace + block-comment
+  trivia), asserting trivia attribution and positions round-trip through incremental edits.
+
+### Breaking
+
+- **Removed the bespoke recovery combinators `recover`, `manyRecover`, and `sepByRecover`**
+  (and their exports). List recovery is now the tolerant-mode C+B mechanism above.
+  `expect`, `scanTo`, `balanced`, `isParseError`, and the `{ recover: true }` error channel
+  are unchanged.
+
 ## 0.25.0 — 2026-07-10
 
 - **Incremental re-parse stores parent-relative spans (`parseDoc`).** An incremental document's
