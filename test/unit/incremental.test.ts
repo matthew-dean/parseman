@@ -22,7 +22,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  node, regex, literal, sequence, optional, sepBy, choice, not, rules, parseDoc,
+  node, regex, literal, sequence, optional, sepBy, choice, not, many, oneOrMore, token, rules, parseDoc,
+  relativizeCST, absolutizeCST, absoluteSpanCST,
 } from '../../src/index.ts'
 import type { Combinator, ParseResult } from '../../src/index.ts'
 import type { Registry, RuleFn } from '../../src/functional/doc.ts'
@@ -307,6 +308,26 @@ function sharedByIdentity(oldTree: unknown, newTree: unknown): { shared: number;
   return { shared, total }
 }
 
+// ── A list whose elements aren't a single node type declines to splice ────────
+describe('parseDoc().edit() — heterogeneous list falls back safely', () => {
+  // A genuine sepBy repetition, but its elements are DIFFERENT node types (Id vs N,
+  // not wrapped in a common rule). Detection sees a repetition, but the splice's
+  // homogeneous-element check refuses it — still correct, just not reused.
+  it('mixed-type elements → correct reparse, no wrong splice', () => {
+    const g = rules(self => ({
+      Mix: node('Mix', sepBy(choice(self.Id, self.N), literal(',')), cst('Mix')),
+      Id: node('Id', regex(/[a-z]+/), cst('Id')),
+      N: node('N', regex(/[0-9]+/), cst('N')),
+    }))
+    const registry = toRegistry(g)
+    const src = 'a,1,b,2,c,3'
+    const base = parseDoc<CSTNode>(registry, 'Mix', src, REUSE)
+    const inc = base.edit(0, 0, 'z,') // structural front insert
+    const fresh = parseDoc<CSTNode>(registry, 'Mix', 'z,' + src)
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+  })
+})
+
 // ── Structural list-reuse (opt-in): tail elements shared, insert near the front ─
 describe('parseDoc().edit() — structural list-reuse', () => {
   // A big flat list; inserting a new element near the FRONT is the "insert at the
@@ -505,4 +526,89 @@ describe('parseDoc().edit() — Stage-2 lookahead guard', () => {
       expect(structurallyEqual(inc.tree, fresh.tree), `src=${src} e=${JSON.stringify(e)}`).toBe(true)
     }
   })
+})
+
+// ── CST span projection (relativizeCST / absolutizeCST / absoluteSpanCST) ─────
+describe('CST span projection helpers', () => {
+  // A small absolute-span CST: Root[0..7] → [ Leaf[0..1], Child[1..6]→[Leaf[2..5]], Leaf[6..7] ]
+  const abs: CSTNode = {
+    _tag: 'node', type: 'Root', state: null, span: { start: 0, end: 7 },
+    children: [
+      { _tag: 'leaf', value: '(', span: { start: 0, end: 1 } },
+      { _tag: 'node', type: 'Child', state: null, span: { start: 1, end: 6 },
+        children: [{ _tag: 'leaf', value: 'abcd', span: { start: 2, end: 5 } }] },
+      { _tag: 'leaf', value: ')', span: { start: 6, end: 7 } },
+    ] as CSTChild[],
+  }
+
+  it('relativizeCST then absolutizeCST round-trips', () => {
+    const rel = relativizeCST(abs)
+    expect(rel.span).toEqual({ start: 0, end: 7 })
+    // Child is now relative to Root (start 0): unchanged; its leaf relative to Child (start 1).
+    const relChild = rel.children[1] as CSTNode
+    expect(relChild.span).toEqual({ start: 1, end: 6 })
+    expect((relChild.children[0] as { span: unknown }).span).toEqual({ start: 1, end: 4 }) // 2..5 rel to 1
+    expect(absolutizeCST(rel)).toEqual(abs)
+  })
+
+  it('absoluteSpanCST walks a path (and throws on a bad index)', () => {
+    const rel = relativizeCST(abs)
+    expect(absoluteSpanCST(rel, [])).toEqual({ start: 0, end: 7 })
+    expect(absoluteSpanCST(rel, [1])).toEqual({ start: 1, end: 6 })
+    expect(absoluteSpanCST(rel, [1, 0])).toEqual({ start: 2, end: 5 })
+    expect(() => absoluteSpanCST(rel, [9])).toThrow(/no child/)
+  })
+})
+
+// ── doc.spanAt cursor + absolutizeCST(doc.tree) on a real parse ───────────────
+describe('parseDoc — absolute positions from the relative tree', () => {
+  const { registry, root } = makeSeqGrammar()
+  it('spanAt(path) projects absolute offsets; absolutizeCST reconstructs them', () => {
+    const doc = parseDoc<CSTNode>(registry, root, 'foo,12,bar')
+    // Root Seq children: Term Id 'foo' @0..3, ',' , Term '12' @4..6, ',' , Term 'bar' @7..10
+    expect(doc.spanAt([])).toEqual({ start: 0, end: 10 })
+    expect(doc.spanAt([2])).toEqual({ start: 4, end: 6 })     // the '12' Term
+    const absTree = absolutizeCST(doc.tree!)
+    expect(absTree.span).toEqual({ start: 0, end: 10 })
+    expect((absTree.children[2] as CSTNode).span).toEqual({ start: 4, end: 6 })
+  })
+  it('spanAt throws on a failed parse', () => {
+    const obj = makeObjGrammar()
+    const doc = parseDoc<CSTNode>(obj.registry, obj.root, '{') // unterminated → parse fails
+    expect(doc.tree).toBeNull()
+    expect(() => doc.spanAt([])).toThrow()
+  })
+})
+
+// ── Repetition detection covers many / oneOrMore / wrapped rules ──────────────
+describe('parseDoc — repetition detection across combinator shapes', () => {
+  const cstb = (type: string) => cst(type) // reuse the CST builder above
+  // Each grammar's list rule is a genuine repetition behind a different shape; a
+  // structural edit must equal a full reparse (splice may or may not engage, but
+  // detection runs at construction and the result is always correct).
+  const shapes = {
+    many: () => rules(self => ({
+      Doc: node('Doc', many(self.Item), cstb('Doc')),
+      Item: node('Item', regex(/[a-z]/), cstb('Item')),
+    })),
+    oneOrMore: () => rules(self => ({
+      Doc: node('Doc', oneOrMore(self.Item), cstb('Doc')),
+      Item: node('Item', regex(/[a-z]/), cstb('Item')),
+    })),
+    tokenWrapped: () => rules(self => ({
+      Doc: node('Doc', sepBy(self.Item, literal(',')), cstb('Doc')),
+      Item: node('Item', token(sequence(regex(/[a-z]/), optional(regex(/[0-9]/)))), cstb('Item')),
+    })),
+  }
+  for (const [name, make] of Object.entries(shapes)) {
+    it(`handles a ${name}-shaped list soundly`, () => {
+      const registry = toRegistry(make() as Record<string, Combinator<unknown>>)
+      const src = name === 'tokenWrapped' ? 'a,b1,c' : 'abc'
+      const base = parseDoc<CSTNode>(registry, 'Doc', src, REUSE)
+      expect(base.tree).toBeTruthy()
+      const inc = base.edit(1, 1, name === 'tokenWrapped' ? 'z,' : 'z')
+      const fresh = parseDoc<CSTNode>(registry, 'Doc', applyEditStr(src, { start: 1, deleted: 0, inserted: name === 'tokenWrapped' ? 'z,' : 'z' }))
+      expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+    })
+  }
 })

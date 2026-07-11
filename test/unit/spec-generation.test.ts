@@ -195,6 +195,20 @@ describe('spec — railroad HTML', () => {
 describe('spec — static railroad SVG', () => {
   const svgs = toRailroadSvg(demoGrammar())
 
+  it('reuses the vendored builders across calls (a second render re-enters the memo)', () => {
+    // Distinct grammar exercising star (many), plus (oneOrMore), opt (optional),
+    // annotation (not) and sepBy in the live builder path — and a second call so
+    // the cached `builders()` branch is taken.
+    const g = rules(self => ({
+      doc: sequence(many(self.word), oneOrMore(self.num), optional(literal('!')), not(literal('#')), sepBy(self.word, literal(','))),
+      word: regex(/[a-z]+/),
+      num: regex(/[0-9]+/),
+    }))
+    const out = toRailroadSvg(g)
+    expect(out.map((s) => s.name)).toContain('doc')
+    for (const { svg } of out) expect(svg).toMatch(/^<svg class="railroad-diagram"/)
+  })
+
   it('renders one static SVG per production, headlessly (no DOM, no client script)', () => {
     expect(svgs.map((s) => s.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg'])
     for (const { svg } of svgs) {
