@@ -40,7 +40,6 @@ Three words that sound alike but play different roles:
 | `ref<T>()` | Low-level forward-declaration slot (prefer `rules()`). |
 | `guard(predicate)` | Succeeds only when `predicate(ctx)` is true; for context-sensitive rules. See [Context](./context). |
 | `withCtx(extra, combinator)` | Merge `extra` into the user context for the duration of `combinator`. |
-| `recover(combinator, sentinel)` | On failure, skip to `sentinel` and return a `ParseError`. See [Error recovery](./error-recovery). |
 | `expect(combinator, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). |
 | `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` — including the delimiters. |

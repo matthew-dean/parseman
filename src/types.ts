@@ -152,8 +152,25 @@ export type ParseContext = {
    * positioned-CST / language-service (set) modes. Ignored by non-linkable output.
    */
   build?: BuildHost | undefined
-  /** When set, recover() nodes push their ParseError here instead of (only) embedding it in the tree. */
-  _errors?: ParseError[]
+  /** When set, recovery (tolerant lists / expect()) pushes each ParseError here in addition to embedding it in the tree. */
+  _errors?: ParseError[] | undefined
+  /**
+   * Framework-internal: layered "C+B" list recovery gate. When true, tolerant
+   * `many`/`oneOrMore`/`sepBy` recover from a failed element (skip to a sync point,
+   * emit a ParseError, keep parsing) instead of stopping the list. Unset (the
+   * default / strict path) ⇒ the list combinators behave byte-identically to before;
+   * the only residue is a single cold branch on the element-failure edge.
+   */
+  _tolerant?: boolean | undefined
+  /**
+   * Framework-internal: the inferred sync sentinel propagated DOWN by an enclosing
+   * `sequence` in tolerant mode (layer C). It is a lightweight combinator that
+   * matches (zero-width) when the input could start any of the sequence's remaining
+   * terms — i.e. the enclosing delimiter/close a nested list should resync to. A
+   * nested `many`/`sepBy` reads it as its recovery terminator. `undefined` when no
+   * enclosing delimiter is locally inferable. A B-hint (`{ recover }`) overrides it.
+   */
+  _sync?: Combinator<unknown> | undefined
   /**
    * Framework-internal (compiled/macro output only): the deepest failure recorded
    * while a fallible sub-parser was running — position (`_fe`) and expected set
@@ -169,7 +186,7 @@ export type ParseContext = {
    * during parsing up to _probe.offset. Used to return completions at the cursor
    * even when sepBy/many backtracked past the cursor position.
    */
-  _probe?: { offset: number; best: ParseFail | null }
+  _probe?: { offset: number; best: ParseFail | null } | undefined
   /**
    * Framework-internal: current CSTNode rule's child collector.
    * Set by node() during capture; undefined outside an active node parse.
@@ -195,7 +212,7 @@ export type ParseContext = {
    * array instead of (or in addition to) rawChildren capture. Zero object
    * allocations — just number pushes.
    */
-  _triviaLog?: number[]
+  _triviaLog?: number[] | undefined
   /**
    * Framework-internal: flat per-node trivia log for CST capture mode.
    * When set alongside _cstRawChildren, each trivia entry is recorded as three
@@ -212,8 +229,9 @@ export type ParseContext = {
 }
 
 /**
- * Sentinel value returned by recover() when its inner parser fails.
- * The span covers the skipped input; expected lists what the inner parser wanted.
+ * The recovery value produced when a parse fails at a recoverable point (tolerant
+ * list recovery, or expect()). The span covers the skipped/missing input; expected
+ * lists what the parser wanted there.
  */
 export type ParseError = {
   readonly _tag: 'parseError'

@@ -362,42 +362,38 @@ Restrict a grammar/artifact to `names` plus their transitive rule-dependency clo
 
 ## Error recovery
 
-### `recover(combinator, sentinel)`
+### Tolerant lists (`run(entry, input, { tolerant: true })`)
 
-On failure, scan forward to `sentinel` (not consumed) and return a
-[`ParseError`](./types#parseerror) spanning the skipped text. See
-[Error recovery](../guide/error-recovery#recover-skip-to-a-sentinel).
+Activates list recovery. With `tolerant` set, `many` / `oneOrMore` / `sepBy` recover from a
+failed element — skip to a sync point, emit a [`ParseError`](./types#parseerror) over the
+skipped span (collected in `errors`), and keep parsing the list — instead of stopping at
+the first bad element. The sync point is inferred from the enclosing combinator (a
+`sepBy`'s separator; a list's enclosing `sequence(open, …, close)` delimiter) or supplied
+by a `{ recover }` hint. Omit `tolerant` for the strict "one clean error and stop"
+behavior, byte-identical to a parser with no recovery. See
+[Tolerant lists](../guide/error-recovery#tolerant-lists).
+
+```ts
+const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
+run(block, '{a:1;$$;b:2}', { tolerant: true }) // list → [decl, ParseError, decl]
+```
+
+### `many(combinator, { recover }?)` · `oneOrMore(...)` · `sepBy(item, sep, { recover }?)`
+
+The `{ recover }` option is the optional sync-point hint for tolerant recovery: a sentinel
+combinator (matched, not consumed) that supplies the sync where it isn't locally inferable,
+or overrides the inferred one. Ignored on the strict path.
+
+```ts
+sepBy(item, literal(','), { recover: literal(']') })
+many(statement, { recover: literal('}') })
+```
 
 ### `expect(combinator, label?)`
 
 Required token. On failure, record a zero-width `ParseError` and recover in place.
 `label` overrides the derived `expected` message. See
 [Error recovery](../guide/error-recovery#expect-required-tokens).
-
-### `sepByRecover(item, separator, until)`
-
-Tolerant `sepBy`: a malformed element is skipped to the next `separator` or the `until` terminator and
-recorded as a [`ParseError`](./types#parseerror) in the result array, instead of truncating
-the list. `until` (the closing delimiter, matched but **not** consumed) is what distinguishes
-an empty list from a malformed first element. Built from existing combinators, so `compile()`
-and CST capture handle it with no special cases. See
-[Tolerant lists](../guide/error-recovery#tolerant-lists).
-
-```ts
-const elements = sepByRecover(value, literal(','), literal(']'))
-// "[1,,3]" → [1, ParseError, 3]
-```
-
-### `manyRecover(item, until)`
-
-Tolerant `many`: junk that is neither a valid `item` nor the `until` terminator is skipped up to `until` and
-recorded as a `ParseError`, instead of ending the repetition. With no separator to resync
-on, a bad run is captured as a single error up to the terminator. See
-[Tolerant lists](../guide/error-recovery#tolerant-lists).
-
-```ts
-const items = manyRecover(statement, literal('}'))
-```
 
 ### `isParseError(value)`
 

@@ -1,6 +1,19 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
 import { matchesEmpty } from './first-set.ts'
+import { deriveExpected } from './expect.ts'
+import { matchesAt, orSentinel, recoverScan } from './recover-scan.ts'
+
+/**
+ * Optional recovery hint (layer B) accepted by `many`/`oneOrMore`/`sepBy`. When
+ * `recover` is given it OVERRIDES the sync point layer C would infer — supplying
+ * sync where it isn't local, or tuning it for a better error tree where C already
+ * works. Purely additive: omitting it (or the whole options arg) keeps the strict
+ * signature and behavior.
+ */
+export type RepeatOptions = {
+  recover?: Combinator<unknown>
+}
 
 /**
  * Parse one repetition item at `cur`, first skipping (and, in capture mode,
@@ -31,7 +44,7 @@ function repItem<T>(
     }
   }
   // Nothing but trivia left: don't speculatively parse an item at EOF (it would
-  // fail and could trigger an item's recover()/error side-effects). The trivia
+  // fail and could trigger an item's expect()/error side-effects). The trivia
   // is trailing — roll it back for the enclosing context and stop.
   if (pos >= input.length) {
     rollbackTrivia(ctx, mark)
@@ -49,7 +62,7 @@ function repItem<T>(
   return { value: result.value, end: result.span.end }
 }
 
-export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
+export function many<T>(combinator: Combinator<T>, opts?: RepeatOptions): Combinator<T[]> {
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,
@@ -57,6 +70,8 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
   }
   const def: { tag: 'many'; parser: Combinator<unknown>; min: 0; valueUnused?: boolean } =
     { tag: 'many', parser: combinator as Combinator<unknown>, min: 0 }
+  const hint = opts?.recover
+  let expected: string[] | undefined
 
   return {
     _tag: 'many',
@@ -69,7 +84,23 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
       let cur = pos
       while (cur < input.length) {
         const item = repItem(combinator, input, cur, ctx)
-        if (item === 'stop' || 'fail' in item) break
+        if (item === 'stop') break
+        if ('fail' in item) {
+          // Cold path: only reached on an element failure. In strict mode this is
+          // the same `break`. In tolerant mode, resync to the sync point (B hint,
+          // else the enclosing delimiter propagated into ctx._sync by layer C) and
+          // keep going. With no sync available there is nothing to skip to → break.
+          const sync = hint ?? ctx._sync
+          if (!ctx._tolerant || sync === undefined) break
+          // Sync token already here ⇒ clean list end, not junk. (Also the loop
+          // guard: the scan below always advances ≥1 since sync fails at `cur`.)
+          if (matchesAt(sync, input, cur, ctx)) break
+          expected ??= deriveExpected(combinator)
+          const { error, end } = recoverScan(input, cur, ctx, sync, expected)
+          if (values !== undefined) values.push(error as unknown as T)
+          cur = end
+          continue
+        }
         if (values !== undefined) values.push(item.value)
         cur = item.end
       }
@@ -79,7 +110,7 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
   }
 }
 
-export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
+export function oneOrMore<T>(combinator: Combinator<T>, opts?: RepeatOptions): Combinator<T[]> {
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,
@@ -87,6 +118,8 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
   }
   const def: { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean } =
     { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min: 1 }
+  const hint = opts?.recover
+  let expected: string[] | undefined
 
   return {
     _tag: 'oneOrMore',
@@ -102,7 +135,18 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
       let cur = first.span.end
       while (cur < input.length) {
         const item = repItem(combinator, input, cur, ctx)
-        if (item === 'stop' || 'fail' in item) break
+        if (item === 'stop') break
+        if ('fail' in item) {
+          // Cold path (element failure). Strict: break. Tolerant: resync — see many().
+          const sync = hint ?? ctx._sync
+          if (!ctx._tolerant || sync === undefined) break
+          if (matchesAt(sync, input, cur, ctx)) break
+          expected ??= deriveExpected(combinator)
+          const { error, end } = recoverScan(input, cur, ctx, sync, expected)
+          if (values !== undefined) values.push(error as unknown as T)
+          cur = end
+          continue
+        }
         if (values !== undefined) values.push(item.value)
         cur = item.end
       }
@@ -148,12 +192,14 @@ function startsFirstSet(combinator: Combinator<unknown>, input: string, pos: num
   return false
 }
 
-export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>): Combinator<T[]> {
+export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>, opts?: RepeatOptions): Combinator<T[]> {
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline || separator._meta.canMatchNewline,
     isTrivia: false,
   }
+  const hint = opts?.recover
+  let expected: string[] | undefined
 
   return {
     _tag: 'sepBy',
@@ -161,9 +207,25 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
     _def: { tag: 'sepBy', parser: combinator as Combinator<unknown>, separator: separator as Combinator<unknown> },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       const first = combinator.parse(input, pos, ctx)
-      if (!first.ok) return { ok: true, value: [], span: { start: pos, end: pos } }
-      const values: T[] = [first.value]
-      let cur = first.span.end
+      const values: T[] = []
+      let cur: number
+      if (first.ok) {
+        values.push(first.value)
+        cur = first.span.end
+      } else {
+        // Cold path. Strict: an empty/absent first element is a legal empty list.
+        // Tolerant: if the first element is JUNK (a terminator is inferable and we
+        // are not already sitting on it) recover it and enter the loop; otherwise
+        // it is a genuine empty list.
+        const term = ctx._tolerant ? (hint ?? ctx._sync) : undefined
+        if (term === undefined || matchesAt(term, input, pos, ctx)) {
+          return { ok: true, value: [], span: { start: pos, end: pos } }
+        }
+        expected ??= deriveExpected(combinator)
+        const rec = recoverScan(input, pos, ctx, orSentinel(separator, term), expected)
+        values.push(rec.error as unknown as T)
+        cur = rec.end
+      }
       while (cur < input.length) {
         // One mark for the whole iteration (separator + following item): if the
         // item fails, the trailing separator must be rolled back with it, or its
@@ -196,6 +258,18 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
         }
         const next = combinator.parse(input, nextPos, ctx)
         if (!next.ok) {
+          // Cold path. Strict: roll back the trailing separator + break. Tolerant:
+          // the separator we just consumed is real, so resync the bad element after
+          // it. If a terminator is inferable and already present at nextPos, the
+          // separator was a trailing one (e.g. `a;}`) → roll it back and stop.
+          const term = ctx._tolerant ? (hint ?? ctx._sync) : undefined
+          if (term !== undefined && !matchesAt(term, input, nextPos, ctx)) {
+            expected ??= deriveExpected(combinator)
+            const rec = recoverScan(input, nextPos, ctx, orSentinel(separator, term), expected)
+            values.push(rec.error as unknown as T)
+            cur = rec.end
+            continue
+          }
           rollbackTrivia(ctx, loopMark)
           break
         }

@@ -7,7 +7,6 @@ import {
   label,
   literal,
   parse,
-  recover,
   regex,
   sequence,
 } from '../../src/index.ts'
@@ -121,23 +120,6 @@ describe('diagnostics parity — interpreter vs compiled', () => {
         expect(result.errors, mode).toHaveLength(1)
         expect(result.errors![0]!.expected).toEqual(['closing bracket'])
         expect(result.errors![0]!.span).toEqual({ start: 1, end: 1 })
-      }
-    }
-  })
-
-  it('records recover() diagnostics with friendly labels and skipped spans', () => {
-    const p = sequence(
-      recover(label('statement', regex(/[a-z]+/)), literal(';')),
-      literal(';'),
-    )
-
-    for (const { mode, result } of recoverModes(p, '123;')) {
-      expect(result.ok, mode).toBe(true)
-      if (result.ok) {
-        const [err] = result.value as [ParseError, string]
-        expect(isParseError(err), mode).toBe(true)
-        expect(err.expected, mode).toEqual(['statement'])
-        expect(err.span, mode).toEqual({ start: 0, end: 3 })
       }
     }
   })

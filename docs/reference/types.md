@@ -160,7 +160,7 @@ type RunResult = {
   value: unknown                       // the entry's value (undefined on failure)
   span: { start: number; end: number }
   expected: string[]                   // when the top-level parse failed
-  errors: ParseError[]                 // recover()/expect() diagnostics
+  errors: ParseError[]                 // tolerant-list / expect() diagnostics
   triviaLog: number[]                  // flat [start, end] pairs
   unconsumedFrom: number | null            // first non-trivia offset left unconsumed, else null
 }
@@ -245,7 +245,7 @@ type CSTRawChild = CSTNode | CSTLeaf | CSTTrivia | CSTError
 
 ::: tip `CSTError` vs `ParseError`
 `CSTError` (`_tag: 'error'`) is a *tree-node* type for representing an error node in your
-own AST. The recovery combinators (`recover`, `expect`) produce a
+own AST. Recovery — tolerant lists and `expect` — produces a
 [`ParseError`](#parseerror) (`_tag: 'parseError'`) value instead — see
 [Error recovery](../guide/error-recovery).
 :::

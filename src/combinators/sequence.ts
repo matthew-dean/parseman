@@ -1,6 +1,7 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseFail } from '../types.ts'
-import { sequenceFirstSet } from './first-set.ts'
+import { sequenceFirstSet, firstSetOf, union } from './first-set.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
+import { firstSetSentinel } from './recover-scan.ts'
 
 type UnwrapParsers<T extends Combinator<unknown>[]> = {
   [K in keyof T]: T[K] extends Combinator<infer U> ? U : never
@@ -20,11 +21,79 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
   const def: { tag: 'sequence'; parsers: Combinator<unknown>[]; valueUnused?: boolean } =
     { tag: 'sequence', parsers: parsers as Combinator<unknown>[] }
 
+  // Layer-C follow sentinels, built lazily on first tolerant parse only:
+  // followSentinels[i] matches when the input could start any term AFTER i, so a
+  // list nested in term i can resync to the enclosing delimiter. Never touched on
+  // the strict path.
+  let followSentinels: (Combinator<null> | null)[] | undefined
+
+  // Tolerant twin of the strict loop: identical term-parsing, but around each
+  // term it publishes the follow sentinel (layer C) into ctx._sync so a nested
+  // list resyncs to this sequence's enclosing delimiter. Cold-path only.
+  function parseTolerant(input: string, pos: number, ctx: ParseContext): ParseResult<UnwrapParsers<T>> {
+    const values: unknown[] | undefined = def.valueUnused ? undefined : []
+    let cur = pos
+    const inheritedSync = ctx._sync
+    try {
+      for (let i = 0; i < parsers.length; i++) {
+        // Publish this term's follow set (or keep the inherited sync when the local
+        // follow isn't usable, e.g. the last term or an `any` first set).
+        ctx._sync = followSentinels![i] ?? inheritedSync
+        if (ctx.trivia && i > 0) {
+          let scanEnd: number
+          const mark = saveTriviaMark(ctx)
+          if (needsDeferredTriviaCommit(ctx)) {
+            const scan = scanTrivia(input, cur, ctx)
+            scan.commit()
+            scanEnd = scan.end
+          } else {
+            scanEnd = advanceTrivia(input, cur, ctx)
+          }
+          const result = parsers[i]!.parse(input, scanEnd, ctx)
+          if (!result.ok) return result as ParseFail
+          if (result.span.end > scanEnd) cur = result.span.end
+          else rollbackTrivia(ctx, mark)
+          if (values !== undefined) values.push(result.value)
+          continue
+        }
+        const result = parsers[i]!.parse(input, cur, ctx)
+        if (!result.ok) return result as ParseFail
+        if (values !== undefined) values.push(result.value)
+        cur = result.span.end
+      }
+    } finally {
+      ctx._sync = inheritedSync
+    }
+    return {
+      ok: true,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      value: (values ?? undefined) as UnwrapParsers<T>,
+      span: { start: pos, end: cur },
+    }
+  }
+
   return {
     _tag: 'sequence',
     _meta: meta,
     _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnwrapParsers<T>> {
+      // One cold branch: the tolerant path publishes ctx._sync per term (layer C).
+      // The strict loop below is byte-identical to before.
+      if (ctx._tolerant) {
+        followSentinels ??= parsers.map((_, i) => {
+          // A nested list can resync to the start of ANY term that follows it in
+          // this sequence, so union every following term's first set (not just up
+          // to the first non-nullable one — a mandatory middle term must not hide a
+          // later closing delimiter).
+          const fs = parsers.slice(i + 1).reduce<ReturnType<typeof firstSetOf>>(
+            (acc, p) => union(acc, firstSetOf(p)),
+            { kind: 'empty' },
+          )
+          return firstSetSentinel(fs)
+        })
+        return parseTolerant(input, pos, ctx)
+      }
+
       // Skip the tuple when it's never observed (markUnusedValues): terms still
       // parse (and self-capture) — only the array of their values is elided.
       const values: unknown[] | undefined = def.valueUnused ? undefined : []

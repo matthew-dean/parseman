@@ -84,8 +84,9 @@ Two questions sort most of the field:
 - **Incremental re-parse** — **✅✅** built for it (buffer-tree fragment reuse); **✅**
   first-class API; **⚠️ DIY, no engine**: no built-in edit-reuse, but the pieces exist to
   roll your own; **❌**: re-parses from scratch.
-- **Error recovery** — Parséman recovers at resync points you **mark explicitly**
-  (`recover` / `expect`), plus automatic tolerant lists (`sepByRecover` / `manyRecover`);
+- **Error recovery** — Parséman recovers at resync points that are **inferred from the
+  enclosing combinator** (a list's separator / its enclosing delimiter) under a `tolerant`
+  flag, with an optional per-list hint and explicit `expect` for required tokens;
   Chevrotain's is **automatic/heuristic across the whole grammar** (single-token
   insert/delete, resync). Both report every error, not just the first.
 - **Diagrams / EBNF** — can the tool emit a human-readable grammar artifact *from the
@@ -223,10 +224,10 @@ several things Parséman doesn't offer:
   per rule.
 - **Configurable LL(k) lookahead** and opt-in `BACKTRACK`.
 - **Grammar-wide automatic error recovery** (heuristic single-token insert/delete +
-  resync, with no annotation anywhere). Parséman recovers at resync points you mark
-  explicitly (`recover` / `expect`), plus automatic tolerant lists
-  ([`sepByRecover` / `manyRecover`](./error-recovery#tolerant-lists)); it doesn't recover
-  across arbitrary rules on its own.
+  resync, with no annotation anywhere). Parséman recovers via
+  [tolerant lists](./error-recovery#tolerant-lists) whose sync point is inferred from the
+  enclosing combinator (or given a hint), plus explicit `expect` for required tokens; it
+  doesn't recover across arbitrary rules on its own.
 
 **[Lezer](https://lezer.codemirror.net/) / [tree-sitter](https://tree-sitter.github.io/tree-sitter/)**
 win on **structural-edit incremental** (buffer-tree fragment reuse), **GLR / ambiguity**,

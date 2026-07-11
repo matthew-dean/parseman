@@ -2420,9 +2420,10 @@ export type CompiledParser<T> = {
   /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
   parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
   /**
-   * Like parse(), but activates error recovery. recover() nodes collect their
-   * ParseErrors into result.errors instead of (only) embedding them as values.
-   * Always returns ParseOk — top-level failures are still ParseFail.
+   * Like parse(), but activates the error-collection channel. Recovery points
+   * (expect()) collect their ParseErrors into result.errors instead of only
+   * embedding them as values. Always returns ParseOk — top-level failures are
+   * still ParseFail.
    */
   parseWithErrors(input: string, pos?: number): ParseResult<T> & { errors: ParseError[] }
   /** The generated source (for inspection / future source maps) */
@@ -2822,7 +2823,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     parseWithContext(input: string, parseCtx: ParseContext, pos = 0): ParseResult<T> {
       return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, parseCtx)
     },
-    // Note: collects recover()/expect() errors via _errors. Unlike interpreter
+    // Note: collects expect() errors via _errors. Unlike interpreter
     // parse({recover:true}) it does NOT populate furthestFail — the compiled path
     // inlines failures for throughput and deliberately skips _probe bookkeeping.
     // Callers wanting a furthest-position diagnostic detect unconsumed input

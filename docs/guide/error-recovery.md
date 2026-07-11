@@ -6,28 +6,27 @@ To power diagnostics, autocomplete, folding, and refactors, a parser has to keep
 report **every** error, not just the first, and still hand back a usable tree for the
 parts that did parse.
 
-Parséman makes recovery explicit rather than magical. You mark the places where the
-grammar can resynchronize, and the parser produces a `ParseError` value there instead of
-aborting. There are three tools, from smallest to largest blast radius:
+Parséman keeps the strict path — the compiler's path — untouched, and layers recovery on
+top as a **cold path** that only runs when something fails. Recovery has two pieces:
 
 | Tool | Use it for | On failure |
 | --- | --- | --- |
+| [Tolerant lists](#tolerant-lists) (`tolerant` + `many`/`sepBy`) | A list/repetition whose bad elements shouldn't truncate the rest | Skips the bad element to a **sync point**, emits a `ParseError`, keeps parsing the list |
 | [`expect`](#expect-required-tokens) | A required delimiter/terminator (`}`, `)`, `;`) | Records an error, recovers **in place** (zero width), keeps going |
-| [`recover`](#recover-skip-to-a-sentinel) | A whole construct that failed (a statement, a declaration) | **Skips forward** to a sentinel, returns a `ParseError` spanning the junk |
-| [`scanTo` / `balanced`](#positional-recovery-scanto-balanced) | Consuming an opaque region up to a boundary | Positional scanning; the building blocks the other two lean on |
+| [`scanTo` / `balanced`](#positional-recovery-scanto-balanced) | Consuming an opaque region up to a boundary | Positional scanning; independently useful building blocks |
 
-All of them turn a failure into a *successful* parse whose value is a `ParseError`, so the
-enclosing `sequence` / `many` continues. You collect the errors through the
-[`{ recover: true }` channel](#collecting-every-error).
+All of them turn a failure into a *successful* parse whose value carries a `ParseError`, so
+the enclosing `sequence` / list continues. Errors are collected through the
+[error channel](#collecting-every-error).
 
 ## The `ParseError` value
 
-Both `expect` and `recover` produce the same shape:
+Recovery produces a single shape:
 
 ```ts
 type ParseError = {
   _tag: 'parseError'
-  span: Span          // where the problem is (zero-width for expect, the skipped range for recover)
+  span: Span          // where the problem is (zero-width for expect, the skipped range for a list)
   expected: string[]  // what the parser wanted there
 }
 ```
@@ -44,8 +43,79 @@ if (isParseError(value)) {
 
 > **Note:** `ParseError` (`_tag: 'parseError'`) is the runtime recovery value. It is
 > distinct from the `CSTError` *type* (`_tag: 'error'`), which describes an error-node
-> shape you may choose to build in your own AST. The combinators here produce
-> `ParseError`.
+> shape you may choose to build in your own AST.
+
+## Tolerant lists
+
+The most common recovery need is a list — a block body, a declaration list, arguments —
+where one malformed element must not truncate everything after it. Turn it on with the
+run-level `tolerant` flag; then `many`, `oneOrMore`, and `sepBy` recover from a failed
+element instead of stopping at it.
+
+```ts
+import { run, sequence, sepBy, literal } from 'parseman'
+
+const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
+
+const r = run(block, '{a:1;$$;b:2}', { tolerant: true })
+// r.value's list  → [decl, ParseError, decl]   (the `$$` is one recovered error)
+// r.errors        → [ParseError]                (every recovery point that fired)
+// r.ok            → true                        (the closing `}` was still reached)
+```
+
+Recovery's one hard requirement is a **sync point** — where to resume after a bad element.
+It comes from two layers.
+
+### C — the sync point is inferred for free
+
+The enclosing combinator already knows where a list resynchronizes, so no annotation is
+needed:
+
+- `sepBy(elem, sep)` knows its **separator** — the natural per-element resync token.
+- A list inside `sequence(open, …, close)` learns the **enclosing delimiter**: the
+  `sequence` publishes the first set of its following terms as the sync point while it
+  parses each term, so the nested list resyncs to `close`.
+
+That covers the block-body / declaration-list shapes an editor cares about, with the
+grammar written exactly as it is for strict parsing:
+
+```ts
+// No recovery annotation anywhere — the inner sepBy infers `;` (its separator) and
+// `}` (the block's close). A bad element is skipped to whichever comes first.
+const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
+run(block, '{a:1;$$;b:2}', { tolerant: true })   // → [decl, error, decl]
+```
+
+A list with no enclosing delimiter and no hint has no sync point to skip to, so it falls
+back to the strict behavior (stop at the first bad element) — a `tolerant` flag alone
+can't recover.
+
+### B — an explicit hint
+
+When the sync point isn't local, or when you want to override the inferred one, pass a
+`{ recover }` hint. It's the sync sentinel for that list (matched, not consumed):
+
+```ts
+// Non-local: a top-level list with no enclosing sequence — the hint supplies the sync.
+const list = sepBy(decl, literal(';'), { recover: literal('%') })
+run(list, 'a:1;$$;b:2%', { tolerant: true })     // → [decl, error, decl]
+
+// Override: ignore a token the inferred sync would stop at, resync to the real close.
+const body = sepBy(num, literal(','), { recover: literal('}') })
+```
+
+`many` / `oneOrMore` take the same option: `many(item, { recover: literal('}') })`. With
+no separator to resync on, a bad run is captured as one `ParseError` up to the sync token.
+
+### Guarantees
+
+- **The span covers only the skipped text**, never the sync token.
+- **A missing element between two separators** (`{a:1;;b}`) is a zero-width `ParseError`;
+  the loop then consumes the separator, so a zero-width failure can never spin.
+- **A trailing separator before the close** (`{a:1;}`) is not junk — the list ends cleanly
+  with no spurious error.
+- **Cold path.** None of this runs on well-formed input, and the strict default (no
+  `tolerant`) is byte-identical to a parser with no recovery at all.
 
 ## `expect` — required tokens
 
@@ -92,57 +162,10 @@ Because `expect` never moves the cursor on failure, it's the right tool when the
 token is *punctuation the surrounding grammar can continue past* — the classic
 "single-token insertion" recovery, made explicit.
 
-## `recover` — skip to a sentinel
-
-Use `recover` when a whole construct fails to parse and you want to **discard the junk up
-to a known re-sync point** and carry on. On failure it scans forward one character at a
-time until `sentinel` matches (or EOF), then returns a `ParseError` spanning the skipped
-range. The sentinel is **not** consumed — your grammar continues from there.
-
-**Happens when:** an entire sub-rule (a statement, a list item, a declaration) fails, and
-there's a natural boundary to skip to.
-
-```ts
-import { recover, many, sequence, literal } from 'parseman'
-
-// A tolerant statement list: if a statement is broken, skip to the next ';'.
-const stmt  = recover(g.Stmt, literal(';'))
-const block = many(sequence(stmt, literal(';')))
-```
-
-::: code-group
-
-```ts [Good input]
-// "a = 1; b = 2;"  →  both statements parse; no ParseError produced.
-```
-
-```ts [Bad input]
-// "a = @#$; b = 2;"
-//   1. g.Stmt fails at "@#$".
-//   2. recover scans forward: '@' no, '#' no, '$' no, ';' matches → stop (not consumed).
-//   3. returns { _tag: 'parseError', span: { start: 4, end: 7 }, expected: [ … ] }
-//   4. the outer sequence consumes ';', many() loops, "b = 2" parses cleanly.
-// Result: the second statement is recovered; you get one error, not a dead parse.
-```
-
-:::
-
-A few important properties:
-
-- **The span covers only the skipped text**, never the sentinel.
-- **`expected` is preserved** from the inner failure, so the message still says what the
-  construct wanted.
-- **If the sentinel is never found**, the scan runs to EOF and returns a `ParseError`
-  spanning the rest of the input.
-- **The error path is not optimized.** `recover` is meant for IDE / incremental parsers
-  that must produce a result on broken input — put it where recovery is genuinely needed,
-  not on a hot path.
-
 ## Positional recovery: `scanTo` & `balanced`
 
 `scanTo` and `balanced` are pure cursor arithmetic — they advance the position with zero
-CST allocation. They're the building blocks `recover` and `balanced` themselves use, and
-they're independently useful for consuming opaque regions.
+CST allocation. They're independently useful for consuming opaque regions.
 
 ### `scanTo(sentinel, opts?)`
 
@@ -202,8 +225,8 @@ enclosing `node()`'s child list; only the final scanned span appears as a single
 
 ## Collecting every error
 
-By default, recovered errors are produced as values but not gathered anywhere central. To
-collect them — the whole point, for a language server — run with `{ recover: true }`:
+`run()` always returns an `errors` array (empty when nothing recovered). With the
+interpreter `parse()`, opt in with `{ recover: true }` to gather them centrally:
 
 ```ts
 import { parse } from 'parseman'
@@ -217,78 +240,52 @@ if (r.ok) {
 }
 ```
 
-- `errors` is populated by every `expect` / `recover` that fired during the parse.
-- Without `{ recover: true }`, `expect` and `recover` still recover in place, but nothing
-  is recorded (zero overhead beyond the inner attempt).
+- `errors` is populated by every tolerant-list recovery and every `expect` that fired.
+- Without `{ recover: true }`, `expect` still recovers in place, but nothing is recorded
+  (zero overhead beyond the inner attempt).
 - The compiled path has the same channel via `compiled.parseWithErrors(input)`.
 
 ### `furthestFail`
 
 Even when a parse *succeeds*, it may have succeeded too early — matching a prefix and
-leaving trailing input, or taking a recovery arm that hid a deeper problem.
-`furthestFail` records the **deepest position any alternative reached before failing**,
-with the merged `expected` set at that point. It's the single most useful signal for
-"why didn't this parse the way I expected," and for producing a good top-level error
-message when the tree is technically valid but the input clearly wasn't.
+leaving trailing input, or recovering past a deeper problem. `furthestFail` records the
+**deepest position any alternative reached before failing**, with the merged `expected`
+set at that point. It's the single most useful signal for "why didn't this parse the way I
+expected," and it's what [`completionsAt`](./incremental) reads to offer completions at a
+cursor: run it `tolerant` so the enclosing list keeps parsing to the cursor and records the
+expectation there.
 
 ## Design guidance & tradeoffs
 
 Recovery is never free, and it's never pretty. Be deliberate:
 
-- **Prefer `expect` for punctuation, `recover` for whole constructs.** `expect` is
-  zero-width and cheap — reach for it on required delimiters. `recover` discards input, so
-  reserve it for "this statement is hopeless, skip to the next `;`."
-- **Recovery loses input.** A `recover` that skips to a sentinel throws away everything in
-  between. Your tree will have gaps; downstream consumers (visitors, formatters) must be
+- **Prefer `expect` for punctuation, tolerant lists for elements.** `expect` is zero-width
+  and cheap — reach for it on required delimiters. A tolerant list discards input between
+  the bad element and the sync point, so reserve it for "this element is hopeless, skip to
+  the next one."
+- **Recovery loses input.** Skipping to a sync point throws away everything in between.
+  Your tree will have gaps; downstream consumers (visitors, formatters) must be
   **defensive** and not assume every expected child exists.
-- **Choose re-sync points that actually resynchronize.** A statement list recovers to `;`;
-  a block recovers to `}`; a comma-separated list recovers to `,` or the closing bracket.
-  The better the sentinel matches the grammar's real structure, the less input you lose.
-- **Keep it off the hot path.** The recovery scans are intentionally simple, not fast. In
-  a batch parser that only cares about valid input, you may not want any recovery at all;
-  in an editor, you want it at every construct boundary.
+- **Sync points that actually resynchronize.** The inferred separator/close covers most
+  lists; reach for a `{ recover }` hint when the inference stops at a misleading token or
+  when there's no enclosing delimiter at all.
+- **It's off by default.** Strict parsing pays nothing. Turn `tolerant` on for the editor
+  path; leave it off for a batch compile that only cares about valid input.
 - **Pair it with [incremental re-parsing](./incremental).** Recovery keeps the tree alive
   through a broken keystroke; incremental re-parsing keeps re-parsing cheap. Together
   they're the foundation of a responsive language server.
-
-## Tolerant lists
-
-Wrapping every list element in `recover` by hand is the most common recovery chore, so
-`sepByRecover` and `manyRecover` do it for you. They behave like `sepBy` / `many`, but a
-malformed element is skipped to the next separator (or the list terminator) and recorded
-as a `ParseError` in the result — instead of truncating the list at the first bad item.
-
-```ts
-import { sepByRecover, literal } from 'parseman'
-
-const elements = sepByRecover(value, literal(','), literal(']'))
-const array = sequence(literal('['), elements, literal(']'))
-
-// "[1,,3]"  → [1, ParseError, 3]   (the hole is one recovered error)
-// "[]"      → []                    (empty list — no spurious error)
-```
-
-The third argument is the list's **terminator** (matched but not consumed). It's required:
-it's how an empty list is told apart from a malformed first element, so `[]` yields `[]`
-rather than a bogus error. The terminator must not overlap with what a valid element can
-start with.
-
-`manyRecover(item, until)` is the separator-less form: with no separator to resync on, a
-bad run is captured as a single `ParseError` up to the terminator. Both are built from
-`recover` under the hood, so the collected errors show up in `{ recover: true }` exactly
-like hand-written recovery, and the macro build behaves identically to the interpreter.
 
 ## Cheat sheet
 
 | I want to… | Use |
 | --- | --- |
 | Require a `}` / `)` / `;` but keep parsing if it's missing | `expect(literal('}'))` |
-| Skip a broken statement and resume at the next `;` | `recover(stmt, literal(';'))` |
-| Parse a list, tolerating bad elements | `sepByRecover(item, literal(','), literal(']'))` |
-| Parse a repetition, tolerating junk | `manyRecover(item, literal('}'))` |
+| Parse a list, tolerating bad elements | `run(list, src, { tolerant: true })` |
+| Supply / override a list's sync point | `sepBy(item, sep, { recover: literal(']') })` |
+| Tolerate junk in a separator-less repetition | `many(item, { recover: literal('}') })` |
 | Consume everything up to a boundary token | `scanTo(sentinel, { skip: […] })` |
 | Match a whole `(…)` / `[…]` / `{…}` region as text | `balanced('(', ')')` |
-| Collect all errors from a parse | `parse(p, src, { recover: true }).errors` |
+| Collect all errors from a parse | `run(p, src, { tolerant: true }).errors` |
 | Know why a "successful" parse stopped short | `.furthestFail` |
 | Test a value for a recovered error | `isParseError(value)` |
 | Walk / visit the result tree | `walk(tree, …)` · `createVisitor({ … })` |
