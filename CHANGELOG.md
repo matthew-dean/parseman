@@ -3,6 +3,47 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.25.0 — 2026-07-10
+
+- **Incremental re-parse stores parent-relative spans (`parseDoc`).** An incremental document's
+  tree now stores each node's `span` relative to its parent's start instead of as an absolute
+  offset. A length-changing edit no longer rewrites the offsets of every node after it — a subtree
+  that slides as a unit with its parent keeps its parent-relative offsets and is **shared by
+  identity**, so an inserted character costs the same as an overtype. On the 12 kB nested-JSON
+  incremental benchmark, inserting a character drops from **~68 µs to ~8 µs** (and is now ~13×
+  ahead of Lezer's ~108 µs), while an overtype stays ~4.6 µs. Absolute positions are recovered on
+  demand: `doc.spanAt(path)` is an O(depth) cursor, and `absolutizeCST(tree)` materializes the
+  whole absolute tree. A fresh, non-incremental `node().parse()` result is unchanged — still
+  absolute. `relativizeCST` / `absolutizeCST` / `absoluteSpanCST` are exported for working with the
+  representation directly. See [Incremental re-parse](https://github.com/matthew-dean/parseman).
+- **Opt-in structural list-reuse (`parseDoc({ structuralReuse: true })`).** A structural edit —
+  adding or removing a whole element in a collection — used to re-parse the entire containing rule,
+  landing near full-reparse cost (the "insert a line at the top of a large array" case). With
+  `structuralReuse` on, `edit()` re-parses only the disturbed span and reuses the collection's
+  untouched tail elements by identity, taking a front-of-200-element-array insert from
+  **~590 µs to ~29 µs** — within a few × of Lezer's fragment reuse. It stays **sound
+  automatically**: parseDoc inspects the grammar and only ever splices a rule it can prove is a
+  genuine repetition (`many`/`sepBy`/`oneOrMore`). A fixed-arity sequence of same-typed tokens
+  (e.g. `Triple = Num ',' Num ',' Num`) has CST children indistinguishable from a list but a
+  non-repetition grammar, so it's never spliced — it falls back to a full, correct reparse. This
+  requires passing the `rules()` **combinators** as the registry (so `Registry` now accepts
+  combinators alongside bare functions); a bare-function registry carries no grammar to inspect, so
+  structural reuse simply doesn't engage. Off by default only as a newer opt-in optimization, not
+  for safety. Every splice is additionally guarded (exact tiling, lookahead probe, stateless-tail
+  check); `edit()` is always structurally identical to a fresh parse (verified by the incremental
+  oracle fuzz, including a fixed-arity grammar that must decline to splice).
+- **Static railroad SVGs for embedding (`parseman/spec`).** `toRailroadSvg(grammar)` /
+  `renderRailroadSvg(model)` render each production to a self-contained **static SVG string** —
+  built headlessly (no DOM, no client script) — so a single diagram drops straight into an existing
+  page, README, or MDX, unlike `toRailroadHtml` which returns a whole page that builds its diagrams
+  client-side. `RAILROAD_CSS` is exported for styling the embedded SVGs. The
+  [Grammar spec generation](https://github.com/matthew-dean/parseman) guide now embeds a live
+  diagram this way and links to a full generated page.
+- **`buildSpecModel` validates `root`/`order` rule names.** An unknown rule name in `root`/`order`
+  (or a stray string like `order: 'source'` where a `string[]` is meant) used to seed a phase that
+  reached nothing and silently return an **empty** model. It now throws a clear error naming the
+  offending name(s) and listing the known rules.
+
 ## 0.24.0 — 2026-07-10
 
 - **Grammar spec generation (`parseman/spec`).** Generate a formal grammar spec directly from a

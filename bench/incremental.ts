@@ -63,9 +63,10 @@ const grammar = rules(g => {
   return { Value, Object, Array, Member, Str, Num, True, False, Null }
 })
 
-const registry: Record<string, RuleFn> = Object.fromEntries(
-  Object.entries(grammar).map(([k, comb]) => [k, (i, p, c) => comb.parse(i, p, c)]),
-) as Record<string, RuleFn>
+// Pass the rules() combinators straight through — parseDoc reads their grammar
+// defs to prove Array/Object are genuine repetitions (so structural reuse is
+// sound, not a caller promise).
+const registry = grammar as unknown as Record<string, RuleFn>
 
 // ---------------------------------------------------------------------------
 // Fixtures + edit scenarios
@@ -130,12 +131,16 @@ export function makeParsemanIncremental(s: EditScenario): {
   incremental: () => unknown
   fullReparse: () => unknown
 } {
-  const base = parseDoc<JNode>(registry, 'Value', s.input)
+  // JSON arrays/objects are genuine repetitions, so structural list-reuse is sound
+  // here — opt in so a structural insert reuses the untouched tail instead of
+  // reparsing the whole collection.
+  const opts = { structuralReuse: true } as const
+  const base = parseDoc<JNode>(registry, 'Value', s.input, opts)
   if (!base.tree) throw new Error(`Parséman failed to parse fixture: ${s.name}`)
   const newInput = applyEdit(s)
   return {
     incremental: () => base.edit(s.from, s.to, s.replacement),
-    fullReparse: () => parseDoc<JNode>(registry, 'Value', newInput),
+    fullReparse: () => parseDoc<JNode>(registry, 'Value', newInput, opts),
   }
 }
 

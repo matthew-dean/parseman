@@ -17,14 +17,15 @@
 import { buildSpecModel } from './model.ts'
 import type { GrammarInput, SpecModel, SpecOptions } from './model.ts'
 import { renderEBNF } from './ebnf.ts'
-import { renderRailroadHtml } from './railroad.ts'
+import { renderRailroadHtml, renderRailroadSvg } from './railroad.ts'
 import type { RailroadHtmlOptions } from './railroad.ts'
 
 export { buildSpecModel } from './model.ts'
 export type { GrammarInput, SpecModel, SpecOptions, SpecNode, Production } from './model.ts'
 export { renderEBNF, renderExpr } from './ebnf.ts'
-export { renderRailroadHtml } from './railroad.ts'
-export type { RailroadHtmlOptions } from './railroad.ts'
+export { renderRailroadHtml, renderRailroadSvg } from './railroad.ts'
+export type { RailroadHtmlOptions, RailroadSvg } from './railroad.ts'
+export { RAILROAD_CSS } from './railroad-lib.ts'
 
 /** Generate W3C-style EBNF text (one production per named rule). */
 export function toEBNF(grammar: GrammarInput, options?: SpecOptions): string {
@@ -41,4 +42,13 @@ export function toRailroadHtml(
 ): string {
   const model: SpecModel = buildSpecModel(grammar, options)
   return renderRailroadHtml(model, options)
+}
+
+/**
+ * Render each production to a static, self-contained SVG string — one per named
+ * rule — ready to inline in a docs page, README, or any HTML (no client script).
+ * Style with the exported `RAILROAD_CSS`, scoped to whatever wraps the SVGs.
+ */
+export function toRailroadSvg(grammar: GrammarInput, options?: SpecOptions): ReturnType<typeof renderRailroadSvg> {
+  return renderRailroadSvg(buildSpecModel(grammar, options))
 }

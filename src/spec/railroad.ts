@@ -41,6 +41,66 @@ function toDsl(node: SpecNode): string {
   }
 }
 
+// Vendored railroad-diagrams builders, evaluated once. `.toString()` on the
+// result walks an in-memory FakeSVG tree and emits SVG markup with no DOM — so a
+// diagram can be rendered to a static SVG string at build time (Node), not just
+// in the browser. The library exports onto `exports` when it's an object.
+type RailroadBuilders = {
+  Diagram: (item: unknown) => { toString(): string }
+  Sequence: (...xs: unknown[]) => unknown
+  Choice: (normal: number, ...xs: unknown[]) => unknown
+  Optional: (x: unknown) => unknown
+  OneOrMore: (x: unknown, sep?: unknown) => unknown
+  ZeroOrMore: (x: unknown) => unknown
+  Terminal: (t: string) => unknown
+  NonTerminal: (t: string) => unknown
+  Comment: (t: string) => unknown
+  Skip: () => unknown
+}
+let _builders: RailroadBuilders | null = null
+function builders(): RailroadBuilders {
+  if (_builders) return _builders
+  const mod = {} as Record<string, unknown>
+  // eslint-disable-next-line no-new-func
+  new Function('exports', RAILROAD_JS)(mod)
+  _builders = mod as unknown as RailroadBuilders
+  return _builders
+}
+
+/** Build a railroad-diagrams object from a spec node (mirrors `toDsl`, but live). */
+function toDiagramNode(b: RailroadBuilders, node: SpecNode): unknown {
+  switch (node.kind) {
+    case 'terminal': return b.Terminal(node.text)
+    case 'ref': return b.NonTerminal(node.name)
+    case 'empty': return b.Skip()
+    case 'annotation': return b.Comment(node.text)
+    case 'seq': return b.Sequence(...node.items.map((n) => toDiagramNode(b, n)))
+    case 'choice': return b.Choice(0, ...node.items.map((n) => toDiagramNode(b, n)))
+    case 'star': return b.ZeroOrMore(toDiagramNode(b, node.item))
+    case 'plus': return b.OneOrMore(toDiagramNode(b, node.item))
+    case 'opt': return b.Optional(toDiagramNode(b, node.item))
+    case 'sepBy': return b.OneOrMore(toDiagramNode(b, node.item), toDiagramNode(b, node.sep))
+    case 'not': return b.Sequence(b.Comment('not'), toDiagramNode(b, node.item))
+  }
+}
+
+/** One production rendered to a static SVG string. */
+export type RailroadSvg = { name: string; svg: string }
+
+/**
+ * Render each production to a self-contained **static SVG** string — no DOM and
+ * no client-side script, so a diagram can be inlined straight into a docs page,
+ * README, or any HTML. Pair each SVG with [`RAILROAD_CSS`](./railroad-lib) (scope
+ * it to a container) to style the strokes and boxes.
+ */
+export function renderRailroadSvg(model: SpecModel): RailroadSvg[] {
+  const b = builders()
+  return model.productions.map((p) => ({
+    name: p.name,
+    svg: b.Diagram(toDiagramNode(b, p.expr)).toString(),
+  }))
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

@@ -11,7 +11,7 @@ import {
   rules, choice, sequence, literal, regex, optional, sepBy, many, oneOrMore,
   not, keywords, trivia, transform, node, type Combinator,
 } from '../../src/index.ts'
-import { toEBNF, toRailroadHtml, buildSpecModel } from '../../src/spec/index.ts'
+import { toEBNF, toRailroadHtml, toRailroadSvg, RAILROAD_CSS, buildSpecModel } from '../../src/spec/index.ts'
 
 function demoGrammar() {
   return rules(self => {
@@ -91,6 +91,18 @@ describe('spec — options', () => {
     // list is first; expr and its reachable deps follow.
     expect(model.productions[0]!.name).toBe('list')
     expect(model.productions.map(p => p.name)).toContain('call')
+  })
+
+  it('throws (not silently empty) on an unknown rule name in root/order', () => {
+    // Regression: an unknown name — or a stray string like order:'source' where a
+    // string[] is meant — used to seed a phase that reached nothing and returned an
+    // EMPTY model with no error. It must fail loudly, naming the offender.
+    expect(() => buildSpecModel(demoGrammar(), { root: 'nope' })).toThrow(/unknown rule name.*root.*"nope"/)
+    expect(() => buildSpecModel(demoGrammar(), { order: ['expr', 'nope'] })).toThrow(/unknown rule name.*order.*"nope"/)
+    // A string passed where string[] is expected is normalized then rejected by name.
+    expect(() => buildSpecModel(demoGrammar(), { order: 'source' as unknown as string[] })).toThrow(/unknown rule name.*order.*"source"/)
+    // The error lists the known rules to guide the fix.
+    expect(() => buildSpecModel(demoGrammar(), { root: 'nope' })).toThrow(/Known rules:.*"expr"/)
   })
 })
 
@@ -177,5 +189,43 @@ describe('spec — railroad HTML', () => {
 
   it('sets the page title', () => {
     expect(html).toContain('<title>Demo</title>')
+  })
+})
+
+describe('spec — static railroad SVG', () => {
+  const svgs = toRailroadSvg(demoGrammar())
+
+  it('reuses the vendored builders across calls (a second render re-enters the memo)', () => {
+    // Distinct grammar exercising star (many), plus (oneOrMore), opt (optional),
+    // annotation (not) and sepBy in the live builder path — and a second call so
+    // the cached `builders()` branch is taken.
+    const g = rules(self => ({
+      doc: sequence(many(self.word), oneOrMore(self.num), optional(literal('!')), not(literal('#')), sepBy(self.word, literal(','))),
+      word: regex(/[a-z]+/),
+      num: regex(/[0-9]+/),
+    }))
+    const out = toRailroadSvg(g)
+    expect(out.map((s) => s.name)).toContain('doc')
+    for (const { svg } of out) expect(svg).toMatch(/^<svg class="railroad-diagram"/)
+  })
+
+  it('renders one static SVG per production, headlessly (no DOM, no client script)', () => {
+    expect(svgs.map((s) => s.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg'])
+    for (const { svg } of svgs) {
+      expect(svg).toMatch(/^<svg class="railroad-diagram"/)
+      expect(svg).toContain('</svg>')
+      expect(svg).not.toContain('data-rule') // fully rendered, not a client-built placeholder
+    }
+  })
+
+  it('renders the grammar\'s terminals and non-terminals into the SVG', () => {
+    const list = svgs.find((s) => s.name === 'list')!.svg
+    expect(list).toContain('&#91;') // '[' literal terminal (the lib HTML-escapes brackets)
+    expect(list).toContain('expr') // NonTerminal reference (sepBy element)
+    expect(list).toContain('<text') // actual glyphs, i.e. the diagram was really rendered
+  })
+
+  it('exports the diagram CSS for styling embedded SVGs', () => {
+    expect(RAILROAD_CSS).toContain('svg.railroad-diagram')
   })
 })

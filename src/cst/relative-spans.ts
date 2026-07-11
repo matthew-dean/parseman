@@ -66,6 +66,69 @@ export function absoluteSpanAt(root: RelNode, path: readonly number[]): { start:
   return { start: base + node.start, end: base + node.end }
 }
 
+// ---------------------------------------------------------------------------
+// CST-shaped projection (parseDoc incremental trees)
+//
+// The bare Abs/RelNode helpers above are the reference model. The functions
+// below apply the same relative-span algebra to real CST children — nodes,
+// leaves, and error nodes — where the span is a nested `{ start, end }` and
+// children are heterogeneous (leaves carry a span but no `children`). Trivia
+// never appears in structural `children`, so every child has a span.
+// ---------------------------------------------------------------------------
+
+/**
+ * A CST child as far as span projection cares: a nested span + optional children.
+ * `children` is typed loosely (`unknown[]`) so the real heterogeneous CST unions
+ * (nodes, leaves, error nodes — a leaf has no `children`) satisfy it directly.
+ */
+type Spanned = {
+  readonly span: { readonly start: number; readonly end: number }
+  readonly children?: readonly unknown[]
+}
+
+/**
+ * Rewrite a CST subtree's spans to be RELATIVE to `parentBase` (the absolute
+ * start of the node's parent; root base = 0). Each child's own children are
+ * relativized against *this* node's absolute start. Preserves every other field
+ * (`_tag`, `type`, `state`, leaf `value`, …) by shallow spread.
+ */
+export function relativizeCST<T extends Spanned>(node: T, parentBase = 0): T {
+  const span = { start: node.span.start - parentBase, end: node.span.end - parentBase }
+  if (node.children) {
+    const base = node.span.start
+    return { ...node, span, children: node.children.map((c) => relativizeCST(c as Spanned, base)) } as T
+  }
+  return { ...node, span } as T
+}
+
+/** Reconstruct absolute CST spans from a relative subtree. Inverse of `relativizeCST`. */
+export function absolutizeCST<T extends Spanned>(node: T, parentBase = 0): T {
+  const start = parentBase + node.span.start
+  const span = { start, end: parentBase + node.span.end }
+  if (node.children) {
+    return { ...node, span, children: node.children.map((c) => absolutizeCST(c as Spanned, start)) } as T
+  }
+  return { ...node, span } as T
+}
+
+/**
+ * Absolute span of the CST node at `path` (child indices from the root),
+ * accumulating the base as it descends — O(path length), no full absolutize.
+ * The relative-form cursor for a positioned CST: query one node's absolute
+ * position without materializing the whole tree.
+ */
+export function absoluteSpanCST(root: Spanned, path: readonly number[]): { start: number; end: number } {
+  let base = 0
+  let node: Spanned = root
+  for (const idx of path) {
+    base += node.span.start
+    const child = node.children?.[idx] as Spanned | undefined
+    if (!child) throw new RangeError(`absoluteSpanCST: no child ${idx} on path ${path.join('.')}`)
+    node = child
+  }
+  return { start: base + node.span.start, end: base + node.span.end }
+}
+
 /** Naive absolute reshift (baseline): shift every offset >= `at` by `delta`. */
 export function shiftAbsolute(node: AbsNode, at: number, delta: number): AbsNode {
   const s = node.start >= at ? node.start + delta : node.start

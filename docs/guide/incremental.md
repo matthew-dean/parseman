@@ -43,12 +43,54 @@ span end lands where the edit's delta predicts. Nodes unaffected by the edit are
 reference between the old and new docs — so a keystroke deep in a large file re-parses one
 small subtree, not the whole thing.
 
-Because spans are **absolute** offsets, a length-changing edit shifts every node that comes
-*after* it by the delta; nodes *before* the edit stay shared by reference. So an in-place
-value edit (overtype, or a character typed into an existing token) is close to free, while
-a structural edit costs in proportion to how much of the document follows it. See the
-[incremental re-parse benchmark](./benchmarks#incremental-re-parse) for how that compares to
-Lezer's buffer-tree reuse — the two engines have opposite sweet spots.
+### Spans are parent-relative
+
+An incremental doc's `tree` stores each node's `span` **relative to its parent's start**
+(the root's base is 0). That's what lets a length-changing edit stay cheap: a subtree that
+sits *after* the edit slides as a unit with its parent, so its parent-relative offsets are
+*unchanged* and the whole subtree is **shared by identity** — no per-node offset rewrite.
+An in-place value edit (overtype) and a character insert are both close to free as a result.
+
+You get absolute positions two ways:
+
+```ts
+doc.spanAt(path)        // O(depth) cursor — absolute span of the node at a child-index path
+absolutizeCST(doc.tree) // O(nodes) — the whole tree with absolute spans, when you need it
+```
+
+Prefer `spanAt` for the handful of nodes an editor queries per keystroke; reach for
+`absolutizeCST` only when a consumer genuinely needs the entire absolute tree at once.
+(A fresh, non-incremental `node().parse()` result is unchanged — its spans are still
+absolute.)
+
+### Structural edits: opt-in list reuse
+
+Inserting or deleting a *whole element* in a large collection (the "add a line at the top
+of a big array" case) would otherwise re-parse the entire collection. Pass
+`{ structuralReuse: true }` and `edit()` instead re-parses only the disturbed span and
+reuses the collection's untouched tail elements by identity — turning that edit from
+O(list) into O(edit + trailing siblings):
+
+```ts
+let doc = parseDoc(registry, 'Stylesheet', src, { structuralReuse: true })
+```
+
+This stays **sound automatically** — you don't have to promise anything about your grammar.
+`parseDoc` reads the grammar and **only ever splices a rule it can prove is a genuine
+repetition** (`many` / `sepBy` / `oneOrMore`). A fixed-arity sequence of same-typed tokens
+(e.g. `Triple = Num ',' Num ',' Num`) has CST children that look *exactly* like a 3-element
+list, but its grammar is a plain `sequence` with no repetition — so it is never spliced and
+falls back to a full, correct reparse. The result of `edit()` is always structurally
+identical to a fresh parse, flag or no flag.
+
+For that proof, pass the **`rules()` combinators** as the registry (what the examples above
+do) — parseDoc inspects their grammar. If you instead pass bare parse *functions*, there's
+no grammar to inspect, so structural reuse simply doesn't engage (still correct, just no
+speedup). It's off by default only because it's a newer, opt-in optimization — not because
+it's unsafe. On top of the grammar check, every splice is still guarded (exact tiling of the
+reparsed span, a lookahead probe, a stateless-tail check). See the
+[incremental re-parse benchmark](./benchmarks#incremental-re-parse) for how the three edit
+kinds compare to Lezer.
 
 Because docs are immutable, `edit()` returns a new doc and leaves the old one intact —
 convenient for undo stacks and time-travel debugging.
@@ -88,10 +130,10 @@ const doc = parseDoc(registry, 'Program', src, {
 })
 ```
 
-With a custom `rebuild`, a **length-changing** edit falls back to a full reparse — shifting
-the absolute spans of a class instance can't be done safely by the graft, so correctness
-wins over the incremental fast path. Same-length edits still graft incrementally. Plain
-object trees (the default) get the incremental path for both.
+With a custom `rebuild`, a **length-changing** edit falls back to a full reparse — sliding
+the span of a class instance can't be done safely by the graft, so correctness wins over the
+incremental fast path (and `structuralReuse` is likewise skipped). Same-length edits still
+graft incrementally. Plain object trees (the default) get the incremental path for both.
 
 ## Build a CST from a composed grammar
 

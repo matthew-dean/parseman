@@ -22,11 +22,12 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  node, regex, literal, sequence, optional, sepBy, choice, not, rules, parseDoc,
+  node, regex, literal, sequence, optional, sepBy, choice, not, many, oneOrMore, token, rules, parseDoc,
+  relativizeCST, absolutizeCST, absoluteSpanCST,
 } from '../../src/index.ts'
-import type { Combinator, ParseContext, ParseResult } from '../../src/index.ts'
+import type { Combinator, ParseResult } from '../../src/index.ts'
 import type { Registry, RuleFn } from '../../src/functional/doc.ts'
-import { structurallyEqual } from '../../src/functional/doc.ts'
+import { structurallyEqual, relTreeOf } from '../../src/functional/doc.ts'
 import type { CSTChild, CSTNode } from '../../src/cst/types.ts'
 
 // ── Deterministic PRNG (mulberry32) ──────────────────────────────────────────
@@ -49,8 +50,17 @@ function cst(type: string) {
     ({ _tag: 'node', type, span: { start: span.start, end: span.end }, state, children: [...children] as CSTChild[] })
 }
 
-/** Turn a `rules()` record into a parseDoc registry keyed by node type. */
+/**
+ * Registry keyed by node type. By default we pass the `rules()` COMBINATORS
+ * straight through — parseDoc reads their grammar defs to prove which rules are
+ * genuine repetitions (the only ones structural reuse will splice).
+ */
 function toRegistry(g: Record<string, Combinator<unknown>>): Registry<CSTNode> {
+  return g as unknown as Registry<CSTNode>
+}
+
+/** Bare-function registry (no combinator defs) — used to check the safe fallback. */
+function toFnRegistry(g: Record<string, Combinator<unknown>>): Registry<CSTNode> {
   const reg: Record<string, RuleFn<CSTNode>> = {}
   for (const [k, comb] of Object.entries(g)) reg[k] = (i, p, c) => comb.parse(i, p, c) as ParseResult<CSTNode>
   return reg
@@ -132,6 +142,10 @@ function makeSeqGrammar() {
 
 const GRAMMARS = [makeListGrammar, makeObjGrammar, makeSeqGrammar]
 
+// All grammars here are genuine repetitions (sepBy/list), so structural list-reuse
+// is sound for them — turn it on so the oracle fuzz exercises the splice path.
+const REUSE = { structuralReuse: true } as const
+
 // ── Oracle helpers ────────────────────────────────────────────────────────────
 type Edit = { start: number; deleted: number; inserted: string }
 const applyEditStr = (src: string, e: Edit) => src.slice(0, e.start) + e.inserted + src.slice(e.start + e.deleted)
@@ -158,7 +172,7 @@ describe('parseDoc().edit() — correctness fuzz (oracle)', () => {
       let mismatches = 0
       for (let s = 0; s < SEEDS; s++) {
         const src = gen(r)
-        const base = parseDoc<CSTNode>(registry, root, src)
+        const base = parseDoc<CSTNode>(registry, root, src, REUSE)
         if (!base.tree) continue // generator should always produce valid source
         const e = randomEdit(r, src)
         const newSrc = applyEditStr(src, e)
@@ -175,7 +189,10 @@ describe('parseDoc().edit() — correctness fuzz (oracle)', () => {
           }
         }
         expect(ok).toBe(true)
-        if (inc.tree && base.tree && countShared(base.tree, inc.tree) > 0) reentries++
+        // Identity-sharing lives in the parent-RELATIVE tree the doc stores
+        // internally (the public `.tree` is absolutized fresh on read), so the
+        // reuse metric observes that representation.
+        if (inc.tree && base.tree && countShared(relTreeOf(base), relTreeOf(inc)) > 0) reentries++
       }
       // eslint-disable-next-line no-console
       console.log(`[${makeG.name}] reused (reentry) on ${reentries}/${SEEDS} edits`)
@@ -191,7 +208,7 @@ describe('parseDoc().edit() — reuse fraction on localized edits', () => {
     // A big object; replace one digit deep inside (delta 0) — most siblings must
     // be shared by reference.
     const src = '{' + Array.from({ length: 30 }, (_, i) => `${'abcde'[i % 5]}${'x'.repeat((i % 4) + 1)}:${i}`).join(',') + '}'
-    const base = parseDoc<CSTNode>(registry, root, src)
+    const base = parseDoc<CSTNode>(registry, root, src, REUSE)
     expect(base.tree).toBeTruthy()
     // Replace a digit in the ~middle value.
     let at = Math.floor(src.length / 2)
@@ -200,8 +217,8 @@ describe('parseDoc().edit() — reuse fraction on localized edits', () => {
     const fresh = parseDoc<CSTNode>(registry, root, applyEditStr(src, { start: at, deleted: 1, inserted: '7' }))
     expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
 
-    const reused = countShared(base.tree, inc.tree)
-    const total = countNodes(inc.tree)
+    const reused = countShared(relTreeOf(base), relTreeOf(inc))
+    const total = countNodes(relTreeOf(inc))
     const frac = reused / total
     // eslint-disable-next-line no-console
     console.log(`localized-edit reuse fraction = ${(frac * 100).toFixed(1)}% (${reused}/${total})`)
@@ -223,7 +240,7 @@ describe('parseDoc().edit() — localized-edit fuzz (reuses)', () => {
       const ps: string[] = []
       for (let i = 0; i < n; i++) ps.push(`${keys[i % keys.length]}:${100 + int(r, 900)}`)
       const src = '{' + ps.join(',') + '}'
-      const base = parseDoc<CSTNode>(registry, root, src)
+      const base = parseDoc<CSTNode>(registry, root, src, REUSE)
       if (!base.tree) continue
       const digitPositions: number[] = []
       for (let i = 0; i < src.length; i++) if (/[0-9]/.test(src[i]!)) digitPositions.push(i)
@@ -234,7 +251,7 @@ describe('parseDoc().edit() — localized-edit fuzz (reuses)', () => {
       // `.edit()` sets `.input` to the edited source — parse it fresh for the oracle.
       const fresh = parseDoc<CSTNode>(registry, root, inc.input)
       expect(structurallyEqual(inc.tree, fresh.tree), `src=${src} at=${at}`).toBe(true)
-      if (inc.tree && countShared(base.tree, inc.tree) / countNodes(inc.tree) > 0.5) highReuse++
+      if (inc.tree && countShared(relTreeOf(base), relTreeOf(inc)) / countNodes(relTreeOf(inc)) > 0.5) highReuse++
     }
     // eslint-disable-next-line no-console
     console.log(`localized digit-edit: ${highReuse}/${total} reused >50% of the tree`)
@@ -246,7 +263,7 @@ describe('parseDoc().edit() — localized-edit fuzz (reuses)', () => {
 describe('parseDoc().edit() — edge cases', () => {
   const { registry, root } = makeObjGrammar()
   const check = (src: string, e: Edit, label: string) => {
-    const base = parseDoc<CSTNode>(registry, root, src)
+    const base = parseDoc<CSTNode>(registry, root, src, REUSE)
     if (!base.tree) throw new Error(`bad fixture for ${label}: ${src}`)
     const inc = base.edit(e.start, e.start + e.deleted, e.inserted)
     const fresh = parseDoc<CSTNode>(registry, root, applyEditStr(src, e))
@@ -263,6 +280,165 @@ describe('parseDoc().edit() — edge cases', () => {
   it('structure-changing: insert opening brace', () => check('{a:1}', { start: 1, deleted: 0, inserted: '{' }, 'insert-brace'))
   it('replace whole content', () => check('{a:1,b:2}', { start: 0, deleted: 9, inserted: '{z:5}' }, 'replace-all'))
   it('delete everything', () => check('{a:1}', { start: 0, deleted: 5, inserted: '' }, 'delete-all'))
+})
+
+// Identity-sharing that survives index shifts: how many of the OLD tree's node
+// objects reappear (by identity) anywhere in the new tree. Unlike index-aligned
+// `countShared`, this sees reuse after a structural insert/delete has renumbered
+// sibling positions.
+function collectIdentities(node: unknown, into: Set<unknown>): void {
+  if (!node || typeof node !== 'object') return
+  into.add(node)
+  const kids = (node as { children?: readonly unknown[] }).children
+  if (Array.isArray(kids)) for (const k of kids) collectIdentities(k, into)
+}
+function sharedByIdentity(oldTree: unknown, newTree: unknown): { shared: number; total: number } {
+  const oldSet = new Set<unknown>()
+  collectIdentities(oldTree, oldSet)
+  let shared = 0
+  let total = 0
+  const walk = (n: unknown): void => {
+    if (!n || typeof n !== 'object') return
+    total++
+    if (oldSet.has(n)) shared++
+    const kids = (n as { children?: readonly unknown[] }).children
+    if (Array.isArray(kids)) for (const k of kids) walk(k)
+  }
+  walk(newTree)
+  return { shared, total }
+}
+
+// ── A list whose elements aren't a single node type declines to splice ────────
+describe('parseDoc().edit() — heterogeneous list falls back safely', () => {
+  // A genuine sepBy repetition, but its elements are DIFFERENT node types (Id vs N,
+  // not wrapped in a common rule). Detection sees a repetition, but the splice's
+  // homogeneous-element check refuses it — still correct, just not reused.
+  it('mixed-type elements → correct reparse, no wrong splice', () => {
+    const g = rules(self => ({
+      Mix: node('Mix', sepBy(choice(self.Id, self.N), literal(',')), cst('Mix')),
+      Id: node('Id', regex(/[a-z]+/), cst('Id')),
+      N: node('N', regex(/[0-9]+/), cst('N')),
+    }))
+    const registry = toRegistry(g)
+    const src = 'a,1,b,2,c,3'
+    const base = parseDoc<CSTNode>(registry, 'Mix', src, REUSE)
+    const inc = base.edit(0, 0, 'z,') // structural front insert
+    const fresh = parseDoc<CSTNode>(registry, 'Mix', 'z,' + src)
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+  })
+})
+
+// ── Structural list-reuse (opt-in): tail elements shared, insert near the front ─
+describe('parseDoc().edit() — structural list-reuse', () => {
+  // A big flat list; inserting a new element near the FRONT is the "insert at the
+  // top of a large document" case where a whole-collection reparse is ~a full
+  // reparse. With structuralReuse the untouched tail elements are reused by
+  // identity and only the disturbed span is reparsed.
+  const { registry, root } = makeSeqGrammar() // Seq = sepBy(Term, ',')
+  const bigList = Array.from({ length: 60 }, (_, i) => (i % 2 ? 'foo' : String(i))).join(',')
+
+  it('front insert equals a full reparse and reuses the untouched tail by identity', () => {
+    const base = parseDoc<CSTNode>(registry, root, bigList, REUSE)
+    expect(base.tree).toBeTruthy()
+    // Insert a whole new element + separator right after the first element.
+    const at = bigList.indexOf(',') + 1
+    const inc = base.edit(at, at, 'zz,')
+    const fresh = parseDoc<CSTNode>(registry, root, applyEditStr(bigList, { start: at, deleted: 0, inserted: 'zz,' }))
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+
+    // The reuse win: the untouched tail elements' subtrees are shared by identity
+    // with the pre-edit tree (a front-insert renumbers sibling indices, so we
+    // measure identity that survives the shift, not index-aligned sharing). Only
+    // the disturbed front + the O(siblings) flat spine were reallocated.
+    const { shared, total } = sharedByIdentity(relTreeOf(base), relTreeOf(inc))
+    // eslint-disable-next-line no-console
+    console.log(`structural front-insert reuse = ${(100 * shared / total).toFixed(1)}% (${shared}/${total})`)
+    expect(shared / total).toBeGreaterThan(0.4)
+  })
+
+  it('is OFF by default — a structural edit stays sound without the flag', () => {
+    // Same edit, no structuralReuse: must still equal a full reparse (falls back).
+    const base = parseDoc<CSTNode>(registry, root, bigList)
+    const at = bigList.indexOf(',') + 1
+    const inc = base.edit(at, at, 'zz,')
+    const fresh = parseDoc<CSTNode>(registry, root, applyEditStr(bigList, { start: at, deleted: 0, inserted: 'zz,' }))
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+  })
+
+  it('deleting a whole element near the front reuses the tail and matches a full reparse', () => {
+    const base = parseDoc<CSTNode>(registry, root, bigList, REUSE)
+    // Delete the second element ('foo') plus its LEADING comma: "0,foo,2,…" →
+    // "0,2,…". Neighbours stay comma-separated, so it's a clean element removal.
+    const from = bigList.indexOf(',')            // comma after "0"
+    const to = bigList.indexOf(',', from + 1)     // comma after "foo"
+    const inc = base.edit(from, to, '')
+    const fresh = parseDoc<CSTNode>(registry, root, applyEditStr(bigList, { start: from, deleted: to - from, inserted: '' }))
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+    const { shared, total } = sharedByIdentity(relTreeOf(base), relTreeOf(inc))
+    expect(shared / total).toBeGreaterThan(0.4)
+  })
+})
+
+// ── Soundness: structural reuse is refused unless the GRAMMAR proves a repetition ─
+describe('parseDoc().edit() — structural reuse is grammar-verified (no footgun)', () => {
+  // `Triple` is a FIXED-ARITY sequence of same-typed, comma-delimited elements. Its
+  // CST children — [N, ',', N, ',', N] — are byte-for-byte indistinguishable from a
+  // 3-element `sepBy` list, so the CST-level splice checks alone would happily add a
+  // 4th element. Only the grammar def (a `sequence`, no `sepBy`/`many`/`oneOrMore`)
+  // reveals it's not a repetition. This is the case that would be UNSOUND without
+  // def-based detection.
+  function makeTripleGrammar() {
+    const g = rules(self => ({
+      Triple: node('Triple', sequence(self.N, literal(','), self.N, literal(','), self.N), cst('Triple')),
+      N: node('N', regex(/[0-9]+/), cst('N')),
+    }))
+    return { registry: toRegistry(g), root: 'Triple' }
+  }
+
+  it('a fixed-arity same-typed sequence is NEVER spliced — falls back to a correct reparse', () => {
+    const { registry, root } = makeTripleGrammar()
+    const base = parseDoc<CSTNode>(registry, root, '1,2,3', REUSE) // structuralReuse ON
+    // Insert a 4th element at the front. A splice would produce Triple[9,1,2,3];
+    // a real reparse yields Triple[9,1,2] (the rule takes exactly three).
+    const inc = base.edit(0, 0, '9,')
+    const fresh = parseDoc<CSTNode>(registry, root, '9,1,2,3')
+    // Sound: identical to a full reparse …
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+    // … and it got there by FALLING BACK (no splice): a full reparse shares no
+    // node identity with the pre-edit tree, so zero reuse ⟺ the splice was refused.
+    expect(sharedByIdentity(relTreeOf(base), relTreeOf(inc)).shared).toBe(0)
+  })
+
+  it('a real sepBy list of the SAME shape IS spliced (detection is not just "off")', () => {
+    // Same element/separator shape, but a genuine repetition — must reuse the tail.
+    const g = rules(self => ({
+      List: node('List', sepBy(self.N, literal(',')), cst('List')),
+      N: node('N', regex(/[0-9]+/), cst('N')),
+    }))
+    const registry = toRegistry(g)
+    const src = Array.from({ length: 40 }, (_, i) => String(i)).join(',')
+    const base = parseDoc<CSTNode>(registry, 'List', src, REUSE)
+    const inc = base.edit(0, 0, '99,')
+    const fresh = parseDoc<CSTNode>(registry, 'List', '99,' + src)
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+    expect(sharedByIdentity(relTreeOf(base), relTreeOf(inc)).shared).toBeGreaterThan(0)
+  })
+
+  it('a bare-function registry (no grammar defs) safely declines to splice', () => {
+    // Without combinator defs parseDoc can't prove anything is a repetition, so
+    // structuralReuse becomes a no-op — still correct, just not reused.
+    const g = rules(self => ({
+      List: node('List', sepBy(self.N, literal(',')), cst('List')),
+      N: node('N', regex(/[0-9]+/), cst('N')),
+    }))
+    const fn = toFnRegistry(g) // wrapped as bare functions — defs stripped
+    const src = Array.from({ length: 20 }, (_, i) => String(i)).join(',')
+    const base = parseDoc<CSTNode>(fn, 'List', src, REUSE)
+    const inc = base.edit(0, 0, '99,')
+    const fresh = parseDoc<CSTNode>(fn, 'List', '99,' + src)
+    expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true) // still correct
+    expect(sharedByIdentity(relTreeOf(base), relTreeOf(inc)).shared).toBe(0) // just declined
+  })
 })
 
 // ── Stage-2 guard: an edit that introduces a cross-boundary lookahead ─────────
@@ -286,7 +462,7 @@ describe('parseDoc().edit() — Stage-2 lookahead guard', () => {
     const { registry, root } = makePeekGrammar()
     const src = 'ab cd'
     for (const e of [{ start: 2, deleted: 0, inserted: '!' }, { start: 2, deleted: 0, inserted: '! ' }] as Edit[]) {
-      const base = parseDoc<CSTNode>(registry, root, src)
+      const base = parseDoc<CSTNode>(registry, root, src, REUSE)
       const inc = base.edit(e.start, e.start + e.deleted, e.inserted)
       const fresh = parseDoc<CSTNode>(registry, root, applyEditStr(src, e))
       expect(structurallyEqual(inc.tree, fresh.tree), JSON.stringify(e)).toBe(true)
@@ -302,7 +478,7 @@ describe('parseDoc().edit() — Stage-2 lookahead guard', () => {
       const toks: string[] = []
       for (let i = 0; i < n; i++) toks.push(pick(r, words) + (r() < 0.4 ? '!' : ''))
       const src = toks.join(' ')
-      const base = parseDoc<CSTNode>(registry, root, src)
+      const base = parseDoc<CSTNode>(registry, root, src, REUSE)
       if (!base.tree) continue
       const alpha = pick(r, ['abc', '! ', '!', ' ', 'x'])
       const start = int(r, src.length + 1)
@@ -340,7 +516,7 @@ describe('parseDoc().edit() — Stage-2 lookahead guard', () => {
       const toks: string[] = []
       for (let i = 0; i < n; i++) toks.push(pick(r, words) + (r() < 0.5 ? '=' + int(r, 100) : ''))
       const src = toks.join(' ')
-      const base = parseDoc<CSTNode>(registry, root, src)
+      const base = parseDoc<CSTNode>(registry, root, src, REUSE)
       if (!base.tree) continue
       const inserted = pick(r, ['=', '=5', 'a', ' ', ''])
       const start = int(r, src.length + 1)
@@ -350,4 +526,89 @@ describe('parseDoc().edit() — Stage-2 lookahead guard', () => {
       expect(structurallyEqual(inc.tree, fresh.tree), `src=${src} e=${JSON.stringify(e)}`).toBe(true)
     }
   })
+})
+
+// ── CST span projection (relativizeCST / absolutizeCST / absoluteSpanCST) ─────
+describe('CST span projection helpers', () => {
+  // A small absolute-span CST: Root[0..7] → [ Leaf[0..1], Child[1..6]→[Leaf[2..5]], Leaf[6..7] ]
+  const abs: CSTNode = {
+    _tag: 'node', type: 'Root', state: null, span: { start: 0, end: 7 },
+    children: [
+      { _tag: 'leaf', value: '(', span: { start: 0, end: 1 } },
+      { _tag: 'node', type: 'Child', state: null, span: { start: 1, end: 6 },
+        children: [{ _tag: 'leaf', value: 'abcd', span: { start: 2, end: 5 } }] },
+      { _tag: 'leaf', value: ')', span: { start: 6, end: 7 } },
+    ] as CSTChild[],
+  }
+
+  it('relativizeCST then absolutizeCST round-trips', () => {
+    const rel = relativizeCST(abs)
+    expect(rel.span).toEqual({ start: 0, end: 7 })
+    // Child is now relative to Root (start 0): unchanged; its leaf relative to Child (start 1).
+    const relChild = rel.children[1] as CSTNode
+    expect(relChild.span).toEqual({ start: 1, end: 6 })
+    expect((relChild.children[0] as { span: unknown }).span).toEqual({ start: 1, end: 4 }) // 2..5 rel to 1
+    expect(absolutizeCST(rel)).toEqual(abs)
+  })
+
+  it('absoluteSpanCST walks a path (and throws on a bad index)', () => {
+    const rel = relativizeCST(abs)
+    expect(absoluteSpanCST(rel, [])).toEqual({ start: 0, end: 7 })
+    expect(absoluteSpanCST(rel, [1])).toEqual({ start: 1, end: 6 })
+    expect(absoluteSpanCST(rel, [1, 0])).toEqual({ start: 2, end: 5 })
+    expect(() => absoluteSpanCST(rel, [9])).toThrow(/no child/)
+  })
+})
+
+// ── doc.spanAt cursor + absolutizeCST(doc.tree) on a real parse ───────────────
+describe('parseDoc — absolute positions from the relative tree', () => {
+  const { registry, root } = makeSeqGrammar()
+  it('spanAt(path) projects absolute offsets; absolutizeCST reconstructs them', () => {
+    const doc = parseDoc<CSTNode>(registry, root, 'foo,12,bar')
+    // Root Seq children: Term Id 'foo' @0..3, ',' , Term '12' @4..6, ',' , Term 'bar' @7..10
+    expect(doc.spanAt([])).toEqual({ start: 0, end: 10 })
+    expect(doc.spanAt([2])).toEqual({ start: 4, end: 6 })     // the '12' Term
+    const absTree = absolutizeCST(doc.tree!)
+    expect(absTree.span).toEqual({ start: 0, end: 10 })
+    expect((absTree.children[2] as CSTNode).span).toEqual({ start: 4, end: 6 })
+  })
+  it('spanAt throws on a failed parse', () => {
+    const obj = makeObjGrammar()
+    const doc = parseDoc<CSTNode>(obj.registry, obj.root, '{') // unterminated → parse fails
+    expect(doc.tree).toBeNull()
+    expect(() => doc.spanAt([])).toThrow()
+  })
+})
+
+// ── Repetition detection covers many / oneOrMore / wrapped rules ──────────────
+describe('parseDoc — repetition detection across combinator shapes', () => {
+  const cstb = (type: string) => cst(type) // reuse the CST builder above
+  // Each grammar's list rule is a genuine repetition behind a different shape; a
+  // structural edit must equal a full reparse (splice may or may not engage, but
+  // detection runs at construction and the result is always correct).
+  const shapes = {
+    many: () => rules(self => ({
+      Doc: node('Doc', many(self.Item), cstb('Doc')),
+      Item: node('Item', regex(/[a-z]/), cstb('Item')),
+    })),
+    oneOrMore: () => rules(self => ({
+      Doc: node('Doc', oneOrMore(self.Item), cstb('Doc')),
+      Item: node('Item', regex(/[a-z]/), cstb('Item')),
+    })),
+    tokenWrapped: () => rules(self => ({
+      Doc: node('Doc', sepBy(self.Item, literal(',')), cstb('Doc')),
+      Item: node('Item', token(sequence(regex(/[a-z]/), optional(regex(/[0-9]/)))), cstb('Item')),
+    })),
+  }
+  for (const [name, make] of Object.entries(shapes)) {
+    it(`handles a ${name}-shaped list soundly`, () => {
+      const registry = toRegistry(make() as Record<string, Combinator<unknown>>)
+      const src = name === 'tokenWrapped' ? 'a,b1,c' : 'abc'
+      const base = parseDoc<CSTNode>(registry, 'Doc', src, REUSE)
+      expect(base.tree).toBeTruthy()
+      const inc = base.edit(1, 1, name === 'tokenWrapped' ? 'z,' : 'z')
+      const fresh = parseDoc<CSTNode>(registry, 'Doc', applyEditStr(src, { start: 1, deleted: 0, inserted: name === 'tokenWrapped' ? 'z,' : 'z' }))
+      expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+    })
+  }
 })

@@ -145,12 +145,13 @@ general rule-level context.
 
 Editors re-parse on every keystroke, and here the buffer-tree generators shine — this is
 what Lezer and tree-sitter were built for. Parséman also re-parses incrementally
-([`parseDoc`](./incremental)), but with a different cost profile: its plain
-object tree with absolute spans makes **in-place value edits** (overtyping, extending a
-token — the common keystroke) close to free and ahead of Lezer, while **structural
-edits** in a large collection favor Lezer/tree-sitter fragment reuse. The
-[incremental benchmark](./benchmarks#incremental-re-parse) has the numbers and the
-tradeoff.
+([`parseDoc`](./incremental)) and stays competitive: its plain object tree stores
+**parent-relative** spans, so **in-place value edits** (overtyping, extending a token — the
+common keystroke) are close to free and well ahead of Lezer, and **structural edits** in a
+large collection reuse the untouched tail elements by identity (opt-in `structuralReuse`),
+landing within a small factor of Lezer/tree-sitter fragment reuse rather than at
+full-reparse cost. The [incremental benchmark](./benchmarks#incremental-re-parse) has the
+numbers and the tradeoff.
 
 The other parsers don't ship an incremental **engine**. Chevrotain is the closest: it has
 no built-in edit-reuse (its incremental-parser tracking issues,

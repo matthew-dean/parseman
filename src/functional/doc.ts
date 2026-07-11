@@ -1,14 +1,85 @@
 /**
  * Incremental parse document — incremental re-parse over a rules() registry.
  */
-import type { ParseContext, ParseFail, ParseResult } from '../types.ts'
+import type { Combinator, ParseContext, ParseFail, ParseResult, ParserDef, Span } from '../types.ts'
 import type { NodeLike, CSTLeaf, CSTError } from '../cst/types.ts'
+import { relativizeCST, absoluteSpanCST } from '../cst/relative-spans.ts'
 
 /** A single compiled (or interpreted) rule: parse from `pos`, producing node `N`. */
 export type RuleFn<N> = (input: string, pos: number, ctx: ParseContext) => ParseResult<N>
 
-/** Rule name → parser function. This is exactly the shape `rules()` returns. */
-export type Registry<N> = Record<string, RuleFn<N>>
+/**
+ * Rule name → parser. Each entry is either a bare parse function or a
+ * `Combinator` (what `rules()` returns). Passing the `rules()` combinators
+ * directly lets `.edit()` inspect the grammar — required for **sound** structural
+ * list-reuse (see `structuralReuse`): only a rule the grammar proves is a genuine
+ * repetition is ever spliced. A bare-function registry still parses correctly; it
+ * just can't be structurally reused (the splice is skipped, never guessed).
+ */
+export type Registry<N> = Record<string, RuleFn<N> | Combinator<N>>
+
+/** Normalize a registry entry to a callable parse function. */
+function asRuleFn<N>(entry: RuleFn<N> | Combinator<N>): RuleFn<N> {
+  return typeof entry === 'function' ? entry : (input, pos, ctx) => entry.parse(input, pos, ctx)
+}
+
+/** The combinator def behind a registry entry, if it carries one (bare functions don't). */
+function defOf(entry: unknown): ParserDef | undefined {
+  return typeof entry === 'object' && entry !== null && '_def' in entry
+    ? (entry as { _def: ParserDef })._def
+    : undefined
+}
+
+/**
+ * Does this rule's grammar produce its element children via a genuine, unbounded
+ * **repetition** (`sepBy` / `many` / `oneOrMore`) — as opposed to a fixed-arity
+ * sequence of same-typed tokens (e.g. `Triple = Num ',' Num ',' Num`)? Only the
+ * former is sound to structurally reuse: a full reparse accepts any element count,
+ * so splicing one in or out matches it; a fixed-arity rule would not. We walk the
+ * def, transparently unwrapping semantic wrappers (`node`, `transform`, …) and
+ * looking through a top-level `sequence` / `optional` (the `[ (sepBy)? ]` shape),
+ * and return true iff a repetition combinator is reachable that way. Structurally
+ * indistinguishable-from-the-CST cases (fixed sequences) return false and fall
+ * back to a full, correct reparse. This is what makes `structuralReuse` sound
+ * rather than a promise the caller has to keep.
+ */
+function producesRepetition(def: ParserDef | undefined, depth = 0): boolean {
+  if (!def || depth > 24) return false
+  const d = def as ParserDef & Record<string, unknown>
+  switch (d.tag) {
+    case 'sepBy':
+    case 'many':
+    case 'oneOrMore':
+      return true
+    // Rule entries and `ref`s wrap their body in a `lazy` thunk — resolve it. The
+    // `depth` cap bounds any self-referential cycle (a repetition, if present, is
+    // found shallowly before recursion goes deep).
+    case 'lazy': {
+      const thunk = d.thunk as (() => { _def?: ParserDef }) | undefined
+      let inner: { _def?: ParserDef } | undefined
+      try { inner = typeof thunk === 'function' ? thunk() : undefined } catch { return false }
+      return producesRepetition(inner?._def, depth + 1)
+    }
+    // Transparent wrappers — look through to the inner parser.
+    case 'node':
+    case 'transform':
+    case 'token':
+    case 'label':
+    case 'field':
+    case 'expect':
+    case 'withCtx':
+    case 'grammar':
+    case 'optional':
+      return producesRepetition(defOf(d.parser), depth + 1)
+    case 'skip':
+      return producesRepetition(defOf(d.main), depth + 1)
+    // A bracketed/anchored list is a sequence whose element run is a repetition.
+    case 'sequence':
+      return (d.parsers as unknown[]).some(p => producesRepetition(defOf(p), depth + 1))
+    default:
+      return false
+  }
+}
 
 export type ParseDocOptions<N extends NodeLike> = {
   /** Initial grammar state threaded into ctx.state for the root parse. */
@@ -26,12 +97,46 @@ export type ParseDocOptions<N extends NodeLike> = {
    * own builders (eval mode).
    */
   build?: ParseContext['build']
+  /**
+   * Enable structural list-reuse: on a length-changing *structural* edit (adding
+   * or removing a whole element in a collection) that would otherwise force a full
+   * reparse, reparse only the disturbed span and reuse the collection's untouched
+   * tail elements by identity — turning an insert near the top of a large list from
+   * O(list) into O(edit + trailing siblings).
+   *
+   * OFF by default because it is sound only when a rule whose CST children form a
+   * homogeneous, separator-delimited element list is a genuine REPETITION
+   * (`many` / `sepBy` / `oneOrMore`), not a fixed-arity sequence of same-typed
+   * tokens (e.g. `Triple = Num ',' Num ',' Num`) — the two are structurally
+   * indistinguishable without the grammar, and splicing the latter would accept an
+   * element count it shouldn't. Turn it on when your list rules are true
+   * repetitions (the common case: JSON arrays/objects, CSS value lists, argument
+   * lists). Every splice is still guarded (exact tiling + lookahead probe +
+   * stateless-tail check) and falls back to a full, correct reparse when unproven;
+   * the flag only authorises *attempting* the reuse.
+   */
+  structuralReuse?: boolean
 }
 
 export interface ParseDoc<N extends NodeLike> {
+  /**
+   * The parse tree with PARENT-RELATIVE spans — each node's `span` is relative to
+   * its parent's start (root base 0). This is the shareable representation: a
+   * length-changing `.edit()` keeps every untouched subtree shared by identity,
+   * and reading the tree is O(1) (no offset rewrite). For absolute positions use
+   * the O(depth) cursor `spanAt(path)`, or `absolutizeCST(doc.tree)` to
+   * materialize the whole absolute tree. A fresh non-incremental `node().parse()`
+   * result is unchanged — still absolute.
+   */
   readonly tree: N | null
   readonly errors: ParseFail[]
   readonly input: string
+  /**
+   * Absolute span of the node at `path` (child indices from the root) — O(depth),
+   * without materializing the absolute tree. The projection cursor for the
+   * relative representation; use it for spot queries on a large incremental doc.
+   */
+  spanAt(path: readonly number[]): { start: number; end: number }
   /**
    * Incrementally re-parse after a text change. `from`/`to` are byte offsets in
    * the OLD input; `replacement` fills that range (editor change-event shape).
@@ -64,12 +169,25 @@ function isNode(x: unknown): x is NodeLike {
   return typeof x === 'object' && x !== null && (x as { _tag?: string })._tag === 'node'
 }
 
-function findContaining<N extends NodeLike>(node: N, pos: number, path: number[] = []): FoundNode<N> | null {
+/**
+ * Locate the deepest node containing absolute offset `pos`. The tree stores
+ * PARENT-RELATIVE spans (see relative-spans), so we thread each node's absolute
+ * start down the descent: a child's absolute start is `nodeAbsStart +
+ * child.span.start`.
+ */
+function findContaining<N extends NodeLike>(
+  node: N,
+  nodeAbsStart: number,
+  pos: number,
+  path: number[] = [],
+): FoundNode<N> | null {
   for (let i = 0; i < node.children.length; i++) {
     const child = node.children[i]!
     if (!isNode(child)) continue
-    if (child.span.start <= pos && pos < child.span.end) {
-      const inner = findContaining(child as N, pos, [...path, i])
+    const childAbsStart = nodeAbsStart + child.span.start
+    const childAbsEnd = nodeAbsStart + child.span.end
+    if (childAbsStart <= pos && pos < childAbsEnd) {
+      const inner = findContaining(child as N, childAbsStart, pos, [...path, i])
       return inner ?? { node: child as N, path: [...path, i] }
     }
   }
@@ -110,42 +228,237 @@ function defaultRebuild<N extends NodeLike>(node: N, children: ReadonlyArray<N |
 type SpanChild = { span: { start: number; end: number }; children?: readonly unknown[] }
 
 /**
- * Deep-shift every absolute span in a subtree by `delta`. Used for nodes that
- * sit *after* a length-changing edit: their content didn't change but their
- * offsets moved. Plain-object path only (see `graftAndShift`).
+ * Shift a node's PARENT-RELATIVE span by `delta`. Used for siblings that sit
+ * *after* a length-changing edit inside the same parent: the node moved as a
+ * unit, so both endpoints slide by `delta`, but its own children are relative to
+ * *its* start and are unchanged — so `children` is shared by identity. That's the
+ * relative-span win: O(1) per trailing sibling, not O(subtree). (Contrast the old
+ * absolute model, which had to deep-rewrite every descendant.)
  */
-function shiftSpans<T>(child: T, delta: number): T {
+function shiftRelStart<T>(child: T, delta: number): T {
   const c = child as unknown as SpanChild
-  const span = { start: c.span.start + delta, end: c.span.end + delta }
-  if (Array.isArray(c.children)) {
-    return { ...(c as object), span, children: c.children.map((g) => shiftSpans(g, delta)) } as unknown as T
-  }
-  return { ...(c as object), span } as unknown as T
+  return { ...(c as object), span: { start: c.span.start + delta, end: c.span.end + delta } } as unknown as T
 }
 
 /**
- * Graft `newNode` at `path` for a length-changing edit (`delta !== 0`):
- * children before the edit are shared by reference, the edited child is
- * replaced, children after it are span-shifted by `delta`, and each ancestor's
- * `span.end` grows by `delta`. Absolute-offset trees must touch every node after
- * the edit — that's inherent — but everything before it is still shared.
+ * Graft `newNode` at `path` into a parent-relative tree for a length-changing
+ * edit (`delta !== 0`): children before the edit are shared by reference, the
+ * edited child is replaced, children *after* it have their relative start slid by
+ * `delta` (one shallow alloc each — their subtrees are shared by identity), and
+ * each ancestor's relative `span.end` grows by `delta` while its start is
+ * untouched. Cost is O(depth + trailing siblings along the spine), independent of
+ * how many nodes sit inside those trailing siblings.
  */
-function graftAndShift<N extends NodeLike>(root: N, path: number[], newNode: N, delta: number): N {
+function graftRelative<N extends NodeLike>(root: N, path: number[], newNode: N, delta: number): N {
   if (path.length === 0) return newNode
   const [idx, ...rest] = path as [number, ...number[]]
   const oldChildren = root.children as ReadonlyArray<N | CSTLeaf | CSTError>
   const newChildren = oldChildren.map((child, i) => {
     if (i < idx) return child
     if (i === idx) {
-      return rest.length === 0 ? newNode : graftAndShift(child as N, rest, newNode, delta)
+      return rest.length === 0 ? newNode : graftRelative(child as N, rest, newNode, delta)
     }
-    return shiftSpans(child, delta)
+    return shiftRelStart(child, delta)
   })
   return {
     ...root,
     span: { start: root.span.start, end: root.span.end + delta },
     children: newChildren,
   } as N
+}
+
+// ---------------------------------------------------------------------------
+// List-splice reuse (structural edits in a collection)
+//
+// A structural edit — inserting or deleting a whole element in a list — makes the
+// innermost-rule reparse fail to converge, and the containing collection is often
+// too big to reparse (that's the "insert at the top of a large array" case where
+// a whole-rule reparse costs ~a full reparse). Instead of reparsing the whole
+// collection, reparse ONLY the disturbed span between the last untouched element
+// before the edit and the first untouched element after it, then splice: the head
+// children are shared as-is, the freshly-parsed middle replaces the changed run,
+// and the tail children are reused with their relative start slid by `delta`
+// (O(1) each — their subtrees are shared by identity, the relative-span win).
+//
+// Soundness rests on: (1) the reparsed middle exactly fills [reStart, reEnd) and
+// lands on element/separator boundaries; (2) a lookahead probe proving the middle
+// read nothing at/after the splice point (else it peeked into the reused tail);
+// (3) a stateless-reentry precondition on the reused tail (its saved `state` is
+// null), so a forward, context-free grammar reproduces those subtrees unchanged.
+// Any failure ⇒ `null` ⇒ the caller falls back to a full, correct reparse. The
+// incremental oracle fuzz (edit() ≡ full reparse, 400 seeds × 3 list grammars +
+// edge cases) is the end-to-end correctness net.
+// ---------------------------------------------------------------------------
+
+type AnyChild = { readonly _tag: string; readonly span: { start: number; end: number }; readonly value?: string; readonly type?: string; readonly state?: unknown; readonly children?: readonly unknown[] }
+
+/**
+ * Parse the collection's disturbed middle `[reStart, reEnd)` as an
+ * `element (separator element)*` run (optionally with a trailing separator that
+ * connects to the reused tail), C-relative. Alternation is STRICT: after an
+ * element, if we're not yet at `reEnd`, the separator MUST match — element/element
+ * juxtaposition is rejected (that's a `sepBy` violation). When the grammar has no
+ * separator (`separator === null`, i.e. a bare repetition), consecutive elements
+ * are allowed. Returns the C-relative children, or `null` if the run doesn't tile
+ * `[reStart, reEnd)` exactly on token boundaries.
+ */
+function parseMiddle(
+  input: string,
+  reStart: number,
+  reEnd: number,
+  cStart: number,
+  ruleFn: RuleFn<NodeLike>,
+  separator: string | null,
+  build: ParseContext['build'],
+): AnyChild[] | null {
+  const ctx: ParseContext = { trackLines: false, state: null, build }
+  const out: AnyChild[] = []
+  let pos = reStart
+  let guard = 0
+  while (pos < reEnd) {
+    if (++guard > reEnd - reStart + 2) return null // no-progress backstop
+    // After an element, a separator is mandatory before the next element (unless
+    // the grammar is separator-free). This is what keeps `elem elem` — invalid in
+    // a `sepBy` — from being accepted as two elements.
+    if (separator && out.length > 0 && out[out.length - 1]!._tag === 'node') {
+      if (pos + separator.length > reEnd || !input.startsWith(separator, pos)) return null
+      out.push({ _tag: 'leaf', value: separator, span: { start: pos - cStart, end: pos + separator.length - cStart } })
+      pos += separator.length
+      continue
+    }
+    let r: ParseResult<NodeLike>
+    try {
+      r = ruleFn(input, pos, ctx)
+    } catch {
+      return null
+    }
+    if (!r.ok || r.span.end <= pos || r.span.end > reEnd) return null
+    out.push(relativizeCST(r.value as unknown as AnyChild, cStart))
+    pos = r.span.end
+  }
+  return pos === reEnd ? out : null
+}
+
+/**
+ * Try to reuse the untouched tail of collection `C` (at `path`, absolute start
+ * `cStart`) around a length-changing edit, reparsing only the disturbed middle.
+ * Returns the new relative root, or `null` to fall back to a full reparse.
+ */
+function tryListSplice<N extends NodeLike>(
+  root: N,
+  path: number[],
+  C: N,
+  cStart: number,
+  newInput: string,
+  from: number,
+  to: number,
+  delta: number,
+  registry: Record<string, RuleFn<N>>,
+  build: ParseContext['build'],
+): N | null {
+  const kids = C.children as ReadonlyArray<AnyChild>
+  if (kids.length === 0) return null
+
+  // head = maximal prefix ending before the edit, backed off so it ends at a
+  // leaf (open delimiter or separator) — i.e. where an ELEMENT is next expected.
+  let h = 0
+  while (h < kids.length && cStart + kids[h]!.span.end <= from) h++
+  while (h > 0 && kids[h - 1]!._tag === 'node') h--
+  // tail = maximal suffix starting after the edit, advanced so it BEGINS at an
+  // element (node) boundary — a self-contained element run to reuse.
+  let t = kids.length
+  while (t > h && cStart + kids[t - 1]!.span.start >= to) t--
+  while (t < kids.length && kids[t]!._tag !== 'node') t++
+  if (t >= kids.length) return null // nothing reusable after the edit
+
+  // Stateless-reentry precondition on the reused tail (see soundness note).
+  for (let i = t; i < kids.length; i++) {
+    if (kids[i]!._tag === 'node' && kids[i]!.state != null) return null
+  }
+
+  // C must look like a genuine homogeneous COLLECTION — a repetition of one
+  // element rule joined by one separator — not a fixed heterogeneous sequence
+  // (e.g. `Pair = Key ':' Val`, whose `:` is not a list separator). Require: all
+  // element (node) children share a type, and there are ≥2 elements joined by a
+  // consistent separator leaf. This rejects fixed sequences (their nodes differ
+  // in type, or there's only one) so we never treat them as splice-able lists.
+  let elemType: string | undefined
+  let elemCount = 0
+  for (const k of kids) {
+    if (k._tag !== 'node') continue
+    elemCount++
+    if (elemType === undefined) elemType = k.type
+    else if (k.type !== elemType) return null // heterogeneous → not a collection
+  }
+  if (elemType === undefined || elemCount < 2) return null
+  const ruleFn = registry[elemType]
+  if (!ruleFn) return null
+  // The separator is the leaf that appears between two elements; require it to be
+  // consistent everywhere two elements meet (a real list delimiter).
+  let separator: string | null = null
+  for (let i = 1; i < kids.length - 1; i++) {
+    if (kids[i - 1]!._tag === 'node' && kids[i + 1]!._tag === 'node') {
+      if (kids[i]!._tag !== 'leaf') return null
+      const sep = kids[i]!.value ?? null
+      if (separator === null) separator = sep
+      else if (sep !== separator) return null // inconsistent delimiter → not a plain list
+    }
+  }
+  if (separator === null) return null // ≥2 elements but no delimiter between any pair
+
+  // The disturbed middle must be pure elements + separators. If the collection is
+  // bracketed, its OPENING / CLOSING delimiter (a leaf whose value isn't the
+  // separator, sitting before the first / after the last element) must lie OUTSIDE
+  // the edit — otherwise the edit changed the collection's own framing and a
+  // whole-rule reparse (not a splice) is required.
+  const first = kids[0]!
+  const last = kids[kids.length - 1]!
+  if (first._tag === 'leaf' && first.value !== separator && from < cStart + first.span.end) return null
+  if (last._tag === 'leaf' && last.value !== separator && to > cStart + last.span.start) return null
+
+  const reStart = h > 0 ? cStart + kids[h - 1]!.span.end : cStart
+  const reEnd = cStart + kids[t]!.span.start + delta
+  if (reEnd < reStart) return null
+
+  const middle = parseMiddle(newInput, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, build)
+  if (!middle) return null
+
+  // Junction check: `tail` always begins with an ELEMENT (we advanced `t` to a
+  // node), so a non-empty middle must END with a SEPARATOR to connect validly —
+  // otherwise the edit deleted the delimiter between the middle's last element and
+  // the tail's first, and splicing would fuse two elements with no separator (a
+  // `sepBy` violation the whole-collection reparse would never produce). When the
+  // middle is empty the tail is preceded by `head`'s last token, itself already a
+  // separator or the open delimiter (head was backed off to a leaf), so it's fine.
+  if (middle.length > 0) {
+    const last = middle[middle.length - 1]!
+    if (!(last._tag === 'leaf' && last.value === separator)) return null
+  }
+
+  // Lookahead guard: the middle must have read nothing at/after `reEnd`, else it
+  // peeked into the reused tail. Re-run over an input whose tail is overwritten
+  // with a sentinel and require an identical middle. Two sentinels so the real
+  // byte at `reEnd` can't accidentally match the probe.
+  if (reEnd < newInput.length) {
+    for (const sentinel of [' ', '￿']) {
+      if (newInput[reEnd] === sentinel) continue
+      const probed = newInput.slice(0, reEnd) + sentinel.repeat(newInput.length - reEnd)
+      const probe = parseMiddle(probed, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, build)
+      if (!probe || probe.length !== middle.length) return null
+      for (let i = 0; i < middle.length; i++) if (!structurallyEqual(probe[i], middle[i])) return null
+    }
+  }
+
+  const head = kids.slice(0, h)
+  const tail = kids.slice(t).map((k) => shiftRelStart(k, delta))
+  const newC = {
+    ...C,
+    span: { start: C.span.start, end: C.span.end + delta },
+    children: [...head, ...middle, ...tail],
+  } as N
+
+  // Replace C at `path` and slide C's own trailing siblings / ancestor ends.
+  return graftRelative(root, path, newC, delta)
 }
 
 // ---------------------------------------------------------------------------
@@ -227,9 +540,23 @@ function boundaryIsSafe<N extends NodeLike>(
 
 class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
   private readonly _registry: Registry<N>
+  /** Registry entries normalized to callable parse functions (memoized once). */
+  private readonly _fns: Record<string, RuleFn<N>>
+  /** Rule names the grammar proves are genuine repetitions — the ONLY splice-safe types. */
+  private readonly _reps: Set<string>
   private readonly _rootRule: string
   private readonly _opts: ParseDocOptions<N>
-  readonly tree: N | null
+  /**
+   * The tree, held in whichever coordinate system it arrived in. A fresh parse
+   * arrives ABSOLUTE (`_abs` set); an incremental graft arrives PARENT-RELATIVE
+   * (`_rel` set). The public `tree` is always the RELATIVE form (so untouched
+   * subtrees stay shared by identity across edits and reads are O(1)); it's
+   * materialized from `_abs` once, on demand, and memoized. `undefined` = not yet
+   * computed; `null` = failed parse. A fresh parse that's never edited nor
+   * tree-read pays no conversion — important for the full-reparse fallback path.
+   */
+  private _abs: N | null | undefined
+  private _rel: N | null | undefined
   readonly errors: ParseFail[]
   readonly input: string
 
@@ -237,30 +564,64 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
     registry: Registry<N>,
     rootRule: string,
     opts: ParseDocOptions<N>,
-    tree: N | null,
+    trees: { abs?: N | null; rel?: N | null },
     errors: ParseFail[],
     input: string,
   ) {
     this._registry = registry
+    this._fns = {}
+    this._reps = new Set()
+    for (const [name, entry] of Object.entries(registry)) {
+      this._fns[name] = asRuleFn(entry)
+      if (producesRepetition(defOf(entry))) this._reps.add(name)
+    }
     this._rootRule = rootRule
     this._opts = opts
-    this.tree = tree
+    this._abs = trees.abs
+    this._rel = trees.rel
     this.errors = errors
     this.input = input
+  }
+
+  /**
+   * The parse tree with PARENT-RELATIVE spans — a node's `span` is relative to
+   * its parent's start (root base 0). This is the shareable representation:
+   * untouched subtrees keep the same identity across `.edit()`s, and reading the
+   * tree after a length-changing edit is O(1) (no offset rewrite). For absolute
+   * positions use the O(depth) cursor `spanAt(path)`, or `absolutizeCST(tree)` to
+   * materialize the whole absolute tree. (A fresh non-incremental `node().parse()`
+   * result is unchanged — still absolute.)
+   */
+  get tree(): N | null {
+    if (this._rel === undefined) {
+      this._rel = this._abs ? (relativizeCST(this._abs as unknown as N & { span: Span }, 0) as unknown as N) : null
+    }
+    return this._rel
+  }
+
+  spanAt(path: readonly number[]): { start: number; end: number } {
+    const rel = this.tree
+    if (!rel) throw new Error('spanAt on a failed parse (tree is null)')
+    return absoluteSpanCST(rel as unknown as { span: Span; children?: readonly unknown[] }, path)
   }
 
   edit(from: number, to: number, replacement: string): ParseDoc<N> {
     const newInput = this.input.slice(0, from) + replacement + this.input.slice(to)
     const reparse = () => parseDoc(this._registry, this._rootRule, newInput, this._opts)
 
-    if (!this.tree) return reparse()
+    const root = this.tree
+    if (!root) return reparse()
 
     const delta = replacement.length - (to - from)
-    const found = findContaining(this.tree, from)
-    if (!found) return reparse()
+    // When `from` sits on the root's own boundary (e.g. right after a top-level
+    // element, before its separator), no child node contains it and
+    // `findContaining` returns null — but the root still does. Fall back to the
+    // root as the container so the structural splice below still gets a shot
+    // (this is exactly the "insert/delete a top-level list element" position).
+    const found = findContaining(root, 0, from) ?? { node: root, path: [] as number[] }
 
     // Try the innermost containing rule first, then widen outward.
-    const ancestors = ancestorsAt(this.tree, found.path)
+    const ancestors = ancestorsAt(root, found.path)
     const candidates: FoundNode<N>[] = [found]
     const pathCopy = [...found.path]
     for (let i = ancestors.length - 2; i >= 0; i--) {
@@ -270,6 +631,8 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
 
     const rebuild = this._opts.rebuild ?? defaultRebuild
     for (const { node, path } of candidates) {
+      // Absolute span of this candidate, projected from the relative root (O(depth)).
+      const { start: absStart, end: absEnd } = absoluteSpanCST(root as unknown as { span: Span; children?: readonly unknown[] }, path)
       // Reentry only pays off when the re-parsed rule is substantially smaller
       // than the whole document. Candidates widen deepest→root (monotonically
       // growing span), so once one covers most of the input, reparsing it — and
@@ -277,44 +640,82 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       // be wasted work before the fallback. Bail to the full reparse NOW. This
       // caps `.edit()` at ~one full reparse in the worst case (e.g. a structural
       // insert near the front) instead of stacking several near-full reparses.
-      if (node.span.end - node.span.start > this.input.length * REENTRY_MAX_SPAN_FRACTION) break
-      const ruleFn = this._registry[node.type]
+      if (absEnd - absStart > this.input.length * REENTRY_MAX_SPAN_FRACTION) break
+      const ruleFn = this._fns[node.type]
       if (!ruleFn) continue
       // The reused subtree must FULLY CONTAIN the edited range (old coords).
       // `findContaining` only locates `from`; if the edit's end `to` spills past
       // this node's end, the edit also changed a sibling/separator after it, and
       // reusing the untouched suffix would be unsound — widen to an ancestor
       // that does span the whole edit (ultimately a full reparse).
-      if (!(node.span.start <= from && to <= node.span.end)) continue
+      if (!(absStart <= from && to <= absEnd)) continue
       const ctx: ParseContext = { trackLines: false, state: node.state, build: this._opts.build }
-      const r = ruleFn(newInput, node.span.start, ctx)
+      const r = ruleFn(newInput, absStart, ctx)
       if (!r.ok) continue
-      if (r.span.end !== node.span.end + delta) continue
+      if (r.span.end !== absEnd + delta) continue
 
       // Stage-2 soundness guard: only reuse the untouched suffix if the re-parse
       // provably read no input past its own end (else a lookahead/backtrack
       // crossed the splice). Widen to the next candidate — ultimately a full
       // reparse — when it can't be proven.
-      if (!boundaryIsSafe(ruleFn, newInput, node.span.start, node.span.end + delta, node.state, this._opts.build, r)) {
+      if (!boundaryIsSafe(ruleFn, newInput, absStart, absEnd + delta, node.state, this._opts.build, r)) {
         continue
       }
 
-      // delta === 0: spans are unchanged, so the spine graft (sharing every
-      // untouched sibling by reference) is already correct.
+      // The re-parse produced an ABSOLUTE subtree; rebase it to parent-relative
+      // for splicing into the relative tree. The parent's absolute start is
+      // `absStart - node.span.start` (node.span is already relative to it).
+      const parentBase = absStart - node.span.start
+      const newRel = relativizeCST(r.value as unknown as N & { span: Span }, parentBase) as unknown as N
+
+      // delta === 0: relative spans are unchanged, so the spine graft (sharing
+      // every untouched sibling by reference) is already correct.
       if (delta === 0) {
-        const newTree = replaceAtPath(rebuild, this.tree, path, r.value)
-        return new ParseDocImpl(this._registry, this._rootRule, this._opts, newTree, [], newInput)
+        const newTree = replaceAtPath(rebuild, root, path, newRel)
+        return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: newTree }, [], newInput)
       }
-      // Length-changing edit: nodes after the edit must have their absolute
-      // spans shifted. A custom `rebuild` can't have its spans shifted safely
-      // (it may be a class instance), so fall back to a full, correct reparse.
+      // Length-changing edit: trailing siblings' relative starts slide by `delta`.
+      // A custom `rebuild` (possibly a class instance) can't have its span slid
+      // safely, so fall back to a full, correct reparse.
       if (this._opts.rebuild) return reparse()
-      const newTree = graftAndShift(this.tree, path, r.value, delta)
-      return new ParseDocImpl(this._registry, this._rootRule, this._opts, newTree, [], newInput)
+      const newTree = graftRelative(root, path, newRel, delta)
+      return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: newTree }, [], newInput)
+    }
+
+    // No localized rule reparse converged — the edit is structural. Before paying
+    // a full reparse, try reusing the untouched tail of a containing collection
+    // (add/remove an element in a list). We only ever splice a rule the GRAMMAR
+    // proves is a genuine repetition (`this._reps`, from its combinator def) — a
+    // fixed-arity same-typed sequence is structurally indistinguishable from a list
+    // by its CST alone, so splicing it could accept a wrong element count; it's
+    // excluded here and falls back to a full, correct reparse. Innermost containing
+    // collection first; a candidate whose disturbed middle doesn't tile cleanly
+    // returns null and we widen. Correctness net is the incremental oracle fuzz.
+    if (this._opts.structuralReuse && delta !== 0 && !this._opts.rebuild) {
+      // Candidates run innermost→ancestor but never include the root itself; the
+      // splice-able collection can BE the root (e.g. a top-level `sepBy` list), so
+      // consider it last.
+      const spliceCandidates: FoundNode<N>[] = [...candidates, { node: root, path: [] }]
+      for (const { node, path } of spliceCandidates) {
+        if (!this._reps.has(node.type)) continue // grammar didn't prove this rule a repetition
+        const { start: cStart, end: cEnd } = absoluteSpanCST(root as unknown as { span: Span; children?: readonly unknown[] }, path)
+        if (!(cStart <= from && to <= cEnd)) continue
+        const spliced = tryListSplice(root, path, node, cStart, newInput, from, to, delta, this._fns, this._opts.build)
+        if (spliced) return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: spliced }, [], newInput)
+      }
     }
 
     return reparse()
   }
+}
+
+/**
+ * The relative (parent-offset) tree backing a doc. Currently identical to the
+ * public `doc.tree` (which is relative); kept as a named internal handle for the
+ * reuse-metric tests, which assert on the shareable representation explicitly.
+ */
+export function relTreeOf<N extends NodeLike>(doc: ParseDoc<N>): N | null {
+  return doc.tree
 }
 
 /**
@@ -327,12 +728,14 @@ export function parseDoc<N extends NodeLike>(
   input: string,
   opts: ParseDocOptions<N> = {},
 ): ParseDoc<N> {
-  const ruleFn = registry[rootRule]
-  if (!ruleFn) throw new Error(`No rule '${rootRule}' in registry`)
+  const entry = registry[rootRule]
+  if (!entry) throw new Error(`No rule '${rootRule}' in registry`)
   const ctx: ParseContext = { trackLines: false, state: opts.state, build: opts.build }
-  const r: ParseResult<N> = ruleFn(input, 0, ctx)
+  const r: ParseResult<N> = asRuleFn(entry)(input, 0, ctx)
   if (r.ok) {
-    return new ParseDocImpl(registry, rootRule, opts, r.value, [], input)
+    // A fresh parse is ABSOLUTE; the relative form is materialized lazily on the
+    // first edit/spanAt, so a parse that's never edited pays no conversion.
+    return new ParseDocImpl(registry, rootRule, opts, { abs: r.value }, [], input)
   }
-  return new ParseDocImpl(registry, rootRule, opts, null, [{ ok: false, expected: r.expected, span: r.span }], input)
+  return new ParseDocImpl(registry, rootRule, opts, { abs: null }, [{ ok: false, expected: r.expected, span: r.span }], input)
 }

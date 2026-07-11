@@ -124,28 +124,31 @@ span-correct tree (verified against a full reparse):
 
 | Edit | Parséman incremental | [Lezer](https://lezer.codemirror.net/) incremental | Full reparse |
 | --- | --- | --- | --- |
-| Overtype a value (same length) | **1.9 µs** | 105 µs | ~560 µs |
-| Insert a character (+1) | **68 µs** | 108 µs | ~580 µs |
-| Insert a new element (structural) | 616 µs | **7.9 µs** | ~590 µs |
+| Overtype a value (same length) | **4.6 µs** | 107 µs | ~510 µs |
+| Insert a character (+1) | **8.1 µs** | 108 µs | ~510 µs |
+| Insert a new element (structural) | 29 µs | **8.0 µs** | ~510 µs |
 
-Two engines, two sweet spots:
+Parséman stores **parent-relative** spans in a plain object tree, so a length-changing edit
+never rewrites the offsets of the nodes after it — a subtree that slides as a unit with its
+parent keeps its parent-relative offsets and is shared by identity. That makes all three
+edit kinds cheap:
 
 - **In-place value edits** — overtyping, or typing a character into an existing token, the
-  overwhelmingly common editing operation — are Parséman's home turf. It re-parses just the
-  smallest containing rule and shares every untouched node by reference, so an overtype is
-  **~300× faster than a full reparse** and well ahead of Lezer.
-- **Structural edits** — inserting or removing a node in a large collection — are Lezer's.
-  Its fragment reuse keeps the untouched sibling subtrees and re-parses almost nothing;
-  Parséman re-parses the whole containing rule (here, the 200-element array), landing near
-  full-reparse cost.
+  overwhelmingly common editing operation — re-parse just the smallest containing rule and
+  share every untouched node by reference. An overtype is **~110× faster than a full
+  reparse** and ~20× ahead of Lezer; a character insert is nearly as cheap (no O(n) offset
+  shift to pay).
+- **Structural edits** — inserting or removing an element in a large collection — reuse the
+  collection's untouched tail elements by identity ([opt-in
+  `structuralReuse`](./incremental#structural-edits-opt-in-list-reuse)), re-parsing only the
+  disturbed span. That takes the 200-element-array insert from ~full-reparse cost down to
+  **~30 µs** — within a few × of Lezer's chunked buffer-tree reuse, which does the tail
+  shift in O(log) where Parséman's flat object list does it in O(trailing siblings).
 
-The reason is the tree representation. Parséman stores **absolute** spans in a plain object
-tree, so a length-changing edit shifts the offsets of every node after it — negligible for
-a localized value edit, O(nodes-after-edit) for a structural one. Lezer stores a buffer
-tree with relative offsets built for exactly this case. If your editor mostly sees value
-edits (a linter or formatter re-running as tokens change), Parséman's re-parse is
-effectively free; if it sees heavy structural churn in large documents, Lezer's design
-wins. Pick for your edit mix.
+Absolute positions come from the O(depth) `spanAt(path)` cursor, or `absolutizeCST(tree)`
+for the whole tree at once. If your editor mostly sees value edits (a linter or formatter
+re-running as tokens change), Parséman's re-parse is effectively free; even heavy structural
+churn is now within a small factor of Lezer.
 
 ## Reproducing the numbers
 
