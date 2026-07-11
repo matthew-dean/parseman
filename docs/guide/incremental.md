@@ -79,9 +79,17 @@ This stays **sound automatically** — you don't have to promise anything about 
 `parseDoc` reads the grammar and **only ever splices a rule it can prove is a genuine
 repetition** (`many` / `sepBy` / `oneOrMore`). A fixed-arity sequence of same-typed tokens
 (e.g. `Triple = Num ',' Num ',' Num`) has CST children that look *exactly* like a 3-element
-list, but its grammar is a plain `sequence` with no repetition — so it is never spliced and
-falls back to a full, correct reparse. The result of `edit()` is always structurally
-identical to a fresh parse, flag or no flag.
+list, but its grammar is a plain `sequence` with no repetition — so it is never spliced.
+
+The splice is only an *extra* optimization layered on top of the normal reparse path: on
+every edit, `edit()` first re-parses the **smallest enclosing rule that still parses cleanly**
+and grafts just that subtree (see [How `edit()` works](#how-edit-works)); the splice is tried
+only when that finds nothing and the containing collection is a large fraction of the
+document. So declining the splice doesn't *cause* a full reparse — it just doesn't accelerate
+one. A whole-document reparse happens only when the change can't be absorbed by any rule short
+of the root, which is exactly what a fixed-arity element-count change is (no rule accepts the
+new count). A *value* edit inside that same `Triple` still re-parses just the small enclosing
+rule. Either way, `edit()` is structurally identical to a fresh parse — flag or no flag.
 
 For that proof, pass the **`rules()` combinators** as the registry (what the examples above
 do) — parseDoc inspects their grammar. If you instead pass bare parse *functions*, there's

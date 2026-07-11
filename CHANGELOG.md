@@ -25,7 +25,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   automatically**: parseDoc inspects the grammar and only ever splices a rule it can prove is a
   genuine repetition (`many`/`sepBy`/`oneOrMore`). A fixed-arity sequence of same-typed tokens
   (e.g. `Triple = Num ',' Num ',' Num`) has CST children indistinguishable from a list but a
-  non-repetition grammar, so it's never spliced — it falls back to a full, correct reparse. This
+  non-repetition grammar, so it's never spliced. The splice is only an extra optimization on top
+  of the normal reparse path (which already re-parses the smallest enclosing rule that still
+  parses cleanly and grafts just that subtree); declining it doesn't *cause* a full reparse, it
+  just doesn't accelerate one, and a whole-document reparse happens only when the change can't be
+  absorbed by any rule short of the root (as a fixed-arity element-count change can't). This
   requires passing the `rules()` **combinators** as the registry (so `Registry` now accepts
   combinators alongside bare functions); a bare-function registry carries no grammar to inspect, so
   structural reuse simply doesn't engage. Off by default only as a newer opt-in optimization, not

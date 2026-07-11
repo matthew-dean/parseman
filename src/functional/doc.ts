@@ -682,13 +682,16 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: newTree }, [], newInput)
     }
 
-    // No localized rule reparse converged — the edit is structural. Before paying
-    // a full reparse, try reusing the untouched tail of a containing collection
-    // (add/remove an element in a list). We only ever splice a rule the GRAMMAR
-    // proves is a genuine repetition (`this._reps`, from its combinator def) — a
-    // fixed-arity same-typed sequence is structurally indistinguishable from a list
-    // by its CST alone, so splicing it could accept a wrong element count; it's
-    // excluded here and falls back to a full, correct reparse. Innermost containing
+    // No localized enclosing-rule reparse converged above — the widening loop
+    // already tried (and failed to graft) the smallest rule that re-parses cleanly,
+    // so we're otherwise headed for a full reparse. This splice is the extra rescue
+    // for the one case where that's expensive: a structural add/remove inside a
+    // collection that's a large fraction of the document. We only ever splice a rule
+    // the GRAMMAR proves is a genuine repetition (`this._reps`, from its combinator
+    // def) — a fixed-arity same-typed sequence is indistinguishable from a list by
+    // its CST alone, so splicing it could accept a wrong element count; it's excluded
+    // and the (already-unavoidable) full reparse stands. Declining here doesn't
+    // *cause* the full reparse — it just doesn't accelerate it. Innermost containing
     // collection first; a candidate whose disturbed middle doesn't tile cleanly
     // returns null and we widen. Correctness net is the incremental oracle fuzz.
     if (this._opts.structuralReuse && delta !== 0 && !this._opts.rebuild) {
