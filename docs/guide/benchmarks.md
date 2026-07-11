@@ -124,9 +124,9 @@ span-correct tree (verified against a full reparse):
 
 | Edit | Parséman incremental | [Lezer](https://lezer.codemirror.net/) incremental | Full reparse |
 | --- | --- | --- | --- |
-| Overtype a value (same length) | **4.5 µs** | 102 µs | ~590 µs |
-| Insert a character (+1) | **7.6 µs** | 105 µs | ~585 µs |
-| Insert a new element (structural) | 31 µs | **7.8 µs** | ~595 µs |
+| Overtype a value (same length) | **4.6 µs** | 107 µs | ~510 µs |
+| Insert a character (+1) | **8.1 µs** | 108 µs | ~510 µs |
+| Insert a new element (structural) | 29 µs | **8.0 µs** | ~510 µs |
 
 Parséman stores **parent-relative** spans in a plain object tree, so a length-changing edit
 never rewrites the offsets of the nodes after it — a subtree that slides as a unit with its
@@ -135,7 +135,7 @@ edit kinds cheap:
 
 - **In-place value edits** — overtyping, or typing a character into an existing token, the
   overwhelmingly common editing operation — re-parse just the smallest containing rule and
-  share every untouched node by reference. An overtype is **~130× faster than a full
+  share every untouched node by reference. An overtype is **~110× faster than a full
   reparse** and ~20× ahead of Lezer; a character insert is nearly as cheap (no O(n) offset
   shift to pay).
 - **Structural edits** — inserting or removing an element in a large collection — reuse the

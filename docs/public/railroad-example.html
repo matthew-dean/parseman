@@ -621,7 +621,7 @@ At runtime, these constants can be found on the Diagram class.
   { name: "Array", dsl: function(){ return Diagram(Sequence(Terminal("["), Optional(OneOrMore(NonTerminal("Value"), Terminal(","))), Terminal("]"))); } }
   ];
   rules.forEach(function (r) {
-    var host = document.querySelector('.diagram[data-rule="' + r.name.replace(/"/g, '\\"') + '"]');
+    var host = document.querySelector('.diagram[data-rule=' + CSS.escape(r.name) + ']');
     if (!host) return;
     try { r.dsl().addTo(host); }
     catch (e) { host.textContent = 'diagram error: ' + e.message; }
