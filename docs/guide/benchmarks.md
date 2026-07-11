@@ -67,18 +67,17 @@ size in the charts above:
 
 | Fixture | Parséman macro | [Peggy](https://peggyjs.org/) | [Chevrotain](https://chevrotain.io/) | Native |
 | --- | --- | --- | --- | --- |
-| JSON large (12 kB) | **125 µs** | 472 | 1,946 | `JSON.parse` 45 µs |
-| JSON medium (1.8 kB) | **15 µs** | 67 | 245 | `JSON.parse` 4 µs |
-| CSV large (14.8 kB) | **71 µs** | 447 | 1,301 | — |
-| GraphQL large (7.8 kB) | **154 µs** | 423 | 768 | — |
+| JSON large (12 kB) | **125 µs** | 472 | 1,783 | `JSON.parse` 44 µs |
+| JSON medium (1.8 kB) | **16 µs** | 68 | 232 | `JSON.parse` 4 µs |
+| CSV large (14.8 kB) | **74 µs** | 430 | 1,045 | — |
+| GraphQL large (7.8 kB) | **131 µs** | 373 | 671 | — |
 
 The zero-setup **interpreter** stays close behind with no compile step at all — and after
 recent interpreter fast-paths (single-char literals, comma/line-comment trivia) it's roughly
 **2× faster than before**. On JSON, CSV, *and* GraphQL it's now the fastest of *any* option
-here except Parséman's own macro build: ahead of Peggy (a near tie at the smallest GraphQL
-input, clearly ahead at medium and large), and well ahead of Parsimmon, Chevrotain, Nearley,
-and Jison. Reach for the macro build when you want the last 2–3×; either way you pay nothing
-up front.
+here except Parséman's own macro build: ahead of Peggy at every size (comfortably on JSON and
+CSV, narrowly on GraphQL), and well ahead of Parsimmon, Chevrotain, Nearley, and Jison. Reach
+for the macro build when you want the last 2–3×; either way you pay nothing up front.
 
 ## Parsing to a syntax tree
 
@@ -91,17 +90,17 @@ span capture). Measured on the same JSON fixtures (`pnpm bench:svg`, tree-buildi
 
 | Parser | small (52 B) | medium (1.8 kB) | large (12 kB) | Output |
 | --- | --- | --- | --- | --- |
-| **Parséman CST (macro build)** | **0.94 µs** | **27.5 µs** | **226 µs** | object tree + spans |
-| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.31 µs | 76.6 µs | 626 µs | compact buffer tree |
-| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.87 µs | 84.9 µs | 708 µs | compact buffer tree |
-| Parséman CST (interpreter) | 2.76 µs | 102 µs | 623 µs | object tree + spans |
-| [Chevrotain](https://chevrotain.io/) CST | 7.38 µs | 231 µs | 1.78 ms | object CST |
+| **Parséman CST (macro build)** | **0.99 µs** | **29.0 µs** | **246 µs** | object tree + spans |
+| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.40 µs | 68.8 µs | 576 µs | compact buffer tree |
+| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.70 µs | 77.5 µs | 649 µs | compact buffer tree |
+| Parséman CST (interpreter) | 2.76 µs | 90.8 µs | 579 µs | object tree + spans |
+| [Chevrotain](https://chevrotain.io/) CST | 7.54 µs | 243 µs | 1.83 ms | object CST |
 
 **Macro build** = compiled by the bundler plugin at build time (zero runtime setup).
 **Interpreter** = default combinator runtime, no `compile()` or macro. These are the two
 ways to run Parséman; the chart shows both against Lezer and Chevrotain.
 
-**Compiled Parséman CST (macro build) beats Lezer at every fixture size** — ~2.8× at
+**Compiled Parséman CST (macro build) beats Lezer at every fixture size** — ~2.3× at
 large — while building a directly-usable object tree with per-node spans. Optional
 [`captureTrivia`](./trivia) (`parser({ captureTrivia: true })`) also logs whitespace
 between tokens for formatters — it adds ~5% on this fixture, so it isn't a separate bar.
@@ -110,8 +109,8 @@ editor pipeline; Parséman emits JS objects ready for formatters and refactors w
 second walk. Pick the output your consumer actually needs.
 
 Even the zero-setup **interpreter** CST holds its own against a purpose-built incremental
-generator: it's within ~1.2× of Lezer parse-only at small inputs, slightly ahead at large
-(623 µs vs 626 µs) while building a richer object tree, and **~2.9× faster than
+generator: it's within ~1.2× of Lezer parse-only at small inputs, neck-and-neck at large
+(579 µs vs 576 µs) while building a richer object tree, and **~2.7–3× faster than
 Chevrotain** throughout. Compile it (macro build) and it moves ahead of Lezer outright.
 
 ## Incremental re-parse

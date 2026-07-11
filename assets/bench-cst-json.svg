@@ -17,64 +17,64 @@
 <text x="20" y="145" font-size="12.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">warm parse — small  (52 bytes)</text>
 <text x="230" y="180" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Parséman CST (macro build)</text>
 <rect x="238" y="165" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="165" width="8.6" height="18" rx="3" fill="#534AB7"/>
-<text x="251.61441632737552" y="180" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.95 µs</text>
+<rect x="238" y="165" width="9.0" height="18" rx="3" fill="#534AB7"/>
+<text x="251.96225698779145" y="180" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.99 µs</text>
 <text x="230" y="208" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Lezer (parse only)</text>
 <rect x="238" y="193" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="193" width="13.6" height="18" rx="3" fill="#5B7FC7"/>
-<text x="256.6344148349882" y="208" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.37 µs</text>
+<rect x="238" y="193" width="14.0" height="18" rx="3" fill="#5B7FC7"/>
+<text x="256.95084763619496" y="208" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.40 µs</text>
 <text x="230" y="236" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Lezer (parse + walk)</text>
 <rect x="238" y="221" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="221" width="14.6" height="18" rx="3" fill="#8FA8D9"/>
-<text x="257.6005565710695" y="236" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.72 µs</text>
+<rect x="238" y="221" width="14.8" height="18" rx="3" fill="#8FA8D9"/>
+<text x="257.799496913883" y="236" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.70 µs</text>
 <text x="230" y="264" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Parséman CST (interpreter)</text>
 <rect x="238" y="249" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="249" width="15.8" height="18" rx="3" fill="#C4BAFF"/>
-<text x="258.76784796690674" y="264" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">3.17 µs</text>
+<rect x="238" y="249" width="15.0" height="18" rx="3" fill="#C4BAFF"/>
+<text x="257.96215159582505" y="264" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.76 µs</text>
 <text x="230" y="292" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Chevrotain CST</text>
 <rect x="238" y="277" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="277" width="24.7" height="18" rx="3" fill="#BA7517"/>
-<text x="267.67983696119165" y="292" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">7.78 µs</text>
+<rect x="238" y="277" width="24.8" height="18" rx="3" fill="#BA7517"/>
+<text x="267.75301618043034" y="292" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">7.54 µs</text>
 <text x="20" y="321" font-size="12.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">warm parse — medium  (1.8 kB)</text>
 <text x="230" y="356" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Parséman CST (macro build)</text>
 <rect x="238" y="341" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="341" width="47.9" height="18" rx="3" fill="#534AB7"/>
-<text x="290.8795645766145" y="356" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">29.3 µs</text>
+<rect x="238" y="341" width="48.5" height="18" rx="3" fill="#534AB7"/>
+<text x="291.53393741688933" y="356" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">29.0 µs</text>
 <text x="230" y="384" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Lezer (parse only)</text>
 <rect x="238" y="369" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="369" width="75.7" height="18" rx="3" fill="#5B7FC7"/>
-<text x="318.6911818516048" y="384" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">73.2 µs</text>
+<rect x="238" y="369" width="74.8" height="18" rx="3" fill="#5B7FC7"/>
+<text x="317.7604153041174" y="384" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">68.8 µs</text>
 <text x="230" y="412" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Lezer (parse + walk)</text>
 <rect x="238" y="397" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="397" width="81.8" height="18" rx="3" fill="#8FA8D9"/>
-<text x="324.78528748175586" y="412" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">85.4 µs</text>
+<rect x="238" y="397" width="79.4" height="18" rx="3" fill="#8FA8D9"/>
+<text x="322.3760060050792" y="412" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">77.5 µs</text>
 <text x="230" y="440" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Parséman CST (interpreter)</text>
 <rect x="238" y="425" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="425" width="96.3" height="18" rx="3" fill="#C4BAFF"/>
-<text x="339.3262323685535" y="440" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">118 µs</text>
+<rect x="238" y="425" width="85.9" height="18" rx="3" fill="#C4BAFF"/>
+<text x="328.88934437958113" y="440" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">90.8 µs</text>
 <text x="230" y="468" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Chevrotain CST</text>
 <rect x="238" y="453" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="453" width="144.6" height="18" rx="3" fill="#BA7517"/>
-<text x="387.61248619593425" y="468" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">267 µs</text>
+<rect x="238" y="453" width="140.4" height="18" rx="3" fill="#BA7517"/>
+<text x="383.40929523583037" y="468" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">243 µs</text>
 <text x="20" y="497" font-size="12.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">warm parse — large  (11.9 kB)</text>
 <text x="230" y="532" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Parséman CST (macro build)</text>
 <rect x="238" y="517" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="517" width="140.4" height="18" rx="3" fill="#534AB7"/>
-<text x="383.42015117495436" y="532" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">252 µs</text>
-<text x="230" y="560" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Lezer (parse + walk)</text>
+<rect x="238" y="517" width="141.4" height="18" rx="3" fill="#534AB7"/>
+<text x="384.4431847000575" y="532" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">246 µs</text>
+<text x="230" y="560" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Lezer (parse only)</text>
 <rect x="238" y="545" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="545" width="230.7" height="18" rx="3" fill="#8FA8D9"/>
-<text x="473.70269437649955" y="560" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">680 µs</text>
+<rect x="238" y="545" width="216.3" height="18" rx="3" fill="#5B7FC7"/>
+<text x="459.31311420085467" y="560" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">576 µs</text>
 <text x="230" y="588" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Parséman CST (interpreter)</text>
 <rect x="238" y="573" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="573" width="239.5" height="18" rx="3" fill="#C4BAFF"/>
-<text x="482.46441754114767" y="588" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">732 µs</text>
-<text x="230" y="616" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Lezer (parse only)</text>
+<rect x="238" y="573" width="216.9" height="18" rx="3" fill="#C4BAFF"/>
+<text x="459.86887421114113" y="588" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">579 µs</text>
+<text x="230" y="616" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Lezer (parse + walk)</text>
 <rect x="238" y="601" width="386" height="18" rx="3" fill="#eaeef2"/>
-<rect x="238" y="601" width="240.2" height="18" rx="3" fill="#5B7FC7"/>
-<text x="483.18234480476144" y="616" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">737 µs</text>
+<rect x="238" y="601" width="229.6" height="18" rx="3" fill="#8FA8D9"/>
+<text x="472.6186441260011" y="616" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">649 µs</text>
 <text x="230" y="644" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Chevrotain CST</text>
 <rect x="238" y="629" width="386" height="18" rx="3" fill="#eaeef2"/>
 <rect x="238" y="629" width="386.0" height="18" rx="3" fill="#BA7517"/>
-<text x="629" y="644" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">1.90 ms</text>
+<text x="629" y="644" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">1.83 ms</text>
 </svg>
