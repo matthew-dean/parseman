@@ -182,12 +182,9 @@ recovery in a single pass, covered below — not incremental re-parse.
 
 Powering an editor is more than parsing: a language server has to survive a broken
 keystroke (recovery), answer *what can go here* (completions), flag problems
-(diagnostics), and do all of it fast enough to run on every edit. Historically that stack
-belonged to the editor-first generators — but they buy it by being context-*free* and
-generating a buffer tree in another artifact.
-
-Parséman now assembles the same stack from its own pieces, with two properties the
-generators don't have:
+(diagnostics), and do all of it fast enough to run on every edit. The editor-first
+generators own this by being context-*free* and generating a buffer tree in a separate
+artifact. Parséman gets there from its own pieces, with two properties they don't have:
 
 - **It runs on the fast path.** Recovery and the completions probe are emitted into the
   **compiled/macro** parser (`compile(g, { recovery: true })`), not just the interpreter —
@@ -202,13 +199,10 @@ generators don't have:
   Lezer/tree-sitter, whose context and tokenizer hooks live in a separate module but are
   still coupled to the generated grammar.
 
-The honest limits: the language service drives a full (or compiled) re-parse, and isn't
-yet fused with the incremental [`parseDoc`](./incremental) engine — an LSP can run both,
-but they're separate entry points, not one pipeline. And Lezer/tree-sitter still win
-**structural-edit** incremental and the reuse of an existing grammar (below). What changed
-is that *authoring a new language's editor support* — recover, complete, diagnose, on a
-fast compiled parser, with in-grammar context and JS values out — is now a place Parséman
-competes rather than concedes.
+Where the generators still lead: Lezer/tree-sitter win **structural-edit** incremental and
+the reuse of an existing grammar (below). The task Parséman covers end to end is
+*authoring a new language's editor support* — recover, complete, diagnose, on a fast
+compiled parser, with in-grammar context and JS values out.
 
 ## The developer-experience axis
 
@@ -281,9 +275,9 @@ become a reflexive go-to for parsing in general ("just grab a tree-sitter gramma
 that reflex is earned for **reusing an existing grammar inside an editor**, which isn't the
 same task as **authoring a new language's parser + editor support** — turning text into
 your own values or AST, *and* backing an LSP with recovery, completions, and diagnostics.
-Parséman now covers that second task end to end (see [the editor-backend
-axis](#the-editor-backend-axis)); the reflex to reach past it to an editor-first generator
-is really only earned when you're reusing a grammar that already exists. Point them at the latter and three editor-first tradeoffs come along: the grammar
+Parséman covers that second task end to end (see [the editor-backend
+axis](#the-editor-backend-axis)); reaching past it to an editor-first generator is really
+only warranted when you're reusing a grammar that already exists. Point them at the latter and three editor-first tradeoffs come along: the grammar
 is context-*free*, so any real context sensitivity (indentation, heredocs, a construct
 legal only *here*) drops you into a hand-written external scanner — **C** for tree-sitter —
 *outside* the grammar; the artifact you actually run is generated, so you debug a state
