@@ -42,6 +42,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   CSS-ish block / declaration-list / value-list grammar with whitespace + block-comment
   trivia), asserting trivia attribution and positions round-trip through incremental edits.
 
+### Fixes
+
+- **Compiled/interpreter span parity for trailing empty-match trivia.** The non-capturing
+  `compile()` codegen for a `sequence` advanced the cursor over inter-term trivia
+  unconditionally, so a trailing `optional` / `many` that matched empty folded the
+  preceding whitespace into the sequence's span — a compiled node's `span.end` then ran
+  past where the interpreter (which rolls the trivia back) ends it (e.g. the `a*b` node on
+  `'a * b + c'` ended at `6` vs `5`). The non-capturing branch now mirrors the interpreter
+  and the capturing branch: it scans trivia to a temp position and only commits the advance
+  when the following term consumes content past it. Adds an interpreter-vs-`compile()`
+  span-parity test.
+
 ### Breaking
 
 - **Removed the bespoke recovery combinators `recover`, `manyRecover`, and `sepByRecover`**
