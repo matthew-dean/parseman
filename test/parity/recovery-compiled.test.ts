@@ -6,7 +6,7 @@
  * interpreter. Covers `many`/`oneOrMore` (sepBy compiled recovery lands next).
  */
 import { describe, it, expect } from 'vitest'
-import { regex, literal, sequence, many, oneOrMore, run, compile } from '../../src/index.ts'
+import { regex, literal, sequence, many, oneOrMore, sepBy, rules, trivia, run, compile } from '../../src/index.ts'
 import { recoverScan, matchesAt, orSentinel, firstSetSentinel } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
 
@@ -23,10 +23,10 @@ function runCompiledTolerant(compiled: { parseWithContext(i: string, c: ParseCon
   return { ok: r.ok, value: r.value, errors }
 }
 
-function assertParity(entry: Combinator<unknown>, inputs: string[]) {
-  const compiled = compile(entry, undefined, { recovery: true })
+function assertParity(entry: Combinator<unknown>, inputs: string[], amb?: Combinator<unknown>) {
+  const compiled = compile(entry, undefined, { recovery: true }) // trivia is baked into compiled
   for (const input of inputs) {
-    const ri = run(entry, input, { tolerant: true })
+    const ri = run(entry, input, amb ? { tolerant: true, trivia: amb } : { tolerant: true })
     const rc = runCompiledTolerant(compiled, input)
     expect(rc.ok, `${input} ok`).toBe(ri.ok)
     expect(rc.value, `${input} value`).toEqual(ri.value)
@@ -48,6 +48,26 @@ describe('interpreter ⇔ compiled recovery parity (oneOrMore)', () => {
   const fenced = sequence(oneOrMore(decl), literal('%'))
   it('matches for a partial element resynced to the inferred terminator', () => {
     assertParity(fenced as Combinator<unknown>, ['a:1b:2%', 'a:1b:%', 'a:1$$b:2%', 'a:1%'])
+  })
+})
+
+describe('interpreter ⇔ compiled recovery parity (sepBy)', () => {
+  const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
+  it('no-trivia sepBy: first/middle/last/consecutive junk + empty elements', () => {
+    assertParity(block as Combinator<unknown>, [
+      '{a:1;b:2}', '{a:1;$$;b:2}', '{a:1;$$}', '{$$;a:1}', '{a:1}', '{}',
+      '{a:1;;b:2}', '{$$}', '{a:1;$$;$$;b:2}', '{;a:1}', '{a:1;b:2;$$}',
+    ])
+  })
+
+  const ws = trivia(oneOrMore(regex(/[ \t\n]+/)))
+  const tg = rules({ trivia: ws }, (self: { block: Combinator<unknown> }) => ({
+    block: sequence(literal('{'), sepBy(decl, literal(';')), literal('}')),
+  }))
+  it('ambient-trivia sepBy: recovery across whitespace (capturing/trivia paths)', () => {
+    assertParity(tg.block as Combinator<unknown>, [
+      '{ a:1 ; b:2 }', '{ a:1 ; $$ ; b:2 }', '{ a:1 ; $$ }', '{ $$ ; a:1 }', '{ }',
+    ], ws as Combinator<unknown>)
   })
 })
 

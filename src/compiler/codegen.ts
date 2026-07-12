@@ -1650,6 +1650,14 @@ function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, po
 function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepBy' }>, ctx: Ctx, pos: string): ER {
   const arrV = v(ctx, '_arr')
   const curV = v(ctx, '_cur')
+  const rec = !!ctx.recovery
+  // Recovery sync = the separator's own follow (resync to the next separator) OR the
+  // enclosing delimiter published as _ctx._sync — captured at ENTRY (element parses
+  // clobber _ctx._sync). The separator sentinel is exact for single-char separators.
+  const mySyncV = rec ? v(ctx, '_mysy') : ''
+  const exp = rec ? hoistExpected(ctx, deriveExpectedArr([def.parser])) : ''
+  const sepSent = rec ? syncSentinelExpr(firstSetOf(def.separator)) : null
+  const scanSync = sepSent ? `_ctx._rec.or(${sepSent}, ${mySyncV})` : mySyncV
 
   const { stmts: firstStmts, okVar: firstOk, valVar: firstVal, endVar: firstEnd } =
     emitFallible(def.parser, ctx, pos, true)
@@ -1657,16 +1665,56 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   const stmts: string[] = [
     `${ind(ctx)}const ${arrV} = []`,
     `${ind(ctx)}let ${curV} = ${pos}`,
+    ...(rec ? [`${ind(ctx)}const ${mySyncV} = _ctx._sync`] : []),
     ...firstStmts,
-    `${ind(ctx)}if (${firstOk}) {`,
   ]
-  ctx.indent++
-  stmts.push(
-    `${ind(ctx)}${arrV}.push(${firstVal})`,
-    `${ind(ctx)}${curV} = ${firstEnd}`,
-    `${ind(ctx)}while (${curV} < input.length) {`,
-  )
-  ctx.indent++
+
+  // A failed element after a real separator. Strict → the exact original break
+  // (byte-identical). Tolerant → skip to the sync, emit a ParseError, and continue
+  // (unless already sitting on the enclosing sync). `originalFail` is that site's
+  // exact strict string (the three sites differ — braces / rollback).
+  const failItem = (nextOkVar: string, itemPosVar: string, rb: string, originalFail: string): string[] => {
+    if (!rec) return [originalFail]
+    const rr = v(ctx, '_rr')
+    return [
+      `${ind(ctx)}if (!${nextOkVar}) {`,
+      `${ind(ctx)}  if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPosVar}, _ctx)) {`,
+      `${ind(ctx)}    const ${rr} = _ctx._rec.scan(input, ${itemPosVar}, _ctx, ${scanSync}, ${exp})`,
+      `${ind(ctx)}    ${arrV}.push(${rr}.error); ${curV} = ${rr}.end; continue`,
+      `${ind(ctx)}  }`,
+      `${ind(ctx)}  ${rb}break`,
+      `${ind(ctx)}}`,
+    ]
+  }
+
+  // First element + loop entry. Strict keeps the exact `if (firstOk) { … while }`
+  // shape (byte-identical). Tolerant recovers a junk first element (unless sitting
+  // on the enclosing sync) and still enters the loop via a `did` flag.
+  if (rec) {
+    const rr0 = v(ctx, '_rr0')
+    const didV = v(ctx, '_did')
+    stmts.push(
+      `${ind(ctx)}let ${didV} = false`,
+      `${ind(ctx)}if (${firstOk}) { ${arrV}.push(${firstVal}); ${curV} = ${firstEnd}; ${didV} = true }`,
+      `${ind(ctx)}else if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${pos}, _ctx)) {`,
+      `${ind(ctx)}  const ${rr0} = _ctx._rec.scan(input, ${pos}, _ctx, ${scanSync}, ${exp})`,
+      `${ind(ctx)}  ${arrV}.push(${rr0}.error); ${curV} = ${rr0}.end; ${didV} = true`,
+      `${ind(ctx)}}`,
+      `${ind(ctx)}if (${didV}) {`,
+    )
+    ctx.indent++
+    stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
+    ctx.indent++
+  } else {
+    stmts.push(`${ind(ctx)}if (${firstOk}) {`)
+    ctx.indent++
+    stmts.push(
+      `${ind(ctx)}${arrV}.push(${firstVal})`,
+      `${ind(ctx)}${curV} = ${firstEnd}`,
+      `${ind(ctx)}while (${curV} < input.length) {`,
+    )
+    ctx.indent++
+  }
 
   // Mirror interpreter sepBy — separate rollback marks for pre-sep and post-sep trivia.
   let sepAtPos = curV
@@ -1700,7 +1748,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       stmts.push(
         ...nextStmts,
         // item failed → unwind the separator too, back to the end of the last item
-        `${ind(ctx)}if (!${nextOk}) { ${rollbackToSep}break }`,
+        ...failItem(nextOk, npV, rollbackToSep, `${ind(ctx)}if (!${nextOk}) { ${rollbackToSep}break }`),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -1718,7 +1766,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         emitFallible(def.parser, ctx, npV, true)
       stmts.push(
         ...nextStmts,
-        `${ind(ctx)}if (!${nextOk}) break`,
+        ...failItem(nextOk, npV, '', `${ind(ctx)}if (!${nextOk}) break`),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -1743,7 +1791,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       emitFallible(def.parser, ctx, sepEnd, true)
     stmts.push(
       ...nextStmts,
-      `${ind(ctx)}if (!${nextOk}) { ${nextRb}break }`,
+      ...failItem(nextOk, sepEnd, nextRb, `${ind(ctx)}if (!${nextOk}) { ${nextRb}break }`),
       `${ind(ctx)}${arrV}.push(${nextVal})`,
       `${ind(ctx)}${curV} = ${nextEnd}`,
     )
