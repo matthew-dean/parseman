@@ -3,6 +3,36 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.26.3 — 2026-07-12
+
+- **Fix: a `withCtx` whose inner parser is multiply-reachable self-aliased into infinite
+  recursion.** `withCtx` codegen wraps its inner parser in a named function (`_wcfN`) so
+  the inner can run against a modified context, pre-registering `inner → _wcfN` first so
+  any *other* reference to that same inner reuses the one named fn. It then emitted the
+  inner body through the hoist wrapper `emit()` — which re-found that very pre-registration
+  and emitted a **self-call** (`_wcfN` calls `_wcfN`) whenever the inner was hoistable and
+  referenced ≥2× (e.g. a shared `declarationList` reached from several rules). The `_wcfN`
+  body became a call to itself → stack overflow on *any* input. Codegen now emits the inner
+  body directly (`emitDispatch`, never re-entering the hoist wrapper on the just-registered
+  parser), mirroring `emit()`'s own register-then-`emitDispatch` pattern. A shared `withCtx`
+  inner now hoists correctly, so the grammar-side `label(...)` workaround (a transparent,
+  non-hoistable wrapper) is no longer needed. Grammars without this pattern are byte-identical.
+- **Fix: `compose()` over a compiled base whose grammar contains a `withCtx`.** Like the
+  0.26.2 gated-`choice` fix, `serializeRuleMap` bailed (`Unserializable`) on *any* `withCtx`,
+  so a grammar using it silently shipped **full lowered pieces** instead of re-lowerable IR.
+  Those baked pieces were lowered at the base package's build (its own CST/build helpers,
+  e.g. a `cst()` closure) and spliced verbatim into the composing grammar's fused closure —
+  which references build helpers absent from the fused scope (`cst is not defined`) and
+  corrupts sibling dispatch. Standalone the base parsed fine; only compose-of-the-compiled-
+  base broke. The serializer now round-trips `withCtx` through a dedicated `_wc` helper that
+  rebuilds it **and re-attaches its `extraSrc`** (the source of the `extra`/state value) —
+  load-bearing for static fusion, the same way `_gch` re-attaches `gateSrcs`. A plain
+  `withCtx(value, inner)` would leave `extraSrc` unset → codegen emits a *source-less runtime
+  closure* (a non-static callback) → the macro's build-time `emitFusedSource` fails and a
+  downstream `compose()` silently falls back to a *runtime* fuse. Preserving `extraSrc` keeps
+  the re-lowered state getter inlined from source, so the multi-layer compose stays statically
+  fused. Grammars without `withCtx` serialize byte-for-byte as before.
+
 ## 0.26.2 — 2026-07-12
 
 - **Fix: `compose()` over a compiled base whose grammar has a gated `choice`.** A
