@@ -2577,7 +2577,14 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         ctx.indent    = 1
         ctx.failLabel = '_pfail'  // failures break _pfail (same as emitLazy)
         ctx.recordFail = true     // shared body always records (see emitLazy)
-        const innerR = emit(innerParser, ctx, '_pos')
+        // Emit the inner BODY directly (emitDispatch), not through the hoist
+        // wrapper `emit()`. We just pre-registered `innerParser → _wcf` above so
+        // OTHER references reuse this named fn; re-entering `emit()` here would
+        // re-find that same registration and emit a SELF-CALL (`_wcf` calls
+        // `_wcf`) whenever the inner is multiply-reachable (`counts > 1`) and big
+        // enough to hoist — infinite recursion at parse time. Mirrors `emit()`'s
+        // own register-then-emitDispatch pattern (never emit-on-self).
+        const innerR = emitDispatch(innerParser, ctx, '_pos')
         ctx.indent    = savedIndent
         ctx.failLabel = savedFailLabel
         ctx.recordFail = savedRecord

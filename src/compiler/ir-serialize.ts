@@ -33,6 +33,7 @@ import { scanTo } from '../combinators/scanTo.ts'
 import { token } from '../combinators/token.ts'
 import { transform, skip, trivia, label, field } from '../combinators/map.ts'
 import { expect as expectC } from '../combinators/expect.ts'
+import { withCtx } from '../combinators/withCtx.ts'
 
 type Comb = Combinator<unknown>
 
@@ -51,6 +52,7 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'field':
     case 'not':
     case 'node':
+    case 'withCtx':
     case 'expect':    return [def.parser]
     case 'grammar':   return def.triviaParser ? [def.parser, def.triviaParser] : [def.parser]
     case 'sepBy':     return [def.parser, def.separator]
@@ -61,7 +63,6 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'regex':
     case 'keywords':
     case 'guard':
-    case 'withCtx':
     case 'recover':
     case 'unknown':   return []
   }
@@ -146,17 +147,34 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     ;(c._def as { gateSrcs?: (string | null)[] }).gateSrcs = gateSrcs
     return c
   }
+  // `_wc` rebuilds a `withCtx` AND restores its `_def.extraSrc` (the source of the
+  // `extra`/state value) — the withCtx mirror of `_tf`/`_nd`/`_gch`. The source is
+  // eval'd to the live `extra` value (interpreted mode) and recorded on the def so
+  // re-lowering INLINES the state getter statically (`() => (extraSrc)`), keeping the
+  // artifact fusible via `emitFusedSource`. A plain `withCtx(value, inner)` would
+  // leave `extraSrc` unset → codegen emits a source-less runtime closure (a non-static
+  // callback) → `emitFusedSource` fails and a downstream `compose()` silently falls
+  // back to a runtime fuse. A missing/failed source falls back to `undefined` state —
+  // the same best-effort contract as `_tf`.
+  const _wc = (src: string, inner: Comb): Comb => {
+    let extra: unknown
+    // eslint-disable-next-line no-eval
+    try { extra = (0, eval)(`(${src})`) } catch { extra = undefined }
+    const w = (withCtx as (e: unknown, c: Comb) => Comb)(extra, inner)
+    ;(w._def as { extraSrc?: string }).extraSrc = src
+    return w
+  }
   // eslint-disable-next-line no-new-func
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'node', 'parser',
-    'scanTo', 'token', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_nd', '_gch',
+    'scanTo', 'token', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice,
     many, oneOrMore, optional, sepBy, not, node, parser,
-    scanTo, token, transform, skip, trivia, label, field, expectC, _tf, _nd, _gch,
+    scanTo, token, transform, skip, trivia, label, field, expectC, _tf, _nd, _gch, _wc,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -212,7 +230,7 @@ class Serializer {
       this.analyze(target, active)                      // inline (unnamed, non-recursive) — rare
       return
     }
-    if (def.tag === 'guard' || def.tag === 'withCtx' || def.tag === 'recover' || def.tag === 'unknown') {
+    if (def.tag === 'guard' || def.tag === 'recover' || def.tag === 'unknown') {
       throw new Unserializable(`unsupported tag ${def.tag}`)
     }
     this.counts.set(c, (this.counts.get(c) ?? 0) + 1)
@@ -329,8 +347,17 @@ class Serializer {
         const trivia = def.clearTrivia ? 'null' : def.triviaParser ? kid(def.triviaParser) : 'undefined'
         return `parser({ trivia: ${trivia}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(def.parser)})`
       }
+      case 'withCtx': {
+        // A `withCtx` round-trips through `_wc`, which rebuilds it AND re-attaches
+        // `_def.extraSrc` from the captured `extra` SOURCE. Preserving extraSrc is
+        // load-bearing for the same reason as `_tf`/`_gch`: on re-lowering, codegen
+        // inlines the state getter from source (a static callback), so the re-lowered
+        // artifact stays STATICALLY FUSIBLE. Without a captured source we cannot
+        // re-emit the state statically → keep full pieces (interpreter fallback).
+        if (def.extraSrc === undefined) throw new Unserializable('withCtx without extraSrc')
+        return `_wc(${JSON.stringify(def.extraSrc)}, ${kid(def.parser)})`
+      }
       case 'guard':
-      case 'withCtx':
       case 'recover':
       case 'unknown':
         throw new Unserializable(`unsupported tag ${def.tag}`)
