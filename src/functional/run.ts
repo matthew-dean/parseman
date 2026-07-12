@@ -1,9 +1,5 @@
-import type { Combinator, ParseContext, ParseError, ParseResult, RecoveryHelpers } from '../types.ts'
-import { recoverScan, matchesAt, orSentinel, firstSetSentinel } from '../recovery/scan.ts'
-
-/** Recovery helpers handed to a COMPILED tolerant parse via ctx._rec (the compiled
- * output can't import; the interpreter uses these functions directly). */
-const REC: RecoveryHelpers = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel }
+import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
+import { REC } from '../recovery/scan.ts'
 
 /**
  * Run a compiled/interpreted grammar entry against an input and collect the raw

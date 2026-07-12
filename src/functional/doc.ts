@@ -4,6 +4,22 @@
 import type { Combinator, ParseContext, ParseFail, ParseResult, ParserDef, Span } from '../types.ts'
 import type { NodeLike, CSTLeaf, CSTError } from '../cst/types.ts'
 import { relativizeCST, absoluteSpanCST } from '../cst/relative-spans.ts'
+import { REC } from '../recovery/scan.ts'
+
+/**
+ * Build the parse ctx for a (re)parse. In `tolerant` mode the same recovery bundle
+ * the interpreter/`run` use is installed (`_tolerant` + `_rec`), so a broken edit
+ * keeps producing a tree (with recovered `ParseError`s embedded) instead of
+ * collapsing to `null`. Strict mode is byte-identical to before. Every reparse site
+ * — root, localized rule reparse, list-splice middle, and the soundness probes —
+ * threads the SAME flag, so a probe's tolerance matches the parse it is checking
+ * (a mismatch would spuriously diverge and forgo reuse, never miscompare).
+ */
+function mkCtx(state: unknown, build: ParseContext['build'], tolerant: boolean): ParseContext {
+  return tolerant
+    ? { trackLines: false, state, build, _tolerant: true, _rec: REC }
+    : { trackLines: false, state, build }
+}
 
 /** A single compiled (or interpreted) rule: parse from `pos`, producing node `N`. */
 export type RuleFn<N> = (input: string, pos: number, ctx: ParseContext) => ParseResult<N>
@@ -116,6 +132,17 @@ export type ParseDocOptions<N extends NodeLike> = {
    * the flag only authorises *attempting* the reuse.
    */
   structuralReuse?: boolean
+  /**
+   * Parse tolerantly: `many`/`sepBy`/`oneOrMore` recover from a failed element
+   * (skip to an inferred sync point, embed a `ParseError` over the skipped span),
+   * so a broken edit keeps producing a tree instead of collapsing to `null` — the
+   * editor-backend path. Off by default (strict, byte-identical). Recovery is a cold
+   * path: well-formed input never triggers it. Every reparse the doc does — root,
+   * localized rule, and list-splice — inherits this flag, and the reuse-soundness
+   * probes run at the same tolerance so incremental reuse stays valid under recovery
+   * (a scan that would cross a splice boundary just falls back to a full reparse).
+   */
+  tolerant?: boolean
 }
 
 export interface ParseDoc<N extends NodeLike> {
@@ -310,8 +337,9 @@ function parseMiddle(
   ruleFn: RuleFn<NodeLike>,
   separator: string | null,
   build: ParseContext['build'],
+  tolerant: boolean,
 ): AnyChild[] | null {
-  const ctx: ParseContext = { trackLines: false, state: null, build }
+  const ctx: ParseContext = mkCtx(null, build, tolerant)
   const out: AnyChild[] = []
   let pos = reStart
   let guard = 0
@@ -355,6 +383,7 @@ function tryListSplice<N extends NodeLike>(
   delta: number,
   registry: Record<string, RuleFn<N>>,
   build: ParseContext['build'],
+  tolerant: boolean,
 ): N | null {
   const kids = C.children as ReadonlyArray<AnyChild>
   if (kids.length === 0) return null
@@ -420,7 +449,7 @@ function tryListSplice<N extends NodeLike>(
   const reEnd = cStart + kids[t]!.span.start + delta
   if (reEnd < reStart) return null
 
-  const middle = parseMiddle(newInput, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, build)
+  const middle = parseMiddle(newInput, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, build, tolerant)
   if (!middle) return null
 
   // Junction check: `tail` always begins with an ELEMENT (we advanced `t` to a
@@ -443,7 +472,7 @@ function tryListSplice<N extends NodeLike>(
     for (const sentinel of [' ', '￿']) {
       if (newInput[reEnd] === sentinel) continue
       const probed = newInput.slice(0, reEnd) + sentinel.repeat(newInput.length - reEnd)
-      const probe = parseMiddle(probed, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, build)
+      const probe = parseMiddle(probed, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, build, tolerant)
       if (!probe || probe.length !== middle.length) return null
       for (let i = 0; i < middle.length; i++) if (!structurallyEqual(probe[i], middle[i])) return null
     }
@@ -485,6 +514,14 @@ export function structurallyEqual(a: unknown, b: unknown): boolean {
   if (at === 'leaf' || at === 'trivia') {
     return (a as { value: string }).value === (b as { value: string }).value
   }
+  if (at === 'parseError') {
+    // Embedded recovered error: span already compared above; also compare the
+    // expected-token set so two errors at the same span but different expectations
+    // are not conflated (the oracle must distinguish them).
+    const ae = (a as { expected?: readonly string[] }).expected ?? []
+    const be = (b as { expected?: readonly string[] }).expected ?? []
+    return ae.length === be.length && ae.every((x, i) => x === be[i])
+  }
   if ((a as { type?: string }).type !== (b as { type?: string }).type) return false
   const ac = (a as { children?: readonly unknown[] }).children
   const bc = (b as { children?: readonly unknown[] }).children
@@ -515,13 +552,14 @@ function boundaryIsSafe<N extends NodeLike>(
   state: unknown,
   build: ParseContext['build'],
   produced: ParseResult<N>,
+  tolerant: boolean,
 ): boolean {
   if (!produced.ok) return false
   if (boundary >= newInput.length) return true // nothing after the node to peek at
   for (const sentinel of [' ', '￿']) {
     if (newInput[boundary] === sentinel) continue
     const probed = newInput.slice(0, boundary) + sentinel.repeat(newInput.length - boundary)
-    const ctx: ParseContext = { trackLines: false, state, build }
+    const ctx: ParseContext = mkCtx(state, build, tolerant)
     let r: ParseResult<N>
     try {
       r = ruleFn(probed, start, ctx)
@@ -649,7 +687,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       // reusing the untouched suffix would be unsound — widen to an ancestor
       // that does span the whole edit (ultimately a full reparse).
       if (!(absStart <= from && to <= absEnd)) continue
-      const ctx: ParseContext = { trackLines: false, state: node.state, build: this._opts.build }
+      const ctx: ParseContext = mkCtx(node.state, this._opts.build, !!this._opts.tolerant)
       const r = ruleFn(newInput, absStart, ctx)
       if (!r.ok) continue
       if (r.span.end !== absEnd + delta) continue
@@ -658,7 +696,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       // provably read no input past its own end (else a lookahead/backtrack
       // crossed the splice). Widen to the next candidate — ultimately a full
       // reparse — when it can't be proven.
-      if (!boundaryIsSafe(ruleFn, newInput, absStart, absEnd + delta, node.state, this._opts.build, r)) {
+      if (!boundaryIsSafe(ruleFn, newInput, absStart, absEnd + delta, node.state, this._opts.build, r, !!this._opts.tolerant)) {
         continue
       }
 
@@ -700,7 +738,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
         if (!this._reps.has(node.type)) continue // grammar didn't prove this rule a repetition
         const { start: cStart, end: cEnd } = absoluteSpanCST(root as unknown as { span: Span; children?: readonly unknown[] }, path)
         if (!(cStart <= from && to <= cEnd)) continue
-        const spliced = tryListSplice(root, path, node, cStart, newInput, from, to, delta, this._fns, this._opts.build)
+        const spliced = tryListSplice(root, path, node, cStart, newInput, from, to, delta, this._fns, this._opts.build, !!this._opts.tolerant)
         if (spliced) return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: spliced }, [], newInput)
       }
     }
@@ -730,7 +768,7 @@ export function parseDoc<N extends NodeLike>(
 ): ParseDoc<N> {
   const entry = registry[rootRule]
   if (!entry) throw new Error(`No rule '${rootRule}' in registry`)
-  const ctx: ParseContext = { trackLines: false, state: opts.state, build: opts.build }
+  const ctx: ParseContext = mkCtx(opts.state, opts.build, !!opts.tolerant)
   const r: ParseResult<N> = asRuleFn(entry)(input, 0, ctx)
   if (r.ok) {
     // A fresh parse is ABSOLUTE; the relative form is materialized lazily on the

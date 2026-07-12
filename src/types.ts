@@ -127,6 +127,11 @@ export type RecoveryHelpers = {
   /** Build a zero-width follow-set sentinel from a first-set. Called from compiled
    * code (via `_ctx`, never `_rp`) so recovery grammars stay macro-inlinable. */
   sentinel: (fs: FirstSet) => Combinator<unknown> | null
+  /** Embed a recovered error as a `parseError` CST child at the recovery point
+   * (no-op when CST capture is off). Called from both paths so the error lives in
+   * the tree — riding reused subtrees across incremental edits — not just the flat
+   * `_errors` channel. */
+  capture: (ctx: ParseContext, error: ParseError) => void
 }
 
 export type ParseContext = {

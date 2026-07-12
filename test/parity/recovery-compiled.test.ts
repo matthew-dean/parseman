@@ -6,11 +6,9 @@
  * interpreter. Covers `many`/`oneOrMore` (sepBy compiled recovery lands next).
  */
 import { describe, it, expect } from 'vitest'
-import { regex, literal, sequence, many, oneOrMore, sepBy, rules, trivia, run, compile, completionsAt } from '../../src/index.ts'
-import { recoverScan, matchesAt, orSentinel, firstSetSentinel } from '../../src/recovery/scan.ts'
+import { regex, literal, sequence, many, oneOrMore, sepBy, node, rules, trivia, run, compile, completionsAt, cstBuildHost } from '../../src/index.ts'
+import { REC } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
-
-const REC = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel }
 const ident = regex(/[a-z]+/)
 const num = regex(/[0-9]+/)
 const decl = sequence(ident, literal(':'), num)
@@ -106,6 +104,27 @@ describe('MACRO inline-expression recovers (macro-compiled grammars are recovera
       expect(rc.ok, `${input} ok`).toBe(ri.ok)
       expect(rc.value, `${input} value`).toEqual(ri.value)
       expect(errors, `${input} errors`).toEqual(ri.errors)
+    }
+  })
+})
+
+describe('interpreter ⇔ compiled recovery parity (CST mode: error node in the tree)', () => {
+  // Structural node() rules + cstBuildHost: a tolerant parse must embed the
+  // recovered error as a `parseError` CST child, identically on both paths.
+  const g = rules(self => ({
+    Block: node(sequence(literal('{'), sepBy(self.Decl, literal(';')), literal('}'))),
+    Decl: node(sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/))),
+  }))
+  const compiled = compile(g.Block as Combinator<unknown>, undefined, { recovery: true })
+  const inputs = ['{a:1;b:2}', '{a:1;$$;b:2}', '{a:1;$$}', '{$$;a:1}', '{a:1;$$;$$;b:2}']
+  it('embeds identical parseError nodes in the CST on both paths', () => {
+    for (const input of inputs) {
+      const ri = run(g.Block as Combinator<unknown>, input, { tolerant: true, build: cstBuildHost() })
+      const errors: unknown[] = []
+      const ctx = { trackLines: false, _errors: errors, _tolerant: true, _rec: REC, build: cstBuildHost() } as unknown as ParseContext
+      const rc = (compiled.parseWithContext(input, ctx, 0) as { ok: boolean; value: unknown })
+      expect(rc.ok, `${input} ok`).toBe(ri.ok)
+      expect(rc.value, `${input} tree`).toEqual(ri.value)
     }
   })
 })

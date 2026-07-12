@@ -2,7 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
 import { matchesEmpty } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
-import { matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
+import { matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
 
 /**
  * Parse one repetition item at `cur`, first skipping (and, in capture mode,
@@ -86,6 +86,7 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
           expected ??= deriveExpected(combinator)
           const { error, end } = recoverScan(input, cur, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
+          captureError(ctx, error)
           cur = end
           continue
         }
@@ -131,6 +132,7 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
           expected ??= deriveExpected(combinator)
           const { error, end } = recoverScan(input, cur, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
+          captureError(ctx, error)
           cur = end
           continue
         }
@@ -210,6 +212,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
         expected ??= deriveExpected(combinator)
         const rec = recoverScan(input, pos, ctx, orSentinel(separator, term), expected)
         values.push(rec.error as unknown as T)
+        captureError(ctx, rec.error)
         cur = rec.end
       }
       while (cur < input.length) {
@@ -253,6 +256,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
             expected ??= deriveExpected(combinator)
             const rec = recoverScan(input, nextPos, ctx, orSentinel(separator, term), expected)
             values.push(rec.error as unknown as T)
+            captureError(ctx, rec.error)
             cur = rec.end
             continue
           }

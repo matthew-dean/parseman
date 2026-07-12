@@ -1,4 +1,5 @@
-import type { Combinator, FirstSet, ParseContext, ParseError, ParseResult } from '../types.ts'
+import type { Combinator, FirstSet, ParseContext, ParseError, ParseResult, RecoveryHelpers } from '../types.ts'
+import { cstCaptureActive, pushCstChild } from '../cst/capture-buffer.ts'
 
 /**
  * Recovery MECHANISM — sync-source-agnostic. These primitives implement "scan
@@ -122,3 +123,23 @@ export function matchesAt(
 ): boolean {
   return probeAt(sentinel, input, pos, ctx)
 }
+
+/**
+ * Embed a recovered error as a `parseError` CST child at the recovery point, so the
+ * error lives IN the tree (rides reused subtrees across incremental edits; a tree
+ * walk finds every diagnostic) — not only in the flat `ctx._errors` side-channel.
+ * No-op when CST capture is off (value/AST mode). Both the interpreter list loops
+ * and the compiled recovery branches call this (the latter via `_ctx._rec.capture`),
+ * so the embedded node is identical on both paths.
+ */
+export function captureError(ctx: ParseContext, error: ParseError): void {
+  if (cstCaptureActive(ctx)) pushCstChild(ctx, error, error)
+}
+
+/**
+ * The recovery-helper bundle handed to a tolerant parse via `ctx._rec`. A COMPILED
+ * grammar can't import these, so the driver (`run`, `parseDoc`) injects them; the
+ * interpreter list loops read the same bundle, guaranteeing byte-identical recovery
+ * across paths. Shared here so every driver installs the exact same instance.
+ */
+export const REC: RecoveryHelpers = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel, capture: captureError }

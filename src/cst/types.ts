@@ -45,17 +45,17 @@ export type CSTLeaf = {
 }
 
 /**
- * A record of a failed rule parse — produced when error recovery is active.
- * Carries what was successfully parsed before the failure (partial children)
- * and the expected tokens at the failure point.
+ * A recovered parse error embedded in the tree at a recovery point (tolerant
+ * parsing). Spans exactly the skipped text; `expected` is what the grammar wanted
+ * there. Identical shape to the runtime `ParseError`, so recovery emits ONE value
+ * into both the CST `children` and the flat `ctx._errors` channel. A tree walk
+ * finds every diagnostic, and — because it rides in the tree — an incremental
+ * reuse keeps it attached to the untouched subtree it belongs to.
  */
 export type CSTError = {
-  readonly _tag: 'error'
-  readonly type: string
+  readonly _tag: 'parseError'
   readonly span: Span
   readonly expected: string[]
-  readonly children: CSTChild[]   // partial parse: what succeeded before failure
-  readonly state: unknown
 }
 
 export type CSTChild = CSTNode | CSTLeaf | CSTError

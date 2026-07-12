@@ -1,8 +1,5 @@
-import type { Combinator, ParseFail, ParseContext, ParseResult, RecoveryHelpers } from '../types.ts'
-import { recoverScan, matchesAt, orSentinel, firstSetSentinel } from '../recovery/scan.ts'
-
-/** Recovery helpers for a COMPILED tolerant completion probe (see run.ts). */
-const REC: RecoveryHelpers = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel }
+import type { Combinator, ParseFail, ParseContext, ParseResult } from '../types.ts'
+import { REC } from '../recovery/scan.ts'
 
 /** Anything `completionsAt` can probe: an interpreter combinator OR a `compile()`d
  * grammar. A grammar compiled with `{ recovery: true }` records the probe on its fast
