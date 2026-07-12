@@ -477,12 +477,43 @@ describe('parseScanShape — bounded repeat {n,m} (§8c)', () => {
     rec('', 0)
   }
 
-  // 7^7 ≈ 823k inputs — ~18× the other differentials here. Fine locally, but under
-  // v8 coverage instrumentation on a slow CI runner it can exceed vitest's 5s default
-  // per-test timeout (observed ~16s), so give this exhaustive case explicit headroom.
-  it('CSS colorHex: lowered scan == RegExp across all short inputs', () => {
-    differential(String.raw`#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])`, ['', '#', '0', '9', 'a', 'F', 'g'], 7)
-  }, 30_000)
+  // Same compiled-vs-RegExp discipline as `differential`, but over an explicit case
+  // list instead of a brute-force product — for bounds whose interesting inputs are
+  // longer than an exhaustive-to-depth search can afford to reach.
+  const diffCases = (src: string, cases: string[]) => {
+    const re = new RegExp('^(?:' + src + ')')
+    const compiled = compile(regex(new RegExp(src)))
+    for (const s of cases) {
+      const m = re.exec(s)
+      const want = m ? m[0].length : -1
+      const r = compiled.parse(s, 0)
+      const got = r.ok ? (r.value as string).length : -1
+      expect(got, JSON.stringify(s)).toBe(want)
+    }
+  }
+
+  // colorHex's whole point is the `{3,8}` bound, so target its boundaries directly.
+  // An exhaustive-to-depth-7 product never builds a hex run longer than 6 (it can't
+  // afford the depth to reach 8+), so it tests `{3,8}` as if it were `{3,6}` — the
+  // upper cap and its interaction with the trailing `(?!hex)` lookahead go untested.
+  // Here we walk hex-run lengths 0..12 — straddling `<3` (reject), `3..8` (accept),
+  // and `>8` (cap: after 8 hex the lookahead sees a 9th and the whole match fails) —
+  // each in the trailing contexts that exercise the lookahead. RegExp is the oracle.
+  it('CSS colorHex: lowered scan == RegExp across the {3,8} bounds + lookahead', () => {
+    const HEX = '0123456789abcdefABCDEF'
+    // mix digit / lower / upper within each run so all three hex sub-classes appear
+    const run = (n: number) => Array.from({ length: n }, (_, i) => HEX[(i * 7) % HEX.length]).join('')
+    const cases: string[] = []
+    for (let n = 0; n <= 12; n++) {
+      const body = '#' + run(n)
+      cases.push(body)         // run then end-of-input
+      cases.push(body + 'g')   // run then a non-hex char (lookahead holds)
+      cases.push(body + ' ')   // run then whitespace (also non-hex)
+    }
+    // prefix requirement + interspersed non-hex breaks
+    cases.push('', '0', 'abc', '#', '#g', '#abcg', '#aBcDeF01', '##000')
+    diffCases(String.raw`#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])`, cases)
+  })
 
   it('u[0-9a-fA-F]{4}: lowered scan == RegExp across all short inputs', () => {
     differential(String.raw`u[0-9a-fA-F]{4}`, ['', 'u', '0', 'a', 'F', 'g'], 6)
