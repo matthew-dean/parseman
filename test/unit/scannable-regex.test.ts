@@ -477,9 +477,12 @@ describe('parseScanShape — bounded repeat {n,m} (§8c)', () => {
     rec('', 0)
   }
 
+  // 7^7 ≈ 823k inputs — ~18× the other differentials here. Fine locally, but under
+  // v8 coverage instrumentation on a slow CI runner it can exceed vitest's 5s default
+  // per-test timeout (observed ~16s), so give this exhaustive case explicit headroom.
   it('CSS colorHex: lowered scan == RegExp across all short inputs', () => {
     differential(String.raw`#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])`, ['', '#', '0', '9', 'a', 'F', 'g'], 7)
-  })
+  }, 30_000)
 
   it('u[0-9a-fA-F]{4}: lowered scan == RegExp across all short inputs', () => {
     differential(String.raw`u[0-9a-fA-F]{4}`, ['', 'u', '0', 'a', 'F', 'g'], 6)
