@@ -477,6 +477,59 @@ driver, on top of the ~8.8 MB retained AST.
    worked separately on the jess core side (object-reduction / spine render
    architecture) — not here.
 
+   ---
+
+   **TESTED — negative result (2026-07, branch `perf/precedence-collapse`, not landed).**
+   Built the level-collapse as a real, shared-tag `precedence()` combinator (both the
+   interpreter and codegen recognize `{ tag: 'precedence' }`) and A/B'd it against the
+   existing `leftAssoc` shape on the real `examples/lang` grammar. **It does not help.**
+
+   *The shape built.* A precedence-table combinator, tightest-row first, stacking
+   handled internally so the ladder reads declaratively:
+
+   ```ts
+   precedence(unary, [ ['*','/'], ['+','-'], ['<=','>=','<','>'], ['==','!='], ['&&'], ['||'] ])
+   ```
+
+   Bare op strings auto-wrap to `literal`; a default combine builds
+   `{ type:'binary', op, left, right, span }` (per-node spans — a correctness upgrade
+   over `leftAssoc`, which stamps every node with the whole-chain span). Designed row
+   vocabulary: `assoc:'left'|'right'|'none'` and `mixing:false` (homogeneous run — the
+   jess/media `and`/`or`-can't-mix rule) and `{ prefix:[…] }` (unary, e.g. `not`, `-`).
+   Only left-assoc infix was implemented (enough to A/B). Both paths guard the loop on
+   the operator's first-set, so the no-operator case returns the operand directly — no
+   array, no `combine` — with identity-on-empty true **by construction** (no sentinel
+   probe needed). Correct: interpreter ≡ compiled structurally, full suite green.
+
+   *Why it doesn't help — the measurement.* The scaffolding the collapse removes (the
+   `sequence` tuple + empty `many` array + fold) is **not** the per-level bottleneck on
+   a realistic grammar:
+
+   | scenario | leftAssoc | precedence | result |
+   |---|---|---|---|
+   | synthetic chain, no trivia, **trivial `ident` operand** | 123 ns | 29.5 ns | 4.2× |
+   | **real lang grammar**, no trivia | 17.7 µs | 18.3 µs | 0.96× (noise) |
+   | real lang grammar, trivia on | 32.3 µs | 32.0 µs | 1.01× (noise) |
+
+   The 4× only appears when the operand is a **straw** (`ident`), which inflates the
+   scaffolding's share. With a realistic operand (`unary→call→atom→ident`), parsing the
+   operand dwarfs the per-level array/tuple/fold, and V8 escape-analyzes the scaffolding
+   away regardless. Trivia scanning per level piles on identically for both shapes.
+
+   *Correction to the framing above.* The "§2.3 transparent-wrapper elimination +
+   first-set no-op `many` elision" lever is real but its payoff is bounded by *operand
+   triviality*, not just chain depth — and real operands are never trivial. The profile's
+   `_r_topSum`/`_r_topProduct` #1/#2 self-time is therefore most likely **inlined-operand
+   time attributed to the fold frame**, or genuine operator-dense folding (which both
+   shapes do equally), **not** removable no-op scaffolding. Do not re-chase this as a perf
+   lever. (`precedence()` may still be worth having as an ergonomics/correctness feature —
+   readable table, correct per-node spans — but that's a DX decision, not a perf one.)
+
+   *Method lesson.* A single A/B on the **real grammar** answers "does it help?" in one
+   step. Microbenchmarks that model the *mechanism* (here, a chain over a trivial operand)
+   share confounds and gave three false positives before the real grammar exposed them.
+   Measure the real thing first; drop to microbenchmarks only to *explain* a real delta.
+
 ### Top ideas in one line each
 
 - **#1 lazy/scalar `many` in the compiled reifier** — ⚠ the dead-value part landed
@@ -491,9 +544,11 @@ driver, on top of the ~8.8 MB retained AST.
 - **#4 drop per-node `loc` object + filtered child arrays in `buildNode`.**
 - **#7 value/math precedence-chain descent** (`_r_topSum`/`_r_topProduct`) — #1/#2
   self-time on value-heavy Less (`functions.less`); ~30–40% of parse. Fixed-depth
-  descent + one failed first-char lookahead per level (NOT backtracking); the lever
-  is §2.3 transparent-wrapper elimination + first-set no-op `many` elision, not
-  memoization. Parked: linear-in-size, bounded constant factor, not the eval gap.
+  descent + one failed first-char lookahead per level (NOT backtracking). ❌ **TESTED
+  and SHELVED** (branch `perf/precedence-collapse`): built as a real `precedence()`
+  combinator; the collapse is 4× only over a *trivial* operand, noise on the real
+  grammar (real operands dominate; V8 eats the scaffolding). Not a perf lever — see
+  the TESTED block under §7. Don't re-chase.
 - Remember the **parse-once/render-many** caveat: an AST cache in `Compiler` (jess
   side) would amortize all of the above for the common re-render case.
 
