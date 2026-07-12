@@ -2952,7 +2952,7 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown> },
+  opts?: { trivia?: Combinator<unknown>; recovery?: boolean },
 ): { keys: string[]; replacement: string } | null {
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
@@ -2978,6 +2978,7 @@ export function compileRuleMap(
     triviaFnNames: new Map(),
     namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
+    recovery: opts?.recovery ?? false,
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }
@@ -3111,7 +3112,7 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown> },
+  opts?: { trivia?: Combinator<unknown>; recovery?: boolean },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
@@ -3139,6 +3140,7 @@ export function compileLinkable(
     namedParsers: new Map(), triviaCaptureNames: new Map(),
     triviaFnNames: new Map(), namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
+    recovery: opts?.recovery ?? false,
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
     deferFirstSetRefs: true,

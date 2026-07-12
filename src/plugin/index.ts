@@ -49,6 +49,16 @@ export type ParsecraftPluginOptions = {
    * ON when specifically auditing lowering coverage, not a build-time nag.
    */
   warnUnloweredRegex?: boolean
+  /**
+   * Bake automatic list recovery into the macro-compiled output. **Default `false`.**
+   * When on, `many`/`oneOrMore`/`sepBy` in every compiled grammar gain a
+   * `_ctx._tolerant`-gated recovery branch (dormant on strict parses — a normal
+   * parse is unaffected and allocates nothing). The output stays macro-inlinable
+   * (sentinels build via `_ctx._rec`, not `_rp`). Turn it on for grammars you drive
+   * from an editor/language service so `run(g, src, { tolerant: true })` recovers on
+   * the fast compiled path; leave it off for build-only grammars.
+   */
+  recovery?: boolean
 }
 
 const PARSEMAN_MODULE = 'parseman'
@@ -109,7 +119,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
     if (!code.includes('parseman')) return null
     if (!code.includes('macro')) return null
     const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
-    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true)
+    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true)
     if (result?.warnings.length) {
       for (const w of result.warnings) {
         if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -265,6 +275,7 @@ export function transformMacro(
   id: string,
   moduleAliases = new Set([PARSEMAN_MODULE]),
   warnUnloweredRegex = false,
+  recovery = false,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -375,7 +386,7 @@ export function transformMacro(
       : undefined
     const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
 
-    const compiled = compileRuleMap([...ruleMap], gTrivia ? { trivia: gTrivia } : undefined)
+    const compiled = compileRuleMap([...ruleMap], { ...(gTrivia ? { trivia: gTrivia } : {}), recovery })
     if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
     return { replacement: compiled.replacement, ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}) }
   }
@@ -585,7 +596,7 @@ export function transformMacro(
     const ns = nsFor(label)
     const ir = serializeRuleMap(entries as never)
     if (ir) return { carried: [{ ns, ir }] }
-    const p = compileLinkable(entries as never, ns, composing ? { trivia: composing } : undefined)
+    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), recovery })
     return p ? { carried: [p] } : null
   }
 
@@ -839,7 +850,7 @@ export function transformMacro(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compile(refCombi)
+            const compiled = compile(refCombi, undefined, { recovery })
             if (compiled.inlineExpression === null) {
               warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
               continue
@@ -866,7 +877,7 @@ export function transformMacro(
           let replacement = compiledRules.replacement
           if (exportPrefix) {
             const ns = nsFor(varName)
-            const pieces = compileLinkable([...compiledRules.ruleMap], ns)
+            const pieces = compileLinkable([...compiledRules.ruleMap], ns, { recovery })
             if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
               // Carry the compact IR when serializable; else the full lowered pieces.
               const ir = serializeRuleMap([...compiledRules.ruleMap] as never)
@@ -917,7 +928,7 @@ export function transformMacro(
 
         // Sources are carried on each transform's def (set by the evaluator), so
         // codegen derives them in traversal order — no positional array needed.
-        const compiled = compile(parser)
+        const compiled = compile(parser, undefined, { recovery })
         if (compiled.inlineExpression === null) {
           warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
           continue

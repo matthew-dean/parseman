@@ -234,3 +234,24 @@ const x = literal('x')
     expect(result.map).toBeDefined()
   })
 })
+
+describe('transformMacro — recovery option', () => {
+  const grammar = `
+import { sequence, many, regex, literal } from 'parseman' with { type: 'macro' }
+const block = sequence(literal('{'), many(regex(/[a-z]+/)), literal('}'))
+`.trim()
+
+  it('bakes recovery into the inlined output when recovery=true (dormant/gated)', () => {
+    const on = transformMacro(grammar, 'test.ts', new Set(['parseman']), false, true)!
+    expect(on.code).toContain('function(input')  // still inlined
+    expect(on.code).toContain('_ctx._tolerant')  // recovery branch, gated (strict = dormant)
+    expect(on.code).toContain('_ctx._rec')       // sentinels/scan via _ctx …
+    expect(on.code).not.toContain('_rp[')        // … NOT _rp → stays macro-inlinable
+  })
+
+  it('emits NO recovery code by default — byte-identical to before', () => {
+    const off = transformMacro(grammar, 'test.ts', new Set(['parseman']))!
+    expect(off.code).not.toContain('_ctx._tolerant')
+    expect(off.code).not.toContain('_ctx._rec')
+  })
+})
