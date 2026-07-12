@@ -114,17 +114,49 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     ;(n._def as { buildSrc?: string }).buildSrc = src
     return n as Comb
   }
+  // `_gch` rebuilds a GATED choice AND restores its `_def.gateSrcs` (parallel to the
+  // arms) — the gate mirror of `_tf`/`_nd`. Each item is either a plain arm or a
+  // `[gateSource, arm]` tuple: the source is eval'd to the live predicate (interpreted
+  // mode) and recorded as the arm's gateSrcs entry so re-lowering INLINES the gate
+  // statically (keeping the artifact fusible via `emitFusedSource`). A missing/failed
+  // source falls back to a throwing predicate — the same contract as `_tf`.
+  const _gch = (items: Array<Comb | [string, Comb]>): Comb => {
+    const gateSrcs: (string | null)[] = []
+    const arms = items.map(it => {
+      if (Array.isArray(it)) {
+        const [src, comb] = it
+        gateSrcs.push(src)
+        let gate: (s: unknown) => boolean
+        // eslint-disable-next-line no-eval
+        try { gate = (0, eval)(`(${src})`) } catch { gate = () => { throw new Error('IR gate fn not materialized') } }
+        return { gate, combinator: comb }
+      }
+      gateSrcs.push(null)
+      return it
+    })
+    const c = (choice as (...a: unknown[]) => Comb)(...arms)
+    // `choice` is the authority on gate alignment; `gateSrcs` must line up 1:1 with
+    // the constructed `_def.gates`. They always do on the normal path (both from the
+    // same `items.map`), but assert it so a future change in `choice` that coalesces
+    // or drops arms can't silently ship a mis-aligned gate-source array.
+    const gates = (c._def as { gates?: unknown[] }).gates
+    if (gates && gates.length !== gateSrcs.length) {
+      throw new Error(`_gch: gateSrcs length ${gateSrcs.length} != choice gates length ${gates.length}`)
+    }
+    ;(c._def as { gateSrcs?: (string | null)[] }).gateSrcs = gateSrcs
+    return c
+  }
   // eslint-disable-next-line no-new-func
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'node', 'parser',
-    'scanTo', 'token', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_nd',
+    'scanTo', 'token', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_nd', '_gch',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice,
     many, oneOrMore, optional, sepBy, not, node, parser,
-    scanTo, token, transform, skip, trivia, label, field, expectC, _tf, _nd,
+    scanTo, token, transform, skip, trivia, label, field, expectC, _tf, _nd, _gch,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -238,8 +270,27 @@ class Serializer {
       case 'sequence':
         return `sequence(${def.parsers.map(kid).join(', ')})`
       case 'choice': {
-        if (def.gates.some(g => g !== null)) throw new Unserializable('choice with a gate() has no source')
-        return `choice(${def.parsers.map(kid).join(', ')})`
+        // Ungated choices stay `choice(a, b, …)` byte-for-byte as before.
+        const gates = def.gates
+        if (gates.every(g => g === null)) return `choice(${def.parsers.map(kid).join(', ')})`
+        // A gated choice round-trips through `_gch`, which rebuilds the choice AND
+        // re-attaches `_def.gateSrcs` from each arm's captured gate SOURCE. Preserving
+        // gateSrcs is load-bearing: on re-lowering, codegen inlines the gate from its
+        // source (a static callback), so the re-lowered artifact stays STATICALLY
+        // FUSIBLE. A plain `choice({ gate: fn, … })` would rebuild the predicate as a
+        // source-less runtime closure → a non-static callback → `emitFusedSource`
+        // (macro static fusion) fails and `compose()` silently falls back to a runtime
+        // fuse. Without a captured source we cannot re-emit the gate → keep full pieces.
+        const gateSrcs = def.gateSrcs
+        const items = def.parsers.map((p, i) => {
+          if (gates[i] === null) return kid(p)
+          const src = gateSrcs?.[i]
+          if (src == null) throw new Unserializable('choice gate() has no captured source')
+          // `[gateSource, arm]` — `_gch` evals the source to the live predicate and
+          // records it as the arm's `gateSrcs` entry.
+          return `[${JSON.stringify(src)}, ${kid(p)}]`
+        })
+        return `_gch([${items.join(', ')}])`
       }
       case 'many':      return `many(${kid(def.parser)})`
       case 'oneOrMore': return `oneOrMore(${kid(def.parser)})`
