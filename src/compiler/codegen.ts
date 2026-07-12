@@ -9,7 +9,8 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
-import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
+import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
+import { firstSetSentinel } from '../recovery/scan.ts'
 import { markUnusedValues } from './value-usage.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
@@ -74,6 +75,14 @@ export function endLoweringCapture(): string[] {
 type Ctx = {
   vars: number
   indent: number
+  /**
+   * Compile-time recovery gate (opt-in via `compile(g, { recovery: true })`).
+   * When off (default) NO recovery code is emitted — byte-identical output, and
+   * `runtimeParsers` stays empty so macro-inlining is unaffected. When on, lists
+   * emit a `_ctx._tolerant`-gated recovery branch and sequences publish an inferred
+   * sync sentinel; the machinery is dormant unless the parse is run tolerant.
+   */
+  recovery?: boolean | undefined
   /** Regex declarations hoisted to module scope */
   regexDecls: string[]
   /** Dedup map: "source/flags" → variable name (_re0 etc.) */
@@ -1013,6 +1022,20 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
   return { stmts, valueVar: vv, endVar }
 }
 
+/**
+ * Build a zero-width follow-set sync sentinel for `fs`, register it as a runtime
+ * parser, and return its `_rp[idx]` reference — or null when the first-set yields
+ * no usable sentinel (`any`/`empty`). Only called under `ctx.recovery`, so default
+ * compiles never touch `runtimeParsers` (macro-inlining stays available).
+ */
+function syncSentinelRef(ctx: Ctx, fs: FirstSet): string | null {
+  const sentinel = firstSetSentinel(fs)
+  if (sentinel === null) return null
+  const idx = ctx.runtimeParsers.length
+  ctx.runtimeParsers.push(sentinel as Combinator<unknown>)
+  return `_rp[${idx}]`
+}
+
 function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, pos: string): ER & { valueVars: string[] } {
   const startV = v(ctx, '_start')
   const curV = v(ctx, '_cur')
@@ -1022,7 +1045,23 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
   ]
   const valueVars: string[] = []
 
+  // Recovery sync publish (compile-time gate): save the inherited sync at entry,
+  // then before each term set `_ctx._sync` to the inferred follow-set sentinel of
+  // the remaining terms (or the inherited sync when none is usable) so a nested
+  // list resyncs to the enclosing delimiter. Runtime-gated by `_ctx._tolerant`;
+  // strict parses never touch it.
+  const syncInV = ctx.recovery ? v(ctx, '_syncIn') : ''
+  if (ctx.recovery) stmts.push(`${ind(ctx)}const ${syncInV} = _ctx._sync`)
+  const publishSync = (i: number): string => {
+    if (!ctx.recovery) return ''
+    const fs = def.parsers.slice(i + 1).reduce<FirstSet>((acc, p) => union(acc, firstSetOf(p)), { kind: 'empty' })
+    const ref = syncSentinelRef(ctx, fs)
+    return `${ind(ctx)}if (_ctx._tolerant) _ctx._sync = ${ref ?? syncInV}`
+  }
+
   for (let i = 0; i < def.parsers.length; i++) {
+    const syncPub = publishSync(i)
+    if (syncPub) stmts.push(syncPub)
     if (i > 0 && ctx.activeTrivia) {
       if (ctx.capturing) {
         const capFn = ensureTriviaCaptureFn(ctx)
@@ -1518,6 +1557,11 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     ...(wantValue ? [`${ind(ctx)}const ${arrV} = []`] : []),
     `${ind(ctx)}let ${curV} = ${pos}`,
   ]
+  // Capture this list's recovery sync at ENTRY: a nested element sequence will
+  // clobber `_ctx._sync` (and doesn't restore it, unlike the interpreter's
+  // finally), so the loop must read its own saved sync, not the live one.
+  const mySyncV = ctx.recovery ? v(ctx, '_mysy') : ''
+  if (ctx.recovery) stmts.push(`${ind(ctx)}const ${mySyncV} = _ctx._sync`)
 
   if (def.min === 1) {
     // Inline first mandatory match with early-return on failure
@@ -1559,10 +1603,29 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   }
 
   const { stmts: iterStmts, okVar: iterOk, valVar: iterVal, endVar: iterEnd } = emitFallible(def.parser, ctx, itemPos, true)
-  stmts.push(
-    ...iterStmts,
-    `${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`,
-  )
+  stmts.push(...iterStmts)
+  if (ctx.recovery) {
+    // Tolerant recovery (dormant unless `_ctx._tolerant`): an element that fails —
+    // and isn't sitting on the inferred sync token — is skipped to that token via
+    // the SAME interpreter recoverScan (parity), emitted as a ParseError; the loop
+    // continues. Zero-width progress is still a clean stop.
+    const rrV = v(ctx, '_rr')
+    const exp = hoistExpected(ctx, deriveExpectedArr([def.parser]))
+    stmts.push(
+      `${ind(ctx)}if (!${iterOk}) {`,
+      `${ind(ctx)}  ${rollback}if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPos}, _ctx)) {`,
+      `${ind(ctx)}    const ${rrV} = _ctx._rec.scan(input, ${itemPos}, _ctx, ${mySyncV}, ${exp})`,
+      ...(wantValue ? [`${ind(ctx)}    ${arrV}.push(${rrV}.error)`] : []),
+      `${ind(ctx)}    ${curV} = ${rrV}.end`,
+      `${ind(ctx)}    continue`,
+      `${ind(ctx)}  }`,
+      `${ind(ctx)}  break`,
+      `${ind(ctx)}}`,
+      `${ind(ctx)}if (${iterEnd} <= ${itemPos}) { ${rollback}break }`,
+    )
+  } else {
+    stmts.push(`${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`)
+  }
   if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${iterVal})`)
   stmts.push(`${ind(ctx)}${curV} = ${iterEnd}`)
   ctx.indent--
@@ -2720,7 +2783,7 @@ export function ruleDependencies(
  *
  * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
  */
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): CompiledParser<T> {
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean }): CompiledParser<T> {
   markUnusedValues(combinator)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule bakes it (unless a local
@@ -2745,6 +2808,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     triviaFnNames: new Map(),
     namedFnDecls: [],
     capturing: hasNodeDef(combinator as Combinator<unknown>),
+    recovery: opts?.recovery ?? false,
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }

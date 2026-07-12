@@ -1,4 +1,9 @@
-import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
+import type { Combinator, ParseContext, ParseError, ParseResult, RecoveryHelpers } from '../types.ts'
+import { recoverScan, matchesAt, orSentinel } from '../recovery/scan.ts'
+
+/** Recovery helpers handed to a COMPILED tolerant parse via ctx._rec (the compiled
+ * output can't import; the interpreter uses these functions directly). */
+const REC: RecoveryHelpers = { scan: recoverScan, at: matchesAt, or: orSentinel }
 
 /**
  * Run a compiled/interpreted grammar entry against an input and collect the raw
@@ -109,7 +114,7 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
       ? { trivia: grammarTrivia, ...(grammarTrivia._meta.triviaKindLabels ? { triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}) }
       : {}),
     ...(options.triviaCaptureMask !== undefined ? { _triviaCaptureMask: options.triviaCaptureMask } : {}),
-    ...(options.tolerant ? { _tolerant: true } : {}),
+    ...(options.tolerant ? { _tolerant: true, _rec: REC } : {}),
   }
   const r = invoke(entry, input, 0, ctx)
 

@@ -114,6 +114,18 @@ export type FieldCapture<T = unknown> = {
 
 export type FieldMap = Record<string, FieldCapture | FieldCapture[]>
 
+/**
+ * Recovery helpers the runtime driver injects into a COMPILED parse's ctx (`_rec`)
+ * when tolerant, so the compiled output reuses the exact interpreter recovery
+ * functions (`recoverScan`/`matchesAt`/`orSentinel`) — guaranteeing parity without
+ * the emitted `new Function` needing module-scope access.
+ */
+export type RecoveryHelpers = {
+  scan: (input: string, from: number, ctx: ParseContext, sync: Combinator<unknown>, expected: string[]) => { error: ParseError; end: number }
+  at: (sentinel: Combinator<unknown>, input: string, pos: number, ctx: ParseContext) => boolean
+  or: (a: Combinator<unknown>, b: Combinator<unknown> | undefined) => Combinator<unknown>
+}
+
 export type ParseContext = {
   // `| undefined` (matching captureTrivia/_cst* below): a nested scope may
   // intentionally CLEAR inherited trivia by setting these to undefined (noTrivia).
@@ -174,6 +186,14 @@ export type ParseContext = {
    * free (a list at a rule's tail resyncs to whatever delimiter followed the call).
    */
   _sync?: Combinator<unknown> | undefined
+  /**
+   * Framework-internal (compiled output only): recovery helpers injected by the
+   * runtime driver (`run`) when tolerant, so the compiled parser reuses the EXACT
+   * interpreter recovery functions — guaranteeing byte-for-byte parity without the
+   * emitted `new Function` needing module-scope access. Unset (strict) ⇒ compiled
+   * lists never enter the recovery branch. The interpreter ignores this field.
+   */
+  _rec?: RecoveryHelpers | undefined
   /**
    * Framework-internal (compiled/macro output only): the deepest failure recorded
    * while a fallible sub-parser was running — position (`_fe`) and expected set
