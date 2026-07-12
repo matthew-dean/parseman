@@ -38,29 +38,25 @@ Two questions sort most of the field:
 
 ## Authoring & output
 
-| Parser | Grammar style | Algorithm | Delivery | Output |
-| --- | --- | --- | --- | --- |
-| **Parséman** | JS/TS combinators | PEG-style ordered choice | library · `compile()` · build macro | object CST/AST **+ spans + trivia**, or plain JS values |
-| [Peggy](https://peggyjs.org/) | PEG text DSL | PEG (packrat opt-in) | codegen | whatever your actions return |
-| [Parsimmon](https://github.com/jneen/parsimmon) | JS combinators | PEG-style ordered choice | runtime library | whatever you build |
-| [Chevrotain](https://chevrotain.io/) | JS imperative DSL | LL(k) + backtracking | runtime library | automatic CST, or visitor output |
-| [Nearley](https://nearley.js.org/) | BNF text DSL | Earley (general CFG) | codegen (`nearleyc`) | postprocessor output (may be ambiguous) |
-| [Jison](https://github.com/zaach/jison) | Yacc/BNF text DSL | LALR(1) | codegen | whatever your actions return |
-| [Lezer](https://lezer.codemirror.net/) | LR text DSL | LR (opt-in GLR) | codegen (`@lezer/generator`) | compact buffer `Tree` |
-| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | JS DSL → generated C | GLR | codegen → C / WASM | buffer CST (via bindings) |
+|  | **Parséman** | [Peggy](https://peggyjs.org/) | [Parsimmon](https://github.com/jneen/parsimmon) | [Chevrotain](https://chevrotain.io/) | [Nearley](https://nearley.js.org/) | [Jison](https://github.com/zaach/jison) | [Lezer](https://lezer.codemirror.net/) | [tree-sitter](https://tree-sitter.github.io/tree-sitter/) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **Grammar style** | JS/TS combinators | PEG text DSL | JS combinators | JS imperative DSL | BNF text DSL | Yacc/BNF text DSL | LR text DSL | JS DSL → generated C |
+| **Algorithm** | PEG-style ordered choice | PEG (packrat opt-in) | PEG-style ordered choice | LL(k) + backtracking | Earley (general CFG) | LALR(1) | LR (opt-in GLR) | GLR |
+| **Delivery** | library · `compile()` · build macro | codegen | runtime library | runtime library | codegen (`nearleyc`) | codegen | codegen (`@lezer/generator`) | codegen → C / WASM |
+| **Output** | object CST/AST **+ spans + trivia**, or plain JS values | whatever your actions return | whatever you build | automatic CST, or visitor output | postprocessor output (may be ambiguous) | whatever your actions return | compact buffer `Tree` | buffer CST (via bindings) |
 
 ## Capabilities
 
-| Parser | Author in JS/TS | Debuggable grammar | Context-sensitive grammar | Grammar composition | Incremental re-parse | Error recovery | Trivia capture | Diagrams / EBNF |
+|  | **Parséman** | [Peggy](https://peggyjs.org/) | [Parsimmon](https://github.com/jneen/parsimmon) | [Chevrotain](https://chevrotain.io/) | [Nearley](https://nearley.js.org/) | [Jison](https://github.com/zaach/jison) | [Lezer](https://lezer.codemirror.net/) | [tree-sitter](https://tree-sitter.github.io/tree-sitter/) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `compose()` | ✅ `parseDoc` | ✅ auto lists, interp **+ compiled** | ✅ built-in `triviaLog` | ✅ railroad + EBNF (`parseman/spec`) |
-| [Peggy](https://peggyjs.org/) | ❌ text DSL | ⚠️ generated JS + trace | ✅ in-grammar | ❌ | ❌ | ⚠️ location only | ❌ manual | ⚠️ railroad (`peggy-tracks`, separate pkg) |
-| [Parsimmon](https://github.com/jneen/parsimmon) | ✅ | ✅ | ✅ in-grammar | ⚠️ values | ❌ | ❌ | ❌ manual | ❌ |
-| [Chevrotain](https://chevrotain.io/) | ✅ | ✅ | ✅ in-grammar | ✅ inheritance | ⚠️ DIY, no engine | ✅ strong (automatic) | ⚠️ tokens, manual | ✅ railroad |
-| [Nearley](https://nearley.js.org/) | ❌ text DSL | ❌ | ❌ CFG only | ❌ | ❌ | ❌ | ❌ manual | ✅ railroad (`nearley-railroad`) |
-| [Jison](https://github.com/zaach/jison) | ❌ text DSL | ❌ | ⚠️ lexer states | ❌ | ❌ | ⚠️ error token | ❌ manual | ❌ |
-| [Lezer](https://lezer.codemirror.net/) | ❌ text DSL | ❌ | ⚠️ external only | ⚠️ `@dialect` | ✅✅ core strength | ✅ | ✅ contextual skip | ❌ |
-| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | ⚠️ JS → C | ❌ | ⚠️ external only | ❌ | ✅✅ core strength | ✅ | ⚠️ `extras` | ❌ |
+| **Author in JS/TS** | ✅ | ❌ text DSL | ✅ | ✅ | ❌ text DSL | ❌ text DSL | ❌ text DSL | ⚠️ JS → C |
+| **Debuggable grammar** | ✅ | ⚠️ generated JS + trace | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Context-sensitive grammar** | ✅ in-grammar | ✅ in-grammar | ✅ in-grammar | ✅ in-grammar | ❌ CFG only | ⚠️ lexer states | ⚠️ external only | ⚠️ external only |
+| **Grammar composition** | ✅ `compose()` | ❌ | ⚠️ values | ✅ inheritance | ❌ | ❌ | ⚠️ `@dialect` | ❌ |
+| **Incremental re-parse** | ✅ `parseDoc` | ❌ | ❌ | ⚠️ DIY, no engine | ❌ | ❌ | ✅✅ core strength | ✅✅ core strength |
+| **Error recovery** | ✅ auto lists, interp **+ compiled** | ⚠️ location only | ❌ | ✅ strong (automatic) | ❌ | ⚠️ error token | ✅ | ✅ |
+| **Trivia capture** | ✅ built-in `triviaLog` | ❌ manual | ❌ manual | ⚠️ tokens, manual | ❌ manual | ❌ manual | ✅ contextual skip | ⚠️ `extras` |
+| **Diagrams / EBNF** | ✅ railroad + EBNF (`parseman/spec`) | ⚠️ railroad (`peggy-tracks`, separate pkg) | ❌ | ✅ railroad | ✅ railroad (`nearley-railroad`) | ❌ | ❌ | ❌ |
 
 **Legend:**
 
