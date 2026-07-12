@@ -14,21 +14,23 @@ when a list element fails, and only when `ctx._tolerant` is set.
     its *following* terms into `ctx._sync` while parsing each term. The inner list
     reads `ctx._sync` and resyncs to it. No global FOLLOW-set fixpoint — purely the
     local sequence's own next-term first-set.
-- **B — hint override.** `many`/`sepBy`/`oneOrMore` take an optional
-  `{ recover: <sentinel> }` option. When present it **overrides** the inferred sync
-  point — used to (a) supply sync where it isn't local, and (b) tune the error tree
-  where C already works. B wins over C; C wins over "no recovery."
+- **B — external override.** Recovery policy never rides on the combinators. There is no
+  inline `{ recover }` hint; the grammar is pure structure. Where inference is too coarse
+  or an editor wants richer behaviour, the [`languageService`](./guide/editor-integration)
+  layer wraps the grammar with a config keyed by rule name — outside the grammar entirely.
+  Inference (C) covers the list shapes an editor cares about; the service layer is where
+  domain policy lives.
 
 ## API (all additive)
 
 - `RunOptions.tolerant?: boolean` — run-level gate. Sets `ctx._tolerant = true`.
   Default unset ⇒ strict, byte-identical to today.
-- `RepeatOptions = { recover?: Combinator<unknown> }`, accepted as an optional
-  trailing arg: `many(c, opts?)`, `oneOrMore(c, opts?)`, `sepBy(c, sep, opts?)`.
-  Existing 1-/2-arg call sites are unchanged.
-- `completionsAt(combinator, input, offset, { tolerant? })` — optional 4th arg;
-  `tolerant: true` engages recovery so a failure at the cursor is recorded even when
-  a permissive top rule would otherwise "succeed" with an unconsumed tail.
+- No new option on `many`/`oneOrMore`/`sepBy` — their signatures are unchanged. Sync is
+  inferred from structure; recovery is engaged only by the run-level `tolerant` flag.
+- `completionsAt(target, input, offset, { tolerant? })` — `target` is an interpreter
+  combinator or a `compile(g, { recovery: true })` grammar; `tolerant: true` engages
+  recovery so a failure at the cursor is recorded even when a permissive top rule would
+  otherwise "succeed" with an unconsumed tail.
 - New `ParseContext` fields (framework-internal): `_tolerant?: boolean`,
   `_sync?: Combinator<unknown> | undefined`.
 - Error node: the **existing** `ParseError` (`_tag: 'parseError'`, `span`, `expected`),
@@ -71,12 +73,16 @@ when a list element fails, and only when `ctx._tolerant` is set.
 
 ## Surface
 
-List recovery is the C+B mechanism and nothing else: the `tolerant` run flag plus the
-inferred/`{ recover }`-hinted sync on `many`/`oneOrMore`/`sepBy`. `isParseError` is the
+List recovery is the `tolerant` run flag plus the **inferred** sync on
+`many`/`oneOrMore`/`sepBy` — no inline hints; external policy lives in
+[`languageService`](./guide/editor-integration). `isParseError` is the
 guard for the emitted error nodes. `expect` (required-token, in-place) and
 `scanTo`/`balanced` remain distinct primitives — they are not list recovery.
 
-Tolerant recovery runs on the **interpreter** path (what `run`/`completionsAt` use).
-The compiled (`compile()`) path does not evaluate the `tolerant` flag; wiring recovery
-through codegen is a separate follow-on, deliberately out of scope here so the compiler's
-byte-identical/perf guarantees are untouched.
+Tolerant recovery + the completions probe run on **both** paths. The interpreter path
+is always available. The compiled (`compile()`) path emits them under an opt-in gate —
+`compile(g, { recovery: true })` (or the `parseman({ recovery: true })` macro option) —
+so the published compiled artifact recovers and answers completions on the fast path,
+while a default compile emits **zero** recovery code (byte-identical, macro-inlinable).
+The compiled path reuses the exact interpreter recovery functions via `ctx._rec`, so
+the two are byte-for-byte at parity. See [Editor / language-server integration](./guide/editor-integration).

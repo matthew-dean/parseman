@@ -86,26 +86,22 @@ const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
 run(block, '{a:1;$$;b:2}', { tolerant: true })   // → [decl, error, decl]
 ```
 
-A list with no enclosing delimiter and no hint has no sync point to skip to, so it falls
-back to the strict behavior (stop at the first bad element) — a `tolerant` flag alone
-can't recover.
+A top-level list with no separator and no enclosing delimiter has no sync point to skip
+to, so it falls back to the strict behavior (stop at the first bad element) — a `tolerant`
+flag alone can't recover. In practice a list that an editor cares about is always inside a
+block or separated, so inference covers it.
 
-### B — an explicit hint
+### The grammar carries no recovery annotation
 
-When the sync point isn't local, or when you want to override the inferred one, pass a
-`{ recover }` hint. It's the sync sentinel for that list (matched, not consumed):
+Recovery is a *policy the caller turns on*, never a fact baked into the combinators. The
+grammar written for strict parsing is the same grammar the editor recovers with — there is
+no inline `{ recover }` hint, no sync argument on `many` / `sepBy`. The sync point is
+inferred from structure (above), and that is the whole surface.
 
-```ts
-// Non-local: a top-level list with no enclosing sequence — the hint supplies the sync.
-const list = sepBy(decl, literal(';'), { recover: literal('%') })
-run(list, 'a:1;$$;b:2%', { tolerant: true })     // → [decl, error, decl]
-
-// Override: ignore a token the inferred sync would stop at, resync to the real close.
-const body = sepBy(num, literal(','), { recover: literal('}') })
-```
-
-`many` / `oneOrMore` take the same option: `many(item, { recover: literal('}') })`. With
-no separator to resync on, a bad run is captured as one `ParseError` up to the sync token.
+If you need to attach editor behaviour — override a rule's completions, add lint
+diagnostics, or map structural expectations to semantic suggestions — wrap the grammar in
+[`languageService`](./editor-integration), whose config is keyed by rule name and lives
+entirely outside the grammar. See [Editor / language-server integration](./editor-integration).
 
 ### Guarantees
 
@@ -266,9 +262,10 @@ Recovery is never free, and it's never pretty. Be deliberate:
 - **Recovery loses input.** Skipping to a sync point throws away everything in between.
   Your tree will have gaps; downstream consumers (visitors, formatters) must be
   **defensive** and not assume every expected child exists.
-- **Sync points that actually resynchronize.** The inferred separator/close covers most
-  lists; reach for a `{ recover }` hint when the inference stops at a misleading token or
-  when there's no enclosing delimiter at all.
+- **Sync points that actually resynchronize.** The inferred separator/close covers the
+  list shapes an editor cares about (block bodies, declaration lists, argument lists). A
+  bare top-level repetition with no separator and no enclosing delimiter has nothing to
+  resync to — wrap it in the delimiter it really has rather than reaching for a knob.
 - **It's off by default.** Strict parsing pays nothing. Turn `tolerant` on for the editor
   path; leave it off for a batch compile that only cares about valid input.
 - **Pair it with [incremental re-parsing](./incremental).** Recovery keeps the tree alive
@@ -281,8 +278,8 @@ Recovery is never free, and it's never pretty. Be deliberate:
 | --- | --- |
 | Require a `}` / `)` / `;` but keep parsing if it's missing | `expect(literal('}'))` |
 | Parse a list, tolerating bad elements | `run(list, src, { tolerant: true })` |
-| Supply / override a list's sync point | `sepBy(item, sep, { recover: literal(']') })` |
-| Tolerate junk in a separator-less repetition | `many(item, { recover: literal('}') })` |
+| Recover on the compiled fast path | `compile(g, { recovery: true })` |
+| Add editor completions / diagnostics | `languageService(grammar, config)` |
 | Consume everything up to a boundary token | `scanTo(sentinel, { skip: […] })` |
 | Match a whole `(…)` / `[…]` / `{…}` region as text | `balanced('(', ')')` |
 | Collect all errors from a parse | `run(p, src, { tolerant: true }).errors` |

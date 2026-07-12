@@ -53,7 +53,7 @@ Two questions sort most of the field:
 
 | Parser | Author in JS/TS | Debuggable grammar | Context-sensitive grammar | Grammar composition | Incremental re-parse | Error recovery | Trivia capture | Diagrams / EBNF |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `compose()` | ✅ `parseDoc` | ✅ `recover` + auto lists | ✅ built-in `triviaLog` | ✅ railroad + EBNF (`parseman/spec`) |
+| **Parséman** | ✅ | ✅ | ✅ in-grammar | ✅ `compose()` | ✅ `parseDoc` | ✅ auto lists, interp **+ compiled** | ✅ built-in `triviaLog` | ✅ railroad + EBNF (`parseman/spec`) |
 | [Peggy](https://peggyjs.org/) | ❌ text DSL | ⚠️ generated JS + trace | ✅ in-grammar | ❌ | ❌ | ⚠️ location only | ❌ manual | ⚠️ railroad (`peggy-tracks`, separate pkg) |
 | [Parsimmon](https://github.com/jneen/parsimmon) | ✅ | ✅ | ✅ in-grammar | ⚠️ values | ❌ | ❌ | ❌ manual | ❌ |
 | [Chevrotain](https://chevrotain.io/) | ✅ | ✅ | ✅ in-grammar | ✅ inheritance | ⚠️ DIY, no engine | ✅ strong (automatic) | ⚠️ tokens, manual | ✅ railroad |
@@ -86,9 +86,13 @@ Two questions sort most of the field:
   roll your own; **❌**: re-parses from scratch.
 - **Error recovery** — Parséman recovers at resync points that are **inferred from the
   enclosing combinator** (a list's separator / its enclosing delimiter) under a `tolerant`
-  flag, with an optional per-list hint and explicit `expect` for required tokens;
-  Chevrotain's is **automatic/heuristic across the whole grammar** (single-token
-  insert/delete, resync). Both report every error, not just the first.
+  flag, plus explicit `expect` for required tokens — and it runs on **both** the
+  interpreter and the **compiled/macro fast path** (`compile(g, { recovery: true })`), so
+  an editor gets recovery on the same artifact it ships. The grammar itself carries **no**
+  recovery annotation; editor policy (completions, diagnostics) lives in an external
+  [`languageService`](./editor-integration) layer. Chevrotain's recovery is
+  **automatic/heuristic across the whole grammar** (single-token insert/delete, resync).
+  Both report every error, not just the first.
 - **Diagrams / EBNF** — can the tool emit a human-readable grammar artifact *from the
   grammar itself*? (Any grammar can be hand-translated to EBNF and pasted into a generic
   online generator; that doesn't count.) **✅**: Parséman's
@@ -174,6 +178,38 @@ Peggy, Parsimmon, Nearley, and Jison offer nothing here and re-parse from scratc
 that Chevrotain's real edit-time strength is a *different* axis — fault-tolerant error
 recovery in a single pass, covered below — not incremental re-parse.
 
+## The editor-backend axis
+
+Powering an editor is more than parsing: a language server has to survive a broken
+keystroke (recovery), answer *what can go here* (completions), flag problems
+(diagnostics), and do all of it fast enough to run on every edit. Historically that stack
+belonged to the editor-first generators — but they buy it by being context-*free* and
+generating a buffer tree in another artifact.
+
+Parséman now assembles the same stack from its own pieces, with two properties the
+generators don't have:
+
+- **It runs on the fast path.** Recovery and the completions probe are emitted into the
+  **compiled/macro** parser (`compile(g, { recovery: true })`), not just the interpreter —
+  so the artifact an editor ships recovers and answers completions itself. Strict compiles
+  stay byte-identical (recovery is a dormant, opt-in branch).
+- **The grammar stays pure; editor behaviour hooks on from outside.** A separate
+  [`languageService(grammar, config)`](./editor-integration) layer — a tree-shakeable
+  `parseman/language-service` subpath — supplies semantic completions and lint diagnostics
+  **keyed by node type**, over a grammar that never learns the editor exists. The same
+  grammar file serves a batch value-parse and an LSP, unedited. Contrast Chevrotain, whose
+  recovery and content-assist are capable but live *inside* the parser class, and
+  Lezer/tree-sitter, whose context and tokenizer hooks live in a separate module but are
+  still coupled to the generated grammar.
+
+The honest limits: the language service drives a full (or compiled) re-parse, and isn't
+yet fused with the incremental [`parseDoc`](./incremental) engine — an LSP can run both,
+but they're separate entry points, not one pipeline. And Lezer/tree-sitter still win
+**structural-edit** incremental and the reuse of an existing grammar (below). What changed
+is that *authoring a new language's editor support* — recover, complete, diagnose, on a
+fast compiled parser, with in-grammar context and JS values out — is now a place Parséman
+competes rather than concedes.
+
 ## The developer-experience axis
 
 Two related axes decide how a grammar *feels* to build and maintain: what language you
@@ -226,8 +262,11 @@ several things Parséman doesn't offer:
 - **Grammar-wide automatic error recovery** (heuristic single-token insert/delete +
   resync, with no annotation anywhere). Parséman recovers via
   [tolerant lists](./error-recovery#tolerant-lists) whose sync point is inferred from the
-  enclosing combinator (or given a hint), plus explicit `expect` for required tokens; it
-  doesn't recover across arbitrary rules on its own.
+  enclosing combinator, plus explicit `expect` for required tokens; it doesn't recover
+  across arbitrary rules on its own. (Where Parséman pulls even or ahead: its recovery runs
+  on the **compiled** parser too, and its editor completions/diagnostics live in an
+  external, grammar-pure [`languageService`](./editor-integration) layer rather than inside
+  the parser class.)
 
 **[Lezer](https://lezer.codemirror.net/) / [tree-sitter](https://tree-sitter.github.io/tree-sitter/)**
 win on **structural-edit incremental** (buffer-tree fragment reuse), **GLR / ambiguity**,
@@ -240,8 +279,11 @@ default.
 It's worth being deliberate about *when* that default applies, though. These two have
 become a reflexive go-to for parsing in general ("just grab a tree-sitter grammar"), but
 that reflex is earned for **reusing an existing grammar inside an editor**, which isn't the
-same task as **authoring a new general-purpose grammar that turns text into your own values
-or AST**. Point them at the latter and three editor-first tradeoffs come along: the grammar
+same task as **authoring a new language's parser + editor support** — turning text into
+your own values or AST, *and* backing an LSP with recovery, completions, and diagnostics.
+Parséman now covers that second task end to end (see [the editor-backend
+axis](#the-editor-backend-axis)); the reflex to reach past it to an editor-first generator
+is really only earned when you're reusing a grammar that already exists. Point them at the latter and three editor-first tradeoffs come along: the grammar
 is context-*free*, so any real context sensitivity (indentation, heredocs, a construct
 legal only *here*) drops you into a hand-written external scanner — **C** for tree-sitter —
 *outside* the grammar; the artifact you actually run is generated, so you debug a state
@@ -262,9 +304,11 @@ rich CST and context sensitivity.
 ## Which to reach for
 
 - **Parséman** — you want the **fastest** JS value parser *and* an editor-grade CST with
-  spans and trivia, with **context-sensitive rules** and incremental re-parse — authored
-  and **debugged in TypeScript** (no separate grammar file, no generated artifact to step
-  through), with no build step required and generator-class speed when you want it.
+  spans and trivia, with **context-sensitive rules**, incremental re-parse, and a full
+  **editor backend** (recovery + completions + diagnostics on the compiled parser, via an
+  external grammar-pure language service) — authored and **debugged in TypeScript** (no
+  separate grammar file, no generated artifact to step through), with no build step
+  required and generator-class speed when you want it.
 - **[Peggy](https://peggyjs.org/)** — a quick, readable PEG DSL for a config language or
   small DSL where a text grammar file is the deliverable.
 - **[Parsimmon](https://github.com/jneen/parsimmon)** — a tiny combinator parser with no

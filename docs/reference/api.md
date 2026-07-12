@@ -367,9 +367,9 @@ Restrict a grammar/artifact to `names` plus their transitive rule-dependency clo
 Activates list recovery. With `tolerant` set, `many` / `oneOrMore` / `sepBy` recover from a
 failed element — skip to a sync point, emit a [`ParseError`](./types#parseerror) over the
 skipped span (collected in `errors`), and keep parsing the list — instead of stopping at
-the first bad element. The sync point is inferred from the enclosing combinator (a
-`sepBy`'s separator; a list's enclosing `sequence(open, …, close)` delimiter) or supplied
-by a `{ recover }` hint. Omit `tolerant` for the strict "one clean error and stop"
+the first bad element. The sync point is **inferred from grammar structure** (a `sepBy`'s
+separator; a list's enclosing `sequence(open, …, close)` delimiter) — the grammar carries
+**no** recovery annotation. Omit `tolerant` for the strict "one clean error and stop"
 behavior, byte-identical to a parser with no recovery. See
 [Tolerant lists](../guide/error-recovery#tolerant-lists).
 
@@ -378,16 +378,11 @@ const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
 run(block, '{a:1;$$;b:2}', { tolerant: true }) // list → [decl, ParseError, decl]
 ```
 
-### `many(combinator, { recover }?)` · `oneOrMore(...)` · `sepBy(item, sep, { recover }?)`
-
-The `{ recover }` option is the optional sync-point hint for tolerant recovery: a sentinel
-combinator (matched, not consumed) that supplies the sync where it isn't locally inferable,
-or overrides the inferred one. Ignored on the strict path.
-
-```ts
-sepBy(item, literal(','), { recover: literal(']') })
-many(statement, { recover: literal('}') })
-```
+Recovery is a *policy* the caller turns on, not a fact baked into the grammar. To override
+the inferred sync point for a rule, or add semantic completions/diagnostics, wrap the
+grammar in [`languageService`](../guide/editor-integration) — the config is keyed by rule
+name and the grammar file stays untouched. The compiled/macro fast path recovers too, when
+compiled with `{ recovery: true }`.
 
 ### `expect(combinator, label?)`
 
@@ -422,10 +417,21 @@ Run `combinator` with `extra` merged into `ctx.state`, restored on exit.
 
 ## IDE support
 
-### `completionsAt(combinator, input, offset)`
+### `completionsAt(target, input, offset, options?)`
 
 Return the set of expected tokens at a cursor `offset` — the raw material for
 autocomplete. Probes the grammar at that position via a truncated parse.
+
+- `target` — an interpreter combinator **or** a `compile(g, { recovery: true })`
+  grammar. A recovery-compiled grammar records the furthest-failure probe on its
+  fast path, so completions work on the **published compiled artifact** — no
+  separate interpreter needed.
+- `options.tolerant` — when `true`, list recovery keeps parsing past a bad element
+  before the cursor, so completions are returned even when a permissive top rule
+  would otherwise "succeed" with an unconsumed tail. Default `false`.
+
+For semantic completions (mapping these structural labels to domain suggestions),
+use [`languageService`](../guide/editor-integration) rather than calling this directly.
 
 ## Incremental re-parsing
 

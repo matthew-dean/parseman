@@ -34,10 +34,10 @@ features:
     link: /guide/ast
     linkText: Building trees
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>'
-    title: Fault-tolerant by design
-    details: "Tolerant lists, expect(), and an error channel keep parsing broken input and report every error — not just the first. The foundation for language servers and linters."
-    link: /guide/error-recovery
-    linkText: Error recovery
+    title: An editor backend, not just a parser
+    details: "Tolerant recovery runs on the compiled parser, not just the interpreter — and an external language-service layer adds completions and diagnostics keyed by node type, over a grammar that stays pure. Recover, complete, diagnose: a real language server."
+    link: /guide/editor-integration
+    linkText: Editor integration
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>'
     title: Aged for speed
     details: On JSON, CSV, and GraphQL the macro build beats Peggy at every fixture size; compiled CST beats Lezer on tree-building too.

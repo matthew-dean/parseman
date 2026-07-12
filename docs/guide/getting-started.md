@@ -99,6 +99,8 @@ reusable `.parse(input)` method — wrap your root combinator with
 - **[Macro mode](./macro-mode)** — add the plugin and compile away the runtime cost.
 - **[Error recovery](./error-recovery)** — keep parsing (and reporting) on broken
   input.
+- **[Editor / language-server integration](./editor-integration)** — recovery,
+  completions, and diagnostics for an LSP, over a grammar that stays pure.
 
 ## Developing Parséman itself
 
