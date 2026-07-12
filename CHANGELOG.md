@@ -17,26 +17,35 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   lowers — bounded run plus its trailing boundary lookahead. Purely additive: every
   previously-lowered pattern is byte-identical. Verified with compiled-scan-vs-native
   differentials (0 diffs over ~2M inputs, including adversarial decline cases).
-- **Tolerant-mode list recovery (layered "C+B").** A run-level `tolerant` flag turns
-  `many` / `oneOrMore` / `sepBy` into recovering lists: a malformed element is skipped to a
-  **sync point**, recorded as a `ParseError`, and the rest of the list still parses —
-  instead of the whole list truncating at the first bad element. The sync point comes from
-  two layers. **C (inference, no annotation):** a `sepBy` resyncs to its separator, and a
-  list inside `sequence(open, …, close)` resyncs to the enclosing delimiter (the `sequence`
-  publishes the first set of its following terms as the sync point while parsing each
-  term). **B (hint):** an optional `{ recover }` sentinel on `many` / `oneOrMore` / `sepBy`
-  supplies the sync where it isn't locally inferable, or overrides the inferred one. Both
-  emit the existing `ParseError` node (collected on `run().errors` / via `{ recover: true }`)
-  and are guarded by a must-consume-≥1-token loop so a zero-width failure can never spin.
-  Recovery is a **cold path**: on well-formed input nothing fails, and the strict default
-  (no `tolerant`) is byte-identical to a parser with no recovery.
-- **`completionsAt(comb, input, offset, { tolerant })`.** With `tolerant: true`, list
-  recovery keeps the enclosing node parsing to the cursor and records the failure there, so
-  completions are returned even when a permissive top rule would otherwise "succeed" with an
-  unconsumed tail (previously an empty set). New optional 4th argument; the default behavior
-  is unchanged.
-- **`RunOptions.tolerant` and the `{ recover }` option on `many` / `oneOrMore` / `sepBy`**
-  are additive — no existing signature changes.
+- **Automatic error recovery (`tolerant`) — interpreter *and* compiled.** A run-level
+  `tolerant` flag makes `many` / `oneOrMore` / `sepBy` recover from a malformed element:
+  skip to a **sync point**, record a `ParseError`, and keep parsing the rest of the list
+  instead of truncating at the first bad element. The sync point is **inferred from grammar
+  structure** — a `sepBy` resyncs to its separator; a list inside `sequence(open, …, close)`
+  resyncs to the enclosing delimiter (the `sequence` publishes its following-terms' first set
+  as each term's sync). There is **no inline annotation**: recovery is a caller policy the
+  `tolerant` flag turns on, never a fact baked into the combinators. Recovery runs on
+  **both** the interpreter and the **compiled/macro** fast path — opt in with
+  `compile(g, { recovery: true })` or the `parseman({ recovery: true })` plugin option, which
+  emit a `_ctx._tolerant`-gated branch that reuses the exact interpreter recovery functions
+  via `ctx._rec` (byte-for-byte parity); a default compile emits **zero** recovery code
+  (byte-identical, macro-inlinable). Recovered errors are also **embedded as `parseError`
+  CST nodes** at the recovery point when a CST host is active, so a tree walk finds every
+  diagnostic. Strict (no `tolerant`) is a cold path: byte-identical to a parser with no
+  recovery.
+- **`parseman/language-service` — new tree-shakeable subpath.** `languageService(grammar,
+  config)` layers editor behaviour onto a grammar from the outside, keyed by node type =
+  rule name, over a grammar that carries **zero** IDE concerns: `parse` (tolerant CST +
+  errors), `diagnostics` (recovered errors + your per-node-type lint rules), `completionsAt`
+  (structural expected-set mapped through your semantic handlers), and `openDocument(src)` —
+  a live incremental editor document (`.edit()`, recovered tree, diagnostics) backed by a
+  tolerant `parseDoc`. The same grammar file serves a batch value-parse and an LSP, unedited.
+- **`completionsAt(target, input, offset, { tolerant })`.** `target` may now be a
+  `compile(g, { recovery: true })` grammar (it records the completions probe on its fast
+  path), not just an interpreter combinator; `tolerant: true` keeps the enclosing node
+  parsing to the cursor so completions are returned even past a permissive top rule.
+- **`RunOptions.tolerant`** is additive — no existing signature changes; the grammar is
+  untouched.
 - **Ambient-trivia `.edit()` oracle tests.** `parseDoc().edit()`'s `edit() ≡ full-reparse`
   fuzz now also covers grammars that declare ambient trivia via `rules({ trivia })` (a
   CSS-ish block / declaration-list / value-list grammar with whitespace + block-comment
@@ -57,9 +66,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 ### Breaking
 
 - **Removed the bespoke recovery combinators `recover`, `manyRecover`, and `sepByRecover`**
-  (and their exports). List recovery is now the tolerant-mode C+B mechanism above.
+  (and their exports). List recovery is now the automatic `tolerant`-mode mechanism above —
+  inferred sync points, no inline `{ recover }` hint (recovery policy is external, via
+  `tolerant` and the `parseman/language-service` layer, never an argument on the combinators).
   `expect`, `scanTo`, `balanced`, `isParseError`, and the `{ recover: true }` error channel
-  are unchanged.
+  are unchanged. The `CSTError` tree-node type is now the recovered `ParseError` shape
+  (`_tag: 'parseError'`), matching what recovery embeds in the CST.
 
 ## 0.25.0 — 2026-07-10
 
