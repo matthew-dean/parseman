@@ -62,7 +62,10 @@ trivia is active.
 ### `choice(...args)`
 
 Ordered PEG alternatives — first match wins. Arms may be plain combinators or
-[gated arms](#gated-arms). Disjoint first characters compile to an O(1) dispatch.
+[gated arms](#gated-arms). Disjoint first characters compile to an O(1) dispatch —
+including a gated arm whose first character is disjoint from the others, so gating a
+rare-token alternative (like `&`) stays O(1) rather than dropping the choice to a linear
+scan.
 
 ### `many(combinator)` · `oneOrMore(combinator)` · `optional(combinator)` · `sepBy(combinator, sep)`
 
@@ -466,3 +469,8 @@ Return a copy of `span` with `startLine`/`startColumn`/`endLine`/`endColumn` fil
 `choice` accepts `{ gate, combinator }` objects in place of a bare combinator; the arm is
 only attempted when `gate(ctx.state)` returns true. See
 [Ordered choice & keywords](../guide/keywords#gated-alternatives).
+
+A gated arm whose first-set is non-nullable and disjoint from every other arm keeps the
+choice's O(1) first-char dispatch — the gate is evaluated only when the input sits at that
+arm's first character. A gated arm with a nullable or overlapping first-set falls back to
+the linear first-match scan (as does any gated choice before parseman 0.26.1).
