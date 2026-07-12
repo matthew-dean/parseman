@@ -1571,6 +1571,90 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   return { stmts, valueVar: wantValue ? arrV : 'undefined', endVar: curV }
 }
 
+/**
+ * A precedence level `operand (operator operand)*`, left-associative. Parses
+ * `operand` once, then guards the loop on `operator`'s first-set: when the next
+ * (post-trivia) char can't start an operator, it returns `operand`'s value
+ * directly — no array, no `combine` call. That's the whole win over the
+ * `transform(sequence(base, many(sequence(op, base))))` shape, which allocates a
+ * tuple + array + folds even when no operator follows. Trivia/capture rollback
+ * mirrors emitMany exactly.
+ */
+function emitPrecedence(def: Extract<ParserDef, { tag: 'precedence' }>, ctx: Ctx, pos: string): ER {
+  const opFirst = firstSetOf(def.operator)
+  const baseR = emit(def.operand, ctx, pos)
+  const accV = v(ctx, '_pacc')
+  const curV = v(ctx, '_pcur')
+  const stmts: string[] = [
+    ...baseR.stmts,
+    `${ind(ctx)}let ${accV} = ${baseR.valueVar}`,
+    `${ind(ctx)}let ${curV} = ${baseR.endVar}`,
+    `${ind(ctx)}while (${curV} < input.length) {`,
+  ]
+  ctx.indent++
+
+  // Trivia before the operator (committed speculatively; rolled back if no operator).
+  let opPos = curV
+  let rollback = ''
+  if (ctx.activeTrivia) {
+    if (ctx.capturing) {
+      const capFn = ensureTriviaCaptureFn(ctx)
+      const markV = v(ctx, '_mk'), markTl = v(ctx, '_mktl'), markLog = v(ctx, '_mklg'), npV = v(ctx, '_np')
+      stmts.push(
+        `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
+        `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
+        `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+        `${ind(ctx)}const ${npV} = ${capFn}(input, ${curV}, _ctx, 1)`,
+      )
+      opPos = npV
+      rollback = `if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; `
+    } else {
+      const trivFn = ensureTriviaFn(ctx)
+      const npV = v(ctx, '_np')
+      stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${curV}, _ctx)`)
+      opPos = npV
+    }
+  }
+
+  // First-set guard: no operator can start here → done (the hot no-op exit).
+  const codeV = v(ctx, '_pcode')
+  stmts.push(
+    `${ind(ctx)}const ${codeV} = input.codePointAt(${opPos})`,
+    `${ind(ctx)}if (!(${firstSetCond(codeV, opFirst)})) { ${rollback}break }`,
+  )
+
+  // Operator.
+  const opR = emitFallible(def.operator, ctx, opPos, true)
+  stmts.push(...opR.stmts, `${ind(ctx)}if (!${opR.okVar}) { ${rollback}break }`)
+
+  // Trivia before the right operand.
+  let rhsPos = opR.endVar
+  if (ctx.activeTrivia) {
+    const trivFn = ctx.capturing ? ensureTriviaCaptureFn(ctx) : ensureTriviaFn(ctx)
+    const npV = v(ctx, '_np2')
+    stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${opR.endVar}, _ctx${ctx.capturing ? ', 1' : ''})`)
+    rhsPos = npV
+  }
+
+  // Right operand.
+  const rhsR = emitFallible(def.operand, ctx, rhsPos, true)
+  stmts.push(...rhsR.stmts, `${ind(ctx)}if (!${rhsR.okVar}) { ${rollback}break }`)
+
+  // Fold: combine(acc, op, right, span). Inline the default builder; otherwise a mapFn call.
+  const span = `{ start: ${pos}, end: ${rhsR.endVar} }`
+  const combineCall = def.combineSrc
+    ? `(${def.combineSrc})(${accV}, ${opR.valVar}, ${rhsR.valVar}, ${span})`
+    : `${mfRef(ctx)}[${pushMapFn(ctx, def.combine as (v: unknown, s: { start: number; end: number }) => unknown, null)}](${accV}, ${opR.valVar}, ${rhsR.valVar}, ${span})`
+  stmts.push(
+    `${ind(ctx)}${accV} = ${combineCall}`,
+    `${ind(ctx)}${curV} = ${rhsR.endVar}`,
+  )
+
+  ctx.indent--
+  stmts.push(`${ind(ctx)}}`)
+  return { stmts, valueVar: accV, endVar: curV }
+}
+
 function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, pos: string): ER {
   const valV = v(ctx, '_opt')
   const endV = v(ctx, '_opte')
@@ -2244,6 +2328,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'choice':    return emitChoice(def, ctx, pos)
     case 'many':
     case 'oneOrMore': return emitMany(def, ctx, pos)
+    case 'precedence': return emitPrecedence(def, ctx, pos)
     case 'optional':  return emitOptional(def, ctx, pos)
     case 'sepBy':     return emitSepBy(p, def, ctx, pos)
     case 'transform': {
@@ -2495,6 +2580,9 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     // referenced from two positions within this one compiled function.
     case 'oneOrMore': return [def.parser, def.parser]
     case 'sepBy':     return [def.parser, def.parser, def.separator]
+    // emitPrecedence codegens `operand` TWICE (before the loop, then inside it),
+    // so the usage analysis must see two edges to hoist a shared operand ref.
+    case 'precedence': return [def.operand, def.operand, def.operator]
     case 'skip':      return [def.main, def.skipped]
     case 'recover':   return [def.parser, def.sentinel]
     case 'scanTo':    return [def.sentinel, ...def.skip]
@@ -2517,6 +2605,9 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
  */
 const HOISTABLE_TAGS: ReadonlySet<ParserDef['tag']> = new Set<ParserDef['tag']>([
   'sequence', 'choice', 'many', 'oneOrMore', 'optional', 'sepBy', 'transform', 'node', 'not',
+  // A precedence level emits `operand` twice and stacks (each level's operand is
+  // the next-tighter level) — hoist shared levels or a deep ladder inlines 2^N.
+  'precedence',
 ])
 function isHoistableTag(tag: ParserDef['tag']): boolean {
   return HOISTABLE_TAGS.has(tag)

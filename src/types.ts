@@ -64,6 +64,10 @@ export type ParserDef =
   | { tag: 'expect';   parser: Combinator<unknown>; label: string | undefined; expected: string[] }
   | { tag: 'scanTo';   sentinel: Combinator<unknown>; skip: Combinator<unknown>[]; orEOF: boolean }
   | { tag: 'keywords'; words: readonly string[]; caseInsensitive: boolean; boundary: string | undefined }
+  // A precedence level: `operand (operator operand)*` folded per `assoc`. The
+  // interpreter and codegen both guard the loop on `operator`'s first-set, so the
+  // common no-operator case returns `operand` untouched — no array, no `combine`.
+  | { tag: 'precedence'; operand: Combinator<unknown>; operator: Combinator<unknown>; assoc: 'left' | 'right' | 'none'; mixing: boolean; combine: (left: unknown, op: unknown, right: unknown, span: { start: number; end: number }) => unknown; combineSrc?: string }
   | { tag: 'unknown' }
 
 export type Combinator<T> = {

@@ -29,6 +29,8 @@ export { transform, skip, trivia, label, field } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
 export { token } from './combinators/token.ts'
+export { precedence } from './combinators/precedence.ts'
+export type { PrecRow, Combine } from './combinators/precedence.ts'
 
 export { compile } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'

@@ -16,7 +16,7 @@
  */
 import {
   literal, regex, sequence, choice, many, optional, sepBy,
-  transform, rules, parser, trivia,
+  transform, rules, parser, trivia, precedence,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
 import type { Expr, BinaryExpr } from './ast.ts'
@@ -69,7 +69,7 @@ function leftAssoc<Op extends string>(
   )
 }
 
-export const { expr } = rules<{ expr: Combinator<Expr> }>(g => {
+export const { expr, exprPrec } = rules<{ expr: Combinator<Expr>; exprPrec: Combinator<Expr> }>(g => {
   // if_expr — right-binding, not left-assoc
   const ifExpr: Combinator<Expr> = transform(
     sequence(
@@ -129,8 +129,20 @@ export const { expr } = rules<{ expr: Combinator<Expr> }>(g => {
   const andExpr = leftAssoc(eqExpr, literal('&&') as Combinator<'&&'>)
   const orExpr  = leftAssoc(andExpr, literal('||') as Combinator<'||'>)
 
+  // Same ladder, expressed as a precedence() table (tightest-first). Used for the
+  // precedence-vs-leftAssoc A/B; the default combine builds the same binary node.
+  const valuePrec = precedence(unary as Combinator<unknown>, [
+    ['*', '/'],
+    ['+', '-'],
+    ['<=', '>=', '<', '>'],
+    ['==', '!='],
+    ['&&'],
+    ['||'],
+  ]) as Combinator<Expr>
+
   return {
     expr: choice(ifExpr, orExpr) as Combinator<Expr>,
+    exprPrec: choice(ifExpr, valuePrec) as Combinator<Expr>,
   }
 })
 
@@ -139,7 +151,12 @@ export const { expr } = rules<{ expr: Combinator<Expr> }>(g => {
 // ---------------------------------------------------------------------------
 
 export const exprParser = parser({ trivia: ws }, expr)
+export const exprParserPrec = parser({ trivia: ws }, exprPrec)
 
 export function parseExpr(input: string) {
   return exprParser.parse(input)
+}
+
+export function parseExprPrec(input: string) {
+  return exprParserPrec.parse(input)
 }

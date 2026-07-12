@@ -84,6 +84,11 @@ export function markUnusedValues(root: Combinator<unknown>): void {
       case 'not':
         visit(def.parser, false)    // lookahead — value never observed
         return
+      case 'precedence':
+        // combine(left, op, right) reads both operand and operator values.
+        visit(def.operand, true)
+        visit(def.operator, true)
+        return
       case 'grammar':
         visit(def.parser, consumed)
         if (def.triviaParser) visit(def.triviaParser, false)

@@ -54,6 +54,7 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'expect':    return [def.parser]
     case 'grammar':   return def.triviaParser ? [def.parser, def.triviaParser] : [def.parser]
     case 'sepBy':     return [def.parser, def.separator]
+    case 'precedence': return [def.operand, def.operator]
     case 'skip':      return [def.main, def.skipped]
     case 'scanTo':    return [def.sentinel, ...def.skip]
     case 'lazy':
@@ -245,6 +246,7 @@ class Serializer {
       case 'oneOrMore': return `oneOrMore(${kid(def.parser)})`
       case 'optional':  return `optional(${kid(def.parser)})`
       case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)})`
+      case 'precedence': throw new Unserializable('precedence not yet serializable to IR')
       case 'not':       return `not(${kid(def.parser)})`
       case 'trivia':    return `trivia(${kid(def.parser)})`
       case 'token':     return `token(${kid(def.parser)})`
