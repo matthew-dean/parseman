@@ -2182,7 +2182,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   stmts.push(
     `${i}const ${ndV} = ${finalExpr}`,
     `${i}if (${sc}) ${sc}.push(${ndV})`,
-    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'error')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
   )
 
   return { stmts, valueVar: ndV, endVar }
@@ -2323,6 +2323,10 @@ function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: s
     `${ind0}if (!${okVar}) {`,
     `${ind0}  const ${errV} = { _tag: 'parseError', span: { start: ${pos}, end: ${pos} }, expected: ${JSON.stringify(def.expected)} }`,
     `${ind0}  if (_ctx._errors) _ctx._errors.push(${errV})`,
+    // Embed the missing-token error as a `parseError` CST child, mirroring the
+    // interpreter (expect.ts) and the list-recovery emit sites — guarded on
+    // `_ctx._tolerant`, under which the driver always installs `_ctx._rec`.
+    `${ind0}  if (_ctx._tolerant) _ctx._rec.capture(_ctx, ${errV})`,
     `${ind0}  ${valVar} = ${errV}`,
     `${ind0}  ${endVar} = ${pos}`,
     `${ind0}  ${okVar} = true`,

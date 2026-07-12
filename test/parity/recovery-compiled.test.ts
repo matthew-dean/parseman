@@ -6,7 +6,7 @@
  * interpreter. Covers `many`/`oneOrMore` (sepBy compiled recovery lands next).
  */
 import { describe, it, expect } from 'vitest'
-import { regex, literal, sequence, many, oneOrMore, sepBy, node, rules, trivia, run, compile, completionsAt, cstBuildHost } from '../../src/index.ts'
+import { regex, literal, sequence, many, oneOrMore, sepBy, node, rules, trivia, run, compile, completionsAt, cstBuildHost, expect as expectTok, optional } from '../../src/index.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
 const ident = regex(/[a-z]+/)
@@ -126,6 +126,41 @@ describe('interpreter ⇔ compiled recovery parity (CST mode: error node in the 
       expect(rc.ok, `${input} ok`).toBe(ri.ok)
       expect(rc.value, `${input} tree`).toEqual(ri.value)
     }
+  })
+})
+
+describe('interpreter ⇔ compiled expect() error rides the CST (missing closer)', () => {
+  // A missing required `}` (via expect) must become a `parseError` CST child on
+  // BOTH paths, not just a flat ctx._errors entry — so a tree walk finds it and it
+  // survives incremental reuse. Mirrors the list-recovery embed above.
+  const g = rules(self => ({
+    Block: node(sequence(literal('{'), optional(sepBy(self.Decl, literal(';'))), expectTok(literal('}')))),
+    Decl: node(sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/))),
+  }))
+  const compiled = compile(g.Block as Combinator<unknown>, undefined, { recovery: true })
+  const collect = (n: unknown, out: Array<{ start: number; end: number }> = []): typeof out => {
+    const c = n as { _tag?: string; span?: { start: number; end: number }; children?: readonly unknown[] }
+    if (c?._tag === 'parseError' && c.span) out.push(c.span)
+    if (Array.isArray(c?.children)) for (const k of c.children) collect(k, out)
+    return out
+  }
+  it('embeds an identical parseError node for the missing } on both paths', () => {
+    for (const input of ['{a:1', '{a:1;b:2']) {
+      const ri = run(g.Block as Combinator<unknown>, input, { tolerant: true, build: cstBuildHost() })
+      const errors: unknown[] = []
+      const ctx = { trackLines: false, _errors: errors, _tolerant: true, _rec: REC, build: cstBuildHost() } as unknown as ParseContext
+      const rc = compiled.parseWithContext(input, ctx, 0) as { ok: boolean; value: unknown }
+      expect(rc.value, `${input} tree`).toEqual(ri.value)
+      // the missing } actually embedded a parseError node at EOF (not equal-empty)
+      const iErrs = collect(ri.value)
+      expect(iErrs.length, `${input} interp embed count`).toBe(1)
+      expect(iErrs[0]!.start).toBe(input.length)
+      expect(collect(rc.value)).toEqual(iErrs)
+    }
+  })
+  it('a STRICT CST build embeds nothing (no behavior change off the tolerant path)', () => {
+    const rs = run(g.Block as Combinator<unknown>, '{a:1', { build: cstBuildHost() })
+    expect(collect(rs.value)).toEqual([])
   })
 })
 

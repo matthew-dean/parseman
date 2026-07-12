@@ -1,4 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseError } from '../types.ts'
+import { captureError } from '../recovery/scan.ts'
 
 export type { ParseError }
 
@@ -79,6 +80,14 @@ export function expect<T>(combinator: Combinator<T>, label?: string): Combinator
       if (result.ok) return result as ParseResult<T | ParseError>
       const error: ParseError = { _tag: 'parseError', span: { start: pos, end: pos }, expected }
       ctx._errors?.push(error)
+      // Embed the missing-token error as a `parseError` CST child (no-op when CST
+      // capture is off), so it rides the tree exactly like list-recovery errors —
+      // a tree walk finds every diagnostic and the error survives incremental
+      // reuse, rather than living only in the flat ctx._errors side-channel. Gated
+      // on tolerant like the list-recovery embed sites, so a strict CST build is
+      // byte-identical to before (and stays in parity with the compiled path,
+      // which can only embed when the recovery bundle `_rec` is installed).
+      if (ctx._tolerant) captureError(ctx, error)
       return { ok: true, value: error, span: { start: pos, end: pos } }
     },
   }

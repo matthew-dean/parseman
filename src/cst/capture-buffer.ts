@@ -115,7 +115,7 @@ export function cstTlLen(ctx: ParseContext): number {
   return ctx._cstTriviaLog?.length ?? 0
 }
 
-export type CstRollbackMark = { raw: number; tlog: number; leaves: number; fields: number }
+export type CstRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number }
 
 export function saveCstMark(ctx: ParseContext): CstRollbackMark {
   return {
@@ -123,6 +123,12 @@ export function saveCstMark(ctx: ParseContext): CstRollbackMark {
     tlog: cstTlLen(ctx),
     leaves: cstLeavesLen(ctx),
     fields: ctx._fields?.length ?? 0,
+    // Speculative rollback must truncate the flat recovery-error sink in lockstep
+    // with the CST leaves: a branch that recovered (pushing a ParseError to
+    // ctx._errors AND embedding it as a CST child via captureError) then failed
+    // must remove BOTH, or the flat error survives as a GHOST that a tree walk
+    // can't see (flat run().errors would disagree with the embedded set).
+    errors: ctx._errors?.length ?? 0,
   }
 }
 
@@ -143,6 +149,10 @@ function rollbackBufList(
 }
 
 export function rollbackCstCapture(ctx: ParseContext, mark: CstRollbackMark): void {
+  // Truncate the flat recovery-error sink alongside the CST, so a rolled-back
+  // speculative branch leaves no ghost error (see saveCstMark). Guarded on a
+  // present sink + a defined mark (rollbackTrivia forwards the same field).
+  if (ctx._errors && mark.errors !== undefined) ctx._errors.length = mark.errors
   const b = ctx._cstBuf
   if (b) {
     rollbackBufList(b, 'raw', 'rawSingle', mark.raw)

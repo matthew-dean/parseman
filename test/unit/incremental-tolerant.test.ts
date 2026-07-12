@@ -13,7 +13,7 @@
  *      randomized fuzz whose edits routinely break structure.
  */
 import { describe, it, expect } from 'vitest'
-import { node, regex, literal, sequence, optional, sepBy, choice, rules, parseDoc } from '../../src/index.ts'
+import { node, regex, literal, sequence, optional, sepBy, choice, rules, parseDoc, expect as expectTok } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
 import type { Registry } from '../../src/functional/doc.ts'
 import { structurallyEqual } from '../../src/functional/doc.ts'
@@ -78,6 +78,57 @@ function absolutize(n: unknown, base = 0): unknown {
     ...(Array.isArray(c.children) ? { children: c.children.map(k => absolutize(k, start)) } : {}),
   }
 }
+
+// ── parseDoc surfaces recovery errors + trailing junk (fixes the blind sink) ──
+function blockGrammar() {
+  const g = rules(self => ({
+    Block: node('Block', sequence(literal('{'), optional(sepBy(self.Decl, literal(';'))), expectTok(literal('}'))), cst('Block')),
+    Decl: node('Decl', sequence(self.Id, literal(':'), self.Num), cst('Decl')),
+    Id: node('Id', regex(/[a-z]+/), cst('Id')),
+    Num: node('Num', regex(/[0-9]+/), cst('Num')),
+  }))
+  return { registry: reg<CSTNode>(g), root: 'Block' }
+}
+
+describe('tolerant parseDoc — errors + unconsumedFrom are populated', () => {
+  const { registry, root } = blockGrammar()
+
+  it('a missing required closer surfaces in doc.errors (was blind: [])', () => {
+    const doc = parseDoc<CSTNode>(registry, root, '{a:1', { tolerant: true })
+    expect(doc.tree).not.toBeNull()
+    expect(doc.errors.length).toBe(1)
+    expect(doc.errors[0]!.span).toEqual({ start: 4, end: 4 })
+    expect(doc.errors[0]!.expected).toEqual(['"}"'])
+    expect(doc.unconsumedFrom).toBeNull()
+  })
+
+  it('trailing junk after a complete parse surfaces via unconsumedFrom', () => {
+    const doc = parseDoc<CSTNode>(registry, root, '{a:1}xyz', { tolerant: true })
+    expect(doc.errors).toEqual([])
+    expect(doc.unconsumedFrom).toBe(5)
+  })
+
+  it('strict mode stays silent (no error sink installed)', () => {
+    // expect() recovers in place on ANY path (that is its contract), so the tree
+    // still parses — but strict mode installs no `_errors` sink and does not embed,
+    // so nothing is reported. Byte-identical to the pre-fix behaviour.
+    const doc = parseDoc<CSTNode>(registry, root, '{a:1', {})
+    expect(doc.tree).not.toBeNull()
+    expect(doc.errors).toEqual([])
+    expect(doc.unconsumedFrom).toBeNull()
+  })
+
+  it('the diagnostics survive .edit() — recomputed per parse, cleared when fixed', () => {
+    const broken = parseDoc<CSTNode>(registry, root, '{a:1', { tolerant: true })
+    expect(broken.errors.length).toBe(1)
+    const fixed = broken.edit(4, 4, '}') // insert the missing closer
+    expect(fixed.errors).toEqual([])
+    expect(fixed.unconsumedFrom).toBeNull()
+    // …and re-breaking via edit re-surfaces it
+    const rebroken = fixed.edit(5, 5, 'zzz') // trailing junk after '}'
+    expect(rebroken.unconsumedFrom).toBe(5)
+  })
+})
 
 // ── tolerant oracle fuzz ──────────────────────────────────────────────────────
 function mulberry32(seed: number): () => number {

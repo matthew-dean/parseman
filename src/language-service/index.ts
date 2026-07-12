@@ -84,6 +84,41 @@ export type LanguageService = {
 const errorMessage = (expected: readonly string[]): string =>
   expected.length ? `Unexpected input; expected ${expected.join(' or ')}` : 'Unexpected input'
 
+/**
+ * Merge every syntax-error source into one deduped diagnostic list:
+ *   (a) recovered `parseError` nodes embedded in the tree + per-node lint rules
+ *       (via {@link diagnoseTree}),
+ *   (b) residual FLAT recovery/failure errors from the run/doc (present when the
+ *       parse produced no tree, or as the flat mirror of embedded errors), and
+ *   (c) a sentinel over any trailing `unconsumedFrom..end` junk the grammar left.
+ * Deduped by span+message so an embedded error and its flat twin collapse to one,
+ * while distinct diagnostics at the same offset survive. With the reporting fixes
+ * (expect() embeds, speculative rollback is clean) (a) is already complete; the
+ * merge is what guarantees missing-closers and trailing junk are never invisible.
+ */
+function mergeDiagnostics(
+  tree: LsNode | null,
+  flat: ReadonlyArray<{ expected: readonly string[]; span: Span }>,
+  unconsumedFrom: number | null,
+  inputLength: number,
+  config: LanguageServiceConfig,
+): Diagnostic[] {
+  const out: Diagnostic[] = []
+  const seen = new Set<string>()
+  const add = (d: Diagnostic): void => {
+    const key = `${d.severity}|${d.span.start}|${d.span.end}|${d.message}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(d)
+  }
+  if (tree) for (const d of diagnoseTree(tree, config)) add(d)
+  for (const e of flat) add({ severity: 'error', message: errorMessage(e.expected), span: e.span })
+  if (unconsumedFrom !== null) {
+    add({ severity: 'error', message: 'Unexpected input', span: { start: unconsumedFrom, end: inputLength } })
+  }
+  return out
+}
+
 /** One walk over a CST: recovered `parseError` nodes → error diagnostics, and each
  * node dispatched to its `config.diagnostics[type]` lint handler. Errors live in the
  * tree, so this is the single source for both — no separate flat channel to merge. */
@@ -113,7 +148,12 @@ export function languageService(grammar: GrammarInput, config: LanguageServiceCo
   const root = asReg ? grammar.root : undefined
   const entry: Grammar = asReg ? (registry![root!] as Grammar) : grammar
 
-  const parseTolerant = (src: string) => run(entry as never, src, { tolerant: true, build })
+  // The grammar's ambient trivia (interpreter combinators carry it in _meta) —
+  // handed to run() so it skips a trailing whitespace/comment tail before
+  // reporting unconsumedFrom, matching parseDoc/run semantics.
+  const trivia = typeof entry !== 'function' ? (entry as Combinator<unknown>)._meta.grammarTrivia : undefined
+  const parseTolerant = (src: string) =>
+    run(entry as never, src, { tolerant: true, build, ...(trivia !== undefined ? { trivia } : {}) })
 
   const complete = (input: string, offset: number, treeForCursor: unknown): CompletionItem[] => {
     const expected = coreCompletionsAt(entry as never, input, offset, { tolerant: true })
@@ -130,8 +170,8 @@ export function languageService(grammar: GrammarInput, config: LanguageServiceCo
 
     diagnostics(src) {
       const r = parseTolerant(src)
-      return r.value && typeof r.value === 'object' ? diagnoseTree(r.value as LsNode, config)
-        : r.errors.map(e => ({ severity: 'error' as const, message: errorMessage(e.expected), span: e.span }))
+      const tree = r.value && typeof r.value === 'object' ? (r.value as LsNode) : null
+      return mergeDiagnostics(tree, r.errors, r.unconsumedFrom, src.length, config)
     },
 
     completionsAt(src, offset) {
@@ -149,7 +189,10 @@ export function languageService(grammar: GrammarInput, config: LanguageServiceCo
         return {
           get tree() { return abs },
           edit: (from, to, replacement) => make(doc.edit(from, to, replacement)),
-          diagnostics: () => (abs ? diagnoseTree(abs, config) : []),
+          // Same unified merge as the stateless path: embedded parseError nodes +
+          // lint, the flat recovery errors the doc collected, and a trailing-junk
+          // sentinel — so a live editor document surfaces missing-closers and junk.
+          diagnostics: () => mergeDiagnostics(abs, doc.errors, doc.unconsumedFrom, doc.input.length, config),
           completionsAt: (offset) => complete(doc.input, offset, abs),
         }
       }

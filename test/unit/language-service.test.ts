@@ -4,7 +4,7 @@
  * itself carries NONE of it. This is the acceptance test for the whole re-arch.
  */
 import { describe, it, expect } from 'vitest'
-import { regex, literal, sequence, sepBy, node, choice, rules } from '../../src/index.ts'
+import { regex, literal, sequence, sepBy, node, choice, rules, optional, expect as expectTok } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
 import type { Registry } from '../../src/functional/doc.ts'
 import type { NodeLike } from '../../src/cst/types.ts'
@@ -108,5 +108,49 @@ describe('languageService.openDocument — incremental editor document', () => {
 
   it('openDocument throws on a bare-entry service (no registry)', () => {
     expect(() => css.openDocument('{a:red}')).toThrow(/registry/)
+  })
+})
+
+// ── unified diagnostics: missing closer (expect) + trailing junk ─────────────
+// Grammar whose closing `}` is REQUIRED via expect(), so a missing one recovers
+// (embeds a parseError) instead of aborting — the case the old diagnostics()
+// (tree-walk only, never consulting unconsumedFrom) rendered invisible.
+const gx = rules(self => ({
+  Block: node(sequence(literal('{'), optional(sepBy(self.Decl, literal(';'))), expectTok(literal('}')))),
+  Decl: node(sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/))),
+}))
+const lsx = languageService({ rules: gx as unknown as Registry<NodeLike>, root: 'Block' }, {})
+
+describe('languageService.diagnostics — unified sources (no invisible errors)', () => {
+  it('surfaces a missing required closer (was []: tree walk missed expect errors)', () => {
+    const d = lsx.diagnostics('{a:1').filter(x => x.severity === 'error')
+    expect(d).toHaveLength(1)
+    expect(d[0]!.span).toEqual({ start: 4, end: 4 })
+  })
+
+  it('surfaces trailing junk after a complete parse via unconsumedFrom', () => {
+    const d = lsx.diagnostics('{a:1}xyz').filter(x => x.severity === 'error')
+    expect(d).toHaveLength(1)
+    expect(d[0]!.span).toEqual({ start: 5, end: 8 })
+  })
+
+  it('a well-formed document yields no diagnostics', () => {
+    expect(lsx.diagnostics('{a:1;b:2}')).toEqual([])
+  })
+
+  it('embedded + flat errors for the same recovery are deduped to one', () => {
+    // '{abc' recovers the junk element (embedded + flat, same span) → exactly one.
+    const d = lsx.diagnostics('{abc').filter(x => x.severity === 'error')
+    const spans = d.map(x => `${x.span.start}:${x.span.end}`)
+    expect(new Set(spans).size).toBe(spans.length) // no duplicate spans/messages
+  })
+
+  it('the incremental document surfaces the same missing-closer + junk', () => {
+    const doc = lsx.openDocument('{a:1')
+    expect(doc.diagnostics().filter(x => x.severity === 'error')).toHaveLength(1)
+    const fixed = doc.edit(4, 4, '}')
+    expect(fixed.diagnostics()).toEqual([])
+    const junk = fixed.edit(5, 5, 'zz')
+    expect(junk.diagnostics().filter(x => x.severity === 'error')).toHaveLength(1)
   })
 })
