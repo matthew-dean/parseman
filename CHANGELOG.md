@@ -3,6 +3,38 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.26.2 — 2026-07-12
+
+- **Fix: `compose()` over a compiled base whose grammar has a gated `choice`.** A
+  macro-compiled, exported `rules()` grammar carries a compact, re-lowerable **IR**
+  form so a downstream package can `compose([base, delta])` and re-lower the base
+  under its own composing trivia. `serializeRuleMap` produced that IR — but it bailed
+  (`Unserializable`) on *any* `choice` containing a `{ gate, combinator }` arm, so the
+  grammar silently shipped **full lowered pieces** instead. Those baked pieces were
+  lowered at the base package's build (its own trivia and first-set bookkeeping) and
+  spliced verbatim into the composing grammar's fused closure — corrupting a **sibling**
+  rule's first-char dispatch (e.g. after 0.26.1 let a gated arm keep O(1) dispatch,
+  gating CSS's `simpleSelector` `&` arm broke `Declaration` dispatch inside a *composed*
+  ruleset body, even though the standalone compiled grammar parsed fine). The serializer
+  now round-trips gated arms through their captured gate sources, so a gated grammar
+  carries IR like any other. Ungated choices serialize byte-for-byte as before.
+- The gated choice round-trips through a dedicated `_gch` helper that rebuilds the choice
+  **and re-attaches its `gateSrcs`** — load-bearing for static fusion. A plain
+  `choice({ gate, … })` reconstructed the predicate as a *source-less runtime closure*, a
+  non-static callback that made the macro's build-time `emitFusedSource` fail — so a
+  downstream `compose()` (e.g. Jess composing the compiled CSS) silently fell back to a
+  *runtime* fuse, whose combinator consts then crashed `rules()` at grammar construction
+  (`Cannot read properties of undefined (reading 'tag')`). Preserving `gateSrcs` keeps the
+  re-lowered gate inlined from source, so the multi-layer compose stays statically fused.
+- A captured gate source is sliced from the grammar's TypeScript and may carry a type
+  annotation (`(s: any) => …`, unavoidable for a gate under a `g: any` factory with
+  `noImplicitAny`). Inlined gate sources are transpiled downstream, but the IR string is
+  re-lowered with `new Function` verbatim, where TS syntax is a hard parse error — so the
+  macro now strips TS-only syntax from a captured gate source (using the spans the parser
+  already produced; no extra transpiler dependency). Sources that are already valid JS
+  (every existing untyped callback) are kept byte-for-byte, so standalone codegen output
+  is unchanged.
+
 ## 0.26.1 — 2026-07-12
 
 - **Gated `choice` arms keep O(1) first-char dispatch.** Previously, gating any arm of a

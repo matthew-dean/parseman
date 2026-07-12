@@ -17,6 +17,59 @@ import type { Combinator } from '../types.ts'
 import { ref } from '../combinators/ref.ts'
 import * as parseman from '../index.ts'
 
+/**
+ * Emit an AST subtree's source with TypeScript-only syntax removed. A gate source
+ * is sliced verbatim from the grammar's `.ts` and may carry a type annotation (e.g.
+ * `(s: any) => …`, unavoidable for a gate under a `g: any` factory with
+ * noImplicitAny). Where the macro INLINES the source, downstream TS→JS transpilation
+ * strips that — but a gated choice also round-trips through the `serializeRuleMap`
+ * IR string, which is re-lowered with `new Function` VERBATIM, where TS syntax is a
+ * hard parse error. So blank out every TS-only span (param/return/variable type
+ * annotations, generic type args, and `as`/`satisfies`/`!` cast suffixes) using the
+ * spans the oxc parser already gave us — no extra transpiler dependency. A subtree
+ * with no TS syntax (every existing untyped callback) is returned byte-for-byte, so
+ * standalone codegen output is unchanged.
+ */
+function stripTsFromSource(node: Node, code: string): string {
+  const cuts: Array<[number, number]> = []
+  const walk = (n: unknown): void => {
+    if (!n || typeof n !== 'object') return
+    const rec = n as Record<string, unknown> & { type?: string; start?: number; end?: number; expression?: { end?: number } }
+    // A whole TS-only node (a type annotation, type-argument list, etc.): drop it.
+    if (typeof rec.type === 'string' && rec.type.startsWith('TS') && typeof rec.start === 'number' && typeof rec.end === 'number') {
+      // Cast/non-null WRAPPERS keep their expression; only the `as T` / `satisfies T`
+      // / `!` suffix after the inner expression is TS. Everything else (annotations,
+      // type-argument lists) is dropped whole.
+      if ((rec.type === 'TSAsExpression' || rec.type === 'TSSatisfiesExpression' || rec.type === 'TSNonNullExpression') && rec.expression && typeof rec.expression.end === 'number') {
+        cuts.push([rec.expression.end, rec.end])
+        walk(rec.expression)
+        return
+      }
+      cuts.push([rec.start, rec.end])
+      return
+    }
+    for (const key in rec) {
+      if (key === 'type' || key === 'start' || key === 'end') continue
+      const v = rec[key]
+      if (Array.isArray(v)) { for (const item of v) walk(item) }
+      else if (v && typeof v === 'object') walk(v)
+    }
+  }
+  walk(node)
+  const start = (node as { start: number }).start
+  const end = (node as { end: number }).end
+  if (cuts.length === 0) return code.slice(start, end)
+  cuts.sort((a, b) => a[0] - b[0])
+  let out = ''
+  let cur = start
+  for (const [s, e] of cuts) {
+    if (s < cur) continue // nested cut already covered
+    out += code.slice(cur, s)
+    cur = e
+  }
+  return out + code.slice(cur, end)
+}
+
 // ---------------------------------------------------------------------------
 // Scope types
 //
@@ -391,7 +444,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         const parts = gatedArmParts(argNode as unknown as ObjectExpression)
         if (!parts) return null
         // Gate mapFn is pushed BEFORE the arm body's mapFns (matches emitFirstMatch).
-        const gateSrc = code.slice(parts.gate.start, parts.gate.end)
+        const gateSrc = stripTsFromSource(parts.gate as unknown as Node, code)
         mfs.push(gateSrc)
         const combi = anyValue(parts.combinator, scope, code, mfs)
         if (!isCombinator(combi)) return null
