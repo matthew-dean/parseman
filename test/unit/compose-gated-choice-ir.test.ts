@@ -130,4 +130,27 @@ describe('compose over a compiled base with a gated choice (0.26.2)', () => {
     expect(composed.Ruleset!('&{color:red}', 0, {}).ok).toBe(false)
     expect(composed.Ruleset!('&{color:red}', 0, { state: { inner: true } }).ok).toBe(true)
   })
+
+  it('a gate written with a TS angle-bracket assertion (<T>x) re-lowers to valid JS', () => {
+    // The IR string is re-lowered with `new Function`, where a `<any>s` assertion is
+    // a hard SyntaxError. stripTsFromSource must remove the PREFIX `<any>` and keep the
+    // wrapped expression (unlike an `as`/`satisfies` SUFFIX). Exercises the
+    // TSTypeAssertion branch end-to-end.
+    const src = `import { rules, choice, sequence, literal, regex, node } from 'parseman' with { type: 'macro' }
+const cst = (type) => (ch, _r, span) => ({ _tag: 'node', type, span, children: [...ch] })
+export const g2 = rules(g => ({
+  Ruleset: node('Ruleset', sequence(g.Sel, literal('{'), literal('}')), cst('Ruleset')),
+  Sel: choice({ gate: (s) => !!((<any>s)?.inner), combinator: literal('&') }, regex(/\\.[a-z]+/)),
+}))`
+    const mod = buildCompiledGrammar(src)
+    const g2 = mod.g2 as Record<string | symbol, unknown>
+    const carried = g2[COMPOSED_PIECES] as Array<{ ir?: string }>
+    const ir = carried.find(p => typeof p.ir === 'string')!.ir!
+    expect(ir).not.toContain('<any>') // the TS assertion was stripped from the gate source
+    const pieces = compileLinkable(evalRuleMapIR(ir), '_ts_')!
+    expect(() => emitFusedSource([pieces])).not.toThrow() // no SyntaxError on re-lower
+    const gg = g2 as unknown as Record<string, FusedRule>
+    expect(gg.Ruleset!('&{}', 0, {}).ok).toBe(false)                          // gate blocks without inner
+    expect(gg.Ruleset!('&{}', 0, { state: { inner: true } }).ok).toBe(true)  // gate passes with inner
+  })
 })
