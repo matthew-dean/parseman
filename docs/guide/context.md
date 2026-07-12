@@ -55,11 +55,12 @@ const stmt = choice(
 The gated arm is skipped entirely unless its gate returns true. See
 [Ordered choice & keywords](./keywords#gated-alternatives).
 
-Gating is cheap when it's worth reaching for: if the gated arm's first character is
-disjoint from the other arms, the choice keeps its O(1) first-char dispatch and the gate
-runs only when the input is actually at that character (parseman 0.26.1). So gating a
-rare-token alternative — a nesting `&`, a mode-only keyword — costs essentially nothing on
-the hot path.
+Gating is cheap when it's worth reaching for: as long as **every** arm has a disjoint
+first-set and **none** is nullable, the choice keeps its O(1) first-char dispatch and the
+gate runs only when the input is actually at that arm's first character (parseman 0.26.1).
+A single nullable sibling forces the linear first-match path even if the gated arm itself
+is disjoint. So gating a rare-token alternative in an otherwise-disjoint choice — a nesting
+`&`, a mode-only keyword — costs essentially nothing on the hot path.
 
 ## Which tool: structure, options, recursion, or context
 
