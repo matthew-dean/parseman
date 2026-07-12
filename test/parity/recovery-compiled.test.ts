@@ -51,6 +51,28 @@ describe('interpreter ⇔ compiled recovery parity (oneOrMore)', () => {
   })
 })
 
+describe('MACRO inline-expression recovers (macro-compiled grammars are recoverable)', () => {
+  const block = sequence(literal('{'), many(decl), literal('}'))
+  it('the inlinable macro output recovers with parity, and keeps inlineExpression', () => {
+    const rec = compile(block as Combinator<unknown>, undefined, { recovery: true })
+    // A recovery grammar must still be macro-inlinable (no _rp), else it can't be
+    // baked into a shipped compiled grammar.
+    expect(rec.inlineExpression).not.toBeNull()
+    expect(/_rp\[/.test(rec.source)).toBe(false)
+    // Eval the exact expression the macro pastes → a (input,_pos,_ctx) parse fn.
+    const macroFn = new Function(`return ${rec.inlineExpression}`)() as
+      (input: string, pos: number, ctx: ParseContext) => { ok: boolean; value: unknown }
+    for (const input of ['{a:1$$b:2}', '{$$a:1}', '{a:1}', '{a:1@@b:2c:3}']) {
+      const ri = run(block as Combinator<unknown>, input, { tolerant: true })
+      const errors: unknown[] = []
+      const rc = macroFn(input, 0, { trackLines: false, _errors: errors, _tolerant: true, _rec: REC } as unknown as ParseContext)
+      expect(rc.ok, `${input} ok`).toBe(ri.ok)
+      expect(rc.value, `${input} value`).toEqual(ri.value)
+      expect(errors, `${input} errors`).toEqual(ri.errors)
+    }
+  })
+})
+
 describe('compiled recovery is dormant on the strict path', () => {
   it('a recovery-compiled grammar run WITHOUT tolerant behaves strictly', () => {
     const block = sequence(literal('{'), many(decl), literal('}'))
