@@ -20,7 +20,7 @@ const external = [
 ]
 
 const shared = {
-  entryPoints: ['src/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts'],
+  entryPoints: ['src/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts', 'src/language-service/index.ts'],
   bundle: true,
   external,
   sourcemap: true,
