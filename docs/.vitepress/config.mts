@@ -80,6 +80,7 @@ export default defineConfig({
           text: 'Tooling',
           collapsed: false,
           items: [
+            { text: 'Editor / language-server integration', link: '/guide/editor-integration' },
             { text: 'Grammar spec generation', link: '/guide/spec-generation' },
           ],
         },

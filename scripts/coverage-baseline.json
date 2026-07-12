@@ -1,10 +1,10 @@
 {
-  "updatedAt": "2026-07-03",
-  "gitRev": "410ece4",
+  "updatedAt": "2026-07-11",
+  "gitRev": "4602a28",
   "metrics": {
-    "lines": 97.2,
-    "statements": 92.73,
-    "functions": 97.22,
-    "branches": 85.86
+    "lines": 96.85,
+    "statements": 92.76,
+    "functions": 98.15,
+    "branches": 86.32
   }
 }

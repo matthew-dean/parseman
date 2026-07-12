@@ -371,7 +371,7 @@ describe('parseScanShape — general seq category', () => {
   it('optional literal prefix + run (e.g. -?[0-9]+)', () => {
     expect(seqOf(/-?[0-9]+/)).toEqual([
       { part: 'lit', cps: [45], optional: true },
-      { part: 'run', ranges: [[48, 57]], negated: false, min: 1, unbounded: true },
+      { part: 'run', ranges: [[48, 57]], negated: false, min: 1, max: Infinity },
     ])
   })
 
@@ -401,6 +401,137 @@ describe('parseScanShape — general seq category', () => {
     // diverges from backtracking (P consumed by run → required P fails). Must
     // NOT be lowered. (This is the `rangeFirstCps` lower-bound-only bug.)
     expect(parseScanShape('[A-Z]?P')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bounded counted repeat `{n}` / `{n,}` / `{n,m}` on a class/shorthand run
+// (PERF_IDEAS §8c). A `{n}` run is fixed-length (no wiggle); a `{n,m}` with
+// m>n or a `{n,}` has the same greedy wiggle as `+`/`*` and lowers only when
+// that wiggle is disjoint from what follows (`seqIsUnambiguous`).
+// ---------------------------------------------------------------------------
+
+describe('parseScanShape — bounded repeat {n,m} (§8c)', () => {
+  const hex = [[48, 57], [97, 102], [65, 70]] as Array<[number, number]>
+
+  it('records min/max for {n}, {n,}, {n,m}', () => {
+    expect(parseScanShape('[0-9a-fA-F]{3,8}')).toEqual({
+      kind: 'seq', parts: [{ part: 'run', ranges: hex, negated: false, min: 3, max: 8 }],
+    })
+    expect(parseScanShape('[0-9a-fA-F]{4}')).toEqual({
+      kind: 'seq', parts: [{ part: 'run', ranges: hex, negated: false, min: 4, max: 4 }],
+    })
+    expect(parseScanShape('[0-9]{2,}')).toEqual({
+      kind: 'seq', parts: [{ part: 'run', ranges: [[48, 57]], negated: false, min: 2, max: Infinity }],
+    })
+  })
+
+  it('declines degenerate/invalid bounds (RegExp handles them)', () => {
+    expect(parseScanShape('[0-9]{0}')).toBeNull()   // max < 1 — matches empty
+    expect(parseScanShape('[0-9]{0,0}')).toBeNull()
+  })
+
+  it('declines a bounded run whose wiggle overlaps the continuation', () => {
+    // `[0-9]{2,4}[0-9]` — greedy takes up to 4 digits, but the engine can give a
+    // digit back to satisfy the trailing `[0-9]`. A one-pass scan can't, so this
+    // must NOT lower (mirrors the `[a-z]+[a-z]` §8 decline).
+    expect(parseScanShape('[0-9]{2,4}[0-9]')).toBeNull()
+    // A FIXED count has no wiggle, so `{2}` followed by an overlapping class is
+    // still sound (exactly 2, then 1 more).
+    expect(parseScanShape('[0-9]{2}[0-9]')?.kind).toBe('seq')
+  })
+
+  it('lowers the target grammar terminals to charCodeAt (no exec)', () => {
+    for (const re of [
+      /#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])/, // CSS colorHex (with its trailing lookahead)
+      /#[0-9a-fA-F]{3,8}/,
+      /u[0-9a-fA-F]{4}/,                  // JSON/GraphQL \uXXXX escape body
+      /[0-9]{2,4}x/,                      // bounded wiggle, disjoint continuation
+      /[0-9]{2}[a-z]/,                    // fixed count + continuation
+    ]) {
+      const src = compile(regex(re)).source
+      expect(src, re.source).toContain('charCodeAt')
+      expect(src, re.source).not.toContain('.exec(input)')
+    }
+    // The wiggle-overlaps-continuation case stays on exec.
+    expect(compile(regex(/[0-9]{2,4}[0-9]/)).source).toContain('.exec(input)')
+  })
+
+  // Exhaustive differential: the lowered scan must consume exactly what the raw
+  // RegExp matches, over every short combination of the structurally-relevant
+  // chars. Diffs the COMPILED output (not the interpreter, which trivially
+  // equals RegExp) — the same discipline as §8h/§8i.
+  const differential = (src: string, alph: string[], len: number) => {
+    const re = new RegExp('^(?:' + src + ')')
+    const compiled = compile(regex(new RegExp(src)))
+    const rec = (s: string, d: number) => {
+      if (s.length) {
+        const m = re.exec(s)
+        const want = m ? m[0].length : -1
+        const r = compiled.parse(s, 0)
+        const got = r.ok ? (r.value as string).length : -1
+        expect(got, JSON.stringify(s)).toBe(want)
+      }
+      if (d < len) for (const a of alph) rec(s + a, d + 1)
+    }
+    rec('', 0)
+  }
+
+  // Same compiled-vs-RegExp discipline as `differential`, but over an explicit case
+  // list instead of a brute-force product — for bounds whose interesting inputs are
+  // longer than an exhaustive-to-depth search can afford to reach.
+  const diffCases = (src: string, cases: string[]) => {
+    const re = new RegExp('^(?:' + src + ')')
+    const compiled = compile(regex(new RegExp(src)))
+    for (const s of cases) {
+      const m = re.exec(s)
+      const want = m ? m[0].length : -1
+      const r = compiled.parse(s, 0)
+      const got = r.ok ? (r.value as string).length : -1
+      expect(got, JSON.stringify(s)).toBe(want)
+    }
+  }
+
+  // colorHex's whole point is the `{3,8}` bound, so target its boundaries directly.
+  // An exhaustive-to-depth-7 product never builds a hex run longer than 6 (it can't
+  // afford the depth to reach 8+), so it tests `{3,8}` as if it were `{3,6}` — the
+  // upper cap and its interaction with the trailing `(?!hex)` lookahead go untested.
+  // Here we walk hex-run lengths 0..12 — straddling `<3` (reject), `3..8` (accept),
+  // and `>8` (cap: after 8 hex the lookahead sees a 9th and the whole match fails) —
+  // each in the trailing contexts that exercise the lookahead. RegExp is the oracle.
+  it('CSS colorHex: lowered scan == RegExp across the {3,8} bounds + lookahead', () => {
+    const HEX = '0123456789abcdefABCDEF'
+    // mix digit / lower / upper within each run so all three hex sub-classes appear
+    const run = (n: number) => Array.from({ length: n }, (_, i) => HEX[(i * 7) % HEX.length]).join('')
+    const cases: string[] = []
+    for (let n = 0; n <= 12; n++) {
+      const body = '#' + run(n)
+      cases.push(body)         // run then end-of-input
+      cases.push(body + 'g')   // run then a non-hex char (lookahead holds)
+      cases.push(body + ' ')   // run then whitespace (also non-hex)
+    }
+    // prefix requirement + interspersed non-hex breaks
+    cases.push('', '0', 'abc', '#', '#g', '#abcg', '#aBcDeF01', '##000')
+    diffCases(String.raw`#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])`, cases)
+  })
+
+  it('u[0-9a-fA-F]{4}: lowered scan == RegExp across all short inputs', () => {
+    differential(String.raw`u[0-9a-fA-F]{4}`, ['', 'u', '0', 'a', 'F', 'g'], 6)
+  })
+
+  it('bounded wiggle {2,4}x: lowered scan == RegExp across all short inputs', () => {
+    differential(String.raw`[0-9]{2,4}x`, ['', '0', '9', 'x', 'y'], 6)
+  })
+
+  it('interpreter == compiled for colorHex over representative inputs', () => {
+    const p = regex(/#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])/)
+    const c = compile(p)
+    for (const s of ['#fff', '#ffff', '#ffffff', '#ffffffff', '#fffffffff', '#ff', '#GG', 'fff', '#abcXYZ']) {
+      const ri = parse(p, s)
+      const rc = c.parse(s, 0)
+      expect(rc.ok, s).toBe(ri.ok)
+      if (ri.ok && rc.ok) expect(rc.value, s).toBe(ri.value)
+    }
   })
 })
 

@@ -1,4 +1,5 @@
 import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
+import { REC } from '../recovery/scan.ts'
 
 /**
  * Run a compiled/interpreted grammar entry against an input and collect the raw
@@ -45,6 +46,17 @@ export type RunOptions = {
    * `triviaLog` returned by `run()` is unaffected. Omit to capture every kind.
    */
   triviaCaptureMask?: number
+  /**
+   * Activate automatic list recovery. When true, `many`/`sepBy`/`oneOrMore` recover
+   * from a failed element — skip to a sync point (a resume token inferred from the
+   * grammar's structure; the grammar carries no recovery config), emit a
+   * `ParseError` over the skipped span (collected in `errors`), and keep parsing the
+   * rest of the list — instead of stopping at the first bad element. Omit (the
+   * default) for the strict "one clean error and stop" behavior, byte-identical to a
+   * run with no recovery. Recovery is a cold path: on well-formed input nothing
+   * fails, so none of the machinery runs.
+   */
+  tolerant?: boolean
 }
 
 export type RunResult = {
@@ -54,7 +66,7 @@ export type RunResult = {
   span: { start: number; end: number }
   /** Expected-token set when the TOP-LEVEL parse failed (empty on success). */
   expected: string[]
-  /** `recover()` / `expect()` diagnostics collected during the parse (in order). */
+  /** Recovery diagnostics (tolerant lists / `expect()`) collected during the parse (in order). */
   errors: ParseError[]
   /**
    * Flat trivia log for building a trivia map. Entry width depends on whether the
@@ -98,6 +110,7 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
       ? { trivia: grammarTrivia, ...(grammarTrivia._meta.triviaKindLabels ? { triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}) }
       : {}),
     ...(options.triviaCaptureMask !== undefined ? { _triviaCaptureMask: options.triviaCaptureMask } : {}),
+    ...(options.tolerant ? { _tolerant: true, _rec: REC } : {}),
   }
   const r = invoke(entry, input, 0, ctx)
 

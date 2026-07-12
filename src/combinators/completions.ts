@@ -1,4 +1,12 @@
-import type { Combinator, ParseFail, ParseContext } from '../types.ts'
+import type { Combinator, ParseFail, ParseContext, ParseResult } from '../types.ts'
+import { REC } from '../recovery/scan.ts'
+
+/** Anything `completionsAt` can probe: an interpreter combinator OR a `compile()`d
+ * grammar. A grammar compiled with `{ recovery: true }` records the probe on its fast
+ * path, so completions work on the published compiled artifact — no interpreter needed. */
+type CompletionsTarget =
+  | Combinator<unknown>
+  | { parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<unknown> }
 
 /**
  * Returns the set of expected tokens at the given cursor offset.
@@ -8,24 +16,35 @@ import type { Combinator, ParseFail, ParseContext } from '../types.ts'
  * highest-position failure seen, even when sepBy/many backtrack past the cursor.
  * Returns the expected tokens from that deepest failure.
  *
- * Returns an empty array when the input up to `offset` parses completely
- * with no failures at or before the cursor.
+ * Works on the interpreter combinator OR a `compile(g, { recovery: true })` grammar
+ * (the probe is recorded on the compiled fast path). Returns an empty array when the
+ * input up to `offset` parses completely with no failures at or before the cursor.
  *
  * The returned strings use the same labels as ParseFail.expected:
  * quoted literals like `"\"{\""` and regex patterns like `"/[0-9]+/"`.
  */
 export function completionsAt(
-  combinator: Combinator<unknown>,
+  target: CompletionsTarget,
   input: string,
   offset: number,
+  options: { tolerant?: boolean } = {},
 ): string[] {
   const probe: { offset: number; best: ParseFail | null } = { offset, best: null }
-  const ctx: ParseContext = { trackLines: false, _probe: probe }
-  const result = combinator.parse(input.slice(0, offset), 0, ctx)
+  // In tolerant mode, list recovery keeps the enclosing node parsing past a bad
+  // element so the failure at the cursor is actually recorded — the completion set
+  // is otherwise empty when a permissive top rule "succeeds" with an unconsumed tail.
+  const ctx: ParseContext = { trackLines: false, _probe: probe, ...(options.tolerant ? { _tolerant: true, _rec: REC } : {}) }
+  const sliced = input.slice(0, offset)
+  const result = 'parseWithContext' in target
+    ? target.parseWithContext(sliced, ctx, 0)
+    : target.parse(sliced, 0, ctx)
 
   // If the parser consumed everything up to offset successfully, there is nothing
-  // to complete — the input is already valid at this position.
-  if (result.ok) return []
+  // to complete — the input is already valid at this position. In tolerant mode the
+  // parse "succeeds" (list recovery swallowed the incomplete element at the cursor),
+  // so the meaningful expectation lives in the deepest failure the probe recorded
+  // while recovering: return that instead of an empty set.
+  if (result.ok) return options.tolerant ? (probe.best?.expected ?? []) : []
 
   // Use whichever failure (probe or top-level) sits at the deeper position.
   const best = deeperFail(probe.best, result)

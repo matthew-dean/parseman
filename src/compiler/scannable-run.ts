@@ -42,7 +42,11 @@
  */
 export type SeqPart =
   | { part: 'lit'; cps: number[]; optional: boolean }
-  | { part: 'run'; ranges: Array<[number, number]>; negated: boolean; min: 0 | 1; unbounded: boolean }
+  // A char-class run with a general counted quantifier: `min`..`max` occurrences.
+  // `max === Infinity` is unbounded (`+`/`*`/`{n,}`). The four legacy shapes map
+  // as `+`→{1,∞} `*`→{0,∞} `?`→{0,1} bare→{1,1}; `{n,m}` (§8c) fills the rest.
+  // Greedy scanning has "wiggle" a backtracker could exploit iff `max > min`.
+  | { part: 'run'; ranges: Array<[number, number]>; negated: boolean; min: number; max: number }
   | { part: 'group'; inner: ScanShape; min: 0 | 1; unbounded: boolean }
 
 export type ScanShape =
@@ -177,11 +181,31 @@ function parseSeqParts(source: string): SeqPart[] | null {
   const flush = () => {
     if (lit.length) { parts.push({ part: 'lit', cps: lit, optional: false }); lit = [] }
   }
-  const runFrom = (ranges: Array<[number, number]>, negated: boolean, q: string | undefined) => {
-    if (q === '+') { parts.push({ part: 'run', ranges, negated, min: 1, unbounded: true }); return 1 }
-    if (q === '*') { parts.push({ part: 'run', ranges, negated, min: 0, unbounded: true }); return 1 }
-    if (q === '?') { parts.push({ part: 'run', ranges, negated, min: 0, unbounded: false }); return 1 }
-    parts.push({ part: 'run', ranges, negated, min: 1, unbounded: false })
+  // Parse a `{n}` / `{n,}` / `{n,m}` counted quantifier at `source[at]` (`'{'`).
+  // Returns the bounds and the token length, or null when it isn't a well-formed
+  // brace quantifier (then the `{` is left for the caller's metachar decline).
+  const braceQuant = (at: number): { min: number; max: number; len: number } | null => {
+    const close = source.indexOf('}', at)
+    if (close === -1) return null
+    const body = source.slice(at + 1, close)
+    const m = /^(\d+)(,(\d*)?)?$/.exec(body)
+    if (!m) return null
+    const min = Number(m[1])
+    const max = m[2] === undefined ? min : m[3] ? Number(m[3]!) : Infinity
+    // Decline degenerate/empty-capable or invalid bounds — RegExp handles them.
+    if (max < 1 || min > max) return null
+    return { min, max, len: close - at + 1 }
+  }
+  const runFrom = (ranges: Array<[number, number]>, negated: boolean, at: number) => {
+    const q = source[at]
+    if (q === '+') { parts.push({ part: 'run', ranges, negated, min: 1, max: Infinity }); return 1 }
+    if (q === '*') { parts.push({ part: 'run', ranges, negated, min: 0, max: Infinity }); return 1 }
+    if (q === '?') { parts.push({ part: 'run', ranges, negated, min: 0, max: 1 }); return 1 }
+    if (q === '{') {
+      const b = braceQuant(at)
+      if (b) { parts.push({ part: 'run', ranges, negated, min: b.min, max: b.max }); return b.len }
+    }
+    parts.push({ part: 'run', ranges, negated, min: 1, max: 1 })
     return 0
   }
   let i = 0
@@ -202,7 +226,7 @@ function parseSeqParts(source: string): SeqPart[] | null {
       if (!ranges) return null
       flush()
       i = k + 1
-      i += runFrom(ranges, neg, source[i])
+      i += runFrom(ranges, neg, i)
       continue
     }
     if (ch === '\\') {
@@ -210,7 +234,7 @@ function parseSeqParts(source: string): SeqPart[] | null {
       if (e === 'd' || e === 'w' || e === 's') {
         flush()
         i += 2
-        i += runFrom(shorthandRanges(e), false, source[i])
+        i += runFrom(shorthandRanges(e), false, i)
         continue
       }
       // Escaped literal code point (incl. `\uXXXX`, `\t`, `\(`, …).
@@ -318,7 +342,7 @@ function seqIsUnambiguous(parts: SeqPart[]): boolean {
   let hasMandatory = false
   for (let k = 0; k < parts.length; k++) {
     const p = parts[k]!
-    const mandatory = p.part === 'lit' ? !p.optional : p.min === 1
+    const mandatory = p.part === 'lit' ? !p.optional : p.min >= 1
     if (mandatory) hasMandatory = true
     // A `group` part has a right-edge exposure (`groupPartExposure`): the chars a
     // backtracking engine could give back by shrinking the body's own trailing
@@ -344,10 +368,17 @@ function seqIsUnambiguous(parts: SeqPart[]): boolean {
         if (!firstSetsDisjoint(exposure, seqFirstAccept(parts.slice(k + 1)))) return false
       }
     }
-    const skippableSingle =
-      (p.part === 'lit' && p.optional) || (p.part !== 'lit' && !p.unbounded && p.min === 0)
-    const isUnboundedRepeat = p.part !== 'lit' && p.unbounded
-    if (skippableSingle || isUnboundedRepeat) {
+    // A part needs the disjoint-from-continuation check when a greedy one-pass
+    // scan has freedom a backtracking engine could resolve differently: an
+    // optional `lit`, a `run` with wiggle (`max > min` — covers `?`/`*`/`+` and
+    // bounded `{n,m}` with `m > n`; a fixed `{n}` run has none), or an
+    // optional/repeated `group`. A fixed-length run (`max === min`) consumes an
+    // exact count with no boundary to shift, so it never needs the check.
+    const needsDisjoint =
+      p.part === 'lit' ? p.optional
+      : p.part === 'run' ? p.max > p.min
+      : (p.unbounded || p.min === 0)
+    if (needsDisjoint) {
       const rest = seqFirstAccept(parts.slice(k + 1))
       if (!firstSetsDisjoint(partFirstAccept(p), rest)) return false
     }
@@ -447,10 +478,12 @@ function fixedClassSeq(shape: ScanShape): CharSet[] | null {
     if (p.part === 'lit') {
       if (p.optional) return null
       for (const cp of p.cps) out.push({ ranges: [[cp, cp]], negated: false })
-    } else if (p.part === 'run' && !p.unbounded && p.min === 1) {
-      out.push({ ranges: p.ranges, negated: p.negated })
+    } else if (p.part === 'run' && p.max === p.min && Number.isFinite(p.max)) {
+      // A fixed-count run `[x]{n}` (incl. the bare `[x]`, n=1) is n fixed
+      // positions of the same class. Variable-length runs return null below.
+      for (let c = 0; c < p.max; c++) out.push({ ranges: p.ranges, negated: p.negated })
     } else {
-      return null // optional/unbounded run, or a nested group — length not fixed
+      return null // optional/variable/unbounded run, or a nested group — length not fixed
     }
   }
   return out.length ? out : null
@@ -539,10 +572,11 @@ function trailingBacktrackClass(shape: ScanShape): CharSet | null | 'unsupported
     const last = shape.parts[shape.parts.length - 1]!
     if (last.part === 'lit') return null // fixed literal tail — no wiggle room
     if (last.part === 'run') {
-      // unbounded (`+`/`*`) or optional-bounded (`[x]?`) both have a
-      // 1-position choice a backtracker could make; `[x]` (min 1, bounded) is
-      // a single required char — no choice, hence no risk.
-      if (last.unbounded || last.min === 0) return { ranges: last.ranges, negated: last.negated }
+      // Wiggle iff `max > min`: unbounded (`+`/`*`/`{n,}`), optional (`[x]?`),
+      // or bounded `{n,m}` with `m > n` all let a backtracker shrink the trailing
+      // run by ≥1 position. A fixed run (`[x]`, `{n}`, `max === min`) has no
+      // choice — no wiggle, hence no risk.
+      if (last.max > last.min) return { ranges: last.ranges, negated: last.negated }
       return null
     }
     // A trailing `group` (§8f): its trailing exposure combines its body's own
@@ -735,7 +769,7 @@ function partFirstAccept(part: SeqPart): CharSet | 'any' {
 function seqFirstAccept(parts: SeqPart[]): CharSet | 'any' {
   const sets: Array<CharSet | 'any'> = []
   for (const p of parts) {
-    const mandatory = p.part === 'lit' ? !p.optional : p.min === 1
+    const mandatory = p.part === 'lit' ? !p.optional : p.min >= 1
     sets.push(partFirstAccept(p))
     if (mandatory) break
   }
@@ -1352,7 +1386,14 @@ export function emitShapeMatch(
           lines.push(`${ind}  if (!(${endV} + ${L} <= input.length && (${cond}))) break`)
           lines.push(`${ind}  ${endV} += ${L}`)
         }
-      } else if (p.part === 'run' && !p.unbounded) {
+      } else if (p.part === 'run' && p.max === Infinity) {
+        // Unbounded run (`+`/`*`/`{n,}`): greedy scan, then enforce the minimum.
+        const s = mint('_s')
+        lines.push(`${ind}  const ${s} = ${endV}`)
+        lines.push(`${ind}  while (${endV} < input.length && ${runCond(p, endV)}) ${endV}++`)
+        if (p.min === 1) lines.push(`${ind}  if (${endV} === ${s}) break`)
+        else if (p.min > 1) lines.push(`${ind}  if (${endV} - ${s} < ${p.min}) break`)
+      } else if (p.part === 'run' && p.max === 1) {
         // Exactly one char: required (min 1) or optional (min 0).
         if (p.min === 1) {
           lines.push(`${ind}  if (!(${endV} < input.length && ${runCond(p, endV)})) break`)
@@ -1361,10 +1402,13 @@ export function emitShapeMatch(
           lines.push(`${ind}  if (${endV} < input.length && ${runCond(p, endV)}) ${endV}++`)
         }
       } else if (p.part === 'run') {
+        // Bounded counted run `[x]{min,max}` (§8c), max ≥ 2: consume up to `max`
+        // occurrences, then require at least `min` (greedy — sound because
+        // `seqIsUnambiguous` proved any wiggle is disjoint from what follows).
         const s = mint('_s')
         lines.push(`${ind}  const ${s} = ${endV}`)
-        lines.push(`${ind}  while (${endV} < input.length && ${runCond(p, endV)}) ${endV}++`)
-        if (p.min === 1) lines.push(`${ind}  if (${endV} === ${s}) break`)
+        lines.push(`${ind}  while (${endV} - ${s} < ${p.max} && ${endV} < input.length && ${runCond(p, endV)}) ${endV}++`)
+        if (p.min > 0) lines.push(`${ind}  if (${endV} - ${s} < ${p.min}) break`)
       } else {
         // `group` (§8f): the group's own body is just another `ScanShape` —
         // recurse via `emitShapeMatch`, then splice its setup in as the body

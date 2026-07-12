@@ -114,6 +114,26 @@ export type FieldCapture<T = unknown> = {
 
 export type FieldMap = Record<string, FieldCapture | FieldCapture[]>
 
+/**
+ * Recovery helpers the runtime driver injects into a COMPILED parse's ctx (`_rec`)
+ * when tolerant, so the compiled output reuses the exact interpreter recovery
+ * functions (`recoverScan`/`matchesAt`/`orSentinel`) — guaranteeing parity without
+ * the emitted `new Function` needing module-scope access.
+ */
+export type RecoveryHelpers = {
+  scan: (input: string, from: number, ctx: ParseContext, sync: Combinator<unknown>, expected: string[]) => { error: ParseError; end: number }
+  at: (sentinel: Combinator<unknown>, input: string, pos: number, ctx: ParseContext) => boolean
+  or: (a: Combinator<unknown>, b: Combinator<unknown> | undefined) => Combinator<unknown>
+  /** Build a zero-width follow-set sentinel from a first-set. Called from compiled
+   * code (via `_ctx`, never `_rp`) so recovery grammars stay macro-inlinable. */
+  sentinel: (fs: FirstSet) => Combinator<unknown> | null
+  /** Embed a recovered error as a `parseError` CST child at the recovery point
+   * (no-op when CST capture is off). Called from both paths so the error lives in
+   * the tree — riding reused subtrees across incremental edits — not just the flat
+   * `_errors` channel. */
+  capture: (ctx: ParseContext, error: ParseError) => void
+}
+
 export type ParseContext = {
   // `| undefined` (matching captureTrivia/_cst* below): a nested scope may
   // intentionally CLEAR inherited trivia by setting these to undefined (noTrivia).
@@ -152,8 +172,36 @@ export type ParseContext = {
    * positioned-CST / language-service (set) modes. Ignored by non-linkable output.
    */
   build?: BuildHost | undefined
-  /** When set, recover() nodes push their ParseError here instead of (only) embedding it in the tree. */
-  _errors?: ParseError[]
+  /** When set, recovery (tolerant lists / expect()) pushes each ParseError here in addition to embedding it in the tree. */
+  _errors?: ParseError[] | undefined
+  /**
+   * Framework-internal: layered "C+B" list recovery gate. When true, tolerant
+   * `many`/`oneOrMore`/`sepBy` recover from a failed element (skip to a sync point,
+   * emit a ParseError, keep parsing) instead of stopping the list. Unset (the
+   * default / strict path) ⇒ the list combinators behave byte-identically to before;
+   * the only residue is a single cold branch on the element-failure edge.
+   */
+  _tolerant?: boolean | undefined
+  /**
+   * Framework-internal: the recovery sync sentinel in effect for the current
+   * subtree, published DOWN by an enclosing `sequence` in tolerant mode. It is a
+   * zero-width combinator that matches when the input could start any of the
+   * sequence's remaining terms — i.e. the enclosing delimiter/close a nested list
+   * should resync to. A nested `many`/`oneOrMore`/`sepBy` reads it as its recovery
+   * terminator on element failure. Inferred automatically from grammar structure
+   * (the grammar carries no recovery config); `undefined` when nothing is locally
+   * inferable. Dynamic scoping through rule refs gives cross-rule inheritance for
+   * free (a list at a rule's tail resyncs to whatever delimiter followed the call).
+   */
+  _sync?: Combinator<unknown> | undefined
+  /**
+   * Framework-internal (compiled output only): recovery helpers injected by the
+   * runtime driver (`run`) when tolerant, so the compiled parser reuses the EXACT
+   * interpreter recovery functions — guaranteeing byte-for-byte parity without the
+   * emitted `new Function` needing module-scope access. Unset (strict) ⇒ compiled
+   * lists never enter the recovery branch. The interpreter ignores this field.
+   */
+  _rec?: RecoveryHelpers | undefined
   /**
    * Framework-internal (compiled/macro output only): the deepest failure recorded
    * while a fallible sub-parser was running — position (`_fe`) and expected set
@@ -169,7 +217,7 @@ export type ParseContext = {
    * during parsing up to _probe.offset. Used to return completions at the cursor
    * even when sepBy/many backtracked past the cursor position.
    */
-  _probe?: { offset: number; best: ParseFail | null }
+  _probe?: { offset: number; best: ParseFail | null } | undefined
   /**
    * Framework-internal: current CSTNode rule's child collector.
    * Set by node() during capture; undefined outside an active node parse.
@@ -195,7 +243,7 @@ export type ParseContext = {
    * array instead of (or in addition to) rawChildren capture. Zero object
    * allocations — just number pushes.
    */
-  _triviaLog?: number[]
+  _triviaLog?: number[] | undefined
   /**
    * Framework-internal: flat per-node trivia log for CST capture mode.
    * When set alongside _cstRawChildren, each trivia entry is recorded as three
@@ -212,8 +260,9 @@ export type ParseContext = {
 }
 
 /**
- * Sentinel value returned by recover() when its inner parser fails.
- * The span covers the skipped input; expected lists what the inner parser wanted.
+ * The recovery value produced when a parse fails at a recoverable point (tolerant
+ * list recovery, or expect()). The span covers the skipped/missing input; expected
+ * lists what the parser wanted there.
  */
 export type ParseError = {
   readonly _tag: 'parseError'

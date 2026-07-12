@@ -9,7 +9,7 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
-import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
+import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
 import { markUnusedValues } from './value-usage.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
@@ -74,6 +74,14 @@ export function endLoweringCapture(): string[] {
 type Ctx = {
   vars: number
   indent: number
+  /**
+   * Compile-time recovery gate (opt-in via `compile(g, { recovery: true })`).
+   * When off (default) NO recovery code is emitted — byte-identical output, and
+   * `runtimeParsers` stays empty so macro-inlining is unaffected. When on, lists
+   * emit a `_ctx._tolerant`-gated recovery branch and sequences publish an inferred
+   * sync sentinel; the machinery is dormant unless the parse is run tolerant.
+   */
+  recovery?: boolean | undefined
   /** Regex declarations hoisted to module scope */
   regexDecls: string[]
   /** Dedup map: "source/flags" → variable name (_re0 etc.) */
@@ -248,6 +256,22 @@ function hoistExpected(ctx: Ctx, constArrSource: string): string {
   return name
 }
 
+/**
+ * Compiled mirror of the interpreter's `failAt` (probe.ts): a `_ctx._probe`-gated
+ * furthest-failure update emitted at leaf-fail sites when IDE support is compiled in
+ * (`ctx.recovery`). A deeper failure replaces the best; a tie MERGES expected arrays
+ * (so choice arms aggregate their alternatives). Fires even inside swallowers
+ * (`recordFail` off) — a completion's deepest failure is often inside an optional/
+ * many. Dormant unless `completionsAt` set `_ctx._probe`, so a normal/tolerant parse
+ * pays one property read per leaf fail. Empty (no side effects) when recovery is off.
+ */
+function probeUpdate(ctx: Ctx, expectedArr: string, posExpr: string, constant = true): string {
+  if (!ctx.recovery) return ''
+  const fx = constant ? hoistExpected(ctx, expectedArr) : expectedArr
+  const pb = v(ctx, '_pb')
+  return `if (_ctx._probe !== undefined && ${posExpr} <= _ctx._probe.offset) { const ${pb} = _ctx._probe.best; if (${pb} === null || ${posExpr} > ${pb}.span.start) _ctx._probe.best = { ok: false, expected: [...${fx}], span: { start: ${posExpr}, end: ${posExpr} } }; else if (${posExpr} === ${pb}.span.start) _ctx._probe.best = { ok: false, expected: [...${pb}.expected, ...${fx}], span: { start: ${posExpr}, end: ${posExpr} } } } `
+}
+
 function failBody(ctx: Ctx, expected: string, posExpr: string): string {
   // Record the failure payload before breaking so an enclosing composite
   // construct can propagate this (deepest) failure verbatim — parity with the
@@ -256,11 +280,12 @@ function failBody(ctx: Ctx, expected: string, posExpr: string): string {
   // optional/many/sepBy/not never inspect `_ctx._fx`, so a leaf failing inside
   // them just breaks — the hot path (loop terminations, first-arm misses) pays
   // nothing. The direct-return path is the final answer and needs no recording.
+  const probe = probeUpdate(ctx, `[${expected}]`, posExpr)
   if (ctx.failLabel) {
-    if (!ctx.recordFail) return `break ${ctx.failLabel}`
-    return `{ _ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; break ${ctx.failLabel} }`
+    if (!ctx.recordFail) return probe ? `{ ${probe}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
+    return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; break ${ctx.failLabel} }`
   }
-  return failReturn(expected, posExpr)
+  return probe + failReturn(expected, posExpr)
 }
 
 /**
@@ -270,16 +295,17 @@ function failBody(ctx: Ctx, expected: string, posExpr: string): string {
  * that must be assigned verbatim.
  */
 function failArrBody(ctx: Ctx, expectedArr: string, posExpr: string, constant = true): string {
+  const probe = probeUpdate(ctx, expectedArr, posExpr, constant)
   if (ctx.failLabel) {
-    if (!ctx.recordFail) return `break ${ctx.failLabel}`
+    if (!ctx.recordFail) return probe ? `{ ${probe}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
     const fx = constant ? hoistExpected(ctx, expectedArr) : expectedArr
-    return `{ _ctx._fe = ${posExpr}; _ctx._fx = ${fx}; break ${ctx.failLabel} }`
+    return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${fx}; break ${ctx.failLabel} }`
   }
   // Direct-return (no enclosing fail label). A dynamic source may reference the
   // shared frozen `_ctx._fx`; copy it so the (possibly frozen) constant never
   // escapes into a user-facing result. Constant sources are inline literals.
-  if (!constant) return `return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} } }`
-  return failReturnArr(expectedArr, posExpr)
+  if (!constant) return `${probe}return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} } }`
+  return probe + failReturnArr(expectedArr, posExpr)
 }
 
 /** Build a ParseResult from the recorded deepest failure, copying `_fx` so the
@@ -1013,6 +1039,19 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
   return { stmts, valueVar: vv, endVar }
 }
 
+/**
+ * A JS expression that builds a zero-width follow-set sync sentinel for `fs` at
+ * RUNTIME via `_ctx._rec.sentinel(...)` — never `_rp` — so a recovery-enabled
+ * grammar keeps `runtimeParsers` empty and stays macro-inlinable. Returns null when
+ * the first-set is `any`/`empty` (no usable sentinel). The build is only reached on
+ * the tolerant path (the publish that uses it is `_ctx._tolerant`-gated), so a strict
+ * parse of the shipped grammar allocates nothing.
+ */
+function syncSentinelExpr(fs: FirstSet): string | null {
+  if (fs.kind !== 'ranges' || fs.ranges.length === 0) return null
+  return `_ctx._rec.sentinel({ kind: 'ranges', ranges: ${JSON.stringify(fs.ranges)} })`
+}
+
 function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, pos: string): ER & { valueVars: string[] } {
   const startV = v(ctx, '_start')
   const curV = v(ctx, '_cur')
@@ -1022,7 +1061,23 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
   ]
   const valueVars: string[] = []
 
+  // Recovery sync publish (compile-time gate): save the inherited sync at entry,
+  // then before each term set `_ctx._sync` to the inferred follow-set sentinel of
+  // the remaining terms (or the inherited sync when none is usable) so a nested
+  // list resyncs to the enclosing delimiter. Runtime-gated by `_ctx._tolerant`;
+  // strict parses never touch it.
+  const syncInV = ctx.recovery ? v(ctx, '_syncIn') : ''
+  if (ctx.recovery) stmts.push(`${ind(ctx)}const ${syncInV} = _ctx._sync`)
+  const publishSync = (i: number): string => {
+    if (!ctx.recovery) return ''
+    const fs = def.parsers.slice(i + 1).reduce<FirstSet>((acc, p) => union(acc, firstSetOf(p)), { kind: 'empty' })
+    const ref = syncSentinelExpr(fs)
+    return `${ind(ctx)}if (_ctx._tolerant) _ctx._sync = ${ref ?? syncInV}`
+  }
+
   for (let i = 0; i < def.parsers.length; i++) {
+    const syncPub = publishSync(i)
+    if (syncPub) stmts.push(syncPub)
     if (i > 0 && ctx.activeTrivia) {
       if (ctx.capturing) {
         const capFn = ensureTriviaCaptureFn(ctx)
@@ -1046,8 +1101,24 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         valueVars.push(r.valueVar)
         continue
       } else {
+        // Match the interpreter (sequence.ts): scan trivia to a temp position, but
+        // only *commit* it (advance cur) if the following term consumes content past
+        // it. A term matching empty (optional/many/lookahead) leaves cur pre-trivia,
+        // so trailing whitespace stays out of the sequence's span. The non-capturing
+        // trivFn has no side effects when called without `_cap`, so there is nothing
+        // to roll back — just keep cur unchanged.
         const trivFn = ensureTriviaFn(ctx)
-        stmts.push(`${ind(ctx)}${curV} = ${trivFn}(input, ${curV}, _ctx)`)
+        const scanEndV = v(ctx, '_sne')
+        stmts.push(`${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx)`)
+        const r = emit(def.parsers[i]!, ctx, scanEndV)
+        stmts.push(...r.stmts)
+        const endAfterV = v(ctx, '_sea')
+        stmts.push(
+          `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}`,
+        )
+        valueVars.push(r.valueVar)
+        continue
       }
     }
     const r = emit(def.parsers[i]!, ctx, curV)
@@ -1518,6 +1589,11 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     ...(wantValue ? [`${ind(ctx)}const ${arrV} = []`] : []),
     `${ind(ctx)}let ${curV} = ${pos}`,
   ]
+  // Capture this list's recovery sync at ENTRY: a nested element sequence will
+  // clobber `_ctx._sync` (and doesn't restore it, unlike the interpreter's
+  // finally), so the loop must read its own saved sync, not the live one.
+  const mySyncV = ctx.recovery ? v(ctx, '_mysy') : ''
+  if (ctx.recovery) stmts.push(`${ind(ctx)}const ${mySyncV} = _ctx._sync`)
 
   if (def.min === 1) {
     // Inline first mandatory match with early-return on failure
@@ -1559,10 +1635,30 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   }
 
   const { stmts: iterStmts, okVar: iterOk, valVar: iterVal, endVar: iterEnd } = emitFallible(def.parser, ctx, itemPos, true)
-  stmts.push(
-    ...iterStmts,
-    `${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`,
-  )
+  stmts.push(...iterStmts)
+  if (ctx.recovery) {
+    // Tolerant recovery (dormant unless `_ctx._tolerant`): an element that fails —
+    // and isn't sitting on the inferred sync token — is skipped to that token via
+    // the SAME interpreter recoverScan (parity), emitted as a ParseError; the loop
+    // continues. Zero-width progress is still a clean stop.
+    const rrV = v(ctx, '_rr')
+    const exp = hoistExpected(ctx, deriveExpectedArr([def.parser]))
+    stmts.push(
+      `${ind(ctx)}if (!${iterOk}) {`,
+      `${ind(ctx)}  ${rollback}if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPos}, _ctx)) {`,
+      `${ind(ctx)}    const ${rrV} = _ctx._rec.scan(input, ${itemPos}, _ctx, ${mySyncV}, ${exp})`,
+      ...(wantValue ? [`${ind(ctx)}    ${arrV}.push(${rrV}.error)`] : []),
+      `${ind(ctx)}    _ctx._rec.capture(_ctx, ${rrV}.error)`,
+      `${ind(ctx)}    ${curV} = ${rrV}.end`,
+      `${ind(ctx)}    continue`,
+      `${ind(ctx)}  }`,
+      `${ind(ctx)}  break`,
+      `${ind(ctx)}}`,
+      `${ind(ctx)}if (${iterEnd} <= ${itemPos}) { ${rollback}break }`,
+    )
+  } else {
+    stmts.push(`${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`)
+  }
   if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${iterVal})`)
   stmts.push(`${ind(ctx)}${curV} = ${iterEnd}`)
   ctx.indent--
@@ -1589,6 +1685,14 @@ function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, po
 function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepBy' }>, ctx: Ctx, pos: string): ER {
   const arrV = v(ctx, '_arr')
   const curV = v(ctx, '_cur')
+  const rec = !!ctx.recovery
+  // Recovery sync = the separator's own follow (resync to the next separator) OR the
+  // enclosing delimiter published as _ctx._sync — captured at ENTRY (element parses
+  // clobber _ctx._sync). The separator sentinel is exact for single-char separators.
+  const mySyncV = rec ? v(ctx, '_mysy') : ''
+  const exp = rec ? hoistExpected(ctx, deriveExpectedArr([def.parser])) : ''
+  const sepSent = rec ? syncSentinelExpr(firstSetOf(def.separator)) : null
+  const scanSync = sepSent ? `_ctx._rec.or(${sepSent}, ${mySyncV})` : mySyncV
 
   const { stmts: firstStmts, okVar: firstOk, valVar: firstVal, endVar: firstEnd } =
     emitFallible(def.parser, ctx, pos, true)
@@ -1596,16 +1700,56 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   const stmts: string[] = [
     `${ind(ctx)}const ${arrV} = []`,
     `${ind(ctx)}let ${curV} = ${pos}`,
+    ...(rec ? [`${ind(ctx)}const ${mySyncV} = _ctx._sync`] : []),
     ...firstStmts,
-    `${ind(ctx)}if (${firstOk}) {`,
   ]
-  ctx.indent++
-  stmts.push(
-    `${ind(ctx)}${arrV}.push(${firstVal})`,
-    `${ind(ctx)}${curV} = ${firstEnd}`,
-    `${ind(ctx)}while (${curV} < input.length) {`,
-  )
-  ctx.indent++
+
+  // A failed element after a real separator. Strict → the exact original break
+  // (byte-identical). Tolerant → skip to the sync, emit a ParseError, and continue
+  // (unless already sitting on the enclosing sync). `originalFail` is that site's
+  // exact strict string (the three sites differ — braces / rollback).
+  const failItem = (nextOkVar: string, itemPosVar: string, rb: string, originalFail: string): string[] => {
+    if (!rec) return [originalFail]
+    const rr = v(ctx, '_rr')
+    return [
+      `${ind(ctx)}if (!${nextOkVar}) {`,
+      `${ind(ctx)}  if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPosVar}, _ctx)) {`,
+      `${ind(ctx)}    const ${rr} = _ctx._rec.scan(input, ${itemPosVar}, _ctx, ${scanSync}, ${exp})`,
+      `${ind(ctx)}    ${arrV}.push(${rr}.error); _ctx._rec.capture(_ctx, ${rr}.error); ${curV} = ${rr}.end; continue`,
+      `${ind(ctx)}  }`,
+      `${ind(ctx)}  ${rb}break`,
+      `${ind(ctx)}}`,
+    ]
+  }
+
+  // First element + loop entry. Strict keeps the exact `if (firstOk) { … while }`
+  // shape (byte-identical). Tolerant recovers a junk first element (unless sitting
+  // on the enclosing sync) and still enters the loop via a `did` flag.
+  if (rec) {
+    const rr0 = v(ctx, '_rr0')
+    const didV = v(ctx, '_did')
+    stmts.push(
+      `${ind(ctx)}let ${didV} = false`,
+      `${ind(ctx)}if (${firstOk}) { ${arrV}.push(${firstVal}); ${curV} = ${firstEnd}; ${didV} = true }`,
+      `${ind(ctx)}else if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${pos}, _ctx)) {`,
+      `${ind(ctx)}  const ${rr0} = _ctx._rec.scan(input, ${pos}, _ctx, ${scanSync}, ${exp})`,
+      `${ind(ctx)}  ${arrV}.push(${rr0}.error); _ctx._rec.capture(_ctx, ${rr0}.error); ${curV} = ${rr0}.end; ${didV} = true`,
+      `${ind(ctx)}}`,
+      `${ind(ctx)}if (${didV}) {`,
+    )
+    ctx.indent++
+    stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
+    ctx.indent++
+  } else {
+    stmts.push(`${ind(ctx)}if (${firstOk}) {`)
+    ctx.indent++
+    stmts.push(
+      `${ind(ctx)}${arrV}.push(${firstVal})`,
+      `${ind(ctx)}${curV} = ${firstEnd}`,
+      `${ind(ctx)}while (${curV} < input.length) {`,
+    )
+    ctx.indent++
+  }
 
   // Mirror interpreter sepBy — separate rollback marks for pre-sep and post-sep trivia.
   let sepAtPos = curV
@@ -1639,7 +1783,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       stmts.push(
         ...nextStmts,
         // item failed → unwind the separator too, back to the end of the last item
-        `${ind(ctx)}if (!${nextOk}) { ${rollbackToSep}break }`,
+        ...failItem(nextOk, npV, rollbackToSep, `${ind(ctx)}if (!${nextOk}) { ${rollbackToSep}break }`),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -1657,7 +1801,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         emitFallible(def.parser, ctx, npV, true)
       stmts.push(
         ...nextStmts,
-        `${ind(ctx)}if (!${nextOk}) break`,
+        ...failItem(nextOk, npV, '', `${ind(ctx)}if (!${nextOk}) break`),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -1682,7 +1826,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       emitFallible(def.parser, ctx, sepEnd, true)
     stmts.push(
       ...nextStmts,
-      `${ind(ctx)}if (!${nextOk}) { ${nextRb}break }`,
+      ...failItem(nextOk, sepEnd, nextRb, `${ind(ctx)}if (!${nextOk}) { ${nextRb}break }`),
       `${ind(ctx)}${arrV}.push(${nextVal})`,
       `${ind(ctx)}${curV} = ${nextEnd}`,
     )
@@ -2420,9 +2564,10 @@ export type CompiledParser<T> = {
   /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
   parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
   /**
-   * Like parse(), but activates error recovery. recover() nodes collect their
-   * ParseErrors into result.errors instead of (only) embedding them as values.
-   * Always returns ParseOk — top-level failures are still ParseFail.
+   * Like parse(), but activates the error-collection channel. Recovery points
+   * (expect()) collect their ParseErrors into result.errors instead of only
+   * embedding them as values. Always returns ParseOk — top-level failures are
+   * still ParseFail.
    */
   parseWithErrors(input: string, pos?: number): ParseResult<T> & { errors: ParseError[] }
   /** The generated source (for inspection / future source maps) */
@@ -2719,7 +2864,7 @@ export function ruleDependencies(
  *
  * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
  */
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): CompiledParser<T> {
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean }): CompiledParser<T> {
   markUnusedValues(combinator)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule bakes it (unless a local
@@ -2744,6 +2889,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     triviaFnNames: new Map(),
     namedFnDecls: [],
     capturing: hasNodeDef(combinator as Combinator<unknown>),
+    recovery: opts?.recovery ?? false,
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }
@@ -2822,7 +2968,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[]): 
     parseWithContext(input: string, parseCtx: ParseContext, pos = 0): ParseResult<T> {
       return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, parseCtx)
     },
-    // Note: collects recover()/expect() errors via _errors. Unlike interpreter
+    // Note: collects expect() errors via _errors. Unlike interpreter
     // parse({recover:true}) it does NOT populate furthestFail — the compiled path
     // inlines failures for throughput and deliberately skips _probe bookkeeping.
     // Callers wanting a furthest-position diagnostic detect unconsumed input
@@ -2889,7 +3035,7 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown> },
+  opts?: { trivia?: Combinator<unknown>; recovery?: boolean },
 ): { keys: string[]; replacement: string } | null {
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
@@ -2915,6 +3061,7 @@ export function compileRuleMap(
     triviaFnNames: new Map(),
     namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
+    recovery: opts?.recovery ?? false,
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }
@@ -3048,7 +3195,7 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown> },
+  opts?: { trivia?: Combinator<unknown>; recovery?: boolean },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
@@ -3076,6 +3223,7 @@ export function compileLinkable(
     namedParsers: new Map(), triviaCaptureNames: new Map(),
     triviaFnNames: new Map(), namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
+    recovery: opts?.recovery ?? false,
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
     deferFirstSetRefs: true,

@@ -3,6 +3,83 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.26.0 — 2026-07-11
+
+- **Bounded counted-repeat regex lowering (`{n}` / `{n,}` / `{n,m}`).** A terminal
+  `regex()` whose shape includes a counted class/shorthand run now compiles to a
+  `charCodeAt` scan loop instead of `RegExp.exec`, the same as `+`/`*`/`?` already did.
+  The compiler generalizes its internal run model to real `min`/`max` bounds and only
+  lowers when a greedy one-pass scan provably equals the backtracking engine — a run has
+  exploitable "wiggle" exactly when `max > min`, so a fixed `{n}` run lowers even before
+  an overlapping continuation, while a variable `{n,m}` lowers only when its class is
+  disjoint from what follows (`[0-9]{2,4}[0-9]` correctly stays on `exec`). The headline
+  beneficiary is CSS `colorHex` (`#[0-9a-fA-F]{3,8}(?![0-9a-fA-F])`), which now fully
+  lowers — bounded run plus its trailing boundary lookahead. Purely additive: every
+  previously-lowered pattern is byte-identical. Verified with compiled-scan-vs-native
+  differentials (0 diffs over ~2M inputs, including adversarial decline cases).
+- **Automatic error recovery (`tolerant`) — interpreter *and* compiled.** A run-level
+  `tolerant` flag makes `many` / `oneOrMore` / `sepBy` recover from a malformed element:
+  skip to a **sync point**, record a `ParseError`, and keep parsing the rest of the list
+  instead of truncating at the first bad element. The sync point is **inferred from grammar
+  structure** — a `sepBy` resyncs to its separator; a list inside `sequence(open, …, close)`
+  resyncs to the enclosing delimiter (the `sequence` publishes its following-terms' first set
+  as each term's sync). There is **no inline annotation**: recovery is a caller policy the
+  `tolerant` flag turns on, never a fact baked into the combinators. Recovery runs on
+  **both** the interpreter and the **compiled/macro** fast path — opt in with
+  `compile(g, { recovery: true })` or the `parseman({ recovery: true })` plugin option, which
+  emit a `_ctx._tolerant`-gated branch that reuses the exact interpreter recovery functions
+  via `ctx._rec` (byte-for-byte parity); a default compile emits **zero** recovery code
+  (byte-identical, macro-inlinable). Recovered errors are also **embedded as `parseError`
+  CST nodes** at the recovery point when a CST host is active, so a tree walk finds every
+  diagnostic. Strict (no `tolerant`) is a cold path: byte-identical to a parser with no
+  recovery.
+- **`parseman/language-service` — new tree-shakeable subpath.** `languageService(grammar,
+  config)` layers editor behaviour onto a grammar from the outside, keyed by node type =
+  rule name, over a grammar that carries **zero** IDE concerns: `parse` (tolerant CST +
+  errors), `diagnostics` (recovered errors + your per-node-type lint rules), `completionsAt`
+  (structural expected-set mapped through your semantic handlers), and `openDocument(src)` —
+  a live incremental editor document (`.edit()`, recovered tree, diagnostics) backed by a
+  tolerant `parseDoc`. The same grammar file serves a batch value-parse and an LSP, unedited.
+- **`completionsAt(target, input, offset, { tolerant })`.** `target` may now be a
+  `compile(g, { recovery: true })` grammar (it records the completions probe on its fast
+  path), not just an interpreter combinator; `tolerant: true` keeps the enclosing node
+  parsing to the cursor so completions are returned even past a permissive top rule.
+- **`RunOptions.tolerant`** is additive — no existing signature changes; the grammar is
+  untouched.
+- **Ambient-trivia `.edit()` oracle tests.** `parseDoc().edit()`'s `edit() ≡ full-reparse`
+  fuzz now also covers grammars that declare ambient trivia via `rules({ trivia })` (a
+  CSS-ish block / declaration-list / value-list grammar with whitespace + block-comment
+  trivia), asserting trivia attribution and positions round-trip through incremental edits.
+
+### Fixes
+
+- **Tolerant recovery no longer swallows trailing trivia into a spurious `ParseError`.**
+  `many` / `oneOrMore` checked the inferred sync token at the pre-trivia cursor, so ambient
+  whitespace between the last good element and the list's closer (e.g. `{ 1 2 }`) tripped
+  recovery and produced a bogus error over the space. The guard now checks — and starts the
+  recovery scan from — the post-trivia position where the element actually failed (matching
+  `sepBy`). Also: a recovery sentinel no longer inherits `_tolerant` / `_sync` during its
+  lookahead probe, so a sentinel composing `many` / `sepBy` can't recurse into recovery.
+- **Compiled/interpreter span parity for trailing empty-match trivia.** The non-capturing
+  `compile()` codegen for a `sequence` advanced the cursor over inter-term trivia
+  unconditionally, so a trailing `optional` / `many` that matched empty folded the
+  preceding whitespace into the sequence's span — a compiled node's `span.end` then ran
+  past where the interpreter (which rolls the trivia back) ends it (e.g. the `a*b` node on
+  `'a * b + c'` ended at `6` vs `5`). The non-capturing branch now mirrors the interpreter
+  and the capturing branch: it scans trivia to a temp position and only commits the advance
+  when the following term consumes content past it. Adds an interpreter-vs-`compile()`
+  span-parity test.
+
+### Breaking
+
+- **Removed the bespoke recovery combinators `recover`, `manyRecover`, and `sepByRecover`**
+  (and their exports). List recovery is now the automatic `tolerant`-mode mechanism above —
+  inferred sync points, no inline `{ recover }` hint (recovery policy is external, via
+  `tolerant` and the `parseman/language-service` layer, never an argument on the combinators).
+  `expect`, `scanTo`, `balanced`, `isParseError`, and the `{ recover: true }` error channel
+  are unchanged. The `CSTError` tree-node type is now the recovered `ParseError` shape
+  (`_tag: 'parseError'`), matching what recovery embeds in the CST.
+
 ## 0.25.0 — 2026-07-10
 
 - **Incremental re-parse stores parent-relative spans (`parseDoc`).** An incremental document's

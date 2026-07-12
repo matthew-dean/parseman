@@ -5,9 +5,11 @@
  *
  *   1. Regex lowering  — a scannable shape (`[0-9]+`, `[A-Za-z_]\w*`, `//…`,
  *      `/*…*​/`) compiles to a `charCodeAt` scan. The A/B "baseline" is the SAME
- *      pattern with `{1,}`/`{0,}` instead of `+`/`*`: identical matches, but the
- *      quantifier form is NOT recognized by parseScanShape, so it stays on
- *      `RegExp.exec`. scan-µs vs exec-µs isolates the lowering.
+ *      pattern with the `u` flag added: identical matches on the ASCII inputs
+ *      here, but lowering is disabled under `u` (as for `m`/`s`), so it stays on
+ *      `RegExp.exec`. scan-µs vs exec-µs isolates the lowering. (The old baseline
+ *      used `{1,}`/`{0,}`; those now lower via §8c bounded-repeat, so they can no
+ *      longer serve as the exec oracle.)
  *
  *   2. Choice dispatch — a disjoint choice of discrete first chars compiles to a
  *      `switch` jump table. Forcing `__setForceDisjointIf(true)` recompiles the
@@ -38,7 +40,7 @@ function compForceIf<T>(c: Combinator<T>): CompiledFn {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Regex lowering: scan (`+`/`*`) vs exec (`{1,}`/`{0,}`, same semantics)
+// 1. Regex lowering: scan (`+`/`*`) vs exec (same pattern + `u` flag, same semantics)
 // ---------------------------------------------------------------------------
 
 export type ScanAbCase = {
@@ -52,8 +54,8 @@ export type ScanAbCase = {
 
 /**
  * Build a scan-vs-exec A/B from two grammars. `opt` uses a scannable regex
- * (`+`/`*`, lowered to charCodeAt); `base` is the SAME grammar with `{1,}`/`{0,}`
- * quantifiers — identical matches, but NOT recognized by parseScanShape, so it
+ * (`+`/`*`, lowered to charCodeAt); `base` is the SAME grammar with the `u` flag
+ * added — identical matches on ASCII, but lowering is disabled under `u`, so it
  * stays on RegExp.exec. The only regex in each grammar is the one under test, so
  * "opt has no .exec" reliably means the terminal was lowered.
  */
@@ -87,11 +89,11 @@ export function buildScanAbCases(): ScanAbCase[] {
   const idents = Array.from({ length: 2000 }, (_, i) => 'v' + (i % 100)).join(' ')
   return [
     grammarScanAb('short digits ×2000',
-      sepBy(regex(/[0-9]+/), sp), sepBy(regex(/[0-9]{1,}/), sp), nums),
+      sepBy(regex(/[0-9]+/), sp), sepBy(regex(/[0-9]+/u), sp), nums),
     grammarScanAb('short chars  ×2000',
-      sepBy(regex(/[a-z]+/), sp), sepBy(regex(/[a-z]{1,}/), sp), words),
+      sepBy(regex(/[a-z]+/), sp), sepBy(regex(/[a-z]+/u), sp), words),
     grammarScanAb('short ident  ×2000',
-      sepBy(regex(/[a-z][a-z0-9]*/), sp), sepBy(regex(/[a-z][a-z0-9]{0,}/), sp), idents),
+      sepBy(regex(/[a-z][a-z0-9]*/), sp), sepBy(regex(/[a-z][a-z0-9]*/u), sp), idents),
   ]
 }
 
@@ -105,10 +107,10 @@ export function buildScanAbLongCases(): ScanAbCase[] {
   const line = '//' + 'x'.repeat(4000)
   const block = '/*' + 'x'.repeat(4000) + '*/'
   return [
-    grammarScanAb('long digits (1 tok)', regex(/[0-9]+/), regex(/[0-9]{1,}/), digits),
-    grammarScanAb('long line   (1 tok)', regex(/\/\/[^\n\r]*/), regex(/\/\/[^\n\r]{0,}/), line),
+    grammarScanAb('long digits (1 tok)', regex(/[0-9]+/), regex(/[0-9]+/u), digits),
+    grammarScanAb('long line   (1 tok)', regex(/\/\/[^\n\r]*/), regex(/\/\/[^\n\r]*/u), line),
     grammarScanAb('long block  (1 tok)',
-      regex(/\/\*(?:[^*]|\*(?!\/))*\*\//), regex(/\/\*(?:[^*]|\*(?!\/)){0,}\*\//), block),
+      regex(/\/\*(?:[^*]|\*(?!\/))*\*\//), regex(/\/\*(?:[^*]|\*(?!\/))*\*\//u), block),
   ]
 }
 

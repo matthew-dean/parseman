@@ -44,12 +44,11 @@ export type { LineIndex } from './compiler/line-index.ts'
 
 export { guard } from './combinators/guard.ts'
 export { withCtx } from './combinators/withCtx.ts'
-export { recover, isParseError } from './combinators/recover.ts'
+export { isParseError } from './combinators/expect.ts'
 export { expect } from './combinators/expect.ts'
 export { completionsAt } from './combinators/completions.ts'
 export { scanTo, balanced } from './combinators/scanTo.ts'
 export type { ScanToOptions } from './combinators/scanTo.ts'
-export { sepByRecover, manyRecover } from './combinators/recover-list.ts'
 
 export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, NodeLike } from './cst/types.ts'
 

@@ -362,42 +362,33 @@ Restrict a grammar/artifact to `names` plus their transitive rule-dependency clo
 
 ## Error recovery
 
-### `recover(combinator, sentinel)`
+### Tolerant lists (`run(entry, input, { tolerant: true })`)
 
-On failure, scan forward to `sentinel` (not consumed) and return a
-[`ParseError`](./types#parseerror) spanning the skipped text. See
-[Error recovery](../guide/error-recovery#recover-skip-to-a-sentinel).
+Activates list recovery. With `tolerant` set, `many` / `oneOrMore` / `sepBy` recover from a
+failed element — skip to a sync point, emit a [`ParseError`](./types#parseerror) over the
+skipped span (collected in `errors`), and keep parsing the list — instead of stopping at
+the first bad element. The sync point is **inferred from grammar structure** (a `sepBy`'s
+separator; a list's enclosing `sequence(open, …, close)` delimiter) — the grammar carries
+**no** recovery annotation. Omit `tolerant` for the strict "one clean error and stop"
+behavior, byte-identical to a parser with no recovery. See
+[Tolerant lists](../guide/error-recovery#tolerant-lists).
+
+```ts
+const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
+run(block, '{a:1;$$;b:2}', { tolerant: true }) // list → [decl, ParseError, decl]
+```
+
+Recovery is a *policy* the caller turns on, not a fact baked into the grammar. To override
+the inferred sync point for a rule, or add semantic completions/diagnostics, wrap the
+grammar in [`languageService`](../guide/editor-integration) — the config is keyed by rule
+name and the grammar file stays untouched. The compiled/macro fast path recovers too, when
+compiled with `{ recovery: true }`.
 
 ### `expect(combinator, label?)`
 
 Required token. On failure, record a zero-width `ParseError` and recover in place.
 `label` overrides the derived `expected` message. See
 [Error recovery](../guide/error-recovery#expect-required-tokens).
-
-### `sepByRecover(item, separator, until)`
-
-Tolerant `sepBy`: a malformed element is skipped to the next `separator` or the `until` terminator and
-recorded as a [`ParseError`](./types#parseerror) in the result array, instead of truncating
-the list. `until` (the closing delimiter, matched but **not** consumed) is what distinguishes
-an empty list from a malformed first element. Built from existing combinators, so `compile()`
-and CST capture handle it with no special cases. See
-[Tolerant lists](../guide/error-recovery#tolerant-lists).
-
-```ts
-const elements = sepByRecover(value, literal(','), literal(']'))
-// "[1,,3]" → [1, ParseError, 3]
-```
-
-### `manyRecover(item, until)`
-
-Tolerant `many`: junk that is neither a valid `item` nor the `until` terminator is skipped up to `until` and
-recorded as a `ParseError`, instead of ending the repetition. With no separator to resync
-on, a bad run is captured as a single error up to the terminator. See
-[Tolerant lists](../guide/error-recovery#tolerant-lists).
-
-```ts
-const items = manyRecover(statement, literal('}'))
-```
 
 ### `isParseError(value)`
 
@@ -426,10 +417,21 @@ Run `combinator` with `extra` merged into `ctx.state`, restored on exit.
 
 ## IDE support
 
-### `completionsAt(combinator, input, offset)`
+### `completionsAt(target, input, offset, options?)`
 
 Return the set of expected tokens at a cursor `offset` — the raw material for
 autocomplete. Probes the grammar at that position via a truncated parse.
+
+- `target` — an interpreter combinator **or** a `compile(g, { recovery: true })`
+  grammar. A recovery-compiled grammar records the furthest-failure probe on its
+  fast path, so completions work on the **published compiled artifact** — no
+  separate interpreter needed.
+- `options.tolerant` — when `true`, list recovery keeps parsing past a bad element
+  before the cursor, so completions are returned even when a permissive top rule
+  would otherwise "succeed" with an unconsumed tail. Default `false`.
+
+For semantic completions (mapping these structural labels to domain suggestions),
+use [`languageService`](../guide/editor-integration) rather than calling this directly.
 
 ## Incremental re-parsing
 

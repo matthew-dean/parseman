@@ -20,8 +20,8 @@ const sp = (start: number, end: number): Span => ({ start, end })
 const leaf = (value: string, span: Span = sp(0, 0)): CSTLeaf => ({ _tag: 'leaf', value, span })
 const cnode = (type: string, children: CSTChild[], span: Span = sp(0, 0)): CSTNode =>
   ({ _tag: 'node', type, span, state: null, children })
-const cerror = (type: string, children: CSTChild[] = []): CSTError =>
-  ({ _tag: 'error', type, span: sp(0, 0), state: null, expected: [], children })
+const cerror = (_label = '', span: Span = sp(0, 0)): CSTError =>
+  ({ _tag: 'parseError', span, expected: [] })
 
 // Add(Num[1], Add(Num[2], Num[3]))
 const cstTree: CSTChild = cnode('Add', [
@@ -87,14 +87,14 @@ describe('walk() — default CST shape', () => {
     expect(parents).toEqual(['Add', 'Add', 'Add'])
   })
 
-  it('descends into error nodes and visits every _tag', () => {
+  it('visits an embedded parseError node as a terminal', () => {
     const withErr = cnode('List', [
       cnode('Num', [leaf('1')]),
-      cerror('Item', [leaf('junk')]),
+      cerror('Item'),
     ])
     const tags: string[] = []
     walk(withErr, { enter(n) { tags.push(n._tag) } })
-    expect(tags).toEqual(['node', 'node', 'leaf', 'error', 'leaf'])
+    expect(tags).toEqual(['node', 'node', 'leaf', 'parseError'])
   })
 
   it('handles a single leaf root (no children)', () => {
