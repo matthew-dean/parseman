@@ -10,7 +10,6 @@ import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseE
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
-import { firstSetSentinel } from '../recovery/scan.ts'
 import { markUnusedValues } from './value-usage.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
@@ -1023,17 +1022,16 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
 }
 
 /**
- * Build a zero-width follow-set sync sentinel for `fs`, register it as a runtime
- * parser, and return its `_rp[idx]` reference — or null when the first-set yields
- * no usable sentinel (`any`/`empty`). Only called under `ctx.recovery`, so default
- * compiles never touch `runtimeParsers` (macro-inlining stays available).
+ * A JS expression that builds a zero-width follow-set sync sentinel for `fs` at
+ * RUNTIME via `_ctx._rec.sentinel(...)` — never `_rp` — so a recovery-enabled
+ * grammar keeps `runtimeParsers` empty and stays macro-inlinable. Returns null when
+ * the first-set is `any`/`empty` (no usable sentinel). The build is only reached on
+ * the tolerant path (the publish that uses it is `_ctx._tolerant`-gated), so a strict
+ * parse of the shipped grammar allocates nothing.
  */
-function syncSentinelRef(ctx: Ctx, fs: FirstSet): string | null {
-  const sentinel = firstSetSentinel(fs)
-  if (sentinel === null) return null
-  const idx = ctx.runtimeParsers.length
-  ctx.runtimeParsers.push(sentinel as Combinator<unknown>)
-  return `_rp[${idx}]`
+function syncSentinelExpr(fs: FirstSet): string | null {
+  if (fs.kind !== 'ranges' || fs.ranges.length === 0) return null
+  return `_ctx._rec.sentinel({ kind: 'ranges', ranges: ${JSON.stringify(fs.ranges)} })`
 }
 
 function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, pos: string): ER & { valueVars: string[] } {
@@ -1055,7 +1053,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
   const publishSync = (i: number): string => {
     if (!ctx.recovery) return ''
     const fs = def.parsers.slice(i + 1).reduce<FirstSet>((acc, p) => union(acc, firstSetOf(p)), { kind: 'empty' })
-    const ref = syncSentinelRef(ctx, fs)
+    const ref = syncSentinelExpr(fs)
     return `${ind(ctx)}if (_ctx._tolerant) _ctx._sync = ${ref ?? syncInV}`
   }
 

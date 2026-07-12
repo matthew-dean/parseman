@@ -7,10 +7,10 @@
  */
 import { describe, it, expect } from 'vitest'
 import { regex, literal, sequence, many, oneOrMore, run, compile } from '../../src/index.ts'
-import { recoverScan, matchesAt, orSentinel } from '../../src/recovery/scan.ts'
+import { recoverScan, matchesAt, orSentinel, firstSetSentinel } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
 
-const REC = { scan: recoverScan, at: matchesAt, or: orSentinel }
+const REC = { scan: recoverScan, at: matchesAt, or: orSentinel, sentinel: firstSetSentinel }
 const ident = regex(/[a-z]+/)
 const num = regex(/[0-9]+/)
 const decl = sequence(ident, literal(':'), num)

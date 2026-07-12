@@ -124,6 +124,9 @@ export type RecoveryHelpers = {
   scan: (input: string, from: number, ctx: ParseContext, sync: Combinator<unknown>, expected: string[]) => { error: ParseError; end: number }
   at: (sentinel: Combinator<unknown>, input: string, pos: number, ctx: ParseContext) => boolean
   or: (a: Combinator<unknown>, b: Combinator<unknown> | undefined) => Combinator<unknown>
+  /** Build a zero-width follow-set sentinel from a first-set. Called from compiled
+   * code (via `_ctx`, never `_rp`) so recovery grammars stay macro-inlinable. */
+  sentinel: (fs: FirstSet) => Combinator<unknown> | null
 }
 
 export type ParseContext = {
