@@ -3,6 +3,24 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.26.1 — 2026-07-12
+
+- **Gated `choice` arms keep O(1) first-char dispatch.** Previously, gating any arm of a
+  `choice` (a `{ gate, combinator }` arm) dropped the entire choice from its disjoint
+  first-char dispatch to the linear `firstMatch` loop — a real regression on hot paths
+  (e.g. a `&` arm gated on nesting context in a CSS selector). Now a gated arm whose
+  first-set is **non-nullable and disjoint** from every other arm keeps its dispatch slot:
+  the parser dispatches on the arm's unique first char and evaluates the gate only inside
+  that branch, so every other input char never touches the gate. This is sound for ordered
+  PEG precisely because a disjoint first-set means no later arm could match that char, so
+  "skip the gate and retry" is equivalent to "dispatch and fail the choice." Both the
+  interpreter and the compiled/macro paths emit it; a gated arm with a nullable or
+  overlapping first-set still uses `firstMatch`. Byte-identical for choices with no gates.
+  Measured ~2× faster on a gated-disjoint selector choice (back to within ~8% of ungated).
+- As a side effect, the disjoint-dispatch soundness check now also excludes nullable arms
+  on the **ungated** path, closing a latent edge case (no existing grammar was affected —
+  codegen snapshots are unchanged).
+
 ## 0.26.0 — 2026-07-11
 
 - **Bounded counted-repeat regex lowering (`{n}` / `{n,}` / `{n,m}`).** A terminal

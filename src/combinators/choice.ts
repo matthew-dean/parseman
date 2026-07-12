@@ -2,7 +2,8 @@ import type {
   Combinator, ParseContext, ParseResult, ParserMeta, FirstSet,
   AutoNotCheck, CharRange, ChoiceStrategy, GatedArm,
 } from '../types.ts'
-import { union, intersects } from './first-set.ts'
+import { union, intersects, matchesEmpty } from './first-set.ts'
+import { deriveExpected } from './expect.ts'
 import { saveCstMark, rollbackCstCapture } from '../cst/capture-buffer.ts'
 
 type ArmParser<T> = T extends GatedArm<infer U> ? Combinator<U> : T extends Combinator<infer U> ? Combinator<U> : never
@@ -19,7 +20,20 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
 
   const hasGates = gates.some(g => g !== null)
 
-  const disjoint = !hasGates && areDisjoint(parsers.map(p => p._meta.firstSet))
+  // O(1) first-char dispatch is sound when arms are pairwise-disjoint in their
+  // first char AND no arm can match empty. Non-nullability is what makes a GATED
+  // arm keep its dispatch slot: a gated arm is normally *skipped* so a later arm
+  // can retry the same position — but if every arm is non-nullable and first-sets
+  // are disjoint, no later arm can match this first char, so "skip the gate then
+  // retry" is exactly "dispatch to this arm, check its gate, and fail the choice
+  // if the gate is false". Every OTHER first char dispatches as before and never
+  // touches the gate. A nullable arm matches at ANY position (zero-width), so
+  // first-char dispatch can't represent it → such choices stay on firstMatch.
+  // (Requiring non-nullability universally also tightens the ungated path, which
+  // was already unsound for a nullable-but-first-set-disjoint arm; in practice no
+  // ungated disjoint choice has a nullable arm, so codegen output is unchanged.)
+  const disjoint = areDisjoint(parsers.map(p => p._meta.firstSet))
+    && parsers.every(p => !matchesEmpty(p))
 
   let combined: FirstSet = { kind: 'empty' }
   for (const p of parsers) combined = union(combined, p._meta.firstSet)
@@ -31,7 +45,9 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
     disjoint,
   }
 
-  // Gates force firstMatch — predicate dispatch is incompatible with first-set strategies.
+  // A disjoint choice dispatches by first char (gated arms check their gate inside
+  // the dispatched branch); a NON-disjoint gated choice falls to firstMatch — the
+  // greedy/longest-first strategies are incompatible with per-arm predicates.
   const strategy = (disjoint || hasGates) ? null : detectStrategy(parsers)
   const autoNot = (!disjoint && !hasGates && strategy?.tag === 'firstMatch')
     ? computeAutoNot(parsers)
@@ -67,20 +83,24 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnionArms<T>> {
       const expected: string[] = []
 
-      // ── Disjoint: O(1) first-char dispatch (never has gates) ──────────────
+      // ── Disjoint: O(1) first-char dispatch (arms may be gated) ────────────
       if (disjoint && pos < input.length) {
         const code = input.codePointAt(pos)!
-        let parser = code < 128 ? asciiDispatch?.[code] ?? null : null
-        if (!parser) {
-          for (const p of parsers) {
-            if (inFirstSet(code, p._meta.firstSet)) {
-              parser = p
-              break
-            }
+        let idx = code < 128 ? asciiDispatch![code]! : -1
+        if (idx < 0) {
+          for (let i = 0; i < parsers.length; i++) {
+            if (inFirstSet(code, parsers[i]!._meta.firstSet)) { idx = i; break }
           }
         }
-        if (parser) {
-          const result = parser.parse(input, pos, ctx)
+        if (idx >= 0) {
+          const gate = gates[idx]
+          if (gate && !gate(ctx.state)) {
+            // Gate blocks this arm. Disjointness + non-nullable arms guarantee no
+            // OTHER arm can match this first char, so skip-and-retry is exactly
+            // fail-the-choice — we must not fall through to another arm.
+            return { ok: false, expected: deriveExpected(parsers[idx]!), span: { start: pos, end: pos } }
+          }
+          const result = parsers[idx]!.parse(input, pos, ctx)
           if (result.ok) return result as ParseResult<UnionArms<T>>
           expected.push(...result.expected)
           return { ok: false, expected, span: { start: pos, end: pos } }
@@ -310,14 +330,16 @@ function areDisjoint(sets: FirstSet[]): boolean {
   return true
 }
 
-function buildAsciiDispatch(parsers: Combinator<unknown>[]): (Combinator<unknown> | null)[] {
-  const table = Array<Combinator<unknown> | null>(128).fill(null)
-  for (const parser of parsers) {
-    const fs = parser._meta.firstSet
+// ASCII first-char → arm INDEX (not the parser) so a gated arm's gate can be
+// looked up (gates[idx]) at dispatch time. -1 means "no arm keys off this char".
+function buildAsciiDispatch(parsers: Combinator<unknown>[]): number[] {
+  const table = Array<number>(128).fill(-1)
+  for (let i = 0; i < parsers.length; i++) {
+    const fs = parsers[i]!._meta.firstSet
     if (fs.kind !== 'ranges') continue
     for (const { lo, hi } of fs.ranges) {
       for (let code = Math.max(0, lo); code <= Math.min(127, hi); code++) {
-        table[code] = parser
+        table[code] = i
       }
     }
   }

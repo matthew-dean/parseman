@@ -55,6 +55,47 @@ const stmt = choice(
 The gated arm is skipped entirely unless its gate returns true. See
 [Ordered choice & keywords](./keywords#gated-alternatives).
 
+Gating is cheap when it's worth reaching for: as long as **every** arm has a disjoint
+first-set and **none** is nullable, the choice keeps its O(1) first-char dispatch and the
+gate runs only when the input is actually at that arm's first character (parseman 0.26.1).
+A single nullable sibling forces the linear first-match path even if the gated arm itself
+is disjoint. So gating a rare-token alternative in an otherwise-disjoint choice — a nesting
+`&`, a mode-only keyword — costs essentially nothing on the hot path.
+
+## Which tool: structure, options, recursion, or context
+
+`ctx.state` is the **last** tool to reach for, not the first. In a recursive-descent
+combinator parser the **call stack already is a context stack**, so most "context" is
+better expressed by *where a rule sits* than by a runtime flag. Four tools, roughly in
+order of preference:
+
+1. **Separate rules (structural).** When the distinction lines up with a rule boundary,
+   make it two rules and read the difference at build time from the node type. A bare
+   declaration is legal in a nested block but not at the top level, so a stylesheet's
+   top-level rule and its block-body rule are simply *different rules*. Less's
+   `/`-divides-only-in-parens is `OperationTop` (a top-level value) vs `Operation` (a
+   parenthesised value), chosen by which rule the recursion is currently in. Zero runtime
+   cost, first-char dispatch intact, macro-friendly.
+2. **A document option.** When the mode is one setting for the whole document, put it in
+   the resolved options, not the grammar — Less `math: always | parens-division`, strict
+   math, the active `trivia`. Read it in a build callback.
+3. **Recursion and `balanced`/`scanTo` (counting).** Depth *is* the call stack — nested
+   parens, `calc()` nesting, balanced delimiters are tracked by recursing through the rule
+   (or by `balanced()`), never by a counter in `ctx.state`. A state counter would just
+   duplicate the stack.
+4. **`ctx.state` (`withCtx` / `guard` / gated arms).** Reach for this only when the *same*
+   rule must behave differently based on an **ancestor that isn't a distinct rule on its
+   path** — so structure alone can't tell the cases apart. The parent selector `&` is the
+   canonical case: a selector is reached by the identical rule path whether it is written
+   at the top level or nested inside a block, and the only difference is whether a block
+   was entered above it. Wrap the block body in `withCtx({ inner: true }, …)` and gate the
+   `&` arm on `inner`.
+
+A quick test for which to use: if you can point at *which rule you're in* to tell the cases
+apart, use structure; if it's *how deep you are*, use recursion; if it's *one setting for
+the whole document*, use an option; only if it's *what an ancestor did, at a point
+structure can't distinguish*, reach for `ctx.state`.
+
 ## How this compares
 
 Expressing context *in the grammar* is a real dividing line between parsers. Parséman,

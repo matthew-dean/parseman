@@ -1225,10 +1225,49 @@ function emitDisjointArm(p: Combinator<unknown>, ctx: Ctx, pos: string, valV: st
   ]
 }
 
+/**
+ * Register a disjoint-choice arm's gate predicate (if any) into `mapFns` and emit
+ * the guarded arm body. Mirrors emitFirstMatch's gate handling: the gate closure
+ * is pushed into `mapFns` (with its source into `mapFnSrcs` — `def.gateSrcs[i]`
+ * for the macro, null for compile()) BEFORE the arm body is emitted, so the
+ * per-arm push order (gate, then arm transforms) stays parallel with the macro's
+ * pre-accumulated sources and the emitFirstMatch layout.
+ *
+ * A gated arm dispatches on its first char, then checks the gate INSIDE that
+ * branch: gate true → run the arm; gate false → FAIL the choice at `pos` (sound
+ * because disjoint + non-nullable arms guarantee no other arm matches this char).
+ */
+function emitDisjointArmGated(
+  def: Extract<ParserDef, { tag: 'choice' }>,
+  i: number,
+  ctx: Ctx,
+  pos: string,
+  valV: string,
+  endV: string,
+): string[] {
+  const p = def.parsers[i]!
+  const gate = def.gates[i]
+  if (!gate) return emitDisjointArm(p, ctx, pos, valV, endV)
+
+  const gateIdx = ctx.mapFns.length
+  ctx.mapFns.push(gate as (v: unknown, span: unknown) => unknown)
+  // Macro path inlines the captured gate source; compile() has no source → null.
+  // Parallel-length invariant with mapFns preserved either way.
+  ctx.mapFnSrcs.push(def.gateSrcs?.[i] ?? null)
+  const gateCond = `${mfRef(ctx)}[${gateIdx}](_ctx.state)`
+
+  const stmts = [`${ind(ctx)}if (${gateCond}) {`]
+  ctx.indent++
+  stmts.push(...emitDisjointArm(p, ctx, pos, valV, endV))
+  ctx.indent--
+  stmts.push(`${ind(ctx)}} else { ${failArrBody(ctx, deriveExpectedArr([p]), pos)} }`)
+  return stmts
+}
+
 function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: string): ER {
   const allExpected = deriveExpectedArr(def.parsers)
 
-  // ── Disjoint: O(1) first-char dispatch ──────────────────────────────────
+  // ── Disjoint: O(1) first-char dispatch (arms may be gated) ───────────────
   if (def.disjoint) {
     const codeV = v(ctx, '_code')
     const valV = v(ctx, '_chv')
@@ -1245,12 +1284,11 @@ function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: s
       stmts.push(`${ind(ctx)}switch (${codeV}) {`)
       ctx.indent++
       for (let i = 0; i < def.parsers.length; i++) {
-        const p = def.parsers[i]!
         for (const cp of plan.cases[i]!) stmts.push(`${ind(ctx)}case ${cp}:`)
         stmts.push(`${ind(ctx)}{`)
         ctx.indent++
         stmts.push(
-          ...emitDisjointArm(p, ctx, pos, valV, endV),
+          ...emitDisjointArmGated(def, i, ctx, pos, valV, endV),
           `${ind(ctx)}break`,
         )
         ctx.indent--
@@ -1264,13 +1302,14 @@ function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: s
 
     // Otherwise if/else if with range comparisons (cheaper for char-class arms).
     let first = true
-    for (const p of def.parsers) {
+    for (let i = 0; i < def.parsers.length; i++) {
+      const p = def.parsers[i]!
       const cond = firstSetCond(codeV, p._meta.firstSet)
       const kw = first ? 'if' : 'else if'
       first = false
       stmts.push(`${ind(ctx)}${kw} (${cond}) {`)
       ctx.indent++
-      stmts.push(...emitDisjointArm(p, ctx, pos, valV, endV))
+      stmts.push(...emitDisjointArmGated(def, i, ctx, pos, valV, endV))
       ctx.indent--
       stmts.push(`${ind(ctx)}}`)
     }
