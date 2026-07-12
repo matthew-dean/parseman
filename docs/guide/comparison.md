@@ -184,20 +184,24 @@ Powering an editor is more than parsing: a language server has to survive a brok
 keystroke (recovery), answer *what can go here* (completions), flag problems
 (diagnostics), and do all of it fast enough to run on every edit. The editor-first
 generators own this by being context-*free* and generating a buffer tree in a separate
-artifact. Parséman gets there from its own pieces, with two properties they don't have:
+artifact. Parséman gets there from its own pieces, with three properties they don't have:
 
 - **It runs on the fast path.** Recovery and the completions probe are emitted into the
   **compiled/macro** parser (`compile(g, { recovery: true })`), not just the interpreter —
   so the artifact an editor ships recovers and answers completions itself. Strict compiles
   stay byte-identical (recovery is a dormant, opt-in branch).
-- **The grammar stays pure; editor behaviour hooks on from outside.** A separate
-  [`languageService(grammar, config)`](./editor-integration) layer — a tree-shakeable
-  `parseman/language-service` subpath — supplies semantic completions and lint diagnostics
-  **keyed by node type**, over a grammar that never learns the editor exists. The same
-  grammar file serves a batch value-parse and an LSP, unedited. Contrast Chevrotain, whose
-  recovery and content-assist are capable but live *inside* the parser class, and
-  Lezer/tree-sitter, whose context and tokenizer hooks live in a separate module but are
-  still coupled to the generated grammar.
+- **Recovery and incremental re-parse are one pipeline.** The
+  [`languageService`](./editor-integration) opens an **incremental document**: an edit
+  re-parses only the changed span, the tree survives a broken keystroke, and — because a
+  recovered error is a `parseError` node *in the CST* — diagnostics ride the reused
+  subtrees instead of being recomputed from scratch.
+- **The grammar stays pure; editor behaviour hooks on from outside.** That
+  `languageService(grammar, config)` layer — a tree-shakeable `parseman/language-service`
+  subpath — supplies semantic completions and lint diagnostics **keyed by node type**,
+  over a grammar that never learns the editor exists. The same grammar file serves a batch
+  value-parse and an LSP, unedited. Contrast Chevrotain, whose recovery and content-assist
+  are capable but live *inside* the parser class, and Lezer/tree-sitter, whose context and
+  tokenizer hooks live in a separate module but are still coupled to the generated grammar.
 
 Where the generators still lead: Lezer/tree-sitter win **structural-edit** incremental and
 the reuse of an existing grammar (below). The task Parséman covers end to end is

@@ -237,17 +237,17 @@ Built-in node shapes, if you'd rather use them than roll your own:
 type CSTNode   = { _tag: 'node';   type: string; span: Span; children: CSTChild[]; state: unknown }
 type CSTLeaf   = { _tag: 'leaf';   value: string; span: Span }
 type CSTTrivia = { _tag: 'trivia'; value: string; span: Span }
-type CSTError  = { _tag: 'error';  type: string; span: Span; expected: string[]; children: CSTChild[]; state: unknown }
+type CSTError  = { _tag: 'parseError'; span: Span; expected: string[] }
 
 type CSTChild    = CSTNode | CSTLeaf | CSTError
 type CSTRawChild = CSTNode | CSTLeaf | CSTTrivia | CSTError
 ```
 
-::: tip `CSTError` vs `ParseError`
-`CSTError` (`_tag: 'error'`) is a *tree-node* type for representing an error node in your
-own AST. Recovery — tolerant lists and `expect` — produces a
-[`ParseError`](#parseerror) (`_tag: 'parseError'`) value instead — see
-[Error recovery](../guide/error-recovery).
+::: tip `CSTError` is the embedded `ParseError`
+`CSTError` is the recovered [`ParseError`](#parseerror) (`_tag: 'parseError'`) as it
+appears **in the tree**: when a CST host is active, tolerant recovery embeds one as a
+`children` entry spanning the skipped text — the same value that also lands in the flat
+`errors` channel. See [Error recovery](../guide/error-recovery).
 :::
 
 ### `ParseError`

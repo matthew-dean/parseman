@@ -34,8 +34,10 @@ when a list element fails, and only when `ctx._tolerant` is set.
 - New `ParseContext` fields (framework-internal): `_tolerant?: boolean`,
   `_sync?: Combinator<unknown> | undefined`.
 - Error node: the **existing** `ParseError` (`_tag: 'parseError'`, `span`, `expected`),
-  pushed to `ctx._errors` and placed in the result array — the same shape `expect()`
-  emits, so CST/`structurallyEqual`/`completionsAt` consumers already handle it.
+  pushed to `ctx._errors`, placed in the result array, AND — when a CST host is active —
+  embedded as a `parseError` child in the tree (via the shared `_rec.capture`, so
+  interpreter and compiled emit identical trees). Having the error IN the tree is what
+  lets an incremental `parseDoc` document carry diagnostics across edits.
 
 ## Mechanics
 

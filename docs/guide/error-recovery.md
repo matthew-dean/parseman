@@ -41,9 +41,11 @@ if (isParseError(value)) {
 }
 ```
 
-> **Note:** `ParseError` (`_tag: 'parseError'`) is the runtime recovery value. It is
-> distinct from the `CSTError` *type* (`_tag: 'error'`), which describes an error-node
-> shape you may choose to build in your own AST.
+> **Note:** `ParseError` (`_tag: 'parseError'`) is the recovery value. In value/AST mode
+> it appears in the list's value array; when a [CST host](./ast) is active
+> (`cstBuildHost`, the language service) the **same** node is embedded in the tree's
+> `children` as a `CSTError` (also `_tag: 'parseError'`) — so a tree walk finds every
+> error, and it rides reused subtrees across incremental edits.
 
 ## Tolerant lists
 
@@ -62,6 +64,12 @@ const r = run(block, '{a:1;$$;b:2}', { tolerant: true })
 // r.errors        → [ParseError]                (every recovery point that fired)
 // r.ok            → true                        (the closing `}` was still reached)
 ```
+
+With a CST host active — `cstBuildHost`, or the
+[language service](./editor-integration) — the recovered error is also embedded in the
+tree as a `parseError` child spanning the skipped text, on both the interpreter and the
+compiled (`{ recovery: true }`) path. That's what lets an incremental editor document
+carry diagnostics inside the tree.
 
 Recovery's one hard requirement is a **sync point** — where to resume after a bad element.
 It comes from two layers.
