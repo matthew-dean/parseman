@@ -149,8 +149,12 @@ export const g2 = rules(g => ({
     expect(ir).not.toContain('<any>') // the TS assertion was stripped from the gate source
     const pieces = compileLinkable(evalRuleMapIR(ir), '_ts_')!
     expect(() => emitFusedSource([pieces])).not.toThrow() // no SyntaxError on re-lower
-    const gg = g2 as unknown as Record<string, FusedRule>
-    expect(gg.Ruleset!('&{}', 0, {}).ok).toBe(false)                          // gate blocks without inner
-    expect(gg.Ruleset!('&{}', 0, { state: { inner: true } }).ok).toBe(true)  // gate passes with inner
+    // Assert the gate on the RE-LOWERED artifact (compose re-lowers the IR), not the
+    // original g2 — a regression that loses/changes the predicate during restoration
+    // would only surface here, not on the original grammar.
+    const delta = parseman.rules(() => ({ Extra: parseman.regex(/z/) }))
+    const composed = parseman.compose([g2 as never, delta as never]) as unknown as Record<string, FusedRule>
+    expect(composed.Ruleset!('&{}', 0, {}).ok).toBe(false)                          // gate blocks without inner
+    expect(composed.Ruleset!('&{}', 0, { state: { inner: true } }).ok).toBe(true)  // gate passes with inner
   })
 })
