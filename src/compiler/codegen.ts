@@ -256,6 +256,22 @@ function hoistExpected(ctx: Ctx, constArrSource: string): string {
   return name
 }
 
+/**
+ * Compiled mirror of the interpreter's `failAt` (probe.ts): a `_ctx._probe`-gated
+ * furthest-failure update emitted at leaf-fail sites when IDE support is compiled in
+ * (`ctx.recovery`). A deeper failure replaces the best; a tie MERGES expected arrays
+ * (so choice arms aggregate their alternatives). Fires even inside swallowers
+ * (`recordFail` off) — a completion's deepest failure is often inside an optional/
+ * many. Dormant unless `completionsAt` set `_ctx._probe`, so a normal/tolerant parse
+ * pays one property read per leaf fail. Empty (no side effects) when recovery is off.
+ */
+function probeUpdate(ctx: Ctx, expectedArr: string, posExpr: string, constant = true): string {
+  if (!ctx.recovery) return ''
+  const fx = constant ? hoistExpected(ctx, expectedArr) : expectedArr
+  const pb = v(ctx, '_pb')
+  return `if (_ctx._probe !== undefined && ${posExpr} <= _ctx._probe.offset) { const ${pb} = _ctx._probe.best; if (${pb} === null || ${posExpr} > ${pb}.span.start) _ctx._probe.best = { ok: false, expected: [...${fx}], span: { start: ${posExpr}, end: ${posExpr} } }; else if (${posExpr} === ${pb}.span.start) _ctx._probe.best = { ok: false, expected: [...${pb}.expected, ...${fx}], span: { start: ${posExpr}, end: ${posExpr} } } } `
+}
+
 function failBody(ctx: Ctx, expected: string, posExpr: string): string {
   // Record the failure payload before breaking so an enclosing composite
   // construct can propagate this (deepest) failure verbatim — parity with the
@@ -264,11 +280,12 @@ function failBody(ctx: Ctx, expected: string, posExpr: string): string {
   // optional/many/sepBy/not never inspect `_ctx._fx`, so a leaf failing inside
   // them just breaks — the hot path (loop terminations, first-arm misses) pays
   // nothing. The direct-return path is the final answer and needs no recording.
+  const probe = probeUpdate(ctx, `[${expected}]`, posExpr)
   if (ctx.failLabel) {
-    if (!ctx.recordFail) return `break ${ctx.failLabel}`
-    return `{ _ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; break ${ctx.failLabel} }`
+    if (!ctx.recordFail) return probe ? `{ ${probe}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
+    return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; break ${ctx.failLabel} }`
   }
-  return failReturn(expected, posExpr)
+  return probe + failReturn(expected, posExpr)
 }
 
 /**
@@ -278,16 +295,17 @@ function failBody(ctx: Ctx, expected: string, posExpr: string): string {
  * that must be assigned verbatim.
  */
 function failArrBody(ctx: Ctx, expectedArr: string, posExpr: string, constant = true): string {
+  const probe = probeUpdate(ctx, expectedArr, posExpr, constant)
   if (ctx.failLabel) {
-    if (!ctx.recordFail) return `break ${ctx.failLabel}`
+    if (!ctx.recordFail) return probe ? `{ ${probe}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
     const fx = constant ? hoistExpected(ctx, expectedArr) : expectedArr
-    return `{ _ctx._fe = ${posExpr}; _ctx._fx = ${fx}; break ${ctx.failLabel} }`
+    return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${fx}; break ${ctx.failLabel} }`
   }
   // Direct-return (no enclosing fail label). A dynamic source may reference the
   // shared frozen `_ctx._fx`; copy it so the (possibly frozen) constant never
   // escapes into a user-facing result. Constant sources are inline literals.
-  if (!constant) return `return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} } }`
-  return failReturnArr(expectedArr, posExpr)
+  if (!constant) return `${probe}return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} } }`
+  return probe + failReturnArr(expectedArr, posExpr)
 }
 
 /** Build a ParseResult from the recorded deepest failure, copying `_fx` so the

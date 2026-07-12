@@ -6,7 +6,7 @@
  * interpreter. Covers `many`/`oneOrMore` (sepBy compiled recovery lands next).
  */
 import { describe, it, expect } from 'vitest'
-import { regex, literal, sequence, many, oneOrMore, sepBy, rules, trivia, run, compile } from '../../src/index.ts'
+import { regex, literal, sequence, many, oneOrMore, sepBy, rules, trivia, run, compile, completionsAt } from '../../src/index.ts'
 import { recoverScan, matchesAt, orSentinel, firstSetSentinel } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
 
@@ -68,6 +68,23 @@ describe('interpreter ⇔ compiled recovery parity (sepBy)', () => {
     assertParity(tg.block as Combinator<unknown>, [
       '{ a:1 ; b:2 }', '{ a:1 ; $$ ; b:2 }', '{ a:1 ; $$ }', '{ $$ ; a:1 }', '{ }',
     ], ws as Combinator<unknown>)
+  })
+})
+
+describe('completionsAt on the COMPILED grammar (probe parity)', () => {
+  const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}'))
+  const compiled = compile(block as Combinator<unknown>, undefined, { recovery: true })
+  const cases: Array<[string, number, boolean]> = [
+    ['{', 1, false], ['{a', 2, false], ['{a:', 3, false], ['{a:1', 4, false],
+    ['{a:1;', 5, false], ['{a:1;b', 6, false], ['{}', 1, false],
+    ['{a:1;$$;', 8, true], ['{a:1;$$;b', 9, true],
+  ]
+  it('the compiled probe yields identical completions to the interpreter at every cursor', () => {
+    for (const [input, off, tol] of cases) {
+      const ci = completionsAt(block as Combinator<unknown>, input, off, { tolerant: tol }).slice().sort()
+      const cc = completionsAt(compiled, input, off, { tolerant: tol }).slice().sort()
+      expect(cc, `${JSON.stringify(input.slice(0, off))} @${off}`).toEqual(ci)
+    }
   })
 })
 
