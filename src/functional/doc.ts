@@ -1,7 +1,7 @@
 /**
  * Incremental parse document — incremental re-parse over a rules() registry.
  */
-import type { Combinator, ParseContext, ParseFail, ParseResult, ParserDef, Span } from '../types.ts'
+import type { Combinator, ParseContext, ParseError, ParseResult, ParserDef, Span } from '../types.ts'
 import type { NodeLike, CSTLeaf, CSTError } from '../cst/types.ts'
 import { relativizeCST, absoluteSpanCST } from '../cst/relative-spans.ts'
 import { REC } from '../recovery/scan.ts'
@@ -17,7 +17,7 @@ import { REC } from '../recovery/scan.ts'
  */
 function mkCtx(state: unknown, build: ParseContext['build'], tolerant: boolean): ParseContext {
   return tolerant
-    ? { trackLines: false, state, build, _tolerant: true, _rec: REC }
+    ? { trackLines: false, state, build, _tolerant: true, _rec: REC, _errors: [] }
     : { trackLines: false, state, build }
 }
 
@@ -143,6 +143,15 @@ export type ParseDocOptions<N extends NodeLike> = {
    * (a scan that would cross a splice boundary just falls back to a full reparse).
    */
   tolerant?: boolean
+  /**
+   * The grammar's trivia rule, used ONLY to compute `unconsumedFrom`: a root rule
+   * consumes trivia BETWEEN terms but not after the last, so trailing
+   * whitespace/comments would otherwise read as leftover input. Given the trivia
+   * rule, the tail is skipped before reporting the first unconsumed offset —
+   * matching `run()`'s semantics. Defaults to the root rule's own
+   * `_meta.grammarTrivia` (from `rules({ trivia })`); set it only to override.
+   */
+  trivia?: Combinator<unknown>
 }
 
 export interface ParseDoc<N extends NodeLike> {
@@ -156,7 +165,22 @@ export interface ParseDoc<N extends NodeLike> {
    * result is unchanged — still absolute.
    */
   readonly tree: N | null
-  readonly errors: ParseFail[]
+  /**
+   * Recovery diagnostics collected during the (re)parse — the missing-token
+   * `expect()` errors and tolerant-list recovery errors that ride the tree as
+   * `parseError` nodes, surfaced here as a flat list too (spans ABSOLUTE). Empty
+   * in strict mode. On a hard (non-recovered) parse failure this holds the single
+   * top-level failure. This is what makes an editor document able to see syntax
+   * errors — a blank `errors: []` (the prior behaviour) hid every recovery.
+   */
+  readonly errors: ParseError[]
+  /**
+   * Offset where unparsed input begins — the first non-trivia character the parse
+   * left unconsumed (trailing trivia skipped when a trivia rule is available), or
+   * `null` if the whole input was consumed. This is how a document detects "the
+   * grammar stopped short, there's junk here"; computed exactly as `run()` does.
+   */
+  readonly unconsumedFrom: number | null
   readonly input: string
   /**
    * Absolute span of the node at `path` (child indices from the root) — O(depth),
@@ -595,7 +619,8 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
    */
   private _abs: N | null | undefined
   private _rel: N | null | undefined
-  readonly errors: ParseFail[]
+  readonly errors: ParseError[]
+  readonly unconsumedFrom: number | null
   readonly input: string
 
   constructor(
@@ -603,7 +628,8 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
     rootRule: string,
     opts: ParseDocOptions<N>,
     trees: { abs?: N | null; rel?: N | null },
-    errors: ParseFail[],
+    errors: ParseError[],
+    unconsumedFrom: number | null,
     input: string,
   ) {
     this._registry = registry
@@ -618,6 +644,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
     this._abs = trees.abs
     this._rel = trees.rel
     this.errors = errors
+    this.unconsumedFrom = unconsumedFrom
     this.input = input
   }
 
@@ -641,6 +668,20 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
     const rel = this.tree
     if (!rel) throw new Error('spanAt on a failed parse (tree is null)')
     return absoluteSpanCST(rel as unknown as { span: Span; children?: readonly unknown[] }, path)
+  }
+
+  /**
+   * Wrap a reused (grafted/spliced) RELATIVE tree, recomputing `errors` and
+   * `unconsumedFrom` from it so both stay consistent with the tree across the
+   * edit (the flat errors are recovered errors embedded in the reused subtrees;
+   * unconsumedFrom re-derives trailing junk over the new input).
+   */
+  private wrapReuse(newTree: N, newInput: string): ParseDoc<N> {
+    const trivia = triviaOf(this._registry[this._rootRule], this._opts)
+    const end = (newTree as unknown as { span: { end: number } }).span.end
+    const errors = collectEmbeddedErrors(newTree, 0, [])
+    const unconsumedFrom = unconsumedAfter(end, newInput, trivia)
+    return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: newTree }, errors, unconsumedFrom, newInput)
   }
 
   edit(from: number, to: number, replacement: string): ParseDoc<N> {
@@ -710,14 +751,14 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       // every untouched sibling by reference) is already correct.
       if (delta === 0) {
         const newTree = replaceAtPath(rebuild, root, path, newRel)
-        return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: newTree }, [], newInput)
+        return this.wrapReuse(newTree, newInput)
       }
       // Length-changing edit: trailing siblings' relative starts slide by `delta`.
       // A custom `rebuild` (possibly a class instance) can't have its span slid
       // safely, so fall back to a full, correct reparse.
       if (this._opts.rebuild) return reparse()
       const newTree = graftRelative(root, path, newRel, delta)
-      return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: newTree }, [], newInput)
+      return this.wrapReuse(newTree, newInput)
     }
 
     // No localized rule reparse converged — the edit is structural. Before paying
@@ -739,7 +780,7 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
         const { start: cStart, end: cEnd } = absoluteSpanCST(root as unknown as { span: Span; children?: readonly unknown[] }, path)
         if (!(cStart <= from && to <= cEnd)) continue
         const spliced = tryListSplice(root, path, node, cStart, newInput, from, to, delta, this._fns, this._opts.build, !!this._opts.tolerant)
-        if (spliced) return new ParseDocImpl(this._registry, this._rootRule, this._opts, { rel: spliced }, [], newInput)
+        if (spliced) return this.wrapReuse(spliced, newInput)
       }
     }
 
@@ -754,6 +795,57 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
  */
 export function relTreeOf<N extends NodeLike>(doc: ParseDoc<N>): N | null {
   return doc.tree
+}
+
+/**
+ * The grammar trivia rule to skip when computing `unconsumedFrom`: an explicit
+ * `trivia` option wins; otherwise the root entry's ambient `grammarTrivia` (the
+ * same source `run()` derives it from). A bare-function registry carries no meta,
+ * so trailing trivia can't be inferred and the parse must reach the exact end.
+ */
+function triviaOf<N extends NodeLike>(
+  entry: RuleFn<N> | Combinator<N> | undefined,
+  opts: ParseDocOptions<N>,
+): Combinator<unknown> | undefined {
+  if (opts.trivia) return opts.trivia
+  // Only an interpreter Combinator carries `_meta`; a bare parse function or a
+  // compiled-grammar object (which bakes its ambient trivia into codegen) does
+  // not, so there's nothing to derive and trailing trivia isn't skipped.
+  if (entry === undefined || typeof entry === 'function') return undefined
+  const meta = (entry as { _meta?: { grammarTrivia?: Combinator<unknown> } })._meta
+  return meta ? meta.grammarTrivia : undefined
+}
+
+/**
+ * First unconsumed non-trivia offset after a parse that ended at `end` (trailing
+ * trivia skipped when a trivia rule is available), or `null` when the whole input
+ * was consumed — byte-for-byte the computation in `run()` (run.ts:117-129).
+ */
+function unconsumedAfter(end: number, input: string, trivia: Combinator<unknown> | undefined): number | null {
+  let pos = end
+  if (trivia && pos < input.length) {
+    const t = trivia.parse(input, pos, { trackLines: false })
+    if (t.ok && t.span.end > pos) pos = t.span.end
+  }
+  return pos < input.length ? pos : null
+}
+
+/**
+ * Collect embedded `parseError` recovery nodes from a PARENT-RELATIVE tree,
+ * projecting each to an ABSOLUTE span (root base 0) — the flat mirror of the
+ * errors that ride the tree, recomputed for a reuse-path (grafted/spliced) result
+ * so `doc.errors` stays consistent with the tree across incremental edits.
+ */
+function collectEmbeddedErrors(node: unknown, base: number, out: ParseError[]): ParseError[] {
+  const c = node as { _tag?: string; span?: { start: number; end: number }; expected?: string[]; children?: readonly unknown[] }
+  if (!c || typeof c !== 'object' || !c.span) return out
+  const start = base + c.span.start
+  if (c._tag === 'parseError') {
+    out.push({ _tag: 'parseError', span: { start, end: base + c.span.end }, expected: c.expected ?? [] })
+    return out
+  }
+  if (Array.isArray(c.children)) for (const k of c.children) collectEmbeddedErrors(k, start, out)
+  return out
 }
 
 /**
@@ -772,8 +864,14 @@ export function parseDoc<N extends NodeLike>(
   const r: ParseResult<N> = asRuleFn(entry)(input, 0, ctx)
   if (r.ok) {
     // A fresh parse is ABSOLUTE; the relative form is materialized lazily on the
-    // first edit/spanAt, so a parse that's never edited pays no conversion.
-    return new ParseDocImpl(registry, rootRule, opts, { abs: r.value }, [], input)
+    // first edit/spanAt, so a parse that's never edited pays no conversion. The
+    // recovery errors the tolerant parse collected into ctx._errors are surfaced
+    // flat too (like run()), and unconsumedFrom reports any trailing junk.
+    const errors = ctx._errors ? [...ctx._errors] : []
+    const unconsumedFrom = unconsumedAfter(r.span.end, input, triviaOf(entry, opts))
+    return new ParseDocImpl(registry, rootRule, opts, { abs: r.value }, errors, unconsumedFrom, input)
   }
-  return new ParseDocImpl(registry, rootRule, opts, { abs: null }, [{ ok: false, expected: r.expected, span: r.span }], input)
+  // Hard (non-recovered) failure: the single top-level failure, as a parseError.
+  const fail: ParseError = { _tag: 'parseError', span: r.span, expected: r.expected }
+  return new ParseDocImpl(registry, rootRule, opts, { abs: null }, [fail], null, input)
 }

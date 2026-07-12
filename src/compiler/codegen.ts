@@ -1449,7 +1449,10 @@ function emitFirstMatch(
     if (gate) {
       const gateIdx = ctx.mapFns.length
       ctx.mapFns.push(gate as (v: unknown, span: unknown) => unknown)
-      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a gate predicate has no captured source)
+      // Macro path: inline the captured gate source (def.gateSrcs[i]); runtime
+      // compile() has no source → null (closure in mapFns drives it). Parallel-
+      // length invariant preserved either way.
+      ctx.mapFnSrcs.push(def.gateSrcs?.[i] ?? null)
       gateCond = `${mfRef(ctx)}[${gateIdx}](_ctx.state)`
     }
     const skipCond = gateCond ? `!${resOkV} && ${gateCond}` : `!${resOkV}`
@@ -2179,7 +2182,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   stmts.push(
     `${i}const ${ndV} = ${finalExpr}`,
     `${i}if (${sc}) ${sc}.push(${ndV})`,
-    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'error')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
   )
 
   return { stmts, valueVar: ndV, endVar }
@@ -2320,6 +2323,10 @@ function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: s
     `${ind0}if (!${okVar}) {`,
     `${ind0}  const ${errV} = { _tag: 'parseError', span: { start: ${pos}, end: ${pos} }, expected: ${JSON.stringify(def.expected)} }`,
     `${ind0}  if (_ctx._errors) _ctx._errors.push(${errV})`,
+    // Embed the missing-token error as a `parseError` CST child, mirroring the
+    // interpreter (expect.ts) and the list-recovery emit sites — guarded on
+    // `_ctx._tolerant`, under which the driver always installs `_ctx._rec`.
+    `${ind0}  if (_ctx._tolerant) _ctx._rec.capture(_ctx, ${errV})`,
     `${ind0}  ${valVar} = ${errV}`,
     `${ind0}  ${endVar} = ${pos}`,
     `${ind0}  ${okVar} = true`,
@@ -2497,7 +2504,8 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'guard': {
       const fnIdx = ctx.mapFns.length
       ctx.mapFns.push(def.predicate as (v: unknown, span: unknown) => unknown)
-      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a guard predicate has no captured source)
+      // Macro path: inline the captured predicate source; runtime compile() → null.
+      ctx.mapFnSrcs.push(def.predSrc ?? null)
       const vv = v(ctx)
       return {
         stmts: [
@@ -2513,7 +2521,9 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       const evIdx = ctx.mapFns.length
       const extra = def.extra
       ctx.mapFns.push((() => extra) as (v: unknown, span: unknown) => unknown)
-      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a withCtx value getter has no captured source)
+      // Macro path: inline the captured `extra` as a getter `() => (extra)` so
+      // `_mf[evIdx]()` returns the value; runtime compile() → null (closure above).
+      ctx.mapFnSrcs.push(def.extraSrc !== undefined ? `() => (${def.extraSrc})` : null)
 
       // Wrap inner parser as a named function so it receives _ctx as a parameter.
       // That lets us call it with a modified ctx (user changed) without polluting

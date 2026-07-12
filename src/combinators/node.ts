@@ -52,7 +52,7 @@ function isCstChild(value: unknown): boolean {
     && value !== null
     && ((value as { _tag?: string })._tag === 'node'
       || (value as { _tag?: string })._tag === 'leaf'
-      || (value as { _tag?: string })._tag === 'error')
+      || (value as { _tag?: string })._tag === 'parseError')
 }
 
 function missingInferredType(): never {

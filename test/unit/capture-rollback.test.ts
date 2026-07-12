@@ -116,3 +116,38 @@ describe('CST capture rollback — every path, interpreter vs compile() vs macro
     })
   }
 })
+
+/**
+ * Speculative-branch ERROR rollback (soundness): a choice arm that recovers —
+ * pushing a ParseError to ctx._errors AND embedding it as a `parseError` CST
+ * child — then fails must truncate BOTH, exactly as it truncates captured leaves.
+ * Otherwise a rolled-back arm leaves a GHOST error: flat ctx._errors disagrees
+ * with the tree, and a diagnostics layer reports an error over input the winning
+ * arm consumed cleanly.
+ */
+describe('speculative rollback truncates ctx._errors (no ghost error)', () => {
+  it('a recovering-then-failing choice arm leaves no error behind', async () => {
+    const { choice, sequence, literal, many, regex, run } = await import('../../src/index.ts')
+    const item = regex(/[a-z]+/)
+    const ws = regex(/[ ]*/)
+    // arm1 requires a closing ']' (fails on this input after recovering inside
+    // many); arm2 does not and wins. The arm1 recovery must not survive.
+    const arm1 = sequence(literal('['), many(sequence(ws, item)), literal(']'))
+    const arm2 = sequence(literal('['), many(sequence(ws, item)))
+    const r = run(choice(arm1, arm2) as never, '[abc !!! def', { tolerant: true })
+    expect(r.ok).toBe(true)
+    expect(r.errors).toEqual([]) // ghost error over unconsumed input is gone
+  })
+
+  it('a not() lookahead over a recovering parser leaves no error behind', async () => {
+    const { not, sequence, literal, many, regex, run } = await import('../../src/index.ts')
+    const item = regex(/[a-z]+/)
+    const inner = sequence(literal('['), many(item), literal(']')) // recovers then fails
+    // not(inner) succeeds (inner fails on '[a' — no closer) and must roll back the
+    // recovered error inner pushed while failing.
+    const g = sequence(not(inner), regex(/[\[a-z]+/))
+    const r = run(g as never, '[a', { tolerant: true })
+    expect(r.ok).toBe(true)
+    expect(r.errors).toEqual([])
+  })
+})
