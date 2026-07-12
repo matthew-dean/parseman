@@ -100,7 +100,7 @@
   stroke: var(--vp-c-brand-1);
 }
 
-/* Comparison page: the feature matrices are wide (up to 7 columns). Forcing them
+/* Comparison page: the feature matrices are wide (up to 9 columns). Forcing them
    to 100% width divides that space evenly and crushes cells on narrow viewports.
    Instead, let each column keep a comfortable floor (min-width), size the table to
    its content, and scroll horizontally when it can't fit. Scoped to this page so
@@ -121,12 +121,14 @@
   overflow-wrap: anywhere;
 }
 
-/* Parser-name column: a bit narrower, and pinned so the row label stays visible
-   while the capability columns scroll. Backgrounds are set explicitly (matching
-   the default zebra striping) so the pinned cells stay opaque over scrolled ones. */
+/* Dimension-label column: the matrices are transposed (aspects/capabilities down
+   the side, tools across the top), and this first column is pinned so the label you
+   are comparing by stays visible while the tool columns scroll. Backgrounds are set
+   explicitly (matching the default zebra striping) so the pinned cells stay opaque
+   over scrolled ones. */
 .comparison-page .vp-doc th:first-child,
 .comparison-page .vp-doc td:first-child {
-  min-width: 7.5rem;
+  min-width: 11rem;
   position: sticky;
   left: 0;
   z-index: 1;
