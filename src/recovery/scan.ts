@@ -23,16 +23,23 @@ function probeAt(sentinel: Combinator<unknown>, input: string, pos: number, ctx:
     _probe: ctx._probe, _errors: ctx._errors,
     _cstLeaves: ctx._cstLeaves, _cstChildren: ctx._cstChildren, _cstRawChildren: ctx._cstRawChildren,
     _cstTriviaLog: ctx._cstTriviaLog, _triviaLog: ctx._triviaLog, _fields: ctx._fields, _cstBuf: ctx._cstBuf,
+    _tolerant: ctx._tolerant, _sync: ctx._sync,
   }
   ctx._probe = undefined; ctx._errors = undefined
   ctx._cstLeaves = undefined; ctx._cstChildren = undefined; ctx._cstRawChildren = undefined
   ctx._cstTriviaLog = undefined; ctx._triviaLog = undefined; ctx._fields = undefined; ctx._cstBuf = undefined
+  // A sentinel is pure lookahead: it must not itself enter tolerant recovery (nor
+  // read a stale outer `_sync`). Otherwise a sentinel that composes many/sepBy would
+  // run recovery on every probed position — wasted work, and it could resync to the
+  // enclosing list's sync token. Cleared here and restored in `finally`.
+  ctx._tolerant = undefined; ctx._sync = undefined
   try {
     return sentinel.parse(input, pos, ctx).ok
   } finally {
     ctx._probe = s._probe; ctx._errors = s._errors
     ctx._cstLeaves = s._cstLeaves; ctx._cstChildren = s._cstChildren; ctx._cstRawChildren = s._cstRawChildren
     ctx._cstTriviaLog = s._cstTriviaLog; ctx._triviaLog = s._triviaLog; ctx._fields = s._fields; ctx._cstBuf = s._cstBuf
+    ctx._tolerant = s._tolerant; ctx._sync = s._sync
   }
 }
 

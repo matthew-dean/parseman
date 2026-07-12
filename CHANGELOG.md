@@ -53,6 +53,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ### Fixes
 
+- **Tolerant recovery no longer swallows trailing trivia into a spurious `ParseError`.**
+  `many` / `oneOrMore` checked the inferred sync token at the pre-trivia cursor, so ambient
+  whitespace between the last good element and the list's closer (e.g. `{ 1 2 }`) tripped
+  recovery and produced a bogus error over the space. The guard now checks — and starts the
+  recovery scan from — the post-trivia position where the element actually failed (matching
+  `sepBy`). Also: a recovery sentinel no longer inherits `_tolerant` / `_sync` during its
+  lookahead probe, so a sentinel composing `many` / `sepBy` can't recurse into recovery.
 - **Compiled/interpreter span parity for trailing empty-match trivia.** The non-capturing
   `compile()` codegen for a `sequence` advanced the cursor over inter-term trivia
   unconditionally, so a trailing `optional` / `many` that matched empty folded the

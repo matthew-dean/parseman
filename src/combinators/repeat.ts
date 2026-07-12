@@ -20,7 +20,7 @@ function repItem<T>(
   input: string,
   cur: number,
   ctx: ParseContext,
-): { value: T; end: number } | { fail: ParseResult<T> } | 'stop' {
+): { value: T; end: number } | { fail: ParseResult<T>; failPos: number } | 'stop' {
   const mark = saveTriviaMark(ctx)
   let pos = cur
   if (ctx.trivia) {
@@ -42,7 +42,11 @@ function repItem<T>(
   const result = combinator.parse(input, pos, ctx)
   if (!result.ok) {
     rollbackTrivia(ctx, mark)
-    return { fail: result }
+    // Surface the POST-trivia position where the element actually failed. The
+    // tolerant recovery guard must check the sync token there — not at `cur`,
+    // which sits before any leading trivia — so trailing trivia before the sync
+    // isn't mistaken for junk and swallowed into a spurious ParseError.
+    return { fail: result, failPos: pos }
   }
   if (result.span.end === pos) {
     rollbackTrivia(ctx, mark)
@@ -80,11 +84,13 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
           // sync available ⇒ nothing to skip to → break.
           const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
-          // Sync token already here ⇒ clean list end, not junk. (Also the loop
-          // guard: the scan below always advances ≥1 since sync fails at `cur`.)
-          if (matchesAt(sync, input, cur, ctx)) break
+          // Sync token at the POST-trivia failure position ⇒ clean list end (the
+          // trailing trivia belongs to the enclosing context), not junk. Checking
+          // `item.failPos` (past leading trivia), not `cur`, keeps trivia out of
+          // both the break decision and the recovered error span.
+          if (matchesAt(sync, input, item.failPos, ctx)) break
           expected ??= deriveExpected(combinator)
-          const { error, end } = recoverScan(input, cur, ctx, sync, expected)
+          const { error, end } = recoverScan(input, item.failPos, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
           captureError(ctx, error)
           cur = end
@@ -128,9 +134,9 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
           // Cold path (element failure). Strict: break. Tolerant: resync — see many().
           const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
-          if (matchesAt(sync, input, cur, ctx)) break
+          if (matchesAt(sync, input, item.failPos, ctx)) break
           expected ??= deriveExpected(combinator)
-          const { error, end } = recoverScan(input, cur, ctx, sync, expected)
+          const { error, end } = recoverScan(input, item.failPos, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
           captureError(ctx, error)
           cur = end
