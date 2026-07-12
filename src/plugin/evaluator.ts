@@ -69,6 +69,44 @@ function isScopeEntry(v: unknown): v is ScopeEntry {
   return !!v && typeof v === 'object' && 'combi' in v && 'mfSrcs' in v
 }
 
+/** Read a non-computed object-property key name (Identifier or Literal), or null. */
+function propName(p: ObjectProperty): string | null {
+  if (p.computed) return null
+  const key = p.key as unknown as { type: string; name?: string; value?: unknown }
+  return key.type === 'Identifier' ? key.name ?? null
+    : key.type === 'Literal' ? String(key.value)
+    : null
+}
+
+/** Is this a gated-choice arm object literal — `{ gate, combinator }`? */
+function isGatedArmExpr(e: { type: string }): boolean {
+  if (e.type !== 'ObjectExpression') return false
+  let hasGate = false, hasCombinator = false
+  for (const prop of (e as ObjectExpression).properties) {
+    if (prop.type !== 'Property') continue
+    const name = propName(prop as unknown as ObjectProperty)
+    if (name === 'gate') hasGate = true
+    else if (name === 'combinator') hasCombinator = true
+  }
+  return hasGate && hasCombinator
+}
+
+/** Extract the `gate` / `combinator` value expressions from a gated-arm object.
+ * Returns null on any unexpected shape (spread, computed key, extra key). */
+function gatedArmParts(e: ObjectExpression): { gate: Expression; combinator: Expression } | null {
+  let gate: Expression | undefined
+  let combinator: Expression | undefined
+  for (const prop of e.properties) {
+    if (prop.type !== 'Property') return null
+    const op = prop as unknown as ObjectProperty
+    const name = propName(op)
+    if (name === 'gate') gate = op.value as Expression
+    else if (name === 'combinator') combinator = op.value as Expression
+    else return null
+  }
+  return gate && combinator ? { gate, combinator } : null
+}
+
 function isCombinator(v: unknown): v is Combinator<unknown> {
   return !!v && typeof v === 'object' && '_def' in v
 }
@@ -294,6 +332,89 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       ? anyValue(optsArg as Expression, scope, code, [])
       : undefined
     try { return parseman.scanTo(sentinel, opts as parseman.ScanToOptions | undefined) } catch { return null }
+  }
+
+  // guard(pred) — context assertion. Capture the predicate source (like
+  // transform's fn) so codegen inlines it into `_mf`; build a placeholder guard
+  // and stash the source on `_def.predSrc`. Without source-capture context we
+  // return null → the whole rule falls back to the (correct) interpreter, never
+  // dropping the predicate.
+  if (callee.name === 'guard') {
+    if (code === undefined || mfs === undefined) return null
+    const [predArg] = node.arguments
+    if (!predArg || predArg.type === 'SpreadElement') return null
+    const predSrc = code.slice((predArg as Expression).start, (predArg as Expression).end)
+    mfs.push(predSrc)
+    try {
+      const combi = parseman.guard(() => true)
+      if (combi._def.tag !== 'guard') return null
+      combi._def.predSrc = predSrc
+      return combi
+    } catch { return null }
+  }
+
+  // withCtx(extra, inner) — run `inner` with ctx.state = extra. Capture the
+  // `extra` argument source; codegen wraps it as `() => (extra)` in `_mf`. The
+  // extra getter is emitted BEFORE the inner parser's own mapFns (matching
+  // emitWithCtx's push order), so push the extra token first, then eval inner.
+  if (callee.name === 'withCtx') {
+    if (code === undefined || mfs === undefined) return null
+    const [extraArg, innerArg] = node.arguments
+    if (!extraArg || !innerArg || extraArg.type === 'SpreadElement' || innerArg.type === 'SpreadElement') return null
+    const extraSrc = code.slice((extraArg as Expression).start, (extraArg as Expression).end)
+    mfs.push(extraSrc)
+    const inner = anyValue(innerArg as Expression, scope, code, mfs)
+    if (!isCombinator(inner)) return null
+    try {
+      const combi = parseman.withCtx({}, inner)
+      if (combi._def.tag !== 'withCtx') return null
+      combi._def.extraSrc = extraSrc
+      return combi
+    } catch { return null }
+  }
+
+  // choice(...) WITH at least one gated arm `{ gate, combinator }`. The generic
+  // SUPPORTED path evaluates a gated-arm ObjectExpression via anyValue, whose
+  // arrow-gate evaluates to `null` — so `choice` would treat the arm as UNGATED
+  // and emit it unconditionally (a SILENT semantic miscompile vs the interpreter).
+  // Handle gated choices explicitly: capture each gate's source, build the REAL
+  // gated arm, and stash the per-arm sources on `_def.gateSrcs`. If any gate can't
+  // be source-captured, return null for the WHOLE choice → safe interpreter
+  // fallback. (Non-gated choices fall through to the generic path → byte-identical.)
+  if (callee.name === 'choice' && node.arguments.some(a => a.type !== 'SpreadElement' && isGatedArmExpr(a as { type: string }))) {
+    if (code === undefined || mfs === undefined) return null
+    const arms: Array<Combinator<unknown> | { gate: (s: unknown) => boolean; combinator: Combinator<unknown> }> = []
+    const gateSrcs: (string | null)[] = []
+    for (const argNode of node.arguments) {
+      if (argNode.type === 'SpreadElement') return null
+      if (isGatedArmExpr(argNode as { type: string })) {
+        const parts = gatedArmParts(argNode as unknown as ObjectExpression)
+        if (!parts) return null
+        // Gate mapFn is pushed BEFORE the arm body's mapFns (matches emitFirstMatch).
+        const gateSrc = code.slice(parts.gate.start, parts.gate.end)
+        mfs.push(gateSrc)
+        const combi = anyValue(parts.combinator, scope, code, mfs)
+        if (!isCombinator(combi)) return null
+        arms.push({ gate: () => true, combinator: combi })
+        gateSrcs.push(gateSrc)
+      } else {
+        const combi = anyValue(argNode as Expression, scope, code, mfs)
+        if (!isCombinator(combi)) return null
+        arms.push(combi)
+        gateSrcs.push(null)
+      }
+    }
+    try {
+      const combi = (parseman.choice as (...p: unknown[]) => Combinator<unknown>)(...arms)
+      if (combi._def.tag !== 'choice') return null
+      combi._def.gateSrcs = gateSrcs
+      // Guard: a real gate MUST align with a captured source, and vice-versa —
+      // no predicate-bearing arm may reach codegen with a dropped source.
+      for (let i = 0; i < combi._def.gates.length; i++) {
+        if ((combi._def.gates[i] !== null) !== (gateSrcs[i] !== null)) return null
+      }
+      return combi
+    } catch { return null }
   }
 
   const factory = SUPPORTED[callee.name]

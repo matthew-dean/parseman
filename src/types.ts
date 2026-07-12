@@ -43,7 +43,12 @@ export type ParserDef =
   // children, not this value). When true, the interpreter and codegen skip
   // building the array/tuple — the elements still parse + self-capture.
   | { tag: 'sequence';  parsers: Combinator<unknown>[]; valueUnused?: boolean }
-  | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
+  // `gateSrcs` (set by the macro evaluator): per-arm gate predicate SOURCE TEXT,
+  // aligned by arm index (null for an ungated arm). Lets codegen inline the gate
+  // into the macro's `_mf` array instead of pushing a `null` source (which would
+  // force interpreter fallback). Absent under runtime compile() — the real gate
+  // closures live in `gates`.
+  | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; gateSrcs?: (string | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
   | { tag: 'many';      parser: Combinator<unknown>; min: 0; valueUnused?: boolean }
   | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean }
   | { tag: 'optional';  parser: Combinator<unknown> }
@@ -58,8 +63,12 @@ export type ParserDef =
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
   | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; unwrap?: boolean; collapse?: boolean }
-  | { tag: 'guard';    predicate: (state: unknown) => boolean }
-  | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown> }
+  // `predSrc`/`extraSrc` (set by the macro evaluator): SOURCE TEXT of the guard
+  // predicate / the withCtx `extra` value, so codegen inlines them into `_mf`
+  // rather than pushing a `null` source. Absent under runtime compile() (the real
+  // closures/values live in `predicate`/`extra`).
+  | { tag: 'guard';    predicate: (state: unknown) => boolean; predSrc?: string }
+  | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown>; extraSrc?: string }
   | { tag: 'recover';  parser: Combinator<unknown>; sentinel: Combinator<unknown> }
   | { tag: 'expect';   parser: Combinator<unknown>; label: string | undefined; expected: string[] }
   | { tag: 'scanTo';   sentinel: Combinator<unknown>; skip: Combinator<unknown>[]; orEOF: boolean }

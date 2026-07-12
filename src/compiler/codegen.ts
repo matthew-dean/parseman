@@ -1449,7 +1449,10 @@ function emitFirstMatch(
     if (gate) {
       const gateIdx = ctx.mapFns.length
       ctx.mapFns.push(gate as (v: unknown, span: unknown) => unknown)
-      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a gate predicate has no captured source)
+      // Macro path: inline the captured gate source (def.gateSrcs[i]); runtime
+      // compile() has no source → null (closure in mapFns drives it). Parallel-
+      // length invariant preserved either way.
+      ctx.mapFnSrcs.push(def.gateSrcs?.[i] ?? null)
       gateCond = `${mfRef(ctx)}[${gateIdx}](_ctx.state)`
     }
     const skipCond = gateCond ? `!${resOkV} && ${gateCond}` : `!${resOkV}`
@@ -2497,7 +2500,8 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'guard': {
       const fnIdx = ctx.mapFns.length
       ctx.mapFns.push(def.predicate as (v: unknown, span: unknown) => unknown)
-      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a guard predicate has no captured source)
+      // Macro path: inline the captured predicate source; runtime compile() → null.
+      ctx.mapFnSrcs.push(def.predSrc ?? null)
       const vv = v(ctx)
       return {
         stmts: [
@@ -2513,7 +2517,9 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       const evIdx = ctx.mapFns.length
       const extra = def.extra
       ctx.mapFns.push((() => extra) as (v: unknown, span: unknown) => unknown)
-      ctx.mapFnSrcs.push(null) // keep parallel with mapFns (a withCtx value getter has no captured source)
+      // Macro path: inline the captured `extra` as a getter `() => (extra)` so
+      // `_mf[evIdx]()` returns the value; runtime compile() → null (closure above).
+      ctx.mapFnSrcs.push(def.extraSrc !== undefined ? `() => (${def.extraSrc})` : null)
 
       // Wrap inner parser as a named function so it receives _ctx as a parameter.
       // That lets us call it with a modified ctx (user changed) without polluting
