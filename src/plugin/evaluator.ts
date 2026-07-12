@@ -34,21 +34,30 @@ function stripTsFromSource(node: Node, code: string): string {
   const cuts: Array<[number, number]> = []
   const walk = (n: unknown): void => {
     if (!n || typeof n !== 'object') return
-    const rec = n as Record<string, unknown> & { type?: string; start?: number; end?: number; expression?: { end?: number } }
+    const rec = n as Record<string, unknown> & { type?: string; start?: number; end?: number; expression?: { start?: number; end?: number } }
     // A whole TS-only node (a type annotation, type-argument list, etc.): drop it.
     if (typeof rec.type === 'string' && rec.type.startsWith('TS') && typeof rec.start === 'number' && typeof rec.end === 'number') {
-      // Cast/non-null WRAPPERS keep their expression; only the `as T` / `satisfies T`
-      // / `!` suffix after the inner expression is TS. Everything else (annotations,
-      // type-argument lists) is dropped whole.
-      if ((rec.type === 'TSAsExpression' || rec.type === 'TSSatisfiesExpression' || rec.type === 'TSNonNullExpression') && rec.expression && typeof rec.expression.end === 'number') {
-        cuts.push([rec.expression.end, rec.end])
+      const ex = rec.expression
+      // SUFFIX wrappers keep their expression; only the trailing TS is dropped:
+      // `x as T` / `x satisfies T` / `x!` (after the expression) and `f<T>` (the
+      // `<T>` type-argument list after the callee expression).
+      if ((rec.type === 'TSAsExpression' || rec.type === 'TSSatisfiesExpression' || rec.type === 'TSNonNullExpression' || rec.type === 'TSInstantiationExpression') && ex && typeof ex.end === 'number') {
+        cuts.push([ex.end, rec.end])
         walk(rec.expression)
         return
       }
+      // PREFIX wrapper: `<T>x` (angle-bracket assertion) — cut the leading `<T>`,
+      // keep the wrapped expression.
+      if (rec.type === 'TSTypeAssertion' && ex && typeof ex.start === 'number') {
+        cuts.push([rec.start, ex.start])
+        walk(rec.expression)
+        return
+      }
+      // Everything else (annotations, bare type-argument lists) is dropped whole.
       cuts.push([rec.start, rec.end])
       return
     }
-    for (const key in rec) {
+    for (const key of Object.keys(rec)) {
       if (key === 'type' || key === 'start' || key === 'end') continue
       const v = rec[key]
       if (Array.isArray(v)) { for (const item of v) walk(item) }

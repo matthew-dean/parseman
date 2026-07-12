@@ -135,6 +135,14 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
       return it
     })
     const c = (choice as (...a: unknown[]) => Comb)(...arms)
+    // `choice` is the authority on gate alignment; `gateSrcs` must line up 1:1 with
+    // the constructed `_def.gates`. They always do on the normal path (both from the
+    // same `items.map`), but assert it so a future change in `choice` that coalesces
+    // or drops arms can't silently ship a mis-aligned gate-source array.
+    const gates = (c._def as { gates?: unknown[] }).gates
+    if (gates && gates.length !== gateSrcs.length) {
+      throw new Error(`_gch: gateSrcs length ${gateSrcs.length} != choice gates length ${gates.length}`)
+    }
     ;(c._def as { gateSrcs?: (string | null)[] }).gateSrcs = gateSrcs
     return c
   }
