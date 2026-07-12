@@ -52,7 +52,7 @@ const { expr, tail } = rules<{ expr: Combinator<E>; tail: Combinator<E> }>({ tri
   const add = leftAssoc(mul, choice(literal('+'), literal('-')) as Combinator<string>)
 
   // A trailing optional() that matches empty after trivia — the simplest shape.
-  const tailR = transform(
+  const tailR: Combinator<E> = transform(
     sequence(id, optional(literal('!'))),
     ([, bang], span) => ({ type: 'id', name: bang ?? '', end: span.end }),
   )
