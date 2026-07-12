@@ -4,8 +4,10 @@
  * itself carries NONE of it. This is the acceptance test for the whole re-arch.
  */
 import { describe, it, expect } from 'vitest'
-import { regex, literal, sequence, sepBy, node, choice } from '../../src/index.ts'
+import { regex, literal, sequence, sepBy, node, choice, rules } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
+import type { Registry } from '../../src/functional/doc.ts'
+import type { NodeLike } from '../../src/cst/types.ts'
 import { languageService } from '../../src/language-service/index.ts'
 
 const ident = regex(/[a-z]+/)
@@ -60,5 +62,51 @@ describe('languageService — the grammar is untouched', () => {
     expect(block._def.tag).toBe('node')
     expect('recover' in block).toBe(false)
     expect(css.parse('{a:red}', { tolerant: false }).ok).toBe(true)
+  })
+})
+
+// ── incremental document (the parseDoc fusion) ────────────────────────────────
+// Structural node() rules (built via the CST host) keyed by rule name = node type,
+// so the document can address rules individually for incremental re-parse.
+const g = rules(self => ({
+  Block: node(sequence(literal('{'), sepBy(self.Decl, literal(';')), literal('}'))),
+  Decl: node(sequence(regex(/[a-z]+/), literal(':'), self.Val)),
+  Val: node(choice(regex(/red|blue|green/), regex(/[0-9]+/))),
+}))
+const doc0 = () => languageService(
+  { rules: g as unknown as Registry<NodeLike>, root: 'Block' },
+  { diagnostics: { Val: (n) => (/^(red|blue|green)/.test(n.value ?? '') ? [] : []) } },
+).openDocument('{a:red;b:blue}')
+
+describe('languageService.openDocument — incremental editor document', () => {
+  it('keeps a live tree and diagnostics through a broken edit, then recovers', () => {
+    const d0 = doc0()
+    expect(d0.tree).not.toBeNull()
+    expect(d0.diagnostics().filter(x => x.severity === 'error')).toHaveLength(0)
+
+    // Break the middle element: replace 'b:blue' with '$$' → recovered error.
+    // '{a:red;b:blue}' — 'b:blue' spans offsets 7..13.
+    const d1 = d0.edit(7, 13, '$$')
+    expect(d1.tree).not.toBeNull() // tree survives the broken keystroke
+    const errs = d1.diagnostics().filter(x => x.severity === 'error')
+    expect(errs).toHaveLength(1)
+    expect(errs[0]!.span).toEqual({ start: 7, end: 9 })
+
+    // Fix it back → the error clears, tree whole again.
+    const d2 = d1.edit(7, 9, 'b:blue')
+    expect(d2.diagnostics().filter(x => x.severity === 'error')).toHaveLength(0)
+    expect(d2.tree).toEqual(d0.tree) // structurally back to the original
+  })
+
+  it('the document tree === a fresh full tolerant parse of the same text', () => {
+    const edited = doc0().edit(7, 13, '$$;c:9')
+    const fresh = languageService(
+      { rules: g as unknown as Registry<NodeLike>, root: 'Block' }, {},
+    ).openDocument('{a:red;$$;c:9}')
+    expect(edited.tree).toEqual(fresh.tree)
+  })
+
+  it('openDocument throws on a bare-entry service (no registry)', () => {
+    expect(() => css.openDocument('{a:red}')).toThrow(/registry/)
   })
 })
