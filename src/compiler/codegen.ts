@@ -1101,8 +1101,24 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         valueVars.push(r.valueVar)
         continue
       } else {
+        // Match the interpreter (sequence.ts): scan trivia to a temp position, but
+        // only *commit* it (advance cur) if the following term consumes content past
+        // it. A term matching empty (optional/many/lookahead) leaves cur pre-trivia,
+        // so trailing whitespace stays out of the sequence's span. The non-capturing
+        // trivFn has no side effects when called without `_cap`, so there is nothing
+        // to roll back — just keep cur unchanged.
         const trivFn = ensureTriviaFn(ctx)
-        stmts.push(`${ind(ctx)}${curV} = ${trivFn}(input, ${curV}, _ctx)`)
+        const scanEndV = v(ctx, '_sne')
+        stmts.push(`${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx)`)
+        const r = emit(def.parsers[i]!, ctx, scanEndV)
+        stmts.push(...r.stmts)
+        const endAfterV = v(ctx, '_sea')
+        stmts.push(
+          `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}`,
+        )
+        valueVars.push(r.valueVar)
+        continue
       }
     }
     const r = emit(def.parsers[i]!, ctx, curV)
