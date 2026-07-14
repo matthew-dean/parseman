@@ -57,6 +57,33 @@ export type RunOptions = {
    * fails, so none of the machinery runs.
    */
   tolerant?: boolean
+  /**
+   * Run three compiled-parser-only profiling passes: outputless recognizer,
+   * structural capture without the host, then the normal host path. This is a
+   * measurement boundary, not a parser mode; ordinary `run()` output is
+   * unchanged when omitted.
+   */
+  profile?: boolean
+}
+
+export type RunProfilePass = {
+  ms: number
+  nodes: number
+  childSlots: number
+  rawSlots: number
+  triviaSlots: number
+  fieldSlots: number
+  hostCalls: number
+}
+
+export type RunProfile = {
+  /** Existing `voidOf(transform(..., () => undefined))` semantics, generalized
+   * to compiled structural nodes: no `ch`/`raw`/`tl` capture or raw entries. */
+  recognizer: RunProfilePass
+  /** Captures children/raw/trivia/fields but suppresses node construction. */
+  structuralCapture: RunProfilePass
+  /** The ordinary parser path, including its injected build host. */
+  hostConstruction: RunProfilePass
 }
 
 export type RunResult = {
@@ -82,12 +109,17 @@ export type RunResult = {
    * there's junk here". Only meaningful on success — a failed parse reports its own
    * `span`/`expected`. */
   unconsumedFrom: number | null
+  /** Present only when `RunOptions.profile` is true. */
+  profile?: RunProfile
 }
 
 const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): ParseResult<unknown> =>
   typeof r === 'function' ? r(input, pos, ctx) : r.parse(input, pos, ctx)
 
-export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
+type ProfilePhase = NonNullable<ParseContext['_pmProfile']>['phase']
+type ProfileState = NonNullable<ParseContext['_pmProfile']>
+
+function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: ProfilePhase, profileState?: ProfileState): RunResult {
   if (typeof entry !== 'function' && typeof (entry as Combinator<unknown> | undefined)?.parse !== 'function') {
     throw new TypeError(
       `run(): start production is ${entry === null ? 'null' : typeof entry}, not a rule — the requested grammar rule does not exist (check the rule name).`,
@@ -95,6 +127,10 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
   }
   const triviaLog: number[] = []
   const errors: ParseError[] = []
+  const profile = profileState ?? (phase === undefined
+    ? undefined
+    : { phase, nodes: 0, childSlots: 0, rawSlots: 0, triviaSlots: 0, fieldSlots: 0, hostCalls: 0 })
+  const outputless = phase === 'recognizer' || phase === 'capture'
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): install
   // it as ctx.trivia so it's ambient for the whole parse (the interpreter path;
   // a compiled entry has it baked in and carries no _meta). parser/noTrivia still
@@ -102,8 +138,9 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
   const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
   const ctx: ParseContext = {
     trackLines: false,
-    _triviaLog: triviaLog,
-    _errors: errors,
+    ...(outputless
+      ? { _pmProfile: profile! }
+      : { _triviaLog: triviaLog, _errors: errors, ...(profile === undefined ? {} : { _pmProfile: profile }) }),
     build: options.build,
     state: options.state,
     ...(grammarTrivia !== undefined
@@ -133,5 +170,37 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
     errors,
     triviaLog,
     unconsumedFrom,
+  }
+}
+
+function profilePass(entry: Runnable, input: string, options: RunOptions, phase: ProfilePhase): { result: RunResult; profile: RunProfilePass } {
+  const state: ProfileState = { phase, nodes: 0, childSlots: 0, rawSlots: 0, triviaSlots: 0, fieldSlots: 0, hostCalls: 0 }
+  const start = performance.now()
+  const result = runOnce(entry, input, options, phase, state)
+  const { phase: _phase, ...counts } = state
+  return { result, profile: { ms: performance.now() - start, ...counts } }
+}
+
+export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
+  if (!options.profile) return runOnce(entry, input, options)
+  if (typeof entry !== 'function') {
+    throw new TypeError('run({ profile: true }) requires a compiled parser entry')
+  }
+
+  const recognizer = profilePass(entry, input, options, 'recognizer')
+  const capture = profilePass(entry, input, options, 'capture')
+  const host = profilePass(entry, input, options, 'host')
+  if (recognizer.result.ok !== host.result.ok || capture.result.ok !== host.result.ok
+    || recognizer.result.unconsumedFrom !== host.result.unconsumedFrom
+    || capture.result.unconsumedFrom !== host.result.unconsumedFrom) {
+    throw new Error('run({ profile: true }) changed recognition; the grammar is not profile-safe')
+  }
+  return {
+    ...host.result,
+    profile: {
+      recognizer: recognizer.profile,
+      structuralCapture: capture.profile,
+      hostConstruction: host.profile,
+    },
   }
 }

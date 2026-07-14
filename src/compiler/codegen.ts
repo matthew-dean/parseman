@@ -2138,16 +2138,23 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const smk = structural ? v(ctx, '_smk') : null
   if (structural) ctx.needsHostReads = true
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
+  // `run({ profile: true })` reuses the established recognition-only boundary
+  // (`transform(parser, () => undefined)`) for an already-compiled structural
+  // grammar: recognizer suppresses all node output, capture records structure
+  // but skips construction, and host is the unmodified normal path. This is
+  // profiling-only context state, not a public parser mode.
+  const profileRecognizer = `_ctx._pmProfile?.phase === 'recognizer'`
+  const profileCapture = `_ctx._pmProfile?.phase === 'capture'`
   const allocStmt = structural
-    ? `${i}const ${capTLv} = ${hostTriviaGate}, ${capSTv} = _ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6))${capFv ? `, ${capFv} = _ctx.build !== undefined && _hostReads(_ctx.build, 2)` : ''}\n`
-      + `${i}const ${chV} = [], ${rawV} = [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
+    ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
+      + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
     : capturesTrivia
-      ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
-      : `${i}const ${chV} = [], ${rawV} = []`
+      ? `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : []`
+      : `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : []`
   // When not capturing, set _ctx._cstTriviaLog = undefined so inner trivia terminals'
   // `if (_ctx._cstTriviaLog !== undefined)` guard short-circuits (no per-token push).
   const innerTl = structural ? `${capTLv} ? ${tlV} : undefined` : capturesTrivia ? tlV : 'undefined'
-  const fieldsOn = structural ? (capFv ?? 'false') : capturesFields ? 'true' : 'false'
+  const fieldsOn = structural ? (capFv ?? 'false') : `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
   const sf = hasFields ? v(ctx, '_sf') : null
   const fArr = hasFields ? v(ctx, '_fa') : null
   const fObj = hasFields ? v(ctx, '_fields') : 'undefined'
@@ -2166,13 +2173,22 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // the recorded deepest failure, not a coarse ["node"] at the node's start.
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
 
+  stmts.push(
+    `${i}if (_ctx._pmProfile) {`,
+    `${i}  _ctx._pmProfile.nodes++`,
+    `${i}  if (${profileCapture}) {`,
+    `${i}    _ctx._pmProfile.childSlots += ${chV}.length; _ctx._pmProfile.rawSlots += ${rawV}.length; _ctx._pmProfile.triviaSlots += ${tlV}.length${fArr ? `; _ctx._pmProfile.fieldSlots += ${fArr} ? ${fArr}.length : 0` : ''}`,
+    `${i}  }`,
+    `${i}}`,
+  )
+
   let stV = 'undefined'
   if (structural) {
     stV = v(ctx, '_nst')
     stmts.push(`${i}const ${stV} = ${capSTv} && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   } else if (clonesState) {
     stV = v(ctx, '_nst')
-    stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+    stmts.push(`${i}const ${stV} = !(${profileRecognizer} || ${profileCapture}) && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
   if (sf && fArr) {
     const fe = v(ctx, '_fe')
@@ -2204,7 +2220,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // node (whose whole point is the injected host). A built standalone node stays
   // byte-identical (no `_ctx.build` branch).
   const ndExpr = ctx.ns || structural
-    ? `_ctx.build !== undefined ? _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV}) : (${buildExpr})`
+    ? `_ctx.build !== undefined ? (_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})) : (${buildExpr})`
     : buildExpr
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
@@ -2219,9 +2235,11 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
       ? collapseExpr
     : hostCollapseExpr
   stmts.push(
-    `${i}const ${ndV} = ${finalExpr}`,
-    `${i}if (${sc}) ${sc}.push(${ndV})`,
-    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}const ${ndV} = (${profileRecognizer} || ${profileCapture}) ? undefined : (${finalExpr})`,
+    `${i}if (!(${profileRecognizer})) {`,
+    `${i}  if (${sc}) ${sc}.push(${ndV})`,
+    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}}`,
   )
 
   return { stmts, valueVar: ndV, endVar }
