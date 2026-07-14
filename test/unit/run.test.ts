@@ -5,8 +5,8 @@
  * compiled map (bare functions), and reports leftover after skipping the
  * grammar's own trivia.
  */
-import { describe, it, expect } from 'vitest'
-import { rules, regex, many, choice, parser, trivia, node, compile, run } from '../../src/index.ts'
+import { describe, it, expect, vi } from 'vitest'
+import { rules, regex, many, choice, parser, trivia, node, field, sequence, literal, compile, run } from '../../src/index.ts'
 
 const blockTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))
 const lineTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//), regex(/\/\/[^\n]*/))))
@@ -59,5 +59,38 @@ describe('run() — generic grammar-entry driver', () => {
     expect(() => run(undefined as never, 'a b c')).toThrow(/not a rule|does not exist/)
     // A valid entry still parses — no regression.
     expect(run(g.Doc as never, 'a b c').ok).toBe(true)
+  })
+
+  it('profiles compiled structural parsing as recognizer, capture, and host passes', () => {
+    const profiled = node(
+      'Doc',
+      parser({ trivia: blockTrivia }, sequence(
+        field('left', node('Word', regex(/[a-z]+/))),
+        literal(':'),
+        field('right', node('Word', regex(/[a-z]+/))),
+      )),
+    )
+    const compiled = compile(profiled)
+    const host = vi.fn((type: string, children: ReadonlyArray<unknown>) => ({ _tag: 'node', type, children }))
+    const entry = (input: string, pos: number, ctx: import('../../src/index.ts').ParseContext) =>
+      compiled.parseWithContext(input, ctx, pos)
+
+    const result = run(entry, 'a : b', { build: host, profile: true })
+
+    expect(result.ok).toBe(true)
+    expect(result.triviaLog.length).toBeGreaterThan(0)
+    expect(result.profile).toBeDefined()
+    expect(result.profile?.recognizer.hostCalls).toBe(0)
+    expect(result.profile?.recognizer.rawSlots).toBe(0)
+    expect(result.profile?.recognizer.triviaSlots).toBe(0)
+    expect(result.profile?.structuralCapture.hostCalls).toBe(0)
+    expect(result.profile?.structuralCapture.childSlots).toBeGreaterThan(0)
+    expect(result.profile?.structuralCapture.rawSlots).toBeGreaterThan(0)
+    expect(result.profile?.structuralCapture.triviaSlots).toBeGreaterThan(0)
+    expect(result.profile?.structuralCapture.fieldSlots).toBeGreaterThan(0)
+    expect(result.profile?.hostConstruction.hostCalls).toBe(host.mock.calls.length)
+    expect(result.profile?.hostConstruction.hostCalls).toBeGreaterThan(0)
+    expect(result.profile?.hostConstruction.ms).toBeGreaterThanOrEqual(0)
+    expect(() => run(profiled as never, 'a : b', { build: host, profile: true })).toThrow(/compiled parser entry/)
   })
 })

@@ -266,6 +266,20 @@ export type ParseContext = {
   _fields?: Array<{ name: string; value: unknown; span: Span }> | undefined
   /** Framework-internal: lazy capture buffer for active node() parse. */
   _cstBuf?: CstCaptureBuf | undefined
+  /**
+   * Framework-internal: opt-in `run({ profile: true })` pass state. This is
+   * deliberately not a parser mode: codegen reads it only while the profiling
+   * driver is comparing its recognizer, capture-only, and normal-host passes.
+   */
+  _pmProfile?: {
+    phase: 'recognizer' | 'capture' | 'host'
+    nodes: number
+    childSlots: number
+    rawSlots: number
+    triviaSlots: number
+    fieldSlots: number
+    hostCalls: number
+  } | undefined
 }
 
 /**
