@@ -616,7 +616,7 @@ claim. It does not replace the zero-copy structural-builder target below.
    architecture experiment, not permission to weaken the existing capture
    contract.
 
-2. **Zero-copy structural builder input — highest measured capture ceiling.**
+2. **Zero-copy structural builder input — POC retained, host integration pending.**
    The real profile's largest avoidable family is per-node CST/raw-child
    materialization, not value arrays: raw/child/trivia bookkeeping was measured
    as a 28–51% ceiling in isolated capture probes, while dead value-array
@@ -627,10 +627,19 @@ claim. It does not replace the zero-copy structural-builder target below.
    Preserve raw order, trivia positions, rollback truncation, and the current
    array API by keeping this opt-in. Do not alias `children` and `rawChildren`
    unless the grammar proves they cannot diverge. This is the recommended
-   future implementation goal because it attacks the largest
-   measured family while remaining a Parseman representation change. Keep it
-   as a future implementation target; this documentation pass does not build
-   the experiment.
+   future implementation goal because it attacks the largest measured family
+   while remaining a Parseman representation change. The opt-in experiment is
+   now implemented and retained locally as commit `950e8b4` on
+   `feature/parseman-zero-copy-builder-20260715` (worktree
+   `/private/tmp/parseman-zero-copy-builder-20260715`). It passes `62` focused
+   tests and preserves output hash
+   `464577bb7fe9506d9f3dd842b52b6321e286d19b0ea87148e883e42adccdbf34`.
+   On the 106,797-byte Less grammar with 20 warmups/45 samples, arrays measure
+   `10.97 ms` median and range views `4.35 ms`; generated source is unchanged
+   at `25,114` bytes. Transient heap regresses about `1.95 MB` → `7.17 MB`, so
+   this is a parse-time POC with an explicit memory tradeoff, not an automatic
+   default-path win. Jess adoption remains blocked because the current Jess
+   macro/fused path uses `compileLinkable`, while this proof wires `compile()`.
 
 3. **Explicit no-trivia boundaries — safe call-site reduction.** Add a generic
    `noTrivia`/adjacent-token contract (or equivalent grammar metadata) that
@@ -669,25 +678,21 @@ claim. It does not replace the zero-copy structural-builder target below.
    elimination already measured allocation relief without parse-time movement.
    These remain valid future work only when a new profile identifies a target.
 
-### Recommended follow-up goal for a future implementation agent
+### Recommended follow-up goal after the zero-copy POC
 
-The current Parseman investigation stops at evidence and documentation. It
-may inspect source and run read-only existing benchmarks, but it must not edit
-`src/`, add a POC, or change generated output. The goal below is deliberately
-preserved as the handoff for a later implementation worker.
+The generic POC is complete in its isolated branch. The next implementation
+goal is a separate host-integration proof; it must not silently change the
+default array API or erase the measured heap tradeoff.
 
-> In `parser-thing`, implement and benchmark the generic zero-copy structural
-> builder-input experiment. Add an opt-in compiler/host contract that represents
-> node children and raw children as ranges into shared capture storage (or an
-> equally allocation-free cursor view), without CSS/Less knowledge and without
-> changing the default API. Preserve child ordering, trivia offsets, rollback,
-> source spans, interpreter/compiled parity, and existing host behavior. Compare
-> the current array path against the range path on a real structural grammar
-> and the Jess CSS/Less host: 20 warmups, 45 samples, parse time, heap/GC,
-> generated-code size, and retained AST size. Require byte-identical output,
-> identical CST/AST semantics, and all relevant parser suites. Keep the change
-> only if it produces a clear parse-time or resident/transient-memory win;
-> otherwise record a rejection and leave the default path unchanged.
+> In `parser-thing`, integrate the retained range-view POC with the actual
+> `compileLinkable`/fused host contract used by Jess. Preserve the default array
+> API, child ordering, trivia offsets, rollback, source spans, interpreter/
+> compiled parity, and existing host behavior. Compare the current array path
+> against the range path on the Jess CSS/Less host with 20 warmups/45 samples,
+> parse time, heap/GC, generated-code size, retained AST size, and exact CSS
+> output. Keep the integration only if the parse-time win survives and the
+> transient-heap regression is eliminated or justified by a measured resident
+> memory win; otherwise retain the generic POC as a non-default experiment.
 
 The agent should first inspect existing `capturesTrivia`, `buildReads*`,
 `mayLeavePartialCapture`, and rollback gates in `src/compiler/codegen.ts` so the
