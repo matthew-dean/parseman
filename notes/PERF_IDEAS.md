@@ -597,8 +597,10 @@ raw `anonymousValue()` path taken by 2,024/2,902 benchmark declarations
    Preserve raw order, trivia positions, rollback truncation, and the current
    array API by keeping this opt-in. Do not alias `children` and `rawChildren`
    unless the grammar proves they cannot diverge. This is the recommended
-   implementation goal for the next agent because it attacks the largest
-   measured family while remaining a Parseman representation change.
+   future implementation goal because it attacks the largest
+   measured family while remaining a Parseman representation change. Keep it
+   as a future implementation target; this documentation pass does not build
+   the experiment.
 
 3. **Explicit no-trivia boundaries — safe call-site reduction.** Add a generic
    `noTrivia`/adjacent-token contract (or equivalent grammar metadata) that
@@ -637,7 +639,12 @@ raw `anonymousValue()` path taken by 2,024/2,902 benchmark declarations
    elimination already measured allocation relief without parse-time movement.
    These remain valid future work only when a new profile identifies a target.
 
-### Recommended next-agent goal
+### Recommended follow-up goal for a future implementation agent
+
+The current Parseman investigation stops at evidence and documentation. It
+may inspect source and run read-only existing benchmarks, but it must not edit
+`src/`, add a POC, or change generated output. The goal below is deliberately
+preserved as the handoff for a later implementation worker.
 
 > In `parser-thing`, implement and benchmark the generic zero-copy structural
 > builder-input experiment. Add an opt-in compiler/host contract that represents
