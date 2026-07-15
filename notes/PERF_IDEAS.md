@@ -552,6 +552,113 @@ driver, on top of the ~8.8 MB retained AST.
 - Remember the **parse-once/render-many** caveat: an AST cache in `Compiler` (jess
   side) would amortize all of the above for the common re-render case.
 
+## Q-40 follow-up queue: fresh Parseman-versus-Less flow evidence
+
+Added 2026-07-14 after tracing the generated Parseman flow against Less 4.x.
+This section is a ranking and an agent handoff, not an implementation claim.
+The current detailed phase baseline is Parseman recognizer-only `12.784 ms`,
+structural capture `28.873 ms`, and CSS-CST host construction `37.558 ms`,
+versus Less 4.6.3 native AST parse `4.417 ms` on the same 106,797-byte fixture,
+Node v24.11.1, 12 warmups, and 45 samples. A later equal-contract run measured
+Parseman recognizer-only `12.58 ms` and Less parse `6.01 ms`; reconcile the
+fixture/node-count difference before treating either as a new gate.
+
+The important attribution is that Parseman's current "recognizer-only" mode is
+the normal generated structural parser with output suppressed at runtime. It
+still executes structural collector save/install/restore, profile/output
+branches, rollback checks, trivia checks, and named-rule call ladders. That is
+generic Parseman work. Less's mutable cursor/save stack is part of its lower
+cost, but Less also benefits from declaration-before-ruleset dispatch and a
+raw `anonymousValue()` path taken by 2,024/2,902 benchmark declarations
+(69.7%). Those latter choices belong to the Less grammar/host, not Parseman.
+
+### Ranked candidates
+
+1. **Compile-time output-contract variants — highest generic leverage.**
+   Generate separate recognition, ordinary-value, structural-capture, and
+   host-building variants from one grammar, instead of making every generated
+   rule test a runtime phase flag. The recognition variant should omit
+   collector setup, CST/raw/trivia buffers, host calls, node construction,
+   profile branches, and output-only state cloning while retaining lookahead,
+   guards, context operations, rollback, consumed offsets, and diagnostics.
+   This is the clean generic answer to the proven structural-protocol cost; it
+   must not know anything about CSS, comments, or Less values. It is a parser
+   architecture experiment, not permission to weaken the existing capture
+   contract.
+
+2. **Zero-copy structural builder input — highest measured capture ceiling.**
+   The real profile's largest avoidable family is per-node CST/raw-child
+   materialization, not value arrays: raw/child/trivia bookkeeping was measured
+   as a 28–51% ceiling in isolated capture probes, while dead value-array
+   elision produced about 7% allocation relief and 0% parse-time change.
+   Add an opt-in generic builder contract that passes a shared buffer plus
+   numeric start/end ranges (or an equivalently allocation-free cursor view)
+   instead of allocating a fresh `children`/`rawChildren` array per node.
+   Preserve raw order, trivia positions, rollback truncation, and the current
+   array API by keeping this opt-in. Do not alias `children` and `rawChildren`
+   unless the grammar proves they cannot diverge. This is the recommended
+   implementation goal for the next agent because it attacks the largest
+   measured family while remaining a Parseman representation change.
+
+3. **Explicit no-trivia boundaries — safe call-site reduction.** Add a generic
+   `noTrivia`/adjacent-token contract (or equivalent grammar metadata) that
+   lets codegen omit the trivia-skip call where whitespace/comments are
+   semantically forbidden. Do not infer this from CSS or from a weak first-set
+   guess. Prove the boundary in interpreter and compiled modes, including
+   comments and rollback failures. The current `_tf0` profile share is about
+   3.2%, so this is a bounded follow-up, not the primary capture fix.
+
+4. **Capture-plan specialization.** Replace the remaining per-node runtime
+   feature checks with a compile-time capture plan describing whether a node
+   needs semantic children, raw children, trivia, fields, state, and rollback
+   marks. This should consolidate the already-landed arity/trivia gates rather
+   than add another hook or reflection path. Measure generated code size and
+   both capture and non-capture parses; do not land a frame object or side map
+   without a whole-parser A/B.
+
+5. **Host-boundary allocation contract.** Keep this explicitly parser-adjacent,
+   not a generic Parseman semantic change: measure an opt-in builder path that
+   receives span start/end numbers instead of a per-node `loc` object and uses
+   positional/range access instead of `children.filter(...)`. The profile
+   attributes roughly 7% combined to `buildNode`/dispatch/host work. This needs
+   Jess/CSS host ownership and exact AST/output/CST parity, so it should follow
+   the generic range experiment rather than be mixed into it.
+
+6. **Late value materialization and Less dispatch.** Keep this outside Parseman:
+   test declaration-before-ruleset candidate ordering and broaden Less's
+   authored scalar/opaque-value path for colors, decimals, units, and multi-token
+   values with explicit type tags. This is potentially valuable for Jess but
+   cannot be used to justify a generic Parseman optimization or a string-only
+   parser contract.
+
+7. **Do not prioritize more regex lowering or value-array cleverness.** Regex
+   execution is only about 2.6% of the measured CSS parse, and prior keyword/
+   escape-identifier lowering moved whole-parse time by 0%. Dead-value array
+   elimination already measured allocation relief without parse-time movement.
+   These remain valid future work only when a new profile identifies a target.
+
+### Recommended next-agent goal
+
+> In `parser-thing`, implement and benchmark the generic zero-copy structural
+> builder-input experiment. Add an opt-in compiler/host contract that represents
+> node children and raw children as ranges into shared capture storage (or an
+> equally allocation-free cursor view), without CSS/Less knowledge and without
+> changing the default API. Preserve child ordering, trivia offsets, rollback,
+> source spans, interpreter/compiled parity, and existing host behavior. Compare
+> the current array path against the range path on a real structural grammar
+> and the Jess CSS/Less host: 20 warmups, 45 samples, parse time, heap/GC,
+> generated-code size, and retained AST size. Require byte-identical output,
+> identical CST/AST semantics, and all relevant parser suites. Keep the change
+> only if it produces a clear parse-time or resident/transient-memory win;
+> otherwise record a rejection and leave the default path unchanged.
+
+The agent should first inspect existing `capturesTrivia`, `buildReads*`,
+`mayLeavePartialCapture`, and rollback gates in `src/compiler/codegen.ts` so the
+experiment composes with landed work. It must not re-propose the rejected
+trivia-call guard, recognizer-only node-frame bypass, raw-child alias proof,
+precedence-chain collapse, or CSS-specific comment mode as if they were new
+wins.
+
 ## Jess builder-host proposals (from jess `docs/future/parseman-perf-proposals.md` — reshaped/corrected)
 
 Parseman-side changes proposed by the jess side to cut the `builders.ts` + capture
