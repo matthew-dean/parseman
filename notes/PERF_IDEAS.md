@@ -572,6 +572,36 @@ cost, but Less also benefits from declaration-before-ruleset dispatch and a
 raw `anonymousValue()` path taken by 2,024/2,902 benchmark declarations
 (69.7%). Those latter choices belong to the Less grammar/host, not Parseman.
 
+### Experimental result — compile-time stripped recognizer (2026-07-15; unpublished)
+
+The first generic implementation proof now exists on local branch
+`feature/true-recognizer-20260715`, commit `c84d777`. It adds an opt-in
+`compile(..., { mode: 'recognizer' })` code-generation contract that emits only
+acceptance, end-offset, and failure-cursor data. It removes collector
+setup/restore, CST/raw/trivia/field capture, host/node construction,
+output-only profile branches, dead output temporaries, and output-state
+cloning, while retaining lookahead, guards, context operations, rollback,
+consumed offsets, and diagnostics. This is generic Parseman behavior; it does
+not know about CSS, Less, or comments.
+
+The isolated equal-contract result was positive: JSON-like input improved
+`0.180875→0.095291 ms` (`−47.32%`) and the real `106,802`-byte Less grammar
+improved `7.38425→5.534 ms` (`−25.06%`), with p95 and GC neutral-or-better.
+Focused contract coverage was `39/39`, perf coverage `5/5`, and typecheck,
+build, and lint passed. The full Parseman suite still has the unrelated
+baseline source-shape failure at `test/unit/build-arity.test.ts:116`
+(`1,735` passed, `1` failed). The branch could not be pushed because SSH
+credentials were unavailable; no published package or default parser behavior
+changed.
+
+Jess adoption was tested separately and rejected for now: the disposable
+candidate reduced parse+render by `4.95%` but increased render-only by `1.09%`,
+and the current Jess grammar does not opt into the recognizer mode. Both
+phases were byte-identical at `131,578` bytes (SHA-256
+`98a0536086c7e555b1a98e2372ad4000d51e25f1418c6345b6b8a9a97d80972f`). Keep
+this as an unpublished architecture proof, not as a Jess or Parseman release
+claim. It does not replace the zero-copy structural-builder target below.
+
 ### Ranked candidates
 
 1. **Compile-time output-contract variants — highest generic leverage.**
