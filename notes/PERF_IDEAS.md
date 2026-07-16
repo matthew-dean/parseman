@@ -811,16 +811,26 @@ measured neutral; see candidate #2, now shelved.)
    complicate it (an overridden rule's subtree can change) — must resolve at fuse time like
    the §FS first-set dispatch, or stay conservative across compose boundaries.
 
-   **MEASURE BEFORE BUILDING (discipline — this family has over-projected every time):**
-   step 1 is NOT the analysis. It's a throwaway codegen variant that drops the 6-field
-   save/restore for a hand-picked always-safe leaf rule (or globally, accepting
-   incorrectness, purely to time it), A/B'd separate-process on bootstrap4 + benchmark.less.
-   **Kill condition:** sub-1% delta → DROP (it joins zero-copy / host-filter / trivia-elision
-   / dead-value in the "mechanism looked big, measured single-digit" pile). Only a real
-   multi-% delta justifies building the whole-subtree capture-plan. **Prior: LOW** — but it
-   is the last un-measured item in the 30% capture phase, and unlike the others it is cheap
-   to falsify before committing. See [[zero-copy-range-builder-negative]] (flagged this exact
-   lever as "one unmeasured possibility that could still matter … don't chase without building").
+   **FIRST MEASUREMENT DONE (2026-07-16, additive method) — real but small; magnitude
+   unconfirmed.** Isolated worktree `perf/measure-nodescope`: added N extra redundant
+   save/restore roundtrips per `node()` behind a flag, A/B'd via `run(compiledCss,
+   bootstrap4.css, { profile: true })` structuralCapture.ms (18,458 nodes). Result: a
+   **clear, monotonic, non-DCE'd slope** — the frame is genuinely executed work, NOT the
+   sub-noise nothing that zero-copy/trivia-elision were. Rough size from the low-rep slope:
+   one ~10-op roundtrip ≈ 0.1–0.15 ms/parse → the real ~18-op frame ≈ **~0.2–0.3 ms ≈ ~3–4%
+   of the ~5.5 ms capture-mode parse**. **Caveats (why this is upper-bound-ish, not a
+   verdict):** (1) the additive method inflates via function-size bloat — at high reps V8
+   deopts the bloated rule fns and the slope runs 3–4× the true op cost, so only low-rep
+   points are usable; (2) the box was contended (absolute times drifted 5→18 ms across the
+   session); (3) a subtractive test (a `structural &&` guard bug made the first passes emit
+   0 blocks — every "delta" there was noise between identical binaries; caught by grepping
+   the generated source for the marker). **So: signal is real, ~low-single-digit %, but the
+   number needs the SOUND method.** Step 2 = the SUBTRACTIVE prototype on a QUIET machine:
+   actually skip the save/restore where a subtree proves it unused and measure the DROP (no
+   bloat confound). **Prior revised from LOW → "worth the real prototype"**: unlike the dead
+   levers, there's measurable time here. **Kill condition unchanged:** if the sound
+   subtractive measurement lands sub-1%, drop it. See [[zero-copy-range-builder-negative]]
+   (flagged this exact lever as "one unmeasured possibility that could still matter").
 
 5. **Host-boundary allocation contract.** Keep this explicitly parser-adjacent,
    not a generic Parseman semantic change: measure an opt-in builder path that
