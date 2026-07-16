@@ -3,6 +3,38 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.27.0 — 2026-07-16
+
+- **New: compiled-parser profiling boundary (`run(entry, input, { profile: true })`).**
+  Runs three compiled-parser-only measurement passes over the same input — an outputless
+  **recognizer** (no `ch`/`raw`/`tl` capture, generalizing the `voidOf(transform(…, () => undefined))`
+  semantics to compiled structural nodes), a **structural-capture** pass (children/raw/trivia/fields
+  captured but node construction suppressed), and the ordinary **host-construction** path — and
+  returns per-pass `RunProfilePass` measurements on `RunResult.profile` (`{ ms, nodes, childSlots,
+  rawSlots, triviaSlots, fieldSlots, hostCalls }`). This is a measurement boundary, not a
+  parser mode: ordinary `run()` output is byte-identical when `profile` is omitted. Lets a host
+  attribute parse time across recognition vs. capture-bookkeeping vs. host-building without an
+  external profiler. See `src/functional/run.ts`, `src/types.ts` (`RunProfile`/`RunProfilePass`),
+  `test/unit/run.test.ts`.
+
+- **Perf: elide the per-node trivia frame for bare-terminal nodes.** A `node()` whose parser
+  subtree has no trivia-skip site (a bare terminal — `regex`/`literal`/`keywords`/`token`, or a
+  `choice`/`transform`/`optional` over them) can never log trivia into its own `_cstTriviaLog`, so
+  its `captureTrivia`/`_cstTriviaLog`/`_triviaCaptureMask` save+install+restore is dead work. A new
+  conservative `parserHasTriviaSite` walker (returns `false` only when provably no site) gates it,
+  removing those property writes from the many bare value/token leaf nodes (Num, Color, Quoted, …).
+  **Neutral-or-faster by construction:** the generated code is *remove-or-byte-identical* — verified
+  across all example grammars (0 additions; non-bare nodes unchanged; interpreter untouched). CST
+  byte-identity parity preserved. Integrated Jess bench (macro-compiled `parseCssFn`, min-of-N):
+  **CSS ~2–4% faster**, Less neutral. See `src/compiler/fields.ts` (`parserHasTriviaSite`),
+  `src/compiler/codegen.ts` (`emitNode`).
+
+- **Perf: hoist the per-node profiling-phase reads.** The profiling boundary inlined
+  `_ctx._pmProfile?.phase === X` ~8× per structural node across the capture alloc/install lines;
+  hoisted to one `_ctx._pmProfile` read plus two boolean locals reused everywhere, so the normal
+  (non-profiling) path pays one read + two short-circuiting compares instead of eight optional-chain
+  reads. See `src/compiler/codegen.ts`.
+
 ## 0.26.3 — 2026-07-12
 
 - **Fix: a `withCtx` whose inner parser is multiply-reachable self-aliased into infinite

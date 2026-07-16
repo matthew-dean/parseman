@@ -25,7 +25,7 @@ import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type Scan
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
-import { buildReadsFields, parserHasOwnFields } from './fields.ts'
+import { buildReadsFields, parserHasOwnFields, parserHasTriviaSite } from './fields.ts'
 import {
   transformFnSource,
   tryInlineUnaryTransform,
@@ -2138,33 +2138,77 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const smk = structural ? v(ctx, '_smk') : null
   if (structural) ctx.needsHostReads = true
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
+  // `run({ profile: true })` reuses the established recognition-only boundary
+  // (`transform(parser, () => undefined)`) for an already-compiled structural
+  // grammar: recognizer suppresses all node output, capture records structure
+  // but skips construction, and host is the unmodified normal path. This is
+  // profiling-only context state, not a public parser mode.
+  // Hoist the profiling-phase reads to ONE `_ctx._pmProfile` read + two boolean
+  // locals per node, instead of re-evaluating `_ctx._pmProfile?.phase === X` ~8×
+  // across the alloc/install lines. On the normal (non-profiling) path `_pm` is
+  // undefined, so both locals fall out of one read + two short-circuiting compares,
+  // and every downstream `${_rec} ? … : …` becomes a cheap boolean-local ternary.
+  // Fixes the per-node overhead the profiling boundary added on tiny inputs (where
+  // it isn't amortized: ~+10–15% on 2–3µs cases, ~0% on bootstrap4).
+  const pmV = v(ctx, '_pm'), recV = v(ctx, '_rec'), capV = v(ctx, '_cap')
+  const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
+  const profileRecognizer = recV
+  const profileCapture = capV
   const allocStmt = structural
-    ? `${i}const ${capTLv} = ${hostTriviaGate}, ${capSTv} = _ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6))${capFv ? `, ${capFv} = _ctx.build !== undefined && _hostReads(_ctx.build, 2)` : ''}\n`
-      + `${i}const ${chV} = [], ${rawV} = [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
+    ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
+      + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
     : capturesTrivia
-      ? `${i}const ${chV} = [], ${rawV} = [], ${tlV} = []`
-      : `${i}const ${chV} = [], ${rawV} = []`
+      ? `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : []`
+      : `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : []`
   // When not capturing, set _ctx._cstTriviaLog = undefined so inner trivia terminals'
   // `if (_ctx._cstTriviaLog !== undefined)` guard short-circuits (no per-token push).
   const innerTl = structural ? `${capTLv} ? ${tlV} : undefined` : capturesTrivia ? tlV : 'undefined'
-  const fieldsOn = structural ? (capFv ?? 'false') : capturesFields ? 'true' : 'false'
+  const fieldsOn = structural ? (capFv ?? 'false') : `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
   const sf = hasFields ? v(ctx, '_sf') : null
   const fArr = hasFields ? v(ctx, '_fa') : null
   const fObj = hasFields ? v(ctx, '_fields') : 'undefined'
+  // Per-node trivia-frame elision: a node whose parser subtree has NO trivia-skip
+  // site (a bare terminal) can never log trivia into its own `_cstTriviaLog`, so
+  // its `captureTrivia`/`_cstTriviaLog`/`_triviaCaptureMask` save+install+restore is
+  // dead work — skip it. The parent's values stay untouched (nothing inside writes
+  // them) and the node's trivia is empty (build reads `tlV`, which is `_EMPTY_TL` /
+  // an unpopulated `_tl`). Sound because `parserHasTriviaSite` is conservative
+  // (only `false` when provably no site). Halves the per-node scope frame on the
+  // many bare value/token leaf nodes (Num, Color, Quoted, …). See emitNode notes.
+  const needsTriviaFrame = parserHasTriviaSite(def.parser)
+  const saveTrivia = needsTriviaFrame
+    ? `, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${smk ? `, ${smk} = _ctx._triviaCaptureMask` : ''}`
+    : ''
+  const installTrivia = needsTriviaFrame
+    ? `; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}`
+    : ''
+  const restoreTrivia = needsTriviaFrame
+    ? `; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}`
+    : ''
   const stmts: string[] = [
+    profHoist,
     allocStmt,
-    `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${smk ? `, ${smk} = _ctx._triviaCaptureMask` : ''}${sf ? `, ${sf} = _ctx._fields` : ''}`,
-    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
+    `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,
+    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}${installTrivia}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
   ]
   const { stmts: innerStmts, okVar, endVar } = emitFallible(def.parser, ctx, pos)
   stmts.push(...innerStmts)
   if (sf && fArr) {
     stmts.push(`${i}const ${fArr} = _ctx._fields`)
   }
-  stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}${sf ? `; _ctx._fields = ${sf}` : ''}`)
+  stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}${restoreTrivia}${sf ? `; _ctx._fields = ${sf}` : ''}`)
   // node() returns the inner failure verbatim (interpreter parity) — propagate
   // the recorded deepest failure, not a coarse ["node"] at the node's start.
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
+
+  stmts.push(
+    `${i}if (_ctx._pmProfile) {`,
+    `${i}  _ctx._pmProfile.nodes++`,
+    `${i}  if (${profileCapture}) {`,
+    `${i}    _ctx._pmProfile.childSlots += ${chV}.length; _ctx._pmProfile.rawSlots += ${rawV}.length; _ctx._pmProfile.triviaSlots += ${tlV}.length${fArr ? `; _ctx._pmProfile.fieldSlots += ${fArr} ? ${fArr}.length : 0` : ''}`,
+    `${i}  }`,
+    `${i}}`,
+  )
 
   let stV = 'undefined'
   if (structural) {
@@ -2172,7 +2216,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     stmts.push(`${i}const ${stV} = ${capSTv} && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   } else if (clonesState) {
     stV = v(ctx, '_nst')
-    stmts.push(`${i}const ${stV} = _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+    stmts.push(`${i}const ${stV} = !(${profileRecognizer} || ${profileCapture}) && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
   if (sf && fArr) {
     const fe = v(ctx, '_fe')
@@ -2204,7 +2248,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // node (whose whole point is the injected host). A built standalone node stays
   // byte-identical (no `_ctx.build` branch).
   const ndExpr = ctx.ns || structural
-    ? `_ctx.build !== undefined ? _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV}) : (${buildExpr})`
+    ? `_ctx.build !== undefined ? (_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})) : (${buildExpr})`
     : buildExpr
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
@@ -2219,9 +2263,11 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
       ? collapseExpr
     : hostCollapseExpr
   stmts.push(
-    `${i}const ${ndV} = ${finalExpr}`,
-    `${i}if (${sc}) ${sc}.push(${ndV})`,
-    `${i}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}const ${ndV} = (${profileRecognizer} || ${profileCapture}) ? undefined : (${finalExpr})`,
+    `${i}if (!(${profileRecognizer})) {`,
+    `${i}  if (${sc}) ${sc}.push(${ndV})`,
+    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}}`,
   )
 
   return { stmts, valueVar: ndV, endVar }

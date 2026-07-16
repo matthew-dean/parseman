@@ -113,7 +113,11 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
   })
   it('typed arity-5 → allocates a per-node _tl array', () => {
     const src = compile(typed5).source
-    expect(src).toMatch(/_tl\d*\s*=\s*\[\]/)
+    // 0.27.0 guards the alloc behind the hoisted recognizer flag (`_tl = _recN ?
+    // undefined : []`). Assert the GUARDED allocation (`… ? undefined : []`), not a
+    // bare `_tl = []`, so dropping the guard is caught. (`_recN` is a codegen local,
+    // not the literal `profileRecognizer` — that name never reaches generated code.)
+    expect(src).toMatch(/_tl\d*\s*=\s*\w+\s*\?\s*undefined\s*:\s*\[\]/)
   })
   it('elision is output-preserving (typed arity-3 parses identically to a kept-capture run)', () => {
     // both should produce { n: 2 } regardless of capture

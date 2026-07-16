@@ -91,6 +91,60 @@ The reusable ~60–70%: `analyzeTriviaFastPath`'s recognition logic (minus the t
 
 Arms like `ident '(' …` vs bare `ident` can't use disjoint dispatch. Generalize the CSS grammar hand-merge: parse shared prefix once, branch on lookahead. Complements existing `autoNot` (suffix rejection) but doesn't replace it.
 
+#### 7a. NEXT UP — factor `Dimension`/`Num` into one numeric node (grammar-side; verified 2026-07-16) — SMALL perf + a correctness fix
+
+**Verified against the real jess CSS grammar** (`@jesscss/core` `packages/css-parser/src/grammar.ts`), not projected:
+
+```js
+57:  const numPart = regex(/[+-]?(?:\d*\.\d+…|\d+…|\d+)/);
+163: const value = choice(g.Dimension, g.Num, g.Color, …);          // Dimension BEFORE Num
+186: const Dimension = node(sequence(numPart, regex(/…unit…|%/)));  // number + REQUIRED unit
+262: const numTok   = regex(/…numPart…(?![a-zA-Z-￿%])/); // numPart + negative lookahead
+267: const Num      = node(numTok);
+```
+
+`Dimension` and `Num` are separate ordered `choice` arms that BOTH start with `numPart`, so they
+share a first-set → the disjoint-dispatch fast path can't split them → ordered `firstMatch`,
+Dimension tried first. **The waste, per unitless number** (`16`, `1.5`, `0` — opacity/line-height/
+z-index/flex/calc operands, i.e. very common): enter the `Dimension` `node()` **capture frame** →
+scan `numPart` → fail the required unit → **roll the frame back** → enter `Num` → scan `numPart`
+**again** + run the `(?!unit)` lookahead. The re-scan is cheap (numPart lowers to a charCodeAt
+loop); the **failed-capture-frame enter+rollback** is the real cost, and it lands in the #1-hot
+value rule, in the 30%-capture phase — i.e. this removes WORK, not allocation (the class that has
+actually moved time; allocation-shaped ideas all measured 0% — see zero-copy / dead-value / §1).
+
+**Fix — one numeric node, unit as an optional glued continuation** ("a Dimension is just a Number
+that continues into a unit"):
+
+```js
+const numeric = node(noTrivia(sequence(numPart, optional(unitRegex))));
+// builder: unit leaf present → Dimension, else → Num
+```
+
+- `numPart` scanned once; one capture frame; zero rollback on the common (unitless) path.
+- **The `(?!unit)` lookahead disappears** — `optional(unit)` greedily takes an adjacent unit, so
+  `16px`→Dimension / `16`→Num disambiguate structurally.
+- **Use `noTrivia`, NOT `token`** (`src/combinators/grammar.ts` vs `src/combinators/token.ts`):
+  `_buildDimension` reads number and unit as TWO leaves (grammar comment at :185); `token` flattens
+  to one `Combinator<string>` and loses the split. `noTrivia` preserves the leaves while killing
+  inter-element trivia.
+
+**This is also a CORRECTNESS fix (red test first).** Current `Dimension` is a BARE `sequence`
+under the grammar's ambient trivia (`rules({ trivia: rw })` → `sequence` skips trivia between
+elements dynamically). So today `16 /* c */ px` and `16   px` skip the trivia and parse as ONE
+`Dimension`, when they must be `Num(16)` + a separate `px` token. The `Num` arm's `(?!unit)` only
+guards the immediately-adjacent case; it does NOT stop the Dimension arm from eating trivia. So:
+- **RED on current grammar / GREEN after `noTrivia`:** `16 /*c*/ px` and `16 px` ⇒ `Num` + separate
+  token, not `Dimension`. `16px` ⇒ `Dimension`. `16` ⇒ `Num`. (Exact-equality asserts, no substring.)
+
+**Scope:** Jess-grammar + builder change (`grammar.ts` collapses the two arms; `builders.ts` picks
+Dimension/Num by unit-leaf presence). NOT a Parseman-core change — but it's the concrete instance of
+the generic §7 factoring; teaching Parseman to detect shared-prefix arms and factor them
+automatically is the reusable follow-on (§7c richer dispatch). **Magnitude: honestly single-digit**
+overall (numeric tokens are a subset; numPart is cheap) — worth doing for the capture-frame removal
+on the hot path AND because it makes the grammar correct and match how it reads. Measure on
+value-dense CSS via `pnpm bench:parseman -- --only=css` + a Jess CSS/Less A/B; guard with `perf:guard`.
+
 ### 7b. Partial first-char choice dispatch (switch + fallback)
 
 **Problem:** `choice(quotedField, unquotedField)` in CSV is *not* marked `disjoint` because
@@ -230,6 +284,20 @@ Moved to **Already landed** (closes the CSS `numPart` gap §8f left open).
 
 # Jess parser hotspots (from @jesscss render profiling) — 2026-07-05
 
+> ⚠️ **STALE PROFILE — re-measure before trusting any number below.** This
+> profile was taken `2026-07-05` against jess core `parseman 0.14.0` compiled
+> grammars. It has since been partly invalidated by core changes on the SAME
+> day and after — most visibly the **#2 hotspot `ensureProv` is GONE**: jess
+> `2b39c8072` (2026-07-05) inlined the node span onto `Node` and killed the PROV
+> WeakMap, `311cf9232` left only sparse slot-spans in flag-gated WeakMaps, and
+> `cc9888e29` deleted dead provenance CST plumbing. So the #2/#3 rows are dead
+> and the #1 reify (61.9%) / trivia shares can no longer be assumed to hold their
+> proportions. **Numbers here are a stamped snapshot, not current truth.** Before
+> ranking any idea off this table, re-run a fresh profile on current jess core —
+> `run(entry, input, { profile: true })` (added parseman 0.27.0) gives the
+> recognizer / structuralCapture / hostConstruction phase split; add a V8 CPU
+> sample for self-time. Then correct the rows IN PLACE (strike them), don't append.
+
 **Source of this section:** the @jesscss/core render re-profile flagged PARSE as
 the #1 render hotspot (~42% of a render). Investigating *inside* the parser
 subsystem (parseman 0.14.0 compiled grammars + the @jesscss builder hosts) to
@@ -363,18 +431,19 @@ driver, on top of the ~8.8 MB retained AST.
    the **cold CST-capture path** (most runtime callers request only the value, no CST).
    Micro-opt, not the broad lever the ~3967-count implied.
 
-3. **`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%).** Every parsed
-   node does `ensureProv(node)` → allocate a `{}` Provenance + `WeakMap.set`
-   (core `provenance.ts:77-82`, called from the Node ctor's `setSourceSpan`). At
-   12,984 nodes/parse that's 12,984 object allocs + WeakMap inserts. IDEA (for
-   the parser/host boundary, not core internals): let the build host hand
-   parseman a single span pair and defer provenance materialization — e.g. store
-   `spanStart/spanEnd` inline on the CST leaf/frame and only populate the
-   side-table lazily on first `sourceSpanOf`/`fieldSpansOf` read (many nodes are
-   never queried for spans during a render). Even batching the WeakMap writes, or
-   using a parse-scoped dense array keyed by a node-index instead of a WeakMap,
-   would cut the per-node hash insert. (Flagging as parser-adjacent evidence; the
-   actual `ensureProv` body is core-owned — hand to core only if they want it.)
+3. ~~**`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%).**~~ ✅ **FIXED BY
+   CORE — do not chase.** The profile above (2026-07-05) caught the OLD shape:
+   every node did `ensureProv(node)` → allocate a `{}` Provenance + `WeakMap.set`,
+   12,984 allocs + WeakMap inserts/parse, and it was the #1 GC driver. **That was
+   re-architected the same afternoon.** jess `2b39c8072` ("inline source-span
+   provenance onto Node, kill PROV WeakMap") moved the node-level span to inline
+   monomorphic Node fields (`_spanStart`/`_spanEnd` + `F_HAS_SPAN` bit); `311cf9232`
+   left only the SPARSE per-slot value/field spans in flag-gated WeakMaps. The `{}`
+   alloc and per-node WeakMap insert are gone; `ensureProv` no longer exists. The
+   inline-fields solution is strictly better than the "defer / dense-array-by-index"
+   idea this entry used to propose — that idea is moot. **Lesson: this hotspot's
+   numbers here are stale; re-profile current jess core before ranking provenance
+   against anything.** (Core owner already handled it; nothing for the parser team.)
 
 4. **`buildNode` host: kill the per-node `loc` object and per-build filtered
    arrays.** `_dispatchBuild` calls `spanToLocation(span)` → `{start,end}` per
@@ -387,21 +456,49 @@ driver, on top of the ~8.8 MB retained AST.
    runtime filter). This is a jess-builders change but is driven entirely by how
    parseman hands children to `ctx.build`, so it's worth co-designing.
 
-5. **Trivia-skip fn (`_tf0`, 3.2%) call-site reduction.** The compiled
-   trivia-skip runs at every `many`/`sequence` boundary. IDEA: for rules whose
-   grammar proves adjacent tokens cannot be separated by trivia (e.g. glued
-   selector runs, number+unit in `Dimension`), skip emitting the trivia call
-   entirely (a `noTrivia` combinator or first-set proof), rather than calling
-   `_tf0` and having it immediately return the same position.
+5. ~~**Trivia-skip fn (`_tf0`, 3.2%) call-site reduction.**~~ ⚠️ **EXPLORED
+   2026-07-16 — real but SMALL, no free redundancy; deprioritized.** Read the
+   compiled less grammar (`@jesscss/less-parser/lib/grammar.js`): 394 `_tf0` call
+   sites. Findings: (a) **no double-skip** — rule bodies do NOT skip leading trivia
+   on entry (they open with the per-`node()` capture-frame setup, not `_tf0`), so
+   the caller's skip + a rule-entry skip never stack; (b) **no back-to-back `_tf0`**
+   anywhere, so no adjacent-redundant-skip to delete; (c) the elidable subset is
+   narrow **because CSS/Less are whitespace-permissive** — trivia is legal at nearly
+   every boundary, and the genuinely-glued spots (number→unit, `::`, `funcname(`)
+   are already single regexes or (post-§7a) `noTrivia`-wrapped, which already omit
+   the call. Per-call empty-path cost is low (call + 2–3 `charCodeAt` + return). Net
+   ceiling is well under the 3.2% (most of which is calls that DO skip real trivia).
+   Capturing even the tail needs manual `noTrivia` (author work) or an automatic
+   trivia-forbidden first-set proof (real feature + soundness burden). **Not worth
+   prioritizing ahead of §7a.** Same conclusion applies to Q-40 candidate #3
+   ("explicit no-trivia boundaries"). **Two bigger things seen while reading:**
+   (i) the per-`node()` capture-frame header (6 ctx-field saves + buffer installs +
+   `_hostReads`/`_parsemanCaptureTrivia` gate computations, ×~22.6k nodes) is the fat
+   part of node entry — this is the "per-node scope save/restore" lever flagged as
+   unmeasured in [[zero-copy-range-builder-negative]], higher-risk (adjacent runtime-
+   indirection attempts measured +32–50%, see §2), but where capture-phase time
+   actually is; (ii) the 0.27.0 profiling boundary's per-node `_ctx._pmProfile?.phase`
+   reads were **hoisted** (commit 4621ed6) to one `_ctx._pmProfile` read + two reused
+   boolean locals (`_rec`/`_cap`) per structural node, so the off-profile path pays one
+   read + two short-circuiting compares instead of ~8 optional-chain reads. Measured
+   effect: bootstrap4 compiled +2% → ~0% (amortized case); tiny µs cases unmoved (they
+   were a stale-baseline artifact, not per-node profile cost).
 
-6. **`_r_value` disjunction ordering / first-char dispatch.** `_r_value`'s
-   `choice(Dimension,Num,Color,Url,CalcCall,Call,Paren,Quoted,anyValue)` is
-   entered per value token and is #1 self-time. The "disjoint first-char
-   dispatch" fast path (Already-landed section) may not be firing here because
-   several arms share ambiguous first chars (a digit starts both Dimension and
-   Num; `.` starts Num and a class). IDEA: verify whether `_r_value` compiled to
-   a jump-table dispatch or an if/else chain, and if the latter, split the
-   digit-led arms into a sub-dispatch keyed on the char *after* the numeric run.
+6. ~~**`_r_value` disjunction ordering / first-char dispatch.**~~ ✅ **ANSWERED
+   (verified 2026-07-16) — dispatch IS firing; residual = §7a, not dispatch.**
+   Read the actual compiled value choice in BOTH `@jesscss/css-parser/lib/grammar.js`
+   (monolithic) and `@jesscss/less-parser/lib/grammar.js` (composed/fused): each arm
+   is first-char guarded off one `codePointAt` (`_chcode`), 0 unresolved `@FS`
+   placeholders — the fuse-time first-set dispatch shipped on parseman release/0.15.0
+   (~30% jess win) is working end-to-end. Disjoint arms (`Color` `#`, `Quoted`,
+   `Paren`) are correctly skipped. The ONLY residual waste is the OVERLAPPING arms:
+   Dimension and Num carry the **identical** guard (`43 || 45..46 || 48..57`), so a
+   unitless number passes the Dimension guard, enters+fails `_r_Dimension`, then
+   enters `_r_Num` — the double-entry §7a fixes. First-char dispatch structurally
+   CANNOT separate same-first-char arms; only §7a common-prefix factoring can. So
+   there is no "sub-dispatch keyed on the char after the numeric run" to add here —
+   the fix is §7a's structural collapse. (CalcCall/Call is the same story on the
+   ident-led arms — §7 idea #2.) See [[macro-firstset-dispatch-unsound]].
 
 7. **Value / math-expression precedence-chain descent cost (operator-precedence rules).**
    *Parked — a bounded constant-factor parse win, not the dominant scaling cost.*
@@ -539,8 +636,11 @@ driver, on top of the ~8.8 MB retained AST.
   `rawChildren` — ⚠ **largely LANDED** (`mayLeavePartialCapture`/`capturesTrivia`/
   `_hostReads` skip + the single-boolean save/restore gate in `codegen.ts`); only a
   cold-path buffer-reference hoist remains. NOT an available cheap/broad win.
-- **#3 defer/dense-array `ensureProv`** — 12,984 per-node `{}`+WeakMap inserts is
-  the 2nd hotspot and the main GC driver (worse on CSS: 12.5%).
+- ~~**#3 defer/dense-array `ensureProv`** — 12,984 per-node `{}`+WeakMap inserts is
+  the 2nd hotspot and the main GC driver (worse on CSS: 12.5%).~~ ✅ **DONE BY CORE**
+  — jess `2b39c8072` inlined the node span onto `Node` (monomorphic fields +
+  `F_HAS_SPAN`), killed the PROV WeakMap; only sparse slot-spans remain (flag-gated).
+  `ensureProv` deleted. The dense-array idea is moot — inline fields beat it. (verified 2026-07-16)
 - **#4 drop per-node `loc` object + filtered child arrays in `buildNode`.**
 - **#7 value/math precedence-chain descent** (`_r_topSum`/`_r_topProduct`) — #1/#2
   self-time on value-heavy Less (`functions.less`); ~30–40% of parse. Fixed-depth
@@ -551,6 +651,262 @@ driver, on top of the ~8.8 MB retained AST.
   the TESTED block under §7. Don't re-chase.
 - Remember the **parse-once/render-many** caveat: an AST cache in `Compiler` (jess
   side) would amortize all of the above for the common re-render case.
+
+## Q-40 follow-up queue: fresh Parseman-versus-Less flow evidence
+
+Added 2026-07-14 after tracing the generated Parseman flow against Less 4.x.
+This section is a ranking and an agent handoff, not an implementation claim.
+The current detailed phase baseline is Parseman recognizer-only `12.784 ms`,
+structural capture `28.873 ms`, and CSS-CST host construction `37.558 ms`,
+versus Less 4.6.3 native AST parse `4.417 ms` on the same 106,797-byte fixture,
+Node v24.11.1, 12 warmups, and 45 samples. A later equal-contract run measured
+Parseman recognizer-only `12.58 ms` and Less parse `6.01 ms`; reconcile the
+fixture/node-count difference before treating either as a new gate.
+
+The important attribution is that Parseman's current "recognizer-only" mode is
+the normal generated structural parser with output suppressed at runtime. It
+still executes structural collector save/install/restore, profile/output
+branches, rollback checks, trivia checks, and named-rule call ladders. That is
+generic Parseman work. Less's mutable cursor/save stack is part of its lower
+cost, but Less also benefits from declaration-before-ruleset dispatch and a
+raw `anonymousValue()` path taken by 2,024/2,902 benchmark declarations
+(69.7%). Those latter choices belong to the Less grammar/host, not Parseman.
+
+### Experimental result — compile-time stripped recognizer (2026-07-15; unpublished)
+
+The first generic implementation proof now exists on local branch
+`feature/true-recognizer-20260715`, commit `c84d777`. It adds an opt-in
+`compile(..., { mode: 'recognizer' })` code-generation contract that emits only
+acceptance, end-offset, and failure-cursor data. It removes collector
+setup/restore, CST/raw/trivia/field capture, host/node construction,
+output-only profile branches, dead output temporaries, and output-state
+cloning, while retaining lookahead, guards, context operations, rollback,
+consumed offsets, and diagnostics. This is generic Parseman behavior; it does
+not know about CSS, Less, or comments.
+
+The isolated equal-contract result was positive: JSON-like input improved
+`0.180875→0.095291 ms` (`−47.32%`) and the real `106,802`-byte Less grammar
+improved `7.38425→5.534 ms` (`−25.06%`), with p95 and GC neutral-or-better.
+Focused contract coverage was `39/39`, perf coverage `5/5`, and typecheck,
+build, and lint passed. The full Parseman suite still has the unrelated
+baseline source-shape failure at `test/unit/build-arity.test.ts:116`
+(`1,735` passed, `1` failed). The branch could not be pushed because SSH
+credentials were unavailable; no published package or default parser behavior
+changed.
+
+Jess adoption was tested separately and rejected for now: the disposable
+candidate reduced parse+render by `4.95%` but increased render-only by `1.09%`,
+and the current Jess grammar does not opt into the recognizer mode. Both
+phases were byte-identical at `131,578` bytes (SHA-256
+`98a0536086c7e555b1a98e2372ad4000d51e25f1418c6345b6b8a9a97d80972f`). Keep
+this as an unpublished architecture proof, not as a Jess or Parseman release
+claim. (It was once framed as not replacing "the zero-copy structural-builder
+target below" — but that target has since been built through the fused path and
+measured neutral; see candidate #2, now shelved.)
+
+### Ranked candidates
+
+1. **Compile-time output-contract variants — highest generic leverage.**
+   Generate separate recognition, ordinary-value, structural-capture, and
+   host-building variants from one grammar, instead of making every generated
+   rule test a runtime phase flag. The recognition variant should omit
+   collector setup, CST/raw/trivia buffers, host calls, node construction,
+   profile branches, and output-only state cloning while retaining lookahead,
+   guards, context operations, rollback, consumed offsets, and diagnostics.
+   This is the clean generic answer to the proven structural-protocol cost; it
+   must not know anything about CSS, comments, or Less values. It is a parser
+   architecture experiment, not permission to weaken the existing capture
+   contract.
+
+2. **Zero-copy structural builder input — ❌ TRIED THROUGH THE FUSED PATH; NEUTRAL, DON'T SHIP.**
+   The real profile's largest avoidable family is per-node CST/raw-child
+   materialization, not value arrays: raw/child/trivia bookkeeping was measured
+   as a 28–51% ceiling in isolated capture probes, while dead value-array
+   elision produced about 7% allocation relief and 0% parse-time change. The
+   idea was an opt-in generic builder contract that pushes children onto a
+   shared arena and hands the host a windowed `CstRangeView` instead of
+   allocating a fresh `children`/`rawChildren` array per node.
+
+   **This was built end-to-end and measured neutral.** Branch
+   `feature/parseman-zero-copy-builder-20260715` (worktree
+   `/private/tmp/parseman-zero-copy-builder-20260715`) carried it past the POC:
+   `950e8b4` prototype range builders → `53a5bfb` arena-as-stack (killed the
+   POC's 4 wrapper objects/node) → `04c0573` **wired the range runtime through
+   the `compileLinkable`/fused path** (closing the "Jess adoption blocked, proof
+   only wires `compile()`" gap this entry used to name) → `b395706` widened
+   `CstRangeView` to the array-read methods real hosts use (filter/map/find/
+   some/slice/iterator).
+
+   **The earlier "parse-time win" was a measurement artifact — do NOT trust the
+   old `10.97 ms → 4.35 ms` number.** That was a single-process A/B: array mode
+   ran first and made the host's `children.filter(...)`/`.length`/`for..of` call
+   sites monomorphic for `Array`, then range mode fed them a `CstRangeView` →
+   megamorphic deopt/recompile. Whichever mode ran **second** ate the penalty;
+   the delta followed run-order, not the representation. Redone correctly
+   (separate process per mode, bootstrap4.css, 22.6k nodes, 3 runs): **array
+   ~26.9 ms vs range ~26.8 ms (indistinguishable), transient ~50 vs ~51 MB
+   (indistinguishable).** The "−13% memory" claim was the same single-process
+   GC-timing artifact.
+
+   **Why it's structurally neutral (not just noisy):** phase decomposition is
+   recognize 34% / capture-bookkeeping 30% / host-builder 36%. Zero-copy only
+   removes the array-alloc *slice* of the 30% capture — and per the dead-value
+   elision finding, array building is ~0% of capture **time** (the cost is
+   trivia/raw/span bookkeeping). There is no time sitting in those arrays to
+   reclaim, so even a perfect `(buffer, start, end)` primitives contract can't
+   beat neutral. **Verdict: do not ship** — not because it regresses, but
+   because a provably-neutral feature with real added surface (arena lifecycle,
+   view/primitives contract, builder rewrites) is complexity for nothing. The
+   branch stays as an architecture reference, not a shippable path.
+
+   *Caveat on "tried": this settles the range-view-through-the-fused-host shape.
+   A different shape — e.g. partition-at-capture so builders skip the
+   `filter(isLeaf)`/`filter(isNode)` split — was separately sized and is also a
+   small, **conditional** prize (breaks builders needing ordered interleaved
+   `children[i]` access), so it's declined on the no-conditional-wins rule, not
+   because it was benchmarked. The one clean bit there is a Jess-side
+   single-pass-builder fix (~0.6–1 ms), which needs no Parseman change.*
+
+3. **Explicit no-trivia boundaries — safe call-site reduction.** Add a generic
+   `noTrivia`/adjacent-token contract (or equivalent grammar metadata) that
+   lets codegen omit the trivia-skip call where whitespace/comments are
+   semantically forbidden. Do not infer this from CSS or from a weak first-set
+   guess. Prove the boundary in interpreter and compiled modes, including
+   comments and rollback failures. The current `_tf0` profile share is about
+   3.2%, so this is a bounded follow-up, not the primary capture fix.
+
+4. **Capture-plan specialization.** Replace the remaining per-node runtime
+   feature checks with a compile-time capture plan describing whether a node
+   needs semantic children, raw children, trivia, fields, state, and rollback
+   marks. This should consolidate the already-landed arity/trivia gates rather
+   than add another hook or reflection path. Measure generated code size and
+   both capture and non-capture parses; do not land a frame object or side map
+   without a whole-parser A/B.
+
+   #### 4a. SCOPED 2026-07-16 — the per-`node()` scope save/restore (the last unmeasured capture lever)
+
+   **Target (concrete):** `emitNode` (`src/compiler/codegen.ts:2134-2171`) emits, per
+   `node()`, an **unconditional** save of 6 `_ctx` fields (`_sc/_sl/_sr/_st/_stl` +
+   `_smk`), an install of fresh capture buffers, and a restore of all 6 on exit — so
+   ~12 `_ctx` property ops **per node × ~22.6k nodes/parse**. Confirmed by reading the
+   compiled less header (every `_r_*` opens with exactly this). This is DISTINCT from
+   (and unaffected by) the already-gated **fallible-block** restore (`captureRestoreBody`,
+   `codegen.ts:597-644` — "gate the whole save/restore on a single boolean"): that fix
+   covers sequence-term rollback, NOT the node-scope frame.
+
+   **Rule OUT first (don't re-chase):** the two array allocs (`_ch`/`_raw`) are ~0% time
+   ([[dead-value-elision-landed]]); the gate computations are memoized (`??=`) so cheap
+   after node 1; profile-phase checks short-circuit off-profile. The only candidate cost
+   is the 6 saves + 6 installs + 6 restores themselves.
+
+   **Direction (the ONLY safe one):** a compile-time capture-plan that emits **fewer
+   save/install/restore lines** for a node whose SUBTREE provably never touches a given
+   field — e.g. a leaf whose subtree never trivia-captures skips `_st/_stl/_smk`; one
+   whose subtree never reads rawChildren skips `_sr`. This is compile-time line-selection,
+   **NOT** a runtime frame object / depth-indexed stack — that shape was rejected TWICE
+   (§2: +50% and +32-47%), and "eager `[],[],[]` beat branchy indirection." Runtime
+   indirection is off the table; only emitting-less-code is on it.
+
+   **Soundness burden (the real cost):** "node N needn't save field X" requires proving
+   **no descendant rule reachable from N modifies X** — a whole-subtree reachability pass
+   over the grammar (does the subtree contain any `node()`/trivia/field-capturing construct
+   that writes X?). Conservative default: save unless proven-clean. Composed grammars
+   complicate it (an overridden rule's subtree can change) — must resolve at fuse time like
+   the §FS first-set dispatch, or stay conservative across compose boundaries.
+
+   **FIRST MEASUREMENT DONE (2026-07-16, additive method) — real but small; magnitude
+   unconfirmed.** Isolated worktree `perf/measure-nodescope`: added N extra redundant
+   save/restore roundtrips per `node()` behind a flag, A/B'd via `run(compiledCss,
+   bootstrap4.css, { profile: true })` structuralCapture.ms (18,458 nodes). Result: a
+   **clear, monotonic, non-DCE'd slope** — the frame is genuinely executed work, NOT the
+   sub-noise nothing that zero-copy/trivia-elision were. Rough size from the low-rep slope:
+   one ~10-op roundtrip ≈ 0.1–0.15 ms/parse → the real ~18-op frame ≈ **~0.2–0.3 ms ≈ ~3–4%
+   of the ~5.5 ms capture-mode parse**. **Caveats (why this is upper-bound-ish, not a
+   verdict):** (1) the additive method inflates via function-size bloat — at high reps V8
+   deopts the bloated rule fns and the slope runs 3–4× the true op cost, so only low-rep
+   points are usable; (2) the box was contended (absolute times drifted 5→18 ms across the
+   session); (3) a subtractive test (a `structural &&` guard bug made the first passes emit
+   0 blocks — every "delta" there was noise between identical binaries; caught by grepping
+   the generated source for the marker). **So: signal is real, ~low-single-digit %, but the
+   number needs the SOUND method.** Step 2 = the SUBTRACTIVE prototype on a QUIET machine:
+   actually skip the save/restore where a subtree proves it unused and measure the DROP (no
+   bloat confound). **Prior revised from LOW → "worth the real prototype"**: unlike the dead
+   levers, there's measurable time here. **Kill condition unchanged:** if the sound
+   subtractive measurement lands sub-1%, drop it. See [[zero-copy-range-builder-negative]]
+   (flagged this exact lever as "one unmeasured possibility that could still matter").
+
+   **THE KEEP/TOSS GATE IS THE JESS PARSER PERF TESTS — not this parseman proxy.** The
+   `examples/css` number above is a MOTIVATOR only. Two reasons it can't decide it: (1) it's
+   the `compile()` MONOLITHIC path, but Jess runs `compileLinkable`/fused — those diverge
+   (see the zero-copy saga); (2) it's a synthetic proxy grammar, and the standing rule is
+   measure on real Jess, not a synthetic best case ([[feedback-no-conditional-wins]]). So the
+   decision A/B is: land the subtractive frame-elision in the parseman worktree Jess links to,
+   then run Jess's own parser perf suite — `@jesscss/css-parser/test/bootstrap-baseline.test.ts`
+   + `test/bench.ts` (and `@jesscss/core/test/perf-compare.test.ts` for whole-render context) —
+   before/after, on a quiet machine, NOT concurrently with any agent compiling Jess ([[jess-parseman-link-coupling]]).
+   Keep only on a real Jess parse-time win with no render regression; otherwise toss.
+
+   **✅ BUILT + INTEGRATED-BENCHED — KEEPER (2026-07-16, commit e4936d8).** Implemented as
+   `parserHasTriviaSite` (conservative walker in `fields.ts`) gating the `captureTrivia`/
+   `_cstTriviaLog`/`_triviaCaptureMask` save+install+restore in `emitNode` for bare-terminal
+   nodes. **No-regression PROVEN deterministically** (not timing): generated-code diff baseline-
+   vs-change across all 5 example grammars is *remove-or-byte-identical* — 0 additions anywhere,
+   only bare-leaf trivia-frame writes removed; css −522 B, csv/json/graphql/lang byte-identical.
+   Interpreter untouched by construction (diff is codegen-only; `node.ts` runtime unchanged).
+   **Parseman suite 1719/1719 green** (CST byte-identity parity incl.). **Compile size same-or-
+   smaller** (never larger). **Integrated Jess bench** (`pnpm bench` = shipping macro-compiled
+   `parseCssFn`/`parseLessFn` via the macro register, min-of-100 over real corpora, PM_NO_ELIDE
+   A/B, min column — contention-robust): **CSS ~2–4% faster** (235 files; base min 12.71/12.34/
+   12.18 → elide 12.25/11.70/12.16, faster in 3/3 pairs), **LESS ~neutral** (base min ~37.7–41.4
+   → elide ~37.6–38.3, within noise — less parse is dominated by non-leaf work: vars/ops/mixins).
+   Net: real modest CSS win, neutral Less, zero regression risk. The jess test path DOES run
+   macro-compiled (`vitest.config.ts` → `parseman.vite()` compiles grammars imported
+   `with { type: 'macro' }`), so this is exercised end-to-end. **Note:** absolute bench medians
+   were noisy (contended machine — a stale Jul-7 saved baseline shows spurious "9–52% slower");
+   only the min-of-N A/B is trustworthy. **Follow-on:** extend the elision to the interpreter's
+   `node.ts` frame (same soundness proof) and to the `_cstRawChildren`/`_ch`/`_raw` half where a
+   subtree proves no child capture — bigger prize, more analysis.
+
+5. **Host-boundary allocation contract.** Keep this explicitly parser-adjacent,
+   not a generic Parseman semantic change: measure an opt-in builder path that
+   receives span start/end numbers instead of a per-node `loc` object and uses
+   positional/range access instead of `children.filter(...)`. The profile
+   attributes roughly 7% combined to `buildNode`/dispatch/host work. This needs
+   Jess/CSS host ownership and exact AST/output/CST parity, so it should follow
+   the generic range experiment rather than be mixed into it.
+
+6. **Late value materialization and Less dispatch.** Keep this outside Parseman:
+   test declaration-before-ruleset candidate ordering and broaden Less's
+   authored scalar/opaque-value path for colors, decimals, units, and multi-token
+   values with explicit type tags. This is potentially valuable for Jess but
+   cannot be used to justify a generic Parseman optimization or a string-only
+   parser contract.
+
+7. **Do not prioritize more regex lowering or value-array cleverness.** Regex
+   execution is only about 2.6% of the measured CSS parse, and prior keyword/
+   escape-identifier lowering moved whole-parse time by 0%. Dead-value array
+   elimination already measured allocation relief without parse-time movement.
+   These remain valid future work only when a new profile identifies a target.
+
+### Host-integration proof — DONE, and it is what settled the neutral verdict
+
+The host-integration proof this section used to request as future work **was
+carried out** (commits `04c0573`/`b395706` above): the range-view runtime was
+wired through the actual `compileLinkable`/fused host contract used by Jess and
+A/B'd on the real Jess CSS/Less host. Under a correct separate-process
+methodology the parse-time "win" did **not** survive — it was array-vs-view
+inline-cache poisoning in a single process — and the array/range paths are
+indistinguishable on both time and transient heap. That is precisely why
+candidate #2 above is now shelved rather than promoted. Do not re-run this as an
+open question; the answer is neutral.
+
+Any future agent must NOT re-propose as new wins: this range-view/zero-copy
+builder (settled neutral through the fused path), partition-at-capture (small +
+conditional), the rejected trivia-call guard, the recognizer-only node-frame
+bypass, the raw-child alias proof, the precedence-chain collapse, or a
+CSS-specific comment mode. Landed gates to compose with, not reinvent, live in
+`src/compiler/codegen.ts`: `capturesTrivia`, `buildReads*`,
+`mayLeavePartialCapture`, and the rollback marks.
 
 ## Jess builder-host proposals (from jess `docs/future/parseman-perf-proposals.md` — reshaped/corrected)
 
