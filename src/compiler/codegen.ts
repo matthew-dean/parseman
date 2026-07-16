@@ -25,7 +25,7 @@ import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type Scan
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
-import { buildReadsFields, parserHasOwnFields } from './fields.ts'
+import { buildReadsFields, parserHasOwnFields, parserHasTriviaSite } from './fields.ts'
 import {
   transformFnSource,
   tryInlineUnaryTransform,
@@ -2158,17 +2158,35 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const sf = hasFields ? v(ctx, '_sf') : null
   const fArr = hasFields ? v(ctx, '_fa') : null
   const fObj = hasFields ? v(ctx, '_fields') : 'undefined'
+  // Per-node trivia-frame elision: a node whose parser subtree has NO trivia-skip
+  // site (a bare terminal) can never log trivia into its own `_cstTriviaLog`, so
+  // its `captureTrivia`/`_cstTriviaLog`/`_triviaCaptureMask` save+install+restore is
+  // dead work — skip it. The parent's values stay untouched (nothing inside writes
+  // them) and the node's trivia is empty (build reads `tlV`, which is `_EMPTY_TL` /
+  // an unpopulated `_tl`). Sound because `parserHasTriviaSite` is conservative
+  // (only `false` when provably no site). Halves the per-node scope frame on the
+  // many bare value/token leaf nodes (Num, Color, Quoted, …). See emitNode notes.
+  const needsTriviaFrame = parserHasTriviaSite(def.parser)
+  const saveTrivia = needsTriviaFrame
+    ? `, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${smk ? `, ${smk} = _ctx._triviaCaptureMask` : ''}`
+    : ''
+  const installTrivia = needsTriviaFrame
+    ? `; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}`
+    : ''
+  const restoreTrivia = needsTriviaFrame
+    ? `; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}`
+    : ''
   const stmts: string[] = [
     allocStmt,
-    `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${smk ? `, ${smk} = _ctx._triviaCaptureMask` : ''}${sf ? `, ${sf} = _ctx._fields` : ''}`,
-    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
+    `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,
+    `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}${installTrivia}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
   ]
   const { stmts: innerStmts, okVar, endVar } = emitFallible(def.parser, ctx, pos)
   stmts.push(...innerStmts)
   if (sf && fArr) {
     stmts.push(`${i}const ${fArr} = _ctx._fields`)
   }
-  stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}${sf ? `; _ctx._fields = ${sf}` : ''}`)
+  stmts.push(`${i}_ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}${restoreTrivia}${sf ? `; _ctx._fields = ${sf}` : ''}`)
   // node() returns the inner failure verbatim (interpreter parity) — propagate
   // the recorded deepest failure, not a coarse ["node"] at the node's start.
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))

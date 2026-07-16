@@ -113,7 +113,9 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
   })
   it('typed arity-5 → allocates a per-node _tl array', () => {
     const src = compile(typed5).source
-    expect(src).toMatch(/_tl\d*\s*=\s*\[\]/)
+    // 0.27.0 profiling boundary guards the alloc (`_tl = profileRecognizer ? undefined : []`),
+    // so match the trailing `[]` allocation rather than a bare `_tl = []`.
+    expect(src).toMatch(/_tl\d*\s*=\s*[^;]*\[\]/)
   })
   it('elision is output-preserving (typed arity-3 parses identically to a kept-capture run)', () => {
     // both should produce { n: 2 } regardless of capture

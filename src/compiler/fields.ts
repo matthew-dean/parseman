@@ -44,6 +44,60 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
   }
 }
 
+/**
+ * Does the node's OWN parse frame ever have a trivia run logged into it?
+ * Trivia is logged only by the trivia-skip fn, which runs at `sequence`/`many`/
+ * repeat boundaries. A bare terminal (regex/literal/keywords/…) has NO trivia
+ * site, so its `_cstTriviaLog` stays empty and its `captureTrivia`/`_cstTriviaLog`/
+ * `_triviaCaptureMask` save+install+restore is dead work — the per-node scope
+ * trivia frame can be elided for it (see emitNode `needsTriviaFrame`).
+ *
+ * Stops at a nested `node()` (it manages its OWN trivia frame; trivia inside it
+ * never logs to THIS node's frame). CONSERVATIVE: any unknown / trivia-bearing
+ * shape returns `true` (keep the frame) — we only elide when provably safe.
+ */
+export function parserHasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return true // cycle → conservative (keep the frame)
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    // Trivia is skipped between/around elements or iterations → a site.
+    case 'sequence':
+    case 'many':
+    case 'oneOrMore':
+    case 'sepBy':
+    case 'scanTo':
+    case 'recover':
+    case 'skip':
+      return true
+    // Nested node manages its own trivia frame; none logs here.
+    case 'node': return false
+    // Pure terminals + trivia-suppressing token: no site.
+    case 'regex':
+    case 'literal':
+    case 'keywords':
+    case 'guard':
+    case 'token':
+      return false
+    // Transparent single-child wrappers: recurse.
+    case 'optional':
+    case 'transform':
+    case 'trivia':
+    case 'label':
+    case 'expect':
+    case 'withCtx':
+    case 'not':
+    case 'field':
+      return parserHasTriviaSite(d.parser, seen)
+    case 'choice': return d.parsers.some(x => parserHasTriviaSite(x, seen))
+    case 'grammar': return parserHasTriviaSite(d.parser, seen)
+    case 'lazy': {
+      try { return parserHasTriviaSite(d.thunk(), seen) } catch { return true }
+    }
+    default: return true // unknown shape → conservative
+  }
+}
+
 export function buildFieldMap(captures: ReadonlyArray<{ name: string; value: unknown; span: { start: number; end: number } }> | undefined): FieldMap | undefined {
   if (!captures?.length) return undefined
   const out: FieldMap = {}
