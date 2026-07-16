@@ -832,6 +832,17 @@ measured neutral; see candidate #2, now shelved.)
    subtractive measurement lands sub-1%, drop it. See [[zero-copy-range-builder-negative]]
    (flagged this exact lever as "one unmeasured possibility that could still matter").
 
+   **THE KEEP/TOSS GATE IS THE JESS PARSER PERF TESTS — not this parseman proxy.** The
+   `examples/css` number above is a MOTIVATOR only. Two reasons it can't decide it: (1) it's
+   the `compile()` MONOLITHIC path, but Jess runs `compileLinkable`/fused — those diverge
+   (see the zero-copy saga); (2) it's a synthetic proxy grammar, and the standing rule is
+   measure on real Jess, not a synthetic best case ([[feedback-no-conditional-wins]]). So the
+   decision A/B is: land the subtractive frame-elision in the parseman worktree Jess links to,
+   then run Jess's own parser perf suite — `@jesscss/css-parser/test/bootstrap-baseline.test.ts`
+   + `test/bench.ts` (and `@jesscss/core/test/perf-compare.test.ts` for whole-render context) —
+   before/after, on a quiet machine, NOT concurrently with any agent compiling Jess ([[jess-parseman-link-coupling]]).
+   Keep only on a real Jess parse-time win with no render regression; otherwise toss.
+
 5. **Host-boundary allocation contract.** Keep this explicitly parser-adjacent,
    not a generic Parseman semantic change: measure an opt-in builder path that
    receives span start/end numbers instead of a per-node `loc` object and uses
