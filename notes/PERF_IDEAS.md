@@ -230,6 +230,20 @@ Moved to **Already landed** (closes the CSS `numPart` gap §8f left open).
 
 # Jess parser hotspots (from @jesscss render profiling) — 2026-07-05
 
+> ⚠️ **STALE PROFILE — re-measure before trusting any number below.** This
+> profile was taken `2026-07-05` against jess core `parseman 0.14.0` compiled
+> grammars. It has since been partly invalidated by core changes on the SAME
+> day and after — most visibly the **#2 hotspot `ensureProv` is GONE**: jess
+> `2b39c8072` (2026-07-05) inlined the node span onto `Node` and killed the PROV
+> WeakMap, `311cf9232` left only sparse slot-spans in flag-gated WeakMaps, and
+> `cc9888e29` deleted dead provenance CST plumbing. So the #2/#3 rows are dead
+> and the #1 reify (61.9%) / trivia shares can no longer be assumed to hold their
+> proportions. **Numbers here are a stamped snapshot, not current truth.** Before
+> ranking any idea off this table, re-run a fresh profile on current jess core —
+> `run(entry, input, { profile: true })` (added parseman 0.27.0) gives the
+> recognizer / structuralCapture / hostConstruction phase split; add a V8 CPU
+> sample for self-time. Then correct the rows IN PLACE (strike them), don't append.
+
 **Source of this section:** the @jesscss/core render re-profile flagged PARSE as
 the #1 render hotspot (~42% of a render). Investigating *inside* the parser
 subsystem (parseman 0.14.0 compiled grammars + the @jesscss builder hosts) to
@@ -363,8 +377,8 @@ driver, on top of the ~8.8 MB retained AST.
    the **cold CST-capture path** (most runtime callers request only the value, no CST).
    Micro-opt, not the broad lever the ~3967-count implied.
 
-3. **`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%). ✅ ALREADY FIXED
-   BY CORE — do not chase.** The profile above (2026-07-05) caught the OLD shape:
+3. ~~**`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%).**~~ ✅ **FIXED BY
+   CORE — do not chase.** The profile above (2026-07-05) caught the OLD shape:
    every node did `ensureProv(node)` → allocate a `{}` Provenance + `WeakMap.set`,
    12,984 allocs + WeakMap inserts/parse, and it was the #1 GC driver. **That was
    re-architected the same afternoon.** jess `2b39c8072` ("inline source-span
@@ -540,8 +554,11 @@ driver, on top of the ~8.8 MB retained AST.
   `rawChildren` — ⚠ **largely LANDED** (`mayLeavePartialCapture`/`capturesTrivia`/
   `_hostReads` skip + the single-boolean save/restore gate in `codegen.ts`); only a
   cold-path buffer-reference hoist remains. NOT an available cheap/broad win.
-- **#3 defer/dense-array `ensureProv`** — 12,984 per-node `{}`+WeakMap inserts is
-  the 2nd hotspot and the main GC driver (worse on CSS: 12.5%).
+- ~~**#3 defer/dense-array `ensureProv`** — 12,984 per-node `{}`+WeakMap inserts is
+  the 2nd hotspot and the main GC driver (worse on CSS: 12.5%).~~ ✅ **DONE BY CORE**
+  — jess `2b39c8072` inlined the node span onto `Node` (monomorphic fields +
+  `F_HAS_SPAN`), killed the PROV WeakMap; only sparse slot-spans remain (flag-gated).
+  `ensureProv` deleted. The dense-array idea is moot — inline fields beat it. (verified 2026-07-16)
 - **#4 drop per-node `loc` object + filtered child arrays in `buildNode`.**
 - **#7 value/math precedence-chain descent** (`_r_topSum`/`_r_topProduct`) — #1/#2
   self-time on value-heavy Less (`functions.less`); ~30–40% of parse. Fixed-depth
