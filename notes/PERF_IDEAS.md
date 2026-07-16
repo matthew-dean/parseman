@@ -843,6 +843,27 @@ measured neutral; see candidate #2, now shelved.)
    before/after, on a quiet machine, NOT concurrently with any agent compiling Jess ([[jess-parseman-link-coupling]]).
    Keep only on a real Jess parse-time win with no render regression; otherwise toss.
 
+   **✅ BUILT + INTEGRATED-BENCHED — KEEPER (2026-07-16, commit e4936d8).** Implemented as
+   `parserHasTriviaSite` (conservative walker in `fields.ts`) gating the `captureTrivia`/
+   `_cstTriviaLog`/`_triviaCaptureMask` save+install+restore in `emitNode` for bare-terminal
+   nodes. **No-regression PROVEN deterministically** (not timing): generated-code diff baseline-
+   vs-change across all 5 example grammars is *remove-or-byte-identical* — 0 additions anywhere,
+   only bare-leaf trivia-frame writes removed; css −522 B, csv/json/graphql/lang byte-identical.
+   Interpreter untouched by construction (diff is codegen-only; `node.ts` runtime unchanged).
+   **Parseman suite 1719/1719 green** (CST byte-identity parity incl.). **Compile size same-or-
+   smaller** (never larger). **Integrated Jess bench** (`pnpm bench` = shipping macro-compiled
+   `parseCssFn`/`parseLessFn` via the macro register, min-of-100 over real corpora, PM_NO_ELIDE
+   A/B, min column — contention-robust): **CSS ~2–4% faster** (235 files; base min 12.71/12.34/
+   12.18 → elide 12.25/11.70/12.16, faster in 3/3 pairs), **LESS ~neutral** (base min ~37.7–41.4
+   → elide ~37.6–38.3, within noise — less parse is dominated by non-leaf work: vars/ops/mixins).
+   Net: real modest CSS win, neutral Less, zero regression risk. The jess test path DOES run
+   macro-compiled (`vitest.config.ts` → `parseman.vite()` compiles grammars imported
+   `with { type: 'macro' }`), so this is exercised end-to-end. **Note:** absolute bench medians
+   were noisy (contended machine — a stale Jul-7 saved baseline shows spurious "9–52% slower");
+   only the min-of-N A/B is trustworthy. **Follow-on:** extend the elision to the interpreter's
+   `node.ts` frame (same soundness proof) and to the `_cstRawChildren`/`_ch`/`_raw` half where a
+   subtree proves no child capture — bigger prize, more analysis.
+
 5. **Host-boundary allocation contract.** Keep this explicitly parser-adjacent,
    not a generic Parseman semantic change: measure an opt-in builder path that
    receives span start/end numbers instead of a per-node `loc` object and uses
