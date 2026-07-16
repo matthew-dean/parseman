@@ -3,6 +3,19 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.27.0 — 2026-07-16
+
+- **New: compiled-parser profiling boundary (`run(entry, input, { profile: true })`).**
+  Runs three compiled-parser-only measurement passes over the same input — an outputless
+  **recognizer** (no `ch`/`raw`/`tl` capture, generalizing the `voidOf(transform(…, () => undefined))`
+  semantics to compiled structural nodes), a **structural-capture** pass (children/raw/trivia/fields
+  captured but node construction suppressed), and the ordinary **host-construction** path — and
+  returns per-pass `{ ms, nodes }` on `RunResult.profile`. This is a measurement boundary, not a
+  parser mode: ordinary `run()` output is byte-identical when `profile` is omitted. Lets a host
+  attribute parse time across recognition vs. capture-bookkeeping vs. host-building without an
+  external profiler. See `src/functional/run.ts`, `src/types.ts` (`RunProfile`/`RunProfilePass`),
+  `test/unit/run.test.ts`.
+
 ## 0.26.3 — 2026-07-12
 
 - **Fix: a `withCtx` whose inner parser is multiply-reachable self-aliased into infinite
