@@ -600,7 +600,9 @@ and the current Jess grammar does not opt into the recognizer mode. Both
 phases were byte-identical at `131,578` bytes (SHA-256
 `98a0536086c7e555b1a98e2372ad4000d51e25f1418c6345b6b8a9a97d80972f`). Keep
 this as an unpublished architecture proof, not as a Jess or Parseman release
-claim. It does not replace the zero-copy structural-builder target below.
+claim. (It was once framed as not replacing "the zero-copy structural-builder
+target below" — but that target has since been built through the fused path and
+measured neutral; see candidate #2, now shelved.)
 
 ### Ranked candidates
 
@@ -616,30 +618,54 @@ claim. It does not replace the zero-copy structural-builder target below.
    architecture experiment, not permission to weaken the existing capture
    contract.
 
-2. **Zero-copy structural builder input — POC retained, host integration pending.**
+2. **Zero-copy structural builder input — ❌ TRIED THROUGH THE FUSED PATH; NEUTRAL, DON'T SHIP.**
    The real profile's largest avoidable family is per-node CST/raw-child
    materialization, not value arrays: raw/child/trivia bookkeeping was measured
    as a 28–51% ceiling in isolated capture probes, while dead value-array
-   elision produced about 7% allocation relief and 0% parse-time change.
-   Add an opt-in generic builder contract that passes a shared buffer plus
-   numeric start/end ranges (or an equivalently allocation-free cursor view)
-   instead of allocating a fresh `children`/`rawChildren` array per node.
-   Preserve raw order, trivia positions, rollback truncation, and the current
-   array API by keeping this opt-in. Do not alias `children` and `rawChildren`
-   unless the grammar proves they cannot diverge. This is the recommended
-   future implementation goal because it attacks the largest measured family
-   while remaining a Parseman representation change. The opt-in experiment is
-   now implemented and retained locally as commit `950e8b4` on
+   elision produced about 7% allocation relief and 0% parse-time change. The
+   idea was an opt-in generic builder contract that pushes children onto a
+   shared arena and hands the host a windowed `CstRangeView` instead of
+   allocating a fresh `children`/`rawChildren` array per node.
+
+   **This was built end-to-end and measured neutral.** Branch
    `feature/parseman-zero-copy-builder-20260715` (worktree
-   `/private/tmp/parseman-zero-copy-builder-20260715`). It passes `62` focused
-   tests and preserves output hash
-   `464577bb7fe9506d9f3dd842b52b6321e286d19b0ea87148e883e42adccdbf34`.
-   On the 106,797-byte Less grammar with 20 warmups/45 samples, arrays measure
-   `10.97 ms` median and range views `4.35 ms`; generated source is unchanged
-   at `25,114` bytes. Transient heap regresses about `1.95 MB` → `7.17 MB`, so
-   this is a parse-time POC with an explicit memory tradeoff, not an automatic
-   default-path win. Jess adoption remains blocked because the current Jess
-   macro/fused path uses `compileLinkable`, while this proof wires `compile()`.
+   `/private/tmp/parseman-zero-copy-builder-20260715`) carried it past the POC:
+   `950e8b4` prototype range builders → `53a5bfb` arena-as-stack (killed the
+   POC's 4 wrapper objects/node) → `04c0573` **wired the range runtime through
+   the `compileLinkable`/fused path** (closing the "Jess adoption blocked, proof
+   only wires `compile()`" gap this entry used to name) → `b395706` widened
+   `CstRangeView` to the array-read methods real hosts use (filter/map/find/
+   some/slice/iterator).
+
+   **The earlier "parse-time win" was a measurement artifact — do NOT trust the
+   old `10.97 ms → 4.35 ms` number.** That was a single-process A/B: array mode
+   ran first and made the host's `children.filter(...)`/`.length`/`for..of` call
+   sites monomorphic for `Array`, then range mode fed them a `CstRangeView` →
+   megamorphic deopt/recompile. Whichever mode ran **second** ate the penalty;
+   the delta followed run-order, not the representation. Redone correctly
+   (separate process per mode, bootstrap4.css, 22.6k nodes, 3 runs): **array
+   ~26.9 ms vs range ~26.8 ms (indistinguishable), transient ~50 vs ~51 MB
+   (indistinguishable).** The "−13% memory" claim was the same single-process
+   GC-timing artifact.
+
+   **Why it's structurally neutral (not just noisy):** phase decomposition is
+   recognize 34% / capture-bookkeeping 30% / host-builder 36%. Zero-copy only
+   removes the array-alloc *slice* of the 30% capture — and per the dead-value
+   elision finding, array building is ~0% of capture **time** (the cost is
+   trivia/raw/span bookkeeping). There is no time sitting in those arrays to
+   reclaim, so even a perfect `(buffer, start, end)` primitives contract can't
+   beat neutral. **Verdict: do not ship** — not because it regresses, but
+   because a provably-neutral feature with real added surface (arena lifecycle,
+   view/primitives contract, builder rewrites) is complexity for nothing. The
+   branch stays as an architecture reference, not a shippable path.
+
+   *Caveat on "tried": this settles the range-view-through-the-fused-host shape.
+   A different shape — e.g. partition-at-capture so builders skip the
+   `filter(isLeaf)`/`filter(isNode)` split — was separately sized and is also a
+   small, **conditional** prize (breaks builders needing ordered interleaved
+   `children[i]` access), so it's declined on the no-conditional-wins rule, not
+   because it was benchmarked. The one clean bit there is a Jess-side
+   single-pass-builder fix (~0.6–1 ms), which needs no Parseman change.*
 
 3. **Explicit no-trivia boundaries — safe call-site reduction.** Add a generic
    `noTrivia`/adjacent-token contract (or equivalent grammar metadata) that
@@ -678,28 +704,25 @@ claim. It does not replace the zero-copy structural-builder target below.
    elimination already measured allocation relief without parse-time movement.
    These remain valid future work only when a new profile identifies a target.
 
-### Recommended follow-up goal after the zero-copy POC
+### Host-integration proof — DONE, and it is what settled the neutral verdict
 
-The generic POC is complete in its isolated branch. The next implementation
-goal is a separate host-integration proof; it must not silently change the
-default array API or erase the measured heap tradeoff.
+The host-integration proof this section used to request as future work **was
+carried out** (commits `04c0573`/`b395706` above): the range-view runtime was
+wired through the actual `compileLinkable`/fused host contract used by Jess and
+A/B'd on the real Jess CSS/Less host. Under a correct separate-process
+methodology the parse-time "win" did **not** survive — it was array-vs-view
+inline-cache poisoning in a single process — and the array/range paths are
+indistinguishable on both time and transient heap. That is precisely why
+candidate #2 above is now shelved rather than promoted. Do not re-run this as an
+open question; the answer is neutral.
 
-> In `parser-thing`, integrate the retained range-view POC with the actual
-> `compileLinkable`/fused host contract used by Jess. Preserve the default array
-> API, child ordering, trivia offsets, rollback, source spans, interpreter/
-> compiled parity, and existing host behavior. Compare the current array path
-> against the range path on the Jess CSS/Less host with 20 warmups/45 samples,
-> parse time, heap/GC, generated-code size, retained AST size, and exact CSS
-> output. Keep the integration only if the parse-time win survives and the
-> transient-heap regression is eliminated or justified by a measured resident
-> memory win; otherwise retain the generic POC as a non-default experiment.
-
-The agent should first inspect existing `capturesTrivia`, `buildReads*`,
-`mayLeavePartialCapture`, and rollback gates in `src/compiler/codegen.ts` so the
-experiment composes with landed work. It must not re-propose the rejected
-trivia-call guard, recognizer-only node-frame bypass, raw-child alias proof,
-precedence-chain collapse, or CSS-specific comment mode as if they were new
-wins.
+Any future agent must NOT re-propose as new wins: this range-view/zero-copy
+builder (settled neutral through the fused path), partition-at-capture (small +
+conditional), the rejected trivia-call guard, the recognizer-only node-frame
+bypass, the raw-child alias proof, the precedence-chain collapse, or a
+CSS-specific comment mode. Landed gates to compose with, not reinvent, live in
+`src/compiler/codegen.ts`: `capturesTrivia`, `buildReads*`,
+`mayLeavePartialCapture`, and the rollback marks.
 
 ## Jess builder-host proposals (from jess `docs/future/parseman-perf-proposals.md` — reshaped/corrected)
 
