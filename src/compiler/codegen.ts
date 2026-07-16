@@ -2143,8 +2143,17 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // grammar: recognizer suppresses all node output, capture records structure
   // but skips construction, and host is the unmodified normal path. This is
   // profiling-only context state, not a public parser mode.
-  const profileRecognizer = `_ctx._pmProfile?.phase === 'recognizer'`
-  const profileCapture = `_ctx._pmProfile?.phase === 'capture'`
+  // Hoist the profiling-phase reads to ONE `_ctx._pmProfile` read + two boolean
+  // locals per node, instead of re-evaluating `_ctx._pmProfile?.phase === X` ~8×
+  // across the alloc/install lines. On the normal (non-profiling) path `_pm` is
+  // undefined, so both locals fall out of one read + two short-circuiting compares,
+  // and every downstream `${_rec} ? … : …` becomes a cheap boolean-local ternary.
+  // Fixes the per-node overhead the profiling boundary added on tiny inputs (where
+  // it isn't amortized: ~+10–15% on 2–3µs cases, ~0% on bootstrap4).
+  const pmV = v(ctx, '_pm'), recV = v(ctx, '_rec'), capV = v(ctx, '_cap')
+  const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
+  const profileRecognizer = recV
+  const profileCapture = capV
   const allocStmt = structural
     ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
       + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
@@ -2177,6 +2186,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? `; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}`
     : ''
   const stmts: string[] = [
+    profHoist,
     allocStmt,
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,
     `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}${installTrivia}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
