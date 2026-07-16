@@ -363,18 +363,19 @@ driver, on top of the ~8.8 MB retained AST.
    the **cold CST-capture path** (most runtime callers request only the value, no CST).
    Micro-opt, not the broad lever the ~3967-count implied.
 
-3. **`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%).** Every parsed
-   node does `ensureProv(node)` → allocate a `{}` Provenance + `WeakMap.set`
-   (core `provenance.ts:77-82`, called from the Node ctor's `setSourceSpan`). At
-   12,984 nodes/parse that's 12,984 object allocs + WeakMap inserts. IDEA (for
-   the parser/host boundary, not core internals): let the build host hand
-   parseman a single span pair and defer provenance materialization — e.g. store
-   `spanStart/spanEnd` inline on the CST leaf/frame and only populate the
-   side-table lazily on first `sourceSpanOf`/`fieldSpansOf` read (many nodes are
-   never queried for spans during a render). Even batching the WeakMap writes, or
-   using a parse-scoped dense array keyed by a node-index instead of a WeakMap,
-   would cut the per-node hash insert. (Flagging as parser-adjacent evidence; the
-   actual `ensureProv` body is core-owned — hand to core only if they want it.)
+3. **`ensureProv` per-node allocation (2nd-ranked; 5.6%→12.5%). ✅ ALREADY FIXED
+   BY CORE — do not chase.** The profile above (2026-07-05) caught the OLD shape:
+   every node did `ensureProv(node)` → allocate a `{}` Provenance + `WeakMap.set`,
+   12,984 allocs + WeakMap inserts/parse, and it was the #1 GC driver. **That was
+   re-architected the same afternoon.** jess `2b39c8072` ("inline source-span
+   provenance onto Node, kill PROV WeakMap") moved the node-level span to inline
+   monomorphic Node fields (`_spanStart`/`_spanEnd` + `F_HAS_SPAN` bit); `311cf9232`
+   left only the SPARSE per-slot value/field spans in flag-gated WeakMaps. The `{}`
+   alloc and per-node WeakMap insert are gone; `ensureProv` no longer exists. The
+   inline-fields solution is strictly better than the "defer / dense-array-by-index"
+   idea this entry used to propose — that idea is moot. **Lesson: this hotspot's
+   numbers here are stale; re-profile current jess core before ranking provenance
+   against anything.** (Core owner already handled it; nothing for the parser team.)
 
 4. **`buildNode` host: kill the per-node `loc` object and per-build filtered
    arrays.** `_dispatchBuild` calls `spanToLocation(span)` → `{start,end}` per
