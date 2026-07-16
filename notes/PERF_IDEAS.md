@@ -456,12 +456,30 @@ driver, on top of the ~8.8 MB retained AST.
    runtime filter). This is a jess-builders change but is driven entirely by how
    parseman hands children to `ctx.build`, so it's worth co-designing.
 
-5. **Trivia-skip fn (`_tf0`, 3.2%) call-site reduction.** The compiled
-   trivia-skip runs at every `many`/`sequence` boundary. IDEA: for rules whose
-   grammar proves adjacent tokens cannot be separated by trivia (e.g. glued
-   selector runs, number+unit in `Dimension`), skip emitting the trivia call
-   entirely (a `noTrivia` combinator or first-set proof), rather than calling
-   `_tf0` and having it immediately return the same position.
+5. ~~**Trivia-skip fn (`_tf0`, 3.2%) call-site reduction.**~~ ⚠️ **EXPLORED
+   2026-07-16 — real but SMALL, no free redundancy; deprioritized.** Read the
+   compiled less grammar (`@jesscss/less-parser/lib/grammar.js`): 394 `_tf0` call
+   sites. Findings: (a) **no double-skip** — rule bodies do NOT skip leading trivia
+   on entry (they open with the per-`node()` capture-frame setup, not `_tf0`), so
+   the caller's skip + a rule-entry skip never stack; (b) **no back-to-back `_tf0`**
+   anywhere, so no adjacent-redundant-skip to delete; (c) the elidable subset is
+   narrow **because CSS/Less are whitespace-permissive** — trivia is legal at nearly
+   every boundary, and the genuinely-glued spots (number→unit, `::`, `funcname(`)
+   are already single regexes or (post-§7a) `noTrivia`-wrapped, which already omit
+   the call. Per-call empty-path cost is low (call + 2–3 `charCodeAt` + return). Net
+   ceiling is well under the 3.2% (most of which is calls that DO skip real trivia).
+   Capturing even the tail needs manual `noTrivia` (author work) or an automatic
+   trivia-forbidden first-set proof (real feature + soundness burden). **Not worth
+   prioritizing ahead of §7a.** Same conclusion applies to Q-40 candidate #3
+   ("explicit no-trivia boundaries"). **Two bigger things seen while reading:**
+   (i) the per-`node()` capture-frame header (6 ctx-field saves + buffer installs +
+   `_hostReads`/`_parsemanCaptureTrivia` gate computations, ×~22.6k nodes) is the fat
+   part of node entry — this is the "per-node scope save/restore" lever flagged as
+   unmeasured in [[zero-copy-range-builder-negative]], higher-risk (adjacent runtime-
+   indirection attempts measured +32–50%, see §2), but where capture-phase time
+   actually is; (ii) the 0.27.0 profiling boundary now emits `_ctx._pmProfile?.phase`
+   checks inline in every node header — cheap (undefined short-circuit off-profile)
+   but NOT zero-codegen-overhead; wants an A/B to confirm no measurable per-node cost.
 
 6. ~~**`_r_value` disjunction ordering / first-char dispatch.**~~ ✅ **ANSWERED
    (verified 2026-07-16) — dispatch IS firing; residual = §7a, not dispatch.**
