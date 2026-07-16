@@ -780,6 +780,48 @@ measured neutral; see candidate #2, now shelved.)
    both capture and non-capture parses; do not land a frame object or side map
    without a whole-parser A/B.
 
+   #### 4a. SCOPED 2026-07-16 — the per-`node()` scope save/restore (the last unmeasured capture lever)
+
+   **Target (concrete):** `emitNode` (`src/compiler/codegen.ts:2134-2171`) emits, per
+   `node()`, an **unconditional** save of 6 `_ctx` fields (`_sc/_sl/_sr/_st/_stl` +
+   `_smk`), an install of fresh capture buffers, and a restore of all 6 on exit — so
+   ~12 `_ctx` property ops **per node × ~22.6k nodes/parse**. Confirmed by reading the
+   compiled less header (every `_r_*` opens with exactly this). This is DISTINCT from
+   (and unaffected by) the already-gated **fallible-block** restore (`captureRestoreBody`,
+   `codegen.ts:597-644` — "gate the whole save/restore on a single boolean"): that fix
+   covers sequence-term rollback, NOT the node-scope frame.
+
+   **Rule OUT first (don't re-chase):** the two array allocs (`_ch`/`_raw`) are ~0% time
+   ([[dead-value-elision-landed]]); the gate computations are memoized (`??=`) so cheap
+   after node 1; profile-phase checks short-circuit off-profile. The only candidate cost
+   is the 6 saves + 6 installs + 6 restores themselves.
+
+   **Direction (the ONLY safe one):** a compile-time capture-plan that emits **fewer
+   save/install/restore lines** for a node whose SUBTREE provably never touches a given
+   field — e.g. a leaf whose subtree never trivia-captures skips `_st/_stl/_smk`; one
+   whose subtree never reads rawChildren skips `_sr`. This is compile-time line-selection,
+   **NOT** a runtime frame object / depth-indexed stack — that shape was rejected TWICE
+   (§2: +50% and +32-47%), and "eager `[],[],[]` beat branchy indirection." Runtime
+   indirection is off the table; only emitting-less-code is on it.
+
+   **Soundness burden (the real cost):** "node N needn't save field X" requires proving
+   **no descendant rule reachable from N modifies X** — a whole-subtree reachability pass
+   over the grammar (does the subtree contain any `node()`/trivia/field-capturing construct
+   that writes X?). Conservative default: save unless proven-clean. Composed grammars
+   complicate it (an overridden rule's subtree can change) — must resolve at fuse time like
+   the §FS first-set dispatch, or stay conservative across compose boundaries.
+
+   **MEASURE BEFORE BUILDING (discipline — this family has over-projected every time):**
+   step 1 is NOT the analysis. It's a throwaway codegen variant that drops the 6-field
+   save/restore for a hand-picked always-safe leaf rule (or globally, accepting
+   incorrectness, purely to time it), A/B'd separate-process on bootstrap4 + benchmark.less.
+   **Kill condition:** sub-1% delta → DROP (it joins zero-copy / host-filter / trivia-elision
+   / dead-value in the "mechanism looked big, measured single-digit" pile). Only a real
+   multi-% delta justifies building the whole-subtree capture-plan. **Prior: LOW** — but it
+   is the last un-measured item in the 30% capture phase, and unlike the others it is cheap
+   to falsify before committing. See [[zero-copy-range-builder-negative]] (flagged this exact
+   lever as "one unmeasured possibility that could still matter … don't chase without building").
+
 5. **Host-boundary allocation contract.** Keep this explicitly parser-adjacent,
    not a generic Parseman semantic change: measure an opt-in builder path that
    receives span start/end numbers instead of a per-node `loc` object and uses
