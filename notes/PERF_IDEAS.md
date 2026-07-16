@@ -91,6 +91,60 @@ The reusable ~60–70%: `analyzeTriviaFastPath`'s recognition logic (minus the t
 
 Arms like `ident '(' …` vs bare `ident` can't use disjoint dispatch. Generalize the CSS grammar hand-merge: parse shared prefix once, branch on lookahead. Complements existing `autoNot` (suffix rejection) but doesn't replace it.
 
+#### 7a. NEXT UP — factor `Dimension`/`Num` into one numeric node (grammar-side; verified 2026-07-16) — SMALL perf + a correctness fix
+
+**Verified against the real jess CSS grammar** (`@jesscss/core` `packages/css-parser/src/grammar.ts`), not projected:
+
+```js
+57:  const numPart = regex(/[+-]?(?:\d*\.\d+…|\d+…|\d+)/);
+163: const value = choice(g.Dimension, g.Num, g.Color, …);          // Dimension BEFORE Num
+186: const Dimension = node(sequence(numPart, regex(/…unit…|%/)));  // number + REQUIRED unit
+262: const numTok   = regex(/…numPart…(?![a-zA-Z-￿%])/); // numPart + negative lookahead
+267: const Num      = node(numTok);
+```
+
+`Dimension` and `Num` are separate ordered `choice` arms that BOTH start with `numPart`, so they
+share a first-set → the disjoint-dispatch fast path can't split them → ordered `firstMatch`,
+Dimension tried first. **The waste, per unitless number** (`16`, `1.5`, `0` — opacity/line-height/
+z-index/flex/calc operands, i.e. very common): enter the `Dimension` `node()` **capture frame** →
+scan `numPart` → fail the required unit → **roll the frame back** → enter `Num` → scan `numPart`
+**again** + run the `(?!unit)` lookahead. The re-scan is cheap (numPart lowers to a charCodeAt
+loop); the **failed-capture-frame enter+rollback** is the real cost, and it lands in the #1-hot
+value rule, in the 30%-capture phase — i.e. this removes WORK, not allocation (the class that has
+actually moved time; allocation-shaped ideas all measured 0% — see zero-copy / dead-value / §1).
+
+**Fix — one numeric node, unit as an optional glued continuation** ("a Dimension is just a Number
+that continues into a unit"):
+
+```js
+const numeric = node(noTrivia(sequence(numPart, optional(unitRegex))));
+// builder: unit leaf present → Dimension, else → Num
+```
+
+- `numPart` scanned once; one capture frame; zero rollback on the common (unitless) path.
+- **The `(?!unit)` lookahead disappears** — `optional(unit)` greedily takes an adjacent unit, so
+  `16px`→Dimension / `16`→Num disambiguate structurally.
+- **Use `noTrivia`, NOT `token`** (`src/combinators/grammar.ts` vs `src/combinators/token.ts`):
+  `_buildDimension` reads number and unit as TWO leaves (grammar comment at :185); `token` flattens
+  to one `Combinator<string>` and loses the split. `noTrivia` preserves the leaves while killing
+  inter-element trivia.
+
+**This is also a CORRECTNESS fix (red test first).** Current `Dimension` is a BARE `sequence`
+under the grammar's ambient trivia (`rules({ trivia: rw })` → `sequence` skips trivia between
+elements dynamically). So today `16 /* c */ px` and `16   px` skip the trivia and parse as ONE
+`Dimension`, when they must be `Num(16)` + a separate `px` token. The `Num` arm's `(?!unit)` only
+guards the immediately-adjacent case; it does NOT stop the Dimension arm from eating trivia. So:
+- **RED on current grammar / GREEN after `noTrivia`:** `16 /*c*/ px` and `16 px` ⇒ `Num` + separate
+  token, not `Dimension`. `16px` ⇒ `Dimension`. `16` ⇒ `Num`. (Exact-equality asserts, no substring.)
+
+**Scope:** Jess-grammar + builder change (`grammar.ts` collapses the two arms; `builders.ts` picks
+Dimension/Num by unit-leaf presence). NOT a Parseman-core change — but it's the concrete instance of
+the generic §7 factoring; teaching Parseman to detect shared-prefix arms and factor them
+automatically is the reusable follow-on (§7c richer dispatch). **Magnitude: honestly single-digit**
+overall (numeric tokens are a subset; numPart is cheap) — worth doing for the capture-frame removal
+on the hot path AND because it makes the grammar correct and match how it reads. Measure on
+value-dense CSS via `pnpm bench:parseman -- --only=css` + a Jess CSS/Less A/B; guard with `perf:guard`.
+
 ### 7b. Partial first-char choice dispatch (switch + fallback)
 
 **Problem:** `choice(quotedField, unquotedField)` in CSV is *not* marked `disjoint` because
