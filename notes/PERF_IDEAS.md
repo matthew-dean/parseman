@@ -477,9 +477,12 @@ driver, on top of the ~8.8 MB retained AST.
    part of node entry — this is the "per-node scope save/restore" lever flagged as
    unmeasured in [[zero-copy-range-builder-negative]], higher-risk (adjacent runtime-
    indirection attempts measured +32–50%, see §2), but where capture-phase time
-   actually is; (ii) the 0.27.0 profiling boundary now emits `_ctx._pmProfile?.phase`
-   checks inline in every node header — cheap (undefined short-circuit off-profile)
-   but NOT zero-codegen-overhead; wants an A/B to confirm no measurable per-node cost.
+   actually is; (ii) the 0.27.0 profiling boundary's per-node `_ctx._pmProfile?.phase`
+   reads were **hoisted** (commit 4621ed6) to one `_ctx._pmProfile` read + two reused
+   boolean locals (`_rec`/`_cap`) per structural node, so the off-profile path pays one
+   read + two short-circuiting compares instead of ~8 optional-chain reads. Measured
+   effect: bootstrap4 compiled +2% → ~0% (amortized case); tiny µs cases unmoved (they
+   were a stale-baseline artifact, not per-node profile cost).
 
 6. ~~**`_r_value` disjunction ordering / first-char dispatch.**~~ ✅ **ANSWERED
    (verified 2026-07-16) — dispatch IS firing; residual = §7a, not dispatch.**

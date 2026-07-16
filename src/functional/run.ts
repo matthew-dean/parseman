@@ -58,10 +58,12 @@ export type RunOptions = {
    */
   tolerant?: boolean
   /**
-   * Run three compiled-parser-only profiling passes: outputless recognizer,
-   * structural capture without the host, then the normal host path. This is a
-   * measurement boundary, not a parser mode; ordinary `run()` output is
-   * unchanged when omitted.
+   * Run three compiled-parser-only profiling passes: recognizer (no global
+   * sinks), structural capture without the host, then the normal host path. This
+   * is a measurement boundary, not a parser mode; ordinary `run()` output is
+   * unchanged when omitted. The input is parsed THREE times — each pass gets its
+   * own shallow copy of `options.state`, so keep per-parse state shallow (only
+   * the top level is isolated between passes).
    */
   profile?: boolean
 }
@@ -130,7 +132,10 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   const profile = profileState ?? (phase === undefined
     ? undefined
     : { phase, nodes: 0, childSlots: 0, rawSlots: 0, triviaSlots: 0, fieldSlots: 0, hostCalls: 0 })
-  const outputless = phase === 'recognizer' || phase === 'capture'
+  // NOT "no output" — the `capture` phase still allocates per-node children/raw/
+  // trivia buffers and records slot counts. This flag only omits the two GLOBAL
+  // sinks (`_triviaLog`, `_errors`) from the context; hence `skipGlobalSinks`.
+  const skipGlobalSinks = phase === 'recognizer' || phase === 'capture'
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): install
   // it as ctx.trivia so it's ambient for the whole parse (the interpreter path;
   // a compiled entry has it baked in and carries no _meta). parser/noTrivia still
@@ -138,7 +143,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
   const ctx: ParseContext = {
     trackLines: false,
-    ...(outputless
+    ...(skipGlobalSinks
       ? { _pmProfile: profile! }
       : { _triviaLog: triviaLog, _errors: errors, ...(profile === undefined ? {} : { _pmProfile: profile }) }),
     build: options.build,
@@ -173,10 +178,21 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   }
 }
 
+/** Shallow copy of `options.state` per pass so an in-place mutation by one
+ * profiling pass doesn't leak into the next (the parity check only compares
+ * `ok`/`unconsumedFrom`, so a diverged structural output would go unnoticed).
+ * Only the top level is isolated — deeply-nested mutable state is shared; a
+ * profiled grammar should keep per-parse state shallow (see the `profile` docs). */
+function clonePassState(state: unknown): unknown {
+  if (state === null || typeof state !== 'object') return state
+  return Array.isArray(state) ? [...state] : { ...(state as Record<string, unknown>) }
+}
+
 function profilePass(entry: Runnable, input: string, options: RunOptions, phase: ProfilePhase): { result: RunResult; profile: RunProfilePass } {
   const state: ProfileState = { phase, nodes: 0, childSlots: 0, rawSlots: 0, triviaSlots: 0, fieldSlots: 0, hostCalls: 0 }
+  const passOptions: RunOptions = options.state === undefined ? options : { ...options, state: clonePassState(options.state) }
   const start = performance.now()
-  const result = runOnce(entry, input, options, phase, state)
+  const result = runOnce(entry, input, passOptions, phase, state)
   const { phase: _phase, ...counts } = state
   return { result, profile: { ms: performance.now() - start, ...counts } }
 }

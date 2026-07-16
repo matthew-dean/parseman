@@ -10,7 +10,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   **recognizer** (no `ch`/`raw`/`tl` capture, generalizing the `voidOf(transform(…, () => undefined))`
   semantics to compiled structural nodes), a **structural-capture** pass (children/raw/trivia/fields
   captured but node construction suppressed), and the ordinary **host-construction** path — and
-  returns per-pass `{ ms, nodes }` on `RunResult.profile`. This is a measurement boundary, not a
+  returns per-pass `RunProfilePass` measurements on `RunResult.profile` (`{ ms, nodes, childSlots,
+  rawSlots, triviaSlots, fieldSlots, hostCalls }`). This is a measurement boundary, not a
   parser mode: ordinary `run()` output is byte-identical when `profile` is omitted. Lets a host
   attribute parse time across recognition vs. capture-bookkeeping vs. host-building without an
   external profiler. See `src/functional/run.ts`, `src/types.ts` (`RunProfile`/`RunProfilePass`),
