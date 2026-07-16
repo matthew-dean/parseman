@@ -463,14 +463,21 @@ driver, on top of the ~8.8 MB retained AST.
    entirely (a `noTrivia` combinator or first-set proof), rather than calling
    `_tf0` and having it immediately return the same position.
 
-6. **`_r_value` disjunction ordering / first-char dispatch.** `_r_value`'s
-   `choice(Dimension,Num,Color,Url,CalcCall,Call,Paren,Quoted,anyValue)` is
-   entered per value token and is #1 self-time. The "disjoint first-char
-   dispatch" fast path (Already-landed section) may not be firing here because
-   several arms share ambiguous first chars (a digit starts both Dimension and
-   Num; `.` starts Num and a class). IDEA: verify whether `_r_value` compiled to
-   a jump-table dispatch or an if/else chain, and if the latter, split the
-   digit-led arms into a sub-dispatch keyed on the char *after* the numeric run.
+6. ~~**`_r_value` disjunction ordering / first-char dispatch.**~~ ✅ **ANSWERED
+   (verified 2026-07-16) — dispatch IS firing; residual = §7a, not dispatch.**
+   Read the actual compiled value choice in BOTH `@jesscss/css-parser/lib/grammar.js`
+   (monolithic) and `@jesscss/less-parser/lib/grammar.js` (composed/fused): each arm
+   is first-char guarded off one `codePointAt` (`_chcode`), 0 unresolved `@FS`
+   placeholders — the fuse-time first-set dispatch shipped on parseman release/0.15.0
+   (~30% jess win) is working end-to-end. Disjoint arms (`Color` `#`, `Quoted`,
+   `Paren`) are correctly skipped. The ONLY residual waste is the OVERLAPPING arms:
+   Dimension and Num carry the **identical** guard (`43 || 45..46 || 48..57`), so a
+   unitless number passes the Dimension guard, enters+fails `_r_Dimension`, then
+   enters `_r_Num` — the double-entry §7a fixes. First-char dispatch structurally
+   CANNOT separate same-first-char arms; only §7a common-prefix factoring can. So
+   there is no "sub-dispatch keyed on the char after the numeric run" to add here —
+   the fix is §7a's structural collapse. (CalcCall/Call is the same story on the
+   ident-led arms — §7 idea #2.) See [[macro-firstset-dispatch-unsound]].
 
 7. **Value / math-expression precedence-chain descent cost (operator-precedence rules).**
    *Parked — a bounded constant-factor parse win, not the dominant scaling cost.*
