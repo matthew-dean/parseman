@@ -123,6 +123,7 @@ export function node<N>(
       // unwrap/collapse: a single captured child IS the value — skip build.
       const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const nodeType = def.type ?? missingInferredType()
+      const cstOutput = (ctx.build as unknown as { _parsemanCstOutput?: true } | undefined)?._parsemanCstOutput === true
       const built: unknown = unwrap && children.length === 1
         ? unwrapChild(children[0])
         : collapse && children.length === 1
@@ -134,7 +135,12 @@ export function node<N>(
           && ctx.build._parsemanCstCollapse(nodeType, children[0], children, rawChildren)
           ? children[0]
         : build
-          ? build(children, fields, r.span, rawChildren, triviaLog, st)
+          // A direct builder normally owns its result. The positioned-CST host is
+          // the one exception: it must never receive an arbitrary AST object as a
+          // child of a CST node, so build this grammar node through that host.
+          ? cstOutput && ctx.build
+            ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, st)
+            : build(children, fields, r.span, rawChildren, triviaLog, st)
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build
               ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, st)

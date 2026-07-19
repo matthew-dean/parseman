@@ -6,7 +6,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
-  choice, expect as required, literal, node, oneOrMore, parse, parser, regex, run,
+  choice, cstBuildHost, expect as required, literal, node, oneOrMore, parse, parser, regex, run,
   sequence, trivia,
 } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
@@ -28,6 +28,7 @@ const Call = node('Call', parser({ trivia: ws }, choice(
 const RecoveringCall = node('RecoveringCall', sequence(
   literal('fn('), Color, required(literal(')')),
 ), (children, _fields, _span, raw) => summarize(children, raw))
+const CstOuter = node('CstOuter', Color)
 
 const MACRO = `
 import { choice, expect, literal, node, oneOrMore, parser, regex, sequence, trivia } from 'parseman' with { type: 'macro' }
@@ -43,15 +44,16 @@ const Call = node('Call', parser({ trivia: ws }, choice(
 const RecoveringCall = node('RecoveringCall', sequence(
   literal('fn('), Color, expect(literal(')')),
 ), (children, _fields, _span, raw) => ({ child: children[1], raw: raw[1] }))
+const CstOuter = node('CstOuter', Color)
 `.trim()
 
-let macro: { Call: RuleFn; RecoveringCall: RuleFn }
+let macro: { Call: RuleFn; RecoveringCall: RuleFn; CstOuter: RuleFn }
 
 beforeAll(() => {
   const result = transformMacro(MACRO, 'direct-child-raw-source.ts', new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
   if (result.code.includes("from 'parseman'")) throw new Error('macro transform did not compile')
-  macro = new Function(result.code.replace(/\bconst\b/g, 'var') + '\nreturn { Call, RecoveringCall }')() as typeof macro
+  macro = new Function(result.code.replace(/\bconst\b/g, 'var') + '\nreturn { Call, RecoveringCall, CstOuter }')() as typeof macro
 })
 
 function assertSource(value: Result | undefined): void {
@@ -91,5 +93,21 @@ describe('direct node child raw source', () => {
     expect(result.ok).toBe(true)
     if (result.ok) assertSource(result.value)
     expect(errors).toHaveLength(1)
+  })
+
+  it('never places a direct AST object inside a positioned CST', () => {
+    const assertCst = (value: unknown) => expect(value).toMatchObject({
+      _tag: 'node', type: 'CstOuter', children: [{
+        _tag: 'node', type: 'Color', children: [
+          { _tag: 'leaf', value: 're' }, { _tag: 'leaf', value: 'd' },
+        ],
+      }],
+    })
+    const interpreted = run(CstOuter, 'red', { build: cstBuildHost() })
+    expect(interpreted.ok).toBe(true)
+    if (interpreted.ok) assertCst(interpreted.value)
+    const compiled = macro.CstOuter('red', 0, { trackLines: false, build: cstBuildHost() } as never)
+    expect(compiled.ok).toBe(true)
+    if (compiled.ok) assertCst(compiled.value)
   })
 })

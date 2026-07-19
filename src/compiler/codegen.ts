@@ -2247,9 +2247,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // positioned-CST modes. Emitted when `ctx.ns` (linkable) OR for a structural
   // node (whose whole point is the injected host). A built standalone node stays
   // byte-identical (no `_ctx.build` branch).
+  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
   const ndExpr = ctx.ns || structural
-    ? `_ctx.build !== undefined ? (_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})) : (${buildExpr})`
-    : buildExpr
+    ? `_ctx.build !== undefined ? (${hostBuildExpr}) : (${buildExpr})`
+    // Direct builders stay direct for ordinary hosts. cstBuildHost marks its
+    // mode internally so nested direct nodes cannot leak arbitrary AST objects
+    // into a positioned CST's children.
+    : `_ctx.build?._parsemanCstOutput === true ? (${hostBuildExpr}) : (${buildExpr})`
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
   const hostCollapseExpr = (ctx.ns || structural)
