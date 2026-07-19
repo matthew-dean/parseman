@@ -16,6 +16,7 @@ import type {
 import type { Combinator } from '../types.ts'
 import { ref } from '../combinators/ref.ts'
 import * as parseman from '../index.ts'
+import { directBuilderUnsupportedBindings } from './direct-builder-static.ts'
 
 /**
  * Emit an AST subtree's source with TypeScript-only syntax removed. A gate source
@@ -290,7 +291,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const be = buildArg as { type: string; start: number; end: number; name?: string } | undefined
     const hasBuild = be !== undefined && be.type !== 'SpreadElement'
       && !(be.type === 'Identifier' && be.name === 'undefined')
-    const buildSrc = hasBuild ? code.slice(be!.start, be!.end) : undefined
+    const buildSrc = hasBuild ? stripTsFromSource(be! as Node, code) : undefined
     const opts = optsArg !== undefined && optsArg.type !== 'SpreadElement'
       ? staticNodeOptions(optsArg as Expression)
       : undefined
@@ -298,7 +299,11 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       const combi = explicitType !== undefined
         ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, opts)
         : parseman.node(inner, hasBuild ? () => null : undefined, opts)
-      if (combi._def.tag === 'node' && buildSrc !== undefined) combi._def.buildSrc = buildSrc
+      if (combi._def.tag === 'node' && buildSrc !== undefined) {
+        combi._def.buildSrc = buildSrc
+        const staticError = directBuilderUnsupportedBindings(buildSrc)
+        if (staticError.length > 0) combi._def.buildStaticError = staticError
+      }
       return combi
     } catch { return null }
   }
@@ -406,7 +411,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     if (code === undefined || mfs === undefined) return null
     const [predArg] = node.arguments
     if (!predArg || predArg.type === 'SpreadElement') return null
-    const predSrc = code.slice((predArg as Expression).start, (predArg as Expression).end)
+    const predSrc = stripTsFromSource(predArg as Node, code)
     mfs.push(predSrc)
     try {
       const combi = parseman.guard(() => true)
@@ -424,7 +429,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     if (code === undefined || mfs === undefined) return null
     const [extraArg, innerArg] = node.arguments
     if (!extraArg || !innerArg || extraArg.type === 'SpreadElement' || innerArg.type === 'SpreadElement') return null
-    const extraSrc = code.slice((extraArg as Expression).start, (extraArg as Expression).end)
+    const extraSrc = stripTsFromSource(extraArg as Node, code)
     mfs.push(extraSrc)
     const inner = anyValue(innerArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null

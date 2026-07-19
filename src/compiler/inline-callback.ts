@@ -1,4 +1,3 @@
-/** Builtins allowed in inlined transform bodies (not treated as free closure refs). */
 const INLINE_BUILTINS = new Set([
   'parseInt', 'parseFloat', 'String', 'Number', 'Boolean', 'Object', 'Array', 'Math', 'JSON',
   'undefined', 'null', 'true', 'false', 'NaN', 'Infinity',

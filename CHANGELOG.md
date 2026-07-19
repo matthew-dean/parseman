@@ -5,6 +5,26 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.27.1 — 2026-07-18
 
+- **Fix: retain direct `node(..., build)` semantics when re-lowering composed
+  grammar IR.** Rehydration restored `buildSrc` but recreated the node as
+  structural, so generated composed grammars routed it through `ctx.build` or a
+  default CST instead of its grammar-owned builder. Rehydrated direct nodes now
+  retain a direct builder marker while preserving their serialized callback source,
+  so compiled, macro-built, and downstream-composed grammars agree. Raw IR
+  interpretation rejects direct builders rather than evaluating captured source.
+  A direct builder carried through grammar composition must therefore be a
+  **macro-static** arrow-expression: identifier parameters plus a self-contained expression
+  using only those parameters and a small set of standard globals. It may not use
+  lexical helpers, imported factories, statement bodies, or destructuring. Parseman
+  verifies that subset with Oxc AST analysis during macro lowering, carries its
+  result as inert artifact metadata, and rejects any unsupported builder before
+  composition emits a parser that could later fail with
+  `ReferenceError`. Typed `guard()` predicates and `withCtx()` state expressions
+  now use the same TypeScript-stripped source path before macro codegen or IR
+  re-lowering, so composed artifacts stay valid generated JavaScript. Oxc remains
+  confined to the macro/plugin entry; public runtime bundles carry only the
+  validation result, never the parser or its native bindings.
+
 - **New: scoped `node(..., { captureTrivia: true })`.** A grammar can now retain
   trivia for one CST node without enabling document-wide capture. The option is
   scoped to that node, preserves inherited capture when it is already enabled,

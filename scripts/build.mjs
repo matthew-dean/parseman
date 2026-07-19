@@ -34,6 +34,16 @@ await Promise.all([
 
 console.log('JS bundles built.')
 
+// The public runtime (including language-service) is browser-capable. Oxc is a
+// macro/plugin implementation detail with native platform bindings; keep it out
+// of these bundles even when runtime composition re-lowers artifact IR.
+for (const file of ['dist/index.js', 'dist/index.cjs', 'dist/language-service/index.js', 'dist/language-service/index.cjs']) {
+  if (readFileSync(file, 'utf8').includes('oxc-parser')) {
+    throw new Error(`runtime bundle unexpectedly imports oxc-parser: ${file}`)
+  }
+}
+console.log('Runtime bundles exclude oxc-parser.')
+
 // Generate declarations via tsc
 execSync('node_modules/.bin/tsc -p tsconfig.build.json --emitDeclarationOnly --declaration --declarationMap --outDir dist', { stdio: 'inherit' })
 console.log('Declarations built.')

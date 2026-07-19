@@ -55,13 +55,12 @@ function buildCompiledGrammar(src: string): Record<string, unknown> {
 // SEMANTICS are asserted separately via a direct `_wc` round-trip below — a
 // `guard` reader would itself be unserializable and mask the withCtx path.)
 const CSS_SRC = `import { rules, choice, sequence, literal, regex, many, oneOrMore, node, withCtx } from 'parseman' with { type: 'macro' }
-const cst = (type) => (ch, _r, span) => ({ _tag: 'node', type, span, children: [...ch] })
 export const cssGrammar = rules(g => ({
-  Ruleset: node('Ruleset', sequence(g.SelectorList, literal('{'), g.declarationList, literal('}')), cst('Ruleset')),
-  SelectorList: node('SelectorList', oneOrMore(g.BasicSelector), cst('SelectorList')),
-  BasicSelector: node('Basic', regex(/\\.[a-z]+/), cst('Basic')),
+  Ruleset: node('Ruleset', sequence(g.SelectorList, literal('{'), g.declarationList, literal('}')), (ch, _r, span) => ({ _tag: 'node', type: 'Ruleset', span, children: [...ch] })),
+  SelectorList: node('SelectorList', oneOrMore(g.BasicSelector), (ch, _r, span) => ({ _tag: 'node', type: 'SelectorList', span, children: [...ch] })),
+  BasicSelector: node('Basic', regex(/\\.[a-z]+/), (ch, _r, span) => ({ _tag: 'node', type: 'Basic', span, children: [...ch] })),
   declarationList: withCtx({ inner: true }, many(choice(g.Ruleset, g.Declaration, literal(';')))),
-  Declaration: node('Decl', sequence(regex(/[a-z]+/), literal(':'), regex(/[a-z]+/)), cst('Decl')),
+  Declaration: node('Decl', sequence(regex(/[a-z]+/), literal(':'), regex(/[a-z]+/)), (ch, _r, span) => ({ _tag: 'node', type: 'Decl', span, children: [...ch] })),
 }))`
 
 describe('compose over a compiled base with a withCtx (0.26.3)', () => {
@@ -118,5 +117,37 @@ describe('compose over a compiled base with a withCtx (0.26.3)', () => {
     expect(def.tag).toBe('withCtx')
     expect(def.extra).toEqual({ inner: true, depth: 2 })   // extra re-evaluated from source
     expect(def.extraSrc).toBe('{ inner: true, depth: 2 }') // source restored → statically re-inlinable
+  })
+
+  it('strips TypeScript from a guard predicate in generated macro JS', () => {
+    // The predicate is inserted directly into the generated `_mf` array. A source
+    // slice with `: boolean` would make the macro artifact invalid JavaScript.
+    const typed = buildCompiledGrammar(`import { rules, guard, literal, sequence } from 'parseman' with { type: 'macro' }
+export const typed = rules(g => ({
+  Entry: sequence(guard((state: { inner: boolean }) => state.inner === true), literal('x')),
+}))`)
+    const base = typed.typed as Record<string, FusedRule>
+    expect(base.Entry!('x', 0, { state: { inner: true } }).ok).toBe(true)
+    expect(base.Entry!('x', 0, { state: { inner: false } }).ok).toBe(false)
+  })
+
+  it('strips TypeScript from withCtx state before a composed artifact re-lowers', () => {
+    // `extraSrc` crosses the artifact IR boundary and is evaluated/inlined as JS.
+    // Keeping `as {...}` would break `new Function` only after composition.
+    const typed = buildCompiledGrammar(`import { rules, literal, withCtx } from 'parseman' with { type: 'macro' }
+export const typed = rules(g => ({
+  Entry: withCtx(({ inner: true } as { inner: boolean }), literal('x')),
+}))`)
+    const base = typed.typed as Record<string | symbol, unknown>
+    const carried = base[COMPOSED_PIECES] as Array<{ ir: string }>
+    const ir = carried.find(p => typeof p.ir === 'string')!.ir
+    expect(ir).not.toContain(' as {')
+    const pieces = compileLinkable(evalRuleMapIR(ir), '_typed_')!
+    expect(pieces.mfFns).toHaveLength(0)
+    expect(() => emitFusedSource([pieces])).not.toThrow()
+
+    const delta = parseman.rules(() => ({ Extra: parseman.literal('z') }))
+    const composed = parseman.compose([base as never, delta]) as unknown as Record<string, FusedRule>
+    expect(composed.Entry!('x', 0, {}).ok).toBe(true)
   })
 })
