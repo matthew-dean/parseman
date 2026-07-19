@@ -17,6 +17,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   static grammar to fall back to interpreter output. Macro evaluation now preserves the
   combinator and compiles both delimiter-present and delimiter-absent inputs normally.
 
+- **Fix: preserve direct node source in enclosing raw CSTs.** A `node(..., build)`
+  callback returning an application object previously became an empty raw leaf in its
+  structural parent, losing its matched source span's text. Opaque direct values now
+  retain `input.slice(span.start, span.end)` in that raw leaf. `cstBuildHost()` also
+  keeps its positioned-CST contract when such a direct node is nested: it emits the
+  grammar node as CST instead of placing the application object in `children`.
+
 ## 0.27.0 — 2026-07-16
 
 - **New: compiled-parser profiling boundary (`run(entry, input, { profile: true })`).**
