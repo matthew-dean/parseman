@@ -12,6 +12,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   selector execution. An unresolved composition now leaves the module's combinators and
   Parseman import intact; fully resolvable compositions remain statically fused.
 
+- **Fix: macro-compile `skip(main, trailing)` combinators.** The runtime, code generator,
+  and IR already supported `skip`, but the macro evaluator omitted it, causing an otherwise
+  static grammar to fall back to interpreter output. Macro evaluation now preserves the
+  combinator and compiles both delimiter-present and delimiter-absent inputs normally.
+
 ## 0.27.0 — 2026-07-16
 
 - **New: compiled-parser profiling boundary (`run(entry, input, { profile: true })`).**
