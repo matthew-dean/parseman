@@ -2161,8 +2161,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
   const profileRecognizer = recV
   const profileCapture = capV
+  // A structural node can make its CST-trivia contract grammar-owned. That is
+  // stronger than a host preference: `node(..., undefined, { captureTrivia:
+  // true })` must keep its log even when the injected host explicitly opts out.
+  // This mirrors the interpreter's `capturesTrivia` decision above.
+  const structuralCapturesTrivia = structural && def.captureTrivia === true
   const allocStmt = structural
-    ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
+    ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${structuralCapturesTrivia ? 'true' : hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
       + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
     : capturesTrivia
       ? `${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : []`

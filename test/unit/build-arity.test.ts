@@ -177,6 +177,32 @@ export const P = node('P', parser({ trivia: regex(/ +/) }, sequence(literal('a')
     expect(value).toEqual({ triviaLog: [1, 2, 1] })
     expect(triviaEntries(value.triviaLog, undefined, { nodeLog: true }).insertIndex(0)).toBe(1)
   })
+
+  it('macro preserves grammar-owned structural trivia when the host explicitly opts out', () => {
+    const { fn } = macroParser(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+export const P = node('P', parser({ trivia: regex(/ +/) }, sequence(literal('a'), literal('b'))), undefined,
+  { captureTrivia: true })
+`, 'P')
+    let log: readonly number[] | undefined
+    const host = Object.assign(
+      (
+        _type: string,
+        _children: readonly unknown[],
+        _fields: unknown,
+        _span: unknown,
+        _rawChildren: readonly unknown[],
+        triviaLog: readonly number[],
+      ) => {
+        log = triviaLog
+        return { type: 'P' }
+      },
+      { _parsemanCaptureTrivia: () => false },
+    )
+    const result = fn('a b', 0, { build: host })
+    expect(result.ok).toBe(true)
+    expect(log).toEqual([1, 2, 1])
+  })
 })
 
 describe('node-local trivia capture', () => {
