@@ -203,6 +203,16 @@ export const P = node('P', parser({ trivia: regex(/ +/) }, sequence(literal('a')
     expect(result.ok).toBe(true)
     expect(log).toEqual([1, 2, 1])
   })
+
+  it('macro grammar-owned structural capture is safe without a BuildHost', () => {
+    const { fn } = macroParser(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+export const P = node('P', parser({ trivia: regex(/ +/) }, sequence(literal('a'), literal('b'))), undefined,
+  { captureTrivia: true })
+`, 'P')
+    const result = fn('a b', 0, {})
+    expect(result.ok).toBe(true)
+  })
 })
 
 describe('node-local trivia capture', () => {

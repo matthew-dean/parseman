@@ -136,4 +136,50 @@ describe('structural-node capture gate — host-arity inference', () => {
     expect(compiledResult.ok).toBe(true)
     expect(logs.get('StaticDoc')).toEqual([1, 2, 1])
   })
+
+  it('grammar-owned structural capture is safe without a BuildHost (interpreter == compiled)', () => {
+    const Static = node(
+      'Static',
+      parser({ trivia: rw }, sequence(literal('a'), literal('b'))),
+      undefined,
+      { captureTrivia: true },
+    )
+    const input = 'a b'
+    const interpreted = Static.parse(input, 0, { trackLines: false })
+    const compiled = compile(Static).parse(input)
+    expect(interpreted.ok).toBe(true)
+    expect(compiled).toEqual(interpreted)
+  })
+
+  it('a selective host can opt out around a nested static capture (interpreter == compiled)', () => {
+    const Inner = node(
+      'Inner',
+      parser({ trivia: rw }, sequence(literal('b'), literal('c'))),
+      undefined,
+      { captureTrivia: true },
+    )
+    const Outer = node(
+      'Outer',
+      parser({ trivia: rw }, sequence(literal('a'), Inner, literal('d'))),
+    )
+    const logs = new Map<string, readonly number[]>()
+    const host = Object.assign(
+      (type: string, _children: readonly unknown[], _fields: unknown, _span: unknown, _raw: readonly unknown[], triviaLog: readonly number[]) => {
+        logs.set(type, triviaLog)
+        return { type }
+      },
+      { _parsemanCaptureTrivia: (type: string) => type === 'Inner' },
+    )
+    const input = 'a b c d'
+    const interpreted = Outer.parse(input, 0, { trackLines: false, build: host })
+    expect(interpreted.ok).toBe(true)
+    const interpLogs = new Map(logs)
+    expect(interpLogs.get('Outer')).toEqual([])
+    expect(interpLogs.get('Inner')).toEqual([3, 4, 1])
+
+    logs.clear()
+    const compiled = compile(Outer).parseWithContext(input, { trackLines: false, build: host }, 0)
+    expect(compiled.ok).toBe(true)
+    expect(logs).toEqual(interpLogs)
+  })
 })

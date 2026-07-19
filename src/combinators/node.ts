@@ -95,7 +95,12 @@ export function node<N>(
   // capture for the inner scope; when it never reads state (5th), skip the state clone.
   // A STRUCTURAL node (no own build) defers to `ctx.build` / a default CST, which
   // may read either, so capture both.
-  const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : true)
+  // A grammar-owned capture is unconditional. Otherwise a structural node lets
+  // an explicitly selective host opt out just like compiled output does. The
+  // default CST (no host) still retains trivia: its tree is the only owner.
+  // Hosts without the optional predicate retain the historical conservative
+  // behaviour here; compile() may additionally elide based on host arity.
+  const directCapturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : false)
   const clonesState = build ? buildReadsState(def) : true
   const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
   return {
@@ -103,6 +108,12 @@ export function node<N>(
     _meta: meta,
     _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<N> {
+      // `rules()` supplies inferred types after node() is constructed, so read it
+      // at parse time before consulting a type-selective structural host.
+      const nodeType = def.type ?? missingInferredType()
+      const capturesTrivia = directCapturesTrivia
+        || (!build && (ctx.build?._parsemanCaptureTrivia === undefined
+          || ctx.build._parsemanCaptureTrivia(nodeType)))
       const saved = beginCstNodeCapture(ctx)
       const savedFields = ctx._fields
       ctx._fields = capturesFields ? [] : undefined
@@ -126,7 +137,6 @@ export function node<N>(
 
       // unwrap/collapse: a single captured child IS the value — skip build.
       const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
-      const nodeType = def.type ?? missingInferredType()
       const cstOutput = (ctx.build as unknown as { _parsemanCstOutput?: true } | undefined)?._parsemanCstOutput === true
       const built: unknown = unwrap && children.length === 1
         ? unwrapChild(children[0])
