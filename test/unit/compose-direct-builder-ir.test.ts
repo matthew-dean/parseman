@@ -49,6 +49,13 @@ describe('compose over a macro-built direct node builder', () => {
     expect(rehydrated.Direct!('x', 0, { build: host }).value).toBe('direct')
   })
 
+  it('never evaluates a captured builder source while rehydrating IR', () => {
+    const source = `rules((g) => ({ Direct: _nd('Direct', literal('x'), '() => lexicalHelper()') }))`
+    const entries = evalRuleMapIR(source)
+    const direct = entries.find(([name]) => name === 'Direct')![1]
+    expect(() => direct.parse('x', 0, { trackLines: false })).toThrow('IR node build requires static re-lowering')
+  })
+
   it('keeps the direct value after composition with a second grammar', () => {
     const delta = parseman.rules(() => ({ Tail: parseman.literal('z') }))
     const composed = parseman.compose([base as never, delta]) as unknown as Record<

@@ -111,16 +111,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     return t as Comb
   }
   const _nd = (type: string, child: Comb, src: string, opts?: unknown): Comb => {
-    // A serialized direct builder needs a live sentinel as well as buildSrc.
+    // A serialized direct builder needs an inert sentinel as well as buildSrc.
     // `node(..., undefined)` is structural, so re-lowering a composed artifact
     // silently routes it through ctx.build/default CST even though the IR still
-    // carries the callback source. The compiler uses buildSrc to emit the real
-    // callback; this sentinel is only the interpreter fallback when source cannot
-    // be evaluated (for example macro-captured TypeScript syntax).
-    let build: (...args: unknown[]) => unknown
-    // eslint-disable-next-line no-eval
-    try { build = (0, eval)(`(${src})`) } catch { build = () => { throw new Error('IR node build not materialized') } }
-    const n = node(type, child as never, build as never, opts as never)
+    // carries the callback source. The compiler is the only consumer that may
+    // materialize `buildSrc`; raw IR interpretation deliberately rejects direct
+    // builders rather than evaluating arbitrary captured source at runtime.
+    const n = node(type, child as never, (() => { throw new Error('IR node build requires static re-lowering') }) as never, opts as never)
     ;(n._def as { buildSrc?: string }).buildSrc = src
     return n as Comb
   }

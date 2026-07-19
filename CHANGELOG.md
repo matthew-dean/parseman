@@ -10,7 +10,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   structural, so generated composed grammars routed it through `ctx.build` or a
   default CST instead of its grammar-owned builder. Rehydrated direct nodes now
   retain a direct builder marker while preserving their serialized callback source,
-  so interpreter, compiled, macro-built, and downstream-composed grammars agree.
+  so compiled, macro-built, and downstream-composed grammars agree. Raw IR
+  interpretation rejects direct builders rather than evaluating captured source.
 
 - **Fix: preserve runtime `compose()` when a composition cannot be resolved at macro
   build time.** Previously the macro could lower reachable local combinators before
