@@ -18,6 +18,7 @@
  *   export default { plugins: [parseman.rollup()] }
  */
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
@@ -74,6 +75,90 @@ function getCompiledResolver(): ResolverFactory {
     conditionNames: ['import', 'require', 'default'],
     mainFields: ['module', 'main'],
   })
+}
+
+type ResolvedGrammarModule = {
+  file: string
+  /** A private TypeScript source module, not a published macro artifact. */
+  source: boolean
+}
+
+const PRIVATE_SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts'])
+
+function nearestPackageRoot(file: string): string | null {
+  let dir = path.dirname(file)
+  for (;;) {
+    try {
+      if (fs.statSync(path.join(dir, 'package.json')).isFile()) return fs.realpathSync(dir)
+    } catch { /* keep walking upward */ }
+    const parent = path.dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+function isWithinPackageRoot(file: string, root: string): boolean {
+  const relative = path.relative(root, file)
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
+/**
+ * Resolve only a relative/absolute source-private import. Published package
+ * imports deliberately remain compiled-artifact-only: source is allowed here
+ * solely so `import { syntax } from './recognition.js'` can consume the
+ * colocated `recognition.ts` before a bundler has emitted that JS file.
+ */
+function resolvePrivateSourceModule(from: string, specifier: string): string | null {
+  if (!specifier.startsWith('.') && !path.isAbsolute(specifier)) return null
+  const packageRoot = nearestPackageRoot(from)
+  if (!packageRoot) return null
+  const base = path.resolve(path.dirname(from), specifier)
+  const ext = path.extname(base)
+  const candidates = [
+    base,
+    ...(ext ? ['.ts', '.tsx', '.mts', '.cts'].map(next => `${base.slice(0, -ext.length)}${next}`) : []),
+    ...(!ext ? ['.ts', '.tsx', '.mts', '.cts'].map(next => `${base}${next}`) : []),
+    ...(!ext ? ['index.ts', 'index.tsx', 'index.mts', 'index.cts'].map(next => path.join(base, next)) : []),
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (!fs.statSync(candidate).isFile()) continue
+      // Both paths are real, so a symlink cannot smuggle a source dependency out
+      // of the importing package after the lexical `../` check passed.
+      const real = fs.realpathSync(candidate)
+      if (isWithinPackageRoot(real, packageRoot)) return real
+    } catch { /* try the next source spelling */ }
+  }
+  return null
+}
+
+function resolveGrammarModule(from: string, specifier: string): ResolvedGrammarModule | null {
+  // An explicit source import means source semantics even when a stale/generated
+  // sibling JS artifact exists. Ordinary `.js` imports keep compiled precedence.
+  if (PRIVATE_SOURCE_EXTENSIONS.has(path.extname(specifier))) {
+    const file = resolvePrivateSourceModule(from, specifier)
+    return file ? { file, source: true } : null
+  }
+  try {
+    const file = getCompiledResolver().resolveFileSync(from, specifier).path
+    if (file) return { file, source: false }
+  } catch { /* private source fallback below */ }
+  const file = resolvePrivateSourceModule(from, specifier)
+  return file ? { file, source: true } : null
+}
+
+// Recursive source lowering is a build-time operation. This guard makes an
+// import cycle fail closed rather than recursing into a runtime composition.
+const _sourceLowering = new Set<string>()
+const _sourceLoweringCache = new Map<string, { mtimeMs: number; parsed: ParsedModule | null }>()
+
+function sourceLoweringCacheKey(
+  file: string,
+  moduleAliases: Set<string>,
+  warnUnloweredRegex: boolean,
+  recovery: boolean,
+): string {
+  return `${file}\0${[...moduleAliases].sort().join('\0')}\0${warnUnloweredRegex ? 'warn' : ''}\0${recovery ? 'recovery' : ''}`
 }
 
 // Module-level parse cache for imported COMPILED grammar modules (read to recover
@@ -268,6 +353,46 @@ export type TransformMacroResult = {
   map: ReturnType<MagicString['generateMap']>
   /** Diagnostics for macro-referencing shapes that fell back to the interpreter. */
   warnings: string[]
+}
+
+/**
+ * Read a source-private grammar as if Vite had already run this macro on it.
+ * The result is still only an in-memory artifact for the importing transform:
+ * no source module is executed, emitted, or made available at runtime.
+ */
+function lowerPrivateSourceModule(
+  file: string,
+  moduleAliases: Set<string>,
+  warnUnloweredRegex: boolean,
+  recovery: boolean,
+): ParsedModule | null {
+  if (_sourceLowering.has(file)) return null
+  let mtimeMs: number
+  try {
+    mtimeMs = fs.statSync(file).mtimeMs
+  } catch {
+    return null
+  }
+  const cacheKey = sourceLoweringCacheKey(file, moduleAliases, warnUnloweredRegex, recovery)
+  const hit = _sourceLoweringCache.get(cacheKey)
+  if (hit && hit.mtimeMs === mtimeMs) return hit.parsed
+  _sourceLowering.add(file)
+  let parsedModule: ParsedModule | null = null
+  try {
+    const source = fs.readFileSync(file, 'utf8')
+    const transformed = transformMacro(source, file, moduleAliases, warnUnloweredRegex, recovery)
+    if (!transformed || transformed.warnings.length > 0) return null
+    const parsed = parseSync(file, transformed.code)
+    parsedModule = parsed.errors.length === 0
+      ? { body: parsed.program.body as unknown[], src: transformed.code }
+      : null
+    return parsedModule
+  } catch {
+    return null
+  } finally {
+    _sourceLoweringCache.set(cacheKey, { mtimeMs, parsed: parsedModule })
+    _sourceLowering.delete(file)
+  }
 }
 
 export function transformMacro(
@@ -531,8 +656,11 @@ export function transformMacro(
   // spread by following that module's own import of `binding` to its compiled file
   // and recursing, then eval the literal with the resolved ancestors stubbed in so
   // the spreads splice their pieces. `seen` guards against an import cycle.
-  const resolveModulePieces = (file: string, exportName: string, seen: Set<string>): RawItem[] | null => {
-    const mod = parseModuleCached(file)
+  const resolveModulePieces = (module: ResolvedGrammarModule, exportName: string, seen: Set<string>): RawItem[] | null => {
+    const { file } = module
+    const mod = module.source
+      ? lowerPrivateSourceModule(file, moduleAliases, warnUnloweredRegex, recovery)
+      : parseModuleCached(file)
     if (!mod) return null
     const localFor = exportLocalName(mod.body as AnyNode[], exportName)
     const initNode = localFor ? topLevelInit(mod.body as AnyNode[], localFor) : null
@@ -552,9 +680,10 @@ export function transformMacro(
       const b = imports.get(local)
       let subPieces: RawItem[] = []
       if (b) {
-        let subFile: string | null = null
-        try { subFile = getCompiledResolver().resolveFileSync(file, b.source).path ?? null } catch { /* unresolved */ }
-        if (subFile && !seen.has(subFile)) subPieces = resolveModulePieces(subFile, b.imported, new Set(seen).add(subFile)) ?? []
+        const subModule = resolveGrammarModule(file, b.source)
+        if (subModule && !seen.has(subModule.file)) {
+          subPieces = resolveModulePieces(subModule, b.imported, new Set(seen).add(subModule.file)) ?? []
+        }
       }
       stubNames.push(local)
       stubVals.push({ [Symbol.for('parseman.composedPieces')]: subPieces })
@@ -576,9 +705,8 @@ export function transformMacro(
     let result: RawItem[] | null = null
     const binding = importBindings.get(localName)
     if (binding) {
-      let file: string | null = null
-      try { file = getCompiledResolver().resolveFileSync(id, binding.source).path ?? null } catch { /* unresolved */ }
-      result = file ? resolveModulePieces(file, binding.imported, new Set([file])) : null
+      const module = resolveGrammarModule(id, binding.source)
+      result = module ? resolveModulePieces(module, binding.imported, new Set([module.file])) : null
     }
     importedPiecesCache.set(localName, result)
     return result
