@@ -2266,7 +2266,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     `${i}const ${ndV} = (${profileRecognizer} || ${profileCapture}) ? undefined : (${finalExpr})`,
     `${i}if (!(${profileRecognizer})) {`,
     `${i}  if (${sc}) ${sc}.push(${ndV})`,
-    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : (typeof ${ndV} === 'object' && ${ndV} !== null ? input.slice(${pos}, ${endVar}) : ''), span: { start: ${pos}, end: ${endVar} } })`,
     `${i}}`,
   )
 

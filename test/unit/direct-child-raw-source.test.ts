@@ -1,0 +1,95 @@
+/**
+ * A direct node builder returns an application object, while an enclosing
+ * structural node still needs the exact source span for its raw CST view. This
+ * covers a multi-token direct node, trivia around it, a rolled-back choice arm,
+ * and expect() recovery in both the interpreter and macro output.
+ */
+import { beforeAll, describe, expect, it } from 'vitest'
+import {
+  choice, expect as required, literal, node, oneOrMore, parse, parser, regex, run,
+  sequence, trivia,
+} from '../../src/index.ts'
+import { transformMacro } from '../../src/plugin/index.ts'
+
+type Result = { child: unknown; raw: unknown }
+type RuleFn = (input: string, pos: number, ctx: { trackLines?: boolean; _errors?: unknown[] }) =>
+  { ok: boolean; value?: Result; span: { start: number; end: number } }
+
+const ws = trivia(oneOrMore(choice(
+  regex(/[ \t\n]+/),
+  regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+)))
+const Color = node('Color', sequence(literal('re'), literal('d')), () => ({ kind: 'color' }))
+const summarize = (children: readonly unknown[], raw: readonly unknown[]): Result => ({ child: children[1], raw: raw[1] })
+const Call = node('Call', parser({ trivia: ws }, choice(
+  sequence(literal('fn('), Color, literal('!')),
+  sequence(literal('fn('), Color, literal(','), literal('blue'), literal(')')),
+)), (children, _fields, _span, raw) => summarize(children, raw))
+const RecoveringCall = node('RecoveringCall', sequence(
+  literal('fn('), Color, required(literal(')')),
+), (children, _fields, _span, raw) => summarize(children, raw))
+
+const MACRO = `
+import { choice, expect, literal, node, oneOrMore, parser, regex, sequence, trivia } from 'parseman' with { type: 'macro' }
+const ws = trivia(oneOrMore(choice(
+  regex(/[ \\t\\n]+/),
+  regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//),
+)))
+const Color = node('Color', sequence(literal('re'), literal('d')), () => ({ kind: 'color' }))
+const Call = node('Call', parser({ trivia: ws }, choice(
+  sequence(literal('fn('), Color, literal('!')),
+  sequence(literal('fn('), Color, literal(','), literal('blue'), literal(')')),
+)), (children, _fields, _span, raw) => ({ child: children[1], raw: raw[1] }))
+const RecoveringCall = node('RecoveringCall', sequence(
+  literal('fn('), Color, expect(literal(')')),
+), (children, _fields, _span, raw) => ({ child: children[1], raw: raw[1] }))
+`.trim()
+
+let macro: { Call: RuleFn; RecoveringCall: RuleFn }
+
+beforeAll(() => {
+  const result = transformMacro(MACRO, 'direct-child-raw-source.ts', new Set(['parseman']))
+  if (!result) throw new Error('macro transform returned null')
+  if (result.code.includes("from 'parseman'")) throw new Error('macro transform did not compile')
+  macro = new Function(result.code.replace(/\bconst\b/g, 'var') + '\nreturn { Call, RecoveringCall }')() as typeof macro
+})
+
+function assertSource(value: Result | undefined): void {
+  expect(value).toEqual({
+    child: { kind: 'color' },
+    raw: { _tag: 'leaf', value: 'red', span: { start: 3, end: 6 } },
+  })
+}
+
+describe('direct node child raw source', () => {
+  const input = 'fn(red /* note */\n  , blue)'
+
+  it('preserves the direct object and its multi-token source after choice rollback', () => {
+    const result = run(Call, input)
+    expect(result.ok).toBe(true)
+    if (result.ok) assertSource(result.value as Result)
+  })
+
+  it('does the same in macro-compiled output', () => {
+    const result = macro.Call(input, 0, { trackLines: false })
+    expect(result.ok).toBe(true)
+    if (result.ok) assertSource(result.value)
+  })
+
+  it('keeps the raw child through expect() recovery', () => {
+    const result = parse(RecoveringCall, 'fn(red', { recover: true })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      assertSource(result.value)
+      expect(result.errors).toHaveLength(1)
+    }
+  })
+
+  it('keeps the raw child through macro expect() recovery', () => {
+    const errors: unknown[] = []
+    const result = macro.RecoveringCall('fn(red', 0, { trackLines: false, _errors: errors })
+    expect(result.ok).toBe(true)
+    if (result.ok) assertSource(result.value)
+    expect(errors).toHaveLength(1)
+  })
+})

@@ -141,7 +141,10 @@ export function node<N>(
               : { _tag: 'node', type: nodeType, span: { start: r.span.start, end: r.span.end }, state: st ?? null, children }
       const rawEntry = isCstChild(built)
         ? built
-        : { _tag: 'leaf', value: typeof built === 'string' ? built : '', span: r.span }
+        // A direct semantic object is opaque to the raw CST, but its source is
+        // not. Preserve the exact matched span so legacy/structural parents can
+        // retain text and trivia without fabricating an empty token.
+        : { _tag: 'leaf', value: typeof built === 'string' ? built : typeof built === 'object' && built !== null ? input.slice(r.span.start, r.span.end) : '', span: r.span }
       if (saved.buf !== undefined || saved.ch !== undefined) {
         pushCstChild(ctx, built, rawEntry)
       }
