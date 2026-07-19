@@ -14,7 +14,7 @@
  * `arguments` all yield `null` (→ caller keeps capture).
  */
 import { describe, it, expect } from 'vitest'
-import { node, sequence, regex, literal, parser, compile, parse } from '../../src/index.ts'
+import { node, sequence, regex, literal, parser, compile, parse, triviaEntries } from '../../src/index.ts'
 import type { ParserDef } from '../../src/index.ts'
 import { confirmedBuildArity, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
@@ -173,7 +173,9 @@ export const P = node('P', parser({ trivia: regex(/ +/) }, sequence(literal('a')
   { captureTrivia: true })
 `, 'P')
 
-    expect(fn('a b', 0, {}).value).toEqual({ triviaLog: [1, 2, 1] })
+    const value = fn('a b', 0, {}).value as { triviaLog: readonly number[] }
+    expect(value).toEqual({ triviaLog: [1, 2, 1] })
+    expect(triviaEntries(value.triviaLog, undefined, { nodeLog: true }).insertIndex(0)).toBe(1)
   })
 })
 

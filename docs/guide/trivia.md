@@ -102,7 +102,9 @@ run of consecutive numbers, so entry `i` starts at `i * stride`:
 | Per-node `triviaLog` (`{ nodeLog: true }`) | `[start, end, insertIdx]` (stride 3) | `[start, end, insertIdx, kind]` (stride 4) |
 
 `triviaEntries(log, labels?, opts?)` gives you an indexed view — `.start(i)`, `.end(i)`,
-`.kind(i)`, `.text(i, input)` — without materializing objects. For tree-shaped access
+`.insertIndex(i)` (for a per-node log), `.kind(i)`, `.text(i, input)` — without materializing
+objects. `insertIndex(i)` is the `rawChildren` boundary before which that trivia was consumed;
+it is `undefined` for a root log. For tree-shaped access
 (trivia before/after each node), pass the tree to
 [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
