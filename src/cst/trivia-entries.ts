@@ -5,6 +5,8 @@ export type TriviaEntriesView = {
   readonly stride: number
   start(i: number): number
   end(i: number): number
+  /** Raw-child insertion boundary; defined only for a per-node trivia log. */
+  insertIndex(i: number): number | undefined
   kindIndex(i: number): number | undefined
   kind(i: number): string | undefined
   text(i: number, input: string): string
@@ -37,6 +39,9 @@ export function triviaEntries(
     },
     end(i) {
       return log[entryOffset(i, stride) + 1]!
+    },
+    insertIndex(i) {
+      return opts?.nodeLog ? log[entryOffset(i, stride) + 2] : undefined
     },
     kindIndex(i) {
       if (!labels) return undefined
