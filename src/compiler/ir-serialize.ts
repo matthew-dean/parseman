@@ -332,9 +332,12 @@ class Serializer {
       }
       case 'node': {
         if (def.build !== undefined && def.buildSrc === undefined) throw new Unserializable('node build without buildSrc')
-        const opts = def.unwrap || def.collapse
-          ? `, { ${def.unwrap ? 'unwrap: true' : 'collapse: true'} }`
-          : ''
+        const optEntries = [
+          ...(def.unwrap ? ['unwrap: true'] : []),
+          ...(def.collapse ? ['collapse: true'] : []),
+          ...(def.captureTrivia ? ['captureTrivia: true'] : []),
+        ]
+        const opts = optEntries.length > 0 ? `, { ${optEntries.join(', ')} }` : ''
         // `_nd` sets `_def.buildSrc` (same reason as `_tf`). No build → plain node.
         if (def.type === undefined) {
           if (def.buildSrc !== undefined) throw new Unserializable('inferred node build without inferred type')
@@ -345,7 +348,7 @@ class Serializer {
       }
       case 'grammar': {
         const trivia = def.clearTrivia ? 'null' : def.triviaParser ? kid(def.triviaParser) : 'undefined'
-        return `parser({ trivia: ${trivia}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(def.parser)})`
+        return `parser({ trivia: ${trivia}${def.captureTrivia ? ', captureTrivia: true' : ''}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(def.parser)})`
       }
       case 'withCtx': {
         // A `withCtx` round-trips through `_wc`, which rebuilds it AND re-attaches

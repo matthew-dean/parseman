@@ -25,7 +25,7 @@ import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type Scan
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
-import { buildReadsFields, parserHasOwnFields, parserHasTriviaSite } from './fields.ts'
+import { buildReadsFields, parserEnablesTriviaCapture, parserHasOwnFields, parserHasTriviaSite } from './fields.ts'
 import {
   transformFnSource,
   tryInlineUnaryTransform,
@@ -2126,11 +2126,15 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
 
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
-  const capTLv = structural ? v(ctx, '_ctl') : null
+  const capTLv = (structural || capturesTrivia) ? v(ctx, '_ctl') : null
   const capSTv = structural ? v(ctx, '_cst') : null
   const capFv = structural && hasFields ? v(ctx, '_cf') : null
   const tlV = capturesTrivia || structural ? v(ctx, '_tl') : '_EMPTY_TL'
-  if (!capturesTrivia) ctx.needsEmptyTl = true
+  // Direct nodes use `_EMPTY_TL` whenever their enclosing parser has not opted
+  // into capture; a node-local option can turn capture back on for just this
+  // scope. Structural nodes already need the shared empty array for their host
+  // gate.
+  ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
   // Per-node-type trivia-kind mask (structural/host nodes only): a host may want
   // one node type captured comments-only and another whitespace-and-all. Scoped
@@ -2154,15 +2158,18 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
   const profileRecognizer = recV
   const profileCapture = capV
+  const nodeTriviaGate = def.captureTrivia || parserEnablesTriviaCapture(def.parser)
+    ? 'true'
+    : '_ctx.captureTrivia === true'
   const allocStmt = structural
     ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
       + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
     : capturesTrivia
-      ? `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : []`
+      ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${nodeTriviaGate}), ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
       : `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : []`
   // When not capturing, set _ctx._cstTriviaLog = undefined so inner trivia terminals'
   // `if (_ctx._cstTriviaLog !== undefined)` guard short-circuits (no per-token push).
-  const innerTl = structural ? `${capTLv} ? ${tlV} : undefined` : capturesTrivia ? tlV : 'undefined'
+  const innerTl = structural || capturesTrivia ? `${capTLv} ? ${tlV} : undefined` : 'undefined'
   const fieldsOn = structural ? (capFv ?? 'false') : `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
   const sf = hasFields ? v(ctx, '_sf') : null
   const fArr = hasFields ? v(ctx, '_fa') : null
@@ -2180,7 +2187,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? `, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${smk ? `, ${smk} = _ctx._triviaCaptureMask` : ''}`
     : ''
   const installTrivia = needsTriviaFrame
-    ? `; _ctx.captureTrivia = true; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}`
+    ? `; _ctx.captureTrivia = ${capTLv ?? 'false'}; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}`
     : ''
   const restoreTrivia = needsTriviaFrame
     ? `; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}`
@@ -2579,10 +2586,19 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
           ctx.triviaKindLabels = def.triviaParser._meta.triviaKindLabels
         }
       }
+      const savedCapture = def.captureTrivia ? v(ctx, '_gcap') : null
       const r = emit(def.parser, ctx, pos)
       ctx.activeTrivia = savedTrivia
       ctx.triviaKindLabels = savedKindLabels
-      return r
+      if (!savedCapture) return r
+      return {
+        ...r,
+        stmts: [
+          `${ind(ctx)}const ${savedCapture} = _ctx.captureTrivia; _ctx.captureTrivia = true`,
+          ...r.stmts,
+          `${ind(ctx)}_ctx.captureTrivia = ${savedCapture}`,
+        ],
+      }
     }
     case 'not':     return emitNot(def, ctx, pos)
     case 'node':    return emitNode(def, ctx, pos)

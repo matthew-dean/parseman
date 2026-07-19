@@ -5,6 +5,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.27.1 — 2026-07-18
 
+- **New: scoped `node(..., { captureTrivia: true })`.** A grammar can now retain
+  trivia for one CST node without enabling document-wide capture. The option is
+  scoped to that node, preserves inherited capture when it is already enabled,
+  and macro-compiled grammars use the same behavior.
+
 - **Fix: preserve runtime `compose()` when a composition cannot be resolved at macro
   build time.** Previously the macro could lower reachable local combinators before
   discovering an unresolved imported grammar. It then left `compose()` at runtime but

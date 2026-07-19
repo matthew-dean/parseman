@@ -226,7 +226,7 @@ describe('functional grammar — node() CST capture', () => {
 
   const { Pair: interpPair } = rules<{ Pair: Combinator<any> }>(g => {
     const Num = node('Num', regex(/[0-9]+/), (c, _fields, s, r, tl) => ({ _tag: 'node', type: 'Num', span: s, ...summarize(c, r, s, tl) }))
-    const Pair = node('Pair', parser({ trivia: ws }, sequence(regex(/[a-z]+/), literal(':'), g.Num)),
+    const Pair = node('Pair', parser({ trivia: ws, captureTrivia: true }, sequence(regex(/[a-z]+/), literal(':'), g.Num)),
       (c, _fields, s, r, tl) => ({ _tag: 'node', type: 'Pair', span: s, ...summarize(c, r, s, tl) }))
     return { Pair, Num }
   })
@@ -236,7 +236,7 @@ import { node, regex, literal, sequence, parser, trivia, oneOrMore, choice, rule
 const ws = trivia(oneOrMore(choice(regex(/[ \\t\\n]+/), regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//))))
 const { Pair } = rules(g => {
   const Num = node('Num', regex(/[0-9]+/), (c, _fields, s, r, tl) => ({ _tag: 'node', type: 'Num', span: s, ...summarize(c, r, s, tl) }))
-  const Pair = node('Pair', parser({ trivia: ws }, sequence(regex(/[a-z]+/), literal(':'), g.Num)),
+  const Pair = node('Pair', parser({ trivia: ws, captureTrivia: true }, sequence(regex(/[a-z]+/), literal(':'), g.Num)),
     (c, _fields, s, r, tl) => ({ _tag: 'node', type: 'Pair', span: s, ...summarize(c, r, s, tl) }))
   return { Pair, Num }
 })
