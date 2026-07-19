@@ -1,7 +1,7 @@
 import type { Combinator, FieldMap, ParseContext, ParseResult, ParserMeta, ParserDef } from '../types.ts'
 import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/capture-buffer.ts'
 import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
-import { buildFieldMap, buildReadsFields, parserEnablesTriviaCapture, parserHasOwnFields } from '../compiler/fields.ts'
+import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
@@ -95,10 +95,9 @@ export function node<N>(
   // capture for the inner scope; when it never reads state (5th), skip the state clone.
   // A STRUCTURAL node (no own build) defers to `ctx.build` / a default CST, which
   // may read either, so capture both.
-  const capturesTrivia = build ? buildReadsTrivia(def) : true
+  const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : true)
   const clonesState = build ? buildReadsState(def) : true
   const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
-  const innerEnablesTriviaCapture = parserEnablesTriviaCapture(combinator)
   return {
     _tag: 'node',
     _meta: meta,
@@ -116,7 +115,7 @@ export function node<N>(
       }
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
       // without touching the global _triviaLog, which is committed independently.
-      if (!capturesTrivia || (!captureTrivia && !saved.cap && !innerEnablesTriviaCapture)) ctx.captureTrivia = false
+      if (!capturesTrivia) ctx.captureTrivia = false
       const r = combinator.parse(input, pos, ctx)
       const fields = capturesFields ? buildFieldMap(ctx._fields) : undefined
       ctx._fields = savedFields

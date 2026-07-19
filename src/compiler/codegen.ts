@@ -513,7 +513,7 @@ function ensureTriviaFn(ctx: Ctx): string {
     `  }`,
     `  if (_cap && _e > _pos) {`,
     `    if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_pos, _e)`,
-    `    if (_ctx._cstTriviaLog !== undefined) _ctx._cstTriviaLog.push(_pos, _e, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0)`,
+    `    if (_ctx._cstTriviaLog !== undefined && _ctx.captureTrivia) _ctx._cstTriviaLog.push(_pos, _e, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0)`,
     `  }`,
     `  return _e`,
     `}`,
@@ -2119,10 +2119,14 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // rest/default param or `arguments` forces full capture, so a spread host never
   // silently loses data. jess hosts can ask for fields with arity 3 while trivia/state stay dead
   // (the cstTriviaLog per-token push dominates — ~28% of a real jess parse).
-  const capturesTrivia = mkType !== null || (!structural && buildReadsTrivia(def))
+  const capturesTrivia = mkType !== null || def.captureTrivia === true || (!structural && buildReadsTrivia(def))
   const clonesState = !structural && buildReadsState(def)
   const hasFields = parserHasOwnFields(def.parser)
   const capturesFields = hasFields && !structural && buildReadsFields(def)
+  // A nested parser({ captureTrivia: true }) needs this node's collector, but
+  // must not activate it until that parser scope is entered. Keep the collector
+  // decision separate from the active capture flag below.
+  const innerEnablesTriviaCapture = parserEnablesTriviaCapture(def.parser)
 
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
@@ -2130,11 +2134,10 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const capSTv = structural ? v(ctx, '_cst') : null
   const capFv = structural && hasFields ? v(ctx, '_cf') : null
   const tlV = capturesTrivia || structural ? v(ctx, '_tl') : '_EMPTY_TL'
-  // Direct nodes use `_EMPTY_TL` whenever their enclosing parser has not opted
-  // into capture; a node-local option can turn capture back on for just this
-  // scope. Structural nodes already need the shared empty array for their host
-  // gate.
-  ctx.needsEmptyTl = true
+  // Direct builders that declare trivia retain the established eager collector.
+  // `_EMPTY_TL` remains necessary for elided direct builders and host-gated
+  // structural nodes only.
+  if (!capturesTrivia || structural) ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
   // Per-node-type trivia-kind mask (structural/host nodes only): a host may want
   // one node type captured comments-only and another whitespace-and-all. Scoped
@@ -2158,18 +2161,18 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
   const profileRecognizer = recV
   const profileCapture = capV
-  const nodeTriviaGate = def.captureTrivia || parserEnablesTriviaCapture(def.parser)
-    ? 'true'
-    : '_ctx.captureTrivia === true'
   const allocStmt = structural
     ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
-      + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
+      + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
     : capturesTrivia
-      ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${nodeTriviaGate}), ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${capTLv} ? [] : _EMPTY_TL`
+      ? `${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : []`
       : `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : []`
-  // When not capturing, set _ctx._cstTriviaLog = undefined so inner trivia terminals'
-  // `if (_ctx._cstTriviaLog !== undefined)` guard short-circuits (no per-token push).
-  const innerTl = structural || capturesTrivia ? `${capTLv} ? ${tlV} : undefined` : 'undefined'
+  // The collector stays installed when a nested grammar can opt in; generated
+  // trivia scanners gate their push on `captureTrivia`, so this remains inert
+  // until that nested scope activates it.
+  const innerTl = structural || capturesTrivia
+    ? structural && !innerEnablesTriviaCapture ? `${capTLv} ? ${tlV} : undefined` : tlV
+    : 'undefined'
   const fieldsOn = structural ? (capFv ?? 'false') : `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
   const sf = hasFields ? v(ctx, '_sf') : null
   const fArr = hasFields ? v(ctx, '_fa') : null
