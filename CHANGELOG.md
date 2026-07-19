@@ -5,6 +5,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.27.1 — 2026-07-18
 
+- **Fix: retain direct `node(..., build)` semantics when re-lowering composed
+  grammar IR.** Rehydration restored `buildSrc` but recreated the node as
+  structural, so generated composed grammars routed it through `ctx.build` or a
+  default CST instead of its grammar-owned builder. Rehydrated direct nodes now
+  retain a direct builder marker while preserving their serialized callback source,
+  so interpreter, compiled, macro-built, and downstream-composed grammars agree.
+
 - **Fix: preserve runtime `compose()` when a composition cannot be resolved at macro
   build time.** Previously the macro could lower reachable local combinators before
   discovering an unresolved imported grammar. It then left `compose()` at runtime but

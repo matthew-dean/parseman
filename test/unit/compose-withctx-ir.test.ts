@@ -55,13 +55,12 @@ function buildCompiledGrammar(src: string): Record<string, unknown> {
 // SEMANTICS are asserted separately via a direct `_wc` round-trip below — a
 // `guard` reader would itself be unserializable and mask the withCtx path.)
 const CSS_SRC = `import { rules, choice, sequence, literal, regex, many, oneOrMore, node, withCtx } from 'parseman' with { type: 'macro' }
-const cst = (type) => (ch, _r, span) => ({ _tag: 'node', type, span, children: [...ch] })
 export const cssGrammar = rules(g => ({
-  Ruleset: node('Ruleset', sequence(g.SelectorList, literal('{'), g.declarationList, literal('}')), cst('Ruleset')),
-  SelectorList: node('SelectorList', oneOrMore(g.BasicSelector), cst('SelectorList')),
-  BasicSelector: node('Basic', regex(/\\.[a-z]+/), cst('Basic')),
+  Ruleset: node('Ruleset', sequence(g.SelectorList, literal('{'), g.declarationList, literal('}')), (ch, _r, span) => ({ _tag: 'node', type: 'Ruleset', span, children: [...ch] })),
+  SelectorList: node('SelectorList', oneOrMore(g.BasicSelector), (ch, _r, span) => ({ _tag: 'node', type: 'SelectorList', span, children: [...ch] })),
+  BasicSelector: node('Basic', regex(/\\.[a-z]+/), (ch, _r, span) => ({ _tag: 'node', type: 'Basic', span, children: [...ch] })),
   declarationList: withCtx({ inner: true }, many(choice(g.Ruleset, g.Declaration, literal(';')))),
-  Declaration: node('Decl', sequence(regex(/[a-z]+/), literal(':'), regex(/[a-z]+/)), cst('Decl')),
+  Declaration: node('Decl', sequence(regex(/[a-z]+/), literal(':'), regex(/[a-z]+/)), (ch, _r, span) => ({ _tag: 'node', type: 'Decl', span, children: [...ch] })),
 }))`
 
 describe('compose over a compiled base with a withCtx (0.26.3)', () => {

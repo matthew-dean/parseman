@@ -62,15 +62,14 @@ function buildCompiledGrammar(src: string): Record<string, unknown> {
 // css nesting selector) plus a `declarationList` whose block choice must keep
 // dispatching `Declaration` for an ident like `color` after composition.
 const CSS_SRC = `import { rules, choice, sequence, literal, regex, many, oneOrMore, node } from 'parseman' with { type: 'macro' }
-const cst = (type) => (ch, _r, span) => ({ _tag: 'node', type, span, children: [...ch] })
 export const cssGrammar = rules(g => ({
-  Ruleset: node('Ruleset', sequence(g.SelectorList, literal('{'), g.declarationList, literal('}')), cst('Ruleset')),
-  SelectorList: node('SelectorList', oneOrMore(g.simpleSelector), cst('SelectorList')),
+  Ruleset: node('Ruleset', sequence(g.SelectorList, literal('{'), g.declarationList, literal('}')), (ch, _r, span) => ({ _tag: 'node', type: 'Ruleset', span, children: [...ch] })),
+  SelectorList: node('SelectorList', oneOrMore(g.simpleSelector), (ch, _r, span) => ({ _tag: 'node', type: 'SelectorList', span, children: [...ch] })),
   simpleSelector: choice(g.AttributeSelector, { gate: (s: any) => !!(s && s.inner), combinator: literal('&') }, g.BasicSelector),
-  AttributeSelector: node('Attr', sequence(literal('['), regex(/[a-z]+/), literal(']')), cst('Attr')),
-  BasicSelector: node('Basic', regex(/\\.[a-z]+/), cst('Basic')),
+  AttributeSelector: node('Attr', sequence(literal('['), regex(/[a-z]+/), literal(']')), (ch, _r, span) => ({ _tag: 'node', type: 'Attr', span, children: [...ch] })),
+  BasicSelector: node('Basic', regex(/\\.[a-z]+/), (ch, _r, span) => ({ _tag: 'node', type: 'Basic', span, children: [...ch] })),
   declarationList: many(choice(g.Declaration, g.Ruleset, literal(';'))),
-  Declaration: node('Decl', sequence(regex(/[a-z]+/), literal(':'), regex(/[a-z]+/)), cst('Decl')),
+  Declaration: node('Decl', sequence(regex(/[a-z]+/), literal(':'), regex(/[a-z]+/)), (ch, _r, span) => ({ _tag: 'node', type: 'Decl', span, children: [...ch] })),
 }))`
 
 describe('compose over a compiled base with a gated choice (0.26.2)', () => {
@@ -137,9 +136,8 @@ describe('compose over a compiled base with a gated choice (0.26.2)', () => {
     // wrapped expression (unlike an `as`/`satisfies` SUFFIX). Exercises the
     // TSTypeAssertion branch end-to-end.
     const src = `import { rules, choice, sequence, literal, regex, node } from 'parseman' with { type: 'macro' }
-const cst = (type) => (ch, _r, span) => ({ _tag: 'node', type, span, children: [...ch] })
 export const g2 = rules(g => ({
-  Ruleset: node('Ruleset', sequence(g.Sel, literal('{'), literal('}')), cst('Ruleset')),
+  Ruleset: node('Ruleset', sequence(g.Sel, literal('{'), literal('}')), (ch, _r, span) => ({ _tag: 'node', type: 'Ruleset', span, children: [...ch] })),
   Sel: choice({ gate: (s) => !!((<any>s)?.inner), combinator: literal('&') }, regex(/\\.[a-z]+/)),
 }))`
     const mod = buildCompiledGrammar(src)
