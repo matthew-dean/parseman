@@ -2195,7 +2195,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? `, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${smk ? `, ${smk} = _ctx._triviaCaptureMask` : ''}`
     : ''
   const installTrivia = needsTriviaFrame
-    ? `; _ctx.captureTrivia = ${capTLv ?? 'false'}; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}`
+    ? `; _ctx.captureTrivia = ${capTLv ?? 'false'}; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build !== undefined && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}`
     : ''
   const restoreTrivia = needsTriviaFrame
     ? `; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}`

@@ -56,6 +56,22 @@ describe('node({ trailingTrivia: true })', () => {
     expectOwnership(logs)
   })
 
+  it('uses the default CST fallback in compiled output without a build host', () => {
+    // `trailingTrivia` is grammar-owned structural capture, not a requirement
+    // that a caller provide a CST host. This exercises the generated node-local
+    // trivia-mask installation when `_ctx.build` is absent.
+    const result = compile(grammar.Doc).parse(INPUT)
+    expect(result).toMatchObject({
+      ok: true,
+      span: { start: 0, end: 26 },
+      value: {
+        _tag: 'node',
+        type: 'Doc',
+        span: { start: 0, end: 26 },
+      },
+    })
+  })
+
   it('macro-compiles the node option with the same ownership', () => {
     const source = `
 import { choice, label, literal, many, node, oneOrMore, regex, rules, sequence, trivia } from 'parseman' with { type: 'macro' }
