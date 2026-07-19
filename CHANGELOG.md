@@ -13,7 +13,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   so compiled, macro-built, and downstream-composed grammars agree. Raw IR
   interpretation rejects direct builders rather than evaluating captured source.
   A direct builder carried through grammar composition must therefore be a
-  **macro-static** arrow-expression: identifier parameters plus a pure expression
+  **macro-static** arrow-expression: identifier parameters plus a self-contained expression
   using only those parameters and a small set of standard globals. It may not use
   lexical helpers, imported factories, statement bodies, or destructuring. Parseman
   verifies that subset with Oxc AST analysis during IR lowering and rejects any
