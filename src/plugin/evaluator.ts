@@ -16,6 +16,7 @@ import type {
 import type { Combinator } from '../types.ts'
 import { ref } from '../combinators/ref.ts'
 import * as parseman from '../index.ts'
+import { directBuilderUnsupportedBindings } from './direct-builder-static.ts'
 
 /**
  * Emit an AST subtree's source with TypeScript-only syntax removed. A gate source
@@ -300,6 +301,8 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         : parseman.node(inner, hasBuild ? () => null : undefined, opts)
       if (combi._def.tag === 'node' && buildSrc !== undefined) {
         combi._def.buildSrc = buildSrc
+        const staticError = directBuilderUnsupportedBindings(buildSrc)
+        if (staticError.length > 0) combi._def.buildStaticError = staticError
       }
       return combi
     } catch { return null }

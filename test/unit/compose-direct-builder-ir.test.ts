@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import * as parseman from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
-import { directBuilderUnsupportedBindings } from '../../src/compiler/inline-callback.ts'
+import { directBuilderUnsupportedBindings } from '../../src/plugin/direct-builder-static.ts'
 import { emitFusedSource } from '../../src/compiler/linker.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
@@ -56,26 +56,14 @@ describe('compose over a macro-built direct node builder', () => {
     })
   })
 
-  it('rejects a lexical helper while rehydrating IR, before it can emit a parser', () => {
-    const source = `rules((g) => ({ Direct: _nd('Direct', literal('x'), '() => lexicalHelper()') }))`
-    expect(() => evalRuleMapIR(source)).toThrow(
-      'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): lexicalHelper',
-    )
-  })
-
-  it('rejects an imported builder binding while rehydrating IR', () => {
-    const source = `rules((g) => ({ Direct: _nd('Direct', literal('x'), '() => importedFactory()') }))`
-    expect(() => evalRuleMapIR(source)).toThrow(
-      'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): importedFactory',
-    )
-  })
-
   it('rejects a real imported builder capture when compose re-lowers the macro artifact', () => {
     const captured = macroModule(`import { rules, literal, node } from 'parseman' with { type: 'macro' }
 import { importedFactory } from './ast-factory.ts'
 export const base = rules(g => ({
   Direct: node('Direct', literal('x'), () => importedFactory()),
 }))`).base as Record<string | symbol, unknown>
+    const carried = captured[COMPOSED_PIECES] as Array<{ ir?: string }>
+    expect(carried[0]!.ir).toContain('["importedFactory"]')
     expect(() => parseman.compose([captured as never])).toThrow(
       'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): importedFactory',
     )
@@ -100,6 +88,8 @@ const lexicalHelper = () => 'captured'
 export const base = rules(g => ({
   Direct: node('Direct', literal('x'), () => lexicalHelper()),
 }))`).base as Record<string | symbol, unknown>
+    const carried = captured[COMPOSED_PIECES] as Array<{ ir?: string }>
+    expect(carried[0]!.ir).toContain('["lexicalHelper"]')
     const delta = parseman.rules(() => ({ Tail: parseman.literal('z') }))
     expect(() => parseman.compose([captured as never, delta])).toThrow(
       'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): lexicalHelper',

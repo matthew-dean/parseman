@@ -16,11 +16,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   **macro-static** arrow-expression: identifier parameters plus a self-contained expression
   using only those parameters and a small set of standard globals. It may not use
   lexical helpers, imported factories, statement bodies, or destructuring. Parseman
-  verifies that subset with Oxc AST analysis during IR lowering and rejects any
-  unsupported builder before it emits a parser that could later fail with
+  verifies that subset with Oxc AST analysis during macro lowering, carries its
+  result as inert artifact metadata, and rejects any unsupported builder before
+  composition emits a parser that could later fail with
   `ReferenceError`. Typed `guard()` predicates and `withCtx()` state expressions
   now use the same TypeScript-stripped source path before macro codegen or IR
-  re-lowering, so composed artifacts stay valid generated JavaScript.
+  re-lowering, so composed artifacts stay valid generated JavaScript. Oxc remains
+  confined to the macro/plugin entry; public runtime bundles carry only the
+  validation result, never the parser or its native bindings.
 
 - **New: scoped `node(..., { captureTrivia: true })`.** A grammar can now retain
   trivia for one CST node without enabling document-wide capture. The option is

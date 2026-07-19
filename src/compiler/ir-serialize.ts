@@ -34,7 +34,6 @@ import { token } from '../combinators/token.ts'
 import { transform, skip, trivia, label, field } from '../combinators/map.ts'
 import { expect as expectC } from '../combinators/expect.ts'
 import { withCtx } from '../combinators/withCtx.ts'
-import { directBuilderUnsupportedBindings } from './inline-callback.ts'
 
 type Comb = Combinator<unknown>
 
@@ -102,7 +101,8 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   // source (`_def.fnSrc`/`buildSrc`) so re-lowering inlines it statically. The live
   // fn is only needed for interpreted mode; a self-contained transform source is
   // eval'd, a node build (which may reference imported AST classes) is left to its
-  // source only.
+  // source only. Macro-only validation metadata is carried as plain data: this
+  // runtime module never parses callback source or imports a compiler frontend.
   const _tf = (child: Comb, src: string): Comb => {
     let fn: (...a: unknown[]) => unknown
     // eslint-disable-next-line no-eval
@@ -111,10 +111,9 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     ;(t._def as { fnSrc?: string }).fnSrc = src
     return t as Comb
   }
-  const _nd = (type: string, child: Comb, src: string, opts?: unknown): Comb => {
-    const unsupported = directBuilderUnsupportedBindings(src)
-    if (unsupported.length > 0) {
-      throw new Error(`IR direct node builder for ${type} must be macro-static and self-contained; unsupported binding(s): ${unsupported.join(', ')}`)
+  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[]): Comb => {
+    if (staticError !== undefined && staticError.length > 0) {
+      throw new Error(`IR direct node builder for ${type} must be macro-static and self-contained; unsupported binding(s): ${staticError.join(', ')}`)
     }
     // A serialized direct builder needs an inert sentinel as well as buildSrc.
     // `node(..., undefined)` is structural, so re-lowering a composed artifact
@@ -123,7 +122,8 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     // materialize `buildSrc`; raw IR interpretation deliberately rejects direct
     // builders rather than evaluating arbitrary captured source at runtime.
     const n = node(type, child as never, (() => { throw new Error('IR node build requires static re-lowering') }) as never, opts as never)
-    ;(n._def as { buildSrc?: string }).buildSrc = src
+    ;(n._def as { buildSrc?: string; buildStaticError?: readonly string[] }).buildSrc = src
+    if (staticError !== undefined) (n._def as { buildStaticError?: readonly string[] }).buildStaticError = staticError
     return n as Comb
   }
   // `_gch` rebuilds a GATED choice AND restores its `_def.gateSrcs` (parallel to the
@@ -354,7 +354,12 @@ class Serializer {
           if (def.buildSrc !== undefined) throw new Unserializable('inferred node build without inferred type')
           return opts ? `node(${kid(def.parser)}, undefined${opts})` : `node(${kid(def.parser)})`
         }
-        if (def.buildSrc !== undefined) return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts})`
+        if (def.buildSrc !== undefined) {
+          const staticError = def.buildStaticError === undefined
+            ? ''
+            : `${opts ? '' : ', undefined'}, ${JSON.stringify(def.buildStaticError)}`
+          return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts}${staticError})`
+        }
         return opts ? `node(${JSON.stringify(def.type)}, ${kid(def.parser)}, undefined${opts})` : `node(${JSON.stringify(def.type)}, ${kid(def.parser)})`
       }
       case 'grammar': {
