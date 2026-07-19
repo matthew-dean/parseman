@@ -51,6 +51,7 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
       parser: root as Combinator<unknown>,
       triviaParser: clearTrivia ? undefined : (opts.trivia ?? undefined),
       clearTrivia,
+      ...(opts.captureTrivia ? { captureTrivia: true } : {}),
       trackLines: opts.trackLines ?? false,
     },
     parse(input: string, pos?: number, _ctx?: ParseContext): ParseResult<T> {

@@ -98,6 +98,43 @@ export function parserHasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator
   }
 }
 
+/**
+ * Can this node's inner grammar explicitly enable trivia capture? A surrounding
+ * node owns the collector, so a nested `parser({ captureTrivia: true })` must
+ * allocate that collector before it enters the grammar scope. Nested node()
+ * rules own their separate collector and therefore do not contribute here.
+ */
+export function parserEnablesTriviaCapture(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'grammar': return d.captureTrivia === true || parserEnablesTriviaCapture(d.parser, seen)
+    case 'node': return false
+    case 'sequence':
+    case 'choice': return d.parsers.some(x => parserEnablesTriviaCapture(x, seen))
+    case 'sepBy': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.separator, seen)
+    case 'skip': return parserEnablesTriviaCapture(d.main, seen) || parserEnablesTriviaCapture(d.skipped, seen)
+    case 'scanTo': return parserEnablesTriviaCapture(d.sentinel, seen) || d.skip.some(x => parserEnablesTriviaCapture(x, seen))
+    case 'recover': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.sentinel, seen)
+    case 'many':
+    case 'oneOrMore':
+    case 'optional':
+    case 'transform':
+    case 'trivia':
+    case 'token':
+    case 'label':
+    case 'field':
+    case 'expect':
+    case 'withCtx':
+    case 'not': return parserEnablesTriviaCapture(d.parser, seen)
+    case 'lazy': {
+      try { return parserEnablesTriviaCapture(d.thunk(), seen) } catch { return false }
+    }
+    default: return false
+  }
+}
+
 export function buildFieldMap(captures: ReadonlyArray<{ name: string; value: unknown; span: { start: number; end: number } }> | undefined): FieldMap | undefined {
   if (!captures?.length) return undefined
   const out: FieldMap = {}

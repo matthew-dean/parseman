@@ -119,11 +119,11 @@ describe('IR serialize round-trip', () => {
     roundTrip(rm, 'Ci', ['url(', 'URL(', 'nope'])
   })
 
-  it('round-trips captured transform/node callbacks and node collapse opts', () => {
+  it('round-trips captured transform/node callbacks and node capture opts', () => {
     const mapped = transform(regex(/[0-9]+/), (v: unknown) => v)
     if (mapped._def.tag === 'transform') mapped._def.fnSrc = '(v) => v'
 
-    const collapsed = node('Collapsed', regex(/[a-z]+/), (_children: readonly unknown[]) => null, { collapse: true })
+    const collapsed = node('Collapsed', regex(/[a-z]+/), (_children: readonly unknown[]) => null, { collapse: true, captureTrivia: true })
     if (collapsed._def.tag === 'node') collapsed._def.buildSrc = '(_children) => null'
 
     const rm = Object.entries(rules(() => ({
@@ -131,6 +131,7 @@ describe('IR serialize round-trip', () => {
       Collapsed: collapsed,
     })))
 
+    expect(serializeRuleMap(rm as never)).toContain('captureTrivia: true')
     roundTrip(rm, 'Mapped', ['1', '123', 'a'])
     roundTrip(rm, 'Collapsed', ['a', 'abc', '1'])
   })

@@ -9,11 +9,11 @@ to get a tree out:
 - **Your own AST** — pass a `build` callback that constructs whatever node shape you want
   from the captured children. Covered first.
 
-Either way, Parséman captures the rule's terminals into `children` / `rawChildren` and
-records trivia as flat `[start, end, insertIdx, …]` entries in `triviaLog`. **Capture is
-the library's job** — you don't wrap terminals to recover their spans, and you don't
-reconstruct trivia. It's collected as the parser runs, in both the interpreter and the
-compiled build.
+Either way, Parséman captures the rule's terminals into `children` / `rawChildren`. When
+that node owns trivia capture, it also records trivia as flat `[start, end, insertIdx, …]`
+entries in `triviaLog`. **Capture is the library's job** — you don't wrap terminals to
+recover their spans, and you don't reconstruct trivia. It is collected as the parser runs,
+in both the interpreter and the compiled build.
 
 ```ts
 import { rules, parser, node, regex, literal, sequence, many, trivia } from 'parseman'
@@ -62,6 +62,41 @@ Expr.parse('1 + 2 + 3', 0, { trackLines: false })
 Wrap a rule's inner combinator in `parser({ trivia }, combinator)` so trivia-skipping is
 baked in regardless of which rule you start from; the macro compiles the wrapper (and all
 capture) away to flat JS.
+
+### Scoped trivia ownership
+
+There are three deliberately separate concerns:
+
+- `parser({ trivia, captureTrivia: true }, child)` **activates** recording while `child`
+  runs. It is useful for a local grammar scope; the surrounding parser state resumes when
+  that scope ends.
+- `node(child, build, { captureTrivia: true })` **owns** the per-node log. The log belongs
+  to that node's build/CST boundary, not to every combinator below it.
+- A direct `build` callback that declares its fifth `triviaLog` parameter retains the
+  established capture behavior. That arity analysis is a performance optimization and
+  compatibility rule, not a second parser-wide capture API.
+
+Plain combinators such as `sequence()` and `many()` do not own nodes, so they do not expose
+or retain a `triviaLog`. Put the ownership boundary at `node()` instead of building a side
+channel or reconstructing source gaps later.
+
+```ts
+const ws = trivia(regex(/[ \t]+/))
+
+const Pair = node(
+  'Pair',
+  parser({ trivia: ws }, sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/))),
+  (_children, _fields, _span, _rawChildren, triviaLog) => ({ type: 'Pair', triviaLog }),
+  { captureTrivia: true },
+)
+
+// Only Pair owns these offsets; the inner sequence and terminals remain plain combinators.
+Pair.parse('name : 1', 0, { trackLines: false })
+```
+
+Use parser-level activation for a nested region only when that region is inside an owning
+`node()`. For example, `node(... parser({ captureTrivia: true }, child) ...)` records the
+inner region for that node without making unrelated sibling nodes retain trivia.
 
 ### Capture follows your `build`'s arity {#capture-follows-arity}
 

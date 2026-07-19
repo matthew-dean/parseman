@@ -1566,7 +1566,7 @@ export function scanBranchLabeled(shape: ScanShape, kindIndex: number, mint: Min
     `    if (${m.end} > _e) {`,
     `      if (_cap) {`,
     `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, ${m.end}, ${kindIndex})`,
-    `        if (_ctx._cstTriviaLog !== undefined && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << kindIndex}))) _ctx._cstTriviaLog.push(_e, ${m.end}, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${kindIndex})`,
+    `        if (_ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << kindIndex}))) _ctx._cstTriviaLog.push(_e, ${m.end}, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${kindIndex})`,
     `      }`,
     `      _e = ${m.end}`,
     `      continue`,
