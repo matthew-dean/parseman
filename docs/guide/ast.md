@@ -72,6 +72,10 @@ There are three deliberately separate concerns:
   that scope ends.
 - `node(child, build, { captureTrivia: true })` **owns** the per-node log. The log belongs
   to that node's build/CST boundary, not to every combinator below it.
+- `node(child, build, { trailingTrivia: true })` is the narrow document-boundary form:
+  after `child` succeeds, it commits one final run of the active trivia into that same
+  node's log. It also enables that node's capture frame, even when its build/host would
+  otherwise elide trivia.
 - A direct `build` callback that declares its fifth `triviaLog` parameter retains the
   established capture behavior. That arity analysis is a performance optimization and
   compatibility rule, not a second parser-wide capture API.
@@ -97,6 +101,21 @@ Pair.parse('name : 1', 0, { trackLines: false })
 Use parser-level activation for a nested region only when that region is inside an owning
 `node()`. For example, `node(... parser({ captureTrivia: true }, child) ...)` records the
 inner region for that node without making unrelated sibling nodes retain trivia.
+
+### Terminal document trivia
+
+`many()` correctly rolls back trivia before a failed next item: that run is terminal, not
+between two siblings. A document root that needs to retain a final comment can opt in
+without a source-gap scan:
+
+```ts
+const Document = node('Document', many(rule), undefined, { trailingTrivia: true })
+```
+
+Use this only at a meaningful terminal boundary, normally the document root. A block body
+followed by `}` already has a real following term, so its final trivia belongs to that
+block's normal node log; do not opt every nested node in. This keeps ordinary sibling-gap
+ownership unchanged and avoids a parser-wide capture tax.
 
 ### Capture follows your `build`'s arity {#capture-follows-arity}
 

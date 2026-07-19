@@ -2119,7 +2119,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // rest/default param or `arguments` forces full capture, so a spread host never
   // silently loses data. jess hosts can ask for fields with arity 3 while trivia/state stay dead
   // (the cstTriviaLog per-token push dominates — ~28% of a real jess parse).
-  const capturesTrivia = mkType !== null || def.captureTrivia === true || (!structural && buildReadsTrivia(def))
+  const capturesTrivia = mkType !== null || def.captureTrivia === true || def.trailingTrivia === true || (!structural && buildReadsTrivia(def))
   const clonesState = !structural && buildReadsState(def)
   const hasFields = parserHasOwnFields(def.parser)
   const capturesFields = hasFields && !structural && buildReadsFields(def)
@@ -2165,7 +2165,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // stronger than a host preference: `node(..., undefined, { captureTrivia:
   // true })` must keep its log even when the injected host explicitly opts out.
   // This mirrors the interpreter's `capturesTrivia` decision above.
-  const structuralCapturesTrivia = structural && def.captureTrivia === true
+  const structuralCapturesTrivia = structural && (def.captureTrivia === true || def.trailingTrivia === true)
   const allocStmt = structural
     ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${structuralCapturesTrivia ? 'true' : hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
       + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
@@ -2190,12 +2190,12 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // an unpopulated `_tl`). Sound because `parserHasTriviaSite` is conservative
   // (only `false` when provably no site). Halves the per-node scope frame on the
   // many bare value/token leaf nodes (Num, Color, Quoted, …). See emitNode notes.
-  const needsTriviaFrame = parserHasTriviaSite(def.parser)
+  const needsTriviaFrame = def.trailingTrivia === true || parserHasTriviaSite(def.parser)
   const saveTrivia = needsTriviaFrame
     ? `, ${st} = _ctx.captureTrivia, ${stl} = _ctx._cstTriviaLog${smk ? `, ${smk} = _ctx._triviaCaptureMask` : ''}`
     : ''
   const installTrivia = needsTriviaFrame
-    ? `; _ctx.captureTrivia = ${capTLv ?? 'false'}; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}`
+    ? `; _ctx.captureTrivia = ${capTLv ?? 'false'}; _ctx._cstTriviaLog = ${innerTl}${smk ? `; _ctx._triviaCaptureMask = ${capTLv} && _ctx.build !== undefined && _ctx.build._parsemanTriviaKinds !== undefined ? _ctx.build._parsemanTriviaKinds(${JSON.stringify(def.type)}) : ${smk}` : ''}`
     : ''
   const restoreTrivia = needsTriviaFrame
     ? `; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}`
@@ -2206,8 +2206,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,
     `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}${installTrivia}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
   ]
-  const { stmts: innerStmts, okVar, endVar } = emitFallible(def.parser, ctx, pos)
+  const { stmts: innerStmts, okVar, endVar: innerEndVar } = emitFallible(def.parser, ctx, pos)
+  const endVar = def.trailingTrivia === true && ctx.activeTrivia ? v(ctx, '_trailend') : innerEndVar
   stmts.push(...innerStmts)
+  if (def.trailingTrivia === true && ctx.activeTrivia) {
+    const triviaFn = ensureTriviaFn(ctx)
+    stmts.push(`${i}const ${endVar} = ${okVar} ? ${triviaFn}(input, ${innerEndVar}, _ctx, 1) : ${innerEndVar}`)
+  }
   if (sf && fArr) {
     stmts.push(`${i}const ${fArr} = _ctx._fields`)
   }

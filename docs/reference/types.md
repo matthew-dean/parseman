@@ -101,13 +101,17 @@ type KeywordsOptions = { caseInsensitive?: boolean; boundary?: string }
 type NodeOptions = {
   unwrap?: boolean
   collapse?: boolean
+  captureTrivia?: boolean
+  trailingTrivia?: boolean // commit one active-trivia run at this node's terminal boundary
 }
 ```
 
 `unwrap` is for AST/value wrapper rules: when exactly one child is captured, `build` is
 skipped and a captured leaf becomes its string value. `collapse` is for structural/CST
 wrapper rules: when exactly one child is captured, `build` is skipped and that child is
-returned exactly. Set at most one option. See
+returned exactly. `captureTrivia` owns interior trivia. `trailingTrivia` is for a repeating
+document root at EOF: it commits the active terminal trivia to that node's log; blocks with
+a closing delimiter do not need it. Set at most one of `unwrap` and `collapse`. See
 [unwrapping and collapsing wrapper rules](../guide/ast#unwrapping-and-collapsing-wrapper-rules).
 
 ### `ScanToOptions`
