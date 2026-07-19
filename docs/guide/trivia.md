@@ -108,6 +108,21 @@ it is `undefined` for a root log. For tree-shaped access
 (trivia before/after each node), pass the tree to
 [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
+### Terminal document trivia
+
+Normally a failed next item leaves its preceding trivia uncommitted: it is terminal, not a
+gap between siblings. A document root that must retain an EOF comment can opt in locally:
+
+```ts
+const Document = node('Document', many(rule), undefined, { trailingTrivia: true })
+```
+
+`trailingTrivia: true` commits that one final active-trivia run to **this node's** log and
+forces this node's trivia capture. Use it only for a meaningful terminal boundary, normally a
+repeating document root. Do not add it to ordinary nodes or blocks: a closing delimiter such
+as `}` is already the next term, so normal trivia ownership records the preceding gap. Keeping
+the opt-in node-local preserves ordinary sibling ownership and avoids global capture work.
+
 ## Local overrides {#local-overrides}
 
 Trivia skipping is ambient: wherever it's installed, `sequence` / `many` / `choice` skip filler
