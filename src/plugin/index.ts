@@ -716,13 +716,17 @@ export function transformMacro(
    * grammar's `trivia` into EVERY re-lowerable item (composing-wins B): an IR piece
    * is re-lowered with that trivia; an import spread's re-lowerable items are re-lowered
    * with it too; a full baked piece (the un-serializable fallback) passes through. */
-  const materializeCarried = (items: CarriedItem[], composing?: Combinator<unknown>): LinkablePieces[] => {
+  const materializeCarried = (
+    items: CarriedItem[],
+    composing?: Combinator<unknown>,
+    captureTerminals = false,
+  ): LinkablePieces[] => {
     const out: LinkablePieces[] = []
     for (const it of items) {
       if (isSpread(it)) {
-        for (const p of importedPieces(it.__spreadLocal) ?? []) out.push(materializePiece(p, composing))
+        for (const p of importedPieces(it.__spreadLocal) ?? []) out.push(materializePiece(p, composing, captureTerminals))
       } else if (isIR(it)) {
-        out.push(materializePiece(it as RawItem, composing))
+        out.push(materializePiece(it as RawItem, composing, captureTerminals))
       } else {
         out.push(it)
       }
@@ -936,7 +940,11 @@ export function transformMacro(
       return null
     }
     try {
-      const recognitionPieces = materializeCarried(carried, composing)
+      // The imported pieces are recognition-only, but the local leaf grammar
+      // may place one beneath a direct node(). Re-lower their terminals with
+      // capture enabled so that node receives the imported token values in its
+      // normal child collector; the pieces still contain no semantic callback.
+      const recognitionPieces = materializeCarried(carried, composing, localPiece.hasDirectBuilders === true)
       if (recognitionPieces.some(piece => piece.hasDirectBuilders !== false || piece.isRecognitionOnly !== true)) {
         warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
         return null

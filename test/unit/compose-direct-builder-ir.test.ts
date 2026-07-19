@@ -184,15 +184,15 @@ export const parser = composeLeaf([
     }
   })
 
-  it('keeps local direct builders lexical, static, and terminal', async () => {
+  it('resolves a local direct wrapper\'s imported named recognition rule in the fused closure', async () => {
     const os = await import('node:os')
     const fs = await import('node:fs')
     const path = await import('node:path')
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-compose-leaf-'))
     try {
       const base = transformMacro(
-        `import { rules, literal } from 'parseman' with { type: 'macro' }
-export const syntax = rules(g => ({ Atom: literal('x') }))`,
+        `import { regex, rules } from 'parseman' with { type: 'macro' }
+export const syntax = rules(g => ({ Atom: regex(/[a-z]+/) }))`,
         path.join(dir, 'syntax.js'), new Set(['parseman']),
       )!
       expect(base.warnings).toEqual([])
@@ -202,7 +202,7 @@ export const syntax = rules(g => ({ Atom: literal('x') }))`,
         `import { composeLeaf, node, rules } from 'parseman' with { type: 'macro' }
 import { syntax } from './syntax.js'
 import { makeAst } from './ast.js'
-export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Document', g.Atom, () => makeAst('made locally')) }))])`,
+export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Document', g.Atom, (children, _fields, span) => makeAst(children.map(child => child.value), span)) }))])`,
         path.join(dir, 'leaf.js'), new Set(['parseman']),
       )!
       expect(leaf.warnings).toEqual([])
@@ -210,18 +210,64 @@ export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Documen
       expect(/new Function/.test(leaf.code)).toBe(false)
       expect(leaf.code).not.toContain('composedPieces')
       expect(leaf.code).toContain('leafComposed')
+      // `g.Atom` is intentionally absent from the local rules map. The evaluator
+      // leaves it as a named external placeholder; leaf fusion must close that
+      // placeholder over the imported recognition piece, not delegate to a host
+      // parser or runtime composition.
+      expect(leaf.code).toContain('_r_Atom')
 
       const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
       const parser = new Function('makeAst', strip(leaf.code) + '\nreturn parser')(
-        (value: unknown) => ({ type: 'Ast', value }),
+        (value: unknown, span: unknown) => ({ type: 'Ast', value, span }),
       ) as Record<string | symbol, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
-      expect(parser.Document!('x', 0, {}).value).toEqual({ type: 'Ast', value: 'made locally' })
+      expect(parser.Document!('token', 0, {}).value).toEqual({
+        type: 'Ast',
+        value: ['token'],
+        span: { start: 0, end: 5 },
+      })
 
       const marker = Symbol.for('parseman.leafComposed')
       expect(parser[marker]).toBe(true)
       expect(() => parseman.compose([parser as never])).toThrow(
         'compose: a composeLeaf() result is terminal and cannot be composed again',
       )
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('captures imported recognition sequence tokens in order without trivia', async () => {
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-compose-leaf-trivia-'))
+    try {
+      const base = transformMacro(
+        `import { regex, rules, sequence } from 'parseman' with { type: 'macro' }
+export const syntax = rules(g => ({ Pair: sequence(regex(/[a-z]+/), regex(/[0-9]+/)) }))`,
+        path.join(dir, 'syntax.js'), new Set(['parseman']),
+      )!
+      expect(base.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, 'syntax.js'), base.code)
+
+      const leaf = transformMacro(
+        `import { composeLeaf, node, regex, rules, trivia } from 'parseman' with { type: 'macro' }
+import { syntax } from './syntax.js'
+import { makeAst } from './ast.js'
+const whitespace = trivia(regex(/\\s+/))
+export const parser = composeLeaf([syntax, rules({ trivia: whitespace }, g => ({ Document: node('Document', g.Pair, children => makeAst(children.map(child => child.value))) }))])`,
+        path.join(dir, 'leaf.js'), new Set(['parseman']),
+      )!
+      expect(leaf.warnings).toEqual([])
+
+      const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
+      const parser = new Function('makeAst', strip(leaf.code) + '\nreturn parser')(
+        (value: unknown) => ({ type: 'Ast', value }),
+      ) as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      expect(parser.Document!('word  42', 0, {}).value).toEqual({
+        type: 'Ast',
+        value: ['word', '42'],
+      })
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

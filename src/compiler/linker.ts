@@ -336,9 +336,16 @@ function isIRPiece(p: unknown): p is IRPiece {
 
 /** Materialize a carried item to full `LinkablePieces`: an IR piece is evaluated
  * back to a rule map and re-lowered; a full piece passes through. */
-export function materializePiece(p: LinkablePieces | IRPiece, trivia?: Combinator<unknown>): LinkablePieces {
+export function materializePiece(
+  p: LinkablePieces | IRPiece,
+  trivia?: Combinator<unknown>,
+  captureTerminals = false,
+): LinkablePieces {
   if (!isIRPiece(p)) return p
-  const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns, trivia ? { trivia } : undefined)
+  const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns, {
+    ...(trivia ? { trivia } : {}),
+    ...(captureTerminals ? { captureTerminals: true } : {}),
+  })
   if (!pieces) throw new Error(`compose: carried IR for ns "${p.ns}" could not be re-lowered`)
   return pieces
 }

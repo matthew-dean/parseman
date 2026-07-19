@@ -3345,7 +3345,7 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; recovery?: boolean },
+  opts?: { trivia?: Combinator<unknown>; recovery?: boolean; captureTerminals?: boolean },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
@@ -3372,7 +3372,11 @@ export function compileLinkable(
     mapFns: [], mapFnSrcs: [], buildFns: [], buildSrcs: [], runtimeParsers: [],
     namedParsers: new Map(), triviaCaptureNames: new Map(),
     triviaFnNames: new Map(), namedFnDecls: [],
-    capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
+    // A recognition-only fragment normally has no node collector of its own.
+    // Leaf composition can re-lower it beneath a local semantic node, though;
+    // in that case its terminals must feed the caller's collector rather than
+    // merely returning their scalar parse values.
+    capturing: opts?.captureTerminals === true || ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
