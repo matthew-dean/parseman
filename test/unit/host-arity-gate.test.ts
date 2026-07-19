@@ -100,4 +100,40 @@ describe('structural-node capture gate — host-arity inference', () => {
     expect(logs.get('Doc')?.length).toBe(0)
     expect(typed.source).toContain('_parsemanCaptureTrivia')
   })
+
+  it('a grammar-owned structural capture overrides an explicit host opt-out (interpreter == compiled)', () => {
+    const { StaticDoc } = rules(() => ({
+      StaticDoc: node(
+        'StaticDoc',
+        parser({ trivia: rw }, sequence(literal('a'), literal('b'))),
+        undefined,
+        { captureTrivia: true },
+      ),
+    }))
+    const logs = new Map<string, readonly number[]>()
+    const host = Object.assign(
+      (
+        type: string,
+        _children: readonly unknown[],
+        _fields: unknown,
+        _span: unknown,
+        _raw: readonly unknown[],
+        triviaLog: readonly number[],
+      ) => {
+        logs.set(type, triviaLog)
+        return { type }
+      },
+      { _parsemanCaptureTrivia: () => false },
+    )
+    const input = 'a b'
+    const interpreted = StaticDoc.parse(input, 0, { trackLines: false, build: host })
+    expect(interpreted.ok).toBe(true)
+    expect(logs.get('StaticDoc')).toEqual([1, 2, 1])
+
+    const compiledStatic = compile(StaticDoc)
+    logs.clear()
+    const compiledResult = compiledStatic.parseWithContext(input, { trackLines: false, build: host }, 0)
+    expect(compiledResult.ok).toBe(true)
+    expect(logs.get('StaticDoc')).toEqual([1, 2, 1])
+  })
 })
