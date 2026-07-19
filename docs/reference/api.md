@@ -197,7 +197,8 @@ flat `triviaLog` into a lookup table for whitespace-sensitive analysis.
 ### `triviaEntries(log, labels?, opts?)`
 
 An indexed, allocation-free view over a flat trivia log: `.start(i)`, `.end(i)`,
-`.kind(i)`, `.text(i, input)`. Pass `{ nodeLog: true }` for per-node logs (stride 3/4).
+`.insertIndex(i)` (per-node logs only), `.kind(i)`, `.text(i, input)`. Pass `{ nodeLog: true }`
+for per-node logs (stride 3/4).
 
 ## Tree traversal
 

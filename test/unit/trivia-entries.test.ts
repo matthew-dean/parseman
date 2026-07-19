@@ -3,7 +3,7 @@
  *
  * label.test.ts and trivia-kinds.test.ts already exercise `.length`, `.kind()`,
  * and `.text()` via real parses. This file directly exercises the remaining
- * accessors (`.start`, `.end`, `.kindIndex`, `.labels`, `.stride`) across every
+ * accessors (`.start`, `.end`, `.insertIndex`, `.kindIndex`, `.labels`, `.stride`) across every
  * stride shape the doc comment describes:
  *   - root log, no labels   (stride 2)
  *   - root log, labels      (stride 3)
@@ -26,6 +26,7 @@ describe('triviaEntries()', () => {
     expect(view.end(0)).toBe(3)
     expect(view.start(1)).toBe(5)
     expect(view.end(1)).toBe(9)
+    expect(view.insertIndex(0)).toBeUndefined()
 
     expect(view.kindIndex(0)).toBeUndefined()
     expect(view.kind(0)).toBeUndefined()
@@ -41,6 +42,7 @@ describe('triviaEntries()', () => {
 
     expect(view.start(0)).toBe(0)
     expect(view.end(0)).toBe(3)
+    expect(view.insertIndex(0)).toBeUndefined()
     expect(view.kindIndex(0)).toBe(1)
     expect(view.kind(0)).toBe('comment')
 
@@ -57,8 +59,10 @@ describe('triviaEntries()', () => {
     expect(view.stride).toBe(3)
     expect(view.start(0)).toBe(0)
     expect(view.end(0)).toBe(3)
+    expect(view.insertIndex(0)).toBe(0)
     expect(view.start(1)).toBe(5)
     expect(view.end(1)).toBe(9)
+    expect(view.insertIndex(1)).toBe(1)
     expect(view.kindIndex(0)).toBeUndefined()
     expect(view.kind(0)).toBeUndefined()
   })
@@ -71,11 +75,13 @@ describe('triviaEntries()', () => {
     expect(view.stride).toBe(4)
     expect(view.start(0)).toBe(0)
     expect(view.end(0)).toBe(3)
+    expect(view.insertIndex(0)).toBe(0)
     expect(view.kindIndex(0)).toBe(1)
     expect(view.kind(0)).toBe('comment')
 
     expect(view.start(1)).toBe(5)
     expect(view.end(1)).toBe(9)
+    expect(view.insertIndex(1)).toBe(1)
     expect(view.kindIndex(1)).toBe(0)
     expect(view.kind(1)).toBe('ws')
   })
