@@ -34,6 +34,7 @@ import { token } from '../combinators/token.ts'
 import { transform, skip, trivia, label, field } from '../combinators/map.ts'
 import { expect as expectC } from '../combinators/expect.ts'
 import { withCtx } from '../combinators/withCtx.ts'
+import { directBuilderUnsupportedBindings } from './inline-callback.ts'
 
 type Comb = Combinator<unknown>
 
@@ -111,6 +112,10 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     return t as Comb
   }
   const _nd = (type: string, child: Comb, src: string, opts?: unknown): Comb => {
+    const unsupported = directBuilderUnsupportedBindings(src)
+    if (unsupported.length > 0) {
+      throw new Error(`IR direct node builder must be macro-static and self-contained; unsupported binding(s): ${unsupported.join(', ')}`)
+    }
     // A serialized direct builder needs an inert sentinel as well as buildSrc.
     // `node(..., undefined)` is structural, so re-lowering a composed artifact
     // silently routes it through ctx.build/default CST even though the IR still

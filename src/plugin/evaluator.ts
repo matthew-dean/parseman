@@ -290,7 +290,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const be = buildArg as { type: string; start: number; end: number; name?: string } | undefined
     const hasBuild = be !== undefined && be.type !== 'SpreadElement'
       && !(be.type === 'Identifier' && be.name === 'undefined')
-    const buildSrc = hasBuild ? code.slice(be!.start, be!.end) : undefined
+    const buildSrc = hasBuild ? stripTsFromSource(be! as Node, code) : undefined
     const opts = optsArg !== undefined && optsArg.type !== 'SpreadElement'
       ? staticNodeOptions(optsArg as Expression)
       : undefined
@@ -298,7 +298,9 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       const combi = explicitType !== undefined
         ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, opts)
         : parseman.node(inner, hasBuild ? () => null : undefined, opts)
-      if (combi._def.tag === 'node' && buildSrc !== undefined) combi._def.buildSrc = buildSrc
+      if (combi._def.tag === 'node' && buildSrc !== undefined) {
+        combi._def.buildSrc = buildSrc
+      }
       return combi
     } catch { return null }
   }
