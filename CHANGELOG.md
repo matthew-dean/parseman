@@ -3,6 +3,27 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.28.0 — 2026-07-19
+
+- **New: opt-in grammar observability.** `runWithGrammarCoverage()` reports
+  stable rule, choice-arm, and label coverage from an immutable snapshot, while
+  `createGrammarTraceSink()` records bounded lifecycle traces. IDs come from the
+  final start-rule graph, including final compose winners. The public guide
+  documents the distinction from line coverage and the bounded-sink contract.
+
+- **New: coverage-aware compiled and macro output.** `compile(..., {
+  coverage: true })` and the Parseman plugin's `grammarCoverage: true` option
+  emit rule, choice, and label instrumentation only in that opt-in mode. Static
+  combinators, `ref()` entries, and `rules(...)` maps share the same plan. Normal
+  generated output remains byte-identical. `createGrammarInstrumentationContext()`
+  provides the typed context for covered generated parsers.
+
+- **New: semantic choice traces.** Coverage traces record rule
+  enter/success/failure, choice attempt/failure/backtrack/selected/success, and
+  successful labels with parser-local offsets and ends. Interpreter and generated
+  paths agree across disjoint dispatch, greedy classification, longest literals,
+  auto-not rejection, recursion, and re-entrant choices.
+
 ## 0.27.1 — 2026-07-18
 
 - **New: document-root terminal trivia ownership.** `node(..., {

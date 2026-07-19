@@ -324,6 +324,11 @@ const LEAF_COMPOSED = Symbol.for('parseman.leafComposed')
  * macro (which delegates pick to the runtime linker). */
 const COMPOSED_TRIVIA = Symbol.for('parseman.composedTrivia')
 
+/** Final winner map for semantic-coverage tooling. It exists only when every
+ * carried compose piece is re-lowerable IR; opaque precompiled artifacts have no
+ * combinator graph to inspect and therefore deliberately expose no fake map. */
+const COMPOSED_COVERAGE_RULES = Symbol.for('parseman.composedCoverageRules')
+
 /** The compact IR form a grammar carries instead of its lowered rule source: the
  * combinator-construction expression, re-lowered here at fuse time. */
 export type IRPiece = { ns: string; ir: string }
@@ -332,6 +337,30 @@ function isIRPiece(p: unknown): p is IRPiece {
   return !!p && typeof p === 'object'
     && typeof (p as IRPiece).ir === 'string' && typeof (p as IRPiece).ns === 'string'
     && !('ruleFns' in (p as object))
+}
+
+function coverageRulesOf(carried: Array<LinkablePieces | IRPiece>): Record<string, Combinator<unknown>> | undefined {
+  const winners: Record<string, Combinator<unknown>> = {}
+  for (const piece of carried) {
+    if (!isIRPiece(piece)) return undefined
+    const map = evalRuleMapIR(piece.ir)
+    for (const [name, rule] of map) {
+      // An accessed-but-undefined `g.Name` is an external reference, never a
+      // rule definition. Match compose's IR filtering rule exactly.
+      if (rule._def.tag === 'lazy') {
+        try { rule._def.thunk() } catch { continue }
+      }
+      winners[name] = rule
+    }
+  }
+  return winners
+}
+
+/** Return the final override-winner combinator map carried by runtime
+ * `compose()`, or `undefined` when a precompiled opaque artifact participated.
+ * This is intentionally internal: callers must not treat it as a parser API. */
+export function composedCoverageRules(grammar: Record<string, unknown>): Record<string, Combinator<unknown>> | undefined {
+  return (grammar as Record<symbol, unknown>)[COMPOSED_COVERAGE_RULES] as Record<string, Combinator<unknown>> | undefined
 }
 
 /** Materialize a carried item to full `LinkablePieces`: an IR piece is evaluated
@@ -441,6 +470,8 @@ export function compose(
   const map = fuseRules(pieces)
   Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })
   if (trivia) Object.defineProperty(map, COMPOSED_TRIVIA, { value: trivia, enumerable: false })
+  const coverageRules = coverageRulesOf(carried)
+  if (coverageRules) Object.defineProperty(map, COMPOSED_COVERAGE_RULES, { value: coverageRules, enumerable: false })
   return map
 }
 

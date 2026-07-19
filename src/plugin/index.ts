@@ -60,6 +60,9 @@ export type ParsecraftPluginOptions = {
    * the fast compiled path; leave it off for build-only grammars.
    */
   recovery?: boolean
+  /** Emit grammar-coverage hooks in macro output. Off by default, so ordinary
+   * macro output remains byte-identical. */
+  grammarCoverage?: boolean
 }
 
 const PARSEMAN_MODULE = 'parseman'
@@ -204,7 +207,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
     if (!code.includes('parseman')) return null
     if (!code.includes('macro')) return null
     const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
-    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true)
+    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true)
     if (result?.warnings.length) {
       for (const w of result.warnings) {
         if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -401,6 +404,7 @@ export function transformMacro(
   moduleAliases = new Set([PARSEMAN_MODULE]),
   warnUnloweredRegex = false,
   recovery = false,
+  grammarCoverage = false,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -521,7 +525,7 @@ export function transformMacro(
   ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
-    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), recovery })
+    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), recovery, coverage: grammarCoverage })
     if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
     return { replacement: compiled.replacement, ruleMap: evaluated.ruleMap, ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}) }
   }
@@ -1061,7 +1065,7 @@ export function transformMacro(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compile(refCombi, undefined, { recovery })
+            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage })
             if (compiled.inlineExpression === null) {
               warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
               continue
@@ -1153,7 +1157,7 @@ export function transformMacro(
 
         // Sources are carried on each transform's def (set by the evaluator), so
         // codegen derives them in traversal order — no positional array needed.
-        const compiled = compile(parser, undefined, { recovery })
+        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage })
         if (compiled.inlineExpression === null) {
           warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
           continue
