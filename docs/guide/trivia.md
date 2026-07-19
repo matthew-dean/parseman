@@ -111,7 +111,8 @@ it is `undefined` for a root log. For tree-shaped access
 ### Terminal document trivia
 
 Normally a failed next item leaves its preceding trivia uncommitted: it is terminal, not a
-gap between siblings. A document root that must retain an EOF comment can opt in locally:
+gap between siblings. A document root that must retain an EOF comment can opt in locally
+(for example, a CSS grammar's `Stylesheet` root):
 
 ```ts
 const Document = node('Document', many(rule), undefined, { trailingTrivia: true })
