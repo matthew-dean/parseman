@@ -74,4 +74,66 @@ export const grammar = rules({ trivia: rw }, g => ({
     expect(result.ok).toBe(true)
     expectOwnership(logs)
   })
+
+  it('preserves terminal ownership when a composed artifact IR is re-lowered', async () => {
+    // This intentionally crosses *two* compiled-artifact boundaries:
+    //
+    //   base (Block) → mid (Doc with trailingTrivia) → outer (re-lowers mid IR)
+    //
+    // Merely checking the `trailingTrivia: true` text in serialized IR would not
+    // prove that the re-lowered rule installs the node-local collector, consumes
+    // ambient grammar trivia at EOF, and returns the correct insertion indices.
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-trailing-ir-'))
+    const build = (name: string, source: string) => {
+      const out = transformMacro(source, path.join(dir, `${name}.js`), new Set(['parseman']))
+      expect(out, `${name} must macro-compile`).not.toBeNull()
+      expect(out!.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, `${name}.js`), out!.code)
+      return out!.code
+    }
+    const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
+
+    try {
+      const baseCode = build('base', `
+import { choice, label, literal, many, node, oneOrMore, regex, rules, sequence, trivia } from 'parseman' with { type: 'macro' }
+const rw = trivia(oneOrMore(choice(label('space', regex(/[ ]+/)), label('comment', regex(/\\/\\*[^]*?\\*\\//)))))
+export const base = rules({ trivia: rw }, g => ({
+  Block: node('Block', sequence(literal('{'), many(literal('a')), literal('}'))),
+}))
+`)
+      const midCode = build('mid', `
+import { choice, compose, label, node, oneOrMore, regex, rules, trivia } from 'parseman' with { type: 'macro' }
+import { base } from './base.js'
+const rw = trivia(oneOrMore(choice(label('space', regex(/[ ]+/)), label('comment', regex(/\\/\\*[^]*?\\*\\//)))))
+export const mid = compose([base, rules({ trivia: rw }, g => ({
+  Doc: node('Doc', g.Block, undefined, { trailingTrivia: true }),
+}))])
+`)
+      const outerCode = build('outer', `
+import { choice, compose, label, oneOrMore, regex, rules, trivia } from 'parseman' with { type: 'macro' }
+import { mid } from './mid.js'
+const rw = trivia(oneOrMore(choice(label('space', regex(/[ ]+/)), label('comment', regex(/\\/\\*[^]*?\\*\\//)))))
+export const grammar = compose([mid, rules({ trivia: rw }, g => ({ Pass: regex(/z/) }))])
+`)
+
+      // `outer` must statically fuse the carried IR from `mid`; a residual runtime
+      // compose call would exercise a different path and make this regression weak.
+      expect(outerCode).not.toMatch(/\bcompose\s*\(/)
+
+      const base = new Function(`${strip(baseCode)}\nreturn base`)()
+      const mid = new Function('base', `${strip(midCode)}\nreturn mid`)(base)
+      const grammar = new Function('mid', `${strip(outerCode)}\nreturn grammar`)(mid) as {
+        Doc: (input: string, pos: number, ctx: unknown) => { ok: boolean }
+      }
+      const { logs, build: host } = capture()
+      const result = grammar.Doc(INPUT, 0, { trackLines: false, build: host })
+      expect(result.ok).toBe(true)
+      expectOwnership(logs)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
