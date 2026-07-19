@@ -309,6 +309,14 @@ export function emitFusedSource(pieces: LinkablePieces[]): string {
  * itself a `compose([...])` result. */
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
+/**
+ * A terminal fused grammar may be used to run a parser, but not as an input to
+ * another composition. Macro `composeLeaf()` uses this for a local semantic
+ * reduction over imported recognition-only IR: the local reductions stay in
+ * their lexical module and therefore never become carried IR.
+ */
+const LEAF_COMPOSED = Symbol.for('parseman.leafComposed')
+
 /** The composing (outermost) trivia a runtime `compose()` applied — stored so a
  * later `pick(composedGrammar, …)` can re-lower the selected rules under the SAME
  * trivia (composing-wins survives à-la-carte selection). The carried IR pieces hold
@@ -410,6 +418,9 @@ function composingTriviaOf(items: Array<LinkablePieces | Record<string, unknown>
 export function compose(
   items: Array<LinkablePieces | Record<string, unknown>>,
 ): Record<string, FusedRule> {
+  if (items.some(item => (item as Record<symbol, unknown>)[LEAF_COMPOSED] === true)) {
+    throw new Error('compose: a composeLeaf() result is terminal and cannot be composed again')
+  }
   const used = new Set<string>()
   // The composed grammar's ambient trivia comes from the composing grammar itself —
   // whatever the last piece declared via rules({ trivia }, …). No separate option:
@@ -424,4 +435,16 @@ export function compose(
   Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })
   if (trivia) Object.defineProperty(map, COMPOSED_TRIVIA, { value: trivia, enumerable: false })
   return map
+}
+
+/**
+ * Compose a terminal grammar. This is for a leaf parser that overlays local
+ * semantic reductions on reusable recognition rules. It is macro-only: without
+ * macro lowering there is no safe way to keep lexical builders out of carried
+ * IR, so it fails rather than falling back to runtime composition.
+ */
+export function composeLeaf(
+  _items: Array<LinkablePieces | Record<string, unknown>>,
+): Record<string, FusedRule> {
+  throw new Error('composeLeaf(): requires Parseman macro lowering; runtime composition is forbidden')
 }

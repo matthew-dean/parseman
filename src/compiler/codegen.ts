@@ -2750,6 +2750,18 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
   }
 }
 
+/** Whether a grammar tree owns a direct semantic node reduction. */
+function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  if (d.tag === 'node' && d.build !== undefined) return true
+  if (d.tag === 'lazy') {
+    try { return hasDirectBuildDef(d.thunk(), seen) } catch { return false }
+  }
+  return childrenOf(d).some(child => hasDirectBuildDef(child, seen))
+}
+
 /** Immediate child combinators of a def, for generic tree walks (childrenOf). */
 function childrenOf(def: ParserDef): Combinator<unknown>[] {
   switch (def.tag) {
@@ -3316,6 +3328,10 @@ export type LinkablePieces = {
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
+  /** True when this piece contains any direct `node(..., build)` reduction. */
+  hasDirectBuilders?: boolean
+  /** True only when this piece has no direct builder or callback-based semantics. */
+  isRecognitionOnly?: boolean
   /**
    * Transform (`_mf`) / build (`_build`) callback FUNCTIONS, injected into the
    * fused scope via `_env` when their SOURCE isn't available (runtime `compile()`
@@ -3509,6 +3525,8 @@ export function compileLinkable(
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
+    hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    isRecognitionOnly: ctx.buildFns.length === 0 && ctx.mapFns.length === 0,
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
     buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
   }

@@ -359,10 +359,10 @@ export function transformMacro(
    * shared pass compiles each shared sub-rule once instead of once per entry
    * that reaches it).
    */
-  const compileRulesFactory = (
+  const evaluateRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
+  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
     // Options-first: rules({ trivia }, factory). Disambiguate by type — an
     // ObjectExpression first arg means options lead; otherwise the factory leads
@@ -387,9 +387,18 @@ export function transformMacro(
       : undefined
     const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
 
-    const compiled = compileRuleMap([...ruleMap], { ...(gTrivia ? { trivia: gTrivia } : {}), recovery })
+    return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}) }
+  }
+
+  const compileRulesFactory = (
+    init: Expression,
+    label: string,
+  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
+    const evaluated = evaluateRulesFactory(init, label)
+    if (!evaluated) return null
+    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), recovery })
     if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
-    return { replacement: compiled.replacement, ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}) }
+    return { replacement: compiled.replacement, ruleMap: evaluated.ruleMap, ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}) }
   }
 
   const isRulesCall = (init: Expression): boolean =>
@@ -401,6 +410,11 @@ export function transformMacro(
     init.type === 'CallExpression' &&
     (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
     (init as unknown as { callee: { name?: string } }).callee.name === 'compose'
+
+  const isComposeLeafCall = (init: Expression): boolean =>
+    init.type === 'CallExpression'
+    && (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier'
+    && (init as unknown as { callee: { name?: string } }).callee.name === 'composeLeaf'
 
   const isPickCall = (init: Expression): boolean =>
     init.type === 'CallExpression' &&
@@ -441,7 +455,7 @@ export function transformMacro(
     return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
       + `prelude: ${JSON.stringify(p.prelude.map(stripIndent))}, ruleFns: ${mapLit(p.ruleFns, true)}, `
       + `wrappers: ${mapLit(p.wrappers, true)}, firstSets: ${mapLit(p.firstSets)}, deps: ${mapLit(p.deps)}, `
-      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, mfFns: [], buildFns: [] }`
+      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
    * list for a `compose()` result. */
@@ -487,6 +501,8 @@ export function transformMacro(
    */
   const withCarriedPieces = (grammarExpr: string, list: CarriedItem[]): string =>
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
+  const withLeafMarker = (grammarExpr: string): string =>
+    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.leafComposed'), { value: true, enumerable: false })`
   // Same-file `const X = compose([...])` → its carried (re-lowerable) list, so a
   // later same-file compose can chain it AND re-lower it under that compose's own
   // composing trivia (composing-wins holds at every level).
@@ -746,6 +762,64 @@ export function transformMacro(
     }
   }
 
+  /**
+   * Compile a terminal composition. Imported/base pieces still travel as normal
+   * re-lowerable IR, but the final local rules map is compiled directly in this
+   * module. Its direct builders may therefore refer to lexical AST constructors;
+   * they are inlined into the fused output and are never serialized or carried.
+   */
+  const compileComposeLeafCall = (init: Expression): { replacement: string } | null => {
+    const args = (init as unknown as { arguments: Expression[] }).arguments
+    const arr = args[0]
+    if (!arr || arr.type !== 'ArrayExpression') {
+      warn(init.start, 'composeLeaf(): expected a static array of grammars')
+      return null
+    }
+    const elements = (arr as unknown as { elements: Expression[] }).elements
+    if (elements.length < 2) {
+      warn(init.start, 'composeLeaf(): needs imported recognition grammar(s) and one local rules() map')
+      return null
+    }
+    const localArg = elements[elements.length - 1]!
+    let localRules: Iterable<readonly [string, unknown]> | null = null
+    if (isRulesCall(localArg)) {
+      const evaluated = evaluateRulesFactory(localArg, `composeLeaf${init.start}`)
+      localRules = evaluated?.ruleMap ?? null
+    } else if (localArg.type === 'Identifier') {
+      localRules = localRuleMaps.get((localArg as unknown as { name: string }).name) ?? null
+    }
+    if (!localRules) {
+      warn(init.start, 'composeLeaf(): final argument must be a local rules() map')
+      return null
+    }
+    const composing = composingTrivia(elements)
+    const carried: CarriedItem[] = []
+    for (let i = 0; i < elements.length - 1; i++) {
+      const r = argPieces(elements[i]!, `composeLeaf${init.start}_${i}`, composing)
+      if (!r) {
+        warn(init.start, `composeLeaf(): argument ${i} isn't a build-resolvable recognition grammar`)
+        return null
+      }
+      carried.push(...r.carried)
+    }
+    const localPiece = compileLinkable([...localRules] as never, nsFor(`composeLeaf${init.start}`), { ...(composing ? { trivia: composing } : {}), recovery })
+    if (!localPiece) {
+      warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
+      return null
+    }
+    try {
+      const recognitionPieces = materializeCarried(carried, composing)
+      if (recognitionPieces.some(piece => piece.hasDirectBuilders !== false || piece.isRecognitionOnly !== true)) {
+        warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
+        return null
+      }
+      return { replacement: withLeafMarker(emitFusedSource([...recognitionPieces, localPiece])) }
+    } catch (e) {
+      warn(init.start, `composeLeaf(): ${(e as Error).message}`)
+      return null
+    }
+  }
+
   // --- Pre-pass: resolve standalone ref() recursion clusters ---
   // `const x = ref()` … `x.define(expr)` is the interpreter/compile() recursion
   // mechanism. The macro must support it for parity: evaluate every ref slot and
@@ -907,6 +981,17 @@ export function transformMacro(
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
           replacements.push({ start: init.start, end: init.end, replacement })
+          continue
+        }
+
+        // `composeLeaf([...recognition, localRules])` is static and terminal:
+        // local direct builders stay lexical and are not carried/recomposable.
+        if (isComposeLeafCall(init)) {
+          const fused = compileComposeLeafCall(init)
+          if (!fused) {
+            throw new Error(`${id}:${lineOf(init.start)} — composeLeaf() must macro-fuse; runtime composition is forbidden`)
+          }
+          replacements.push({ start: init.start, end: init.end, replacement: fused.replacement })
           continue
         }
 
