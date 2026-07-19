@@ -120,9 +120,13 @@ export function cstBuildHost(
     triviaLog: readonly number[],
     state: unknown,
   ) => buildCstNode(type, children, fields, span, rawChildren, triviaLog, state)
+  ;(host as typeof host & { _parsemanCstOutput?: true })._parsemanCstOutput = true
   if (collapse) host._parsemanCstCollapse = collapse
   return host
 }
+
+// `cstBuildHost` itself is also accepted as a BuildHost (without options).
+;(cstBuildHost as unknown as { _parsemanCstOutput?: true })._parsemanCstOutput = true
 
 export type FusedRule = (
   input: string,

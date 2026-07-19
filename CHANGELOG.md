@@ -12,6 +12,24 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   selector execution. An unresolved composition now leaves the module's combinators and
   Parseman import intact; fully resolvable compositions remain statically fused.
 
+- **Fix: macro-compile `skip(main, trailing)` combinators.** The runtime, code generator,
+  and IR already supported `skip`, but the macro evaluator omitted it, causing an otherwise
+  static grammar to fall back to interpreter output. Macro evaluation now preserves the
+  combinator and compiles both delimiter-present and delimiter-absent inputs normally.
+
+- **Fix: preserve direct node source in enclosing raw CSTs.** A `node(..., build)`
+  callback returning an application object previously became an empty raw leaf in its
+  structural parent, losing its matched source span's text. Opaque direct values now
+  retain `input.slice(span.start, span.end)` in that raw leaf. `cstBuildHost()` also
+  keeps its positioned-CST contract when such a direct node is nested: it emits the
+  grammar node as CST instead of placing the application object in `children`.
+
+- **Fix: retain direct node-builder ownership after linking grammars.** An ordinary
+  `BuildHost` no longer replaces a direct `node(..., build)` callback merely because
+  its grammar was passed through `compose()`. Direct AST factories now produce the
+  same result in interpreted, compiled, and linkable modes; `cstBuildHost()` remains
+  the explicit positioned-CST exception.
+
 ## 0.27.0 — 2026-07-16
 
 - **New: compiled-parser profiling boundary (`run(entry, input, { profile: true })`).**

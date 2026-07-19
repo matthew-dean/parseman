@@ -2242,17 +2242,20 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     : mkType
       ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
       : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
-  // Modes (RULE_ABI_PLAN §7): a per-parse `_ctx.build` host (keyed by node type)
-  // may override construction — so ONE fused grammar serves eval-AST vs
-  // positioned-CST modes. Emitted when `ctx.ns` (linkable) OR for a structural
-  // node (whose whole point is the injected host). A built standalone node stays
-  // byte-identical (no `_ctx.build` branch).
-  const ndExpr = ctx.ns || structural
-    ? `_ctx.build !== undefined ? (_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})) : (${buildExpr})`
-    : buildExpr
+  // A structural node builds through the per-parse host. A direct builder owns
+  // its semantic result in every lowering mode; the positioned-CST host is the
+  // sole exception, so a direct object never becomes a CST child. Linkability
+  // must not change that ownership rule.
+  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
+  const ndExpr = structural
+    ? `_ctx.build !== undefined ? (${hostBuildExpr}) : (${buildExpr})`
+    // Direct builders stay direct for ordinary hosts. cstBuildHost marks its
+    // mode internally so nested direct nodes cannot leak arbitrary AST objects
+    // into a positioned CST's children.
+    : `_ctx.build?._parsemanCstOutput === true ? (${hostBuildExpr}) : (${buildExpr})`
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
-  const hostCollapseExpr = (ctx.ns || structural)
+  const hostCollapseExpr = structural
     ? `_ctx.build !== undefined && _ctx.build._parsemanCstCollapse !== undefined && ${chV}.length === 1 && ${rawV}.length === 1 && _ctx.build._parsemanCstCollapse(${JSON.stringify(def.type)}, ${chV}[0], ${chV}, ${rawV}) ? ${chV}[0] : (${ndExpr})`
     : ndExpr
   const unwrapExpr = `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
@@ -2266,7 +2269,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     `${i}const ${ndV} = (${profileRecognizer} || ${profileCapture}) ? undefined : (${finalExpr})`,
     `${i}if (!(${profileRecognizer})) {`,
     `${i}  if (${sc}) ${sc}.push(${ndV})`,
-    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : '', span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : (typeof ${ndV} === 'object' && ${ndV} !== null ? input.slice(${pos}, ${endVar}) : ''), span: { start: ${pos}, end: ${endVar} } })`,
     `${i}}`,
   )
 
