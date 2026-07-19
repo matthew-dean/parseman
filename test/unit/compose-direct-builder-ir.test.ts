@@ -43,7 +43,10 @@ describe('compose over a macro-built direct node builder', () => {
     const ir = carried[0]!.ir
     expect(ir).toContain('_nd')
 
-    const pieces = compileLinkable(evalRuleMapIR(ir), '_direct_')!
+    const entries = evalRuleMapIR(ir)
+    const direct = entries[0]![1]._def
+    expect(direct.tag === 'node' && direct.buildStaticValidated).toBe(true)
+    const pieces = compileLinkable(entries, '_direct_')!
     expect(pieces.buildFns).toEqual([])
     expect(() => emitFusedSource([pieces])).not.toThrow()
 
@@ -54,6 +57,17 @@ describe('compose over a macro-built direct node builder', () => {
     expect(rehydrated.Direct!('x', 0, { build: host }).value).toEqual({
       kind: 'direct', span: { start: 0, end: 1 }, children: [{ _tag: 'leaf', value: 'x', span: { start: 0, end: 1 } }],
     })
+  })
+
+  it('rejects malformed IR with a lexical direct builder that lacks macro validation', () => {
+    const malformed = `({ Direct: _nd("Direct", literal("x"), "() => importedFactory()", undefined, undefined) })`
+    expect(() => evalRuleMapIR(malformed)).toThrow(
+      'IR direct node builder for Direct lacks macro static validation',
+    )
+    const invalid = `({ Direct: _nd("Direct", literal("x"), "() => importedFactory()", undefined, undefined, false) })`
+    expect(() => evalRuleMapIR(invalid)).toThrow(
+      'IR direct node builder for Direct lacks macro static validation',
+    )
   })
 
   it('rejects a real imported builder capture when compose re-lowers the macro artifact', () => {

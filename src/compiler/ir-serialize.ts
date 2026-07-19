@@ -101,8 +101,10 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   // source (`_def.fnSrc`/`buildSrc`) so re-lowering inlines it statically. The live
   // fn is only needed for interpreted mode; a self-contained transform source is
   // eval'd, a node build (which may reference imported AST classes) is left to its
-  // source only. Macro-only validation metadata is carried as plain data: this
-  // runtime module never parses callback source or imports a compiler frontend.
+  // source only. Macro-only validation metadata is carried as plain data: a
+  // positive marker proves the macro checked the source before it crossed this
+  // boundary. This runtime module never parses callback source or imports a
+  // compiler frontend.
   const _tf = (child: Comb, src: string): Comb => {
     let fn: (...a: unknown[]) => unknown
     // eslint-disable-next-line no-eval
@@ -111,9 +113,12 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     ;(t._def as { fnSrc?: string }).fnSrc = src
     return t as Comb
   }
-  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[]): Comb => {
+  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[], staticValidated?: boolean): Comb => {
     if (staticError !== undefined && staticError.length > 0) {
       throw new Error(`IR direct node builder for ${type} must be macro-static and self-contained; unsupported binding(s): ${staticError.join(', ')}`)
+    }
+    if (staticValidated !== true) {
+      throw new Error(`IR direct node builder for ${type} lacks macro static validation`)
     }
     // A serialized direct builder needs an inert sentinel as well as buildSrc.
     // `node(..., undefined)` is structural, so re-lowering a composed artifact
@@ -122,8 +127,9 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     // materialize `buildSrc`; raw IR interpretation deliberately rejects direct
     // builders rather than evaluating arbitrary captured source at runtime.
     const n = node(type, child as never, (() => { throw new Error('IR node build requires static re-lowering') }) as never, opts as never)
-    ;(n._def as { buildSrc?: string; buildStaticError?: readonly string[] }).buildSrc = src
+    ;(n._def as { buildSrc?: string; buildStaticError?: readonly string[]; buildStaticValidated?: boolean }).buildSrc = src
     if (staticError !== undefined) (n._def as { buildStaticError?: readonly string[] }).buildStaticError = staticError
+    ;(n._def as { buildStaticValidated?: boolean }).buildStaticValidated = true
     return n as Comb
   }
   // `_gch` rebuilds a GATED choice AND restores its `_def.gateSrcs` (parallel to the
@@ -355,10 +361,8 @@ class Serializer {
           return opts ? `node(${kid(def.parser)}, undefined${opts})` : `node(${kid(def.parser)})`
         }
         if (def.buildSrc !== undefined) {
-          const staticError = def.buildStaticError === undefined
-            ? ''
-            : `${opts ? '' : ', undefined'}, ${JSON.stringify(def.buildStaticError)}`
-          return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts}${staticError})`
+          if (def.buildStaticValidated === undefined) throw new Unserializable('node build without macro static validation')
+          return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}, ${opts ? `{ ${optEntries.join(', ')} }` : 'undefined'}, ${JSON.stringify(def.buildStaticError ?? [])}, ${def.buildStaticValidated})`
         }
         return opts ? `node(${JSON.stringify(def.type)}, ${kid(def.parser)}, undefined${opts})` : `node(${JSON.stringify(def.type)}, ${kid(def.parser)})`
       }

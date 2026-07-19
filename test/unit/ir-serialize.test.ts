@@ -119,12 +119,11 @@ describe('IR serialize round-trip', () => {
     roundTrip(rm, 'Ci', ['url(', 'URL(', 'nope'])
   })
 
-  it('round-trips captured transform/node callbacks and node capture opts', () => {
+  it('round-trips captured transforms and structural node capture opts', () => {
     const mapped = transform(regex(/[0-9]+/), (v: unknown) => v)
     if (mapped._def.tag === 'transform') mapped._def.fnSrc = '(v) => v'
 
-    const collapsed = node('Collapsed', regex(/[a-z]+/), (_children: readonly unknown[]) => null, { collapse: true, captureTrivia: true })
-    if (collapsed._def.tag === 'node') collapsed._def.buildSrc = '(_children) => null'
+    const collapsed = node('Collapsed', regex(/[a-z]+/), undefined, { collapse: true, captureTrivia: true })
 
     const rm = Object.entries(rules(() => ({
       Mapped: mapped,
@@ -134,6 +133,12 @@ describe('IR serialize round-trip', () => {
     expect(serializeRuleMap(rm as never)).toContain('captureTrivia: true')
     roundTrip(rm, 'Mapped', ['1', '123', 'a'])
     roundTrip(rm, 'Collapsed', ['a', 'abc', '1'])
+  })
+
+  it('does not serialize a manually attached direct-builder source', () => {
+    const direct = node('Direct', regex(/[a-z]+/), (_children: readonly unknown[]) => null)
+    if (direct._def.tag === 'node') direct._def.buildSrc = '(_children) => null'
+    expect(serializeRuleMap([['Direct', direct]] as never)).toBeNull()
   })
 
   it('returns null when a construct carries no static source (runtime transform fn)', () => {

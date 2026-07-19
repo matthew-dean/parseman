@@ -303,6 +303,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         combi._def.buildSrc = buildSrc
         const staticError = directBuilderUnsupportedBindings(buildSrc)
         if (staticError.length > 0) combi._def.buildStaticError = staticError
+        combi._def.buildStaticValidated = staticError.length === 0
       }
       return combi
     } catch { return null }

@@ -62,7 +62,9 @@ export type ParserDef =
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; trackLines: boolean }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
-  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; buildStaticError?: readonly string[]; unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean }
+  // `buildStaticValidated` is set only by the macro after its Oxc binding check;
+  // carried IR must present `true` before its direct build source is re-lowered.
+  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; buildStaticError?: readonly string[]; buildStaticValidated?: boolean; unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean }
   // `predSrc`/`extraSrc` (set by the macro evaluator): SOURCE TEXT of the guard
   // predicate / the withCtx `extra` value, so codegen inlines them into `_mf`
   // rather than pushing a `null` source. Absent under runtime compile() (the real
