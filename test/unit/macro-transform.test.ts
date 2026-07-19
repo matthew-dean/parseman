@@ -185,6 +185,63 @@ const x = literal('x')
   })
 })
 
+describe('transformMacro — unresolved compose fallback', () => {
+  it('keeps reachable local trivia combinators runtime and executable', async () => {
+    const source = `
+import { compose, regex, rules, trivia } from 'parseman' with { type: 'macro' }
+const ws = regex(/\\s+/)
+const rw = trivia(ws)
+export const grammar = compose([externalGrammar, rules({ trivia: rw }, () => ({ Value: regex(/[a-z]+/) }))])
+`.trim()
+    const result = transform(source)!
+
+    expect(result.warnings).toContainEqual(expect.stringContaining("compose(): argument 0 isn't a build-resolvable grammar"))
+    expect(result.code).toContain('const ws = regex(/\\s+/)')
+    expect(result.code).toContain('const rw = trivia(ws)')
+
+    const runtime = await import('../../src/index.ts')
+    const externalGrammar = runtime.rules(() => ({}))
+    const executable = result.code
+      .replace("import { compose, regex, rules, trivia } from 'parseman'", '')
+      .replace('export const grammar =', 'return')
+    const grammar = new Function('externalGrammar', 'compose', 'regex', 'rules', 'trivia', executable)(
+      externalGrammar, runtime.compose, runtime.regex, runtime.rules, runtime.trivia,
+    ) as { Value: unknown; rw: unknown }
+    const parsed = runtime.run(grammar.Value as never, 'alpha', { trivia: grammar.rw as never })
+    expect(parsed.ok).toBe(true)
+    expect(parsed.unconsumedFrom).toBeNull()
+  })
+
+  it('keeps ref wiring and all local macro declarations when composition falls back', () => {
+    const source = `
+import { compose, literal, ref, rules } from 'parseman' with { type: 'macro' }
+const atom = literal('a')
+const loop = ref()
+loop.define(atom)
+export const grammar = compose([externalGrammar, rules(() => ({ Value: loop }))])
+`.trim()
+    const result = transform(source)!
+
+    expect(result.code).toContain("from 'parseman'")
+    expect(result.code).toContain("const atom = literal('a')")
+    expect(result.code).toContain('const loop = ref()')
+    expect(result.code).toContain('loop.define(atom)')
+  })
+
+  it('still statically fuses a fully-resolvable compose', () => {
+    const source = `
+import { compose, literal, rules } from 'parseman' with { type: 'macro' }
+const base = rules(g => ({ Value: literal('a') }))
+export const grammar = compose([base, rules(g => ({ Tail: literal('b') }))])
+`.trim()
+    const result = transform(source)!
+
+    expect(result.warnings).toEqual([])
+    expect(result.code).not.toContain("from 'parseman'")
+    expect(result.code).not.toContain('compose([')
+  })
+})
+
 describe('transformMacro — keywords inlining', () => {
   it('inlines word()', () => {
     const code = `

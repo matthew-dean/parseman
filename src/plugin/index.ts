@@ -334,6 +334,7 @@ export function transformMacro(
   const warnings: string[] = []
   beginLoweringCapture()
   let anyUnresolved = false
+  let runtimeComposeFallback = false
   // Unique per rules() call site in this file — holds the ONE shared compiled
   // rule-map object; each destructured local name reads its property off it.
   let ruleMapHolderCounter = 0
@@ -892,7 +893,10 @@ export function transformMacro(
         // fuses at build, never emitting `new Function`.
         if (isComposeCall(init)) {
           const fused = compileComposeCall(init)
-          if (!fused) continue // leave the runtime compose() call in place
+          if (!fused) {
+            runtimeComposeFallback = true
+            continue // leave the runtime compose() call in place
+          }
           // Remember for a same-file downstream compose, and (if exported) carry the
           // re-lowerable list on the value so another package can compose this composed
           // grammar via `import { <name> }` (re-composition, no source) and re-lower it
@@ -1042,7 +1046,10 @@ export function transformMacro(
     }
   }
 
-  for (const { start, end, replacement } of [...replacements].sort((a, b) => b.start - a.start)) {
+  // Runtime compose consumes combinator objects. A partially lowered module mixes
+  // compiled parser functions with those objects (for example `trivia(ws)` after
+  // `ws` was lowered), so an unresolved compose makes the whole module runtime.
+  for (const { start, end, replacement } of (runtimeComposeFallback ? [] : replacements).sort((a, b) => b.start - a.start)) {
     ms.overwrite(start, end, replacement)
   }
 

@@ -3,6 +3,15 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.27.1 — 2026-07-18
+
+- **Fix: preserve runtime `compose()` when a composition cannot be resolved at macro
+  build time.** Previously the macro could lower reachable local combinators before
+  discovering an unresolved imported grammar. It then left `compose()` at runtime but
+  fed it lowered parser functions instead of combinator objects, breaking grammars before
+  selector execution. An unresolved composition now leaves the module's combinators and
+  Parseman import intact; fully resolvable compositions remain statically fused.
+
 ## 0.27.0 — 2026-07-16
 
 - **New: compiled-parser profiling boundary (`run(entry, input, { profile: true })`).**
