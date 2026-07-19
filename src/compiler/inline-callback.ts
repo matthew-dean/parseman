@@ -114,6 +114,12 @@ export function directBuilderUnsupportedBindings(src: string): string[] {
         expression(ast.consequent, allowedNames)
         expression(ast.alternate, allowedNames)
         return
+      case 'SequenceExpression':
+        // The comma operator has no bindings of its own. Each expression is
+        // checked independently, so self-contained parameter updates remain
+        // legal while a captured helper is still rejected.
+        for (const value of astArray(ast.expressions)) expression(value, allowedNames)
+        return
       case 'TemplateLiteral':
         for (const value of astArray(ast.expressions)) expression(value, allowedNames)
         return

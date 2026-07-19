@@ -114,7 +114,7 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   const _nd = (type: string, child: Comb, src: string, opts?: unknown): Comb => {
     const unsupported = directBuilderUnsupportedBindings(src)
     if (unsupported.length > 0) {
-      throw new Error(`IR direct node builder must be macro-static and self-contained; unsupported binding(s): ${unsupported.join(', ')}`)
+      throw new Error(`IR direct node builder for ${type} must be macro-static and self-contained; unsupported binding(s): ${unsupported.join(', ')}`)
     }
     // A serialized direct builder needs an inert sentinel as well as buildSrc.
     // `node(..., undefined)` is structural, so re-lowering a composed artifact

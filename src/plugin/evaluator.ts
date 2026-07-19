@@ -408,7 +408,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     if (code === undefined || mfs === undefined) return null
     const [predArg] = node.arguments
     if (!predArg || predArg.type === 'SpreadElement') return null
-    const predSrc = code.slice((predArg as Expression).start, (predArg as Expression).end)
+    const predSrc = stripTsFromSource(predArg as Node, code)
     mfs.push(predSrc)
     try {
       const combi = parseman.guard(() => true)
@@ -426,7 +426,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     if (code === undefined || mfs === undefined) return null
     const [extraArg, innerArg] = node.arguments
     if (!extraArg || !innerArg || extraArg.type === 'SpreadElement' || innerArg.type === 'SpreadElement') return null
-    const extraSrc = code.slice((extraArg as Expression).start, (extraArg as Expression).end)
+    const extraSrc = stripTsFromSource(extraArg as Node, code)
     mfs.push(extraSrc)
     const inner = anyValue(innerArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null

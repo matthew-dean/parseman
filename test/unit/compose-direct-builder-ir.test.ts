@@ -59,14 +59,14 @@ describe('compose over a macro-built direct node builder', () => {
   it('rejects a lexical helper while rehydrating IR, before it can emit a parser', () => {
     const source = `rules((g) => ({ Direct: _nd('Direct', literal('x'), '() => lexicalHelper()') }))`
     expect(() => evalRuleMapIR(source)).toThrow(
-      'IR direct node builder must be macro-static and self-contained; unsupported binding(s): lexicalHelper',
+      'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): lexicalHelper',
     )
   })
 
   it('rejects an imported builder binding while rehydrating IR', () => {
     const source = `rules((g) => ({ Direct: _nd('Direct', literal('x'), '() => importedFactory()') }))`
     expect(() => evalRuleMapIR(source)).toThrow(
-      'IR direct node builder must be macro-static and self-contained; unsupported binding(s): importedFactory',
+      'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): importedFactory',
     )
   })
 
@@ -77,7 +77,7 @@ export const base = rules(g => ({
   Direct: node('Direct', literal('x'), () => importedFactory()),
 }))`).base as Record<string | symbol, unknown>
     expect(() => parseman.compose([captured as never])).toThrow(
-      'IR direct node builder must be macro-static and self-contained; unsupported binding(s): importedFactory',
+      'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): importedFactory',
     )
   })
 
@@ -88,6 +88,9 @@ export const base = rules(g => ({
     expect(directBuilderUnsupportedBindings(
       '(_children) => importedFactory.create()',
     )).toEqual(['importedFactory'])
+    expect(directBuilderUnsupportedBindings(
+      '(value) => (value += 1, { value })',
+    )).toEqual([])
     expect(directBuilderUnsupportedBindings('() => {')).toEqual(['invalid callback source'])
   })
 
@@ -99,7 +102,7 @@ export const base = rules(g => ({
 }))`).base as Record<string | symbol, unknown>
     const delta = parseman.rules(() => ({ Tail: parseman.literal('z') }))
     expect(() => parseman.compose([captured as never, delta])).toThrow(
-      'IR direct node builder must be macro-static and self-contained; unsupported binding(s): lexicalHelper',
+      'IR direct node builder for Direct must be macro-static and self-contained; unsupported binding(s): lexicalHelper',
     )
   })
 
