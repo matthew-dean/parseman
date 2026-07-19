@@ -35,10 +35,13 @@ export type BuildNode<N> = (
  *   returned as-is.
  * - `collapse` — a structural wrapper rule that returns its single child exactly
  *   as captured. A leaf stays a CSTLeaf; a node stays a node.
+ * - `captureTrivia` — capture trivia consumed inside this node even when its
+ *   enclosing `parser()` did not opt into document-wide trivia capture. This is
+ *   scoped to the node; sibling and parent nodes retain their own setting.
  * Both skip `build` only for a one-child match; zero or two-plus children go
  * through `build` normally.
  */
-export type NodeOptions = { unwrap?: boolean; collapse?: boolean }
+export type NodeOptions = { unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean }
 
 /** A captured child's value form: a leaf unwraps to its string value, else as-is. */
 function unwrapChild(child: unknown): unknown {
@@ -80,18 +83,19 @@ export function node<N>(
   }
   const unwrap = opts?.unwrap === true
   const collapse = opts?.collapse === true
+  const captureTrivia = opts?.captureTrivia === true
   if (unwrap && collapse) {
     throw new Error('node() options cannot set both unwrap and collapse')
   }
-  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse
-    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}) }
+  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || captureTrivia
+    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(captureTrivia ? { captureTrivia: true } : {}) }
     : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
   // capture for the inner scope; when it never reads state (5th), skip the state clone.
   // A STRUCTURAL node (no own build) defers to `ctx.build` / a default CST, which
   // may read either, so capture both.
-  const capturesTrivia = build ? buildReadsTrivia(def) : true
+  const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : true)
   const clonesState = build ? buildReadsState(def) : true
   const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
   return {

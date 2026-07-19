@@ -14,7 +14,7 @@
  * `arguments` all yield `null` (→ caller keeps capture).
  */
 import { describe, it, expect } from 'vitest'
-import { node, sequence, regex, compile, parse } from '../../src/index.ts'
+import { node, sequence, regex, literal, parser, compile, parse } from '../../src/index.ts'
 import type { ParserDef } from '../../src/index.ts'
 import { confirmedBuildArity, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
@@ -113,11 +113,8 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
   })
   it('typed arity-5 → allocates a per-node _tl array', () => {
     const src = compile(typed5).source
-    // 0.27.0 guards the alloc behind the hoisted recognizer flag (`_tl = _recN ?
-    // undefined : []`). Assert the GUARDED allocation (`… ? undefined : []`), not a
-    // bare `_tl = []`, so dropping the guard is caught. (`_recN` is a codegen local,
-    // not the literal `profileRecognizer` — that name never reaches generated code.)
-    expect(src).toMatch(/_tl\d*\s*=\s*\w+\s*\?\s*undefined\s*:\s*\[\]/)
+    // Existing direct five-argument builders own a fresh trivia collector.
+    expect(src).toMatch(/_tl\d*\s*=\s*_rec\d*\s*\?\s*undefined\s*:\s*\[\]/)
   })
   it('elision is output-preserving (typed arity-3 parses identically to a kept-capture run)', () => {
     // both should produce { n: 2 } regardless of capture
@@ -166,5 +163,65 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
       triviaCount: 0,
       span: { start: 0, end: 2 },
     })
+  })
+
+  it('macro preserves node-local trivia capture without enabling it for the whole parser', () => {
+    const { fn } = macroParser(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+export const P = node('P', parser({ trivia: regex(/ +/) }, sequence(literal('a'), literal('b'))),
+  (_children, _fields, _span, _rawChildren, triviaLog) => ({ triviaLog: [...triviaLog] }),
+  { captureTrivia: true })
+`, 'P')
+
+    expect(fn('a b', 0, {}).value).toEqual({ triviaLog: [1, 2, 1] })
+  })
+})
+
+describe('node-local trivia capture', () => {
+  function local(enabled: boolean) {
+    return node(
+      'Pair',
+      parser({ trivia: regex(/ +/) }, sequence(literal('a'), literal('b'))),
+      (_children, _fields, _span, _rawChildren, triviaLog) => ({ triviaLog: [...triviaLog] }),
+      enabled ? { captureTrivia: true } : undefined,
+    )
+  }
+
+  it('preserves direct builder trivia capture and matches compiled output', () => {
+    const without = parse(local(false), 'a b')
+    expect(without.ok && without.value).toEqual({ triviaLog: [1, 2, 1] })
+
+    const grammar = local(true)
+    const interpreted = parse(grammar, 'a b')
+    const compiled = compile(grammar).parse('a b')
+    expect(interpreted.ok && interpreted.value).toEqual({ triviaLog: [1, 2, 1] })
+    expect(compiled).toEqual(interpreted)
+  })
+
+  it('keeps legacy direct-builder capture around a nested parser scope', () => {
+    const ws = regex(/ +/)
+    const inner = parser({ trivia: ws, captureTrivia: true }, sequence(literal('b'), literal('c')))
+    const grammar = parser({ trivia: ws }, node(
+      'Outer',
+      sequence(literal('a'), inner, literal('d')),
+      (_children, _fields, _span, _rawChildren, triviaLog) => ({ triviaLog: [...triviaLog] }),
+    ))
+
+    const interpreted = parse(grammar, 'a b c d')
+    const compiled = compile(grammar).parse('a b c d')
+    expect(interpreted.ok && interpreted.value).toEqual({ triviaLog: [1, 2, 1, 3, 4, 2, 5, 6, 3] })
+    expect(compiled).toEqual(interpreted)
+  })
+
+  it('preserves legacy direct-builder capture in macro output', () => {
+    const { fn } = macroParser(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+const ws = regex(/ +/)
+const inner = parser({ trivia: ws, captureTrivia: true }, sequence(literal('b'), literal('c')))
+export const P = parser({ trivia: ws }, node('Outer', sequence(literal('a'), inner, literal('d')),
+  (_children, _fields, _span, _rawChildren, triviaLog) => ({ triviaLog: [...triviaLog] })))
+`, 'P')
+
+    expect(fn('a b c d', 0, {}).value).toEqual({ triviaLog: [1, 2, 1, 3, 4, 2, 5, 6, 3] })
   })
 })

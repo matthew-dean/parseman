@@ -155,7 +155,10 @@ local/manual nodes outside `rules()`.
 in value form: a captured leaf becomes its string value; a sub-node is returned as-is.
 `opts.collapse` also skips `build` for one-child matches, but returns the captured child
 exactly, so a leaf remains a `CSTLeaf` with its span. Set at most one of `unwrap` and
-`collapse`. See [CST / AST nodes](../guide/ast).
+`collapse`. `opts.captureTrivia` makes this node the explicit owner of its per-node trivia
+log; `parser({ captureTrivia: true })` merely activates recording for a grammar scope, and
+plain combinators own no log. A direct build that declares the fifth `triviaLog` parameter
+keeps the established arity-based capture behavior. See [CST / AST nodes](../guide/ast).
 
 ### `cstBuildHost(opts?)` {#cstbuildhost}
 

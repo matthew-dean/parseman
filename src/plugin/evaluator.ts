@@ -194,7 +194,7 @@ function scopeGet(scope: XScope, name: string, mfs?: string[]): Combinator<unkno
 // Core evaluators
 // ---------------------------------------------------------------------------
 
-/** Read static `{ unwrap: true }` / `{ collapse: true }` node opts. */
+/** Read static node opts that affect generated grammar shape. */
 function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
   if (expr.type !== 'ObjectExpression') return undefined
   const opts: parseman.NodeOptions = {}
@@ -205,12 +205,12 @@ function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
     const name = key.type === 'Identifier' ? key.name
       : key.type === 'Literal' ? String(key.value)
       : undefined
-    if (name === 'unwrap' || name === 'collapse') {
+    if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia') {
       const val = p.value as unknown as { type: string; value?: unknown }
       if ((val.type === 'Literal' || val.type === 'BooleanLiteral') && val.value === true) opts[name] = true
     }
   }
-  return opts.unwrap || opts.collapse ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.captureTrivia ? opts : undefined
 }
 
 /**
