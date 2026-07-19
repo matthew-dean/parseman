@@ -24,6 +24,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   keeps its positioned-CST contract when such a direct node is nested: it emits the
   grammar node as CST instead of placing the application object in `children`.
 
+- **Fix: retain direct node-builder ownership after linking grammars.** An ordinary
+  `BuildHost` no longer replaces a direct `node(..., build)` callback merely because
+  its grammar was passed through `compose()`. Direct AST factories now produce the
+  same result in interpreted, compiled, and linkable modes; `cstBuildHost()` remains
+  the explicit positioned-CST exception.
+
 ## 0.27.0 — 2026-07-16
 
 - **New: compiled-parser profiling boundary (`run(entry, input, { profile: true })`).**

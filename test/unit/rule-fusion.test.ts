@@ -357,23 +357,21 @@ describe('fusion — parity with monolithic compile()', () => {
   })
 })
 
-describe('fusion — modes over one grammar (RULE_ABI_PLAN §7)', () => {
+describe('fusion — direct builders retain ownership', () => {
   const mk = () => rules(g => ({
     Pair: node('Pair', sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/)),
       (_c, _r, s) => ({ kind: 'PairAST', span: s })),
   }))
 
-  it('ctx.build host swaps eval-AST vs positioned-CST on the SAME fused grammar', () => {
+  it('an ordinary ctx.build host does not override a direct builder in a fused grammar', () => {
     const R = fuseRules([link(mk(), '_m_')])
     // default (no host) → the grammar's own builder (eval AST):
     expect((R.Pair!('a:1', 0, {}).value as { kind: string }).kind).toBe('PairAST')
-    // ctx.build host → positioned CST for every node type:
+    // An ordinary host is for structural nodes; a direct factory remains canonical.
     const cstHost = (type: string, children: readonly unknown[]) =>
       ({ _tag: 'node', type, children: [...children] })
-    const v = R.Pair!('a:1', 0, { build: cstHost }).value as { _tag: string; type: string; children: unknown[] }
-    expect(v._tag).toBe('node')
-    expect(v.type).toBe('Pair')
-    expect(v.children).toHaveLength(3)
+    const v = R.Pair!('a:1', 0, { build: cstHost }).value as { kind: string; span: { start: number; end: number } }
+    expect(v).toEqual({ kind: 'PairAST', span: { start: 0, end: 3 } })
   })
 })
 

@@ -6,7 +6,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
-  choice, cstBuildHost, expect as required, literal, node, oneOrMore, parse, parser, regex, run,
+  choice, compose, cstBuildHost, expect as required, literal, node, oneOrMore, parse, parser, regex, rules, run,
   sequence, trivia,
 } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
@@ -33,6 +33,11 @@ const InternalCall = node('InternalCall', parser({ trivia: ws }, sequence(
   literal('fn('), InternalColor, literal(','), literal('blue'), literal(')'),
 )), (children, _fields, _span, raw) => summarize(children, raw))
 const CstOuter = node('CstOuter', Color)
+const directRules = rules(g => {
+  const Direct = node('Direct', literal('x'), () => ({ kind: 'direct' }))
+  const Root = node('Root', g.Direct)
+  return { Direct, Root }
+})
 
 const MACRO = `
 import { choice, expect, literal, node, oneOrMore, parser, regex, sequence, trivia } from 'parseman' with { type: 'macro' }
@@ -147,5 +152,23 @@ describe('direct node child raw source', () => {
     const compiled = macro.CstOuter('red', 0, { trackLines: false, build: cstBuildHost() } as never)
     expect(compiled.ok).toBe(true)
     if (compiled.ok) assertCst(compiled.value)
+  })
+
+  it('keeps direct-builder ownership across run() and linkable compose(), except for the CST host', () => {
+    const customHost = (type: string) => ({ kind: 'host', type })
+    const interpreted = run(directRules.Direct, 'x', { build: customHost })
+    expect(interpreted.ok).toBe(true)
+    if (interpreted.ok) expect(interpreted.value).toEqual({ kind: 'direct' })
+
+    const composed = compose([directRules])
+    const linked = composed.Direct!('x', 0, { build: customHost })
+    expect(linked.ok).toBe(true)
+    expect(linked.value).toEqual({ kind: 'direct' })
+
+    const cst = composed.Root!('x', 0, { build: cstBuildHost() })
+    expect(cst.ok).toBe(true)
+    expect(cst.value).toMatchObject({
+      _tag: 'node', type: 'Root', children: [{ _tag: 'node', type: 'Direct' }],
+    })
   })
 })
