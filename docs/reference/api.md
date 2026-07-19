@@ -159,6 +159,10 @@ exactly, so a leaf remains a `CSTLeaf` with its span. Set at most one of `unwrap
 log; `parser({ captureTrivia: true })` merely activates recording for a grammar scope, and
 plain combinators own no log. A direct build that declares the fifth `triviaLog` parameter
 keeps the established arity-based capture behavior. See [CST / AST nodes](../guide/ast).
+`opts.trailingTrivia` is a document-boundary opt-in: after a successful node body it commits
+the active trivia once into that node's log (and therefore forces this node's trivia capture).
+Use it for a repeating document root at EOF, not for blocks with a closing delimiter; their
+ordinary following `}` already owns the preceding trivia.
 
 ### `cstBuildHost(opts?)` {#cstbuildhost}
 

@@ -347,6 +347,7 @@ class Serializer {
           ...(def.unwrap ? ['unwrap: true'] : []),
           ...(def.collapse ? ['collapse: true'] : []),
           ...(def.captureTrivia ? ['captureTrivia: true'] : []),
+          ...(def.trailingTrivia ? ['trailingTrivia: true'] : []),
         ]
         const opts = optEntries.length > 0 ? `, { ${optEntries.join(', ')} }` : ''
         // `_nd` sets `_def.buildSrc` (same reason as `_tf`). No build → plain node.

@@ -5,6 +5,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.27.1 — 2026-07-18
 
+- **New: document-root terminal trivia ownership.** `node(..., {
+  trailingTrivia: true })` commits one final run of active grammar trivia into
+  that node's own CST log after its body succeeds. It is deliberately opt-in for
+  a repeating document root: regular sibling gaps and block trivia before a real
+  closing delimiter retain their existing owners. Interpreter, `compile()`,
+  macro output, and composed grammar IR preserve the option and its insertion
+  index/kind metadata.
+
 - **Fix: retain direct `node(..., build)` semantics when re-lowering composed
   grammar IR.** Rehydration restored `buildSrc` but recreated the node as
   structural, so generated composed grammars routed it through `ctx.build` or a

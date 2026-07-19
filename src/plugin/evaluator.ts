@@ -206,12 +206,12 @@ function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
     const name = key.type === 'Identifier' ? key.name
       : key.type === 'Literal' ? String(key.value)
       : undefined
-    if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia') {
+    if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
       const val = p.value as unknown as { type: string; value?: unknown }
       if ((val.type === 'Literal' || val.type === 'BooleanLiteral') && val.value === true) opts[name] = true
     }
   }
-  return opts.unwrap || opts.collapse || opts.captureTrivia ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.captureTrivia || opts.trailingTrivia ? opts : undefined
 }
 
 /**

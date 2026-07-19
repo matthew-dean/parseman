@@ -2,6 +2,7 @@ import type { Combinator, FieldMap, ParseContext, ParseResult, ParserMeta, Parse
 import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/capture-buffer.ts'
 import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
 import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
+import { consumeTrivia } from './trivia-skip.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
@@ -38,10 +39,13 @@ export type BuildNode<N> = (
  * - `captureTrivia` — capture trivia consumed inside this node even when its
  *   enclosing `parser()` did not opt into document-wide trivia capture. This is
  *   scoped to the node; sibling and parent nodes retain their own setting.
+ * - `trailingTrivia` — after a successful node body, consume the active grammar
+ *   trivia once into THIS node's log. Intended for a document root whose body is
+ *   a repetition; do not set it on a block that already has a closing delimiter.
  * Both skip `build` only for a one-child match; zero or two-plus children go
  * through `build` normally.
  */
-export type NodeOptions = { unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean }
+export type NodeOptions = { unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean; trailingTrivia?: boolean }
 
 /** A captured child's value form: a leaf unwraps to its string value, else as-is. */
 function unwrapChild(child: unknown): unknown {
@@ -84,18 +88,19 @@ export function node<N>(
   const unwrap = opts?.unwrap === true
   const collapse = opts?.collapse === true
   const captureTrivia = opts?.captureTrivia === true
+  const trailingTrivia = opts?.trailingTrivia === true
   if (unwrap && collapse) {
     throw new Error('node() options cannot set both unwrap and collapse')
   }
-  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || captureTrivia
-    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(captureTrivia ? { captureTrivia: true } : {}) }
+  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || captureTrivia || trailingTrivia
+    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}) }
     : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
   // capture for the inner scope; when it never reads state (5th), skip the state clone.
   // A STRUCTURAL node (no own build) defers to `ctx.build` / a default CST, which
   // may read either, so capture both.
-  const capturesTrivia = captureTrivia || (build ? buildReadsTrivia(def) : true)
+  const capturesTrivia = captureTrivia || trailingTrivia || (build ? buildReadsTrivia(def) : true)
   const clonesState = build ? buildReadsState(def) : true
   const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
   return {
@@ -116,7 +121,11 @@ export function node<N>(
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
       // without touching the global _triviaLog, which is committed independently.
       if (!capturesTrivia) ctx.captureTrivia = false
-      const r = combinator.parse(input, pos, ctx)
+      let r = combinator.parse(input, pos, ctx)
+      if (r.ok && trailingTrivia && ctx.trivia) {
+        const end = consumeTrivia(input, r.span.end, ctx)
+        r = { ...r, span: { start: r.span.start, end } }
+      }
       const fields = capturesFields ? buildFieldMap(ctx._fields) : undefined
       ctx._fields = savedFields
       ctx._triviaCaptureMask = savedMask
