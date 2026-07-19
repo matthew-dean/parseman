@@ -91,6 +91,22 @@ const pair = sequence(literal('foo'), literal('bar'))
   })
 })
 
+describe('transformMacro — skip() declarations', () => {
+  it('macro-compiles a main parser with grammar-native trailing trivia', () => {
+    const code = `
+import { literal, skip } from 'parseman' with { type: 'macro' }
+const token = skip(literal('word'), literal(';'))
+`.trim()
+    const result = transform(code)!
+    expect(result.warnings).toEqual([])
+    expect(result.code).not.toContain("from 'parseman'")
+    expect(/\bskip\s*\(/.test(result.code)).toBe(false)
+    const token = new Function(`${result.code}\nreturn token`)() as (input: string, pos: number, ctx: object) => { ok: boolean; span: { end: number } }
+    expect(token('word;', 0, {}).span.end).toBe(5)
+    expect(token('word', 0, {}).span.end).toBe(4)
+  })
+})
+
 describe('transformMacro — cross-declaration references', () => {
   it('inlines a parser that references a previously inlined parser', () => {
     const code = `
