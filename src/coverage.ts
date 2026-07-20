@@ -166,7 +166,10 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
             if (id) trace?.write({ id, phase: 'attempt', offset: pos })
             const result = child.parse(input, pos, ctx)
             if (result.ok) {
-              collector.hit(ids[index]!)
+              // Greedy classification runs its super arm as an implementation
+              // detail, then chooses the final semantic arm below. Only that
+              // final arm belongs in coverage.
+              if (def.strategy.tag !== 'greedyClassify') collector.hit(ids[index]!)
               const invocation = invocations[invocations.length - 1]
               if (invocation) { invocation.lastSuccessfulArm = index; invocation.successfulArms.push(index) }
             }
@@ -197,7 +200,11 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
               if (rejectedId) { trace?.write({ id: rejectedId, phase: 'failure', offset: pos }); trace?.write({ id: rejectedId, phase: 'backtrack', offset: pos }) }
             }
           }
-          if (id) { trace?.write({ id, phase: 'selected', offset: pos, end: result.span.end }); trace?.write({ id, phase: 'success', offset: pos, end: result.span.end }) }
+          if (id) {
+            collector.hit(id)
+            trace?.write({ id, phase: 'selected', offset: pos, end: result.span.end })
+            trace?.write({ id, phase: 'success', offset: pos, end: result.span.end })
+          }
         }
         invocations.pop()
         return result

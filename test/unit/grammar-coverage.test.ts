@@ -80,7 +80,10 @@ describe('grammar semantic coverage', () => {
   it('traces greedy classification as its classified final arm', () => {
     const trace = createGrammarTraceSink({ capacity: 20 })
     const parser = choice(regex('[a-z]+'), literal('if'))
-    expect(runWithGrammarCoverage(parser, 'if', { trace }).result.ok).toBe(true)
+    const run = runWithGrammarCoverage(parser, 'if', { trace })
+    expect(run.result.ok).toBe(true)
+    expect(run.coverage.hits).toEqual(['choice:entry/arm:1'])
+    expect(run.coverage.unhit).toEqual(['choice:entry/arm:0'])
     expect(trace.snapshot().events).toContainEqual({ id: 'choice:entry/arm:1', phase: 'selected', offset: 0, end: 2 })
   })
 

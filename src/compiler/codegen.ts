@@ -289,7 +289,7 @@ function failBody(ctx: Ctx, expected: string, posExpr: string): string {
   const probe = probeUpdate(ctx, `[${expected}]`, posExpr)
   const trace = ctx.activeCoverageRuleId === undefined ? '' : `_ctx._grammarTrace?.write({ id: ${JSON.stringify(ctx.activeCoverageRuleId)}, phase: 'failure', offset: ${posExpr} }); `
   if (ctx.failLabel) {
-    if (!ctx.recordFail) return probe ? `{ ${probe}${trace}break ${ctx.failLabel} }` : `{ ${trace}break ${ctx.failLabel} }`
+    if (!ctx.recordFail) return probe ? `{ ${probe}${trace}break ${ctx.failLabel} }` : trace ? `{ ${trace}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
     return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; ${trace}break ${ctx.failLabel} }`
   }
   return probe + trace + failReturn(expected, posExpr)
@@ -305,7 +305,7 @@ function failArrBody(ctx: Ctx, expectedArr: string, posExpr: string, constant = 
   const probe = probeUpdate(ctx, expectedArr, posExpr, constant)
   const trace = ctx.activeCoverageRuleId === undefined ? '' : `_ctx._grammarTrace?.write({ id: ${JSON.stringify(ctx.activeCoverageRuleId)}, phase: 'failure', offset: ${posExpr} }); `
   if (ctx.failLabel) {
-    if (!ctx.recordFail) return probe ? `{ ${probe}${trace}break ${ctx.failLabel} }` : `{ ${trace}break ${ctx.failLabel} }`
+    if (!ctx.recordFail) return probe ? `{ ${probe}${trace}break ${ctx.failLabel} }` : trace ? `{ ${trace}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
     const fx = constant ? hoistExpected(ctx, expectedArr) : expectedArr
     return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${fx}; ${trace}break ${ctx.failLabel} }`
   }

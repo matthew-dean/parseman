@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, createGrammarTraceSink, label, literal, regex, rules, runWithGrammarCoverage, sequence, type GatedArm } from '../../src/index.ts'
+import { choice, compile, createGrammarTraceSink, label, literal, many, regex, rules, runWithGrammarCoverage, sequence, type GatedArm } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 
@@ -33,6 +33,12 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
   }
   return { ok: true, value: _chv1, span: { start: _pos, end: _che2 } }
 }`)
+  })
+
+  it('keeps non-coverage loop-termination breaks byte-identical', () => {
+    const source = compile(many(literal('a'))).source
+    expect(source).toContain('break _lbl2')
+    expect(source).not.toContain('{ break _lbl2 }')
   })
 
   it('emits selected first-match and disjoint arm hooks only in coverage mode', () => {

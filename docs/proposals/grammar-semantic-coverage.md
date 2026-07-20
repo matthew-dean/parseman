@@ -7,8 +7,9 @@ reports exercised named rules, selected choice arms, and structural labels.
 It must not add code, allocations, branches, metadata, or changed output to a
 normal interpreter or macro-compiled parser.
 
-This document is a design only. It intentionally does not add a public API or
-runtime instrumentation yet.
+> **Status — implemented in 0.28.0.** This document preserves the design
+> rationale. The current public API and operational contract are documented in
+> [Grammar observability](/guide/grammar-observability).
 
 ## Coverage identity
 
@@ -68,13 +69,13 @@ boolean hit sets and optional counts; thresholding uses booleans, while counts
 are diagnostics only.
 
 ```ts
-const run = runWithCoverage(grammar.Entry, input)
+const run = runWithGrammarCoverage(grammar.Entry, input)
 // run.result: ordinary ParseResult
 // run.coverage: immutable snapshot for this parse
 
-const collector = createCoverageCollector(definitions)
-runWithCoverage(grammar.Entry, inputA, { collector })
-runWithCoverage(grammar.Entry, inputB, { collector })
+const collector = createGrammarCoverageCollector(definitions)
+runWithGrammarCoverage(grammar.Entry, inputA, { collector })
+runWithGrammarCoverage(grammar.Entry, inputB, { collector })
 const merged = collector.snapshot()
 collector.reset()
 ```
@@ -223,7 +224,7 @@ normalized longest-first order; gates emit no attempt for a gated-off arm; an
 auto-not rejection emits failure then backtrack before the next scheduled arm.
 Both engines emit this abstract schedule, not incidental physical calls.
 
-The sink contract is normative. `createTraceSink({ capacity, write })` requires
+The sink contract is normative. `createGrammarTraceSink({ capacity, write })` requires
 a finite non-negative capacity and retains the first `capacity` events in order
 (zero retains none). An event is retained before `write` is called. A `false`
 return retains and forwards that triggering event, then detaches; a thrown error
