@@ -21,6 +21,12 @@ export type Runnable =
   | Combinator<unknown>
 
 export type RunOptions = {
+  /** Optional hooks for a coverage-enabled compiled or macro parser. Ordinary
+   * parses omit this completely, so instrumentation has no normal-path cost. */
+  instrumentation?: {
+    _grammarCoverage?: (id: string) => void
+    _grammarTrace?: { write(event: { id: string; phase: 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack'; offset: number; end?: number }): void }
+  }
   /** `ctx.build` host — makes structural `node()` rules build a CST / AST via the
    * host instead of their own eval builders. Omit for a grammar's own builders. */
   build?: ParseContext['build']
@@ -153,6 +159,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
       : {}),
     ...(options.triviaCaptureMask !== undefined ? { _triviaCaptureMask: options.triviaCaptureMask } : {}),
     ...(options.tolerant ? { _tolerant: true, _rec: REC } : {}),
+    ...(options.instrumentation === undefined ? {} : options.instrumentation),
   }
   const r = invoke(entry, input, 0, ctx)
 

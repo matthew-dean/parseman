@@ -1,8 +1,8 @@
 # Grammar observability
 
-Parséman has two opt-in grammar-observability modes. They share stable grammar
-IDs from the selected start-rule closure, including the final winner after
-composition.
+Parséman has two opt-in grammar-observability modes. Interpreter coverage uses
+the selected start-rule closure; a coverage-enabled macro grammar map carries
+the stable IDs emitted for that compiled map, including final composed winners.
 
 - Coverage answers “which rules, choice arms, and labels succeeded?”
 - Trace answers “what did this parse try, select, fail, and backtrack through?”
@@ -28,6 +28,54 @@ console.log(coverage.unhit)  // ['choice:entry/arm:0']
 
 Pass one collector explicitly to merge several inputs. CI thresholds should use
 the boolean hit set and an explicit required-ID list.
+
+### Vitest with a macro grammar
+
+Enable instrumentation only in the test build, then give `run()` the collector
+and (optionally) the trace sink. Coverage-enabled macro grammar maps carry their
+own immutable definition list; this is what makes the reported percentage
+truthful for the generated grammar rather than a count of whichever events a
+test happened to observe.
+
+```ts
+// vitest.config.ts
+import parseman from 'parseman/plugin'
+
+export default {
+  plugins: [parseman.vite({ grammarCoverage: true })],
+}
+```
+
+```ts
+import {
+  compiledGrammarCoverageDefinitions,
+  createGrammarCoverageCollector,
+  createGrammarInstrumentationContext,
+  run,
+} from 'parseman'
+import { grammar } from '../src/grammar.js'
+
+const collector = createGrammarCoverageCollector(
+  compiledGrammarCoverageDefinitions(grammar),
+)
+
+for (const source of fixtures) {
+  const result = run(grammar.Stylesheet, source, {
+    trivia: grammar.whitespace,
+    instrumentation: createGrammarInstrumentationContext({ collector }),
+  })
+  expect(result.ok && result.unconsumedFrom === null).toBe(true)
+}
+
+const coverage = collector.snapshot()
+expect(coverage.ratio).toBe(1) // 100% of structural definitions in this corpus
+```
+
+`ratio` is `hits.length / definitions.length`: it counts successful named rules,
+choice arms, and labels in the coverage-enabled generated grammar map. It is not V8 line
+coverage, statement coverage, or a claim that every invalid input has been
+tested. Macro output without `grammarCoverage: true` intentionally has no
+definition metadata or hooks; production parsing stays unchanged.
 
 ## Trace
 
@@ -59,7 +107,7 @@ Enable it only in a test/debug build:
 import parseman from 'parseman/plugin'
 
 export default {
-  plugins: [parseman({ grammarCoverage: true })],
+  plugins: [parseman.vite({ grammarCoverage: true })],
 }
 ```
 
@@ -73,14 +121,15 @@ import {
   createGrammarCoverageCollector,
   createGrammarInstrumentationContext,
   createGrammarTraceSink,
-  grammarCoverageDefinitions,
+  compiledGrammarCoverageDefinitions,
+  run,
 } from 'parseman'
 
-const collector = createGrammarCoverageCollector(grammarCoverageDefinitions(parser))
+const collector = createGrammarCoverageCollector(compiledGrammarCoverageDefinitions(grammar))
 const trace = createGrammarTraceSink({ capacity: 200 })
 const context = createGrammarInstrumentationContext({ collector, trace })
 
-compiledParser('yes', 0, context)
+run(grammar.Entry, 'yes', { instrumentation: context })
 ```
 
 ## CI artifacts

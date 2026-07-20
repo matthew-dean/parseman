@@ -16,7 +16,8 @@ function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>)
     case 'skip': return [def.main, def.skipped]
     case 'scanTo': return [def.sentinel, ...def.skip]
     case 'lazy': {
-      const resolved = def.thunk()
+      let resolved: Combinator<unknown>
+      try { resolved = def.thunk() } catch { return [] }
       const name = (resolved as Combinator<unknown> & { _ruleName?: string })._ruleName
       return name && winners?.[name] ? [winners[name]!] : [resolved]
     }

@@ -32,6 +32,23 @@ export type GrammarCoverageCollector = {
   reset(): void
 }
 
+/** Metadata emitted only by a coverage-enabled macro grammar. It is attached to
+ * the grammar map, rather than each rule function, so a caller chooses the
+ * explicit public start rule before collecting results. */
+export const GRAMMAR_COVERAGE_DEFINITIONS: symbol = Symbol.for('parseman.grammarCoverageDefinitions')
+
+export function compiledGrammarCoverageDefinitions(grammar: Record<string, unknown>): readonly GrammarCoverageDefinition[] {
+  const definitions = (grammar as Record<symbol, unknown>)[GRAMMAR_COVERAGE_DEFINITIONS]
+  if (!Array.isArray(definitions)
+    || !definitions.every((definition): definition is GrammarCoverageDefinition => typeof definition === 'object'
+      && definition !== null
+      && typeof definition.id === 'string'
+      && (definition.kind === 'rule' || definition.kind === 'choice-arm' || definition.kind === 'label'))) {
+    throw new TypeError('grammar has no coverage definitions; enable grammarCoverage for this macro build')
+  }
+  return definitions
+}
+
 export type GrammarTracePhase = 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack'
 export type GrammarTraceEvent = { id: string; phase: GrammarTracePhase; offset: number; end?: number }
 export type GrammarTraceSnapshot = { events: readonly GrammarTraceEvent[]; truncated: boolean; dropped: number }

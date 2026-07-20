@@ -523,12 +523,12 @@ export function transformMacro(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
+  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown> } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
     const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), recovery, coverage: grammarCoverage })
     if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
-    return { replacement: compiled.replacement, ruleMap: evaluated.ruleMap, ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}) }
+    return { replacement: compiled.replacement, ruleMap: evaluated.ruleMap, ...(compiled.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}), ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}) }
   }
 
   const isRulesCall = (init: Expression): boolean =>
@@ -633,6 +633,20 @@ export function transformMacro(
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
   const withLeafMarker = (grammarExpr: string): string =>
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.leafComposed'), { value: true, enumerable: false })`
+  /** Coverage-only macro output carries the exact IDs emitted in its generated
+   * hooks. The metadata is non-enumerable so grammar maps keep their ordinary
+   * public shape, and it is absent entirely from production builds. */
+  const withCoverageDefinitions = (grammarExpr: string, definitions: readonly { id: string; kind: string }[]): string =>
+    !grammarCoverage ? grammarExpr
+      : `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.grammarCoverageDefinitions'), { value: Object.freeze(${JSON.stringify(definitions)}.map(Object.freeze)), enumerable: false })`
+  const emittedCoverageDefinitions = (source: string): Array<{ id: string; kind: 'rule' | 'choice-arm' | 'label' }> => {
+    const ids = new Set<string>()
+    for (const match of source.matchAll(/id:\s*"([^"]+)"/g)) ids.add(match[1]!)
+    return [...ids].sort().map(id => ({
+      id,
+      kind: id.startsWith('rule:') ? 'rule' : id.startsWith('label:') ? 'label' : 'choice-arm',
+    }))
+  }
   // Same-file `const X = compose([...])` → its carried (re-lowerable) list, so a
   // later same-file compose can chain it AND re-lower it under that compose's own
   // composing trivia (composing-wins holds at every level).
@@ -1006,7 +1020,8 @@ export function transformMacro(
         warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
         return null
       }
-      return { replacement: withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece])) }
+      const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece]))
+      return { replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) }
     } catch (e) {
       warn(init.start, `composeLeaf(): ${(e as Error).message}`)
       return null
@@ -1142,7 +1157,10 @@ export function transformMacro(
           // downstream package composes it via `import { <name> }` alone. Only when
           // the pieces are fully static (no runtime-only callbacks) — otherwise the
           // grammar isn't source-free composable and we ship it as a plain map.
-          let replacement = compiledRules.replacement
+          let replacement = withCoverageDefinitions(
+            compiledRules.replacement,
+            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(compiledRules.replacement),
+          )
           if (exportPrefix) {
             const ns = nsFor(varName)
             const pieces = compileLinkable([...compiledRules.ruleMap], ns, { recovery })
@@ -1173,7 +1191,7 @@ export function transformMacro(
           const replacement = exportPrefix
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
-          replacements.push({ start: init.start, end: init.end, replacement })
+          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) })
           continue
         }
 

@@ -16,7 +16,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   emit rule, choice, and label instrumentation only in that opt-in mode. Static
   combinators, `ref()` entries, and `rules(...)` maps share the same plan. Normal
   generated output remains byte-identical. `createGrammarInstrumentationContext()`
-  provides the typed context for covered generated parsers.
+  provides the typed context for covered generated parsers; `run(..., {
+  instrumentation })` forwards it without changing ordinary parse contexts, and
+  `compiledGrammarCoverageDefinitions()` exposes the immutable generated-map
+  denominator used for a truthful ratio.
 
 - **New: semantic choice traces.** Coverage traces record rule
   enter/success/failure, choice attempt/failure/backtrack/selected/success, and

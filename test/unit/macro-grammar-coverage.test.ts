@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, createGrammarTraceSink, label, literal, many, regex, rules, runWithGrammarCoverage, sequence, type GatedArm } from '../../src/index.ts'
+import { choice, compile, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, label, literal, many, regex, rules, run, runWithGrammarCoverage, sequence, type GatedArm } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 
@@ -55,6 +55,20 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
     expect(hits).toEqual(['choice:entry/arm:1'])
   })
 
+  it('exposes definitions and accepts instrumentation through run() only in coverage mode', () => {
+    const parser = choice(literal('a'), literal('b'))
+    const compiled = compile(parser, undefined, { coverage: true })
+    expect(compiled.coverageDefinitions).toEqual([
+      { id: 'choice:entry/arm:0', kind: 'choice-arm' },
+      { id: 'choice:entry/arm:1', kind: 'choice-arm' },
+    ])
+    const collector = createGrammarCoverageCollector(compiled.coverageDefinitions!)
+    expect(run((input, pos, context) => compiled.parseWithContext(input, context, pos), 'b', {
+      instrumentation: createGrammarInstrumentationContext({ collector }),
+    }).ok).toBe(true)
+    expect(collector.snapshot()).toMatchObject({ ratio: 0.5, hits: ['choice:entry/arm:1'] })
+  })
+
   it('records the final classified arm for greedy and longest-literal choices', () => {
     const greedy = compile(choice(regex('[a-z]+'), literal('if')), undefined, { coverage: true })
     const greedyHits: string[] = []
@@ -74,6 +88,20 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
     expect(ordinary.code).not.toContain('_grammarCoverage')
     expect(covered.code).toContain('_grammarCoverage')
     expect(transformMacro(source, 'coverage-fixture.ts', new Set(['parseman']))!.code).toBe(ordinary.code)
+  })
+
+  it('attaches coverage definitions to coverage-enabled macro rule maps only', () => {
+    const source = `import { choice, literal, rules } from 'parseman' with { type: 'macro' }\nconst grammar = rules(g => ({ Entry: choice(literal('a'), literal('b')) }))`
+    const ordinary = transformMacro(source, 'coverage-definitions.ts', new Set(['parseman']))!
+    const covered = transformMacro(source, 'coverage-definitions.ts', new Set(['parseman']), false, false, true)!
+    expect(ordinary.code).not.toContain('parseman.grammarCoverageDefinitions')
+    expect(covered.code).toContain('parseman.grammarCoverageDefinitions')
+    const grammar = new Function(`${covered.code}\nreturn grammar`)() as Record<string, unknown>
+    expect(compiledGrammarCoverageDefinitions(grammar)).toEqual([
+      { id: 'choice:Entry/lazy:0/arm:0', kind: 'choice-arm' },
+      { id: 'choice:Entry/lazy:0/arm:1', kind: 'choice-arm' },
+      { id: 'rule:Entry', kind: 'rule' },
+    ])
   })
 
   it('uses shared-plan rule and label IDs in coverage mode', () => {

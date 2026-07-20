@@ -2803,6 +2803,8 @@ export type CompiledParser<T> = {
    * closures that can't be serialized).
    */
   inlineExpression: string | null
+  /** Present only when compiled with `{ coverage: true }`. */
+  coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[]
 }
 
 /**
@@ -3220,6 +3222,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   return {
     source,
     inlineExpression,
+    ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
     parse(input: string, pos = 0): ParseResult<T> {
       return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, defaultCtx)
     },
@@ -3294,7 +3297,7 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts?: { trivia?: Combinator<unknown>; recovery?: boolean; coverage?: boolean },
-): { keys: string[]; replacement: string } | null {
+): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule in the map bakes it (unless a local
@@ -3423,7 +3426,11 @@ export function compileRuleMap(
     `})()`,
   ].join('\n')
 
-  return { keys: perEntry.map(e => e.key), replacement }
+  return {
+    keys: perEntry.map(e => e.key),
+    replacement,
+    ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
+  }
 }
 
 /**
