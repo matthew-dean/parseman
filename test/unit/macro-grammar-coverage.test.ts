@@ -177,6 +177,19 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
     }
   })
 
+  it('closes a greedy-classify regex-arm attempt when the super-regex misses', () => {
+    const parser = choice(regex('[a-z]+'), literal('if'))
+    const interpreterTrace = createGrammarTraceSink({ capacity: 20 })
+    expect(runWithGrammarCoverage(parser, '1', { trace: interpreterTrace }).result.ok).toBe(false)
+
+    const macroEvents: Array<{ id: string; phase: string; offset: number; end?: number }> = []
+    expect(compile(parser, undefined, { coverage: true }).parseWithContext('1', {
+      trackLines: false,
+      _grammarTrace: { write: (event: { id: string; phase: string; offset: number; end?: number }) => macroEvents.push(event) },
+    } as never).ok).toBe(false)
+    expect(macroEvents).toEqual(interpreterTrace.snapshot().events)
+  })
+
   it('instruments rules-map macro output while preserving its ordinary output', () => {
     const grammar = rules(g => ({ Entry: sequence(literal('('), g.Word, literal(')')), Word: literal('a') }))
     const ordinary = compileRuleMap(Object.entries(grammar))!

@@ -1380,7 +1380,7 @@ function emitGreedyClassify(
     ...coverageAttempt(ctx, superCoverageId, pos),
     `${ind(ctx)}${reVar}.lastIndex = ${pos}`,
     `${ind(ctx)}const ${matchV} = ${reVar}.exec(input)`,
-    ...emitIfFail(ctx, `${matchV} === null`, failArrBody(ctx, regexExpected, pos)),
+    ...emitIfFail(ctx, `${matchV} === null`, `${coverageFailureBacktrack(ctx, superCoverageId, pos, pos).join('; ')}; ${failArrBody(ctx, regexExpected, pos)}`),
     `${ind(ctx)}const ${wordV} = ${matchV}[0]`,
     `${ind(ctx)}const ${endV} = ${pos} + ${wordV}.length`,
     `${ind(ctx)}let ${valV}`,
