@@ -820,7 +820,6 @@ function emitFallible(
   return { stmts, okVar: okV, valVar: valV, endVar: endV }
 }
 
-
 // ---------------------------------------------------------------------------
 // Per-combinator emitters
 // ---------------------------------------------------------------------------
@@ -3473,10 +3472,11 @@ export type LinkablePieces = {
   buildFns: ReadonlyArray<(...args: unknown[]) => unknown>
 }
 
+
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; recovery?: boolean; captureTerminals?: boolean },
+  opts?: { trivia?: Combinator<unknown>; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
@@ -3509,6 +3509,7 @@ export function compileLinkable(
     // merely returning their scalar parse values.
     capturing: opts?.captureTerminals === true || ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
+    ...(opts?.coverage ? { coverage: { plan: opts.coverage } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
     deferFirstSetRefs: true,
@@ -3587,7 +3588,18 @@ export function compileLinkable(
       const body = emit(resolved, ctx, '_pos')
       ctx.activeTrivia = savedTrivia
       ctx.indent = savedIndent; ctx.failLabel = savedFail; ctx.recordFail = savedRec
-      pushNamedFnDecl(ctx, fn, body.stmts, body.valueVar, body.endVar)
+      // Linkable entries run through their named rule body rather than the
+      // public compileRuleMap wrapper. Instrument the named boundary itself so
+      // a final compose winner remains observable even when its resolved body
+      // is emitted under a different identity.
+      const ruleId = ctx.coverage?.plan.rules.get(rule)
+      const stmts = ruleId === undefined ? body.stmts : [
+        `${ind(ctx)}_ctx._grammarCoverage?.(${JSON.stringify(ruleId)})`,
+        `${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(ruleId)}, phase: 'enter', offset: _pos })`,
+        ...body.stmts,
+        `${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(ruleId)}, phase: 'success', offset: _pos, end: ${body.endVar} })`,
+      ]
+      pushNamedFnDecl(ctx, fn, stmts, body.valueVar, body.endVar)
     }
     // Public wrapper: call the named fn, adapt sentinel → ParseResult.
     perEntry.push({ key, rule, r: emitNamedFnCall(ctx, fn, '_pos') })
@@ -3661,10 +3673,30 @@ export function compileLinkable(
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
     hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
-    isRecognitionOnly: ctx.buildFns.length === 0 && ctx.mapFns.length === 0,
+    isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule)),
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
     buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
   }
+}
+
+/** A leaf-composed imported piece may carry Parseman's own structural balanced
+ * text reconstruction, but never a grammar-authored semantic callback. */
+function hasSemanticReduction(roots: readonly Combinator<unknown>[]): boolean {
+  const seen = new Set<Combinator<unknown>>()
+  const visit = (parser: Combinator<unknown>): boolean => {
+    if (seen.has(parser)) return false
+    seen.add(parser)
+    const def = parser._def
+    if (def.tag === 'transform' && !def.recognitionOnly) return true
+    if (def.tag === 'choice' && def.gates.some(Boolean)) return true
+    if (def.tag === 'guard' || def.tag === 'withCtx') return true
+    if (def.tag === 'node' && def.build !== undefined) return true
+    if (def.tag === 'lazy') {
+      try { return visit(def.thunk()) } catch { return true }
+    }
+    return childrenOf(def).some(visit)
+  }
+  return roots.some(visit)
 }
 
 function buildInlineExpression(

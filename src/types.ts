@@ -53,7 +53,7 @@ export type ParserDef =
   | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean }
   | { tag: 'optional';  parser: Combinator<unknown> }
   | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown> }
-  | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
+  | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; recognitionOnly?: boolean }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
   | { tag: 'token';     parser: Combinator<unknown> }

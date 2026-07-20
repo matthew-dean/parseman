@@ -27,7 +27,8 @@ import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateW
 import { compile, compileRuleMap, compileLinkable, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
-import { serializeRuleMap } from '../compiler/ir-serialize.ts'
+import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
+import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { createHash } from 'node:crypto'
 import type { Combinator } from '../types.ts'
 import type {
@@ -738,6 +739,50 @@ export function transformMacro(
     return out
   }
 
+  /** Materialize the exact combinator identities that will be lowered for a
+   * coverage-enabled terminal composition.  Coverage IDs are WeakMap keyed, so
+   * planning from a second IR hydration would silently leave the emitted pieces
+   * uninstrumented.  Opaque baked pieces deliberately fail closed: they cannot
+   * prove the post-compose winner graph. */
+  const materializeLeafCoverage = (
+    items: CarriedItem[],
+    localRules: Iterable<readonly [string, unknown]>,
+    localNs: string,
+    composing?: Combinator<unknown>,
+    captureTerminals = false,
+  ): LinkablePieces[] | null => {
+    type CoverageSource = { ns: string; rules: Array<[string, Combinator<unknown>]> }
+    const sources: CoverageSource[] = []
+    const add = (item: RawItem): boolean => {
+      if (!isIR(item)) return false
+      sources.push({ ns: item.ns, rules: evalRuleMapIR(item.ir) })
+      return true
+    }
+    for (const item of items) {
+      if (isSpread(item)) {
+        const imported = importedPieces(item.__spreadLocal)
+        if (!imported || !imported.every(add)) return null
+      } else if (!add(item as RawItem)) return null
+    }
+    sources.push({ ns: localNs, rules: [...localRules] as Array<[string, Combinator<unknown>]> })
+    const winners: Record<string, Combinator<unknown>> = {}
+    for (const source of sources) for (const [name, rule] of source.rules) winners[name] = rule
+    const plan = buildGrammarPlan(Object.values(winners), winners)
+    const pieces: LinkablePieces[] = []
+    for (let index = 0; index < sources.length; index++) {
+      const source = sources[index]!
+      const piece = compileLinkable(source.rules, source.ns, {
+        ...(composing ? { trivia: composing } : {}),
+        recovery,
+        ...(index < sources.length - 1 && captureTerminals ? { captureTerminals: true } : {}),
+        coverage: plan,
+      })
+      if (!piece) return null
+      pieces.push(piece)
+    }
+    return pieces
+  }
+
   /** Resolve one `compose([...])` argument to its RE-LOWERABLE carried items (IR
    * pieces / import spreads / baked-pieces fallback). The composing grammar's trivia
    * is applied later, uniformly, in materializeCarried — never per-piece here. */
@@ -938,22 +983,30 @@ export function transformMacro(
       }
       carried.push(...r.carried)
     }
-    const localPiece = compileLinkable([...localRules] as never, nsFor(`composeLeaf${init.start}`), { ...(composing ? { trivia: composing } : {}), recovery })
-    if (!localPiece) {
-      warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
-      return null
-    }
     try {
       // The imported pieces are recognition-only, but the local leaf grammar
       // may place one beneath a direct node(). Re-lower their terminals with
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
-      const recognitionPieces = materializeCarried(carried, composing, localPiece.hasDirectBuilders === true)
-      if (recognitionPieces.some(piece => piece.hasDirectBuilders !== false || piece.isRecognitionOnly !== true)) {
+      const localNs = nsFor(`composeLeaf${init.start}`)
+      const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), recovery })
+      if (!plainLocalPiece) {
+        warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
+        return null
+      }
+      const recognitionPieces = grammarCoverage
+        ? materializeLeafCoverage(carried, localRules, localNs, composing, plainLocalPiece.hasDirectBuilders === true)
+        : materializeCarried(carried, composing, plainLocalPiece.hasDirectBuilders === true)
+      if (!recognitionPieces) {
+        warn(init.start, 'composeLeaf(): coverage needs re-lowerable recognition IR')
+        return null
+      }
+      const importedRecognitionPieces = grammarCoverage ? recognitionPieces.slice(0, -1) : recognitionPieces
+      if (importedRecognitionPieces.some(piece => piece.hasDirectBuilders !== false || piece.isRecognitionOnly !== true)) {
         warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
         return null
       }
-      return { replacement: withLeafMarker(emitFusedSource([...recognitionPieces, localPiece])) }
+      return { replacement: withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece])) }
     } catch (e) {
       warn(init.start, `composeLeaf(): ${(e as Error).message}`)
       return null

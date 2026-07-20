@@ -51,7 +51,9 @@ reports `truncated` and `dropped`; detachment never changes parse results.
 ## Macro mode
 
 Static combinators, `ref()` entries, and `rules(...)` maps can also emit
-instrumentation. Enable it only in a test/debug build:
+instrumentation. This includes a terminal `composeLeaf(...)`, which uses its
+post-compose winner plan rather than imported-piece identities.
+Enable it only in a test/debug build:
 
 ```ts
 import parseman from 'parseman/plugin'

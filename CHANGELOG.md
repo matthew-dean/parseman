@@ -24,6 +24,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   paths agree across disjoint dispatch, greedy classification, longest literals,
   auto-not rejection, recursion, and re-entrant choices.
 
+- **Fix: preserve grammar observability through macro `composeLeaf()`.** The
+  coverage plan now uses the exact re-lowered final-winner graph, including
+  imported recognition fragments and the final local semantic map. Parseman's
+  own `balanced()` delimiter reconstruction remains recognition-only for this
+  purpose; grammar-authored reductions still make an imported leaf ineligible.
+
 ## 0.27.1 — 2026-07-18
 
 - **New: document-root terminal trivia ownership.** `node(..., {

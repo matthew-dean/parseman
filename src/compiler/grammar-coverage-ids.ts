@@ -32,14 +32,27 @@ export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinato
   const choices = new WeakMap<Combinator<unknown>, readonly string[]>()
   const labels = new WeakMap<Combinator<unknown>, readonly string[]>()
   const rules = new WeakMap<Combinator<unknown>, string>()
+  // A `rules()` map stores named lazy proxies while code generation may emit
+  // either that proxy or its resolved body.  Final composed winners are the
+  // authority for both identities; relying on `_ruleName` alone loses direct
+  // local leaf rules and cross-piece references after IR hydration.
+  const winnerNames = new Map<Combinator<unknown>, string>()
+  if (winners) {
+    for (const [name, winner] of Object.entries(winners)) {
+      winnerNames.set(winner, name)
+      if (winner._def.tag === 'lazy') {
+        try { winnerNames.set(winner._def.thunk(), name) } catch { /* unresolved external stays absent */ }
+      }
+    }
+  }
   const seen = new Set<Combinator<unknown>>()
   const visit = (parser: Combinator<unknown>, path: string): void => {
     if (seen.has(parser)) return
     seen.add(parser)
-    const rule = (parser as Combinator<unknown> & { _ruleName?: string })._ruleName
+    const rule = winnerNames.get(parser) ?? (parser as Combinator<unknown> & { _ruleName?: string })._ruleName
     // `rules()` references are tagged too for linker naming, but only the final
     // rule definition owns execution coverage; otherwise ref + target double-hit.
-    if (rule && parser._def.tag !== 'lazy') {
+    if (rule && (winnerNames.has(parser) || parser._def.tag !== 'lazy')) {
       const id = `rule:${rule}`
       definitions.set(id, { id, kind: 'rule' })
       rules.set(parser, id)

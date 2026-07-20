@@ -103,12 +103,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   // eval'd, a node build (which may reference imported AST classes) is left to its
   // source only. Macro-only validation metadata is carried as plain data: this
   // runtime module never parses callback source or imports a compiler frontend.
-  const _tf = (child: Comb, src: string): Comb => {
+  const _tf = (child: Comb, src: string, recognitionOnly = false): Comb => {
     let fn: (...a: unknown[]) => unknown
     // eslint-disable-next-line no-eval
     try { fn = (0, eval)(`(${src})`) } catch { fn = () => { throw new Error('IR transform fn not materialized') } }
     const t = transform(child as never, fn as never)
     ;(t._def as { fnSrc?: string }).fnSrc = src
+    if (recognitionOnly) (t._def as { recognitionOnly?: boolean }).recognitionOnly = true
     return t as Comb
   }
   const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[]): Comb => {
@@ -339,7 +340,7 @@ class Serializer {
         // `_tf` sets `_def.fnSrc` so re-lowering INLINES the callback (a plain
         // `transform(child, fn)` would leave fnSrc unset → a non-static runtime
         // callback that emitFusedSource can't inline).
-        return `_tf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)})`
+        return `_tf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)}${def.recognitionOnly ? ', true' : ''})`
       }
       case 'node': {
         if (def.build !== undefined && def.buildSrc === undefined) throw new Unserializable('node build without buildSrc')
