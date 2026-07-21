@@ -166,6 +166,56 @@ function measure(fn: CompiledFn, input: string, iterations: number): number {
   return measureMedianUs(() => fn(input), iterations, { samples: 9 })
 }
 
+function median(samples: readonly number[]): number {
+  const sorted = [...samples].sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)]!
+}
+
+/**
+ * Measure two already-compiled functions as alternating, equal-size windows.
+ *
+ * The original dispatch A/B timed every if/else window and then every switch
+ * window. On a busy Vitest run that made a GC, thermal, or neighboring-worker
+ * phase look like a code-generation difference (including one 0.409× keyword
+ * outlier). Alternating the order makes both implementations see the same
+ * process conditions without weakening the 0.7× regression floor.
+ */
+function measurePair(a: CompiledFn, b: CompiledFn, input: string, iterations: number): { aUs: number; bUs: number } {
+  // Let each generated function reach the same JIT tier before timed windows.
+  for (let i = 0; i < 500; i++) { a(input); b(input) }
+  // Keep a paired window at the same bounded ~5 ms budget as measureMedianUs.
+  // The caller's configured iteration count remains an upper bound, but a
+  // 4,000-parse window for this 2,000-token grammar is long enough to starve
+  // unrelated Vitest workers and turns the guard itself into a full-suite flake.
+  const calibrationIterations = Math.min(iterations, 200)
+  const calibrate = (fn: CompiledFn): number => {
+    const start = performance.now()
+    for (let i = 0; i < calibrationIterations; i++) fn(input)
+    return (performance.now() - start) / calibrationIterations
+  }
+  const perOpMs = Math.max(calibrate(a), calibrate(b))
+  const windowIterations = perOpMs > 0
+    ? Math.min(iterations, Math.max(1, Math.ceil(5 / perOpMs)))
+    : iterations
+  const aSamples: number[] = []
+  const bSamples: number[] = []
+  const window = (fn: CompiledFn): number => {
+    const start = performance.now()
+    for (let i = 0; i < windowIterations; i++) fn(input)
+    return (performance.now() - start) / windowIterations * 1000
+  }
+  for (let pass = 0; pass < 9; pass++) {
+    if (pass % 2 === 0) {
+      aSamples.push(window(a))
+      bSamples.push(window(b))
+    } else {
+      bSamples.push(window(b))
+      aSamples.push(window(a))
+    }
+  }
+  return { aUs: median(aSamples), bUs: median(bSamples) }
+}
+
 function runScanCases(cases: ScanAbCase[], iterations: number): AbResult[] {
   return cases.map(c => {
     const bUs = measure(c.exec, c.input, iterations)
@@ -184,8 +234,7 @@ export function runScanAbLong(iterations = 4_000): AbResult[] {
 
 export function runDispatchAb(iterations = 20_000): AbResult[] {
   return buildDispatchAbCases().map(c => {
-    const bUs = measure(c.iff, c.input, iterations)
-    const aUs = measure(c.sw, c.input, iterations)
+    const { aUs, bUs } = measurePair(c.sw, c.iff, c.input, iterations)
     return { name: c.name, aUs, bUs, speedup: bUs / aUs, valid: c.valid }
   })
 }

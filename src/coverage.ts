@@ -1,6 +1,7 @@
 import { run, type RunOptions, type RunResult, type Runnable } from './functional/run.ts'
 import type { Combinator, ParseContext, ParseResult } from './types.ts'
 import { choice } from './combinators/choice.ts'
+import { attempt } from './combinators/attempt.ts'
 import { getCoreLiteralValue } from './combinators/choice.ts'
 import { not } from './combinators/not.ts'
 import { node } from './combinators/node.ts'
@@ -12,6 +13,7 @@ import { many, oneOrMore, optional, sepBy } from './combinators/repeat.ts'
 import { scanTo } from './combinators/scanTo.ts'
 import { sequence } from './combinators/sequence.ts'
 import { token } from './combinators/token.ts'
+import { leaf } from './combinators/token.ts'
 import { withCtx } from './combinators/withCtx.ts'
 import { composedCoverageRules } from './compiler/linker.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition, type GrammarCoveragePlan } from './compiler/grammar-coverage-ids.ts'
@@ -49,7 +51,7 @@ export function compiledGrammarCoverageDefinitions(grammar: Record<string, unkno
   return definitions
 }
 
-export type GrammarTracePhase = 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack'
+export type GrammarTracePhase = 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack' | 'rollback'
 export type GrammarTraceEvent = { id: string; phase: GrammarTracePhase; offset: number; end?: number }
 export type GrammarTraceSnapshot = { events: readonly GrammarTraceEvent[]; truncated: boolean; dropped: number }
 export type GrammarTraceSink = { write(event: GrammarTraceEvent): void; snapshot(): GrammarTraceSnapshot }
@@ -126,7 +128,7 @@ export function composedGrammarCoverageDefinitions(grammar: Record<string, unkno
   return grammarCoverageDefinitions(entry, winners)
 }
 
-type CoverageMaps = Pick<GrammarCoveragePlan, 'choices' | 'labels' | 'rules'>
+type CoverageMaps = Pick<GrammarCoveragePlan, 'choices' | 'attempts' | 'labels' | 'rules'>
 
 /**
  * Build a separate interpreter graph for the coverage run. It never mutates the
@@ -236,11 +238,24 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'many': return many(build(def.parser))
         case 'oneOrMore': return oneOrMore(build(def.parser))
         case 'optional': return optional(build(def.parser))
+        case 'attempt': {
+          const base = attempt(build(def.parser))
+          const id = maps.attempts.get(parser)
+          return id === undefined ? base : {
+            ...base,
+            parse(input, pos, ctx) {
+              const result = base.parse(input, pos, ctx)
+              if (!result.ok) trace?.write({ id, phase: 'rollback', offset: pos })
+              return result
+            },
+          }
+        }
         case 'sepBy': return sepBy(build(def.parser), build(def.separator))
         case 'transform': return transform(build(def.parser), def.fn)
         case 'skip': return skip(build(def.main), build(def.skipped))
         case 'trivia': return trivia(build(def.parser))
         case 'token': return token(build(def.parser))
+        case 'leaf': return leaf(build(def.parser), def.fn)
         case 'field': return field(def.name, build(def.parser))
         case 'grammar': return grammarParser({
           ...(def.triviaParser === undefined ? (def.clearTrivia ? { trivia: null } : {}) : { trivia: build(def.triviaParser) }),

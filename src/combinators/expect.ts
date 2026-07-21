@@ -26,10 +26,12 @@ export function deriveExpected(c: Combinator<unknown>): string[] {
     case 'label':     return [def.label]
     case 'choice':    return def.parsers.flatMap(deriveExpected)
     case 'sequence':  return def.parsers.length > 0 ? deriveExpected(def.parsers[0]!) : []
+    case 'attempt':   return deriveExpected(def.parser)
     case 'node':
     case 'grammar':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'optional':
     case 'many':
     case 'oneOrMore':

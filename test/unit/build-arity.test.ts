@@ -14,9 +14,9 @@
  * `arguments` all yield `null` (→ caller keeps capture).
  */
 import { describe, it, expect } from 'vitest'
-import { node, sequence, regex, literal, parser, compile, parse, triviaEntries } from '../../src/index.ts'
+import { node, sequence, regex, literal, parser, compile, parse, triviaEntries, cstBuildHost } from '../../src/index.ts'
 import type { ParserDef } from '../../src/index.ts'
-import { confirmedBuildArity, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
+import { confirmedBuildArity, buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
@@ -76,13 +76,20 @@ describe('confirmedBuildArity — conservative null (keep capture)', () => {
   }
 })
 
-describe('buildReadsTrivia / buildReadsState off buildSrc (typed)', () => {
+describe('build capture arity gates off buildSrc (typed)', () => {
   const def = (buildSrc: string): Extract<ParserDef, { tag: 'node' }> =>
     ({ tag: 'node', type: 'T', parser: regex(/a/), build: () => null, buildSrc })
-  it('typed arity-3 → reads neither (ELIDE)', () => {
+  it('typed arity-3 → keeps children/fields but elides raw/trivia/state', () => {
     const d = def('(c: any, f: any, s: any) => x')
+    expect(buildReadsChildren(d)).toBe(true)
+    expect(buildReadsRaw(d)).toBe(false)
     expect(buildReadsTrivia(d)).toBe(false)
     expect(buildReadsState(d)).toBe(false)
+  })
+  it('arity-0 → elides children/raw and keeps the fixed build call slots', () => {
+    const d = def('() => x')
+    expect(buildReadsChildren(d)).toBe(false)
+    expect(buildReadsRaw(d)).toBe(false)
   })
   it('typed arity-5 → reads trivia only', () => {
     const d = def('(c: any, f: any, s: any, r: any, tl: number[]) => x')
@@ -91,6 +98,8 @@ describe('buildReadsTrivia / buildReadsState off buildSrc (typed)', () => {
   })
   it('generic-with-comma type → conservatively keeps both', () => {
     const d = def('(c: Map<string, number>) => c')
+    expect(buildReadsChildren(d)).toBe(true)
+    expect(buildReadsRaw(d)).toBe(true)
     expect(buildReadsTrivia(d)).toBe(true)
     expect(buildReadsState(d)).toBe(true)
   })
@@ -111,6 +120,11 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
     expect(src).toContain('_EMPTY_TL')
     expect(src).not.toMatch(/_tl\d*\s*=\s*\[\]/)
   })
+  it('typed arity-3 → raw CST collector is AST-only lazy, not eagerly allocated', () => {
+    const src = compile(typed3).source
+    expect(src).toMatch(/const _dcst\d+ = _cap\d+ \|\| _ctx\.build\?\._parsemanCstOutput === true/)
+    expect(src).toMatch(/_raw\d+ = _rec\d+ \? undefined : _dcst\d+ \? \[\] : undefined/)
+  })
   it('typed arity-5 → allocates a per-node _tl array', () => {
     const src = compile(typed5).source
     // Existing direct five-argument builders own a fresh trivia collector.
@@ -120,6 +134,19 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
     // both should produce { n: 2 } regardless of capture
     expect(compile(typed3).parse('ab')).toEqual(parse(typed3, 'ab'))
     expect((compile(typed3).parse('ab') as { ok: boolean; value: unknown }).value).toEqual({ n: 2 })
+  })
+  it('direct AST elision still restores the complete public CST host contract', () => {
+    const compiled = compile(typed3)
+    const cst = compiled.parseWithContext('ab', { trackLines: false, build: cstBuildHost() })
+    expect(cst.ok).toBe(true)
+    expect(cst.ok && cst.value).toMatchObject({
+      _tag: 'node',
+      type: 'Typed3',
+      children: [
+        { _tag: 'leaf', value: 'a' },
+        { _tag: 'leaf', value: 'b' },
+      ],
+    })
   })
 })
 
@@ -135,6 +162,7 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
 `, 'P')
 
     expect(source).toContain('_EMPTY_TL')
+    expect(source).toMatch(/const _dcst\d+ = _cap\d+ \|\| _ctx\.build\?\._parsemanCstOutput === true/)
     expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start:/)
     expect(source).toMatch(/_EMPTY_TL, undefined\)/)
     expect(fn('ab', 0, {}).value).toEqual({

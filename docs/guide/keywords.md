@@ -17,6 +17,20 @@ import { choice, literal } from 'parseman'
 const op = choice(literal('instanceof'), literal('in'), literal('if'))
 ```
 
+When an alternative needs to consume past a shared prefix before deciding, wrap
+that alternative in `attempt()`. A failed attempt restores Parseman's CST,
+trivia, field, and recovery-diagnostic capture before the next arm runs; it
+does not roll back user-owned parse state.
+
+```ts
+import { attempt, choice, literal, sequence } from 'parseman'
+
+const value = choice(
+  attempt(sequence(literal('a'), literal('b'))),
+  literal('a'),
+)
+```
+
 ## Keyword vs. identifier boundaries
 
 The classic hazard: `if` should not match the `if` at the start of `ifdef`. A bare

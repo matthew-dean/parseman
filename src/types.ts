@@ -49,6 +49,7 @@ export type ParserDef =
   // force interpreter fallback). Absent under runtime compile() — the real gate
   // closures live in `gates`.
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; gateSrcs?: (string | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
+  | { tag: 'attempt';   parser: Combinator<unknown> }
   | { tag: 'many';      parser: Combinator<unknown>; min: 0; valueUnused?: boolean }
   | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean }
   | { tag: 'optional';  parser: Combinator<unknown> }
@@ -57,6 +58,7 @@ export type ParserDef =
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
   | { tag: 'token';     parser: Combinator<unknown> }
+  | { tag: 'leaf';      parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'field';     name: string; parser: Combinator<unknown> }
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; trackLines: boolean }

@@ -198,7 +198,7 @@ pre-override piece names.
 ```ts
 type GrammarTraceEvent = {
   id: string
-  phase: 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack'
+  phase: 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack' | 'rollback'
   offset: number
   end?: number
 }
@@ -213,6 +213,12 @@ wrapped parser succeeds; they do not suppress or duplicate child rule/arm
 events. `offset` is the cursor at the named phase; `end` is present only for a
 successful return. Events from an enclosing parse that later fails remain in
 the trace. Recursion and re-entry produce new ordered events with the same ID.
+
+`attempt(parser)` is transactional rather than a coverage definition: a failed
+transaction emits trace-only `attempt:<structural-path>/rollback` at its entry
+cursor after its owned capture/diagnostic sinks are restored. That ID is not in
+the coverage denominator and no inner locally successful arm is credited when
+the enclosing transaction rolls back.
 
 `selected` is local PEG commitment, not a global parse winner: it is the first
 locally successful arm of that choice invocation. A later enclosing retry emits
@@ -253,6 +259,8 @@ disjoint dispatch, greedy classification, longest-literal, and truncation.
 - direct recursion and mutual recursion do not duplicate IDs or leak hits;
 - a `choice` with failed speculative arms records only the selected successful
   arm;
+- a rejected `attempt()` emits its trace-only rollback event and credits no
+  rolled-back inner arm;
 - duplicate `label()` names remain separate structural IDs;
 - `compose` override picks the final winner only;
 - nested compose (`base → mid → leaf`) keeps stable IDs after flattening;

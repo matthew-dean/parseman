@@ -1,6 +1,6 @@
 import { beforeAll, describe, it, expect } from 'vitest'
 import {
-  compile, literal, many, node, optional, parse, parser, regex, sequence, token, trivia,
+  choice, compile, leaf, literal, many, node, noTrivia, oneOrMore, optional, parse, parser, regex, sequence, token, trivia,
   sepBy, transform,
 } from '../../src/index.ts'
 import type { CSTLeaf, ParseContext } from '../../src/index.ts'
@@ -37,6 +37,21 @@ const throwingToken = token(transform(literal('a'), () => { throw new Error('boo
 const throwingCompiled = compile(throwingToken)
 const nestedTriviaToken = token(sequence(literal('a'), parser({ trivia: ws }, sequence(literal('['), literal(']')))))
 const nestedTriviaCompiled = compile(nestedTriviaToken)
+const commentGap = oneOrMore(choice(
+  regex(/[ \t\n]+/),
+  sequence(literal('//'), many(regex(/[^\n]/)), optional(literal('\n'))),
+))
+const mathOperator = leaf(
+  noTrivia(sequence(optional(commentGap), choice(literal('*'), literal('/'), literal('%')), optional(commentGap))),
+  (parts) => parts[1] as string,
+)
+const mathExpression = parser(
+  { trivia: ws },
+  node('Math', noTrivia(sequence(literal('a'), mathOperator, literal('b'))), mkNode('Math')),
+)
+const mathExpressionCompiled = compile(mathExpression)
+const gluedLeaf = parser({ trivia: ws }, noTrivia(sequence(literal('a'), leaf(sequence(literal('['), literal(']')), () => '[]'), literal('b'))))
+const gluedLeafCompiled = compile(gluedLeaf)
 type ParseFn = (input: string, pos: number, ctx: object) =>
   { ok: boolean; value?: unknown; span: { start: number; end: number } }
 let macroFn: ParseFn
@@ -208,5 +223,27 @@ describe('token()', () => {
       expect(ctx._triviaLog).toBe(triviaLog)
       expect(triviaLog).toEqual([])
     }
+  })
+})
+
+describe('leaf()', () => {
+  it('reduces a comment-aware structural operator to one semantic CST leaf with its full span', () => {
+    const input = 'a * // explanation\n b'
+    const interp = parse(mathExpression, input)
+    const compiled = mathExpressionCompiled.parse(input, 0)
+    expect(interp.ok).toBe(true)
+    expect(compiled.ok).toBe(true)
+    if (!interp.ok || !compiled.ok) return
+    expect(leafValues(interp.value)).toEqual(['a', '*', 'b'])
+    const operator = (interp.value as CstNode).children[1] as CSTLeaf
+    expect(operator.span).toEqual({ start: 1, end: input.length - 1 })
+    expect(compiled.value).toEqual(interp.value)
+  })
+
+  it('keeps noTrivia containment when the enclosing structural run is also glued', () => {
+    expect(parse(gluedLeaf, 'a[]b').ok).toBe(true)
+    expect(gluedLeafCompiled.parse('a[]b', 0).ok).toBe(true)
+    expect(parse(gluedLeaf, 'a []b').ok).toBe(false)
+    expect(gluedLeafCompiled.parse('a []b', 0).ok).toBe(false)
   })
 })

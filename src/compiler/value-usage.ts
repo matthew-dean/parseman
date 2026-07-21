@@ -95,9 +95,15 @@ export function markUnusedValues(root: Combinator<unknown>): void {
       case 'label':
       case 'trivia':
       case 'token':
+      case 'attempt':
       case 'withCtx':
       case 'expect':
         visit(def.parser, consumed) // single-child pass-through wrappers
+        return
+      case 'leaf':
+        // The reducer observes the complete inner value even when its own result
+        // is immediately captured by a node().
+        visit(def.parser, true)
         return
       case 'lazy':
         // An INNER ref boundary — a distinct rule, analyzed on its own root. Don't

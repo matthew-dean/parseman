@@ -1,10 +1,13 @@
 import { defineConfig } from 'vitest/config'
 
-// Dedicated config for the heavy Parseman perf suite (full grammar sweep +
-// 3-pass CSS ratio guard). Split out of the default `pnpm test` run because it
-// benchmarks rather than unit-tests — run it explicitly via `pnpm test:perf`.
+// Dedicated config for timing guards. They must not race each other or ordinary
+// unit tests: a neighboring GC/CPU phase is not a parser-codegen regression.
+// Correctness assertions in these files still run in the default suite.
 export default defineConfig({
   test: {
-    include: ['test/perf/parseman-perf.test.ts'],
+    include: ['test/perf/**/*.test.ts'],
+    fileParallelism: false,
+    maxWorkers: 1,
+    env: { PARSEMAN_PERF: '1' },
   },
 })

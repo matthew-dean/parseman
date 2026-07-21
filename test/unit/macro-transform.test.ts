@@ -138,6 +138,20 @@ const upper = transform(literal('hello'), s => s.toUpperCase())
   })
 })
 
+describe('transformMacro — leaf() declarations', () => {
+  it('lowers a static semantic leaf without a runtime combinator helper', () => {
+    const code = `
+import { leaf, literal } from 'parseman' with { type: 'macro' }
+const star = leaf(literal('*'), value => value)
+`.trim()
+    const result = transform(code)
+    expect(result).not.toBeNull()
+    expect(result!.code).not.toContain('leaf(')
+    expect(result!.code).not.toContain('composeLeaf(')
+    expect(result!.code).toContain('const _mf =')
+  })
+})
+
 describe('transformMacro — rules() binding forms', () => {
   it('compiles a destructured rules() binding', () => {
     const code = `

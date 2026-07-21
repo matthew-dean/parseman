@@ -25,12 +25,13 @@ import { literal } from '../combinators/literal.ts'
 import { keywords } from '../combinators/keywords.ts'
 import { sequence } from '../combinators/sequence.ts'
 import { choice } from '../combinators/choice.ts'
+import { attempt } from '../combinators/attempt.ts'
 import { many, oneOrMore, optional, sepBy } from '../combinators/repeat.ts'
 import { not } from '../combinators/not.ts'
 import { node } from '../combinators/node.ts'
 import { parser } from '../combinators/grammar.ts'
 import { scanTo } from '../combinators/scanTo.ts'
-import { token } from '../combinators/token.ts'
+import { token, leaf } from '../combinators/token.ts'
 import { transform, skip, trivia, label, field } from '../combinators/map.ts'
 import { expect as expectC } from '../combinators/expect.ts'
 import { withCtx } from '../combinators/withCtx.ts'
@@ -45,9 +46,11 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'many':
     case 'oneOrMore':
     case 'optional':
+    case 'attempt':
     case 'transform':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'label':
     case 'field':
     case 'not':
@@ -111,6 +114,14 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     ;(t._def as { fnSrc?: string }).fnSrc = src
     if (recognitionOnly) (t._def as { recognitionOnly?: boolean }).recognitionOnly = true
     return t as Comb
+  }
+  const _lf = (child: Comb, src: string): Comb => {
+    let fn: (...a: unknown[]) => unknown
+    // eslint-disable-next-line no-eval
+    try { fn = (0, eval)(`(${src})`) } catch { fn = () => { throw new Error('IR leaf fn not materialized') } }
+    const l = leaf(child as never, fn as never)
+    ;(l._def as { fnSrc?: string }).fnSrc = src
+    return l as Comb
   }
   const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[]): Comb => {
     if (staticError !== undefined && staticError.length > 0) {
@@ -178,15 +189,15 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   }
   // eslint-disable-next-line no-new-func
   const fn = new Function(
-    'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice',
+    'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'attempt',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'node', 'parser',
-    'scanTo', 'token', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_nd', '_gch', '_wc',
+    'scanTo', 'token', 'leaf', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
-    rules, ref, regex, literal, keywords, sequence, choice,
+    rules, ref, regex, literal, keywords, sequence, choice, attempt,
     many, oneOrMore, optional, sepBy, not, node, parser,
-    scanTo, token, transform, skip, trivia, label, field, expectC, _tf, _nd, _gch, _wc,
+    scanTo, token, leaf, transform, skip, trivia, label, field, expectC, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -325,10 +336,15 @@ class Serializer {
       case 'many':      return `many(${kid(def.parser)})`
       case 'oneOrMore': return `oneOrMore(${kid(def.parser)})`
       case 'optional':  return `optional(${kid(def.parser)})`
+      case 'attempt':   return `attempt(${kid(def.parser)})`
       case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)})`
       case 'not':       return `not(${kid(def.parser)})`
       case 'trivia':    return `trivia(${kid(def.parser)})`
       case 'token':     return `token(${kid(def.parser)})`
+      case 'leaf': {
+        if (def.fnSrc === undefined) throw new Unserializable('leaf without fnSrc')
+        return `_lf(${kid(def.parser)}, ${JSON.stringify(def.fnSrc)})`
+      }
       case 'label':     return `label(${JSON.stringify(def.label)}, ${kid(def.parser)})`
       case 'field':     return `field(${JSON.stringify(def.name)}, ${kid(def.parser)})`
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`

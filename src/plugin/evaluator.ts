@@ -112,6 +112,7 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   word:      (...a) => parseman.word(a[0] as string, a[1] as string | undefined),
   sequence:  (...a) => (parseman.sequence as (...p: Combinator<unknown>[]) => Combinator<unknown[]>)(...(a as Combinator<unknown>[])),
   choice:    (...a) => (parseman.choice as (...p: Combinator<unknown>[]) => Combinator<unknown>)(...(a as Combinator<unknown>[])),
+  attempt:   (...a) => parseman.attempt(a[0] as Combinator<unknown>),
   many:      (...a) => parseman.many(a[0] as Combinator<unknown>),
   oneOrMore: (...a) => parseman.oneOrMore(a[0] as Combinator<unknown>),
   optional:  (...a) => parseman.optional(a[0] as Combinator<unknown>),
@@ -122,6 +123,7 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),
   noTrivia:  (...a) => parseman.noTrivia(a[0] as Combinator<unknown>),
   token:     (...a) => parseman.token(a[0] as Combinator<unknown>),
+  leaf:      (...a) => parseman.leaf(a[0] as Combinator<unknown>, a[1] as (value: unknown, span: { start: number; end: number }) => unknown),
   expect:    (...a) => parseman.expect(a[0] as Combinator<unknown>, a[1] as string | undefined),
 }
 
@@ -267,6 +269,22 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       // Carry the callback source on the def so codegen can pull it in traversal
       // order (order-independent across rules that share sub-combinators).
       if (combi._def.tag === 'transform') combi._def.fnSrc = fnSrc
+      return combi
+    } catch { return null }
+  }
+
+  // leaf(inner, fn) — like transform(), but suppresses inner CST captures and
+  // publishes one reducer-selected terminal leaf to its parent.
+  if (callee.name === 'leaf' && code !== undefined && mfs !== undefined) {
+    const [parserArg, fnArg] = node.arguments
+    if (!parserArg || !fnArg || parserArg.type === 'SpreadElement' || fnArg.type === 'SpreadElement') return null
+    const inner = anyValue(parserArg as Expression, scope, code, mfs)
+    if (!isCombinator(inner)) return null
+    const fnSrc = code.slice((fnArg as Expression).start, (fnArg as Expression).end)
+    mfs.push(fnSrc)
+    try {
+      const combi = parseman.leaf(inner, (v: unknown) => v)
+      if (combi._def.tag === 'leaf') combi._def.fnSrc = fnSrc
       return combi
     } catch { return null }
   }

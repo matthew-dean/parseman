@@ -31,9 +31,11 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
     case 'many':
     case 'oneOrMore':
     case 'optional':
+    case 'attempt':
     case 'transform':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'label':
     case 'expect':
     case 'withCtx':
@@ -78,9 +80,11 @@ export function parserHasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator
     case 'keywords':
     case 'guard':
     case 'token':
+    case 'leaf':
       return false
     // Transparent single-child wrappers: recurse.
     case 'optional':
+    case 'attempt':
     case 'transform':
     case 'trivia':
     case 'label':
@@ -120,9 +124,11 @@ export function parserEnablesTriviaCapture(p: Combinator<unknown>, seen: Set<Com
     case 'many':
     case 'oneOrMore':
     case 'optional':
+    case 'attempt':
     case 'transform':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'label':
     case 'field':
     case 'expect':

@@ -25,7 +25,7 @@ import {
 import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type ScanShape, type Mint } from './scannable-run.ts'
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
-import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
+import { buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from './build-arity.ts'
 import { buildReadsFields, parserEnablesTriviaCapture, parserHasOwnFields, parserHasTriviaSite } from './fields.ts'
 import {
   transformFnSource,
@@ -649,6 +649,7 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     case 'not':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'scanTo':
     case 'unknown':
       return false
@@ -659,6 +660,8 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     // choice/firstMatch already roll back each failed arm; on overall failure
     // nothing committed remains.
     case 'choice':
+      return false
+    case 'attempt':
       return false
     // optional never fails; many/oneOrMore only "fail" with zero captured items.
     case 'optional':
@@ -711,6 +714,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'keywords':
     case 'node':
     case 'token':
+    case 'leaf':
       return true
     case 'not':
     case 'guard':
@@ -725,6 +729,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'many':
     case 'oneOrMore':
     case 'optional':
+    case 'attempt':
     case 'transform':
     case 'label':
     case 'field':
@@ -1232,7 +1237,9 @@ function coverageFailureBacktrack(ctx: Ctx, id: string | undefined, failureOffse
 }
 
 function emitDisjointArm(p: Combinator<unknown>, ctx: Ctx, pos: string, valV: string, endV: string, coverageId?: string): string[] {
-  if (failsAtStart(p)) {
+  // Coverage needs an observable failure/backtrack pair even for an atomic
+  // dispatched terminal. Keep the unwrapped hot path only when uninstrumented.
+  if (failsAtStart(p) && coverageId === undefined) {
     const r = emit(p, ctx, pos)
     return [...coverageAttempt(ctx, coverageId, pos), ...r.stmts, `${ind(ctx)}${valV} = ${r.valueVar}`, `${ind(ctx)}${endV} = ${r.endVar}`, ...coverageHit(ctx, coverageId, pos, r.endVar)]
   }
@@ -1240,7 +1247,7 @@ function emitDisjointArm(p: Combinator<unknown>, ctx: Ctx, pos: string, valV: st
   return [
     ...coverageAttempt(ctx, coverageId, pos),
     ...stmts,
-    ...emitIfFail(ctx, `!${okVar}`, failArrBody(ctx, '_ctx._fx', pos, false)),
+    ...emitIfFail(ctx, `!${okVar}`, `${coverageFailureBacktrack(ctx, coverageId, '_ctx._fe', pos).join('; ')}; ${failArrBody(ctx, '_ctx._fx', pos, false)}`),
     `${ind(ctx)}${valV} = ${valVar}`,
     `${ind(ctx)}${endV} = ${endVar}`,
     ...coverageHit(ctx, coverageId, pos, endVar),
@@ -1774,6 +1781,34 @@ function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, po
   return { stmts, valueVar: valV, endVar: endV }
 }
 
+/** Transactional parser arm: emitFallible owns the private failure label and
+ * structural rollback; Attempt only re-anchors the diagnostic at its entry. */
+function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'attempt' }>, ctx: Ctx, pos: string): ER {
+  const inner = emitFallible(def.parser, ctx, pos)
+  // Unlike an ordinary fallible sub-parser, attempt is a semantic transaction:
+  // every framework-owned side effect from its rejected branch disappears.  Keep
+  // this boundary here (rather than teaching emitFallible different semantics),
+  // because ordinary sequences deliberately retain their diagnostic trivia.
+  const leaves = v(ctx, '_atl')
+  const raw = v(ctx, '_atr')
+  const trivia = v(ctx, '_att')
+  const log = v(ctx, '_atg')
+  const fields = v(ctx, '_atf')
+  const errors = v(ctx, '_ate')
+  const rollback = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${log}; if (_ctx._fields) _ctx._fields.length = ${fields}; if (_ctx._errors) _ctx._errors.length = ${errors}`
+  const traceId = ctx.coverage?.plan.attempts.get(p)
+  const traceRollback = traceId === undefined ? '' : ` _ctx._grammarTrace?.write({ id: ${JSON.stringify(traceId)}, phase: 'rollback', offset: ${pos} });`
+  return {
+    stmts: [
+      `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${trivia} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
+      ...inner.stmts,
+      ...emitIfFail(ctx, `!${inner.okVar}`, `{ ${rollback};${traceRollback} _ctx._fe = ${pos}; ${propagateFailBody(ctx)} }`),
+    ],
+    valueVar: inner.valVar,
+    endVar: inner.endVar,
+  }
+}
+
 function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepBy' }>, ctx: Ctx, pos: string): ER {
   const arrV = v(ctx, '_arr')
   const curV = v(ctx, '_cur')
@@ -2134,6 +2169,39 @@ function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: str
   }
 }
 
+/** Semantic-leaf wrapper: preserve the inner grammar's trivia policy, hide its
+ * captures, and expose one callback-reduced leaf at the enclosing level. */
+function emitLeaf(def: Extract<ParserDef, { tag: 'leaf' }>, ctx: Ctx, pos: string): ER {
+  const inner = emitFallible(def.parser, ctx, pos)
+  const i = ind(ctx)
+  const sc = v(ctx, '_leafCh')
+  const sl = v(ctx, '_leafLv')
+  const sr = v(ctx, '_leafRaw')
+  const stl = v(ctx, '_leafTl')
+  const sol = v(ctx, '_leafLog')
+  const sb = v(ctx, '_leafBuf')
+  const rawV = v(ctx, '_leafRawValue')
+  const valV = v(ctx, '_leaf')
+  const fnIdx = pushMapFn(ctx, def.fn, def.fnSrc ?? null)
+  return {
+    stmts: [
+      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${stl} = _ctx._cstTriviaLog, ${sol} = _ctx._triviaLog, ${sb} = _ctx._cstBuf`,
+      `${i}_ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._triviaLog = undefined; _ctx._cstBuf = undefined`,
+      `${i}try {`,
+      ...reindentStmts(inner.stmts, ctx.indent + 1).map(stmt => stmt.replace(/^(\s*)(?:const|let)\s+/, '$1var ')),
+      `${i}} finally {`,
+      `${i}  _ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._triviaLog = ${sol}; _ctx._cstBuf = ${sb}`,
+      `${i}}`,
+      ...emitIfFail(ctx, `!${inner.okVar}`, propagateFailBody(ctx)),
+      `${i}const ${rawV} = ${inner.valVar}`,
+      `${i}const ${valV} = ${mfRef(ctx)}[${fnIdx}](${rawV}, { start: ${pos}, end: ${inner.endVar} })`,
+      ...emitLeafCapture(ctx, valV, pos, inner.endVar),
+    ],
+    valueVar: valV,
+    endVar: inner.endVar,
+  }
+}
+
 /**
  * CST node rule. Collects the inner parse's terminals/trivia into fresh local
  * arrays (capture is emitted inline by the terminals while capChildren is set),
@@ -2155,9 +2223,12 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   }
   const i = ind(ctx)
 
-  // Arity-gated elision: when the build provably never reads the trivia (4th) or
-  // state (5th) arg, skip that capture entirely. The mk-inline path reads
-  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture.
+  // Arity-gated elision: direct AST builders frequently use only children,
+  // fields, and span. Do not allocate their otherwise-unobservable raw CST
+  // collector (or children for a zero-argument builder). Structural/CST output
+  // retains the full collector contract, and an explicit cstBuildHost switches
+  // the direct node back to full capture at runtime. The mk-inline path reads
+  // both `rawV.length` and `tlV.length`, so it always keeps those collectors.
   //
   // A STRUCTURAL node builds via the injected `_ctx.build` host, whose arity is
   // only known at parse time — so instead of defensively capturing both (the old
@@ -2171,6 +2242,8 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // (the cstTriviaLog per-token push dominates — ~28% of a real jess parse).
   const capturesTrivia = mkType !== null || def.captureTrivia === true || def.trailingTrivia === true || (!structural && buildReadsTrivia(def))
   const clonesState = !structural && buildReadsState(def)
+  const capturesChildren = !structural && (mkType !== null || def.unwrap || def.collapse || buildReadsChildren(def))
+  const capturesRaw = !structural && (mkType !== null || buildReadsRaw(def))
   const hasFields = parserHasOwnFields(def.parser)
   const capturesFields = hasFields && !structural && buildReadsFields(def)
   // A nested parser({ captureTrivia: true }) needs this node's collector, but
@@ -2211,6 +2284,15 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
   const profileRecognizer = recV
   const profileCapture = capV
+  // Direct builders normally produce their own AST and never inspect CST
+  // children/rawChildren. Keep cstBuildHost and profile({ capture: true })
+  // truthful by dynamically restoring those collectors only for those explicit
+  // modes. The normal AST route pays a boolean/property read instead of a fresh
+  // array for every elided collector.
+  const directCstV = !structural && (!capturesChildren || !capturesRaw) ? v(ctx, '_dcst') : null
+  const directCstGate = directCstV === null
+    ? 'false'
+    : `${profileCapture} || _ctx.build?._parsemanCstOutput === true`
   // A structural node can make its CST-trivia contract grammar-owned. That is
   // stronger than a host preference: `node(..., undefined, { captureTrivia:
   // true })` must keep its log even when the injected host explicitly opts out.
@@ -2220,8 +2302,8 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${structuralCapturesTrivia ? 'true' : hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
       + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
     : capturesTrivia
-      ? `${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : []`
-      : `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : []`
+      ? `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}, ${tlV} = ${profileRecognizer} ? undefined : []`
+      : `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}`
   // The collector stays installed when a nested grammar can opt in; generated
   // trivia scanners gate their push on `captureTrivia`, so this remains inert
   // until that nested scope activates it.
@@ -2590,6 +2672,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'keywords':  return emitKeywords(def, ctx, pos)
     case 'sequence':  return emitSeq(def, ctx, pos)
     case 'choice':    return emitChoice(p, def, ctx, pos)
+    case 'attempt':   return emitAttempt(p, def, ctx, pos)
     case 'many':
     case 'oneOrMore': return emitMany(def, ctx, pos)
     case 'optional':  return emitOptional(def, ctx, pos)
@@ -2653,6 +2736,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'lazy':     return emitLazy(p, def, ctx, pos)
     case 'trivia':   return emit(def.parser, ctx, pos)
     case 'token':    return emitToken(def, ctx, pos)
+    case 'leaf':     return emitLeaf(def, ctx, pos)
     case 'label': {
       const inner = emitFallible(def.parser, ctx, pos)
       return {
@@ -2822,6 +2906,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'grammar':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'label':
     case 'field':
     case 'optional':
@@ -2859,10 +2944,12 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'sequence':
     case 'choice':    return def.parsers
     case 'many':
+    case 'attempt':
     case 'optional':
     case 'transform':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'label':
     case 'field':
     case 'grammar':

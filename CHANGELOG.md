@@ -5,6 +5,31 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.28.0 — 2026-07-19
 
+- **New: macro-only `composeLeaf([...recognition, localRules])`.** A terminal
+  composition fuses imported, explicitly recognition-only grammar pieces with
+  one local `rules()` map whose direct builders may use lexical AST
+  constructors. The macro emits one parser; an unlowered runtime call throws
+  instead of creating a composition fallback. The terminal result cannot be
+  composed again.
+
+- **New: `leaf(combinator, reducer)` semantic terminal composition.** A structural
+  grammar can now publish one reducer-selected value and full source span to its
+  parent while suppressing internal CST captures. It keeps local trivia explicit,
+  macro-compiles, round-trips through linkable IR, and preserves inner coverage and
+  trace identities.
+
+- **New: `attempt(parser)` transactional ordered-choice arms.** A rejected arm
+  restores every Parseman-owned sink—CST leaves/raw children/trivia, fields,
+  global trivia diagnostics, and recovery errors—then reports failure at the
+  transaction entry while retaining the inner expected-token set. User state is
+  deliberately not cloned. Interpreter, runtime-compiled, macro-compiled, and
+  re-lowered composed grammars use the same semantics.
+
+- **New: transaction trace lifecycle.** Coverage-enabled parser output now emits
+  a trace-only `attempt:<path>/rollback` event for a rejected transaction. It is
+  intentionally absent from semantic-coverage definitions and never credits a
+  rejected inner choice arm; normal generated output remains uninstrumented.
+
 - **New: opt-in grammar observability.** `runWithGrammarCoverage()` reports
   stable rule, choice-arm, and label coverage from an immutable snapshot, while
   `createGrammarTraceSink()` records bounded lifecycle traces. IDs come from the
@@ -32,6 +57,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   imported recognition fragments and the final local semantic map. Parseman's
   own `balanced()` delimiter reconstruction remains recognition-only for this
   purpose; grammar-authored reductions still make an imported leaf ineligible.
+
+- **Improved: direct-AST node codegen omits unobserved CST collectors.** When a
+  direct `node()` builder's confirmed formal parameters cannot read `children`
+  or `rawChildren`, normal generated parsing leaves those buffers unallocated.
+  Structural/CST output, explicit `cstBuildHost()`, and capture profiling retain
+  their complete collector contract.
 
 ## 0.27.1 — 2026-07-18
 

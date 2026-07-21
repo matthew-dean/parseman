@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, label, literal, many, regex, rules, run, runWithGrammarCoverage, sequence, type GatedArm } from '../../src/index.ts'
+import { choice, compile, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, leaf, label, literal, many, regex, rules, run, runWithGrammarCoverage, sequence, type GatedArm } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 
 describe('macro grammar coverage emission', () => {
+  it('keeps choices nested by a semantic leaf observable with their stable IDs', () => {
+    const parser = leaf(choice(literal('*'), literal('/')), value => value)
+    const compiled = compile(parser, undefined, { coverage: true })
+    const hits: string[] = []
+    expect(compiled.parseWithContext('/', { trackLines: false, _grammarCoverage: (id: string) => hits.push(id) } as never).ok).toBe(true)
+    expect(hits).toEqual(['choice:entry/leaf:0/arm:1'])
+  })
   it('preserves the checked default generated-output baseline', () => {
     const parser = choice(literal('a'), literal('b'))
     expect(compile(parser).source).toBe(`
