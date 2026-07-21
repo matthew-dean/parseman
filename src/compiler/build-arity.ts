@@ -1,10 +1,10 @@
 import type { ParserDef } from '../types.ts'
 
 /**
- * Per-node CST-trivia (5th build arg) and state-clone (6th build arg) capture is
- * dead work when the build never declares those formal params. This module derives
- * a build's *confirmed* formal-parameter arity so all three eval paths (interpreter,
- * compiler, macro) can elide that capture identically.
+ * Per-node children/fields/raw/trivia/state capture is dead work when the build
+ * never declares the corresponding formal param. This module derives a build's
+ * *confirmed* formal-parameter arity so the compiler and macro can elide their
+ * direct-AST-only CST collectors without changing structural/CST output.
  *
  * Conservative by construction: any source we can't confidently parse — rest params,
  * destructuring, `arguments`, an unrecognized shape — yields `null` (arity unknown),
@@ -57,6 +57,24 @@ export function confirmedBuildArity(src: string): number | null {
   if (/\barguments\b/.test(s)) return null
 
   return parts.length
+}
+
+/** Build reads its 1st (`children`) arg? Unknown/unparseable → true (keep capture). */
+export function buildReadsChildren(def: NodeDef): boolean {
+  if (!def.build) return true // structural node: CST output always owns children
+  const src = def.buildSrc ?? def.build.toString()
+  const arity = confirmedBuildArity(src)
+  if (arity === null) return true
+  return arity >= 1
+}
+
+/** Build reads its 4th (`rawChildren`) arg? Unknown/unparseable → true (keep capture). */
+export function buildReadsRaw(def: NodeDef): boolean {
+  if (!def.build) return true // structural node: host/default CST may read raw children
+  const src = def.buildSrc ?? def.build.toString()
+  const arity = confirmedBuildArity(src)
+  if (arity === null) return true
+  return arity >= 4
 }
 
 /** Build reads the 5th (triviaLog) arg? Unknown/unparseable → true (keep capture). */

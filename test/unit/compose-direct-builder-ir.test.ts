@@ -108,3 +108,168 @@ export const base = rules(g => ({
     expect(composed.Tail!('z', 0, {}).ok).toBe(true)
   })
 })
+
+describe('composeLeaf over imported recognition IR', () => {
+  it('is macro-only and never delegates to runtime compose()', () => {
+    expect(() => parseman.composeLeaf([])).toThrow(
+      'composeLeaf(): requires Parseman macro lowering; runtime composition is forbidden',
+    )
+    expect(() => transformMacro(
+      `import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
+export const parser = composeLeaf([unresolvedSyntax, rules(g => ({ Document: literal('x') }))])`,
+      '/pkg/leaf-unresolved.ts', new Set(['parseman']),
+    )).toThrow('composeLeaf() must macro-fuse; runtime composition is forbidden')
+  })
+
+  it('rejects direct builders in every pre-final grammar', async () => {
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-compose-leaf-reject-'))
+    try {
+      const directBase = transformMacro(
+        `import { literal, node, rules } from 'parseman' with { type: 'macro' }
+export const directBase = rules(g => ({ Atom: node('Atom', literal('x'), () => ({ type: 'base' })) }))`,
+        path.join(dir, 'direct-base.js'), new Set(['parseman']),
+      )!
+      expect(directBase.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, 'direct-base.js'), directBase.code)
+
+      expect(() => transformMacro(
+        `import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
+import { directBase } from './direct-base.js'
+export const parser = composeLeaf([directBase, rules(g => ({ Document: literal('x') }))])`,
+        path.join(dir, 'imported-direct.ts'), new Set(['parseman']),
+      )).toThrow('composeLeaf() must macro-fuse; runtime composition is forbidden')
+
+      const semanticBase = transformMacro(
+        `import { literal, rules, transform } from 'parseman' with { type: 'macro' }
+export const semanticBase = rules(g => ({ Atom: transform(literal('x'), value => value.toUpperCase()) }))`,
+        path.join(dir, 'semantic-base.js'), new Set(['parseman']),
+      )!
+      expect(semanticBase.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, 'semantic-base.js'), semanticBase.code)
+      expect(() => transformMacro(
+        `import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
+import { semanticBase } from './semantic-base.js'
+export const parser = composeLeaf([semanticBase, rules(g => ({ Document: literal('x') }))])`,
+        path.join(dir, 'semantic-transform.ts'), new Set(['parseman']),
+      )).toThrow('composeLeaf() must macro-fuse; runtime composition is forbidden')
+
+      // A carried full piece from before the recognition-only marker is unknown,
+      // even if it happens not to contain a builder. Leaf fusion must reject it
+      // rather than infer safety from generated source text.
+      fs.writeFileSync(path.join(dir, 'legacy.js'), `
+export const legacy = Object.defineProperty({}, Symbol.for('parseman.composedPieces'), {
+  value: [{ ns: 'legacy', keys: [], prelude: [], ruleFns: new Map(), wrappers: new Map(), firstSets: new Map(), deps: new Map(), needsEmptyTl: false, needsHostReads: false, mfFns: [], buildFns: [] }],
+  enumerable: false,
+})`)
+      expect(() => transformMacro(
+        `import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
+import { legacy } from './legacy.js'
+export const parser = composeLeaf([legacy, rules(g => ({ Document: literal('x') }))])`,
+        path.join(dir, 'legacy-unknown.ts'), new Set(['parseman']),
+      )).toThrow('composeLeaf() must macro-fuse; runtime composition is forbidden')
+
+      expect(() => transformMacro(
+        `import { composeLeaf, literal, node, rules } from 'parseman' with { type: 'macro' }
+export const parser = composeLeaf([
+  rules(g => ({ Prior: node('Prior', literal('x'), () => ({ type: 'prior' })) })),
+  rules(g => ({ Document: literal('x') })),
+])`,
+        path.join(dir, 'local-direct.ts'), new Set(['parseman']),
+      )).toThrow('composeLeaf() must macro-fuse; runtime composition is forbidden')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves a local direct wrapper\'s imported named recognition rule in the fused closure', async () => {
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-compose-leaf-'))
+    try {
+      const base = transformMacro(
+        `import { regex, rules } from 'parseman' with { type: 'macro' }
+export const syntax = rules(g => ({ Atom: regex(/[a-z]+/) }))`,
+        path.join(dir, 'syntax.js'), new Set(['parseman']),
+      )!
+      expect(base.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, 'syntax.js'), base.code)
+
+      const leaf = transformMacro(
+        `import { composeLeaf, node, rules } from 'parseman' with { type: 'macro' }
+import { syntax } from './syntax.js'
+import { makeAst } from './ast.js'
+export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Document', g.Atom, (children, _fields, span) => makeAst(children.map(child => child.value), span)) }))])`,
+        path.join(dir, 'leaf.js'), new Set(['parseman']),
+      )!
+      expect(leaf.warnings).toEqual([])
+      expect(/\bcomposeLeaf\s*\(/.test(leaf.code)).toBe(false)
+      expect(/new Function/.test(leaf.code)).toBe(false)
+      expect(leaf.code).not.toContain('composedPieces')
+      expect(leaf.code).toContain('leafComposed')
+      // `g.Atom` is intentionally absent from the local rules map. The evaluator
+      // leaves it as a named external placeholder; leaf fusion must close that
+      // placeholder over the imported recognition piece, not delegate to a host
+      // parser or runtime composition.
+      expect(leaf.code).toContain('_r_Atom')
+
+      const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
+      const parser = new Function('makeAst', strip(leaf.code) + '\nreturn parser')(
+        (value: unknown, span: unknown) => ({ type: 'Ast', value, span }),
+      ) as Record<string | symbol, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      expect(parser.Document!('token', 0, {}).value).toEqual({
+        type: 'Ast',
+        value: ['token'],
+        span: { start: 0, end: 5 },
+      })
+
+      const marker = Symbol.for('parseman.leafComposed')
+      expect(parser[marker]).toBe(true)
+      expect(() => parseman.compose([parser as never])).toThrow(
+        'compose: a composeLeaf() result is terminal and cannot be composed again',
+      )
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('captures imported recognition sequence tokens in order without trivia', async () => {
+    const os = await import('node:os')
+    const fs = await import('node:fs')
+    const path = await import('node:path')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-compose-leaf-trivia-'))
+    try {
+      const base = transformMacro(
+        `import { regex, rules, sequence } from 'parseman' with { type: 'macro' }
+export const syntax = rules(g => ({ Pair: sequence(regex(/[a-z]+/), regex(/[0-9]+/)) }))`,
+        path.join(dir, 'syntax.js'), new Set(['parseman']),
+      )!
+      expect(base.warnings).toEqual([])
+      fs.writeFileSync(path.join(dir, 'syntax.js'), base.code)
+
+      const leaf = transformMacro(
+        `import { composeLeaf, node, regex, rules, trivia } from 'parseman' with { type: 'macro' }
+import { syntax } from './syntax.js'
+import { makeAst } from './ast.js'
+const whitespace = trivia(regex(/\\s+/))
+export const parser = composeLeaf([syntax, rules({ trivia: whitespace }, g => ({ Document: node('Document', g.Pair, children => makeAst(children.map(child => child.value))) }))])`,
+        path.join(dir, 'leaf.js'), new Set(['parseman']),
+      )!
+      expect(leaf.warnings).toEqual([])
+
+      const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
+      const parser = new Function('makeAst', strip(leaf.code) + '\nreturn parser')(
+        (value: unknown) => ({ type: 'Ast', value }),
+      ) as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      expect(parser.Document!('word  42', 0, {}).value).toEqual({
+        type: 'Ast',
+        value: ['word', '42'],
+      })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

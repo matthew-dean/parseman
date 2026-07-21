@@ -67,6 +67,22 @@ choice compiles to an O(1) first-char dispatch — gated arms included, so gatin
 rare-token alternative (like `&`) stays O(1) rather than dropping the whole choice to a
 linear scan. (A nullable or overlapping arm forces the linear path.)
 
+### `attempt(combinator)`
+
+Make one ordered-choice arm transactional. If its parser fails after consuming
+input, Parseman restores its structural capture, trivia, field, and recovery
+diagnostic sinks before returning a zero-width failure at the attempt entry.
+The inner expectation is preserved, so diagnostics still name the token that
+actually failed. `attempt()` does not clone or roll back `ctx.state`.
+
+```ts
+const value = choice(
+  attempt(sequence(literal('a'), literal('b'))),
+  literal('a'),
+)
+// `a` selects the fallback; no partial `a` capture leaks from the first arm.
+```
+
 ### `many(combinator)` · `oneOrMore(combinator)` · `optional(combinator)` · `sepBy(combinator, sep)`
 
 Repetition and optionality. `many` is zero-or-more, `oneOrMore` fails on zero, `optional`
@@ -95,6 +111,25 @@ The compiler may lower safe nullable terminal runs inside `token()` — `many`,
 `optional`, and `sepBy` forms whose pieces are literals/regexes — to one regex while
 preserving the one-token value/CST shape. Use it for source-text regions that should be
 semantically opaque; keep ordinary combinators when builders need the internal leaves.
+
+### `leaf(combinator, reducer)`
+
+Treat a structural grammar as one semantic leaf. `reducer(value, span)` chooses the
+value exposed to the parent and, inside `node()`, Parseman captures exactly one CST
+leaf with that value and the complete matched span. Unlike `token()`, `leaf()` does
+not alter trivia; make the structural grammar's local spacing explicit with
+`noTrivia()` or `parser({ trivia })`.
+
+```ts
+const operator = leaf(
+  noTrivia(sequence(optional(gap), choice(literal('*'), literal('/')), optional(gap))),
+  parts => parts[1],
+)
+```
+
+This is useful when a parent reducer needs a flat terminal (here `'*'` or `'/'`)
+but the language accepts structured comments or spacing around it. Static `leaf()`
+calls macro-compile and retain the inner grammar's normal coverage and trace IDs.
 
 ### `not(combinator)`
 
@@ -136,6 +171,31 @@ returns the definitions. See [Recursive rules](../guide/recursive-rules).
 
 Low-level forward-declaration slot. `ref()` returns a combinator with a `.define(p)`
 method. Prefer `rules()`.
+
+### `composeLeaf([...recognition, localRules])` <Badge type="warning" text="macro only" />
+
+Fuse imported, explicitly recognition-only grammar pieces with one final local
+`rules()` map. Use this when shared syntax must stay reusable, while the final
+dialect owns direct AST construction. The macro emits one parser with the local
+builders inlined; Parseman does not create a runtime composition or builder-host
+fallback.
+
+```ts
+import { composeLeaf, node, rules } from 'parseman' with { type: 'macro' }
+import { cssRecognition } from './css-recognition.js'
+
+export const grammar = composeLeaf([
+  cssRecognition,
+  rules(g => ({
+    Stylesheet: node('Stylesheet', g.Document, children => ({ type: 'Stylesheet', children })),
+  })),
+])
+```
+
+Every item before the final local map must prove recognition-only. `composeLeaf`
+is terminal: it cannot be fed into another `compose()`/`composeLeaf()` call. It
+is publicly exported so macro source can import it, but an unlowered runtime
+call throws rather than silently changing construction semantics.
 
 ## Trees
 

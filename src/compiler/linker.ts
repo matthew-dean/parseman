@@ -309,12 +309,25 @@ export function emitFusedSource(pieces: LinkablePieces[]): string {
  * itself a `compose([...])` result. */
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
+/**
+ * A terminal fused grammar may be used to run a parser, but not as an input to
+ * another composition. Macro `composeLeaf()` uses this for a local semantic
+ * reduction over imported recognition-only IR: the local reductions stay in
+ * their lexical module and therefore never become carried IR.
+ */
+const LEAF_COMPOSED = Symbol.for('parseman.leafComposed')
+
 /** The composing (outermost) trivia a runtime `compose()` applied — stored so a
  * later `pick(composedGrammar, …)` can re-lower the selected rules under the SAME
  * trivia (composing-wins survives à-la-carte selection). The carried IR pieces hold
  * no trivia of their own, so it must be remembered separately. Not serialized by the
  * macro (which delegates pick to the runtime linker). */
 const COMPOSED_TRIVIA = Symbol.for('parseman.composedTrivia')
+
+/** Final winner map for semantic-coverage tooling. It exists only when every
+ * carried compose piece is re-lowerable IR; opaque precompiled artifacts have no
+ * combinator graph to inspect and therefore deliberately expose no fake map. */
+const COMPOSED_COVERAGE_RULES = Symbol.for('parseman.composedCoverageRules')
 
 /** The compact IR form a grammar carries instead of its lowered rule source: the
  * combinator-construction expression, re-lowered here at fuse time. */
@@ -326,11 +339,42 @@ function isIRPiece(p: unknown): p is IRPiece {
     && !('ruleFns' in (p as object))
 }
 
+function coverageRulesOf(carried: Array<LinkablePieces | IRPiece>): Record<string, Combinator<unknown>> | undefined {
+  const winners: Record<string, Combinator<unknown>> = {}
+  for (const piece of carried) {
+    if (!isIRPiece(piece)) return undefined
+    const map = evalRuleMapIR(piece.ir)
+    for (const [name, rule] of map) {
+      // An accessed-but-undefined `g.Name` is an external reference, never a
+      // rule definition. Match compose's IR filtering rule exactly.
+      if (rule._def.tag === 'lazy') {
+        try { rule._def.thunk() } catch { continue }
+      }
+      winners[name] = rule
+    }
+  }
+  return winners
+}
+
+/** Return the final override-winner combinator map carried by runtime
+ * `compose()`, or `undefined` when a precompiled opaque artifact participated.
+ * This is intentionally internal: callers must not treat it as a parser API. */
+export function composedCoverageRules(grammar: Record<string, unknown>): Record<string, Combinator<unknown>> | undefined {
+  return (grammar as Record<symbol, unknown>)[COMPOSED_COVERAGE_RULES] as Record<string, Combinator<unknown>> | undefined
+}
+
 /** Materialize a carried item to full `LinkablePieces`: an IR piece is evaluated
  * back to a rule map and re-lowered; a full piece passes through. */
-export function materializePiece(p: LinkablePieces | IRPiece, trivia?: Combinator<unknown>): LinkablePieces {
+export function materializePiece(
+  p: LinkablePieces | IRPiece,
+  trivia?: Combinator<unknown>,
+  captureTerminals = false,
+): LinkablePieces {
   if (!isIRPiece(p)) return p
-  const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns, trivia ? { trivia } : undefined)
+  const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns, {
+    ...(trivia ? { trivia } : {}),
+    ...(captureTerminals ? { captureTerminals: true } : {}),
+  })
   if (!pieces) throw new Error(`compose: carried IR for ns "${p.ns}" could not be re-lowered`)
   return pieces
 }
@@ -410,6 +454,9 @@ function composingTriviaOf(items: Array<LinkablePieces | Record<string, unknown>
 export function compose(
   items: Array<LinkablePieces | Record<string, unknown>>,
 ): Record<string, FusedRule> {
+  if (items.some(item => (item as Record<symbol, unknown>)[LEAF_COMPOSED] === true)) {
+    throw new Error('compose: a composeLeaf() result is terminal and cannot be composed again')
+  }
   const used = new Set<string>()
   // The composed grammar's ambient trivia comes from the composing grammar itself —
   // whatever the last piece declared via rules({ trivia }, …). No separate option:
@@ -423,5 +470,19 @@ export function compose(
   const map = fuseRules(pieces)
   Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })
   if (trivia) Object.defineProperty(map, COMPOSED_TRIVIA, { value: trivia, enumerable: false })
+  const coverageRules = coverageRulesOf(carried)
+  if (coverageRules) Object.defineProperty(map, COMPOSED_COVERAGE_RULES, { value: coverageRules, enumerable: false })
   return map
+}
+
+/**
+ * Compose a terminal grammar. This is for a leaf parser that overlays local
+ * semantic reductions on reusable recognition rules. It is macro-only: without
+ * macro lowering there is no safe way to keep lexical builders out of carried
+ * IR, so it fails rather than falling back to runtime composition.
+ */
+export function composeLeaf(
+  _items: Array<LinkablePieces | Record<string, unknown>>,
+): Record<string, FusedRule> {
+  throw new Error('composeLeaf(): requires Parseman macro lowering; runtime composition is forbidden')
 }

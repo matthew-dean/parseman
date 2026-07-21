@@ -11,6 +11,7 @@ import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
 import { markUnusedValues } from './value-usage.ts'
+import { buildGrammarPlan, type GrammarCoveragePlan } from './grammar-coverage-ids.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
   analyzeLabeledScannableRun,
@@ -24,7 +25,7 @@ import {
 import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type ScanShape, type Mint } from './scannable-run.ts'
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
-import { buildReadsTrivia, buildReadsState } from './build-arity.ts'
+import { buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from './build-arity.ts'
 import { buildReadsFields, parserEnablesTriviaCapture, parserHasOwnFields, parserHasTriviaSite } from './fields.ts'
 import {
   transformFnSource,
@@ -74,6 +75,11 @@ export function endLoweringCapture(): string[] {
 type Ctx = {
   vars: number
   indent: number
+  /** Coverage-only emission. Undefined for ordinary compile/macro output. */
+  coverage?: { plan: GrammarCoveragePlan; entry?: Combinator<unknown> } | undefined
+  activeCoverageRuleId?: string | undefined
+  /** A generated named-rule wrapper emits failure after its `_pfail` boundary. */
+  suppressCoverageFailure?: boolean | undefined
   /**
    * Compile-time recovery gate (opt-in via `compile(g, { recovery: true })`).
    * When off (default) NO recovery code is emitted — byte-identical output, and
@@ -281,11 +287,12 @@ function failBody(ctx: Ctx, expected: string, posExpr: string): string {
   // them just breaks — the hot path (loop terminations, first-arm misses) pays
   // nothing. The direct-return path is the final answer and needs no recording.
   const probe = probeUpdate(ctx, `[${expected}]`, posExpr)
+  const trace = ctx.activeCoverageRuleId === undefined ? '' : `_ctx._grammarTrace?.write({ id: ${JSON.stringify(ctx.activeCoverageRuleId)}, phase: 'failure', offset: ${posExpr} }); `
   if (ctx.failLabel) {
-    if (!ctx.recordFail) return probe ? `{ ${probe}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
-    return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; break ${ctx.failLabel} }`
+    if (!ctx.recordFail) return probe ? `{ ${probe}${trace}break ${ctx.failLabel} }` : trace ? `{ ${trace}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
+    return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; ${trace}break ${ctx.failLabel} }`
   }
-  return probe + failReturn(expected, posExpr)
+  return probe + trace + failReturn(expected, posExpr)
 }
 
 /**
@@ -296,16 +303,17 @@ function failBody(ctx: Ctx, expected: string, posExpr: string): string {
  */
 function failArrBody(ctx: Ctx, expectedArr: string, posExpr: string, constant = true): string {
   const probe = probeUpdate(ctx, expectedArr, posExpr, constant)
+  const trace = ctx.activeCoverageRuleId === undefined ? '' : `_ctx._grammarTrace?.write({ id: ${JSON.stringify(ctx.activeCoverageRuleId)}, phase: 'failure', offset: ${posExpr} }); `
   if (ctx.failLabel) {
-    if (!ctx.recordFail) return probe ? `{ ${probe}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
+    if (!ctx.recordFail) return probe ? `{ ${probe}${trace}break ${ctx.failLabel} }` : trace ? `{ ${trace}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
     const fx = constant ? hoistExpected(ctx, expectedArr) : expectedArr
-    return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${fx}; break ${ctx.failLabel} }`
+    return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${fx}; ${trace}break ${ctx.failLabel} }`
   }
   // Direct-return (no enclosing fail label). A dynamic source may reference the
   // shared frozen `_ctx._fx`; copy it so the (possibly frozen) constant never
   // escapes into a user-facing result. Constant sources are inline literals.
-  if (!constant) return `${probe}return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} } }`
-  return probe + failReturnArr(expectedArr, posExpr)
+  if (!constant) return `${probe}${trace}return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} } }`
+  return probe + trace + failReturnArr(expectedArr, posExpr)
 }
 
 /** Build a ParseResult from the recorded deepest failure, copying `_fx` so the
@@ -366,6 +374,7 @@ function pushNamedFnDecl(
   bodyStmts: string[],
   valueVar: string,
   endVar: string,
+  failureRuleId?: string,
 ): void {
   // Success path returns the value DIRECTLY (setting the shared end slot first);
   // failure breaks `_pfail` and falls through to the sentinel return. No `_pfok`
@@ -377,6 +386,9 @@ function pushNamedFnDecl(
     `    ${NAMED_FN_END} = ${endVar}`,
     `    return ${valueVar}`,
     `  }`,
+    ...(failureRuleId === undefined
+      ? []
+      : [`  _ctx._grammarTrace?.write({ id: ${JSON.stringify(failureRuleId)}, phase: 'failure', offset: _ctx._fe ?? _pos })`]),
     `  return ${NAMED_FN_FAIL}`,
     `}`,
   ].join('\n'))
@@ -637,6 +649,7 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     case 'not':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'scanTo':
     case 'unknown':
       return false
@@ -647,6 +660,8 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     // choice/firstMatch already roll back each failed arm; on overall failure
     // nothing committed remains.
     case 'choice':
+      return false
+    case 'attempt':
       return false
     // optional never fails; many/oneOrMore only "fail" with zero captured items.
     case 'optional':
@@ -699,6 +714,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'keywords':
     case 'node':
     case 'token':
+    case 'leaf':
       return true
     case 'not':
     case 'guard':
@@ -713,6 +729,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'many':
     case 'oneOrMore':
     case 'optional':
+    case 'attempt':
     case 'transform':
     case 'label':
     case 'field':
@@ -731,16 +748,6 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     default:
       return true
   }
-}
-
-/** Wrap stmts + success return in an IIFE. Returns the IIFE expression string. */
-function asIIFE(stmts: string[], valueVar: string, endVar: string, startPos: string, indent: string): string {
-  return [
-    `(() => {`,
-    ...stmts,
-    `${indent}  return { ok: true, value: ${valueVar}, span: { start: ${startPos}, end: ${endVar} } }`,
-    `${indent}})()`,
-  ].join('\n')
 }
 
 /**
@@ -817,7 +824,6 @@ function emitFallible(
   ]
   return { stmts, okVar: okV, valVar: valV, endVar: endV }
 }
-
 
 // ---------------------------------------------------------------------------
 // Per-combinator emitters
@@ -1211,17 +1217,40 @@ function needsFirstSetGuard(p: Combinator<unknown>): boolean {
  * the arm's deep `expected` (via _ctx._fx) but re-anchors the span at the choice
  * position `pos` — exactly what the interpreter's disjoint dispatch returns.
  */
-function emitDisjointArm(p: Combinator<unknown>, ctx: Ctx, pos: string, valV: string, endV: string): string[] {
-  if (failsAtStart(p)) {
+function coverageHit(ctx: Ctx, id: string | undefined, offset = '_pos', end?: string): string[] {
+  return id === undefined ? [] : [
+    `${ind(ctx)}_ctx._grammarCoverage?.(${JSON.stringify(id)})`,
+    `${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(id)}, phase: 'selected', offset: ${offset}${end === undefined ? '' : `, end: ${end}`} })`,
+    `${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(id)}, phase: 'success', offset: ${offset}${end === undefined ? '' : `, end: ${end}`} })`,
+  ]
+}
+
+function coverageAttempt(ctx: Ctx, id: string | undefined, offset: string): string[] {
+  return id === undefined ? [] : [`${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(id)}, phase: 'attempt', offset: ${offset} })`]
+}
+
+function coverageFailureBacktrack(ctx: Ctx, id: string | undefined, failureOffset: string, startOffset: string): string[] {
+  return id === undefined ? [] : [
+    `${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(id)}, phase: 'failure', offset: ${failureOffset} })`,
+    `${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(id)}, phase: 'backtrack', offset: ${startOffset} })`,
+  ]
+}
+
+function emitDisjointArm(p: Combinator<unknown>, ctx: Ctx, pos: string, valV: string, endV: string, coverageId?: string): string[] {
+  // Coverage needs an observable failure/backtrack pair even for an atomic
+  // dispatched terminal. Keep the unwrapped hot path only when uninstrumented.
+  if (failsAtStart(p) && coverageId === undefined) {
     const r = emit(p, ctx, pos)
-    return [...r.stmts, `${ind(ctx)}${valV} = ${r.valueVar}`, `${ind(ctx)}${endV} = ${r.endVar}`]
+    return [...coverageAttempt(ctx, coverageId, pos), ...r.stmts, `${ind(ctx)}${valV} = ${r.valueVar}`, `${ind(ctx)}${endV} = ${r.endVar}`, ...coverageHit(ctx, coverageId, pos, r.endVar)]
   }
   const { stmts, okVar, valVar, endVar } = emitFallible(p, ctx, pos)
   return [
+    ...coverageAttempt(ctx, coverageId, pos),
     ...stmts,
-    ...emitIfFail(ctx, `!${okVar}`, failArrBody(ctx, '_ctx._fx', pos, false)),
+    ...emitIfFail(ctx, `!${okVar}`, `${coverageFailureBacktrack(ctx, coverageId, '_ctx._fe', pos).join('; ')}; ${failArrBody(ctx, '_ctx._fx', pos, false)}`),
     `${ind(ctx)}${valV} = ${valVar}`,
     `${ind(ctx)}${endV} = ${endVar}`,
+    ...coverageHit(ctx, coverageId, pos, endVar),
   ]
 }
 
@@ -1244,10 +1273,11 @@ function emitDisjointArmGated(
   pos: string,
   valV: string,
   endV: string,
+  coverageId?: string,
 ): string[] {
   const p = def.parsers[i]!
   const gate = def.gates[i]
-  if (!gate) return emitDisjointArm(p, ctx, pos, valV, endV)
+  if (!gate) return emitDisjointArm(p, ctx, pos, valV, endV, coverageId)
 
   const gateIdx = ctx.mapFns.length
   ctx.mapFns.push(gate as (v: unknown, span: unknown) => unknown)
@@ -1258,13 +1288,15 @@ function emitDisjointArmGated(
 
   const stmts = [`${ind(ctx)}if (${gateCond}) {`]
   ctx.indent++
-  stmts.push(...emitDisjointArm(p, ctx, pos, valV, endV))
+  stmts.push(...emitDisjointArm(p, ctx, pos, valV, endV, coverageId))
   ctx.indent--
   stmts.push(`${ind(ctx)}} else { ${failArrBody(ctx, deriveExpectedArr([p]), pos)} }`)
   return stmts
 }
 
-function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: string): ER {
+function emitChoice(parser: Combinator<unknown>, def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: string): ER {
+  const coverageIds = ctx.coverage?.plan.choices.get(parser)
+  const coverageBase = coverageIds?.[0]?.slice(0, -1)
   const allExpected = deriveExpectedArr(def.parsers)
 
   // ── Disjoint: O(1) first-char dispatch (arms may be gated) ───────────────
@@ -1288,7 +1320,7 @@ function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: s
         stmts.push(`${ind(ctx)}{`)
         ctx.indent++
         stmts.push(
-          ...emitDisjointArmGated(def, i, ctx, pos, valV, endV),
+          ...emitDisjointArmGated(def, i, ctx, pos, valV, endV, coverageIds?.[i]),
           `${ind(ctx)}break`,
         )
         ctx.indent--
@@ -1309,7 +1341,7 @@ function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: s
       first = false
       stmts.push(`${ind(ctx)}${kw} (${cond}) {`)
       ctx.indent++
-      stmts.push(...emitDisjointArmGated(def, i, ctx, pos, valV, endV))
+      stmts.push(...emitDisjointArmGated(def, i, ctx, pos, valV, endV, coverageIds?.[i]))
       ctx.indent--
       stmts.push(`${ind(ctx)}}`)
     }
@@ -1317,7 +1349,7 @@ function emitChoice(def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: s
     return { stmts, valueVar: valV, endVar: endV }
   }
 
-  return emitNonDisjoint(def, def.strategy, allExpected, ctx, pos)
+  return emitNonDisjoint(def, def.strategy, allExpected, ctx, pos, coverageBase)
 }
 
 // ── greedyClassify: run the super-regex once, classify by string equality ────
@@ -1327,6 +1359,7 @@ function emitGreedyClassify(
   superIndex: number,
   ctx: Ctx,
   pos: string,
+  coverageBase?: string,
 ): ER {
   const superParser = def.parsers[superIndex]!
   const regexDef = getCoreRegexDef(superParser)!
@@ -1349,10 +1382,12 @@ function emitGreedyClassify(
   // On no-match the interpreter returns the super-regex arm's failure verbatim
   // (choice.ts) — report only the regex's expected, not every classified literal.
   const regexExpected = JSON.stringify(deriveExpected(superParser))
+  const superCoverageId = coverageBase === undefined ? undefined : `${coverageBase}${superIndex}`
   const stmts: string[] = [
+    ...coverageAttempt(ctx, superCoverageId, pos),
     `${ind(ctx)}${reVar}.lastIndex = ${pos}`,
     `${ind(ctx)}const ${matchV} = ${reVar}.exec(input)`,
-    ...emitIfFail(ctx, `${matchV} === null`, failArrBody(ctx, regexExpected, pos)),
+    ...emitIfFail(ctx, `${matchV} === null`, `${coverageFailureBacktrack(ctx, superCoverageId, pos, pos).join('; ')}; ${failArrBody(ctx, regexExpected, pos)}`),
     `${ind(ctx)}const ${wordV} = ${matchV}[0]`,
     `${ind(ctx)}const ${endV} = ${pos} + ${wordV}.length`,
     `${ind(ctx)}let ${valV}`,
@@ -1371,8 +1406,9 @@ function emitGreedyClassify(
     stmts.push(`${ind(ctx)}${kw} (${wordV} === ${JSON.stringify(litVal)}) {`)
     ctx.indent++
     const tR = emitTransformChain(p, JSON.stringify(litVal), endV, pos, ctx)
+    stmts.push(...coverageFailureBacktrack(ctx, superCoverageId, pos, pos))
     stmts.push(...emitLeafCapture(ctx, JSON.stringify(litVal), pos, endV))
-    stmts.push(...tR.stmts, `${ind(ctx)}${valV} = ${tR.valueVar}`)
+    stmts.push(...tR.stmts, `${ind(ctx)}${valV} = ${tR.valueVar}`, ...coverageHit(ctx, coverageBase === undefined ? undefined : `${coverageBase}${i}`, pos, endV))
     ctx.indent--
     stmts.push(`${ind(ctx)}}`)
   }
@@ -1382,7 +1418,7 @@ function emitGreedyClassify(
   const regexKw = first ? 'if' : 'else'
   stmts.push(`${ind(ctx)}${regexKw} {`)
   ctx.indent++
-  stmts.push(...emitLeafCapture(ctx, wordV, pos, endV), ...rR.stmts, `${ind(ctx)}${valV} = ${rR.valueVar}`)
+  stmts.push(...emitLeafCapture(ctx, wordV, pos, endV), ...rR.stmts, `${ind(ctx)}${valV} = ${rR.valueVar}`, ...coverageHit(ctx, coverageBase === undefined ? undefined : `${coverageBase}${superIndex}`, pos, endV))
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
   return { stmts, valueVar: valV, endVar: endV }
@@ -1395,6 +1431,7 @@ function emitLiteralsLongestFirst(
   allExpected: string,
   ctx: Ctx,
   pos: string,
+  coverageBase?: string,
 ): ER {
   const valV = v(ctx, '_llv')
   const endV = v(ctx, '_lle')
@@ -1416,10 +1453,12 @@ function emitLiteralsLongestFirst(
     ctx.indent++
     const tR = emitTransformChain(p, JSON.stringify(litVal), litEnd, pos, ctx)
     stmts.push(
+      ...coverageAttempt(ctx, coverageBase === undefined ? undefined : `${coverageBase}${idx}`, pos),
       ...emitLeafCapture(ctx, JSON.stringify(litVal), pos, litEnd),
       ...tR.stmts,
       `${ind(ctx)}${valV} = ${tR.valueVar}`,
       `${ind(ctx)}${endV} = ${litEnd}`,
+      ...coverageHit(ctx, coverageBase === undefined ? undefined : `${coverageBase}${idx}`, pos, litEnd),
     )
     ctx.indent--
     stmts.push(`${ind(ctx)}}`)
@@ -1436,6 +1475,7 @@ function emitFirstMatch(
   def: Extract<ParserDef, { tag: 'choice' }>,
   ctx: Ctx,
   pos: string,
+  coverageBase?: string,
 ): ER {
   const resValV = v(ctx, '_crv')
   const resEndV = v(ctx, '_cre')
@@ -1450,10 +1490,15 @@ function emitFirstMatch(
   // the rare all-arms-failed branch. Auto-not-rejected arms leave their slot
   // unset — matching choice.ts.
   const slots = def.parsers.map(() => v(ctx, '_cfx'))
+  // Auto-not arms parse successfully but are semantically rejected only once a
+  // later arm wins. Keep that pending set in coverage mode so emitted trace
+  // ordering matches the interpreter wrapper exactly.
+  const autoRejectedV = coverageBase === undefined ? undefined : v(ctx, '_carej')
   const ind0 = ind(ctx)
   const stmts: string[] = [
     `${ind0}let ${resValV}, ${resEndV} = ${pos}, ${resOkV} = false`,
     `${ind0}let ${slots.join(', ')}`,
+    ...(autoRejectedV === undefined ? [] : [`${ind0}const ${autoRejectedV} = []`]),
     `${ind0}const ${codeV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
   ]
 
@@ -1513,6 +1558,7 @@ function emitFirstMatch(
     stmts.push(`${ind0}if (${skipCond}) {`)
     if (fsGuard) stmts.push(`${ind(ctx)}if (${fsGuard}) {`)
     ctx.indent += fsGuard ? 2 : 1
+    if (coverageBase !== undefined) stmts.push(`${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'attempt', offset: ${pos} })`)
 
     if (markLeaves) {
       stmts.push(
@@ -1539,13 +1585,23 @@ function emitFirstMatch(
       stmts.push(`${ind(ctx)}    ${resValV} = ${valVar}`)
       stmts.push(`${ind(ctx)}    ${resEndV} = ${endVar}`)
       stmts.push(`${ind(ctx)}    ${resOkV} = true`)
+      if (autoRejectedV !== undefined) {
+        stmts.push(`${ind(ctx)}    for (const _rejectedId of ${autoRejectedV}) { _ctx._grammarTrace?.write({ id: _rejectedId, phase: 'failure', offset: ${pos} }); _ctx._grammarTrace?.write({ id: _rejectedId, phase: 'backtrack', offset: ${pos} }) }`)
+      }
+      stmts.push(...coverageHit(ctx, coverageBase === undefined ? undefined : `${coverageBase}${i}`, pos, endVar))
       stmts.push(`${ind(ctx)}  }`)
+      if (autoRejectedV !== undefined) {
+        stmts.push(`${ind(ctx)}  else { ${autoRejectedV}.push(${JSON.stringify(`${coverageBase}${i}`)}) }`)
+      }
       stmts.push(`${ind(ctx)}}`)
-      stmts.push(`${ind(ctx)}else { ${slots[i]} = ${failSlot} }`)
+      stmts.push(`${ind(ctx)}else { ${slots[i]} = ${failSlot}; ${coverageBase === undefined ? '' : `_ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'failure', offset: ${atStart ? pos : '_ctx._fe'} }); _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'backtrack', offset: ${pos} });`} }`)
       if (rollback) stmts.push(`${ind(ctx)}if (!${resOkV}) { ${rollback} }`)
     } else {
-      stmts.push(`${ind(ctx)}if (${okVar}) { ${resValV} = ${valVar}; ${resEndV} = ${endVar}; ${resOkV} = true }`)
-      stmts.push(`${ind(ctx)}else { ${slots[i]} = ${failSlot}${rollback ? `; ${rollback}` : ''} }`)
+      const rejectedFlush = autoRejectedV === undefined
+        ? ''
+        : `; for (const _rejectedId of ${autoRejectedV}) { _ctx._grammarTrace?.write({ id: _rejectedId, phase: 'failure', offset: ${pos} }); _ctx._grammarTrace?.write({ id: _rejectedId, phase: 'backtrack', offset: ${pos} }) }`
+      stmts.push(`${ind(ctx)}if (${okVar}) { ${resValV} = ${valVar}; ${resEndV} = ${endVar}; ${resOkV} = true${coverageBase === undefined ? '' : `${rejectedFlush}; _ctx._grammarCoverage?.(${JSON.stringify(`${coverageBase}${i}`)}); _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'selected', offset: ${pos}, end: ${endVar} }); _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'success', offset: ${pos}, end: ${endVar} })`} }`)
+      stmts.push(`${ind(ctx)}else { ${slots[i]} = ${failSlot}${rollback ? `; ${rollback}` : ''}${coverageBase === undefined ? '' : `; _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'failure', offset: ${atStart ? pos : '_ctx._fe'} }); _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'backtrack', offset: ${pos} })`} }`)
     }
 
     ctx.indent -= fsGuard ? 2 : 1
@@ -1563,12 +1619,13 @@ function emitNonDisjoint(
   allExpected: string,
   ctx: Ctx,
   pos: string,
+  coverageBase?: string,
 ): ER {
   if (strategy.tag === 'greedyClassify')
-    return emitGreedyClassify(def, strategy.superIndex, ctx, pos)
+    return emitGreedyClassify(def, strategy.superIndex, ctx, pos, coverageBase)
   if (strategy.tag === 'literalsLongestFirst')
-    return emitLiteralsLongestFirst(def, strategy.sortedIndices, allExpected, ctx, pos)
-  return emitFirstMatch(def, ctx, pos)
+    return emitLiteralsLongestFirst(def, strategy.sortedIndices, allExpected, ctx, pos, coverageBase)
+  return emitFirstMatch(def, ctx, pos, coverageBase)
 }
 
 // ── helpers for emitGreedyClassify / emitLiteralsLongestFirst ────────────────
@@ -1722,6 +1779,34 @@ function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, po
     `${ind0}const ${endV} = ${okVar} ? ${endVar} : ${pos}`,
   ]
   return { stmts, valueVar: valV, endVar: endV }
+}
+
+/** Transactional parser arm: emitFallible owns the private failure label and
+ * structural rollback; Attempt only re-anchors the diagnostic at its entry. */
+function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'attempt' }>, ctx: Ctx, pos: string): ER {
+  const inner = emitFallible(def.parser, ctx, pos)
+  // Unlike an ordinary fallible sub-parser, attempt is a semantic transaction:
+  // every framework-owned side effect from its rejected branch disappears.  Keep
+  // this boundary here (rather than teaching emitFallible different semantics),
+  // because ordinary sequences deliberately retain their diagnostic trivia.
+  const leaves = v(ctx, '_atl')
+  const raw = v(ctx, '_atr')
+  const trivia = v(ctx, '_att')
+  const log = v(ctx, '_atg')
+  const fields = v(ctx, '_atf')
+  const errors = v(ctx, '_ate')
+  const rollback = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${log}; if (_ctx._fields) _ctx._fields.length = ${fields}; if (_ctx._errors) _ctx._errors.length = ${errors}`
+  const traceId = ctx.coverage?.plan.attempts.get(p)
+  const traceRollback = traceId === undefined ? '' : ` _ctx._grammarTrace?.write({ id: ${JSON.stringify(traceId)}, phase: 'rollback', offset: ${pos} });`
+  return {
+    stmts: [
+      `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${trivia} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
+      ...inner.stmts,
+      ...emitIfFail(ctx, `!${inner.okVar}`, `{ ${rollback};${traceRollback} _ctx._fe = ${pos}; ${propagateFailBody(ctx)} }`),
+    ],
+    valueVar: inner.valVar,
+    endVar: inner.endVar,
+  }
 }
 
 function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepBy' }>, ctx: Ctx, pos: string): ER {
@@ -2084,6 +2169,39 @@ function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: str
   }
 }
 
+/** Semantic-leaf wrapper: preserve the inner grammar's trivia policy, hide its
+ * captures, and expose one callback-reduced leaf at the enclosing level. */
+function emitLeaf(def: Extract<ParserDef, { tag: 'leaf' }>, ctx: Ctx, pos: string): ER {
+  const inner = emitFallible(def.parser, ctx, pos)
+  const i = ind(ctx)
+  const sc = v(ctx, '_leafCh')
+  const sl = v(ctx, '_leafLv')
+  const sr = v(ctx, '_leafRaw')
+  const stl = v(ctx, '_leafTl')
+  const sol = v(ctx, '_leafLog')
+  const sb = v(ctx, '_leafBuf')
+  const rawV = v(ctx, '_leafRawValue')
+  const valV = v(ctx, '_leaf')
+  const fnIdx = pushMapFn(ctx, def.fn, def.fnSrc ?? null)
+  return {
+    stmts: [
+      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${stl} = _ctx._cstTriviaLog, ${sol} = _ctx._triviaLog, ${sb} = _ctx._cstBuf`,
+      `${i}_ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._triviaLog = undefined; _ctx._cstBuf = undefined`,
+      `${i}try {`,
+      ...reindentStmts(inner.stmts, ctx.indent + 1).map(stmt => stmt.replace(/^(\s*)(?:const|let)\s+/, '$1var ')),
+      `${i}} finally {`,
+      `${i}  _ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._triviaLog = ${sol}; _ctx._cstBuf = ${sb}`,
+      `${i}}`,
+      ...emitIfFail(ctx, `!${inner.okVar}`, propagateFailBody(ctx)),
+      `${i}const ${rawV} = ${inner.valVar}`,
+      `${i}const ${valV} = ${mfRef(ctx)}[${fnIdx}](${rawV}, { start: ${pos}, end: ${inner.endVar} })`,
+      ...emitLeafCapture(ctx, valV, pos, inner.endVar),
+    ],
+    valueVar: valV,
+    endVar: inner.endVar,
+  }
+}
+
 /**
  * CST node rule. Collects the inner parse's terminals/trivia into fresh local
  * arrays (capture is emitted inline by the terminals while capChildren is set),
@@ -2105,9 +2223,12 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   }
   const i = ind(ctx)
 
-  // Arity-gated elision: when the build provably never reads the trivia (4th) or
-  // state (5th) arg, skip that capture entirely. The mk-inline path reads
-  // `tlV.length` for `localTriviaLen`, so it always keeps trivia capture.
+  // Arity-gated elision: direct AST builders frequently use only children,
+  // fields, and span. Do not allocate their otherwise-unobservable raw CST
+  // collector (or children for a zero-argument builder). Structural/CST output
+  // retains the full collector contract, and an explicit cstBuildHost switches
+  // the direct node back to full capture at runtime. The mk-inline path reads
+  // both `rawV.length` and `tlV.length`, so it always keeps those collectors.
   //
   // A STRUCTURAL node builds via the injected `_ctx.build` host, whose arity is
   // only known at parse time — so instead of defensively capturing both (the old
@@ -2121,6 +2242,8 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // (the cstTriviaLog per-token push dominates — ~28% of a real jess parse).
   const capturesTrivia = mkType !== null || def.captureTrivia === true || def.trailingTrivia === true || (!structural && buildReadsTrivia(def))
   const clonesState = !structural && buildReadsState(def)
+  const capturesChildren = !structural && (mkType !== null || def.unwrap || def.collapse || buildReadsChildren(def))
+  const capturesRaw = !structural && (mkType !== null || buildReadsRaw(def))
   const hasFields = parserHasOwnFields(def.parser)
   const capturesFields = hasFields && !structural && buildReadsFields(def)
   // A nested parser({ captureTrivia: true }) needs this node's collector, but
@@ -2161,6 +2284,15 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
   const profileRecognizer = recV
   const profileCapture = capV
+  // Direct builders normally produce their own AST and never inspect CST
+  // children/rawChildren. Keep cstBuildHost and profile({ capture: true })
+  // truthful by dynamically restoring those collectors only for those explicit
+  // modes. The normal AST route pays a boolean/property read instead of a fresh
+  // array for every elided collector.
+  const directCstV = !structural && (!capturesChildren || !capturesRaw) ? v(ctx, '_dcst') : null
+  const directCstGate = directCstV === null
+    ? 'false'
+    : `${profileCapture} || _ctx.build?._parsemanCstOutput === true`
   // A structural node can make its CST-trivia contract grammar-owned. That is
   // stronger than a host preference: `node(..., undefined, { captureTrivia:
   // true })` must keep its log even when the injected host explicitly opts out.
@@ -2170,8 +2302,8 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${structuralCapturesTrivia ? 'true' : hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
       + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
     : capturesTrivia
-      ? `${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : []`
-      : `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : []`
+      ? `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}, ${tlV} = ${profileRecognizer} ? undefined : []`
+      : `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}`
   // The collector stays installed when a nested grammar can opt in; generated
   // trivia scanners gate their push on `captureTrivia`, so this remains inert
   // until that nested scope activates it.
@@ -2370,6 +2502,11 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     const savedIndent    = ctx.indent
     const savedFailLabel = ctx.failLabel
     const savedRecord    = ctx.recordFail
+    const failureRuleId = p === ctx.coverage?.entry
+      ? undefined
+      : (ctx.coverage?.plan.rules.get(p) ?? ctx.coverage?.plan.rules.get(resolved))
+    const savedActiveRule = ctx.activeCoverageRuleId
+    const savedSuppressFailure = ctx.suppressCoverageFailure
     ctx.indent    = 1
     ctx.failLabel = '_pfail'  // failures break _pfail (labeled block in fn body)
     // A named fn is compiled ONCE but shared across every call site, so its body
@@ -2378,12 +2515,20 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     // (possibly swallowed) recordFail into the shared body would leave `_ctx._fx`
     // unset for other callers that DO read it.
     ctx.recordFail = true
+    // The generated named-rule wrapper owns this event. Do not also emit it at
+    // each terminal failure in the named body.
+    if (failureRuleId !== undefined) {
+      ctx.activeCoverageRuleId = undefined
+      ctx.suppressCoverageFailure = true
+    }
     const r = emit(resolved, ctx, '_pos')
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
     ctx.recordFail = savedRecord
+    ctx.activeCoverageRuleId = savedActiveRule
+    ctx.suppressCoverageFailure = savedSuppressFailure
 
-    pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar)
+    pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar, failureRuleId)
   }
 
   const fnName = ctx.namedParsers.get(p)!
@@ -2459,6 +2604,32 @@ function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: s
  * `_r_<Name>` path; probe/ trivia-capture contexts opt out (see `noHoist`).
  */
 function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
+  const dispatch = (emissionPos = pos): ER => {
+    const savedRule = ctx.activeCoverageRuleId
+    const rule = ctx.coverage?.plan.rules.get(p)
+    // The outer coverage IIFE owns the entry rule's failure event, because its
+    // generated body may return directly from any depth.
+    if (rule && p !== ctx.coverage?.entry && !ctx.suppressCoverageFailure) ctx.activeCoverageRuleId = rule
+    const result = emitDispatch(p, ctx, emissionPos)
+    ctx.activeCoverageRuleId = savedRule
+    return result
+  }
+  const instrument = (r: ER): ER => {
+    const ruleId = ctx.coverage?.plan.rules.get(p)
+    const labelIds = ctx.coverage?.plan.labels.get(p)
+    if (!ruleId && !labelIds) return r
+    return {
+      ...r,
+      stmts: [
+        ...(ruleId ? [`${ind(ctx)}_ctx._grammarCoverage?.(${JSON.stringify(ruleId)})`] : []),
+        ...(ruleId ? [`${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(ruleId)}, phase: 'enter', offset: ${pos} })`] : []),
+        ...r.stmts,
+        ...(ruleId ? [`${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(ruleId)}, phase: 'success', offset: ${pos}, end: ${r.endVar} })`] : []),
+        ...(labelIds?.flatMap(id => [`${ind(ctx)}_ctx._grammarCoverage?.(${JSON.stringify(id)})`]) ?? []),
+        ...(labelIds?.flatMap(id => [`${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(id)}, phase: 'success', offset: ${pos}, end: ${r.endVar} })`]) ?? []),
+      ],
+    }
+  }
   const usage = ctx.lazyUsage
   if (
     usage &&
@@ -2483,14 +2654,14 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     ctx.indent    = 1
     ctx.failLabel = '_pfail'  // failures break _pfail (labeled block in the fn body)
     ctx.recordFail = true     // shared body always records; each caller decides propagation
-    const r = emitDispatch(p, ctx, '_pos')
+    const r = dispatch('_pos')
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
     ctx.recordFail = savedRecord
     pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar)
-    return emitNamedFnCall(ctx, fnName, pos)
+    return instrument(emitNamedFnCall(ctx, fnName, pos))
   }
-  return emitDispatch(p, ctx, pos)
+  return instrument(dispatch())
 }
 
 function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
@@ -2500,7 +2671,8 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'regex':     return emitRegex(def, ctx, pos)
     case 'keywords':  return emitKeywords(def, ctx, pos)
     case 'sequence':  return emitSeq(def, ctx, pos)
-    case 'choice':    return emitChoice(def, ctx, pos)
+    case 'choice':    return emitChoice(p, def, ctx, pos)
+    case 'attempt':   return emitAttempt(p, def, ctx, pos)
     case 'many':
     case 'oneOrMore': return emitMany(def, ctx, pos)
     case 'optional':  return emitOptional(def, ctx, pos)
@@ -2564,6 +2736,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'lazy':     return emitLazy(p, def, ctx, pos)
     case 'trivia':   return emit(def.parser, ctx, pos)
     case 'token':    return emitToken(def, ctx, pos)
+    case 'leaf':     return emitLeaf(def, ctx, pos)
     case 'label': {
       const inner = emitFallible(def.parser, ctx, pos)
       return {
@@ -2714,6 +2887,8 @@ export type CompiledParser<T> = {
    * closures that can't be serialized).
    */
   inlineExpression: string | null
+  /** Present only when compiled with `{ coverage: true }`. */
+  coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[]
 }
 
 /**
@@ -2731,6 +2906,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'grammar':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'label':
     case 'field':
     case 'optional':
@@ -2750,16 +2926,30 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
   }
 }
 
+/** Whether a grammar tree owns a direct semantic node reduction. */
+function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  if (d.tag === 'node' && d.build !== undefined) return true
+  if (d.tag === 'lazy') {
+    try { return hasDirectBuildDef(d.thunk(), seen) } catch { return false }
+  }
+  return childrenOf(d).some(child => hasDirectBuildDef(child, seen))
+}
+
 /** Immediate child combinators of a def, for generic tree walks (childrenOf). */
 function childrenOf(def: ParserDef): Combinator<unknown>[] {
   switch (def.tag) {
     case 'sequence':
     case 'choice':    return def.parsers
     case 'many':
+    case 'attempt':
     case 'optional':
     case 'transform':
     case 'trivia':
     case 'token':
+    case 'leaf':
     case 'label':
     case 'field':
     case 'grammar':
@@ -2998,7 +3188,7 @@ export function ruleDependencies(
  *
  * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
  */
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean }): CompiledParser<T> {
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; coverage?: boolean }): CompiledParser<T> {
   markUnusedValues(combinator)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule bakes it (unless a local
@@ -3024,11 +3214,28 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     namedFnDecls: [],
     capturing: hasNodeDef(combinator as Combinator<unknown>),
     recovery: opts?.recovery ?? false,
+    ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }
 
   const r = emit(combinator as Combinator<unknown>, ctx, '_pos')
+  const coverageRootRuleId = ctx.coverage?.plan.rules.get(combinator as Combinator<unknown>)
+  const resultBody = coverageRootRuleId === undefined
+    ? [
+        `  let pos = _pos`,
+        ...r.stmts,
+        `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+      ]
+    : [
+        `  const _coverageResult = (() => {`,
+        `    let pos = _pos`,
+        ...r.stmts,
+        `    return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+        `  })()`,
+        `  if (!_coverageResult.ok) _ctx._grammarTrace?.write({ id: ${JSON.stringify(coverageRootRuleId)}, phase: 'failure', offset: _coverageResult.span.start })`,
+        `  return _coverageResult`,
+      ]
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
   const emptyTlDecls = ctx.needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []
@@ -3043,9 +3250,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     ...namedPrelude,
     ctx.namedFnDecls.join('\n\n'),
     `function _parse(input, _pos, _rp, _mf, _build, _ctx) {`,
-    `  let pos = _pos`,
-    ...r.stmts,
-    `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+    ...resultBody,
     `}`,
   ].join('\n')
 
@@ -3056,9 +3261,17 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     ...ctx.expectedDecls,
     ...namedPrelude,
     ...ctx.namedFnDecls.flatMap((decl, i) => (i > 0 ? ['', decl] : [decl])),
-    `let pos = _pos`,
-    ...r.stmts,
-    `return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+    ...(coverageRootRuleId === undefined
+      ? [`let pos = _pos`, ...r.stmts, `return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`]
+      : [
+          `const _coverageResult = (() => {`,
+          `  let pos = _pos`,
+          ...r.stmts,
+          `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+          `})()`,
+          `if (!_coverageResult.ok) _ctx._grammarTrace?.write({ id: ${JSON.stringify(coverageRootRuleId)}, phase: 'failure', offset: _coverageResult.span.start })`,
+          `return _coverageResult`,
+        ]),
   ].join('\n')) as (
     input: string,
     pos: number,
@@ -3091,11 +3304,12 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   // no map-function closures or their source text has been provided for injection.
   const mfCovered = ctx.mapFns.length === 0 || (effectiveSources !== undefined && effectiveSources.length === ctx.mapFns.length)
   const canInline = ctx.runtimeParsers.length === 0 && mfCovered && buildCovered
-  const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, effectiveSources, buildSources) : null
+  const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, effectiveSources, buildSources, coverageRootRuleId) : null
 
   return {
     source,
     inlineExpression,
+    ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
     parse(input: string, pos = 0): ParseResult<T> {
       return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, defaultCtx)
     },
@@ -3169,9 +3383,16 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; recovery?: boolean },
-): { keys: string[]; replacement: string } | null {
+  opts?: { trivia?: Combinator<unknown>; recovery?: boolean; coverage?: boolean },
+): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   for (const [, rule] of ruleMap) markUnusedValues(rule)
+  // Named lazy proxies already carry their stable rule identity and redirect
+  // their children through the final winner graph. Register only ordinary
+  // unannotated roots here: giving a lazy proxy its own winner makes a lazy
+  // reference point back to itself, so its body never enters the coverage plan.
+  const coverageWinners = opts?.coverage
+    ? Object.fromEntries(ruleMap.filter(([, rule]) => rule._def.tag !== 'lazy')) as Record<string, Combinator<unknown>>
+    : undefined
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule in the map bakes it (unless a local
   // parser({trivia}) / noTrivia overrides). Mirrors the interpreter installing it
@@ -3196,6 +3417,7 @@ export function compileRuleMap(
     namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
+    ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule), coverageWinners) } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }
@@ -3253,13 +3475,30 @@ export function compileRuleMap(
     }),
   ].filter(Boolean)
 
-  const entryFnText = (r: ER): string => [
-    `function(input, _pos, _ctx) {`,
-    `  let pos = _pos`,
-    ...r.stmts,
-    `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
-    `}`,
-  ].join('\n')
+  const entryRuleId = (rule: Combinator<unknown>): string | undefined => {
+    const direct = ctx.coverage?.plan.rules.get(rule)
+    if (direct !== undefined || rule._def.tag !== 'lazy') return direct
+    try { return ctx.coverage?.plan.rules.get(rule._def.thunk()) } catch { return undefined }
+  }
+  const entryFnText = (r: ER, rule: Combinator<unknown>): string => {
+    const ruleId = entryRuleId(rule)
+    const body = ruleId === undefined
+      ? [
+          `  let pos = _pos`,
+          ...r.stmts,
+          `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+        ]
+      : [
+          `  const _coverageResult = (() => {`,
+          `    let pos = _pos`,
+          ...r.stmts,
+          `    return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+          `  })()`,
+          `  if (!_coverageResult.ok) _ctx._grammarTrace?.write({ id: ${JSON.stringify(ruleId)}, phase: 'failure', offset: _coverageResult.span.start })`,
+          `  return _coverageResult`,
+        ]
+    return [`function(input, _pos, _ctx) {`, ...body, `}`].join('\n')
+  }
 
   // One shared IIFE, evaluated ONCE, returning the whole `{ key: fn, ... }`
   // map — this whole string is the caller's replacement for the entire
@@ -3268,7 +3507,7 @@ export function compileRuleMap(
   // prelude per entry or duplicate its text per entry — both defeat the point).
   const objBody = perEntry
     .map(({ key, rule, r }) => {
-      const src = publicRuleWrapperSource(rule, entryFnText(r))
+      const src = publicRuleWrapperSource(rule, entryFnText(r, rule))
       return `    ${JSON.stringify(key)}: ${src.split('\n').join('\n    ')}`
     })
     .join(',\n')
@@ -3281,7 +3520,11 @@ export function compileRuleMap(
     `})()`,
   ].join('\n')
 
-  return { keys: perEntry.map(e => e.key), replacement }
+  return {
+    keys: perEntry.map(e => e.key),
+    replacement,
+    ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
+  }
 }
 
 /**
@@ -3316,6 +3559,10 @@ export type LinkablePieces = {
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
+  /** True when this piece contains any direct `node(..., build)` reduction. */
+  hasDirectBuilders?: boolean
+  /** True only when this piece has no direct builder or callback-based semantics. */
+  isRecognitionOnly?: boolean
   /**
    * Transform (`_mf`) / build (`_build`) callback FUNCTIONS, injected into the
    * fused scope via `_env` when their SOURCE isn't available (runtime `compile()`
@@ -3326,10 +3573,11 @@ export type LinkablePieces = {
   buildFns: ReadonlyArray<(...args: unknown[]) => unknown>
 }
 
+
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; recovery?: boolean },
+  opts?: { trivia?: Combinator<unknown>; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
@@ -3356,8 +3604,13 @@ export function compileLinkable(
     mapFns: [], mapFnSrcs: [], buildFns: [], buildSrcs: [], runtimeParsers: [],
     namedParsers: new Map(), triviaCaptureNames: new Map(),
     triviaFnNames: new Map(), namedFnDecls: [],
-    capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
+    // A recognition-only fragment normally has no node collector of its own.
+    // Leaf composition can re-lower it beneath a local semantic node, though;
+    // in that case its terminals must feed the caller's collector rather than
+    // merely returning their scalar parse values.
+    capturing: opts?.captureTerminals === true || ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
+    ...(opts?.coverage ? { coverage: { plan: opts.coverage } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
     deferFirstSetRefs: true,
@@ -3436,7 +3689,18 @@ export function compileLinkable(
       const body = emit(resolved, ctx, '_pos')
       ctx.activeTrivia = savedTrivia
       ctx.indent = savedIndent; ctx.failLabel = savedFail; ctx.recordFail = savedRec
-      pushNamedFnDecl(ctx, fn, body.stmts, body.valueVar, body.endVar)
+      // Linkable entries run through their named rule body rather than the
+      // public compileRuleMap wrapper. Instrument the named boundary itself so
+      // a final compose winner remains observable even when its resolved body
+      // is emitted under a different identity.
+      const ruleId = ctx.coverage?.plan.rules.get(rule)
+      const stmts = ruleId === undefined ? body.stmts : [
+        `${ind(ctx)}_ctx._grammarCoverage?.(${JSON.stringify(ruleId)})`,
+        `${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(ruleId)}, phase: 'enter', offset: _pos })`,
+        ...body.stmts,
+        `${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(ruleId)}, phase: 'success', offset: _pos, end: ${body.endVar} })`,
+      ]
+      pushNamedFnDecl(ctx, fn, stmts, body.valueVar, body.endVar)
     }
     // Public wrapper: call the named fn, adapt sentinel → ParseResult.
     perEntry.push({ key, rule, r: emitNamedFnCall(ctx, fn, '_pos') })
@@ -3509,9 +3773,31 @@ export function compileLinkable(
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
+    hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule)),
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
     buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
   }
+}
+
+/** A leaf-composed imported piece may carry Parseman's own structural balanced
+ * text reconstruction, but never a grammar-authored semantic callback. */
+function hasSemanticReduction(roots: readonly Combinator<unknown>[]): boolean {
+  const seen = new Set<Combinator<unknown>>()
+  const visit = (parser: Combinator<unknown>): boolean => {
+    if (seen.has(parser)) return false
+    seen.add(parser)
+    const def = parser._def
+    if (def.tag === 'transform' && !def.recognitionOnly) return true
+    if (def.tag === 'choice' && def.gates.some(Boolean)) return true
+    if (def.tag === 'guard' || def.tag === 'withCtx') return true
+    if (def.tag === 'node' && def.build !== undefined) return true
+    if (def.tag === 'lazy') {
+      try { return visit(def.thunk()) } catch { return true }
+    }
+    return childrenOf(def).some(visit)
+  }
+  return roots.some(visit)
 }
 
 function buildInlineExpression(
@@ -3519,12 +3805,23 @@ function buildInlineExpression(
   r: ER,
   mapFnSources?: string[],
   buildSources?: string[],
+  coverageRootRuleId?: string,
 ): string {
-  const bodyLines = [
-    `  let pos = _pos`,
-    ...r.stmts,
-    `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
-  ]
+  const bodyLines = coverageRootRuleId === undefined
+    ? [
+        `  let pos = _pos`,
+        ...r.stmts,
+        `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+      ]
+    : [
+        `  const _coverageResult = (() => {`,
+        `    let pos = _pos`,
+        ...r.stmts,
+        `    return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+        `  })()`,
+        `  if (!_coverageResult.ok) _ctx._grammarTrace?.write({ id: ${JSON.stringify(coverageRootRuleId)}, phase: 'failure', offset: _coverageResult.span.start })`,
+        `  return _coverageResult`,
+      ]
 
   const innerFn = [
     `function(input, _pos, _ctx) {`,

@@ -234,6 +234,8 @@ class Builder {
         return { kind: 'plus', item: this.walk(def.parser) }
       case 'optional':
         return { kind: 'opt', item: this.walk(def.parser) }
+      case 'attempt':
+        return this.walk(def.parser)
       case 'sepBy':
         return { kind: 'sepBy', item: this.walk(def.parser), sep: this.walk(def.separator) }
 
@@ -243,6 +245,7 @@ class Builder {
       // Transparent semantic wrappers — render the inner syntax.
       case 'transform':
       case 'token':
+      case 'leaf':
       case 'label':
       case 'field':
       case 'expect':

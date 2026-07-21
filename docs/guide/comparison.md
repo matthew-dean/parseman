@@ -51,6 +51,7 @@ Two questions sort most of the field:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | **Author in JS/TS** | ✅ | ❌ text DSL | ✅ | ✅ | ❌ text DSL | ❌ text DSL | ❌ text DSL | ⚠️ JS → C |
 | **Debuggable grammar** | ✅ | ⚠️ generated JS + trace | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Grammar coverage / trace** | ✅ opt-in structural coverage + bounded trace | — | — | — | — | — | — | — |
 | **Context-sensitive grammar** | ✅ in-grammar | ✅ in-grammar | ✅ in-grammar | ✅ in-grammar | ❌ CFG only | ⚠️ lexer states | ⚠️ external only | ⚠️ external only |
 | **Grammar composition** | ✅ `compose()` | ❌ | ⚠️ values | ✅ inheritance | ❌ | ❌ | ⚠️ `@dialect` | ❌ |
 | **Incremental re-parse** | ✅ `parseDoc` | ❌ | ❌ | ⚠️ DIY, no engine | ❌ | ❌ | ✅✅ core strength | ✅✅ core strength |
@@ -67,6 +68,12 @@ Two questions sort most of the field:
   (breakpoints, real stack traces) and read the parser *as code*, rather than debugging a
   generated state table or a parser in another language. Runtime combinator/DSL libraries
   qualify; generators mostly don't — Peggy emits JS you *can* trace, hence ⚠️.
+- **Grammar coverage / trace** — Parséman can record successful named rules,
+  choice arms, and labels plus a bounded semantic lifecycle trace. This row is
+  intentionally not a claim that the other tools lack test-runner coverage,
+  debugger support, or separate observability integrations; it compares the
+  built-in Parseman grammar-level API documented in
+  [Grammar observability](./grammar-observability).
 - **Context-sensitive grammar** — **✅ in-grammar**: express context directly (semantic
   predicates or arbitrary parse-time state), no escape hatch. **⚠️ external only**:
   possible, but *only* via a hand-written tokenizer/scanner (token-level state) or lexer

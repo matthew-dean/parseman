@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 230" width="760" height="230">
+<rect width="760" height="230" rx="6" fill="white"/>
+<text x="20" y="30" font-size="16" font-weight="600" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Direct-AST collector elision</text>
+<text x="20" y="50" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2,000 direct AST nodes per parse · same output SHA-256 in both generated parsers</text>
+<text x="273" y="99" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">before elision</text>
+<rect x="285" y="82" width="360" height="22" rx="3" fill="#eaeef2"/>
+<rect x="285" y="82" width="360.0" height="22" rx="3" fill="#8c959f"/>
+<text x="651" y="99" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">56.9 µs</text>
+<text x="273" y="151" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">AST-only collector elision</text>
+<rect x="285" y="134" width="360" height="22" rx="3" fill="#eaeef2"/>
+<rect x="285" y="134" width="74.8" height="22" rx="3" fill="#534ab7"/>
+<text x="365.7776177504645" y="151" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">11.8 µs</text>
+<text x="20" y="196" font-size="10.5" fill="#8c959f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">output 5772941cd67a… · source 2489 B → 2605 B</text>
+</svg>

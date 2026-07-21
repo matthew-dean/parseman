@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest'
 import {
   rules, regex, literal, sequence, choice, many, oneOrMore, optional, sepBy,
   not, scanTo, balanced, parser, trivia, expect as expectC, node,
-  keywords, label, skip, token, transform,
+  keywords, label, skip, token, leaf, transform,
 } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { fuseRules } from '../../src/compiler/linker.ts'
@@ -135,6 +135,14 @@ describe('IR serialize round-trip', () => {
     expect(serializeRuleMap(rm as never)).toContain('trailingTrivia: true')
     roundTrip(rm, 'Mapped', ['1', '123', 'a'])
     roundTrip(rm, 'Collapsed', ['a', 'abc', '1'])
+  })
+
+  it('round-trips a captured semantic leaf reducer as static linkable IR', () => {
+    const op = leaf(choice(literal('*'), literal('/')), (v: unknown) => v)
+    if (op._def.tag === 'leaf') op._def.fnSrc = '(v) => v'
+    const rm = Object.entries(rules(() => ({ Op: op })))
+    expect(serializeRuleMap(rm as never)).toContain('_lf(')
+    roundTrip(rm, 'Op', ['*', '/', '+'])
   })
 
   it('returns null when a construct carries no static source (runtime transform fn)', () => {

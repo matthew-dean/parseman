@@ -67,10 +67,10 @@ size in the charts above:
 
 | Fixture | Parséman macro | [Peggy](https://peggyjs.org/) | [Chevrotain](https://chevrotain.io/) | Native |
 | --- | --- | --- | --- | --- |
-| JSON large (12 kB) | **125 µs** | 472 | 312 | `JSON.parse` 44 µs |
-| JSON medium (1.8 kB) | **16 µs** | 68 | 30 | `JSON.parse` 4 µs |
-| CSV large (14.8 kB) | **74 µs** | 430 | 1,045 | — |
-| GraphQL large (7.8 kB) | **131 µs** | 373 | 342 | — |
+| JSON large (12 kB) | **141 µs** | 466 | 250 | `JSON.parse` 54.6 µs |
+| JSON medium (1.8 kB) | **17.8 µs** | 66.6 | 30.1 | `JSON.parse` 4.45 µs |
+| CSV large (14.5 kB) | **78.5 µs** | 438 | 1,110 | — |
+| GraphQL large (7.8 kB) | **142 µs** | 339 | 363 | — |
 
 The zero-setup **interpreter** stays close behind with no compile step at all. On **CSV** it's
 the fastest option after the macro build, well ahead of every generator. On **JSON** and
@@ -91,17 +91,17 @@ span capture). Measured on the same JSON fixtures (`pnpm bench:svg`, tree-buildi
 
 | Parser | small (52 B) | medium (1.8 kB) | large (12 kB) | Output |
 | --- | --- | --- | --- | --- |
-| **Parséman CST (macro build)** | **0.99 µs** | **29.0 µs** | **246 µs** | object tree + spans |
-| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.40 µs | 68.8 µs | 576 µs | compact buffer tree |
-| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.70 µs | 77.5 µs | 649 µs | compact buffer tree |
-| Parséman CST (interpreter) | 2.76 µs | 90.8 µs | 579 µs | object tree + spans |
-| [Chevrotain](https://chevrotain.io/) CST | 7.54 µs | 243 µs | 1.83 ms | object CST |
+| **Parséman CST (macro build)** | **0.74 µs** | **21.4 µs** | **172 µs** | object tree + spans |
+| [Lezer](https://lezer.codemirror.net/) (parse only) | 2.42 µs | 74.5 µs | 619 µs | compact buffer tree |
+| [Lezer](https://lezer.codemirror.net/) (parse + walk) | 2.76 µs | 81.1 µs | 725 µs | compact buffer tree |
+| Parséman CST (interpreter) | 2.70 µs | 93.6 µs | 604 µs | object tree + spans |
+| [Chevrotain](https://chevrotain.io/) CST | 8.92 µs | 270 µs | 2.09 ms | object CST |
 
 **Macro build** = compiled by the bundler plugin at build time (zero runtime setup).
 **Interpreter** = default combinator runtime, no `compile()` or macro. These are the two
 ways to run Parséman; the chart shows both against Lezer and Chevrotain.
 
-**Compiled Parséman CST (macro build) beats Lezer at every fixture size** — ~2.3× at
+**Compiled Parséman CST (macro build) beats Lezer at every fixture size** — ~3.6× at
 large — while building a directly-usable object tree with per-node spans. Optional
 [`captureTrivia`](./trivia) (`parser({ captureTrivia: true })`) also logs whitespace
 between tokens for formatters — it adds ~5% on this fixture, so it isn't a separate bar.
@@ -110,8 +110,8 @@ editor pipeline; Parséman emits JS objects ready for formatters and refactors w
 second walk. Pick the output your consumer actually needs.
 
 Even the zero-setup **interpreter** CST holds its own against a purpose-built incremental
-generator: it's within ~1.2× of Lezer parse-only at small inputs, neck-and-neck at large
-(579 µs vs 576 µs) while building a richer object tree, and **~2.7–3× faster than
+generator: it's within ~1.1× of Lezer parse-only at small inputs, and slightly faster at large
+(604 µs vs 619 µs) while building a richer object tree, and **~3.5× faster than
 Chevrotain** throughout. Compile it (macro build) and it moves ahead of Lezer outright.
 
 ## Incremental re-parse

@@ -18,6 +18,7 @@
  *   export default { plugins: [parseman.rollup()] }
  */
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
@@ -26,7 +27,8 @@ import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateW
 import { compile, compileRuleMap, compileLinkable, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
-import { serializeRuleMap } from '../compiler/ir-serialize.ts'
+import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
+import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { createHash } from 'node:crypto'
 import type { Combinator } from '../types.ts'
 import type {
@@ -59,6 +61,9 @@ export type ParsecraftPluginOptions = {
    * the fast compiled path; leave it off for build-only grammars.
    */
   recovery?: boolean
+  /** Emit grammar-coverage hooks in macro output. Off by default, so ordinary
+   * macro output remains byte-identical. */
+  grammarCoverage?: boolean
 }
 
 const PARSEMAN_MODULE = 'parseman'
@@ -74,6 +79,90 @@ function getCompiledResolver(): ResolverFactory {
     conditionNames: ['import', 'require', 'default'],
     mainFields: ['module', 'main'],
   })
+}
+
+type ResolvedGrammarModule = {
+  file: string
+  /** A private TypeScript source module, not a published macro artifact. */
+  source: boolean
+}
+
+const PRIVATE_SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts'])
+
+function nearestPackageRoot(file: string): string | null {
+  let dir = path.dirname(file)
+  for (;;) {
+    try {
+      if (fs.statSync(path.join(dir, 'package.json')).isFile()) return fs.realpathSync(dir)
+    } catch { /* keep walking upward */ }
+    const parent = path.dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+function isWithinPackageRoot(file: string, root: string): boolean {
+  const relative = path.relative(root, file)
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
+/**
+ * Resolve only a relative/absolute source-private import. Published package
+ * imports deliberately remain compiled-artifact-only: source is allowed here
+ * solely so `import { syntax } from './recognition.js'` can consume the
+ * colocated `recognition.ts` before a bundler has emitted that JS file.
+ */
+function resolvePrivateSourceModule(from: string, specifier: string): string | null {
+  if (!specifier.startsWith('.') && !path.isAbsolute(specifier)) return null
+  const packageRoot = nearestPackageRoot(from)
+  if (!packageRoot) return null
+  const base = path.resolve(path.dirname(from), specifier)
+  const ext = path.extname(base)
+  const candidates = [
+    base,
+    ...(ext ? ['.ts', '.tsx', '.mts', '.cts'].map(next => `${base.slice(0, -ext.length)}${next}`) : []),
+    ...(!ext ? ['.ts', '.tsx', '.mts', '.cts'].map(next => `${base}${next}`) : []),
+    ...(!ext ? ['index.ts', 'index.tsx', 'index.mts', 'index.cts'].map(next => path.join(base, next)) : []),
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (!fs.statSync(candidate).isFile()) continue
+      // Both paths are real, so a symlink cannot smuggle a source dependency out
+      // of the importing package after the lexical `../` check passed.
+      const real = fs.realpathSync(candidate)
+      if (isWithinPackageRoot(real, packageRoot)) return real
+    } catch { /* try the next source spelling */ }
+  }
+  return null
+}
+
+function resolveGrammarModule(from: string, specifier: string): ResolvedGrammarModule | null {
+  // An explicit source import means source semantics even when a stale/generated
+  // sibling JS artifact exists. Ordinary `.js` imports keep compiled precedence.
+  if (PRIVATE_SOURCE_EXTENSIONS.has(path.extname(specifier))) {
+    const file = resolvePrivateSourceModule(from, specifier)
+    return file ? { file, source: true } : null
+  }
+  try {
+    const file = getCompiledResolver().resolveFileSync(from, specifier).path
+    if (file) return { file, source: false }
+  } catch { /* private source fallback below */ }
+  const file = resolvePrivateSourceModule(from, specifier)
+  return file ? { file, source: true } : null
+}
+
+// Recursive source lowering is a build-time operation. This guard makes an
+// import cycle fail closed rather than recursing into a runtime composition.
+const _sourceLowering = new Set<string>()
+const _sourceLoweringCache = new Map<string, { mtimeMs: number; parsed: ParsedModule | null }>()
+
+function sourceLoweringCacheKey(
+  file: string,
+  moduleAliases: Set<string>,
+  warnUnloweredRegex: boolean,
+  recovery: boolean,
+): string {
+  return `${file}\0${[...moduleAliases].sort().join('\0')}\0${warnUnloweredRegex ? 'warn' : ''}\0${recovery ? 'recovery' : ''}`
 }
 
 // Module-level parse cache for imported COMPILED grammar modules (read to recover
@@ -119,7 +208,7 @@ export default createUnplugin((opts: ParsecraftPluginOptions = {}) => ({
     if (!code.includes('parseman')) return null
     if (!code.includes('macro')) return null
     const moduleAliases = new Set([PARSEMAN_MODULE, ...(opts.moduleAliases ?? [])])
-    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true)
+    const result = transformMacro(code, id, moduleAliases, opts.warnUnloweredRegex === true, opts.recovery === true, opts.grammarCoverage === true)
     if (result?.warnings.length) {
       for (const w of result.warnings) {
         if (typeof this?.warn === 'function') this.warn(`[parseman] ${w}`)
@@ -270,12 +359,53 @@ export type TransformMacroResult = {
   warnings: string[]
 }
 
+/**
+ * Read a source-private grammar as if Vite had already run this macro on it.
+ * The result is still only an in-memory artifact for the importing transform:
+ * no source module is executed, emitted, or made available at runtime.
+ */
+function lowerPrivateSourceModule(
+  file: string,
+  moduleAliases: Set<string>,
+  warnUnloweredRegex: boolean,
+  recovery: boolean,
+): ParsedModule | null {
+  if (_sourceLowering.has(file)) return null
+  let mtimeMs: number
+  try {
+    mtimeMs = fs.statSync(file).mtimeMs
+  } catch {
+    return null
+  }
+  const cacheKey = sourceLoweringCacheKey(file, moduleAliases, warnUnloweredRegex, recovery)
+  const hit = _sourceLoweringCache.get(cacheKey)
+  if (hit && hit.mtimeMs === mtimeMs) return hit.parsed
+  _sourceLowering.add(file)
+  let parsedModule: ParsedModule | null = null
+  try {
+    const source = fs.readFileSync(file, 'utf8')
+    const transformed = transformMacro(source, file, moduleAliases, warnUnloweredRegex, recovery)
+    if (!transformed || transformed.warnings.length > 0) return null
+    const parsed = parseSync(file, transformed.code)
+    parsedModule = parsed.errors.length === 0
+      ? { body: parsed.program.body as unknown[], src: transformed.code }
+      : null
+    return parsedModule
+  } catch {
+    return null
+  } finally {
+    _sourceLoweringCache.set(cacheKey, { mtimeMs, parsed: parsedModule })
+    _sourceLowering.delete(file)
+  }
+}
+
 export function transformMacro(
   code: string,
   id: string,
   moduleAliases = new Set([PARSEMAN_MODULE]),
   warnUnloweredRegex = false,
   recovery = false,
+  grammarCoverage = false,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -359,10 +489,10 @@ export function transformMacro(
    * shared pass compiles each shared sub-rule once instead of once per entry
    * that reaches it).
    */
-  const compileRulesFactory = (
+  const evaluateRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
+  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
     // Options-first: rules({ trivia }, factory). Disambiguate by type — an
     // ObjectExpression first arg means options lead; otherwise the factory leads
@@ -387,9 +517,18 @@ export function transformMacro(
       : undefined
     const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
 
-    const compiled = compileRuleMap([...ruleMap], { ...(gTrivia ? { trivia: gTrivia } : {}), recovery })
+    return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}) }
+  }
+
+  const compileRulesFactory = (
+    init: Expression,
+    label: string,
+  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown> } | null => {
+    const evaluated = evaluateRulesFactory(init, label)
+    if (!evaluated) return null
+    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), recovery, coverage: grammarCoverage })
     if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
-    return { replacement: compiled.replacement, ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}) }
+    return { replacement: compiled.replacement, ruleMap: evaluated.ruleMap, ...(compiled.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}), ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}) }
   }
 
   const isRulesCall = (init: Expression): boolean =>
@@ -401,6 +540,11 @@ export function transformMacro(
     init.type === 'CallExpression' &&
     (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
     (init as unknown as { callee: { name?: string } }).callee.name === 'compose'
+
+  const isComposeLeafCall = (init: Expression): boolean =>
+    init.type === 'CallExpression'
+    && (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier'
+    && (init as unknown as { callee: { name?: string } }).callee.name === 'composeLeaf'
 
   const isPickCall = (init: Expression): boolean =>
     init.type === 'CallExpression' &&
@@ -441,7 +585,7 @@ export function transformMacro(
     return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
       + `prelude: ${JSON.stringify(p.prelude.map(stripIndent))}, ruleFns: ${mapLit(p.ruleFns, true)}, `
       + `wrappers: ${mapLit(p.wrappers, true)}, firstSets: ${mapLit(p.firstSets)}, deps: ${mapLit(p.deps)}, `
-      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, mfFns: [], buildFns: [] }`
+      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
    * list for a `compose()` result. */
@@ -487,6 +631,22 @@ export function transformMacro(
    */
   const withCarriedPieces = (grammarExpr: string, list: CarriedItem[]): string =>
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
+  const withLeafMarker = (grammarExpr: string): string =>
+    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.leafComposed'), { value: true, enumerable: false })`
+  /** Coverage-only macro output carries the exact IDs emitted in its generated
+   * hooks. The metadata is non-enumerable so grammar maps keep their ordinary
+   * public shape, and it is absent entirely from production builds. */
+  const withCoverageDefinitions = (grammarExpr: string, definitions: readonly { id: string; kind: string }[]): string =>
+    !grammarCoverage ? grammarExpr
+      : `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.grammarCoverageDefinitions'), { value: Object.freeze(${JSON.stringify(definitions)}.map(Object.freeze)), enumerable: false })`
+  const emittedCoverageDefinitions = (source: string): Array<{ id: string; kind: 'rule' | 'choice-arm' | 'label' }> => {
+    const ids = new Set<string>()
+    for (const match of source.matchAll(/id:\s*"([^"]+)"/g)) ids.add(match[1]!)
+    return [...ids].sort().map(id => ({
+      id,
+      kind: id.startsWith('rule:') ? 'rule' : id.startsWith('label:') ? 'label' : 'choice-arm',
+    }))
+  }
   // Same-file `const X = compose([...])` → its carried (re-lowerable) list, so a
   // later same-file compose can chain it AND re-lower it under that compose's own
   // composing trivia (composing-wins holds at every level).
@@ -515,8 +675,11 @@ export function transformMacro(
   // spread by following that module's own import of `binding` to its compiled file
   // and recursing, then eval the literal with the resolved ancestors stubbed in so
   // the spreads splice their pieces. `seen` guards against an import cycle.
-  const resolveModulePieces = (file: string, exportName: string, seen: Set<string>): RawItem[] | null => {
-    const mod = parseModuleCached(file)
+  const resolveModulePieces = (module: ResolvedGrammarModule, exportName: string, seen: Set<string>): RawItem[] | null => {
+    const { file } = module
+    const mod = module.source
+      ? lowerPrivateSourceModule(file, moduleAliases, warnUnloweredRegex, recovery)
+      : parseModuleCached(file)
     if (!mod) return null
     const localFor = exportLocalName(mod.body as AnyNode[], exportName)
     const initNode = localFor ? topLevelInit(mod.body as AnyNode[], localFor) : null
@@ -536,9 +699,10 @@ export function transformMacro(
       const b = imports.get(local)
       let subPieces: RawItem[] = []
       if (b) {
-        let subFile: string | null = null
-        try { subFile = getCompiledResolver().resolveFileSync(file, b.source).path ?? null } catch { /* unresolved */ }
-        if (subFile && !seen.has(subFile)) subPieces = resolveModulePieces(subFile, b.imported, new Set(seen).add(subFile)) ?? []
+        const subModule = resolveGrammarModule(file, b.source)
+        if (subModule && !seen.has(subModule.file)) {
+          subPieces = resolveModulePieces(subModule, b.imported, new Set(seen).add(subModule.file)) ?? []
+        }
       }
       stubNames.push(local)
       stubVals.push({ [Symbol.for('parseman.composedPieces')]: subPieces })
@@ -560,9 +724,8 @@ export function transformMacro(
     let result: RawItem[] | null = null
     const binding = importBindings.get(localName)
     if (binding) {
-      let file: string | null = null
-      try { file = getCompiledResolver().resolveFileSync(id, binding.source).path ?? null } catch { /* unresolved */ }
-      result = file ? resolveModulePieces(file, binding.imported, new Set([file])) : null
+      const module = resolveGrammarModule(id, binding.source)
+      result = module ? resolveModulePieces(module, binding.imported, new Set([module.file])) : null
     }
     importedPiecesCache.set(localName, result)
     return result
@@ -572,18 +735,66 @@ export function transformMacro(
    * grammar's `trivia` into EVERY re-lowerable item (composing-wins B): an IR piece
    * is re-lowered with that trivia; an import spread's re-lowerable items are re-lowered
    * with it too; a full baked piece (the un-serializable fallback) passes through. */
-  const materializeCarried = (items: CarriedItem[], composing?: Combinator<unknown>): LinkablePieces[] => {
+  const materializeCarried = (
+    items: CarriedItem[],
+    composing?: Combinator<unknown>,
+    captureTerminals = false,
+  ): LinkablePieces[] => {
     const out: LinkablePieces[] = []
     for (const it of items) {
       if (isSpread(it)) {
-        for (const p of importedPieces(it.__spreadLocal) ?? []) out.push(materializePiece(p, composing))
+        for (const p of importedPieces(it.__spreadLocal) ?? []) out.push(materializePiece(p, composing, captureTerminals))
       } else if (isIR(it)) {
-        out.push(materializePiece(it as RawItem, composing))
+        out.push(materializePiece(it as RawItem, composing, captureTerminals))
       } else {
         out.push(it)
       }
     }
     return out
+  }
+
+  /** Materialize the exact combinator identities that will be lowered for a
+   * coverage-enabled terminal composition.  Coverage IDs are WeakMap keyed, so
+   * planning from a second IR hydration would silently leave the emitted pieces
+   * uninstrumented.  Opaque baked pieces deliberately fail closed: they cannot
+   * prove the post-compose winner graph. */
+  const materializeLeafCoverage = (
+    items: CarriedItem[],
+    localRules: Iterable<readonly [string, unknown]>,
+    localNs: string,
+    composing?: Combinator<unknown>,
+    captureTerminals = false,
+  ): LinkablePieces[] | null => {
+    type CoverageSource = { ns: string; rules: Array<[string, Combinator<unknown>]> }
+    const sources: CoverageSource[] = []
+    const add = (item: RawItem): boolean => {
+      if (!isIR(item)) return false
+      sources.push({ ns: item.ns, rules: evalRuleMapIR(item.ir) })
+      return true
+    }
+    for (const item of items) {
+      if (isSpread(item)) {
+        const imported = importedPieces(item.__spreadLocal)
+        if (!imported || !imported.every(add)) return null
+      } else if (!add(item as RawItem)) return null
+    }
+    sources.push({ ns: localNs, rules: [...localRules] as Array<[string, Combinator<unknown>]> })
+    const winners: Record<string, Combinator<unknown>> = {}
+    for (const source of sources) for (const [name, rule] of source.rules) winners[name] = rule
+    const plan = buildGrammarPlan(Object.values(winners), winners)
+    const pieces: LinkablePieces[] = []
+    for (let index = 0; index < sources.length; index++) {
+      const source = sources[index]!
+      const piece = compileLinkable(source.rules, source.ns, {
+        ...(composing ? { trivia: composing } : {}),
+        recovery,
+        ...(index < sources.length - 1 && captureTerminals ? { captureTerminals: true } : {}),
+        coverage: plan,
+      })
+      if (!piece) return null
+      pieces.push(piece)
+    }
+    return pieces
   }
 
   /** Resolve one `compose([...])` argument to its RE-LOWERABLE carried items (IR
@@ -746,6 +957,77 @@ export function transformMacro(
     }
   }
 
+  /**
+   * Compile a terminal composition. Imported/base pieces still travel as normal
+   * re-lowerable IR, but the final local rules map is compiled directly in this
+   * module. Its direct builders may therefore refer to lexical AST constructors;
+   * they are inlined into the fused output and are never serialized or carried.
+   */
+  const compileComposeLeafCall = (init: Expression): { replacement: string } | null => {
+    const args = (init as unknown as { arguments: Expression[] }).arguments
+    const arr = args[0]
+    if (!arr || arr.type !== 'ArrayExpression') {
+      warn(init.start, 'composeLeaf(): expected a static array of grammars')
+      return null
+    }
+    const elements = (arr as unknown as { elements: Expression[] }).elements
+    if (elements.length < 2) {
+      warn(init.start, 'composeLeaf(): needs imported recognition grammar(s) and one local rules() map')
+      return null
+    }
+    const localArg = elements[elements.length - 1]!
+    let localRules: Iterable<readonly [string, unknown]> | null = null
+    if (isRulesCall(localArg)) {
+      const evaluated = evaluateRulesFactory(localArg, `composeLeaf${init.start}`)
+      localRules = evaluated?.ruleMap ?? null
+    } else if (localArg.type === 'Identifier') {
+      localRules = localRuleMaps.get((localArg as unknown as { name: string }).name) ?? null
+    }
+    if (!localRules) {
+      warn(init.start, 'composeLeaf(): final argument must be a local rules() map')
+      return null
+    }
+    const composing = composingTrivia(elements)
+    const carried: CarriedItem[] = []
+    for (let i = 0; i < elements.length - 1; i++) {
+      const r = argPieces(elements[i]!, `composeLeaf${init.start}_${i}`, composing)
+      if (!r) {
+        warn(init.start, `composeLeaf(): argument ${i} isn't a build-resolvable recognition grammar`)
+        return null
+      }
+      carried.push(...r.carried)
+    }
+    try {
+      // The imported pieces are recognition-only, but the local leaf grammar
+      // may place one beneath a direct node(). Re-lower their terminals with
+      // capture enabled so that node receives the imported token values in its
+      // normal child collector; the pieces still contain no semantic callback.
+      const localNs = nsFor(`composeLeaf${init.start}`)
+      const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), recovery })
+      if (!plainLocalPiece) {
+        warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
+        return null
+      }
+      const recognitionPieces = grammarCoverage
+        ? materializeLeafCoverage(carried, localRules, localNs, composing, plainLocalPiece.hasDirectBuilders === true)
+        : materializeCarried(carried, composing, plainLocalPiece.hasDirectBuilders === true)
+      if (!recognitionPieces) {
+        warn(init.start, 'composeLeaf(): coverage needs re-lowerable recognition IR')
+        return null
+      }
+      const importedRecognitionPieces = grammarCoverage ? recognitionPieces.slice(0, -1) : recognitionPieces
+      if (importedRecognitionPieces.some(piece => piece.hasDirectBuilders !== false || piece.isRecognitionOnly !== true)) {
+        warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
+        return null
+      }
+      const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece]))
+      return { replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) }
+    } catch (e) {
+      warn(init.start, `composeLeaf(): ${(e as Error).message}`)
+      return null
+    }
+  }
+
   // --- Pre-pass: resolve standalone ref() recursion clusters ---
   // `const x = ref()` … `x.define(expr)` is the interpreter/compile() recursion
   // mechanism. The macro must support it for parity: evaluate every ref slot and
@@ -851,7 +1133,7 @@ export function transformMacro(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compile(refCombi, undefined, { recovery })
+            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage })
             if (compiled.inlineExpression === null) {
               warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
               continue
@@ -875,7 +1157,10 @@ export function transformMacro(
           // downstream package composes it via `import { <name> }` alone. Only when
           // the pieces are fully static (no runtime-only callbacks) — otherwise the
           // grammar isn't source-free composable and we ship it as a plain map.
-          let replacement = compiledRules.replacement
+          let replacement = withCoverageDefinitions(
+            compiledRules.replacement,
+            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(compiledRules.replacement),
+          )
           if (exportPrefix) {
             const ns = nsFor(varName)
             const pieces = compileLinkable([...compiledRules.ruleMap], ns, { recovery })
@@ -906,7 +1191,18 @@ export function transformMacro(
           const replacement = exportPrefix
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
-          replacements.push({ start: init.start, end: init.end, replacement })
+          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) })
+          continue
+        }
+
+        // `composeLeaf([...recognition, localRules])` is static and terminal:
+        // local direct builders stay lexical and are not carried/recomposable.
+        if (isComposeLeafCall(init)) {
+          const fused = compileComposeLeafCall(init)
+          if (!fused) {
+            throw new Error(`${id}:${lineOf(init.start)} — composeLeaf() must macro-fuse; runtime composition is forbidden`)
+          }
+          replacements.push({ start: init.start, end: init.end, replacement: fused.replacement })
           continue
         }
 
@@ -932,7 +1228,7 @@ export function transformMacro(
 
         // Sources are carried on each transform's def (set by the evaluator), so
         // codegen derives them in traversal order — no positional array needed.
-        const compiled = compile(parser, undefined, { recovery })
+        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage })
         if (compiled.inlineExpression === null) {
           warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
           continue

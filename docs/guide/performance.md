@@ -80,6 +80,7 @@ pnpm bench                  # parser-to-parser comparison
 pnpm bench:parseman         # Parseman interpreted vs compiled regression report
 pnpm bench:svg              # chart-only benchmarks + regenerate assets/bench-*.svg
 pnpm bench:baseline         # refresh the regression baseline + append a history snapshot
+pnpm bench:release-compare-svg # regenerate committed 0.26/0.27/0.28 release evidence SVGs
 pnpm bench:compile-grammars # regenerate the precompiled Peggy/Nearley/Jison parsers
 pnpm perf:guard             # fast pre-commit CSS speed regression check
 
@@ -112,9 +113,10 @@ lowers many `regex(…)` terminals into `charCodeAt` scan loops — see
 [Under the hood: regex lowering](./regex-lowering) for what gets lowered, into what, and how
 it's kept correct and fast.
 
-Node capture is arity-driven: a `build` (or injected `ctx.build` host) that doesn't declare
-`triviaLog` / `state` params pays nothing to capture them — often a large slice of parse
-time on value-dense grammars. See
+Node capture is arity-driven: a direct AST `build` that doesn't declare
+`children`, `rawChildren`, `triviaLog`, or `state` pays nothing to collect them;
+an injected `ctx.build` host keeps the complete CST contract. This is often a
+large slice of parse time on value-dense grammars. See
 [Capture follows your `build`'s arity](./ast#capture-follows-arity).
 
 For the full catalog of library-level codegen and macro optimizations (choice fast-paths,

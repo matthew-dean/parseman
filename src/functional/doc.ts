@@ -79,7 +79,9 @@ function producesRepetition(def: ParserDef | undefined, depth = 0): boolean {
     // Transparent wrappers — look through to the inner parser.
     case 'node':
     case 'transform':
+    case 'attempt':
     case 'token':
+    case 'leaf':
     case 'label':
     case 'field':
     case 'expect':

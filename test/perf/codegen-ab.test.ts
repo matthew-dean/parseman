@@ -16,6 +16,11 @@ import {
   buildScanAbCases, buildDispatchAbCases, runScanAb, runDispatchAb,
 } from '../../bench/codegen-ab.ts'
 
+// A timing ratio needs an isolated worker. The ordinary suite still runs the
+// generated-source and result-parity checks above, while `pnpm test:perf` turns
+// this gate on under a serial perf configuration.
+const describePerf = process.env.PARSEMAN_PERF === '1' ? describe : describe.skip
+
 // A regression is only flagged if the optimized path is >40% slower than its
 // same-semantics baseline — well outside measurement noise for these medians.
 const PERF_FLOOR = 0.7
@@ -60,7 +65,7 @@ describe('codegen A/B — disjoint dispatch (switch vs if/else)', () => {
   }
 })
 
-describe('codegen A/B — perf floor (lenient)', () => {
+describePerf('codegen A/B — perf floor (lenient)', () => {
   it('regex scan is not a regression vs exec', () => {
     const results = runScanAb(4_000)
     for (const r of results) {

@@ -4,6 +4,10 @@ import { resolveCssFixture } from '../../bench/css-fixture.ts'
 import { parseCss, parseCssCompiled, Stylesheet, compiledCss } from '../../examples/css/parser.ts'
 import { expectTriviaLogParity, runTriviaLogParity } from '../parity/helpers/trivia-log-parity.ts'
 
+// The syntax/parity tests belong in the normal suite. The 20-pass timing check
+// needs the same isolated worker as the other performance guards.
+const describePerf = process.env.PARSEMAN_PERF === '1' ? describe : describe.skip
+
 describe('CSS grammar (jess port) — correctness', () => {
   it('parses selector.css without errors (interpreted)', () => {
     const src = readFileSync(resolveCssFixture('selector.css'), 'utf8')
@@ -34,7 +38,7 @@ describe('CSS grammar (jess port) — correctness', () => {
   })
 })
 
-describe('CSS grammar — bootstrap perf smoke', () => {
+describePerf('CSS grammar — bootstrap perf smoke', () => {
   it('parses bootstrap4.css when fixture is available', () => {
     let src: string
     try {

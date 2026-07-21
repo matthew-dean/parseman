@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 808" width="800" height="808">
+<rect width="800" height="808" rx="6" fill="white"/>
+<text x="20" y="30" font-size="16" font-weight="600" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">Parseman 0.28 release comparison — compiled parsers</text>
+<text x="20" y="50" font-size="11" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">compiled parser median microseconds per parse · 5 fresh processes/version · median of 15 samples/process</text>
+<text x="780" y="50" text-anchor="end" font-size="10.5" fill="#8c959f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">shorter is faster · each fixture scaled independently</text>
+<rect x="20" y="66" width="11" height="11" rx="2" fill="#8c959f"/>
+<text x="35" y="76" font-size="11.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.26.3 (b2b43e8)</text>
+<rect x="180" y="66" width="11" height="11" rx="2" fill="#9b8fef"/>
+<text x="195" y="76" font-size="11.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.27.1 (8952dca)</text>
+<rect x="340" y="66" width="11" height="11" rx="2" fill="#534ab7"/>
+<text x="355" y="76" font-size="11.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.28.0 (b10b0e4+local)</text>
+<text x="280" y="125" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">json/small</text>
+<rect x="292" y="98" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="98" width="249.9" height="10" rx="2" fill="#8c959f"/>
+<text x="546.8518799999999" y="107" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.69 µs</text>
+<rect x="292" y="111" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="111" width="236.2" height="10" rx="2" fill="#9b8fef"/>
+<text x="533.1924" y="120" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.66 µs</text>
+<rect x="292" y="124" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="124" width="235.7" height="10" rx="2" fill="#534ab7"/>
+<text x="532.67508" y="133" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.65 µs</text>
+<text x="280" y="173" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">json/medium</text>
+<rect x="292" y="146" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="146" width="350.6" height="10" rx="2" fill="#8c959f"/>
+<text x="647.5604414169845" y="155" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">17.6 µs</text>
+<rect x="292" y="159" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="159" width="360.0" height="10" rx="2" fill="#9b8fef"/>
+<text x="657" y="168" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">18.1 µs</text>
+<rect x="292" y="172" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="172" width="354.0" height="10" rx="2" fill="#534ab7"/>
+<text x="650.9825927553791" y="181" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">17.8 µs</text>
+<text x="280" y="221" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">json/large</text>
+<rect x="292" y="194" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="194" width="354.9" height="10" rx="2" fill="#8c959f"/>
+<text x="651.9354095945357" y="203" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">143.8 µs</text>
+<rect x="292" y="207" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="207" width="360.0" height="10" rx="2" fill="#9b8fef"/>
+<text x="657" y="216" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">145.9 µs</text>
+<rect x="292" y="220" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="220" width="352.0" height="10" rx="2" fill="#534ab7"/>
+<text x="649.0449010251898" y="229" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">142.7 µs</text>
+<text x="280" y="269" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">csv/small</text>
+<rect x="292" y="242" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="242" width="151.8" height="10" rx="2" fill="#8c959f"/>
+<text x="448.75764000000004" y="251" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.42 µs</text>
+<rect x="292" y="255" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="255" width="149.9" height="10" rx="2" fill="#9b8fef"/>
+<text x="446.90364" y="264" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.42 µs</text>
+<rect x="292" y="268" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="268" width="149.9" height="10" rx="2" fill="#534ab7"/>
+<text x="446.94" y="277" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.42 µs</text>
+<text x="280" y="317" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">csv/large</text>
+<rect x="292" y="290" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="290" width="360.0" height="10" rx="2" fill="#8c959f"/>
+<text x="657" y="299" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">83.9 µs</text>
+<rect x="292" y="303" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="303" width="338.5" height="10" rx="2" fill="#9b8fef"/>
+<text x="635.4822878552241" y="312" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">78.9 µs</text>
+<rect x="292" y="316" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="316" width="327.1" height="10" rx="2" fill="#534ab7"/>
+<text x="624.1290748049643" y="325" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">76.3 µs</text>
+<text x="280" y="365" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">graphql/small</text>
+<rect x="292" y="338" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="338" width="360.0" height="10" rx="2" fill="#8c959f"/>
+<text x="657" y="347" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">1.10 µs</text>
+<rect x="292" y="351" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="351" width="336.3" height="10" rx="2" fill="#9b8fef"/>
+<text x="633.3420482039575" y="360" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">1.03 µs</text>
+<rect x="292" y="364" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="364" width="331.3" height="10" rx="2" fill="#534ab7"/>
+<text x="628.3351939136087" y="373" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">1.01 µs</text>
+<text x="280" y="413" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">graphql/medium</text>
+<rect x="292" y="386" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="386" width="360.0" height="10" rx="2" fill="#8c959f"/>
+<text x="657" y="395" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">6.37 µs</text>
+<rect x="292" y="399" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="399" width="349.5" height="10" rx="2" fill="#9b8fef"/>
+<text x="646.5245528598283" y="408" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">6.18 µs</text>
+<rect x="292" y="412" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="412" width="355.2" height="10" rx="2" fill="#534ab7"/>
+<text x="652.206814402083" y="421" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">6.28 µs</text>
+<text x="280" y="461" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">graphql/large</text>
+<rect x="292" y="434" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="434" width="351.6" height="10" rx="2" fill="#8c959f"/>
+<text x="648.6440143799728" y="443" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">145.0 µs</text>
+<rect x="292" y="447" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="447" width="360.0" height="10" rx="2" fill="#9b8fef"/>
+<text x="657" y="456" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">148.5 µs</text>
+<rect x="292" y="460" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="460" width="351.7" height="10" rx="2" fill="#534ab7"/>
+<text x="648.6571498479175" y="469" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">145.0 µs</text>
+<text x="280" y="509" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">toml/small</text>
+<rect x="292" y="482" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="482" width="194.7" height="10" rx="2" fill="#8c959f"/>
+<text x="491.74308" y="491" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.54 µs</text>
+<rect x="292" y="495" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="495" width="198.2" height="10" rx="2" fill="#9b8fef"/>
+<text x="495.24552" y="504" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.55 µs</text>
+<rect x="292" y="508" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="508" width="201.1" height="10" rx="2" fill="#534ab7"/>
+<text x="498.14748" y="517" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">0.56 µs</text>
+<text x="280" y="557" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">toml/medium</text>
+<rect x="292" y="530" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="530" width="360.0" height="10" rx="2" fill="#8c959f"/>
+<text x="657" y="539" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">11.7 µs</text>
+<rect x="292" y="543" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="543" width="357.7" height="10" rx="2" fill="#9b8fef"/>
+<text x="654.7365298118007" y="552" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">11.6 µs</text>
+<rect x="292" y="556" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="556" width="358.3" height="10" rx="2" fill="#534ab7"/>
+<text x="655.2541863609742" y="565" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">11.6 µs</text>
+<text x="280" y="605" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">lang/small</text>
+<rect x="292" y="578" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="578" width="360.0" height="10" rx="2" fill="#8c959f"/>
+<text x="657" y="587" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.89 µs</text>
+<rect x="292" y="591" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="591" width="329.1" height="10" rx="2" fill="#9b8fef"/>
+<text x="626.1106959769111" y="600" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.64 µs</text>
+<rect x="292" y="604" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="604" width="337.4" height="10" rx="2" fill="#534ab7"/>
+<text x="634.4110192160197" y="613" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.71 µs</text>
+<text x="280" y="653" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">lang/medium</text>
+<rect x="292" y="626" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="626" width="360.0" height="10" rx="2" fill="#8c959f"/>
+<text x="657" y="635" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.88 µs</text>
+<rect x="292" y="639" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="639" width="359.6" height="10" rx="2" fill="#9b8fef"/>
+<text x="656.5592652060409" y="648" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.88 µs</text>
+<rect x="292" y="652" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="652" width="352.7" height="10" rx="2" fill="#534ab7"/>
+<text x="649.7334975169456" y="661" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.82 µs</text>
+<text x="280" y="701" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">css/selector</text>
+<rect x="292" y="674" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="674" width="329.3" height="10" rx="2" fill="#8c959f"/>
+<text x="626.2647489750655" y="683" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.72 µs</text>
+<rect x="292" y="687" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="687" width="360.0" height="10" rx="2" fill="#9b8fef"/>
+<text x="657" y="696" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.98 µs</text>
+<rect x="292" y="700" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="700" width="345.0" height="10" rx="2" fill="#534ab7"/>
+<text x="641.9535049398481" y="709" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">2.85 µs</text>
+<text x="280" y="749" text-anchor="end" font-size="12" fill="#24292f" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">css/decls</text>
+<rect x="292" y="722" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="722" width="344.6" height="10" rx="2" fill="#8c959f"/>
+<text x="641.6421099062845" y="731" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">3.25 µs</text>
+<rect x="292" y="735" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="735" width="318.6" height="10" rx="2" fill="#9b8fef"/>
+<text x="615.6037745640333" y="744" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">3.00 µs</text>
+<rect x="292" y="748" width="360" height="10" rx="2" fill="#eaeef2"/>
+<rect x="292" y="748" width="360.0" height="10" rx="2" fill="#534ab7"/>
+<text x="657" y="757" font-size="10.5" fill="#57606a" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">3.39 µs</text>
+</svg>

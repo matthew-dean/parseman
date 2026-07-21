@@ -18,6 +18,7 @@ export type { KeywordsOptions } from './combinators/keywords.ts'
 
 export { sequence } from './combinators/sequence.ts'
 export { choice } from './combinators/choice.ts'
+export { attempt } from './combinators/attempt.ts'
 export { many, oneOrMore, optional, sepBy } from './combinators/repeat.ts'
 export { rules } from './combinators/parser.ts'
 export { ref } from './combinators/ref.ts'
@@ -28,15 +29,16 @@ export type { BuildNode, NodeOptions } from './combinators/node.ts'
 export { transform, skip, trivia, label, field } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
-export { token } from './combinators/token.ts'
+export { token, leaf } from './combinators/token.ts'
 
 export { compile } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'
 // `pick()` is deliberately NOT re-exported: build-inlining a `pick()` of an imported
 // grammar can't yet carry that grammar's ambient trivia across the module boundary, so
 // the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)
-// for later exploration of that lowering; `compose()` is the public composition primitive.
-export { compose, cstBuildHost } from './compiler/linker.ts'
+// for later exploration of that lowering. `composeLeaf()` is terminal by design;
+// ordinary reusable grammar composition remains `compose()`.
+export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, offsetToLineCol, annotateSpan } from './compiler/line-index.ts'
@@ -56,6 +58,8 @@ export { parseDoc } from './functional/doc.ts'
 export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts'
 export { run } from './functional/run.ts'
 export type { RunResult, RunOptions, RunProfile, RunProfilePass, Runnable } from './functional/run.ts'
+export { GRAMMAR_COVERAGE_DEFINITIONS, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, grammarCoverageDefinitions, composedGrammarCoverageDefinitions, runWithGrammarCoverage } from './coverage.ts'
+export type { GrammarCoverageCollector, GrammarCoverageDefinition, GrammarCoverageSnapshot, GrammarInstrumentationContext, GrammarTraceEvent, GrammarTracePhase, GrammarTraceSink, GrammarTraceSnapshot } from './coverage.ts'
 export { buildTriviaIndex } from './cst/trivia-index.ts'
 export type { TriviaIndex, TriviaToken, TriviaIndexOptions } from './cst/trivia-index.ts'
 export { walk, createVisitor } from './cst/walk.ts'

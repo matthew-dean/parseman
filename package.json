@@ -1,6 +1,6 @@
 {
   "name": "parseman",
-  "version": "0.27.1",
+  "version": "0.28.0",
   "packageManager": "pnpm@10.15.1",
   "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
   "type": "module",
@@ -64,6 +64,7 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "bench:svg": "node --import tsx/esm bench/gen-svg.ts",
+    "bench:release-compare-svg": "node --import tsx/esm bench/gen-release-compare-svg.ts",
     "bench:size": "node --import tsx/esm bench/measure-expansion.ts",
     "docs:favicons": "node scripts/gen-favicons.mjs",
     "build:chevrotain-bench": "node --import tsx/esm scripts/build-chevrotain-bench.mjs",

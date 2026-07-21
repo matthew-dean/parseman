@@ -153,6 +153,10 @@ export function balanced(
   // transform (codegen derives map-fn sources from def.fnSrc).
   if (combi._def.tag === 'transform') {
     combi._def.fnSrc = '([o, parts, c]) => o + parts.map(p => typeof p === "string" ? p : Array.isArray(p) ? p.join("") : "").join("") + (typeof c === "string" ? c : "")'
+    // This is Parseman's structural delimiter reconstruction, not a grammar
+    // semantic reduction. It must remain eligible for recognition-only
+    // composeLeaf artifacts while user-authored transform() remains excluded.
+    combi._def.recognitionOnly = true
   }
   self.define(combi as Combinator<string>)
   return combi
