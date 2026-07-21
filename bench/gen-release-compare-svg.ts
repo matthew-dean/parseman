@@ -1,6 +1,7 @@
 /** Render the committed 0.26/0.27/0.28 release-comparison evidence. */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 type Version = { revision: string; cases: Record<string, number[]> }
 type Collector = { revision: string; samples: number[]; outputHash: string; sourceBytes: number }
@@ -10,7 +11,7 @@ type Data = {
   collectorElision: { baseline: Collector; candidate: Collector }
 }
 
-const root = new URL('..', import.meta.url).pathname
+const root = fileURLToPath(new URL('..', import.meta.url))
 const data = JSON.parse(readFileSync(join(root, 'bench/release-0.28-performance.json'), 'utf8')) as Data
 const out = join(root, 'assets')
 const font = `-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif`

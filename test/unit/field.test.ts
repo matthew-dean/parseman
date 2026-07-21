@@ -3,16 +3,19 @@ import {
   choice,
   compile,
   field,
+  leaf,
   literal,
   many,
   node,
   parse,
+  parser,
   regex,
   rules,
   run,
   sequence,
 } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { parserEnablesTriviaCapture } from '../../src/compiler/fields.ts'
 
 describe('field()', () => {
   const ident = regex(/[a-z]+/)
@@ -137,5 +140,13 @@ const Import = node('Import', sequence(literal('@import'), field('tail', Tail), 
     })
     expect(compiled.source).toContain('_hostReads(_ctx.build, 2)')
     expect(compiled.source).toContain('_hostReads(_ctx.build, 5)')
+  })
+
+  it('does not allocate an outer trivia collector for a capture hidden by leaf()', () => {
+    const ws = regex(/[ ]+/)
+    const hidden = leaf(parser({ trivia: ws, captureTrivia: true }, sequence(literal('a'), literal('b'))), value => value)
+    const visible = parser({ trivia: ws, captureTrivia: true }, sequence(literal('a'), literal('b')))
+    expect(parserEnablesTriviaCapture(hidden)).toBe(false)
+    expect(parserEnablesTriviaCapture(visible)).toBe(true)
   })
 })

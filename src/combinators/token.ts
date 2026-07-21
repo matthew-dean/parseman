@@ -75,7 +75,11 @@ export function leaf<T, U>(
   root: Combinator<T>,
   fn: (value: T, span: { start: number; end: number }) => U,
 ): Combinator<U> {
-  const meta: ParserMeta = { ...root._meta, isTrivia: false }
+  const meta: ParserMeta = {
+    firstSet: root._meta.firstSet,
+    canMatchNewline: root._meta.canMatchNewline,
+    isTrivia: false,
+  }
   return {
     _tag: 'leaf',
     _meta: meta,

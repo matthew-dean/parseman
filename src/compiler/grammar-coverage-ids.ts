@@ -77,7 +77,11 @@ export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinato
   }
   const roots = Array.isArray(entry) ? entry : [entry]
   for (const root of roots) {
-    visit(root, (root as Combinator<unknown> & { _ruleName?: string })._ruleName ?? 'entry')
+    // Rule-map compilation can receive ordinary, unannotated combinators. The
+    // caller's winner map is then the only durable public identity for each
+    // root; using the generic `entry` path would merge separate roots' choice
+    // IDs and omit their rule definitions.
+    visit(root, winnerNames.get(root) ?? (root as Combinator<unknown> & { _ruleName?: string })._ruleName ?? 'entry')
   }
   return { definitions: [...definitions.values()].sort((a, b) => a.id.localeCompare(b.id)), choices, attempts, labels, rules }
 }

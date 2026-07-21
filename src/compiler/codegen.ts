@@ -3386,6 +3386,13 @@ export function compileRuleMap(
   opts?: { trivia?: Combinator<unknown>; recovery?: boolean; coverage?: boolean },
 ): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   for (const [, rule] of ruleMap) markUnusedValues(rule)
+  // Named lazy proxies already carry their stable rule identity and redirect
+  // their children through the final winner graph. Register only ordinary
+  // unannotated roots here: giving a lazy proxy its own winner makes a lazy
+  // reference point back to itself, so its body never enters the coverage plan.
+  const coverageWinners = opts?.coverage
+    ? Object.fromEntries(ruleMap.filter(([, rule]) => rule._def.tag !== 'lazy')) as Record<string, Combinator<unknown>>
+    : undefined
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule in the map bakes it (unless a local
   // parser({trivia}) / noTrivia overrides). Mirrors the interpreter installing it
@@ -3410,7 +3417,7 @@ export function compileRuleMap(
     namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
-    ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule)) } } : {}),
+    ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule), coverageWinners) } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
   }

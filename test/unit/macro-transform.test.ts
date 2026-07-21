@@ -150,6 +150,28 @@ const star = leaf(literal('*'), value => value)
     expect(result!.code).not.toContain('composeLeaf(')
     expect(result!.code).toContain('const _mf =')
   })
+
+  it('strips TypeScript-only callback syntax before re-lowering a semantic leaf', () => {
+    const code = `
+import { leaf, literal } from 'parseman' with { type: 'macro' }
+const star = leaf(literal('*'), (value: string): string => value)
+`.trim()
+    const result = transform(code)
+    expect(result).not.toBeNull()
+    expect(result!.code).toContain('(value) => value')
+    expect(result!.code).not.toContain('value: string')
+  })
+
+  it('strips TypeScript-only callback syntax before re-lowering a transform', () => {
+    const code = `
+import { literal, transform } from 'parseman' with { type: 'macro' }
+const upper = transform(literal('hello'), (value: string): string => value.toUpperCase())
+`.trim()
+    const result = transform(code)
+    expect(result).not.toBeNull()
+    expect(result!.code).toContain('(value) => value.toUpperCase()')
+    expect(result!.code).not.toContain('value: string')
+  })
 })
 
 describe('transformMacro — rules() binding forms', () => {

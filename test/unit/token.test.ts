@@ -227,6 +227,17 @@ describe('token()', () => {
 })
 
 describe('leaf()', () => {
+  it('does not propagate inner grammar metadata onto the leaf boundary', () => {
+    const inner = parser({ trivia: ws }, sequence(literal('a'), literal('b')))
+    const wrapped = leaf(inner, value => value)
+    expect(wrapped._meta).toMatchObject({
+      firstSet: inner._meta.firstSet,
+      canMatchNewline: inner._meta.canMatchNewline,
+      isTrivia: false,
+    })
+    expect(wrapped._meta.grammarTrivia).toBeUndefined()
+  })
+
   it('reduces a comment-aware structural operator to one semantic CST leaf with its full span', () => {
     const input = 'a * // explanation\n b'
     const interp = parse(mathExpression, input)

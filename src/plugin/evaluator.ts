@@ -262,7 +262,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     if (!parserArg || !fnArg || parserArg.type === 'SpreadElement' || fnArg.type === 'SpreadElement') return null
     const inner = anyValue(parserArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null
-    const fnSrc = code.slice((fnArg as Expression).start, (fnArg as Expression).end)
+    const fnSrc = stripTsFromSource(fnArg as Node, code)
     mfs.push(fnSrc)
     try {
       const combi = parseman.transform(inner, (v: unknown) => v)
@@ -280,7 +280,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     if (!parserArg || !fnArg || parserArg.type === 'SpreadElement' || fnArg.type === 'SpreadElement') return null
     const inner = anyValue(parserArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null
-    const fnSrc = code.slice((fnArg as Expression).start, (fnArg as Expression).end)
+    const fnSrc = stripTsFromSource(fnArg as Node, code)
     mfs.push(fnSrc)
     try {
       const combi = parseman.leaf(inner, (v: unknown) => v)

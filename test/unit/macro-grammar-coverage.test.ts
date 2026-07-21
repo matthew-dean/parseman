@@ -111,6 +111,21 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
     ])
   })
 
+  it('keeps distinct keyed roots for direct coverage-enabled rule-map compilation', () => {
+    const compiled = compileRuleMap([
+      ['Alpha', choice(literal('a'), literal('b'))],
+      ['Beta', choice(literal('c'), literal('d'))],
+    ], { coverage: true })
+    expect(compiled?.coverageDefinitions).toEqual([
+      { id: 'choice:Alpha/arm:0', kind: 'choice-arm' },
+      { id: 'choice:Alpha/arm:1', kind: 'choice-arm' },
+      { id: 'choice:Beta/arm:0', kind: 'choice-arm' },
+      { id: 'choice:Beta/arm:1', kind: 'choice-arm' },
+      { id: 'rule:Alpha', kind: 'rule' },
+      { id: 'rule:Beta', kind: 'rule' },
+    ])
+  })
+
   it('uses shared-plan rule and label IDs in coverage mode', () => {
     const grammar = rules(g => ({ Entry: choice(g.Word, literal('x')), Word: label('word', literal('w')) }))
     const compiled = compile(grammar.Entry, undefined, { coverage: true })
