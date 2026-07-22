@@ -6,7 +6,8 @@
  * composite body is never entered — matching the compiled path — while staying
  * byte-identical (the parity suites elsewhere prove interpreter ≡ compiled output).
  */
-import { many, oneOrMore, node, attempt, sequence, literal, parse, type Combinator, type ParseContext } from '../../src/index.ts'
+import { many, oneOrMore, node, attempt, sequence, literal, field, withCtx, skip, expect as required, parse, compile, type Combinator, type ParseContext } from '../../src/index.ts'
+import { deriveExpected } from '../../src/combinators/expect.ts'
 import { describe, expect, it } from 'vitest'
 
 /** Wrap a combinator so every `.parse` call is counted, without changing `_meta`. */
@@ -62,5 +63,48 @@ describe('interpreter first-set fail-fast (parity with codegen guards)', () => {
     // '@' is in the first set → body IS entered (and here fails on the 2nd char).
     expect(parse(n, '@q', { trackLines: false } as ParseContext).ok).toBe(false)
     expect(calls()).toBe(1)
+  })
+})
+
+/**
+ * A first-set-miss fast-fail must report the SAME `expected` a normal start-failure
+ * would — including through delegating wrappers (`field`/`withCtx`/`skip`/`expect`)
+ * that `deriveExpected` previously omitted (returning the wrapper tag instead of the
+ * real leading token). The guard's synthetic `expected` is read identically by the
+ * interpreter and by codegen (emitAttempt/emitNode via armStaticExpected → the same
+ * `deriveExpected`), so this asserts BOTH modes match the normal failure.
+ */
+describe('first-set-miss failure is wrapper-complete (guard == normal start-failure)', () => {
+  const bodies: [string, Combinator<unknown>][] = [
+    ['field',   field('x', sequence(literal('@'), literal('b')))],
+    ['withCtx', withCtx({}, sequence(literal('@'), literal('b')))],
+    ['skip',    skip(sequence(literal('@'), literal('b')), literal('!'))],
+  ]
+
+  for (const [name, body] of bodies) {
+    it(`${name}: attempt & node first-char miss report '@' in interpreter AND compiled`, () => {
+      // Baseline: the body parsed on its own fails at the first char with the token.
+      const normal = parse(body, 'z', { trackLines: false } as ParseContext)
+      expect(normal.ok).toBe(false)
+      const want = (normal as { expected: string[] }).expected
+      expect(want).toEqual(['"@"'])
+
+      for (const guarded of [attempt(body), node('N', body, (c: unknown) => c)]) {
+        const ri = parse(guarded, 'z', { trackLines: false } as ParseContext)
+        expect(ri.ok).toBe(false)
+        expect((ri as { expected: string[] }).expected).toEqual(want)
+
+        const rc = compile(guarded).parse('z', 0) as { ok: boolean; expected?: string[] }
+        expect(rc.ok).toBe(false)
+        expect(rc.expected).toEqual(want)
+      }
+    })
+  }
+
+  it('deriveExpected sees through field/withCtx/skip/expect (previously the wrapper tag)', () => {
+    expect(deriveExpected(field('x', literal('@')))).toEqual(['"@"'])
+    expect(deriveExpected(withCtx({}, literal('@')))).toEqual(['"@"'])
+    expect(deriveExpected(skip(literal('@'), literal('!')))).toEqual(['"@"'])
+    expect(deriveExpected(required(literal('@')))).toEqual(['"@"'])
   })
 })

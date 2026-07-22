@@ -270,7 +270,7 @@ function detectSharedPrefix(parsers: Combinator<unknown>[]): ChoiceStrategy | nu
  * replayed there. `attempt`/`optional`/`many`/`choice`/etc. are NOT peeled, so such
  * arms are conservatively excluded.
  */
-function leadingTermOfArm(arm: Combinator<unknown>): Combinator<unknown> | null {
+export function leadingTermOfArm(arm: Combinator<unknown>): Combinator<unknown> | null {
   let d = arm._def
   for (;;) {
     if (d.tag === 'node' || d.tag === 'grammar' || d.tag === 'transform' || d.tag === 'label') {

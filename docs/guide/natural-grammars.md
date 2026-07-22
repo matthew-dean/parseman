@@ -80,8 +80,8 @@ speculatively enters an arm, does some setup, then discovers on the first byte t
 never had a chance. Parséman removes that cost for you, so you can write the natural
 `choice(a, b)` without pre-optimizing away the misses.
 
-As of **0.29.0**, a speculative construct rejects on its **first character — before it
-allocates or mutates anything**. Concretely the guards live in:
+A speculative construct rejects on its **first character — before it allocates or mutates
+anything**. This landed first on the **compiled** path in **0.29.0** — the codegen guards:
 
 - `emitMany` — a `many`/`oneOrMore` loop, at the iteration that terminates it, checks the
   body's first set *before* allocating the iteration's collector arrays.
@@ -95,13 +95,12 @@ bailing early is behavior-identical, and it records the same expected token a no
 start-failure would, so your error messages don't change. It is also skipped under
 error-recovery mode, where a swallowed failure still needs to feed the completions probe.
 
-Unlike the shared-prefix optimization, **this one is in the interpreter too.** The
-runtime `many`/`oneOrMore`/`node`/`attempt` combinators (and `optional`, which already
-did) apply the same first-set fail-fast on the same soundness condition — a doomed body
-is never entered, no capture frame is allocated, no rollback marks are taken — skipped
-identically under a completions probe / tolerant recovery. So the interpreter and the
-compiled output skip the *same* doomed setup, and the parity suites hold the two
-byte-identical.
+**0.30.0** brings the interpreter to parity: the runtime `many`/`oneOrMore`/`node`/
+`attempt` combinators (and `optional`, which already had it in an earlier release) now
+apply the same first-set fail-fast, on the same soundness condition and the same
+probe/recovery skip-gates — a doomed body is never entered, no capture frame is allocated,
+no rollback marks are taken. So the interpreter and the compiled output skip the *same*
+doomed setup, and the parity suites hold the two byte-identical.
 
 ## Literal-heavy choices collapse to one scan
 
@@ -194,14 +193,18 @@ every other span, and the choice's failure `expected` set are all bit-for-bit wh
 un-factored grammar produced — in both the interpreter and the compiled output.
 
 **Where the dedup applies.** It's a **compiled-output** transform (both `compile()` and
-the macro build). The **interpreter runs the ordinary `firstMatch` loop** and re-scans the
-prefix per arm — identical output, natural authoring, no dedup — because replaying the
-prefix at runtime would mean threading a cache through the core `parse()` dispatch of every
-combinator, and the free byte-identity of the `firstMatch` fallback is worth more than a
-runtime win on a path that exists mainly for tests and REPLs. And because the strategy is a
-faithful specialization of `firstMatch`, compiles that carry extra per-arm bookkeeping —
-coverage tracing, error-recovery, and linkable/compose fusion — also transparently fall
-back to plain `firstMatch`.
+the macro build), and it stays enabled for **linkable/`compose` fusion** (`deferFirstSetRefs`)
+too — the shared prefix is always a concrete literal/regex, never a ref, so it is scanned
+once even in the fused form. The **interpreter runs the ordinary `firstMatch` loop** and
+re-scans the prefix per arm — identical output, natural authoring, no dedup — because
+replaying the prefix at runtime would mean threading a cache through the core `parse()`
+dispatch of every combinator, and the free byte-identity of the `firstMatch` fallback is
+worth more than a runtime win on a path that exists mainly for tests and REPLs. Because the
+strategy is a faithful specialization of `firstMatch`, it *does* fall back to plain
+`firstMatch` in two situations where the rewrite can't apply: the scope-unsafe case (a
+grouped arm hoisted into its own function — see the same-scope limit below), and compiles
+carrying extra per-arm bookkeeping the rewrite doesn't reproduce (coverage tracing and
+error-recovery). Every fallback is byte-identical to the un-factored choice.
 
 **Honest limits — what it conservatively skips.** Correctness comes first, so the detector
 only fires where the factoring is provably behavior-identical:

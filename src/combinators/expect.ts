@@ -27,6 +27,14 @@ export function deriveExpected(c: Combinator<unknown>): string[] {
     case 'choice':    return def.parsers.flatMap(deriveExpected)
     case 'sequence':  return def.parsers.length > 0 ? deriveExpected(def.parsers[0]!) : []
     case 'attempt':   return deriveExpected(def.parser)
+    // Delegating wrappers whose first-token failure is their inner parser's — must
+    // pass through so a start-failure (and the first-set-miss fast-path in attempt/
+    // node, which reads this) names the real expected token, not the wrapper tag.
+    case 'field':
+    case 'withCtx':
+    case 'recover':   return deriveExpected(def.parser)
+    case 'skip':      return deriveExpected(def.main)
+    case 'expect':    return def.expected
     case 'node':
     case 'grammar':
     case 'trivia':

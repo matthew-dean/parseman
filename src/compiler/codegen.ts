@@ -7,7 +7,7 @@
  * object allocation per node.
  */
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
-import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
+import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any } from '../combinators/first-set.ts'
 
@@ -1766,7 +1766,9 @@ function emitSharedPrefix(
   const map = (ctx.replayPrefix ??= new Map())
   const keys: Combinator<unknown>[] = []
   for (const i of members) {
-    const term0 = leadingTermOf(def.parsers[i]!)
+    // Shared with the detector (choice.ts) so codegen groups exactly what detection
+    // grouped — peel node/parser/transform/label to the core sequence's first term.
+    const term0 = leadingTermOfArm(def.parsers[i]!)
     if (term0 === null) continue
     map.set(term0, { valVar: pfx.valVar, endVar: pfx.endVar })
     keys.push(term0)
@@ -1776,26 +1778,6 @@ function emitSharedPrefix(
 
   for (const k of keys) map.delete(k)
   return r
-}
-
-/**
- * Peel node / parser(grammar) / transform / label wrappers down to the core
- * `sequence` and return its FIRST term (the candidate shared prefix), or null.
- * These wrappers neither consume input nor skip trivia before the sequence's first
- * term, so the term is parsed at the arm's entry position in every arm — which is
- * why the once-recognized prefix end/value can be replayed there.
- */
-function leadingTermOf(arm: Combinator<unknown>): Combinator<unknown> | null {
-  let d: ParserDef = arm._def
-  for (;;) {
-    if (d.tag === 'node' || d.tag === 'grammar' || d.tag === 'transform' || d.tag === 'label') {
-      d = d.parser._def
-      continue
-    }
-    break
-  }
-  if (d.tag !== 'sequence' || d.parsers.length < 2) return null
-  return d.parsers[0]!
 }
 
 /**

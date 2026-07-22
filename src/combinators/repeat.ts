@@ -77,7 +77,7 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
     { tag: 'many', parser: combinator as Combinator<unknown>, min: 0 }
   let expected: string[] | undefined
   // A non-nullable body can be first-set-gated per loop iteration (see repItem).
-  const guardable = !matchesEmpty(combinator)
+  const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
 
   return {
     _tag: 'many',
@@ -129,7 +129,7 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
     { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min: 1 }
   let expected: string[] | undefined
   // A non-nullable body can be first-set-gated per loop iteration (see repItem).
-  const guardable = !matchesEmpty(combinator)
+  const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
 
   return {
     _tag: 'oneOrMore',

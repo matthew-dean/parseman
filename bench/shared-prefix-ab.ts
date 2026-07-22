@@ -63,8 +63,12 @@ function buildCase(name: string, prefix: Combinator<unknown>, nArms: number, inp
   // Validity: the strategy detected sharedPrefix, and the two compiles differ.
   const src = compile(grammar).source
   __setForceNoSharedPrefix(true)
-  const srcFm = compile(grammar).source
-  __setForceNoSharedPrefix(false)
+  let srcFm: string
+  try {
+    srcFm = compile(grammar).source
+  } finally {
+    __setForceNoSharedPrefix(false)   // never leave the flag set (would corrupt later cases)
+  }
   const valid = strat === 'sharedPrefix' && src !== srcFm
   return { name, input, grammar, valid }
 }
