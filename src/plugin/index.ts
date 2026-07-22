@@ -584,7 +584,13 @@ export function transformMacro(
       ).join(', ')}])`
     return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
       + `prelude: ${JSON.stringify(p.prelude.map(stripIndent))}, ruleFns: ${mapLit(p.ruleFns, true)}, `
-      + `wrappers: ${mapLit(p.wrappers, true)}, firstSets: ${mapLit(p.firstSets)}, deps: ${mapLit(p.deps)}, `
+      + `wrappers: ${mapLit(p.wrappers, true)}, firstSets: ${mapLit(p.firstSets)}, `
+      // Carry the leading first-set RECIPE so a DOWNSTREAM compose of this
+      // serialized artifact keeps monolithic-parity first-char dispatch (else
+      // fusedBody falls back to the shallow `any` first-set and the arm degrades
+      // to always-try — the regression Greptile flagged). `{concrete, refs}` is
+      // plain JSON.
+      + `firstSetRecipes: ${p.firstSetRecipes ? mapLit(p.firstSetRecipes) : 'new Map()'}, deps: ${mapLit(p.deps)}, `
       + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened

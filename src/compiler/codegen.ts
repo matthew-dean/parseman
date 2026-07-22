@@ -1798,7 +1798,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   // the guard would be pure redundancy and would perturb byte-identical leaf-body
   // output. The win is for COMPOSITE bodies (sequence/node) that do setup before
   // discovering a first-char mismatch — e.g. `many(sequence(op, atom))`.
-  if (!ctx.recovery && !failsAtStart(def.parser) && needsFirstSetGuard(def.parser)) {
+  if (!ctx.recovery && !ctx.coverage && !failsAtStart(def.parser) && needsFirstSetGuard(def.parser)) {
     const lcV = v(ctx, '_lc')
     stmts.push(
       `${ind(ctx)}const ${lcV} = ${itemPos} < input.length ? (input.codePointAt(${itemPos}) ?? -1) : -1`,
@@ -1879,7 +1879,7 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
   // reject, and recording the same static `expected` the inner start-fail would.
   // Skipped under recovery (the completions probe still wants the swallowed failure).
   const preGuard: string[] = []
-  if (!ctx.recovery && needsFirstSetGuard(def.parser)) {
+  if (!ctx.recovery && !ctx.coverage && needsFirstSetGuard(def.parser)) {
     const gcV = v(ctx, '_agc')
     const gExp = armStaticExpected(ctx, def.parser)
     const gFail = ctx.failLabel
@@ -2439,7 +2439,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // the completions probe there) and when the node captures nothing (no frame to
   // save). Mirrors the choice/`many` first-set guards.
   const preGuard: string[] = []
-  if (!ctx.recovery && (capturesChildren || structural) && needsFirstSetGuard(def.parser)) {
+  if (!ctx.recovery && !ctx.coverage && (capturesChildren || structural) && needsFirstSetGuard(def.parser)) {
     const gcV = v(ctx, '_ngc')
     const gExp = armStaticExpected(ctx, def.parser)
     const gFail = ctx.failLabel
