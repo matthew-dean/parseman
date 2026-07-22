@@ -629,6 +629,12 @@ const SWITCH_MIN_CASES = 3
 let _forceDisjointIf = false
 export function __setForceDisjointIf(on: boolean): void { _forceDisjointIf = on }
 
+// Test/bench-only: force a `sharedPrefix` choice to compile as ordered `firstMatch`
+// (each arm re-scans the shared prefix), so the shared-once form can be A/B'd against
+// it in the same process. Defaults to off. See bench/shared-prefix-ab.ts.
+let _forceNoSharedPrefix = false
+export function __setForceNoSharedPrefix(on: boolean): void { _forceNoSharedPrefix = on }
+
 /**
  * Choose the dispatch form for a *disjoint* choice. Returns per-arm case code
  * points for a `switch` (jump table) when every arm keys off a small discrete
@@ -1839,7 +1845,7 @@ function emitNonDisjoint(
     // SAME function scope as the choice — otherwise the once-recognized prefix's
     // replay variable would be referenced out of scope from an arm hoisted into its
     // own function (a ReferenceError on the fused/linkable path).
-    if (coverageBase === undefined && !ctx.recovery
+    if (!_forceNoSharedPrefix && coverageBase === undefined && !ctx.recovery
       && strategy.members.every(i => armReplayInScope(def.parsers[i]!, ctx)))
       return emitSharedPrefix(def, strategy, ctx, pos)
     return emitFirstMatch(def, ctx, pos, coverageBase)

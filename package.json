@@ -55,6 +55,7 @@
     "bench:incremental": "node --import tsx/esm bench/incremental-run.ts",
     "bench:literal": "node --import tsx/esm bench/literal-match.ts",
     "bench:codegen": "node --import tsx/esm bench/codegen-ab.ts",
+    "bench:sharedprefix": "node --import tsx/esm bench/shared-prefix-ab.ts",
     "bench:baseline": "node --import tsx/esm bench/update-parseman-baseline.ts",
     "perf:guard": "node --import tsx/esm bench/perf-guard.ts",
     "prepare": "git config core.hooksPath scripts/git-hooks || true; node scripts/build.mjs",
