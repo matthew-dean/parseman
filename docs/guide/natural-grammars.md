@@ -174,11 +174,19 @@ The one difference is that the arm's leading terminal replays the once-computed 
 position and value, and pushes an identical leaf into that arm's own capture scope. The
 result is that your reducer's `children[0]` (value **and** span), the node's trivia log,
 every other span, and the choice's failure `expected` set are all bit-for-bit what the
-un-factored grammar produced — in both the interpreter and the compiled output. (The
-interpreter simply runs the arms in order; the sharing is a compiled-output optimization.
-Because it's a faithful specialization of `firstMatch`, compiles that carry extra
-per-arm bookkeeping — coverage tracing, error-recovery, and linkable/compose fusion —
-transparently fall back to plain `firstMatch`.)
+un-factored grammar produced — in both the interpreter and the compiled output.
+
+**Which modes get the speed-up.** The single-scan is a **compiled-output** optimization
+(both `compile()` and the macro build). The **interpreter runs the ordinary `firstMatch`
+loop** — output is identical, but each arm re-scans the shared prefix, so interpreted mode
+gets the correctness and ergonomics of writing the arms naturally but *not* the
+scan-sharing speed-up. That's a deliberate limit: replaying the prefix at runtime would
+mean threading a replay cache through the core `parse()` dispatch of every combinator, and
+the free byte-identity of the `firstMatch` fallback is worth more than the runtime win on a
+path that exists mainly for tests and REPLs. Compile your grammar (or use the macro) to get
+the shared scan. And because the strategy is a faithful specialization of `firstMatch`,
+compiles that carry extra per-arm bookkeeping — coverage tracing, error-recovery, and
+linkable/compose fusion — also transparently fall back to plain `firstMatch`.
 
 **Honest limits — what it conservatively skips.** Correctness comes first, so the detector
 only fires where the factoring is provably behavior-identical:
