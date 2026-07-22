@@ -3,6 +3,27 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.30.0 — 2026-07-22
+
+- **New `choice` codegen strategy: shared-prefix left-factoring.** When several
+  alternatives of a `choice` begin with the same concrete leading `literal`/`regex`
+  — including the natural wrapped forms authors write (`node(...)`, `parser({trivia}, ...)`,
+  `transform`, `label`) — Parseman now recognizes that prefix ONCE and branches on the
+  residual, instead of re-scanning it per alternative on backtrack. Fires on both the
+  plain-compile and the linkable/fused (`deferFirstSetRefs`) paths; conservatively falls
+  back to the byte-identical ordered `firstMatch` whenever it can't prove byte-identity
+  (arms that would hoist to separate functions, differing trivia, ref/overridable prefixes,
+  coverage/recovery compiles). It shares only the *scan*, so it pays off when the shared
+  prefix does real scanning work: a head-to-head A/B benchmark (`bench:sharedprefix`) shows
+  ~1.85–1.95× on adversarial shapes (24–40-char shared prefix, 8 arms, last-arm-wins) and
+  ~1.24× on a plausible-favorable grammar; it is (correctly) a no-op for trivially cheap
+  prefixes. See `docs/guide/natural-grammars.md`.
+- **Interpreter: first-set fail-fast parity.** The 0.29.0 codegen first-set fail-fast
+  guards now also apply in the interpreter runtime for `many`/`oneOrMore`/`attempt`/`node`,
+  so interpreted grammars skip the same doomed setup the compiled path already skips (same
+  soundness + skip conditions; verified byte-identical by the interpreter≡compiled parity
+  suites).
+
 ## 0.29.0 — 2026-07-22
 
 - **Perf: fused grammars now first-char-dispatch as well as monolithic ones.** A
