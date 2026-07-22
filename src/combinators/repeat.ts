@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
-import { matchesEmpty } from './first-set.ts'
+import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
 
@@ -20,6 +20,7 @@ function repItem<T>(
   input: string,
   cur: number,
   ctx: ParseContext,
+  guardable: boolean,
 ): { value: T; end: number } | { fail: ParseResult<T>; failPos: number } | 'stop' {
   const mark = saveTriviaMark(ctx)
   let pos = cur
@@ -36,6 +37,17 @@ function repItem<T>(
   // fail and could trigger an item's expect()/error side-effects). The trivia
   // is trailing — roll it back for the enclosing context and stop.
   if (pos >= input.length) {
+    rollbackTrivia(ctx, mark)
+    return 'stop'
+  }
+  // First-set fast-path (mirrors emitMany's codegen guard): a body that can't match
+  // empty and whose first set can't start at `pos` can ONLY fail this iteration, so
+  // stop before the (composite) body's setup-then-fail. This is behaviour-identical
+  // in strict mode — a swallowed body failure is discarded either way, and a
+  // zero-width/leaf miss reaches the same loop stop. Skipped under a completions
+  // probe or tolerant recovery, where a swallowed failure still feeds the probe /
+  // triggers resync (matching the codegen guard's `!ctx.recovery` gate).
+  if (guardable && ctx._probe === undefined && !ctx._tolerant && !startsFirstSet(combinator, input, pos)) {
     rollbackTrivia(ctx, mark)
     return 'stop'
   }
@@ -64,6 +76,8 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
   const def: { tag: 'many'; parser: Combinator<unknown>; min: 0; valueUnused?: boolean } =
     { tag: 'many', parser: combinator as Combinator<unknown>, min: 0 }
   let expected: string[] | undefined
+  // A non-nullable body can be first-set-gated per loop iteration (see repItem).
+  const guardable = !matchesEmpty(combinator)
 
   return {
     _tag: 'many',
@@ -75,7 +89,7 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
       const values: T[] | undefined = def.valueUnused ? undefined : []
       let cur = pos
       while (cur < input.length) {
-        const item = repItem(combinator, input, cur, ctx)
+        const item = repItem(combinator, input, cur, ctx, guardable)
         if (item === 'stop') break
         if ('fail' in item) {
           // Cold path: only reached on an element failure. Strict mode ⇒ `break`.
@@ -114,6 +128,8 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
   const def: { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean } =
     { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min: 1 }
   let expected: string[] | undefined
+  // A non-nullable body can be first-set-gated per loop iteration (see repItem).
+  const guardable = !matchesEmpty(combinator)
 
   return {
     _tag: 'oneOrMore',
@@ -128,7 +144,7 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
       const values: T[] | undefined = def.valueUnused ? undefined : [first.value]
       let cur = first.span.end
       while (cur < input.length) {
-        const item = repItem(combinator, input, cur, ctx)
+        const item = repItem(combinator, input, cur, ctx, guardable)
         if (item === 'stop') break
         if ('fail' in item) {
           // Cold path (element failure). Strict: break. Tolerant: resync — see many().
@@ -175,16 +191,6 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
       return { ok: true, value: null, span: { start: pos, end: pos } }
     },
   }
-}
-
-function startsFirstSet(combinator: Combinator<unknown>, input: string, pos: number): boolean {
-  const fs = combinator._meta.firstSet
-  if (fs.kind === 'any') return true
-  if (fs.kind === 'empty') return false
-  const code = input.codePointAt(pos)
-  if (code === undefined) return false
-  for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
-  return false
 }
 
 export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>): Combinator<T[]> {
