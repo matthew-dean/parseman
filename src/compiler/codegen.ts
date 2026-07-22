@@ -1823,8 +1823,28 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
   const rollback = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${log}; if (_ctx._fields) _ctx._fields.length = ${fields}; if (_ctx._errors) _ctx._errors.length = ${errors}`
   const traceId = ctx.coverage?.plan.attempts.get(p)
   const traceRollback = traceId === undefined ? '' : ` _ctx._grammarTrace?.write({ id: ${JSON.stringify(traceId)}, phase: 'rollback', offset: ${pos} });`
+  // First-set fail-fast before the transaction marks. `attempt(inner)` reads six
+  // rollback marks before `inner` recognizes anything; a non-dispatching caller
+  // (e.g. `choice(attempt(MixinReference), …)` on the non-disjoint majority) enters
+  // it at every position and rejects on the first byte. Bail on a first-set miss
+  // before the marks, re-anchoring the failure at `pos` like the transaction's own
+  // reject, and recording the same static `expected` the inner start-fail would.
+  // Skipped under recovery (the completions probe still wants the swallowed failure).
+  const preGuard: string[] = []
+  if (!ctx.recovery && needsFirstSetGuard(def.parser)) {
+    const gcV = v(ctx, '_agc')
+    const gExp = armStaticExpected(ctx, def.parser)
+    const gFail = ctx.failLabel
+      ? `{ _ctx._fe = ${pos};${ctx.recordFail ? ` _ctx._fx = ${gExp};` : ''} break ${ctx.failLabel} }`
+      : `{ _ctx._fe = ${pos}; ${failReturnArr(gExp, pos)} }`
+    preGuard.push(
+      `${ind(ctx)}const ${gcV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
+      `${ind(ctx)}if (!(${firstSetCond(gcV, def.parser._meta.firstSet)})) ${gFail}`,
+    )
+  }
   return {
     stmts: [
+      ...preGuard,
       `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${trivia} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
       ...inner.stmts,
       ...emitIfFail(ctx, `!${inner.okVar}`, `{ ${rollback};${traceRollback} _ctx._fe = ${pos}; ${propagateFailBody(ctx)} }`),

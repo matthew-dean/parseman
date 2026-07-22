@@ -35,7 +35,7 @@ diagnostics are unchanged, and it is **skipped under compiled recovery**
 | `choice` arm | — (already first-set dispatches; `asciiDispatch` / per-arm `firstSetCond`) | ✅ built-in |
 | `many` / `oneOrMore` body | attempt-then-fail at the terminating iteration | ✅ 0.29.0 (`emitMany`, gated `!failsAtStart`) |
 | `node()` capture frame | allocates `_ch`/`_raw`/`_tl` arrays + swaps CST context | ✅ 0.29.0 (`emitNode`, gated `capturesChildren \|\| structural`) |
-| `attempt(inner)` | 6 rollback-mark reads (`_ctx._cstLeaves?.length ?? 0`, …) before `inner` | ⬜ CANDIDATE — cheaper (reads, not allocs); guard `inner`'s first-set before the marks |
+| `attempt(inner)` | 6 rollback-mark reads (`_ctx._cstLeaves?.length ?? 0`, …) before `inner` | ✅ 0.29.0 (`emitAttempt`; ~1% — reads, not allocs) |
 | `sequence` | tuple `[…]` only AFTER terms parse; skipped when `valueUnused` | ✅ already lazy |
 
 **When adding a combinator, ask:** does it do any allocation/mutation/mark before
@@ -97,8 +97,6 @@ on `!ctx.recovery`.
 
 ## Not-yet-done candidates (early-exit-before-setup rule)
 
-1. **`attempt` first-set guard** — bail before the 6 rollback-mark reads when the
-   inner's first set misses (e.g. `attempt(MixinReference)` at non-`.#` positions).
-2. **Interpreter parity** — the interpreter (`src/combinators/*`) does the analogous
+1. **Interpreter parity** — the interpreter (`src/combinators/*`) does the analogous
    allocate-before-recognize in `node`/`repeat`; a matching first-set pre-check keeps
    interpreter and compiled speed closer and is a natural mirror of the codegen guards.
