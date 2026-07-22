@@ -1661,6 +1661,198 @@ function emitFirstMatch(
   return { stmts, valueVar: resValV, endVar: resEndV }
 }
 
+// ── sharedPrefix: left-factor a common leading literal/regex, parse it ONCE ────
+// Every arm is a bare `sequence(prefix, …residual)` sharing the same concrete
+// `prefix`. We parse `prefix` a single time (capturing its leaf once), then try
+// each arm's residual terms in PEG order from the shared end. This is a faithful
+// specialization of emitFirstMatch: the winning arm's value is [prefixVal,
+// …residualVals] (identical to the un-factored sequence), the shared leaf is
+// captured exactly once and rolled back only on total failure, and each arm's
+// failure `expected` is snapshotted from `_ctx._fx` in the same order/shape the
+// per-arm firstMatch parse produces — so `_ctx._fe`/`_fx` and the concatenated
+// failure set are byte-identical.
+function emitSharedPrefix(
+  def: Extract<ParserDef, { tag: 'choice' }>,
+  strategy: Extract<ChoiceStrategy, { tag: 'sharedPrefix' }>,
+  ctx: Ctx,
+  pos: string,
+): ER {
+  const { prefix, members } = strategy
+  const resValV = v(ctx, '_spv')
+  const resEndV = v(ctx, '_spe')
+  const resOkV  = v(ctx, '_spok')
+  // One failure-expected slot per member arm (parallel to firstMatch's `slots`).
+  const slots = members.map(() => v(ctx, '_spfx'))
+  const ind0 = ind(ctx)
+  const stmts: string[] = [
+    `${ind0}let ${resValV}, ${resEndV} = ${pos}, ${resOkV} = false`,
+    `${ind0}let ${slots.join(', ')}`,
+  ]
+
+  // Marks taken BEFORE the shared prefix parse: on total failure the once-captured
+  // prefix leaf must be rolled back so the capture state matches firstMatch (which
+  // rolls each failed arm back fully). Cheap when no CST buffer is live at runtime.
+  const sharedRollback = ctx.capturing
+  const mL0  = sharedRollback ? v(ctx, '_spml')  : null
+  const mR0  = sharedRollback ? v(ctx, '_spmr')  : null
+  const mTl0 = sharedRollback ? v(ctx, '_spmtl') : null
+  const mLg0 = sharedRollback ? v(ctx, '_spmlg') : null
+  if (sharedRollback) {
+    stmts.push(
+      `${ind0}const ${mL0} = _ctx._cstLeaves?.length ?? 0`,
+      `${ind0}const ${mR0} = _ctx._cstRawChildren?.length ?? 0`,
+      `${ind0}const ${mTl0} = _ctx._cstTriviaLog?.length ?? 0`,
+      `${ind0}const ${mLg0} = _ctx._triviaLog?.length ?? 0`,
+    )
+  }
+
+  // Parse the shared prefix ONCE. `swallow=false` (recordFail on) so a prefix
+  // failure records `_ctx._fx` exactly as the un-factored sequence arm would.
+  const { stmts: pfxStmts, okVar: pfxOk, valVar: pfxVal, endVar: pfxEnd } = emitFallible(prefix, ctx, pos, false)
+  stmts.push(...pfxStmts)
+
+  // Prefix failed → every arm fails at its start, all with the SAME recorded
+  // `_ctx._fx` (the prefix's expected) — mirroring firstMatch's `slot[i]=_ctx._fx`
+  // for a sequence arm whose leading term fails.
+  stmts.push(`${ind0}if (!${pfxOk}) {`)
+  for (const slot of slots) stmts.push(`${ind0}  ${slot} = _ctx._fx`)
+  stmts.push(`${ind0}}`)
+  stmts.push(`${ind0}else {`)
+  ctx.indent++
+  for (let k = 0; k < members.length; k++) {
+    const arm = def.parsers[members[k]!]!
+    const seqDef = arm._def as Extract<ParserDef, { tag: 'sequence' }>
+    stmts.push(`${ind(ctx)}if (!${resOkV}) {`)
+    ctx.indent++
+
+    // Per-arm capture rollback: restore to the POST-prefix state (keep the shared
+    // leaf) when this residual fails, matching firstMatch's per-arm arm rollback.
+    const armRollback = ctx.capturing && mayLeavePartialCapture(arm)
+    const armFieldRollback = armRollback && parserHasOwnFields(arm)
+    const mL = armRollback ? v(ctx, '_spal')  : null
+    const mR = armRollback ? v(ctx, '_spar')  : null
+    const mTl = armRollback ? v(ctx, '_spatl') : null
+    const mLg = armRollback ? v(ctx, '_spalg') : null
+    const mF  = armFieldRollback ? v(ctx, '_spaf') : null
+    const rollback = mL ? captureRestoreBody(mL, mR!, mTl!, mLg!, mF) : ''
+    if (mL) {
+      stmts.push(
+        `${ind(ctx)}const ${mL} = _ctx._cstLeaves?.length ?? 0`,
+        `${ind(ctx)}const ${mR} = _ctx._cstRawChildren?.length ?? 0`,
+        `${ind(ctx)}const ${mTl} = _ctx._cstTriviaLog?.length ?? 0`,
+        `${ind(ctx)}const ${mLg} = _ctx._triviaLog?.length ?? 0`,
+        ...(mF ? [`${ind(ctx)}const ${mF} = _ctx._fields?.length ?? 0`] : []),
+      )
+    }
+
+    // Residual = the arm sequence with its (already-parsed) leading term dropped,
+    // emitted inside a private labeled fallible block from the shared prefix end.
+    const lbl  = v(ctx, '_lbl')
+    const okV  = `${lbl}ok`
+    const rvalV = `${lbl}v`
+    const rendV = `${lbl}e`
+    stmts.push(`${ind(ctx)}let ${okV} = false, ${rvalV}, ${rendV} = ${pfxEnd}`)
+    const savedLabel = ctx.failLabel
+    const savedRecord = ctx.recordFail
+    ctx.failLabel = lbl
+    ctx.recordFail = true
+    stmts.push(`${ind(ctx)}${lbl}: {`)
+    ctx.indent++
+    const resid = emitResidualSeqValues(seqDef, ctx, pfxEnd, pfxVal)
+    stmts.push(...resid.stmts)
+    stmts.push(`${ind(ctx)}${rvalV} = ${resid.valueVar}; ${rendV} = ${resid.endVar}; ${okV} = true`)
+    ctx.indent--
+    stmts.push(`${ind(ctx)}}`)
+    ctx.failLabel = savedLabel
+    ctx.recordFail = savedRecord
+
+    stmts.push(`${ind(ctx)}if (${okV}) { ${resValV} = ${rvalV}; ${resEndV} = ${rendV}; ${resOkV} = true }`)
+    stmts.push(`${ind(ctx)}else { ${slots[k]} = _ctx._fx${rollback ? `; ${rollback}` : ''} }`)
+
+    ctx.indent--
+    stmts.push(`${ind(ctx)}}`)
+  }
+  ctx.indent--
+  stmts.push(`${ind0}}`)
+
+  // Total failure: roll the shared prefix leaf back, then report the concatenated
+  // per-arm expected sets (byte-identical to firstMatch's `[...slot0, ...slot1, …]`).
+  const concatExpr = `[${slots.map(s => `...(${s} || [])`).join(', ')}]`
+  const sharedRestore = mL0 ? captureRestoreBody(mL0, mR0!, mTl0!, mLg0!) : ''
+  stmts.push(...emitIfFail(ctx, `!${resOkV}`, `${sharedRestore ? `${sharedRestore}; ` : ''}${failArrBody(ctx, concatExpr, pos, false)}`))
+  return { stmts, valueVar: resValV, endVar: resEndV }
+}
+
+/**
+ * emitSeqValues for the RESIDUAL of a shared-prefix arm: the leading term is
+ * already parsed (its value is `prefixValVar`, its end `prefixEndVar`), so this
+ * seeds the value tuple with the prefix value, starts the cursor at the prefix
+ * end, and emits terms from index 1 onward — the first residual term still gets
+ * the inter-term trivia scan (it is `i > 0`), so trivia handling is identical to
+ * the un-factored sequence. Recovery sync is intentionally absent: the caller only
+ * reaches the optimized path when `ctx.recovery` is off.
+ */
+function emitResidualSeqValues(
+  def: Extract<ParserDef, { tag: 'sequence' }>,
+  ctx: Ctx,
+  prefixEndVar: string,
+  prefixValVar: string,
+): ER {
+  const curV = v(ctx, '_cur')
+  const stmts: string[] = [
+    `${ind(ctx)}let ${curV} = ${prefixEndVar}`,
+  ]
+  const valueVars: string[] = [prefixValVar]
+
+  for (let i = 1; i < def.parsers.length; i++) {
+    if (ctx.activeTrivia) {
+      if (ctx.capturing) {
+        const capFn = ensureTriviaCaptureFn(ctx)
+        const markV = v(ctx, '_mk')
+        const markTl = v(ctx, '_mktl')
+        const markLog = v(ctx, '_mklg')
+        const scanEndV = v(ctx, '_sne')
+        stmts.push(
+          `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
+          `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
+          `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+          `${ind(ctx)}const ${scanEndV} = ${capFn}(input, ${curV}, _ctx, 1)`,
+        )
+        const r = emit(def.parsers[i]!, ctx, scanEndV)
+        stmts.push(...r.stmts)
+        const endAfterV = v(ctx, '_sea')
+        stmts.push(
+          `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; }`,
+        )
+        valueVars.push(r.valueVar)
+        continue
+      } else {
+        const trivFn = ensureTriviaFn(ctx)
+        const scanEndV = v(ctx, '_sne')
+        stmts.push(`${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx)`)
+        const r = emit(def.parsers[i]!, ctx, scanEndV)
+        stmts.push(...r.stmts)
+        const endAfterV = v(ctx, '_sea')
+        stmts.push(
+          `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}`,
+        )
+        valueVars.push(r.valueVar)
+        continue
+      }
+    }
+    const r = emit(def.parsers[i]!, ctx, curV)
+    stmts.push(...r.stmts, `${ind(ctx)}${curV} = ${r.endVar}`)
+    valueVars.push(r.valueVar)
+  }
+
+  if (def.valueUnused) return { stmts, valueVar: 'undefined', endVar: curV }
+  const arrV = v(ctx, '_arr')
+  stmts.push(`${ind(ctx)}const ${arrV} = [${valueVars.join(', ')}]`)
+  return { stmts, valueVar: arrV, endVar: curV }
+}
+
 function emitNonDisjoint(
   def: Extract<ParserDef, { tag: 'choice' }>,
   strategy: ChoiceStrategy,
@@ -1673,6 +1865,16 @@ function emitNonDisjoint(
     return emitGreedyClassify(def, strategy.superIndex, ctx, pos, coverageBase)
   if (strategy.tag === 'literalsLongestFirst')
     return emitLiteralsLongestFirst(def, strategy.sortedIndices, allExpected, ctx, pos, coverageBase)
+  if (strategy.tag === 'sharedPrefix') {
+    // Optimized left-factor only on the plain compile path. Coverage tracing,
+    // tolerant-recovery sync publishing, and linkable ref-gate deferral each carry
+    // per-arm bookkeeping that the shared-prefix rewrite would have to reproduce;
+    // fall back to the byte-identical `firstMatch` there (sharedPrefix IS just a
+    // firstMatch specialization, so the fallback is a no-op semantically).
+    if (coverageBase === undefined && !ctx.recovery && !ctx.deferFirstSetRefs)
+      return emitSharedPrefix(def, strategy, ctx, pos)
+    return emitFirstMatch(def, ctx, pos, coverageBase)
+  }
   return emitFirstMatch(def, ctx, pos, coverageBase)
 }
 

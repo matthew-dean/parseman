@@ -335,11 +335,19 @@ export type CharRange = { lo: number; hi: number }
  *                       no ambiguity, no backtracking.
  * firstMatch: PEG fallback — try each arm in order; arms with autoNot[] get an inline
  *             rejection check so a later arm can "win" without explicit not().
+ * sharedPrefix: EVERY arm is a bare `sequence(...)` beginning with the SAME concrete
+ *               leading literal/regex (a "left factor"). The compiler parses that
+ *               prefix ONCE, then tries each arm's residual terms in PEG order from
+ *               the shared end position — no re-parse of the prefix per arm. PEG
+ *               priority and byte-identical value/CST/diagnostics are preserved; the
+ *               interpreter treats it exactly as `firstMatch`. Opt-in like
+ *               greedyClassify (auto-detected only for the narrow shape it can prove).
  */
 export type ChoiceStrategy =
   | { tag: 'greedyClassify';       superIndex: number }
   | { tag: 'literalsLongestFirst'; sortedIndices: number[] }
   | { tag: 'firstMatch' }
+  | { tag: 'sharedPrefix';         prefix: Combinator<unknown>; members: number[] }
 
 /**
  * Used only by the 'firstMatch' fallback strategy. Describes what char/string at

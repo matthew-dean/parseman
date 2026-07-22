@@ -49,7 +49,10 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
   // the dispatched branch); a NON-disjoint gated choice falls to firstMatch — the
   // greedy/longest-first strategies are incompatible with per-arm predicates.
   const strategy = (disjoint || hasGates) ? null : detectStrategy(parsers)
-  const autoNot = (!disjoint && !hasGates && strategy?.tag === 'firstMatch')
+  // `sharedPrefix` is a `firstMatch` specialization — the interpreter runs it via
+  // the firstMatch loop below, and codegen falls back to firstMatch under
+  // coverage/recovery/linkable — so it needs the same auto-not table computed.
+  const autoNot = (!disjoint && !hasGates && (strategy?.tag === 'firstMatch' || strategy?.tag === 'sharedPrefix'))
     ? computeAutoNot(parsers)
     : parsers.map(() => null)
 
@@ -207,7 +210,55 @@ function detectStrategy(parsers: Combinator<unknown>[]): ChoiceStrategy {
     return { tag: 'literalsLongestFirst', sortedIndices }
   }
 
+  // sharedPrefix: EVERY arm is a bare sequence beginning with the SAME concrete
+  // leading literal/regex — the compiler parses that left factor once. Detected
+  // last (its shape is disjoint from the literal-only strategies above).
+  const shared = detectSharedPrefix(parsers)
+  if (shared !== null) return shared
+
   return { tag: 'firstMatch' }
+}
+
+/**
+ * A stable structural key for a bare leading terminal (concrete literal/regex),
+ * or `null` when the term is NOT a shareable concrete prefix. Deliberately
+ * conservative: only an UNWRAPPED literal (case-sensitive) or regex qualifies —
+ * a transform/label/ref/node wrapper changes the value/capture shape and must NOT
+ * be left-factored (correctness first; the strategy is opt-in like greedyClassify).
+ */
+function bareLeadingTermKey(term: Combinator<unknown>): string | null {
+  const d = term._def
+  if (d.tag === 'literal' && !d.caseInsensitive) return `L:${d.value}`
+  if (d.tag === 'regex') return `R:${d.source} ${d.flags}`
+  return null
+}
+
+/**
+ * Detect the pure single-group shared-prefix shape: at least two arms, EVERY arm
+ * a bare `sequence` with ≥2 terms, and every arm's FIRST term the same concrete
+ * literal/regex (identical source/flags or literal string). Returns the plan with
+ * a representative prefix combinator (the first arm's leading term — all members'
+ * leading terms are structurally identical, so any one emits identical code),
+ * else `null`. Mixed / multi-group / wrapped shapes are conservatively skipped and
+ * fall through to `firstMatch`.
+ */
+function detectSharedPrefix(parsers: Combinator<unknown>[]): ChoiceStrategy | null {
+  if (parsers.length < 2) return null
+  let key: string | null = null
+  let prefix: Combinator<unknown> | null = null
+  const members: number[] = []
+  for (let i = 0; i < parsers.length; i++) {
+    const d = parsers[i]!._def
+    if (d.tag !== 'sequence' || d.parsers.length < 2) return null
+    const term0 = d.parsers[0]!
+    const k = bareLeadingTermKey(term0)
+    if (k === null) return null
+    if (key === null) { key = k; prefix = term0 }
+    else if (k !== key) return null
+    members.push(i)
+  }
+  if (prefix === null || members.length < 2) return null
+  return { tag: 'sharedPrefix', prefix, members }
 }
 
 // ---------------------------------------------------------------------------
