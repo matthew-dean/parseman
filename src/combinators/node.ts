@@ -3,6 +3,8 @@ import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/cap
 import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
 import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { consumeTrivia } from './trivia-skip.ts'
+import { matchesEmpty, startsFirstSet } from './first-set.ts'
+import { deriveExpected } from './expect.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
@@ -103,11 +105,27 @@ export function node<N>(
   const capturesTrivia = captureTrivia || trailingTrivia || (build ? buildReadsTrivia(def) : true)
   const clonesState = build ? buildReadsState(def) : true
   const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
+  // First-set fail-fast (mirrors emitNode's codegen guard): a node whose body can't
+  // match empty and whose first set can't start here can only fail, so reject BEFORE
+  // allocating the CST capture frame. Sound and output-neutral — the failing body
+  // would capture nothing and beginCstNodeCapture saves/restores every buffer, so
+  // skipping returns the same failure the body's start-fail produces. Skipped under a
+  // completions probe / tolerant recovery, where the swallowed failure still feeds the
+  // probe (matching the codegen guard's `!ctx.recovery` gate).
+  const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
+  let failExpected: string[] | undefined
   return {
     _tag: 'node',
     _meta: meta,
     _def: def,
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<N> {
+      if (guardable && ctx._probe === undefined && !ctx._tolerant && !startsFirstSet(combinator, input, pos)) {
+        if (failExpected === undefined) {
+          const e = deriveExpected(combinator)
+          failExpected = e.length > 0 ? e : [combinator._tag]
+        }
+        return { ok: false, expected: failExpected, span: { start: pos, end: pos } }
+      }
       const saved = beginCstNodeCapture(ctx)
       const savedFields = ctx._fields
       ctx._fields = capturesFields ? [] : undefined

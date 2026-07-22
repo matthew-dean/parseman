@@ -22,6 +22,22 @@ export function fromChar(code: number): FirstSet {
   return { kind: 'ranges', ranges: [{ lo: code, hi: code }] }
 }
 
+/**
+ * True when `combinator`'s first set admits the code point at `input[pos]` (or its
+ * first set is `any`). The runtime counterpart of codegen's `firstSetCond` guard —
+ * used by the interpreter's first-set fail-fast in `optional`/`many`/`attempt`/
+ * `node` to reject a doomed sub-parse before doing any setup. Returns `false` at EOF.
+ */
+export function startsFirstSet(combinator: Combinator<unknown>, input: string, pos: number): boolean {
+  const fs = combinator._meta.firstSet
+  if (fs.kind === 'any') return true
+  if (fs.kind === 'empty') return false
+  const code = input.codePointAt(pos)
+  if (code === undefined) return false
+  for (const r of fs.ranges) if (code >= r.lo && code <= r.hi) return true
+  return false
+}
+
 export function fromRange(lo: number, hi: number): FirstSet {
   return { kind: 'ranges', ranges: [{ lo, hi }] }
 }

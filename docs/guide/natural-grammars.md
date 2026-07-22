@@ -95,6 +95,14 @@ bailing early is behavior-identical, and it records the same expected token a no
 start-failure would, so your error messages don't change. It is also skipped under
 error-recovery mode, where a swallowed failure still needs to feed the completions probe.
 
+Unlike the shared-prefix optimization, **this one is in the interpreter too.** The
+runtime `many`/`oneOrMore`/`node`/`attempt` combinators (and `optional`, which already
+did) apply the same first-set fail-fast on the same soundness condition — a doomed body
+is never entered, no capture frame is allocated, no rollback marks are taken — skipped
+identically under a completions probe / tolerant recovery. So the interpreter and the
+compiled output skip the *same* doomed setup, and the parity suites hold the two
+byte-identical.
+
 ## Literal-heavy choices collapse to one scan
 
 Write a pile of keyword alternatives the obvious way and Parséman recognizes the shape
