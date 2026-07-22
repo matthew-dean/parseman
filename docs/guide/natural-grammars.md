@@ -162,6 +162,15 @@ that already-recognized token instead of re-scanning it. You keep the two readab
 the compiler does the factoring — you never rewrite them into `::?·(functional | simple)`
 with a hand-merged builder.
 
+**This is a scan *dedup*, not a guaranteed speed-up.** How much it saves scales with how
+expensive the shared prefix is and how many arms would otherwise re-scan it. For a cheap,
+short prefix like the CSS pseudo `::?` (two character comparisons) the saving is below the
+noise floor — measured *no* parse-time win on a real stylesheet workload. It becomes worth
+something only when the shared prefix does real work (a long literal, or a regex that scans
+a meaningful token run) *and* several arms would re-scan it before one wins. Treat it as a
+correctness-preserving factoring that removes redundant work where redundant work is
+actually expensive — not as a blanket optimization.
+
 **What it sees through.** To find the shared leading term the detector peels the wrappers
 that don't consume input or skip trivia before the sequence's first term — `node`,
 `parser`/`grammar` (any `trivia`/`captureTrivia` config), `transform`, and `label`. So
@@ -184,17 +193,15 @@ result is that your reducer's `children[0]` (value **and** span), the node's tri
 every other span, and the choice's failure `expected` set are all bit-for-bit what the
 un-factored grammar produced — in both the interpreter and the compiled output.
 
-**Which modes get the speed-up.** The single-scan is a **compiled-output** optimization
-(both `compile()` and the macro build). The **interpreter runs the ordinary `firstMatch`
-loop** — output is identical, but each arm re-scans the shared prefix, so interpreted mode
-gets the correctness and ergonomics of writing the arms naturally but *not* the
-scan-sharing speed-up. That's a deliberate limit: replaying the prefix at runtime would
-mean threading a replay cache through the core `parse()` dispatch of every combinator, and
-the free byte-identity of the `firstMatch` fallback is worth more than the runtime win on a
-path that exists mainly for tests and REPLs. Compile your grammar (or use the macro) to get
-the shared scan. And because the strategy is a faithful specialization of `firstMatch`,
-compiles that carry extra per-arm bookkeeping — coverage tracing, error-recovery, and
-linkable/compose fusion — also transparently fall back to plain `firstMatch`.
+**Where the dedup applies.** It's a **compiled-output** transform (both `compile()` and
+the macro build). The **interpreter runs the ordinary `firstMatch` loop** and re-scans the
+prefix per arm — identical output, natural authoring, no dedup — because replaying the
+prefix at runtime would mean threading a cache through the core `parse()` dispatch of every
+combinator, and the free byte-identity of the `firstMatch` fallback is worth more than a
+runtime win on a path that exists mainly for tests and REPLs. And because the strategy is a
+faithful specialization of `firstMatch`, compiles that carry extra per-arm bookkeeping —
+coverage tracing, error-recovery, and linkable/compose fusion — also transparently fall
+back to plain `firstMatch`.
 
 **Honest limits — what it conservatively skips.** Correctness comes first, so the detector
 only fires where the factoring is provably behavior-identical:
@@ -214,7 +221,12 @@ only fires where the factoring is provably behavior-identical:
 - Prefixes hidden **behind a rule reference** (`choice(g.RuleA, g.RuleB)`, where the
   shared leading terminal lives one level down inside each referenced rule) are not
   factored — the detector runs at grammar-construction time and does not resolve refs.
+- Arms that would compile into **separate function bodies** are not factored. The prefix
+  is recognized once into a variable in the *choice's* function; if a grouped arm is a
+  shared subtree hoisted into its own `_pf` function, or a named rule in the linkable/fused
+  form, its replayed prefix would reference that variable out of scope. So the strategy
+  fires only for **self-contained, single-function** shared-prefix choices (the pseudo case
+  is one); when the arms span a function boundary the choice falls back to `firstMatch`.
 
-These are places the win is left on the table for a possible follow-up, not places where
-output could diverge — anything the detector isn't sure about falls back to the ordered
-`firstMatch` you'd have had anyway.
+These are places the factoring is skipped, not places where output could diverge — anything
+the detector isn't sure about falls back to the ordered `firstMatch` you'd have had anyway.

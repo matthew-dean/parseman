@@ -163,6 +163,38 @@ describe('choice — sharedPrefix strategy', () => {
     }
   })
 
+  // Regression for the cross-scope ReferenceError: when grouped arms are SHARED
+  // subtrees used across rules, the fused/linkable compile hoists each arm into its
+  // OWN function, so a once-recognized prefix variable declared in the choice's
+  // function would be referenced out of scope inside the arm's function. The
+  // same-scope guard must NOT group those arms — it falls back to firstMatch, which
+  // compiles and runs without a ReferenceError.
+  it('does NOT group arms that span fused rule-function boundaries (no cross-scope ReferenceError)', () => {
+    const ws = trivia(oneOrMore(literal(' ')))
+    const cst = (type: string) =>
+      (children: readonly unknown[], _f: unknown, span: { start: number; end: number }) =>
+        ({ type, span, children: [...children] })
+    // The SAME node instances used in two rules → shared → hoisted → arms live in
+    // separate functions from the choice that groups them. Both share leading '('.
+    const armA = node('A', grammarParser({ trivia: ws }, sequence(literal('('), regex(/[a-z]+/), literal(':'), regex(/[a-z]+/), literal(')'))), cst('A'))
+    const armB = node('B', grammarParser({ trivia: ws }, sequence(literal('('), regex(/[a-z]+/), literal(')'))), cst('B'))
+    const g = rules(() => ({
+      QueryA: choice(armA, armB),
+      QueryB: choice(armA, armB),
+    })) as Record<string, Combinator<unknown>>
+
+    // The fused body must compile without a stray out-of-scope replay variable, and
+    // run correctly — it re-scans '(' per arm (fallback) rather than crashing.
+    const pieces = compileLinkable(Object.entries(g), '_xs_')!
+    expect(() => fusedBody([pieces])).not.toThrow()
+    const fused = compose([g]) as unknown as Record<string, (i: string, p: number, c: unknown) => { ok: boolean; value?: unknown }>
+    const ctx = () => ({ trackLines: false, trivia: ws, captureTrivia: true })
+    expect(() => fused.QueryA!('(x:y)', 0, ctx())).not.toThrow()
+    expect(fused.QueryA!('(x:y)', 0, ctx())).toMatchObject({ ok: true, value: { type: 'A' } })
+    expect(fused.QueryA!('(z)', 0, ctx())).toMatchObject({ ok: true, value: { type: 'B' } })
+    expect(fused.QueryB!('(z)', 0, ctx())).toMatchObject({ ok: true, value: { type: 'B' } })
+  })
+
   it('fires for a transform-wrapped arm (value shape preserved by full-arm emission)', () => {
     const g = choice(
       transform(sequence(literal('--'), literal('a')), v => v),

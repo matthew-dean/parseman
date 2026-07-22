@@ -1686,6 +1686,44 @@ function emitFirstMatch(
   return { stmts, valueVar: resValV, endVar: resEndV }
 }
 
+/**
+ * True when `p` would be emitted as a CALL into a separate function body rather than
+ * inline — a lazy/ref, a named rule (linkable/fused form), an already-hoisted parser,
+ * or a shared subtree that the lazy-usage pre-pass will hoist to a `_pf` function.
+ * Mirrors the hoist decision in emit() (the top-level `_pf` gate + emitLazy).
+ */
+function emitsAsNamedFn(p: Combinator<unknown>, ctx: Ctx): boolean {
+  if (p._def.tag === 'lazy') return true
+  if (ctx.ruleNames?.has(p)) return true
+  if (ctx.namedParsers.has(p)) return true
+  const usage = ctx.lazyUsage
+  return !!usage && !ctx.noHoist && !ctx.capAsTrivia && isHoistableTag(p._def.tag)
+    && (usage.counts.get(p) ?? 0) > 1 && (usage.sizes.get(p) ?? 0) >= HOIST_MIN_SUBTREE
+}
+
+/**
+ * sharedPrefix same-scope guard. The strategy recognizes the shared prefix once into
+ * a variable declared in the CHOICE's function, then replays it at each arm's leading
+ * term. That only works when the choice and every grouped arm — through its
+ * node/parser/transform/label wrappers down to the shared sequence — compile into the
+ * SAME function body. On the linkable/fused path (and with shared-subtree hoisting) an
+ * arm can be emitted into a separate `_pf`/`_r_<Name>` function, which would reference
+ * the pre-scan variable out of scope → a runtime ReferenceError. Return false there so
+ * the choice conservatively falls back to the byte-identical firstMatch.
+ */
+function armReplayInScope(arm: Combinator<unknown>, ctx: Ctx): boolean {
+  let p = arm
+  for (;;) {
+    if (emitsAsNamedFn(p, ctx)) return false
+    const d = p._def
+    if (d.tag === 'node' || d.tag === 'grammar' || d.tag === 'transform' || d.tag === 'label') {
+      p = (d as { parser: Combinator<unknown> }).parser
+      continue
+    }
+    return d.tag === 'sequence'
+  }
+}
+
 // ── sharedPrefix: recognize a common leading literal/regex ONCE, then REPLAY ──
 // Every arm shares the same concrete leading terminal `prefix` (reached by peeling
 // node/parser(grammar)/transform/label wrappers down to the core sequence). We
@@ -1797,8 +1835,12 @@ function emitNonDisjoint(
     // Coverage tracing and tolerant-recovery still carry extra per-arm bookkeeping
     // the rewrite doesn't reproduce, so fall back to the byte-identical firstMatch
     // there (sharedPrefix IS a firstMatch specialization, so the fallback is a
-    // semantic no-op).
-    if (coverageBase === undefined && !ctx.recovery)
+    // semantic no-op). And it only fires when every grouped arm compiles into the
+    // SAME function scope as the choice — otherwise the once-recognized prefix's
+    // replay variable would be referenced out of scope from an arm hoisted into its
+    // own function (a ReferenceError on the fused/linkable path).
+    if (coverageBase === undefined && !ctx.recovery
+      && strategy.members.every(i => armReplayInScope(def.parsers[i]!, ctx)))
       return emitSharedPrefix(def, strategy, ctx, pos)
     return emitFirstMatch(def, ctx, pos, coverageBase)
   }
