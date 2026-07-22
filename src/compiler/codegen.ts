@@ -1733,6 +1733,31 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     }
   }
 
+  // First-set body fast-path: if the next code point can't start the loop body,
+  // this iteration can only fail — stop the loop with a single code-point
+  // comparison instead of a full body attempt-then-fail. Sound exactly when the
+  // body has a discrete (non-`any`) first set and can't match empty
+  // (`needsFirstSetGuard`), so a first-set miss is a guaranteed non-match; it
+  // mirrors the first-set arm guard the choice codegen already emits. Skipped
+  // under `ctx.recovery`: there a swallowed body failure still feeds the
+  // completions probe (`probeUpdate` fires inside swallowers), so the IDE build
+  // keeps recording the body as a candidate at a non-matching char. A normal
+  // parse records nothing on a swallowed body failure (`recordFail` off for many),
+  // so skipping the attempt is behavior-identical there — pure speedup.
+  //
+  // Skipped when the body already `failsAtStart` (a bare literal/regex/keywords
+  // leaf): its own generated code leads with the identical first-char check, so
+  // the guard would be pure redundancy and would perturb byte-identical leaf-body
+  // output. The win is for COMPOSITE bodies (sequence/node) that do setup before
+  // discovering a first-char mismatch — e.g. `many(sequence(op, atom))`.
+  if (!ctx.recovery && !failsAtStart(def.parser) && needsFirstSetGuard(def.parser)) {
+    const lcV = v(ctx, '_lc')
+    stmts.push(
+      `${ind(ctx)}const ${lcV} = ${itemPos} < input.length ? (input.codePointAt(${itemPos}) ?? -1) : -1`,
+      `${ind(ctx)}if (!(${firstSetCond(lcV, def.parser._meta.firstSet)})) { ${rollback}break }`,
+    )
+  }
+
   const { stmts: iterStmts, okVar: iterOk, valVar: iterVal, endVar: iterEnd } = emitFallible(def.parser, ctx, itemPos, true)
   stmts.push(...iterStmts)
   if (ctx.recovery) {

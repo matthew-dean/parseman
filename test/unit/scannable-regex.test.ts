@@ -799,7 +799,11 @@ describe('scannable regex — codegen', () => {
       if (depth < 6) for (const a of alph) rec(s + a, depth + 1)
     }
     rec('', 0)
-  })
+    // Deterministic but heavy: exhaustive depth-6 over a 6-symbol alphabet
+    // (~46k compiled-vs-RegExp comparisons). Fast locally but spikes past the 5s
+    // default under parallel load on a throttled runner. Generous timeout so this
+    // scan-lowering equivalence fuzz doesn't flake on machine load.
+  }, 30000)
 })
 
 // ---------------------------------------------------------------------------

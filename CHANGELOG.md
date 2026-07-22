@@ -3,6 +3,31 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.29.0 — 2026-07-22
+
+- **Perf: first-set fast-path on `many`/`oneOrMore` loop bodies.** The repeat
+  codegen now emits a single code-point first-set check before each loop
+  iteration's body attempt: when the next code point can't start the repeated
+  element, the loop stops immediately instead of running the full body
+  recognizer and backtracking. This is the same first-set arm guard the `choice`
+  codegen already emits, applied to the repeat body, and it removes the
+  attempt-then-fail every `many`/`oneOrMore` pays at its terminating iteration
+  (e.g. a value list that ends at `;`/`)`/`,`).
+
+  Emitted only when the body has a discrete (non-`any`) first set and cannot
+  match empty (`needsFirstSetGuard`), so a first-set miss is a guaranteed
+  non-match and stopping is behavior-identical; and only when the body does not
+  already `failsAtStart` (a bare literal/regex/keywords leaf leads with the same
+  first-char check, so guarding it would be redundant and would perturb
+  byte-identical leaf-body output). The win lands on composite bodies —
+  `sequence`/`node` — that do setup before discovering a first-char mismatch.
+  Suppressed under compiled
+  recovery (`compile(g, { recovery: true })`): there a swallowed body failure
+  still feeds the completions probe, so the IDE build keeps recording the body
+  as a candidate at a non-matching char. A normal parse records nothing on a
+  swallowed body failure, so the fast-path is a pure speedup with no diagnostic
+  or output change. Interpreter semantics are unchanged.
+
 ## 0.28.1 — 2026-07-21
 
 - **Fix: make `FusedRule` compatible with `run()`'s public `Runnable` contract.**
