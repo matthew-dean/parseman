@@ -248,9 +248,8 @@ function detectSharedPrefix(parsers: Combinator<unknown>[]): ChoiceStrategy | nu
   let prefix: Combinator<unknown> | null = null
   const members: number[] = []
   for (let i = 0; i < parsers.length; i++) {
-    const d = parsers[i]!._def
-    if (d.tag !== 'sequence' || d.parsers.length < 2) return null
-    const term0 = d.parsers[0]!
+    const term0 = leadingTermOfArm(parsers[i]!)
+    if (term0 === null) return null
     const k = bareLeadingTermKey(term0)
     if (k === null) return null
     if (key === null) { key = k; prefix = term0 }
@@ -259,6 +258,29 @@ function detectSharedPrefix(parsers: Combinator<unknown>[]): ChoiceStrategy | nu
   }
   if (prefix === null || members.length < 2) return null
   return { tag: 'sharedPrefix', prefix, members }
+}
+
+/**
+ * Peel wrappers that neither consume input nor skip trivia before their inner
+ * sequence -- `node`, `parser`/`grammar`, `transform`, `label` -- down to the core
+ * `sequence` and return its FIRST term (the candidate shared prefix), or null when
+ * the arm is not a wrapped-or-bare sequence with >=2 terms. Because none of these
+ * wrappers advance the position before the sequence's first term, the term is parsed
+ * at the arm's entry position in every arm, so the once-recognized prefix can be
+ * replayed there. `attempt`/`optional`/`many`/`choice`/etc. are NOT peeled, so such
+ * arms are conservatively excluded.
+ */
+function leadingTermOfArm(arm: Combinator<unknown>): Combinator<unknown> | null {
+  let d = arm._def
+  for (;;) {
+    if (d.tag === 'node' || d.tag === 'grammar' || d.tag === 'transform' || d.tag === 'label') {
+      d = (d as { parser: Combinator<unknown> }).parser._def
+      continue
+    }
+    break
+  }
+  if (d.tag !== 'sequence' || d.parsers.length < 2) return null
+  return d.parsers[0]!
 }
 
 // ---------------------------------------------------------------------------

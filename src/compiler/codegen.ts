@@ -204,7 +204,7 @@ type Ctx = {
    * When false (no node() anywhere) NO capture code is emitted, so non-CST
    * grammars compile byte-identically to before.
    */
-  capturing?: boolean
+  capturing?: boolean | undefined
   /** Inside the trivia-capture fn: terminals emit CSTTrivia tokens, not leaves. */
   capAsTrivia?: boolean | undefined
   /**
@@ -240,6 +240,14 @@ type Ctx = {
    * true (safe: always record). Only meaningful together with `failLabel`.
    */
   recordFail: boolean
+  /**
+   * sharedPrefix strategy: leading-terminal combinator instance → the once-computed
+   * value/end variable names to REPLAY at its emit site (instead of re-scanning).
+   * Registered by emitSharedPrefix around the arm-loop emission and cleared after,
+   * so it is only active for the arms of a single shared-prefix choice. Undefined on
+   * every other path → no interception, byte-identical output.
+   */
+  replayPrefix?: Map<Combinator<unknown>, { valVar: string; endVar: string }> | undefined
   /**
    * Precomputed by analyzeLazyUsage() before codegen starts. emitLazy consults
    * this to inline a single-use, non-recursive ref directly at its call site
@@ -1524,6 +1532,15 @@ function emitFirstMatch(
   ctx: Ctx,
   pos: string,
   coverageBase?: string,
+  /**
+   * `sharedPrefix` support: statements to emit BEFORE the arm loop (the once-only
+   * recognition of the shared leading terminal), and a boolean condition ANDed into
+   * every arm's first-char guard so no arm is entered when that prefix did not match
+   * (the arms REPLAY the prefix rather than re-scanning it — see emitSharedPrefix).
+   * Both undefined on the ordinary firstMatch path → byte-identical output.
+   */
+  preStmts?: string[],
+  armGuardPrefix?: string,
 ): ER {
   const resValV = v(ctx, '_crv')
   const resEndV = v(ctx, '_cre')
@@ -1549,6 +1566,7 @@ function emitFirstMatch(
     ...(autoRejectedV === undefined ? [] : [`${ind0}const ${autoRejectedV} = []`]),
     `${ind0}const ${codeV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
   ]
+  if (preStmts) stmts.push(...preStmts)
 
   for (let i = 0; i < def.parsers.length; i++) {
     const p = def.parsers[i]!
@@ -1566,7 +1584,7 @@ function emitFirstMatch(
     // only because it was built over `ref()`s (which cache `any()` at construction),
     // recover a real guard from the DEEP, ref-resolving first-set. Sound here because
     // refs can't be overridden; the compose path defers instead (above).
-    const fsGuard = deferRuleName !== undefined
+    const baseFsGuard = deferRuleName !== undefined
       ? `/*@FS:${deferRuleName}:${codeV}@*/true`
       : needsFirstSetGuard(p)
         ? firstSetCond(codeV, p._meta.firstSet)
@@ -1575,6 +1593,13 @@ function emitFirstMatch(
             const deep = firstSetOf(p)
             return deep.kind === 'ranges' ? firstSetCond(codeV, deep) : null
           })()
+    // sharedPrefix: every arm additionally requires the once-recognized prefix to
+    // have matched (`armGuardPrefix`), so a prefix miss skips ALL arms → each slot
+    // takes its `staticFx` (== the prefix expected) exactly as the un-factored
+    // firstMatch would, and a prefix hit lets the arm run and REPLAY the prefix.
+    const fsGuard = armGuardPrefix === undefined
+      ? baseFsGuard
+      : baseFsGuard === null ? armGuardPrefix : `${armGuardPrefix} && (${baseFsGuard})`
 
     // Gate: register predicate in mapFns; condition guards entire arm attempt
     let gateCond: string | null = null
@@ -1661,16 +1686,19 @@ function emitFirstMatch(
   return { stmts, valueVar: resValV, endVar: resEndV }
 }
 
-// ── sharedPrefix: left-factor a common leading literal/regex, parse it ONCE ────
-// Every arm is a bare `sequence(prefix, …residual)` sharing the same concrete
-// `prefix`. We parse `prefix` a single time (capturing its leaf once), then try
-// each arm's residual terms in PEG order from the shared end. This is a faithful
-// specialization of emitFirstMatch: the winning arm's value is [prefixVal,
-// …residualVals] (identical to the un-factored sequence), the shared leaf is
-// captured exactly once and rolled back only on total failure, and each arm's
-// failure `expected` is snapshotted from `_ctx._fx` in the same order/shape the
-// per-arm firstMatch parse produces — so `_ctx._fe`/`_fx` and the concatenated
-// failure set are byte-identical.
+// ── sharedPrefix: recognize a common leading literal/regex ONCE, then REPLAY ──
+// Every arm shares the same concrete leading terminal `prefix` (reached by peeling
+// node/parser(grammar)/transform/label wrappers down to the core sequence). We
+// recognize `prefix` a SINGLE time up front (recognition-only — no leaf capture),
+// then emit each arm through the ordinary emitFirstMatch: an intercept in emit()
+// makes each arm's own leading-terminal instance REPLAY the once-recognized end +
+// value (and push its leaf into whatever capture scope the arm is in — e.g. the
+// arm's own node() buffer) instead of re-scanning. Because the whole arm (node,
+// parser-trivia, sequence tail, reducer, capture rollback) is emitted by the
+// unchanged emitFirstMatch machinery, the reducer's children[0], spans, trivia
+// logs, and failure `expected` sets stay byte-identical; only the prefix SCAN is
+// shared. The per-arm first-char guard is ANDed with the prefix-matched flag so a
+// prefix miss skips all arms and yields firstMatch's prefix-expected-per-arm set.
 function emitSharedPrefix(
   def: Extract<ParserDef, { tag: 'choice' }>,
   strategy: Extract<ChoiceStrategy, { tag: 'sharedPrefix' }>,
@@ -1678,179 +1706,71 @@ function emitSharedPrefix(
   pos: string,
 ): ER {
   const { prefix, members } = strategy
-  const resValV = v(ctx, '_spv')
-  const resEndV = v(ctx, '_spe')
-  const resOkV  = v(ctx, '_spok')
-  // One failure-expected slot per member arm (parallel to firstMatch's `slots`).
-  const slots = members.map(() => v(ctx, '_spfx'))
-  const ind0 = ind(ctx)
-  const stmts: string[] = [
-    `${ind0}let ${resValV}, ${resEndV} = ${pos}, ${resOkV} = false`,
-    `${ind0}let ${slots.join(', ')}`,
-  ]
 
-  // Marks taken BEFORE the shared prefix parse: on total failure the once-captured
-  // prefix leaf must be rolled back so the capture state matches firstMatch (which
-  // rolls each failed arm back fully). Cheap when no CST buffer is live at runtime.
-  const sharedRollback = ctx.capturing
-  const mL0  = sharedRollback ? v(ctx, '_spml')  : null
-  const mR0  = sharedRollback ? v(ctx, '_spmr')  : null
-  const mTl0 = sharedRollback ? v(ctx, '_spmtl') : null
-  const mLg0 = sharedRollback ? v(ctx, '_spmlg') : null
-  if (sharedRollback) {
-    stmts.push(
-      `${ind0}const ${mL0} = _ctx._cstLeaves?.length ?? 0`,
-      `${ind0}const ${mR0} = _ctx._cstRawChildren?.length ?? 0`,
-      `${ind0}const ${mTl0} = _ctx._cstTriviaLog?.length ?? 0`,
-      `${ind0}const ${mLg0} = _ctx._triviaLog?.length ?? 0`,
-    )
+  // Recognize the shared prefix ONCE, recognition-only (capturing suppressed so no
+  // leaf reaches the enclosing scope — each arm replays the leaf into its OWN scope).
+  // `swallow=false` keeps recordFail on, so a prefix miss records `_ctx._fx` = the
+  // prefix expected, exactly as an un-factored arm's leading term would.
+  const savedCapturing = ctx.capturing
+  ctx.capturing = false
+  const pfx = emitFallible(prefix, ctx, pos, false)
+  ctx.capturing = savedCapturing
+
+  // Register the replay for EACH arm's own leading-terminal instance (all members'
+  // leading terms are structurally identical to `prefix`; each is a distinct object
+  // reached during that arm's emission).
+  const map = (ctx.replayPrefix ??= new Map())
+  const keys: Combinator<unknown>[] = []
+  for (const i of members) {
+    const term0 = leadingTermOf(def.parsers[i]!)
+    if (term0 === null) continue
+    map.set(term0, { valVar: pfx.valVar, endVar: pfx.endVar })
+    keys.push(term0)
   }
 
-  // Parse the shared prefix ONCE. `swallow=false` (recordFail on) so a prefix
-  // failure records `_ctx._fx` exactly as the un-factored sequence arm would.
-  const { stmts: pfxStmts, okVar: pfxOk, valVar: pfxVal, endVar: pfxEnd } = emitFallible(prefix, ctx, pos, false)
-  stmts.push(...pfxStmts)
+  const r = emitFirstMatch(def, ctx, pos, undefined, pfx.stmts, pfx.okVar)
 
-  // Prefix failed → every arm fails at its start, all with the SAME recorded
-  // `_ctx._fx` (the prefix's expected) — mirroring firstMatch's `slot[i]=_ctx._fx`
-  // for a sequence arm whose leading term fails.
-  stmts.push(`${ind0}if (!${pfxOk}) {`)
-  for (const slot of slots) stmts.push(`${ind0}  ${slot} = _ctx._fx`)
-  stmts.push(`${ind0}}`)
-  stmts.push(`${ind0}else {`)
-  ctx.indent++
-  for (let k = 0; k < members.length; k++) {
-    const arm = def.parsers[members[k]!]!
-    const seqDef = arm._def as Extract<ParserDef, { tag: 'sequence' }>
-    stmts.push(`${ind(ctx)}if (!${resOkV}) {`)
-    ctx.indent++
-
-    // Per-arm capture rollback: restore to the POST-prefix state (keep the shared
-    // leaf) when this residual fails, matching firstMatch's per-arm arm rollback.
-    const armRollback = ctx.capturing && mayLeavePartialCapture(arm)
-    const armFieldRollback = armRollback && parserHasOwnFields(arm)
-    const mL = armRollback ? v(ctx, '_spal')  : null
-    const mR = armRollback ? v(ctx, '_spar')  : null
-    const mTl = armRollback ? v(ctx, '_spatl') : null
-    const mLg = armRollback ? v(ctx, '_spalg') : null
-    const mF  = armFieldRollback ? v(ctx, '_spaf') : null
-    const rollback = mL ? captureRestoreBody(mL, mR!, mTl!, mLg!, mF) : ''
-    if (mL) {
-      stmts.push(
-        `${ind(ctx)}const ${mL} = _ctx._cstLeaves?.length ?? 0`,
-        `${ind(ctx)}const ${mR} = _ctx._cstRawChildren?.length ?? 0`,
-        `${ind(ctx)}const ${mTl} = _ctx._cstTriviaLog?.length ?? 0`,
-        `${ind(ctx)}const ${mLg} = _ctx._triviaLog?.length ?? 0`,
-        ...(mF ? [`${ind(ctx)}const ${mF} = _ctx._fields?.length ?? 0`] : []),
-      )
-    }
-
-    // Residual = the arm sequence with its (already-parsed) leading term dropped,
-    // emitted inside a private labeled fallible block from the shared prefix end.
-    const lbl  = v(ctx, '_lbl')
-    const okV  = `${lbl}ok`
-    const rvalV = `${lbl}v`
-    const rendV = `${lbl}e`
-    stmts.push(`${ind(ctx)}let ${okV} = false, ${rvalV}, ${rendV} = ${pfxEnd}`)
-    const savedLabel = ctx.failLabel
-    const savedRecord = ctx.recordFail
-    ctx.failLabel = lbl
-    ctx.recordFail = true
-    stmts.push(`${ind(ctx)}${lbl}: {`)
-    ctx.indent++
-    const resid = emitResidualSeqValues(seqDef, ctx, pfxEnd, pfxVal)
-    stmts.push(...resid.stmts)
-    stmts.push(`${ind(ctx)}${rvalV} = ${resid.valueVar}; ${rendV} = ${resid.endVar}; ${okV} = true`)
-    ctx.indent--
-    stmts.push(`${ind(ctx)}}`)
-    ctx.failLabel = savedLabel
-    ctx.recordFail = savedRecord
-
-    stmts.push(`${ind(ctx)}if (${okV}) { ${resValV} = ${rvalV}; ${resEndV} = ${rendV}; ${resOkV} = true }`)
-    stmts.push(`${ind(ctx)}else { ${slots[k]} = _ctx._fx${rollback ? `; ${rollback}` : ''} }`)
-
-    ctx.indent--
-    stmts.push(`${ind(ctx)}}`)
-  }
-  ctx.indent--
-  stmts.push(`${ind0}}`)
-
-  // Total failure: roll the shared prefix leaf back, then report the concatenated
-  // per-arm expected sets (byte-identical to firstMatch's `[...slot0, ...slot1, …]`).
-  const concatExpr = `[${slots.map(s => `...(${s} || [])`).join(', ')}]`
-  const sharedRestore = mL0 ? captureRestoreBody(mL0, mR0!, mTl0!, mLg0!) : ''
-  stmts.push(...emitIfFail(ctx, `!${resOkV}`, `${sharedRestore ? `${sharedRestore}; ` : ''}${failArrBody(ctx, concatExpr, pos, false)}`))
-  return { stmts, valueVar: resValV, endVar: resEndV }
+  for (const k of keys) map.delete(k)
+  return r
 }
 
 /**
- * emitSeqValues for the RESIDUAL of a shared-prefix arm: the leading term is
- * already parsed (its value is `prefixValVar`, its end `prefixEndVar`), so this
- * seeds the value tuple with the prefix value, starts the cursor at the prefix
- * end, and emits terms from index 1 onward — the first residual term still gets
- * the inter-term trivia scan (it is `i > 0`), so trivia handling is identical to
- * the un-factored sequence. Recovery sync is intentionally absent: the caller only
- * reaches the optimized path when `ctx.recovery` is off.
+ * Peel node / parser(grammar) / transform / label wrappers down to the core
+ * `sequence` and return its FIRST term (the candidate shared prefix), or null.
+ * These wrappers neither consume input nor skip trivia before the sequence's first
+ * term, so the term is parsed at the arm's entry position in every arm — which is
+ * why the once-recognized prefix end/value can be replayed there.
  */
-function emitResidualSeqValues(
-  def: Extract<ParserDef, { tag: 'sequence' }>,
-  ctx: Ctx,
-  prefixEndVar: string,
-  prefixValVar: string,
-): ER {
-  const curV = v(ctx, '_cur')
-  const stmts: string[] = [
-    `${ind(ctx)}let ${curV} = ${prefixEndVar}`,
-  ]
-  const valueVars: string[] = [prefixValVar]
-
-  for (let i = 1; i < def.parsers.length; i++) {
-    if (ctx.activeTrivia) {
-      if (ctx.capturing) {
-        const capFn = ensureTriviaCaptureFn(ctx)
-        const markV = v(ctx, '_mk')
-        const markTl = v(ctx, '_mktl')
-        const markLog = v(ctx, '_mklg')
-        const scanEndV = v(ctx, '_sne')
-        stmts.push(
-          `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
-          `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
-          `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
-          `${ind(ctx)}const ${scanEndV} = ${capFn}(input, ${curV}, _ctx, 1)`,
-        )
-        const r = emit(def.parsers[i]!, ctx, scanEndV)
-        stmts.push(...r.stmts)
-        const endAfterV = v(ctx, '_sea')
-        stmts.push(
-          `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; }`,
-        )
-        valueVars.push(r.valueVar)
-        continue
-      } else {
-        const trivFn = ensureTriviaFn(ctx)
-        const scanEndV = v(ctx, '_sne')
-        stmts.push(`${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx)`)
-        const r = emit(def.parsers[i]!, ctx, scanEndV)
-        stmts.push(...r.stmts)
-        const endAfterV = v(ctx, '_sea')
-        stmts.push(
-          `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}`,
-        )
-        valueVars.push(r.valueVar)
-        continue
-      }
+function leadingTermOf(arm: Combinator<unknown>): Combinator<unknown> | null {
+  let d: ParserDef = arm._def
+  for (;;) {
+    if (d.tag === 'node' || d.tag === 'grammar' || d.tag === 'transform' || d.tag === 'label') {
+      d = d.parser._def
+      continue
     }
-    const r = emit(def.parsers[i]!, ctx, curV)
-    stmts.push(...r.stmts, `${ind(ctx)}${curV} = ${r.endVar}`)
-    valueVars.push(r.valueVar)
+    break
   }
+  if (d.tag !== 'sequence' || d.parsers.length < 2) return null
+  return d.parsers[0]!
+}
 
-  if (def.valueUnused) return { stmts, valueVar: 'undefined', endVar: curV }
-  const arrV = v(ctx, '_arr')
-  stmts.push(`${ind(ctx)}const ${arrV} = [${valueVars.join(', ')}]`)
-  return { stmts, valueVar: arrV, endVar: curV }
+/**
+ * Replay a shared prefix's already-recognized leaf: emit no scan, reuse the
+ * once-computed value + end, and push the leaf into the active capture scope. This
+ * reproduces the leading terminal's SUCCESS path byte-for-byte (same value string,
+ * same {pos,end} span, same leaf object) — the arms are only ever reached when the
+ * prefix matched, so the scan/failure path is never needed here.
+ */
+function emitReplayPrefixLeaf(ctx: Ctx, pos: string, replay: { valVar: string; endVar: string }): ER {
+  const vv = v(ctx)
+  return {
+    stmts: [
+      `${ind(ctx)}const ${vv} = ${replay.valVar}`,
+      ...emitLeafCapture(ctx, vv, pos, replay.endVar),
+    ],
+    valueVar: vv,
+    endVar: replay.endVar,
+  }
 }
 
 function emitNonDisjoint(
@@ -2925,6 +2845,11 @@ function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: s
  * `_r_<Name>` path; probe/ trivia-capture contexts opt out (see `noHoist`).
  */
 function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
+  // sharedPrefix: a registered leading terminal replays the once-recognized prefix
+  // instead of re-scanning (see emitSharedPrefix). Checked before coverage/hoisting
+  // — the replay is a plain leaf emission with no rule/label identity of its own.
+  const replay = ctx.replayPrefix?.get(p)
+  if (replay !== undefined) return emitReplayPrefixLeaf(ctx, pos, replay)
   const dispatch = (emissionPos = pos): ER => {
     const savedRule = ctx.activeCoverageRuleId
     const rule = ctx.coverage?.plan.rules.get(p)
