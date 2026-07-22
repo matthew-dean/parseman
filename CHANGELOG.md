@@ -3,6 +3,14 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.28.1 — 2026-07-21
+
+- **Fix: make `FusedRule` compatible with `run()`'s public `Runnable` contract.**
+  The exported type now uses Parseman's `ParseContext` and discriminated
+  `ParseResult<unknown>` instead of a looser private context/result shape, so
+  macro-fused grammar entries can be passed directly to `run()` without
+  consumer-side casts.
+
 ## 0.28.0 — 2026-07-19
 
 - **New: macro-only `composeLeaf([...recognition, localRules])`.** A terminal

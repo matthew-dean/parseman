@@ -21,7 +21,7 @@
 import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import type { LinkablePieces } from './codegen.ts'
-import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet } from '../types.ts'
+import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'
 
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
@@ -128,11 +128,18 @@ export function cstBuildHost(
 // `cstBuildHost` itself is also accepted as a BuildHost (without options).
 ;(cstBuildHost as unknown as { _parsemanCstOutput?: true })._parsemanCstOutput = true
 
+/**
+ * A fused function receives the full ParseContext through `run()`. Direct
+ * callers historically supplied a plain context object, so keep that usage
+ * valid while making the function assignable to the public `Runnable` type.
+ * Generated code treats optional framework fields as absent when they are not
+ * provided, matching the interpreter's normal defaults.
+ */
 export type FusedRule = (
   input: string,
   pos: number,
-  ctx: Record<string, unknown>,
-) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
+  ctx: ParseContext | Record<string, unknown>,
+) => ParseResult<unknown> & { readonly value?: unknown }
 
 /**
  * Restrict a grammar/artifact to `names` plus their transitive rule-dependency

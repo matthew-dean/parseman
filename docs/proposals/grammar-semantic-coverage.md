@@ -276,18 +276,23 @@ disjoint dispatch, greedy classification, longest-literal, and truncation.
 
 ## Release checklist
 
-1. Decide whether the coverage API is public in this release; if not, keep it
-   test/internal-only and omit it from package exports.
+Coverage and trace are public, shipped APIs in 0.28.x. The release proof is
+therefore an API/export and packed-consumer check, not a choice between public
+and test-only implementations:
+
+1. Verify the public coverage and trace exports, including the macro plugin's
+   explicit `grammarCoverage` option.
 2. Run interpreter/macro parity and the complete matrix above.
-3. Run normal macro byte-identity fixture plus package build/typecheck/test.
+3. Run the normal macro byte-identity fixture plus package build/typecheck/test.
 4. Run `pnpm pack` (or the repository's package verification equivalent) and
    execute a macro coverage fixture against the packed `dist` package.
-5. Add the semantic CI command and a checked-in threshold configuration.
-6. Document the schema/versioning and threshold update procedure.
-7. Release from current `main` through the normal next-version process; do not
-   resurrect an historical `release/*` branch. Current `main` is ahead of
-   `origin/main`, so branch/release selection must preserve those pending macro
-   fixes rather than cut from an older release line.
+5. Keep any future semantic-CI threshold command separate from line coverage;
+   it must consume the immutable definition list and explicit required IDs.
+6. Document schema/versioning and threshold-update procedure before changing
+   the public observability contract.
+7. Release from the validated current branch through the normal next-version
+   process; do not resurrect an historical release branch or omit the public
+   coverage/trace exports.
 
 ## Adversarial verdict
 
