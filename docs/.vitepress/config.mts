@@ -54,6 +54,7 @@ export default defineConfig({
             { text: 'Combinators', link: '/guide/combinators' },
             { text: 'Whitespace & trivia', link: '/guide/trivia' },
             { text: 'Ordered choice & keywords', link: '/guide/keywords' },
+            { text: 'Grammars the way you write them', link: '/guide/natural-grammars' },
             { text: 'Recursive rules', link: '/guide/recursive-rules' },
             { text: 'Extending grammars', link: '/guide/extending' },
           ],
