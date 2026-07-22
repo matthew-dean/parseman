@@ -7,7 +7,7 @@
  * object allocation per node.
  */
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
-import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
+import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any } from '../combinators/first-set.ts'
 
@@ -204,7 +204,7 @@ type Ctx = {
    * When false (no node() anywhere) NO capture code is emitted, so non-CST
    * grammars compile byte-identically to before.
    */
-  capturing?: boolean
+  capturing?: boolean | undefined
   /** Inside the trivia-capture fn: terminals emit CSTTrivia tokens, not leaves. */
   capAsTrivia?: boolean | undefined
   /**
@@ -240,6 +240,14 @@ type Ctx = {
    * true (safe: always record). Only meaningful together with `failLabel`.
    */
   recordFail: boolean
+  /**
+   * sharedPrefix strategy: leading-terminal combinator instance → the once-computed
+   * value/end variable names to REPLAY at its emit site (instead of re-scanning).
+   * Registered by emitSharedPrefix around the arm-loop emission and cleared after,
+   * so it is only active for the arms of a single shared-prefix choice. Undefined on
+   * every other path → no interception, byte-identical output.
+   */
+  replayPrefix?: Map<Combinator<unknown>, { valVar: string; endVar: string }> | undefined
   /**
    * Precomputed by analyzeLazyUsage() before codegen starts. emitLazy consults
    * this to inline a single-use, non-recursive ref directly at its call site
@@ -620,6 +628,12 @@ const SWITCH_MIN_CASES = 3
 // off — production always uses planDisjointDispatch. See bench/codegen-ab.ts.
 let _forceDisjointIf = false
 export function __setForceDisjointIf(on: boolean): void { _forceDisjointIf = on }
+
+// Test/bench-only: force a `sharedPrefix` choice to compile as ordered `firstMatch`
+// (each arm re-scans the shared prefix), so the shared-once form can be A/B'd against
+// it in the same process. Defaults to off. See bench/shared-prefix-ab.ts.
+let _forceNoSharedPrefix = false
+export function __setForceNoSharedPrefix(on: boolean): void { _forceNoSharedPrefix = on }
 
 /**
  * Choose the dispatch form for a *disjoint* choice. Returns per-arm case code
@@ -1524,6 +1538,15 @@ function emitFirstMatch(
   ctx: Ctx,
   pos: string,
   coverageBase?: string,
+  /**
+   * `sharedPrefix` support: statements to emit BEFORE the arm loop (the once-only
+   * recognition of the shared leading terminal), and a boolean condition ANDed into
+   * every arm's first-char guard so no arm is entered when that prefix did not match
+   * (the arms REPLAY the prefix rather than re-scanning it — see emitSharedPrefix).
+   * Both undefined on the ordinary firstMatch path → byte-identical output.
+   */
+  preStmts?: string[],
+  armGuardPrefix?: string,
 ): ER {
   const resValV = v(ctx, '_crv')
   const resEndV = v(ctx, '_cre')
@@ -1549,6 +1572,7 @@ function emitFirstMatch(
     ...(autoRejectedV === undefined ? [] : [`${ind0}const ${autoRejectedV} = []`]),
     `${ind0}const ${codeV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
   ]
+  if (preStmts) stmts.push(...preStmts)
 
   for (let i = 0; i < def.parsers.length; i++) {
     const p = def.parsers[i]!
@@ -1566,7 +1590,7 @@ function emitFirstMatch(
     // only because it was built over `ref()`s (which cache `any()` at construction),
     // recover a real guard from the DEEP, ref-resolving first-set. Sound here because
     // refs can't be overridden; the compose path defers instead (above).
-    const fsGuard = deferRuleName !== undefined
+    const baseFsGuard = deferRuleName !== undefined
       ? `/*@FS:${deferRuleName}:${codeV}@*/true`
       : needsFirstSetGuard(p)
         ? firstSetCond(codeV, p._meta.firstSet)
@@ -1575,6 +1599,13 @@ function emitFirstMatch(
             const deep = firstSetOf(p)
             return deep.kind === 'ranges' ? firstSetCond(codeV, deep) : null
           })()
+    // sharedPrefix: every arm additionally requires the once-recognized prefix to
+    // have matched (`armGuardPrefix`), so a prefix miss skips ALL arms → each slot
+    // takes its `staticFx` (== the prefix expected) exactly as the un-factored
+    // firstMatch would, and a prefix hit lets the arm run and REPLAY the prefix.
+    const fsGuard = armGuardPrefix === undefined
+      ? baseFsGuard
+      : baseFsGuard === null ? armGuardPrefix : `${armGuardPrefix} && (${baseFsGuard})`
 
     // Gate: register predicate in mapFns; condition guards entire arm attempt
     let gateCond: string | null = null
@@ -1661,6 +1692,113 @@ function emitFirstMatch(
   return { stmts, valueVar: resValV, endVar: resEndV }
 }
 
+/**
+ * True when `p` would be emitted as a CALL into a separate function body rather than
+ * inline — a lazy/ref, a named rule (linkable/fused form), an already-hoisted parser,
+ * or a shared subtree that the lazy-usage pre-pass will hoist to a `_pf` function.
+ * Mirrors the hoist decision in emit() (the top-level `_pf` gate + emitLazy).
+ */
+function emitsAsNamedFn(p: Combinator<unknown>, ctx: Ctx): boolean {
+  if (p._def.tag === 'lazy') return true
+  if (ctx.ruleNames?.has(p)) return true
+  if (ctx.namedParsers.has(p)) return true
+  const usage = ctx.lazyUsage
+  return !!usage && !ctx.noHoist && !ctx.capAsTrivia && isHoistableTag(p._def.tag)
+    && (usage.counts.get(p) ?? 0) > 1 && (usage.sizes.get(p) ?? 0) >= HOIST_MIN_SUBTREE
+}
+
+/**
+ * sharedPrefix same-scope guard. The strategy recognizes the shared prefix once into
+ * a variable declared in the CHOICE's function, then replays it at each arm's leading
+ * term. That only works when the choice and every grouped arm — through its
+ * node/parser/transform/label wrappers down to the shared sequence — compile into the
+ * SAME function body. On the linkable/fused path (and with shared-subtree hoisting) an
+ * arm can be emitted into a separate `_pf`/`_r_<Name>` function, which would reference
+ * the pre-scan variable out of scope → a runtime ReferenceError. Return false there so
+ * the choice conservatively falls back to the byte-identical firstMatch.
+ */
+function armReplayInScope(arm: Combinator<unknown>, ctx: Ctx): boolean {
+  let p = arm
+  for (;;) {
+    if (emitsAsNamedFn(p, ctx)) return false
+    const d = p._def
+    if (d.tag === 'node' || d.tag === 'grammar' || d.tag === 'transform' || d.tag === 'label') {
+      p = (d as { parser: Combinator<unknown> }).parser
+      continue
+    }
+    return d.tag === 'sequence'
+  }
+}
+
+// ── sharedPrefix: recognize a common leading literal/regex ONCE, then REPLAY ──
+// Every arm shares the same concrete leading terminal `prefix` (reached by peeling
+// node/parser(grammar)/transform/label wrappers down to the core sequence). We
+// recognize `prefix` a SINGLE time up front (recognition-only — no leaf capture),
+// then emit each arm through the ordinary emitFirstMatch: an intercept in emit()
+// makes each arm's own leading-terminal instance REPLAY the once-recognized end +
+// value (and push its leaf into whatever capture scope the arm is in — e.g. the
+// arm's own node() buffer) instead of re-scanning. Because the whole arm (node,
+// parser-trivia, sequence tail, reducer, capture rollback) is emitted by the
+// unchanged emitFirstMatch machinery, the reducer's children[0], spans, trivia
+// logs, and failure `expected` sets stay byte-identical; only the prefix SCAN is
+// shared. The per-arm first-char guard is ANDed with the prefix-matched flag so a
+// prefix miss skips all arms and yields firstMatch's prefix-expected-per-arm set.
+function emitSharedPrefix(
+  def: Extract<ParserDef, { tag: 'choice' }>,
+  strategy: Extract<ChoiceStrategy, { tag: 'sharedPrefix' }>,
+  ctx: Ctx,
+  pos: string,
+): ER {
+  const { prefix, members } = strategy
+
+  // Recognize the shared prefix ONCE, recognition-only (capturing suppressed so no
+  // leaf reaches the enclosing scope — each arm replays the leaf into its OWN scope).
+  // `swallow=false` keeps recordFail on, so a prefix miss records `_ctx._fx` = the
+  // prefix expected, exactly as an un-factored arm's leading term would.
+  const savedCapturing = ctx.capturing
+  ctx.capturing = false
+  const pfx = emitFallible(prefix, ctx, pos, false)
+  ctx.capturing = savedCapturing
+
+  // Register the replay for EACH arm's own leading-terminal instance (all members'
+  // leading terms are structurally identical to `prefix`; each is a distinct object
+  // reached during that arm's emission).
+  const map = (ctx.replayPrefix ??= new Map())
+  const keys: Combinator<unknown>[] = []
+  for (const i of members) {
+    // Shared with the detector (choice.ts) so codegen groups exactly what detection
+    // grouped — peel node/parser/transform/label to the core sequence's first term.
+    const term0 = leadingTermOfArm(def.parsers[i]!)
+    if (term0 === null) continue
+    map.set(term0, { valVar: pfx.valVar, endVar: pfx.endVar })
+    keys.push(term0)
+  }
+
+  const r = emitFirstMatch(def, ctx, pos, undefined, pfx.stmts, pfx.okVar)
+
+  for (const k of keys) map.delete(k)
+  return r
+}
+
+/**
+ * Replay a shared prefix's already-recognized leaf: emit no scan, reuse the
+ * once-computed value + end, and push the leaf into the active capture scope. This
+ * reproduces the leading terminal's SUCCESS path byte-for-byte (same value string,
+ * same {pos,end} span, same leaf object) — the arms are only ever reached when the
+ * prefix matched, so the scan/failure path is never needed here.
+ */
+function emitReplayPrefixLeaf(ctx: Ctx, pos: string, replay: { valVar: string; endVar: string }): ER {
+  const vv = v(ctx)
+  return {
+    stmts: [
+      `${ind(ctx)}const ${vv} = ${replay.valVar}`,
+      ...emitLeafCapture(ctx, vv, pos, replay.endVar),
+    ],
+    valueVar: vv,
+    endVar: replay.endVar,
+  }
+}
+
 function emitNonDisjoint(
   def: Extract<ParserDef, { tag: 'choice' }>,
   strategy: ChoiceStrategy,
@@ -1673,6 +1811,27 @@ function emitNonDisjoint(
     return emitGreedyClassify(def, strategy.superIndex, ctx, pos, coverageBase)
   if (strategy.tag === 'literalsLongestFirst')
     return emitLiteralsLongestFirst(def, strategy.sortedIndices, allExpected, ctx, pos, coverageBase)
+  if (strategy.tag === 'sharedPrefix') {
+    // The shared prefix is always a CONCRETE literal/regex (the detector never
+    // groups arms whose leading term is — or reaches through — a ref), so it is
+    // never overridable and safe to scan once even on the linkable/fused
+    // (`deferFirstSetRefs`) path: only the once-recognized prefix SCAN is shared,
+    // while each arm's residual terms (which MAY contain deferred refs) continue
+    // through the ordinary emitFirstMatch/emitFallible emission that already
+    // resolves ref first-sets at fuse time. This is the mode jess actually compiles
+    // in, so gating it off here made the whole strategy inert for real grammars.
+    // Coverage tracing and tolerant-recovery still carry extra per-arm bookkeeping
+    // the rewrite doesn't reproduce, so fall back to the byte-identical firstMatch
+    // there (sharedPrefix IS a firstMatch specialization, so the fallback is a
+    // semantic no-op). And it only fires when every grouped arm compiles into the
+    // SAME function scope as the choice — otherwise the once-recognized prefix's
+    // replay variable would be referenced out of scope from an arm hoisted into its
+    // own function (a ReferenceError on the fused/linkable path).
+    if (!_forceNoSharedPrefix && coverageBase === undefined && !ctx.recovery
+      && strategy.members.every(i => armReplayInScope(def.parsers[i]!, ctx)))
+      return emitSharedPrefix(def, strategy, ctx, pos)
+    return emitFirstMatch(def, ctx, pos, coverageBase)
+  }
   return emitFirstMatch(def, ctx, pos, coverageBase)
 }
 
@@ -2723,6 +2882,11 @@ function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: s
  * `_r_<Name>` path; probe/ trivia-capture contexts opt out (see `noHoist`).
  */
 function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
+  // sharedPrefix: a registered leading terminal replays the once-recognized prefix
+  // instead of re-scanning (see emitSharedPrefix). Checked before coverage/hoisting
+  // — the replay is a plain leaf emission with no rule/label identity of its own.
+  const replay = ctx.replayPrefix?.get(p)
+  if (replay !== undefined) return emitReplayPrefixLeaf(ctx, pos, replay)
   const dispatch = (emissionPos = pos): ER => {
     const savedRule = ctx.activeCoverageRuleId
     const rule = ctx.coverage?.plan.rules.get(p)
