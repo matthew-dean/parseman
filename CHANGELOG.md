@@ -3,6 +3,60 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.29.0 — 2026-07-22
+
+- **Perf: fused grammars now first-char-dispatch as well as monolithic ones.** A
+  composed/`composeLeaf` grammar compiled a `sequence(ref, …)`-led choice arm or
+  node body with NO first-char gate: the referenced rule bakes an `any` first set
+  at construction, so the arm degraded to always-enter (Less `@{…}` interpolation
+  was ENTERED ~56.5k times/parse, 97% at a non-`@` char). `compileLinkable` now
+  records a per-rule LEADING first-set RECIPE — concrete leading chars (through the
+  nullable prefix) kept separate from leading rule-ref NAMES — and `fusedBody()`
+  fixpoint-resolves the ref names against the WINNING rules. This matches what a
+  single-file compile emits (`firstSetOf`), and stays sound under override (the
+  winning rule supplies the char, and a wider override WIDENS the gate — never
+  drops a parse). Less `@{…}` entries fell 56.5k→7.4k; ~9% faster Less parse,
+  behavior-identical (interpreter/compiled/macro parity green). DX-friendly
+  composition no longer costs first-set dispatch.
+
+- **Perf: first-set fail-fast before a node()'s capture frame.** A `node()` whose
+  body has a discrete (non-`any`) first set and cannot match empty now emits a
+  single code-point first-set check BEFORE allocating its children/raw/trivia
+  collectors and swapping the CST context. Non-dispatching callers (an early arm
+  of a non-disjoint `choice`, a `many` body) invoke such nodes at many positions
+  and reject them on the first byte — previously each miss allocated the whole
+  capture frame, then failed. The guard rejects a first-set miss with no
+  allocation, recording the same static `expected` a body start-fail would (named
+  rules run with `recordFail`), so diagnostics are unchanged. Emitted only when the
+  node captures (children/structural) and outside compiled recovery (where a
+  swallowed failure still feeds the completions probe). Measured ~6–7% faster Less
+  parse on top of the repeat-body guard below (Less `@{…}` interpolation alone was
+  invoked ~56k times/parse, almost all rejected on the first byte).
+
+
+- **Perf: first-set fast-path on `many`/`oneOrMore` loop bodies.** The repeat
+  codegen now emits a single code-point first-set check before each loop
+  iteration's body attempt: when the next code point can't start the repeated
+  element, the loop stops immediately instead of running the full body
+  recognizer and backtracking. This is the same first-set arm guard the `choice`
+  codegen already emits, applied to the repeat body, and it removes the
+  attempt-then-fail every `many`/`oneOrMore` pays at its terminating iteration
+  (e.g. a value list that ends at `;`/`)`/`,`).
+
+  Emitted only when the body has a discrete (non-`any`) first set and cannot
+  match empty (`needsFirstSetGuard`), so a first-set miss is a guaranteed
+  non-match and stopping is behavior-identical; and only when the body does not
+  already `failsAtStart` (a bare literal/regex/keywords leaf leads with the same
+  first-char check, so guarding it would be redundant and would perturb
+  byte-identical leaf-body output). The win lands on composite bodies —
+  `sequence`/`node` — that do setup before discovering a first-char mismatch.
+  Suppressed under compiled
+  recovery (`compile(g, { recovery: true })`): there a swallowed body failure
+  still feeds the completions probe, so the IDE build keeps recording the body
+  as a candidate at a non-matching char. A normal parse records nothing on a
+  swallowed body failure, so the fast-path is a pure speedup with no diagnostic
+  or output change. Interpreter semantics are unchanged.
+
 ## 0.28.1 — 2026-07-21
 
 - **Fix: make `FusedRule` compatible with `run()`'s public `Runnable` contract.**

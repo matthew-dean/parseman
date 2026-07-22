@@ -9,7 +9,55 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
-import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
+import { firstSetOf, matchesEmpty, union, empty, any } from '../combinators/first-set.ts'
+
+/**
+ * A rule's LEADING first-set as a fuse-resolvable recipe: the concrete leading
+ * chars (literals/regex reached through the nullable prefix) kept SEPARATE from the
+ * leading rule-REFERENCE names. `fusedBody()` resolves the ref names against the
+ * WINNING rules (a fixpoint) and unions the concrete part, so a composed grammar
+ * gets the same first-char dispatch a monolithic compile would — WITHOUT baking a
+ * referenced rule's first-set (which a compose override could later widen). Kept
+ * conservative: an unknown/opaque construct contributes its shallow `_meta.firstSet`
+ * (never an under-approximation, so dispatch never drops a valid parse).
+ */
+export type FirstSetRecipe = { concrete: FirstSet; refs: string[] }
+export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): FirstSetRecipe {
+  if (seen.has(p)) return { concrete: empty(), refs: [] }
+  seen.add(p)
+  const d = p._def as ParserDef
+  const rec = (c: Combinator<unknown>): FirstSetRecipe => leadingFirstSetRecipe(c, seen)
+  const merge = (a: FirstSetRecipe, b: FirstSetRecipe): FirstSetRecipe =>
+    ({ concrete: union(a.concrete, b.concrete), refs: [...a.refs, ...b.refs] })
+  switch (d.tag) {
+    case 'lazy': {
+      const name = (p as unknown as { _ruleName?: string })._ruleName
+      if (name !== undefined) return { concrete: empty(), refs: [name] }   // a rule ref: defer to the winner
+      try { return rec(d.thunk()) } catch { return { concrete: any(), refs: [] } }
+    }
+    case 'literal': case 'regex': case 'keywords':
+      return { concrete: p._meta.firstSet, refs: [] }
+    case 'choice': {
+      let out: FirstSetRecipe = { concrete: empty(), refs: [] }
+      for (const arm of d.parsers) out = merge(out, rec(arm))
+      return out
+    }
+    case 'sequence': {
+      // Union through the nullable prefix, stop at (and include) the first
+      // non-nullable term — same rule as `sequenceFirstSet`.
+      let out: FirstSetRecipe = { concrete: empty(), refs: [] }
+      for (const term of d.parsers) { out = merge(out, rec(term)); if (!matchesEmpty(term)) return out }
+      return out
+    }
+    case 'oneOrMore': case 'many': case 'optional': case 'transform': case 'label':
+    case 'field': case 'trivia': case 'token': case 'leaf': case 'node': case 'grammar': case 'expect':
+      return rec(d.parser)
+    case 'sepBy': return rec(d.parser)
+    case 'skip': return rec(d.main)
+    // not / scanTo / guard / withCtx / recover / unknown → shallow set (safe).
+    default: return { concrete: p._meta.firstSet, refs: [] }
+  }
+}
 import { markUnusedValues } from './value-usage.ts'
 import { buildGrammarPlan, type GrammarCoveragePlan } from './grammar-coverage-ids.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
@@ -1733,6 +1781,31 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     }
   }
 
+  // First-set body fast-path: if the next code point can't start the loop body,
+  // this iteration can only fail — stop the loop with a single code-point
+  // comparison instead of a full body attempt-then-fail. Sound exactly when the
+  // body has a discrete (non-`any`) first set and can't match empty
+  // (`needsFirstSetGuard`), so a first-set miss is a guaranteed non-match; it
+  // mirrors the first-set arm guard the choice codegen already emits. Skipped
+  // under `ctx.recovery`: there a swallowed body failure still feeds the
+  // completions probe (`probeUpdate` fires inside swallowers), so the IDE build
+  // keeps recording the body as a candidate at a non-matching char. A normal
+  // parse records nothing on a swallowed body failure (`recordFail` off for many),
+  // so skipping the attempt is behavior-identical there — pure speedup.
+  //
+  // Skipped when the body already `failsAtStart` (a bare literal/regex/keywords
+  // leaf): its own generated code leads with the identical first-char check, so
+  // the guard would be pure redundancy and would perturb byte-identical leaf-body
+  // output. The win is for COMPOSITE bodies (sequence/node) that do setup before
+  // discovering a first-char mismatch — e.g. `many(sequence(op, atom))`.
+  if (!ctx.recovery && !ctx.coverage && !failsAtStart(def.parser) && needsFirstSetGuard(def.parser)) {
+    const lcV = v(ctx, '_lc')
+    stmts.push(
+      `${ind(ctx)}const ${lcV} = ${itemPos} < input.length ? (input.codePointAt(${itemPos}) ?? -1) : -1`,
+      `${ind(ctx)}if (!(${firstSetCond(lcV, def.parser._meta.firstSet)})) { ${rollback}break }`,
+    )
+  }
+
   const { stmts: iterStmts, okVar: iterOk, valVar: iterVal, endVar: iterEnd } = emitFallible(def.parser, ctx, itemPos, true)
   stmts.push(...iterStmts)
   if (ctx.recovery) {
@@ -1798,8 +1871,28 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
   const rollback = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${log}; if (_ctx._fields) _ctx._fields.length = ${fields}; if (_ctx._errors) _ctx._errors.length = ${errors}`
   const traceId = ctx.coverage?.plan.attempts.get(p)
   const traceRollback = traceId === undefined ? '' : ` _ctx._grammarTrace?.write({ id: ${JSON.stringify(traceId)}, phase: 'rollback', offset: ${pos} });`
+  // First-set fail-fast before the transaction marks. `attempt(inner)` reads six
+  // rollback marks before `inner` recognizes anything; a non-dispatching caller
+  // (e.g. `choice(attempt(MixinReference), …)` on the non-disjoint majority) enters
+  // it at every position and rejects on the first byte. Bail on a first-set miss
+  // before the marks, re-anchoring the failure at `pos` like the transaction's own
+  // reject, and recording the same static `expected` the inner start-fail would.
+  // Skipped under recovery (the completions probe still wants the swallowed failure).
+  const preGuard: string[] = []
+  if (!ctx.recovery && !ctx.coverage && needsFirstSetGuard(def.parser)) {
+    const gcV = v(ctx, '_agc')
+    const gExp = armStaticExpected(ctx, def.parser)
+    const gFail = ctx.failLabel
+      ? `{ _ctx._fe = ${pos};${ctx.recordFail ? ` _ctx._fx = ${gExp};` : ''} break ${ctx.failLabel} }`
+      : `{ _ctx._fe = ${pos}; ${failReturnArr(gExp, pos)} }`
+    preGuard.push(
+      `${ind(ctx)}const ${gcV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
+      `${ind(ctx)}if (!(${firstSetCond(gcV, def.parser._meta.firstSet)})) ${gFail}`,
+    )
+  }
   return {
     stmts: [
+      ...preGuard,
       `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${trivia} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
       ...inner.stmts,
       ...emitIfFail(ctx, `!${inner.okVar}`, `{ ${rollback};${traceRollback} _ctx._fe = ${pos}; ${propagateFailBody(ctx)} }`),
@@ -2332,7 +2425,33 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const restoreTrivia = needsTriviaFrame
     ? `; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}`
     : ''
+  // First-set fail-fast (before the capture frame is allocated). A node whose
+  // body has a discrete (non-`any`) first set and can't match empty is often
+  // invoked speculatively at many positions by non-dispatching callers — e.g.
+  // Less `@{…}` interpolation, an early arm of a non-disjoint choice, is entered
+  // at every position and rejected on its first byte. The `allocStmt` below
+  // allocates the children/raw/trivia arrays and swaps the CST context BEFORE the
+  // body recognizes anything, so each such miss allocates then immediately fails.
+  // Reject a first-set miss here instead: sound because a miss cannot match, and
+  // nothing has been captured yet to roll back. Records the same static `expected`
+  // a body start-fail would (named-rule bodies run with recordFail), so diagnostics
+  // are unchanged. Skipped under compiled recovery (a swallowed failure still feeds
+  // the completions probe there) and when the node captures nothing (no frame to
+  // save). Mirrors the choice/`many` first-set guards.
+  const preGuard: string[] = []
+  if (!ctx.recovery && !ctx.coverage && (capturesChildren || structural) && needsFirstSetGuard(def.parser)) {
+    const gcV = v(ctx, '_ngc')
+    const gExp = armStaticExpected(ctx, def.parser)
+    const gFail = ctx.failLabel
+      ? (ctx.recordFail ? `{ _ctx._fe = ${pos}; _ctx._fx = ${gExp}; break ${ctx.failLabel} }` : `break ${ctx.failLabel}`)
+      : failReturnArr(gExp, pos)
+    preGuard.push(
+      `${i}const ${gcV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
+      `${i}if (!(${firstSetCond(gcV, def.parser._meta.firstSet)})) ${gFail}`,
+    )
+  }
   const stmts: string[] = [
+    ...preGuard,
     profHoist,
     allocStmt,
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,
@@ -3556,6 +3675,14 @@ export type LinkablePieces = {
    * emitted for rule-ref choice arms — sound under compose override.
    */
   firstSets: Map<string, FirstSet>
+  /**
+   * Per-rule LEADING first-set recipe (concrete chars + leading ref names).
+   * `fusedBody()` fixpoint-resolves the ref names over the WINNING rules so a
+   * `sequence(ref, …)`-led arm/node dispatches on the ref's real first char —
+   * matching a monolithic compile — instead of degrading to always-try because
+   * the ref baked `any`. Optional for back-compat with hand-built pieces.
+   */
+  firstSetRecipes?: Map<string, FirstSetRecipe>
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
@@ -3756,11 +3883,16 @@ export function compileLinkable(
   // with the WINNING rule's condition. Resolve each rule to its real first-set;
   // a rule that can match empty at start gets `any` (→ no guard, always try).
   const firstSets = new Map<string, FirstSet>()
+  const firstSetRecipes = new Map<string, FirstSetRecipe>()
   for (const [key, rule] of ruleMap) {
     let resolved: Combinator<unknown> = rule
     const d = rule._def
     if (d.tag === 'lazy') { try { resolved = d.thunk() } catch { resolved = rule } }
     firstSets.set(key, canMatchEmptyAtStart(resolved) ? { kind: 'any' } : resolved._meta.firstSet)
+    // Recipe drives fuse-time dispatch: keep leading ref names unresolved so the
+    // WINNING rule (post-override) supplies their first char. An empty-at-start
+    // rule stays `any` (always try).
+    firstSetRecipes.set(key, canMatchEmptyAtStart(resolved) ? { concrete: any(), refs: [] } : leadingFirstSetRecipe(resolved))
   }
 
   return {
@@ -3770,6 +3902,7 @@ export function compileLinkable(
     ruleFns,
     wrappers,
     firstSets,
+    firstSetRecipes,
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
