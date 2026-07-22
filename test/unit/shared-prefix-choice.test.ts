@@ -9,7 +9,9 @@
  * The interpreter runs the strategy through its firstMatch loop; the compiler emits
  * the shared-recognition form. Both are asserted here.
  */
-import { choice, sequence, regex, literal, transform, not, node, parser as grammarParser, trivia, oneOrMore, compile, type Combinator, type ParseContext } from '../../src/index.ts'
+import { choice, sequence, regex, literal, transform, not, node, parser as grammarParser, trivia, oneOrMore, compile, rules, compose, parse, type Combinator, type ParseContext } from '../../src/index.ts'
+import { compileLinkable } from '../../src/compiler/codegen.ts'
+import { fusedBody } from '../../src/compiler/linker.ts'
 import { describe, expect, it } from 'vitest'
 
 type Runner = { parse(input: string, pos: number, ctx: Record<string, unknown>): { ok: boolean; value?: unknown; span: { start: number; end: number }; expected?: string[] } }
@@ -123,6 +125,41 @@ describe('choice — sharedPrefix strategy', () => {
       // neither
       expect(p.parse('zz', 0, ctx()).ok).toBe(false)
       expect(p.parse('::', 0, ctx()).ok).toBe(false)
+    }
+  })
+
+  // jess compiles its grammar in the linkable/fused rule-map form, where ref
+  // first-sets are deferred to fuse time (`deferFirstSetRefs`). The shared prefix is
+  // a CONCRETE regex (never a ref), so it can still be scanned once there — this is
+  // the mode that actually matters for real grammars.
+  it('fires on the linkable/fused (deferFirstSetRefs) compile path and scans the prefix once', () => {
+    const ws = trivia(oneOrMore(literal(' ')))
+    const cst = (type: string) =>
+      (children: readonly unknown[], _f: unknown, span: { start: number; end: number }) =>
+        ({ type, span, children: [...children] })
+    const g = rules(() => ({
+      Pseudo: choice(
+        node('Func', grammarParser({ trivia: ws }, sequence(regex(/::?/), regex(/[a-z]+/), literal('('), regex(/[a-z]+/), literal(')'))), cst('Func')),
+        node('Simple', grammarParser({ trivia: ws }, sequence(regex(/::?/), regex(/[a-z]+/))), cst('Simple')),
+      ),
+    })) as Record<string, Combinator<unknown>>
+
+    expect(strategyOf(g.Pseudo!)).toBe('sharedPrefix')
+
+    // The fused body (linkable form) recognizes `::?` exactly once.
+    const pieces = compileLinkable(Object.entries(g), '_lk_')!
+    const { body } = fusedBody([pieces])
+    expect((body.match(/do \{/g) ?? []).length).toBe(1)
+
+    // And the fused parser matches the interpreter bit-for-bit for arm-1/arm-2/neither.
+    const fused = compose([g]) as unknown as Record<string, (i: string, p: number, c: unknown) => { ok: boolean; value?: unknown; expected?: string[] }>
+    const ctx = () => ({ trackLines: false, trivia: ws, captureTrivia: true })
+    for (const input of ['::foo(bar)', ':hover', 'zz', '::']) {
+      const interp = parse(g.Pseudo!, input, ctx() as ParseContext)
+      const comp = fused.Pseudo!(input, 0, ctx())
+      expect(comp.ok).toBe(interp.ok)
+      expect(JSON.stringify(comp.ok ? comp.value : comp.expected))
+        .toBe(JSON.stringify(interp.ok ? interp.value : interp.expected))
     }
   })
 

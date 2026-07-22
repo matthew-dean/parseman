@@ -1786,12 +1786,19 @@ function emitNonDisjoint(
   if (strategy.tag === 'literalsLongestFirst')
     return emitLiteralsLongestFirst(def, strategy.sortedIndices, allExpected, ctx, pos, coverageBase)
   if (strategy.tag === 'sharedPrefix') {
-    // Optimized left-factor only on the plain compile path. Coverage tracing,
-    // tolerant-recovery sync publishing, and linkable ref-gate deferral each carry
-    // per-arm bookkeeping that the shared-prefix rewrite would have to reproduce;
-    // fall back to the byte-identical `firstMatch` there (sharedPrefix IS just a
-    // firstMatch specialization, so the fallback is a no-op semantically).
-    if (coverageBase === undefined && !ctx.recovery && !ctx.deferFirstSetRefs)
+    // The shared prefix is always a CONCRETE literal/regex (the detector never
+    // groups arms whose leading term is — or reaches through — a ref), so it is
+    // never overridable and safe to scan once even on the linkable/fused
+    // (`deferFirstSetRefs`) path: only the once-recognized prefix SCAN is shared,
+    // while each arm's residual terms (which MAY contain deferred refs) continue
+    // through the ordinary emitFirstMatch/emitFallible emission that already
+    // resolves ref first-sets at fuse time. This is the mode jess actually compiles
+    // in, so gating it off here made the whole strategy inert for real grammars.
+    // Coverage tracing and tolerant-recovery still carry extra per-arm bookkeeping
+    // the rewrite doesn't reproduce, so fall back to the byte-identical firstMatch
+    // there (sharedPrefix IS a firstMatch specialization, so the fallback is a
+    // semantic no-op).
+    if (coverageBase === undefined && !ctx.recovery)
       return emitSharedPrefix(def, strategy, ctx, pos)
     return emitFirstMatch(def, ctx, pos, coverageBase)
   }
