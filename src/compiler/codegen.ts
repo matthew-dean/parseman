@@ -2357,7 +2357,33 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const restoreTrivia = needsTriviaFrame
     ? `; _ctx.captureTrivia = ${st}; _ctx._cstTriviaLog = ${stl}${smk ? `; _ctx._triviaCaptureMask = ${smk}` : ''}`
     : ''
+  // First-set fail-fast (before the capture frame is allocated). A node whose
+  // body has a discrete (non-`any`) first set and can't match empty is often
+  // invoked speculatively at many positions by non-dispatching callers — e.g.
+  // Less `@{…}` interpolation, an early arm of a non-disjoint choice, is entered
+  // at every position and rejected on its first byte. The `allocStmt` below
+  // allocates the children/raw/trivia arrays and swaps the CST context BEFORE the
+  // body recognizes anything, so each such miss allocates then immediately fails.
+  // Reject a first-set miss here instead: sound because a miss cannot match, and
+  // nothing has been captured yet to roll back. Records the same static `expected`
+  // a body start-fail would (named-rule bodies run with recordFail), so diagnostics
+  // are unchanged. Skipped under compiled recovery (a swallowed failure still feeds
+  // the completions probe there) and when the node captures nothing (no frame to
+  // save). Mirrors the choice/`many` first-set guards.
+  const preGuard: string[] = []
+  if (!ctx.recovery && (capturesChildren || structural) && needsFirstSetGuard(def.parser)) {
+    const gcV = v(ctx, '_ngc')
+    const gExp = armStaticExpected(ctx, def.parser)
+    const gFail = ctx.failLabel
+      ? (ctx.recordFail ? `{ _ctx._fe = ${pos}; _ctx._fx = ${gExp}; break ${ctx.failLabel} }` : `break ${ctx.failLabel}`)
+      : failReturnArr(gExp, pos)
+    preGuard.push(
+      `${i}const ${gcV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
+      `${i}if (!(${firstSetCond(gcV, def.parser._meta.firstSet)})) ${gFail}`,
+    )
+  }
   const stmts: string[] = [
+    ...preGuard,
     profHoist,
     allocStmt,
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,

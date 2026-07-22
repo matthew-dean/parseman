@@ -5,6 +5,21 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.29.0 — 2026-07-22
 
+- **Perf: first-set fail-fast before a node()'s capture frame.** A `node()` whose
+  body has a discrete (non-`any`) first set and cannot match empty now emits a
+  single code-point first-set check BEFORE allocating its children/raw/trivia
+  collectors and swapping the CST context. Non-dispatching callers (an early arm
+  of a non-disjoint `choice`, a `many` body) invoke such nodes at many positions
+  and reject them on the first byte — previously each miss allocated the whole
+  capture frame, then failed. The guard rejects a first-set miss with no
+  allocation, recording the same static `expected` a body start-fail would (named
+  rules run with `recordFail`), so diagnostics are unchanged. Emitted only when the
+  node captures (children/structural) and outside compiled recovery (where a
+  swallowed failure still feeds the completions probe). Measured ~6–7% faster Less
+  parse on top of the repeat-body guard below (Less `@{…}` interpolation alone was
+  invoked ~56k times/parse, almost all rejected on the first byte).
+
+
 - **Perf: first-set fast-path on `many`/`oneOrMore` loop bodies.** The repeat
   codegen now emits a single code-point first-set check before each loop
   iteration's body attempt: when the next code point can't start the repeated
