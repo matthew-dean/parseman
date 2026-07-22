@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest'
 import { sequence, choice, literal, regex, node, rules, optional } from '../../src/index.ts'
 import { compileLinkable, leadingFirstSetRecipe } from '../../src/compiler/codegen.ts'
+import type { Combinator } from '../../src/index.ts'
 import { fusedBody } from '../../src/compiler/linker.ts'
 
 const cst = (type: string) => (ch: readonly unknown[], _f: unknown, span: { start: number; end: number }) =>
@@ -19,18 +20,18 @@ const cst = (type: string) => (ch: readonly unknown[], _f: unknown, span: { star
 describe('fused grammar first-set parity with monolithic', () => {
   it('recipe separates concrete leading chars from leading ref names (through the nullable prefix)', () => {
     const interp = node('Interp', sequence(literal('@{'), regex(/[a-z]+/), literal('}')), cst('Interp'))
-    const g = rules((g: Record<string, ReturnType<typeof regex>>) => ({
+    const g = rules((g: Record<string, Combinator<unknown>>) => ({
       Interp: interp,
       // `.`/`#`(46/35) from the optional, then the `Interp` ref (its `@`).
       Sel: node('Sel', sequence(optional(regex(/[.#]/)), g.Interp!, literal('x')), cst('Sel')),
     }))
-    const r = leadingFirstSetRecipe((g as Record<string, ReturnType<typeof regex>>).Sel!)
+    const r = leadingFirstSetRecipe((g as Record<string, Combinator<unknown>>).Sel!)
     expect(r.refs).toContain('Interp')                         // leading ref deferred by NAME
     expect(r.concrete).toMatchObject({ kind: 'ranges' })       // and the `.`/`#` kept concrete
   })
 
   it('fused Doc first-char-gates the sequence(ref,…)-led arm on the ref first set', () => {
-    const g = rules((g: Record<string, ReturnType<typeof regex>>) => ({
+    const g = rules((g: Record<string, Combinator<unknown>>) => ({
       Interp: node('Interp', sequence(literal('@{'), regex(/[a-z]+/), literal('}')), cst('Interp')),
       Sel: node('Sel', sequence(g.Interp!, literal('x')), cst('Sel')),
       Doc: choice(g.Sel!, node('Other', literal('.'), cst('Other'))),
@@ -44,7 +45,7 @@ describe('fused grammar first-set parity with monolithic', () => {
 
   it('stays SOUND under compose override — a wider winning rule widens the arm gate', () => {
     // Artifact A: Interp starts with `@`(64); Doc gates the Sel(->Interp) arm.
-    const A = compileLinkable([...Object.entries(rules((g: Record<string, ReturnType<typeof regex>>) => ({
+    const A = compileLinkable([...Object.entries(rules((g: Record<string, Combinator<unknown>>) => ({
       Interp: node('Interp', sequence(literal('@{'), regex(/[a-z]+/), literal('}')), cst('Interp')),
       Sel: node('Sel', sequence(g.Interp!, literal('x')), cst('Sel')),
       Doc: choice(g.Sel!, node('Other', literal('.'), cst('Other'))),
