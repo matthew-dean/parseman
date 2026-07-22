@@ -20,7 +20,8 @@
  */
 import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
-import type { LinkablePieces } from './codegen.ts'
+import type { LinkablePieces, FirstSetRecipe } from './codegen.ts'
+import { union } from '../combinators/first-set.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'
 
 /**
@@ -214,7 +215,7 @@ export function pickPieces(pieces: LinkablePieces[], names: string[]): LinkableP
  * for any non-inlined callbacks) and the `_env` to bind. In macro mode callbacks
  * are inlined from source, so `_env` is empty and the body is fully static.
  */
-function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string, unknown> } {
+export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string, unknown> } {
   // Winner per rule name — later pieces override earlier ones.
   const winner = new Map<string, LinkablePieces>()
   for (const p of pieces) for (const k of p.keys) winner.set(k, p)
@@ -251,8 +252,33 @@ function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string
   // one visible when the referencing rule was compiled. Unknown / `any` /
   // empty-matching rule → leave `true` (always try the arm; correctness over
   // pruning). Non-composed callers with no `firstSets` table also fall through.
+  // Resolve each rule's LEADING first-set over the WINNING rules — recipe.concrete
+  // ∪ union(finalFS[ref]) to a fixpoint — so a `sequence(ref, …)`-led arm/node
+  // dispatches on the ref's real first char (parity with a monolithic compile),
+  // instead of degrading to always-try because the ref baked `any`. A ref name is
+  // resolved from the WINNING rule, so it stays sound under compose override. A ref
+  // to a piece without a recipe (older format) falls back to its shallow first-set;
+  // a genuinely unknown ref → `any` (always try).
+  const ANY: FirstSet = { kind: 'any' }
+  const recipes = new Map<string, FirstSetRecipe>()
+  const shallow = new Map<string, FirstSet>()
+  for (const [k, p] of winner) {
+    const r = p.firstSetRecipes?.get(k); if (r) recipes.set(k, r)
+    const fs = p.firstSets?.get(k); if (fs) shallow.set(k, fs)
+  }
   const finalFS = new Map<string, FirstSet>()
-  for (const [k, p] of winner) { const fs = p.firstSets?.get(k); if (fs) finalFS.set(k, fs) }
+  for (const [k] of winner) finalFS.set(k, recipes.get(k)?.concrete ?? shallow.get(k) ?? ANY)
+  for (let iter = 0; iter <= recipes.size; iter++) {
+    let changed = false
+    for (const [k, r] of recipes) {
+      let fs = r.concrete
+      for (const ref of r.refs) {
+        fs = union(fs, recipes.has(ref) || shallow.has(ref) ? (finalFS.get(ref) ?? ANY) : ANY)
+      }
+      if (JSON.stringify(finalFS.get(k)) !== JSON.stringify(fs)) { finalFS.set(k, fs); changed = true }
+    }
+    if (!changed) break
+  }
   const body = rawBody.replace(
     // Rule name + code-point var are both JS identifiers (rule names are validated
     // at compile time — see assertRuleName in codegen), so an identifier class

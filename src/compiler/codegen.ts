@@ -9,7 +9,55 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
-import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
+import { firstSetOf, matchesEmpty, union, empty, any } from '../combinators/first-set.ts'
+
+/**
+ * A rule's LEADING first-set as a fuse-resolvable recipe: the concrete leading
+ * chars (literals/regex reached through the nullable prefix) kept SEPARATE from the
+ * leading rule-REFERENCE names. `fusedBody()` resolves the ref names against the
+ * WINNING rules (a fixpoint) and unions the concrete part, so a composed grammar
+ * gets the same first-char dispatch a monolithic compile would — WITHOUT baking a
+ * referenced rule's first-set (which a compose override could later widen). Kept
+ * conservative: an unknown/opaque construct contributes its shallow `_meta.firstSet`
+ * (never an under-approximation, so dispatch never drops a valid parse).
+ */
+export type FirstSetRecipe = { concrete: FirstSet; refs: string[] }
+export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): FirstSetRecipe {
+  if (seen.has(p)) return { concrete: empty(), refs: [] }
+  seen.add(p)
+  const d = p._def as ParserDef
+  const rec = (c: Combinator<unknown>): FirstSetRecipe => leadingFirstSetRecipe(c, seen)
+  const merge = (a: FirstSetRecipe, b: FirstSetRecipe): FirstSetRecipe =>
+    ({ concrete: union(a.concrete, b.concrete), refs: [...a.refs, ...b.refs] })
+  switch (d.tag) {
+    case 'lazy': {
+      const name = (p as unknown as { _ruleName?: string })._ruleName
+      if (name !== undefined) return { concrete: empty(), refs: [name] }   // a rule ref: defer to the winner
+      try { return rec(d.thunk()) } catch { return { concrete: any(), refs: [] } }
+    }
+    case 'literal': case 'regex': case 'keywords':
+      return { concrete: p._meta.firstSet, refs: [] }
+    case 'choice': {
+      let out: FirstSetRecipe = { concrete: empty(), refs: [] }
+      for (const arm of d.parsers) out = merge(out, rec(arm))
+      return out
+    }
+    case 'sequence': {
+      // Union through the nullable prefix, stop at (and include) the first
+      // non-nullable term — same rule as `sequenceFirstSet`.
+      let out: FirstSetRecipe = { concrete: empty(), refs: [] }
+      for (const term of d.parsers) { out = merge(out, rec(term)); if (!matchesEmpty(term)) return out }
+      return out
+    }
+    case 'oneOrMore': case 'many': case 'optional': case 'transform': case 'label':
+    case 'field': case 'trivia': case 'token': case 'leaf': case 'node': case 'grammar': case 'expect':
+      return rec(d.parser)
+    case 'sepBy': return rec(d.parser)
+    case 'skip': return rec(d.main)
+    // not / scanTo / guard / withCtx / recover / unknown → shallow set (safe).
+    default: return { concrete: p._meta.firstSet, refs: [] }
+  }
+}
 import { markUnusedValues } from './value-usage.ts'
 import { buildGrammarPlan, type GrammarCoveragePlan } from './grammar-coverage-ids.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
@@ -3627,6 +3675,14 @@ export type LinkablePieces = {
    * emitted for rule-ref choice arms — sound under compose override.
    */
   firstSets: Map<string, FirstSet>
+  /**
+   * Per-rule LEADING first-set recipe (concrete chars + leading ref names).
+   * `fusedBody()` fixpoint-resolves the ref names over the WINNING rules so a
+   * `sequence(ref, …)`-led arm/node dispatches on the ref's real first char —
+   * matching a monolithic compile — instead of degrading to always-try because
+   * the ref baked `any`. Optional for back-compat with hand-built pieces.
+   */
+  firstSetRecipes?: Map<string, FirstSetRecipe>
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
@@ -3827,11 +3883,16 @@ export function compileLinkable(
   // with the WINNING rule's condition. Resolve each rule to its real first-set;
   // a rule that can match empty at start gets `any` (→ no guard, always try).
   const firstSets = new Map<string, FirstSet>()
+  const firstSetRecipes = new Map<string, FirstSetRecipe>()
   for (const [key, rule] of ruleMap) {
     let resolved: Combinator<unknown> = rule
     const d = rule._def
     if (d.tag === 'lazy') { try { resolved = d.thunk() } catch { resolved = rule } }
     firstSets.set(key, canMatchEmptyAtStart(resolved) ? { kind: 'any' } : resolved._meta.firstSet)
+    // Recipe drives fuse-time dispatch: keep leading ref names unresolved so the
+    // WINNING rule (post-override) supplies their first char. An empty-at-start
+    // rule stays `any` (always try).
+    firstSetRecipes.set(key, canMatchEmptyAtStart(resolved) ? { concrete: any(), refs: [] } : leadingFirstSetRecipe(resolved))
   }
 
   return {
@@ -3841,6 +3902,7 @@ export function compileLinkable(
     ruleFns,
     wrappers,
     firstSets,
+    firstSetRecipes,
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
