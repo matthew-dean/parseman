@@ -86,7 +86,7 @@ describe('structural-node capture gate — host-arity inference', () => {
     const typed = compile(TypedDoc)
     const logs = new Map<string, readonly number[]>()
     const host = Object.assign(
-      (type: string, _children: readonly unknown[], _fields: unknown, _span: unknown, _raw: readonly unknown[], triviaLog: readonly number[]) => {
+      (type: string, _children: readonly unknown[] | undefined, _fields: unknown, _span: unknown, _raw: readonly unknown[], triviaLog: readonly number[]) => {
         logs.set(type, triviaLog)
         return { type }
       },
@@ -114,7 +114,7 @@ describe('structural-node capture gate — host-arity inference', () => {
     const host = Object.assign(
       (
         type: string,
-        _children: readonly unknown[],
+        _children: readonly unknown[] | undefined,
         _fields: unknown,
         _span: unknown,
         _raw: readonly unknown[],

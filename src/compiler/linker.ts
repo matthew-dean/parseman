@@ -114,13 +114,15 @@ export function cstBuildHost(
   const collapse = normalizeCstCollapse(typeOrOptions?.collapse)
   const host: BuildHost = (
     type: string,
-    children: ReadonlyArray<unknown>,
+    children: ReadonlyArray<unknown> | undefined,
     fields: unknown,
     span: { start: number; end: number },
     rawChildren: ReadonlyArray<unknown>,
     triviaLog: readonly number[],
     state: unknown,
-  ) => buildCstNode(type, children, fields, span, rawChildren, triviaLog, state)
+    // A CST/collapse host always keeps `children` (chV) — the opt-out never
+    // applies — so `?? []` is unreachable defensive modeling for the widened type.
+  ) => buildCstNode(type, children ?? [], fields, span, rawChildren, triviaLog, state)
   ;(host as typeof host & { _parsemanCstOutput?: true })._parsemanCstOutput = true
   if (collapse) host._parsemanCstCollapse = collapse
   return host

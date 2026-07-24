@@ -95,7 +95,10 @@ export type CstCollapsePredicate = (
 
 export type BuildHost = ((
   type: string,
-  children: ReadonlyArray<unknown>,
+  // `undefined` when a structural host opts out of the duplicate children array
+  // via `_parsemanReadsChildren === false` (codegen elides the chV allocation).
+  // Hosts that read `children` must tolerate an omitted array (e.g. `children ?? []`).
+  children: ReadonlyArray<unknown> | undefined,
   fields: FieldMap | undefined,
   span: { start: number; end: number },
   rawChildren: ReadonlyArray<unknown>,
@@ -104,6 +107,19 @@ export type BuildHost = ((
 ) => unknown) & {
   /** Framework-internal: optional syntax-CST wrapper collapse policy. */
   _parsemanCstCollapse?: CstCollapsePredicate | undefined
+  /**
+   * Framework-internal: `false` when this host builds its node purely from
+   * `rawChildren` (arg 4) and never reads the structural `children` (arg 1).
+   * Arity-based elision (`_hostReads`) cannot see this: a host that reads a LATER
+   * positional arg (`span`/`rawChildren`/`state`) must still DECLARE `children`
+   * positionally, so `Function.length` stays high and every arg-gate reports
+   * "read". This explicit opt-out lets a structural node skip allocating its
+   * per-node `children` array entirely — a pure duplicate of `rawChildren` for a
+   * structural grammar. Default (`undefined`) keeps the array (output-neutral).
+   * A host that sets this MUST NOT also read `children`, and must not rely on
+   * `_parsemanCstCollapse` (which inspects `children`).
+   */
+  _parsemanReadsChildren?: boolean | undefined
   /** Framework-internal: node types whose structural host wants triviaLog. */
   _parsemanCaptureTrivia?: ((type: string) => boolean) | undefined
   /**

@@ -477,10 +477,14 @@ function emitLeafCapture(ctx: Ctx, valExpr: string, startExpr: string, endExpr: 
   if (ctx.capAsTrivia) return []
   const i = ind(ctx)
   const lf = v(ctx, '_lf')
+  // Gate on EITHER collector: a structural node whose host reads only
+  // `rawChildren` (see `_parsemanReadsChildren`) elides `_cstLeaves`/`_cstChildren`
+  // but still needs its terminals in `_cstRawChildren`. When both are present the
+  // single leaf object is shared by both pushes — identical to the prior output.
   return [
-    `${i}if (_ctx._cstLeaves) {`,
+    `${i}if (_ctx._cstLeaves || _ctx._cstRawChildren) {`,
     `${i}  const ${lf} = { _tag: 'leaf', value: ${valExpr}, span: { start: ${startExpr}, end: ${endExpr} } }`,
-    `${i}  _ctx._cstLeaves.push(${lf})`,
+    `${i}  if (_ctx._cstLeaves) _ctx._cstLeaves.push(${lf})`,
     `${i}  if (_ctx._cstRawChildren) _ctx._cstRawChildren.push(${lf})`,
     `${i}}`,
   ]
@@ -2550,9 +2554,23 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // true })` must keep its log even when the injected host explicitly opts out.
   // This mirrors the interpreter's `capturesTrivia` decision above.
   const structuralCapturesTrivia = structural && (def.captureTrivia === true || def.trailingTrivia === true)
+  // Children-array (chV) elision for structural nodes. chV is a byte-for-byte
+  // duplicate of rawV for a structural grammar (every captured item is a CST
+  // child, so the rawEntry synthesis never diverges), and a host that builds from
+  // `rawChildren` never reads it. `_hostReads` can't detect this — the host
+  // declares `children` positionally to reach later args — so consult the explicit
+  // `_parsemanReadsChildren === false` opt-out. Keep chV whenever it is actually
+  // read: a default CST (no host), a collapse host (`_parsemanCstCollapse` inspects
+  // it), unwrap/collapse rules (compile-time), or the profiling capture pass.
+  const chNeededExpr = (def.unwrap || def.collapse)
+    ? 'true'
+    : `(_ctx._pmReadsCh ??= (_ctx.build === undefined || _ctx.build._parsemanReadsChildren !== false || _ctx.build._parsemanCstCollapse !== undefined))`
+  const chAlloc = (def.unwrap || def.collapse)
+    ? `${profileRecognizer} ? undefined : []`
+    : `${profileRecognizer} ? undefined : ((${profileCapture} || ${chNeededExpr}) ? [] : undefined)`
   const allocStmt = structural
     ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${structuralCapturesTrivia ? 'true' : hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
-      + `${i}const ${chV} = ${profileRecognizer} ? undefined : [], ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
+      + `${i}const ${chV} = ${chAlloc}, ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
     : capturesTrivia
       ? `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}, ${tlV} = ${profileRecognizer} ? undefined : []`
       : `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}`

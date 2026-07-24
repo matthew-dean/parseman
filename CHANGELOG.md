@@ -3,6 +3,30 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.31.0 — 2026-07-23
+
+- **Perf: structural children-array (`chV`) elision via `_parsemanReadsChildren`.**
+  A structural `node()`'s per-node `children` array is a byte-for-byte duplicate of
+  its `rawChildren` array (every captured item is a CST child, so the raw-entry
+  synthesis never diverges). A build host that constructs its node purely from
+  `rawChildren` (e.g. jess's `cssCstBuildHost`) never reads `children` — but arity
+  inference (`_hostReads` / `Function.length`) CANNOT detect this: a host that reads
+  any LATER positional arg (`span`/`rawChildren`/`state`) must still DECLARE
+  `children` positionally, so its length stays high and every arg-gate reports
+  "read". Hosts may now set `build._parsemanReadsChildren = false` to declare they
+  build from `rawChildren` only; structural nodes then skip allocating `chV`
+  entirely (one fewer array per node). Leaf capture was restructured to gate on
+  `_cstLeaves || _cstRawChildren` so terminals still reach `rawChildren` when the
+  children collector is elided. Output-neutral: the default (`undefined`) keeps the
+  array, and the opt-out is kept inert whenever `children` is actually read — a
+  default CST (no host), unwrap/collapse rules, or a `_parsemanCstCollapse` host
+  (which inspects `children`). Monomorphism and macro-fusion are unchanged (an
+  allocation gate, not a shape change). A/B on a structural jess-shaped model:
+  ~25% fewer young-gen scavenges, ~10% wall; on a real jess Less-CST parse of
+  benchmark.less (10.3k nodes): ~8.5% fewer scavenges (415→380/400 parses), ~6%
+  faster wall (18.1→17.0 ms/parse), byte-identical CST. Does not affect direct-AST
+  builders (whose `children` is read) — only the structural-host CST path.
+
 ## 0.30.0 — 2026-07-22
 
 - **New `choice` codegen strategy: shared-prefix left-factoring.** When several
