@@ -22,8 +22,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
      cycle. Only ancestors on the current recursion path are true cycles.
   2. **Case-insensitive regex first-set omitted the opposite case.** The first-set
      analyzer is flag-agnostic, so `/red|blue/i` yielded `{r,b}` not `{r,R,b,B}`;
-     dispatching on that false-excluded `ReD`. `regex()` now ASCII-case-folds the
-     leading set under the `i` flag (matching `keywords(ci)`), a sound widening.
+     dispatching on that false-excluded `ReD`. `regex()` now widens the leading set
+     under `i`, FLAG-AWARE: a plain `/i` (no `u`) folds only ASCII case pairs per
+     ECMAScript — a sound, tight superset that keeps at-keyword gating (`/@media/i` →
+     `{@}`); a `/ui` pattern uses Unicode simple case folding (`/[a-z]/ui` also matches
+     `ſ`/`K`), which ASCII-folding can't enumerate, so it widens to `any` (always-try)
+     rather than a narrow set that would false-exclude those. (A blanket `any` for all
+     `/i` would wrongly de-gate the ASCII at-keywords.)
   Fuzz-verified + a regression test matching the real jess shape (recursive
   nested-paren prelude behind a cross-artifact ref, shared inlined node,
   case-insensitive recognizer); full jess corpus (css/less/scss/jess parsers +

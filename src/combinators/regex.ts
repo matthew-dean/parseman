@@ -122,9 +122,22 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   // The first-set analyzer is flag-agnostic, so for a CASE-INSENSITIVE pattern it
   // returns only the literal-case leading chars — e.g. `/red|blue/i` → `{r,b}`, NOT
   // `{r,R,b,B}`. Using that narrow set for first-char DISPATCH would false-EXCLUDE the
-  // opposite-case input (`ReD` gated out of a `/(?:red|…)/i` arm). ASCII-case-fold the
-  // leading set under `i` so it stays a correct SUPERSET (matches `keywords(ci)`).
-  const firstSet = resolvedFlags.includes('i') ? asciiCaseFold(raw.firstSet) : raw.firstSet
+  // opposite-case input (`ReD` gated out of a `/(?:red|…)/i` arm), so widen it under
+  // `i`. The widening is FLAG-AWARE because `i` alone and `i`+`u` fold different sets:
+  //   - `/i` WITHOUT `u`: ECMAScript case-insensitive matching folds ONLY the ASCII
+  //     Basic-Latin case pairs (`a`↔`A` … `z`↔`Z`) — a plain `/[a-z]/i` does NOT match
+  //     `ſ`(U+017F) or `K`(U+212A). So `asciiCaseFold` is a SOUND, tight superset, and
+  //     it preserves at-keyword dispatch (`/@media…/i` still gates on `@`).
+  //   - `/ui` (Unicode mode): matching uses Unicode *simple case folding*, so
+  //     `/[a-z]/ui` ALSO matches `ſ`→s and `K`→k. ASCII-folding can't enumerate those
+  //     astral/BMP case pairs, so gating on the ASCII set would false-exclude them.
+  //     Fall back to `any()` (always-try) — sound, and only forfeits gating for the
+  //     rare `/ui` recognizer, never the ASCII-only `/i` at-keywords the fix targets.
+  const firstSet = !resolvedFlags.includes('i')
+    ? raw.firstSet
+    : resolvedFlags.includes('u')
+      ? any()
+      : asciiCaseFold(raw.firstSet)
   const canMatchNewline = raw.canMatchNewline
   const meta: ParserMeta = { firstSet, canMatchNewline, isTrivia: false }
 

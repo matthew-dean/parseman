@@ -236,4 +236,28 @@ describe('cross-artifact first-set dispatch (composeLeaf shape)', () => {
     expect(R.Value!('ReD', 0, {}).ok).toBe(true)
     expect(R.Value!('AQUA', 0, {}).ok).toBe(true)
   })
+
+  it('a case-fold is FLAG-AWARE: `/i` folds ASCII (gated), `/ui` widens to any (no false-exclude)', () => {
+    // `/i` WITHOUT `u`: ECMAScript folds only ASCII case pairs — a tight, gated superset.
+    expect(regex(/media/i)._meta.firstSet).toMatchObject({ kind: 'ranges' }) // finite {m,M}
+    expect(regex(/@media(?![-\w])/i)._meta.firstSet).toMatchObject({ kind: 'ranges', ranges: [{ lo: 64, hi: 64 }] }) // `@` — at-keyword STAYS gated
+    // `/ui` (Unicode mode): `/[a-z]/ui` also matches `ſ`(U+017F)→s and `K`(U+212A)→k,
+    // which ASCII-folding can't enumerate. So the first-set must widen to `any`, NOT a
+    // narrow ASCII set that would false-exclude those. (A blanket any() for ALL `/i`
+    // would wrongly de-gate the ASCII at-keywords above — this is why it's flag-aware.)
+    expect(regex(/[a-z]+/iu)._meta.firstSet).toEqual({ kind: 'any' })
+    expect(regex(/red|blue/iu)._meta.firstSet).toEqual({ kind: 'any' })
+    // End-to-end: a `/ui` recognizer behind a cross-artifact ref must ACCEPT its
+    // Unicode-case-fold input (`ſ` matches `/s…/ui`) — the `any` first-set always-tries.
+    const recog = rules(() => ({ Word: regex(/su/iu) })) // `su`; `/ui` also matches `ſu`
+    const consumer = rules((g: Record<string, Combinator<unknown>>) => ({
+      Doc: node('Doc', choice(g.Word!, regex(/x/)), cst('Doc')),
+    }))
+    const R = fuseRules([
+      compileLinkable(Object.entries(recog), '_r_')!,
+      compileLinkable(Object.entries(consumer), '_c_')!,
+    ]) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    expect(R.Doc!('su', 0, {}).ok).toBe(true)
+    expect(R.Doc!('ſu', 0, {}).ok).toBe(true) // `ſu` — must NOT be gated out
+  })
 })
