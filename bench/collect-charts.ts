@@ -4,138 +4,103 @@
  *
  * This is intentionally much smaller than `pnpm bench` — no incremental re-parse,
  * combinator inlining, codegen A/B, or Parseman-only regression suite.
+ *
+ * Each bar is measured in its OWN child process (bench/measure-bar.ts). These
+ * numbers are published, and a measurement is sensitive to what else has run in
+ * its process: measured all-in-one, Parséman's compiled GraphQL read ~11.5µs
+ * against ~7µs alone (~60% inflation), and — worse for a comparison chart — the
+ * inflation differed per library depending on what ran before it, so the bars
+ * were not comparable to each other. One process per bar removes both.
  */
-import {
-  SMALL_JSON, MEDIUM_JSON, LARGE_JSON,
-  SMALL_CSV, LARGE_CSV,
-  SMALL_GQL, MEDIUM_GQL, LARGE_GQL,
-} from './fixtures.ts'
-import { warmUs } from './measure.ts'
-import { PINNED_INIT, CHART_COLORS, type Bar, type Chart } from './chart-types.ts'
-import * as P from './parsers.ts'
+import { execFileSync } from 'node:child_process'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { PINNED_INIT, type Bar, type Chart } from './chart-types.ts'
+import { CHART_GROUPS, CHART_BARS, BAR_MARKER, type ChartKey } from './chart-specs.ts'
 
-function bar(label: string, us: number, color: string): Bar {
-  return { label, us, color }
+const __dir = dirname(fileURLToPath(import.meta.url))
+const CHILD = resolve(__dir, 'measure-bar.ts')
+
+/** µs per size group for one bar, measured in a fresh process. */
+function measureBar(chart: ChartKey, key: string): number[] {
+  const out = execFileSync(process.execPath, ['--import', 'tsx/esm', CHILD, chart, key], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+    maxBuffer: 32 * 1024 * 1024,
+  })
+  const line = out.split('\n').find(l => l.startsWith(BAR_MARKER))
+  if (!line) throw new Error(`collect-charts: ${chart}/${key} produced no ${BAR_MARKER} line`)
+  return JSON.parse(line.slice(BAR_MARKER.length)) as number[]
 }
 
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} bytes`
-  return `${(n / 1024).toFixed(1)} kB`
+const CHART_TITLES: Record<ChartKey, string> = {
+  json: 'JSON PARSING',
+  csv: 'CSV PARSING',
+  graphql: 'GRAPHQL PARSING',
+  cst: 'JSON CST — SYNTAX TREE BUILDING',
+}
+
+const INIT_TITLE = 'initialization (one-time; others: no setup cost)'
+const CST_INIT_TITLE = 'initialization (macro build: zero runtime cost; others: no setup)'
+
+/**
+ * Rounds of interleaved measurement. Isolation alone is NOT enough: one process
+ * per bar stretches a full regen to ~10 minutes, and a bar measured at minute 9
+ * reads systematically slower than one measured at minute 1 (observed: the same
+ * graphql bar read 5.8µs standalone and 10.5µs late in a serial run). Since bar
+ * order is fixed, that drift lands straight on the bar-vs-bar comparison the
+ * chart exists to make — and it favours whichever bar is measured first, which is
+ * Parséman in every chart.
+ *
+ * So sweep ALL bars per round and take each bar's median across rounds: drift
+ * then hits every bar in roughly equal measure instead of accumulating down the
+ * list. Odd count — median() of an even list takes the upper element.
+ */
+const ROUNDS = 3
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b)
+  return s[Math.floor(s.length / 2)]!
 }
 
 export function collectChartData(): Chart[] {
-  console.log('bench:charts — warm-parse timings for comparison SVGs…\n')
+  console.log(`bench:charts — one process per bar, ${ROUNDS} interleaved rounds…\n`)
 
-  // ── JSON ──────────────────────────────────────────────────────────────────
-  const jsonGroups = [
-    { title: `warm parse — small  (${fmtBytes(SMALL_JSON.length)})`, input: SMALL_JSON, iters: 50_000 },
-    { title: `warm parse — medium  (${fmtBytes(MEDIUM_JSON.length)})`, input: MEDIUM_JSON, iters: 10_000 },
-    { title: `warm parse — large  (${fmtBytes(LARGE_JSON.length)})`, input: LARGE_JSON, iters: 2_000 },
-  ].map(({ title, input, iters }) => {
-    console.log(`  JSON ${title}`)
-    const bars = [
-      bar('Parséman (macro build)', warmUs(() => P.compiledJSON.parse(input, 0), iters), CHART_COLORS.macroBuild),
-      bar('Parséman (interpreter)',  warmUs(() => P.parseJSON(input), iters), CHART_COLORS.noCompile),
-      bar('Peggy',                  warmUs(() => P.peggyJSON(input), iters), CHART_COLORS.peggy),
-      bar('Jison',                  warmUs(() => P.jisonJSON(input), iters), CHART_COLORS.jison),
-      bar('Nearley',                warmUs(() => P.nearleyJSON(input), iters), CHART_COLORS.nearley),
-      bar('Parsimmon',              warmUs(() => P.parsimmonJSON(input), iters), CHART_COLORS.parsimmon),
-      bar('Chevrotain',             warmUs(() => P.chevrotainJSON(input), iters), CHART_COLORS.chevrotain),
-      bar('JSON.parse (native)',    warmUs(() => JSON.parse(input), iters), CHART_COLORS.native),
-    ]
-    for (const b of bars) console.log(`    ${b.label.padEnd(28)} ${b.us.toFixed(2)} µs`)
-    return { title, bars }
-  })
+  const charts: Chart[] = []
+  for (const chart of Object.keys(CHART_GROUPS) as ChartKey[]) {
+    console.log(`  [${chart}]`)
+    // rounds[roundIndex][barIndex][groupIndex]
+    const rounds: number[][][] = []
+    for (let r = 0; r < ROUNDS; r++) {
+      rounds.push(CHART_BARS[chart].map(spec => measureBar(chart, spec.key)))
+      process.stdout.write(`    round ${r + 1}/${ROUNDS} done\n`)
+    }
+    // barUs[barIndex][groupIndex] — median across rounds, per group
+    const barUs = CHART_BARS[chart].map((spec, bi) => {
+      const us = CHART_GROUPS[chart].map((_g, gi) => median(rounds.map(round => round[bi]![gi]!)))
+      console.log(`    ${spec.label.padEnd(28)} ${us.map(v => v.toFixed(2) + ' µs').join('  ')}`)
+      return us
+    })
 
-  // ── CSV ───────────────────────────────────────────────────────────────────
-  const csvGroups = [
-    { title: `warm parse — small  (${SMALL_CSV.length} bytes, 4 rows)`, input: SMALL_CSV, iters: 50_000 },
-    { title: `warm parse — large  (${fmtBytes(LARGE_CSV.length)}, 500 rows)`, input: LARGE_CSV, iters: 5_000 },
-  ].map(({ title, input, iters }) => {
-    console.log(`\n  CSV ${title}`)
-    const bars = [
-      bar('Parséman (macro build)', warmUs(() => P.compiledCSV.parse(input), iters), CHART_COLORS.macroBuild),
-      bar('Peggy',                  warmUs(() => P.peggyCSV(input), iters), CHART_COLORS.peggy),
-      bar('Parséman (interpreter)',  warmUs(() => P.parseCSV(input), iters), CHART_COLORS.noCompile),
-      bar('Parsimmon',              warmUs(() => P.parsimmonCSV(input), iters), CHART_COLORS.parsimmon),
-      bar('Chevrotain',             warmUs(() => P.chevrotainCSV(input), iters), CHART_COLORS.chevrotain),
-      bar('Nearley',                warmUs(() => P.nearleyCSV(input), iters), CHART_COLORS.nearley),
-    ]
-    for (const b of bars) console.log(`    ${b.label.padEnd(28)} ${b.us.toFixed(2)} µs`)
-    return { title, bars }
-  })
+    const groups = CHART_GROUPS[chart].map((g, gi) => ({
+      title: g.title,
+      bars: CHART_BARS[chart].map((spec, bi): Bar => ({
+        label: spec.label,
+        us: barUs[bi]![gi]!,
+        color: spec.color,
+      })),
+    }))
 
-  // ── GraphQL ───────────────────────────────────────────────────────────────
-  const gqlGroups = [
-    { title: `warm parse — small  (${SMALL_GQL.length} bytes)`, input: SMALL_GQL, iters: 50_000 },
-    { title: `warm parse — medium  (${MEDIUM_GQL.length} bytes)`, input: MEDIUM_GQL, iters: 10_000 },
-    { title: `warm parse — large  (${fmtBytes(LARGE_GQL.length)})`, input: LARGE_GQL, iters: 2_000 },
-  ].map(({ title, input, iters }) => {
-    console.log(`\n  GraphQL ${title}`)
-    const bars = [
-      bar('Parséman (macro build)', warmUs(() => P.compiledGraphQL.parse(input), iters), CHART_COLORS.macroBuild),
-      bar('Peggy',                  warmUs(() => P.peggyGQL(input), iters), CHART_COLORS.peggy),
-      bar('Parséman (interpreter)',  warmUs(() => P.parseGraphQL(input), iters), CHART_COLORS.noCompile),
-      bar('Chevrotain',             warmUs(() => P.chevrotainGQL(input), iters), CHART_COLORS.chevrotain),
-      bar('Nearley',                warmUs(() => P.nearleyGQL(input), iters), CHART_COLORS.nearley),
-      bar('Jison',                  warmUs(() => P.jisonGQL(input), iters), CHART_COLORS.jison),
-      bar('Parsimmon',              warmUs(() => P.parsimmonGQL(input), iters), CHART_COLORS.parsimmon),
-    ]
-    for (const b of bars) console.log(`    ${b.label.padEnd(28)} ${b.us.toFixed(2)} µs`)
-    return { title, bars }
-  })
-
-  // ── CST JSON ──────────────────────────────────────────────────────────────
-  const cstGroups = [
-    { title: `warm parse — small  (${fmtBytes(SMALL_JSON.length)})`, input: SMALL_JSON, iters: 50_000 },
-    { title: `warm parse — medium  (${fmtBytes(MEDIUM_JSON.length)})`, input: MEDIUM_JSON, iters: 10_000 },
-    { title: `warm parse — large  (${fmtBytes(LARGE_JSON.length)})`, input: LARGE_JSON, iters: 2_000 },
-  ].map(({ title, input, iters }) => {
-    console.log(`\n  CST JSON ${title}`)
-    const bars = [
-      bar('Parséman CST (macro build)', warmUs(() => P.parsermanCSTCompiled(input), iters), CHART_COLORS.macroBuild),
-      bar('Lezer (parse only)',         warmUs(() => P.lezerJSONParse(input), iters), CHART_COLORS.lezer),
-      bar('Lezer (parse + walk)',       warmUs(() => P.lezerJSON(input), iters), CHART_COLORS.lezerWalk),
-      bar('Parséman CST (interpreter)', warmUs(() => P.parsermanCSTJSONNoTriv(input), iters), CHART_COLORS.noCompile),
-      bar('Chevrotain CST',             warmUs(() => P.chevrotainCSTJSON(input), iters), CHART_COLORS.chevrotain),
-    ]
-    for (const b of bars) console.log(`    ${b.label.padEnd(28)} ${b.us.toFixed(2)} µs`)
-    return { title, bars }
-  })
-
-  console.log()
-  return [
-    {
-      title: 'JSON PARSING',
+    charts.push({
+      title: CHART_TITLES[chart],
       initGroup: {
-        title: 'initialization (one-time; others: no setup cost)',
-        bars: [...PINNED_INIT.json],
+        title: chart === 'cst' ? CST_INIT_TITLE : INIT_TITLE,
+        bars: chart === 'cst' ? [] : [...(PINNED_INIT[chart as keyof typeof PINNED_INIT] ?? [])],
       },
-      groups: jsonGroups,
-    },
-    {
-      title: 'CSV PARSING',
-      initGroup: {
-        title: 'initialization (one-time; others: no setup cost)',
-        bars: [...PINNED_INIT.csv],
-      },
-      groups: csvGroups,
-    },
-    {
-      title: 'GRAPHQL PARSING',
-      initGroup: {
-        title: 'initialization (one-time; others: no setup cost)',
-        bars: [...PINNED_INIT.graphql],
-      },
-      groups: gqlGroups,
-    },
-    {
-      title: 'JSON CST — SYNTAX TREE BUILDING',
-      initGroup: {
-        title: 'initialization (macro build: zero runtime cost; others: no setup)',
-        bars: [],
-      },
-      groups: cstGroups,
-    },
-  ]
+      groups,
+    })
+    console.log()
+  }
+
+  return charts
 }
