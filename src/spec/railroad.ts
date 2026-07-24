@@ -12,6 +12,18 @@ import { RAILROAD_CSS, RAILROAD_JS } from './railroad-lib.ts'
 
 const j = (s: string): string => JSON.stringify(s)
 
+/**
+ * Human label for a bounded repeat, or `null` when the bounds are the default
+ * ones the diagram shape already conveys (`ZeroOrMore` = 0+, `OneOrMore` = 1+).
+ * Railroad diagrams have no repetition-count primitive, so a genuine bound rides
+ * the repeat's loop-back path as a Comment rather than going unrendered.
+ */
+function boundLabel(min: number, max: number | undefined): string | null {
+  if (max === undefined) return min <= 1 ? null : `${min}+ times`
+  if (max === min) return `${min}×`
+  return `${min}–${max} times`
+}
+
 /** Convert a spec node to a railroad-diagrams DSL expression string. */
 function toDsl(node: SpecNode): string {
   switch (node.kind) {
@@ -27,17 +39,28 @@ function toDsl(node: SpecNode): string {
       return `Sequence(${node.items.map(toDsl).join(', ')})`
     case 'choice':
       return `Choice(0, ${node.items.map(toDsl).join(', ')})`
-    case 'star':
-      return `ZeroOrMore(${toDsl(node.item)})`
-    case 'plus':
-      return `OneOrMore(${toDsl(node.item)})`
+    case 'star': {
+      const b = boundLabel(0, node.max)
+      return b ? `ZeroOrMore(${toDsl(node.item)}, Comment(${j(b)}))` : `ZeroOrMore(${toDsl(node.item)})`
+    }
+    case 'plus': {
+      const b = boundLabel(node.min ?? 1, node.max)
+      return b ? `OneOrMore(${toDsl(node.item)}, Comment(${j(b)}))` : `OneOrMore(${toDsl(node.item)})`
+    }
     case 'opt':
       return `Optional(${toDsl(node.item)})`
     case 'sepBy': {
-      // OneOrMore(item, separator): the separator rides the repeat loop. A min-0
-      // list can also match nothing — wrap it in Optional.
-      const rep = `OneOrMore(${toDsl(node.item)}, ${toDsl(node.sep)})`
-      return node.min === 1 ? rep : `Optional(${rep})`
+      // OneOrMore(item, separator): the separator rides the repeat loop, carrying
+      // the item-count label with it when the list is bounded.
+      const b = boundLabel(node.min, node.max)
+      const loop = b ? `Sequence(${toDsl(node.sep)}, Comment(${j(b)}))` : toDsl(node.sep)
+      const rep = `OneOrMore(${toDsl(node.item)}, ${loop})`
+      const withTrail = node.trailing === undefined
+        ? rep
+        : `Sequence(${rep}, ${node.trailing === 'allow' ? `Optional(${toDsl(node.sep)})` : toDsl(node.sep)})`
+      // ONLY a min-0 list can match nothing. Collapsing every `min > 1` into
+      // Optional too rendered a list that requires N items as nullable.
+      return node.min === 0 ? `Optional(${withTrail})` : withTrail
     }
     case 'not':
       return `Sequence(Comment("not"), ${toDsl(node.item)})`
@@ -56,7 +79,7 @@ type RailroadBuilders = {
   Choice: (normal: number, ...xs: unknown[]) => unknown
   Optional: (x: unknown) => unknown
   OneOrMore: (x: unknown, sep?: unknown) => unknown
-  ZeroOrMore: (x: unknown) => unknown
+  ZeroOrMore: (x: unknown, rep?: unknown) => unknown
   Terminal: (t: string) => unknown
   NonTerminal: (t: string) => unknown
   Comment: (t: string) => unknown
@@ -81,12 +104,23 @@ function toDiagramNode(b: RailroadBuilders, node: SpecNode): unknown {
     case 'annotation': return b.Comment(node.text)
     case 'seq': return b.Sequence(...node.items.map((n) => toDiagramNode(b, n)))
     case 'choice': return b.Choice(0, ...node.items.map((n) => toDiagramNode(b, n)))
-    case 'star': return b.ZeroOrMore(toDiagramNode(b, node.item))
-    case 'plus': return b.OneOrMore(toDiagramNode(b, node.item))
+    case 'star': {
+      const lbl = boundLabel(0, node.max)
+      return lbl ? b.ZeroOrMore(toDiagramNode(b, node.item), b.Comment(lbl)) : b.ZeroOrMore(toDiagramNode(b, node.item))
+    }
+    case 'plus': {
+      const lbl = boundLabel(node.min ?? 1, node.max)
+      return lbl ? b.OneOrMore(toDiagramNode(b, node.item), b.Comment(lbl)) : b.OneOrMore(toDiagramNode(b, node.item))
+    }
     case 'opt': return b.Optional(toDiagramNode(b, node.item))
     case 'sepBy': {
-      const rep = b.OneOrMore(toDiagramNode(b, node.item), toDiagramNode(b, node.sep))
-      return node.min === 1 ? rep : b.Optional(rep)
+      const lbl = boundLabel(node.min, node.max)
+      const sep = toDiagramNode(b, node.sep)
+      const rep = b.OneOrMore(toDiagramNode(b, node.item), lbl ? b.Sequence(sep, b.Comment(lbl)) : sep)
+      const withTrail = node.trailing === undefined
+        ? rep
+        : b.Sequence(rep, node.trailing === 'allow' ? b.Optional(toDiagramNode(b, node.sep)) : toDiagramNode(b, node.sep))
+      return node.min === 0 ? b.Optional(withTrail) : withTrail
     }
     case 'not': return b.Sequence(b.Comment('not'), toDiagramNode(b, node.item))
     case 'peek': return b.Sequence(b.Comment('peek'), toDiagramNode(b, node.item))

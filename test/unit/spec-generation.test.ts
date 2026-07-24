@@ -54,6 +54,52 @@ describe('spec — combinator → EBNF mapping', () => {
     expect(lines.list).toBe('"[" expr ("," expr)* "]"')
   })
 
+  it('BOUNDED repeats render their real bounds instead of collapsing to * / +', () => {
+    // 0.34.0 gave the whole repeat family { min, max } (and sepBy `trailing`), but
+    // the spec model dropped every one of them: `many(x, { min: 3, max: 8 })` came
+    // out as plain `x+`, and a `sepBy` with `min >= 2` came out wrapped in `( … )?`
+    // — claiming a list that requires two items can match EMPTY, and that one item
+    // would do. A generated spec that understates the grammar is worse than none.
+    const item = regex(/[a-z]+/)
+    const comma = literal(',')
+    const lines = ebnfLines(toEBNF(rules(() => ({
+      nullable: sepBy(item, comma),
+      atLeast1: sepBy(item, comma, { min: 1 }),
+      atLeast2: sepBy(item, comma, { min: 2 }),
+      oneToThree: sepBy(item, comma, { min: 1, max: 3 }),
+      trailAllow: sepBy(item, comma, { min: 1, trailing: 'allow' }),
+      trailReq: sepBy(item, comma, { min: 1, trailing: 'require' }),
+      starMax: many(item, { max: 4 }),
+      threeToEight: many(item, { min: 3, max: 8 }),
+      exactly2: many(item, { min: 2, max: 2 }),
+      plainStar: many(item),
+      plainPlus: oneOrMore(item),
+    }))))
+    const I = '/[a-z]+/'
+    expect(lines.nullable).toBe(`(${I} ("," ${I})*)?`)
+    expect(lines.atLeast1).toBe(`${I} ("," ${I})*`)
+    // The tail repeats ONE FEWER time than there are items: 2+ items → 1+ tails.
+    expect(lines.atLeast2).toBe(`${I} ("," ${I})+`)
+    expect(lines.oneToThree).toBe(`${I} ("," ${I}){0,2}`)
+    expect(lines.trailAllow).toBe(`${I} ("," ${I})* ","?`)
+    expect(lines.trailReq).toBe(`${I} ("," ${I})* ","`)
+    expect(lines.starMax).toBe(`${I}{0,4}`)
+    expect(lines.threeToEight).toBe(`${I}{3,8}`)
+    expect(lines.exactly2).toBe(`${I}{2}`)
+    // The unbounded spellings are untouched.
+    expect(lines.plainStar).toBe(`${I}*`)
+    expect(lines.plainPlus).toBe(`${I}+`)
+  })
+
+  it('a non-empty sepBy is never wrapped in the OPTIONAL that means "can match empty"', () => {
+    const item = regex(/[a-z]+/)
+    for (const min of [1, 2, 5]) {
+      const line = ebnfLines(toEBNF(rules(() => ({ r: sepBy(item, literal(','), { min }) })))).r!
+      expect(line, `min ${min}`).not.toMatch(/^\(.*\)\?$/)
+    }
+    expect(ebnfLines(toEBNF(rules(() => ({ r: sepBy(item, literal(','), { min: 0 }) })))).r).toMatch(/^\(.*\)\?$/)
+  })
+
   it('keywords → alternation of quoted literals', () => {
     // keywords() sorts internally; assert set membership, not order.
     const alts = lines.kw!.split(' | ').sort()
@@ -199,6 +245,20 @@ describe('spec — railroad HTML', () => {
 
   it('sets the page title', () => {
     expect(html).toContain('<title>Demo</title>')
+  })
+
+  it('does not wrap a non-empty sepBy in Optional, and labels a bounded repeat', () => {
+    const item = regex(/[a-z]+/)
+    const dsl = (r: Combinator<unknown>): string =>
+      toRailroadHtml(rules(() => ({ r }))).match(/name: "r", dsl: function\(\)\{ return Diagram\((.*)\); \}/)![1]!
+    // `Optional(` is the diagram's way of saying "this path can be skipped".
+    expect(dsl(sepBy(item, literal(',')))).toContain('Optional(')
+    expect(dsl(sepBy(item, literal(','), { min: 1 }))).not.toContain('Optional(')
+    expect(dsl(sepBy(item, literal(','), { min: 2 }))).not.toContain('Optional(')
+    // A real bound rides the loop-back path, since railroad has no count primitive.
+    expect(dsl(sepBy(item, literal(','), { min: 2 }))).toContain('Comment("2+ times")')
+    expect(dsl(many(item, { min: 3, max: 8 }))).toContain('Comment("3–8 times")')
+    expect(dsl(many(item))).not.toContain('Comment(')
   })
 })
 
