@@ -4203,9 +4203,8 @@ export function compileLinkable(
   // resolve locally (defined in ANOTHER artifact). Emit a by-name `_r_<Name>`
   // call for it — no body here; it's provided at fuse time. This is what lets a
   // fragment reference a consumer/base rule (`g.value`, `g.Digits`) without its
-  // source.
-  // The refs this pass classified as external — i.e. the ones that WILL be bound
-  // by name at fuse time. `hasSemanticReduction` reads it (see there).
+  // source. `externalRefs` collects what the pass CLASSIFIED — the refs that will be
+  // bound by name at fuse time — which `hasSemanticReduction` reads (see there).
   const externalRefs = new Set<Combinator<unknown>>()
   {
     const scanned = new Set<Combinator<unknown>>()
