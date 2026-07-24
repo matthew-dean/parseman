@@ -241,12 +241,16 @@ describe('cross-artifact first-set dispatch (composeLeaf shape)', () => {
     // `/i` WITHOUT `u`: ECMAScript folds only ASCII case pairs — a tight, gated superset.
     expect(regex(/media/i)._meta.firstSet).toMatchObject({ kind: 'ranges' }) // finite {m,M}
     expect(regex(/@media(?![-\w])/i)._meta.firstSet).toMatchObject({ kind: 'ranges', ranges: [{ lo: 64, hi: 64 }] }) // `@` — at-keyword STAYS gated
-    // `/ui` (Unicode mode): `/[a-z]/ui` also matches `ſ`(U+017F)→s and `K`(U+212A)→k,
-    // which ASCII-folding can't enumerate. So the first-set must widen to `any`, NOT a
-    // narrow ASCII set that would false-exclude those. (A blanket any() for ALL `/i`
-    // would wrongly de-gate the ASCII at-keywords above — this is why it's flag-aware.)
+    // Unicode mode (the `u` flag OR the ES2024 `v` Unicode-sets flag): `/[a-z]/ui` and
+    // `/[a-z]/iv` also match `ſ`(U+017F)→s and `K`(U+212A)→k, which ASCII-folding can't
+    // enumerate. So the first-set must widen to `any`, NOT a narrow ASCII set that would
+    // false-exclude those. (A blanket any() for ALL `/i` would wrongly de-gate the ASCII
+    // at-keywords above — this is why it's flag-aware, keyed on `u`/`v`.)
     expect(regex(/[a-z]+/iu)._meta.firstSet).toEqual({ kind: 'any' })
     expect(regex(/red|blue/iu)._meta.firstSet).toEqual({ kind: 'any' })
+    // The `v` (Unicode-sets, ES2024) flag enables the SAME Unicode folding as `u`.
+    expect(regex('[a-z]+', 'iv')._meta.firstSet).toEqual({ kind: 'any' })
+    expect(regex('red|blue', 'iv')._meta.firstSet).toEqual({ kind: 'any' })
     // End-to-end: a `/ui` recognizer behind a cross-artifact ref must ACCEPT its
     // Unicode-case-fold input (`ſ` matches `/s…/ui`) — the `any` first-set always-tries.
     const recog = rules(() => ({ Word: regex(/su/iu) })) // `su`; `/ui` also matches `ſu`

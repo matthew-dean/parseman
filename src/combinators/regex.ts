@@ -128,14 +128,15 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   //     Basic-Latin case pairs (`a`↔`A` … `z`↔`Z`) — a plain `/[a-z]/i` does NOT match
   //     `ſ`(U+017F) or `K`(U+212A). So `asciiCaseFold` is a SOUND, tight superset, and
   //     it preserves at-keyword dispatch (`/@media…/i` still gates on `@`).
-  //   - `/ui` (Unicode mode): matching uses Unicode *simple case folding*, so
-  //     `/[a-z]/ui` ALSO matches `ſ`→s and `K`→k. ASCII-folding can't enumerate those
-  //     astral/BMP case pairs, so gating on the ASCII set would false-exclude them.
-  //     Fall back to `any()` (always-try) — sound, and only forfeits gating for the
-  //     rare `/ui` recognizer, never the ASCII-only `/i` at-keywords the fix targets.
+  //   - `/ui` or `/iv` (Unicode mode — the `u` OR the ES2024 `v` Unicode-sets flag):
+  //     matching uses Unicode *simple case folding*, so `/[a-z]/ui` (and `/[a-z]/iv`)
+  //     ALSO match `ſ`→s and `K`→k. ASCII-folding can't enumerate those astral/BMP case
+  //     pairs, so gating on the ASCII set would false-exclude them. Fall back to `any()`
+  //     (always-try) — sound, and only forfeits gating for the rare Unicode-mode `/i`
+  //     recognizer, never the ASCII-only `/i` at-keywords the fix targets.
   const firstSet = !resolvedFlags.includes('i')
     ? raw.firstSet
-    : resolvedFlags.includes('u')
+    : (resolvedFlags.includes('u') || resolvedFlags.includes('v'))
       ? any()
       : asciiCaseFold(raw.firstSet)
   const canMatchNewline = raw.canMatchNewline
