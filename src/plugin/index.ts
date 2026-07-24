@@ -493,7 +493,7 @@ export function transformMacro(
   const evaluateRulesFactory = (
     init: Expression,
     label: string,
-  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown> } | null => {
+  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
     // Options-first: rules({ trivia }, factory). Disambiguate by type — an
     // ObjectExpression first arg means options lead; otherwise the factory leads
@@ -507,29 +507,35 @@ export function transformMacro(
     const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
     if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
 
-    // Grammar-level options object — evaluate its `trivia` so the compiled map
-    // seeds it as the ambient default (build-time mirror of rules() tagging
-    // grammarTrivia at runtime).
+    // Grammar-level options object — evaluate `trivia` / `scanSkip` so the compiled
+    // map seeds them as the ambient defaults (build-time mirror of rules() tagging
+    // grammarTrivia / grammarScanSkip at runtime).
     const optionsArg = (optionsFirst ? arg0 : arg1) as AnyNode | undefined
-    const triviaValue = optionsArg?.type === 'ObjectExpression'
-      ? (((optionsArg.properties as AnyNode[] | undefined) ?? []).find(
-          p => (p as { key?: { name?: string } }).key?.name === 'trivia',
-        ) as { value?: Expression } | undefined)?.value
-      : undefined
+    const optionValue = (name: string): Expression | undefined =>
+      optionsArg?.type === 'ObjectExpression'
+        ? (((optionsArg.properties as AnyNode[] | undefined) ?? []).find(
+            p => (p as { key?: { name?: string } }).key?.name === name,
+          ) as { value?: Expression } | undefined)?.value
+        : undefined
+    const triviaValue = optionValue('trivia')
     const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
+    const scanSkipValue = optionValue('scanSkip')
+    const gScanSkip = scanSkipValue
+      ? (evaluateCombinatorArray(scanSkipValue, scope, code) ?? undefined)
+      : undefined
 
-    return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}) }
+    return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}) }
   }
 
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown> } | null => {
+  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
-    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), recovery, coverage: grammarCoverage })
+    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), recovery, coverage: grammarCoverage })
     if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
-    return { replacement: compiled.replacement, ruleMap: evaluated.ruleMap, ...(compiled.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}), ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}) }
+    return { replacement: compiled.replacement, ruleMap: evaluated.ruleMap, ...(compiled.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}), ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}) }
   }
 
   const isRulesCall = (init: Expression): boolean =>
@@ -992,9 +998,15 @@ export function transformMacro(
     }
     const localArg = elements[elements.length - 1]!
     let localRules: Iterable<readonly [string, unknown]> | null = null
+    // The LOCAL leaf grammar's own ambient scanSkip (from its `rules({ scanSkip })`)
+    // governs the scanTo/balanced sites IT defines — unlike trivia (composing-wins),
+    // opaque units are dialect-specific, so the local declaration is threaded to the
+    // local piece's compile.
+    let localScanSkip: Combinator<unknown>[] | undefined
     if (isRulesCall(localArg)) {
       const evaluated = evaluateRulesFactory(localArg, `composeLeaf${init.start}`)
       localRules = evaluated?.ruleMap ?? null
+      localScanSkip = evaluated?.scanSkip
     } else if (localArg.type === 'Identifier') {
       localRules = localRuleMaps.get((localArg as unknown as { name: string }).name) ?? null
     }
@@ -1018,7 +1030,7 @@ export function transformMacro(
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
       const localNs = nsFor(`composeLeaf${init.start}`)
-      const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), recovery })
+      const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
       if (!plainLocalPiece) {
         warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
         return null
