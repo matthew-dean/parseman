@@ -152,11 +152,29 @@ runtime path. Threaded paths:
   bootstrap fix. Both the INLINE `rules({ scanSkip }, …)` final arg and an
   IDENTIFIER bound to a local `rules({ scanSkip })` grammar are threaded (the
   latter via a `localGrammarScanSkip` map parallel to `localGrammarTrivia`).
-- **`compose([…, rules({ scanSkip })])`** — NOT yet threaded. The local rules
-  element is carried as re-lowerable IR and re-seeded with only the composing
-  trivia in `materializeCarried`; scanSkip would need per-piece carrying. The two
-  grammars on this path (jess less/scss CST) have no bare or under-skipped scanTo
-  site, so no active footgun — this is a documented follow-up.
+- **`compose([…, rules({ scanSkip })])`** — done, per-piece. The local rules
+  element is carried as re-lowerable IR, and its own `scanSkip` now rides WITH that
+  IR: `serializeRuleMap(entries, scanSkip)` emits the carried piece as
+  `rules({ scanSkip: […] }, (g) => …)`, so re-lowering it (`evalRuleMapIR` →
+  `compileLinkable`) re-stamps `_meta.grammarScanSkip` and `compileLinkable`'s
+  existing `_meta` fallback re-applies it — no change to `materializePiece` or
+  `materializeCarried`. It is PER-PIECE (only the declaring element's carried IR
+  gets the option), NOT composing-wins like trivia, because opaque units are
+  dialect-specific. Threaded for the INLINE `rules({ scanSkip }, …)` arg, an
+  IDENTIFIER bound to a local `rules({ scanSkip })` (via `localGrammarScanSkip`),
+  the runtime `compose()` fuse (`itemCarried` reads `_meta.grammarScanSkip` off the
+  map), and an exported standalone grammar's carried IR (so a downstream compose of
+  an imported grammar keeps its scanSkip too).
+  - **Serialization scoping**: the `{ scanSkip }` options object precedes the
+    `(g) => …` factory, so it cannot see the factory-internal shared consts. A
+    scanSkip unit is asserted grammar-rule free (a unit that reaches a `g[name]`
+    ref bails to the full-pieces fallback), so every const a scanSkip unit shares
+    with the body is g-free and is hoisted to an outer IIFE both scopes can read;
+    factory-only (possibly `g`-referencing) consts stay inside. With no scanSkip the
+    emitted IR is byte-identical to the pre-scanSkip form.
+  - The two grammars on this path (jess less/scss CST) still declare no scanSkip,
+    so this remains defense-in-depth: a future bare `scanTo` in those CST grammars
+    is now safe by default.
 
 ## Version
 

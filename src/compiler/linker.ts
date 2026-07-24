@@ -508,7 +508,13 @@ function itemCarried(
     if (d.tag !== 'lazy') return true
     try { d.thunk(); return true } catch { return false }
   })
-  const ir = serializeRuleMap(entries)
+  // Carry this grammar's ambient `scanSkip` (per-piece — opaque units are
+  // dialect-specific, NOT composing-wins) into the IR so a re-lower stamps
+  // `grammarScanSkip` back on. `linkable()`'s fallback reads it off `_meta` directly.
+  const scanSkip = entries
+    .map(([, val]) => (val._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip)
+    .find(Boolean)
+  const ir = serializeRuleMap(entries, scanSkip)
   return ir ? [{ ns, ir }] : [linkable(map, ns, trivia)]
 }
 

@@ -12,8 +12,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     comment is no longer matched. *(Default-behavior change — hence a minor.)*
   - New grammar-level option **`rules({ scanSkip: [...] })`** for opaque non-trivia
     units (strings, `balanced` brackets). Declared once, inherited everywhere
-    (interpreter, `compile()`, and macro; standalone `rules()` and `composeLeaf`),
-    the scan-time analogue of `trivia`.
+    (interpreter, `compile()`, and macro; standalone `rules()`, `composeLeaf`, and
+    `compose`), the scan-time analogue of `trivia`. Under `compose`/`composeLeaf` it
+    threads PER-PIECE — a local `rules({ scanSkip })` element's units reach the
+    re-lower of that element's own rules (not composing-wins like trivia, since
+    opaque units are dialect-specific).
   - Per-call `skip` now **extends** the ambient set rather than replacing it; new
     `raw: true` opts a call out of all ambient skipping (the pre-ambient byte walk).
 

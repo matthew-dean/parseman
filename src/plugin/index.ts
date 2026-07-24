@@ -828,12 +828,17 @@ export function transformMacro(
   // A local rule map → its compact IR ({ns, ir}) for carrying; the trivia is NOT baked
   // into the IR (it is seeded at re-lower time). When the map can't be faithfully
   // serialized, fall back to full lowered pieces WITH the composing trivia baked in.
-  const localCarried = (rm: Iterable<readonly [string, unknown]>, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[] } | null => {
+  const localCarried = (rm: Iterable<readonly [string, unknown]>, label: string, composing?: Combinator<unknown>, scanSkip?: Combinator<unknown>[]): { carried: CarriedItem[] } | null => {
     const entries = [...rm]
     const ns = nsFor(label)
-    const ir = serializeRuleMap(entries as never)
+    // scanSkip is PER-PIECE (opaque units are dialect-specific — NOT composing-wins
+    // like trivia), so it rides WITH this element's IR: it is emitted into the carried
+    // `rules({ scanSkip }, …)` options, which stamps `_meta.grammarScanSkip` when the IR
+    // is re-lowered (materializePiece → compileLinkable picks it up), and survives to a
+    // downstream re-compose. The full-pieces fallback bakes it via the compile option.
+    const ir = serializeRuleMap(entries as never, scanSkip)
     if (ir) return { carried: [{ ns, ir }] }
-    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), recovery })
+    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), ...(scanSkip ? { scanSkip } : {}), recovery })
     return p ? { carried: [p] } : null
   }
 
@@ -873,19 +878,17 @@ export function transformMacro(
     // fused rule, this element's included. It only matters as a CANDIDATE for the
     // composing trivia itself, which composingTrivia() reads directly off the AST.
     if (isRulesCall(arg)) {
-      const rulesArgs = (arg as unknown as { arguments: unknown[] }).arguments
-      const a0 = rulesArgs[0] as AnyNode | undefined
-      const a1 = rulesArgs[1] as AnyNode | undefined
-      const optionsFirst = a0?.type === 'ObjectExpression'
-      const factory = (optionsFirst ? a1 : a0) as Expression | undefined
-      const rm = factory ? evaluateParserFactory(factory, scope, code, []) : null
-      return rm ? localCarried(rm, label, composing) : null
+      // This element's OWN scanSkip DOES thread (per-piece, unlike composing-wins
+      // trivia): evaluateRulesFactory returns both the rule map and the grammar-level
+      // scanSkip option, which localCarried carries with this piece's IR.
+      const evaluated = evaluateRulesFactory(arg, label)
+      return evaluated ? localCarried(evaluated.ruleMap, label, composing, evaluated.scanSkip) : null
     }
     if (arg.type === 'Identifier') {
       const name = (arg as unknown as { name: string }).name
       // Local grammar var (`const myRules = rules(...)`).
       const rm = localRuleMaps.get(name)
-      if (rm) return localCarried(rm, label, composing)
+      if (rm) return localCarried(rm, label, composing, localGrammarScanSkip.get(name))
       // Local composed var (`const g = compose([...])`) → its own carried list, which
       // materializeCarried re-lowers under THIS compose's composing trivia.
       const composed = localComposedCarried.get(name)
@@ -1200,7 +1203,9 @@ export function transformMacro(
             const pieces = compileLinkable([...compiledRules.ruleMap], ns, { recovery })
             if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
               // Carry the compact IR when serializable; else the full lowered pieces.
-              const ir = serializeRuleMap([...compiledRules.ruleMap] as never)
+              // Thread the grammar's scanSkip into the IR so a downstream compose of
+              // this imported grammar re-lowers its scanTo/balanced sites ambiently.
+              const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
               replacement = withCarriedPieces(replacement, [ir ? { ns, ir } : pieces])
             }
           }
