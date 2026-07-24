@@ -48,9 +48,31 @@ import { PARSEMAN_VERSION } from '../version.ts'
 export type FirstSetSeg = { set: FirstSet; nullable: boolean; ref?: string }
 export type FirstSetRecipe = { alts: FirstSetSeg[][] }
 export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): FirstSetRecipe {
-  if (seen.has(p)) return { alts: [[]] }   // cycle: empty (nullable) chain — contributes nothing
-  seen.add(p)
   const d = p._def as ParserDef
+  // A NAMED rule reference is deferred to fuse time and NEVER recursed into here, so
+  // it needs no cycle guard and must NOT be added to `seen`. Otherwise the SAME ref
+  // object appearing in two sibling positions of a rule — e.g. `choice(sequence(not,
+  // g.R), sequence(g.R, …))`, where `g.R` is both arm-0's (nullable-prefix) tail and
+  // arm-1's lead — would hit the `seen` guard on its 2nd visit and return an EMPTY
+  // recipe, silently dropping arm-1's first chars (an unsound FALSE-EXCLUDE: the
+  // fused choice then gates that arm out and rejects valid input). This is handled
+  // BEFORE the cycle guard precisely so a legit multi-occurrence ref is never mistaken
+  // for a cycle. (Rule ref: first-set + chain-stop nullability both deferred to fuse;
+  // `nullable: false` = "not forced skippable" — a wrapping optional/many forces true.)
+  if (d.tag === 'lazy') {
+    const name = (p as unknown as { _ruleName?: string })._ruleName
+    if (name !== undefined) return { alts: [[{ set: empty(), nullable: false, ref: name }]] }
+  }
+  // PATH-BASED cycle guard: `seen` holds only the combinators on the CURRENT recursion
+  // path (ancestors), added on entry and removed on exit (the `finally` below). A
+  // genuine self-cycle (a node reachable from itself through the leading structure)
+  // returns an empty chain, but a node SHARED across SIBLING / DAG positions — e.g. an
+  // inlined `const term = node(…)` used in several arms — is recomputed fresh instead
+  // of being mistaken for a cycle and silently dropped (which would under-approximate
+  // its arm's first-set into a FALSE-EXCLUDE). A global visited-set would conflate the
+  // two; only ancestors on the current path are true cycles.
+  if (seen.has(p)) return { alts: [[]] }
+  seen.add(p)
   const rec = (c: Combinator<unknown>): FirstSetRecipe => leadingFirstSetRecipe(c, seen)
   const seg = (set: FirstSet, nullable: boolean): FirstSetSeg => ({ set, nullable })
   // Force every segment of a recipe to nullable — used for `optional`/`many`, which
@@ -71,13 +93,11 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
     }
     return seg(hasRef ? any() : set, nullable)
   }
+  const compute = (): FirstSetRecipe => {
   switch (d.tag) {
     case 'lazy': {
-      const name = (p as unknown as { _ruleName?: string })._ruleName
-      // Rule ref: first-set AND chain-stop nullability both deferred to fuse time.
-      // `nullable: false` here is the DEFAULT "not forced skippable" — fusedBody
-      // resolves the ref's real nullability (a wrapping optional/many forces it true).
-      if (name !== undefined) return { alts: [[{ set: empty(), nullable: false, ref: name }]] }
+      // Named lazies (rule refs) are handled above, before the cycle guard. An
+      // UNNAMED lazy is an inline thunk — recurse into it (cycle-guarded by `seen`).
       try { return rec(d.thunk()) } catch { return { alts: [[seg(any(), false)]] } }
     }
     case 'literal': case 'regex': case 'keywords':
@@ -117,6 +137,8 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
     // not / scanTo / guard / withCtx / recover / unknown → shallow set (safe).
     default: return { alts: [[seg(p._meta.firstSet, matchesEmpty(p))]] }
   }
+  }
+  try { return compute() } finally { seen.delete(p) }   // pop from the current path
 }
 import { markUnusedValues } from './value-usage.ts'
 import { buildGrammarPlan, type GrammarCoveragePlan } from './grammar-coverage-ids.ts'

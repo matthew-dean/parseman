@@ -165,4 +165,75 @@ describe('cross-artifact first-set dispatch (composeLeaf shape)', () => {
     expect(falseExcludes).toBe(0)
     expect(endMismatch).toBe(0)
   })
+
+  // ── Regression: false-excludes found on the REAL jess corpus (nested-paren at-rule
+  // preludes) that the earlier synthetic fuzz missed — the recursive query/supports
+  // prelude behind cross-artifact refs, where the SAME ref appears in multiple arm
+  // positions and a case-insensitive recognizer feeds the dispatch. ─────────────────
+
+  it('a ref shared across a nullable-prefix tail AND a sibling arm lead keeps BOTH first chars', () => {
+    // The `@media`/`@supports` condition shape: choice(sequence(not-led, g.InParens),
+    // sequence(g.InParens, …)). `g.InParens` is BOTH arm-0's tail (after the nullable
+    // `not`) and arm-1's lead. A path-unaware `seen` guard dropped arm-1 → the fused
+    // choice lost `(`. The resolved first-set MUST include InParens' `(`.
+    const recog = rules(() => ({ Not: regex(/not(?![-\w])/i), Kw: regex(/[a-z]+/i) }))
+    const consumer = rules((g: Record<string, Combinator<unknown>>) => ({
+      InParens: node('InParens', choice(sequence(literal('('), g.Condition!, literal(')')), sequence(literal('('), g.Kw!, literal(')'))), cst('InParens')),
+      Condition: node('Condition', choice(sequence(g.Not!, g.InParens!), sequence(g.InParens!, many(sequence(g.Kw!, g.InParens!)))), cst('Condition')),
+      Clause: node('Clause', choice(g.Condition!, g.Kw!), cst('Clause')),
+    }))
+    const pR = compileLinkable(Object.entries(recog), '_r_')!
+    const pC = compileLinkable(Object.entries(consumer), '_c_')!
+    // Condition's recipe must carry BOTH arms — arm 1 (`[ref InParens]`) must not be
+    // dropped as a false cycle (that lost `(`).
+    const cond = pC.firstSetRecipes!.get('Condition')!
+    expect(cond.alts.some(alt => alt.length === 1 && alt[0]!.ref === 'InParens')).toBe(true)
+    // The Clause arm that calls Condition must gate on `(`(40) — not only `n`/letters.
+    const R = fuseRules([pR, pC]) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    expect(R.Clause!('(x)', 0, {}).ok).toBe(true)          // `(`-led — was false-excluded
+    expect(R.Clause!('((xy))', 0, {}).ok).toBe(true)       // nested parens
+  })
+
+  it('a shared INLINED node used in several arm positions is not mistaken for a cycle', () => {
+    // `const term = node(…)` referenced (not via `g.`) in two arms; a global visited-set
+    // dropped its 2nd occurrence → the arm lost `term`'s first chars. Path-based cycle
+    // detection recomputes it.
+    const g = rules((self: Record<string, Combinator<unknown>>) => {
+      const Term = node('Term', choice(sequence(literal('('), self.Kw!, literal(')')), self.Kw!), cst('Term'))
+      return {
+        Kw: regex(/[a-z]+/),
+        Term,
+        // Term appears in BOTH the `only`-clause many AND the plain clause lead.
+        Clause: node('Clause', choice(
+          sequence(literal('!'), Term, many(sequence(literal('&'), Term))),
+          sequence(optional(literal('~')), Term),
+        ), cst('Clause')),
+      }
+    })
+    const R = fuseRules([compileLinkable(Object.entries(g), '_g_')!]) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    // The plain-clause arm (lead = Term) must accept a `(`-led term — Term's `(` must
+    // survive despite Term also appearing in the `!`-clause arm.
+    expect(R.Clause!('(a)', 0, {}).ok).toBe(true)
+    expect(R.Clause!('~(a)', 0, {}).ok).toBe(true)
+  })
+
+  it('a case-insensitive regex first-set is case-folded (uppercase input not gated out)', () => {
+    // `/red|blue/i` used behind a cross-artifact ref: dispatch must admit `R`/`B`, not
+    // just `r`/`b` (else `ReD` false-excludes the named-color arm → mis-classified).
+    expect(regex(/red|blue/i)._meta.firstSet).toMatchObject({
+      kind: 'ranges',
+      ranges: [{ lo: 66, hi: 66 }, { lo: 82, hi: 82 }, { lo: 98, hi: 98 }, { lo: 114, hi: 114 }],
+    })
+    const recog = rules(() => ({ Color: regex(/(?:red|blue|aqua)(?![-\w])/i) }))
+    const consumer = rules((g: Record<string, Combinator<unknown>>) => ({
+      Value: node('Value', choice(g.Color!, regex(/[a-z]+/i)), cst('Value')),
+    }))
+    const R = fuseRules([
+      compileLinkable(Object.entries(recog), '_r_')!,
+      compileLinkable(Object.entries(consumer), '_c_')!,
+    ]) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    // Uppercase `ReD` must reach the Color arm (its guard includes `R`).
+    expect(R.Value!('ReD', 0, {}).ok).toBe(true)
+    expect(R.Value!('AQUA', 0, {}).ok).toBe(true)
+  })
 })
