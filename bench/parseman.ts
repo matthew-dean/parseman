@@ -19,6 +19,13 @@ const scale = Number(argValue('scale') ?? 1)
 const samples = Number(argValue('samples') ?? 15)
 
 console.log('\n=== Parseman perf — interpreted vs compiled ===')
+if (only || scale !== 1) {
+  // The Δ columns compare against the `full` context baseline. A filtered or
+  // rescaled run is a DIFFERENT measurement context, and interpreted medians move
+  // ~15% between contexts (see PERF_CONTEXTS) — so read Δ as a hint, not a gate.
+  console.log('  note: filtered/rescaled run — Δ vs the full-context baseline is indicative only;')
+  console.log('        the gate is `pnpm perf:guard`, which compares within its own context.')
+}
 const rows = runParsemanSuite({
   only,
   scale,
