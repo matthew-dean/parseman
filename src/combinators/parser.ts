@@ -47,6 +47,13 @@ export type RulesOptions = {
   /** Ambient trivia for the whole grammar. See `parser({ trivia })` for the shape
    * (`null` clears it — equivalent to omitting it at the grammar level). */
   trivia?: Combinator<unknown> | null
+  /**
+   * Ambient scan-skip for the whole grammar: opaque non-trivia units (strings,
+   * balanced brackets, …) that a `scanTo`/`balanced` with no explicit `skip`
+   * consults so a sentinel hidden inside one is never matched. Declared ONCE here
+   * and inherited everywhere, mirroring `trivia`. `null`/absent = none.
+   */
+  scanSkip?: Combinator<unknown>[] | null
 }
 
 // Options-first, mirroring `parser({ opts }, combinator)` — set once on the grammar
@@ -112,6 +119,16 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
       // reach it as `g.rw`): a trivia rule must never carry ambient trivia, or it
       // would recursively skip trivia within itself. Mirrors the codegen guard.
       if (rule && !rule._meta.isTrivia) (rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = options.trivia
+    }
+  }
+
+  // Grammar-level ambient scan-skip, mirroring the trivia stamp above: every
+  // non-trivia rule carries it so any parse entry installs `ctx.scanSkip` and the
+  // compiled map can seed it. `!= null` so `scanSkip: null` clears (stores nothing).
+  if (options?.scanSkip != null) {
+    for (const key of Object.keys(definitions)) {
+      const rule = (cache as Record<string, Combinator<unknown>>)[key]
+      if (rule && !rule._meta.isTrivia) (rule._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip = options.scanSkip
     }
   }
 

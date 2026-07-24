@@ -350,7 +350,7 @@ class Serializer {
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`
       case 'skip':      return `skip(${kid(def.main)}, ${kid(def.skipped)})`
       case 'scanTo':
-        return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}], orEOF: ${def.orEOF} })`
+        return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}]${def.raw ? ', raw: true' : ''}, orEOF: ${def.orEOF} })`
       case 'transform': {
         if (def.fnSrc === undefined) throw new Unserializable('transform without fnSrc')
         // `_tf` sets `_def.fnSrc` so re-lowering INLINES the callback (a plain

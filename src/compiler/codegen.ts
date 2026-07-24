@@ -255,6 +255,13 @@ type Ctx = {
   namedFnDecls: string[]
   /** Active trivia parser (set by grammar() wrappers, cleared on exit) */
   activeTrivia?: Combinator<unknown> | undefined
+  /**
+   * Active grammar-level ambient scan-skip (from `rules({ scanSkip })`), seeded at
+   * the grammar-seed sites alongside `activeTrivia`. `emitScanTo` bakes it (with
+   * `activeTrivia`) in front of a scan's per-call skip list so the compiled scan
+   * matches the interpreter's `resolveScanSkip`.
+   */
+  activeScanSkip?: Combinator<unknown>[] | undefined
   /** Label table from grammar trivia for default ParseContext. */
   triviaKindLabels?: readonly string[] | undefined
   /**
@@ -625,16 +632,19 @@ function ensureTriviaFn(ctx: Ctx): string {
   const savedIndent    = ctx.indent
   const savedFailLabel = ctx.failLabel
   const savedTrivia    = ctx.activeTrivia
+  const savedScanSkip  = ctx.activeScanSkip
   const savedCapAsTrivia = ctx.capAsTrivia
   ctx.indent    = 2
   ctx.failLabel = '_triv'
   ctx.capAsTrivia = true  // trivia terminals must not push into _cstLeaves
   ctx.activeTrivia = undefined  // trivia parser must not skip trivia within itself
+  ctx.activeScanSkip = undefined  // nor consult ambient scan-skip within trivia
   const r = emit(trivia, ctx, '_pos')
   ctx.indent    = savedIndent
   ctx.failLabel = savedFailLabel
   ctx.capAsTrivia = savedCapAsTrivia
   ctx.activeTrivia = savedTrivia
+  ctx.activeScanSkip = savedScanSkip
 
   ctx.namedFnDecls.push([
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
@@ -2320,11 +2330,23 @@ function emitScanTo(
   const { stmts: sentStmts, okVar: sentOk } = emitFallible(def.sentinel, probeCtx, curV)
   stmts.push(...sentStmts, `${ind(ctx)}if (${sentOk}) { ${foundV} = true; break }`)
 
+  // Fold grammar-level ambient trivia + scanSkip in FRONT of the per-call skip
+  // list (explicit skip EXTENDS the ambient default) — mirrors the interpreter's
+  // resolveScanSkip so compiled and interpreted scans stay byte-identical. `raw`
+  // opts out of everything ambient.
+  const effectiveSkip: Combinator<unknown>[] = def.raw
+    ? def.skip
+    : [
+        ...(ctx.activeTrivia ? [ctx.activeTrivia] : []),
+        ...(ctx.activeScanSkip ?? []),
+        ...def.skip,
+      ]
+
   // Skippers — labeled block per skipper; a failure just means "not this one"
-  if (def.skip.length > 0) {
+  if (effectiveSkip.length > 0) {
     const advV = v(ctx, '_stadv')
     stmts.push(`${ind(ctx)}let ${advV} = false`)
-    for (const skipper of def.skip) {
+    for (const skipper of effectiveSkip) {
       const { stmts: skStmts, okVar: skOk, endVar: skEnd } = emitFallible(skipper, probeCtx, curV)
       stmts.push(
         `${ind(ctx)}if (!${advV}) {`,
@@ -3572,6 +3594,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   // parser({trivia}) / noTrivia overrides). This is the compiled mirror of the
   // interpreter installing it as ctx.trivia at the entry.
   const grammarTrivia = (combinator._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
+  const grammarScanSkip = (combinator._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -3594,6 +3617,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
 
   const r = emit(combinator as Combinator<unknown>, ctx, '_pos')
@@ -3760,7 +3784,7 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; recovery?: boolean; coverage?: boolean },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; coverage?: boolean },
 ): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Named lazy proxies already carry their stable rule identity and redirect
@@ -3775,6 +3799,10 @@ export function compileRuleMap(
   // parser({trivia}) / noTrivia overrides). Mirrors the interpreter installing it
   // as ctx.trivia at the entry, and compile()'s single-entry seed.
   const grammarTrivia = opts?.trivia
+  // Grammar-level ambient scan-skip: explicit opt, else the first rule that carries
+  // a `grammarScanSkip` stamp (from `rules({ scanSkip })`). Mirrors grammarTrivia.
+  const grammarScanSkip = opts?.scanSkip
+    ?? ruleMap.map(([, r]) => (r._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip).find(Boolean)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -3797,6 +3825,7 @@ export function compileRuleMap(
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule), coverageWinners) } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
 
   // Reverse map: each rule's `ref` placeholder → its canonical `_r_<Name>` fn
@@ -3820,9 +3849,11 @@ export function compileRuleMap(
   // short. Emit it with activeTrivia cleared, matching the inline-trivia guard.
   const perEntry = ruleMap.map(([key, rule]) => {
     const savedTrivia = ctx.activeTrivia
-    if (rule._meta.isTrivia) ctx.activeTrivia = undefined
+    const savedScanSkip = ctx.activeScanSkip
+    if (rule._meta.isTrivia) { ctx.activeTrivia = undefined; ctx.activeScanSkip = undefined }
     const r = emit(rule, ctx, '_pos')
     ctx.activeTrivia = savedTrivia
+    ctx.activeScanSkip = savedScanSkip
     return { key, rule, r }
   })
 
@@ -3978,7 +4009,7 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
@@ -3988,6 +4019,9 @@ export function compileLinkable(
   // the compose mirror of compileRuleMap's seed. `parser`/`noTrivia` still override.
   const grammarTrivia = opts?.trivia
     ?? ruleMapArg.map(([, r]) => (r._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia).find(Boolean)
+  // Grammar-level ambient scan-skip through compose(), mirroring grammarTrivia.
+  const grammarScanSkip = opts?.scanSkip
+    ?? ruleMapArg.map(([, r]) => (r._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip).find(Boolean)
   // Drop EXTERNAL entries: `rules(g => …)` returns a cache that also holds every
   // `g.X` that was ACCESSED, so an accessed-but-not-defined rule (defined in
   // another artifact) leaks into `Object.entries` as an undefined `ref`. Those
@@ -4016,6 +4050,7 @@ export function compileLinkable(
     ns,
     deferFirstSetRefs: true,
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
   // Canonical name per rule. Register in BOTH ruleNames (so sibling `emitLazy`
   // refs resolve by name) AND namedParsers up-front (so a rule emitted before a
@@ -4086,9 +4121,11 @@ export function compileLinkable(
       // A trivia rule must never carry the ambient trivia (it would recursively
       // skip trivia within itself). Mirrors compileRuleMap's guard.
       const savedTrivia = ctx.activeTrivia
-      if (rule._meta.isTrivia) ctx.activeTrivia = undefined
+      const savedScanSkip = ctx.activeScanSkip
+      if (rule._meta.isTrivia) { ctx.activeTrivia = undefined; ctx.activeScanSkip = undefined }
       const body = emit(resolved, ctx, '_pos')
       ctx.activeTrivia = savedTrivia
+      ctx.activeScanSkip = savedScanSkip
       ctx.indent = savedIndent; ctx.failLabel = savedFail; ctx.recordFail = savedRec
       // Linkable entries run through their named rule body rather than the
       // public compileRuleMap wrapper. Instrument the named boundary itself so

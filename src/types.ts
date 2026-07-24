@@ -73,7 +73,11 @@ export type ParserDef =
   | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown>; extraSrc?: string }
   | { tag: 'recover';  parser: Combinator<unknown>; sentinel: Combinator<unknown> }
   | { tag: 'expect';   parser: Combinator<unknown>; label: string | undefined; expected: string[] }
-  | { tag: 'scanTo';   sentinel: Combinator<unknown>; skip: Combinator<unknown>[]; orEOF: boolean }
+  // `skip` is the per-call opaque-unit list; ambient trivia + grammar-level
+  // `scanSkip` are PREPENDED at parse/compile time (explicit skip EXTENDS the
+  // ambient default). `raw`: hard opt-out — skip nothing ambiently, restoring the
+  // pre-ambient raw byte-walk.
+  | { tag: 'scanTo';   sentinel: Combinator<unknown>; skip: Combinator<unknown>[]; raw: boolean; orEOF: boolean }
   | { tag: 'keywords'; words: readonly string[]; caseInsensitive: boolean; boundary: string | undefined }
   | { tag: 'unknown' }
 
@@ -165,6 +169,16 @@ export type ParseContext = {
   // `| undefined` (matching captureTrivia/_cst* below): a nested scope may
   // intentionally CLEAR inherited trivia by setting these to undefined (noTrivia).
   trivia?: Combinator<unknown> | undefined
+  /**
+   * Grammar-level ambient opaque-unit skippers (strings, balanced brackets, …),
+   * declared once via `rules({ scanSkip }, factory)` and threaded here at the
+   * parse entry — the scan-skip analogue of `trivia`. A `scanTo`/`balanced` with
+   * no explicit per-call `skip` (and not `raw`) consults these so a sentinel
+   * hidden inside a string/bracket run is never matched. Separate category from
+   * `trivia`: trivia is insignificant everywhere; scanSkip is significant but
+   * atomic during a scan. Undefined when the grammar declares none.
+   */
+  scanSkip?: Combinator<unknown>[] | undefined
   /**
    * Label table for the active trivia parser (`label(name, arm)` strings in
    * choice order). When set, trivia logs include a kind index per entry.
@@ -332,6 +346,13 @@ export type ParserMeta = {
    * seed `activeTrivia` for every rule in the map.
    */
   grammarTrivia?: Combinator<unknown> | undefined
+  /**
+   * Grammar-level ambient scan-skip declared via `rules({ scanSkip }, factory)`.
+   * Mirrors `grammarTrivia`: stamped on every non-trivia rule, installed as
+   * `ctx.scanSkip` at the parse entry (and baked as the compiled seed) so a
+   * `scanTo`/`balanced` with no explicit `skip` consults it ambiently.
+   */
+  grammarScanSkip?: Combinator<unknown>[] | undefined
 }
 
 /** A first set is either "any" (unknown/unbounded) or a list of char code ranges */
