@@ -214,6 +214,28 @@ export const PERF_CONTEXTS: Record<PerfContext, ParsemanSuiteOpts> = {
 }
 
 /**
+ * Wall-clock ceiling for ONE context capture, so a child that never terminates
+ * (an unbounded grammar loop is the realistic way to get one) cannot wedge
+ * bench:baseline, perf-guard or a vitest perf gate indefinitely.
+ *
+ * Sized off the worst context, `full`: 15 cases × 2 modes × BASELINE_PASSES,
+ * where measureMedianUs bounds each sample to ~SAMPLE_BUDGET_MS, plus tsx startup
+ * and compiling every example grammar at import — low single-digit minutes in
+ * practice. 15 minutes is roughly an order of magnitude of headroom over that.
+ * Deliberately lopsided: a timeout that fires late costs one stuck run, while a
+ * timeout that fires early kills a legitimate measurement on a loaded machine and
+ * reads as a phantom perf failure.
+ */
+const CONTEXT_TIMEOUT_MS = 15 * 60_000
+
+/** An expired `timeout` surfaces as ETIMEDOUT, and/or as the SIGTERM used to kill the child. */
+function isTimeoutError(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null) return false
+  const { code, signal } = e as { code?: unknown; signal?: unknown }
+  return code === 'ETIMEDOUT' || signal === 'SIGTERM'
+}
+
+/**
  * Measure `context` in a FRESH child process and return its rows.
  *
  * Required whenever the calling process is not itself a faithful instance of the
@@ -229,12 +251,25 @@ export function captureContextRows(
   const args = ['--import', 'tsx/esm', resolve(__dir, 'capture-context.ts'), context]
   if (opts?.samples !== undefined) args.push(`--samples=${opts.samples}`)
   if (opts?.passes !== undefined) args.push(`--passes=${opts.passes}`)
-  const out = execFileSync(process.execPath, args, {
-    encoding: 'utf8',
-    // Child stderr (grammar gating notes) passes through; stdout carries the rows.
-    stdio: ['ignore', 'pipe', 'inherit'],
-    maxBuffer: 64 * 1024 * 1024,
-  })
+  let out: string
+  try {
+    out = execFileSync(process.execPath, args, {
+      encoding: 'utf8',
+      // Child stderr (grammar gating notes) passes through; stdout carries the rows.
+      stdio: ['ignore', 'pipe', 'inherit'],
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: CONTEXT_TIMEOUT_MS,
+    })
+  } catch (e) {
+    // Name the measurement — the raw ETIMEDOUT says only that *a* child died.
+    if (isTimeoutError(e)) {
+      throw new Error(
+        `captureContextRows: context "${context}" timed out after ${CONTEXT_TIMEOUT_MS / 1000}s (child killed)`,
+        { cause: e },
+      )
+    }
+    throw e
+  }
   const line = out.split('\n').find(l => l.startsWith(ROWS_MARKER))
   if (!line) throw new Error(`captureContextRows: context "${context}" produced no ${ROWS_MARKER} line`)
   return JSON.parse(line.slice(ROWS_MARKER.length)) as ParsemanBenchRow[]

@@ -21,13 +21,48 @@ import { CHART_GROUPS, CHART_BARS, BAR_MARKER, type ChartKey } from './chart-spe
 const __dir = dirname(fileURLToPath(import.meta.url))
 const CHILD = resolve(__dir, 'measure-bar.ts')
 
+/**
+ * Wall-clock ceiling for ONE bar, so a child that never terminates cannot hang a
+ * chart regen with no recovery.
+ *
+ * A bar is a warmup plus 5 timed passes over its chart's size groups with no
+ * per-sample budget, so the slow competitors on the large fixtures set the scale.
+ * The serial sweep measured under ROUNDS puts all 26 bars at ~10 minutes, i.e.
+ * tens of seconds for a typical one; 10 minutes for a single bar is ~25× that.
+ * Erring generous is deliberate — a regen that finishes late is recoverable, a
+ * bar killed early on a loaded machine silently corrupts a published chart.
+ * Lower than CONTEXT_TIMEOUT_MS in parseman-perf.ts because a bar loads exactly
+ * one library and one grammar, not the whole example suite.
+ */
+const BAR_TIMEOUT_MS = 10 * 60_000
+
+/** An expired `timeout` surfaces as ETIMEDOUT, and/or as the SIGTERM used to kill the child. */
+function isTimeoutError(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null) return false
+  const { code, signal } = e as { code?: unknown; signal?: unknown }
+  return code === 'ETIMEDOUT' || signal === 'SIGTERM'
+}
+
 /** µs per size group for one bar, measured in a fresh process. */
 function measureBar(chart: ChartKey, key: string): number[] {
-  const out = execFileSync(process.execPath, ['--import', 'tsx/esm', CHILD, chart, key], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'inherit'],
-    maxBuffer: 32 * 1024 * 1024,
-  })
+  let out: string
+  try {
+    out = execFileSync(process.execPath, ['--import', 'tsx/esm', CHILD, chart, key], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'inherit'],
+      maxBuffer: 32 * 1024 * 1024,
+      timeout: BAR_TIMEOUT_MS,
+    })
+  } catch (e) {
+    // Name the bar — a regen spawns ~78 children and the raw ETIMEDOUT names none.
+    if (isTimeoutError(e)) {
+      throw new Error(
+        `collect-charts: ${chart}/${key} timed out after ${BAR_TIMEOUT_MS / 1000}s (child killed)`,
+        { cause: e },
+      )
+    }
+    throw e
+  }
   const line = out.split('\n').find(l => l.startsWith(BAR_MARKER))
   if (!line) throw new Error(`collect-charts: ${chart}/${key} produced no ${BAR_MARKER} line`)
   return JSON.parse(line.slice(BAR_MARKER.length)) as number[]
