@@ -41,8 +41,8 @@ function toDsl(node: SpecNode): string {
     }
     case 'not':
       return `Sequence(Comment("not"), ${toDsl(node.item)})`
-    case 'ahead':
-      return `Sequence(Comment("ahead"), ${toDsl(node.item)})`
+    case 'peek':
+      return `Sequence(Comment("peek"), ${toDsl(node.item)})`
   }
 }
 
@@ -89,7 +89,7 @@ function toDiagramNode(b: RailroadBuilders, node: SpecNode): unknown {
       return node.min === 1 ? rep : b.Optional(rep)
     }
     case 'not': return b.Sequence(b.Comment('not'), toDiagramNode(b, node.item))
-    case 'ahead': return b.Sequence(b.Comment('ahead'), toDiagramNode(b, node.item))
+    case 'peek': return b.Sequence(b.Comment('peek'), toDiagramNode(b, node.item))
   }
 }
 

@@ -50,13 +50,19 @@ export type ParserDef =
   // closures live in `gates`.
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; gateSrcs?: (string | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
   | { tag: 'attempt';   parser: Combinator<unknown> }
-  | { tag: 'many';      parser: Combinator<unknown>; min: 0; valueUnused?: boolean }
-  | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean }
+  // The TAG carries NULLABILITY (what every downstream switch keys on): `many` is
+  // the nullable min-0 repeat, `oneOrMore` the non-nullable min>=1 one. `min`/`max`
+  // carry the actual ITEM bounds (`many(x, { min: 3, max: 8 })` is a `oneOrMore`
+  // def with `min: 3, max: 8`). `max` absent = unbounded.
+  | { tag: 'many';      parser: Combinator<unknown>; min: 0; max?: number; valueUnused?: boolean }
+  | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: number; max?: number; valueUnused?: boolean }
   | { tag: 'optional';  parser: Combinator<unknown> }
-  // `min: 0` — the default: `(item (sep item)*)?`, NULLABLE (matches the empty
-  // string). `min: 1` — `sepBy(item, sep, { min: 1 })`: `item (sep item)*`,
-  // non-nullable, first-set = the item's, so it gates as a choice arm.
-  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: 0 | 1 }
+  // `min`/`max` count ITEMS, not separators. `min: 0` (the default) is
+  // `(item (sep item)*)?` — NULLABLE, matches the empty string. `min >= 1` is
+  // non-nullable with first-set = the item's, so it gates as a choice arm.
+  // `trailing` governs a separator with no item after it: 'forbid' (default) leaves
+  // it unconsumed, 'allow' consumes it, 'require' demands it after the last item.
+  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: number; max?: number; trailing?: 'allow' | 'require' }
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; recognitionOnly?: boolean }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
@@ -68,9 +74,9 @@ export type ParserDef =
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
   // Positive lookahead. Zero-width like `not`, but — unlike `not` — it KNOWS what
-  // it requires, so it carries `parser`'s first-set and a leading `ahead()` gates
+  // it requires, so it carries `parser`'s first-set and a leading `peek()` gates
   // its choice arm (see `isPositiveLookahead` / `sequenceFirstSet`).
-  | { tag: 'ahead';    parser: Combinator<unknown> }
+  | { tag: 'peek';    parser: Combinator<unknown> }
   | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; buildStaticError?: readonly string[]; unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean; trailingTrivia?: boolean }
   // `predSrc`/`extraSrc` (set by the macro evaluator): SOURCE TEXT of the guard
   // predicate / the withCtx `extra` value, so codegen inlines them into `_mf`

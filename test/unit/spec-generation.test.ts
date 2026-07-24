@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rules, choice, sequence, literal, regex, optional, sepBy, many, oneOrMore,
-  not, ahead, keywords, trivia, transform, node, type Combinator,
+  not, peek, keywords, trivia, transform, node, type Combinator,
 } from '../../src/index.ts'
 import { toEBNF, toRailroadHtml, toRailroadSvg, RAILROAD_CSS, buildSpecModel } from '../../src/spec/index.ts'
 
@@ -24,7 +24,7 @@ function demoGrammar() {
       kw: keywords(['if', 'else', 'while']),
       stars: sequence(many(ident), oneOrMore(number)),
       neg: sequence(not(literal('#')), ident),
-      pos: sequence(ahead(literal('@')), ident),
+      pos: sequence(peek(literal('@')), ident),
       opt: sequence(optional(literal('-')), ident),
     }
   })
@@ -68,7 +68,7 @@ describe('spec — combinator → EBNF mapping', () => {
     expect(lines.neg).toBe('!"#" /[a-zA-Z_][a-zA-Z0-9_]*/')
   })
 
-  it('ahead → PEG positive-lookahead annotation', () => {
+  it('peek → PEG positive-lookahead annotation', () => {
     expect(lines.pos).toBe('&"@" /[a-zA-Z_][a-zA-Z0-9_]*/')
   })
 

@@ -79,7 +79,7 @@ function render(node: SpecNode): { text: string; level: number } {
     }
 
     // PEG notation: `&` positive lookahead, `!` negative.
-    case 'ahead': {
+    case 'peek': {
       const r = render(node.item)
       return { text: `&${wrap(r.text, r.level, ATOM)}`, level: ATOM }
     }

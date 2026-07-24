@@ -28,7 +28,7 @@ import { choice } from '../combinators/choice.ts'
 import { attempt } from '../combinators/attempt.ts'
 import { many, oneOrMore, optional, sepBy } from '../combinators/repeat.ts'
 import { not } from '../combinators/not.ts'
-import { ahead } from '../combinators/ahead.ts'
+import { peek } from '../combinators/peek.ts'
 import { node } from '../combinators/node.ts'
 import { parser } from '../combinators/grammar.ts'
 import { scanTo } from '../combinators/scanTo.ts'
@@ -55,7 +55,7 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'label':
     case 'field':
     case 'not':
-    case 'ahead':
+    case 'peek':
     case 'node':
     case 'withCtx':
     case 'expect':    return [def.parser]
@@ -83,6 +83,15 @@ function lazyTarget(c: Comb): Comb | null {
 }
 
 class Unserializable extends Error {}
+
+/** `, { min, max, trailing }` — omitted entirely when everything is at its default. */
+function repeatOpts(min: number, max: number | undefined, trailing?: string): string {
+  const parts: string[] = []
+  if (min !== 0) parts.push(`min: ${min}`)
+  if (max !== undefined) parts.push(`max: ${max}`)
+  if (trailing !== undefined) parts.push(`trailing: ${JSON.stringify(trailing)}`)
+  return parts.length === 0 ? '' : `, { ${parts.join(', ')} }`
+}
 
 export function serializeRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Comb]>,
@@ -193,13 +202,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   // eslint-disable-next-line no-new-func
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'attempt',
-    'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'ahead', 'node', 'parser',
+    'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'peek', 'node', 'parser',
     'scanTo', 'token', 'leaf', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice, attempt,
-    many, oneOrMore, optional, sepBy, not, ahead, node, parser,
+    many, oneOrMore, optional, sepBy, not, peek, node, parser,
     scanTo, token, leaf, transform, skip, trivia, label, field, expectC, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
   return Object.entries(map)
@@ -378,13 +387,17 @@ class Serializer {
         })
         return `_gch([${items.join(', ')}])`
       }
-      case 'many':      return `many(${kid(def.parser)})`
-      case 'oneOrMore': return `oneOrMore(${kid(def.parser)})`
+      case 'many':      return `many(${kid(def.parser)}${repeatOpts(def.min, def.max)})`
+      // A `oneOrMore` def with min > 1 came from `many(x, { min: n })`; round-trip
+      // it through `many` so the bounds survive (oneOrMore defaults min to 1).
+      case 'oneOrMore': return def.min === 1 && def.max === undefined
+        ? `oneOrMore(${kid(def.parser)})`
+        : `many(${kid(def.parser)}${repeatOpts(def.min, def.max)})`
       case 'optional':  return `optional(${kid(def.parser)})`
       case 'attempt':   return `attempt(${kid(def.parser)})`
-      case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)}${def.min === 1 ? ', { min: 1 }' : ''})`
+      case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)}${repeatOpts(def.min, def.max, def.trailing)})`
       case 'not':       return `not(${kid(def.parser)})`
-      case 'ahead':     return `ahead(${kid(def.parser)})`
+      case 'peek':     return `peek(${kid(def.parser)})`
       case 'trivia':    return `trivia(${kid(def.parser)})`
       case 'token':     return `token(${kid(def.parser)})`
       case 'leaf': {

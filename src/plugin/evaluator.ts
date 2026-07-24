@@ -113,12 +113,13 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   sequence:  (...a) => (parseman.sequence as (...p: Combinator<unknown>[]) => Combinator<unknown[]>)(...(a as Combinator<unknown>[])),
   choice:    (...a) => (parseman.choice as (...p: Combinator<unknown>[]) => Combinator<unknown>)(...(a as Combinator<unknown>[])),
   attempt:   (...a) => parseman.attempt(a[0] as Combinator<unknown>),
-  many:      (...a) => parseman.many(a[0] as Combinator<unknown>),
-  oneOrMore: (...a) => parseman.oneOrMore(a[0] as Combinator<unknown>),
+  many:      (...a) => parseman.many(a[0] as Combinator<unknown>, a[1] as parseman.RepeatOptions | undefined),
+  oneOrMore: (...a) => parseman.oneOrMore(a[0] as Combinator<unknown>, a[1] as parseman.RepeatOptions | undefined),
   optional:  (...a) => parseman.optional(a[0] as Combinator<unknown>),
-  ahead:     (...a) => parseman.ahead(a[0] as Combinator<unknown>),
+  peek:       (...a) => parseman.peek(a[0] as Combinator<unknown>),
   skip:      (...a) => parseman.skip(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>),
   sepBy:     (...a) => parseman.sepBy(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>, a[2] as parseman.SepByOptions | undefined),
+  oneOrMoreSep: (...a) => parseman.oneOrMoreSep(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>, a[2] as parseman.SepByOptions | undefined),
   trivia:    (...a) => parseman.trivia(a[0] as Combinator<unknown>),
   label:     (...a) => parseman.label(a[0] as string, a[1] as Combinator<unknown>),
   field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),
@@ -361,7 +362,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
   // (loop body). We must push item's mfSrcs twice to stay aligned with ctx.mapFns.
   // `opts` (notably `{ min: 1 }`) MUST be honored: dropping it would silently
   // compile a NULLABLE list where the source asked for a non-empty one.
-  if (callee.name === 'sepBy') {
+  if (callee.name === 'sepBy' || callee.name === 'oneOrMoreSep') {
     const [itemArg, sepArg, optsArg] = node.arguments
     if (!itemArg || !sepArg || itemArg.type === 'SpreadElement' || sepArg.type === 'SpreadElement') return null
     const itemMfs: string[] = []
@@ -378,18 +379,36 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       opts = v as parseman.SepByOptions
     }
     if (mfs) mfs.push(...itemMfs, ...sepMfs, ...itemMfs)
-    try { return parseman.sepBy(itemCombi, sepCombi, opts) } catch { return null }
+    try {
+      return callee.name === 'sepBy'
+        ? parseman.sepBy(itemCombi, sepCombi, opts)
+        : parseman.oneOrMoreSep(itemCombi, sepCombi, opts)
+    } catch { return null }
   }
 
-  // oneOrMore(item) — emitMany(min=1) traverses: item (mandatory first), item (loop body)
-  if (callee.name === 'oneOrMore') {
-    const [itemArg] = node.arguments
+  // many(item, opts?) / oneOrMore(item, opts?) — emitMany traverses `min` mandatory
+  // items then the loop body, so item's mfSrcs are replayed min+1 times. `opts`
+  // MUST be honored: dropping `{ min }` would silently compile a NULLABLE repeat.
+  if (callee.name === 'oneOrMore' || callee.name === 'many') {
+    const [itemArg, optsArg] = node.arguments
     if (!itemArg || itemArg.type === 'SpreadElement') return null
     const itemMfs: string[] = []
     const itemCombi = anyValue(itemArg as Expression, scope, code, itemMfs)
     if (!isCombinator(itemCombi)) return null
-    if (mfs) mfs.push(...itemMfs, ...itemMfs)
-    try { return parseman.oneOrMore(itemCombi) } catch { return null }
+    let opts: parseman.RepeatOptions | undefined
+    if (optsArg) {
+      if (optsArg.type === 'SpreadElement') return null
+      const v = anyValue(optsArg as Expression, scope, code, [])
+      if (!v || typeof v !== 'object') return null
+      opts = v as parseman.RepeatOptions
+    }
+    let combi: Combinator<unknown>
+    try {
+      combi = callee.name === 'many' ? parseman.many(itemCombi, opts) : parseman.oneOrMore(itemCombi, opts)
+    } catch { return null }
+    const min = combi._def.tag === 'oneOrMore' ? combi._def.min : 0
+    if (mfs) for (let i = 0; i <= min; i++) mfs.push(...itemMfs)
+    return combi
   }
 
   // not(parser) — negative lookahead (consumes nothing).
@@ -401,14 +420,14 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     try { return parseman.not(inner) } catch { return null }
   }
 
-  // ahead(parser) — POSITIVE lookahead (consumes nothing), carrying the body's
-  // first-set so a leading ahead() still gates its choice arm.
-  if (callee.name === 'ahead') {
+  // peek(parser) — POSITIVE lookahead (consumes nothing), carrying the body's
+  // first-set so a leading peek() still gates its choice arm.
+  if (callee.name === 'peek') {
     const [innerArg] = node.arguments
     if (!innerArg || innerArg.type === 'SpreadElement') return null
     const inner = anyValue(innerArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null
-    try { return parseman.ahead(inner) } catch { return null }
+    try { return parseman.peek(inner) } catch { return null }
   }
 
   // balanced(open, close, opts?) — like scanTo, opts (notably opts.skip, an array

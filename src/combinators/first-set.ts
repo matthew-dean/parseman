@@ -76,7 +76,7 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'many':
     case 'optional':
     case 'not':
-    case 'ahead':     return true          // zero repetitions / absent / lookahead
+    case 'peek':     return true          // zero repetitions / absent / lookahead
     // Default `sepBy` is `(item (sep item)*)?` — it MATCHES THE EMPTY STRING.
     // `{ min: 1 }` is `item (sep item)*`, nullable only when the item is.
     case 'sepBy':     return d.min === 1 ? me(d.parser) : true
@@ -113,7 +113,7 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
  * widens the set of possible first chars beyond Y. So firstSet(Y) is a sound (and
  * tighter) superset.
  *
- * The POSITIVE lookahead `ahead(X)` is zero-width too, but it is NOT in this
+ * The POSITIVE lookahead `peek(X)` is zero-width too, but it is NOT in this
  * predicate: unlike `not`, it knows what it requires, so its first-set is a real
  * constraint that must be INTERSECTED into the sequence's set rather than dropped
  * (see `isPositiveLookahead` and `sequenceFirstSet`).
@@ -123,21 +123,21 @@ export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
 }
 
 /**
- * A POSITIVE zero-width assertion (`ahead(X)`). It consumes nothing, so like
+ * A POSITIVE zero-width assertion (`peek(X)`). It consumes nothing, so like
  * `not(X)` it does not contribute a first char of its own — but it does REQUIRE
- * that X match here, so `ahead(X) Y` can only start with a char in
- * firstSet(X) ∩ firstSet(Y). That intersection is what makes a leading `ahead()`
+ * that X match here, so `peek(X) Y` can only start with a char in
+ * firstSet(X) ∩ firstSet(Y). That intersection is what makes a leading `peek()`
  * gate its choice arm; `not(not(X))`, the only previous spelling, reports `any()`
  * and poisons the dispatch instead.
  *
  * Soundness: first-sets are SUPERSETS of the true first chars, and
  * (A ⊇ a) ∧ (B ⊇ b) ⇒ A ∩ B ⊇ a ∩ b — so intersecting stays a superset and can
  * never skip a real match. A NULLABLE body succeeds on the empty string and
- * therefore constrains nothing; `ahead()` reports `any()` in that case, which the
+ * therefore constrains nothing; `peek()` reports `any()` in that case, which the
  * intersection treats as "no constraint".
  */
 export function isPositiveLookahead(p: Combinator<unknown>): boolean {
-  return (p._def as ParserDef).tag === 'ahead'
+  return (p._def as ParserDef).tag === 'peek'
 }
 
 /** Intersect a lookahead constraint into an accumulator; `any` = no constraint. */
@@ -156,9 +156,9 @@ function narrowBy(acc: FirstSet | null, constraint: FirstSet): FirstSet | null {
 }
 
 /**
- * Apply the accumulated `ahead()` constraints to a sequence's first-set. When the
+ * Apply the accumulated `peek()` constraints to a sequence's first-set. When the
  * consuming terms contributed NOTHING (the sequence is all zero-width/nullable,
- * e.g. a bare `ahead(X)` arm), the assertion IS the first-set: the sequence can
+ * e.g. a bare `peek(X)` arm), the assertion IS the first-set: the sequence can
  * only succeed — even zero-width — where X matches.
  */
 function applyAssertion(fs: FirstSet, assertion: FirstSet | null): FirstSet {
@@ -225,7 +225,7 @@ export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>
       // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
       // A leading zero-width assertion (`not`) contributes nothing (its `any` would
       // poison the union) but is still nullable, so keep scanning past it. A
-      // positive `ahead()` is zero-width AND constraining → intersect.
+      // positive `peek()` is zero-width AND constraining → intersect.
       let out: FirstSet = empty()
       let assertion: FirstSet | null = null
       for (const term of d.parsers) {
@@ -235,9 +235,9 @@ export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>
       }
       return applyAssertion(out, assertion)
     }
-    case 'ahead': {
+    case 'peek': {
       // Deep-resolve the body: a `ref()` reads `any()` at CONSTRUCTION, so the
-      // shallow `_meta.firstSet` baked into ahead() would lose the gate.
+      // shallow `_meta.firstSet` baked into peek() would lose the gate.
       const inner = d.parser
       return matchesEmpty(inner) ? any() : fs(inner)
     }

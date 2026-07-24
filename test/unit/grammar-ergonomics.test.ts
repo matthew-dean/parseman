@@ -1,0 +1,339 @@
+/**
+ * The four grammar-authoring defects found by auditing parseman's own reference
+ * grammars — each one had forced the showcase into a spelling parseman's own docs
+ * then flag as wrong.
+ *
+ *   1. no positive lookahead → `not(not(X))`, an anti-pattern with first-set ANY
+ *   2. `word()` could not express a case-insensitive keyword → `regex(/kw/i)`
+ *   3. no non-empty separated list → `sepBy` unused 0 times in ~135 real lists
+ *   4. the macro build's gating diagnostic reported no rule names, no anti-patterns
+ *
+ * Defects 1–3 are only half about ergonomics: each spelling parseman forced also
+ * DESTROYED the arm's first-char dispatch, so every test below pairs the behaviour
+ * with the gating consequence.
+ */
+import { describe, it, expect, vi } from 'vitest'
+import {
+  analyzeGating, choice, compile, keywords, literal, many, not, oneOrMore,
+  oneOrMoreSep, parse, peek, regex, rules, sepBy, sequence, word,
+  type Combinator, type ParserDef,
+} from '../../src/index.ts'
+import { matchesEmpty, firstSetOf } from '../../src/combinators/first-set.ts'
+import { compileRuleMap } from '../../src/compiler/codegen.ts'
+
+/** Does this choice emit O(1) first-char dispatch? The single gating question. */
+const dispatches = (c: Combinator<unknown>): boolean =>
+  (c._def as Extract<ParserDef, { tag: 'choice' }>).disjoint
+
+const firstChars = (c: Combinator<unknown>): string => {
+  const fs = firstSetOf(c)
+  if (fs.kind !== 'ranges') return fs.kind.toUpperCase()
+  const out: string[] = []
+  for (const r of fs.ranges) for (let i = r.lo; i <= r.hi; i++) out.push(String.fromCodePoint(i))
+  return out.sort().join('')
+}
+
+/** Run a combinator through BOTH engines — the interpreter and compiled output. */
+function bothEngines<T>(c: Combinator<T>, input: string): { ok: boolean; end: number; value: unknown } {
+  const interpreted = parse(c, input)
+  const compiled = compile(c, undefined, { gating: 'off' }).parse(input)
+  expect(compiled.ok).toBe(interpreted.ok)
+  if (interpreted.ok && compiled.ok) {
+    expect(compiled.span.end).toBe(interpreted.span.end)
+    expect(compiled.value).toEqual(interpreted.value)
+  }
+  return interpreted.ok
+    ? { ok: true, end: interpreted.span.end, value: interpreted.value }
+    : { ok: false, end: -1, value: undefined }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Defect 1 — peek(): a positive lookahead that keeps its first-set
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('defect 1 — peek() positive lookahead', () => {
+  it('is zero-width: succeeds without consuming, fails when the body does not match', () => {
+    const g = sequence(peek(literal('@')), regex(/@\w+/))
+    expect(bothEngines(g, '@media')).toMatchObject({ ok: true, end: 6 })
+    expect(bothEngines(g, '#media').ok).toBe(false)
+    // Zero-width: the body's own span is not consumed by the lookahead.
+    expect(bothEngines(peek(literal('@')), '@x')).toMatchObject({ ok: true, end: 0 })
+  })
+
+  // A lookahead exists precisely BECAUSE the term it guards is broad — a narrow
+  // body would gate on its own. So the contrast has to use a broad body, which is
+  // the shape `directMixinReferenceAhead` guards in the Less grammar (arm[0] of
+  // `DirectLessValueAtom`'s 24-arm value dispatch).
+  const broadBody = regex(/[^\s;{}]+/)
+
+  it('GATING: an arm led by peek(regex(/[.#]/)) first-char-dispatches', () => {
+    const viaAhead = sequence(peek(regex(/[.#]/)), broadBody)
+    // The lookahead's chars are INTERSECTED into the sequence's first-set, so the
+    // broad body no longer decides where the arm may start.
+    expect(firstChars(viaAhead)).toBe('#.')
+    const gated = choice(viaAhead, literal('@rule'), regex(/[0-9]+/))
+    expect(dispatches(gated)).toBe(true)
+    expect(bothEngines(gated, '.mixin()')).toMatchObject({ ok: true })
+  })
+
+  it('GATING: the not(not(X)) spelling it replaces poisons the same choice', () => {
+    // `not()` cannot know what it forbids, so its own first-set is ANY…
+    expect(firstChars(not(not(regex(/[.#]/))))).toBe('ANY')
+    // …and being merely zero-width, it is SKIPPED rather than intersected, leaving
+    // the broad body to decide the arm's first chars.
+    const viaDoubleNot = sequence(not(not(regex(/[.#]/))), broadBody)
+    expect(firstChars(viaDoubleNot)).not.toBe('#.')
+    const ungated = choice(viaDoubleNot, literal('@rule'), regex(/[0-9]+/))
+    expect(dispatches(ungated)).toBe(false)
+
+    // …and the diagnostic names it, pointing at peek() as the fix.
+    const report = analyzeGating(ungated)
+    expect(report.antiPatterns.map(a => a.kind)).toContain('double-not')
+    expect(report.antiPatterns.find(a => a.kind === 'double-not')!.message).toContain('peek(X)')
+  })
+
+  it('GATING: peek() also rescues a choice whose arms would otherwise OVERLAP', () => {
+    // Two arms sharing a broad body: only the lookaheads tell them apart.
+    const dotHash = sequence(peek(regex(/[.#]/)), broadBody)
+    const atRule = sequence(peek(regex(/@/)), broadBody)
+    expect(dispatches(choice(dotHash, atRule))).toBe(true)
+    expect(dispatches(choice(
+      sequence(not(not(regex(/[.#]/))), broadBody),
+      sequence(not(not(regex(/@/))), broadBody),
+    ))).toBe(false)
+  })
+
+  it('a NULLABLE body constrains no first char, so peek() reports ANY (sound)', () => {
+    // `peek(optional-ish)` succeeds on the empty string — intersecting on its
+    // body's chars would UNSOUNDLY exclude valid input.
+    const nullableBody = regex(/[.#]*/)
+    expect(firstChars(sequence(peek(nullableBody), regex(/[a-z]+/)))).toBe('abcdefghijklmnopqrstuvwxyz')
+  })
+
+  it('the lookahead leaves no CST/trivia behind when it succeeds', () => {
+    // `ahead` matches `@media`, then the real term consumes it — the text must
+    // appear ONCE, not twice.
+    const g = sequence(peek(regex(/@media/)), regex(/@\w+/))
+    const r = parse(g, '@media')
+    expect(r.ok && r.value).toEqual([null, '@media'])
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// Defect 2 — word({ caseInsensitive })
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('defect 2 — word() case-insensitive keywords', () => {
+  it('matches either case, with the word boundary still applied', () => {
+    const kw = word('media', 'A-Za-z0-9_-', { caseInsensitive: true })
+    expect(bothEngines(kw, 'media')).toMatchObject({ ok: true, end: 5 })
+    expect(bothEngines(kw, 'MEDIA')).toMatchObject({ ok: true, end: 5 })
+    expect(bothEngines(kw, 'MeDiA')).toMatchObject({ ok: true, end: 5 })
+    expect(bothEngines(kw, 'mediaquery').ok).toBe(false)   // boundary still guards
+  })
+
+  it('the two-arg options form uses the default boundary', () => {
+    const kw = word('true', { caseInsensitive: true })
+    expect(bothEngines(kw, 'TRUE')).toMatchObject({ ok: true, end: 4 })
+    expect(bothEngines(kw, 'TRUEISH').ok).toBe(false)
+  })
+
+  it('GATING: the first-set is ASCII case-FOLDED, so the arm still dispatches', () => {
+    const kw = word('media', 'A-Za-z0-9_-', { caseInsensitive: true })
+    expect(firstChars(kw)).toBe('Mm')
+    const g = choice(sequence(literal('@'), kw), literal('#id'), regex(/[0-9]+/))
+    expect(dispatches(g)).toBe(true)
+  })
+
+  it('agrees with the /i regex first-set fold that shipped in 0.32.0', () => {
+    // Same keyword, both spellings — the folds must not disagree, or one of the
+    // two gates is wrong.
+    expect(firstChars(word('media', 'A-Za-z0-9_-', { caseInsensitive: true })))
+      .toBe(firstChars(regex(/media(?![A-Za-z0-9_-])/i)))
+  })
+
+  it('case-insensitive matching is ASCII-only, matching the ASCII-only first-set', () => {
+    // Under Unicode mode `/stroke/iu` ALSO matches `ſtroke` (U+017F folds to `s`),
+    // which an ASCII-folded first-set would dispatch away from this arm — an
+    // unsound gate. keywords() therefore does not enter Unicode mode.
+    const kw = keywords(['stroke'], { caseInsensitive: true })
+    expect(firstChars(kw)).toBe('Ss')
+    expect(parse(kw, 'ſtroke').ok).toBe(false)
+  })
+
+  it('replaces the keyword-regex anti-pattern the diagnostic flags', () => {
+    const viaRegex = choice(regex(/media/i), literal('#id'))
+    expect(analyzeGating(viaRegex).antiPatterns.map(a => a.kind)).toContain('keyword-regex')
+    const viaWord = choice(word('media', 'A-Za-z0-9_-', { caseInsensitive: true }), literal('#id'))
+    expect(analyzeGating(viaWord).antiPatterns).toHaveLength(0)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// Defect 3 — the repeat family: { min, max, trailing } + oneOrMoreSep
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('defect 3 — non-empty separated lists', () => {
+  const item = regex(/[a-z]+/)
+  const comma = literal(',')
+
+  it('plain sepBy MATCHES THE EMPTY STRING — the defect, stated', () => {
+    const r = parse(sepBy(item, comma), '')
+    expect(r.ok).toBe(true)
+    expect(r.ok && r.span).toEqual({ start: 0, end: 0 })
+    expect(matchesEmpty(sepBy(item, comma))).toBe(true)
+  })
+
+  it('oneOrMoreSep is genuinely NON-NULLABLE and keeps the item first-set', () => {
+    const list = oneOrMoreSep(item, comma)
+    expect(matchesEmpty(list)).toBe(false)
+    expect(firstChars(list)).toBe(firstChars(item))
+    expect(bothEngines(list, '').ok).toBe(false)
+    expect(bothEngines(list, 'a,b,c')).toMatchObject({ ok: true, end: 5, value: ['a', 'b', 'c'] })
+  })
+
+  it('oneOrMoreSep(i, s) IS sepBy(i, s, { min: 1 })', () => {
+    const a = oneOrMoreSep(item, comma)._def as Extract<ParserDef, { tag: 'sepBy' }>
+    const b = sepBy(item, comma, { min: 1 })._def as Extract<ParserDef, { tag: 'sepBy' }>
+    expect(a.min).toBe(b.min)
+    expect(a.min).toBe(1)
+  })
+
+  it('GATING: a nullable sepBy arm kills dispatch; oneOrMoreSep keeps it', () => {
+    const ungated = choice(sequence(literal('('), sepBy(item, comma), literal(')')), literal('#id'))
+    const gated = choice(sequence(literal('('), oneOrMoreSep(item, comma), literal(')')), literal('#id'))
+    // Both sequences lead with '(' so the SEQUENCE gates either way; the real
+    // difference shows when the list leads the arm.
+    expect(dispatches(ungated)).toBe(true)
+    expect(dispatches(gated)).toBe(true)
+
+    const listLedNullable = choice(sepBy(item, comma), literal('#id'), literal('@x'))
+    const listLedNonEmpty = choice(oneOrMoreSep(item, comma), literal('#id'), literal('@x'))
+    expect(dispatches(listLedNullable)).toBe(false)   // nullable arm ⇒ no dispatch
+    expect(dispatches(listLedNonEmpty)).toBe(true)
+  })
+
+  it('many/oneOrMore take the same { min, max }, and min >= 1 is non-nullable', () => {
+    expect(matchesEmpty(many(item))).toBe(true)
+    expect(matchesEmpty(many(item, { min: 1 }))).toBe(false)
+    expect(matchesEmpty(oneOrMore(item))).toBe(false)
+    // `max` never affects nullability.
+    expect(matchesEmpty(many(item, { max: 3 }))).toBe(true)
+    expect(matchesEmpty(many(item, { min: 2, max: 3 }))).toBe(false)
+  })
+
+  it('oneOrMore(x) IS many(x, { min: 1 }) — the same def, not a lookalike', () => {
+    const a = oneOrMore(item)._def as Extract<ParserDef, { tag: 'oneOrMore' }>
+    const b = many(item, { min: 1 })._def as Extract<ParserDef, { tag: 'oneOrMore' }>
+    expect(a.tag).toBe(b.tag)
+    expect(a.min).toBe(b.min)
+  })
+
+  it('max bounds the item count on both engines', () => {
+    const two = sepBy(item, comma, { max: 2 })
+    expect(bothEngines(two, 'a,b,c')).toMatchObject({ ok: true, value: ['a', 'b'] })
+    const upTo3 = many(regex(/x/), { max: 3 })
+    expect(bothEngines(upTo3, 'xxxxx')).toMatchObject({ ok: true, end: 3 })
+  })
+
+  it('min > 1 requires that many items on both engines', () => {
+    const three = many(regex(/x/), { min: 3 })
+    expect(bothEngines(three, 'xxxx')).toMatchObject({ ok: true, end: 4 })
+    expect(bothEngines(three, 'xx').ok).toBe(false)
+    const threeSep = sepBy(item, comma, { min: 3 })
+    expect(bothEngines(threeSep, 'a,b,c')).toMatchObject({ ok: true, value: ['a', 'b', 'c'] })
+    expect(bothEngines(threeSep, 'a,b').ok).toBe(false)
+  })
+
+  it("trailing: 'forbid' (the default) leaves the separator for the enclosing rule", () => {
+    expect(bothEngines(sepBy(item, comma), 'a,b,')).toMatchObject({ ok: true, end: 3, value: ['a', 'b'] })
+  })
+
+  it("trailing: 'allow' consumes a trailing separator", () => {
+    const list = sepBy(item, comma, { trailing: 'allow' })
+    expect(bothEngines(list, 'a,b,')).toMatchObject({ ok: true, end: 4, value: ['a', 'b'] })
+    expect(bothEngines(list, 'a,b')).toMatchObject({ ok: true, end: 3, value: ['a', 'b'] })
+  })
+
+  it("trailing: 'require' demands a separator after the last item", () => {
+    const list = sepBy(item, literal(';'), { trailing: 'require' })
+    expect(bothEngines(list, 'a;b;')).toMatchObject({ ok: true, end: 4, value: ['a', 'b'] })
+    expect(bothEngines(list, 'a;b').ok).toBe(false)
+    // An empty list has no item to follow — vacuously satisfied.
+    expect(bothEngines(list, '')).toMatchObject({ ok: true, end: 0, value: [] })
+  })
+
+  it('rejects bounds that could never succeed, at CONSTRUCTION', () => {
+    expect(() => many(item, { min: 3, max: 2 })).toThrow(/max \(2\) is less than min \(3\)/)
+    expect(() => many(item, { min: -1 })).toThrow(/non-negative integer/)
+    expect(() => sepBy(item, comma, { max: 0 })).toThrow(/positive integer/)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// Defect 4 — the gating diagnostic in the macro (rule-map) build
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('defect 4 — the macro build reports rule names AND anti-patterns', () => {
+  /** A rule map with one genuinely-ungated choice and one keyword-regex arm. */
+  const grammar = () => rules(g => ({
+    Value: choice(literal('a'), regex(/[\s\S]*/)),
+    AtRule: choice(regex(/media/), literal('#x')),
+    Entry: sequence(g.Value as Combinator<unknown>, g.AtRule as Combinator<unknown>),
+  }))
+
+  const warningsFrom = (run: () => void): string[] => {
+    const seen: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((m: unknown) => { seen.push(String(m)) })
+    try { run() } finally { spy.mockRestore() }
+    return seen
+  }
+
+  it('compileRuleMap runs the diagnostic at all, and NAMES the owning rule', () => {
+    // Before: compileRuleMap never called the analysis, so a macro-built grammar
+    // produced ZERO warnings however many ungated choices it had.
+    const lines = warningsFrom(() => { compileRuleMap(Object.entries(grammar()), { gating: 'warn' }) })
+    const joined = lines.join('\n')
+    expect(joined).toContain('choice @ Value')
+    expect(joined).not.toContain('choice @ <entry>')
+  })
+
+  it('compileRuleMap reports ANTI-PATTERNS, named by rule', () => {
+    const joined = warningsFrom(() => { compileRuleMap(Object.entries(grammar()), { gating: 'warn' }) }).join('\n')
+    expect(joined).toContain('anti-pattern [keyword-regex] @ AtRule')
+  })
+
+  it('analyzeGatingRules attributes each choice to the rule that owns it', () => {
+    const report = analyzeGating(rules(g => ({
+      Outer: choice(literal('a'), regex(/[\s\S]*/)),
+      Inner: choice(regex(/media/), literal('#x')),
+      Entry: sequence(g.Outer as Combinator<unknown>, g.Inner as Combinator<unknown>),
+    })).Entry as Combinator<unknown>)
+    // Reached from a single entry, the walk still recovers both rule names.
+    expect(report.choices.map(c => c.id).sort()).toEqual(['Inner', 'Outer'])
+    expect(report.antiPatterns.map(a => a.rule)).toContain('Inner')
+  })
+
+  it('a single-combinator compile is attributed to its BINDING name, not <entry>', () => {
+    // The macro plugin passes the const's own variable name — without it every
+    // top-level combinator const warns as `<entry>`, which names nothing and gives
+    // the `accept` allowlist no discriminating key.
+    const g = choice(literal('a'), regex(/[\s\S]*/))
+    expect(analyzeGating(g).choices[0]!.id).toBe('<entry>')
+    expect(analyzeGating(g, { entryName: 'directMixinReferenceAhead' }).choices[0]!.id)
+      .toBe('directMixinReferenceAhead')
+
+    const lines = warningsFrom(() => {
+      compile(g, undefined, { gating: { level: 'warn', entryName: 'directMixinReferenceAhead' } })
+    })
+    expect(lines.join('\n')).toContain('choice @ directMixinReferenceAhead')
+  })
+
+  it('the named id is a usable accept key (which `<entry>` was not)', () => {
+    const g = choice(literal('a'), regex(/[\s\S]*/))
+    const r = analyzeGating(g, { entryName: 'valueAtom', accept: ['valueAtom'] })
+    expect(r.ungated).toHaveLength(0)
+    expect(r.accepted.map(c => c.id)).toEqual(['valueAtom'])
+    expect(r.acceptedUnused).toEqual([])
+  })
+})

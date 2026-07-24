@@ -819,9 +819,9 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     case 'keywords':
     case 'guard':
     case 'not':
-    // ahead(): emitted under a non-capturing probe ctx and zero-width on both
+    // peek(): emitted under a non-capturing probe ctx and zero-width on both
     // outcomes, so it can never leave a partial capture behind.
-    case 'ahead':
+    case 'peek':
     case 'trivia':
     case 'token':
     case 'leaf':
@@ -892,7 +892,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'leaf':
       return true
     case 'not':
-    case 'ahead':
+    case 'peek':
     case 'guard':
     case 'trivia':
     case 'unknown':
@@ -1345,7 +1345,7 @@ function deriveExpectedArr(parsers: Combinator<unknown>[]): string {
 function failsAtStart(p: Combinator<unknown>): boolean {
   const d = p._def
   switch (d.tag) {
-    case 'literal': case 'regex': case 'keywords': case 'guard': case 'not': case 'ahead':
+    case 'literal': case 'regex': case 'keywords': case 'guard': case 'not': case 'peek':
       return true
     case 'transform': case 'label': case 'field':
       return failsAtStart(d.parser)
@@ -2031,16 +2031,25 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   const mySyncV = ctx.recovery ? v(ctx, '_mysy') : ''
   if (ctx.recovery) stmts.push(`${ind(ctx)}const ${mySyncV} = _ctx._sync`)
 
-  if (def.min === 1) {
-    // Inline first mandatory match with early-return on failure
+  // `min` MANDATORY matches, inlined with early-return on failure. min 0/1 is the
+  // whole world today, so the loop runs 0 or 1 times and the output is unchanged;
+  // `many(x, { min: n })` simply inlines n of them.
+  for (let i = 0; i < def.min; i++) {
     const firstR = emit(def.parser, ctx, curV)
     stmts.push(...firstR.stmts)
     if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${firstR.valueVar})`)
     stmts.push(`${ind(ctx)}${curV} = ${firstR.endVar}`)
   }
 
+  // `max` — a bounded repeat needs a live item count. `wantValue` lists can read
+  // `arr.length`; a value-elided one needs its own counter. Emitted ONLY when a
+  // finite max was asked for, so the unbounded default stays byte-identical.
+  const maxV = def.max === undefined ? null : (wantValue ? `${arrV}.length` : v(ctx, '_cnt'))
+  if (maxV !== null && !wantValue) stmts.push(`${ind(ctx)}let ${maxV} = ${def.min}`)
+
   stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
   ctx.indent++
+  if (maxV !== null) stmts.push(`${ind(ctx)}if (${maxV} >= ${def.max}) break`)
 
   // Mirror interpreter repeat.ts — skip trivia before each iteration. In capture
   // mode the trivia is committed to rawChildren immediately and rolled back
@@ -2108,7 +2117,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
       `${ind(ctx)}if (!${iterOk}) {`,
       `${ind(ctx)}  ${rollback}if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPos}, _ctx)) {`,
       `${ind(ctx)}    const ${rrV} = _ctx._rec.scan(input, ${itemPos}, _ctx, ${mySyncV}, ${exp})`,
-      ...(wantValue ? [`${ind(ctx)}    ${arrV}.push(${rrV}.error)`] : []),
+      ...(wantValue ? [`${ind(ctx)}    ${arrV}.push(${rrV}.error)`] : maxV !== null ? [`${ind(ctx)}    ${maxV}++`] : []),
       `${ind(ctx)}    _ctx._rec.capture(_ctx, ${rrV}.error)`,
       `${ind(ctx)}    ${curV} = ${rrV}.end`,
       `${ind(ctx)}    continue`,
@@ -2121,6 +2130,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     stmts.push(`${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`)
   }
   if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${iterVal})`)
+  else if (maxV !== null) stmts.push(`${ind(ctx)}${maxV}++`)
   stmts.push(`${ind(ctx)}${curV} = ${iterEnd}`)
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
@@ -2212,17 +2222,18 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     ...(rec ? [`${ind(ctx)}const ${mySyncV} = _ctx._sync`] : []),
     ...firstStmts,
   ]
-  // `{ min: 1 }` — the guard variable the post-loop failure reads. Strict: the
-  // first element's own ok flag. Tolerant: `didV`, which is also set when a junk
-  // first element was RECOVERED (a recovered element counts as present).
-  let producedV = firstOk
+  // `trailing: 'require'` needs a flag that outlives the loop: did the list end on
+  // a consumed separator? Declared here (outside the loop) and emitted ONLY when
+  // asked for, so the default 'forbid' output stays byte-identical.
+  const trailV = def.trailing === 'require' ? v(ctx, '_trl') : null
+  if (trailV) stmts.push(`${ind(ctx)}let ${trailV} = false`)
 
   // A failed element after a real separator. Strict → the exact original break
   // (byte-identical). Tolerant → skip to the sync, emit a ParseError, and continue
   // (unless already sitting on the enclosing sync). `originalFail` is that site's
   // exact strict string (the three sites differ — braces / rollback).
-  const failItem = (nextOkVar: string, itemPosVar: string, rb: string, originalFail: string): string[] => {
-    if (!rec) return [originalFail]
+  const failItem = (nextOkVar: string, itemPosVar: string, breakStmt: string): string[] => {
+    if (!rec) return [`${ind(ctx)}if (!${nextOkVar}) { ${breakStmt} }`]
     const rr = v(ctx, '_rr')
     return [
       `${ind(ctx)}if (!${nextOkVar}) {`,
@@ -2230,9 +2241,36 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       `${ind(ctx)}    const ${rr} = _ctx._rec.scan(input, ${itemPosVar}, _ctx, ${scanSync}, ${exp})`,
       `${ind(ctx)}    ${arrV}.push(${rr}.error); _ctx._rec.capture(_ctx, ${rr}.error); ${curV} = ${rr}.end; continue`,
       `${ind(ctx)}  }`,
-      `${ind(ctx)}  ${rb}break`,
+      `${ind(ctx)}  ${breakStmt}`,
       `${ind(ctx)}}`,
     ]
+  }
+
+  /**
+   * The break taken when the item AFTER a separator fails.
+   *
+   * 'forbid' (default) unwinds the separator with it — the list ends before it.
+   * 'allow'/'require' keep the separator CONSUMED: only what was captured PAST it
+   * unwinds (`postSepRb`), and `cur` advances to the separator's end.
+   */
+  const itemFailBreak = (sepEndVar: string, sepRb: string, postSepRb: string): string =>
+    def.trailing === undefined
+      ? `${sepRb}break`
+      : `${postSepRb}${curV} = ${sepEndVar}; ${trailV ? `${trailV} = true; ` : ''}break`
+
+  /** Marks taken AFTER the separator, so `trailing` can unwind only past it. */
+  const postSepMarks = (): { decl: string[]; rb: string } => {
+    if (def.trailing === undefined || !ctx.capturing) return { decl: [], rb: '' }
+    const lv = v(ctx, '_tlv'), rw = v(ctx, '_trw'), tl = v(ctx, '_ttl'), lg = v(ctx, '_tlg')
+    return {
+      decl: [
+        `${ind(ctx)}const ${lv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
+        `${ind(ctx)}const ${rw} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
+        `${ind(ctx)}const ${tl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
+        `${ind(ctx)}const ${lg} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+      ],
+      rb: `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${lg}; `,
+    }
   }
 
   // First element + loop entry. Strict keeps the exact `if (firstOk) { … while }`
@@ -2250,7 +2288,6 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       `${ind(ctx)}}`,
       `${ind(ctx)}if (${didV}) {`,
     )
-    producedV = didV
     ctx.indent++
     stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
     ctx.indent++
@@ -2264,6 +2301,8 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     )
     ctx.indent++
   }
+
+  if (def.max !== undefined) stmts.push(`${ind(ctx)}if (${arrV}.length >= ${def.max}) break`)
 
   // Mirror interpreter sepBy — separate rollback marks for pre-sep and post-sep trivia.
   let sepAtPos = curV
@@ -2290,6 +2329,8 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}break }`)
 
+      const post = postSepMarks()
+      stmts.push(...post.decl)
       const npV = v(ctx, '_np')
       stmts.push(`${ind(ctx)}const ${npV} = ${capFn}(input, ${sepEnd}, _ctx, 1)`)
       const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
@@ -2297,7 +2338,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       stmts.push(
         ...nextStmts,
         // item failed → unwind the separator too, back to the end of the last item
-        ...failItem(nextOk, npV, rollbackToSep, `${ind(ctx)}if (!${nextOk}) { ${rollbackToSep}break }`),
+        ...failItem(nextOk, npV, itemFailBreak(sepEnd, rollbackToSep, post.rb)),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -2315,7 +2356,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         emitFallible(def.parser, ctx, npV, true)
       stmts.push(
         ...nextStmts,
-        ...failItem(nextOk, npV, '', `${ind(ctx)}if (!${nextOk}) break`),
+        ...failItem(nextOk, npV, itemFailBreak(sepEnd, '', '')),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -2336,11 +2377,13 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     const nextRb = markLv
       ? `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markRw}; `
       : ''
+    const post = postSepMarks()
+    stmts.push(...post.decl)
     const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
       emitFallible(def.parser, ctx, sepEnd, true)
     stmts.push(
       ...nextStmts,
-      ...failItem(nextOk, sepEnd, nextRb, `${ind(ctx)}if (!${nextOk}) { ${nextRb}break }`),
+      ...failItem(nextOk, sepEnd, itemFailBreak(sepEnd, nextRb, post.rb)),
       `${ind(ctx)}${arrV}.push(${nextVal})`,
       `${ind(ctx)}${curV} = ${nextEnd}`,
     )
@@ -2350,11 +2393,16 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
 
-  // `{ min: 1 }`: no first element ⇒ the whole list FAILS. (The default's empty
+  // `min >= 1`: too few items ⇒ the whole list FAILS. (The min-0 default's empty
   // alternative is exactly what makes plain sepBy nullable and un-gateable.)
   // Mirrors the interpreter, which reports the item's derived expected at `pos`.
-  if (def.min === 1) {
-    stmts.push(...emitIfFail(ctx, `!${producedV}`, failArrBody(ctx, deriveExpectedArr([def.parser]), pos)))
+  if (def.min >= 1) {
+    stmts.push(...emitIfFail(ctx, `${arrV}.length < ${def.min}`, failArrBody(ctx, deriveExpectedArr([def.parser]), pos)))
+  }
+  // `trailing: 'require'` — a NON-EMPTY list must end on a consumed separator; an
+  // empty one has no item to follow, so it is vacuously satisfied.
+  if (trailV) {
+    stmts.push(...emitIfFail(ctx, `${arrV}.length > 0 && !${trailV}`, failArrBody(ctx, deriveExpectedArr([def.separator]), curV)))
   }
 
   return { stmts, valueVar: arrV, endVar: curV }
@@ -2462,13 +2510,13 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
  * a lookahead that leaves CST leaves behind would double-capture whatever the
  * following term then consumes for real.
  */
-function emitAhead(def: Extract<ParserDef, { tag: 'ahead' }>, ctx: Ctx, pos: string): ER {
+function emitAhead(def: Extract<ParserDef, { tag: 'peek' }>, ctx: Ctx, pos: string): ER {
   const probeCtx: Ctx = { ...ctx, capturing: false, noHoist: true }
-  // The inner failure is discarded (inner failing = ahead failing, reported at
-  // ahead's own pos with its own label) — swallow the sub-parse bookkeeping.
+  // The inner failure is discarded (inner failing = peek failing, reported at
+  // peek's own pos with its own label) — swallow the sub-parse bookkeeping.
   const { stmts, okVar } = emitFallible(def.parser, probeCtx, pos, true)
   ctx.vars = probeCtx.vars
-  const label = JSON.stringify(`ahead(${def.parser._tag})`)
+  const label = JSON.stringify(`peek(${def.parser._tag})`)
   return {
     stmts: [
       ...stmts,
@@ -3298,7 +3346,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       }
     }
     case 'not':     return emitNot(def, ctx, pos)
-    case 'ahead':   return emitAhead(def, ctx, pos)
+    case 'peek':   return emitAhead(def, ctx, pos)
     case 'node':    return emitNode(def, ctx, pos)
     case 'scanTo':  return emitScanTo(def, ctx, pos)
     case 'recover': return emitRecover(def, ctx, pos)
@@ -3433,7 +3481,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'many':
     case 'oneOrMore':
     case 'not':
-    case 'ahead':
+    case 'peek':
     case 'transform': return hasNodeDef(d.parser, seen)
     case 'skip':      return hasNodeDef(d.main, seen) || hasNodeDef(d.skipped, seen)
     case 'sequence':
@@ -3475,16 +3523,16 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'field':
     case 'grammar':
     case 'not':
-    case 'ahead':
+    case 'peek':
     case 'node':
     case 'withCtx':
     case 'expect':    return [def.parser]
-    // emitMany's oneOrMore branch and emitSepBy both codegen `def.parser` TWICE
-    // (a mandatory first match, then again inside the repeat loop) — two real
-    // emit() call sites, so the usage analysis must see two edges here or it
+    // emitMany's min>=1 branch and emitSepBy both codegen `def.parser` more than
+    // once (`min` mandatory matches, then again inside the repeat loop) — each is a
+    // real emit() call site, so the usage analysis must see one edge per site or it
     // undercounts a single-use `parser` ref as inline-safe when it's actually
-    // referenced from two positions within this one compiled function.
-    case 'oneOrMore': return [def.parser, def.parser]
+    // referenced from several positions within this one compiled function.
+    case 'oneOrMore': return Array.from({ length: def.min + 1 }, () => def.parser)
     case 'sepBy':     return [def.parser, def.parser, def.separator]
     case 'skip':      return [def.main, def.skipped]
     case 'recover':   return [def.parser, def.sentinel]
@@ -3520,7 +3568,7 @@ function isHoistableTag(tag: ParserDef['tag']): boolean {
 const HOIST_MIN_SUBTREE = 3
 
 /**
- * Static-occurrence analysis for `lazy` (ref()) combinators, ahead of codegen.
+ * Static-occurrence analysis for `lazy` (ref()) combinators, peek of codegen.
  * `emitLazy` currently hoists EVERY lazy ref into its own named function
  * (_pfN), even when it's referenced from exactly one place — necessary for
  * genuinely recursive/shared rules, wasteful for the common case of a `g.foo`

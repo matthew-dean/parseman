@@ -176,7 +176,7 @@ const SUGGESTIONS: Record<FirstSetCause, string> = {
   'broad-recognizer':
     "if this arm leads with a keyword regex, use word('kw', boundary) / keywords([...]) — they expose an EXACT, gating first-set and lower to the same charCodeAt scan. A genuine scanTo fallback is fine; accept it in the gating snapshot if intentional.",
   'leading-not':
-    'let the arm lead with its actual consuming terminal (first-sets gate it automatically); keep not(...) only as a TRAILING boundary. Do not hand-roll not(not(...)) to fake gating — use ahead(X), which is zero-width AND carries X first-set.',
+    'let the arm lead with its actual consuming terminal (first-sets gate it automatically); keep not(...) only as a TRAILING boundary. Do not hand-roll not(not(...)) to fake gating — use peek(X), which is zero-width AND carries X first-set.',
   'nullable-prefix':
     'a leading optional/many lets a later, broad term start the arm. Split the empty case into its own arm, or gate on the prefix first char. A plain sepBy(item, sep) is ALSO nullable — pass { min: 1 } for a list that cannot be empty.',
   'cross-artifact-ref':
@@ -198,9 +198,9 @@ function classifyBroadArm(arm: Combinator<unknown>): { cause: FirstSetCause; det
         return isAny(p._meta.firstSet) ? { cause: 'broad-recognizer', detail: `broad recognizer (${d.tag})` } : null
       case 'not':
         return { cause: 'leading-not', detail: 'leading not(...) (first-set ANY)' }
-      // ahead() CARRIES its body's first-set, so it is only broad when the body is
+      // peek() CARRIES its body's first-set, so it is only broad when the body is
       // (or the body is nullable) — walk in for the real cause.
-      case 'ahead':
+      case 'peek':
         return walk(d.parser)
       case 'scanTo':
         return { cause: 'broad-recognizer', detail: 'scanTo (any first char)' }
@@ -295,7 +295,7 @@ function detectAntiPatterns(rule: string, arms: readonly Combinator<unknown>[]):
       const inner = (ld as { parser: Combinator<unknown> }).parser
       if ((inner._def as ParserDef).tag === 'not') {
         out.push({ kind: 'double-not', rule, armIndex: i,
-          message: 'not(not(...)) hand-rolls automatic first-char gating and MISCOMPILES among shared-first-char sibling arms (its first-set is ANY, poisoning dispatch). Prefer letting the arm lead with its consuming terminal; where a real positive lookahead IS needed, use ahead(X) — zero-width like not(not(X)) but it CARRIES X\'s first-set, so the arm still dispatches.' })
+          message: 'not(not(...)) hand-rolls automatic first-char gating and MISCOMPILES among shared-first-char sibling arms (its first-set is ANY, poisoning dispatch). Prefer letting the arm lead with its consuming terminal; where a real positive lookahead IS needed, use peek(X) — zero-width like not(not(X)) but it CARRIES X\'s first-set, so the arm still dispatches.' })
       } else {
         out.push({ kind: 'leading-not', rule, armIndex: i,
           message: 'a leading not(...) on a choice arm hand-rolls gating and poisons the choice first-set (not() is ANY). Reorder so a consuming terminal leads; keep not(...) as a TRAILING boundary only.' })
