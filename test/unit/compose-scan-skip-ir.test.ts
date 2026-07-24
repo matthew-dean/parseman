@@ -18,6 +18,9 @@
  * round-trip preservation, and the CONTROL (no scanSkip → sentinel matched).
  */
 import { describe, it, expect } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import * as parseman from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
@@ -101,6 +104,84 @@ describe('compose() control — no local scanSkip → the sentinel is matched (m
   it('the carried IR embeds NO scanSkip', () => {
     const carried = (mod.grammar as Record<symbol, unknown>)[COMPOSED_PIECES] as Array<{ ns: string; ir?: string }>
     expect(carried.some(p => typeof p.ir === 'string' && p.ir!.includes('scanSkip'))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The EXPORTED FULL-PIECE FALLBACK. When `serializeRuleMap()` can't serialize a
+// grammar (here: a `guard()`, which the IR has no form for but codegen compiles
+// fine), the export path carries fully lowered PIECES instead of IR. Those pieces
+// must still be compiled WITH the grammar's scanSkip, or a downstream compose of
+// the imported grammar loses ambient skipping entirely — silently re-opening the
+// raw-scan footgun. Macro-evaluated rules carry no runtime `_meta.grammarScanSkip`
+// unless the evaluator stamps it, which is what makes this path easy to miss.
+// ---------------------------------------------------------------------------
+describe('exported FULL-PIECE fallback (IR unserializable) still carries scanSkip', () => {
+  const BASE_SRC = `import { rules, sequence, literal, regex, scanTo, guard } from 'parseman' with { type: 'macro' }
+const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+export const base = rules({ scanSkip: [dq] }, g => ({
+  Doc: sequence(guard(s => true), scanTo(literal(';')), literal(';')),
+}))`
+
+  const LEAF_SRC = `import { compose, rules } from 'parseman' with { type: 'macro' }
+import { base } from './base.ts'
+export const parser = compose([base, rules(g => ({ Top: g.Doc }))])`
+
+  const strip = (c: string) => c
+    .replace(/^import[^\n]*\n/gm, '')
+    .replace(/export const/g, 'var')
+    .replace(/\bconst\b/g, 'var')
+
+  /** Real files on disk: the downstream `import { base } from './base.ts'` is
+   * resolved by the plugin's module resolver, so it must actually exist. */
+  const withModules = <T>(fn: (dir: string) => T): T => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-fallback-scanskip-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'base.ts'), BASE_SRC)
+      return fn(dir)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  const compileBase = (dir: string) => {
+    const out = transformMacro(BASE_SRC, path.join(dir, 'base.ts'), new Set(['parseman']))
+    if (!out) throw new Error('base transformMacro returned null')
+    expect(out.warnings).toEqual([])
+    return out
+  }
+
+  it('takes the full-piece fallback (not the IR path) — the precondition', () => {
+    withModules(dir => {
+      const out = compileBase(dir)
+      // A carried IR entry looks like `{ ns: "…", ir: "…" }`; the fallback serializes
+      // whole LinkablePieces, which have a `ruleFns` map.
+      expect(out.code).toContain('ruleFns:')
+      expect(/\bir:\s*"/.test(out.code)).toBe(false)
+    })
+  })
+
+  it('a downstream compose of the imported grammar still skips the opaque unit', () => {
+    withModules(dir => {
+      const baseOut = compileBase(dir)
+      const leaf = transformMacro(LEAF_SRC, path.join(dir, 'leaf.ts'), new Set(['parseman']))
+      if (!leaf) throw new Error('leaf transformMacro returned null')
+      expect(leaf.warnings).toEqual([])
+
+      // eslint-disable-next-line no-new-func
+      const base = new Function(`${strip(baseOut.code)}\nreturn base`)()
+      // eslint-disable-next-line no-new-func
+      const parser = new Function('base', `${strip(leaf.code)}\nreturn parser`)(base) as Record<string, FusedRule>
+
+      // The `;` inside the string must be skipped, so the scan reaches the REAL `;`
+      // and the rule consumes the whole input. Without scanSkip on the carried
+      // pieces the scan stops at the quoted `;` (end 4).
+      const input = 'a ";b" ;'
+      const r = parser.Doc!(input, 0, {})
+      expect(r.ok).toBe(true)
+      expect(r.span.end).toBe(input.length)
+    })
   })
 })
 

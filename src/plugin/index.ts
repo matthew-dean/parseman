@@ -524,6 +524,23 @@ export function transformMacro(
       ? (evaluateCombinatorArray(scanSkipValue, scope, code) ?? undefined)
       : undefined
 
+    // STAMP `_meta.grammarScanSkip` on the evaluated rules, exactly as runtime
+    // `rules({ scanSkip })` does. The macro evaluates the FACTORY directly and never
+    // calls `rules()`, so without this the stamp is absent and every macro-side
+    // `compileLinkable`/`compileRuleMap` has to pass `opts.scanSkip` by hand — which
+    // was forgotten twice (the composeLeaf identifier branch, and the exported
+    // full-piece fallback), each time silently re-opening the raw-scan footgun
+    // downstream. Both compilers already fall back to this `_meta` field, so
+    // stamping here makes omission at a call site structurally impossible.
+    // Trivia rules are skipped, mirroring the runtime guard in `rules()`.
+    if (gScanSkip) {
+      for (const rule of ruleMap.values()) {
+        if (rule && !rule._meta.isTrivia) {
+          ;(rule._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip = gScanSkip
+        }
+      }
+    }
+
     return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}) }
   }
 
@@ -1200,7 +1217,17 @@ export function transformMacro(
           )
           if (exportPrefix) {
             const ns = nsFor(varName)
-            const pieces = compileLinkable([...compiledRules.ruleMap], ns, { recovery })
+            // Thread `scanSkip` explicitly: this is the FULL-PIECE fallback taken when
+            // the IR isn't serializable, and it is what a downstream package composes.
+            // (The `_meta` stamp in evaluateRulesFactory also covers it; passing it
+            // here keeps the intent local and independent of that.) `trivia` is NOT
+            // threaded — it is composing-wins, so the downstream compose supplies it;
+            // `scanSkip` is per-piece (opaque units are dialect-specific) and must
+            // travel WITH the grammar or the downstream loses ambient skipping.
+            const pieces = compileLinkable([...compiledRules.ruleMap], ns, {
+              ...(compiledRules.scanSkip ? { scanSkip: compiledRules.scanSkip } : {}),
+              recovery,
+            })
             if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
               // Carry the compact IR when serializable; else the full lowered pieces.
               // Thread the grammar's scanSkip into the IR so a downstream compose of
