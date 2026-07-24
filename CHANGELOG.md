@@ -25,8 +25,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 - **Perf guard fix — the interpreter had a systematic ~15% dead zone.** A case's
   median depends on which OTHER cases shared its process: measured in isolation,
-  CSS interp runs ~15% faster than the same case measured inside the full suite
-  (compiled, being a monomorphic generated function, is unaffected at ~0%). The
+  CSS interp runs ~15% faster than the same case measured inside the full suite,
+  while the compiled path does not move (~0%). That is the measured effect; the
+  cause has not been instrumented, so no mechanism is claimed for it. The
   guard measured CSS alone while `bench:baseline` captured it inside the full
   30-case suite, so a freshly written baseline already read −14% on interp and an
   interp regression had to exceed ~30% before the 15% tolerance fired.
