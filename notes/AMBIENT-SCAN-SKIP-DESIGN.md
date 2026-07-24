@@ -114,6 +114,18 @@ build time. It is made ambient-aware WITHOUT a new def tag:
   `ctx.activeScanSkip` is set, rebuilds the interior with `[...activeScanSkip,
   ...ownSkip]`, merges the fresh subtree's lazy-usage analysis into `ctx.lazyUsage`
   (so its recursive `self` back-edge is named, not inlined forever), and emits it.
+  - **Two recursion classes, two guards.** (a) A balanced's own `self` (nested
+    same-delimiter pairs) → handled by the lazy-usage merge above. (b) A balanced
+    that is a MEMBER of its own `activeScanSkip` → the rebuilt interior contains
+    that same skipper, so emitting it would re-enter the rebuild forever. Guarded
+    by a PRECISE identity-keyed cycle stack (`ctx.balancedRebuildStack`): the
+    rebuild is suppressed — the balanced emits its eager `_def` — ONLY when
+    re-entering a balanced ALREADY on the stack (the true self-cycle). A NESTED,
+    DIFFERENT balanced (not on the stack) still gets its OWN ambient rebuild, so it
+    keeps skipping ambient opaque units — matching the interpreter. A coarse
+    "suppress every balanced while rebuilding" flag would emit the nested different
+    balanced eager and diverge from the interpreter (a `]` hidden in a string
+    inside it would close early); the stack is the #51-style path cycle guard.
 - Balanced consults ambient **`scanSkip` only, not trivia** — its delimiters are
   structural and its content regex already spans whitespace, so folding trivia in
   would perturb every existing `balanced`; the footgun is a delimiter hidden in
