@@ -32,7 +32,13 @@ export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/
 export { token, leaf } from './combinators/token.ts'
 
 export { compile } from './compiler/codegen.ts'
-export type { CompiledParser, LinkablePieces } from './compiler/codegen.ts'
+export type { CompiledParser, LinkablePieces, GatingOption } from './compiler/codegen.ts'
+
+export { analyzeGating, formatGatingWarnings, firstSetToString } from './analysis/gating.ts'
+export type {
+  GatingReport, ChoiceGating, AnyArm, Overlap, AntiPattern,
+  FirstSetCause, GatingWarnLevel, ChoiceStrategyTag, AnalyzeGatingOptions,
+} from './analysis/gating.ts'
 // `pick()` is deliberately NOT re-exported: build-inlining a `pick()` of an imported
 // grammar can't yet carry that grammar's ambient trivia across the module boundary, so
 // the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)
@@ -44,6 +50,8 @@ export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 export { buildLineIndex, offsetToLineCol, annotateSpan } from './compiler/line-index.ts'
 export type { LineIndex } from './compiler/line-index.ts'
 
+export { gate } from './combinators/gate.ts'
+/** @deprecated Use `gate()`. Thin alias kept for back-compat. */
 export { guard } from './combinators/guard.ts'
 export { withCtx } from './combinators/withCtx.ts'
 export { isParseError } from './combinators/expect.ts'

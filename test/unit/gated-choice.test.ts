@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { literal, sequence, choice, many, parse, compile } from '../../src/index.ts'
-import { guard, withCtx } from '../../src/index.ts'
+import { gate, withCtx } from '../../src/index.ts'
 import type { GatedArm } from '../../src/index.ts'
 
 type Ctx = { inFn: boolean }

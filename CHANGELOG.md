@@ -60,6 +60,31 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `{concrete, refs}` read path (a back-compat shim for a scenario the design forbids)
   was removed as dead code; the ordered-chain `{alts}` recipe is the sole format.
 
+- **DX: default-on first-char gating diagnostic.** `compile()` now runs a static
+  gating analysis and, by default, WARNS when a `choice` on the hot path won't
+  first-char-gate — naming the offending arm, the cause (`broad-recognizer` /
+  `leading-not` / `nullable-prefix` / `cross-artifact-ref` / `opaque-wrapper`), a
+  concrete fix, plus overlap (shared-prefix) pairs and API anti-pattern lints
+  (`not(not(...))`, leading-`not`, keyword-`regex`). This surfaces the invisible
+  perf cliff behind the hand-found 25–48% jess grammar wins — PEG choices are
+  correct whether or not they gate, so the cliff never shows up in tests. New pure
+  `analyzeGating(entry)` / `formatGatingWarnings(report)` API; `compile(g, { gating:
+  'off' | 'warn' | 'error' })` (or the `PARSEMAN_GATING` env var) controls it;
+  `GatingReport` is attached to `CompiledParser.gating` for CI budget snapshots. It
+  honors shallow-any-vs-deep-any so `ref()`-built choices that still gate in
+  compiled code aren't false-flagged. A deliberately-ungated choice is accepted by
+  listing its stable `id` in the snapshot allowlist (`{ gating: { level, accept } }`
+  / `analyzeGating(entry, { accept })`) — the SINGLE per-choice suppression
+  mechanism, driving both warn-suppression and the CI gate. Analysis-only —
+  compiled output is byte-identical regardless of level.
+- **Rename `guard()` → `gate()`** (API-surface only). The state-assertion
+  combinator's name now matches the `gate:` field on a gated `choice` arm (arm
+  field SELECTS a branch; `gate()` combinator ASSERTS mid-sequence). `guard` is kept
+  as a deprecated alias (`guard === gate`); the internal node tag and failure label
+  are unchanged, so compiled output/IR is byte-identical.
+- New guide **First-char gating**, combinator when-to-use tables, and a root
+  **`AGENTS.md`** rule sheet for LLM grammar authors keyed to the build warnings.
+
 ## 0.31.1 — 2026-07-23
 
 - **Fix: first-set computation skips past leading zero-width assertions.** A

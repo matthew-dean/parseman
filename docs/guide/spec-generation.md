@@ -42,7 +42,7 @@ The emitter maps each combinator to an EBNF construct:
 | `regex(/…/)` / `keywords([…])` | terminal (see [readable terminals](#readable-terminals)) |
 | `not(x)` | negation annotation `!x` |
 | `node("T", …)`, `transform`, `token`, `field`, `label`, `withCtx`, `expect` | transparent — the inner syntax |
-| `trivia(…)`, `guard(…)` | elided by default |
+| `trivia(…)`, `gate(…)` | elided by default |
 
 Precedence is handled automatically: alternation binds loosest, then concatenation, then the
 postfix operators — the renderer parenthesizes only where a looser construct sits inside a

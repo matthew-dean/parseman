@@ -478,13 +478,32 @@ contain unbalanced delimiters.
 
 ## Context
 
-### `guard(predicate)`
+### `gate(predicate)`
 
-Zero-width success only when `predicate(ctx.state)` is true.
+Zero-width success only when `predicate(ctx.state)` is true. Formerly `guard()`, which
+remains as a deprecated alias (`guard === gate`). The name matches the `gate:` field on a
+gated `choice` arm: the arm field SELECTS a branch, the combinator ASSERTS mid-sequence.
+
+### `guard(predicate)` <Badge type="warning" text="deprecated" />
+
+Alias of `gate(predicate)` (documented just above). Prefer `gate()`.
 
 ### `withCtx(extra, combinator)`
 
 Run `combinator` with `extra` merged into `ctx.state`, restored on exit.
+
+### `analyzeGating(entry, opts?)` → `GatingReport`
+
+Static first-char gating diagnostic over a combinator tree. For every reachable `choice`
+reports a stable `id`, whether it gates (`yes` / `recoverable` / `no`), the offending arm
+and cause for ungated ones, and API anti-patterns (`not(not(...))`, keyword `regex`).
+`opts.accept` is the snapshot allowlist — choice `id`s that are intentionally ungated: those
+move to `report.accepted` (silent), the rest stay in `report.ungated` (warned + gate-failing),
+and `report.acceptedUnused` flags stale entries. This allowlist is the SINGLE per-choice
+suppression mechanism (there is no `cold()` marker). `compile()` runs the diagnostic by
+default and warns on genuinely-ungated hot choices; see
+[First-char gating](../guide/first-char-gating). `formatGatingWarnings(report)` renders the
+findings as printable lines.
 
 ## IDE support
 

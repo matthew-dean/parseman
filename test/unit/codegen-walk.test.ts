@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  compile, skip, literal, ref, sequence, optional, node, guard, withCtx,
+  compile, skip, literal, ref, sequence, optional, node, gate, withCtx,
 } from '../../src/index.ts'
 
 describe('codegen tree walks', () => {
@@ -21,9 +21,9 @@ describe('codegen tree walks', () => {
     expect(compiled.source).toContain('function')
   })
 
-  it('compiles a node tree containing skip and guard wrappers', () => {
+  it('compiles a node tree containing skip and gate wrappers', () => {
     const Inner = node('Inner', skip(literal('a'), literal(' ')), () => null)
-    const p = withCtx({ ok: true }, sequence(guard(s => !!(s as { ok: boolean }).ok), Inner))
+    const p = withCtx({ ok: true }, sequence(gate(s => !!(s as { ok: boolean }).ok), Inner))
     const src = compile(p).source
     expect(src.length).toBeGreaterThan(100)
     expect(compile(p).parse('a ').ok).toBe(true)
@@ -46,8 +46,8 @@ describe('codegen tree walks', () => {
     expect(src).not.toContain('function _pf')
   })
 
-  it('compiles guard() inside withCtx', () => {
-    const p = withCtx({ ok: true }, sequence(guard(s => !!(s as { ok: boolean }).ok), literal('x')))
+  it('compiles gate() inside withCtx', () => {
+    const p = withCtx({ ok: true }, sequence(gate(s => !!(s as { ok: boolean }).ok), literal('x')))
     const compiled = compile(p)
     expect(compiled.source).toContain('_mf[')
     expect(compiled.parse('x').ok).toBe(true)

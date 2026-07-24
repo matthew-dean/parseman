@@ -100,7 +100,8 @@ consuming nothing — so `keyword('if')` matches `if` but rejects the `if` in `i
 ## Gated alternatives
 
 `choice` arms can be **gated** on the parse context — an arm is only tried when its gate
-predicate returns true. This is the choice-level companion to [`guard`](./context):
+predicate returns true. This is the choice-level companion to [`gate`](./context) — the
+arm field SELECTS a branch (keeping dispatch), the `gate()` combinator ASSERTS mid-sequence:
 
 ```ts
 import { choice } from 'parseman'

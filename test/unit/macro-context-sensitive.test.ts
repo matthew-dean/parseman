@@ -2,7 +2,7 @@
  * Macro-compilation parity for the three context-sensitive combinators the
  * static evaluator historically could not compile:
  *   - gated `choice` arms       `{ gate, combinator }`
- *   - `guard(pred)`
+ *   - `gate(pred)`
  *   - `withCtx(extra, inner)`
  *
  * The harness runs the ACTUAL macro-emitted source (transformMacro → eval) and
@@ -14,7 +14,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   literal, choice, sequence, parse,
-  guard, withCtx,
+  gate, withCtx,
 } from '../../src/index.ts'
 import type { GatedArm } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
@@ -70,30 +70,32 @@ describe('macro — gated choice arm (Part A safety: no silent gate drop)', () =
   })
 })
 
-describe('macro — guard()', () => {
-  it('guard parity: rejects when predicate false, accepts when true', () => {
-    const g = sequence(guard((s) => (s as { on?: boolean } | undefined)?.on === true), literal('a'))
-    expect(parse(g, 'a').ok).toBe(false) // no state → guard fails
+describe('macro — gate()', () => {
+  it('gate parity + deprecated guard() alias in macro: rejects when predicate false, accepts when true', () => {
+    const g = sequence(gate((s) => (s as { on?: boolean } | undefined)?.on === true), literal('a'))
+    expect(parse(g, 'a').ok).toBe(false) // no state → gate fails
 
+    // Exercise the deprecated guard() alias through the macro (evaluator still
+    // recognizes both `gate` and `guard` callee names).
     const { fn, warnings } = macroParser(
       'literal, sequence, guard',
       `const g = sequence(guard((s) => s && s.on === true), literal('a'))`,
       'g',
     )
     expect(warnings).toEqual([])
-    expect(fn('a', 0, {}).ok).toBe(false)  // no state → guard fails
+    expect(fn('a', 0, {}).ok).toBe(false)  // no state → gate fails
     expect(fn('a', 0, { state: { on: true } }).ok).toBe(true)
   })
 })
 
 describe('macro — withCtx()', () => {
   it('withCtx parity: sets state seen by an inner guard', () => {
-    const inner = withCtx({ on: true }, sequence(guard((s) => (s as { on?: boolean }).on === true), literal('a')))
+    const inner = withCtx({ on: true }, sequence(gate((s) => (s as { on?: boolean }).on === true), literal('a')))
     expect(parse(inner, 'a').ok).toBe(true)
 
     const { fn, warnings } = macroParser(
-      'literal, sequence, guard, withCtx',
-      `const inner = withCtx({ on: true }, sequence(guard((s) => s.on === true), literal('a')))`,
+      'literal, sequence, gate, withCtx',
+      `const inner = withCtx({ on: true }, sequence(gate((s) => s.on === true), literal('a')))`,
       'inner',
     )
     expect(warnings).toEqual([])

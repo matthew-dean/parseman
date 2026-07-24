@@ -38,7 +38,7 @@ Three words that sound alike but play different roles:
 | `not(combinator)` | Negative lookahead — succeeds (consuming nothing) when `combinator` fails. |
 | `node(combinator, build?, opts?)` / `node(type, combinator, build?, opts?)` | CST/AST rule: captures terminals + trivia. Inside `rules()`, the node type is inferred from the rule key; pass `type` for explicit/local nodes. See [CST / AST nodes](./ast). |
 | `ref<T>()` | Low-level forward-declaration slot (prefer `rules()`). |
-| `guard(predicate)` | Succeeds only when `predicate(ctx)` is true; for context-sensitive rules. See [Context](./context). |
+| `gate(predicate)` | Zero-width ASSERT: succeeds only when `predicate(ctx.state)` is true; for context-sensitive rules. See [Context](./context). (Formerly `guard()` — kept as a deprecated alias.) |
 | `withCtx(extra, combinator)` | Merge `extra` into the user context for the duration of `combinator`. |
 | `expect(combinator, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). |
@@ -160,6 +160,49 @@ const wordChar = regex(/\w/)
 const keyword  = (s: string) => transform(sequence(literal(s), not(wordChar)), ([kw]) => kw)
 // keyword('if') matches 'if' but not the 'if' inside 'ifdef'
 ```
+
+But you rarely need to hand-roll this — `word()`/`keywords()` do exactly it, with an
+**exact, resolvable first-set** that keeps a `choice` gating. See the table below.
+
+## Choosing between similar combinators
+
+A few combinators overlap in what they can match. The wrong pick usually still *works*
+(the grammar is correct), but silently loses first-char dispatch — the
+[gating diagnostic](./first-char-gating) will flag it. Quick reference:
+
+### Recognizing a keyword — `word` vs `literal` vs `regex`
+
+| Use | When | First-set | Gating |
+| --- | --- | --- | --- |
+| `word('kw', boundary)` | a keyword that must not match inside a longer word (`if` not `ifdef`) | exact | ✅ dispatches |
+| `keywords([...], opts)` | one of many keywords (colors, units, at-rules) | exact (union) | ✅ dispatches |
+| `literal('kw')` | a fixed token with **no** word-boundary requirement (punctuation, operators) | exact | ✅ dispatches |
+| `regex(/kw/)` | **avoid for keywords** — use only for genuine patterns (numbers, identifiers) | often `any` | ⚠️ may not dispatch |
+
+A bare `regex(/color/)` and the hand-rolled `sequence(literal('color'), not(/\w/))` both
+work, but `word('color', '-\\w')` is shorter, has an exact first-set, and lowers to the
+same `charCodeAt` scan. Reach for `regex` only when the token is a real pattern.
+
+### Selecting vs asserting on context — gated arm vs `gate()`
+
+| Use | Role | Dispatch |
+| --- | --- | --- |
+| `choice({ gate, combinator }, …)` | **SELECT** a branch by a cheap state predicate | ✅ preserved (arm keeps its own first-set) |
+| `gate(predicate)` inside `sequence` | **ASSERT** a state predicate mid-sequence | ⚠️ poisons dispatch if used as a leading arm term (first-set `any`) |
+
+Both read `ctx.state`. The arm **field** keeps the choice gating; the **combinator** is a
+zero-width assertion for use after a concrete leading terminal. See [Context](./context).
+
+### Skipping to a delimiter — `scanTo` vs `balanced`
+
+| Use | Matches | Nesting |
+| --- | --- | --- |
+| `scanTo(sentinel, opts?)` | forward until `sentinel` (sentinel **not** consumed) | flat; pass `skip: [balanced(...)]` to skip nested regions |
+| `balanced(open, close, opts?)` | a single balanced region **including** the delimiters | tracks nested `open`/`close` pairs |
+
+Both have an `any` first-set by nature — a `choice` arm leading with either won't
+first-char-gate. That is often fine for an error-recovery fallback arm; if it's intentional,
+accept that choice in the [gating snapshot allowlist](./first-char-gating).
 
 ## What's next
 

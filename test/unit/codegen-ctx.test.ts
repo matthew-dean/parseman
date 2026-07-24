@@ -1,5 +1,5 @@
 /**
- * Codegen for guard() and withCtx() — verifies these combinators compile to
+ * Codegen for gate() and withCtx() — verifies these combinators compile to
  * inline code rather than falling through to the runtime fallback path.
  *
  * Each test checks both runtime (parse) and compiled (compile().parse) output
@@ -7,21 +7,21 @@
  */
 import { describe, it, expect } from 'vitest'
 import { literal, sequence, choice, many, optional, transform, parse, compile } from '../../src/index.ts'
-import { guard, withCtx } from '../../src/index.ts'
+import { gate, withCtx } from '../../src/index.ts'
 
 // ---------------------------------------------------------------------------
-// guard() codegen
+// gate() codegen
 // ---------------------------------------------------------------------------
-describe('guard() codegen', () => {
+describe('gate() codegen', () => {
   it('compiles to inline gate check — no runtime fallback', () => {
-    const p = compile(guard(() => true))
+    const p = compile(gate(() => true))
     // Should have no _rp (runtime parser fallbacks) in the generated source
     expect(p.source).not.toContain('_rp[')
     expect(p.source).toContain('_mf[')   // predicate captured in mapFns
   })
 
   it('passes when predicate is true', () => {
-    const p = compile(guard(() => true))
+    const p = compile(gate(() => true))
     const r = p.parse('')
     expect(r.ok).toBe(true)
     if (r.ok) {
@@ -31,21 +31,21 @@ describe('guard() codegen', () => {
   })
 
   it('fails when predicate is false', () => {
-    const p = compile(guard(() => false))
+    const p = compile(gate(() => false))
     expect(p.parse('').ok).toBe(false)
   })
 
   it('reads _ctx.user via predicate', () => {
     const p = compile(
       withCtx({ flag: true },
-        guard((u) => (u as { flag: boolean }).flag)
+        gate((u) => (u as { flag: boolean }).flag)
       )
     )
     expect(p.parse('').ok).toBe(true)
 
     const p2 = compile(
       withCtx({ flag: false },
-        guard((u) => (u as { flag: boolean }).flag)
+        gate((u) => (u as { flag: boolean }).flag)
       )
     )
     expect(p2.parse('').ok).toBe(false)
@@ -56,7 +56,7 @@ describe('guard() codegen', () => {
     const p = compile(
       withCtx<S, unknown>({ allow: true },
         sequence(
-          guard((u) => (u as S).allow),
+          gate((u) => (u as S).allow),
           literal('ok'),
         )
       )
@@ -89,7 +89,7 @@ describe('withCtx() codegen', () => {
     type S = { mode: string }
     const p = compile(
       withCtx<S, unknown>({ mode: 'strict' },
-        guard((u) => (u as S).mode === 'strict')
+        gate((u) => (u as S).mode === 'strict')
       )
     )
     expect(p.parse('').ok).toBe(true)
@@ -98,10 +98,10 @@ describe('withCtx() codegen', () => {
   it('outer context is unchanged after withCtx', () => {
     // withCtx should not bleed into parsers after it in a sequence
     type S = { on: boolean }
-    const guardOn = guard((u) => (u as S | undefined)?.on === true)
+    const guardOn = gate((u) => (u as S | undefined)?.on === true)
     const p = compile(
       withCtx<S, unknown>({ on: true },
-        // inside: guard passes
+        // inside: gate passes
         sequence(guardOn, literal('a'))
       )
     )
@@ -118,11 +118,11 @@ describe('withCtx() codegen', () => {
     const p = compile(
       withCtx<S, unknown>({ depth: 1 },
         sequence(
-          guard((u) => (u as S).depth === 1),
+          gate((u) => (u as S).depth === 1),
           withCtx<S, unknown>({ depth: 2 },
-            guard((u) => (u as S).depth === 2)
+            gate((u) => (u as S).depth === 2)
           ),
-          guard((u) => (u as S).depth === 1),
+          gate((u) => (u as S).depth === 1),
         )
       )
     )
@@ -136,7 +136,7 @@ describe('withCtx() codegen', () => {
 // ---------------------------------------------------------------------------
 describe('runtime vs compiled parity', () => {
   it('guard parity', () => {
-    const p = withCtx({ on: true }, sequence(guard((u: unknown) => !!(u as any)?.on), literal('x')))
+    const p = withCtx({ on: true }, sequence(gate((u: unknown) => !!(u as any)?.on), literal('x')))
     const rt = parse(p, 'x')
     const cmp = compile(p).parse('x')
     expect(rt.ok).toBe(true)
@@ -161,17 +161,17 @@ describe('runtime vs compiled parity', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Recursive grammar with guard/withCtx — verifies emitLazy cycle handling
-// still works when inner parsers use guard/withCtx
+// Recursive grammar with gate/withCtx — verifies emitLazy cycle handling
+// still works when inner parsers use gate/withCtx
 // ---------------------------------------------------------------------------
 describe('recursive grammar + context', () => {
   it('guard inside parser() compiles without runtime fallback', () => {
-    // A trivial recursive structure that uses guard
+    // A trivial recursive structure that uses gate
     const { item } = (() => {
       let resolvedItem: ReturnType<typeof literal> | null = null
       // simple non-recursive case to avoid complexity
       const item = withCtx({ ok: true }, sequence(
-        guard((u) => !!(u as any)?.ok),
+        gate((u) => !!(u as any)?.ok),
         literal('x'),
       ))
       return { item }
