@@ -9,7 +9,7 @@
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
 import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
-import { firstSetOf, matchesEmpty, union, empty, any } from '../combinators/first-set.ts'
+import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 
 /**
  * A rule's LEADING first-set as a fuse-resolvable recipe: the concrete leading
@@ -44,9 +44,14 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
     }
     case 'sequence': {
       // Union through the nullable prefix, stop at (and include) the first
-      // non-nullable term — same rule as `sequenceFirstSet`.
+      // non-nullable term — same rule as `sequenceFirstSet`. A leading zero-width
+      // assertion (`not`) contributes nothing (its `any` would poison the recipe)
+      // but is still nullable, so keep scanning past it.
       let out: FirstSetRecipe = { concrete: empty(), refs: [] }
-      for (const term of d.parsers) { out = merge(out, rec(term)); if (!matchesEmpty(term)) return out }
+      for (const term of d.parsers) {
+        if (!isZeroWidthAssertion(term)) out = merge(out, rec(term))
+        if (!matchesEmpty(term)) return out
+      }
       return out
     }
     case 'oneOrMore': case 'many': case 'optional': case 'transform': case 'label':

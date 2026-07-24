@@ -3,6 +3,29 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.31.1 — 2026-07-23
+
+- **Fix: first-set computation skips past leading zero-width assertions.** A
+  `sequence` that LEADS with a negative lookahead — `sequence(not(literal('@-')),
+  @name)` (jess's opaque at-rule arm) — computed a first-set of `any`, because the
+  leading `not(...)` reports `firstSet: any()` (it cannot know what it forbids) and
+  that `any` was unioned into the sequence's set BEFORE the nullable-prefix loop
+  reached the first CONSUMING term. An `any` first-set silently disables first-char
+  dispatch gating of the whole arm/node/rule, so an assertion-led subtree (e.g. the
+  at-rule cluster across the jess parsers) was entered on every input char instead
+  of only on `@`. `sequenceFirstSet`, `firstSetOf`, and the compile-time
+  `leadingFirstSetRecipe` now skip a zero-width assertion's (meaningless) first-set
+  contribution while still treating it as nullable: `not(X) Y` can only start with a
+  char in firstSet(Y) — the assertion only NARROWS the language, never widens the
+  possible first chars — so firstSet(Y) stays a correct (and tighter) SUPERSET,
+  which is the soundness contract for a dispatch gate. Fuzz-verified over randomized
+  grammars (0 false-excludes: every input the sequence matches has its first char in
+  the computed set). Byte-identical parse output — this only re-enables the dispatch
+  gate the spurious `any` was suppressing; it adds no new API, IR field, or
+  combinator (cf. the 0.29.0 first-set-recipe minor, which added the recipe IR).
+  Parseman has no positive-lookahead combinator; the doc on `isZeroWidthAssertion`
+  records the `firstSet(body) ∩ firstSet(Y)` rule required before one could be added.
+
 ## 0.31.0 — 2026-07-23
 
 - **Perf: structural children-array (`chV`) elision via `_parsemanReadsChildren`.**

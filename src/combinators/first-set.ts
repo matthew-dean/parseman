@@ -98,16 +98,44 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
 }
 
 /**
+ * A ZERO-WIDTH ASSERTION never consumes input, so it contributes NOTHING to a
+ * sequence's first-set — the first consumed char comes from the following
+ * non-nullable term. `not(X)` reports `firstSet: any()` (it cannot know what it
+ * forbids), which would otherwise poison a sequence's first-set to `any` and kill
+ * first-char dispatch of the whole arm. Skipping its contribution is SOUND: a
+ * first-set used for dispatch gating must stay a correct SUPERSET of the rule's
+ * true first chars, and `not(X) Y` can only start with a char in firstSet(Y) — the
+ * assertion only NARROWS the language (it forbids a full match ahead), it never
+ * widens the set of possible first chars beyond Y. So firstSet(Y) is a sound (and
+ * tighter) superset.
+ *
+ * Parseman has NO positive-lookahead combinator (`(?=X)` exists only INSIDE a
+ * `regex()` pattern, where the regex first-set analyzer handles it). If one is ever
+ * added, its tight first-set is firstSet(body) ∩ firstSet(Y) when `body` is
+ * NON-nullable (both must be satisfiable at the same position), else firstSet(Y)
+ * (a nullable `(?=body)` succeeds on empty, so it imposes no first-char constraint
+ * and intersecting would UNSOUNDLY exclude valid chars). It must NOT be added to
+ * this predicate without that intersection logic — a future assertion combinator
+ * left out of this set merely contributes its shallow `any` first-set, which stays
+ * sound (over-approximation), only losing tightness.
+ */
+export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
+  return (p._def as ParserDef).tag === 'not'
+}
+
+/**
  * First-set of a sequence: union each term's first-set through the NULLABLE
  * PREFIX — a leading `optional(…)` / `many(…)` / nullable term can be skipped, so
  * the sequence can begin with a LATER term's first char. Stop at (and include)
  * the first non-nullable term. (`parsers[0].firstSet` alone under-approximates
  * and silently breaks first-char dispatch — see the InterpolatedSelector bug.)
+ * A leading zero-width assertion (`not(…)`) is nullable but contributes NOTHING to
+ * the first-set (see `isZeroWidthAssertion`) — its `any` must not poison the union.
  */
 export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
   let fs: FirstSet = empty()
   for (const p of parsers) {
-    fs = union(fs, p._meta.firstSet)
+    if (!isZeroWidthAssertion(p)) fs = union(fs, p._meta.firstSet)
     if (!matchesEmpty(p)) return fs
   }
   return fs
@@ -145,8 +173,13 @@ export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>
     case 'sequence': {
       // Union through the nullable prefix (a leading nullable term lets a later
       // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
+      // A leading zero-width assertion (`not`) contributes nothing (its `any` would
+      // poison the union) but is still nullable, so keep scanning past it.
       let out: FirstSet = empty()
-      for (const term of d.parsers) { out = union(out, fs(term)); if (!matchesEmpty(term)) return out }
+      for (const term of d.parsers) {
+        if (!isZeroWidthAssertion(term)) out = union(out, fs(term))
+        if (!matchesEmpty(term)) return out
+      }
       return out
     }
     case 'oneOrMore':
