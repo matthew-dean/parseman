@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any } from './first-set.ts'
-import { saveCstMark, rollbackCstCapture } from '../cst/capture-buffer.ts'
+import { saveTriviaMark, rollbackTrivia } from './trivia-skip.ts'
 
 /**
  * Negative lookahead. Succeeds (consuming nothing) when `combinator` fails;
@@ -25,13 +25,21 @@ export function not(combinator: Combinator<unknown>): Combinator<null> {
     _def: { tag: 'not', parser: combinator },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<null> {
       // Negative lookahead is a pure predicate: whatever the inner attempt
-      // captured (CST leaves/trivia/fields) or recovered (a ParseError pushed to
-      // ctx._errors + embedded via captureError) must be rolled back on BOTH
-      // outcomes — not() consumes nothing and so may leave no side effect, or a
-      // speculatively-recovered error would ghost past the lookahead.
-      const mark = saveCstMark(ctx)
+      // captured (CST leaves/rawChildren/per-node trivia/fields), recovered (a
+      // ParseError pushed to ctx._errors + embedded via captureError), or committed
+      // to the GLOBAL `_triviaLog` must be rolled back on BOTH outcomes — not()
+      // consumes nothing and so may leave no side effect.
+      //
+      // `rollbackTrivia`, not `rollbackCstCapture`: the latter's mark omits
+      // `_triviaLog`, which is a SEPARATE sink `scanTrivia().commit()` writes when
+      // the probed body skips ambient trivia between terms. Missing it duplicates
+      // every probed trivia span once the region is parsed for real — `_triviaLog`
+      // has no dedup anywhere (`triviaEntries()` is a positional view over the flat
+      // array), so the duplicate reaches output. Using the superset helper also
+      // means this cannot silently regress the next time a sink is added.
+      const mark = saveTriviaMark(ctx)
       const result = combinator.parse(input, pos, ctx)
-      rollbackCstCapture(ctx, mark)
+      rollbackTrivia(ctx, mark)
       if (result.ok) {
         return { ok: false, expected: [`not(${combinator._tag})`], span: { start: pos, end: pos } }
       }

@@ -2501,13 +2501,49 @@ function emitScanTo(
 function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string): ER {
   // not() discards the inner failure (inner failing = not succeeding), so the
   // inner sub-parse need not record — swallow it.
+  //
+  // Speculative rollback (mirrors the interpreter's not.ts): a zero-width predicate
+  // must leave NO observable trace on EITHER outcome. emitFallible's own restore is
+  // not enough on its own — it fires only `if (!ok)`, and both `mayLeavePartialCapture`
+  // and `capturesLeaf` classify `'not'` as non-capturing, so nothing upstream cleans
+  // up after it either. Two distinct leaks followed:
+  //   - inner SUCCESS (not fails): the probe's leaves/rawChildren survive, and an
+  //     enclosing optional/many that swallows the failure absorbs them — the compiled
+  //     engine returned a duplicated leaf where the interpreter returned one.
+  //   - EITHER outcome: the probe's inter-term trivia skips stay in the GLOBAL
+  //     `_triviaLog`, which `captureRestoreBody` deliberately never rewinds (see its
+  //     comment: sequence-term rollbacks stay byte-for-byte with the interpreter).
+  //     `not` is zero-width, so the enclosing rule re-parses the probed region for
+  //     real and the span is logged twice. Both engines leaked this one identically,
+  //     which is why interpreted/compiled parity never flagged it.
+  // The emitted rollback restores the same six sinks as `emitAttempt`, unconditionally
+  // (not `if (!ok)`), because not() is zero-width on both outcomes.
+  //
+  // NOT emitted as a `capturing: false` probe ctx the way emitScanTo lowers its
+  // sentinel: `emitLazy` does not honour `noHoist`, so a `not(namedRule)` that is the
+  // FIRST emission of that rule would compile the SHARED `_r_<Name>`/`_pf` body
+  // non-capturing and silently drop real captures at every other call site. Truncating
+  // by length is correct regardless of hoisting or sharing.
+  const sinksLive = !!ctx.capturing || !!ctx.recovery
+  const leaves = sinksLive ? v(ctx, '_ntl') : null
+  const raw    = sinksLive ? v(ctx, '_ntr') : null
+  const tl     = sinksLive ? v(ctx, '_ntt') : null
+  const log    = sinksLive ? v(ctx, '_ntg') : null
+  const fields = sinksLive ? v(ctx, '_ntf') : null
+  const errors = sinksLive ? v(ctx, '_nte') : null
   const { stmts, okVar } = emitFallible(def.parser, ctx, pos, true)
   // not() fails (at its own pos) when the inner parser SUCCEEDS; the interpreter
   // reports `not(<innerTag>)` as the expected token — match that label exactly.
   const label = JSON.stringify(`not(${def.parser._tag})`)
   return {
     stmts: [
+      ...(sinksLive ? [
+        `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${tl} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
+      ] : []),
       ...stmts,
+      ...(sinksLive ? [
+        `${ind(ctx)}if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${log}; if (_ctx._fields) _ctx._fields.length = ${fields}; if (_ctx._errors) _ctx._errors.length = ${errors}`,
+      ] : []),
       ...emitIfFail(ctx, okVar, failBody(ctx, label, pos)),
     ],
     valueVar: 'null',
