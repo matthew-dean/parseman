@@ -287,12 +287,17 @@ type Ctx = {
    */
   activeScanSkip?: Combinator<unknown>[] | undefined
   /**
-   * True while emitting a balanced()'s ambient-rebuilt interior. Suppresses the
-   * ambient balanced rebuild for any balanced encountered inside it — so a
-   * balanced skipper that is a MEMBER of `activeScanSkip` emits in its eager
-   * (non-ambient) form instead of re-triggering the rebuild forever.
+   * The set of balanced() combinators whose ambient interior is CURRENTLY being
+   * rebuilt (the active rebuild stack). A precise, identity-keyed cycle guard: the
+   * ambient rebuild is suppressed ONLY when re-entering a balanced already on this
+   * stack (the true self-cycle — a balanced that is a MEMBER of its own
+   * `activeScanSkip`), which then emits in its eager (non-ambient) form. A NESTED
+   * DIFFERENT balanced (not on the stack) still gets its own ambient rebuild, so it
+   * keeps skipping ambient opaque units — matching the interpreter. Entries are
+   * added on rebuild entry and removed on exit (finally). `activeScanSkip` is fixed
+   * within one rebuild chain, so keying on the balanced identity is precise.
    */
-  inBalancedRebuild?: boolean | undefined
+  balancedRebuildStack?: Set<Combinator<unknown>> | undefined
   /** Label table from grammar trivia for default ParseContext. */
   triviaKindLabels?: readonly string[] | undefined
   /**
@@ -3101,14 +3106,16 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
   // delimiter hidden inside a declared opaque region (string) close the balance
   // early. Rebuild the interior with [ambient scanSkip, ...ownSkip] and emit it.
   const bal = (p as BalancedAmbient)._balancedAmbient
-  // `!ctx.inBalancedRebuild`: break the SECOND recursion class. When a `balanced()`
-  // is itself a MEMBER of `activeScanSkip`, the rebuilt interior contains that same
-  // balanced skipper — re-entering here with the unchanged set would rebuild
-  // forever (distinct from a balanced's own `self` back-edge, handled below via the
-  // lazy-usage merge). While emitting a rebuilt interior we set the flag so any
-  // balanced within it (a scanSkip member, or a nested per-call skip) emits in its
-  // NON-ambient eager `_def` form — terminating, and each keeps its own per-call skip.
-  if (bal && ctx.activeScanSkip && ctx.activeScanSkip.length > 0 && !ctx.inBalancedRebuild) {
+  // Precise, identity-keyed cycle guard (`balancedRebuildStack`): break the SECOND
+  // recursion class WITHOUT over-suppressing. When a `balanced()` is a MEMBER of its
+  // own `activeScanSkip`, the rebuilt interior contains that same skipper — re-entering
+  // here with the unchanged set would rebuild forever (distinct from a balanced's own
+  // `self` back-edge, handled below via the lazy-usage merge). Suppress the rebuild
+  // ONLY when re-entering a balanced ALREADY on the stack (the true self-cycle); it
+  // then emits its eager `_def`. A NESTED DIFFERENT balanced (not on the stack) STILL
+  // gets its own ambient rebuild, so it keeps skipping ambient opaque units — matching
+  // the interpreter (a blanket flag would emit it eager and diverge).
+  if (bal && ctx.activeScanSkip && ctx.activeScanSkip.length > 0 && !ctx.balancedRebuildStack?.has(p)) {
     const interior = buildBalancedInterior(bal.open, bal.close, [...ctx.activeScanSkip, ...bal.ownSkip])
     markUnusedValues(interior)
     // The interior is created HERE, so it is absent from ctx.lazyUsage — which
@@ -3122,11 +3129,13 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       for (const k of u.recursive) ctx.lazyUsage.recursive.add(k)
       for (const [k, s] of u.sizes) ctx.lazyUsage.sizes.set(k, s)
     }
-    const saved = ctx.inBalancedRebuild
-    ctx.inBalancedRebuild = true
-    const r = emit(interior, ctx, pos)
-    ctx.inBalancedRebuild = saved
-    return r
+    const stack = ctx.balancedRebuildStack ?? (ctx.balancedRebuildStack = new Set())
+    stack.add(p)
+    try {
+      return emit(interior, ctx, pos)
+    } finally {
+      stack.delete(p)
+    }
   }
   const def = p._def
   switch (def.tag) {

@@ -54,6 +54,16 @@ const bs = rules({ scanSkip: [paren] }, gg => ({
   toSemi: sequence(scanTo(literal(';')), literal(';')),
 }))
 
+// A NESTED DIFFERENT balanced: `paren` (NOT in scanSkip) is rebuilt with a scanSkip
+// containing a DIFFERENT balanced (`nbBracket`) + a string. The nested bracket must
+// STILL get its own ambient rebuild so it skips the string — a coarse "suppress all"
+// guard would emit it eager and reject a `]` hidden in a string (compiled ≠ interp).
+const nbBracket = balanced('[', ']')
+const nbDq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+const nb = rules({ scanSkip: [nbBracket, nbDq] }, gg => ({
+  paren: balanced('(', ')'),
+}))
+
 // ---------------------------------------------------------------------------
 // Macro mode — the ambient options must survive the build-time compile too.
 // ---------------------------------------------------------------------------
@@ -63,6 +73,18 @@ let macroOp: MacroFn
 let macroGroup: MacroFn
 let macroBsBracket: MacroFn
 let macroBsToSemi: MacroFn
+let macroNbParen: MacroFn
+
+// A macro grammar with a NESTED DIFFERENT balanced in scanSkip — the nested
+// bracket must keep its ambient string-skipping (precise cycle guard, not coarse).
+const MACRO_NB_CODE = `
+import { rules, sequence, literal, regex, balanced } from 'parseman' with { type: 'macro' }
+const nbBracket = balanced('[', ']')
+const nbDq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+export const nb = rules({ scanSkip: [nbBracket, nbDq] }, gg => ({
+  paren: balanced('(', ')'),
+}))
+`.trim()
 
 // A macro grammar with a balanced() MEMBER in its scanSkip — must macro-fuse
 // (not stack-overflow) exactly like the interpreter/compile() paths.
@@ -113,6 +135,16 @@ beforeAll(async () => {
   const bsGrammar = new Function(bsBody)() as Record<string, MacroFn>
   macroBsBracket = bsGrammar.bracket!
   macroBsToSemi = bsGrammar.toSemi!
+
+  // Third grammar: nested DIFFERENT balanced in scanSkip.
+  const nbResult = transformMacro(MACRO_NB_CODE, 'ambient-scan-skip-nb-test.ts', new Set(['parseman']))
+  if (!nbResult) throw new Error('nb macro transform returned null')
+  if (nbResult.code.includes("from 'parseman'"))
+    throw new Error('nb macro transform did not remove the import — compilation failed')
+  const nbBody = nbResult.code
+    .replace(/\bexport const\b/g, 'var')
+    .replace(/\bconst\b/g, 'var') + '\nreturn nb'
+  macroNbParen = (new Function(nbBody)() as Record<string, MacroFn>).paren!
 })
 
 // ---------------------------------------------------------------------------
@@ -317,6 +349,38 @@ describe('balanced() member of scanSkip — codegen terminates and skips correct
     const ts = macroBsToSemi('(a;b);', 0, {})
     expect(ts.ok).toBe(true)
     if (ts.ok) expect((ts.value as string[])[0]).toBe('(a;b)')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A NESTED DIFFERENT balanced inside a rebuilt interior must KEEP its ambient
+// opaque-unit skipping — compiled must match the interpreter (Greptile follow-on:
+// a coarse boolean guard over-suppresses and diverges).
+// ---------------------------------------------------------------------------
+describe('nested different balanced keeps its ambient skipping (compiled === interpreter)', () => {
+  // `(["a]b"])` — a `]` hidden inside a string, inside the bracket, inside the paren.
+  // The nested bracket (a DIFFERENT balanced, member of scanSkip) must skip the
+  // string, so the `]` is not matched and the whole region parses.
+  const INPUT = '(["a]b"])'
+
+  it('interpreter — the nested bracket skips the string, whole region matches', () => {
+    const r = parse(nb.paren, INPUT)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value).toBe(INPUT)
+  })
+
+  it('compile() MATCHES the interpreter (a coarse guard would reject this)', () => {
+    const ci = compile(nb.paren).parse(INPUT)
+    const iv = parse(nb.paren, INPUT)
+    expect(ci.ok).toBe(true)
+    expect(ci.ok && iv.ok && ci.value === iv.value).toBe(true)
+    if (ci.ok) expect(ci.value).toBe(INPUT)
+  })
+
+  it('macro MATCHES the interpreter too', () => {
+    const m = macroNbParen(INPUT, 0, {})
+    expect(m.ok).toBe(true)
+    if (m.ok) expect(m.value).toBe(INPUT)
   })
 })
 
