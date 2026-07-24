@@ -31,6 +31,14 @@ function engineClass(cp: number): number[] {
 
 const sorted = (cp: number): number[] => [...caseFoldVariants(cp)].sort((a, b) => a - b)
 
+/** `engineClass` memoized — the exhaustive sweep asks for the same class twice. */
+const engineClassCache = new Map<number, number[]>()
+function classOf(cp: number): number[] {
+  let c = engineClassCache.get(cp)
+  if (!c) { c = engineClass(cp); engineClassCache.set(cp, c) }
+  return c
+}
+
 describe('caseFoldVariants — non-Unicode /i fold classes', () => {
   it('ASCII letters fold to exactly their twin, and non-letters to themselves', () => {
     expect(sorted(0x61)).toEqual([0x41, 0x61])     // a ↔ A
@@ -79,16 +87,39 @@ describe('caseFoldVariants — non-Unicode /i fold classes', () => {
     expect(sorted(0x10400)).toEqual([0x10400])     // DESERET CAPITAL LONG I
   })
 
-  it('EXHAUSTIVE: every multi-member class equals the engine\'s own class', () => {
-    // All 2307 BMP code points that fold with anything, checked both directions.
-    let checked = 0
+  it('EXHAUSTIVE: the multi-member classes are EXACTLY the engine\'s own', () => {
+    // Which code points fold at all is UNICODE-VERSION dependent — Node 22 counts
+    // 2313 of them, Node 24 counts 2307 — so a hardcoded total pins the test to one
+    // ICU build and fails on the other (it did: green locally, red on CI's Node 22).
+    // Derive the engine's own set in the SAME process instead, and assert exact set
+    // equality rather than a count. That also closes the direction a count never
+    // covered: a class the ENGINE folds but the model left singleton — the UNSOUND
+    // direction, which until now was only sampled (strided) by the test below.
+
+    // Candidate superset. A char the engine folds has a case mapping of its own...
+    const candidates = CPS.filter(cp => {
+      const ch = String.fromCharCode(cp)
+      return ch.toUpperCase() !== ch || ch.toLowerCase() !== ch || sorted(cp).length > 1
+    })
+    // ...but it can also be only the TARGET of a fold (canonicalize maps the other
+    // char onto it while its own maps are identity), so take the UNION of the
+    // candidates' engine classes, not the candidates themselves.
+    const engineMulti = new Set<number>()
+    for (const cp of candidates) {
+      const cls = classOf(cp)
+      if (cls.length > 1) for (const member of cls) engineMulti.add(member)
+    }
+
+    const modelMulti = new Set<number>()
     for (const cp of CPS) {
       const mine = sorted(cp)
       if (mine.length < 2) continue
-      expect(mine, `class of U+${cp.toString(16)}`).toEqual(engineClass(cp))
-      checked++
+      expect(mine, `class of U+${cp.toString(16)}`).toEqual(classOf(cp))
+      modelMulti.add(cp)
     }
-    expect(checked).toBe(2307)
+
+    const asc = (s: Set<number>): number[] => [...s].sort((a, b) => a - b)
+    expect(asc(modelMulti)).toEqual(asc(engineMulti))
   })
 
   it('EXHAUSTIVE (strided): never UNDER-approximates a singleton class', () => {
