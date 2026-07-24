@@ -585,11 +585,16 @@ export function transformMacro(
     return `{ ns: ${JSON.stringify(p.ns)}, keys: ${JSON.stringify(p.keys)}, `
       + `prelude: ${JSON.stringify(p.prelude.map(stripIndent))}, ruleFns: ${mapLit(p.ruleFns, true)}, `
       + `wrappers: ${mapLit(p.wrappers, true)}, firstSets: ${mapLit(p.firstSets)}, `
+      // Carry per-rule NULLABILITY so a downstream fuse of this serialized artifact
+      // can terminate an ordered-chain recipe at a non-nullable ref to one of these
+      // rules (else the chain over-unions the tail and the arm degrades to
+      // always-try). Absent → treated as nullable (safe). Plain JSON booleans.
+      + `nullable: ${p.nullable ? mapLit(p.nullable) : 'new Map()'}, `
       // Carry the leading first-set RECIPE so a DOWNSTREAM compose of this
       // serialized artifact keeps monolithic-parity first-char dispatch (else
       // fusedBody falls back to the shallow `any` first-set and the arm degrades
-      // to always-try — the regression Greptile flagged). `{concrete, refs}` is
-      // plain JSON.
+      // to always-try — the regression Greptile flagged). Ordered-chain (`{alts}`)
+      // and legacy (`{concrete, refs}`) recipes are both plain JSON.
       + `firstSetRecipes: ${p.firstSetRecipes ? mapLit(p.firstSetRecipes) : 'new Map()'}, deps: ${mapLit(p.deps)}, `
       + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
   }

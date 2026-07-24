@@ -20,7 +20,7 @@
  */
 import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
-import type { LinkablePieces, FirstSetRecipe } from './codegen.ts'
+import type { LinkablePieces, FirstSetRecipe, FirstSetSeg, LegacyFirstSetRecipe } from './codegen.ts'
 import { union } from '../combinators/first-set.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'
 
@@ -262,21 +262,58 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
   // to a piece without a recipe (older format) falls back to its shallow first-set;
   // a genuinely unknown ref → `any` (always try).
   const ANY: FirstSet = { kind: 'any' }
-  const recipes = new Map<string, FirstSetRecipe>()
+  const EMPTY: FirstSet = { kind: 'empty' }
+  const recipes = new Map<string, FirstSetRecipe | LegacyFirstSetRecipe>()
   const shallow = new Map<string, FirstSet>()
+  const nullable = new Map<string, boolean>()
   for (const [k, p] of winner) {
     const r = p.firstSetRecipes?.get(k); if (r) recipes.set(k, r)
     const fs = p.firstSets?.get(k); if (fs) shallow.set(k, fs)
+    const nu = p.nullable?.get(k); if (nu !== undefined) nullable.set(k, nu)
   }
+  const isNew = (r: FirstSetRecipe | LegacyFirstSetRecipe): r is FirstSetRecipe =>
+    (r as FirstSetRecipe).alts !== undefined
+  const knownRef = (ref: string): boolean => recipes.has(ref) || shallow.has(ref)
+  // A referenced rule's resolved first-set (or `any` for a genuinely unknown ref —
+  // always try). A ref whose nullability is unknown defaults to nullable (keep
+  // unioning the chain tail — never drops a valid first char).
+  const refFS = (ref: string): FirstSet => (knownRef(ref) ? (finalFS.get(ref) ?? ANY) : ANY)
+  const refNullable = (ref: string): boolean => (knownRef(ref) ? (nullable.get(ref) ?? true) : true)
+  // Resolve ONE ordered chain: union each segment's first-set left-to-right, STOP
+  // after the first non-nullable segment (its tail can't start the rule).
+  const resolveChain = (chain: FirstSetSeg[]): FirstSet => {
+    let fs: FirstSet = EMPTY
+    for (const seg of chain) {
+      fs = union(fs, seg.ref !== undefined ? refFS(seg.ref) : seg.set)
+      // Chain continues past a segment that can be empty. For a ref: EITHER it was
+      // forced skippable at build (a wrapping optional/many → `seg.nullable`) OR the
+      // resolved rule is itself nullable. Only a definitely-consuming ref stops it.
+      const skippable = seg.ref !== undefined ? (seg.nullable || refNullable(seg.ref)) : seg.nullable
+      if (!skippable) break
+    }
+    return fs
+  }
+  const resolveRecipe = (r: FirstSetRecipe | LegacyFirstSetRecipe): FirstSet => {
+    if (isNew(r)) {
+      let fs: FirstSet = EMPTY
+      for (const alt of r.alts) fs = union(fs, resolveChain(alt))
+      return fs
+    }
+    // Legacy `{concrete, refs}`: flat union (old semantics, back-compat).
+    let fs = r.concrete
+    for (const ref of r.refs) fs = union(fs, refFS(ref))
+    return fs
+  }
+  // Least-fixpoint: recipe-bearing rules start EMPTY and grow monotonically via
+  // `resolveRecipe` (union of refs is monotone; the chain stop is static), so a
+  // recursive rule converges to its tightest sound first-set. Rules with no recipe
+  // keep their static shallow set.
   const finalFS = new Map<string, FirstSet>()
-  for (const [k] of winner) finalFS.set(k, recipes.get(k)?.concrete ?? shallow.get(k) ?? ANY)
+  for (const [k] of winner) finalFS.set(k, recipes.has(k) ? EMPTY : (shallow.get(k) ?? ANY))
   for (let iter = 0; iter <= recipes.size; iter++) {
     let changed = false
     for (const [k, r] of recipes) {
-      let fs = r.concrete
-      for (const ref of r.refs) {
-        fs = union(fs, recipes.has(ref) || shallow.has(ref) ? (finalFS.get(ref) ?? ANY) : ANY)
-      }
+      const fs = resolveRecipe(r)
       if (JSON.stringify(finalFS.get(k)) !== JSON.stringify(fs)) { finalFS.set(k, fs); changed = true }
     }
     if (!changed) break

@@ -3,6 +3,51 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.32.0 — 2026-07-23
+
+- **Fix: cross-artifact first-set dispatch across the `composeLeaf` boundary.** A
+  fused choice arm / node whose leading term is a rule REFERENCE into a separately
+  compiled recognition artifact — `sequence(g.SyntaxAtRuleName, prelude, ';')`, the
+  shape every jess at-rule cluster uses — degraded to an `any` first-set and was
+  entered SPECULATIVELY at every input position (each of ~2000 top-level rulesets
+  paid ~11 doomed at-rule node-frame enter+regex+rollback cycles). Two coupled
+  causes, both fixed:
+  - **`canMatchEmptyAtStart` was imprecise for a `regex`.** It tested the pattern
+    SOURCE for a `?`/`*`/`{n,}` anywhere — including inside a `(?!…)` lookahead or on
+    a non-leading term — so a required-prefix recognizer like `/@media(?![-\w])/`
+    (first-set `{@}`, cannot match empty) was wrongly flagged nullable, and
+    `compileLinkable` poisoned that rule's `firstSets`/`firstSetRecipes` to `any`. It
+    now uses the precise `regexMatchesEmpty` (`^(?:source)$` against `''`) — tighter
+    AND sound (also fixes a latent unsoundness: `/a{0}/` matches empty but has no
+    `{n,}`, so the old test missed it).
+  - **The leading first-set recipe over-unioned the tail past a leading ref.** The
+    old flat `{concrete, refs}` recipe treated a leading cross-artifact ref as
+    nullable (its nullability is unknown at compile time) and unioned the FOLLOWING
+    terms' first-sets — and a `scanTo` prelude's set is `any`, collapsing the whole
+    recipe. The recipe is now an ORDERED CHAIN (`{alts}`: a union of ordered
+    leading-term chains) plus a per-rule `nullable` map, and `fusedBody` resolves each
+    chain left-to-right, STOPPING at the first non-nullable segment — so a
+    `sequence(ref, …)`-led arm resolves to the ref's real `{@}` even when the tail is
+    `any`, exactly as a grammar-local `regex(/@…/)` would.
+
+  Net effect: a fused grammar first-char-gates a cross-artifact `sequence(ref, …)`
+  arm identically to a monolithic compile, so grammar authors no longer need to
+  hand-copy recognizer regexes into the consuming grammar to recover dispatch.
+  Verified on the real jess CSS AST grammar: the at-rule cluster went from **0**
+  gated arms (0.31.1) to gated on `@` throughout (11/13 `CssAstAtRuleStatement`
+  sites, 7/9 conditional/layer, 14/16 opaque/page/scope), AST byte-identical
+  (css-parser suite green), bootstrap4.css parse **~−38%** median in a same-store
+  interleaved A/B vs 0.31.1. Soundness fuzz-verified over 1.8M randomized
+  cross-artifact grammar × input pairs (0 false-excludes, 0 end-mismatches; the
+  guard is load-bearing — a deliberately-broken chain-stop produced 2311).
+
+  **Breaking (artifact format):** `firstSetRecipes` now serializes as `{alts}` and
+  a new per-rule `nullable` map ships alongside `firstSets`. `fusedBody` reads BOTH
+  the new ordered-chain and the legacy `{concrete, refs}` shape, so consuming an
+  older pre-compiled artifact still works — but an artifact compiled by 0.32.0
+  cannot be fused by an OLDER parseman. New exported types `FirstSetSeg` /
+  `LegacyFirstSetRecipe`; `FirstSetRecipe` / `leadingFirstSetRecipe` changed shape.
+
 ## 0.31.1 — 2026-07-23
 
 - **Fix: first-set computation skips past leading zero-width assertions.** A

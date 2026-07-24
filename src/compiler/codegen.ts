@@ -12,55 +12,106 @@ import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 
 /**
- * A rule's LEADING first-set as a fuse-resolvable recipe: the concrete leading
- * chars (literals/regex reached through the nullable prefix) kept SEPARATE from the
- * leading rule-REFERENCE names. `fusedBody()` resolves the ref names against the
- * WINNING rules (a fixpoint) and unions the concrete part, so a composed grammar
- * gets the same first-char dispatch a monolithic compile would — WITHOUT baking a
- * referenced rule's first-set (which a compose override could later widen). Kept
- * conservative: an unknown/opaque construct contributes its shallow `_meta.firstSet`
- * (never an under-approximation, so dispatch never drops a valid parse).
+ * A rule's LEADING first-set as a fuse-resolvable recipe.
+ *
+ * A recipe is a UNION of ORDERED CHAINS (`alts`). Each chain is the leading-term
+ * sequence of one alternative; `fusedBody()` resolves it left-to-right against the
+ * WINNING rules, UNIONING each segment's first-set and STOPPING after the first
+ * segment that is not nullable. A segment is either
+ *   - a concrete first-set (`set`) with its build-time-known `nullable` flag, or
+ *   - a rule REFERENCE (`ref`) whose first-set AND nullability are resolved at fuse
+ *     time (`nullable` is a conservative placeholder until then).
+ *
+ * Why the ORDER + per-segment nullability matter (the bug this shape fixes): a rule
+ * like `sequence(g.CssAstSyntaxStatementAtRuleName, prelude, ';')` leads with a
+ * cross-artifact ref. At compile time that ref's nullability is unknown, so the old
+ * flat `{concrete, refs}` recipe conservatively treated it as nullable and unioned
+ * the FOLLOWING terms' first-sets into `concrete` — and the prelude's first-set is
+ * `any` (a `scanTo`), so the whole recipe collapsed to `any` and the arm lost
+ * first-char dispatch. Keeping the leading chain ordered lets fuse-time resolution
+ * see the ref is actually NON-nullable and STOP — so the arm gates on `{@}`, exactly
+ * as a grammar-local `regex(/@…/)` would. Grammar authors had to hand-copy those
+ * recognizers to work around this; the ordered chain removes the need.
+ *
+ * Soundness: the resolved set is always a SUPERSET of the rule's true first chars.
+ * An unknown/opaque construct contributes its shallow `_meta.firstSet`; a ref whose
+ * nullability can't be resolved defaults to nullable (keep unioning — never drops a
+ * valid first char). Legacy `{concrete, refs}` recipes (from artifacts compiled by
+ * an older parseman) are still understood by `fusedBody` unchanged.
  */
-export type FirstSetRecipe = { concrete: FirstSet; refs: string[] }
+export type FirstSetSeg = { set: FirstSet; nullable: boolean; ref?: string }
+export type FirstSetRecipe = { alts: FirstSetSeg[][] }
+/** Legacy recipe shape (pre-ordered-chain); still resolvable by fusedBody. */
+export type LegacyFirstSetRecipe = { concrete: FirstSet; refs: string[] }
 export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): FirstSetRecipe {
-  if (seen.has(p)) return { concrete: empty(), refs: [] }
+  if (seen.has(p)) return { alts: [[]] }   // cycle: empty (nullable) chain — contributes nothing
   seen.add(p)
   const d = p._def as ParserDef
   const rec = (c: Combinator<unknown>): FirstSetRecipe => leadingFirstSetRecipe(c, seen)
-  const merge = (a: FirstSetRecipe, b: FirstSetRecipe): FirstSetRecipe =>
-    ({ concrete: union(a.concrete, b.concrete), refs: [...a.refs, ...b.refs] })
+  const seg = (set: FirstSet, nullable: boolean): FirstSetSeg => ({ set, nullable })
+  // Force every segment of a recipe to nullable — used for `optional`/`many`, which
+  // are skippable as a whole, so the leading chain must be able to continue PAST
+  // them to a following term (and a wrapped rule REF must not stop the chain even if
+  // it resolves non-nullable — the optional can omit it).
+  const forceNullable = (r: FirstSetRecipe): FirstSetRecipe =>
+    ({ alts: r.alts.map(alt => alt.map(s => ({ ...s, nullable: true }))) })
+  // Collapse a multi-alternative term (an inner choice) reached inside a sequence
+  // chain into ONE segment. If any alternative's leading run holds a rule REF, its
+  // real first chars are only known at fuse time and can't be carried in a linear
+  // chain, so widen to `any` (sound superset); otherwise union the concrete sets.
+  const collapse = (r: FirstSetRecipe, nullable: boolean): FirstSetSeg => {
+    let set: FirstSet = empty()
+    let hasRef = false
+    for (const alt of r.alts) {
+      for (const s of alt) { if (s.ref !== undefined) hasRef = true; set = union(set, s.set); if (!s.nullable) break }
+    }
+    return seg(hasRef ? any() : set, nullable)
+  }
   switch (d.tag) {
     case 'lazy': {
       const name = (p as unknown as { _ruleName?: string })._ruleName
-      if (name !== undefined) return { concrete: empty(), refs: [name] }   // a rule ref: defer to the winner
-      try { return rec(d.thunk()) } catch { return { concrete: any(), refs: [] } }
+      // Rule ref: first-set AND chain-stop nullability both deferred to fuse time.
+      // `nullable: false` here is the DEFAULT "not forced skippable" — fusedBody
+      // resolves the ref's real nullability (a wrapping optional/many forces it true).
+      if (name !== undefined) return { alts: [[{ set: empty(), nullable: false, ref: name }]] }
+      try { return rec(d.thunk()) } catch { return { alts: [[seg(any(), false)]] } }
     }
     case 'literal': case 'regex': case 'keywords':
-      return { concrete: p._meta.firstSet, refs: [] }
+      return { alts: [[seg(p._meta.firstSet, matchesEmpty(p))]] }
     case 'choice': {
-      let out: FirstSetRecipe = { concrete: empty(), refs: [] }
-      for (const arm of d.parsers) out = merge(out, rec(arm))
-      return out
+      // Alternatives union: concat every arm's chains.
+      const alts: FirstSetSeg[][] = []
+      for (const arm of d.parsers) alts.push(...rec(arm).alts)
+      return { alts }
     }
     case 'sequence': {
-      // Union through the nullable prefix, stop at (and include) the first
-      // non-nullable term — same rule as `sequenceFirstSet`. A leading zero-width
-      // assertion (`not`) contributes nothing (its `any` would poison the recipe)
-      // but is still nullable, so keep scanning past it.
-      let out: FirstSetRecipe = { concrete: empty(), refs: [] }
+      // One ordered chain through the nullable prefix, stopping at (and including)
+      // the first non-nullable term — same rule as `sequenceFirstSet`. A leading
+      // zero-width assertion (`not`) contributes nothing but is nullable (keep
+      // scanning past it). A multi-alt term is collapsed to keep the chain linear.
+      const chain: FirstSetSeg[] = []
       for (const term of d.parsers) {
-        if (!isZeroWidthAssertion(term)) out = merge(out, rec(term))
-        if (!matchesEmpty(term)) return out
+        if (!isZeroWidthAssertion(term)) {
+          const tr = rec(term)
+          if (tr.alts.length === 1) chain.push(...tr.alts[0]!)
+          else chain.push(collapse(tr, matchesEmpty(term)))
+        }
+        if (!matchesEmpty(term)) return { alts: [chain] }
       }
-      return out
+      return { alts: [chain] }
     }
-    case 'oneOrMore': case 'many': case 'optional': case 'transform': case 'label':
+    // `many`/`optional` are skippable as a whole → their leading chars start the
+    // sequence but the chain must continue past them (force nullable). `oneOrMore`
+    // requires at least one repetition, so it is NOT made nullable here.
+    case 'many': case 'optional':
+      return forceNullable(rec(d.parser))
+    case 'oneOrMore': case 'transform': case 'label':
     case 'field': case 'trivia': case 'token': case 'leaf': case 'node': case 'grammar': case 'expect':
       return rec(d.parser)
     case 'sepBy': return rec(d.parser)
     case 'skip': return rec(d.main)
     // not / scanTo / guard / withCtx / recover / unknown → shallow set (safe).
-    default: return { concrete: p._meta.firstSet, refs: [] }
+    default: return { alts: [[seg(p._meta.firstSet, matchesEmpty(p))]] }
   }
 }
 import { markUnusedValues } from './value-usage.ts'
@@ -1263,7 +1314,23 @@ function canMatchEmptyAtStart(p: Combinator<unknown>): boolean {
   const d = p._def
   switch (d.tag) {
     case 'regex':
-      return /(?:[*?]|\{0,|\{\d*,)/.test(d.source)
+      // Precise nullability: does the pattern actually match the empty string?
+      // The old crude test (`/(?:[*?]|\{0,|\{\d*,)/.test(source)`) fired on ANY
+      // `?`/`*`/`{n,}` in the source — including a `?`/`*` inside a `(?!…)`/`(?=…)`
+      // lookahead or applied to a NON-leading term — so a required-prefix recognizer
+      // like `/@media(?![-\w])/` (first-set `{@}`, cannot match empty) was wrongly
+      // flagged nullable. When such a rule is a compileLinkable rule, that poisoned
+      // its `firstSets`/`firstSetRecipes` to `any` (below), so a cross-artifact
+      // `g.CssAstSyntax*` reference to it resolved to `any` at fuse time and the
+      // referencing choice arm lost first-char dispatch. `regexMatchesEmpty` tests
+      // `^(?:source)$` against `''` — the exact "matches empty" question — and falls
+      // back to `true` (conservatively nullable → always-try) if the pattern can't be
+      // compiled. Tighter AND sound: the first-set stays a superset (firstSetFromRegex
+      // is unchanged); we only stop over-declaring nullability. Also fixes a latent
+      // UNSOUNDNESS the crude test had — `/a{0}/` matches empty but has no `{n,}`, so
+      // the old check returned false (would gate a nullable rule); the precise test
+      // returns true.
+      return regexMatchesEmpty(d.source, d.flags)
     case 'optional': return true
     case 'many': return true
     case 'transform': case 'label': case 'field':
@@ -3863,13 +3930,22 @@ export type LinkablePieces = {
    */
   firstSets: Map<string, FirstSet>
   /**
-   * Per-rule LEADING first-set recipe (concrete chars + leading ref names).
-   * `fusedBody()` fixpoint-resolves the ref names over the WINNING rules so a
-   * `sequence(ref, …)`-led arm/node dispatches on the ref's real first char —
-   * matching a monolithic compile — instead of degrading to always-try because
-   * the ref baked `any`. Optional for back-compat with hand-built pieces.
+   * Per-rule nullability (does the rule match the empty string?). `fusedBody()`
+   * reads it when resolving an ordered-chain recipe segment that REFERENCES this
+   * rule: a non-nullable ref terminates the leading chain (stop unioning the tail),
+   * a nullable one lets it continue. Optional/absent → treated as nullable (the safe
+   * default: keep unioning, never drop a valid first char).
    */
-  firstSetRecipes?: Map<string, FirstSetRecipe>
+  nullable?: Map<string, boolean>
+  /**
+   * Per-rule LEADING first-set recipe — a union of ordered leading-term chains
+   * (`FirstSetRecipe`) or a legacy `{concrete, refs}` shape from an older artifact.
+   * `fusedBody()` fixpoint-resolves the leading ref names over the WINNING rules so a
+   * `sequence(ref, …)`-led arm/node dispatches on the ref's real first char —
+   * matching a monolithic compile — instead of degrading to always-try because the
+   * ref baked `any`. Optional for back-compat with hand-built pieces.
+   */
+  firstSetRecipes?: Map<string, FirstSetRecipe | LegacyFirstSetRecipe>
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
@@ -4071,15 +4147,20 @@ export function compileLinkable(
   // a rule that can match empty at start gets `any` (→ no guard, always try).
   const firstSets = new Map<string, FirstSet>()
   const firstSetRecipes = new Map<string, FirstSetRecipe>()
+  // Per-rule nullability (does the whole rule match empty?) — fusedBody reads it to
+  // decide whether an ordered-chain segment that is a REF to this rule terminates the
+  // chain (non-nullable → stop unioning the tail) or lets it continue (nullable).
+  const nullable = new Map<string, boolean>()
   for (const [key, rule] of ruleMap) {
     let resolved: Combinator<unknown> = rule
     const d = rule._def
     if (d.tag === 'lazy') { try { resolved = d.thunk() } catch { resolved = rule } }
     firstSets.set(key, canMatchEmptyAtStart(resolved) ? { kind: 'any' } : resolved._meta.firstSet)
+    nullable.set(key, matchesEmpty(resolved))
     // Recipe drives fuse-time dispatch: keep leading ref names unresolved so the
     // WINNING rule (post-override) supplies their first char. An empty-at-start
     // rule stays `any` (always try).
-    firstSetRecipes.set(key, canMatchEmptyAtStart(resolved) ? { concrete: any(), refs: [] } : leadingFirstSetRecipe(resolved))
+    firstSetRecipes.set(key, canMatchEmptyAtStart(resolved) ? { alts: [[{ set: any(), nullable: false }]] } : leadingFirstSetRecipe(resolved))
   }
 
   return {
@@ -4089,6 +4170,7 @@ export function compileLinkable(
     ruleFns,
     wrappers,
     firstSets,
+    nullable,
     firstSetRecipes,
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,

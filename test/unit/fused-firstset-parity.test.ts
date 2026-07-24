@@ -26,8 +26,11 @@ describe('fused grammar first-set parity with monolithic', () => {
       Sel: node('Sel', sequence(optional(regex(/[.#]/)), g.Interp!, literal('x')), cst('Sel')),
     }))
     const r = leadingFirstSetRecipe((g as Record<string, Combinator<unknown>>).Sel!)
-    expect(r.refs).toContain('Interp')                         // leading ref deferred by NAME
-    expect(r.concrete).toMatchObject({ kind: 'ranges' })       // and the `.`/`#` kept concrete
+    const chain = r.alts[0]!                                    // one alternative (a linear sequence)
+    expect(chain.some(s => s.ref === 'Interp')).toBe(true)     // leading ref deferred by NAME
+    // the `.`/`#` from the optional is kept concrete, ahead of the ref, and nullable
+    const dotHash = chain.find(s => s.set.kind === 'ranges')
+    expect(dotHash).toMatchObject({ set: { kind: 'ranges' }, nullable: true })
   })
 
   it('fused Doc first-char-gates the sequence(ref,…)-led arm on the ref first set', () => {
