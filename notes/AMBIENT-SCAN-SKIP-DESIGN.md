@@ -118,6 +118,27 @@ Decision:
 This keeps the guarantee where it matters (every `scanTo`, both paths) without a
 new deferred-construction combinator, and is flagged for the owner.
 
+## Macro / compose threading
+
+The macro plugin never runs `rules()` (so `_meta.grammarScanSkip` is not stamped),
+it evaluates the factory and reads options off the AST. `scanSkip` is therefore
+extracted from the `rules({ … })` options ObjectExpression alongside `trivia`
+(`evaluateRulesFactory`) and passed to `compileRuleMap` / `compileLinkable` via a
+new `opts.scanSkip`. Codegen also falls back to `_meta.grammarScanSkip` for the
+runtime path. Threaded paths:
+
+- **standalone `rules()`** (`compileRulesFactory` → `compileRuleMap`) — done.
+- **`composeLeaf([…, rules({ scanSkip })])`** — the local leaf grammar's own
+  `scanSkip` is threaded to its `compileLinkable` (the site's own opaque units,
+  NOT composing-wins, since strings are dialect-specific). Done — this is the path
+  the public Less/CSS/SCSS AST grammars use, and the path that carries the jess
+  bootstrap fix.
+- **`compose([…, rules({ scanSkip })])`** — NOT yet threaded. The local rules
+  element is carried as re-lowerable IR and re-seeded with only the composing
+  trivia in `materializeCarried`; scanSkip would need per-piece carrying. The two
+  grammars on this path (jess less/scss CST) have no bare or under-skipped scanTo
+  site, so no active footgun — this is a documented follow-up.
+
 ## Version
 
 New ambient option (`scanSkip`) **plus** a default-behavior change (`scanTo` now

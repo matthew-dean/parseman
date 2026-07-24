@@ -998,9 +998,15 @@ export function transformMacro(
     }
     const localArg = elements[elements.length - 1]!
     let localRules: Iterable<readonly [string, unknown]> | null = null
+    // The LOCAL leaf grammar's own ambient scanSkip (from its `rules({ scanSkip })`)
+    // governs the scanTo/balanced sites IT defines — unlike trivia (composing-wins),
+    // opaque units are dialect-specific, so the local declaration is threaded to the
+    // local piece's compile.
+    let localScanSkip: Combinator<unknown>[] | undefined
     if (isRulesCall(localArg)) {
       const evaluated = evaluateRulesFactory(localArg, `composeLeaf${init.start}`)
       localRules = evaluated?.ruleMap ?? null
+      localScanSkip = evaluated?.scanSkip
     } else if (localArg.type === 'Identifier') {
       localRules = localRuleMaps.get((localArg as unknown as { name: string }).name) ?? null
     }
@@ -1024,7 +1030,7 @@ export function transformMacro(
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
       const localNs = nsFor(`composeLeaf${init.start}`)
-      const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), recovery })
+      const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
       if (!plainLocalPiece) {
         warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
         return null
