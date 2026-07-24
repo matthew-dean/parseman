@@ -43,6 +43,17 @@ const compiledEntry = compile(g.entry)
 const compiledOp = compile(g.entryOp)
 const compiledGroup = compile(g.group)
 
+// A grammar whose `scanSkip` set CONTAINS a balanced() skipper — the codegen
+// crash class (Greptile P1): emitting a balanced rebuilds its interior with
+// `activeScanSkip`, which contains that balanced member, which would re-trigger
+// the rebuild forever. `bsBracket` is a DIFFERENT balanced whose rebuild pulls in
+// the `paren` member; `bsToSemi` is a scanTo that must skip the paren group.
+const paren = balanced('(', ')')
+const bs = rules({ scanSkip: [paren] }, gg => ({
+  bracket: balanced('[', ']'),
+  toSemi: sequence(scanTo(literal(';')), literal(';')),
+}))
+
 // ---------------------------------------------------------------------------
 // Macro mode — the ambient options must survive the build-time compile too.
 // ---------------------------------------------------------------------------
@@ -50,6 +61,19 @@ type MacroFn = (input: string, pos: number, ctx: object) => { ok: boolean; value
 let macroEntry: MacroFn
 let macroOp: MacroFn
 let macroGroup: MacroFn
+let macroBsBracket: MacroFn
+let macroBsToSemi: MacroFn
+
+// A macro grammar with a balanced() MEMBER in its scanSkip — must macro-fuse
+// (not stack-overflow) exactly like the interpreter/compile() paths.
+const MACRO_BS_CODE = `
+import { rules, sequence, literal, scanTo, balanced } from 'parseman' with { type: 'macro' }
+const paren = balanced('(', ')')
+export const bs = rules({ scanSkip: [paren] }, gg => ({
+  bracket: balanced('[', ']'),
+  toSemi: sequence(scanTo(literal(';')), literal(';')),
+}))
+`.trim()
 
 const MACRO_CODE = `
 import { rules, sequence, literal, regex, scanTo, balanced } from 'parseman' with { type: 'macro' }
@@ -77,6 +101,18 @@ beforeAll(async () => {
   macroEntry = grammar.entry!
   macroOp = grammar.entryOp!
   macroGroup = grammar.group!
+
+  // Second grammar: balanced() member in scanSkip — the codegen recursion class.
+  const bsResult = transformMacro(MACRO_BS_CODE, 'ambient-scan-skip-bs-test.ts', new Set(['parseman']))
+  if (!bsResult) throw new Error('bs macro transform returned null')
+  if (bsResult.code.includes("from 'parseman'"))
+    throw new Error('bs macro transform did not remove the import — compilation failed (possible stack overflow)')
+  const bsBody = bsResult.code
+    .replace(/\bexport const\b/g, 'var')
+    .replace(/\bconst\b/g, 'var') + '\nreturn bs'
+  const bsGrammar = new Function(bsBody)() as Record<string, MacroFn>
+  macroBsBracket = bsGrammar.bracket!
+  macroBsToSemi = bsGrammar.toSemi!
 })
 
 // ---------------------------------------------------------------------------
@@ -243,6 +279,44 @@ describe('balanced() honors ambient scanSkip in its interior', () => {
     const r = parse(bare.group, '("a)b")')
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.value).toBe('("a)')   // closed at the `)` inside the string
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A balanced() MEMBER of scanSkip must not send codegen into unbounded rebuild
+// recursion (Greptile P1 codegen crash). compile() + macro must TERMINATE and
+// produce a working parser, and the skipping must still be correct.
+// ---------------------------------------------------------------------------
+describe('balanced() member of scanSkip — codegen terminates and skips correctly', () => {
+  it('compile() a balanced whose rebuild pulls in the balanced scanSkip member — no stack overflow', () => {
+    let compiledBracket: ReturnType<typeof compile>
+    expect(() => { compiledBracket = compile(bs.bracket) }).not.toThrow()
+    // …and it actually parses: a `]` hidden inside a paren group is skipped, so
+    // the bracket closes at the REAL `]`.
+    const r = compiledBracket!.parse('[(a]b)]')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value).toBe('[(a]b)]')
+  })
+
+  it('compile() a scanTo that skips the balanced paren member — a `;` inside `()` is not matched', () => {
+    const compiledToSemi = compile(bs.toSemi)
+    const r = compiledToSemi.parse('(a;b);')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect((r.value as string[])[0]).toBe('(a;b)')   // the inner `;` was skipped
+  })
+
+  it('interpreter agrees (no infinite build/parse)', () => {
+    expect((parse(bs.bracket, '[(a]b)]') as { value: string }).value).toBe('[(a]b)]')
+    expect((parse(bs.toSemi, '(a;b);') as { value: string[] }).value[0]).toBe('(a;b)')
+  })
+
+  it('macro path fuses (no stack overflow) and skips correctly', () => {
+    const br = macroBsBracket('[(a]b)]', 0, {})
+    expect(br.ok).toBe(true)
+    if (br.ok) expect(br.value).toBe('[(a]b)]')
+    const ts = macroBsToSemi('(a;b);', 0, {})
+    expect(ts.ok).toBe(true)
+    if (ts.ok) expect((ts.value as string[])[0]).toBe('(a;b)')
   })
 })
 

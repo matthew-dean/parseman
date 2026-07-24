@@ -286,6 +286,13 @@ type Ctx = {
    * matches the interpreter's `resolveScanSkip`.
    */
   activeScanSkip?: Combinator<unknown>[] | undefined
+  /**
+   * True while emitting a balanced()'s ambient-rebuilt interior. Suppresses the
+   * ambient balanced rebuild for any balanced encountered inside it — so a
+   * balanced skipper that is a MEMBER of `activeScanSkip` emits in its eager
+   * (non-ambient) form instead of re-triggering the rebuild forever.
+   */
+  inBalancedRebuild?: boolean | undefined
   /** Label table from grammar trivia for default ParseContext. */
   triviaKindLabels?: readonly string[] | undefined
   /**
@@ -3094,7 +3101,14 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
   // delimiter hidden inside a declared opaque region (string) close the balance
   // early. Rebuild the interior with [ambient scanSkip, ...ownSkip] and emit it.
   const bal = (p as BalancedAmbient)._balancedAmbient
-  if (bal && ctx.activeScanSkip && ctx.activeScanSkip.length > 0) {
+  // `!ctx.inBalancedRebuild`: break the SECOND recursion class. When a `balanced()`
+  // is itself a MEMBER of `activeScanSkip`, the rebuilt interior contains that same
+  // balanced skipper — re-entering here with the unchanged set would rebuild
+  // forever (distinct from a balanced's own `self` back-edge, handled below via the
+  // lazy-usage merge). While emitting a rebuilt interior we set the flag so any
+  // balanced within it (a scanSkip member, or a nested per-call skip) emits in its
+  // NON-ambient eager `_def` form — terminating, and each keeps its own per-call skip.
+  if (bal && ctx.activeScanSkip && ctx.activeScanSkip.length > 0 && !ctx.inBalancedRebuild) {
     const interior = buildBalancedInterior(bal.open, bal.close, [...ctx.activeScanSkip, ...bal.ownSkip])
     markUnusedValues(interior)
     // The interior is created HERE, so it is absent from ctx.lazyUsage — which
@@ -3108,7 +3122,11 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       for (const k of u.recursive) ctx.lazyUsage.recursive.add(k)
       for (const [k, s] of u.sizes) ctx.lazyUsage.sizes.set(k, s)
     }
-    return emit(interior, ctx, pos)
+    const saved = ctx.inBalancedRebuild
+    ctx.inBalancedRebuild = true
+    const r = emit(interior, ctx, pos)
+    ctx.inBalancedRebuild = saved
+    return r
   }
   const def = p._def
   switch (def.tag) {
