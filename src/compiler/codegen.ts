@@ -2512,7 +2512,7 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
  * a lookahead that leaves CST leaves behind would double-capture whatever the
  * following term then consumes for real.
  */
-function emitAhead(def: Extract<ParserDef, { tag: 'peek' }>, ctx: Ctx, pos: string): ER {
+function emitPeek(def: Extract<ParserDef, { tag: 'peek' }>, ctx: Ctx, pos: string): ER {
   const probeCtx: Ctx = { ...ctx, capturing: false, noHoist: true }
   // The inner failure is discarded (inner failing = peek failing, reported at
   // peek's own pos with its own label) — swallow the sub-parse bookkeeping.
@@ -3348,7 +3348,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       }
     }
     case 'not':     return emitNot(def, ctx, pos)
-    case 'peek':   return emitAhead(def, ctx, pos)
+    case 'peek':    return emitPeek(def, ctx, pos)
     case 'node':    return emitNode(def, ctx, pos)
     case 'scanTo':  return emitScanTo(def, ctx, pos)
     case 'recover': return emitRecover(def, ctx, pos)
@@ -3570,7 +3570,7 @@ function isHoistableTag(tag: ParserDef['tag']): boolean {
 const HOIST_MIN_SUBTREE = 3
 
 /**
- * Static-occurrence analysis for `lazy` (ref()) combinators, peek of codegen.
+ * Static-occurrence analysis for `lazy` (ref()) combinators, ahead of codegen.
  * `emitLazy` currently hoists EVERY lazy ref into its own named function
  * (_pfN), even when it's referenced from exactly one place — necessary for
  * genuinely recursive/shared rules, wasteful for the common case of a `g.foo`

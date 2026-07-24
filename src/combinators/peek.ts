@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any, matchesEmpty } from './first-set.ts'
-import { saveCstMark, rollbackCstCapture } from '../cst/capture-buffer.ts'
+import { saveTriviaMark, rollbackTrivia } from './trivia-skip.ts'
 
 /**
  * Positive lookahead. Succeeds (consuming nothing) when `combinator` matches at
@@ -39,12 +39,23 @@ export function peek(combinator: Combinator<unknown>): Combinator<null> {
     _meta: meta,
     _def: { tag: 'peek', parser: combinator },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<null> {
-      // Zero-width on BOTH outcomes: whatever the inner attempt captured (CST
-      // leaves/trivia/fields) or recovered must be rolled back, or a speculative
-      // capture would ghost past the lookahead. Mirrors not().
-      const mark = saveCstMark(ctx)
+      // Zero-width on BOTH outcomes, so the probe must leave NO observable trace:
+      // whatever the inner attempt captured (CST leaves/rawChildren/per-node
+      // trivia/fields), recovered (`_errors`), or committed to the GLOBAL
+      // `_triviaLog` is rolled back either way.
+      //
+      // `rollbackTrivia`, not `rollbackCstCapture`: the latter's mark omits
+      // `_triviaLog`, which is a SEPARATE sink `scanTrivia().commit()` writes when
+      // the body skips ambient trivia between terms. Missing it duplicates every
+      // probed trivia span once the region is parsed for real — `_triviaLog` has no
+      // dedup anywhere (`triviaEntries()` is a positional view over the flat array),
+      // so the duplicate reaches output. Same failure mode as the one recorded in
+      // `test/parity/trivia-log-regression.test.ts`. The compiled `peek` emits its
+      // body under a non-capturing ctx and so never writes these sinks at all; this
+      // is what keeps the two engines at parity.
+      const mark = saveTriviaMark(ctx)
       const result = combinator.parse(input, pos, ctx)
-      rollbackCstCapture(ctx, mark)
+      rollbackTrivia(ctx, mark)
       if (result.ok) return { ok: true, value: null, span: { start: pos, end: pos } }
       return { ok: false, expected: [`peek(${combinator._tag})`], span: { start: pos, end: pos } }
     },
