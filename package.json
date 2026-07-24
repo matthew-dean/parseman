@@ -2,7 +2,7 @@
   "name": "parseman",
   "version": "0.34.0",
   "packageManager": "pnpm@10.15.1",
-  "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
+  "description": "Parser combinators that compile to optimized JavaScript \u2014 use as a library or as a build-time macro",
   "type": "module",
   "author": "Matthew Dean <matthew-dean@users.noreply.github.com>",
   "repository": {
@@ -62,6 +62,7 @@
     "prepare": "git config core.hooksPath scripts/git-hooks || true; node scripts/build.mjs",
     "prepublishOnly": "node scripts/check-changelog.mjs",
     "check:changelog": "node scripts/check-changelog.mjs",
+    "docs:verify": "node scripts/verify-doc-examples.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",

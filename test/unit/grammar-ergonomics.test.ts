@@ -18,8 +18,10 @@ import {
   oneOrMoreSep, parse, peek, regex, rules, sepBy, sequence, word,
   type Combinator, type ParserDef,
 } from '../../src/index.ts'
+import { node, runWithGrammarCoverage } from '../../src/index.ts'
 import { matchesEmpty, firstSetOf } from '../../src/combinators/first-set.ts'
-import { compileRuleMap } from '../../src/compiler/codegen.ts'
+import { compileRuleMap, compileLinkable } from '../../src/compiler/codegen.ts'
+import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 
 /** Does this choice emit O(1) first-char dispatch? The single gating question. */
 const dispatches = (c: Combinator<unknown>): boolean =>
@@ -335,5 +337,103 @@ describe('defect 4 — the macro build reports rule names AND anti-patterns', ()
     expect(r.ungated).toHaveLength(0)
     expect(r.accepted.map(c => c.id)).toEqual(['valueAtom'])
     expect(r.acceptedUnused).toEqual([])
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// Every engine must agree: interpreter, compiled, MACRO, carried IR, coverage
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('the new API survives every lowering path', () => {
+  const MACRO = `import { rules, sequence, choice, literal, regex, peek, many, oneOrMore, sepBy, oneOrMoreSep } from 'parseman' with { type: 'macro' }
+export const g = rules(g => ({
+  Entry: choice(g.Mixin, g.List),
+  Mixin: sequence(peek(regex(/[.#]/)), regex(/[.#][a-z-]+/)),
+  List: sequence(literal('('), oneOrMoreSep(regex(/[a-z]+/), literal(',')), literal(')')),
+  Bounded: many(regex(/x/), { min: 2, max: 4 }),
+  Trailing: sepBy(regex(/[a-z]+/), literal(';'), { trailing: 'allow' }),
+  Plus: oneOrMore(regex(/y/)),
+}))`
+
+  it('macro-compiles peek / oneOrMoreSep / { min, max } / { trailing } statically', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    const out = transformMacro(MACRO, 'ergonomics-macro.ts', new Set(['parseman']))
+    expect(out).not.toBeNull()
+    // A silent interpreter fallback would warn and leave the call interpreted;
+    // a static compile emits a `_r_<Name>` function per rule.
+    expect(out!.warnings).toEqual([])
+    expect(out!.code).toContain('function _r_Mixin(')
+    // The exported grammar CARRIES its IR for downstream composition — every option
+    // must survive that round trip or a composed dialect silently loses it.
+    expect(out!.code).toContain('peek(regex(')
+    expect(out!.code).toContain('{ min: 1 }')
+    expect(out!.code).toContain('{ min: 2, max: 4 }')
+    expect(out!.code).toContain('trailing: \\"allow\\"')
+    const g = new Function(`${out!.code.replace(/^export /gm, '')}\nreturn g`)() as Record<
+      string, (input: string, pos: number, ctx: unknown) => { ok: boolean; value?: unknown; span?: { end: number } }
+    >
+    const run = (rule: string, input: string) => g[rule]!(input, 0, { trackLines: false })
+
+    expect(run('Mixin', '.rounded').ok).toBe(true)
+    expect(run('Mixin', 'rounded').ok).toBe(false)
+    expect(run('List', '(a,b)').ok).toBe(true)
+    expect(run('List', '()').ok).toBe(false)          // oneOrMoreSep is non-empty
+    expect(run('Bounded', 'x').ok).toBe(false)         // min 2
+    expect(run('Bounded', 'xxxxxx').span!.end).toBe(4) // max 4
+    expect(run('Trailing', 'a;b;').span!.end).toBe(4)  // trailing consumed
+    expect(run('Plus', '').ok).toBe(false)
+  })
+
+  it('round-trips through the carried IR with its options intact', () => {
+    const g = rules(() => ({
+      Mixin: sequence(peek(regex(/[.#]/)), regex(/[.#][a-z-]+/)),
+      List: oneOrMoreSep(regex(/[a-z]+/), literal(',')),
+      Bounded: many(regex(/x/), { min: 2, max: 4 }),
+      Trailing: sepBy(regex(/[a-z]+/), literal(';'), { trailing: 'require' }),
+    }))
+    const ir = serializeRuleMap(Object.entries(g))
+    expect(ir).not.toBeNull()
+    expect(ir!).toContain('peek(')
+    expect(ir!).toContain('{ min: 2, max: 4 }')
+    expect(ir!).toContain(`trailing: "require"`)
+
+    const back = Object.fromEntries(evalRuleMapIR(ir!))
+    expect(parse(back.Mixin!, '.a').ok).toBe(true)
+    expect(parse(back.Mixin!, 'a').ok).toBe(false)
+    expect(parse(back.List!, '').ok).toBe(false)
+    expect(parse(back.Bounded!, 'x').ok).toBe(false)
+    expect(parse(back.Trailing!, 'a;b').ok).toBe(false)
+    expect(parse(back.Trailing!, 'a;b;').ok).toBe(true)
+  })
+
+  it('the coverage-instrumented rebuild preserves peek and the repeat bounds', () => {
+    const entry = sequence(peek(regex(/[.#]/)), regex(/[.#][a-z]+/), many(regex(/x/), { max: 2 }))
+    expect(runWithGrammarCoverage(entry, '.abxxx').result.ok).toBe(true)
+    expect(runWithGrammarCoverage(entry, 'ab').result.ok).toBe(false)
+    const bounded = runWithGrammarCoverage(oneOrMoreSep(regex(/[a-z]+/), literal(',')), '')
+    expect(bounded.result.ok).toBe(false)
+  })
+
+  it('trailing separators unwind CST capture correctly under a node()', () => {
+    // The capturing+trivia branch of emitSepBy takes its own post-separator marks;
+    // a leaked capture would show up as an extra child.
+    const List = node('List', sepBy(regex(/[a-z]+/), literal(','), { trailing: 'allow' }),
+      children => children.length)
+    // 4 children: a , b , — the consumed trailing separator is one of them, and
+    // nothing extra leaked from the failed item attempt after it.
+    expect(bothEngines(List, 'a,b,')).toMatchObject({ ok: true, end: 4, value: 4 })
+    expect(bothEngines(List, 'a,b')).toMatchObject({ ok: true, end: 3, value: 3 })
+  })
+
+  it('compileLinkable runs the gating diagnostic only when asked', () => {
+    const map: Array<[string, Combinator<unknown>]> = [['Value', choice(literal('a'), regex(/[\s\S]*/))]]
+    const seen: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((m: unknown) => { seen.push(String(m)) })
+    try {
+      compileLinkable(map, 'ns1')                      // opt-in only — silent
+      expect(seen).toHaveLength(0)
+      compileLinkable(map, 'ns2', { gating: 'warn' })
+      expect(seen.join('\n')).toContain('choice @ Value')
+    } finally { spy.mockRestore() }
   })
 })

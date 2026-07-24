@@ -64,7 +64,7 @@ const g = rules(self => {
 toEBNF(g)
 ```
 
-```ebnf
+```text
 expr ::= call | list | /[a-zA-Z_][a-zA-Z0-9_]*/ | /[0-9]+/
 call ::= /[a-zA-Z_][a-zA-Z0-9_]*/ "(" (expr ("," expr)*)? ")"
 list ::= "[" expr ("," expr)* "]"

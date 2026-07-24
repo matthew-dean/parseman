@@ -2233,7 +2233,9 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   // (unless already sitting on the enclosing sync). `originalFail` is that site's
   // exact strict string (the three sites differ — braces / rollback).
   const failItem = (nextOkVar: string, itemPosVar: string, breakStmt: string): string[] => {
-    if (!rec) return [`${ind(ctx)}if (!${nextOkVar}) { ${breakStmt} }`]
+    // A bare `break` stays brace-less — the emitted source is byte-identical to
+    // the pre-options output for every default-option sepBy.
+    if (!rec) return [`${ind(ctx)}if (!${nextOkVar}) ${breakStmt === 'break' ? 'break' : `{ ${breakStmt} }`}`]
     const rr = v(ctx, '_rr')
     return [
       `${ind(ctx)}if (!${nextOkVar}) {`,

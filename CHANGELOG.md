@@ -5,6 +5,54 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.34.0 — 2026-07-24
 
+- **`peek(combinator)` — the positive lookahead.** PEG's `&X`, the counterpart to
+  the existing `not(X)`. Zero-width, and — crucially — it **carries its body's
+  first-set**, so an arm led by `peek(regex(/[.#]/))` still emits O(1) first-char
+  dispatch. The only previous spelling, `not(not(X))`, reports first-set `any` and
+  poisons the whole choice's dispatch; the gating diagnostic already flagged it as
+  the `double-not` anti-pattern, and now names `peek()` as the fix. In a sequence
+  the lookahead's first chars are **intersected** into the sequence's set (sound:
+  `A ⊇ a ∧ B ⊇ b ⇒ A ∩ B ⊇ a ∩ b`); a nullable body constrains nothing and reports
+  `any`. See [not & peek](/reference/api#not-combinator-peek-combinator).
+
+- **`word()` takes `caseInsensitive`.** `word(str, boundary?, opts?)` and
+  `word(str, opts)` now accept the same `caseInsensitive` flag `keywords()` has.
+  CSS at-keywords, function names and units are ASCII case-insensitive *per spec*,
+  and the only conforming spelling used to be `regex(/media/i)` — which the
+  diagnostic correctly flags as the `keyword-regex` anti-pattern. The resulting
+  first-set is ASCII case-**folded** (`{m, M}`), so the arm still gates.
+
+  Case-insensitive `keywords()` no longer compiles under the `u` flag. `/iu` folds
+  by Unicode *simple case folding*, so `keywords(['stroke'], { caseInsensitive })`
+  also matched `ſtroke` (U+017F → s) while its ASCII-folded first-set dispatched
+  that input away from the arm — an unsound gate. Matching and the first-set now
+  fold the same ASCII set, the invariant `regex()` established in 0.32.0.
+  *(Behaviour change for non-ASCII case-folded keywords — hence a minor.)*
+
+- **The four repetition combinators take `{ min, max }`, and separated lists get a
+  non-empty form.** `many(item, opts?)` · `oneOrMore(item, opts?)` ·
+  `sepBy(item, sep, opts?)` · **`oneOrMoreSep(item, sep, opts?)`** (new). Named
+  combinators are sugar for the common option combinations: `oneOrMore(x)` **is**
+  `many(x, { min: 1 })`, and `oneOrMoreSep(i, s)` **is** `sepBy(i, s, { min: 1 })`
+  — the same combinator, not a lookalike. `min`/`max` count **items**, not
+  separators; defaults are unchanged, so every existing call site behaves exactly
+  as before.
+
+  This is a gating fix as much as an ergonomic one. Plain `sepBy` is
+  `(item (sep item)*)?` — it **matches the empty string**, which makes it nullable,
+  and a nullable arm disables its choice's first-char dispatch by parseman's own
+  first-set rule. An audit of parseman's reference grammars found `sepBy` used
+  **zero** times across ~135 hand-rolled separated lists: the nullable default was
+  wrong for essentially every real list and nothing surfaced the fix. `min >= 1` is
+  genuinely non-nullable with first-set = the item's; `max` never affects
+  nullability.
+
+  Separated forms also take **`trailing: 'forbid' | 'allow' | 'require'`** (default
+  `'forbid'`, today's behaviour: the trailing separator is left unconsumed for the
+  enclosing rule). `'allow'` consumes it; `'require'` demands one after the last
+  item (an empty list is vacuously satisfied).
+  See [repetition](/reference/api#many-c-opts-oneormore-c-opts-sepby-c-sep-opts-oneormoresep-c-sep-opts-optional-c).
+
 - **Shared grammar SHAPES — a composable piece may now reference rules it doesn't
   define, and still ship compiled.** A `rules()` map is allowed to leave holes
   (`g.Value` naming a rule defined by whoever composes it), so a composite *shape* —
@@ -35,6 +83,28 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   *hole* rather than as unknown semantics — it holds no callback, and whoever binds
   it is either another pre-final piece (gated the same way) or the local leaf (allowed
   to be semantic). Every other unresolvable reference still counts as semantic.
+
+- **Fix: the gating diagnostic was blind in the macro build.** A macro-built
+  `rules()` grammar compiles through `compileRuleMap`/`compileLinkable`, and
+  **neither ran the analysis at all** — so a whole grammar reported zero ungated
+  choices and zero anti-patterns, and every warning the build did print came from
+  the stray single-combinator `compile()` calls, each unnamed as `choice @ <entry>`.
+  Now:
+  - `compileRuleMap` runs the diagnostic over the WHOLE rule map in one shared
+    walk, so every choice is attributed to the rule that owns it and anti-patterns
+    are reported. New `analyzeGatingRules(ruleMap, opts?)` is the programmatic
+    multi-root surface (`analyzeGating` is the single-entry case of it).
+  - New `gating.entryName` option names an UNNAMED entry; the macro plugin passes
+    the binding's own variable name, so a top-level combinator const now warns as
+    `choice @ directMixinReferenceAhead` — actionable, and a discriminating
+    `accept` allowlist key, which `<entry>` never was.
+  - `compileLinkable` takes `gating` too, but opt-IN only: it re-lowers the same
+    map for the linkable form, so running it by default would double every warning.
+
+- **Docs: every combinator now has a worked, executed example.** `docs/guide/combinators.md`
+  shows input → what matches → what it yields for the full export surface,
+  including the instructive failure and the discriminating case between similar
+  combinators. Every sample is run by `scripts/verify-doc-examples.mjs`.
 
 ## 0.33.0 — 2026-07-24
 

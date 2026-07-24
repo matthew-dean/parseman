@@ -105,6 +105,14 @@ function isWordFactory(v: unknown): v is WordFactoryEntry {
   return !!v && typeof v === 'object' && (v as WordFactoryEntry).tag === 'wordFactory'
 }
 
+/**
+ * Generic fallback table, consulted LAST (see the dispatch at the end of
+ * `exprToCombi`). A combinator with an UNCONDITIONAL explicit branch above must
+ * not appear here — the entry would be unreachable. `many`/`oneOrMore`/`sepBy`/
+ * `oneOrMoreSep`/`peek`/`not` are all handled explicitly, because their emitters
+ * traverse the item more than once (mfSrcs replay) or take options that must not
+ * be silently dropped.
+ */
 const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   literal:   (...a) => parseman.literal(a[0] as string, a[1] as parseman.LiteralOptions | undefined),
   regex:     (...a) => parseman.regex(a[0] as RegExp, a[1] as string | undefined),
@@ -113,13 +121,8 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   sequence:  (...a) => (parseman.sequence as (...p: Combinator<unknown>[]) => Combinator<unknown[]>)(...(a as Combinator<unknown>[])),
   choice:    (...a) => (parseman.choice as (...p: Combinator<unknown>[]) => Combinator<unknown>)(...(a as Combinator<unknown>[])),
   attempt:   (...a) => parseman.attempt(a[0] as Combinator<unknown>),
-  many:      (...a) => parseman.many(a[0] as Combinator<unknown>, a[1] as parseman.RepeatOptions | undefined),
-  oneOrMore: (...a) => parseman.oneOrMore(a[0] as Combinator<unknown>, a[1] as parseman.RepeatOptions | undefined),
   optional:  (...a) => parseman.optional(a[0] as Combinator<unknown>),
-  peek:       (...a) => parseman.peek(a[0] as Combinator<unknown>),
   skip:      (...a) => parseman.skip(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>),
-  sepBy:     (...a) => parseman.sepBy(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>, a[2] as parseman.SepByOptions | undefined),
-  oneOrMoreSep: (...a) => parseman.oneOrMoreSep(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>, a[2] as parseman.SepByOptions | undefined),
   trivia:    (...a) => parseman.trivia(a[0] as Combinator<unknown>),
   label:     (...a) => parseman.label(a[0] as string, a[1] as Combinator<unknown>),
   field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),

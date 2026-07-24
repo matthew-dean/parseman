@@ -20,6 +20,16 @@ but slow, and nothing but the build warning tells you.
 - Use `word('kw', boundary)` or `keywords([...], { boundary })` for keywords.
   They have an EXACT first-set and gate. `word('color', '-\\w')`, not
   `regex(/color/)`.
+- For an ASCII case-insensitive keyword (CSS at-keywords, function names, units —
+  case-insensitive PER SPEC), pass the option:
+  `word('media', 'A-Za-z0-9_-', { caseInsensitive: true })`, never `regex(/media/i)`.
+  Its first-set is ASCII case-FOLDED, so the arm still gates.
+- A separated list of ONE OR MORE is `oneOrMoreSep(item, sep)`, **not** `sepBy`.
+  Plain `sepBy` is `(item (sep item)*)?` — it MATCHES THE EMPTY STRING, which makes
+  the arm nullable and kills the whole choice's dispatch. Reach for `sepBy` only
+  when the empty list is genuinely legal.
+- Need a positive lookahead? `peek(X)` — zero-width, and it CARRIES X's first-set,
+  so `sequence(peek(regex(/[.#]/)), broadThing)` still first-char-dispatches.
 - Use `literal('...')` for fixed punctuation/operators with no word boundary.
 - Let each `choice` arm LEAD with a concrete terminal (`literal`/`word`/`keywords`/
   a narrow `regex`). First-char dispatch is then automatic.
@@ -40,21 +50,72 @@ but slow, and nothing but the build warning tells you.
   (Warning: `anti-pattern [keyword-regex]`.)
 - DON'T hand-roll first-char gating with `not(not(...))`. It miscompiles among
   shared-first-char sibling arms and its first-set is `any`. First-char gating is
-  automatic; just lead with the terminal. (Warning: `anti-pattern [double-not]`.)
+  automatic; just lead with the terminal — and where a real positive lookahead IS
+  needed, use **`peek(X)`**, which is zero-width like `not(not(X))` but carries X's
+  first-set instead of poisoning dispatch. (Warning: `anti-pattern [double-not]`.)
 - DON'T lead a `choice` arm with `not(...)`. `not()`'s first-set is `any` and
   poisons the whole choice's dispatch. Keep `not(...)` as a TRAILING boundary
   (`sequence(literal('true'), not(/\w/))`). (Warning: `anti-pattern [leading-not]`.)
-- DON'T lead a `choice` arm with `optional`/`many`/`gate`/`guard` — all widen the
-  first-set. Put a concrete terminal first.
+- DON'T lead a `choice` arm with `optional`/`many`/`gate`/`guard`/plain `sepBy` —
+  all are NULLABLE and widen the first-set. Put a concrete terminal first, or use
+  the non-nullable form (`many(x, { min: 1 })` / `oneOrMore`, `oneOrMoreSep`).
 - DON'T reach for `ctx.state` (`withCtx`/`gate`) when structure (separate rules),
   a document option, or recursion/`balanced` would express the distinction. See
   `docs/guide/context.md` § "Which tool".
+
+## The two lookaheads
+
+Both are zero-width — they assert and consume nothing.
+
+- **`not(X)`** — NEGATIVE lookahead (PEG `!X`). Succeeds when X does NOT match.
+  Its first-set is `any` (it cannot know what it forbids), so keep it as a TRAILING
+  boundary, never leading an arm.
+- **`peek(X)`** — POSITIVE lookahead (PEG `&X`). Succeeds when X DOES match. It
+  carries X's first-set, so a LEADING `peek()` is fine — it narrows the arm's first
+  chars instead of widening them. (A nullable X constrains nothing and reports
+  `any`.)
+
+## The four repetition combinators
+
+Named combinators are sugar for the common option combinations. Opts are LAST on
+all four; `min`/`max` count ITEMS, and `trailing` is separated-only (it is
+meaningless without a separator).
+
+| | nullable (min 0) | non-empty (min 1) |
+|---|---|---|
+| plain | `many(item, opts?)` | `oneOrMore(item, opts?)` |
+| separated | `sepBy(item, sep, opts?)` | `oneOrMoreSep(item, sep, opts?)` |
+
+- `oneOrMore(x)` **is** `many(x, { min: 1 })`; `oneOrMoreSep(i, s)` **is**
+  `sepBy(i, s, { min: 1 })` — the same combinator, not a lookalike.
+- `{ min: n }` is what makes a repeat NON-NULLABLE, which is what lets an arm led
+  by it gate. `{ max: n }` never affects nullability.
+- `{ trailing: 'forbid' | 'allow' | 'require' }` (default `'forbid'`) decides what
+  happens to a separator with no item after it: leave it for the enclosing rule,
+  consume it, or demand it.
 
 ## Naming
 
 - `gate(predicate)` is the state-assertion combinator (formerly `guard()`, kept as
   a deprecated alias). Its name matches the `gate:` field on a gated choice arm:
   **arm field = SELECT a branch; `gate()` combinator = ASSERT a predicate.**
+
+## Where the options object goes
+
+**Opts go FIRST when they configure a SCOPE; LAST when they modify THIS
+combinator.**
+
+- Scope (opts first): `rules(opts, factory)`, `parser(opts, root)`. The config
+  governs everything inside, so it reads as a preamble.
+- Local (opts last): `literal(v, opts?)`, `word(s, boundary?, opts?)`,
+  `keywords(words, opts?)`, `scanTo(sentinel, opts?)`, `balanced(open, close,
+  opts?)`, `node(c, build?, opts?)`, `many`/`oneOrMore`/`sepBy`/`oneOrMoreSep`.
+  Note `node` puts opts AFTER its `build` callback — "callbacks trail" is not the
+  rule; scope-vs-local is.
+
+Practical test for a new signature: **does omitting the opts still leave a sensible
+call?** If yes → trailing sugar, opts last. If the config is the point of the
+wrapper → opts first.
 
 ## How to check your grammar
 
