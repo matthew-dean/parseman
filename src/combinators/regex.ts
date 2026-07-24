@@ -79,6 +79,38 @@ function shortScanner(source: string, flags: string): ShortScanner | null {
   }
 }
 
+/**
+ * ASCII-case-fold a first-set: for every ASCII letter reachable as a leading char,
+ * also admit its opposite-case twin (A–Z ↔ a–z). Non-letter code points and `any`/
+ * `empty` are unchanged. Only widens the set (sound superset) — used to correct a
+ * case-insensitive regex's flag-agnostic first-set for first-char dispatch. Unicode
+ * case-folding beyond ASCII is deliberately NOT applied (parseman first-sets are
+ * ASCII-BMP for dispatch); a non-ASCII letter keeps its own code point only, which
+ * stays sound (the interpreter's real `/i` match still runs).
+ */
+function asciiCaseFold(fs: FirstSet): FirstSet {
+  if (fs.kind !== 'ranges') return fs
+  const ranges: { lo: number; hi: number }[] = fs.ranges.map(r => ({ lo: r.lo, hi: r.hi }))
+  const add = (lo: number, hi: number): void => { if (lo <= hi) ranges.push({ lo, hi }) }
+  for (const r of fs.ranges) {
+    // Uppercase portion [A–Z] → lowercase twin (+32).
+    const uLo = Math.max(r.lo, 65), uHi = Math.min(r.hi, 90)
+    add(uLo + 32, uHi + 32)
+    // Lowercase portion [a–z] → uppercase twin (−32).
+    const lLo = Math.max(r.lo, 97), lHi = Math.min(r.hi, 122)
+    add(lLo - 32, lHi - 32)
+  }
+  // Normalize: sort + coalesce overlapping/adjacent ranges.
+  ranges.sort((a, b) => a.lo - b.lo)
+  const merged: { lo: number; hi: number }[] = []
+  for (const r of ranges) {
+    const last = merged[merged.length - 1]
+    if (last && r.lo <= last.hi + 1) last.hi = Math.max(last.hi, r.hi)
+    else merged.push({ lo: r.lo, hi: r.hi })
+  }
+  return { kind: 'ranges', ranges: merged }
+}
+
 export function regex(pattern: string | RegExp, flags = ''): Combinator<string> {
   const source = typeof pattern === 'string' ? pattern : pattern.source
   const resolvedFlags = typeof pattern === 'string' ? flags : pattern.flags
@@ -86,7 +118,28 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   const anchored = new RegExp(source, 'y' + resolvedFlags.replace(/[gy]/g, ''))
   const scan = shortScanner(source, resolvedFlags)
 
-  const { firstSet, canMatchNewline } = (firstSetAnalyzer ?? permissiveFirstSet)(source)
+  const raw = (firstSetAnalyzer ?? permissiveFirstSet)(source)
+  // The first-set analyzer is flag-agnostic, so for a CASE-INSENSITIVE pattern it
+  // returns only the literal-case leading chars — e.g. `/red|blue/i` → `{r,b}`, NOT
+  // `{r,R,b,B}`. Using that narrow set for first-char DISPATCH would false-EXCLUDE the
+  // opposite-case input (`ReD` gated out of a `/(?:red|…)/i` arm), so widen it under
+  // `i`. The widening is FLAG-AWARE because `i` alone and `i`+`u` fold different sets:
+  //   - `/i` WITHOUT `u`: ECMAScript case-insensitive matching folds ONLY the ASCII
+  //     Basic-Latin case pairs (`a`↔`A` … `z`↔`Z`) — a plain `/[a-z]/i` does NOT match
+  //     `ſ`(U+017F) or `K`(U+212A). So `asciiCaseFold` is a SOUND, tight superset, and
+  //     it preserves at-keyword dispatch (`/@media…/i` still gates on `@`).
+  //   - `/ui` or `/iv` (Unicode mode — the `u` OR the ES2024 `v` Unicode-sets flag):
+  //     matching uses Unicode *simple case folding*, so `/[a-z]/ui` (and `/[a-z]/iv`)
+  //     ALSO match `ſ`→s and `K`→k. ASCII-folding can't enumerate those astral/BMP case
+  //     pairs, so gating on the ASCII set would false-exclude them. Fall back to `any()`
+  //     (always-try) — sound, and only forfeits gating for the rare Unicode-mode `/i`
+  //     recognizer, never the ASCII-only `/i` at-keywords the fix targets.
+  const firstSet = !resolvedFlags.includes('i')
+    ? raw.firstSet
+    : (resolvedFlags.includes('u') || resolvedFlags.includes('v'))
+      ? any()
+      : asciiCaseFold(raw.firstSet)
+  const canMatchNewline = raw.canMatchNewline
   const meta: ParserMeta = { firstSet, canMatchNewline, isTrivia: false }
 
   return {
