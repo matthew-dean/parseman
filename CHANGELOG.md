@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.33.0 — 2026-07-24
 
 - **Ambient scan-skip — `scanTo`/`balanced` no longer match a sentinel hidden in a
   string or comment.** Two layers, mirroring grammar-level `trivia`:
@@ -17,9 +17,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   - Per-call `skip` now **extends** the ambient set rather than replacing it; new
     `raw: true` opts a call out of all ambient skipping (the pre-ambient byte walk).
 
-  See [scanTo & balanced](/guide/combinators#scanto-and-balanced). *(Version choice —
-  fold vs. a 0.33.0 minor — pending owner sign-off; this is a new ambient option plus
-  a default-behavior change.)*
+  See [scanTo & balanced](/guide/combinators#scanto-and-balanced). *(A new ambient
+  option plus a default-behavior change, so a minor.)*
 
 ## 0.32.0 — 2026-07-23
 
