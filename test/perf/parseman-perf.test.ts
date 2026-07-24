@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
-  runParsemanSuite,
-  runParsemanSuiteRobust,
   loadBaseline,
+  baselineCases,
+  captureContextRows,
   findRegressions,
   measureMedianUs,
   loadHistory,
@@ -52,22 +52,26 @@ describe('Parseman perf — history', () => {
 })
 
 describe('Parseman perf — baseline regression guard', () => {
+  // Both gates measure in a SPAWNED clean process, not in this worker. The worker
+  // has already run the smoke tests above (every grammar) plus the other perf
+  // files, so its interpreter inline caches are polluted: an in-process css-only
+  // reading here measures like the full suite (~+17% on css interp) and would be
+  // compared against a baseline captured in a pristine process. Spawning the same
+  // capture child bench:baseline uses makes the comparison apples-to-apples.
+  // See PERF_CONTEXTS in bench/parseman-perf.ts.
+
   // TIGHT gate — measured median speed must stay within PERF_TOLERANCE of the
   // committed baseline. Runs on the CSS subset, mirroring `pnpm perf:guard`.
   it('css median speed within tight tolerance vs baseline', () => {
     const baseline = loadBaseline()
-    if (!baseline) return
+    if (!baseline || !baselineCases(baseline, 'css')) return
 
-    const rows = runParsemanSuiteRobust({
-      scale: baseline.measurement?.scale ?? 1,
-      skipOptional: true,
-      only: ['css'],
-      measure: { samples: PERF_SAMPLES },
-    }, GUARD_PASSES)
+    const rows = captureContextRows('css', { samples: PERF_SAMPLES, passes: GUARD_PASSES })
     const regressions = findRegressions(rows, baseline, {
       checkSpeedup: false,
       checkAbsolute: true,
       tolerance: { compiled: PERF_TOLERANCE, interpreted: PERF_TOLERANCE },
+      context: 'css',
     })
     if (regressions.length > 0) {
       console.log('\nParseman CSS perf regressions vs baseline:')
@@ -81,17 +85,21 @@ describe('Parseman perf — baseline regression guard', () => {
   // sub-µs cases; the authoritative tight gate is `pnpm perf:guard --all`.
   it('no grammar grossly regresses vs committed baseline', () => {
     const baseline = loadBaseline()
-    if (!baseline) return
+    if (!baseline || !baselineCases(baseline, 'all')) return
 
-    const rows = runParsemanSuite({
-      scale: baseline.measurement?.scale ?? 1,
-      skipOptional: true,
-      measure: { samples: 5 },
-    })
+    // Cheap sweep — few samples, but at least 3 passes. Fewer reads COLD: a css
+    // case does 50 warmup iterations, nowhere near enough for V8 to optimize the
+    // big compiled parse function, so a 1-pass sweep reports css compiled at
+    // ~5.2µs against a 2.05µs baseline (+164%). 3 passes lands warm (~2.2µs), and
+    // an EVEN pass count is worse than useless here — median() of 2 takes the
+    // upper element, i.e. the cold pass. The loose 50% tolerance absorbs what
+    // remains.
+    const rows = captureContextRows('all', { samples: 5, passes: 3 })
     const regressions = findRegressions(rows, baseline, {
       checkSpeedup: false,
       checkAbsolute: true,
       tolerance: { compiled: 50, interpreted: 50 },
+      context: 'all',
     })
     if (regressions.length > 0) {
       console.log('\nParseman gross perf regressions vs baseline:')

@@ -16,7 +16,9 @@
 import {
   runParsemanSuiteRobust,
   loadBaseline,
+  baselineCases,
   findRegressions,
+  PERF_CONTEXTS,
   PERF_SAMPLES,
   GUARD_PASSES,
   PERF_TOLERANCE,
@@ -31,15 +33,25 @@ if (!baseline) {
   process.exit(0)
 }
 
-// Measure IDENTICALLY to how the baseline was captured (same samples, robust
-// median across interleaved passes) so the comparison is apples-to-apples and an
-// 8% tolerance reflects real codegen drift, not measurement methodology.
+// Measure IDENTICALLY to how this context's baseline was captured — same samples,
+// same robust median across interleaved passes, and crucially the SAME CASE SET in
+// the process. The filter comes from PERF_CONTEXTS rather than being spelled out
+// here, so the guard cannot drift from what bench:baseline captured for it.
 // CSS cases are the most codegen-sensitive (trivia + node capture); they catch a
 // 2× compiled regression without running the full suite.
+const context = all ? 'all' : 'css'
+const cases = baselineCases(baseline, context)
+if (!cases) {
+  console.error(
+    `perf-guard: baseline @ ${baseline.gitRev} has no "${context}" context (predates per-context capture) — ` +
+    'run `pnpm bench:baseline` and commit bench/parseman-baseline.json. Skipping.',
+  )
+  process.exit(0)
+}
+
 const rows = runParsemanSuiteRobust({
+  ...PERF_CONTEXTS[context],
   scale: baseline.measurement?.scale ?? 1,
-  skipOptional: true,
-  only: all ? undefined : ['css'],
   measure: { samples: PERF_SAMPLES },
 }, GUARD_PASSES)
 
@@ -47,6 +59,7 @@ const regressions = findRegressions(rows, baseline, {
   checkSpeedup: false,
   checkAbsolute: true,
   tolerance: { compiled: tolerance, interpreted: tolerance },
+  context,
 })
 
 // Report speed deltas and ratios so the dev sees both signal and headroom.
@@ -57,11 +70,11 @@ for (const r of rows) {
   else g.c = r.medianUs
   byId.set(r.id, g)
 }
-console.log(`perf-guard: median speed vs baseline @ ${baseline.gitRev} (tolerance ${tolerance}% slower)`)
+console.log(`perf-guard: median speed vs baseline @ ${baseline.gitRev} · context "${context}" (tolerance ${tolerance}% slower)`)
 for (const [id, { i, c }] of [...byId.entries()].sort()) {
   if (i === undefined || c === undefined) continue
-  const bi = baseline.cases[`${id}/interpreted`]?.medianUs
-  const bc = baseline.cases[`${id}/compiled`]?.medianUs
+  const bi = cases[`${id}/interpreted`]?.medianUs
+  const bc = cases[`${id}/compiled`]?.medianUs
   const speedup = i / c
   const base = bi !== undefined && bc !== undefined ? bi / bc : NaN
   const interp = bi === undefined ? '' : `  interp ${i.toFixed(2)}µs (${(((i - bi) / bi) * 100).toFixed(1)}%)`

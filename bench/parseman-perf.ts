@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { execSync } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { compile } from '../src/index.ts'
 import { parseJSON, jsonDoc } from '../examples/json/parser.ts'
 import { parseCSV, compiledCSV } from '../examples/csv/parser.ts'
@@ -45,6 +45,11 @@ export const HISTORY_PATH = resolve(__dir, 'parseman-history.jsonl')
  * half the time (verified: `css/selector`, which a numeric-terminal change
  * cannot touch, "regressed" 5–11% run-to-run). So: more samples/passes to
  * tighten (a), and a tolerance comfortably above (b).
+ *
+ * Matching these numbers is NECESSARY BUT NOT SUFFICIENT: a reading is also only
+ * comparable to a baseline taken in the same measurement CONTEXT (same case set
+ * in the process, and not under vitest). That is a systematic ~15% bias on
+ * interpreted cases, not noise — see PERF_CONTEXTS.
  */
 export const PERF_SAMPLES = 15
 /**
@@ -76,12 +81,20 @@ export type ParsemanBenchRow = {
   opsPerSec: number
 }
 
+export type ParsemanCaseStat = { medianUs: number; iterations: number; bytes: number }
+
 export type ParsemanBaseline = {
   updatedAt: string
   gitRev: string
   /** Measurement settings used when this baseline was captured. */
   measurement?: { scale: number; samples: number }
-  cases: Record<string, { medianUs: number; iterations: number; bytes: number }>
+  /** The `full` context (every case, one process) — also what history snapshots store. */
+  cases: Record<string, ParsemanCaseStat>
+  /**
+   * Per-context case maps for every non-`full` measurement context, each captured
+   * in its own child process. See PERF_CONTEXTS for why this exists.
+   */
+  contexts?: Record<string, { cases: Record<string, ParsemanCaseStat> }>
 }
 
 /** One committed snapshot in the append-only history log (same shape as baseline). */
@@ -148,6 +161,131 @@ export type ParsemanSuiteOpts = {
   only?: string[]
   /** Called before each case/mode measurement (for long interactive runs). */
   onProgress?: (id: string, mode: ParsemanMode) => void
+}
+
+/**
+ * MEASUREMENT CONTEXTS — a case's median depends on which OTHER cases ran in the
+ * same process, so a baseline is only comparable to a reading taken under the
+ * same filter.
+ *
+ * Measured on this hardware (3 runs per context, separate processes each):
+ *
+ *   case                  css-only ctx   full-suite ctx    Δ
+ *   css/selector interp     16.43µs         19.41µs      −15.4%
+ *   css/decls    interp     18.35µs         21.07µs      −12.9%
+ *   css/selector compiled    2.055µs         2.055µs       0.0%
+ *   css/decls    compiled    2.384µs         2.442µs      −2.4%
+ *
+ * That is the measured EFFECT; the cause is not established. Some interpreter
+ * state is evidently shared across grammars and some isn't (the compiled path, a
+ * generated per-grammar function, doesn't move), but nothing here has been
+ * instrumented to prove why — don't cite a mechanism from this comment.
+ *
+ * Guarding a css-only reading against a full-suite baseline handed the
+ * interpreter a free ~15% dead zone — a regression had to exceed ~30% before a
+ * 15% tolerance fired.
+ *
+ * NOTE ON REALISM: `full` is not a realistic workload. It is 30 cases across six
+ * unrelated grammars (json/csv/graphql/toml/lang/css) sharing one bench process,
+ * which no consumer does. A process using ONE grammar looks like the `css`
+ * context. So `full` interp numbers — what the report and the committed history
+ * series record — are probably PESSIMISTIC for a single-grammar consumer by
+ * roughly this margin. Compiled is unaffected, so this skews interp reporting
+ * only. Kept as the history context for continuity, not because it is the truer
+ * number.
+ *
+ * So: every comparison site names its context, the baseline stores one case map
+ * PER context, and each context is captured in its own child process (a single
+ * process capturing several contexts would just re-pollute the later ones).
+ * Adding a comparison site means adding its filter HERE, not inlining opts.
+ */
+export type PerfContext = 'full' | 'all' | 'css'
+
+/** Line prefix a capture child uses to hand its rows back to bench:baseline. */
+export const ROWS_MARKER = '__ROWS__'
+
+export const PERF_CONTEXTS: Record<PerfContext, ParsemanSuiteOpts> = {
+  /** Every case including optional large fixtures — the report, history and charts. */
+  full: {},
+  /** Every grammar, no optional large fixtures — `perf-guard --all`, gross-regression test. */
+  all: { skipOptional: true },
+  /** CSS cases only — the default pre-commit guard and the tight vitest gate. */
+  css: { skipOptional: true, only: ['css'] },
+}
+
+/**
+ * Wall-clock ceiling for ONE context capture, so a child that never terminates
+ * (an unbounded grammar loop is the realistic way to get one) cannot wedge
+ * bench:baseline, perf-guard or a vitest perf gate indefinitely.
+ *
+ * Sized off the worst context, `full`: 15 cases × 2 modes × BASELINE_PASSES,
+ * where measureMedianUs bounds each sample to ~SAMPLE_BUDGET_MS, plus tsx startup
+ * and compiling every example grammar at import — low single-digit minutes in
+ * practice. 15 minutes is roughly an order of magnitude of headroom over that.
+ * Deliberately lopsided: a timeout that fires late costs one stuck run, while a
+ * timeout that fires early kills a legitimate measurement on a loaded machine and
+ * reads as a phantom perf failure.
+ */
+const CONTEXT_TIMEOUT_MS = 15 * 60_000
+
+/** An expired `timeout` surfaces as ETIMEDOUT, and/or as the SIGTERM used to kill the child. */
+function isTimeoutError(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null) return false
+  const { code, signal } = e as { code?: unknown; signal?: unknown }
+  return code === 'ETIMEDOUT' || signal === 'SIGTERM'
+}
+
+/**
+ * Measure `context` in a FRESH child process and return its rows.
+ *
+ * Required whenever the calling process is not itself a faithful instance of the
+ * context — most importantly under vitest, where the worker has already run the
+ * smoke tests (every grammar) and other perf files, so an in-process reading is
+ * polluted no matter which filter it passes. Comparing that against a
+ * node-process baseline is exactly the mismatch PERF_CONTEXTS documents.
+ */
+export function captureContextRows(
+  context: PerfContext,
+  opts?: { samples?: number; passes?: number },
+): ParsemanBenchRow[] {
+  const args = ['--import', 'tsx/esm', resolve(__dir, 'capture-context.ts'), context]
+  if (opts?.samples !== undefined) args.push(`--samples=${opts.samples}`)
+  if (opts?.passes !== undefined) args.push(`--passes=${opts.passes}`)
+  let out: string
+  try {
+    out = execFileSync(process.execPath, args, {
+      encoding: 'utf8',
+      // Child stderr (grammar gating notes) passes through; stdout carries the rows.
+      stdio: ['ignore', 'pipe', 'inherit'],
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: CONTEXT_TIMEOUT_MS,
+    })
+  } catch (e) {
+    // Name the measurement — the raw ETIMEDOUT says only that *a* child died.
+    if (isTimeoutError(e)) {
+      throw new Error(
+        `captureContextRows: context "${context}" timed out after ${CONTEXT_TIMEOUT_MS / 1000}s (child killed)`,
+        { cause: e },
+      )
+    }
+    throw e
+  }
+  const line = out.split('\n').find(l => l.startsWith(ROWS_MARKER))
+  if (!line) throw new Error(`captureContextRows: context "${context}" produced no ${ROWS_MARKER} line`)
+  return JSON.parse(line.slice(ROWS_MARKER.length)) as ParsemanBenchRow[]
+}
+
+/**
+ * The stored case map for `context`, or null when this baseline predates the
+ * context (re-baseline needed). Callers must NOT silently fall back to another
+ * context's numbers — that is the dead zone this exists to close.
+ */
+export function baselineCases(
+  baseline: ParsemanBaseline,
+  context: PerfContext,
+): Record<string, ParsemanCaseStat> | null {
+  if (context === 'full') return baseline.cases
+  return baseline.contexts?.[context]?.cases ?? null
 }
 
 function buildCases(): CaseDef[] {
@@ -254,6 +392,12 @@ export function runParsemanSuite(opts?: ParsemanSuiteOpts): ParsemanBenchRow[] {
  * the regression tolerance be tight (≈8%) instead of absorbing measurement junk.
  * Passes are interleaved (whole suite per pass) so slow drift spreads across all
  * cases rather than biasing whichever case happened to run during a hiccup.
+ *
+ * Use an ODD pass count, and at least 3. median() of an even list returns the
+ * UPPER middle element, so `passes: 2` reports the slower of the two — and pass 1
+ * is systematically the slow one, because a low-iteration case (css: 50 warmup
+ * iterations) is still running unoptimized code. Measured: css/selector compiled
+ * reads ~5.2µs at 1–2 passes vs ~2.2µs at 3.
  */
 export function runParsemanSuiteRobust(opts?: ParsemanSuiteOpts, passes = 5): ParsemanBenchRow[] {
   if (passes <= 1) return runParsemanSuite(opts)
@@ -306,8 +450,22 @@ export function historyAnchors(history: ParsemanSnapshot[]): {
   return { origin, previous }
 }
 
+function toCaseMap(rows: ParsemanBenchRow[]): Record<string, ParsemanCaseStat> {
+  const cases: Record<string, ParsemanCaseStat> = {}
+  for (const r of rows) {
+    cases[`${r.id}/${r.mode}`] = { medianUs: r.medianUs, iterations: r.iterations, bytes: r.bytes }
+  }
+  return cases
+}
+
+/**
+ * Write the baseline from one row set PER context. `full` becomes the top-level
+ * `cases` (what history, charts and the report read); the rest go under
+ * `contexts`. Each row set must come from its OWN process — see PERF_CONTEXTS.
+ * History snapshots stay full-context so the time series remains comparable.
+ */
 export function writeBaseline(
-  rows: ParsemanBenchRow[],
+  rowsByContext: Partial<Record<PerfContext, ParsemanBenchRow[]>>,
   measurement?: { scale: number; samples: number },
 ): ParsemanBaseline {
   let gitRev = 'unknown'
@@ -316,13 +474,16 @@ export function writeBaseline(
     updatedAt: new Date().toISOString().slice(0, 10),
     gitRev,
     measurement: measurement ?? { scale: 1, samples: 15 },
-    cases: {},
+    cases: toCaseMap(rowsByContext.full ?? []),
+    contexts: {},
   }
-  for (const r of rows) {
-    const key = `${r.id}/${r.mode}`
-    baseline.cases[key] = { medianUs: r.medianUs, iterations: r.iterations, bytes: r.bytes }
+  for (const context of Object.keys(PERF_CONTEXTS) as PerfContext[]) {
+    if (context === 'full') continue
+    const rows = rowsByContext[context]
+    if (rows) baseline.contexts![context] = { cases: toCaseMap(rows) }
   }
-  appendHistory(baseline)
+  const { contexts: _perContext, ...snapshot } = baseline
+  appendHistory(snapshot)
   writeFileSync(BASELINE_PATH, JSON.stringify(baseline, null, 2) + '\n')
   return baseline
 }
@@ -421,6 +582,11 @@ export function printHistoryIndex(caseId = 'css/bootstrap4'): void {
  * PRIMARY check — absolute median µs per measured mode. Ratios are useful
  * reporting, but not a regression signal: making the interpreter faster lowers
  * the compiled/interpreted ratio without making anything slower.
+ *
+ * `rows` MUST have been measured under `opts.context`; comparing across contexts
+ * silently biases the interpreted numbers by ~15% (see PERF_CONTEXTS). Returns []
+ * when the baseline has no map for that context — check with baselineCases()
+ * first if you need to tell "clean" apart from "not comparable".
  */
 export function findRegressions(
   rows: ParsemanBenchRow[],
@@ -433,6 +599,8 @@ export function findRegressions(
     checkSpeedup?: boolean
     /** Run the absolute-µs speed check (default true). */
     checkAbsolute?: boolean
+    /** Measurement context `rows` were taken under (default 'full'). */
+    context?: PerfContext
   },
 ): string[] {
   const tolCompiled = opts?.tolerance?.compiled ?? PERF_TOLERANCE
@@ -441,6 +609,8 @@ export function findRegressions(
   const modes = opts?.modes ?? ['interpreted', 'compiled']
   const checkAbsolute = opts?.checkAbsolute ?? true
   const msgs: string[] = []
+  const cases = baselineCases(baseline, opts?.context ?? 'full')
+  if (!cases) return msgs
 
   const byId = new Map<string, { interp?: ParsemanBenchRow; comp?: ParsemanBenchRow }>()
   for (const r of rows) {
@@ -454,8 +624,8 @@ export function findRegressions(
   if (opts?.checkSpeedup === true) {
     for (const [id, { interp, comp }] of byId) {
       if (!interp || !comp) continue
-      const bi = baseline.cases[`${id}/interpreted`]?.medianUs
-      const bc = baseline.cases[`${id}/compiled`]?.medianUs
+      const bi = cases[`${id}/interpreted`]?.medianUs
+      const bc = cases[`${id}/compiled`]?.medianUs
       if (bi === undefined || bc === undefined) continue
       const speedup = interp.medianUs / comp.medianUs
       const baseSpeedup = bi / bc
@@ -471,7 +641,7 @@ export function findRegressions(
     for (const r of rows) {
       if (!modes.includes(r.mode)) continue
       const key = `${r.id}/${r.mode}`
-      const b = baseline.cases[key]
+      const b = cases[key]
       if (!b) continue
       const pct = pctDelta(r.medianUs, b.medianUs)
       const limit = r.mode === 'compiled' ? tolCompiled : tolInterpreted
