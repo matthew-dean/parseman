@@ -13,18 +13,25 @@ const decls = Number(process.argv[2] ?? 1500)
 const BATCH = Number(process.argv[3] ?? 60)
 const input = buildInput(decls)
 
+/**
+ * Parse a fixed batch for one variant, counting young-gen scavenges, major GCs
+ * and total GC pause (ms) plus median-free wall time. GC entries are delivered
+ * asynchronously, so any still-queued entries are drained via `takeRecords()`
+ * before `disconnect()` — otherwise the last batch's GCs would be dropped.
+ */
 function run(optOut: boolean): { scavenges: number; major: number; gcMs: number; wallMs: number } {
   const h = optOut ? hostOptOut : host
   let scavenges = 0, major = 0, gcMs = 0
-  const obs = new PerformanceObserver(list => {
-    for (const e of list.getEntries()) {
+  const tally = (entries: PerformanceEntryList) => {
+    for (const e of entries) {
       // @ts-expect-error node gc detail
       const kind = e.detail?.kind
       if (kind === 1) scavenges++
       else major++
       gcMs += e.duration
     }
-  })
+  }
+  const obs = new PerformanceObserver(list => tally(list.getEntries()))
   // warmup (JIT) outside the measured window
   for (let i = 0; i < 8; i++) {
     const r = compiled.parseWithContext(input, { trackLines: false, build: h, captureTrivia: true } as unknown as ParseContext, 0)
@@ -39,6 +46,7 @@ function run(optOut: boolean): { scavenges: number; major: number; gcMs: number;
     if (!r.ok) throw new Error('fail')
   }
   const wallMs = (performance.now() - t0) / BATCH
+  tally(obs.takeRecords()) // drain queued GC entries before teardown
   obs.disconnect()
   return { scavenges, major, gcMs, wallMs }
 }

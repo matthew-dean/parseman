@@ -12,6 +12,7 @@ const decls = Number(process.argv[2] ?? 1500)
 const samples = Number(process.argv[3] ?? 11)
 const input = buildInput(decls)
 
+/** Parse the model input once with the chosen host (opt-out toggles chV elision). */
 function parse(optOut: boolean): unknown {
   const h = optOut ? hostOptOut : host
   const ctx = { trackLines: false, build: h, captureTrivia: true } as unknown as ParseContext
@@ -30,9 +31,17 @@ if (a !== b) {
   process.exit(1)
 }
 
+/** Median of a numeric sample. */
 function median(xs: number[]): number { const s = [...xs].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]! }
 
-function measure(optOut: boolean): { med: number; heapMB: number } {
+/**
+ * Median wall-clock per parse, plus the net heap delta over a fixed batch.
+ * `netHeapMB` is `(heapUsed_after - heapUsed_before) / BATCH` — a NOISY average
+ * net change in live V8 heap, NOT per-parse allocation: GC can reclaim mid-batch,
+ * so it undercounts churn and swings run-to-run. Use bench/alloc-count.ts
+ * (scavenge counts) for the real allocation signal.
+ */
+function measure(optOut: boolean): { med: number; netHeapMB: number } {
   const gc = (globalThis as { gc?: () => void }).gc
   // warmup
   for (let i = 0; i < 5; i++) parse(optOut)
@@ -47,8 +56,8 @@ function measure(optOut: boolean): { med: number; heapMB: number } {
   const h0 = process.memoryUsage().heapUsed
   const BATCH = 40
   for (let i = 0; i < BATCH; i++) parse(optOut)
-  const heapMB = (process.memoryUsage().heapUsed - h0) / 1024 / 1024 / BATCH
-  return { med: median(times), heapMB }
+  const netHeapMB = (process.memoryUsage().heapUsed - h0) / 1024 / 1024 / BATCH
+  return { med: median(times), netHeapMB }
 }
 
 // interleave to cancel drift: measure both several times, take median of medians
@@ -56,10 +65,10 @@ const aMeds: number[] = [], bMeds: number[] = [], aHeap: number[] = [], bHeap: n
 for (let round = 0; round < 5; round++) {
   const mb = measure(true)   // optimized
   const ma = measure(false)  // baseline
-  bMeds.push(mb.med); aMeds.push(ma.med); bHeap.push(mb.heapMB); aHeap.push(ma.heapMB)
+  bMeds.push(mb.med); aMeds.push(ma.med); bHeap.push(mb.netHeapMB); aHeap.push(ma.netHeapMB)
 }
 const base = median(aMeds), opt = median(bMeds)
 console.log(`\n== chV-elision A/B: ${decls} decls, ${(input.length / 1024).toFixed(1)} KB ==`)
-console.log(`baseline  (chV kept):    ${base.toFixed(3)} ms/parse   heap ${median(aHeap).toFixed(2)} MB/parse`)
-console.log(`optimized (chV elided):  ${opt.toFixed(3)} ms/parse   heap ${median(bHeap).toFixed(2)} MB/parse`)
-console.log(`wall-clock delta: ${((1 - opt / base) * 100).toFixed(1)}% faster   heap delta: ${((1 - median(bHeap) / median(aHeap)) * 100).toFixed(1)}% less`)
+console.log(`baseline  (chV kept):    ${base.toFixed(3)} ms/parse   net heap Δ ${median(aHeap).toFixed(2)} MB/parse (noisy)`)
+console.log(`optimized (chV elided):  ${opt.toFixed(3)} ms/parse   net heap Δ ${median(bHeap).toFixed(2)} MB/parse (noisy)`)
+console.log(`wall-clock delta: ${((1 - opt / base) * 100).toFixed(1)}% faster   net heap Δ delta: ${((1 - median(bHeap) / median(aHeap)) * 100).toFixed(1)}% less (noisy; see alloc-count.ts for scavenge counts)`)

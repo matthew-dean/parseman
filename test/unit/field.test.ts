@@ -128,7 +128,7 @@ const Import = node('Import', sequence(literal('@import'), field('tail', Tail), 
   it('structural ctx.build can read fields without trivia/state capture', () => {
     const Doc = node('Doc', sequence(literal('['), field('name', ident), literal(']')))
     const compiled = compile(Doc)
-    const host = (_type: string, _children: readonly unknown[], fields: unknown) => fields
+    const host = (_type: string, _children: readonly unknown[] | undefined, fields: unknown) => fields
 
     const interpreted = run(Doc, '[href]', { build: host })
     expect(interpreted.ok && interpreted.value).toEqual({

@@ -18,7 +18,7 @@ function capture() {
   const logs = new Map<string, Log>()
   const build = (
     type: string,
-    _children: readonly unknown[],
+    _children: readonly unknown[] | undefined,
     _fields: unknown,
     span: { start: number; end: number },
     _rawChildren: readonly unknown[],

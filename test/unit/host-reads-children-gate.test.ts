@@ -29,7 +29,7 @@ const INPUT = 'a : b  c : d'
 const fromRaw = (optOut: boolean): BuildHost => {
   const h: BuildHost = (
     type: string,
-    _children: ReadonlyArray<unknown>,
+    _children: ReadonlyArray<unknown> | undefined,
     _fields: unknown,
     span: { start: number; end: number },
     rawChildren: ReadonlyArray<unknown>,

@@ -71,7 +71,7 @@ describe('run() — generic grammar-entry driver', () => {
       )),
     )
     const compiled = compile(profiled)
-    const host = vi.fn((type: string, children: ReadonlyArray<unknown>) => ({ _tag: 'node', type, children }))
+    const host = vi.fn((type: string, children: ReadonlyArray<unknown> | undefined) => ({ _tag: 'node', type, children }))
     const entry = (input: string, pos: number, ctx: import('../../src/index.ts').ParseContext) =>
       compiled.parseWithContext(input, ctx, pos)
 

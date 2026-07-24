@@ -95,7 +95,10 @@ export type CstCollapsePredicate = (
 
 export type BuildHost = ((
   type: string,
-  children: ReadonlyArray<unknown>,
+  // `undefined` when a structural host opts out of the duplicate children array
+  // via `_parsemanReadsChildren === false` (codegen elides the chV allocation).
+  // Hosts that read `children` must tolerate an omitted array (e.g. `children ?? []`).
+  children: ReadonlyArray<unknown> | undefined,
   fields: FieldMap | undefined,
   span: { start: number; end: number },
   rawChildren: ReadonlyArray<unknown>,

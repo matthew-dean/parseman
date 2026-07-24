@@ -20,6 +20,7 @@ const input = buildInput(decls)
 const sane = compiled.parse(input, 0)
 if (!sane.ok) throw new Error('model grammar did not parse')
 
+/** Median of a numeric sample. */
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b)
   return s[Math.floor(s.length / 2)]!
@@ -52,20 +53,22 @@ console.log(`  + hostConstruction  ${mHos.toFixed(3)}   (AST+span cost   = ${(mH
 
 // ---- GC + heap over a full-output batch (uses compiled.parse w/ default host? no: use entry+host via run) ----
 let scavenges = 0, gcPauseMs = 0
-const obs = new PerformanceObserver(list => {
-  for (const e of list.getEntries()) {
+const tally = (entries: PerformanceEntryList) => {
+  for (const e of entries) {
     // kind 1 = scavenge (young gen), 2 = mark-sweep-compact, 8 = incremental, 16 = weakcb
     // @ts-expect-error node perf entry detail
     const kind = e.detail?.kind
     if (kind === 1) scavenges++
     gcPauseMs += e.duration
   }
-})
-obs.observe({ entryTypes: ['gc'] })
+}
+const obs = new PerformanceObserver(list => tally(list.getEntries()))
 
 const BATCH = 40
 const gc = (globalThis as { gc?: () => void }).gc
 if (gc) gc()
+// Observe AFTER the forced gc() so the setup pause stays out of the batch totals.
+obs.observe({ entryTypes: ['gc'] })
 const heapBefore = process.memoryUsage().heapUsed
 const t0 = performance.now()
 for (let i = 0; i < BATCH; i++) {
@@ -74,6 +77,7 @@ for (let i = 0; i < BATCH; i++) {
 }
 const wall = performance.now() - t0
 const heapAfter = process.memoryUsage().heapUsed
+tally(obs.takeRecords()) // drain queued GC entries before teardown
 obs.disconnect()
 
 console.log(`\nfull-output batch x${BATCH}: wall ${(wall / BATCH).toFixed(3)} ms/parse`)
