@@ -84,9 +84,10 @@ class Unserializable extends Error {}
 
 export function serializeRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Comb]>,
+  scanSkip?: readonly Comb[] | null,
 ): string | null {
   try {
-    return new Serializer(ruleMap).run()
+    return new Serializer(ruleMap, scanSkip ?? []).run()
   } catch (e) {
     if (e instanceof Unserializable) {
       if (process.env.PARSEMAN_IR_DEBUG) console.error(`[ir] fallback: ${(e as Error).message}`)
@@ -210,10 +211,29 @@ class Serializer {
   private decls: string[] = []
   private ruleValues = new Set<Comb>()
   private ruleMap: ReadonlyArray<readonly [string, Comb]>
+  private scanSkip: readonly Comb[]
 
-  constructor(ruleMap: ReadonlyArray<readonly [string, Comb]>) {
+  constructor(ruleMap: ReadonlyArray<readonly [string, Comb]>, scanSkip: readonly Comb[] = []) {
     this.ruleMap = ruleMap
+    this.scanSkip = scanSkip
     for (const [, c] of ruleMap) this.ruleValues.add(this.body(c))
+  }
+
+  /** A grammar-level `scanSkip` unit is an opaque TERMINAL (a string, a balanced
+   * bracket) — it must not reach a grammar-rule ref (`g[name]`), because the
+   * serialized `scanSkip` array sits in the `rules({ scanSkip })` OPTIONS position,
+   * outside the `(g) => …` factory where `g` is bound. A unit that does reference a
+   * rule can't be carried in options; bail to the full-pieces fallback. */
+  private assertNoRuleRef(c: Comb, seen: Set<Comb>): void {
+    if (seen.has(c)) return
+    seen.add(c)
+    if (c._def.tag === 'lazy') {
+      if (ruleNameOf(c) !== undefined) throw new Unserializable('scanSkip unit references a grammar rule')
+      const target = lazyTarget(c)
+      if (target) this.assertNoRuleRef(target, seen)
+      return
+    }
+    for (const child of childrenOf(c._def)) this.assertNoRuleRef(child, seen)
   }
 
   /** A `rules()` map wraps each rule value in a named `lazy` proxy; the real body is
@@ -225,6 +245,7 @@ class Serializer {
 
   run(): string {
     for (const [, c] of this.ruleMap) this.analyze(this.body(c), new Set())
+    for (const c of this.scanSkip) { this.assertNoRuleRef(c, new Set()); this.analyze(c, new Set()) }
     // A shared sub-combinator (count ≥ 2) or a self-ref target gets a const, EXCEPT
     // a top-level rule value (it already lives under its rule name).
     let n = 0
@@ -232,13 +253,35 @@ class Serializer {
       if (this.ruleValues.has(c)) continue
       if (count >= 2 || this.selfRef.has(c)) this.constName.set(c, `_s${n++}`)
     }
+    // Two decl scopes. `scanSkip` is emitted FIRST into `outerDecls` (an IIFE that
+    // wraps the whole rules() call) because the `{ scanSkip }` options object
+    // precedes the `(g) => …` factory and so cannot see consts declared inside it.
+    // A scanSkip unit is grammar-rule free (asserted above), so every const it
+    // reaches is g-free and safe in the outer scope; the `emitted` guard then keeps
+    // each remaining (factory-only, possibly `g[name]`-referencing) const inside the
+    // factory. With no scanSkip, `outerDecls` stays empty and the output is
+    // byte-identical to the pre-scanSkip form.
+    const outerDecls: string[] = []
+    const innerDecls: string[] = []
+    let optionsArg = ''
+    if (this.scanSkip.length > 0) {
+      this.decls = outerDecls
+      const units = this.scanSkip.map(c => this.ref(c, null))
+      optionsArg = `{ scanSkip: [${units.join(', ')}] }, `
+    }
+    this.decls = innerDecls
     const body = this.ruleMap
       .map(([name, c]) => `  ${JSON.stringify(name)}: ${this.wrap(this.body(c))}`)
       .join(',\n')
     // Shared consts go INSIDE the factory: they can reference `g[name]` rule refs,
     // and `g` only exists in the factory scope.
-    if (this.decls.length === 0) return `rules((g) => ({\n${body}\n}))`
-    return `rules((g) => {\n${this.decls.map(d => '  ' + d).join('\n')}\n  return ({\n${body}\n})\n})`
+    const factory = innerDecls.length === 0
+      ? `(g) => ({\n${body}\n})`
+      : `(g) => {\n${innerDecls.map(d => '  ' + d).join('\n')}\n  return ({\n${body}\n})\n}`
+    const call = `rules(${optionsArg}${factory})`
+    return outerDecls.length === 0
+      ? call
+      : `(() => {\n${outerDecls.map(d => '  ' + d).join('\n')}\n  return ${call}\n})()`
   }
 
   /** Count identity references and flag self-referential subtrees. `active` is the

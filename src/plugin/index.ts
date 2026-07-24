@@ -524,6 +524,23 @@ export function transformMacro(
       ? (evaluateCombinatorArray(scanSkipValue, scope, code) ?? undefined)
       : undefined
 
+    // STAMP `_meta.grammarScanSkip` on the evaluated rules, exactly as runtime
+    // `rules({ scanSkip })` does. The macro evaluates the FACTORY directly and never
+    // calls `rules()`, so without this the stamp is absent and every macro-side
+    // `compileLinkable`/`compileRuleMap` has to pass `opts.scanSkip` by hand — which
+    // was forgotten twice (the composeLeaf identifier branch, and the exported
+    // full-piece fallback), each time silently re-opening the raw-scan footgun
+    // downstream. Both compilers already fall back to this `_meta` field, so
+    // stamping here makes omission at a call site structurally impossible.
+    // Trivia rules are skipped, mirroring the runtime guard in `rules()`.
+    if (gScanSkip) {
+      for (const rule of ruleMap.values()) {
+        if (rule && !rule._meta.isTrivia) {
+          ;(rule._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip = gScanSkip
+        }
+      }
+    }
+
     return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}) }
   }
 
@@ -828,12 +845,17 @@ export function transformMacro(
   // A local rule map → its compact IR ({ns, ir}) for carrying; the trivia is NOT baked
   // into the IR (it is seeded at re-lower time). When the map can't be faithfully
   // serialized, fall back to full lowered pieces WITH the composing trivia baked in.
-  const localCarried = (rm: Iterable<readonly [string, unknown]>, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[] } | null => {
+  const localCarried = (rm: Iterable<readonly [string, unknown]>, label: string, composing?: Combinator<unknown>, scanSkip?: Combinator<unknown>[]): { carried: CarriedItem[] } | null => {
     const entries = [...rm]
     const ns = nsFor(label)
-    const ir = serializeRuleMap(entries as never)
+    // scanSkip is PER-PIECE (opaque units are dialect-specific — NOT composing-wins
+    // like trivia), so it rides WITH this element's IR: it is emitted into the carried
+    // `rules({ scanSkip }, …)` options, which stamps `_meta.grammarScanSkip` when the IR
+    // is re-lowered (materializePiece → compileLinkable picks it up), and survives to a
+    // downstream re-compose. The full-pieces fallback bakes it via the compile option.
+    const ir = serializeRuleMap(entries as never, scanSkip)
     if (ir) return { carried: [{ ns, ir }] }
-    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), recovery })
+    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), ...(scanSkip ? { scanSkip } : {}), recovery })
     return p ? { carried: [p] } : null
   }
 
@@ -873,19 +895,17 @@ export function transformMacro(
     // fused rule, this element's included. It only matters as a CANDIDATE for the
     // composing trivia itself, which composingTrivia() reads directly off the AST.
     if (isRulesCall(arg)) {
-      const rulesArgs = (arg as unknown as { arguments: unknown[] }).arguments
-      const a0 = rulesArgs[0] as AnyNode | undefined
-      const a1 = rulesArgs[1] as AnyNode | undefined
-      const optionsFirst = a0?.type === 'ObjectExpression'
-      const factory = (optionsFirst ? a1 : a0) as Expression | undefined
-      const rm = factory ? evaluateParserFactory(factory, scope, code, []) : null
-      return rm ? localCarried(rm, label, composing) : null
+      // This element's OWN scanSkip DOES thread (per-piece, unlike composing-wins
+      // trivia): evaluateRulesFactory returns both the rule map and the grammar-level
+      // scanSkip option, which localCarried carries with this piece's IR.
+      const evaluated = evaluateRulesFactory(arg, label)
+      return evaluated ? localCarried(evaluated.ruleMap, label, composing, evaluated.scanSkip) : null
     }
     if (arg.type === 'Identifier') {
       const name = (arg as unknown as { name: string }).name
       // Local grammar var (`const myRules = rules(...)`).
       const rm = localRuleMaps.get(name)
-      if (rm) return localCarried(rm, label, composing)
+      if (rm) return localCarried(rm, label, composing, localGrammarScanSkip.get(name))
       // Local composed var (`const g = compose([...])`) → its own carried list, which
       // materializeCarried re-lowers under THIS compose's composing trivia.
       const composed = localComposedCarried.get(name)
@@ -1197,10 +1217,22 @@ export function transformMacro(
           )
           if (exportPrefix) {
             const ns = nsFor(varName)
-            const pieces = compileLinkable([...compiledRules.ruleMap], ns, { recovery })
+            // Thread `scanSkip` explicitly: this is the FULL-PIECE fallback taken when
+            // the IR isn't serializable, and it is what a downstream package composes.
+            // (The `_meta` stamp in evaluateRulesFactory also covers it; passing it
+            // here keeps the intent local and independent of that.) `trivia` is NOT
+            // threaded — it is composing-wins, so the downstream compose supplies it;
+            // `scanSkip` is per-piece (opaque units are dialect-specific) and must
+            // travel WITH the grammar or the downstream loses ambient skipping.
+            const pieces = compileLinkable([...compiledRules.ruleMap], ns, {
+              ...(compiledRules.scanSkip ? { scanSkip: compiledRules.scanSkip } : {}),
+              recovery,
+            })
             if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
               // Carry the compact IR when serializable; else the full lowered pieces.
-              const ir = serializeRuleMap([...compiledRules.ruleMap] as never)
+              // Thread the grammar's scanSkip into the IR so a downstream compose of
+              // this imported grammar re-lowers its scanTo/balanced sites ambiently.
+              const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
               replacement = withCarriedPieces(replacement, [ir ? { ns, ir } : pieces])
             }
           }
