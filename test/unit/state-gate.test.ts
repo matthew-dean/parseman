@@ -1,20 +1,20 @@
 /**
- * withCtx() + guard() tests.
+ * withCtx() + gate() tests.
  *
- * Verifies context-scoped parsing: guard() gates on runtime state set
+ * Verifies context-scoped parsing: gate() gates on runtime state set
  * by withCtx(). State is lexically scoped — inner parse sees it,
  * outer parse does not.
  */
 import { describe, it, expect } from 'vitest'
 import { literal, sequence, choice, many, transform, parse } from '../../src/index.ts'
-import { guard, withCtx } from '../../src/index.ts'
+import { gate, withCtx } from '../../src/index.ts'
 
 type Ctx = { inFn: boolean; depth: number }
 const readCtx = (u: unknown) => u as Ctx ?? { inFn: false, depth: 0 }
 
-describe('guard()', () => {
+describe('gate()', () => {
   it('succeeds when predicate is true', () => {
-    const p = guard(() => true)
+    const p = gate(() => true)
     const r = parse(p, '')
     expect(r.ok).toBe(true)
     if (r.ok) {
@@ -24,12 +24,12 @@ describe('guard()', () => {
   })
 
   it('fails when predicate is false', () => {
-    const p = guard(() => false)
+    const p = gate(() => false)
     expect(parse(p, '').ok).toBe(false)
   })
 
   it('reads ctx.state via predicate', () => {
-    const p = guard(u => (u as { flag: boolean })?.flag === true)
+    const p = gate(u => (u as { flag: boolean })?.flag === true)
     // Without context: fails
     expect(parse(p, '').ok).toBe(false)
   })
@@ -39,32 +39,32 @@ describe('withCtx()', () => {
   it('sets user context for inner parser', () => {
     let capturedUser: unknown
     const probe = transform(literal('x'), (v, _span) => {
-      // can't read ctx here, but guard proves it works
+      // can't read ctx here, but gate proves it works
       return v
     })
-    // guard inside withCtx sees the user value
+    // gate inside withCtx sees the user value
     const p = withCtx({ flag: true },
-      sequence(guard(u => (u as { flag: boolean }).flag === true), literal('x'))
+      sequence(gate(u => (u as { flag: boolean }).flag === true), literal('x'))
     )
     const r = parse(p, 'x')
     expect(r.ok).toBe(true)
   })
 
   it('restores outer context after inner parse', () => {
-    // outer: no user ctx → guard() fails
-    // inner: user ctx set → guard succeeds
-    const guarded = guard((u) => (u as { on: boolean })?.on === true)
+    // outer: no user ctx → gate() fails
+    // inner: user ctx set → gate succeeds
+    const guarded = gate((u) => (u as { on: boolean })?.on === true)
     const inner = withCtx({ on: true }, sequence(guarded, literal('x')))
 
     // inner parse succeeds
     expect(parse(inner, 'x').ok).toBe(true)
-    // same guard outside withCtx fails (user is undefined)
+    // same gate outside withCtx fails (user is undefined)
     expect(parse(guarded, '').ok).toBe(false)
   })
 
   it('nested withCtx: inner overrides outer', () => {
     const check = (expected: boolean) =>
-      guard(u => (u as { flag: boolean })?.flag === expected)
+      gate(u => (u as { flag: boolean })?.flag === expected)
 
     const p = withCtx({ flag: true },
       sequence(
@@ -81,7 +81,7 @@ describe('withCtx()', () => {
   it('context-gated keyword: return only inside function', () => {
     type S = { inFn: boolean }
     const returnKw = sequence(
-      guard(u => (u as S | undefined)?.inFn === true),
+      gate(u => (u as S | undefined)?.inFn === true),
       literal('return'),
     )
 
@@ -89,12 +89,12 @@ describe('withCtx()', () => {
 
     // Inside function context: works
     expect(parse(fnBody, 'return').ok).toBe(true)
-    // Outside (no context): guard fails
+    // Outside (no context): gate fails
     expect(parse(returnKw, 'return').ok).toBe(false)
   })
 })
 
-describe('guard() + withCtx() — practical: indent-sensitive parsing', () => {
+describe('gate() + withCtx() — practical: indent-sensitive parsing', () => {
   type IndentCtx = { minIndent: number }
 
   // A "line at indent >= N" parser: checks indent, parses content
@@ -102,7 +102,7 @@ describe('guard() + withCtx() — practical: indent-sensitive parsing', () => {
     { minIndent: n },
     transform(
       sequence(
-        guard(u => (u as IndentCtx).minIndent <= n),
+        gate(u => (u as IndentCtx).minIndent <= n),
         literal('  '.repeat(n)),    // exactly n*2 spaces of indent
         literal('line'),
       ),

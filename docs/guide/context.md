@@ -2,33 +2,46 @@
 
 Some grammars are not context-free: `return` is only legal inside a function body; a
 here-doc's terminator depends on its opening line; indentation changes meaning. Parséman
-handles these with `withCtx` and `guard`, **without mutating shared state** — so
+handles these with `withCtx` and `gate`, **without mutating shared state** — so
 incremental re-parsing can replay the exact context a node was parsed under.
 
-## `withCtx` and `guard`
+## `withCtx` and `gate`
 
 - **`withCtx(extra, combinator)`** merges `extra` into the user context (`ctx.state`) for
   the duration of `combinator`, restoring it on exit.
-- **`guard(predicate)`** succeeds (consuming nothing) only when `predicate(ctx.state)`
-  returns true, gating a rule behind runtime context.
+- **`gate(predicate)`** succeeds (consuming nothing) only when `predicate(ctx.state)`
+  returns true, asserting runtime context mid-sequence.
+
+> `gate()` was named `guard()` before; `guard` is kept as a deprecated alias. Its name
+> now matches the `gate:` field on a gated choice arm (below): use the **arm field to
+> SELECT a branch**, the **`gate()` combinator to ASSERT** a predicate inside a sequence.
 
 ```ts
-import { rules, withCtx, guard, many, sequence, choice, literal, regex, trivia, parser } from 'parseman'
+import { rules, withCtx, gate, many, sequence, choice, word, regex, trivia, parser } from 'parseman'
 import type { Combinator } from 'parseman'
 
 const ws = trivia(regex(/\s*/))
 
 export const { Program } = rules<{ Program: Combinator<unknown> }>(g => {
   const expr = regex(/[a-z]+/)
-  const ret  = sequence(guard((ctx: { inFn?: boolean }) => ctx.inFn === true), literal('return'))
+  // Lead with the concrete terminal so the arm keeps first-char dispatch on 'r';
+  // the gate ASSERTS the context after. (A leading gate() would make the arm's
+  // first-set `any` and poison the choice — see the note below.) `word('return')`,
+  // not `literal('return')`, so it won't match the 'return' prefix of `returnValue`.
+  const ret  = sequence(word('return'), gate((ctx: { inFn?: boolean }) => ctx.inFn === true))
   const stmt = choice(ret, expr)
   const body = withCtx({ inFn: true }, many(sequence(stmt, ws)))
   return { Program: parser({ trivia: ws }, many(body)) }
 })
 ```
 
-`return` is only reachable inside a body because `guard` rejects it when `inFn` is not set.
-Outside a body, the `ret` arm fails at the guard and `choice` falls through to `expr`.
+`return` is only reachable inside a body because `gate` rejects it when `inFn` is not set.
+Outside a body, the `ret` arm fails at the gate and `choice` falls through to `expr`.
+
+Note: `gate()`'s first-set is `any` (a runtime predicate can't be known at build time), so
+a `gate()` as the **leading** term of a choice arm poisons that choice's first-char
+dispatch — keep it after a concrete leading terminal. For SELECTING a branch by a cheap
+predicate, prefer the gated-arm field below, which preserves dispatch.
 
 ## Why not just mutate a variable?
 
@@ -41,7 +54,8 @@ re-parses under exactly the context it originally saw.
 ## Gated choice arms
 
 For the common case of "only try this alternative when the context allows it," `choice`
-accepts **gated arms** directly, which reads better than a `guard` inside a `sequence`:
+accepts **gated arms** directly. Use the **arm field to SELECT** a branch (it preserves
+dispatch); use the **`gate()` combinator to ASSERT** a predicate mid-sequence:
 
 ```ts
 import { choice } from 'parseman'
@@ -83,7 +97,7 @@ order of preference:
    parens, `calc()` nesting, balanced delimiters are tracked by recursing through the rule
    (or by `balanced()`), never by a counter in `ctx.state`. A state counter would just
    duplicate the stack.
-4. **`ctx.state` (`withCtx` / `guard` / gated arms).** Reach for this only when the *same*
+4. **`ctx.state` (`withCtx` / `gate` / gated arms).** Reach for this only when the *same*
    rule must behave differently based on an **ancestor that isn't a distinct rule on its
    path** — so structure alone can't tell the cases apart. The parent selector `&` is the
    canonical case: a selector is reached by the identical rule path whether it is written

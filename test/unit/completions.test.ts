@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  literal, regex, sequence, optional, sepBy, choice, guard, scanTo, completionsAt,
+  literal, regex, sequence, optional, sepBy, choice, gate, scanTo, completionsAt,
 } from '../../src/index.ts'
 
 describe('completionsAt()', () => {
@@ -9,8 +9,8 @@ describe('completionsAt()', () => {
   const items = sepBy(num, comma)
   const bracket = sequence(literal('['), optional(items), literal(']'))
 
-  it('uses top-level failure when probe recorded nothing (guard combinator)', () => {
-    expect(completionsAt(guard(() => false), '', 0)).toEqual(['guard'])
+  it('uses top-level failure when probe recorded nothing (gate combinator)', () => {
+    expect(completionsAt(gate(() => false), '', 0)).toEqual(['guard'])
   })
 
   it('prefers probe failure deeper than top-level after sepBy backtrack', () => {

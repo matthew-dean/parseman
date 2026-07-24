@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   literal, regex, sequence, choice, many, optional, sepBy,
-  parse, parser, scanTo, balanced, guard, withCtx, node, rules,
+  parse, parser, scanTo, balanced, gate, withCtx, node, rules,
   parseDoc,
 } from '../../src/index.ts'
 import type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTRawChild, Span } from '../../src/index.ts'
@@ -199,7 +199,7 @@ describe('node() — context-sensitive rules', () => {
     const Return = node(
       'Return',
       sequence(
-        guard((u: unknown) => (u as { inFn?: boolean } | undefined)?.inFn === true),
+        gate((u: unknown) => (u as { inFn?: boolean } | undefined)?.inFn === true),
         literal('return'),
       ),
       (ch, _fields, span, _r, _tl, state) => mkCst('Return', ch as CSTNode['children'], span, state),
