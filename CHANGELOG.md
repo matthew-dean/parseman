@@ -5,6 +5,30 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.32.0 — 2026-07-23
 
+- **Fix (soundness): three first-set FALSE-EXCLUDES the initial cross-artifact
+  dispatch introduced.** The tighter first-sets below were, in three cases, too
+  NARROW — gating out valid input on the real jess CSS/Less/SCSS grammars (15 parser
+  tests regressed: nested-paren `@supports`/media/container preludes rejected;
+  case-`ReD` named colors mis-classified). All three widen the first-set back to a
+  correct SUPERSET without losing the gating win:
+  1. **Shared rule ref treated as a false cycle.** `leadingFirstSetRecipe`'s cycle
+     guard was a global visited-set, so the SAME ref appearing in two sibling arm
+     positions — `choice(sequence(not, g.R), sequence(g.R, …))`, `g.R` both arm-0's
+     nullable-prefix tail and arm-1's lead — hit the guard on its 2nd visit and
+     returned an EMPTY recipe, dropping that arm's first chars. A named ref is now
+     resolved by name (never recursed) so it never pollutes `seen`, and the guard is
+     **path-based** (added on entry, removed on exit) so a shared inlined `node()`
+     used across sibling positions is recomputed fresh instead of mistaken for a
+     cycle. Only ancestors on the current recursion path are true cycles.
+  2. **Case-insensitive regex first-set omitted the opposite case.** The first-set
+     analyzer is flag-agnostic, so `/red|blue/i` yielded `{r,b}` not `{r,R,b,B}`;
+     dispatching on that false-excluded `ReD`. `regex()` now ASCII-case-folds the
+     leading set under the `i` flag (matching `keywords(ci)`), a sound widening.
+  Fuzz-verified + a regression test matching the real jess shape (recursive
+  nested-paren prelude behind a cross-artifact ref, shared inlined node,
+  case-insensitive recognizer); full jess corpus (css/less/scss/jess parsers +
+  all-less + scss-render) back to baseline, gating win preserved.
+
 - **Fix: cross-artifact first-set dispatch across the `composeLeaf` boundary.** A
   fused choice arm / node whose leading term is a rule REFERENCE into a separately
   compiled recognition artifact — `sequence(g.SyntaxAtRuleName, prelude, ';')`, the
