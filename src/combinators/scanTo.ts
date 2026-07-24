@@ -11,13 +11,54 @@ import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 
 export type ScanToOptions = {
-  /** Parsers that match "container" regions to skip over intact (balanced parens, strings, comments…) */
+  /**
+   * Per-call opaque-unit skippers (balanced parens/brackets, dialect
+   * interpolation, …). These EXTEND the grammar-level ambient default: ambient
+   * trivia (comments/ws) and ambient `scanSkip` (strings) are applied too, unless
+   * `raw`. So a site only needs to list the extra units its scan requires.
+   */
   skip?: Combinator<unknown>[]
+  /**
+   * Hard opt-out: skip NOTHING ambiently — no trivia, no scanSkip, and (with no
+   * per-call `skip`) a pure raw byte-walk. For the rare site that intends to scan
+   * literally through comments/strings.
+   */
+  raw?: boolean
   /**
    * If true, reaching EOF without finding the sentinel is a success — returns
    * everything consumed so far. Default false (fail at EOF).
    */
   orEOF?: boolean
+}
+
+/**
+ * Resolve the effective ordered skipper list for a scan, folding grammar-level
+ * ambient trivia + scanSkip in FRONT of the per-call `skip` (explicit skip
+ * EXTENDS the ambient default). Shared by the interpreter `scanTo`/`balanced`;
+ * the compiled path bakes the identical list in codegen.
+ *
+ *   raw   → []                                  (no trivia, no scanSkip, no skip)
+ *   else  → [ ...trivia?, ...scanSkip?, ...skip ]
+ *
+ * The ambient trivia (comments/ws) leads so a sentinel hidden in a comment is
+ * never matched, then ambient strings, then the site's extra units. The sentinel
+ * itself is still checked before any skipper, so a sentinel that also starts a
+ * skip region wins (unchanged priority).
+ */
+export function resolveScanSkip(
+  explicitSkip: Combinator<unknown>[],
+  raw: boolean,
+  ctx: ParseContext,
+): Combinator<unknown>[] {
+  if (raw) return []
+  const trivia = ctx.trivia
+  const ambient = ctx.scanSkip
+  if (!trivia && !ambient) return explicitSkip
+  const out: Combinator<unknown>[] = []
+  if (trivia) out.push(trivia)
+  if (ambient) out.push(...ambient)
+  out.push(...explicitSkip)
+  return out
 }
 
 /**
@@ -33,20 +74,23 @@ export type ScanToOptions = {
  */
 export function scanTo(
   sentinel: Combinator<unknown>,
-  { skip = [], orEOF = false }: ScanToOptions = {},
+  { skip, raw = false, orEOF = false }: ScanToOptions = {},
 ): Combinator<string> {
   const meta: ParserMeta = {
     firstSet: any(),
     canMatchNewline: true,
     isTrivia: false,
   }
+  const explicitSkip = skip ?? []
 
   return {
     _tag: 'scanTo',
     _meta: meta,
-    _def: { tag: 'scanTo', sentinel, skip, orEOF },
+    _def: { tag: 'scanTo', sentinel, skip: explicitSkip, raw, orEOF },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       let cur = pos
+      // Fold grammar-level ambient trivia + scanSkip into the effective skippers.
+      const skip = resolveScanSkip(explicitSkip, raw, ctx)
 
       // Sentinel checks and skip scans must not emit CST children of their own —
       // scanTo represents the whole scanned span as one leaf. Probe them with a
