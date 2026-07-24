@@ -573,6 +573,13 @@ default and warns on genuinely-ungated hot choices; see
 [First-char gating](../guide/first-char-gating). `formatGatingWarnings(report)` renders the
 findings as printable lines.
 
+`report.deferred` holds choices whose verdict is not this artifact's to make: every `any`
+arm is an unresolved NAMED cross-artifact hole (`g.Value` in a
+[shared shape](../guide/extending#shared-shapes-one-shape-many-bindings)). They are silent and do not fail the
+`'error'` gate — the question is re-asked, with the hole bound, when the shape is
+`compose()`d. See
+[Shared shapes and the fuse](../guide/first-char-gating#shared-shapes-the-verdict-belongs-to-the-fuse).
+
 ## IDE support
 
 ### `completionsAt(target, input, offset, options?)`

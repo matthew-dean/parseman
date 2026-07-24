@@ -15,9 +15,16 @@
  * (see `src/compiler/codegen.ts`). Accept a deliberately-ungated choice by listing
  * its `id` in the gating snapshot allowlist (`analyzeGating(entry, { accept })` /
  * `compile(g, { gating: { level, accept } })`) — the single suppression mechanism.
+ *
+ * WHERE the question is asked matters as much as the answer. A SHARED SHAPE — a
+ * `rules()` map referencing a rule it doesn't define (`g.Value`) — has no verdict of
+ * its own: the hole makes every first-set through it `any`, but that configuration is
+ * never executed and its author cannot fix it. Such a choice is `deferred` here, and
+ * re-asked with `resolveRef` at the site that BINDS the name (`runFusedGatingDiagnostic`
+ * in codegen.ts) — the artifact that really runs, whose author really can fix it.
  */
 import type { Combinator, FirstSet, ParserDef } from '../types.ts'
-import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
+import { firstSetOf, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
 
 /** Why an arm's (deep) first-set is `any` / over-broad — the poison source. */
 export type FirstSetCause =
@@ -41,6 +48,16 @@ export type AnyArm = {
    * genuinely-ungated finding.
    */
   shallowAnyOnly: boolean
+  /**
+   * True when the poison is a NAMED cross-artifact hole this artifact cannot resolve
+   * (`g.Value` in a shared shape). The author of THIS artifact cannot act on it — the
+   * arm's real first-set only exists once a consumer binds the name — so a choice
+   * whose every `any` arm is one of these is `deferred`, not `ungated`.
+   *
+   * An UNNAMED unresolved `ref()` is NOT this: nobody can bind it by name, so it is a
+   * genuine local finding and stays reportable here.
+   */
+  unresolvedExternal: boolean
   /** Concrete fix, naming a real primitive. */
   suggestion: string
 }
@@ -85,6 +102,17 @@ export type ChoiceGating = {
   gates: 'yes' | 'recoverable' | 'no'
   /** True when this ungated choice's `id` is in the accepted-snapshot allowlist. */
   accepted: boolean
+  /**
+   * `gates: 'no'` was decided by cross-artifact HOLES ONLY — every `any` arm is an
+   * unresolved NAMED `g.Foo` ref and no two finite arms overlap. The verdict is not
+   * this artifact's to make: the shape module can't fix it (the hole has no body
+   * here) and the configuration it describes never runs. The answer belongs to the
+   * FUSED artifact, where the name is bound — see `runFusedGatingDiagnostic`.
+   *
+   * Deferred choices are excluded from `ungated`: they neither warn nor fail the
+   * `'error'` gate at this site.
+   */
+  deferred: boolean
   combinedFirstSet: { shallow: FirstSet; deep: FirstSet }
   anyArms: AnyArm[]
   overlaps: Overlap[]
@@ -108,6 +136,13 @@ export type AnalyzeGatingOptions = {
    * `_ruleName`.
    */
   entryName?: string
+  /**
+   * Bind NAMED cross-artifact holes (`g.Foo`) by name — supply the FUSED winner map's
+   * lookup. With it, an arm led by a shared shape's hole reports the first-set it
+   * really has once bound, so `deferred` collapses to a real `yes`/`no` verdict.
+   * Without it (the authoring site) such a choice stays `deferred`.
+   */
+  resolveRef?: RefResolver
 }
 
 export type GatingReport = {
@@ -118,6 +153,12 @@ export type GatingReport = {
   ungated: ChoiceGating[]
   /** Ungated choices whose id was in the accepted allowlist — silent, accepted with intent. */
   accepted: ChoiceGating[]
+  /**
+   * Choices whose verdict is NOT this artifact's to make — every `any` arm is an
+   * unresolved cross-artifact hole (see `ChoiceGating.deferred`). Silent here; the
+   * fused artifact re-asks the question with the hole bound.
+   */
+  deferred: ChoiceGating[]
   /** Accepted ids that matched no ungated choice — stale snapshot entries to prune. */
   acceptedUnused: string[]
   /** Every choice, for full inspection / CI snapshots. */
@@ -187,9 +228,17 @@ const SUGGESTIONS: Record<FirstSetCause, string> = {
     'a recursive ref resolved to ANY; ensure the recursion has a concrete terminal lead on the base case.',
 }
 
-function classifyBroadArm(arm: Combinator<unknown>): { cause: FirstSetCause; detail: string } {
+/** The classifier's verdict for one arm: the poison, and whether it is a hole that
+ *  only a downstream fuse can fill (`unresolvedExternal`). */
+type ArmCause = { cause: FirstSetCause; detail: string; unresolvedExternal?: boolean }
+
+function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmCause {
   const seen = new Set<Combinator<unknown>>()
-  const walk = (p: Combinator<unknown>): { cause: FirstSetCause; detail: string } | null => {
+  /** Re-label an inner verdict, carrying its `unresolvedExternal` through unchanged —
+   *  the cause changes, but who can FIX it does not. */
+  const relabel = (inner: ArmCause | null, cause: FirstSetCause, detail: string): ArmCause =>
+    ({ cause, detail, ...(inner?.unresolvedExternal ? { unresolvedExternal: true } : {}) })
+  const walk = (p: Combinator<unknown>): ArmCause | null => {
     if (seen.has(p)) return { cause: 'ref-cycle', detail: 'ref cycle' }
     seen.add(p)
     const d = p._def as ParserDef
@@ -216,17 +265,24 @@ function classifyBroadArm(arm: Combinator<unknown>): { cause: FirstSetCause; det
         return walk(d.parser)
       case 'lazy': {
         const name = (p as unknown as { _ruleName?: string })._ruleName
-        try {
-          const inner = walk((d as { thunk(): Combinator<unknown> }).thunk())
-          if (name !== undefined) return inner ? { cause: 'cross-artifact-ref', detail: `via ref g.${name} → ${inner.detail}` } : null
-          return inner
-        } catch {
-          return { cause: 'cross-artifact-ref', detail: `unresolved ref${name ? ` g.${name}` : ''}` }
+        let target: Combinator<unknown>
+        try { target = (d as { thunk(): Combinator<unknown> }).thunk() }
+        catch {
+          // A NAMED ref the fuse resolver can bind is analyzed against its real body;
+          // otherwise the hole itself is the poison — and it is only the AUTHOR's
+          // problem when it is unnamed (nothing can ever bind it by name).
+          const bound = name !== undefined ? resolve?.(name) : undefined
+          if (bound === undefined)
+            return { cause: 'cross-artifact-ref', detail: `unresolved ref${name ? ` g.${name}` : ''}`, unresolvedExternal: name !== undefined }
+          target = bound
         }
+        const inner = walk(target)
+        if (name !== undefined) return inner ? relabel(inner, 'cross-artifact-ref', `via ref g.${name} → ${inner.detail}`) : null
+        return inner
       }
       case 'optional': case 'many': {
         const inner = walk(d.parser)
-        return { cause: 'nullable-prefix', detail: inner ? `nullable prefix → ${inner.detail}` : 'nullable prefix to broad term' }
+        return relabel(inner, 'nullable-prefix', inner ? `nullable prefix → ${inner.detail}` : 'nullable prefix to broad term')
       }
       case 'oneOrMore': case 'transform': case 'label': case 'field':
       case 'trivia': case 'token': case 'leaf': case 'node': case 'grammar': case 'expect':
@@ -240,19 +296,19 @@ function classifyBroadArm(arm: Combinator<unknown>): { cause: FirstSetCause; det
         let sawNullablePrefix = false
         for (const t of d.parsers) {
           if ((t._def as ParserDef).tag === 'not') { sawNullablePrefix = true; continue }
-          if (isAny(firstSetOf(t))) {
+          if (isAny(firstSetOf(t, new Set(), resolve))) {
             const inner = walk(t)
             if (sawNullablePrefix)
-              return { cause: 'nullable-prefix', detail: inner ? `nullable prefix → ${inner.detail}` : 'nullable prefix to broad term' }
+              return relabel(inner, 'nullable-prefix', inner ? `nullable prefix → ${inner.detail}` : 'nullable prefix to broad term')
             return inner ?? { cause: 'broad-recognizer', detail: 'sequence leading term is broad' }
           }
-          if (matchesEmpty(t)) { sawNullablePrefix = true; continue } // finite but nullable → keep scanning
+          if (matchesEmpty(t, new Set(), resolve)) { sawNullablePrefix = true; continue } // finite but nullable → keep scanning
           return null // finite, non-nullable → this term gates the sequence
         }
         return { cause: 'broad-recognizer', detail: 'sequence of only nullable/zero-width terms' }
       }
       case 'choice': {
-        for (const a of d.parsers) { const r = walk(a); if (r) return { cause: r.cause, detail: `choice arm → ${r.detail}` } }
+        for (const a of d.parsers) { const r = walk(a); if (r) return relabel(r, r.cause, `choice arm → ${r.detail}`) }
         return null
       }
       default:
@@ -343,7 +399,7 @@ export function analyzeGatingRules(
     const d = p._def as ParserDef
     const rule = ruleNameOf(p) ?? enclosingRule
     if (d.tag === 'choice') {
-      raw.push({ g: analyzeChoice(p, d, rule), rule })
+      raw.push({ g: analyzeChoice(p, d, rule, opts?.resolveRef), rule })
       antiPatterns.push(...detectAntiPatterns(rule, d.parsers))
     }
     // Structural recursion (+ through refs once).
@@ -353,6 +409,12 @@ export function analyzeGatingRules(
     for (const k of ['parser', 'main', 'skipped', 'separator', 'sentinel'] as const)
       if (rec[k]) kids.push(rec[k] as Combinator<unknown>)
     if (Array.isArray(rec.skip)) kids.push(...(rec.skip as Combinator<unknown>[]))
+    // Deliberately NOT `resolveRef`-aware: the WALK must visit the same choices with
+    // and without a resolver, so a choice's `id` (per-rule occurrence order) is the
+    // same in both passes — that identity is what lets the fuse-time diagnostic report
+    // exactly the choices its authoring site deferred. Nothing is lost: every rule of
+    // the fused map is its own seed below, so a rule reached only through a hole is
+    // still analyzed, under its own name.
     if (d.tag === 'lazy') { try { kids.push((d as { thunk(): Combinator<unknown> }).thunk()) } catch { /* unresolved */ } }
     for (const k of kids) visit(k, rule)
   }
@@ -380,25 +442,31 @@ export function analyzeGatingRules(
 
   const gated = choices.filter(c => c.gates === 'yes').length
   const recoverable = choices.filter(c => c.gates === 'recoverable').length
-  const ungated = choices.filter(c => c.gates === 'no' && !c.accepted)
+  const ungated = choices.filter(c => c.gates === 'no' && !c.accepted && !c.deferred)
   const accepted = choices.filter(c => c.gates === 'no' && c.accepted)
+  const deferred = choices.filter(c => c.gates === 'no' && !c.accepted && c.deferred)
   const acceptedUnused = [...accept].filter(id => !usedAccept.has(id))
-  return { totalChoices: choices.length, gated, recoverable, ungated, accepted, acceptedUnused, choices, antiPatterns }
+  return { totalChoices: choices.length, gated, recoverable, ungated, accepted, deferred, acceptedUnused, choices, antiPatterns }
 }
 
 // analyzeChoice returns a ChoiceGating WITHOUT id/accepted — analyzeGating assigns
 // those after the full walk (id needs per-rule counts; accepted needs the allowlist).
-function analyzeChoice(p: Combinator<unknown>, d: Extract<ParserDef, { tag: 'choice' }>, rule: string): Omit<ChoiceGating, 'id' | 'accepted'> {
+function analyzeChoice(
+  p: Combinator<unknown>,
+  d: Extract<ParserDef, { tag: 'choice' }>,
+  rule: string,
+  resolve?: RefResolver,
+): Omit<ChoiceGating, 'id' | 'accepted'> {
   const arms = d.parsers
   const shallow = arms.map(a => a._meta.firstSet)
-  const deep = arms.map(a => firstSetOf(a))
+  const deep = arms.map(a => firstSetOf(a, new Set(), resolve))
 
   const anyArms: AnyArm[] = deep
     .map((fs, index) => ({ fs, index }))
     .filter(x => isAny(x.fs))
     .map(({ index }) => {
-      const { cause, detail } = classifyBroadArm(arms[index]!)
-      return { index, cause, detail, shallowAnyOnly: false, suggestion: SUGGESTIONS[cause] }
+      const { cause, detail, unresolvedExternal } = classifyBroadArm(arms[index]!, resolve)
+      return { index, cause, detail, shallowAnyOnly: false, unresolvedExternal: unresolvedExternal === true, suggestion: SUGGESTIONS[cause] }
     })
 
   const overlaps: Overlap[] = []
@@ -417,10 +485,16 @@ function analyzeChoice(p: Combinator<unknown>, d: Extract<ParserDef, { tag: 'cho
   else if (anyArms.length === 0 && overlaps.length === 0) gates = 'recoverable'
   else gates = 'no'
 
+  // Ungated SOLELY because of holes this artifact can't fill: nothing here is
+  // actionable and the configuration described never runs. A finite-arm overlap is a
+  // real local finding, so it keeps the choice reportable even alongside a hole.
+  const deferred = gates === 'no' && overlaps.length === 0 && anyArms.length > 0 && anyArms.every(a => a.unresolvedExternal)
+
   return {
     rule,
     strategy: ((d.strategy as { tag: ChoiceStrategyTag } | undefined)?.tag) ?? 'firstMatch',
     gates,
+    deferred,
     combinedFirstSet: { shallow: combine(shallow), deep: combine(deep) },
     anyArms, overlaps,
   }
@@ -433,7 +507,8 @@ export type GatingWarnLevel = 'off' | 'warn' | 'error'
 /**
  * Format the genuinely-ungated findings + anti-patterns as ready-to-print lines.
  * Precise by design: only 'no'-gated choices NOT in the accepted allowlist, plus
- * the anti-pattern lints. Recoverable / gated / accepted choices produce nothing.
+ * the anti-pattern lints. Recoverable / gated / accepted / DEFERRED choices produce
+ * nothing (a deferred choice's verdict belongs to the fusing artifact, not here).
  */
 export function formatGatingWarnings(report: GatingReport): string[] {
   const lines: string[] = []

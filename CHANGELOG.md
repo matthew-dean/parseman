@@ -100,6 +100,38 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     `accept` allowlist key, which `<entry>` never was.
   - `compileLinkable` takes `gating` too, but opt-IN only: it re-lowers the same
     map for the linkable form, so running it by default would double every warning.
+    It is also the wrong site for a shared shape — one piece at a time, the holes
+    are still unbound (see the next entry).
+
+- **Fix: the gating diagnostic now asks its question where the answer exists.**
+  Combined with shared shapes (above), the diagnostic was inverted in BOTH
+  directions at once. A shape's hole makes every first-set through it `any`, so the
+  shape module warned about an ungated `choice` — describing a configuration that
+  never runs, which its author could not fix — while the artifact that IS executed,
+  the fused consumer whose binding decides the answer and whose author CAN act, was
+  never analyzed at all. A false positive at the shape site and a false negative at
+  the fuse site, simultaneously; muting the shape warning would have hidden the more
+  damaging half.
+
+  A choice ungated SOLELY by unresolved NAMED cross-artifact holes is now
+  **`deferred`**: silent at the shape, excluded from the `'error'` gate, and listed
+  in `GatingReport.deferred` (`ChoiceGating.deferred` / `AnyArm.unresolvedExternal`
+  carry the per-choice detail). Every `compose()` / `composeLeaf()` — macro build and
+  runtime linker alike — re-runs the analysis over the **fused winner map**, with the
+  hole bound, and reports what the binding actually produced, named by rule and with
+  the real cause:
+
+  ```
+  parseman gating: choice @ Term is UNGATED [firstMatch] — no first-char dispatch; …
+    · arm[0] ∩ arm[1] overlap on '@'
+  ```
+
+  Only deferred choices are reported at the fuse, so an ordinary hole-free grammar is
+  still warned about exactly ONCE — at the site that authors it — however many times
+  it is later composed. An UNNAMED unresolved `ref()` is deliberately not deferrable:
+  nothing can bind it by name, so it stays a local finding. `analyzeGating` /
+  `analyzeGatingRules` gained `opts.resolveRef` for the fused view.
+  See [Shared shapes and the fuse](/guide/first-char-gating#shared-shapes-the-verdict-belongs-to-the-fuse).
 
 - **Docs: every combinator now has a worked, executed example.** `docs/guide/combinators.md`
   shows input → what matches → what it yields for the full export surface,

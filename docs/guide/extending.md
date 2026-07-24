@@ -94,6 +94,11 @@ Under `composeLeaf` the usual rule still applies: every grammar before the final
 one must be **recognition-only** — a shape may leave holes, but it may not carry
 reductions of its own. The semantics belong to the leaf that owns the tree.
 
+The [gating diagnostic](./first-char-gating#shared-shapes-the-verdict-belongs-to-the-fuse)
+follows the same logic: whether a shape's `choice` first-char-dispatches depends on what
+gets bound, so the shape itself is not warned — the answer is computed, and reported, at
+each `compose()` / `composeLeaf()` that binds the hole.
+
 > **`pick()` is not currently public.** An earlier `pick(grammar, names)` selected a subset
 > of a grammar's rules plus their transitive closure. It's withdrawn while its build-time
 > lowering is worked out: a `pick()` of an *imported* grammar can't yet carry that grammar's

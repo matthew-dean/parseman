@@ -1,5 +1,26 @@
 import type { CharRange, FirstSet, Combinator, ParserDef } from '../types.ts'
 
+/**
+ * Resolve a NAMED cross-artifact rule reference (`g.Foo`) whose own thunk does not
+ * resolve — the shared-shape hole, bound by name at fuse time.
+ *
+ * A shape module compiles `Ratio: sequence(g.Value, …)` without defining `Value`, so
+ * that `lazy`'s thunk throws and every first-set through it degrades to `any`. Once
+ * the shape is FUSED with a dialect that defines `Value`, the hole is bound — pass a
+ * resolver over the fused winner map and the first-set is the real one.
+ *
+ * Only NAMED refs are resolvable: an unnamed `ref()` that was never `.define()`d
+ * carries no name for anyone to bind, so it stays `any`.
+ */
+export type RefResolver = (name: string) => Combinator<unknown> | undefined
+
+/** The `resolve`-supplied target for an unresolvable NAMED lazy, if any. */
+function resolveNamedRef(p: Combinator<unknown>, resolve: RefResolver | undefined): Combinator<unknown> | undefined {
+  if (resolve === undefined) return undefined
+  const name = (p as unknown as { _ruleName?: string })._ruleName
+  return name === undefined ? undefined : resolve(name)
+}
+
 export function union(a: FirstSet, b: FirstSet): FirstSet {
   if (a.kind === 'any' || b.kind === 'any') return { kind: 'any' }
   if (a.kind === 'empty') return b
@@ -58,13 +79,17 @@ export function empty(): FirstSet {
  * set, which stays sound; under-estimating would drop valid start chars and make
  * first-char dispatch skip a matching arm.
  */
-export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function matchesEmpty(
+  p: Combinator<unknown>,
+  seen: Set<Combinator<unknown>> = new Set(),
+  resolve?: RefResolver,
+): boolean {
   // Cycle guard: a mutually-nullable ref cycle (e.g. `A = oneOrMore(B); B = oneOrMore(A)`)
   // would recurse forever. Treat a re-entered node as nullable — the safe (`true`)
   // default, consistent with the err-toward-true contract below.
   if (seen.has(p)) return true
   seen.add(p)
-  const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen)
+  const me = (c: Combinator<unknown>): boolean => matchesEmpty(c, seen, resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
     case 'literal':   return d.value.length === 0
@@ -99,7 +124,8 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'recover':   return me(d.parser)
     case 'skip':      return me(d.main)
     case 'lazy':
-      try { return me(d.thunk()) } catch { return true }
+      try { return me(d.thunk()) }
+      catch { const t = resolveNamedRef(p, resolve); return t ? me(t) : true }
     default:          return true          // scanTo / guard / unknown → assume nullable (safe)
   }
 }
@@ -206,18 +232,28 @@ export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): First
  * SOUND ONLY where refs are FINAL (monolithic compile). Under compose OVERRIDE a
  * referenced rule can be replaced with a WIDER first-set, so a baked deep set
  * would wrongly skip valid input — the compose path defers dispatch to fuse time.
+ *
+ * `resolve` binds NAMED cross-artifact holes (`g.Foo`) against a fused winner map —
+ * see `RefResolver`. Diagnostic-only today: it is what lets the gating analysis ask
+ * the question at the site where the hole actually HAS an answer.
  */
-export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): FirstSet {
+export function firstSetOf(
+  p: Combinator<unknown>,
+  seen: Set<Combinator<unknown>> = new Set(),
+  resolve?: RefResolver,
+): FirstSet {
   if (seen.has(p)) return any()               // cycle → any (safe over-approximation)
   seen.add(p)
-  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen)
+  const fs = (c: Combinator<unknown>): FirstSet => firstSetOf(c, seen, resolve)
+  const empties = (c: Combinator<unknown>): boolean => matchesEmpty(c, new Set(), resolve)
   const d = p._def as ParserDef
   switch (d.tag) {
     case 'literal':
     case 'regex':
     case 'keywords':  return p._meta.firstSet  // terminals: no refs, cached set is exact
     case 'lazy':
-      try { return fs(d.thunk()) } catch { return any() }
+      try { return fs(d.thunk()) }
+      catch { const t = resolveNamedRef(p, resolve); return t ? fs(t) : any() }
     case 'choice': {
       let out: FirstSet = empty()
       for (const arm of d.parsers) out = union(out, fs(arm))
@@ -234,7 +270,7 @@ export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>
       for (const term of d.parsers) {
         if (isPositiveLookahead(term)) { assertion = narrowBy(assertion, fs(term)); continue }
         if (!isZeroWidthAssertion(term)) out = union(out, fs(term))
-        if (!matchesEmpty(term)) return applyAssertion(out, assertion)
+        if (!empties(term)) return applyAssertion(out, assertion)
       }
       return applyAssertion(out, assertion)
     }
@@ -242,7 +278,7 @@ export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>
       // Deep-resolve the body: a `ref()` reads `any()` at CONSTRUCTION, so the
       // shallow `_meta.firstSet` baked into peek() would lose the gate.
       const inner = d.parser
-      return matchesEmpty(inner) ? any() : fs(inner)
+      return empties(inner) ? any() : fs(inner)
     }
     case 'oneOrMore':
     case 'many':
