@@ -3,6 +3,86 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.32.0 — 2026-07-23
+
+- **Fix: cross-artifact first-set dispatch across the `composeLeaf` boundary.** A
+  fused choice arm / node whose leading term is a rule REFERENCE into a separately
+  compiled recognition artifact — `sequence(g.SyntaxAtRuleName, prelude, ';')`, the
+  shape every jess at-rule cluster uses — degraded to an `any` first-set and was
+  entered SPECULATIVELY at every input position (each of ~2000 top-level rulesets
+  paid ~11 doomed at-rule node-frame enter+regex+rollback cycles). Two coupled
+  causes, both fixed:
+  - **`canMatchEmptyAtStart` was imprecise for a `regex`.** It tested the pattern
+    SOURCE for a `?`/`*`/`{n,}` anywhere — including inside a `(?!…)` lookahead or on
+    a non-leading term — so a required-prefix recognizer like `/@media(?![-\w])/`
+    (first-set `{@}`, cannot match empty) was wrongly flagged nullable, and
+    `compileLinkable` poisoned that rule's `firstSets`/`firstSetRecipes` to `any`. It
+    now uses the precise `regexMatchesEmpty` (`^(?:source)$` against `''`) — tighter
+    AND sound (also fixes a latent unsoundness: `/a{0}/` matches empty but has no
+    `{n,}`, so the old test missed it).
+  - **The leading first-set recipe over-unioned the tail past a leading ref.** The
+    old flat `{concrete, refs}` recipe treated a leading cross-artifact ref as
+    nullable (its nullability is unknown at compile time) and unioned the FOLLOWING
+    terms' first-sets — and a `scanTo` prelude's set is `any`, collapsing the whole
+    recipe. The recipe is now an ORDERED CHAIN (`{alts}`: a union of ordered
+    leading-term chains) plus a per-rule `nullable` map, and `fusedBody` resolves each
+    chain left-to-right, STOPPING at the first non-nullable segment — so a
+    `sequence(ref, …)`-led arm resolves to the ref's real `{@}` even when the tail is
+    `any`, exactly as a grammar-local `regex(/@…/)` would.
+
+  Net effect: a fused grammar first-char-gates a cross-artifact `sequence(ref, …)`
+  arm identically to a monolithic compile, so grammar authors no longer need to
+  hand-copy recognizer regexes into the consuming grammar to recover dispatch.
+  Verified on the real jess CSS AST grammar: the at-rule cluster went from **0**
+  gated arms (0.31.1) to gated on `@` throughout (11/13 `CssAstAtRuleStatement`
+  sites, 7/9 conditional/layer, 14/16 opaque/page/scope), AST byte-identical
+  (css-parser suite green), bootstrap4.css parse **~−38%** median in a same-store
+  interleaved A/B vs 0.31.1. Soundness fuzz-verified over 1.8M randomized
+  cross-artifact grammar × input pairs (0 false-excludes, 0 end-mismatches; the
+  guard is load-bearing — a deliberately-broken chain-stop produced 2311).
+
+  **Breaking (artifact format):** `firstSetRecipes` now serializes as `{alts}` and
+  a new per-rule `nullable` map ships alongside `firstSets`. New exported type
+  `FirstSetSeg`; `FirstSetRecipe` / `leadingFirstSetRecipe` changed shape. There is
+  **no cross-version back-compat** — see the version-lock item below.
+
+- **Artifacts are version-locked (documented + enforced).** A grammar is compiled AND
+  fused/linked by the SAME parseman version; parseman never reads an artifact produced
+  by a different version. The compiled-artifact format may therefore change freely
+  between versions and carries no back-compat shim. This is now (1) documented as a
+  design invariant (`docs/design/artifact-format.md`), (2) stamped — a
+  `PARSEMAN_VERSION` banner tops every generated artifact and a `v` field rides on
+  each serialized `LinkablePieces` (kept in sync with `package.json` by
+  `test/unit/version-sync.test.ts`), and (3) enforced — `fusedBody` throws a loud
+  "recompile — parseman does not fuse across versions" error if a piece's stamp
+  mismatches OR is absent (an unstamped pre-invariant artifact is unsupported;
+  `LinkablePieces.v` is required). Consequently the initial `LegacyFirstSetRecipe` /
+  `{concrete, refs}` read path (a back-compat shim for a scenario the design forbids)
+  was removed as dead code; the ordered-chain `{alts}` recipe is the sole format.
+
+## 0.31.1 — 2026-07-23
+
+- **Fix: first-set computation skips past leading zero-width assertions.** A
+  `sequence` that LEADS with a negative lookahead — `sequence(not(literal('@-')),
+  @name)` (jess's opaque at-rule arm) — computed a first-set of `any`, because the
+  leading `not(...)` reports `firstSet: any()` (it cannot know what it forbids) and
+  that `any` was unioned into the sequence's set BEFORE the nullable-prefix loop
+  reached the first CONSUMING term. An `any` first-set silently disables first-char
+  dispatch gating of the whole arm/node/rule, so an assertion-led subtree (e.g. the
+  at-rule cluster across the jess parsers) was entered on every input char instead
+  of only on `@`. `sequenceFirstSet`, `firstSetOf`, and the compile-time
+  `leadingFirstSetRecipe` now skip a zero-width assertion's (meaningless) first-set
+  contribution while still treating it as nullable: `not(X) Y` can only start with a
+  char in firstSet(Y) — the assertion only NARROWS the language, never widens the
+  possible first chars — so firstSet(Y) stays a correct (and tighter) SUPERSET,
+  which is the soundness contract for a dispatch gate. Fuzz-verified over randomized
+  grammars (0 false-excludes: every input the sequence matches has its first char in
+  the computed set). Byte-identical parse output — this only re-enables the dispatch
+  gate the spurious `any` was suppressing; it adds no new API, IR field, or
+  combinator (cf. the 0.29.0 first-set-recipe minor, which added the recipe IR).
+  Parseman has no positive-lookahead combinator; the doc on `isZeroWidthAssertion`
+  records the `firstSet(body) ∩ firstSet(Y)` rule required before one could be added.
+
 ## 0.31.0 — 2026-07-23
 
 - **Perf: structural children-array (`chV`) elision via `_parsemanReadsChildren`.**

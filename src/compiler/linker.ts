@@ -22,6 +22,7 @@ import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import type { LinkablePieces, FirstSetRecipe } from './codegen.ts'
 import { union } from '../combinators/first-set.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'
 
 /**
@@ -218,6 +219,27 @@ export function pickPieces(pieces: LinkablePieces[], names: string[]): LinkableP
  * are inlined from source, so `_env` is empty and the body is fully static.
  */
 export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string, unknown> } {
+  // ARTIFACT VERSION LOCK (see src/version.ts): a compiled artifact is fused by the
+  // SAME parseman version that produced it — the artifact format carries no
+  // cross-version back-compat. Reject BOTH a version MISMATCH and an UNSTAMPED piece
+  // (a pre-0.32 artifact predates the invariant → its recipe/pieces shape is
+  // unsupported): fail LOUDLY rather than silently mis-reading a stale shape. Every
+  // artifact `compileLinkable` produces is stamped, so an absent stamp means a stale
+  // serialized artifact, not a current one.
+  for (const p of pieces) {
+    if (p.v === undefined) {
+      throw new Error(
+        `parseman: artifact "${p.ns}" is UNSTAMPED (compiled before the version-lock invariant). ` +
+        `Recompile the grammar with parseman ${PARSEMAN_VERSION}; parseman does not fuse unversioned or cross-version artifacts.`,
+      )
+    }
+    if (p.v !== PARSEMAN_VERSION) {
+      throw new Error(
+        `parseman: artifact "${p.ns}" was compiled with parseman ${p.v}, but is being fused with parseman ${PARSEMAN_VERSION}. ` +
+        `Compiled grammar artifacts are version-locked — recompile the grammar with parseman ${PARSEMAN_VERSION}; parseman does not fuse across versions.`,
+      )
+    }
+  }
   // Winner per rule name — later pieces override earlier ones.
   const winner = new Map<string, LinkablePieces>()
   for (const p of pieces) for (const k of p.keys) winner.set(k, p)
@@ -249,34 +271,55 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
   const rawBody = [...lines, 'return {', wrapperEntries.join(',\n'), '}'].join('\n')
 
   // Fuse-time first-set dispatch: a rule-ref choice arm was emitted (in linkable
-  // mode) as `/*@FS:rule:codevar@*​/true`. Resolve it now against the WINNING
-  // rule's first-set — sound under override, since we use the final rule, not the
-  // one visible when the referencing rule was compiled. Unknown / `any` /
-  // empty-matching rule → leave `true` (always try the arm; correctness over
-  // pruning). Non-composed callers with no `firstSets` table also fall through.
-  // Resolve each rule's LEADING first-set over the WINNING rules — recipe.concrete
-  // ∪ union(finalFS[ref]) to a fixpoint — so a `sequence(ref, …)`-led arm/node
-  // dispatches on the ref's real first char (parity with a monolithic compile),
-  // instead of degrading to always-try because the ref baked `any`. A ref name is
-  // resolved from the WINNING rule, so it stays sound under compose override. A ref
-  // to a piece without a recipe (older format) falls back to its shallow first-set;
-  // a genuinely unknown ref → `any` (always try).
+  // mode) as `/*@FS:rule:codevar@*​/true`. Resolve it now against the WINNING rule's
+  // LEADING first-set recipe — sound under override, since we use the final rule, not
+  // the one visible when the referencing rule was compiled. Each rule's recipe is a
+  // union of ordered leading-term chains; resolving them over the WINNING rules to a
+  // fixpoint makes a `sequence(ref, …)`-led arm/node dispatch on the ref's real first
+  // char (parity with a monolithic compile) instead of degrading to always-try
+  // because the ref baked `any`. A genuinely unknown ref → `any` (always try).
   const ANY: FirstSet = { kind: 'any' }
+  const EMPTY: FirstSet = { kind: 'empty' }
   const recipes = new Map<string, FirstSetRecipe>()
   const shallow = new Map<string, FirstSet>()
+  const nullable = new Map<string, boolean>()
   for (const [k, p] of winner) {
     const r = p.firstSetRecipes?.get(k); if (r) recipes.set(k, r)
     const fs = p.firstSets?.get(k); if (fs) shallow.set(k, fs)
+    const nu = p.nullable?.get(k); if (nu !== undefined) nullable.set(k, nu)
   }
+  const knownRef = (ref: string): boolean => recipes.has(ref) || shallow.has(ref)
+  // A referenced rule's resolved first-set (or `any` for a genuinely unknown ref —
+  // always try). A ref whose nullability is unknown defaults to nullable (keep
+  // unioning the chain tail — never drops a valid first char).
+  const refFS = (ref: string): FirstSet => (knownRef(ref) ? (finalFS.get(ref) ?? ANY) : ANY)
+  const refNullable = (ref: string): boolean => (knownRef(ref) ? (nullable.get(ref) ?? true) : true)
+  // Resolve a recipe: union each ordered chain, and within a chain union each
+  // segment's first-set left-to-right STOPPING after the first non-nullable segment
+  // (its tail can't start the rule). A ref segment is skippable if it was forced so
+  // at build (a wrapping optional/many → `seg.nullable`) OR the resolved rule is
+  // itself nullable; only a definitely-consuming ref stops the chain.
+  const resolveRecipe = (r: FirstSetRecipe): FirstSet => {
+    let out: FirstSet = EMPTY
+    for (const chain of r.alts) {
+      for (const seg of chain) {
+        out = union(out, seg.ref !== undefined ? refFS(seg.ref) : seg.set)
+        const skippable = seg.ref !== undefined ? (seg.nullable || refNullable(seg.ref)) : seg.nullable
+        if (!skippable) break
+      }
+    }
+    return out
+  }
+  // Least-fixpoint: recipe-bearing rules start EMPTY and grow monotonically via
+  // `resolveRecipe` (union of refs is monotone; the chain stop is static), so a
+  // recursive rule converges to its tightest sound first-set. Rules with no recipe
+  // keep their static shallow set.
   const finalFS = new Map<string, FirstSet>()
-  for (const [k] of winner) finalFS.set(k, recipes.get(k)?.concrete ?? shallow.get(k) ?? ANY)
+  for (const [k] of winner) finalFS.set(k, recipes.has(k) ? EMPTY : (shallow.get(k) ?? ANY))
   for (let iter = 0; iter <= recipes.size; iter++) {
     let changed = false
     for (const [k, r] of recipes) {
-      let fs = r.concrete
-      for (const ref of r.refs) {
-        fs = union(fs, recipes.has(ref) || shallow.has(ref) ? (finalFS.get(ref) ?? ANY) : ANY)
-      }
+      const fs = resolveRecipe(r)
       if (JSON.stringify(finalFS.get(k)) !== JSON.stringify(fs)) { finalFS.set(k, fs); changed = true }
     }
     if (!changed) break

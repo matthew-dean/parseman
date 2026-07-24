@@ -108,7 +108,9 @@ const { Tail } = rules(g => {
 const Import = node('Import', sequence(literal('@import'), field('tail', Tail), literal(';')), (_children, fields) => fields)
 `.trim()
     const result = transformMacro(code, 'recursive-static-tail.ts', new Set(['parseman']))
-    expect(result?.code).not.toMatch(/\bparseman\b/)
+    // No runtime parseman import / member access remains (the version-lock banner
+    // comment may name parseman, so match the import + runtime refs, not the word).
+    expect(result?.code).not.toMatch(/from ['"]parseman['"]|\bparseman\s*\./)
     expect(result?.code).not.toMatch(/\.parse(?:[A-Z]\w*)?\s*\(/)
     expect(result?.code).toContain('_fields')
 

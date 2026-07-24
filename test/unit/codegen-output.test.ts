@@ -270,7 +270,8 @@ const p = transform(literal('hi'), s => s.toUpperCase())`,
     // transform with an inline callback is now fully compilable
     expect(result).not.toBeNull()
     expect(result!.code).not.toContain('transform(')
-    expect(result!.code).not.toContain('parseman')
+    // The parseman IMPORT is removed (the version-lock banner comment may still name it).
+    expect(result!.code).not.toMatch(/from ['"]parseman['"]/)
     expect(result!.code).toContain('s => s.toUpperCase()')
     expect(result!.code).toContain('const _mf =')
   })

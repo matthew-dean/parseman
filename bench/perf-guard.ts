@@ -70,10 +70,40 @@ for (const [id, { i, c }] of [...byId.entries()].sort()) {
   console.log(`  ${id.padEnd(16)}${interp}${comp}${ratio}`)
 }
 
-if (regressions.length > 0) {
-  console.error('\nperf-guard: REGRESSION — commit blocked:')
-  for (const m of regressions) console.error(`  ${m}`)
-  console.error('\nIf this is an intentional perf change, re-baseline with `pnpm bench:baseline` and commit bench/parseman-baseline.json.')
+// ── Cross-artifact composed-dispatch guard (DETERMINISTIC, noise-free) ──────────
+// The example-grammar suite above is all MONOLITHIC — it never exercises the
+// cross-artifact `composeLeaf` first-set dispatch jess's parsers depend on (the
+// 0.32.0 fix). This check fuses a representative multi-artifact at-rule-cluster
+// grammar and asserts the at-rule arms still first-char-gate on `@` (a gating
+// regression flips it) — timing-independent, so it never false-positives on runner
+// noise. The median is reported for the nightly major-regression watch.
+let composeRegressed = false
+try {
+  const c = await import('./composeleaf-firstset.ts')
+  const trials: number[] = []
+  for (let i = 0; i < 200; i++) c.parse()
+  for (let t = 0; t < GUARD_PASSES * 3; t++) {
+    const start = performance.now()
+    for (let i = 0; i < 400; i++) c.parse()
+    trials.push(((performance.now() - start) / 400) * 1000)
+  }
+  trials.sort((a, b) => a - b)
+  console.log(`  compose/atcluster  dispatch=${c.dispatchEmitted}  median ${trials[Math.floor(trials.length / 2)]!.toFixed(1)}µs (cross-artifact fuse)`)
+  if (!c.dispatchEmitted) {
+    console.error('\nperf-guard: REGRESSION — cross-artifact at-rule arms LOST first-char dispatch (composeLeaf first-set resolution broke).')
+    composeRegressed = true
+  }
+} catch (e) {
+  console.error(`  compose/atcluster  check failed to run: ${(e as Error).message}`)
+  composeRegressed = true
+}
+
+if (regressions.length > 0 || composeRegressed) {
+  if (regressions.length > 0) {
+    console.error('\nperf-guard: REGRESSION — commit blocked:')
+    for (const m of regressions) console.error(`  ${m}`)
+    console.error('\nIf this is an intentional perf change, re-baseline with `pnpm bench:baseline` and commit bench/parseman-baseline.json.')
+  }
   process.exit(1)
 }
 console.log('perf-guard: ok')
