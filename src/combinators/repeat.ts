@@ -193,7 +193,31 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
   }
 }
 
-export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>): Combinator<T[]> {
+export type SepByOptions = {
+  /**
+   * Minimum number of elements. `0` (the default) is `(item (sep item)*)?` — it
+   * MATCHES THE EMPTY STRING. `1` is `item (sep item)*`: a missing first item is a
+   * failure, not a legal empty list.
+   *
+   * Reach for `{ min: 1 }` for every list that cannot actually be empty — selector
+   * lists, value lists, media-query preludes, keyframe selectors. It is not a
+   * validation nicety: the default's empty alternative makes the combinator
+   * NULLABLE, and a nullable arm disables its `choice`'s first-char dispatch by
+   * parseman's own first-set rule. `{ min: 1 }` is non-nullable and keeps the
+   * item's first-set, so the arm still gates.
+   */
+  min?: 0 | 1
+}
+
+/**
+ * Separated list: `(item (sep item)*)?` by default, `item (sep item)*` under
+ * `{ min: 1 }`.
+ *
+ *   sepBy(g.Value, literal(','))                  // may be empty — nullable
+ *   sepBy(g.Selector, literal(','), { min: 1 })   // non-empty — gates as a choice arm
+ */
+export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>, opts: SepByOptions = {}): Combinator<T[]> {
+  const min = opts.min === 1 ? 1 : 0
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline || separator._meta.canMatchNewline,
@@ -204,7 +228,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
   return {
     _tag: 'sepBy',
     _meta: meta,
-    _def: { tag: 'sepBy', parser: combinator as Combinator<unknown>, separator: separator as Combinator<unknown> },
+    _def: { tag: 'sepBy', parser: combinator as Combinator<unknown>, separator: separator as Combinator<unknown>, min },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       const first = combinator.parse(input, pos, ctx)
       const values: T[] = []
@@ -213,12 +237,22 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
         values.push(first.value)
         cur = first.span.end
       } else {
-        // Cold path. Strict: an empty/absent first element is a legal empty list.
+        // Cold path. Strict: an empty/absent first element is a legal empty list
+        // for `sepBy`, and a FAILURE for `sepBy1` (min 1 — that is the whole point).
         // Tolerant: if the first element is JUNK (a terminator is inferable and we
         // are not already sitting on it) recover it and enter the loop; otherwise
         // it is a genuine empty list.
         const term = ctx._tolerant ? ctx._sync : undefined
         if (term === undefined || matchesAt(term, input, pos, ctx)) {
+          // `{ min: 1 }` — report the item's DERIVED expected at the list's own
+          // start. The compiled form swallows the first element's sub-parse (it is
+          // discarded on the min-0 path), so it cannot reproduce the inner
+          // failure's exact payload; both sides report this same derived set.
+          if (min === 1) {
+            expected ??= deriveExpected(combinator)
+            // Same empty-set fallback codegen's `deriveExpectedArr` applies.
+            return { ok: false, expected: expected.length > 0 ? expected : [combinator._tag], span: { start: pos, end: pos } }
+          }
           return { ok: true, value: [], span: { start: pos, end: pos } }
         }
         expected ??= deriveExpected(combinator)

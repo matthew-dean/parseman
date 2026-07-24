@@ -82,6 +82,7 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         visit(def.separator, false)
         return
       case 'not':
+      case 'ahead':
         visit(def.parser, false)    // lookahead — value never observed
         return
       case 'grammar':

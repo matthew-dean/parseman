@@ -1196,7 +1196,7 @@ export function transformMacro(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage })
+            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage, gating: { entryName: varName } })
             if (compiled.inlineExpression === null) {
               warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
               continue
@@ -1328,7 +1328,10 @@ export function transformMacro(
 
         // Sources are carried on each transform's def (set by the evaluator), so
         // codegen derives them in traversal order — no positional array needed.
-        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage })
+        // `entryName`: attribute the gating diagnostic to the BINDING's own name.
+        // Without it every top-level combinator const warns as `choice @ <entry>`,
+        // which names nothing and gives the `accept` allowlist no discriminating key.
+        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage, gating: { entryName: varName } })
         if (compiled.inlineExpression === null) {
           warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
           continue

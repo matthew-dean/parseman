@@ -4,6 +4,7 @@ import { choice } from './combinators/choice.ts'
 import { attempt } from './combinators/attempt.ts'
 import { getCoreLiteralValue } from './combinators/choice.ts'
 import { not } from './combinators/not.ts'
+import { ahead } from './combinators/ahead.ts'
 import { node } from './combinators/node.ts'
 import { parser as grammarParser } from './combinators/grammar.ts'
 import { expect } from './combinators/expect.ts'
@@ -250,7 +251,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
             },
           }
         }
-        case 'sepBy': return sepBy(build(def.parser), build(def.separator))
+        case 'sepBy': return sepBy(build(def.parser), build(def.separator), { min: def.min })
         case 'transform': return transform(build(def.parser), def.fn)
         case 'skip': return skip(build(def.main), build(def.skipped))
         case 'trivia': return trivia(build(def.parser))
@@ -263,6 +264,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
           ...(def.trackLines ? { trackLines: true } : {}),
         }, build(def.parser))
         case 'not': return not(build(def.parser))
+        case 'ahead': return ahead(build(def.parser))
         case 'node': {
           const opts = { ...(def.unwrap ? { unwrap: true } : {}), ...(def.collapse ? { collapse: true } : {}), ...(def.captureTrivia ? { captureTrivia: true } : {}), ...(def.trailingTrivia ? { trailingTrivia: true } : {}) }
           return def.type === undefined ? node(build(def.parser), def.build, opts) : node(def.type, build(def.parser), def.build, opts)

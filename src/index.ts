@@ -20,9 +20,11 @@ export { sequence } from './combinators/sequence.ts'
 export { choice } from './combinators/choice.ts'
 export { attempt } from './combinators/attempt.ts'
 export { many, oneOrMore, optional, sepBy } from './combinators/repeat.ts'
+export type { SepByOptions } from './combinators/repeat.ts'
 export { rules } from './combinators/parser.ts'
 export { ref } from './combinators/ref.ts'
 export { not } from './combinators/not.ts'
+export { ahead } from './combinators/ahead.ts'
 export { node } from './combinators/node.ts'
 export type { BuildNode, NodeOptions } from './combinators/node.ts'
 // lazy() is intentionally NOT exported.
@@ -34,7 +36,7 @@ export { token, leaf } from './combinators/token.ts'
 export { compile } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces, GatingOption } from './compiler/codegen.ts'
 
-export { analyzeGating, formatGatingWarnings, firstSetToString } from './analysis/gating.ts'
+export { analyzeGating, analyzeGatingRules, formatGatingWarnings, firstSetToString } from './analysis/gating.ts'
 export type {
   GatingReport, ChoiceGating, AnyArm, Overlap, AntiPattern,
   FirstSetCause, GatingWarnLevel, ChoiceStrategyTag, AnalyzeGatingOptions,

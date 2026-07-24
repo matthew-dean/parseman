@@ -11,7 +11,7 @@ import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combi
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
-import { analyzeGating, formatGatingWarnings, type GatingReport, type GatingWarnLevel } from '../analysis/gating.ts'
+import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel } from '../analysis/gating.ts'
 
 /**
  * A rule's LEADING first-set as a fuse-resolvable recipe.
@@ -819,6 +819,9 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     case 'keywords':
     case 'guard':
     case 'not':
+    // ahead(): emitted under a non-capturing probe ctx and zero-width on both
+    // outcomes, so it can never leave a partial capture behind.
+    case 'ahead':
     case 'trivia':
     case 'token':
     case 'leaf':
@@ -889,6 +892,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'leaf':
       return true
     case 'not':
+    case 'ahead':
     case 'guard':
     case 'trivia':
     case 'unknown':
@@ -1341,7 +1345,7 @@ function deriveExpectedArr(parsers: Combinator<unknown>[]): string {
 function failsAtStart(p: Combinator<unknown>): boolean {
   const d = p._def
   switch (d.tag) {
-    case 'literal': case 'regex': case 'keywords': case 'guard': case 'not':
+    case 'literal': case 'regex': case 'keywords': case 'guard': case 'not': case 'ahead':
       return true
     case 'transform': case 'label': case 'field':
       return failsAtStart(d.parser)
@@ -2208,6 +2212,10 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     ...(rec ? [`${ind(ctx)}const ${mySyncV} = _ctx._sync`] : []),
     ...firstStmts,
   ]
+  // `{ min: 1 }` — the guard variable the post-loop failure reads. Strict: the
+  // first element's own ok flag. Tolerant: `didV`, which is also set when a junk
+  // first element was RECOVERED (a recovered element counts as present).
+  let producedV = firstOk
 
   // A failed element after a real separator. Strict → the exact original break
   // (byte-identical). Tolerant → skip to the sync, emit a ParseError, and continue
@@ -2242,6 +2250,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       `${ind(ctx)}}`,
       `${ind(ctx)}if (${didV}) {`,
     )
+    producedV = didV
     ctx.indent++
     stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
     ctx.indent++
@@ -2341,6 +2350,13 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
 
+  // `{ min: 1 }`: no first element ⇒ the whole list FAILS. (The default's empty
+  // alternative is exactly what makes plain sepBy nullable and un-gateable.)
+  // Mirrors the interpreter, which reports the item's derived expected at `pos`.
+  if (def.min === 1) {
+    stmts.push(...emitIfFail(ctx, `!${producedV}`, failArrBody(ctx, deriveExpectedArr([def.parser]), pos)))
+  }
+
   return { stmts, valueVar: arrV, endVar: curV }
 }
 
@@ -2434,6 +2450,29 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
     stmts: [
       ...stmts,
       ...emitIfFail(ctx, okVar, failBody(ctx, label, pos)),
+    ],
+    valueVar: 'null',
+    endVar: pos,
+  }
+}
+
+/**
+ * Positive lookahead. Zero-width on BOTH outcomes, so the body is emitted under a
+ * NON-CAPTURING ctx (the same probe treatment `emitScanTo` gives its sentinel):
+ * a lookahead that leaves CST leaves behind would double-capture whatever the
+ * following term then consumes for real.
+ */
+function emitAhead(def: Extract<ParserDef, { tag: 'ahead' }>, ctx: Ctx, pos: string): ER {
+  const probeCtx: Ctx = { ...ctx, capturing: false, noHoist: true }
+  // The inner failure is discarded (inner failing = ahead failing, reported at
+  // ahead's own pos with its own label) — swallow the sub-parse bookkeeping.
+  const { stmts, okVar } = emitFallible(def.parser, probeCtx, pos, true)
+  ctx.vars = probeCtx.vars
+  const label = JSON.stringify(`ahead(${def.parser._tag})`)
+  return {
+    stmts: [
+      ...stmts,
+      ...emitIfFail(ctx, `!${okVar}`, failBody(ctx, label, pos)),
     ],
     valueVar: 'null',
     endVar: pos,
@@ -3259,6 +3298,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       }
     }
     case 'not':     return emitNot(def, ctx, pos)
+    case 'ahead':   return emitAhead(def, ctx, pos)
     case 'node':    return emitNode(def, ctx, pos)
     case 'scanTo':  return emitScanTo(def, ctx, pos)
     case 'recover': return emitRecover(def, ctx, pos)
@@ -3393,6 +3433,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'many':
     case 'oneOrMore':
     case 'not':
+    case 'ahead':
     case 'transform': return hasNodeDef(d.parser, seen)
     case 'skip':      return hasNodeDef(d.main, seen) || hasNodeDef(d.skipped, seen)
     case 'sequence':
@@ -3434,6 +3475,7 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'field':
     case 'grammar':
     case 'not':
+    case 'ahead':
     case 'node':
     case 'withCtx':
     case 'expect':    return [def.parser]
@@ -3679,7 +3721,7 @@ export function ruleDependencies(
  * object form adds the accepted-snapshot `accept` allowlist (choice ids that are
  * intentionally ungated — silent, and excluded from the `'error'` gate).
  */
-export type GatingOption = GatingWarnLevel | { level?: GatingWarnLevel; accept?: Iterable<string> }
+export type GatingOption = GatingWarnLevel | { level?: GatingWarnLevel; accept?: Iterable<string>; entryName?: string }
 
 function resolveGatingLevel(opt: GatingOption | undefined): GatingWarnLevel {
   const explicit = typeof opt === 'string' ? opt : opt?.level
@@ -3697,12 +3739,35 @@ function resolveGatingLevel(opt: GatingOption | undefined): GatingWarnLevel {
  * the listed choice ids. Returns the report to attach (undefined when `'off'`).
  */
 function runGatingDiagnostic<T>(combinator: Combinator<T>, opt: GatingOption | undefined): GatingReport | undefined {
+  return reportGating(opt, o => analyzeGating(combinator as Combinator<unknown>, o))
+}
+
+/**
+ * The rule-map form of the diagnostic. `compileRuleMap`/`compileLinkable` are the
+ * ONLY paths a macro-built `rules()` grammar takes, so without this the whole
+ * grammar was silently unanalyzed — every warning the build did print came from
+ * the stray single-combinator `compile()` calls, unnamed and anti-pattern-free.
+ */
+function runGatingDiagnosticRules(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opt: GatingOption | undefined,
+): GatingReport | undefined {
+  return reportGating(opt, o => analyzeGatingRules(ruleMap, o))
+}
+
+function reportGating(
+  opt: GatingOption | undefined,
+  analyze: (o: { accept?: Iterable<string>; entryName?: string } | undefined) => GatingReport,
+): GatingReport | undefined {
   const level = resolveGatingLevel(opt)
   if (level === 'off') return undefined
   // `typeof null === 'object'` — guard so `gating: null` can't throw on `.accept`.
-  const accept = opt !== null && typeof opt === 'object' ? opt.accept : undefined
+  const obj = opt !== null && typeof opt === 'object' ? opt : undefined
+  const analyzeOpts = obj?.accept !== undefined || obj?.entryName !== undefined
+    ? { ...(obj.accept !== undefined ? { accept: obj.accept } : {}), ...(obj.entryName !== undefined ? { entryName: obj.entryName } : {}) }
+    : undefined
   let report: GatingReport
-  try { report = analyzeGating(combinator as Combinator<unknown>, accept ? { accept } : undefined) }
+  try { report = analyze(analyzeOpts) }
   catch { return undefined }
   const lines = formatGatingWarnings(report)
   if (lines.length > 0) {
@@ -3911,8 +3976,9 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; coverage?: boolean },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; coverage?: boolean; gating?: GatingOption },
 ): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
+  runGatingDiagnosticRules(ruleMap, opts?.gating)
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Named lazy proxies already carry their stable rule identity and redirect
   // their children through the final winner graph. Register only ordinary
@@ -4136,9 +4202,13 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
+  // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
+  // (`compileRuleMap` / `compile`); compileLinkable re-lowers the SAME map for the
+  // carried/linkable form, so running it by default would double every warning.
+  if (opts?.gating !== undefined) runGatingDiagnosticRules(ruleMapArg, opts.gating)
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
   // Grammar-level ambient trivia through compose(): a piece from rules({ trivia },
   // …) tags `grammarTrivia` on its rules (runtime path), or the macro threads it via

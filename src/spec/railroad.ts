@@ -33,11 +33,16 @@ function toDsl(node: SpecNode): string {
       return `OneOrMore(${toDsl(node.item)})`
     case 'opt':
       return `Optional(${toDsl(node.item)})`
-    case 'sepBy':
-      // OneOrMore(item, separator): the separator rides the repeat loop.
-      return `OneOrMore(${toDsl(node.item)}, ${toDsl(node.sep)})`
+    case 'sepBy': {
+      // OneOrMore(item, separator): the separator rides the repeat loop. A min-0
+      // list can also match nothing — wrap it in Optional.
+      const rep = `OneOrMore(${toDsl(node.item)}, ${toDsl(node.sep)})`
+      return node.min === 1 ? rep : `Optional(${rep})`
+    }
     case 'not':
       return `Sequence(Comment("not"), ${toDsl(node.item)})`
+    case 'ahead':
+      return `Sequence(Comment("ahead"), ${toDsl(node.item)})`
   }
 }
 
@@ -79,8 +84,12 @@ function toDiagramNode(b: RailroadBuilders, node: SpecNode): unknown {
     case 'star': return b.ZeroOrMore(toDiagramNode(b, node.item))
     case 'plus': return b.OneOrMore(toDiagramNode(b, node.item))
     case 'opt': return b.Optional(toDiagramNode(b, node.item))
-    case 'sepBy': return b.OneOrMore(toDiagramNode(b, node.item), toDiagramNode(b, node.sep))
+    case 'sepBy': {
+      const rep = b.OneOrMore(toDiagramNode(b, node.item), toDiagramNode(b, node.sep))
+      return node.min === 1 ? rep : b.Optional(rep)
+    }
     case 'not': return b.Sequence(b.Comment('not'), toDiagramNode(b, node.item))
+    case 'ahead': return b.Sequence(b.Comment('ahead'), toDiagramNode(b, node.item))
   }
 }
 

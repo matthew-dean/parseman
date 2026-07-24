@@ -53,7 +53,10 @@ export type ParserDef =
   | { tag: 'many';      parser: Combinator<unknown>; min: 0; valueUnused?: boolean }
   | { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean }
   | { tag: 'optional';  parser: Combinator<unknown> }
-  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown> }
+  // `min: 0` — the default: `(item (sep item)*)?`, NULLABLE (matches the empty
+  // string). `min: 1` — `sepBy(item, sep, { min: 1 })`: `item (sep item)*`,
+  // non-nullable, first-set = the item's, so it gates as a choice arm.
+  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: 0 | 1 }
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; recognitionOnly?: boolean }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
@@ -64,6 +67,10 @@ export type ParserDef =
   | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; trackLines: boolean }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
+  // Positive lookahead. Zero-width like `not`, but — unlike `not` — it KNOWS what
+  // it requires, so it carries `parser`'s first-set and a leading `ahead()` gates
+  // its choice arm (see `isPositiveLookahead` / `sequenceFirstSet`).
+  | { tag: 'ahead';    parser: Combinator<unknown> }
   | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; buildStaticError?: readonly string[]; unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean; trailingTrivia?: boolean }
   // `predSrc`/`extraSrc` (set by the macro evaluator): SOURCE TEXT of the guard
   // predicate / the withCtx `extra` value, so codegen inlines them into `_mf`

@@ -68,13 +68,20 @@ function render(node: SpecNode): { text: string; level: number } {
       const sep = render(node.sep)
       const itemA = wrap(item.text, item.level, ATOM)
       const sepA = wrap(sep.text, sep.level, CAT)
-      // item (sep item)*
-      return { text: `${itemA} (${sepA} ${itemA})*`, level: CAT }
+      // `min: 1` — item (sep item)* ; `min: 0` — the whole thing is OPTIONAL.
+      const body = `${itemA} (${sepA} ${itemA})*`
+      return node.min === 1 ? { text: body, level: CAT } : { text: `(${body})?`, level: ATOM }
     }
 
     case 'not': {
       const r = render(node.item)
       return { text: `!${wrap(r.text, r.level, ATOM)}`, level: ATOM }
+    }
+
+    // PEG notation: `&` positive lookahead, `!` negative.
+    case 'ahead': {
+      const r = render(node.item)
+      return { text: `&${wrap(r.text, r.level, ATOM)}`, level: ATOM }
     }
   }
 }

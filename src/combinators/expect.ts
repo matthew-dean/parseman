@@ -44,7 +44,8 @@ export function deriveExpected(c: Combinator<unknown>): string[] {
     case 'many':
     case 'oneOrMore':
     case 'transform':
-    case 'not':       return deriveExpected(def.parser)
+    case 'not':
+    case 'ahead':     return deriveExpected(def.parser)
     case 'lazy': {
       // An EXTERNAL ref (a rule from a composed base grammar) has no local
       // definition yet — its `thunk()` throws until fusion supplies it. Fall back

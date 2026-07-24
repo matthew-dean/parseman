@@ -20,8 +20,9 @@ export type SpecNode =
   | { kind: 'star'; item: SpecNode }
   | { kind: 'plus'; item: SpecNode }
   | { kind: 'opt'; item: SpecNode }
-  /** Separated repetition (`sepBy`): `item (sep item)*` (min 0) or `item (sep item)+` — always ≥1 here. */
-  | { kind: 'sepBy'; item: SpecNode; sep: SpecNode }
+  /** Separated repetition. `min: 0` is `(item (sep item)*)?` — NULLABLE; `min: 1`
+   *  (`sepBy(…, { min: 1 })`) is `item (sep item)*`. */
+  | { kind: 'sepBy'; item: SpecNode; sep: SpecNode; min: 0 | 1 }
   /** Reference to a named production (non-terminal). */
   | { kind: 'ref'; name: string }
   /**
@@ -32,6 +33,8 @@ export type SpecNode =
   | { kind: 'terminal'; text: string; literal: boolean }
   /** Negative lookahead (`not`). Rendered as an annotation, not consumed input. */
   | { kind: 'not'; item: SpecNode }
+  /** Positive lookahead (`ahead`). Zero-width, like `not`. */
+  | { kind: 'ahead'; item: SpecNode }
   /** An out-of-band annotation (guards, error-recovery, unknowns). */
   | { kind: 'annotation'; text: string }
   /** Matches nothing (elided trivia / semantic-only wrappers). */
@@ -237,10 +240,12 @@ class Builder {
       case 'attempt':
         return this.walk(def.parser)
       case 'sepBy':
-        return { kind: 'sepBy', item: this.walk(def.parser), sep: this.walk(def.separator) }
+        return { kind: 'sepBy', item: this.walk(def.parser), sep: this.walk(def.separator), min: def.min }
 
       case 'not':
         return { kind: 'not', item: this.walk(def.parser) }
+      case 'ahead':
+        return { kind: 'ahead', item: this.walk(def.parser) }
 
       // Transparent semantic wrappers — render the inner syntax.
       case 'transform':

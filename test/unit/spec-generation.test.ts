@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rules, choice, sequence, literal, regex, optional, sepBy, many, oneOrMore,
-  not, keywords, trivia, transform, node, type Combinator,
+  not, ahead, keywords, trivia, transform, node, type Combinator,
 } from '../../src/index.ts'
 import { toEBNF, toRailroadHtml, toRailroadSvg, RAILROAD_CSS, buildSpecModel } from '../../src/spec/index.ts'
 
@@ -19,11 +19,13 @@ function demoGrammar() {
     const number = regex(/[0-9]+/)
     return {
       expr: choice(self.call, self.list, ident, number),
-      call: sequence(ident, literal('('), optional(sepBy(self.expr as Combinator<unknown>, literal(','))), literal(')')),
-      list: sequence(literal('['), sepBy(self.expr as Combinator<unknown>, literal(',')), literal(']')),
+      call: sequence(ident, literal('('), sepBy(self.expr as Combinator<unknown>, literal(',')), literal(')')),
+      list: sequence(literal('['), sepBy(self.expr as Combinator<unknown>, literal(','), { min: 1 }), literal(']')),
       kw: keywords(['if', 'else', 'while']),
       stars: sequence(many(ident), oneOrMore(number)),
       neg: sequence(not(literal('#')), ident),
+      pos: sequence(ahead(literal('@')), ident),
+      opt: sequence(optional(literal('-')), ident),
     }
   })
 }
@@ -44,11 +46,11 @@ describe('spec — combinator → EBNF mapping', () => {
     expect(lines.expr).toBe('call | list | /[a-zA-Z_][a-zA-Z0-9_]*/ | /[0-9]+/')
   })
 
-  it('sequence + optional + sepBy, with precedence parens', () => {
+  it('sequence + nullable sepBy renders the empty alternative it really has', () => {
     expect(lines.call).toBe('/[a-zA-Z_][a-zA-Z0-9_]*/ "(" (expr ("," expr)*)? ")"')
   })
 
-  it('sepBy expands to item (sep item)*', () => {
+  it('sepBy { min: 1 } expands to item (sep item)* — no empty alternative', () => {
     expect(lines.list).toBe('"[" expr ("," expr)* "]"')
   })
 
@@ -64,6 +66,14 @@ describe('spec — combinator → EBNF mapping', () => {
 
   it('not → negation annotation', () => {
     expect(lines.neg).toBe('!"#" /[a-zA-Z_][a-zA-Z0-9_]*/')
+  })
+
+  it('ahead → PEG positive-lookahead annotation', () => {
+    expect(lines.pos).toBe('&"@" /[a-zA-Z_][a-zA-Z0-9_]*/')
+  })
+
+  it('optional → ? postfix', () => {
+    expect(lines.opt).toBe('"-"? /[a-zA-Z_][a-zA-Z0-9_]*/')
   })
 })
 
@@ -112,7 +122,7 @@ describe('spec — ordering', () => {
   // author's declaration order regardless.
   it('defaults to declaration order (entry rule leads)', () => {
     const model = buildSpecModel(demoGrammar())
-    expect(model.productions.map(p => p.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg'])
+    expect(model.productions.map(p => p.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg', 'pos', 'opt'])
   })
 
   it("sort: 'reachable' introduces each rule at its first reference; unreachable rules trail", () => {
@@ -179,7 +189,7 @@ describe('spec — railroad HTML', () => {
   })
 
   it('emits one diagram container + DSL builder per production', () => {
-    for (const name of ['expr', 'call', 'list', 'kw', 'stars', 'neg']) {
+    for (const name of ['expr', 'call', 'list', 'kw', 'stars', 'neg', 'pos', 'opt']) {
       expect(html).toContain(`data-rule="${name}"`)
     }
     expect(html).toContain('Diagram(')
@@ -210,7 +220,7 @@ describe('spec — static railroad SVG', () => {
   })
 
   it('renders one static SVG per production, headlessly (no DOM, no client script)', () => {
-    expect(svgs.map((s) => s.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg'])
+    expect(svgs.map((s) => s.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg', 'pos', 'opt'])
     for (const { svg } of svgs) {
       expect(svg).toMatch(/^<svg class="railroad-diagram"/)
       expect(svg).toContain('</svg>')
