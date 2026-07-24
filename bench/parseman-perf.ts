@@ -176,12 +176,23 @@ export type ParsemanSuiteOpts = {
  *   css/selector compiled    2.055µs         2.055µs       0.0%
  *   css/decls    compiled    2.384µs         2.442µs      −2.4%
  *
- * The interpreter's dispatch is megamorphic: 28 other grammars running first
- * pollute the shared inline caches, so CSS interp measures ~15% SLOWER in the
- * full suite than in a focused process. The compiled path is a monomorphic
- * generated function and is unaffected. Guarding a css-only reading against a
- * full-suite baseline therefore handed the interpreter a free ~15% dead zone —
- * a regression had to exceed ~30% before a 15% tolerance fired.
+ * That is the measured EFFECT; the cause is not established. Some interpreter
+ * state is evidently shared across grammars and some isn't (the compiled path, a
+ * generated per-grammar function, doesn't move), but nothing here has been
+ * instrumented to prove why — don't cite a mechanism from this comment.
+ *
+ * Guarding a css-only reading against a full-suite baseline handed the
+ * interpreter a free ~15% dead zone — a regression had to exceed ~30% before a
+ * 15% tolerance fired.
+ *
+ * NOTE ON REALISM: `full` is not a realistic workload. It is 30 cases across six
+ * unrelated grammars (json/csv/graphql/toml/lang/css) sharing one bench process,
+ * which no consumer does. A process using ONE grammar looks like the `css`
+ * context. So `full` interp numbers — what the report and the committed history
+ * series record — are probably PESSIMISTIC for a single-grammar consumer by
+ * roughly this margin. Compiled is unaffected, so this skews interp reporting
+ * only. Kept as the history context for continuity, not because it is the truer
+ * number.
  *
  * So: every comparison site names its context, the baseline stores one case map
  * PER context, and each context is captured in its own child process (a single
