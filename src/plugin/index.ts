@@ -1217,51 +1217,58 @@ export function transformMacro(
           localRuleMaps.set(varName, compiledRules.ruleMap)
           if (compiledRules.trivia) localGrammarTrivia.set(varName, compiledRules.trivia)
           if (compiledRules.scanSkip) localGrammarScanSkip.set(varName, compiledRules.scanSkip)
+          // Carry the grammar's linkable pieces ON the value so a downstream package
+          // composes it via `import { <name> }` alone. Needed when EXPORTED — and
+          // computed unconditionally for a SHARED SHAPE, because the pieces are the
+          // proof that the shape really did compile (see below).
+          //
+          // Thread `scanSkip` explicitly: this is the FULL-PIECE fallback taken when
+          // the IR isn't serializable, and it is what a downstream package composes.
+          // (The `_meta` stamp in evaluateRulesFactory also covers it; passing it
+          // here keeps the intent local and independent of that.) `trivia` is NOT
+          // threaded — it is composing-wins, so the downstream compose supplies it;
+          // `scanSkip` is per-piece (opaque units are dialect-specific) and must
+          // travel WITH the grammar or the downstream loses ambient skipping.
+          const ns = nsFor(varName)
+          const pieces = exportPrefix || compiledRules.replacement === null
+            ? compileLinkable([...compiledRules.ruleMap], ns, {
+                ...(compiledRules.scanSkip ? { scanSkip: compiledRules.scanSkip } : {}),
+                recovery,
+              })
+            : null
           // A SHARED SHAPE — a map with an unresolved external `g.` ref, e.g.
           // `Ratio: sequence(g.Value, literal('/'), g.Value)` where the consuming
           // dialect defines `Value`. It can't be inlined as a standalone parser (the
           // hole has no body here), so its runtime value stays the `rules(…)` call —
           // the interpreter map, which is the only correct standalone value for a
-          // grammar with a hole. That is NOT a compile failure, so it doesn't warn;
-          // it only pins the macro import (the emitted source still calls `rules`).
-          // The export-carry below still runs: `compileLinkable` emits a by-name
-          // `_r_<Name>` call for each hole, so a downstream `compose()` /
-          // `composeLeaf()` fully macro-fuses this shape against its own bindings.
-          const sharedShape = compiledRules.replacement === null && hasExternalRuleRef([...compiledRules.ruleMap])
-          if (compiledRules.replacement === null && !sharedShape) {
-            warn(init.start, `${varName}: rule map couldn't be inlined`)
-            continue
+          // grammar with a hole. `compileLinkable` DOES compile it (it emits a by-name
+          // `_r_<Name>` call for each hole, bound at fuse time), so a downstream
+          // `compose()` / `composeLeaf()` still fully macro-fuses it. Nothing failed,
+          // so this doesn't warn — it only pins the macro import, since the emitted
+          // source still calls `rules`. Requiring `pieces` here is what keeps this
+          // from swallowing a map that failed to inline for some OTHER reason and
+          // merely happens to also reference an external rule.
+          if (compiledRules.replacement === null) {
+            if (!pieces || !hasExternalRuleRef([...compiledRules.ruleMap])) {
+              warn(init.start, `${varName}: rule map couldn't be inlined`)
+              continue
+            }
+            keepMacroImport = true
           }
-          if (sharedShape) keepMacroImport = true
           const source = compiledRules.replacement ?? code.slice(init.start, init.end)
-          // If EXPORTED, carry the grammar's linkable pieces ON the value so a
-          // downstream package composes it via `import { <name> }` alone. Only when
-          // the pieces are fully static (no runtime-only callbacks) — otherwise the
-          // grammar isn't source-free composable and we ship it as a plain map.
+          // Carry only when the pieces are fully static (no runtime-only callbacks) —
+          // otherwise the grammar isn't source-free composable and we ship it as a
+          // plain map.
           let replacement = withCoverageDefinitions(
             source,
             compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source),
           )
-          if (exportPrefix) {
-            const ns = nsFor(varName)
-            // Thread `scanSkip` explicitly: this is the FULL-PIECE fallback taken when
-            // the IR isn't serializable, and it is what a downstream package composes.
-            // (The `_meta` stamp in evaluateRulesFactory also covers it; passing it
-            // here keeps the intent local and independent of that.) `trivia` is NOT
-            // threaded — it is composing-wins, so the downstream compose supplies it;
-            // `scanSkip` is per-piece (opaque units are dialect-specific) and must
-            // travel WITH the grammar or the downstream loses ambient skipping.
-            const pieces = compileLinkable([...compiledRules.ruleMap], ns, {
-              ...(compiledRules.scanSkip ? { scanSkip: compiledRules.scanSkip } : {}),
-              recovery,
-            })
-            if (pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
-              // Carry the compact IR when serializable; else the full lowered pieces.
-              // Thread the grammar's scanSkip into the IR so a downstream compose of
-              // this imported grammar re-lowers its scanTo/balanced sites ambiently.
-              const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
-              replacement = withCarriedPieces(replacement, [ir ? { ns, ir } : pieces])
-            }
+          if (exportPrefix && pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
+            // Carry the compact IR when serializable; else the full lowered pieces.
+            // Thread the grammar's scanSkip into the IR so a downstream compose of
+            // this imported grammar re-lowers its scanTo/balanced sites ambiently.
+            const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
+            replacement = withCarriedPieces(replacement, [ir ? { ns, ir } : pieces])
           }
           replacements.push({ start: init.start, end: init.end, replacement })
           continue

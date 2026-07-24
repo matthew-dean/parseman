@@ -131,6 +131,19 @@ export const parser = compose([ratioShape, rules(g => ({ Value: regex(/[0-9]+/) 
     expect(makeParser(out.code).Ratio!('16/9', 0, {}).ok).toBe(true)
   })
 
+  it('a consumer WITHOUT the macro composes the carried shape at runtime', () => {
+    withPackage({ shape: RATIO_SHAPE }, (_dir, emitted) => {
+      // eslint-disable-next-line no-new-func
+      const shape = new Function(...Object.keys(parseman), `${emitted.shape!.code.replace(/^import[^\n]*\n/gm, '').replace('export const', 'const')}\nreturn ratioShape`)(
+        ...Object.values(parseman),
+      ) as never
+      const composed = parseman.compose([shape, parseman.rules(() => ({ Value: parseman.regex(/[0-9]+/) })) as never]) as unknown as Record<string, Parse>
+      const r = composed.Ratio!('16/9', 0, {})
+      expect(r.ok).toBe(true)
+      expect(r.value).toEqual(['16', '/', '9'])
+    })
+  })
+
   it('a hole NOBODY binds fails loudly — it is never silently dropped', () => {
     withPackage({ shape: RATIO_SHAPE }, dir => {
       expect(() => transformMacro(`

@@ -62,6 +62,38 @@ Because references resolve by name across `compose()`, you don't extract a depen
 closure — you name the shared rules and the host grammar provides them (along with its
 trivia, via composing-wins).
 
+### Shared shapes: one shape, many bindings
+
+The same mechanism factors out a composite **shape** whose leaves differ per dialect.
+A ratio is `<value> '/' <value>` in every CSS dialect; what a `<value>` is differs
+(a number; a number *or* an interpolation). Write the shape once, leave the leaf as a
+hole, and let each consumer bind it:
+
+```ts
+// @scope/shapes — the shape, with a hole
+import { rules, literal, sequence } from 'parseman' with { type: 'macro' }
+export const ratio = rules(g => ({ Ratio: sequence(g.Value, literal('/'), g.Value) }))
+
+// a dialect binds its own Value, and builds its own tree on top
+import { composeLeaf, node, regex, rules } from 'parseman' with { type: 'macro' }
+import { ratio } from '@scope/shapes'
+export const parser = composeLeaf([ratio, rules(g => ({
+  Value:    regex(/[0-9]+/),                       // …or /@\{[a-z]+\}|[0-9]+/ next door
+  Document: node('Document', g.Ratio, (children, _f, span) => ({ type: 'Ratio', children, span })),
+}))])
+```
+
+A grammar with a hole isn't a runnable parser on its own — `ratio.Ratio` can't resolve
+`Value` until something supplies it — so its exported value stays the ordinary
+`rules(…)` map. It still ships **fully compiled**: the macro stamps its compiled pieces
+on the value, and the consumer's `compose()` / `composeLeaf()` fuses them statically,
+with no base source and no runtime composition. A hole that nothing binds is a build
+error, not a silent drop.
+
+Under `composeLeaf` the usual rule still applies: every grammar before the final local
+one must be **recognition-only** — a shape may leave holes, but it may not carry
+reductions of its own. The semantics belong to the leaf that owns the tree.
+
 > **`pick()` is not currently public.** An earlier `pick(grammar, names)` selected a subset
 > of a grammar's rules plus their transitive closure. It's withdrawn while its build-time
 > lowering is worked out: a `pick()` of an *imported* grammar can't yet carry that grammar's
