@@ -148,23 +148,69 @@ export function scanTo(
   }
 }
 
+/** Codegen marker: a balanced combinator that must re-resolve ambient scanSkip
+ * into its interior at emit time (the compiled mirror of the interpreter wrapper). */
+export type BalancedAmbient = Combinator<string> & {
+  _balancedAmbient?: { open: string; close: string; ownSkip: Combinator<unknown>[] }
+}
+
 /**
  * Match a balanced open/close pair, skipping over any holes inside.
  * Returns the full matched text including delimiters.
  *
  *   const parenGroup = balanced('(', ')', { skip: [comment, stringLit] })
+ *
+ * With no per-call `skip`, a balanced under a grammar that declares
+ * `rules({ scanSkip })` consults that ambient opaque-unit set in its INTERIOR too,
+ * so a delimiter hidden inside a string/bracket run never closes the balance
+ * early — the same footgun closure `scanTo` gets. `raw: true` opts out.
  */
 export function balanced(
   open: string,
   close: string,
   options: ScanToOptions = {},
 ): Combinator<string> {
+  const ownSkip = options.skip ?? []
+  const combi = buildBalancedInterior(open, close, ownSkip)
+  // `raw` keeps the pre-ambient behavior: the eager interior (per-call skip only).
+  if (options.raw) return combi
+
+  // Ambient-aware in place — the returned combinator KEEPS its identity (its own
+  // interior `self` ref points back to it, and ir-serialize / codegen dedup rely
+  // on that), so we override `parse` rather than wrapping. `_def`/`_meta` are
+  // unchanged, so every static analysis sees the eager interior; only PARSING and
+  // codegen EMIT re-resolve `ctx.scanSkip`. Interiors are cached by the ambient
+  // array's identity (stable per grammar). Balanced consults ambient `scanSkip`
+  // (opaque units) but NOT trivia — its delimiters are structural and its content
+  // regex already spans whitespace, so adding trivia would perturb every existing
+  // balanced; the footgun is a delimiter hidden in opaque-unit content.
+  const eagerParse = combi.parse.bind(combi)
+  const cache = new Map<readonly Combinator<unknown>[], Combinator<string>>()
+  ;(combi as BalancedAmbient)._balancedAmbient = { open, close, ownSkip }
+  combi.parse = (input: string, pos: number, ctx: ParseContext): ParseResult<string> => {
+    const amb = ctx.scanSkip
+    if (!amb || amb.length === 0) return eagerParse(input, pos, ctx)
+    let interior = cache.get(amb)
+    if (!interior) {
+      interior = buildBalancedInterior(open, close, [...amb, ...ownSkip])
+      cache.set(amb, interior)
+    }
+    return interior.parse(input, pos, ctx)
+  }
+  return combi
+}
+
+/** Build a balanced open/close interior for a FIXED skip set (no ambient). */
+export function buildBalancedInterior(
+  open: string,
+  close: string,
+  skips: Combinator<unknown>[],
+): Combinator<string> {
   // The interior scan must skip NESTED same-delimiter pairs so depth is counted —
   // otherwise `{{x}}` stops at the first `}`. `self` references this balanced
   // combinator; added to the interior scan's skip list, a nested `open` is
   // consumed intact (recursively) before the scan looks for the matching `close`.
   const self = ref<string>()
-  const skips = options.skip ?? []
   // PREDICTIVE interior — no char-walk. The body is `many(choice(self, …skips,
   // contentRun))`, where contentRun is a regex of chars that are NOT this pair's
   // delimiters and NOT the start of any skip (so a string/comment arm still wins

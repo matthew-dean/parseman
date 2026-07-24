@@ -107,6 +107,38 @@ export const parser = composeLeaf([
     }
   })
 
+  it('threads ambient scanSkip when the local grammar is an IDENTIFIER (not inline rules)', () => {
+    // Greptile P1: composeLeaf([recognition, localIdent]) where localIdent is a
+    // const bound to rules({ scanSkip: [...] }) must still bake the scanSkip, so a
+    // scanTo inside it never matches a sentinel hidden in a string.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-leaf-scanskip-ident-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'recognition.ts'), `
+import { literal, rules } from 'parseman' with { type: 'macro' }
+export const recognition = rules(g => ({ Semi: literal(';') }))
+`)
+      const source = `
+import { composeLeaf, literal, node, regex, rules, scanTo, sequence } from 'parseman' with { type: 'macro' }
+import { recognition } from './recognition.ts'
+const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
+const local = rules({ scanSkip: [dq] }, g => ({
+  Doc: node('Doc', sequence(scanTo(literal(';')), literal(';')), (_children, _fields, span) => ({ type: 'Doc', end: span.end })),
+}))
+export const parser = composeLeaf([recognition, local])
+`
+      const result = transformMacro(source, path.join(dir, 'leaf.ts'), new Set(['parseman']))!
+      expect(result.warnings).toEqual([])
+      const parser = new Function(result.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var').replace(/\bconst\b/g, 'var') + '\nreturn parser')() as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      // `a ";b" ;` — the `;` inside the string must be skipped; the scan lands on
+      // the REAL `;` at the end, so Doc consumes the whole input.
+      const r = parser.Doc!('a ";b" ;', 0, {})
+      expect(r).toMatchObject({ ok: true, value: { type: 'Doc', end: 8 } })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('honors an explicit .ts import over a sibling emitted .js artifact', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-leaf-explicit-source-'))
     try {

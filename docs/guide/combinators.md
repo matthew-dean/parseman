@@ -41,8 +41,8 @@ Three words that sound alike but play different roles:
 | `gate(predicate)` | Zero-width ASSERT: succeeds only when `predicate(ctx.state)` is true; for context-sensitive rules. See [Context](./context). (Formerly `guard()` — kept as a deprecated alias.) |
 | `withCtx(extra, combinator)` | Merge `extra` into the user context for the duration of `combinator`. |
 | `expect(combinator, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
-| `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). |
-| `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` — including the delimiters. |
+| `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Skips ambient trivia + `scanSkip` opaque units by default — see [scanTo & balanced](#scanto-and-balanced). |
+| `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` — including the delimiters. Skips ambient `scanSkip` opaque units in its interior. |
 
 ## Helpers (produce combinators at definition time)
 
@@ -50,7 +50,7 @@ Three words that sound alike but play different roles:
 | --- | --- |
 | `trivia(combinator)` | Label a combinator as skippable filler. Pass the result to `parser({ trivia })` to turn on auto-skipping. |
 | `makeWord(boundary?)` | Returns `(str) => Combinator` with a fixed word-boundary class. Not a combinator. |
-| `rules(factory)` | Named, mutually-recursive rule bundle. See [Recursive rules](./recursive-rules). |
+| `rules(factory)` / `rules({ trivia, scanSkip }, factory)` | Named, mutually-recursive rule bundle. `trivia` sets grammar-wide auto-skip; `scanSkip` sets grammar-wide opaque units (strings, brackets) that `scanTo`/`balanced` treat as atomic. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
 | `parser({ trivia }, combinator)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia). |
 | `noTrivia(combinator)` | Run `combinator` with active trivia cleared — terms must be contiguous. |
 | `triviaEntries(log, labels?, opts?)` | Indexed view over a trivia log. See [Whitespace & trivia](./trivia). |
@@ -164,6 +164,53 @@ const keyword  = (s: string) => transform(sequence(literal(s), not(wordChar)), (
 But you rarely need to hand-roll this — `word()`/`keywords()` do exactly it, with an
 **exact, resolvable first-set** that keeps a `choice` gating. See the table below.
 
+### `scanTo` and `balanced`
+
+`scanTo(sentinel)` walks forward until `sentinel` matches (without consuming it),
+returning the skipped text; `balanced('(', ')')` matches a single balanced region
+including its delimiters, counting nested pairs. Both are "scanning" combinators —
+they look for a delimiter across arbitrary text. The classic hazard is a delimiter
+that appears **inside a string or a comment**: a naïve scan for `)` stops at the
+`)` inside `"a)b"`.
+
+To close that hazard, both combinators skip two kinds of region by default:
+
+- **Ambient trivia.** Whatever `trivia` the grammar declares (whitespace, comments)
+  is skipped during the scan, so a sentinel hidden in a comment is never matched.
+  (Whitespace-only trivia is invisible to the result — the scan lands at the same
+  offset either way.)
+- **Ambient `scanSkip`.** Opaque *non-trivia* units — strings, `balanced` brackets —
+  declared once at the grammar level:
+
+  ```ts
+  const dq = sequence(literal('"'), regex(/[^"\\]|\\./), literal('"'))
+
+  const g = rules({ trivia: ws, scanSkip: [dq] }, g => ({
+    // no per-call skip — the ambient `scanSkip` protects the scan
+    arg:  scanTo(regex(/[,;)]/)),
+    call: balanced('(', ')'),
+  }))
+  // scanTo/balanced now treat a quoted string as one atomic unit:
+  // a `)` or `,` inside "…" never ends the scan or closes the balance.
+  ```
+
+  `scanSkip` is the scan-time analogue of `trivia`: declared once on `rules({ … })`
+  (or threaded through `parser`/`compose`), inherited by every `scanTo`/`balanced`
+  in the grammar. Keep the two categories distinct — `trivia` is *insignificant
+  everywhere*; `scanSkip` is *significant but atomic during a scan*.
+
+**Per-call options** (`scanTo(sentinel, opts)` / `balanced(open, close, opts)`):
+
+| Option | Effect |
+| --- | --- |
+| `skip: [...]` | Extra opaque units for THIS call. **Extends** (does not replace) the ambient trivia + `scanSkip`. |
+| `raw: true` | Hard opt-out: skip nothing ambiently — the pre-ambient raw byte walk. For the rare scan that must read through strings/comments literally. |
+| `orEOF: true` | *(scanTo only)* Reaching end-of-input without the sentinel succeeds, returning everything consumed. |
+
+The sentinel is always checked **before** any skipper, so a sentinel that also
+starts a skip region still wins. `balanced` consults ambient `scanSkip` only (not
+trivia) — its delimiters are structural.
+
 ## Choosing between similar combinators
 
 A few combinators overlap in what they can match. The wrong pick usually still *works*
@@ -202,7 +249,9 @@ zero-width assertion for use after a concrete leading terminal. See [Context](./
 
 Both have an `any` first-set by nature — a `choice` arm leading with either won't
 first-char-gate. That is often fine for an error-recovery fallback arm; if it's intentional,
-accept that choice in the [gating snapshot allowlist](./first-char-gating).
+accept that choice in the [gating snapshot allowlist](./first-char-gating). For how both
+skip ambient trivia and `scanSkip` opaque units during the scan, see
+[scanTo and balanced](#scanto-and-balanced) above.
 
 ## What's next
 

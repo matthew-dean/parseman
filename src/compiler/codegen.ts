@@ -142,6 +142,7 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
   try { return compute() } finally { seen.delete(p) }   // pop from the current path
 }
 import { markUnusedValues } from './value-usage.ts'
+import { buildBalancedInterior, type BalancedAmbient } from '../combinators/scanTo.ts'
 import { buildGrammarPlan, type GrammarCoveragePlan } from './grammar-coverage-ids.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import {
@@ -3087,6 +3088,28 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
 }
 
 function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
+  // A balanced() under a grammar-level ambient scanSkip must re-resolve that set
+  // into its INTERIOR at emit time — the compiled mirror of the interpreter
+  // wrapper. Without this the eager `_def` (per-call skip only) would let a
+  // delimiter hidden inside a declared opaque region (string) close the balance
+  // early. Rebuild the interior with [ambient scanSkip, ...ownSkip] and emit it.
+  const bal = (p as BalancedAmbient)._balancedAmbient
+  if (bal && ctx.activeScanSkip && ctx.activeScanSkip.length > 0) {
+    const interior = buildBalancedInterior(bal.open, bal.close, [...ctx.activeScanSkip, ...bal.ownSkip])
+    markUnusedValues(interior)
+    // The interior is created HERE, so it is absent from ctx.lazyUsage — which
+    // `emitLazy` reads to tell a recursive `self` back-edge (name it) from a
+    // single-use ref (inline it). Without merging, its `self` would be treated as
+    // single-use and inlined forever. Merge the fresh subtree's analysis in (its
+    // nodes have unique identities, so no collision) so `self` is named + recursive.
+    if (ctx.lazyUsage) {
+      const u = analyzeLazyUsage(interior)
+      for (const [k, n] of u.counts) ctx.lazyUsage.counts.set(k, (ctx.lazyUsage.counts.get(k) ?? 0) + n)
+      for (const k of u.recursive) ctx.lazyUsage.recursive.add(k)
+      for (const [k, s] of u.sizes) ctx.lazyUsage.sizes.set(k, s)
+    }
+    return emit(interior, ctx, pos)
+  }
   const def = p._def
   switch (def.tag) {
     case 'literal':   return emitLit(def, ctx, pos)

@@ -99,24 +99,29 @@ less ast:2021, is a bug).
 
 `balanced(open, close)` builds its interior eagerly (`many(choice(self, ...skips,
 contentRun))`, with the content regex's negated class derived from the skip
-first-sets) so its predictive no-char-walk interior can be compiled to plain
-combinators. That eager construction happens inside the grammar factory, *before*
-`rules({ scanSkip })` options are applied, so a bare `balanced()` cannot see the
-ambient list at build time, and it has no `scanTo`-style def tag the codegen can
-re-resolve.
+first-sets). That eager construction happens inside the grammar factory, *before*
+`rules({ scanSkip })` options are applied, so it cannot see the ambient list at
+build time. It is made ambient-aware WITHOUT a new def tag:
 
-Decision:
-- **Interpreter**: `balanced()` with no explicit skip consults `ctx.scanSkip` at
-  parse time (rebuilds+caches its interior against the ambient list on first use).
-- **Compiled / eager path**: a bare `balanced()` bakes no skip. jess `balanced`
-  call sites therefore pass the **shared `SCAN_SKIP` const explicitly** — the same
-  array they hand to `rules({ scanSkip })`, so it is a named reference, not a
-  duplicated literal, and carries zero redundancy. `scanTo` is the site class the
-  footgun is actually about (all 27 raw sites + the bootstrap bug), and it is
-  fully ambient in both paths.
+- The interior-build logic is factored into `buildBalancedInterior(open, close,
+  skips)`. `balanced()` builds an eager interior from the per-call skip (for
+  `_def`/`_meta` and every static analysis), then **overrides its `parse` in
+  place** (identity preserved — its own `self` ref points back to it, which
+  ir-serialize / codegen dedup rely on) to re-resolve `ctx.scanSkip` and run a
+  per-ambient-set interior cached by the ambient array's identity.
+- **Compiled path**: `balanced()` tags the combinator with a `_balancedAmbient`
+  marker `{ open, close, ownSkip }`. `emitDispatch` detects it and, when
+  `ctx.activeScanSkip` is set, rebuilds the interior with `[...activeScanSkip,
+  ...ownSkip]`, merges the fresh subtree's lazy-usage analysis into `ctx.lazyUsage`
+  (so its recursive `self` back-edge is named, not inlined forever), and emits it.
+- Balanced consults ambient **`scanSkip` only, not trivia** — its delimiters are
+  structural and its content regex already spans whitespace, so folding trivia in
+  would perturb every existing `balanced`; the footgun is a delimiter hidden in
+  opaque-unit content. `raw: true` (or a grammar with no `scanSkip`) keeps the
+  pre-ambient eager interior, so byte-identity is exact where no `scanSkip` is
+  declared.
 
-This keeps the guarantee where it matters (every `scanTo`, both paths) without a
-new deferred-construction combinator, and is flagged for the owner.
+Both `scanTo` and `balanced` are now ambient in interpreter + compiled.
 
 ## Macro / compose threading
 
@@ -132,7 +137,9 @@ runtime path. Threaded paths:
   `scanSkip` is threaded to its `compileLinkable` (the site's own opaque units,
   NOT composing-wins, since strings are dialect-specific). Done — this is the path
   the public Less/CSS/SCSS AST grammars use, and the path that carries the jess
-  bootstrap fix.
+  bootstrap fix. Both the INLINE `rules({ scanSkip }, …)` final arg and an
+  IDENTIFIER bound to a local `rules({ scanSkip })` grammar are threaded (the
+  latter via a `localGrammarScanSkip` map parallel to `localGrammarTrivia`).
 - **`compose([…, rules({ scanSkip })])`** — NOT yet threaded. The local rules
   element is carried as re-lowerable IR and re-seeded with only the composing
   trivia in `materializeCarried`; scanSkip would need per-piece carrying. The two

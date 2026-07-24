@@ -34,10 +34,14 @@ const g = rules({ trivia: triviaWsComment, scanSkip: [dq] }, gg => ({
   // hard opt-out: raw byte walk, ambient ignored
   entryRaw: sequence(gg.toSemiRaw, literal(';')),
   toSemiRaw: scanTo(literal(';'), { raw: true }),
+  // balanced() must consult the ambient scanSkip in its INTERIOR too — a
+  // delimiter hidden inside a string must not close the balance early.
+  group: balanced('(', ')'),
 }))
 
 const compiledEntry = compile(g.entry)
 const compiledOp = compile(g.entryOp)
+const compiledGroup = compile(g.group)
 
 // ---------------------------------------------------------------------------
 // Macro mode — the ambient options must survive the build-time compile too.
@@ -45,9 +49,10 @@ const compiledOp = compile(g.entryOp)
 type MacroFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
 let macroEntry: MacroFn
 let macroOp: MacroFn
+let macroGroup: MacroFn
 
 const MACRO_CODE = `
-import { rules, sequence, literal, regex, scanTo } from 'parseman' with { type: 'macro' }
+import { rules, sequence, literal, regex, scanTo, balanced } from 'parseman' with { type: 'macro' }
 const dq = sequence(literal('"'), regex(/[^"]*/), literal('"'))
 const triviaWsComment = regex(/(?:[ \\t\\n\\r]+|\\/\\*[^]*?\\*\\/)+/)
 export const grammar = rules({ trivia: triviaWsComment, scanSkip: [dq] }, gg => ({
@@ -55,6 +60,7 @@ export const grammar = rules({ trivia: triviaWsComment, scanSkip: [dq] }, gg => 
   toSemi: scanTo(literal(';')),
   entryOp: sequence(gg.toOp, regex(/or/)),
   toOp: scanTo(regex(/\\bor\\b/)),
+  group: balanced('(', ')'),
 }))
 `.trim()
 
@@ -70,6 +76,7 @@ beforeAll(async () => {
   const grammar = new Function(fnBody)() as Record<string, MacroFn>
   macroEntry = grammar.entry!
   macroOp = grammar.entryOp!
+  macroGroup = grammar.group!
 })
 
 // ---------------------------------------------------------------------------
@@ -186,6 +193,56 @@ describe('raw opt-out — ambient trivia/scanSkip are ignored', () => {
     const r = compile(g.entryRaw).parse(INPUT)
     expect(r.ok).toBe(true)
     if (r.ok) expect((r.value as string[])[0]).toBe('a "x')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// balanced() consults ambient scanSkip in its interior (Greptile P1)
+// ---------------------------------------------------------------------------
+describe('balanced() honors ambient scanSkip in its interior', () => {
+  // a close-delimiter `)` hidden inside a string must NOT close the balance
+  // (whitespace-free so the value isn't affected by ambient-trivia skipping,
+  // which `many` applies between interior elements regardless of scanSkip)
+  const INPUT = '("a)b")'
+  it('interpreter — the whole region matches, string is opaque', () => {
+    const r = parse(g.group, INPUT)
+    expect(r.ok).toBe(true)
+    if (r.ok) { expect(r.value).toBe(INPUT); expect(r.span.end).toBe(INPUT.length) }
+  })
+  it('compile() — same', () => {
+    const r = compiledGroup.parse(INPUT)
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value).toBe(INPUT)
+  })
+  it('macro — same', () => {
+    const r = macroGroup(INPUT, 0, {})
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value).toBe(INPUT)
+  })
+  it('an OPEN delimiter inside a string is not counted as a nested pair', () => {
+    // `("x(y")` — the `(` inside the string would unbalance depth if not skipped
+    const nested = '("x(y")'
+    expect((parse(g.group, nested) as { value: string }).value).toBe(nested)
+    expect((compiledGroup.parse(nested) as { value: string }).value).toBe(nested)
+    expect((macroGroup(nested, 0, {}) as { value: string }).value).toBe(nested)
+  })
+  it('all three modes agree on a nested paren group beside a string', () => {
+    const mixed = '((a)"b)c"d)'
+    const vals = [
+      (parse(g.group, mixed) as { value: string }).value,
+      (compiledGroup.parse(mixed) as { value: string }).value,
+      (macroGroup(mixed, 0, {}) as { value: string }).value,
+    ]
+    expect(new Set(vals).size).toBe(1)
+    expect(vals[0]).toBe(mixed)
+  })
+  it('WITHOUT ambient scanSkip a hidden `)` closes early (proves the fix matters)', () => {
+    // same balanced, but a grammar that declares NO scanSkip: the raw interior
+    // stops at the `)` inside the string.
+    const bare = rules(gg => ({ group: balanced('(', ')') }))
+    const r = parse(bare.group, '("a)b")')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.value).toBe('("a)')   // closed at the `)` inside the string
   })
 })
 

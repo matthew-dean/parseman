@@ -567,6 +567,10 @@ export function transformMacro(
   // `compose([…, g])` can adopt g's trivia (composing-wins). A grammar declared
   // WITHOUT trivia is absent here, so composingTrivia keeps scanning earlier items.
   const localGrammarTrivia = new Map<string, Combinator<unknown>>()
+  // …and its grammar-level scanSkip, so a same-file `composeLeaf([g, …])` where the
+  // final local grammar is an IDENTIFIER bound to `rules({ scanSkip })` still threads
+  // that opaque-unit set to the fused local piece (mirrors the inline-rules() case).
+  const localGrammarScanSkip = new Map<string, Combinator<unknown>[]>()
 
   // Stable, reproducible per-artifact namespace: hash of module id + a label
   // (binding name / arg position) — never a counter, so rebuilds are byte-stable
@@ -1008,7 +1012,9 @@ export function transformMacro(
       localRules = evaluated?.ruleMap ?? null
       localScanSkip = evaluated?.scanSkip
     } else if (localArg.type === 'Identifier') {
-      localRules = localRuleMaps.get((localArg as unknown as { name: string }).name) ?? null
+      const name = (localArg as unknown as { name: string }).name
+      localRules = localRuleMaps.get(name) ?? null
+      localScanSkip = localGrammarScanSkip.get(name)
     }
     if (!localRules) {
       warn(init.start, 'composeLeaf(): final argument must be a local rules() map')
@@ -1180,6 +1186,7 @@ export function transformMacro(
           // and its grammar-level trivia so that compose can adopt it (composing-wins).
           localRuleMaps.set(varName, compiledRules.ruleMap)
           if (compiledRules.trivia) localGrammarTrivia.set(varName, compiledRules.trivia)
+          if (compiledRules.scanSkip) localGrammarScanSkip.set(varName, compiledRules.scanSkip)
           // If EXPORTED, carry the grammar's linkable pieces ON the value so a
           // downstream package composes it via `import { <name> }` alone. Only when
           // the pieces are fully static (no runtime-only callbacks) — otherwise the
