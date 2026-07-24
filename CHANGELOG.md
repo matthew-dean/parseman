@@ -23,6 +23,20 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   See [scanTo & balanced](/guide/combinators#scanto-and-balanced). *(A new ambient
   option plus a default-behavior change, so a minor.)*
 
+- **Perf guard fix — the interpreter had a systematic ~15% dead zone.** A case's
+  median depends on which OTHER cases shared its process: measured in isolation,
+  CSS interp runs ~15% faster than the same case measured inside the full suite
+  (compiled, being a monomorphic generated function, is unaffected at ~0%). The
+  guard measured CSS alone while `bench:baseline` captured it inside the full
+  30-case suite, so a freshly written baseline already read −14% on interp and an
+  interp regression had to exceed ~30% before the 15% tolerance fired.
+
+  The baseline now stores one case map **per measurement context** (`full` /
+  `all` / `css`), each captured in its own child process, and every comparison
+  site names its context. A guard run whose context is missing from the baseline
+  now skips with a re-baseline instruction instead of silently comparing against
+  the wrong numbers. *(Bench/test tooling only — no library change.)*
+
 ## 0.32.0 — 2026-07-23
 
 - **Fix (soundness): three first-set FALSE-EXCLUDES the initial cross-artifact
