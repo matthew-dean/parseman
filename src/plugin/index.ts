@@ -24,7 +24,7 @@ import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile, compileRuleMap, compileLinkable, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
+import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
@@ -465,6 +465,12 @@ export function transformMacro(
   const warnings: string[] = []
   beginLoweringCapture()
   let anyUnresolved = false
+  // A declaration whose emitted value still CALLS a macro import, without anything
+  // having failed: a shared shape keeps its `rules(…)` source (the interpreter map is
+  // the only correct standalone value for a grammar with a hole) while still carrying
+  // fully compiled pieces for downstream composition. The import must survive, but
+  // this is not an unresolved shape, so it neither warns nor blocks other cleanups.
+  let keepMacroImport = false
   let runtimeComposeFallback = false
   // Unique per rules() call site in this file — holds the ONE shared compiled
   // rule-map object; each destructured local name reads its property off it.
@@ -544,15 +550,19 @@ export function transformMacro(
     return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}) }
   }
 
+  /** null → the factory itself isn't statically evaluable (already warned).
+   * `replacement: null` → the map evaluated fine but `compileRuleMap` couldn't
+   * inline it; the caller decides whether that is a fallback-to-interpreter
+   * warning or the SHARED-SHAPE case (an unresolved external `g.` ref, which is
+   * un-inlinable by construction but still linkable — see `hasExternalRef`). */
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string; ruleMap: Map<string, Combinator<unknown>>; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
+  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
     const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), recovery, coverage: grammarCoverage })
-    if (!compiled) { warn(init.start, `${label}: rule map couldn't be inlined`); return null }
-    return { replacement: compiled.replacement, ruleMap: evaluated.ruleMap, ...(compiled.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}), ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}) }
+    return { replacement: compiled?.replacement ?? null, ruleMap: evaluated.ruleMap, ...(compiled?.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}), ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}) }
   }
 
   const isRulesCall = (init: Expression): boolean =>
@@ -1207,13 +1217,30 @@ export function transformMacro(
           localRuleMaps.set(varName, compiledRules.ruleMap)
           if (compiledRules.trivia) localGrammarTrivia.set(varName, compiledRules.trivia)
           if (compiledRules.scanSkip) localGrammarScanSkip.set(varName, compiledRules.scanSkip)
+          // A SHARED SHAPE — a map with an unresolved external `g.` ref, e.g.
+          // `Ratio: sequence(g.Value, literal('/'), g.Value)` where the consuming
+          // dialect defines `Value`. It can't be inlined as a standalone parser (the
+          // hole has no body here), so its runtime value stays the `rules(…)` call —
+          // the interpreter map, which is the only correct standalone value for a
+          // grammar with a hole. That is NOT a compile failure, so it doesn't warn;
+          // it only pins the macro import (the emitted source still calls `rules`).
+          // The export-carry below still runs: `compileLinkable` emits a by-name
+          // `_r_<Name>` call for each hole, so a downstream `compose()` /
+          // `composeLeaf()` fully macro-fuses this shape against its own bindings.
+          const sharedShape = compiledRules.replacement === null && hasExternalRuleRef([...compiledRules.ruleMap])
+          if (compiledRules.replacement === null && !sharedShape) {
+            warn(init.start, `${varName}: rule map couldn't be inlined`)
+            continue
+          }
+          if (sharedShape) keepMacroImport = true
+          const source = compiledRules.replacement ?? code.slice(init.start, init.end)
           // If EXPORTED, carry the grammar's linkable pieces ON the value so a
           // downstream package composes it via `import { <name> }` alone. Only when
           // the pieces are fully static (no runtime-only callbacks) — otherwise the
           // grammar isn't source-free composable and we ship it as a plain map.
           let replacement = withCoverageDefinitions(
-            compiledRules.replacement,
-            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(compiledRules.replacement),
+            source,
+            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source),
           )
           if (exportPrefix) {
             const ns = nsFor(varName)
@@ -1320,6 +1347,9 @@ export function transformMacro(
 
         const compiledRules = compileRulesFactory(init, '{ … }')
         if (!compiledRules) continue
+        // A destructured binding names INDIVIDUAL rules, so it has to inline —
+        // there is no shared-shape path here (a hole has no standalone value).
+        if (compiledRules.replacement === null) { warn(init.start, `{ … }: rule map couldn't be inlined`); continue }
 
         // Walk the ObjectPattern properties, validating each destructured key
         // exists on the compiled rule map — collect bindings before emitting
@@ -1381,16 +1411,19 @@ export function transformMacro(
 
   // If every declaration referencing an imported name was successfully inlined,
   // the import is no longer needed. Otherwise downgrade to runtime (strip just
-  // the macro attribute so the import stays valid for the interpreter).
+  // the macro attribute so the import stays valid for the interpreter). A shared
+  // shape also keeps the import — its emitted value still calls `rules(…)` — but
+  // without the "fell back to the interpreter" warning, because nothing failed.
   for (const imp of macroImports) {
-    imp.fullyResolved = !anyUnresolved
+    imp.fullyResolved = !anyUnresolved && !keepMacroImport
   }
 
   const ms = new MagicString(code)
 
-  // Strip `x.define(...)` statements — only when the import was fully removed.
+  // Strip `x.define(...)` statements — only when every ref() cluster was inlined.
   // If anything fell back to the interpreter the import stays, and those
-  // statements are still needed to wire the ref at runtime.
+  // statements are still needed to wire the ref at runtime. (A shared shape holds
+  // no ref() cluster of its own, so it doesn't gate this.)
   if (!anyUnresolved) {
     for (const { start, end } of defineRemovals) ms.remove(start, end)
   }
