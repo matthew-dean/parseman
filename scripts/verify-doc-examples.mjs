@@ -25,11 +25,18 @@ const ROOT = resolve(__dir, '..')
 // The scratch modules live INSIDE the repo so tsx resolves them as ESM under the
 // package's own `"type": "module"` — a module in the OS temp dir is treated as CJS
 // and cannot import the TS source at all.
-const SCRATCH = join(ROOT, '.doc-verify')
-const SRC_ENTRY = '../src/index.ts'
+// Suffixed with the pid so two runs (the suite that exercises this script and a
+// developer's own `docs:verify`) cannot delete each other's scratch modules.
+const SCRATCH = join(ROOT, `.doc-verify/${process.pid}`)
+const SRC_ENTRY = '../../src/index.ts'
 const FIX = process.argv.includes('--fix')
 
-const DOCS = globSync('docs/**/*.md', { cwd: ROOT }).map(f => join(ROOT, f)).sort()
+// Explicit paths check just those files; with none, the whole guide.
+//   node scripts/verify-doc-examples.mjs docs/guide/combinators.md
+const ONLY = process.argv.slice(2).filter(a => !a.startsWith('--'))
+const DOCS = ONLY.length
+  ? ONLY.map(f => resolve(ROOT, f))
+  : globSync('docs/**/*.md', { cwd: ROOT }).map(f => join(ROOT, f)).sort()
 
 /** A fenced ```ts block carrying the `// [verify]` marker. */
 const BLOCK_RE = /^```ts\n([\s\S]*?)^```$/gm
@@ -54,13 +61,25 @@ function splitChecks(code) {
   return { lines, checks }
 }
 
-/** Compact JS-literal rendering — what a reader would write by hand, but real. */
+/**
+ * Compact JS-literal rendering — what a reader would write by hand, but real.
+ *
+ * Runs INSIDE the child (its source is injected into the generated module), so it
+ * sees the actual values. It used to run in the parent on JSON-parsed data, which
+ * silently destroyed exactly the values a reader most needs spelled out: in an
+ * array `undefined` and symbols both became `null`, in an object their keys
+ * vanished, and a `bigint` threw and took the whole block down as an ERROR. Two
+ * examples with genuinely different results could then compare EQUAL and pass —
+ * the one failure mode this script exists to prevent.
+ */
 function render(v, seen = new Set()) {
   if (v === null) return 'null'
   if (v === undefined) return 'undefined'
   const t = typeof v
   if (t === 'string') return `'${v.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n')}'`
-  if (t === 'number' || t === 'boolean' || t === 'bigint') return String(v)
+  if (t === 'number' || t === 'boolean') return String(v)
+  // `1n`, not `1` — a bigint must not render identically to the number 1.
+  if (t === 'bigint') return `${v}n`
   if (t === 'function') return `[fn ${v.name || 'anonymous'}]`
   if (t === 'symbol') return String(v)
   if (seen.has(v)) return '[circular]'
@@ -74,6 +93,34 @@ function render(v, seen = new Set()) {
   } finally {
     seen.delete(v)
   }
+}
+
+/**
+ * Wall-clock ceiling for ONE example block's child process, so a doc example that
+ * never terminates (a grammar looping on a zero-width match is the realistic way
+ * to write one) cannot wedge `docs:verify` — and with it a release check — with no
+ * automatic recovery.
+ *
+ * A block spawns `node --import tsx/esm` and runs a handful of tiny parses; the
+ * whole 30-odd-block suite finishes in under 4 seconds, so a single block is well
+ * under one. 60s is roughly two orders of magnitude of headroom. Deliberately
+ * lopsided, for the same reason the bench timeouts are: a timeout that fires late
+ * costs one stuck run, while one that fires early fails a legitimate example on a
+ * loaded machine and reads as a phantom docs regression.
+ */
+const EXAMPLE_TIMEOUT_MS = 60_000
+
+/** An expired `timeout` surfaces as ETIMEDOUT, and/or as the SIGTERM used to kill the child. */
+function isTimeoutError(e) {
+  if (typeof e !== 'object' || e === null) return false
+  const { code, signal } = e
+  return code === 'ETIMEDOUT' || signal === 'SIGTERM'
+}
+
+/** Nearest preceding markdown heading, so a report names the section a reader sees. */
+function headingAbove(text, offset) {
+  const m = text.slice(0, offset).match(/(?:^|\n)(#{1,6} +.*)(?![\s\S]*\n#{1,6} +)/)
+  return m ? m[1].trim() : null
 }
 
 const results = []
@@ -92,7 +139,10 @@ for (const file of DOCS) {
     if (!code.includes('// [verify]')) continue
     const { lines, checks } = splitChecks(code)
     if (checks.length === 0) continue
-    const id = `${file}#${blockIndex++}`
+    blockIndex++
+    const blockLine = original.slice(0, m.index).split('\n').length
+    const id = `${file}:${blockLine}`
+    const heading = headingAbove(original, m.index)
 
     // Build a runnable module from the block VERBATIM, with each checked statement
     // replaced IN PLACE by its emit. In-place matters three ways: the expression
@@ -110,12 +160,18 @@ for (const file of DOCS) {
       .join('\n')
     const imports = lines.filter(l => l.trim().startsWith('import ')).join('\n')
       .replace(/from ['"]parseman['"]/g, `from ${JSON.stringify(SRC_ENTRY)}`)
+    // The child renders each value ITSELF and emits the finished display string,
+    // so the only thing crossing the process boundary is text. Passing raw values
+    // through JSON first is what let `undefined`/symbols collapse to `null` and
+    // made a `bigint` abort the block. `render`'s own source is injected rather
+    // than duplicated, so the two sides cannot drift.
     const mod = [
       imports,
+      `const __render = ${render.toString()}`,
       `const __out = []`,
-      `function __emit(i, f) { try { __out.push([i, 'ok', f()]) } catch (e) { __out.push([i, 'throw', String(e && e.message || e)]) } }`,
+      `function __emit(i, f) { try { __out.push([i, 'ok', __render(f())]) } catch (e) { __out.push([i, 'throw', String(e && e.message || e)]) } }`,
       body,
-      `console.log('@@JSON@@' + JSON.stringify(__out, (k, v) => typeof v === 'function' ? '[fn]' : v))`,
+      `console.log('@@JSON@@' + JSON.stringify(__out))`,
     ].join('\n')
 
     const modPath = join(tmp, `b${results.length}_${blockIndex}.ts`)
@@ -124,22 +180,29 @@ for (const file of DOCS) {
     try {
       const stdout = execFileSync(process.execPath, ['--import', 'tsx/esm', modPath], {
         cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: EXAMPLE_TIMEOUT_MS,
       })
       const line = stdout.split('\n').find(l => l.startsWith('@@JSON@@'))
       if (!line) throw new Error(`no output\n${stdout}`)
       emitted = JSON.parse(line.slice('@@JSON@@'.length))
     } catch (e) {
-      results.push({ id, expr: '(whole block)', status: 'ERROR', detail: String(e.stderr || e.message).slice(0, 600) })
+      // Name the example — a raw ETIMEDOUT says only that *a* child was killed,
+      // and the block that hangs is the one thing the operator needs to find.
+      const detail = isTimeoutError(e)
+        ? `example timed out after ${EXAMPLE_TIMEOUT_MS / 1000}s and was killed`
+          + ` — block at ${file}:${blockLine}${heading ? ` (under "${heading}")` : ''}`
+          + `\n      first statement: ${checks[0]?.expr ?? '(none)'}`
+        : String(e.stderr || e.message).slice(0, 600)
+      results.push({ id, expr: '(whole block)', status: 'ERROR', detail })
       continue
     }
 
-    // JSON round-trip loses undefined; re-render from the raw values by re-running
-    // the renderer on the parsed structure (adequate for doc-shaped data).
     const newLines = [...lines]
     for (const [i, kind, value] of emitted) {
       const c = checks[i]
       if (c.multiline) { results.push({ id, expr: c.expr, status: 'FAIL', detail: 'checked statement must be a single line' }); continue }
-      const actual = kind === 'throw' ? `throws: ${value}` : render(value)
+      // `value` is already the rendered display string when kind === 'ok'.
+      const actual = kind === 'throw' ? `throws: ${value}` : value
       if (actual === c.expected) {
         results.push({ id, expr: c.expr, status: 'PASS' })
       } else if (FIX) {
