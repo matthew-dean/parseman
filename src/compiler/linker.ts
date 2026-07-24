@@ -221,11 +221,19 @@ export function pickPieces(pieces: LinkablePieces[], names: string[]): LinkableP
 export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string, unknown> } {
   // ARTIFACT VERSION LOCK (see src/version.ts): a compiled artifact is fused by the
   // SAME parseman version that produced it — the artifact format carries no
-  // cross-version back-compat. A serialized piece stamped with a different version is
-  // stale; fail LOUDLY rather than silently mis-reading its recipe/pieces shape.
-  // (Pieces with no stamp are hand-built test fixtures / same-version by construction.)
+  // cross-version back-compat. Reject BOTH a version MISMATCH and an UNSTAMPED piece
+  // (a pre-0.32 artifact predates the invariant → its recipe/pieces shape is
+  // unsupported): fail LOUDLY rather than silently mis-reading a stale shape. Every
+  // artifact `compileLinkable` produces is stamped, so an absent stamp means a stale
+  // serialized artifact, not a current one.
   for (const p of pieces) {
-    if (p.v !== undefined && p.v !== PARSEMAN_VERSION) {
+    if (p.v === undefined) {
+      throw new Error(
+        `parseman: artifact "${p.ns}" is UNSTAMPED (compiled before the version-lock invariant). ` +
+        `Recompile the grammar with parseman ${PARSEMAN_VERSION}; parseman does not fuse unversioned or cross-version artifacts.`,
+      )
+    }
+    if (p.v !== PARSEMAN_VERSION) {
       throw new Error(
         `parseman: artifact "${p.ns}" was compiled with parseman ${p.v}, but is being fused with parseman ${PARSEMAN_VERSION}. ` +
         `Compiled grammar artifacts are version-locked — recompile the grammar with parseman ${PARSEMAN_VERSION}; parseman does not fuse across versions.`,

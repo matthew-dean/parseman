@@ -3924,11 +3924,12 @@ export function compileRuleMap(
 export type LinkablePieces = {
   /**
    * The parseman version that produced this artifact (the ARTIFACT VERSION LOCK; see
-   * `src/version.ts`). `fusedBody` refuses to link a piece stamped with a version
-   * different from the linking parseman — artifacts are version-locked and the format
-   * carries no cross-version back-compat. Absent only on hand-built test pieces.
+   * `src/version.ts`). REQUIRED — `compileLinkable` always stamps it. `fusedBody`
+   * refuses to link a piece whose stamp differs from the linking parseman OR is absent
+   * (a stale pre-invariant artifact, whose recipe/pieces shape is unsupported).
+   * Artifacts are version-locked; the format carries no cross-version back-compat.
    */
-  v?: string
+  v: string
   ns: string
   keys: string[]
   prelude: string[]

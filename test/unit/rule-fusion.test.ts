@@ -9,6 +9,7 @@ import type { Combinator, Registry, NodeLike } from '../../src/index.ts'
 import { compose } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import type { LinkablePieces } from '../../src/compiler/codegen.ts'
+import { PARSEMAN_VERSION } from '../../src/version.ts'
 import { fuseRules, pick, cstBuildHost } from '../../src/compiler/linker.ts'
 
 const link = (g: Record<string, Combinator<unknown>>, ns: string) =>
@@ -23,6 +24,7 @@ describe('compose() namespace allocation', () => {
     const ns = probe[sym]![0]!.ns
     const next = `_lk${Number(ns.match(/^_lk(\d+)_$/)?.[1] ?? 0) + 1}_`
     const carried: LinkablePieces = {
+      v: PARSEMAN_VERSION,
       ns: next,
       keys: ['Fake'],
       prelude: [`const ${next}_re0 = /x/y`],

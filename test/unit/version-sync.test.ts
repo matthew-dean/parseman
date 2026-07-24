@@ -30,4 +30,10 @@ describe('artifact version stamp', () => {
     // a same-version artifact still fuses fine
     expect(() => fuseRules([p])).not.toThrow()
   })
+
+  it('fusedBody REFUSES an UNSTAMPED artifact (pre-invariant, missing v)', () => {
+    const p = compileLinkable(Object.entries(rules(() => ({ N: regex(/[0-9]+/) }))), '_v_')!
+    const unstamped = { ...p, v: undefined } as unknown as typeof p
+    expect(() => fuseRules([unstamped])).toThrow(/UNSTAMPED|does not fuse unversioned/)
+  })
 })
