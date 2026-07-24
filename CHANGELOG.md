@@ -42,11 +42,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   guard is load-bearing — a deliberately-broken chain-stop produced 2311).
 
   **Breaking (artifact format):** `firstSetRecipes` now serializes as `{alts}` and
-  a new per-rule `nullable` map ships alongside `firstSets`. `fusedBody` reads BOTH
-  the new ordered-chain and the legacy `{concrete, refs}` shape, so consuming an
-  older pre-compiled artifact still works — but an artifact compiled by 0.32.0
-  cannot be fused by an OLDER parseman. New exported types `FirstSetSeg` /
-  `LegacyFirstSetRecipe`; `FirstSetRecipe` / `leadingFirstSetRecipe` changed shape.
+  a new per-rule `nullable` map ships alongside `firstSets`. New exported type
+  `FirstSetSeg`; `FirstSetRecipe` / `leadingFirstSetRecipe` changed shape. There is
+  **no cross-version back-compat** — see the version-lock item below.
+
+- **Artifacts are version-locked (documented + enforced).** A grammar is compiled AND
+  fused/linked by the SAME parseman version; parseman never reads an artifact produced
+  by a different version. The compiled-artifact format may therefore change freely
+  between versions and carries no back-compat shim. This is now (1) documented as a
+  design invariant (`docs/design/artifact-format.md`), (2) stamped — a
+  `PARSEMAN_VERSION` banner tops every generated artifact and a `v` field rides on
+  each serialized `LinkablePieces` (kept in sync with `package.json` by
+  `test/unit/version-sync.test.ts`), and (3) enforced — `fusedBody` throws a loud
+  "recompile — parseman does not fuse across versions" error if a piece's stamp
+  mismatches. Consequently the initial `LegacyFirstSetRecipe` / `{concrete, refs}`
+  read path (a back-compat shim for a scenario the design forbids) was removed as dead
+  code; the ordered-chain `{alts}` recipe is the sole format.
 
 ## 0.31.1 — 2026-07-23
 

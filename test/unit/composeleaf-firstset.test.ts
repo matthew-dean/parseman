@@ -68,6 +68,24 @@ describe('cross-artifact first-set dispatch (composeLeaf shape)', () => {
     expect(rec.alts[0]![0]).toMatchObject({ ref: 'SyntaxStmtAt', nullable: false })
   })
 
+  it('collapses a multi-alternative leading term (inner choice) into ONE chain segment', () => {
+    // A sequence term that is itself a choice yields multiple chains; it is collapsed
+    // to one segment so the outer chain stays linear. Concrete arms → union of sets…
+    const concreteMulti = leadingFirstSetRecipe(
+      sequence(optional(choice(literal('a'), literal('b'))), literal('c')),
+    )
+    expect(concreteMulti.alts).toHaveLength(1)
+    const s0 = concreteMulti.alts[0]![0]!
+    expect(s0.set).toMatchObject({ kind: 'ranges' })                 // union of {a},{b}
+    expect(s0.nullable).toBe(true)                                    // optional → skippable
+    // …but if an alternative's leading run holds a rule REF (real first chars only
+    // known at fuse time), the collapsed segment widens to `any` (sound superset).
+    const refMulti = leadingFirstSetRecipe(rules((g: Record<string, Combinator<unknown>>) => ({
+      X: node('X', sequence(optional(choice(g.SomeRef!, literal('b'))), literal('c')), cst('X')),
+    })).X!)
+    expect(refMulti.alts[0]![0]!.set).toMatchObject({ kind: 'any' })
+  })
+
   it('an OPTIONAL leading token forces the chain to continue to a following ref', () => {
     // `sequence(optional(.#), ref)`: the optional is skippable, so the ref's chars
     // must still be unioned into the gate — the optional seg is forced nullable.

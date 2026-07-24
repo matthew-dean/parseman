@@ -10,6 +10,7 @@ import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseE
 import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
+import { PARSEMAN_VERSION } from '../version.ts'
 
 /**
  * A rule's LEADING first-set as a fuse-resolvable recipe.
@@ -24,25 +25,28 @@ import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } fro
  *
  * Why the ORDER + per-segment nullability matter (the bug this shape fixes): a rule
  * like `sequence(g.CssAstSyntaxStatementAtRuleName, prelude, ';')` leads with a
- * cross-artifact ref. At compile time that ref's nullability is unknown, so the old
- * flat `{concrete, refs}` recipe conservatively treated it as nullable and unioned
- * the FOLLOWING terms' first-sets into `concrete` — and the prelude's first-set is
- * `any` (a `scanTo`), so the whole recipe collapsed to `any` and the arm lost
- * first-char dispatch. Keeping the leading chain ordered lets fuse-time resolution
- * see the ref is actually NON-nullable and STOP — so the arm gates on `{@}`, exactly
- * as a grammar-local `regex(/@…/)` would. Grammar authors had to hand-copy those
- * recognizers to work around this; the ordered chain removes the need.
+ * cross-artifact ref. At compile time that ref's nullability is unknown, so a flat
+ * "concrete chars + ref names" recipe would conservatively treat it as nullable and
+ * union the FOLLOWING terms' first-sets — and the prelude's first-set is `any` (a
+ * `scanTo`), collapsing the whole recipe to `any` and losing first-char dispatch.
+ * Keeping the leading chain ordered lets fuse-time resolution see the ref is actually
+ * NON-nullable and STOP — so the arm gates on `{@}`, exactly as a grammar-local
+ * `regex(/@…/)` would. Grammar authors had to hand-copy those recognizers to work
+ * around this; the ordered chain removes the need.
  *
  * Soundness: the resolved set is always a SUPERSET of the rule's true first chars.
  * An unknown/opaque construct contributes its shallow `_meta.firstSet`; a ref whose
  * nullability can't be resolved defaults to nullable (keep unioning — never drops a
- * valid first char). Legacy `{concrete, refs}` recipes (from artifacts compiled by
- * an older parseman) are still understood by `fusedBody` unchanged.
+ * valid first char).
  */
+// VERSION-LOCKED FORMAT: this recipe shape is part of the compiled-artifact format
+// (see src/version.ts). It may change freely between parseman versions and carries NO
+// cross-version back-compat — a fused artifact is always produced and consumed by the
+// SAME parseman version. Do NOT add a "legacy"/dual-format read path for an older
+// recipe shape; it is dead code by design (fusedBody's version lock rejects a
+// cross-version artifact before it is ever read).
 export type FirstSetSeg = { set: FirstSet; nullable: boolean; ref?: string }
 export type FirstSetRecipe = { alts: FirstSetSeg[][] }
-/** Legacy recipe shape (pre-ordered-chain); still resolvable by fusedBody. */
-export type LegacyFirstSetRecipe = { concrete: FirstSet; refs: string[] }
 export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): FirstSetRecipe {
   if (seen.has(p)) return { alts: [[]] }   // cycle: empty (nullable) chain — contributes nothing
   seen.add(p)
@@ -3918,6 +3922,13 @@ export function compileRuleMap(
  * Returns null on the same "can't inline" conditions as `compileRuleMap`.
  */
 export type LinkablePieces = {
+  /**
+   * The parseman version that produced this artifact (the ARTIFACT VERSION LOCK; see
+   * `src/version.ts`). `fusedBody` refuses to link a piece stamped with a version
+   * different from the linking parseman — artifacts are version-locked and the format
+   * carries no cross-version back-compat. Absent only on hand-built test pieces.
+   */
+  v?: string
   ns: string
   keys: string[]
   prelude: string[]
@@ -3938,14 +3949,13 @@ export type LinkablePieces = {
    */
   nullable?: Map<string, boolean>
   /**
-   * Per-rule LEADING first-set recipe — a union of ordered leading-term chains
-   * (`FirstSetRecipe`) or a legacy `{concrete, refs}` shape from an older artifact.
+   * Per-rule LEADING first-set recipe — a union of ordered leading-term chains.
    * `fusedBody()` fixpoint-resolves the leading ref names over the WINNING rules so a
    * `sequence(ref, …)`-led arm/node dispatches on the ref's real first char —
    * matching a monolithic compile — instead of degrading to always-try because the
-   * ref baked `any`. Optional for back-compat with hand-built pieces.
+   * ref baked `any`. Optional (absent for hand-built pieces → `any`, always try).
    */
-  firstSetRecipes?: Map<string, FirstSetRecipe | LegacyFirstSetRecipe>
+  firstSetRecipes?: Map<string, FirstSetRecipe>
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
@@ -4164,6 +4174,7 @@ export function compileLinkable(
   }
 
   return {
+    v: PARSEMAN_VERSION,
     ns,
     keys: perEntry.map(e => e.key),
     prelude,
