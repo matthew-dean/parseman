@@ -1,0 +1,91 @@
+# PROPOSAL — not yet an active workflow.
+#
+# To ENABLE: move this file to `.github/workflows/perf-nightly.yml` (it lives under
+# docs/ only because the PR was pushed with a token lacking GitHub `workflow` scope —
+# the owner installs it after reviewing the threshold + runner caveat below).
+#
+# Owner: review the threshold + runner before relying on it.
+#
+# Nightly MAJOR-regression watch — deliberately NOT a PR-required check. Perf on
+# sub-µs cases is noise-prone (see bench/parseman-perf.ts: ~10% run-to-run + ~7-11%
+# cross-machine drift), so gating PRs on it false-positives. Instead this runs on a
+# schedule and only alerts on MAJOR regressions.
+#
+# What it actually protects:
+#   - DETERMINISTIC (noise-free, machine-independent): `perf:guard` fails if the
+#     cross-artifact composeLeaf at-rule cluster loses first-char dispatch
+#     (bench/composeleaf-firstset.ts `dispatchEmitted`). This is the reliable signal
+#     and the reason this workflow is worth having — it guards the exact path jess
+#     depends on, regardless of timing noise.
+#   - TIMING (best-effort): `perf:guard --all` compares medians to the committed
+#     baseline with a LOOSE tolerance so only a catastrophic (~2x) slowdown trips it.
+#
+# ⚠ RUNNER CAVEAT (flagged for owner): GitHub-hosted `ubuntu-latest` runners are
+# SHARED VMs with high run-to-run variance, and the committed baseline was captured
+# on the owner's machine — so the absolute-median timing comparison here is
+# cross-machine and unreliable for anything but gross regressions. For trustworthy
+# timing either (a) use a self-hosted/consistent runner with a baseline captured on
+# it, or (b) switch to run-to-run comparison (nightly vs previous nightly). Until
+# then PARSEMAN_PERF_TOLERANCE is set loose (40%) so timing does not false-alarm;
+# the deterministic dispatch check carries the real regression protection.
+
+name: Perf nightly (major-regression watch)
+
+on:
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC daily
+  workflow_dispatch: {} # manual trigger for ad-hoc checks
+
+# Never a PR trigger — this must not gate merges.
+
+permissions:
+  contents: read
+  issues: write # to open an alert issue on a major regression
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Perf guard (all grammars + cross-artifact dispatch, loose timing)
+        id: guard
+        env:
+          # Loose: only a catastrophic timing regression trips it (see RUNNER CAVEAT
+          # above). The deterministic composeLeaf dispatch check fails regardless of
+          # this value.
+          PARSEMAN_PERF_TOLERANCE: '40'
+        run: pnpm perf:guard --all
+
+      - name: Open an issue on regression
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = 'Perf nightly: regression detected'
+            const body = [
+              `The nightly perf watch failed on ${context.sha.slice(0,7)}.`,
+              '',
+              'This is either a lost cross-artifact composeLeaf dispatch (deterministic —',
+              'act on it) or a major timing regression (verify locally with',
+              '`pnpm perf:guard --all`; timing on shared runners is noisy — see the',
+              'RUNNER CAVEAT in .github/workflows/perf-nightly.yml).',
+              '',
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join('\n')
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'perf-regression',
+            })
+            if (existing.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['perf-regression'],
+              })
+            }

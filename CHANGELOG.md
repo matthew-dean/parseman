@@ -55,9 +55,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   each serialized `LinkablePieces` (kept in sync with `package.json` by
   `test/unit/version-sync.test.ts`), and (3) enforced — `fusedBody` throws a loud
   "recompile — parseman does not fuse across versions" error if a piece's stamp
-  mismatches. Consequently the initial `LegacyFirstSetRecipe` / `{concrete, refs}`
-  read path (a back-compat shim for a scenario the design forbids) was removed as dead
-  code; the ordered-chain `{alts}` recipe is the sole format.
+  mismatches OR is absent (an unstamped pre-invariant artifact is unsupported;
+  `LinkablePieces.v` is required). Consequently the initial `LegacyFirstSetRecipe` /
+  `{concrete, refs}` read path (a back-compat shim for a scenario the design forbids)
+  was removed as dead code; the ordered-chain `{alts}` recipe is the sole format.
 
 ## 0.31.1 — 2026-07-23
 

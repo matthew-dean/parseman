@@ -52,6 +52,7 @@
     "lint": "oxlint --ignore-path .oxlintignore src test examples bench",
     "bench": "node --import tsx/esm bench/run.ts",
     "bench:parseman": "node --import tsx/esm bench/parseman.ts",
+    "bench:composeleaf": "node --import tsx/esm bench/composeleaf-firstset.ts",
     "bench:incremental": "node --import tsx/esm bench/incremental-run.ts",
     "bench:literal": "node --import tsx/esm bench/literal-match.ts",
     "bench:codegen": "node --import tsx/esm bench/codegen-ab.ts",
