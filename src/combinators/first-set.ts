@@ -78,8 +78,11 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'not':
     case 'peek':     return true          // zero repetitions / absent / lookahead
     // Default `sepBy` is `(item (sep item)*)?` — it MATCHES THE EMPTY STRING.
-    // `{ min: 1 }` is `item (sep item)*`, nullable only when the item is.
-    case 'sepBy':     return d.min === 1 ? me(d.parser) : true
+    // Any `min >= 1` requires that many ITEMS, so it is nullable only when the
+    // item is. (Keying this off `min === 1` reported every `{ min: 2 }` list as
+    // nullable — safe, but wrong, and it put a bogus `nullable-prefix` note on
+    // the gating diagnostic for a list that can never match empty.)
+    case 'sepBy':     return d.min >= 1 ? me(d.parser) : true
     case 'oneOrMore': return me(d.parser)
     case 'sequence':  return d.parsers.every(me)
     case 'choice':

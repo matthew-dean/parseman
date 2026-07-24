@@ -15,7 +15,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   analyzeGating, choice, compile, keywords, literal, many, not, oneOrMore,
-  oneOrMoreSep, parse, peek, regex, rules, sepBy, sequence, word,
+  oneOrMoreSep, optional, parse, peek, regex, rules, sepBy, sequence, word,
   type Combinator, type ParserDef,
 } from '../../src/index.ts'
 import { node, runWithGrammarCoverage } from '../../src/index.ts'
@@ -238,6 +238,24 @@ describe('defect 3 — non-empty separated lists', () => {
     expect(r.ok).toBe(true)
     expect(r.ok && r.span).toEqual({ start: 0, end: 0 })
     expect(matchesEmpty(sepBy(item, comma))).toBe(true)
+  })
+
+  it('nullability generalizes past min 1 — a { min: N } list can never match empty', () => {
+    // `matchesEmpty` keyed its sepBy case off `min === 1`, so EVERY `min >= 2`
+    // list was reported nullable. Safe (it only over-widens a first-set) but
+    // wrong, and it hung a bogus `nullable-prefix` note on the gating diagnostic
+    // for a list that cannot match empty.
+    for (const min of [1, 2, 5]) {
+      expect(matchesEmpty(sepBy(item, comma, { min })), `min ${min}`).toBe(false)
+    }
+    expect(matchesEmpty(sepBy(item, comma, { min: 0 }))).toBe(true)
+    // A nullable ITEM still makes the list nullable at any min — unchanged.
+    expect(matchesEmpty(sepBy(optional(item), comma, { min: 2 }))).toBe(true)
+    // …and the first-set of a min-2 list is the item's, not `any`.
+    expect(firstChars(sepBy(item, comma, { min: 2 }))).toBe(firstChars(item))
+    expect(bothEngines(sepBy(item, comma, { min: 2 }), '').ok).toBe(false)
+    expect(bothEngines(sepBy(item, comma, { min: 2 }), 'a').ok).toBe(false)
+    expect(bothEngines(sepBy(item, comma, { min: 2 }), 'a,b')).toMatchObject({ ok: true, end: 3 })
   })
 
   it('oneOrMoreSep is genuinely NON-NULLABLE and keeps the item first-set', () => {
