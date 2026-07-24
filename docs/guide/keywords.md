@@ -10,12 +10,26 @@ When alternatives share a prefix, put the longer one first, or the shorter one w
 match and the longer one will never be reached:
 
 ```ts
-import { choice, literal } from 'parseman'
+// [verify]
+import { choice, literal, regex, parse } from 'parseman'
 
-// Wrong: choice(literal('in'), literal('instanceof'))
-//        → 'instanceof' is never reached; 'in' matches its prefix first.
 const op = choice(literal('instanceof'), literal('in'), literal('if'))
+parse(op, 'instanceof x').value
+// → 'instanceof'
+
+// Short arm first → it matches the prefix and the long arm is unreachable.
+const shadowed = choice(regex(/in/), regex(/instanceof/))
+parse(shadowed, 'instanceof x').value
+// → 'in'
 ```
+
+One exception, and only one: when **every** arm is a bare `literal()`, the compiler
+sorts them longest-first for you
+([`literalsLongestFirst`](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)),
+so an all-literal `choice` is order-insensitive. Mix in a single `regex()`,
+`sequence()` or `word()` arm and ordering is load-bearing again — so write the long
+arm first regardless, and don't make a grammar's correctness depend on the rewrite
+still applying.
 
 When an alternative needs to consume past a shared prefix before deciding, wrap
 that alternative in `attempt()`. A failed attempt restores Parseman's CST,

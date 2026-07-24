@@ -219,24 +219,33 @@ leading with a concrete terminal is what keeps an arm dispatching.
 
 ### `choice`
 
-Ordered alternatives with PEG semantics: **first match wins**. Order matters — when
-alternatives share a prefix, put the longer one first (see
-[Ordered choice & keywords](./keywords)).
+Ordered alternatives with PEG semantics: **first match wins**. Write the longer of
+two overlapping alternatives first (see [Ordered choice & keywords](./keywords)).
 
 ```ts
 // [verify]
-import { choice, literal, parse } from 'parseman'
+import { choice, literal, regex, parse } from 'parseman'
 
 const op = choice(literal('instanceof'), literal('in'), literal('if'))
 parse(op, 'instanceof x').value
 // → 'instanceof'
 
-// The instructive failure: put the SHORT arm first and it wins, forever
-// shadowing the long one. PEG never backtracks into an earlier arm's success.
-const wrong = choice(literal('in'), literal('instanceof'))
-parse(wrong, 'instanceof x').value
-// → 'instanceof'
+// The instructive failure: a SHORT arm placed first wins and shadows the long one
+// for good. PEG never backtracks into an earlier arm's success, so `instanceof`
+// here is unreachable — no input can ever select it.
+const shadowed = choice(regex(/in/), regex(/instanceof/))
+parse(shadowed, 'instanceof x').value
+// → 'in'
 ```
+
+::: tip Bare literals are reordered for you
+When **every** arm is a plain `literal()`, the compiler recognizes the shape and
+sorts the arms longest-first (`literalsLongestFirst` — see
+[Literal-heavy choices](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)),
+so `choice(literal('in'), literal('instanceof'))` still yields `'instanceof'`. The
+shadowing above needs `regex()` arms precisely because that rewrite no longer
+applies. Don't rely on it: add one non-literal arm and ordering matters again.
+:::
 
 When the arms start with disjoint characters the compiler turns the whole `choice`
 into a single O(1) character dispatch.
