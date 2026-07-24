@@ -141,11 +141,13 @@ export function parse<T>(
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): install
   // it as ctx.trivia so it's ambient (interpreter). parser/noTrivia override locally.
   const grammarTrivia = combinator._meta.grammarTrivia
+  const grammarScanSkip = combinator._meta.grammarScanSkip
   const ctx: ParseContext = {
     trackLines,
     ...(grammarTrivia !== undefined
       ? { trivia: grammarTrivia, ...(grammarTrivia._meta.triviaKindLabels ? { triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}) }
       : {}),
+    ...(grammarScanSkip !== undefined ? { scanSkip: grammarScanSkip } : {}),
     ...(_errors !== undefined ? { _errors } : {}),
     ...(_probe !== undefined ? { _probe } : {}),
   }

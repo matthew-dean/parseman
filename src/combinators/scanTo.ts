@@ -11,13 +11,54 @@ import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 
 export type ScanToOptions = {
-  /** Parsers that match "container" regions to skip over intact (balanced parens, strings, comments…) */
+  /**
+   * Per-call opaque-unit skippers (balanced parens/brackets, dialect
+   * interpolation, …). These EXTEND the grammar-level ambient default: ambient
+   * trivia (comments/ws) and ambient `scanSkip` (strings) are applied too, unless
+   * `raw`. So a site only needs to list the extra units its scan requires.
+   */
   skip?: Combinator<unknown>[]
+  /**
+   * Hard opt-out: skip NOTHING ambiently — no trivia, no scanSkip, and (with no
+   * per-call `skip`) a pure raw byte-walk. For the rare site that intends to scan
+   * literally through comments/strings.
+   */
+  raw?: boolean
   /**
    * If true, reaching EOF without finding the sentinel is a success — returns
    * everything consumed so far. Default false (fail at EOF).
    */
   orEOF?: boolean
+}
+
+/**
+ * Resolve the effective ordered skipper list for a scan, folding grammar-level
+ * ambient trivia + scanSkip in FRONT of the per-call `skip` (explicit skip
+ * EXTENDS the ambient default). Shared by the interpreter `scanTo`/`balanced`;
+ * the compiled path bakes the identical list in codegen.
+ *
+ *   raw   → []                                  (no trivia, no scanSkip, no skip)
+ *   else  → [ ...trivia?, ...scanSkip?, ...skip ]
+ *
+ * The ambient trivia (comments/ws) leads so a sentinel hidden in a comment is
+ * never matched, then ambient strings, then the site's extra units. The sentinel
+ * itself is still checked before any skipper, so a sentinel that also starts a
+ * skip region wins (unchanged priority).
+ */
+export function resolveScanSkip(
+  explicitSkip: Combinator<unknown>[],
+  raw: boolean,
+  ctx: ParseContext,
+): Combinator<unknown>[] {
+  if (raw) return []
+  const trivia = ctx.trivia
+  const ambient = ctx.scanSkip
+  if (!trivia && !ambient) return explicitSkip
+  const out: Combinator<unknown>[] = []
+  if (trivia) out.push(trivia)
+  if (ambient) out.push(...ambient)
+  out.push(...explicitSkip)
+  return out
 }
 
 /**
@@ -33,20 +74,23 @@ export type ScanToOptions = {
  */
 export function scanTo(
   sentinel: Combinator<unknown>,
-  { skip = [], orEOF = false }: ScanToOptions = {},
+  { skip, raw = false, orEOF = false }: ScanToOptions = {},
 ): Combinator<string> {
   const meta: ParserMeta = {
     firstSet: any(),
     canMatchNewline: true,
     isTrivia: false,
   }
+  const explicitSkip = skip ?? []
 
   return {
     _tag: 'scanTo',
     _meta: meta,
-    _def: { tag: 'scanTo', sentinel, skip, orEOF },
+    _def: { tag: 'scanTo', sentinel, skip: explicitSkip, raw, orEOF },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
       let cur = pos
+      // Fold grammar-level ambient trivia + scanSkip into the effective skippers.
+      const skip = resolveScanSkip(explicitSkip, raw, ctx)
 
       // Sentinel checks and skip scans must not emit CST children of their own —
       // scanTo represents the whole scanned span as one leaf. Probe them with a
@@ -104,23 +148,69 @@ export function scanTo(
   }
 }
 
+/** Codegen marker: a balanced combinator that must re-resolve ambient scanSkip
+ * into its interior at emit time (the compiled mirror of the interpreter wrapper). */
+export type BalancedAmbient = Combinator<string> & {
+  _balancedAmbient?: { open: string; close: string; ownSkip: Combinator<unknown>[] }
+}
+
 /**
  * Match a balanced open/close pair, skipping over any holes inside.
  * Returns the full matched text including delimiters.
  *
  *   const parenGroup = balanced('(', ')', { skip: [comment, stringLit] })
+ *
+ * With no per-call `skip`, a balanced under a grammar that declares
+ * `rules({ scanSkip })` consults that ambient opaque-unit set in its INTERIOR too,
+ * so a delimiter hidden inside a string/bracket run never closes the balance
+ * early — the same footgun closure `scanTo` gets. `raw: true` opts out.
  */
 export function balanced(
   open: string,
   close: string,
   options: ScanToOptions = {},
 ): Combinator<string> {
+  const ownSkip = options.skip ?? []
+  const combi = buildBalancedInterior(open, close, ownSkip)
+  // `raw` keeps the pre-ambient behavior: the eager interior (per-call skip only).
+  if (options.raw) return combi
+
+  // Ambient-aware in place — the returned combinator KEEPS its identity (its own
+  // interior `self` ref points back to it, and ir-serialize / codegen dedup rely
+  // on that), so we override `parse` rather than wrapping. `_def`/`_meta` are
+  // unchanged, so every static analysis sees the eager interior; only PARSING and
+  // codegen EMIT re-resolve `ctx.scanSkip`. Interiors are cached by the ambient
+  // array's identity (stable per grammar). Balanced consults ambient `scanSkip`
+  // (opaque units) but NOT trivia — its delimiters are structural and its content
+  // regex already spans whitespace, so adding trivia would perturb every existing
+  // balanced; the footgun is a delimiter hidden in opaque-unit content.
+  const eagerParse = combi.parse.bind(combi)
+  const cache = new Map<readonly Combinator<unknown>[], Combinator<string>>()
+  ;(combi as BalancedAmbient)._balancedAmbient = { open, close, ownSkip }
+  combi.parse = (input: string, pos: number, ctx: ParseContext): ParseResult<string> => {
+    const amb = ctx.scanSkip
+    if (!amb || amb.length === 0) return eagerParse(input, pos, ctx)
+    let interior = cache.get(amb)
+    if (!interior) {
+      interior = buildBalancedInterior(open, close, [...amb, ...ownSkip])
+      cache.set(amb, interior)
+    }
+    return interior.parse(input, pos, ctx)
+  }
+  return combi
+}
+
+/** Build a balanced open/close interior for a FIXED skip set (no ambient). */
+export function buildBalancedInterior(
+  open: string,
+  close: string,
+  skips: Combinator<unknown>[],
+): Combinator<string> {
   // The interior scan must skip NESTED same-delimiter pairs so depth is counted —
   // otherwise `{{x}}` stops at the first `}`. `self` references this balanced
   // combinator; added to the interior scan's skip list, a nested `open` is
   // consumed intact (recursively) before the scan looks for the matching `close`.
   const self = ref<string>()
-  const skips = options.skip ?? []
   // PREDICTIVE interior — no char-walk. The body is `many(choice(self, …skips,
   // contentRun))`, where contentRun is a regex of chars that are NOT this pair's
   // delimiters and NOT the start of any skip (so a string/comment arm still wins

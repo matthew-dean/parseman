@@ -147,6 +147,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   // a compiled entry has it baked in and carries no _meta). parser/noTrivia still
   // override locally.
   const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
+  const grammarScanSkip = typeof entry !== 'function' ? entry._meta.grammarScanSkip : undefined
   const ctx: ParseContext = {
     trackLines: false,
     ...(skipGlobalSinks
@@ -157,6 +158,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
     ...(grammarTrivia !== undefined
       ? { trivia: grammarTrivia, ...(grammarTrivia._meta.triviaKindLabels ? { triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}) }
       : {}),
+    ...(grammarScanSkip !== undefined ? { scanSkip: grammarScanSkip } : {}),
     ...(options.triviaCaptureMask !== undefined ? { _triviaCaptureMask: options.triviaCaptureMask } : {}),
     ...(options.tolerant ? { _tolerant: true, _rec: REC } : {}),
     ...(options.instrumentation === undefined ? {} : options.instrumentation),

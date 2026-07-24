@@ -3,6 +3,24 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **Ambient scan-skip — `scanTo`/`balanced` no longer match a sentinel hidden in a
+  string or comment.** Two layers, mirroring grammar-level `trivia`:
+  - `scanTo` and `balanced` skip the grammar's ambient **`trivia`** (comments/ws)
+    during a scan by default. Byte-identical for whitespace; a sentinel hidden in a
+    comment is no longer matched. *(Default-behavior change — hence a minor.)*
+  - New grammar-level option **`rules({ scanSkip: [...] })`** for opaque non-trivia
+    units (strings, `balanced` brackets). Declared once, inherited everywhere
+    (interpreter, `compile()`, and macro; standalone `rules()` and `composeLeaf`),
+    the scan-time analogue of `trivia`.
+  - Per-call `skip` now **extends** the ambient set rather than replacing it; new
+    `raw: true` opts a call out of all ambient skipping (the pre-ambient byte walk).
+
+  See [scanTo & balanced](/guide/combinators#scanto-and-balanced). *(Version choice —
+  fold vs. a 0.33.0 minor — pending owner sign-off; this is a new ambient option plus
+  a default-behavior change.)*
+
 ## 0.32.0 — 2026-07-23
 
 - **Fix (soundness): three first-set FALSE-EXCLUDES the initial cross-artifact

@@ -54,9 +54,29 @@ const list = parser({ trivia: ws }, sepBy(regex(/[a-z]+/), literal(',')))
 list.parse('foo ,  bar , baz')   // { ok: true, value: ['foo','bar','baz'], … }
 ```
 
-`rules({ … })` and `parser({ … })` take the same options — `trivia` today; `rules()` applies
-them to the whole grammar, `parser()` to the one combinator it wraps. `parser()` also carries
-`captureTrivia` / `trackLines` and gives the wrapped combinator a `.parse(input)` method.
+`rules({ … })` and `parser({ … })` take the same options — `trivia`, plus `scanSkip`
+(below); `rules()` applies them to the whole grammar, `parser()` to the one combinator it
+wraps. `parser()` also carries `captureTrivia` / `trackLines` and gives the wrapped
+combinator a `.parse(input)` method.
+
+### Grammar-level `scanSkip` — opaque units for scans
+
+`scanSkip` is the scan-time companion to `trivia`. Where `trivia` is filler that's
+skipped *between terms everywhere*, `scanSkip` lists **opaque non-trivia units** —
+strings, `balanced` brackets — that `scanTo` and `balanced` treat as *atomic while
+scanning*, so a delimiter hidden inside one never ends the scan early:
+
+```ts
+const dq = sequence(literal('"'), regex(/[^"\\]|\\./), literal('"'))
+
+const g = rules({ trivia: rw, scanSkip: [dq] }, (r) => ({
+  arg: scanTo(regex(/[,;)]/)),   // a `,`/`;`/`)` inside "…" is skipped, not matched
+}))
+```
+
+`scanTo`/`balanced` also skip the ambient `trivia` (so a sentinel hidden in a comment
+is safe). A per-call `skip` extends these; `raw: true` opts out. See
+[scanTo & balanced](./combinators#scanto-and-balanced) for the full model.
 
 ## Combining multiple trivia types
 

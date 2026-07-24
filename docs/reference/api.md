@@ -162,10 +162,15 @@ read fields.
 
 ## Recursion
 
-### `rules(factory)` <Badge type="tip" text="helper" />
+### `rules(factory)` / `rules(options, factory)` <Badge type="tip" text="helper" />
 
 Named, mutually-recursive rule bundle. The factory receives a proxy of all rule names and
 returns the definitions. See [Recursive rules](../guide/recursive-rules).
+
+Options-first form `rules({ trivia, scanSkip }, factory)` sets grammar-wide defaults:
+`trivia` — ambient filler skipped between terms; `scanSkip` — ambient opaque units
+(strings/brackets) that `scanTo`/`balanced` treat as atomic while scanning. Both are
+inherited by every rule. See [Whitespace & trivia](../guide/trivia).
 
 ### `ref<T>()`
 
@@ -467,14 +472,21 @@ Type guard: `value is ParseError` (`_tag === 'parseError'`).
 
 ### `scanTo(sentinel, opts?)`
 
-Consume text up to (not including) `sentinel`; return it. `opts.skip` declares opaque
-regions to skip intact; `opts.orEOF` makes EOF a success.
+Consume text up to (not including) `sentinel`; return it. Skips the grammar's ambient
+`trivia` **and** `scanSkip` opaque units (strings/brackets) by default, so a sentinel
+hidden in a string or comment is never matched. `opts.skip` declares EXTRA opaque
+regions for this call (extends the ambient set); `opts.raw` opts out of all ambient
+skipping (raw byte walk); `opts.orEOF` makes EOF a success.
 
 ### `balanced(open, close, opts?)`
 
 Match one balanced delimited region — **string** delimiters — including the delimiters,
-counting nested same-type pairs. `opts.skip` (combinators) declares regions that may
-contain unbalanced delimiters.
+counting nested same-type pairs. Skips the grammar's ambient `scanSkip` opaque units in
+its interior, so a delimiter hidden inside a string doesn't close the balance early.
+`opts.skip` declares EXTRA regions (extends the ambient set); `opts.raw` opts out.
+
+Declare the ambient set once with `rules({ scanSkip: [...] }, factory)` (see
+[Whitespace & trivia](/guide/trivia#grammar-level-scanskip-opaque-units-for-scans)).
 
 ## Context
 
