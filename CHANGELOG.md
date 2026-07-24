@@ -3,6 +3,39 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.34.0 — 2026-07-24
+
+- **Shared grammar SHAPES — a composable piece may now reference rules it doesn't
+  define, and still ship compiled.** A `rules()` map is allowed to leave holes
+  (`g.Value` naming a rule defined by whoever composes it), so a composite *shape* —
+  `<ratio> = <value> '/' <value>`, a media-feature range, a custom-property tail — is
+  written ONCE and each dialect binds its own value/interpolation rule by name. This
+  is what [Assembling one grammar from parts of several](/guide/extending#assembling-one-grammar-from-parts-of-several)
+  always described; under the macro it now actually compiles.
+
+  ```ts
+  // @scope/shapes — the shape, with a hole
+  export const ratio = rules(g => ({ Ratio: sequence(g.Value, literal('/'), g.Value) }))
+
+  // each dialect binds its own Value, and the whole thing macro-fuses
+  export const parser = composeLeaf([ratio, rules(g => ({
+    Value: regex(/[0-9]+/),
+    Document: node('Document', g.Ratio, (children, _f, span) => …),
+  }))])
+  ```
+
+  Under the hood: a map with a hole can't be inlined as a standalone parser, so its
+  own value stays the `rules(…)` map — but the macro now also stamps its **compiled
+  linkable pieces** on that value, so a downstream `compose()` / `composeLeaf()`
+  fuses it statically (no runtime composition, no base source). A hole nobody binds
+  is a hard build error, never a silent drop.
+
+  `composeLeaf`'s safety gate is unchanged in strength: a pre-final piece must still
+  prove **recognition-only**. An unresolved external ref is now correctly read as a
+  *hole* rather than as unknown semantics — it holds no callback, and whoever binds
+  it is either another pre-final piece (gated the same way) or the local leaf (allowed
+  to be semantic). Every other unresolvable reference still counts as semantic.
+
 ## 0.33.0 — 2026-07-24
 
 - **Ambient scan-skip — `scanTo`/`balanced` no longer match a sentinel hidden in a

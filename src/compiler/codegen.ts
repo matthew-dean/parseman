@@ -4203,7 +4203,9 @@ export function compileLinkable(
   // resolve locally (defined in ANOTHER artifact). Emit a by-name `_r_<Name>`
   // call for it — no body here; it's provided at fuse time. This is what lets a
   // fragment reference a consumer/base rule (`g.value`, `g.Digits`) without its
-  // source.
+  // source. `externalRefs` collects what the pass CLASSIFIED — the refs that will be
+  // bound by name at fuse time — which `hasSemanticReduction` reads (see there).
+  const externalRefs = new Set<Combinator<unknown>>()
   {
     const scanned = new Set<Combinator<unknown>>()
     const scanExternal = (p: Combinator<unknown>): void => {
@@ -4215,11 +4217,14 @@ export function compileLinkable(
         try { resolved = def.thunk() } catch { resolved = undefined }
         if (resolved === undefined) {
           const name = (p as unknown as { _ruleName?: string })._ruleName
-          if (name && !ctx.namedParsers.has(p)) {
-            assertRuleName(name)
-            const fn = `_r_${name}`
-            ruleNames.set(p, fn)
-            ctx.namedParsers.set(p, fn)
+          if (name) {
+            externalRefs.add(p)
+            if (!ctx.namedParsers.has(p)) {
+              assertRuleName(name)
+              const fn = `_r_${name}`
+              ruleNames.set(p, fn)
+              ctx.namedParsers.set(p, fn)
+            }
           }
           return
         }
@@ -4352,15 +4357,62 @@ export function compileLinkable(
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
     hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
-    isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule)),
+    isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule), externalRefs),
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
     buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
   }
 }
 
+/**
+ * Does this rule map reference a rule it doesn't define — a NAMED `ref` (`g.Foo`)
+ * that never got `.define()`d? That is the SHARED-SHAPE signature: the grammar is a
+ * shape with a hole, so it can't be inlined as a standalone parser, but it IS
+ * linkable (`compileLinkable` emits a by-name `_r_Foo` call for the hole, bound at
+ * fuse time). Callers use this to tell that case apart from a genuine
+ * "couldn't compile, fall back to the interpreter".
+ *
+ * A `rules()` map's own `Object.entries` also leaks accessed-but-undefined names as
+ * top-level entries, so both the entry values AND their bodies are scanned.
+ */
+export function hasExternalRuleRef(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+): boolean {
+  const seen = new Set<Combinator<unknown>>()
+  const visit = (p: Combinator<unknown>): boolean => {
+    if (seen.has(p)) return false
+    seen.add(p)
+    const def = p._def
+    if (def.tag === 'lazy') {
+      let resolved: Combinator<unknown> | undefined
+      try { resolved = def.thunk() } catch { resolved = undefined }
+      if (resolved === undefined) return (p as unknown as { _ruleName?: string })._ruleName !== undefined
+      return visit(resolved)
+    }
+    return childrenOf(def).some(visit)
+  }
+  return ruleMap.some(([, rule]) => visit(rule))
+}
+
 /** A leaf-composed imported piece may carry Parseman's own structural balanced
- * text reconstruction, but never a grammar-authored semantic callback. */
-function hasSemanticReduction(roots: readonly Combinator<unknown>[]): boolean {
+ * text reconstruction, but never a grammar-authored semantic callback.
+ *
+ * `externalRefs` are the unresolved NAMED refs `compileLinkable`'s pre-pass already
+ * classified as external (`g.Value` naming a rule this artifact doesn't define). They
+ * are the one case that fails OPEN: the ref is a HOLE, it holds no callback of its
+ * own, and codegen emits it as a by-name `_r_<Name>` call bound at fuse time by
+ * whichever piece supplies the name — either another pre-final piece (itself put
+ * through this same gate) or the local leaf (allowed to be semantic by design). So
+ * an artifact whose only "unknown" is a hole is genuinely recognition-only.
+ *
+ * EVERY other lazy failure still fails CLOSED. In particular an UNNAMED `ref()` that
+ * was never `.define()`d is NOT external — nobody can bind it by name — so it stays
+ * an opaque subtree of unknown semantics and the answer is "semantic". Catching all
+ * errors here instead would let that (and any future thunk failure) pass the
+ * recognition-only gate. */
+function hasSemanticReduction(
+  roots: readonly Combinator<unknown>[],
+  externalRefs?: ReadonlySet<Combinator<unknown>>,
+): boolean {
   const seen = new Set<Combinator<unknown>>()
   const visit = (parser: Combinator<unknown>): boolean => {
     if (seen.has(parser)) return false
@@ -4371,6 +4423,7 @@ function hasSemanticReduction(roots: readonly Combinator<unknown>[]): boolean {
     if (def.tag === 'guard' || def.tag === 'withCtx') return true
     if (def.tag === 'node' && def.build !== undefined) return true
     if (def.tag === 'lazy') {
+      if (externalRefs?.has(parser)) return false
       try { return visit(def.thunk()) } catch { return true }
     }
     return childrenOf(def).some(visit)
