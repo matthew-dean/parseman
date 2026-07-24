@@ -11,6 +11,7 @@ import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combi
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
+import { analyzeGating, formatGatingWarnings, type GatingReport, type GatingWarnLevel } from '../analysis/gating.ts'
 
 /**
  * A rule's LEADING first-set as a fuse-resolvable recipe.
@@ -3266,6 +3267,14 @@ export type CompiledParser<T> = {
   inlineExpression: string | null
   /** Present only when compiled with `{ coverage: true }`. */
   coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[]
+  /**
+   * Static first-char gating diagnostic for this grammar (per-choice gated/
+   * recoverable/ungated + offending arm + cause + anti-patterns). Computed unless
+   * `{ gating: 'off' }`. Warnings for genuinely-ungated hot choices are emitted at
+   * compile time by default (see the `gating` option); this is the programmatic
+   * view for CI budget snapshots. See `src/analysis/gating.ts`.
+   */
+  gating?: GatingReport
 }
 
 /**
@@ -3565,7 +3574,51 @@ export function ruleDependencies(
  *
  * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
  */
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; coverage?: boolean }): CompiledParser<T> {
+/**
+ * Resolve the gating-diagnostic level: explicit option wins, else the
+ * `PARSEMAN_GATING` env var, else default-on `'warn'`. `'off'` skips the analysis
+ * entirely; `'warn'` prints via `console.warn`; `'error'` throws when any
+ * genuinely-ungated hot choice (or anti-pattern) is found.
+ */
+/**
+ * The `gating` compile option. A bare level is shorthand for `{ level }`; the
+ * object form adds the accepted-snapshot `accept` allowlist (choice ids that are
+ * intentionally ungated — silent, and excluded from the `'error'` gate).
+ */
+export type GatingOption = GatingWarnLevel | { level?: GatingWarnLevel; accept?: Iterable<string> }
+
+function resolveGatingLevel(opt: GatingOption | undefined): GatingWarnLevel {
+  const explicit = typeof opt === 'string' ? opt : opt?.level
+  if (explicit !== undefined) return explicit
+  const env = typeof process !== 'undefined' ? (process.env?.PARSEMAN_GATING as GatingWarnLevel | undefined) : undefined
+  if (env === 'off' || env === 'warn' || env === 'error') return env
+  return 'warn'
+}
+
+/**
+ * Run the static gating diagnostic and surface it per the resolved level. Never
+ * throws from the analysis itself (a diagnostic must not break a correct
+ * compile) — only `'error'` deliberately throws on a real finding. The `accept`
+ * allowlist (object form) suppresses BOTH the warning and the `'error'` gate for
+ * the listed choice ids. Returns the report to attach (undefined when `'off'`).
+ */
+function runGatingDiagnostic<T>(combinator: Combinator<T>, opt: GatingOption | undefined): GatingReport | undefined {
+  const level = resolveGatingLevel(opt)
+  if (level === 'off') return undefined
+  const accept = typeof opt === 'object' ? opt.accept : undefined
+  let report: GatingReport
+  try { report = analyzeGating(combinator as Combinator<unknown>, accept ? { accept } : undefined) }
+  catch { return undefined }
+  const lines = formatGatingWarnings(report)
+  if (lines.length > 0) {
+    if (level === 'error') throw new Error(`parseman: ${report.ungated.length} ungated hot choice(s) / ${report.antiPatterns.length} anti-pattern(s)\n${lines.join('\n')}`)
+    for (const l of lines) console.warn(l)
+  }
+  return report
+}
+
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; coverage?: boolean; gating?: GatingOption }): CompiledParser<T> {
+  const gatingReport = runGatingDiagnostic(combinator, opts?.gating)
   markUnusedValues(combinator)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule bakes it (unless a local
@@ -3687,6 +3740,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     source,
     inlineExpression,
     ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
+    ...(gatingReport === undefined ? {} : { gating: gatingReport }),
     parse(input: string, pos = 0): ParseResult<T> {
       return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, defaultCtx)
     },

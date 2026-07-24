@@ -420,19 +420,19 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     try { return parseman.scanTo(sentinel, opts as parseman.ScanToOptions | undefined) } catch { return null }
   }
 
-  // guard(pred) — context assertion. Capture the predicate source (like
-  // transform's fn) so codegen inlines it into `_mf`; build a placeholder guard
-  // and stash the source on `_def.predSrc`. Without source-capture context we
-  // return null → the whole rule falls back to the (correct) interpreter, never
-  // dropping the predicate.
-  if (callee.name === 'guard') {
+  // gate(pred) (formerly guard(pred)) — context assertion. Capture the predicate
+  // source (like transform's fn) so codegen inlines it into `_mf`; build a
+  // placeholder gate and stash the source on `_def.predSrc`. Without source-capture
+  // context we return null → the whole rule falls back to the (correct)
+  // interpreter, never dropping the predicate.
+  if (callee.name === 'gate' || callee.name === 'guard') {
     if (code === undefined || mfs === undefined) return null
     const [predArg] = node.arguments
     if (!predArg || predArg.type === 'SpreadElement') return null
     const predSrc = stripTsFromSource(predArg as Node, code)
     mfs.push(predSrc)
     try {
-      const combi = parseman.guard(() => true)
+      const combi = parseman.gate(() => true)
       if (combi._def.tag !== 'guard') return null
       combi._def.predSrc = predSrc
       return combi

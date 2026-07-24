@@ -7,7 +7,7 @@ import { not } from './combinators/not.ts'
 import { node } from './combinators/node.ts'
 import { parser as grammarParser } from './combinators/grammar.ts'
 import { expect } from './combinators/expect.ts'
-import { guard } from './combinators/guard.ts'
+import { gate } from './combinators/gate.ts'
 import { label, field, skip, transform, trivia } from './combinators/map.ts'
 import { many, oneOrMore, optional, sepBy } from './combinators/repeat.ts'
 import { scanTo } from './combinators/scanTo.ts'
@@ -267,7 +267,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
           const opts = { ...(def.unwrap ? { unwrap: true } : {}), ...(def.collapse ? { collapse: true } : {}), ...(def.captureTrivia ? { captureTrivia: true } : {}), ...(def.trailingTrivia ? { trailingTrivia: true } : {}) }
           return def.type === undefined ? node(build(def.parser), def.build, opts) : node(def.type, build(def.parser), def.build, opts)
         }
-        case 'guard': return guard(def.predicate)
+        case 'guard': return gate(def.predicate)
         case 'withCtx': return withCtx(def.extra, build(def.parser))
         case 'expect': return expect(build(def.parser), def.label)
         case 'scanTo': return scanTo(build(def.sentinel), { skip: def.skip.map(build), orEOF: def.orEOF })

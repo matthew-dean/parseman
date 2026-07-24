@@ -120,7 +120,7 @@ a matching scope. Parsers split into three camps on how they handle this.
 
 The grammar can consult and thread state as it parses:
 
-- **Parséman** — [`withCtx`](./context) merges state for a sub-parse, [`guard`](./context)
+- **Parséman** — [`withCtx`](./context) merges state for a sub-parse, [`gate`](./context)
   gates a rule on a predicate, and `choice` arms can be **gated** on context. Crucially,
   each node records the `ctx.state` snapshot it parsed under, so
   [incremental re-parsing](./incremental) can replay the *exact* context a rule saw the
