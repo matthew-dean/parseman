@@ -163,6 +163,60 @@ describe('defect 2 — word() case-insensitive keywords', () => {
     expect(parse(kw, 'ſtroke').ok).toBe(false)
   })
 
+  it('PARITY: the COMPILED build folds the same set — `ſtroke` is rejected there too', () => {
+    // The 0.34.0 `iuy`→`iy` fix landed in the interpreter only; codegen kept
+    // emitting `iuy`, so the compiled build (the artifact the macro ships) still
+    // matched `ſtroke` while its ASCII first-set gated `ſ` away. A boundary is
+    // what routes keywords() off the litFold fast path onto that regex.
+    const kw = keywords(['stroke'], { caseInsensitive: true, boundary: 'A-Za-z0-9_-' })
+    expect(bothEngines(kw, 'STROKE')).toMatchObject({ ok: true, end: 6 })
+    expect(bothEngines(kw, 'ſtroke').ok).toBe(false)
+  })
+
+  it('PARITY: the compiled fast path declines a non-ASCII fold rather than mis-folding it', () => {
+    // `litFold` folds ASCII letters only. Compiling `ärger` through it produced an
+    // exact compare that missed `Ärger` — the compiled build silently REJECTED
+    // input the interpreter accepted. Both spellings must agree, with and without
+    // the boundary that routes the keyword off the fast path.
+    expect(bothEngines(keywords(['ärger'], { caseInsensitive: true }), 'ÄRGER')).toMatchObject({ ok: true, end: 5 })
+    expect(bothEngines(keywords(['ärger'], { caseInsensitive: true, boundary: 'A-Za-z0-9_-' }), 'Ärger')).toMatchObject({ ok: true, end: 5 })
+    expect(bothEngines(keywords(['σtroke'], { caseInsensitive: true }), 'ςtroke')).toMatchObject({ ok: true, end: 6 })
+  })
+
+  it('GATING: a NON-ASCII case-insensitive keyword folds too, so its arm still dispatches', () => {
+    // `/i` without `u` folds any pair that stays on ONE side of the ASCII boundary,
+    // so `/(?:ärger)/iy` really does match `Ärger`. Widening the first-set only for
+    // `cp < 128` left `Ä` out of it, and an enclosing choice then dispatched valid
+    // input AWAY from the only arm that could match — the same gate/matcher
+    // disagreement the `iu`→`iy` fix closed, left residual on the non-ASCII side.
+    const kw = keywords(['ärger'], { caseInsensitive: true })
+    expect(firstChars(kw)).toBe('Ää')
+    expect(bothEngines(kw, 'Ärger')).toMatchObject({ ok: true, end: 5 })
+    expect(bothEngines(kw, 'ärger')).toMatchObject({ ok: true, end: 5 })
+    const g = choice(kw, literal('#id'))
+    expect(dispatches(g)).toBe(true)
+    expect(parse(g, 'Ärger').ok).toBe(true)   // false before the fix: gated away
+  })
+
+  it('GATING: a fold class WIDER than upper/lower (σ Σ ς) is still fully covered', () => {
+    // Final sigma is in σ's fold class but is neither its uppercase nor its
+    // lowercase, so widening by toUpperCase/toLowerCase alone would still gate
+    // `ςtroke` away. 67 BMP code points sit in such classes.
+    const kw = keywords(['σtroke'], { caseInsensitive: true })
+    expect(firstChars(kw)).toBe('Σςσ')
+    const g = choice(kw, literal('#id'))
+    expect(dispatches(g)).toBe(true)
+    for (const spelling of ['σtroke', 'Σtroke', 'ςtroke']) {
+      expect(parse(kw, spelling).ok, spelling).toBe(true)     // the matcher accepts it
+      expect(parse(g, spelling).ok, spelling).toBe(true)      // and the gate agrees
+    }
+  })
+
+  it('the ASCII first-set is UNCHANGED by the non-ASCII fold (no dispatch precision lost)', () => {
+    expect(firstChars(keywords(['media', 'supports'], { caseInsensitive: true }))).toBe('MSms')
+    expect(firstChars(word('media', 'A-Za-z0-9_-', { caseInsensitive: true }))).toBe('Mm')
+  })
+
   it('replaces the keyword-regex anti-pattern the diagnostic flags', () => {
     const viaRegex = choice(regex(/media/i), literal('#id'))
     expect(analyzeGating(viaRegex).antiPatterns.map(a => a.kind)).toContain('keyword-regex')

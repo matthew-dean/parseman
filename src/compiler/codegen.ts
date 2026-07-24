@@ -1090,6 +1090,10 @@ function escapeKeywordRe(s: string): string {
  *     is a defensive, not a practical, limitation
  *   - a boundary class this file can't parse (defensive; `parseClassRanges`
  *     handles every realistic boundary string, e.g. `_0-9A-Za-z`)
+ *   - `caseInsensitive` over a keyword containing a non-ASCII code point —
+ *     `litFold` folds ASCII letters only, so `ä` would compile to an exact
+ *     compare and never match `Ä` (the same hazard `caseFoldLiteralOrAlt`
+ *     declines for regex-derived shapes)
  *   - `caseInsensitive` combined with a boundary — the boundary class would
  *     ALSO need ASCII case-folding to match the original regex's `/i` flag
  *     (the general "`/i` on a char class" problem, PERF_IDEAS §8d, not yet
@@ -1100,6 +1104,12 @@ function emitKeywordsFast(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx
   if (def.words.length === 0 || def.words.some(w => w.length === 0)) return null
   if (def.words.some(w => Array.from(w).length !== w.length)) return null
   if (def.caseInsensitive && def.boundary) return null
+  // `litFold` folds ASCII letters ONLY (scannable-run.ts `foldEq`), so a keyword
+  // holding a non-ASCII code point with a case pair (ä/Ä, σ/Σ/ς) would compile to
+  // an exact compare and silently miss the other case — while the interpreter's
+  // `/iy` regex matches it. `caseFoldLiteralOrAlt` already declines exactly this
+  // for regex-derived shapes; the keywords path had simply omitted the guard.
+  if (def.caseInsensitive && def.words.some(w => w.split('').some(c => c.charCodeAt(0) > 127))) return null
 
   let boundary: { ranges: Array<[number, number]>; negated: boolean } | null = null
   if (def.boundary) {
@@ -1155,7 +1165,13 @@ function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, po
 
   const alt = def.words.map(escapeKeywordRe).join('|')
   const boundary = def.boundary ? `(?![${def.boundary}])` : ''
-  const flags = def.caseInsensitive ? 'iuy' : 'uy'
+  // MUST mirror `keywords()`'s own flags exactly (see `src/combinators/keywords.ts`):
+  // case-insensitive drops `u` so that matching folds the SAME set the first-set
+  // enumerates. Emitting `iuy` here folded by Unicode simple case folding instead,
+  // so the COMPILED build matched `ſtroke` against `keywords(['stroke'], …)` while
+  // the ASCII first-set gated `ſ` away — the unsound gate, and an interpreter/
+  // compiled divergence on top of it.
+  const flags = def.caseInsensitive ? 'iy' : 'uy'
   const source = `(?:${alt})${boundary}`
   const key = `${source}/${flags}`
   let rName = ctx.regexMap.get(key)

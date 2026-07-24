@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, FirstSet } from '../types.ts'
 import { fromChar, union, empty } from './first-set.ts'
+import { caseFoldVariants } from './case-fold.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 
@@ -80,9 +81,12 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
   // Case-INSENSITIVE drops `u` deliberately, so that MATCHING and the first-set
   // below fold the SAME set of characters — the invariant `regex()` established in
   // 0.32.0 (see the flag-aware widening in `src/combinators/regex.ts`):
-  //   - `/i` WITHOUT `u` folds only the ASCII Basic-Latin pairs (a↔A … z↔Z), which
-  //     is exactly what the ASCII fold below enumerates → the first-set is a tight,
-  //     SOUND superset and dispatch stays exact.
+  //   - `/i` WITHOUT `u` folds only pairs that stay on the SAME side of the ASCII
+  //     boundary — every Basic-Latin pair (a↔A … z↔Z), and also the non-ASCII ones
+  //     (ä↔Ä, σ↔Σ↔ς), but never a pair that crosses it. `caseFoldVariants` below
+  //     enumerates exactly that relation → the first-set is a tight, SOUND superset
+  //     and dispatch stays exact. (Widening by toUpperCase/toLowerCase alone would
+  //     NOT be: 67 BMP code points sit in fold classes those two miss.)
   //   - `/iu` folds by Unicode *simple case folding*, so `/(?:stroke)/iu` also
   //     matches `ſtroke` (U+017F → s). An ASCII-only first-set would then dispatch
   //     that input AWAY from this arm — an unsound gate. `regex()` answers that by
@@ -94,17 +98,21 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
   const re = new RegExp(`(?:${alt})${boundary}`, flags)
 
   // First-set: the set of first code points across all keywords (and their
-  // ASCII case-folded variants when case-insensitive), for choice() dispatch.
+  // case-folded variants when case-insensitive), for choice() dispatch.
+  //
+  // The fold must cover the SAME pairs the `iy` matcher above accepts, or the gate
+  // dispatches valid input away from this arm. `/i` folds non-ASCII pairs too
+  // (`/ärger/i` matches `Ärger`, `/σ/i` matches both `Σ` and `ς`) — it only refuses
+  // folds that would CROSS the ASCII boundary. `caseFoldVariants` is that exact
+  // relation, so the widening stays a tight, sound superset for every first char,
+  // not just the Basic-Latin ones.
   let firstSet: FirstSet = empty()
   for (const w of sorted) {
     if (w.length === 0) continue
     const cp = w.codePointAt(0)!
     firstSet = union(firstSet, fromChar(cp))
-    if (opts.caseInsensitive && cp < 128) {
-      const u = String.fromCodePoint(cp).toUpperCase().codePointAt(0)
-      const l = String.fromCodePoint(cp).toLowerCase().codePointAt(0)
-      if (u !== undefined && u < 128) firstSet = union(firstSet, fromChar(u))
-      if (l !== undefined && l < 128) firstSet = union(firstSet, fromChar(l))
+    if (opts.caseInsensitive) {
+      for (const v of caseFoldVariants(cp)) firstSet = union(firstSet, fromChar(v))
     }
   }
 
