@@ -22,6 +22,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `deriveExpected` is the single derivation site, read by both the interpreter and
   the codegen, so the two cannot drift here.
 
+- **Internal.** `perf:guard:grammars` gains an `expected/*` sweep, so derived-set
+  width is an axis the gate can see.
+
 ## 0.35.0 — 2026-07-24
 
 - **New `parseman/run` entry — the driver without the library.** The macro removes
