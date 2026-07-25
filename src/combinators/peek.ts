@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any, matchesEmpty } from './first-set.ts'
-import { saveTriviaMark, rollbackTrivia } from './trivia-skip.ts'
+import { saveLookaheadMark, rollbackLookahead } from './trivia-skip.ts'
 
 /**
  * Positive lookahead. Succeeds (consuming nothing) when `combinator` matches at
@@ -53,9 +53,9 @@ export function peek(combinator: Combinator<unknown>): Combinator<null> {
       // `test/parity/trivia-log-regression.test.ts`. The compiled `peek` emits its
       // body under a non-capturing ctx and so never writes these sinks at all; this
       // is what keeps the two engines at parity.
-      const mark = saveTriviaMark(ctx)
+      const mark = saveLookaheadMark(ctx)
       const result = combinator.parse(input, pos, ctx)
-      rollbackTrivia(ctx, mark)
+      rollbackLookahead(ctx, mark)
       if (result.ok) return { ok: true, value: null, span: { start: pos, end: pos } }
       return { ok: false, expected: [`peek(${combinator._tag})`], span: { start: pos, end: pos } }
     },

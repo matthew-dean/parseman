@@ -428,13 +428,13 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
           //
           // RECOVERY IS TESTED FIRST, and is ORTHOGONAL to `trailing`. This block
           // used to lead with the `sepMark !== undefined` branch — but sepMark is
-          // non-undefined for EVERY 'allow'/'require' list, so that branch always
-          // won and the resync below became unreachable the moment a grammar opted
-          // into a trailing separator. `{a,,b}` recovered under the default
-          // 'forbid' and hard-failed under 'allow', which is not a policy anyone
-          // would choose: permitting a trailing comma has nothing to do with
-          // whether a tolerant parse may resynchronize. (The compiled `failItem`
-          // already ordered it this way — the engines disagreed because of this.)
+          // non-undefined for EVERY 'allow' list, so that branch always won and the
+          // resync below became unreachable the moment a grammar opted into a
+          // trailing separator. `{a,,b}` recovered under the default 'forbid' and
+          // hard-failed under 'allow', which is not a policy anyone would choose:
+          // permitting a trailing comma has nothing to do with whether a tolerant
+          // parse may resynchronize. (The compiled `failItem` already ordered it
+          // this way — the engines disagreed because of this.)
           //
           // Junk after a REAL separator is recovered whatever `trailing` says, and
           // no rollback happens on that path: both the separator and the recovered
@@ -449,8 +449,8 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
             continue
           }
           if (sepMark !== undefined) {
-            // 'allow' / 'require': the separator we just consumed IS part of the
-            // list — a genuine trailing one, since no resync applied above.
+            // 'allow': the separator we just consumed IS part of the list — a
+            // genuine trailing one, since no resync applied above.
             rollbackTrivia(ctx, sepMark)
             cur = sep.span.end
             break
