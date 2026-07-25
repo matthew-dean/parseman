@@ -598,6 +598,37 @@ A contributing piece that is an opaque precompiled artifact — one carrying com
 functions rather than re-lowerable IR — cannot be introspected. Its rules are reported
 in `report.unanalysable` rather than silently omitted.
 
+### `analyzeDuplication(entry, opts?)` / `analyzeDuplicationRules(ruleMap, opts?)` → `DuplicationReport`
+
+Static structural-duplication diagnostic over a combinator tree. Reports eight families:
+`rewrites` (mechanical algebra — `choice(sequence(A, B), B)` → `sequence(optional(A), B)`, a
+hand-rolled `sepBy`, idempotent nesting, and the two dead-arm BUGS `duplicate-arm` /
+`shadowed-arm`), `divergentNodes` (one `node()` type built by several productions),
+`nearDuplicates` (subtrees identical except at one slot), `duplicates` (identical subtrees in
+≥2 places, ranked by nodes saved), `regexFragments` (an alternation run re-spelled across
+several `regex()` terminals), `regexClasses` (character classes re-spelled — and, more
+usefully, near-identical ones, with the drift shown side by side), `keywordRegexes`
+(hand-rolled keywords that should be `word()`/`keywords()`, flagged for the `/i`-without-`/u`
+case-fold bug, plus large literal ALTERNATIONS — a regex enumerating a fixed vocabulary is a
+keyword set written the hard way, and `hazards`/`longestFirst` report whether its
+hand-maintained order lets a shorter alternative shadow a longer one), and `overlaps` (`choice` arms whose first-sets intersect, with the shared
+prefix named and whether the `sharedPrefix` strategy already handles it).
+
+A `keywordRegexes` finding with an UNRESCUED prefix hazard is a third bug class: regex
+alternation is first-match, so with no boundary guard to force a backtrack the longer
+alternative can never match. Only the two dead-arm rewrite findings and unwrapping a one-arm `choice` are `astNeutral`. Everything else changes the child array the
+site produces and is reported as a CANDIDATE to verify, never as a fix. `hand-rolled-sepby`
+carries a per-site `sepByVerdict` — `convertible`, `blocked-by-capture` (the repetition
+`field()`s its separator, which `sepBy` cannot express) or `reducer-stride-review`.
+
+The input is the **rules map**, not the value `compose()`/`composeLeaf()` returns — that is a
+fused compiled artifact with no `_def` to walk, and passing one **throws** rather than
+reporting an empty result. `opts.accept` is the allowlist of finding `id`s, with
+`report.acceptedUnused` flagging stale entries. `formatDuplicationFindings(report)` renders
+printable lines. Wiring is OPT-IN on all three lowering paths via the `duplication` option
+(or `PARSEMAN_DUPLICATION`); default `'off'`. See
+[Grammar duplication](../guide/grammar-duplication).
+
 ## IDE support
 
 ### `completionsAt(target, input, offset, options?)`

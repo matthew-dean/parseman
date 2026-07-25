@@ -3,6 +3,73 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.39.0 — 2026-07-25
+
+- **New: `analyzeDuplication()` — a structural duplication / overlap / rewrite
+  diagnostic.** A parseman grammar is a combinator tree, so "did I write this
+  production twice?" has an exact answer. Finding it by reading does not scale: a
+  few hundred productions is tens of thousands of pairs, and the reference grammars
+  turn out to carry a comparison terminal spelled seven times, a character class
+  spelled eleven ways across 80 terminals, and 39 hand-rolled separated lists.
+
+  Eight families, all located by rule name and structural path: `rewrites`
+  (mechanical algebra — `choice(sequence(A, B), B)` → `sequence(optional(A), B)`, a
+  hand-rolled `sepBy`, idempotent nesting, and the two dead-arm BUGS
+  `duplicate-arm` / `shadowed-arm`), `divergentNodes` (one `node()` type built by
+  several productions that share terms), `nearDuplicates` (subtrees identical
+  except at one slot — the clone family), `duplicates`, `regexFragments` (an
+  alternation run re-spelled across terminals), `regexClasses` (character classes
+  re-spelled, with near-identical spellings grouped so the DRIFT is visible side by
+  side), `keywordRegexes` and `overlaps`.
+
+  Two things it deliberately does not do. It does not claim rewrites are safe: only
+  the dead-arm findings (and unwrapping a one-arm `choice`) are `astNeutral`, and
+  every other rewrite changes the child array the site produces, so it says
+  *candidate — verify AST identity* and names
+  the enclosing `node()`. And it does not report a count where a verdict is needed:
+  each hand-rolled `sepBy` carries `convertible` / `blocked-by-capture` (the
+  repetition `field()`s its separator, which `sepBy` cannot express) /
+  `reducer-stride-review`, because on a real grammar those split roughly evenly and
+  a count of matches would be a list of false work.
+
+  `keywordRegexes` is a correctness finding, not a style note. It covers single
+  keywords AND large literal alternations, on the principle that **a regex
+  enumerating a fixed vocabulary is a keyword set written the hard way**: it exposes
+  no first-set for `choice` to dispatch on, it hand-maintains an ordering
+  `keywords()` guarantees, and with `/i` and no `/u` it inherits the non-ASCII
+  case-folding bug `keywords()` fixes internally (`combinators/case-fold.ts`).
+
+  The ordering analysis makes that a third BUG class. Regex alternation is
+  first-match, not longest-match, so an earlier alternative that is a strict prefix
+  of a later one makes the longer branch unreachable — unless a trailing boundary
+  guard rejects the following character and forces a backtrack. `hazards` reports
+  each such pair and whether the guard rescues it; an unrescued one is a live
+  defect, not a style preference.
+
+  Wired on ALL THREE lowering paths — `compile`, `compileRuleMap`, `compileLinkable`
+  — and tested on each. The gating diagnostic was default-on and blind in the macro
+  build for two minor versions precisely because the latter two never called it.
+
+  Default is `'off'` (`{ duplication: 'warn' | 'error' }` or `PARSEMAN_DUPLICATION`).
+  An ungated hot choice is a cliff with no other symptom; a duplicated subtree is a
+  cost the author may have chosen, and most findings are candidates needing an AST
+  check — printing those on every build teaches people to stop reading the output.
+
+  Passing a `compose()`d artifact **throws** with an actionable message instead of
+  reporting an empty result. Handed a fused grammar, `analyzeGating()` throws deep
+  in its walker; the failure that matters is not the throw but that an analysis
+  which sees nothing reports "no findings". Silence is not a permitted outcome.
+
+  Docs: [Grammar duplication](docs/guide/grammar-duplication.md).
+
+- **Fix: a derived `expected` set names each token once — and that is 32% of Less
+  parse time.** 0.35.0's `fix(expect)` (deriving expectations through a nullable
+  prefix) is correct and stays. What it did not account for is that a nullable
+  prefix re-reaches the SAME tokens from every term it derives through: a value
+  grammar whose leading terms are all optional named its value-start set once per
+  term, per choice arm. One constant in jess's compiled Less grammar went from 20
+  entries to 70+.
+
 ## 0.38.0 — 2026-07-25
 
 - **Fix: a gating analysis that crashed reported the same as one that passed.**

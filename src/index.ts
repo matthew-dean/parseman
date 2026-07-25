@@ -34,7 +34,7 @@ export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/
 export { token, leaf } from './combinators/token.ts'
 
 export { compile } from './compiler/codegen.ts'
-export type { CompiledParser, LinkablePieces, GatingOption } from './compiler/codegen.ts'
+export type { CompiledParser, LinkablePieces, GatingOption, DuplicationOption } from './compiler/codegen.ts'
 
 export { analyzeGating, analyzeGatingRules, formatGatingWarnings, firstSetToString } from './analysis/gating.ts'
 export type {
@@ -46,6 +46,18 @@ export type {
 // directly. This is the entry point a composed grammar's author wants.
 export { analyzeGrammarGating } from './analysis/grammar.ts'
 export type { AnalysableGrammar } from './analysis/grammar.ts'
+
+export {
+  analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings,
+  duplicationFindingCount, siteToString, alternationGroups, keywordRegexShape,
+  extractCharClasses, charClassMembers, keywordAlternationHazards,
+} from './analysis/duplication.ts'
+export type {
+  DuplicationReport, AnalyzeDuplicationOptions, DuplicationWarnLevel, Site,
+  DuplicateFinding, NearDuplicateFinding, RegexFragmentFinding,
+  RegexClassFinding, RegexClassVariant,
+  ArmOverlapFinding, RewriteFinding, RewriteKind, SepByVerdict, KeywordRegexFinding, DivergentNodeFinding,
+} from './analysis/duplication.ts'
 // `pick()` is deliberately NOT re-exported: build-inlining a `pick()` of an imported
 // grammar can't yet carry that grammar's ambient trivia across the module boundary, so
 // the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)

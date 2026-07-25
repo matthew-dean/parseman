@@ -85,6 +85,7 @@ export default defineConfig({
             { text: 'Editor / language-server integration', link: '/guide/editor-integration' },
             { text: 'Grammar spec generation', link: '/guide/spec-generation' },
             { text: 'Grammar observability', link: '/guide/grammar-observability' },
+            { text: 'Grammar duplication', link: '/guide/grammar-duplication' },
           ],
         },
       ],
