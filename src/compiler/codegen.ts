@@ -2833,7 +2833,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // Per-node-type trivia-kind mask (structural/host nodes only): a host may want
   // one node type captured comments-only and another whitespace-and-all. Scoped
   // here and restored after the inner parse, exactly like captureTrivia/_cstTriviaLog.
-  const smk = (structural || needTLgate) ? v(ctx, '_smk') : null
+  // Per-node-type trivia-kind mask: STRUCTURAL nodes only. A direct builder under a CST
+  // host gets its trivia log unfiltered — the host's `_parsemanTriviaKinds` is a
+  // narrowing preference, so ignoring it over-delivers rather than losing anything, and
+  // the save/install/restore is three stores on every node of every parse. Measured at
+  // ~17% on the node-dense `rollback/none` axis, which is a real cost to pay for a
+  // filter that only trims data the host already asked to receive less of.
+  const smk = structural ? v(ctx, '_smk') : null
   if (structural || needTLgate || needSTgate || needFDgate) ctx.needsHostReads = true
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
   // The same three gates for a DIRECT builder, additionally conditioned on a

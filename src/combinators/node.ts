@@ -166,7 +166,9 @@ export function node<N>(
       // only certain kinds captured (comments for Ruleset, whitespace for
       // CompoundSelector). Scoped here, restored below — matches the compiled path.
       const savedMask = ctx._triviaCaptureMask
-      if ((build === undefined || hostCst) && ctx.build?._parsemanTriviaKinds !== undefined && def.type !== undefined) {
+      // Structural nodes only — see the matching note in codegen's `smk`. A direct
+      // builder under a CST host receives its trivia log unfiltered by kind.
+      if (build === undefined && ctx.build?._parsemanTriviaKinds !== undefined && def.type !== undefined) {
         ctx._triviaCaptureMask = ctx.build._parsemanTriviaKinds(def.type)
       }
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
