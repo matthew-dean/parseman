@@ -54,8 +54,11 @@ The same combinator code runs three ways, with identical results:
 
 - **Interpreter** — zero setup, works anywhere (tests, REPLs, dynamic grammars).
 - **Macro build** — a [bundler plugin](https://matthew-dean.github.io/parseman/guide/macro-mode)
-  evaluates your grammar at build time and inlines the result. Zero runtime cost; the
-  `parseman` import disappears from the bundle.
+  evaluates your grammar at build time and inlines the result. The combinator import you
+  mark `with { type: 'macro' }` disappears entirely; what ships is flat JavaScript with no
+  parseman import in it. (Executing that parser still goes through `run()`/`parse()`, so an
+  app keeps parseman as an ordinary dependency — see
+  [the three modes](https://matthew-dean.github.io/parseman/guide/modes).)
 - **`compile()`** — the same optimizer, on demand at runtime.
 
 ```ts
