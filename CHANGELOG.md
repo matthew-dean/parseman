@@ -5,6 +5,39 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.37.0 — 2026-07-25
 
+- **`parseman/oracle` — an AST-identity oracle for grammar refactors.** Digest a
+  corpus through your parse entry points before and after a change and compare:
+  identical digests mean the cleanup is output-neutral, different ones mean it is a
+  semantics change rather than a refactor. Collapsing duplicated rules becomes an
+  accept/reject instead of a judgement call.
+
+  `digestCorpus` takes named surfaces — declare the interpreter and the compiled
+  artifact together and the one you did not edit is a free control — and hashes
+  thrown errors and returned failures alongside successes, so a rejection quietly
+  becoming an accept is caught. `loadCorpus` throws on a root that does not resolve
+  rather than returning a smaller, greener corpus, and entry ids are relative to an
+  explicit base so two machines agree.
+
+  The projection separates what `JSON.stringify` collapses — `{a: undefined}` from
+  `{}`, `NaN` from `null`, `-0` from `0`, `Map`/`Set` from `{}`, and two node
+  classes with the same fields — while ignoring property insertion order, which
+  refactors churn and no consumer observes. A shared subtree is written out twice
+  rather than reported as a cycle, so a DAG's digest does not depend on traversal
+  order.
+
+  A digest that moves because the HARNESS changed rather than the grammar would be
+  worse than no oracle, so every report carries a behavioural fingerprint of the
+  projection, `compareReports` refuses to compare reports that disagree on it, and
+  the suite pins it to a literal. A nondeterministic grammar is diagnosed rather
+  than hashed.
+
+  Node-only, and a separate entry point: nothing here reaches the browser-capable
+  `parseman` bundle. See `docs/guide/identity-oracle.md` and
+  `docs/design/grammar-refactor-gates.md`.
+
+- **Internal.** `docs:verify` now redirects subpath imports (`parseman/spec`,
+  `parseman/oracle`, …) at the TS source, so a doc example for a secondary entry
+  point can be checked at all.
 - **Fix: the INTERPRETER still handed a positioned-CST host the collectors of the
   builder it replaced.** The compile-time host mode below settles this for the compiled engine
   (`hostMode: 'cst'` captures unconditionally). The interpreter has no compile step and

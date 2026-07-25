@@ -42,6 +42,11 @@
       "types": "./dist/language-service/index.d.ts",
       "import": "./dist/language-service/index.js",
       "require": "./dist/language-service/index.cjs"
+    },
+    "./oracle": {
+      "types": "./dist/oracle/index.d.ts",
+      "import": "./dist/oracle/index.js",
+      "require": "./dist/oracle/index.cjs"
     }
   },
   "files": [

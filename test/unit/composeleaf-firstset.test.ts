@@ -164,7 +164,14 @@ describe('cross-artifact first-set dispatch (composeLeaf shape)', () => {
     expect(tested).toBeGreaterThan(1000)
     expect(falseExcludes).toBe(0)
     expect(endMismatch).toBe(0)
-  })
+    // 300 generated grammars, each compiled and fused: ~5.5s under v8 coverage
+    // instrumentation, against a 5s default. It passed only because nothing else
+    // was competing for a worker, so ANY test file added to the suite tipped it —
+    // which is what happened, and the failure named a timeout rather than the
+    // sweep. Raise the ceiling rather than shrink the sweep: the sweep size is the
+    // assertion (`tested > 1000`), and a soundness fuzz that shrinks to fit a
+    // clock is one that stops finding things.
+  }, 60_000)
 
   // ── Regression: false-excludes found on the REAL jess corpus (nested-paren at-rule
   // preludes) that the earlier synthetic fuzz missed — the recursive query/supports
