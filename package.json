@@ -62,6 +62,7 @@
     "bench:sharedprefix": "node --import tsx/esm bench/shared-prefix-ab.ts",
     "bench:baseline": "node --import tsx/esm bench/update-parseman-baseline.ts",
     "perf:guard": "node --import tsx/esm bench/perf-guard.ts",
+    "perf:guard:grammars": "node --import tsx/esm bench/grammar-perf-guard.ts",
     "prepare": "git config core.hooksPath scripts/git-hooks || true; node scripts/build.mjs",
     "prepublishOnly": "node scripts/check-changelog.mjs",
     "check:changelog": "node scripts/check-changelog.mjs",

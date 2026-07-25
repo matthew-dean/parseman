@@ -9,3 +9,6 @@ src/**/*.d.ts.map
 docs/.vitepress/cache/
 coverage/
 .doc-verify/
+
+# Reference worktrees materialised by `pnpm perf:guard:grammars`.
+.cache/

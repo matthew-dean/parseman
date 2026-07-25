@@ -3,6 +3,34 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **A grammar performance gate — `pnpm perf:guard:grammars`, required on every
+  code PR.** `perf:guard` measures a 47-byte `css/decls` and a 34-byte
+  `css/selector`. It passed on every PR of the 0.34.0 cycle, including the one
+  that made a real downstream Less grammar parse 25% slower. Its trigger ("did
+  parseman's microbenchmarks move?") was not its goal ("did the code parseman
+  emits get slower?").
+
+  The new gate measures a **rollback-density sweep** that lives entirely in this
+  repo — one grammar shape over one ~38 KB input at 0 / 1 / 4 / 16 speculative
+  probes per value term, bracketing the 20 / 121 / 599 `not()`-per-KB measured
+  across the real grammars in that event. It A/Bs against a pinned reference
+  commit of this repo, **interleaved in one process** with per-round rotation, and
+  reports **per case** — median, min AND win rate, never one aggregate. Replaying
+  0.34.0 against 0.33.0 it reads +1.2% / +54.9% / +89.0% / +112.8%: the spread is
+  the finding, because it says the cost is per-execution.
+
+  Thresholds (6% median / 6% min, with 3/4 of paired samples lost) come from a
+  measured same-build-vs-itself floor of 1.9% median / 1.0% min. The ~3%
+  resolution limit and the ~4.4× amplification versus a real grammar are stated in
+  `docs/design/perf-gates.md` rather than implied. `--ref` / `--head-ref` replay a
+  known regression so the gate can be watched going red; a missing reference
+  commit is a hard failure, never a skip.
+
+  No sibling checkout, no network fetch, no setup step: `pnpm install && pnpm
+  perf:guard:grammars`.
+
 ## 0.34.0 — 2026-07-24
 
 - **`peek(combinator)` — the positive lookahead.** PEG's `&X`, the counterpart to
