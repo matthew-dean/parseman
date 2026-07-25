@@ -822,8 +822,13 @@ export function transformMacro(
     const opaque: Array<{ ns: string; ruleNames: string[] }> = []
     const add = (it: CarriedItem): void => {
       if (isIR(it)) { maps.push(evalRuleMapIR(it.ir)); return }
-      const o = it as unknown as { ns?: string; ruleFns?: Record<string, unknown> }
-      opaque.push({ ns: o.ns ?? '<unknown>', ruleNames: o.ruleFns ? Object.keys(o.ruleFns) : [] })
+      // `ruleFns` is a Map — see the note on the runtime linker's twin. `Object.keys`
+      // on it silently yields [], anonymising every opaque piece.
+      const o = it as { ns?: string; ruleFns?: Map<string, string> }
+      opaque.push({
+        ns: o.ns ?? '<unknown>',
+        ruleNames: o.ruleFns instanceof Map ? [...o.ruleFns.keys()] : [],
+      })
     }
     for (const it of items) {
       if (isSpread(it)) for (const p of importedPieces(it.__spreadLocal) ?? []) add(p as CarriedItem)

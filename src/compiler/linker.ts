@@ -448,8 +448,11 @@ export function carriedRuleMapsDetailed(
   const opaque: Array<{ ns: string; ruleNames: string[] }> = []
   for (const p of carried) {
     if (isIRPiece(p)) { maps.push(evalRuleMapIR(p.ir)); continue }
-    const ruleFns = (p as unknown as { ruleFns?: Record<string, unknown> }).ruleFns
-    opaque.push({ ns: p.ns, ruleNames: ruleFns ? Object.keys(ruleFns) : [] })
+    // `ruleFns` is a Map, not a plain object — `Object.keys` on it silently yields []
+    // and every opaque piece would degrade to an anonymous `<artifact _lkN_>`, which is
+    // exactly the "reported, but uselessly" failure this whole change is against.
+    const ruleFns = (p as { ruleFns?: Map<string, string> }).ruleFns
+    opaque.push({ ns: p.ns, ruleNames: ruleFns instanceof Map ? [...ruleFns.keys()] : [] })
   }
   return { maps, opaque }
 }

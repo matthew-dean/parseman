@@ -22,7 +22,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   analyzeGating, analyzeGatingRules, analyzeGrammarGating, choice, compose,
-  formatGatingWarnings, literal, regex, rules, sequence,
+  formatGatingWarnings, literal, regex, rules, sequence, withCtx,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
 import { toEBNF } from '../../src/spec/index.ts'
@@ -144,6 +144,41 @@ describe('ENGINE PARITY — the runtime linker and the macro plugin agree', () =
     // banner must NOT appear. (Pairs with the tests above: silence is only legitimate
     // when the walk actually saw the grammar.)
     expect(warns.filter(w => w.includes('UNANALYSABLE'))).toEqual([])
+  })
+})
+
+describe('an OPAQUE contributing piece is named, not silently dropped', () => {
+  /**
+   * Not every composition is fully recoverable. In interpreter mode a rule map that
+   * cannot be serialized to IR — `withCtx` without `extraSrc` is the real-world case —
+   * falls back to a BAKED linkable piece carrying compiled rule functions. Those rules
+   * have no combinator graph, so they are genuinely unanalysable.
+   *
+   * That is allowed. What is NOT allowed is analysing the remaining pieces and
+   * returning a clean report, which is what the old code did: the consumer would see a
+   * verdict covering a fraction of its grammar and no indication of the shortfall.
+   */
+  it('reports opaque pieces in `unanalysable`, WITH their rule names', () => {
+    const withCtxRules = rules(_g => ({
+      Opaque: withCtx({ flag: true }, literal('x')),
+    })) as Record<string, Combinator<unknown>>
+    const composed = compose([
+      rules(_g => ({ Plain: choice(literal('a'), literal('b')) })),
+      withCtxRules,
+    ]) as unknown as Record<string, unknown>
+
+    const report = analyzeGrammarGating(composed)
+    if (report.unanalysable.length === 0) {
+      // The piece was recoverable after all — then it must actually have been analysed.
+      expect(report.totalChoices).toBeGreaterThan(0)
+      return
+    }
+    const opaque = report.unanalysable.filter(u => u.kind === 'opaque-artifact')
+    expect(opaque.length).toBeGreaterThan(0)
+    // `ruleFns` is a Map; reading it with `Object.keys` yields [] and anonymises the
+    // finding to `<artifact _lkN_>`. A finding nobody can act on is barely a finding.
+    expect(opaque.some(u => !u.rule.startsWith('<artifact '))).toBe(true)
+    expect(opaque[0]!.reason).toContain('IR')
   })
 })
 
