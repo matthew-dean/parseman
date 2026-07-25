@@ -49,11 +49,11 @@ jobs:
           #
           # `.github/` counts as code — a workflow change must run the full suite.
           #
-          # CHANGELOG.md counts as code too, and that exception is load-bearing:
-          # `pnpm check:changelog` runs INSIDE the matrix, so a blanket `\.md$`
-          # exclusion would let a changelog-only PR skip the very check that
-          # validates it — an invalid changelog would merge green and only surface
-          # later, at publish time.
+          # CHANGELOG.md counts as code. The changelog itself is now validated by the
+          # `release-gate` job, which is never skipped, so this no longer protects the
+          # changelog check — it protects the SUITE: a changelog entry is a claim about
+          # behaviour, and the version bump that accompanies it lands in `src/version.ts`,
+          # which the artifact version lock reads. A release commit must be tested.
           # `.github/` is tested BEFORE the markdown exemption on purpose: an
           # issue template or workflow README lives under `.github/**` AND ends in
           # `.md`, so a single broad `\.md$` exemption would let it skip the matrix
@@ -86,6 +86,61 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Verify documented examples
         run: pnpm docs:verify
+
+  # Release gate — is this change RELEASABLE the moment it merges?
+  #
+  # `scripts/check-changelog.mjs` used to run only as `prepublishOnly`. It refused a
+  # `## Unreleased` top section at PUBLISH time, which is the last moment it can
+  # matter and long after the PR that caused it has merged. Every PR was free to
+  # leave `main` merged-but-unshippable, and three consecutive releases went out
+  # through that gap — the 0.36.0 content sat on `main` under a heading naming no
+  # version at all. So the check moved LEFT, to here.
+  #
+  # It asserts (a) the changelog's first `##` heading names a version, equal to
+  # package.json's and to `src/version.ts`'s stamp, and (b) if the diff touches the
+  # PUBLISHED SURFACE (`src/**`, or a consumer-facing package.json field) the version
+  # went up. Everything that cannot reach a consumer — tests, benches, scripts, docs,
+  # this file, the lockfile — is exempt from (b) on purpose: a gate that fires on a
+  # comment typo gets bypassed, and then the gates that matter get bypassed with it.
+  #
+  # Its own job rather than a matrix step, for two reasons. It needs `fetch-depth: 0`
+  # to see the base commit, which the matrix deliberately does not take. And it must
+  # run on EVERY PR including documentation-only ones — (a) has no exemption at any
+  # version, so unlike the matrix it is never skipped. It needs no install: the script
+  # is dependency-free Node.
+  #
+  # The hatch is the `release-exempt` LABEL, passed through below. It waives (b) only,
+  # for a revert of a release or a PR chained on one that already bumped, and it does
+  # so visibly on the PR instead of in someone's `--no-verify`.
+  release-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # This job reads history and pushes nothing, so the token has no reason to
+          # survive into the step that runs the gate. Every git call the script makes
+          # (`merge-base`, `diff`, `show`) is local to the checkout.
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Changelog section and version bump
+        env:
+          # `pull_request` only. On a push to `main` there is no base to diff and no
+          # label to read, so the script runs release-integrity alone — which is the
+          # backstop that catches anything merged around this gate.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          EXEMPT: ${{ contains(github.event.pull_request.labels.*.name, 'release-exempt') }}
+        run: |
+          set -euo pipefail
+          # `if`, not `[ … ] && …`: under `set -e` a trailing test that evaluates
+          # false IS the step's exit status, so the short-circuit form would fail the
+          # job precisely when the PR is unlabelled — the common case.
+          args=()
+          if [ -n "$BASE_SHA" ]; then args+=("--base=$BASE_SHA"); fi
+          if [ "$EXEMPT" = "true" ]; then args+=("--exempt"); fi
+          node scripts/check-changelog.mjs ${args[@]+"${args[@]}"}
 
   test-matrix:
     needs: changes
@@ -135,9 +190,6 @@ jobs:
         # (test fixtures import it as a real consumer would). No separate build
         # step needed here.
         run: pnpm install --frozen-lockfile
-
-      - name: Changelog entry
-        run: pnpm check:changelog
 
       - name: Typecheck
         run: pnpm typecheck
@@ -217,7 +269,7 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: [changes, test-matrix, docs-verify, grammar-perf]
+    needs: [changes, test-matrix, docs-verify, grammar-perf, release-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -227,11 +279,18 @@ jobs:
           matrix='${{ needs.test-matrix.result }}'
           docs='${{ needs.docs-verify.result }}'
           perf='${{ needs.grammar-perf.result }}'
+          release='${{ needs.release-gate.result }}'
           code='${{ needs.changes.outputs.code }}'
-          echo "test-matrix=$matrix  docs-verify=$docs  grammar-perf=$perf  code-changed=$code"
+          echo "test-matrix=$matrix  docs-verify=$docs  grammar-perf=$perf  release-gate=$release  code-changed=$code"
 
           # docs-verify gates every change — it is never skipped.
           [ "$docs" = "success" ] || { echo "::error::docs:verify did not pass"; exit 1; }
+
+          # Nor is the release gate, at any version, for any kind of change. A
+          # documentation-only PR still may not leave the changelog headless. `success`
+          # is the ONLY accepted result here — there is no skip case to whitelist, so
+          # a skip from any cause fails rather than sliding through as "not failed".
+          [ "$release" = "success" ] || { echo "::error::release-gate did not pass ($release)"; exit 1; }
 
           case "$matrix" in
             success) ;;
