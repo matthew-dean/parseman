@@ -3,6 +3,35 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.41.0 — 2026-07-25
+
+- **Fix: the INTERPRETER still handed a positioned-CST host the collectors of the
+  builder it replaced.** 0.40.0 settled this for the compiled engine at build time
+  (`hostMode: 'cst'` captures unconditionally). The interpreter has no compile step and
+  was still eliding per-node capture from the DIRECT builder's formal arity — so under a
+  `_parsemanCstOutput` host, an arity-1 `children => …` builder (which is nearly all of
+  them) handed the host an **empty `triviaLog` and absent `fields` and `state`**. Nothing
+  errored, and an empty trivia log is indistinguishable from a node that genuinely had
+  none, which is why it survived.
+
+  The interpreter now re-decides per parse what the compiled engine decides per
+  compilation, and `test/unit/interpreter-host-capture.test.ts` pins the two engines to
+  each other — a fix reaching one engine and not the other fails there. Assertions
+  compare against a STRUCTURAL control (the same grammar on the path that was always
+  gated correctly) rather than against a hand-written expectation.
+
+  Scope note: this is the surviving half of a larger change. The other half — per-node
+  runtime gating in codegen — is **not** needed, because `hostMode` removed the runtime
+  question entirely. **Zero lines of `src/compiler/codegen.ts` changed here**, so the
+  generated code is byte-identical to 0.40.0 and the emitted hot path is untouched.
+
+  That is also the cleanest available confirmation of the 0.40.0 root cause. The earlier
+  attempt at this fix destabilized `css/stylesheet` (readings from −36% to +74%) because
+  it gated capture at parse time on every node. Rebuilt on top of the compile-time gate,
+  the same correctness fix costs nothing: `perf:guard:grammars` ok on all seven cases,
+  `perf:workloads` ok with `css/stylesheet` at min **−9.2 … −4.7%, won 8–9/12, breached
+  0/3**. The runtime gate was the perturbation.
+
 ## 0.40.0 — 2026-07-25
 
 - **Host mode is now a COMPILE-TIME decision.** A `node()` with its own `build` is

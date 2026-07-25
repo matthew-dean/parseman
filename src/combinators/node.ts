@@ -1,6 +1,6 @@
 import type { Combinator, FieldMap, ParseContext, ParseResult, ParserMeta, ParserDef } from '../types.ts'
 import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/capture-buffer.ts'
-import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
+import { buildReadsTrivia, buildReadsState, cstOutputHost } from '../compiler/build-arity.ts'
 import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { consumeTrivia } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
@@ -102,9 +102,21 @@ export function node<N>(
   // capture for the inner scope; when it never reads state (5th), skip the state clone.
   // A STRUCTURAL node (no own build) defers to `ctx.build` / a default CST, which
   // may read either, so capture both.
+  // These are the DIRECT builder's own needs, and they are not the whole story. A node
+  // with its own build is re-routed through `ctx.build` when that host marks itself
+  // `_parsemanCstOutput` (see the dispatch below) — and then the HOST, not the builder,
+  // is the consumer. Nearly every AST builder is `children => …`, arity 1, so under a CST
+  // host these nodes handed the host an EMPTY triviaLog and absent fields and state, and
+  // an empty trivia log is indistinguishable from a node that genuinely had none.
+  //
+  // The COMPILED engine settles this at build time (`compile(g, { hostMode: 'cst' })`,
+  // added in 0.40.0), where it costs nothing. The interpreter has no compile step and
+  // stays dynamic, so it re-decides per parse — which is the same answer, reached the
+  // only way this engine can reach it.
   const capturesTrivia = captureTrivia || trailingTrivia || (build ? buildReadsTrivia(def) : true)
   const clonesState = build ? buildReadsState(def) : true
-  const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
+  const hasOwnFields = parserHasOwnFields(combinator)
+  const capturesFields = hasOwnFields && (build ? buildReadsFields(def) : true)
   // First-set fail-fast (mirrors emitNode's codegen guard): a node whose body can't
   // match empty and whose first set can't start here can only fail, so reject BEFORE
   // allocating the CST capture frame. Sound and output-neutral — the failing body
@@ -126,9 +138,15 @@ export function node<N>(
         }
         return { ok: false, expected: failExpected, span: { start: pos, end: pos } }
       }
+      // Under a positioned-CST host a direct builder is bypassed, so capture must follow
+      // what the HOST reads. Mirrors `hostMode: 'cst'` in the compiled engine, which
+      // captures unconditionally there because it knows the mode at compile time.
+      const hostCst = build !== undefined && cstOutputHost(ctx.build)
+      const effTrivia = capturesTrivia || hostCst
+      const effFields = capturesFields || (hostCst && hasOwnFields)
       const saved = beginCstNodeCapture(ctx)
       const savedFields = ctx._fields
-      ctx._fields = capturesFields ? [] : undefined
+      ctx._fields = effFields ? [] : undefined
       // Per-node-type trivia-kind mask: a structural (host-built) node may want
       // only certain kinds captured (comments for Ruleset, whitespace for
       // CompoundSelector). Scoped here, restored below — matches the compiled path.
@@ -138,13 +156,13 @@ export function node<N>(
       }
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
       // without touching the global _triviaLog, which is committed independently.
-      if (!capturesTrivia) ctx.captureTrivia = false
+      if (!effTrivia) ctx.captureTrivia = false
       let r = combinator.parse(input, pos, ctx)
       if (r.ok && trailingTrivia && ctx.trivia) {
         const end = consumeTrivia(input, r.span.end, ctx)
         r = { ...r, span: { start: r.span.start, end } }
       }
-      const fields = capturesFields ? buildFieldMap(ctx._fields) : undefined
+      const fields = effFields ? buildFieldMap(ctx._fields) : undefined
       ctx._fields = savedFields
       ctx._triviaCaptureMask = savedMask
       const { children, rawChildren, triviaLog } = endCstNodeCapture(ctx, saved)
@@ -154,7 +172,14 @@ export function node<N>(
       // unwrap/collapse: a single captured child IS the value — skip build.
       const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const nodeType = def.type ?? missingInferredType()
-      const cstOutput = (ctx.build as unknown as { _parsemanCstOutput?: true } | undefined)?._parsemanCstOutput === true
+      const cstOutput = cstOutputHost(ctx.build)
+      // A direct builder that never declared `state` still owes the host its snapshot.
+      // The clone happens AFTER the body, so unlike trivia it needs no gate up front —
+      // build it here, on a branch the eval-AST path never takes. Matches what
+      // `hostMode: 'cst'` does in the compiled engine.
+      const hostState = clonesState
+        ? st
+        : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const built: unknown = unwrap && children.length === 1
         ? unwrapChild(children[0])
         : collapse && children.length === 1
@@ -170,7 +195,7 @@ export function node<N>(
           // the one exception: it must never receive an arbitrary AST object as a
           // child of a CST node, so build this grammar node through that host.
           ? cstOutput && ctx.build
-            ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, st)
+            ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, hostState)
             : build(children, fields, r.span, rawChildren, triviaLog, st)
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build

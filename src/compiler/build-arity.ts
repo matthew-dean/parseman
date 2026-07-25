@@ -14,6 +14,21 @@ import type { ParserDef } from '../types.ts'
 
 type NodeDef = Extract<ParserDef, { tag: 'node' }>
 
+/**
+ * Is a positioned-CST host installed for this parse?
+ *
+ * `cstBuildHost` (and the language-service hosts) mark themselves with
+ * `_parsemanCstOutput`. That flag is what re-routes a node with its OWN direct builder
+ * through the host — and therefore what makes the direct builder's formal arity the
+ * WRONG basis for eliding capture, since the consumer is no longer that builder.
+ *
+ * The COMPILED engine answers this at compile time (`hostMode`, 0.40.0). The interpreter
+ * has no compile step, so it asks per parse.
+ */
+export function cstOutputHost(build: unknown): boolean {
+  return (build as { _parsemanCstOutput?: true } | undefined)?._parsemanCstOutput === true
+}
+
 /** Matches the formal-parameter list of an arrow or function build, capturing its inner text. */
 const PARAM_LIST_RE =
   // (params) => ...   |   function name?(params) ...   |   single-ident arrow `x => ...`
