@@ -85,7 +85,7 @@ Cross-process, that same self-versus-self pair reads neutral —
 `pnpm perf:xproc --ref=d4f107f --head-ref=d4f107f --case=expected/narrow`,
 9 rounds, on the same machine at the same time:
 
-```
+```text
 neutral   median-of-rounds 0.5439 → 0.5633 ms (+3.6%)   mean 0.5928 → 0.6014 ms (+1.4%)
           best min 0.4526 → 0.4628 ms (+2.3%)   head won 5/9 rounds
 ```
@@ -139,7 +139,7 @@ the top — so the two tools compare the same two things. It then runs **one fre
 process per side per round**, alternating which side launches first, and prints
 each round's median and min for both sides plus a summary with the win rate.
 
-```
+```sh
 pnpm perf:xproc --ref=<sha> --head-ref=<sha> --case=<substring> --rounds=9 --reps=40
 ```
 
@@ -165,7 +165,7 @@ branch — that is, strictly less work, measured slower.
 
 The strongest instance is the PR that added this document. Its diff is:
 
-```
+```text
  bench/xproc-ab.ts                        | 236 +++++++++++++++++++++++++++
  docs/design/perf-gates.md                |  33 +++
  docs/design/perf-harness-interleaving.md | 207 +++++++++++++++++++++++
@@ -179,7 +179,7 @@ can alter parse throughput.
 
 `workload-perf` failed it anyway, on an idle CI runner (load 0.80):
 
-```
+```text
 FAIL  json/document  59 KB  median +1.7% … +3.7%  min +1.5% … +3.9%
                             won 2/12 0/12 0/12   breached 3/3
 ```

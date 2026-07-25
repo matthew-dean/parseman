@@ -35,6 +35,7 @@
  *   pnpm perf:xproc --rounds=9 --reps=40         # rounds, and timed samples per process
  */
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, mkdirSync, copyFileSync, symlinkSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -81,6 +82,13 @@ if (WORKER_DIR !== null) {
   const input = g.caseInput(c, config.input.rules)
   const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
 
+  // The parent cannot hold both sides' parse results — that is the whole point of
+  // running them in separate processes — so each side reports a digest of its own
+  // and the parent compares those. Same rule as the gate's `assertSameParse`:
+  // structural, because the two sides build their nodes from separate module
+  // graphs, and never identity.
+  const digest = createHash('sha256').update(JSON.stringify(parse())).digest('hex').slice(0, 16)
+
   for (let k = 0; k < 200; k++) parse()
 
   const samples: number[] = []
@@ -89,7 +97,7 @@ if (WORKER_DIR !== null) {
     for (let n = 0; n < 5; n++) parse()
     samples.push((performance.now() - t0) / 5)
   }
-  console.log(JSON.stringify({ median: median(samples), min: Math.min(...samples) }))
+  console.log(JSON.stringify({ median: median(samples), min: Math.min(...samples), digest }))
   process.exit(0)
 }
 
@@ -103,16 +111,42 @@ const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as {
 const REF = argValue('--ref') ?? CONFIG.referenceSha
 const HEAD_REF = argValue('--head-ref')
 const CASE_FILTER = argValue('--case')
-const ROUNDS = Number(argValue('--rounds') ?? 9)
-const REPS = Number(argValue('--reps') ?? 40)
 
 function fail(message: string): never {
   console.error(`\nxproc-ab: ${message}`)
   process.exit(1)
 }
 
+/**
+ * A count that reaches a loop bound must be a positive integer. `0`, a negative
+ * and `NaN` all produce an EMPTY sample array, which then reads as `NaN` median
+ * and `Infinity` min — printed inside a confident-looking `neutral` verdict.
+ * Refusing the input is the only honest handling.
+ */
+function count(flag: string, fallback: number): number {
+  const raw = argValue(flag)
+  if (raw === null) return fallback
+  const n = Number(raw)
+  if (!Number.isSafeInteger(n) || n < 1) fail(`${flag} must be a positive integer, got ${JSON.stringify(raw)}`)
+  return n
+}
+
+const ROUNDS = count('--rounds', 9)
+const REPS = count('--reps', 40)
+
+// Every subprocess here is bounded. An unbounded `git` or worker call turns a
+// confirmation run into a hang with no output, which is worse than a failure:
+// the reader is left unable to tell a slow machine from a wedged one.
+const GIT_TIMEOUT_MS = 120_000
+const WORKER_TIMEOUT_MS = 60_000 + REPS * 3_000
+
 function sh(args: string[], cwd = ROOT): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: GIT_TIMEOUT_MS,
+  })
 }
 
 /**
@@ -121,20 +155,37 @@ function sh(args: string[], cwd = ROOT): string {
  * grammar copied over the top so both sides compile byte-identical grammar
  * input. Deliberately identical so a cross-process reading and a gate reading
  * are comparing the same two things.
+ *
+ * A cached directory is reused only when it is still AT the requested revision.
+ * `src/index.ts` existing proves a worktree was made there once, not that it is
+ * the commit being asked for — the ref may have moved since, or the checkout may
+ * have been touched. Reusing it unchecked measures some other commit and reports
+ * the number under this one's name, which is the exact failure class this tool
+ * exists to catch.
  */
 function materialise(sha: string | null): string {
   if (sha === null) return ROOT
   const dir = path.join(ROOT, '.cache', `grammar-gate-${sha}`)
-  if (!existsSync(path.join(dir, 'src', 'index.ts'))) {
+  let want: string
+  try {
+    want = sh(['rev-parse', `${sha}^{commit}`]).trim()
+  } catch (error) {
+    fail(
+      `could not resolve ${sha} to a commit in this repo. This compares against a pinned commit of THIS repo, `
+      + `so the commit must be present — a shallow clone cannot see it.\n${String(error).slice(0, 500)}`,
+    )
+  }
+  let cached: string | null = null
+  if (existsSync(path.join(dir, 'src', 'index.ts'))) {
+    try { cached = sh(['rev-parse', 'HEAD'], dir).trim() } catch { cached = null }
+  }
+  if (cached !== want) {
     rmSync(dir, { recursive: true, force: true })
     try { sh(['worktree', 'prune']) } catch { /* nothing to prune */ }
     try {
-      sh(['worktree', 'add', '--detach', '--force', dir, sha])
+      sh(['worktree', 'add', '--detach', '--force', dir, want])
     } catch (error) {
-      fail(
-        `could not create a worktree at ${sha}. This compares against a pinned commit of THIS repo, `
-        + `so the commit must be present — a shallow clone cannot see it.\n${String(error).slice(0, 500)}`,
-      )
+      fail(`could not create a worktree at ${sha} (${want.slice(0, 7)}).\n${String(error).slice(0, 500)}`)
     }
   }
   const nm = path.join(dir, 'node_modules')
@@ -147,14 +198,24 @@ function materialise(sha: string | null): string {
   return dir
 }
 
-type Reading = { median: number; min: number }
+type Reading = { median: number; min: number; digest: string }
 
 function measure(dir: string, caseId: string): Reading {
   const r = spawnSync(
     process.execPath,
     ['--import', 'tsx/esm', SELF, `--worker-dir=${dir}`, `--worker-case=${caseId}`, `--worker-reps=${REPS}`],
-    { cwd: ROOT, encoding: 'utf8' },
+    { cwd: ROOT, encoding: 'utf8', timeout: WORKER_TIMEOUT_MS },
   )
+  // `spawnSync` reports a timeout by killing the child and setting `error`, so a
+  // timed-out worker otherwise arrives indistinguishable from a crash. Name the
+  // case and the worktree: with two sides and several cases in flight, "a worker
+  // died" is not enough to act on.
+  if (r.error !== undefined) {
+    fail(
+      `worker for ${caseId} in ${dir} did not complete within ${WORKER_TIMEOUT_MS} ms`
+      + ` (${REPS} samples${r.signal === null ? '' : `, killed by ${r.signal}`}): ${String(r.error)}`,
+    )
+  }
   if (r.status !== 0) fail(`worker for ${caseId} in ${dir} exited ${r.status}:\n${r.stderr}`)
   const line = r.stdout.trim().split('\n').at(-1)
   if (line === undefined) fail(`worker for ${caseId} in ${dir} printed nothing:\n${r.stderr}`)
@@ -195,6 +256,17 @@ for (const c of cases) {
     const a = refFirst ? measure(refDir, c.id) : null
     const b = measure(headDir, c.id)
     const a2 = a ?? measure(refDir, c.id)
+
+    // Both sides must produce the SAME parse, or their timings are not
+    // comparable and the cheapest way for a side to look fast is to stop doing
+    // work. The gate asserts this before it measures; here every round carries
+    // its own digest, so the check costs nothing and the first round makes it.
+    if (a2.digest !== b.digest) {
+      fail(
+        `case ${c.id}: the two sides produced DIFFERENT parse results (ref ${a2.digest}, head ${b.digest}),`
+        + ` so their timings are not comparable.`,
+      )
+    }
 
     refMed.push(a2.median)
     headMed.push(b.median)
