@@ -68,7 +68,6 @@ describe('spec — combinator → EBNF mapping', () => {
       atLeast2: sepBy(item, comma, { min: 2 }),
       oneToThree: sepBy(item, comma, { min: 1, max: 3 }),
       trailAllow: sepBy(item, comma, { min: 1, trailing: 'allow' }),
-      trailReq: sepBy(item, comma, { min: 1, trailing: 'require' }),
       starMax: many(item, { max: 4 }),
       threeToEight: many(item, { min: 3, max: 8 }),
       exactly2: many(item, { min: 2, max: 2 }),
@@ -82,7 +81,6 @@ describe('spec — combinator → EBNF mapping', () => {
     expect(lines.atLeast2).toBe(`${I} ("," ${I})+`)
     expect(lines.oneToThree).toBe(`${I} ("," ${I}){0,2}`)
     expect(lines.trailAllow).toBe(`${I} ("," ${I})* ","?`)
-    expect(lines.trailReq).toBe(`${I} ("," ${I})* ","`)
     expect(lines.starMax).toBe(`${I}{0,4}`)
     expect(lines.threeToEight).toBe(`${I}{3,8}`)
     expect(lines.exactly2).toBe(`${I}{2}`)

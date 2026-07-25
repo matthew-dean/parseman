@@ -90,9 +90,11 @@ meaningless without a separator).
   `sepBy(i, s, { min: 1 })` — the same combinator, not a lookalike.
 - `{ min: n }` is what makes a repeat NON-NULLABLE, which is what lets an arm led
   by it gate. `{ max: n }` never affects nullability.
-- `{ trailing: 'forbid' | 'allow' | 'require' }` (default `'forbid'`) decides what
-  happens to a separator with no item after it: leave it for the enclosing rule,
-  consume it, or demand it.
+- `{ trailing: 'forbid' | 'allow' }` (default `'forbid'`) decides what happens to a
+  separator with no item after it: leave it for the enclosing rule, or consume it.
+  There is deliberately no "require a separator after EVERY item" mode — that is not
+  a separated list (n separators for n items, not n-1). Spell it
+  `many(sequence(item, term))`.
 
 ## Naming
 

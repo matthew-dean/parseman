@@ -31,7 +31,7 @@ const INPUTS = {
   wrapped: ['{a}', '{a,b}', '{a,b,}', '{a,}', '{}', '{a,,b}', '{a,$$,b}', '{a,$$}', '{,a}', '{a,b,c,}'],
 }
 
-const TRAILING = ['forbid', 'allow', 'require'] as const
+const TRAILING = ['forbid', 'allow'] as const
 
 describe('repeat options — interpreter ⇔ compiled, whole-result parity', () => {
   for (const trailing of TRAILING) {
@@ -51,15 +51,24 @@ describe('repeat options — interpreter ⇔ compiled, whole-result parity', () 
     }
   }
 
+  // Bounds are swept STRICT and TOLERANT, bare and wrapped. Recovery can push a
+  // recovered element into the value array, so it interacts with `min` (a list
+  // that would be too short may reach the bound via a ParseError item) and with
+  // `max` (recovery can be what stops the loop). A strict-only bounds sweep never
+  // sees either interaction.
   for (const min of [0, 1, 2, 3]) {
     it(`sepBy { min: ${min} } — bounds parity`, () => {
       assertEnginesAgreeAll(sepBy(item, comma, { min }), INPUTS.bare)
+      assertEnginesAgreeAll(shapes.wrapped(sepBy(item, comma, { min })), INPUTS.wrapped,
+        { tolerant: true, recovery: true })
     })
   }
 
   for (const max of [1, 2, 3]) {
     it(`sepBy { max: ${max} } — bounds parity`, () => {
       assertEnginesAgreeAll(sepBy(item, comma, { max }), INPUTS.bare)
+      assertEnginesAgreeAll(shapes.wrapped(sepBy(item, comma, { max })), INPUTS.wrapped,
+        { tolerant: true, recovery: true })
     })
   }
 

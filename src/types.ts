@@ -62,7 +62,7 @@ export type ParserDef =
   // non-nullable with first-set = the item's, so it gates as a choice arm.
   // `trailing` governs a separator with no item after it: 'forbid' (default) leaves
   // it unconsumed, 'allow' consumes it, 'require' demands it after the last item.
-  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: number; max?: number; trailing?: 'allow' | 'require' }
+  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: number; max?: number; trailing?: 'allow' }
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; recognitionOnly?: boolean }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }

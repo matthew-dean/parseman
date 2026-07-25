@@ -52,23 +52,65 @@ type Sinks = {
  * tree contain a node()" — the compiled output is the ground truth for what the
  * compiled engine will actually write.
  */
-function freshSinks(captures: boolean): { sinks: Sinks; ctx: ParseContext } {
+function freshSinks(
+  captures: boolean,
+  ambient: Record<string, unknown>,
+): { sinks: Sinks; ctx: ParseContext } {
   const sinks: Sinks = { triviaLog: [], cstLeaves: [], errors: [] }
   const ctx = {
     trackLines: false,
+    ...ambient,
     ...(captures ? { _triviaLog: sinks.triviaLog, _cstLeaves: sinks.cstLeaves } : {}),
     _errors: sinks.errors,
   } as unknown as ParseContext
   return { sinks, ctx }
 }
 
+/** Tolerant ctx, identical for both engines (see the tolerant block below). */
+function freshTolerantCtx(ambient: Record<string, unknown>): { ctx: ParseContext; errors: unknown[] } {
+  const errors: unknown[] = []
+  const ctx = {
+    trackLines: false,
+    ...ambient,
+    _errors: errors,
+    _tolerant: true,
+    _rec: REC,
+  } as unknown as ParseContext
+  return { ctx, errors }
+}
+
 export type ParityOptions = {
-  /** Also compare a tolerant/recovery run (value tree AND the ParseError set). */
+  /** Also compare a tolerant/recovery parse (whole result AND the ParseError set). */
   tolerant?: boolean
-  /** Ambient trivia for the tolerant `run()` comparison. */
+  /** Ambient trivia override, applied identically to BOTH engines. */
   trivia?: Combinator<unknown>
   /** Compile with recovery emitted (required for the tolerant comparison). */
   recovery?: boolean
+}
+
+/**
+ * The ambient fields the PUBLIC `parse()` entrypoint installs from grammar
+ * metadata — `rules({ trivia, scanSkip })` becomes `ctx.trivia`/`ctx.scanSkip`.
+ *
+ * Calling `combinator.parse()` directly skips this, while `compile()` bakes the
+ * same defaults into the emitted source. A helper that did not replicate it
+ * would hand the interpreter a trivia-less context and the compiled engine a
+ * trivia-bearing one, then report the difference as an engine divergence — it
+ * would be comparing two different grammars. Every ctx this file builds, strict
+ * and tolerant alike, goes through here.
+ */
+function ambientFields(
+  c: Combinator<unknown>,
+  override?: Combinator<unknown>,
+): Record<string, unknown> {
+  const t = override ?? c._meta.grammarTrivia
+  const s = c._meta.grammarScanSkip
+  return {
+    ...(t != null
+      ? { trivia: t, ...(t._meta.triviaKindLabels ? { triviaKindLabels: t._meta.triviaKindLabels } : {}) }
+      : {}),
+    ...(s !== undefined ? { scanSkip: s } : {}),
+  }
 }
 
 /**
@@ -86,9 +128,16 @@ export function assertEnginesAgree<T>(
 ): ReturnType<typeof runtimeParse<T>> {
   const compiled = compile(c, undefined, { gating: 'off', ...(opts.recovery ? { recovery: true } : {}) })
 
+  // Run the public entrypoint FIRST: it owns the one-time dead-value analysis
+  // (`markUnusedValues`) that decides whether a repeat even materializes its
+  // values. compile() performs its own; without this the interpreter would be
+  // compared un-analyzed against an analyzed compile.
+  const publicResult = runtimeParse(c, input)
+
+  const ambient = ambientFields(c as Combinator<unknown>, opts.trivia)
   const captures = compiled.source.includes('_cstLeaves')
-  const i = freshSinks(captures)
-  const k = freshSinks(captures)
+  const i = freshSinks(captures, ambient)
+  const k = freshSinks(captures, ambient)
   const interpreted = c.parse(input, 0, i.ctx)
   const compiledResult = compiled.parseWithContext(input, k.ctx, 0)
 
@@ -99,17 +148,24 @@ export function assertEnginesAgree<T>(
     .toEqual(i.sinks)
 
   if (opts.tolerant) {
-    const ri = run(c, input, opts.trivia ? { tolerant: true, trivia: opts.trivia } : { tolerant: true })
-    const errors: unknown[] = []
-    const tctx = { trackLines: false, _errors: errors, _tolerant: true, _rec: REC } as unknown as ParseContext
-    const rc = compiled.parseWithContext(input, tctx, 0) as { ok: boolean; value: unknown }
-    expect(
-      { ok: rc.ok, value: rc.value, errors },
-      `tolerant compiled must equal tolerant interpreted for ${JSON.stringify(input)}`,
-    ).toEqual({ ok: ri.ok, value: ri.value, errors: ri.errors })
+    // Both engines get the SAME tolerant ctx and are compared as WHOLE results.
+    // An earlier version ran the interpreter through `run()` and compared only
+    // `{ ok, value, errors }` — which dropped `span` and the failure `expected`
+    // payload, the very fields the three bugs this harness exists for diverged
+    // on, and it also left `opts.trivia` reaching one engine but not the other.
+    // Driving `c.parse` directly keeps both sides on one ParseResult shape so
+    // the comparison can stay whole-object.
+    const ti = freshTolerantCtx(ambient)
+    const tk = freshTolerantCtx(ambient)
+    const rti = c.parse(input, 0, ti.ctx)
+    const rtk = compiled.parseWithContext(input, tk.ctx, 0)
+    expect(rtk, `tolerant compiled result must equal tolerant interpreted for ${JSON.stringify(input)}`)
+      .toEqual(rti)
+    expect(tk.errors, `tolerant compiled errors must equal tolerant interpreted for ${JSON.stringify(input)}`)
+      .toEqual(ti.errors)
   }
 
-  return runtimeParse(c, input)
+  return publicResult
 }
 
 /** `assertEnginesAgree` across a list of inputs. */

@@ -28,7 +28,7 @@ export type SpecNode =
    * `(item (sep item)*)?` — NULLABLE — and any `min >= 1` requires that many
    * items, so it is not. `trailing` mirrors `sepBy`'s option of the same name.
    */
-  | { kind: 'sepBy'; item: SpecNode; sep: SpecNode; min: number; max?: number; trailing?: 'allow' | 'require' }
+  | { kind: 'sepBy'; item: SpecNode; sep: SpecNode; min: number; max?: number; trailing?: 'allow' }
   /** Reference to a named production (non-terminal). */
   | { kind: 'ref'; name: string }
   /**

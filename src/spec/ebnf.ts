@@ -92,7 +92,7 @@ function render(node: SpecNode): { text: string; level: number } {
       // The tail repeats `(sep item)` ONE FEWER time than there are items, so the
       // item bounds shift down by one to become the tail's bounds.
       const tail = `(${sepA} ${itemA})${repeatOp(Math.max(node.min - 1, 0), node.max === undefined ? undefined : node.max - 1)}`
-      const trail = node.trailing === 'allow' ? ` ${sepA}?` : node.trailing === 'require' ? ` ${sepA}` : ''
+      const trail = node.trailing === 'allow' ? ` ${sepA}?` : ''
       const body = `${itemA} ${tail}${trail}`
       // Only a min-0 list is OPTIONAL. Any `min >= 1` requires that many items and
       // can never match empty — rendering it `( … )?` claimed the opposite.

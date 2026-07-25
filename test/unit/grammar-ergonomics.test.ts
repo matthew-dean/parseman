@@ -334,12 +334,20 @@ describe('defect 3 — non-empty separated lists', () => {
     expect(bothEngines(list, 'a,b')).toMatchObject({ ok: true, end: 3, value: ['a', 'b'] })
   })
 
-  it("trailing: 'require' demands a separator after the last item", () => {
-    const list = sepBy(item, literal(';'), { trailing: 'require' })
-    expect(bothEngines(list, 'a;b;')).toMatchObject({ ok: true, end: 4, value: ['a', 'b'] })
-    expect(bothEngines(list, 'a;b').ok).toBe(false)
-    // An empty list has no item to follow — vacuously satisfied.
-    expect(bothEngines(list, '')).toMatchObject({ ok: true, end: 0, value: [] })
+  // A list where EVERY item is followed by the separator is not a separated list
+  // at all — n separators for n items, not n-1. That is a TERMINATED list, and the
+  // existing combinators already spell it: `many(sequence(item, term))`. `sepBy`
+  // deliberately has no `trailing: 'require'` mode for it. Carrying one meant a
+  // loop-scoped `sawTrailing` flag, a `_trl` flag in the emitted source and a
+  // bespoke failure payload — machinery for a `many` with a fixed element shape,
+  // and the source of two of this branch's three parity divergences.
+  it('a TERMINATED list is many(sequence(item, term)), not a sepBy mode', () => {
+    const terminated = many(sequence(item, literal(';')))
+    expect(bothEngines(terminated, 'a;b;')).toMatchObject({ ok: true, end: 4 })
+    // The distinguishing case: a final item with no terminator is not part of the
+    // list, so the list ends before it rather than failing the whole parse.
+    expect(bothEngines(terminated, 'a;b;c')).toMatchObject({ ok: true, end: 4 })
+    expect(bothEngines(terminated, '')).toMatchObject({ ok: true, end: 0, value: [] })
   })
 
   it('rejects bounds that could never succeed, at CONSTRUCTION', () => {
@@ -466,21 +474,26 @@ export const g = rules(g => ({
       Mixin: sequence(peek(regex(/[.#]/)), regex(/[.#][a-z-]+/)),
       List: oneOrMoreSep(regex(/[a-z]+/), literal(',')),
       Bounded: many(regex(/x/), { min: 2, max: 4 }),
-      Trailing: sepBy(regex(/[a-z]+/), literal(';'), { trailing: 'require' }),
+      Trailing: sepBy(regex(/[a-z]+/), literal(';'), { trailing: 'allow' }),
     }))
     const ir = serializeRuleMap(Object.entries(g))
     expect(ir).not.toBeNull()
     expect(ir!).toContain('peek(')
     expect(ir!).toContain('{ min: 2, max: 4 }')
-    expect(ir!).toContain(`trailing: "require"`)
+    expect(ir!).toContain(`trailing: "allow"`)
 
     const back = Object.fromEntries(evalRuleMapIR(ir!))
     expect(parse(back.Mixin!, '.a').ok).toBe(true)
     expect(parse(back.Mixin!, 'a').ok).toBe(false)
     expect(parse(back.List!, '').ok).toBe(false)
     expect(parse(back.Bounded!, 'x').ok).toBe(false)
-    expect(parse(back.Trailing!, 'a;b').ok).toBe(false)
-    expect(parse(back.Trailing!, 'a;b;').ok).toBe(true)
+    // `trailing: 'allow'` survived the round-trip iff the trailing separator is
+    // CONSUMED — the span, not merely `ok`, is what distinguishes it from the
+    // 'forbid' default (which would stop at 3 and leave the ';' to the caller).
+    const noTrail = parse(back.Trailing!, 'a;b')
+    expect(noTrail.ok && noTrail.span.end).toBe(3)
+    const withTrail = parse(back.Trailing!, 'a;b;')
+    expect(withTrail.ok && withTrail.span.end).toBe(4)
   })
 
   it('the coverage-instrumented rebuild preserves peek and the repeat bounds', () => {

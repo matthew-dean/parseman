@@ -2238,11 +2238,6 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     ...(rec ? [`${ind(ctx)}const ${mySyncV} = _ctx._sync`] : []),
     ...firstStmts,
   ]
-  // `trailing: 'require'` needs a flag that outlives the loop: did the list end on
-  // a consumed separator? Declared here (outside the loop) and emitted ONLY when
-  // asked for, so the default 'forbid' output stays byte-identical.
-  const trailV = def.trailing === 'require' ? v(ctx, '_trl') : null
-  if (trailV) stmts.push(`${ind(ctx)}let ${trailV} = false`)
 
   // A failed element after a real separator. Strict → the exact original break
   // (byte-identical). Tolerant → skip to the sync, emit a ParseError, and continue
@@ -2268,13 +2263,13 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
    * The break taken when the item AFTER a separator fails.
    *
    * 'forbid' (default) unwinds the separator with it — the list ends before it.
-   * 'allow'/'require' keep the separator CONSUMED: only what was captured PAST it
-   * unwinds (`postSepRb`), and `cur` advances to the separator's end.
+   * 'allow' keeps the separator CONSUMED: only what was captured PAST it unwinds
+   * (`postSepRb`), and `cur` advances to the separator's end.
    */
   const itemFailBreak = (sepEndVar: string, sepRb: string, postSepRb: string): string =>
     def.trailing === undefined
       ? `${sepRb}break`
-      : `${postSepRb}${curV} = ${sepEndVar}; ${trailV ? `${trailV} = true; ` : ''}break`
+      : `${postSepRb}${curV} = ${sepEndVar}; break`
 
   /** Marks taken AFTER the separator, so `trailing` can unwind only past it. */
   const postSepMarks = (): { decl: string[]; rb: string } => {
@@ -2419,11 +2414,6 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   // for the check that keeps the two engines on the same rule.
   if (def.min >= 1) {
     stmts.push(...emitIfFail(ctx, `${arrV}.length < ${def.min}`, failArrBody(ctx, deriveExpectedArr([def.parser]), curV)))
-  }
-  // `trailing: 'require'` — a NON-EMPTY list must end on a consumed separator; an
-  // empty one has no item to follow, so it is vacuously satisfied.
-  if (trailV) {
-    stmts.push(...emitIfFail(ctx, `${arrV}.length > 0 && !${trailV}`, failArrBody(ctx, deriveExpectedArr([def.separator]), curV)))
   }
 
   return { stmts, valueVar: arrV, endVar: curV }

@@ -344,10 +344,6 @@ parse(sepBy(ident, comma), 'a,b,').span
 // …unless you ask for it.
 parse(sepBy(ident, comma, { trailing: 'allow' }), 'a,b,').span
 // → { start: 0, end: 4 }
-
-// `require` demands one after the last item.
-parse(sepBy(ident, literal(';'), { trailing: 'require' }), 'a;b').ok
-// → false
 ```
 
 **Gating:** the single most consequential nullability in the library. A selector

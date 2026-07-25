@@ -107,9 +107,11 @@ combinations — `oneOrMore(x)` **is** `many(x, { min: 1 })`, and `oneOrMoreSep(
 | separated | `sepBy` | `oneOrMoreSep` |
 
 - `min` / `max` count **items**, not separators. Defaults: `min: 0`, `max` unbounded.
-- `trailing: 'forbid' | 'allow' | 'require'` (separated forms only, default
-  `'forbid'`) decides what happens to a separator with no item after it: leave it for
-  the enclosing rule, consume it, or demand it.
+- `trailing: 'forbid' | 'allow'` (separated forms only, default `'forbid'`) decides
+  what happens to a separator with no item after it: leave it for the enclosing rule,
+  or consume it. A list that *requires* a separator after every item is not a
+  separated list — it has n separators for n items, not n-1 — so spell that one
+  `many(sequence(item, term))`.
 - `optional(c)` returns `null` on no match and takes no options.
 
 ```ts

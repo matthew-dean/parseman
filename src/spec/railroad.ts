@@ -57,7 +57,7 @@ function toDsl(node: SpecNode): string {
       const rep = `OneOrMore(${toDsl(node.item)}, ${loop})`
       const withTrail = node.trailing === undefined
         ? rep
-        : `Sequence(${rep}, ${node.trailing === 'allow' ? `Optional(${toDsl(node.sep)})` : toDsl(node.sep)})`
+        : `Sequence(${rep}, Optional(${toDsl(node.sep)}))`
       // ONLY a min-0 list can match nothing. Collapsing every `min > 1` into
       // Optional too rendered a list that requires N items as nullable.
       return node.min === 0 ? `Optional(${withTrail})` : withTrail
@@ -119,7 +119,7 @@ function toDiagramNode(b: RailroadBuilders, node: SpecNode): unknown {
       const rep = b.OneOrMore(toDiagramNode(b, node.item), lbl ? b.Sequence(sep, b.Comment(lbl)) : sep)
       const withTrail = node.trailing === undefined
         ? rep
-        : b.Sequence(rep, node.trailing === 'allow' ? b.Optional(toDiagramNode(b, node.sep)) : toDiagramNode(b, node.sep))
+        : b.Sequence(rep, b.Optional(toDiagramNode(b, node.sep)))
       return node.min === 0 ? b.Optional(withTrail) : withTrail
     }
     case 'not': return b.Sequence(b.Comment('not'), toDiagramNode(b, node.item))
