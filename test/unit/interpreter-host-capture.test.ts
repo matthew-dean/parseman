@@ -12,7 +12,7 @@
  * trivia log is indistinguishable from a node that genuinely had none, which is why it
  * stayed invisible.
  *
- * 0.40.0 settled this for the COMPILED engine at build time (`hostMode: 'cst'`), where it
+ * 0.37.0's compile-time host mode settled this for the COMPILED engine at build time (`hostMode: 'cst'`), where it
  * costs nothing. The interpreter has no compile step, so it re-decides per parse. These
  * tests pin that the two engines agree — the compiled side is compiled for `'cst'`, which
  * is now how you ask for a positioned CST — because a fix that reaches one engine and not

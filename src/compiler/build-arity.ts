@@ -22,7 +22,7 @@ type NodeDef = Extract<ParserDef, { tag: 'node' }>
  * through the host — and therefore what makes the direct builder's formal arity the
  * WRONG basis for eliding capture, since the consumer is no longer that builder.
  *
- * The COMPILED engine answers this at compile time (`hostMode`, 0.40.0). The interpreter
+ * The COMPILED engine answers this at compile time (`hostMode`, 0.37.0). The interpreter
  * has no compile step, so it asks per parse.
  */
 export function cstOutputHost(build: unknown): boolean {

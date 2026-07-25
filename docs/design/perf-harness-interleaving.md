@@ -238,7 +238,7 @@ granularity, GC drift) and blind to the thing that actually fires this gate. A
 clean `--self` says "the harness is not noisy today". It does not say "this A/B
 number is real".
 
-This is the same shape as the `analyzeGating` defect fixed in 0.39.0: a check that
+This is the same shape as the `analyzeGating` defect fixed in 0.37.0: a check that
 reported success because it could not see the failure, and whose passing result
 was therefore indistinguishable from a genuine pass. Treat "the self-check was
 clean" the same way — as the absence of one class of evidence, never as the
@@ -260,7 +260,7 @@ defect in question — has now appeared in the equivalence checking too, and it 
 worth recording next to this because the lesson is identical.
 
 An **AST-only differential cannot see CST movement.** Comparing parseman 0.32.0
-against 0.40.0 over a real corpus, the eval-AST aggregate was **identical across 707
+against the host-mode change over a real corpus, the eval-AST aggregate was **identical across 707
 files** — genuinely zero movement — while the positioned-CST aggregate moved on **68**.
 
 An earlier evaluation had reported "zero AST movement across 3,053 file-parses" as
@@ -272,9 +272,9 @@ evidence about the CST.
 > A count delta cannot distinguish *a duplicate was removed* from *a token was lost*,
 > and the truth was the former: 0.32.0 leaked duplicate leaves (compiled `not()` relied
 > on a rollback that fires only on the inner-*failure* path, so a successful probe left
-> its captured leaves for an enclosing `optional`/`many` to absorb), and 0.40.0 removes
+> its captured leaves for an enclosing `optional`/`many` to absorb), and host mode removes
 > them. Diffing as a **per-offset multiset** shows every 0.32.0-only leaf sitting at an
-> offset the 0.40.0 tree still covers.
+> offset the host-mode tree still covers.
 >
 > So: compare trees **per offset**, not by count. And when a differential moves, the
 > baseline-free invariant — does the concatenation of leaves reconstruct the source? —
