@@ -159,6 +159,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   than `if (!ok)`. Grammars with no `node()` and no recovery compile byte-identically
   (nothing can write those sinks there); the four example grammars are unchanged.
 
+- **Declared a Node floor: `^20.19.0 || >=22.12.0`.** The package shipped no
+  `engines` field at all, which understated what it actually needs — `oxc-parser`
+  is a runtime `dependencies` entry declaring exactly that range, so the floor was
+  already real, just undeclared. `oxlint` and `vite` land on the same range
+  independently.
+
+  Note the gaps: **20.0–20.18 and 22.0–22.11 are excluded**, so a bare `>=20`
+  would have claimed support for versions where the dependency tree will not
+  install.
+
+  This does not reach anyone consuming a *compiled* grammar. Macro-compiled output
+  is self-contained — zero `import`/`require`, zero references to `parseman`, and
+  its highest language feature is optional chaining (Node 14) — so a build-time
+  macro user carries parseman as a devDependency and never exposes this floor
+  downstream. (Tolerant/recovery parsing is the exception: the emitted source
+  reaches for `_ctx._rec`, so the host supplies parseman's recovery machinery at
+  run time.) The runtime bundle itself uses no `node:` builtins and no post-Node-18
+  built-ins.
+
 ## 0.33.0 — 2026-07-24
 
 - **Ambient scan-skip — `scanTo`/`balanced` no longer match a sentinel hidden in a
