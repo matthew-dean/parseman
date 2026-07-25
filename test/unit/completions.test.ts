@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  literal, regex, sequence, optional, sepBy, choice, gate, scanTo, completionsAt, peek,
+  literal, regex, sequence, optional, sepBy, choice, gate, scanTo, completionsAt, peek, not,
 } from '../../src/index.ts'
 import type { ParseContext, ParseFail } from '../../src/index.ts'
 
@@ -52,6 +52,18 @@ describe('completionsAt()', () => {
       const ctx = { trackLines: false, _probe: probe } as unknown as ParseContext
       const la = peek(sequence(literal('a'), literal('zzz')))
       const r = la.parse(input, 0, ctx)
+      expect(r.span, `${label}: zero-width`).toEqual({ start: 0, end: 0 })
+      expect(probe.best, `${label}: probe must be untouched`).toBe(null)
+    }
+  })
+
+  it('not() leaves the completions probe untouched on BOTH outcomes', () => {
+    // Identical contract to peek() above — both are zero-width predicates, so both
+    // restore `_probe`. `not` reaches it through the same `rollbackLookahead`.
+    for (const [label, input] of [['inner fails', 'ab'], ['inner matches', 'azzz']] as const) {
+      const probe: { offset: number; best: ParseFail | null } = { offset: 10, best: null }
+      const ctx = { trackLines: false, _probe: probe } as unknown as ParseContext
+      const r = not(sequence(literal('a'), literal('zzz'))).parse(input, 0, ctx)
       expect(r.span, `${label}: zero-width`).toEqual({ start: 0, end: 0 })
       expect(probe.best, `${label}: probe must be untouched`).toBe(null)
     }

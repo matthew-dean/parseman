@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any } from './first-set.ts'
-import { saveTriviaMark, rollbackTrivia } from './trivia-skip.ts'
+import { saveLookaheadMark, rollbackLookahead } from './trivia-skip.ts'
 
 /**
  * Negative lookahead. Succeeds (consuming nothing) when `combinator` fails;
@@ -30,16 +30,22 @@ export function not(combinator: Combinator<unknown>): Combinator<null> {
       // to the GLOBAL `_triviaLog` must be rolled back on BOTH outcomes — not()
       // consumes nothing and so may leave no side effect.
       //
-      // `rollbackTrivia`, not `rollbackCstCapture`: the latter's mark omits
-      // `_triviaLog`, which is a SEPARATE sink `scanTrivia().commit()` writes when
-      // the probed body skips ambient trivia between terms. Missing it duplicates
-      // every probed trivia span once the region is parsed for real — `_triviaLog`
-      // has no dedup anywhere (`triviaEntries()` is a positional view over the flat
-      // array), so the duplicate reaches output. Using the superset helper also
-      // means this cannot silently regress the next time a sink is added.
-      const mark = saveTriviaMark(ctx)
+      // `rollbackLookahead`, not `rollbackCstCapture`: the latter's mark omits two
+      // further sinks a probe can write.
+      //   - `_triviaLog`, which `scanTrivia().commit()` writes when the probed body
+      //     skips ambient trivia between terms. Missing it duplicates every probed
+      //     span once the region is parsed for real — `_triviaLog` has no dedup
+      //     anywhere (`triviaEntries()` is a positional view over the flat array),
+      //     so the duplicate reaches output.
+      //   - `_probe.best`, the completions tracker, for the same reason `peek()`
+      //     restores it: expectations raised INSIDE a zero-width probe are not
+      //     reachable from the enclosing grammar at the cursor, so leaving them
+      //     offers unreachable tokens as completions.
+      // Using the shared lookahead helper means neither can silently regress the
+      // next time a sink is added.
+      const mark = saveLookaheadMark(ctx)
       const result = combinator.parse(input, pos, ctx)
-      rollbackTrivia(ctx, mark)
+      rollbackLookahead(ctx, mark)
       if (result.ok) {
         return { ok: false, expected: [`not(${combinator._tag})`], span: { start: pos, end: pos } }
       }

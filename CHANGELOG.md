@@ -117,9 +117,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   probed parser SUCCEEDED its captured leaves survived, and an enclosing
   `optional`/`many` that swallowed the failure absorbed them as real children.
 
+  It also left `_probe.best`, the completions tracker, so tokens reachable only
+  inside the probe were offered as completions — the same leak fixed for `peek()`.
+
   Both engines leaked the trivia identically, so they agreed with each other while
   both being wrong and interpreted/compiled parity never flagged it. Fixed on both:
-  the interpreter uses the superset `saveTriviaMark`/`rollbackTrivia` helper, and
+  the interpreter uses the shared `saveLookaheadMark`/`rollbackLookahead` helper, and
   `emitNot` now emits an `emitAttempt`-style six-sink restore, unconditionally rather
   than `if (!ok)`. Grammars with no `node()` and no recovery compile byte-identically
   (nothing can write those sinks there); the four example grammars are unchanged.
