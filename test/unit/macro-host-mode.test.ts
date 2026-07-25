@@ -235,3 +235,46 @@ export const astOnly = rules((g) => ({ Doc: node(regex(/a+/), _c => ({ mine: tru
     expect(dropped.find(p => p.hostMode !== undefined && p.hostMode !== 'ast')?.hostMode ?? 'ast').toBe('ast')
   })
 })
+
+/**
+ * `compose(items, { hostMode })` was IGNORED by the macro: `compileComposeCall` read
+ * `arguments[0]` (the array) and never `arguments[1]`, so a macro build of
+ * `compose(items, { hostMode: 'cst' })` produced an 'ast' artifact while the runtime path
+ * honoured the option.
+ *
+ * The silence is the defect. The caller asked for a positioned-CST artifact, got an
+ * eval-AST one, and `assertHostModeCompatible` then PASSED — because the artifact
+ * genuinely was 'ast'. Driving it with a CST host yields a tree whose direct-builder
+ * nodes are missing, with `ok: true`. Same vacuous-classification shape as the two
+ * defects this PR already closes, one call site over.
+ */
+describe('macro host mode — compose() honours an explicit hostMode', () => {
+  const COMPOSE_CST = `
+import { node, regex, rules, compose } from 'parseman' with { type: 'macro' }
+const factory = (g) => ({ Doc: node('Doc', regex(/a+/), (c) => ({ c })) })
+export const astG = rules(factory)
+export const composedCst = compose([astG], { hostMode: 'cst' })
+`.trim()
+
+  /** The fused map's own stamp — the last `fusedHostMode` written, on `_map`. */
+  const fusedStamp = (code: string): string | undefined =>
+    [...code.matchAll(/_map,\s*Symbol\.for\("parseman\.fusedHostMode"\),\s*\{\s*value:\s*"(\w+)"/g)].pop()?.[1]
+
+  it('stamps the FUSED artifact cst when compose asks for it', () => {
+    const out = transformMacro(COMPOSE_CST, 'test.ts', new Set(['parseman']))
+    expect(out).not.toBeNull()
+    // Before the fix this read 'ast': the option was dropped and nothing said so.
+    expect(fusedStamp(out!.code)).toBe('cst')
+  })
+
+  it('leaves the fused artifact ast when compose does not ask', () => {
+    const out = transformMacro(COMPOSE_CST.replace(", { hostMode: 'cst' }", ''), 'test.ts', new Set(['parseman']))
+    expect(out).not.toBeNull()
+    expect(fusedStamp(out!.code)).toBe('ast')
+  })
+
+  it('REJECTS a non-literal hostMode rather than silently ignoring it', () => {
+    const out = transformMacro(COMPOSE_CST.replace("'cst'", 'someVar'), 'test.ts', new Set(['parseman']))
+    if (out) expect(out.warnings.join('\n')).toMatch(/hostMode.*literal|literal.*hostMode/i)
+  })
+})

@@ -930,13 +930,14 @@ export function transformMacro(
     items: CarriedItem[],
     composing?: Combinator<unknown>,
     captureTerminals = false,
+    hostMode?: HostMode,
   ): LinkablePieces[] => {
     const out: LinkablePieces[] = []
     for (const it of items) {
       if (isSpread(it)) {
-        for (const p of importedPieces(it.__spreadLocal) ?? []) out.push(materializePiece(p, composing, captureTerminals))
+        for (const p of importedPieces(it.__spreadLocal) ?? []) out.push(materializePiece(p, composing, captureTerminals, hostMode))
       } else if (isIR(it)) {
-        out.push(materializePiece(it as RawItem, composing, captureTerminals))
+        out.push(materializePiece(it as RawItem, composing, captureTerminals, hostMode))
       } else {
         out.push(it)
       }
@@ -1181,6 +1182,26 @@ export function transformMacro(
       return null
     }
     const elements = (arr as unknown as { elements: Expression[] }).elements
+    // `compose(items, { hostMode })` — read and VALIDATE it, mirroring `rules()`. This
+    // argument used to be ignored entirely: `args[1]` was never read, so a macro build of
+    // `compose(items, { hostMode: 'cst' })` silently produced an 'ast' artifact while the
+    // runtime path honoured the option. Silently is the operative word — the caller asked
+    // for a CST artifact, got an eval-AST one, and the compatibility assertion then passed
+    // because the artifact genuinely WAS 'ast'. Same vacuous-classification shape this
+    // change exists to remove, one call site over.
+    const cOptions = (init as unknown as { arguments: Expression[] }).arguments[1] as AnyNode | undefined
+    const cHostModeValue = cOptions?.type === 'ObjectExpression'
+      ? (((cOptions.properties as AnyNode[] | undefined) ?? []).find(
+          p => (p as { key?: { name?: string } }).key?.name === 'hostMode',
+        ) as { value?: Expression } | undefined)?.value
+      : undefined
+    const cHostMode = cHostModeValue?.type === 'Literal'
+      ? (cHostModeValue as unknown as { value?: unknown }).value
+      : undefined
+    if (cHostModeValue !== undefined && cHostMode !== 'ast' && cHostMode !== 'cst') {
+      warn(init.start, "compose({ hostMode }) must be the literal 'ast' or 'cst'")
+      return null
+    }
     // Composing-wins (B): ONE composing trivia, from the last plain grammar in the
     // list that declares one, governs EVERY fused rule — including inherited ones.
     const composing = composingTrivia(elements)
@@ -1201,7 +1222,7 @@ export function transformMacro(
     )
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
-    const pieces = materializeCarried(carried, composing)
+    const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
     try {
       return { replacement: emitFusedSource(pieces), carried, ...(composing ? { trivia: composing } : {}) }
     } catch (e) {
