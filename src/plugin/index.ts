@@ -24,7 +24,7 @@ import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
+import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
@@ -805,6 +805,20 @@ export function transformMacro(
     return out
   }
 
+  /** The carried list's re-lowerable rule maps, in compose order — the input to the
+   * fuse-time gating diagnostic. Opaque baked pieces have no combinator graph and are
+   * skipped: a hole one of them would bind stays unresolved, so its choice stays
+   * DEFERRED (silent) instead of being warned about on a guess. */
+  const carriedRuleMaps = (items: CarriedItem[]): Array<Array<[string, Combinator<unknown>]>> => {
+    const out: Array<Array<[string, Combinator<unknown>]>> = []
+    const add = (it: CarriedItem): void => { if (isIR(it)) out.push(evalRuleMapIR(it.ir)) }
+    for (const it of items) {
+      if (isSpread(it)) for (const p of importedPieces(it.__spreadLocal) ?? []) add(p as CarriedItem)
+      else add(it)
+    }
+    return out
+  }
+
   /** Materialize the exact combinator identities that will be lowered for a
    * coverage-enabled terminal composition.  Coverage IDs are WeakMap keyed, so
    * planning from a second IR hydration would silently leave the emitted pieces
@@ -1001,6 +1015,9 @@ export function transformMacro(
       if (!r) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
       carried.push(...r.carried)
     }
+    // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
+    // only site that can answer whether the choices it leads actually gate.
+    runFusedGatingDiagnostic(() => carriedRuleMaps(carried))
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
     const pieces = materializeCarried(carried, composing)
@@ -1066,6 +1083,9 @@ export function transformMacro(
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
       const localNs = nsFor(`composeLeaf${init.start}`)
+      // The local leaf map is the LAST (winning) contributor, and is usually the one
+      // that binds the imported shapes' holes — so it must be part of the fused view.
+      runFusedGatingDiagnostic(() => [...carriedRuleMaps(carried), [...localRules] as Array<[string, Combinator<unknown>]>])
       const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
       if (!plainLocalPiece) {
         warn(init.start, 'composeLeaf(): local rules could not be statically compiled')

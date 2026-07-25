@@ -18,7 +18,7 @@
  * strict CSP; a build-time variant that emits fused source instead is a later
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
-import { compileLinkable, firstSetCond, HOST_READS_DECL } from './codegen.ts'
+import { compileLinkable, firstSetCond, runFusedGatingDiagnostic, HOST_READS_DECL } from './codegen.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import type { LinkablePieces, FirstSetRecipe } from './codegen.ts'
 import { union } from '../combinators/first-set.ts'
@@ -417,6 +417,14 @@ function isIRPiece(p: unknown): p is IRPiece {
     && !('ruleFns' in (p as object))
 }
 
+/** The re-lowerable carried pieces' rule maps, in compose order — the input to the
+ * fuse-time gating diagnostic. An opaque precompiled artifact contributes no
+ * combinator graph, so it is simply skipped: a hole it would have bound stays
+ * unresolved and its choice stays deferred (silent), never falsely warned. */
+export function carriedRuleMaps(carried: ReadonlyArray<LinkablePieces | IRPiece>): Array<Array<[string, Combinator<unknown>]>> {
+  return carried.filter(isIRPiece).map(p => evalRuleMapIR(p.ir))
+}
+
 function coverageRulesOf(carried: Array<LinkablePieces | IRPiece>): Record<string, Combinator<unknown>> | undefined {
   const winners: Record<string, Combinator<unknown>> = {}
   for (const piece of carried) {
@@ -550,6 +558,9 @@ export function compose(
   // trivia for the now-fuse, but STORE the un-materialized carried list so a later
   // compose can re-lower it under a different trivia (multi-level composing-wins).
   const carried = items.flatMap(item => itemCarried(item, used, trivia))
+  // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
+  // only site that can answer whether the choices it leads actually gate.
+  runFusedGatingDiagnostic(() => carriedRuleMaps(carried))
   const pieces = carried.map(p => materializePiece(p, trivia))
   const map = fuseRules(pieces)
   Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })

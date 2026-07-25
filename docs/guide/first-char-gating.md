@@ -64,7 +64,7 @@ arm's first-set to `any` (or make two arms overlap) and break that proof:
 | **`not(not(...))`** — hand-rolled first-char gating | first-set `any` **and it miscompiles** among shared-first-char siblings | delete it; first-char gating is automatic |
 | **leading `optional`/`many`** | a skippable prefix lets a later, possibly-broad term start the arm | split the empty case into its own arm, or gate on the prefix |
 | **`gate()` / `guard()` as a leading arm term** | a state predicate's first-set is `any` | use the gated-arm **field** to SELECT a branch (it keeps dispatch); put `gate()` after a terminal |
-| **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | parseman ≥ 0.32.0 resolves it at fuse time; if still `any`, the target rule is itself ungated — fix it there |
+| **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | parseman ≥ 0.32.0 resolves it at fuse time; if still `any`, the target rule is itself ungated — fix it there. In a [shared shape](#shared-shapes-the-verdict-belongs-to-the-fuse) the ref is a HOLE, and the finding is reported against the artifact that binds it |
 | **shared prefix** — two arms starting with the same terminal | first-sets overlap, so no unique dispatch key | left-factor: parseman auto-detects `sharedPrefix` for bare sequences — make the arms bare sequences with the common leading terminal |
 
 ## Common mistakes (and what the build warning tells you)
@@ -118,6 +118,41 @@ an ungated choice, so a stale allowlist entry is easy to prune. **Prefer fixing 
 gating** (a concrete leading terminal, `word()`/`keywords()`, reordering a leading `not`)
 over accepting it; the allowlist is for the genuinely-unavoidable cases (recovery
 fallbacks), not the default.
+
+## Shared shapes: the verdict belongs to the fuse
+
+A [shared shape](./extending#shared-shapes-one-shape-many-bindings) is a `rules()` map that
+references a rule it does not define — the shape written once, each dialect binding the
+hole:
+
+```ts
+// shape.ts — `Value` is a HOLE; this module never defines it
+export const shape = rules(g => ({
+  Term: choice(sequence(g.Value, literal('/')), sequence(literal('@'), regex(/[a-z]+/))),
+}))
+```
+
+Does `Term` gate? **The shape cannot know.** `g.Value` has no body here, so its first-set
+reads `any` — and whether the arms collide depends entirely on what a consumer binds. The
+shape module is never executed as a parser, and its author has nothing to fix.
+
+So the diagnostic does not warn there. Such a choice is `deferred`: silent, excluded from
+the `'error'` gate, and visible programmatically as `report.deferred`. The question is
+re-asked at each `compose()` / `composeLeaf()`, over the **fused** rule map, where the hole
+is bound:
+
+```ts
+compose([shape, rules(_g => ({ Value: regex(/[0-9]+/) }))])    // ✅ '0'-'9' vs '@' — gates, silent
+compose([shape, rules(_g => ({ Value: regex(/@[0-9]+/) }))])   // ⚠️ choice @ Term is UNGATED
+//                                                                    · arm[0] ∩ arm[1] overlap on '@'
+```
+
+The warning lands on the build that can act on it, and names the real cause — a concrete
+overlap on `'@'`, not "unresolved ref `g.Value`". Fix it where you'd expect: bind a
+narrower `Value`, or left-factor the shape's arms.
+
+Only DEFERRED choices are reported at the fuse. An ordinary hole-free grammar is analyzed
+once, where it is authored, however many times it is later composed.
 
 ## CI: budget the ungated set with the allowlist
 

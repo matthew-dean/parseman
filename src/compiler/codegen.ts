@@ -3850,6 +3850,56 @@ function runGatingDiagnosticRules(
   return reportGating(opt, o => analyzeGatingRules(ruleMap, o))
 }
 
+/**
+ * The FUSE-time form of the diagnostic — the only site where a shared shape's
+ * `g.Foo` hole has an answer.
+ *
+ * A shape module (`rules(g => ({ Term: choice(sequence(g.Value, …), …) }))`) cannot
+ * decide whether `Term` gates: `g.Value` is unbound there, so its first-set reads
+ * `any`. `analyzeGatingRules` marks such a choice `deferred` rather than `ungated` —
+ * warning about it would describe a configuration that never runs, and its author
+ * has nothing to fix. This runs the SAME analysis over the fused winner map, where
+ * `Value` is bound, and reports what the binding actually produced.
+ *
+ * Threading `gating` into the per-piece `compileLinkable` calls would NOT do this:
+ * each piece is lowered alone, so the hole is still unbound and the shape's own false
+ * positive is simply re-emitted. Resolution needs the MERGED map.
+ *
+ * Reports ONLY choices their authoring site deferred (the local, resolver-free pass
+ * names them). That is what keeps an ordinary hole-free grammar from being warned
+ * about twice — once by `compileRuleMap` and again by every `compose()` that fuses
+ * it. Anti-patterns are structural and already reported at the authoring site, so
+ * they are dropped here for the same reason.
+ *
+ * The rule maps arrive as a THUNK because producing them costs a re-hydration of the
+ * carried IR: `gating: 'off'` must not pay for a diagnostic it will not print.
+ */
+export function runFusedGatingDiagnostic(
+  getRuleMaps: () => ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
+  opt?: GatingOption,
+): GatingReport | undefined {
+  if (resolveGatingLevel(opt) === 'off') return undefined
+  const ruleMaps = getRuleMaps()
+  // Only a SHARED SHAPE can have deferred a verdict, and only a deferred verdict is
+  // reportable here — so a fuse of hole-free grammars has nothing to say and is not
+  // walked at all. (This is also the no-double-reporting guarantee's fast path.)
+  if (!ruleMaps.some(map => hasExternalRuleRef(map))) return undefined
+  // Override-winner order (later wins), matching the linker. An accessed-but-undefined
+  // `g.X` leaks into a `rules()` cache as an unresolved-lazy entry — that is a
+  // REFERENCE, not a definition, and must never shadow the artifact that defines X.
+  const winners = new Map<string, Combinator<unknown>>()
+  for (const map of ruleMaps) for (const [name, rule] of map) {
+    if (rule._def.tag === 'lazy') { try { rule._def.thunk() } catch { continue } }
+    winners.set(name, rule)
+  }
+  const entries = [...winners]
+  return reportGating(opt, o => {
+    const deferredHere = new Set(analyzeGatingRules(entries, o).deferred.map(c => c.id))
+    const fused = analyzeGatingRules(entries, { ...o, resolveRef: name => winners.get(name) })
+    return { ...fused, ungated: fused.ungated.filter(c => deferredHere.has(c.id)), antiPatterns: [] }
+  })
+}
+
 function reportGating(
   opt: GatingOption | undefined,
   analyze: (o: { accept?: Iterable<string>; entryName?: string } | undefined) => GatingReport,
@@ -4303,6 +4353,9 @@ export function compileLinkable(
   // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
   // (`compileRuleMap` / `compile`); compileLinkable re-lowers the SAME map for the
   // carried/linkable form, so running it by default would double every warning.
+  // It is also the WRONG site for a shared shape: one piece at a time, the `g.Foo`
+  // holes are still unbound, so it can only repeat the shape's own non-verdict. The
+  // fused question is asked once over the merged map — `runFusedGatingDiagnostic`.
   if (opts?.gating !== undefined) runGatingDiagnosticRules(ruleMapArg, opts.gating)
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
   // Grammar-level ambient trivia through compose(): a piece from rules({ trivia },
