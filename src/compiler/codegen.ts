@@ -202,7 +202,14 @@ export const CST_ASSERT_SRC =
  */
 export const CLONE_STATE_SRC =
   'const _cloneState = (s) => s !== undefined ? Object.assign({}, s) : undefined; '
-  + 'const _hostBuild = (c, t, ch, f, sp, raw, tl) => { c._pmProfile?.phase === \'host\' && c._pmProfile.hostCalls++; return c.build(t, ch, f, sp, raw, tl, _cloneState(c.state)) }'
+  + 'const _hostBuild = (c, t, ch, f, sp, raw, tl) => { c._pmProfile?.phase === \'host\' && c._pmProfile.hostCalls++; return c.build(t, ch, f, sp, raw, tl, _cloneState(c.state)) }; '
+  // Does the installed positioned-CST host want THIS node type's trivia log? A helper
+  // rather than an inline expression for the same measured reason as `_hostBuild`: the
+  // gate sits in the node's straight-line prologue, and spelling it out inline grew
+  // every low-arity node enough to cost 20-30% on a realistic multi-grammar workload.
+  // The per-TYPE preference is deliberately not memoized; only the arity probe is.
+  + 'const _wantTL = (c, t) => { const b = c.build; if (b === undefined || b._parsemanCstOutput !== true) return false; '
+  + 'return b._parsemanCaptureTrivia !== undefined ? b._parsemanCaptureTrivia(t) : (c._pmCapTL ??= _hostReads(b, 5)) }'
 
 /** The prelude helpers, emitted as one unit wherever host-arity gating is used. */
 export const HOST_READS_DECL = `${HOST_READS_SRC}; ${CST_ASSERT_SRC}; ${CLONE_STATE_SRC}`
@@ -2937,7 +2944,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
       if (capTLv) {
         gates.push(capturesTrivia
           ? `${capTLv} = !(${profileRecognizer})`
-          : `${capTLv} = ${directCstV} && !(${profileRecognizer}) && (${profileCapture} || (${directTriviaGate}))`)
+          : `${capTLv} = !(${profileRecognizer}) && (${profileCapture} || _wantTL(_ctx, ${JSON.stringify(def.type)}))`)
       }
       if (capSTv) gates.push(`${capSTv} = ${directCstV} && !(${profileRecognizer} || ${profileCapture}) && ${directStateGate}`)
       if (capFv) gates.push(`${capFv} = ${directCstV} && !(${profileRecognizer}) && (${profileCapture} || ${directFieldsGate})`)
@@ -2948,7 +2955,16 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
       if (capTLv) {
         // A builder that DECLARES trivia keeps the established eager collector —
         // unchanged emission, no gate. Only an elided log is host-gated.
-        allocs.push(`${tlV} = ${profileRecognizer} ? undefined : ${capturesTrivia || innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`)
+        // A HOST-GATED log is `undefined` when not capturing, not `_EMPTY_TL`. Two
+        // reasons, both about the hot path. The trivia push already guards on
+        // `_cstTriviaLog !== undefined` (see emitTrivia), so `undefined` is the value
+        // that lets the install below be a plain assignment instead of a per-node
+        // ternary — and it keeps a nested `parser({ captureTrivia: true })` scope from
+        // pushing into the FROZEN `_EMPTY_TL`, which is what the ternary existed to
+        // prevent. The build call then receives `undefined` in the triviaLog slot, which
+        // only a builder of arity >= 5 could observe — and such a builder captures
+        // trivia outright, so it never reaches this branch.
+        allocs.push(`${tlV} = ${profileRecognizer} ? undefined : ${capturesTrivia || innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : undefined`}`)
       }
       // Gates and allocations share ONE `const` — the allocations reference the gates,
       // and keeping them in a single declaration keeps emission byte-identical to the
@@ -2963,10 +2979,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // itself settled the question — a builder that declares trivia, or a nested parser
   // that opts in — the collector is unconditional and the ternary is per-node dead
   // weight. (It was measured: adding it to every node cost ~13-18% on `rollback/none`.)
-  const triviaLogIsGated = structural ? !innerEnablesTriviaCapture : !capturesTrivia
+  // Structural nodes still need the ternary: their log is `_EMPTY_TL` when off, and a
+  // nested capture-enabling scope must not push into it. A host-gated DIRECT node
+  // already holds `undefined` in that case (see the alloc above), so the assignment is
+  // plain — which is the whole point, since this line is on every node of every parse.
   const innerTl = capTLv === null
     ? 'undefined'
-    : triviaLogIsGated ? `${capTLv} ? ${tlV} : undefined` : tlV
+    : structural && !innerEnablesTriviaCapture ? `${capTLv} ? ${tlV} : undefined` : tlV
   const fieldsOn = structural
     ? (capFv ?? 'false')
     : capFv ?? `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`

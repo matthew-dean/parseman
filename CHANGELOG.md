@@ -3,6 +3,72 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.40.0 — 2026-07-25
+
+- **Fix: a positioned-CST host was handed the collectors of the builder it replaced.**
+  Per-node capture elision was decided from the DIRECT builder's formal arity. But a
+  direct builder is bypassed whenever a positioned-CST host (`cstBuildHost`, and the
+  language-service hosts, which mark themselves `_parsemanCstOutput`) is installed:
+  `node()` re-routes the node through `ctx.build`, and the host — not the builder —
+  becomes the consumer.
+
+  Nearly every AST builder is written `children => …`, i.e. arity 1. Under a CST host
+  those nodes received an **empty `triviaLog` and absent `fields` and `state`**. Nothing
+  errored. An empty trivia log is indistinguishable from a node that genuinely had no
+  trivia, so a consumer inspecting the tree reported clean. The guide already promised
+  that an injected host "keeps the complete CST contract"; that was true only for
+  structural nodes.
+
+  Children were never lost — the compiled engine already restored them via its
+  `_dcst` gate and the interpreter never elided them. The loss was trivia, fields and
+  state, in **both** engines.
+
+  Those three are now gated on what the HOST reads, reusing the mechanism the
+  structural path already had (`_hostReads`, `_parsemanCaptureTrivia`, the `_pmCap*`
+  memos) rather than a second one. `hostReads` in `build-arity.ts` is the interpreter
+  twin of the emitted `_hostReads`, and `test/unit/host-capture-parity.test.ts` pins the
+  two to identical answers across rest/default/`arguments`/bound/unreadable hosts —
+  every loss assertion runs over both engines from one table, so a fix that reaches one
+  engine fails on the other.
+
+  **Silence is not reachable.** `_cstAssert` / `assertHostCaptureSatisfied` throw, naming
+  each collector, if a CST host is ever about to receive one that was not populated.
+  They run only on the `_parsemanCstOutput` path, so the eval-AST path never evaluates
+  them. An explicit per-type `_parsemanCaptureTrivia` opt-out is not treated as a loss.
+
+- **Fix: an incremental reparse diverged from a fresh parse on `state`.** A CST node
+  stores `state ?? null`, and `Doc.edit()` fed that `null` straight back into the next
+  parse. The state-clone guard tests `!== undefined`, and `Object.assign({}, null)` is
+  `{}` — so a reused subtree carried `state: {}` where a fresh parse carried `null`.
+  Normalized at the single seeding site. Previously latent: direct builders never
+  cloned state at all, which is why only the structural path could reach it.
+
+- **Perf: the hot path is unchanged, and three things were learned making it so.**
+  The eval-AST path pays nothing for the above — for the benchmark grammars the
+  generated code has zero differences outside the host branch.
+
+  - **`state` needs no per-node gate.** Unlike trivia and fields, whose collectors must
+    be installed *before* the body parses, the state snapshot is taken *after* it
+    succeeds — so it is cloned lazily on the host branch. Gating it per node cost +17%
+    on `rollback/none`, where the arity-5 builders already capture everything else.
+  - **The trivia-log install only needs its ternary when the log is host-gated.**
+  - **Dead branch *text* is not free.** The host branch never runs on the eval path,
+    but it sits inside the node's single `_nd` expression and V8 decides inlining on
+    bytecode size. Spelling the profile counter, host call and state clone inline there
+    cost ~21%; behind the `_hostBuild` prelude helper the expression is *shorter* than
+    before this change.
+
+  Measured cross-process (one fresh process per side, alternating): `rollback/none`
+  −0.6% (5/9), `expected/narrow` +0.0% (5/9). `perf:guard` ok.
+
+  **A harness note worth recording.** `perf:guard:grammars` — single-process, both sides
+  interleaved in one heap — reported `expected/narrow` at +21.9%…+26.2%, won 0/12, on
+  generated code whose only difference from the reference is inside a branch that case
+  never takes. Cross-process measurement of the same two commits shows the case neutral
+  (0.4874 ms vs 0.4873 ms). Its own self-vs-self control is clean, so the artifact is
+  not general noise. Treat a single-process interleaved reading on a near-inlining-cliff
+  case as needing cross-process confirmation before it is called a regression.
+
 ## 0.39.0 — 2026-07-25
 
 - **New: `analyzeDuplication()` — a structural duplication / overlap / rewrite

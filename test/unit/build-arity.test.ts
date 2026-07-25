@@ -168,8 +168,10 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
     // `_EMPTY_TL, undefined`: a positioned-CST host bypasses this builder entirely
     // and would otherwise be handed a permanently thin node. The gate collapses to
     // the old values whenever no such host is installed — asserted at runtime below.
-    expect(source).toMatch(/_ctl\d+ = _dcst\d+ && !\(_rec\d+\) && \(_cap\d+ \|\|/)
-    expect(source).toMatch(/_tl\d+ = _rec\d+ \? undefined : _ctl\d+ \? \[\] : _EMPTY_TL/)
+    expect(source).toMatch(/_ctl\d+ = !\(_rec\d+\) && \(_cap\d+ \|\| _wantTL\(_ctx, "P"\)\)/)
+    expect(source).toMatch(/_tl\d+ = _rec\d+ \? undefined : _ctl\d+ \? \[\] : undefined/)
+    // The install is a PLAIN assignment, not a per-node ternary — see the alloc note.
+    expect(source).toMatch(/_ctx\._cstTriviaLog = _tl\d+/)
     // State needs NO per-node gate: it is snapshotted after the body, so the clone
     // lives on the host branch only and the direct builder still receives `undefined`
     // in its fixed slot — the hot path is byte-identical to before the host fix.
