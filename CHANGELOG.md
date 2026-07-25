@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.36.0 — 2026-07-24
 
 - **Fix: a derived `expected` set names each token once — and that is 32% of Less
   parse time.** 0.35.0's `fix(expect)` (deriving expectations through a nullable
@@ -75,6 +75,37 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   At load average ~5 the worst self-vs-self case moves 8.3% median / 7.6% min,
   past the 6% thresholds — so a single red run is not a regression, and the
   replay evidence above is reported over five runs rather than one.
+
+- **A PR lands releasable, or it does not land.** This release exists because the
+  previous one could not be cut: `fix(expect)` merged, `main` read 0.35.0, and the
+  changelog's top section read `## Unreleased` — merged, and unshippable. That was a
+  REACHABLE state because `scripts/check-changelog.mjs` was wired only as
+  `prepublishOnly`. It refused `Unreleased` at publish time, which is the last moment
+  it can possibly matter and long after the PR that caused it is gone. Three
+  consecutive releases went out through that gap.
+
+  The check now runs on every pull request (CI job `release-gate`) and asserts two
+  things instead of one:
+
+  1. **Release integrity** — CHANGELOG.md's FIRST `##` heading names a real version,
+     that version equals `package.json`'s, and `src/version.ts`'s `PARSEMAN_VERSION`
+     equals it too. The old check asked only whether the version appeared *anywhere*
+     in the file, which a `## Unreleased` section on top satisfies trivially.
+  2. **Bump** — if the diff touches the PUBLISHED SURFACE, the version must go up.
+
+  "Published surface" is `src/**` plus the `package.json` fields a consumer actually
+  receives (`exports`, `files`, `dependencies`, `engines`, …). Tests, benches,
+  examples, fixtures, scripts, docs, CI config and the lockfile are exempt, because
+  none of them can change what `npm install parseman` produces. That exemption is
+  what makes the gate requireable: a gate that fires on a comment typo gets bypassed,
+  and then the gates that matter get bypassed with it.
+
+  The hatch is a `release-exempt` PR **label**, not `--no-verify`. It waives the bump
+  rule only — for a revert of a release, or a PR chained on one that already bumped —
+  and it waives it *on the PR*, where a reviewer sees it. Release integrity has no
+  hatch at any version: `Unreleased` is not a state this repo ships from.
+
+  `prepublishOnly` still runs the same script, unchanged, as the backstop.
 
 ## 0.35.0 — 2026-07-24
 
