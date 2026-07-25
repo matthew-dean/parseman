@@ -105,6 +105,27 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   shows input → what matches → what it yields for the full export surface,
   including the instructive failure and the discriminating case between similar
   combinators. Every sample is run by `scripts/verify-doc-examples.mjs`.
+- **Fix: `not()` no longer leaks its speculative probe.** A negative lookahead is
+  zero-width on both outcomes, so it must leave no observable trace — but it left two.
+  Its rollback mark covered the CST buffers and `_errors` and NOT the global
+  `_triviaLog`, so a probed body that skipped ambient trivia between its terms
+  committed that trivia and kept it; because `not()` consumes nothing, the enclosing
+  rule then re-parsed the same region and the span was logged **twice** (nothing
+  dedups `_triviaLog`, and `triviaEntries()` is a positional view over the flat
+  array). Separately, the compiled `emitNot` emitted no rollback of its own, relying
+  on `emitFallible`'s — which fires only on the inner-FAILURE path — so when the
+  probed parser SUCCEEDED its captured leaves survived, and an enclosing
+  `optional`/`many` that swallowed the failure absorbed them as real children.
+
+  It also left `_probe.best`, the completions tracker, so tokens reachable only
+  inside the probe were offered as completions — the same leak fixed for `peek()`.
+
+  Both engines leaked the trivia identically, so they agreed with each other while
+  both being wrong and interpreted/compiled parity never flagged it. Fixed on both:
+  the interpreter uses the shared `saveLookaheadMark`/`rollbackLookahead` helper, and
+  `emitNot` now emits an `emitAttempt`-style six-sink restore, unconditionally rather
+  than `if (!ok)`. Grammars with no `node()` and no recovery compile byte-identically
+  (nothing can write those sinks there); the four example grammars are unchanged.
 
 ## 0.33.0 — 2026-07-24
 
