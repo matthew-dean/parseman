@@ -14,12 +14,10 @@
 import { describe, it, expect } from 'vitest'
 import { parseGraphQL } from '../../examples/graphql/parser.ts'
 import { jsonDoc } from '../../examples/json/parser.ts'
-import { buildChevrotainGraphQL } from '../../bench/chevrotain-graphql.ts'
 import { buildParsimmonGraphQL } from '../../bench/parsimmon-graphql.ts'
 import { buildPeggyGraphQL } from '../../bench/peggy-graphql.ts'
 import { buildNearleyGraphQL } from '../../bench/nearley-graphql.ts'
 import { buildJisonGraphQL } from '../../bench/jison-graphql.ts'
-import { buildChevrotainJSON } from '../../bench/chevrotain-json.ts'
 import { buildParsimmonJSON } from '../../bench/parsimmon-json.ts'
 import { buildPeggyJSON } from '../../bench/peggy-json.ts'
 import { buildNearleyJSON } from '../../bench/nearley-json.ts'
@@ -29,6 +27,26 @@ import {
   SMALL_JSON, MEDIUM_JSON, LARGE_JSON,
 } from '../../bench/fixtures.ts'
 
+/**
+ * Chevrotain 12 calls `Object.groupBy` (Node 21+) from `performSelfAnalysis`, which
+ * runs at MODULE scope — so on Node 20, importing the bench at all throws
+ * `TypeError: Object.groupBy is not a function` and takes the whole FILE down, not
+ * just its own cases. A `describe.skipIf` cannot help with that; the import has to
+ * be conditional, hence the top-level await.
+ *
+ * Node 20 is inside this package's supported range (`^20.19.0 || >=22.12.0`). The
+ * other four bench parsers still run there — only the Chevrotain comparison is
+ * dropped, and it compares a THIRD-PARTY library's output shape, so nothing about
+ * Parseman goes unverified on that line.
+ */
+const HAS_GROUP_BY = typeof (Object as { groupBy?: unknown }).groupBy === 'function'
+const chevrotain = HAS_GROUP_BY
+  ? {
+      gql: (await import('../../bench/chevrotain-graphql.ts')).buildChevrotainGraphQL(),
+      json: (await import('../../bench/chevrotain-json.ts')).buildChevrotainJSON(),
+    }
+  : null
+
 describe('GraphQL bench parsers build the same AST as Parséman', () => {
   const fixtures = { small: SMALL_GQL, medium: MEDIUM_GQL, large: LARGE_GQL }
   const parsers = {
@@ -36,7 +54,7 @@ describe('GraphQL bench parsers build the same AST as Parséman', () => {
     Parsimmon: buildParsimmonGraphQL(),
     Nearley: buildNearleyGraphQL(),
     Jison: buildJisonGraphQL(),
-    Chevrotain: buildChevrotainGraphQL(),
+    ...(chevrotain ? { Chevrotain: chevrotain.gql } : {}),
   }
   for (const [fxName, input] of Object.entries(fixtures)) {
     const reference = parseGraphQL(input)
@@ -54,7 +72,7 @@ describe('JSON bench parsers build the same value as JSON.parse', () => {
     Parsimmon: buildParsimmonJSON(),
     Nearley: buildNearleyJSON(),
     Jison: buildJisonJSON(),
-    Chevrotain: buildChevrotainJSON(),
+    ...(chevrotain ? { Chevrotain: chevrotain.json } : {}),
   }
   for (const [fxName, input] of Object.entries(fixtures)) {
     const reference = JSON.parse(input)

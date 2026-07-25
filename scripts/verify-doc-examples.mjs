@@ -18,7 +18,7 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { globSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dir, '..')
@@ -36,7 +36,26 @@ const FIX = process.argv.includes('--fix')
 const ONLY = process.argv.slice(2).filter(a => !a.startsWith('--'))
 const DOCS = ONLY.length
   ? ONLY.map(f => resolve(ROOT, f))
-  : globSync('docs/**/*.md', { cwd: ROOT }).map(f => join(ROOT, f)).sort()
+  : mdFilesUnder(join(ROOT, 'docs')).sort()
+
+/**
+ * Every `.md` under `dir`, recursively.
+ *
+ * Deliberately NOT `fs.globSync`: that landed in Node 22, and this repo supports
+ * `^20.19.0 || >=22.12.0` (see `engines`). Importing it made the whole script
+ * crash on the floor line with no output at all — which surfaced as six
+ * `expected '' to contain …` failures in `doc-verifier.test.ts` rather than
+ * anything naming the real cause.
+ */
+function mdFilesUnder(dir) {
+  const out = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...mdFilesUnder(full))
+    else if (entry.name.endsWith('.md')) out.push(full)
+  }
+  return out
+}
 
 /** A fenced ```ts block carrying the `// [verify]` marker. */
 const BLOCK_RE = /^```ts\n([\s\S]*?)^```$/gm
