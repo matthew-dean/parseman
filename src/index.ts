@@ -34,7 +34,7 @@ export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/
 export { token, leaf } from './combinators/token.ts'
 
 export { compile } from './compiler/codegen.ts'
-export type { CompiledParser, LinkablePieces, GatingOption, DuplicationOption } from './compiler/codegen.ts'
+export type { CompiledParser, LinkablePieces, GatingOption, DuplicationOption, HostMode } from './compiler/codegen.ts'
 
 export { analyzeGating, analyzeGatingRules, formatGatingWarnings, firstSetToString } from './analysis/gating.ts'
 export type {
