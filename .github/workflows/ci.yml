@@ -54,8 +54,12 @@ jobs:
           # exclusion would let a changelog-only PR skip the very check that
           # validates it — an invalid changelog would merge green and only surface
           # later, at publish time.
-          if echo "$files" | grep -qvE '(^docs/|\.md$)' \
-             || echo "$files" | grep -qE '^CHANGELOG\.md$'; then
+          # `.github/` is tested BEFORE the markdown exemption on purpose: an
+          # issue template or workflow README lives under `.github/**` AND ends in
+          # `.md`, so a single broad `\.md$` exemption would let it skip the matrix
+          # despite the .github rule directly above.
+          if echo "$files" | grep -qE '^(\.github/|CHANGELOG\.md$)' \
+             || echo "$files" | grep -qvE '(^docs/|\.md$)'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
