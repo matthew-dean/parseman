@@ -222,10 +222,40 @@ read fields.
 Named, mutually-recursive rule bundle. The factory receives a proxy of all rule names and
 returns the definitions. See [Recursive rules](../guide/recursive-rules).
 
-Options-first form `rules({ trivia, scanSkip }, factory)` sets grammar-wide defaults:
-`trivia` — ambient filler skipped between terms; `scanSkip` — ambient opaque units
-(strings/brackets) that `scanTo`/`balanced` treat as atomic while scanning. Both are
-inherited by every rule. See [Whitespace & trivia](../guide/trivia).
+Options-first form `rules({ trivia, scanSkip, hostMode }, factory)` sets grammar-wide
+defaults: `trivia` — ambient filler skipped between terms; `scanSkip` — ambient opaque
+units (strings/brackets) that `scanTo`/`balanced` treat as atomic while scanning. Both
+are inherited by every rule. See [Whitespace & trivia](../guide/trivia).
+
+`hostMode: 'ast' | 'cst'` (default `'ast'`) is the compile-time host mode — the same
+option `compile(g, { hostMode })` and `compose(items, { hostMode })` take. `'ast'` emits
+each direct builder's own result and no positioned-CST branch; `'cst'` builds every node
+through the `ctx.build` host and captures unconditionally.
+
+Declaring it here is what lets **one grammar source serve both consumers** under the
+macro, which has no other way to receive a compile option:
+
+```ts
+const factory = (g) => ({ /* … the whole grammar, written once … */ })
+
+export const grammar    = rules({ trivia: rw }, factory)
+export const cstGrammar = rules({ trivia: rw, hostMode: 'cst' }, factory)
+```
+
+Two call sites over one shared factory (a factory may be passed by name, as here). The
+macro emits two independent top-level artifacts, so each bundle tree-shakes away the one
+it does not import — your compiler ships the AST image, your language service ships the
+CST image, and neither pays the other's cost.
+
+This is deliberately two compilations rather than one switchable artifact. `hostMode`
+does not only choose a build expression; it decides what each node CAPTURES. A per-parse
+choice would keep every collector live on both paths, so an AST parse would pay CST
+capture cost it can never use.
+
+An artifact and its host must agree, and a mismatch throws once per parse rather than
+producing a degraded tree — an `'ast'` artifact given a positioned-CST host would
+otherwise hand back its own AST objects where a CST was asked for, and a CST child filter
+would silently drop them.
 
 ### `ref<T>()`
 

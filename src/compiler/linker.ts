@@ -19,6 +19,7 @@
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
 import { compileLinkable, firstSetCond, runFusedGatingDiagnostic, HOST_READS_DECL } from './codegen.ts'
+import { FUSED_HOST_MODE, FUSED_HOST_ELIDED } from '../cst/host-mode.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import type { LinkablePieces, FirstSetRecipe, HostMode } from './codegen.ts'
 import { union } from '../combinators/first-set.ts'
@@ -277,7 +278,29 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
     ...[...winner].map(([k, p]) => p.ruleFns.get(k)!),
   ]
   const wrapperEntries = [...winner].map(([k, p]) => `${JSON.stringify(k)}: ${p.wrappers.get(k)!}`)
-  const rawBody = [...lines, 'return {', wrapperEntries.join(',\n'), '}'].join('\n')
+  // The host-mode stamp is emitted INTO the body rather than applied afterwards by the
+  // caller, so the runtime fuse (`fuseRules`) and the build-time fuse
+  // (`emitFusedSource`) cannot disagree about it. They have drifted on exactly this
+  // kind of change before, and an unstamped macro artifact is invisible to
+  // `assertHostModeCompatible` — it reads `elided: false` and passes, which is the
+  // silent wrong output the whole mechanism exists to prevent.
+  const { mode, elided } = hostModeOfPieces(pieces)
+  const rawBody = [
+    ...lines,
+    'const _map = {',
+    wrapperEntries.join(',\n'),
+    '}',
+    `Object.defineProperty(_map, Symbol.for(${JSON.stringify(FUSED_HOST_MODE.description!)}), { value: ${JSON.stringify(mode)}, enumerable: false })`,
+    `Object.defineProperty(_map, Symbol.for(${JSON.stringify(FUSED_HOST_ELIDED.description!)}), { value: ${JSON.stringify(elided)}, enumerable: false })`,
+    // …and on each rule FUNCTION, because `run(map.Rule, …)` is handed the rule, not the
+    // map, and would otherwise have nothing to check against. Done once at fuse time,
+    // before any rule has been called, so it costs nothing per parse.
+    'for (const _k of Object.keys(_map)) {',
+    `  Object.defineProperty(_map[_k], Symbol.for(${JSON.stringify(FUSED_HOST_MODE.description!)}), { value: ${JSON.stringify(mode)}, enumerable: false })`,
+    `  Object.defineProperty(_map[_k], Symbol.for(${JSON.stringify(FUSED_HOST_ELIDED.description!)}), { value: ${JSON.stringify(elided)}, enumerable: false })`,
+    '}',
+    'return _map',
+  ].join('\n')
 
   // Fuse-time first-set dispatch: a rule-ref choice arm was emitted (in linkable
   // mode) as `/*@FS:rule:codevar@*​/true`. Resolve it now against the WINNING rule's
@@ -354,22 +377,26 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
   return { body, env }
 }
 
-/** Fuse at RUNTIME (via `new Function`) — used by `compose()` when not compiled
- * by the macro (like `compile()`). The macro path uses `emitFusedSource` instead. */
-export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
+/**
+ * The host mode a fusion of these pieces lowers to, and whether any of them dropped a
+ * direct builder's positioned-CST branch. Shared by BOTH fuses via `fusedBody`, so the
+ * runtime and build-time engines cannot label the same artifact differently.
+ *
+ * A MIXED fusion is the one way the per-parse host check could be defeated. Carried IR
+ * re-lowers under this compose's mode, but a piece that arrived ALREADY COMPILED
+ * (`linkable()` / `pick()` / a macro artifact) keeps the mode it was built with — so a
+ * 'cst' fusion can contain an 'ast' piece whose direct builders dropped their host
+ * branch. The map would be labeled 'cst', `assertHostModeCompatible` would pass, and
+ * that piece would hand AST-shaped objects into a positioned CST: precisely the silent
+ * wrong output this whole mechanism exists to prevent. Reject it here, where both facts
+ * are still in hand.
+ */
+function hostModeOfPieces(pieces: LinkablePieces[]): { mode: HostMode; elided: boolean } {
   const mode = pieces.find(p => p.hostMode !== undefined && p.hostMode !== 'ast')?.hostMode ?? 'ast'
   const elided = pieces.filter(p => p.hostBranchElided === true)
-  // A MIXED fusion is the one way the per-parse host check could be defeated. Carried IR
-  // re-lowers under this compose's mode, but a piece that arrived ALREADY COMPILED
-  // (`linkable()` / `pick()` / a macro artifact) keeps the mode it was built with — so a
-  // 'cst' fusion can contain an 'ast' piece whose direct builders dropped their host
-  // branch. The map would be labeled 'cst', `assertHostModeCompatible` would pass, and
-  // that piece would hand AST-shaped objects into a positioned CST: precisely the silent
-  // wrong output this whole mechanism exists to prevent. Reject it at fuse time, where
-  // both facts are still in hand.
   if (mode === 'cst' && elided.length > 0) {
     throw new Error(
-      `compose/fuseRules: cannot build a positioned-CST artifact from pieces that were `
+      `compose: cannot build a positioned-CST artifact from pieces that were `
         + `compiled for host mode "ast" — ${elided.map(p => `"${p.ns}"`).join(', ')} `
         + `${elided.length === 1 ? 'dropped its' : 'dropped their'} direct builders' CST branch, `
         + `so ${elided.length === 1 ? 'it' : 'they'} would return AST objects inside the CST. `
@@ -378,23 +405,19 @@ export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
         + `with hostMode: 'cst', or pass the source grammar so it can be re-lowered.`,
     )
   }
-  const { body, env } = fusedBody(pieces)
-  // eslint-disable-next-line no-new-func
-  const map = new Function('_env', body)(env) as Record<string, FusedRule>
-  // Record what the fused artifact was lowered for, so the drivers (`run`, `parseDoc`)
-  // can refuse a mismatched host once per parse instead of the artifact silently handing
-  // back the wrong tree shape.
-  Object.defineProperty(map, FUSED_HOST_MODE, { value: mode, enumerable: false })
-  // Only pieces that actually dropped a direct builder's host branch make the fused map
-  // incompatible with a CST host; an all-structural fusion is fine either way.
-  Object.defineProperty(map, FUSED_HOST_ELIDED, { value: elided.length > 0, enumerable: false })
-  return map
+  return { mode, elided: elided.length > 0 }
 }
 
-/** Host mode a fused rule map was lowered for; absent on hand-built maps → 'ast'. */
-export const FUSED_HOST_MODE = Symbol.for('parseman.fusedHostMode')
-/** Whether any fused piece omitted a direct builder's positioned-CST branch. */
-export const FUSED_HOST_ELIDED = Symbol.for('parseman.fusedHostElided')
+/** Fuse at RUNTIME (via `new Function`) — used by `compose()` when not compiled
+ * by the macro (like `compile()`). The macro path uses `emitFusedSource` instead.
+ * Both stamp the host mode from inside `fusedBody`; see `hostModeOfPieces`. */
+export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
+  const { body, env } = fusedBody(pieces)
+  // eslint-disable-next-line no-new-func
+  return new Function('_env', body)(env) as Record<string, FusedRule>
+}
+
+export { FUSED_HOST_MODE, FUSED_HOST_ELIDED } from '../cst/host-mode.ts'
 
 /** The host mode a fused/composed rule map was built for. Defaults to 'ast'. */
 export function fusedHostModeOf(registry: object): HostMode {

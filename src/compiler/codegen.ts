@@ -11,6 +11,7 @@ import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combi
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
+import { assertHostModeCompatible, type HostMode } from '../cst/host-mode.ts'
 import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel, type Unanalysable } from '../analysis/gating.ts'
 import { analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings, duplicationFindingCount, type DuplicationReport, type DuplicationWarnLevel } from '../analysis/duplication.ts'
 
@@ -3538,53 +3539,14 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-/**
- * Which consumer a compiled artifact was built for.
- *
- * - `'ast'` (default) — the grammar's own `build` callbacks produce the result.
- * - `'cst'` — a positioned-CST `ctx.build` host produces it (linter / IDE / language
- *   service), and every node's capture is sized for that host.
- *
- * ONE grammar source serves both; they are two COMPILATIONS of it, not two grammars.
- * Deciding at compile time is what keeps the eval-AST artifact free of per-node host
- * probing — see the `hostMode` note on the codegen Ctx.
+/*
+ * Host mode, its fused-map symbols, and the artifact/host compatibility check now live
+ * in `src/cst/host-mode.ts` — the DRIVER (`parseman/run`) has to enforce the same
+ * contract and cannot import the compiler to reach it. Re-exported here so every
+ * existing `from './compiler/codegen.ts'` import keeps working unchanged.
  */
-export type HostMode = 'ast' | 'cst'
-
-/**
- * A compiled artifact and the host it is driven with must agree — and when they do not,
- * that has to be an ERROR, never a quietly-degraded tree.
- *
- * An `'ast'` artifact does not emit the positioned-CST branch at all, so attaching a
- * `_parsemanCstOutput` host to one would silently get the grammar's own AST objects
- * where the caller asked for a CST. A `'cst'` artifact builds every node through the
- * host, so running one without a host would call `undefined`. Both are compile/run
- * mismatches with an obvious fix, so both say so.
- *
- * Called once per parse from the TypeScript entry points, never from generated code.
- */
-export function assertHostModeCompatible(mode: HostMode, build: unknown, hostBranchElided = true): void {
-  const isCstHost = (build as { _parsemanCstOutput?: true } | undefined)?._parsemanCstOutput === true
-  // A purely STRUCTURAL artifact never had a direct-builder host branch to drop, so it
-  // serves a CST host in either mode — that is the long-standing `node(parser)` contract
-  // and this change does not touch it.
-  if (mode === 'ast' && isCstHost && hostBranchElided) {
-    throw new Error(
-      'parseman: this parser was compiled for host mode "ast" (the default), so its nodes '
-        + 'build through their own `build` callbacks and no positioned-CST branch was emitted. '
-        + 'It cannot be driven with a positioned-CST host (cstBuildHost / a language-service '
-        + 'host). Compile a second artifact from the SAME grammar with '
-        + "`compile(grammar, { hostMode: 'cst' })` and drive that one instead.",
-    )
-  }
-  if (mode === 'cst' && !isCstHost) {
-    throw new Error(
-      'parseman: this parser was compiled for host mode "cst", so every node builds through '
-        + 'a positioned-CST `ctx.build` host. Pass one (e.g. `{ build: cstBuildHost }`), or use '
-        + 'an artifact compiled with the default `hostMode: "ast"` to get the grammar\'s own AST.',
-    )
-  }
-}
+export { assertHostModeCompatible, FUSED_HOST_MODE, FUSED_HOST_ELIDED } from '../cst/host-mode.ts'
+export type { HostMode } from '../cst/host-mode.ts'
 
 export type CompiledParser<T> = {
   parse(input: string, pos?: number): ParseResult<T>
@@ -4165,6 +4127,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   // interpreter installing it as ctx.trivia at the entry.
   const grammarTrivia = (combinator._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
   const grammarScanSkip = (combinator._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip
+  const grammarHostMode = (combinator._meta as { grammarHostMode?: HostMode }).grammarHostMode
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -4184,7 +4147,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     namedFnDecls: [],
     capturing: hasNodeDef(combinator as Combinator<unknown>),
     recovery: opts?.recovery ?? false,
-    hostMode: opts?.hostMode ?? 'ast',
+    hostMode: opts?.hostMode ?? grammarHostMode ?? 'ast',
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
@@ -4362,7 +4325,7 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
-): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
+): { keys: string[]; replacement: string; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   runGatingDiagnosticRules(ruleMap, opts?.gating)
   runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
   for (const [, rule] of ruleMap) markUnusedValues(rule)
@@ -4382,6 +4345,12 @@ export function compileRuleMap(
   // a `grammarScanSkip` stamp (from `rules({ scanSkip })`). Mirrors grammarTrivia.
   const grammarScanSkip = opts?.scanSkip
     ?? ruleMap.map(([, r]) => (r._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip).find(Boolean)
+  // Grammar-level host mode, same fallback shape as the two above: explicit opt, else a
+  // `grammarHostMode` stamp from `rules({ hostMode }, factory)`. The stamp is what lets
+  // ONE grammar source be compiled twice (two `rules()` call sites over one factory)
+  // under the MACRO, which has no other way to pass a compile option.
+  const grammarHostMode = opts?.hostMode
+    ?? ruleMap.map(([, r]) => (r._meta as { grammarHostMode?: HostMode }).grammarHostMode).find(Boolean)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -4401,7 +4370,7 @@ export function compileRuleMap(
     namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
-    hostMode: opts?.hostMode ?? 'ast',
+    hostMode: grammarHostMode ?? 'ast',
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule), coverageWinners) } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
@@ -4511,6 +4480,11 @@ export function compileRuleMap(
   return {
     keys: perEntry.map(e => e.key),
     replacement,
+    // Reported so the MACRO can stamp the emitted map, exactly as `fusedBody` stamps a
+    // fused one. Without it a `rules()` artifact carries no mode and every driver-side
+    // host check passes vacuously — see `withHostMode` in the plugin.
+    hostMode: ctx.hostMode ?? 'ast',
+    hostBranchElided: !!ctx.hostBranchElided,
     ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
   }
 }
@@ -4620,6 +4594,9 @@ export function compileLinkable(
   // Grammar-level ambient scan-skip through compose(), mirroring grammarTrivia.
   const grammarScanSkip = opts?.scanSkip
     ?? ruleMapArg.map(([, r]) => (r._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip).find(Boolean)
+  // Grammar-level host mode through compose()/linkable(), mirroring the two above.
+  const grammarHostMode = opts?.hostMode
+    ?? ruleMapArg.map(([, r]) => (r._meta as { grammarHostMode?: HostMode }).grammarHostMode).find(Boolean)
   // Drop EXTERNAL entries: `rules(g => …)` returns a cache that also holds every
   // `g.X` that was ACCESSED, so an accessed-but-not-defined rule (defined in
   // another artifact) leaks into `Object.entries` as an undefined `ref`. Those
@@ -4643,7 +4620,7 @@ export function compileLinkable(
     // merely returning their scalar parse values.
     capturing: opts?.captureTerminals === true || ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
-    hostMode: opts?.hostMode ?? 'ast',
+    hostMode: grammarHostMode ?? 'ast',
     ...(opts?.coverage ? { coverage: { plan: opts.coverage } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,

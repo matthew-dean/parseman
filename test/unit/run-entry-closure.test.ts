@@ -41,6 +41,15 @@ describe('parseman/run — the minimal execution entry', () => {
   it('pulls in exactly the driver, and nothing that builds grammars', async () => {
     expect(await closureOf('src/run/index.ts')).toEqual([
       'src/cst/capture-buffer.ts',
+      // A DELIBERATE addition, which is what this test exists to force. The driver has
+      // to refuse an artifact/host mismatch once per parse — `run()` was the one entry
+      // that did not, so an 'ast' artifact driven with a positioned-CST host silently
+      // returned AST objects that the CST child filter then dropped. Enforcing that
+      // needs the contract, and a second copy of it in the driver is exactly how the
+      // two engines drift. `src/cst/host-mode.ts` is therefore import-free by design:
+      // it adds one leaf module and pulls in nothing, so the closure grows by one and
+      // the entry still builds no grammars.
+      'src/cst/host-mode.ts',
       'src/functional/run.ts',
       'src/recovery/scan.ts',
       'src/run/index.ts',
