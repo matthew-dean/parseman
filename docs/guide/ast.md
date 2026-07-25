@@ -132,6 +132,18 @@ whose AST is built by an injected [`ctx.build` host](#the-nodelike-contract): Pa
 reads the host's arity (`build(type, children, fields, span, rawChildren, triviaLog, state)`) and
 elides the trivia/state/field capture the host doesn't take.
 
+It also runs for a node that **has** its own `build` when a *positioned-CST* host
+([`cstBuildHost`](#just-want-a-plain-cst), and the language-service hosts) is installed.
+That host replaces your builder for the duration of the parse, so it — not your builder —
+is what capture must follow. Without this, the very common `children => …` builder would
+hand the host an empty `triviaLog` and no fields or state, and an empty trivia log is
+indistinguishable from a node that genuinely had none. So: **your builder's arity governs
+the eval-AST parse; the host's arity governs a CST parse of the same grammar.** One grammar
+serves both modes without either consumer being quietly short-changed.
+
+If a positioned-CST host would ever be handed a collector that was not populated,
+Parséman throws instead of returning the thin node.
+
 ::: warning Keep build hosts plain-positional
 The arity check is conservative-by-necessity: `Function.length` under-counts a **rest**
 (`(...args) =>`) or **default** (`(a, b = 1) =>`) parameter, and can't see through a bound
