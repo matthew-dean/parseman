@@ -221,6 +221,19 @@ most **1.9%** and the min by at most **1.0%**. 6% is over 3× the worse of those
   re-run self-vs-self alongside if the machine is busy; a real regression loses
   0-of-12 pairs every time, which is what distinguishes it from load.
 
+- **Losing 0-of-12 pairs is not by itself proof either.** The two sides share a
+  heap and a JIT profile, so a case near an optimization cliff can be pushed to a
+  different optimization outcome by the mere PRESENCE of the other side's code —
+  including by a branch it never executes. Compared against ITSELF at
+  `d4f107f`, `expected/narrow` read **+25.0% median, +21.2% min, 0 of 12 pairs**
+  in one run of four and sat inside ±2.6% in the other three; `rollback/none`
+  won **12 of 12** twice in the same four runs, which would mask a real
+  regression rather than invent one. Cross-process the same self-versus-self
+  pair reads neutral. Before calling a red a regression, confirm it with
+  `pnpm perf:xproc` — see
+  [perf-harness-interleaving.md](./perf-harness-interleaving.md) for the tells
+  and the recipe.
+
 - **The synthetic grammar is not a correctness corpus.** It asserts only that
   both sides parse identically; it says nothing about whether that parse is
   right.
@@ -461,6 +474,14 @@ up as "not slower" rather than as a clean win.
   asserts that both sides parse identically. It says nothing about whether that
   parse is correct.
 
+- **This gate is single-process and multi-workload too, and it has not been
+  audited for the interference documented in
+  [perf-harness-interleaving.md](./perf-harness-interleaving.md).** One
+  observation: a workload measured clean under `--only=css` and breached when
+  run alongside the other four. That is a question, not a finding — there is no
+  control behind it, and the pairing rule already exists because these workloads
+  disturb each other through GC. Stated so nobody has to rediscover it.
+
 - **A workload can be realistic and still structurally blind.** The first draft of
   `bench/workloads/less.ts` routed every value alternative through a named rule,
   which is a perfectly reasonable way to write a grammar — and it read FLAT on the
@@ -484,6 +505,10 @@ pnpm perf:guard:grammars --quick            # 2 rounds x 1 run — TRIAGE ONLY, 
 pnpm perf:guard:grammars --ref=7f1ddcd --head-ref=c7780e4   # 0.34.0 without the fix — expect RED
 pnpm perf:guard:grammars --ref=7f1ddcd --head-ref=fdf4e90   # 0.34.0 with the fix    — expect GREEN
 pnpm perf:guard:grammars --ref=<sha> --head-ref=<same sha>  # the noise floor
+
+# Confirm a suspected regression ACROSS PROCESSES before believing it. Not a
+# gate — see docs/design/perf-harness-interleaving.md.
+pnpm perf:xproc --ref=<sha> --head-ref=<sha> --case=expected/narrow
 
 # Same for the broad gate. `replay.sh` runs each five times, because one run is
 # not evidence at this noise floor.
