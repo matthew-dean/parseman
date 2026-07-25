@@ -741,6 +741,21 @@ export function transformMacro(
       // to always-try — the regression Greptile flagged). Ordered-chain (`{alts}`)
       // and legacy (`{concrete, refs}`) recipes are both plain JSON.
       + `firstSetRecipes: ${p.firstSetRecipes ? mapLit(p.firstSetRecipes) : 'new Map()'}, deps: ${mapLit(p.deps)}, `
+      // TODO(macro-carried-hostmode): fixed by inspection, NOT pinned end-to-end — no
+      // test fixture here takes the full-pieces fallback (the normal paths are an import
+      // spread or a compact IR piece), so nothing fails if this regresses. A fixture that
+      // forces the fallback is the missing coverage.
+      //
+      // Carry the HOST MODE across serialization. `hostModeOfPieces` (linker.ts) reads
+      // exactly these two to classify a fused artifact, and both default to the 'ast'
+      // side when absent — so omitting them made a serialized CST piece round-trip as
+      // `{ mode: 'ast', elided: false }` and `assertHostModeCompatible` pass VACUOUSLY
+      // on the composed result. That is the same hole this change closes for the
+      // in-memory fuse, surviving on the macro's carried path — which is the path a
+      // real grammar package composes over. Emitted only when set, so an 'ast' artifact
+      // stays byte-identical to before.
+      + `${p.hostMode !== undefined ? `hostMode: ${JSON.stringify(p.hostMode)}, ` : ''}`
+      + `${p.hostBranchElided === true ? 'hostBranchElided: true, ' : ''}`
       + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened

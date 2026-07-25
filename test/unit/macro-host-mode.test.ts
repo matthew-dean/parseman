@@ -171,3 +171,49 @@ const factory = (g) => ({ Doc: node(regex(/a+/), _c => ({ mine: true })) })
     if (out) expect((out.warnings ?? []).join('\n')).toMatch(/statically evaluable|isn't|cannot/i)
   })
 })
+
+/**
+ * Greptile P1: the macro's `serializePieces` emitted 16 fields and NOT `hostMode` /
+ * `hostBranchElided` — the exact two `hostModeOfPieces` (linker.ts) reads to classify a
+ * fused artifact. Both default to the 'ast' side when absent, so a serialized CST piece
+ * round-tripped as `{ mode: 'ast', elided: false }` and `assertHostModeCompatible` passed
+ * VACUOUSLY on anything composed over it.
+ *
+ * That is the same vacuous-pass hole this change closes for the in-memory fuse, surviving
+ * on the macro's CARRIED path — which is the path a real grammar package composes over,
+ * so it would have surfaced downstream as a CST parse quietly missing nodes rather than
+ * as an error.
+ *
+ * Asserted on the emitted SOURCE, because that is what a downstream build actually reads.
+ */
+describe('macro host mode — the carried artifact keeps its host mode', () => {
+  // The macro carries a grammar's pieces one of three ways: an import SPREAD, a compact
+  // IR piece (re-lowered at fuse, where `compose({ hostMode })` supplies the mode), or
+  // FULL serialized LinkablePieces — the fallback when a map cannot be serialized.
+  //
+  // Only that third path stores the mode in the literal, and `serializePieces` omitted
+  // `hostMode` / `hostBranchElided` — the exact two fields `hostModeOfPieces`
+  // (linker.ts:394) reads, both defaulting to the 'ast' side when absent. A serialized
+  // CST piece therefore round-tripped as `{ mode: 'ast', elided: false }` and
+  // `assertHostModeCompatible` passed VACUOUSLY on anything composed over it: the same
+  // hole this change closes for the in-memory fuse, surviving on the carried path.
+  //
+  // NOT pinned end-to-end: no fixture here takes the full-pieces fallback, so the guard
+  // below is the reachable half — an 'ast' grammar must stay byte-identical, which is
+  // what makes emitting the field conditionally safe. See TODO(macro-carried-hostmode).
+  it('does NOT emit a cst hostMode for a plain ast-mode grammar', () => {
+    const out = transformMacro(`
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+export const astOnly = rules((g) => ({ Doc: node(regex(/a+/), _c => ({ mine: true })) }))
+`.trim(), 'test.ts', new Set(['parseman']))
+    expect(out).not.toBeNull()
+    expect(out!.code).not.toMatch(/hostMode:\s*["']cst["']/)
+  })
+
+  it('stamps the cst mode on the emitted grammar value itself', () => {
+    const out = transformMacro(SHARED_FACTORY, 'test.ts', new Set(['parseman']))
+    expect(out).not.toBeNull()
+    // The reachable stamp for a non-carried grammar is the fusedHostMode symbol.
+    expect(out!.code).toMatch(/fusedHostMode/)
+  })
+})
