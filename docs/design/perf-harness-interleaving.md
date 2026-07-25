@@ -193,6 +193,35 @@ it is the gate's ordinary operation, on an ordinary PR, in CI. A gate that fails
 documentation change will fail real ones, and the win-rate rule that is supposed to
 separate noise from signal did not separate this.
 
+### A second defect, and what it does to the record
+
+Reviewing the cross-process script surfaced a bug in the gates themselves. Both
+`materialise()` implementations — `bench/grammar-perf-guard.ts` and the shared one
+in `bench/ab-harness.ts` — decided a cached reference worktree was reusable by
+testing that `.cache/<gate>-<sha>/src/index.ts` **exists**. Existence proves a
+worktree is there. It does not prove which commit it holds. The sha appears in the
+directory *name*, and nothing ever checked the contents against it.
+
+So a worktree left behind by an interrupted run, or one someone checked out to a
+different revision, was reused silently — and the gate benchmarked **a different
+commit from the one it named in its own output**, with no warning. Both now verify
+`git rev-parse HEAD` against the requested sha and rebuild on mismatch.
+
+This is worth stating plainly rather than filing as a fixed bug:
+
+> **It retroactively weakens every number these gates have produced.** Any past
+> result whose reference side came from a reused `.cache/` directory may have been
+> measured against the wrong commit, and there is no way to tell after the fact
+> which ones were — the output recorded the sha it *intended*, not the sha it
+> *used*. Historical readings from `perf:guard:grammars` and `perf:workloads`
+> should be treated as indicative, not as evidence, unless they were produced from
+> a clean `.cache/`.
+
+Combined with the interleaving artifact above, the honest summary is that these
+gates have two independent ways of producing a confident wrong number, one of
+which is invisible in their output. Both are fixed; neither fix recovers the
+historical record.
+
 ### The named limitation: a clean `--self` is not a trust signal here
 
 `pnpm perf:workloads --self` reads clean on `css/stylesheet` (±0.8%). That is
@@ -223,6 +252,48 @@ per side, order alternated per round, at least a dozen rounds — the same desig
 applied to the workload's own grammar and corpus. On the change described above
 that gave **+2.0% median, +1.0% min, winning 5 of 14**, against the same gate's
 `+15 … +29%`.
+
+## A related blind spot, in the correctness gates rather than the perf ones
+
+The same failure shape — a check reporting clean because it cannot see the class of
+defect in question — has now appeared in the equivalence checking too, and it is
+worth recording next to this because the lesson is identical.
+
+An **AST-only differential cannot see CST movement.** Comparing parseman 0.32.0
+against 0.40.0 over a real corpus, the eval-AST aggregate was **identical across 707
+files** — genuinely zero movement — while the positioned-CST aggregate moved on **68**.
+
+An earlier evaluation had reported "zero AST movement across 3,053 file-parses" as
+its strongest evidence. That statement was true, and reconfirmed. It was also not
+evidence about the CST.
+
+> **A second lesson, from getting this wrong.** The first reading of that CST movement
+> called it "55 source tokens dropped" — because it compared **leaf counts per file**.
+> A count delta cannot distinguish *a duplicate was removed* from *a token was lost*,
+> and the truth was the former: 0.32.0 leaked duplicate leaves (compiled `not()` relied
+> on a rollback that fires only on the inner-*failure* path, so a successful probe left
+> its captured leaves for an enclosing `optional`/`many` to absorb), and 0.40.0 removes
+> them. Diffing as a **per-offset multiset** shows every 0.32.0-only leaf sitting at an
+> offset the 0.40.0 tree still covers.
+>
+> So: compare trees **per offset**, not by count. And when a differential moves, the
+> baseline-free invariant — does the concatenation of leaves reconstruct the source? —
+> settles which side is wrong without needing to trust either version.
+
+So: **every equivalence claim gated on the AST aggregate alone has a known blind
+spot**, and the two aggregates are not substitutes. A differential oracle should
+carry BOTH as a matter of course, and any spec that depends on one should say which.
+
+Two cheap invariants would have caught these at the commit that introduced them,
+and neither requires a reference version to compare against:
+
+- **Token coverage.** The concatenation of a CST's leaves, in source order, must
+  reconstruct the input. A dropped token fails this immediately and locally.
+- **No structural node flattened.** A rule that declares a node type must not yield a
+  bare leaf where it previously yielded a node.
+
+Both are properties of a single parse, which is what makes them stronger than a
+differential: they hold without a baseline, so they cannot go stale.
 
 ## What this does not mean
 

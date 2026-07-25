@@ -86,9 +86,12 @@ export const median = (a: readonly number[]): number => {
   return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2
 }
 
-export function git(args: string[], cwd: string): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+export function git(args: string[], cwd: string, timeout?: number): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(timeout === undefined ? {} : { timeout }) })
 }
+
+/** Bound for the cache-verification git calls — they are local metadata reads. */
+const VERIFY_TIMEOUT_MS = 10_000
 
 /**
  * Materialise one side of the A/B: a directory whose `src/` is parseman at `sha`
@@ -114,7 +117,37 @@ export function materialise(
 ): string {
   if (sha === null) return root
   const dir = path.join(root, '.cache', `${gate}-${sha}`)
-  if (!existsSync(path.join(dir, 'src', 'index.ts'))) {
+  // A cached directory is only reusable if it is still AT the requested sha. Presence of
+  // `src/index.ts` proves a worktree exists there, not which commit it holds — the
+  // directory name encodes the sha, but nothing verified the contents matched it. A
+  // worktree left by an interrupted run, or one checked out elsewhere, would be reused
+  // silently and the gate would benchmark the WRONG COMMIT while reporting the requested
+  // one. Verify, and rebuild when it does not match: a rebuild is cheap, a confidently
+  // wrong number is not.
+  const stale = (): boolean => {
+    if (!existsSync(path.join(dir, 'src', 'index.ts'))) return true
+    try {
+      const want = git(['rev-parse', sha], root, VERIFY_TIMEOUT_MS).trim()
+      const have = git(['rev-parse', 'HEAD'], dir, VERIFY_TIMEOUT_MS).trim()
+      if (want !== have) return true
+      // Being AT the sha is not enough — a tracked modification under `src/` means the
+      // benchmark imports code that is not what the sha names, and the gate would report
+      // the clean sha while measuring the edit. `copyPaths` are overwritten from the
+      // working tree BY DESIGN and live outside `src/`, so scoping the check to `src/`
+      // catches the real case without rebuilding on every run.
+      return git(['status', '--porcelain', '--', 'src'], dir, VERIFY_TIMEOUT_MS).trim() !== ''
+    } catch (error) {
+      // Treat an unverifiable cache as stale — a rebuild is cheap, a wrong number is not
+      // — but do NOT swallow the reason. Silently discarding it is how a hung or broken
+      // git turns into an unexplained full rebuild every run, or worse, looks like normal
+      // operation. Say what happened and carry on.
+      console.warn(
+        `${gate}: could not verify the cached reference at ${sha} (${String(error).slice(0, 200)}); rebuilding it.`,
+      )
+      return true
+    }
+  }
+  if (stale()) {
     rmSync(dir, { recursive: true, force: true })
     try { git(['worktree', 'prune'], root) } catch { /* nothing to prune */ }
     try {
