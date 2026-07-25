@@ -3,6 +3,14 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # `labeled`/`unlabeled` are here because the release gate's escape hatch reads a
+    # LABEL (`release-exempt`, see scripts/check-changelog.mjs). The default type set
+    # is [opened, synchronize, reopened], so applying the label fired no event and a
+    # re-run replays the original payload with the label absent — observed as
+    # `EXEMPT: false` in a job whose PR was already labelled. The hatch was therefore
+    # unreachable except by pushing a commit AFTER labelling, which is not what its
+    # documentation says and not what anyone would try.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
