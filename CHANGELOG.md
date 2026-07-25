@@ -3,6 +3,35 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.41.0 — 2026-07-25
+
+- **Fix: the INTERPRETER still handed a positioned-CST host the collectors of the
+  builder it replaced.** 0.40.0 settled this for the compiled engine at build time
+  (`hostMode: 'cst'` captures unconditionally). The interpreter has no compile step and
+  was still eliding per-node capture from the DIRECT builder's formal arity — so under a
+  `_parsemanCstOutput` host, an arity-1 `children => …` builder (which is nearly all of
+  them) handed the host an **empty `triviaLog` and absent `fields` and `state`**. Nothing
+  errored, and an empty trivia log is indistinguishable from a node that genuinely had
+  none, which is why it survived.
+
+  The interpreter now re-decides per parse what the compiled engine decides per
+  compilation, and `test/unit/interpreter-host-capture.test.ts` pins the two engines to
+  each other — a fix reaching one engine and not the other fails there. Assertions
+  compare against a STRUCTURAL control (the same grammar on the path that was always
+  gated correctly) rather than against a hand-written expectation.
+
+  Scope note: this is the surviving half of a larger change. The other half — per-node
+  runtime gating in codegen — is **not** needed, because `hostMode` removed the runtime
+  question entirely. **Zero lines of `src/compiler/codegen.ts` changed here**, so the
+  generated code is byte-identical to 0.40.0 and the emitted hot path is untouched.
+
+  That is also the cleanest available confirmation of the 0.40.0 root cause. The earlier
+  attempt at this fix destabilized `css/stylesheet` (readings from −36% to +74%) because
+  it gated capture at parse time on every node. Rebuilt on top of the compile-time gate,
+  the same correctness fix costs nothing: `perf:guard:grammars` ok on all seven cases,
+  `perf:workloads` ok with `css/stylesheet` at min **−9.2 … −4.7%, won 8–9/12, breached
+  0/3**. The runtime gate was the perturbation.
+
 ## 0.40.0 — 2026-07-25
 
 - **Host mode is now a COMPILE-TIME decision.** A `node()` with its own `build` is
@@ -19,8 +48,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   compose(items, { hostMode: 'cst' })
   ```
 
-  - `'ast'` (default) — direct builders own their result; the host branch and the probe
-    are **not emitted at all**. Capture follows the builder's arity, exactly as before.
+  - `'ast'` (default) — direct builders own their result and the **host branch is not
+    emitted at all**. Capture follows the builder's arity, exactly as before. (Precisely:
+    `_dcst` is still emitted in this mode — what changed is that it binds a hoisted
+    boolean local, `_cap`, instead of the `_ctx.build?._parsemanCstOutput` property
+    chain, so it is no longer a host probe. In `'cst'` it is not emitted at all, because
+    the collectors are unconditionally live. An earlier draft of this entry described
+    that backwards.)
   - `'cst'` — direct builders always build through the host, and children / rawChildren /
     triviaLog / fields / state are captured unconditionally. Nothing to probe either way.
 
@@ -58,12 +92,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   CSS and Less workload grammars compile to **10,734 fewer bytes**, with one fewer
   property chain and no dead host branch per direct node.
 
-  `perf:workloads` nonetheless reports `css/stylesheet` at **+15% … +29%, breaching
-  3/3**, on an idle machine — while the same working tree read **clean (breached 0/3)**
-  twenty minutes earlier, and `main` reads stable clean. Measured **cross-process**
-  instead (one fresh process per side, order alternated, 14 rounds) the same two commits
-  read **+2.0% median, +1.0% min, with the change winning 5 of 14** — neutral within a
-  spread where individual round medians range 1.52–2.29 ms on BOTH sides.
+  **What the gate said, and what the trusted method said — both belong here.**
+
+  `perf:workloads` reports `css/stylesheet` at **+15% … +29%, breaching 3/3** on an idle
+  machine, while the same working tree read **clean (breached 0/3)** twenty minutes
+  earlier and `main` reads stable clean. No threshold was widened.
+
+  Measured **cross-process** (one fresh process per side, order alternated, output
+  retained), `ac4da09` → `c4804a3` over **15 rounds**:
+
+  | statistic | pre-0.40.0 | 0.40.0 | delta |
+  | --- | --- | --- | --- |
+  | mean of round medians | 1.7692 ms | 1.6940 ms | **−4.3%** |
+  | median of round medians | 1.8380 ms | 1.6475 ms | −10.4% |
+  | mean of round minimums | 1.3018 ms | 1.2659 ms | −2.8% |
+
+  0.40.0 won **9 of 15** paired rounds. An earlier 12-round batch read −10.1% median /
+  −3.6% min / 9-of-12. This release was merged on the cross-process reading, over the
+  gate's — deliberately, and that judgement is the record, not the favourable number
+  alone.
 
   Three lines of evidence therefore disagree with the gate: the generated code is
   smaller and does less; the gate's own verdict flips between runs on identical input;
