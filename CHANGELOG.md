@@ -5,107 +5,27 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.36.0 — 2026-07-24
 
-- **Fix: a derived `expected` set names each token once — and that is 32% of Less
-  parse time.** 0.35.0's `fix(expect)` (deriving expectations through a nullable
-  prefix) is correct and stays. What it did not account for is that a nullable
-  prefix re-reaches the SAME tokens from every term it derives through: a value
-  grammar whose leading terms are all optional named its value-start set once per
-  term, per choice arm. One constant in jess's compiled Less grammar went from 20
-  entries to 70+.
+- **Expectation sets are deduplicated.** An `expected` array on a parse failure no
+  longer repeats an entry. Deriving an expectation through a nullable prefix reaches
+  the same tokens once per term it derives through, per choice arm; the repeats were
+  duplicates, never newly-reachable tokens, so nothing is dropped from the set.
 
-  That is not merely a cosmetic problem in an error message. A choice that loses
-  every arm emits `_ctx._fx = [...arm0, ...arm1, …]`, materialising a fresh array
-  from those sets — and the result becomes an arm snapshot for the ENCLOSING
-  choice's concat, so duplication compounds up the nesting rather than adding.
-  A grammar that backtracks constantly pays it constantly.
+  Minor rather than patch: `expected` is observable output and a consumer may be
+  asserting on its contents.
 
-  Measured on `benchmark.less` (106 KB), interleaved in one process, 4 rounds ×
-  25 pairs with per-round rotation, 8 warmup:
+  Building the sets is also cheaper, which matters on a grammar that backtracks. A
+  choice that loses every arm concatenates its arms' sets into `_ctx._fx`, and that
+  result becomes an arm snapshot for the enclosing choice, so width compounded with
+  nesting rather than adding. On a 106 KB Less stylesheet the oversized sets were
+  about a third of parse time.
 
-  | build | vs 0.32.0, the version jess pins | pairs won |
-  | --- | --- | --- |
-  | 0.35.0 as shipped | **+35.3%** median / +33.1% min | 1/100 |
-  | 0.35.0 with `fix(expect)` reverted | −8.0% / −7.4% | 92/100 |
-  | **0.35.0 with the set deduplicated** | **−4.9% … −7.9%** / −5.2% … −7.1% | 81–92/100 |
+  `deriveExpected` is the single derivation site, read by both the interpreter and
+  the codegen, so the two cannot drift here.
 
-  So the dedup recovers the whole regression while keeping the correctness fix —
-  the widened sets were duplicates, not newly-reachable tokens. Same-build-vs-
-  itself through this harness moved the median ±0.5%.
-
-  One derivation, one site: `deriveExpected` is what both the interpreter and
-  codegen read, so the interpreter cannot drift from the compiled engine here.
-
-  This also settles the standing question about 0.35.0's rollback guard, which
-  had repaid css/scss/jess and appeared to have done nothing for Less. It did:
-  measured with the `not()` rollback held out of both sides, the guard alone is
-  **−12.3%** median / −13.7% min, 97/100, on `benchmark.less`. Two independent
-  changes moved in opposite directions and the release measured only their sum.
-  Residually, `not()`'s guarded six-sink mark-and-compare still costs about 4%
-  there (62,447 executions on that file, of which 94.5% restore a length that
-  never moved and 98.4% of individual sink stores are skipped by the guard) —
-  real, secondary, and left for its own change.
-
-- **The grammar perf gate gets the axis that broke it.** `perf:guard:grammars`
-  landed one PR before `fix(expect)` and passed it: its sweep varied speculative
-  probes per byte, and the regression rode derived expected-set width, which that
-  sweep cannot see. Replaying the merge (`--ref=9c6fee2 --head-ref=a464372`) all
-  five rollback cases sit inside ±3% while the new `expected/wide` case reads
-  **+25.6% median / +26.9% min / 0-of-12 pairs won**.
-
-  The change is an `expected/*` sweep — 0, 1 and 4 optional terms per choice arm
-  over one operand alphabet, so the derivation re-reaches the same tokens.
-  `narrow` and `wide` both carry a nullable prefix and so share a dispatch shape,
-  differing only in derived width; `none` is the disjoint-arm baseline.
-  `caseGrammar`/`caseInput` replace the single `guardsPerValue` knob so a third
-  axis is an entry in one array, which is the point: a gate parameterised on one
-  axis only ever catches that axis.
-
-  The rollback sweep is NOT extended, and the reason is a correction. Its
-  documented calibration said `guardsPerValue × 42`, which put `rollback/dense`
-  at ~672 probes/KB and made jess's Less grammar (599) look like it sat at the
-  edge of the bracket. Instrumenting the emitted artifact measures **94 per KB
-  per guard** — 0 / 94 / 377 / 1508, with the interpreter counting identically —
-  so css 20, jess 121 and less 599 all land inside the sweep and `dense` sits
-  2.5× above the worst of them. The sweep was never under-ranged; the constant
-  was wrong by 2.2×. A `rollback/extreme` case added on the old reading has been
-  removed rather than kept for reassurance.
-
-  Also re-measured, and documented rather than fixed: the gate's stated
-  same-build-vs-itself floor (1.9% median / 1.0% min) is a quiet-machine figure.
-  At load average ~5 the worst self-vs-self case moves 8.3% median / 7.6% min,
-  past the 6% thresholds — so a single red run is not a regression, and the
-  replay evidence above is reported over five runs rather than one.
-
-- **A PR lands releasable, or it does not land.** This release exists because the
-  previous one could not be cut: `fix(expect)` merged, `main` read 0.35.0, and the
-  changelog's top section read `## Unreleased` — merged, and unshippable. That was a
-  REACHABLE state because `scripts/check-changelog.mjs` was wired only as
-  `prepublishOnly`. It refused `Unreleased` at publish time, which is the last moment
-  it can possibly matter and long after the PR that caused it is gone. Three
-  consecutive releases went out through that gap.
-
-  The check now runs on every pull request (CI job `release-gate`) and asserts two
-  things instead of one:
-
-  1. **Release integrity** — CHANGELOG.md's FIRST `##` heading names a real version,
-     that version equals `package.json`'s, and `src/version.ts`'s `PARSEMAN_VERSION`
-     equals it too. The old check asked only whether the version appeared *anywhere*
-     in the file, which a `## Unreleased` section on top satisfies trivially.
-  2. **Bump** — if the diff touches the PUBLISHED SURFACE, the version must go up.
-
-  "Published surface" is `src/**` plus the `package.json` fields a consumer actually
-  receives (`exports`, `files`, `dependencies`, `engines`, …). Tests, benches,
-  examples, fixtures, scripts, docs, CI config and the lockfile are exempt, because
-  none of them can change what `npm install parseman` produces. That exemption is
-  what makes the gate requireable: a gate that fires on a comment typo gets bypassed,
-  and then the gates that matter get bypassed with it.
-
-  The hatch is a `release-exempt` PR **label**, not `--no-verify`. It waives the bump
-  rule only — for a revert of a release, or a PR chained on one that already bumped —
-  and it waives it *on the PR*, where a reviewer sees it. Release integrity has no
-  hatch at any version: `Unreleased` is not a state this repo ships from.
-
-  `prepublishOnly` still runs the same script, unchanged, as the backstop.
+- **Internal.** Every PR now has to carry its own version bump and a changelog
+  section naming it — `scripts/check-changelog.mjs`, CI job `release-gate`, design in
+  `docs/design/release-gates.md`. `perf:guard:grammars` gains an `expected/*` sweep,
+  so derived-set width is an axis the gate can see.
 
 ## 0.35.0 — 2026-07-24
 
