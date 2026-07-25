@@ -57,6 +57,7 @@ export type {
   DuplicateFinding, NearDuplicateFinding, RegexFragmentFinding,
   RegexClassFinding, RegexClassVariant,
   ArmOverlapFinding, RewriteFinding, RewriteKind, SepByVerdict, KeywordRegexFinding, DivergentNodeFinding,
+  StructureLossFinding,
 } from './analysis/duplication.ts'
 // `pick()` is deliberately NOT re-exported: build-inlining a `pick()` of an imported
 // grammar can't yet carry that grammar's ambient trivia across the module boundary, so

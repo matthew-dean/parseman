@@ -5,7 +5,7 @@
  * "did I write this production twice?" is a structural one a machine answers
  * exactly, and a reviewer answers badly. A few hundred productions is tens of
  * thousands of pairs; nobody reads that. This module walks the same tree
- * `analyzeGating` walks and reports eight families:
+ * `analyzeGating` walks and reports nine families:
  *
  *   1. `duplicates`     — subtrees that are structurally IDENTICAL, in ≥2 places.
  *   2. `nearDuplicates` — subtrees identical except at ONE slot. This is the
@@ -27,7 +27,13 @@
  *                          outright bugs.
  *   7. `divergentNodes` — ONE `node()` type built by several structurally different
  *                          productions that are nonetheless variants of one shape.
- *   8. `keywordRegexes` — hand-rolled keyword regexes (`regex(/not(?![-\w])/i)`)
+ *   8. `structureLoss`  — an earlier `choice` arm that FLATTENS what a later arm
+ *                          would have structured: same `node()` type, overlapping
+ *                          first-sets, and the earlier body contains no `node()`
+ *                          at all. The parse succeeds either way, so nothing else
+ *                          — not a test suite, not an output diff — reports it.
+ *                          The ordered, consequential half of `divergentNodes`.
+ *   9. `keywordRegexes` — hand-rolled keyword regexes (`regex(/not(?![-\w])/i)`)
  *                          that should be `word()`/`keywords()`. Not a style note:
  *                          `/i` without `/u` gets non-ASCII case folding wrong,
  *                          and the fix that lives inside `keywords()` (see
@@ -244,6 +250,46 @@ export type DivergentNodeFinding = {
   suggestion: string
 }
 
+/**
+ * An earlier `choice` arm that FLATTENS what a later arm would have STRUCTURED.
+ *
+ * Both arms build the same `node()` type and can start on the same character, so
+ * on the inputs both accept the earlier one wins — and its body contains no
+ * `node()` at all, so the tree it produces is that node over bare leaves. The
+ * later arm, on those same inputs, would have produced child nodes. Nothing about
+ * this is visible in a parse that succeeds: `ok` is true, the span is right, the
+ * text round-trips. Only the SHAPE moved, and only on the subset of inputs the
+ * flattening arm happens to accept — which is why it survives a test suite that
+ * checks "does it parse" and a corpus diff that checks emitted output. It shows
+ * up in whatever consumes the tree: a language service that lints number tokens,
+ * a formatter, a refactor.
+ *
+ * This is the ordered, consequential half of `divergent-node`. That finding says
+ * two productions build one type and nothing keeps them in sync, and it expressly
+ * allows "the variants exist for a parse-order reason (a fast path tried first)".
+ * This one is the case where that excuse is the bug: the fast path is not
+ * tree-neutral, and here is the list of node types it deletes.
+ */
+export type StructureLossFinding = {
+  kind: 'structure-loss'
+  id: string
+  /** The `choice` that orders the two arms. */
+  site: Site
+  /** The `node()` type BOTH arms build. */
+  nodeType: string
+  /** Index of the flattening arm (the earlier one). */
+  earlier: number
+  /** Index of the structuring arm it shadows. */
+  later: number
+  /** The characters on which both arms can start — where the shadowing bites. */
+  on: FirstSet
+  /** Node types the later arm builds under `nodeType` and the earlier cannot. */
+  lostNodeTypes: string[]
+  earlierShape: string
+  laterShape: string
+  suggestion: string
+}
+
 /** A `regex()` that hand-rolls a keyword + word boundary. */
 export type KeywordRegexFinding = {
   kind: 'keyword-regex'
@@ -292,6 +338,7 @@ export type DuplicationReport = {
   overlaps: ArmOverlapFinding[]
   rewrites: RewriteFinding[]
   divergentNodes: DivergentNodeFinding[]
+  structureLoss: StructureLossFinding[]
   keywordRegexes: KeywordRegexFinding[]
   /** Ids listed in `accept` that matched no finding — stale entries to prune. */
   acceptedUnused: string[]
@@ -756,6 +803,7 @@ export function analyzeDuplicationRules(
   const overlaps = findOverlaps(visited, shapeOf, opts?.resolveRef)
   const rewrites = findRewrites(visited, shapeOf)
   const divergentNodes = findDivergentNodes(visited, shapeOf)
+  const structureLoss = findStructureLoss(visited, opts?.resolveRef)
   const keywordRegexes = findKeywordRegexes(visited)
 
   // Subsumption, WITHIN each category: a 40-node clone family otherwise reports
@@ -785,6 +833,7 @@ export function analyzeDuplicationRules(
     overlaps: overlaps.filter(keep).slice(0, maxFindings),
     rewrites: rewrites.filter(keep).slice(0, maxFindings),
     divergentNodes: divergentNodes.filter(keep).slice(0, maxFindings),
+    structureLoss: structureLoss.filter(keep).slice(0, maxFindings),
     keywordRegexes: keywordRegexes.filter(keep).slice(0, maxFindings),
     acceptedUnused: [...accept].filter(id => !used.has(id)),
     stats: { rules: ruleMap.length, nodes: visited.size, shapes: new Set([...visited.values()].map(v => v.shape)).size },
@@ -1616,6 +1665,137 @@ function findDivergentNodes(
   return out.sort((a, b) => b.sharedTerms.length * b.count - a.sharedTerms.length * a.count)
 }
 
+// ── 5c. an earlier arm that flattens what a later arm structures ─────────────
+
+/**
+ * Peel the wrappers that are REFERENTIAL or purely annotative, so an arm written
+ * `g.FlatDecl` is compared as the production it names. `transform`/`leaf`/`token`
+ * are deliberately NOT peeled: each of them collapses its interior to one value
+ * on purpose, and treating a `leaf(node('X', …))` as if it still produced an `X`
+ * would invert the very question this analysis asks.
+ */
+function resolveArm(p: Combinator<unknown>): Combinator<unknown> {
+  let cur = p
+  const seen = new Set<Combinator<unknown>>()
+  for (;;) {
+    if (seen.has(cur)) return cur
+    seen.add(cur)
+    const d = cur._def as ParserDef
+    if (d.tag === 'label' || d.tag === 'attempt') { cur = d.parser; continue }
+    if (d.tag === 'lazy') {
+      try { cur = (d as { thunk(): Combinator<unknown> }).thunk(); continue }
+      catch { return cur }   // unresolved cross-artifact hole
+    }
+    return cur
+  }
+}
+
+/**
+ * The `node()` types this subtree can put INSIDE the tree, excluding its own root
+ * wrapper. Refs are followed (the structure a declaration's value builds usually
+ * lives behind `g.valueList`, and an analysis that stopped at the ref would report
+ * every grammar as flat). `leaf()`/`token()` are opaque: they reduce their
+ * interior to a single value, so nothing under one reaches the tree.
+ */
+function nestedNodeTypes(
+  root: Combinator<unknown>,
+  out: Set<string>,
+  seen: Set<Combinator<unknown>>,
+  isRoot: boolean,
+): void {
+  if (seen.has(root)) return
+  seen.add(root)
+  const d = root._def as ParserDef
+  if (d.tag === 'leaf' || d.tag === 'token') return
+  if (d.tag === 'node' && !isRoot) out.add(d.type ?? '(anonymous)')
+  if (d.tag === 'lazy') {
+    try { nestedNodeTypes((d as { thunk(): Combinator<unknown> }).thunk(), out, seen, false) }
+    catch { /* unresolved cross-artifact hole */ }
+    return
+  }
+  for (const k of childrenOf(d)) nestedNodeTypes(k, out, seen, false)
+}
+
+/** Most node types worth naming in one finding before it stops being a list. */
+const MAX_LOST_TYPES = 8
+
+function findStructureLoss(
+  visited: Map<Combinator<unknown>, Visited>,
+  resolve?: RefResolver,
+): StructureLossFinding[] {
+  const nestedCache = new Map<Combinator<unknown>, Set<string>>()
+  const nested = (p: Combinator<unknown>): Set<string> => {
+    const hit = nestedCache.get(p)
+    if (hit !== undefined) return hit
+    const out = new Set<string>()
+    nestedNodeTypes(p, out, new Set(), true)
+    nestedCache.set(p, out)
+    return out
+  }
+
+  const findings: StructureLossFinding[] = []
+  for (const v of visited.values()) {
+    const d = v.d
+    if (d.tag !== 'choice') continue
+    const arms = d.parsers
+    const resolved = arms.map(resolveArm)
+    const nodeTypes = resolved.map(wrappingNodeType)
+    const fs = arms.map(a => firstSetOf(a, new Set(), resolve))
+
+    for (let i = 0; i < arms.length; i++) {
+      // A GATED arm is selected by a runtime predicate, not by order alone. The
+      // author has said which branch applies when; that is a deliberate split,
+      // not a shadow, so it is not reported as a bug.
+      if (d.gates[i] != null) continue
+      const type = nodeTypes[i] ?? null
+      if (type === null) continue
+      // Only the arm that produces NO nested node is reported. "Earlier arm is
+      // strictly poorer than later arm" is the same family, but grading it means
+      // comparing two ref-reachable type sets, and in a recursive grammar the
+      // later set reaches most of the grammar — so the graded rule fires on
+      // almost every pair and stops being a signal. Empty-vs-nonempty needs no
+      // threshold and is exactly the reported defect: a node over bare leaves.
+      if (nested(resolved[i]!).size !== 0) continue
+      const A = fs[i]!
+      if (A.kind === 'any') continue   // gating's `anyArms` owns the any-first-set case
+
+      for (let j = i + 1; j < arms.length; j++) {
+        if (nodeTypes[j] !== type) continue
+        const B = fs[j]!
+        if (B.kind === 'any' || !intersects(A, B)) continue
+        const lost = nested(resolved[j]!)
+        if (lost.size === 0) continue
+        const lostNodeTypes = [...lost].sort()
+        findings.push({
+          kind: 'structure-loss',
+          id: `structure-loss:${siteToString(v.site)}:${i}-${j}`,
+          site: v.site,
+          nodeType: type,
+          earlier: i,
+          later: j,
+          on: intersection(A, B),
+          lostNodeTypes: lostNodeTypes.slice(0, MAX_LOST_TYPES),
+          earlierShape: clamp(render(resolved[i]!, 3)),
+          laterShape: clamp(render(resolved[j]!, 3)),
+          suggestion: structureLossSuggestion(type, i, j, lostNodeTypes),
+        })
+      }
+    }
+  }
+  return findings.sort((a, b) => b.lostNodeTypes.length - a.lostNodeTypes.length)
+}
+
+function structureLossSuggestion(
+  type: string,
+  i: number,
+  j: number,
+  lost: readonly string[],
+): string {
+  const names = lost.slice(0, MAX_LOST_TYPES).map(t => `\`${t}\``).join(', ')
+  const more = lost.length > MAX_LOST_TYPES ? ` (and ${lost.length - MAX_LOST_TYPES} more)` : ''
+  return `arm[${i}] and arm[${j}] both build \`${type}\` and can start on the same character, so on every input BOTH accept, arm[${i}] wins — and arm[${i}] contains no \`node()\`, so it yields a \`${type}\` over bare leaves. arm[${j}] would have built ${names}${more} there. The parse still succeeds and the span is still right; only the tree shape changes, and only on the inputs arm[${i}] happens to accept — so a suite that asserts "it parses" and an output diff both stay green while every consumer of the tree (language service, formatter, refactor) silently loses those nodes on the commonest inputs. Decide which tree is the contract: if the structured one is, DELETE arm[${i}] or move it after arm[${j}]; if the flat one is, it must be flat for ALL inputs of this shape, not just the ones arm[${i}] matches — a fast path that is not tree-neutral is not a fast path.`
+}
+
 // ── 6. hand-rolled keyword regexes ───────────────────────────────────────────
 
 function findKeywordRegexes(visited: Map<Combinator<unknown>, Visited>): KeywordRegexFinding[] {
@@ -1717,6 +1897,15 @@ const sitesLine = (sites: readonly Site[]): string =>
  */
 export function formatDuplicationFindings(report: DuplicationReport): string[] {
   const lines: string[] = []
+  // First: the only family here that is silently WRONG rather than redundant —
+  // the parse succeeds, so nothing else reports it.
+  for (const f of report.structureLoss) {
+    lines.push(`parseman BUG [structure-loss] @ ${siteToString(f.site)}: arm[${f.earlier}] flattens \`${f.nodeType}\` where arm[${f.later}] structures it, on ${firstSetToString(f.on)}`)
+    lines.push(`  flat: ${f.earlierShape}`)
+    lines.push(`  rich: ${f.laterShape}`)
+    lines.push(`  lost: ${f.lostNodeTypes.map(t => `\`${t}\``).join(', ')}`)
+    lines.push(`   fix: ${f.suggestion}`)
+  }
   for (const f of report.rewrites) {
     lines.push(`parseman ${f.bug ? 'BUG' : 'rewrite'} [${f.rewrite}${f.sepByVerdict === undefined ? '' : `/${f.sepByVerdict}`}] @ ${siteToString(f.site)}${f.astNeutral ? '' : ' (candidate — verify AST identity)'}`)
     lines.push(`  from: ${f.from}`)
@@ -1766,5 +1955,5 @@ export function formatDuplicationFindings(report: DuplicationReport): string[] {
 export function duplicationFindingCount(report: DuplicationReport): number {
   return report.duplicates.length + report.nearDuplicates.length + report.regexFragments.length
     + report.regexClasses.length + report.overlaps.length + report.rewrites.length
-    + report.divergentNodes.length + report.keywordRegexes.length
+    + report.divergentNodes.length + report.structureLoss.length + report.keywordRegexes.length
 }
