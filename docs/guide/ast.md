@@ -239,8 +239,9 @@ produces a real `Sum` node with its children. You get readable layered rules wit
 paying a `build` call per transparent layer — and without hand-writing
 `if (children.length === 1) return children[0]` in every wrapper builder.
 
-`unwrap` and `collapse` have full **interpreter, `compile()`, and macro** parity: the
-compiled output emits a `children.length === 1 ? <single-child> : build(…)` ternary, and
+`unwrap` and `collapse` produce identical results under the **interpreter, `compile()`, and
+the macro build**: the compiled output emits a
+`children.length === 1 ? <single-child> : build(…)` ternary, and
 the plugin reads static `{ unwrap: true }` / `{ collapse: true }` literals as the 4th
 argument.
 

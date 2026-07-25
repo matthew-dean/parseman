@@ -10,10 +10,10 @@ matches or all fail.
 
 Here's the trap: **PEG grammars are correct regardless of whether a choice gates.** An
 ungated hot choice passes every test and produces the right tree — it just does a lot
-more work per input character. The only symptom is a CPU profile. Four real Parséman
-grammars were hand-optimized 25–48% by finding ungated hot choices in profiles and
-fixing the one arm that broke dispatch. The compiler already knew, statically, which
-choices didn't gate and why.
+more work per input character. The only symptom is a CPU profile, and the stakes are
+large: on real Parséman grammars, fixing the single arm that breaks a hot choice's
+dispatch is worth 25–48% of total parse time. None of that requires profiling to find —
+the compiler can tell statically which choices don't gate, and why.
 
 So Parséman tells you at build time.
 
@@ -64,7 +64,7 @@ arm's first-set to `any` (or make two arms overlap) and break that proof:
 | **`not(not(...))`** — hand-rolled first-char gating | first-set `any` **and it miscompiles** among shared-first-char siblings | delete it; first-char gating is automatic |
 | **leading `optional`/`many`** | a skippable prefix lets a later, possibly-broad term start the arm | split the empty case into its own arm, or gate on the prefix |
 | **`gate()` / `guard()` as a leading arm term** | a state predicate's first-set is `any` | use the gated-arm **field** to SELECT a branch (it keeps dispatch); put `gate()` after a terminal |
-| **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | parseman ≥ 0.32.0 resolves it at fuse time; if still `any`, the target rule is itself ungated — fix it there. In a [shared shape](#shared-shapes-the-verdict-belongs-to-the-fuse) the ref is a HOLE, and the finding is reported against the artifact that binds it |
+| **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | the ref is resolved at fuse time; if it is still `any`, the target rule is itself ungated — fix it there. In a [shared shape](#shared-shapes-the-verdict-belongs-to-the-fuse) the ref is a HOLE, and the finding is reported against the artifact that binds it |
 | **shared prefix** — two arms starting with the same terminal | first-sets overlap, so no unique dispatch key | left-factor: parseman auto-detects `sharedPrefix` for bare sequences — make the arms bare sequences with the common leading terminal |
 
 ## Common mistakes (and what the build warning tells you)

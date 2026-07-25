@@ -148,7 +148,7 @@ edit kinds cheap:
 Absolute positions come from the O(depth) `spanAt(path)` cursor, or `absolutizeCST(tree)`
 for the whole tree at once. If your editor mostly sees value edits (a linter or formatter
 re-running as tokens change), Parséman's re-parse is effectively free; even heavy structural
-churn is now within a small factor of Lezer.
+churn stays within a small factor of Lezer.
 
 ## Reproducing the numbers
 

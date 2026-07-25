@@ -23,13 +23,13 @@ parse(shadowed, 'instanceof x').value
 // → 'in'
 ```
 
-One exception, and only one: when **every** arm is a bare `literal()`, the compiler
-sorts them longest-first for you
-([`literalsLongestFirst`](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)),
-so an all-literal `choice` is order-insensitive. Mix in a single `regex()`,
-`sequence()` or `word()` arm and ordering is load-bearing again — so write the long
-arm first regardless, and don't make a grammar's correctness depend on the rewrite
-still applying.
+One exception, and only one: when **every** arm is a bare `literal()`, the choice
+resolves by longest match instead of by position
+([`literalsLongestFirst`](./natural-grammars#the-one-place-order-defers-to-length)), in
+both the interpreter and the compiled parser — so an all-literal `choice` is
+order-insensitive. Mix in a `sequence()` or `word()` arm and ordering is load-bearing
+again — so write the long arm first regardless, and don't make a grammar's correctness
+depend on the rewrite applying.
 
 When an alternative needs to consume past a shared prefix before deciding, wrap
 that alternative in `attempt()`. A failed attempt restores Parseman's CST,

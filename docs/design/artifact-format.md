@@ -33,11 +33,11 @@ from its carried IR under the consumer's parseman, or is rejected).
   "recompile — parseman does not fuse across versions" message rather than silently
   mis-reading a stale shape.
 
-## Cautionary example
+## The shim that always looks necessary
 
-PR #48 (`fix(codegen): cross-artifact first-set dispatch`) originally shipped a
-`LegacyFirstSetRecipe` type and a `{concrete, refs}` read branch in `fusedBody` "for
-back-compat" with the previous recipe shape. There was nothing to be compatible with:
-no older-format artifact is ever fed to a newer parseman. It was dead defensive code
-and was deleted; the ordered-chain `{alts}` recipe is the *sole* format. Do not
-reintroduce that class of shim.
+Changing the recipe shape makes a `Legacy*` type and a second read branch in `fusedBody`
+feel like ordinary diligence — the new code "should still handle the old shape". It should
+not. No older-format artifact is ever fed to a newer parseman, so that branch is
+unreachable by construction: dead defensive code that permanently doubles the format's
+surface. The ordered-chain `{alts}` first-set recipe is the *sole* format. When a shape
+changes, change it outright and let the version stamp reject anything stale.

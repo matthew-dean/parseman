@@ -99,12 +99,10 @@ follows the same logic: whether a shape's `choice` first-char-dispatches depends
 gets bound, so the shape itself is not warned — the answer is computed, and reported, at
 each `compose()` / `composeLeaf()` that binds the hole.
 
-> **`pick()` is not currently public.** An earlier `pick(grammar, names)` selected a subset
-> of a grammar's rules plus their transitive closure. It's withdrawn while its build-time
-> lowering is worked out: a `pick()` of an *imported* grammar can't yet carry that grammar's
-> ambient trivia across the module boundary, so the macro would diverge from the interpreter.
-> Prefer small composable pieces (above); `pick()` may return once it lowers identically on
-> both the interpreter and the macro.
+> **There is no public `pick()`.** Selecting a subset of a grammar's rules plus their
+> transitive closure is internal-only: such a selection over an *imported* grammar cannot
+> carry that grammar's ambient trivia across the module boundary, which would make the
+> macro build diverge from the interpreter. Compose small pieces instead (above).
 
 ## Building trees: swap the output shape
 

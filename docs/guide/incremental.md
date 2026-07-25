@@ -86,8 +86,8 @@ identical to a fresh parse, flag or no flag.
 For that proof, pass the **`rules()` combinators** as the registry (what the examples above
 do) — parseDoc inspects their grammar. If you instead pass bare parse *functions*, there's
 no grammar to inspect, so structural reuse simply doesn't engage (still correct, just no
-speedup). It's off by default only because it's a newer, opt-in optimization — not because
-it's unsafe. On top of the grammar check, every splice is still guarded (exact tiling of the
+speedup). Reuse is opt-in rather than automatic, but opting in costs no safety: on top of
+the grammar check, every splice is guarded (exact tiling of the
 reparsed span, a lookahead probe, a stateless-tail check). See the
 [incremental re-parse benchmark](./benchmarks#incremental-re-parse) for how the three edit
 kinds compare to Lezer.
