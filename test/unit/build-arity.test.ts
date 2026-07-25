@@ -170,8 +170,14 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
     // the old values whenever no such host is installed — asserted at runtime below.
     expect(source).toMatch(/_ctl\d+ = _dcst\d+ && !\(_rec\d+\) && \(_cap\d+ \|\|/)
     expect(source).toMatch(/_tl\d+ = _rec\d+ \? undefined : _ctl\d+ \? \[\] : _EMPTY_TL/)
-    expect(source).toMatch(/_nst\d+ = _cst\d+ && _ctx\.state !== undefined/)
-    expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start: _pos, end: [\w]+ \}, _raw\d+, _tl\d+, _nst\d+\)/)
+    // State needs NO per-node gate: it is snapshotted after the body, so the clone
+    // lives on the host branch only and the direct builder still receives `undefined`
+    // in its fixed slot — the hot path is byte-identical to before the host fix.
+    expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start: _pos, end: [\w]+ \}, _raw\d+, _tl\d+, undefined\)/)
+    // …and the host branch gets the snapshot through a prelude helper, not an inline
+    // ternary: the clone lives inside the node's single `_nd` expression, and inlining
+    // it there grew that expression enough to cost ~21% on a node-dense parse.
+    expect(source).toMatch(/_hostBuild\(_ctx, "P", _ch\d+, undefined, \{[^}]*\}, _raw\d+, _tl\d+\)/)
     expect(fn('ab', 0, {}).value).toEqual({
       childCount: 2,
       fieldsIsUndefined: true,

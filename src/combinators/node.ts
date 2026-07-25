@@ -155,8 +155,6 @@ export function node<N>(
         || (hostCst && (triviaPref !== undefined
           ? triviaPref(def.type ?? '')
           : (ctx._pmCapTL ??= hostReads(ctx.build, HOST_ARG.triviaLog))))
-      const effState = clonesState
-        || (hostCst && (ctx._pmCapST ??= hostReads(ctx.build, HOST_ARG.state)))
       const effFields = capturesFields
         || (hostCst && hasOwnFields && (ctx._pmCapFD ??= hostReads(ctx.build, HOST_ARG.fields)))
       const saved = beginCstNodeCapture(ctx)
@@ -187,7 +185,7 @@ export function node<N>(
       if (!r.ok) return r
 
       // unwrap/collapse: a single captured child IS the value — skip build.
-      const st = effState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
+      const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const nodeType = def.type ?? missingInferredType()
       const cstOutput = cstOutputHost(ctx.build)
       // Silence must not be reachable: if this node is about to be built through a
@@ -195,13 +193,21 @@ export function node<N>(
       // cannot detect. Throw instead. Only on the CST-host path — the eval-AST hot
       // path never evaluates it.
       if (cstOutput && build !== undefined) {
+        // `state: true` — a direct builder's snapshot is taken lazily below, on the
+        // host branch only, so it is always satisfied there (see `hostState`).
         assertHostCaptureSatisfied(nodeType, ctx.build, {
           trivia: effTrivia,
           fields: effFields,
-          state: effState,
+          state: true,
           hasFields: hasOwnFields,
         })
       }
+      // A direct builder that never declared `state` still owes the host its snapshot.
+      // The clone happens AFTER the body, so unlike trivia it needs no per-node gate —
+      // build it here, on a branch the eval-AST path never takes.
+      const hostState = clonesState
+        ? st
+        : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const built: unknown = unwrap && children.length === 1
         ? unwrapChild(children[0])
         : collapse && children.length === 1
@@ -217,7 +223,7 @@ export function node<N>(
           // the one exception: it must never receive an arbitrary AST object as a
           // child of a CST node, so build this grammar node through that host.
           ? cstOutput && ctx.build
-            ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, st)
+            ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, hostState)
             : build(children, fields, r.span, rawChildren, triviaLog, st)
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build

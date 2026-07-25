@@ -191,8 +191,21 @@ export const HOST_READS_SRC =
 export const CST_ASSERT_SRC =
   'const _cstAssert = (t, b, tl, fd, st, hf) => { const m = []; if (!tl && (b._parsemanCaptureTrivia !== undefined ? b._parsemanCaptureTrivia(t) : _hostReads(b, 5))) m.push("triviaLog"); if (hf && !fd && _hostReads(b, 2)) m.push("fields"); if (!st && _hostReads(b, 6)) m.push("state"); if (m.length !== 0) throw new Error("parseman: node \\"" + t + "\\" was built through a positioned-CST host that reads " + m.join(", ") + ", but capture for it was elided. The host would have received a silently thin node. This is a parseman bug: capture elision must be gated on what the HOST reads, not on the direct builder formal arity.") }'
 
-/** Both prelude helpers, emitted as one unit wherever host-arity gating is used. */
-export const HOST_READS_DECL = `${HOST_READS_SRC}; ${CST_ASSERT_SRC}`
+/**
+ * Runtime prelude: the lazy `state` snapshot a direct builder owes a positioned-CST
+ * host. It exists as a HELPER rather than an inline ternary for a measured reason —
+ * the clone sits inside the node's single `_nd` expression, on the branch the eval-AST
+ * path never takes, and inlining it there grew that expression by ~60 characters. That
+ * alone cost ~21% on the node-dense `rollback/none` axis: V8's inlining decision is
+ * bytecode-size-based, so even dead-branch text pushes the enclosing node function past
+ * a threshold. A call keeps the hot function the size it was.
+ */
+export const CLONE_STATE_SRC =
+  'const _cloneState = (s) => s !== undefined ? Object.assign({}, s) : undefined; '
+  + 'const _hostBuild = (c, t, ch, f, sp, raw, tl) => { c._pmProfile?.phase === \'host\' && c._pmProfile.hostCalls++; return c.build(t, ch, f, sp, raw, tl, _cloneState(c.state)) }'
+
+/** The prelude helpers, emitted as one unit wherever host-arity gating is used. */
+export const HOST_READS_DECL = `${HOST_READS_SRC}; ${CST_ASSERT_SRC}; ${CLONE_STATE_SRC}`
 
 // ---------------------------------------------------------------------------
 // Regex-lowering diagnostics
@@ -2817,13 +2830,21 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // as the structural path already does. All three gates are statically `true` when the
   // builder itself declares the arg, so nothing is added where nothing was elided; on
   // the ordinary eval-AST path (no host) each is one short-circuiting property read.
+  //
+  // TRIVIA and FIELDS need a gate because their collectors must be installed BEFORE the
+  // body parses — the decision cannot be deferred. STATE does not: it is snapshotted
+  // after the body succeeds, so instead of a per-node gate it is cloned lazily inside
+  // the host branch (`hostStateExpr`), which the eval-AST path never enters. That
+  // matters: the benchmark grammars build with `(c, f, span, raw, tl)` — arity 5 —
+  // where trivia and fields are already captured and state was the ONLY thing elided,
+  // so a state gate would have added three per-node bindings to buy nothing on the hot
+  // path. Measured at +17% on `rollback/none` before it was made lazy.
   const needTLgate = !structural && !capturesTrivia
-  const needSTgate = !structural && !clonesState
   const needFDgate = !structural && hasFields && !capturesFields
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
   const capTLv = (structural || capturesTrivia || needTLgate) ? v(ctx, '_ctl') : null
-  const capSTv = (structural || needSTgate) ? v(ctx, '_cst') : null
+  const capSTv = structural ? v(ctx, '_cst') : null
   const capFv = (structural && hasFields) || needFDgate ? v(ctx, '_cf') : null
   const tlV = capturesTrivia || structural || needTLgate ? v(ctx, '_tl') : '_EMPTY_TL'
   // Direct builders that declare trivia retain the established eager collector.
@@ -2840,7 +2861,9 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // ~17% on the node-dense `rollback/none` axis, which is a real cost to pay for a
   // filter that only trims data the host already asked to receive less of.
   const smk = structural ? v(ctx, '_smk') : null
-  if (structural || needTLgate || needSTgate || needFDgate) ctx.needsHostReads = true
+  // `_cloneState` ships in the same prelude unit, so a direct builder that owes the
+  // lazy host snapshot needs it emitted too.
+  if (structural || needTLgate || needFDgate || !clonesState) ctx.needsHostReads = true
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
   // The same three gates for a DIRECT builder, additionally conditioned on a
   // positioned-CST host actually being installed (a plain host never receives a
@@ -2875,7 +2898,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // collector — children/raw (already) and now trivia/state/fields — gates on it, so
   // the ordinary eval-AST path pays ONE `_ctx.build` property load for all of them
   // rather than one per collector.
-  const directCstV = !structural && (!capturesChildren || !capturesRaw || needTLgate || needSTgate || needFDgate)
+  const directCstV = !structural && (!capturesChildren || !capturesRaw || needTLgate || needFDgate)
     ? v(ctx, '_dcst')
     : null
   const directCstGate = directCstV === null
@@ -2918,7 +2941,6 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
       }
       if (capSTv) gates.push(`${capSTv} = ${directCstV} && !(${profileRecognizer} || ${profileCapture}) && ${directStateGate}`)
       if (capFv) gates.push(`${capFv} = ${directCstV} && !(${profileRecognizer}) && (${profileCapture} || ${directFieldsGate})`)
-      if (gates.length > 0) decls.push(`${i}const ${gates.join(', ')}`)
       const allocs = [
         `${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}`,
         `${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}`,
@@ -2928,15 +2950,23 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
         // unchanged emission, no gate. Only an elided log is host-gated.
         allocs.push(`${tlV} = ${profileRecognizer} ? undefined : ${capturesTrivia || innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`)
       }
-      decls.push(`${i}const ${allocs.join(', ')}`)
+      // Gates and allocations share ONE `const` — the allocations reference the gates,
+      // and keeping them in a single declaration keeps emission byte-identical to the
+      // previous shape wherever no gate was actually added.
+      decls.push(`${i}const ${[...gates, ...allocs].join(', ')}`)
       return decls.join('\n')
     })()
   // The collector stays installed when a nested grammar can opt in; generated
   // trivia scanners gate their push on `captureTrivia`, so this remains inert
   // until that nested scope activates it.
+  // Only a node whose log is HOST-GATED needs the runtime ternary. When the grammar
+  // itself settled the question — a builder that declares trivia, or a nested parser
+  // that opts in — the collector is unconditional and the ternary is per-node dead
+  // weight. (It was measured: adding it to every node cost ~13-18% on `rollback/none`.)
+  const triviaLogIsGated = structural ? !innerEnablesTriviaCapture : !capturesTrivia
   const innerTl = capTLv === null
     ? 'undefined'
-    : innerEnablesTriviaCapture ? tlV : `${capTLv} ? ${tlV} : undefined`
+    : triviaLogIsGated ? `${capTLv} ? ${tlV} : undefined` : tlV
   const fieldsOn = structural
     ? (capFv ?? 'false')
     : capFv ?? `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
@@ -3024,12 +3054,14 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   } else if (clonesState) {
     stV = v(ctx, '_nst')
     stmts.push(`${i}const ${stV} = !(${profileRecognizer} || ${profileCapture}) && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
-  } else if (capSTv) {
-    // Direct builder that does not declare `state`, but a positioned-CST host may
-    // read it — clone only when the runtime gate says the host does.
-    stV = v(ctx, '_nst')
-    stmts.push(`${i}const ${stV} = ${capSTv} && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
+  // A direct builder that does not declare `state` still owes the snapshot to a
+  // positioned-CST host. Because the clone happens AFTER the body, it needs no
+  // per-node gate: build it inline in the host branch, which the eval-AST path never
+  // takes. `stV` stays the literal `undefined` the builder already ignored.
+  const hostStateExpr = structural || clonesState
+    ? stV
+    : '_cloneState(_ctx.state)'
   if (sf && fArr) {
     const fe = v(ctx, '_fe')
     const cur = v(ctx, '_fc')
@@ -3058,18 +3090,27 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // its semantic result in every lowering mode; the positioned-CST host is the
   // sole exception, so a direct object never becomes a CST child. Linkability
   // must not change that ownership rule.
-  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
+  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${hostStateExpr})`
+  // A DIRECT builder's host branch goes through a prelude helper instead of being
+  // spelled out inline. The branch is dead on the eval-AST path, but its TEXT is not:
+  // it sits in the node's single `_nd` expression, and V8 decides inlining on bytecode
+  // size. Spelling the profile counter + host call + state clone inline there measured
+  // +21% on `rollback/none`; behind a call the expression is SHORTER than it was before
+  // this change, so the hot path is not merely restored but slightly cheaper.
+  const directHostBuildExpr = `_hostBuild(_ctx, ${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV})`
   // Only where something WAS elided is a thin tree reachable; where the builder
   // declares every arg the gates are statically true and no check is emitted.
-  const directHostGuard = (needTLgate || needSTgate || needFDgate)
-    ? `_cstAssert(${JSON.stringify(def.type)}, _ctx.build, ${capTLv ?? 'true'}, ${capFv ?? 'true'}, ${capSTv ?? 'true'}, ${hasFields}), `
+  // `state` is always satisfied on this path — `hostStateExpr` clones it unconditionally
+  // for a direct builder — so it is reported as captured.
+  const directHostGuard = (needTLgate || needFDgate)
+    ? `_cstAssert(${JSON.stringify(def.type)}, _ctx.build, ${capTLv ?? 'true'}, ${capFv ?? 'true'}, true, ${hasFields}), `
     : ''
   const ndExpr = structural
     ? `_ctx.build !== undefined ? (${hostBuildExpr}) : (${buildExpr})`
     // Direct builders stay direct for ordinary hosts. cstBuildHost marks its
     // mode internally so nested direct nodes cannot leak arbitrary AST objects
     // into a positioned CST's children.
-    : `_ctx.build?._parsemanCstOutput === true ? (${directHostGuard}${hostBuildExpr}) : (${buildExpr})`
+    : `_ctx.build?._parsemanCstOutput === true ? (${directHostGuard}${directHostBuildExpr}) : (${buildExpr})`
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
   const hostCollapseExpr = structural
