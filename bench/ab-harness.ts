@@ -114,7 +114,22 @@ export function materialise(
 ): string {
   if (sha === null) return root
   const dir = path.join(root, '.cache', `${gate}-${sha}`)
-  if (!existsSync(path.join(dir, 'src', 'index.ts'))) {
+  // A cached directory is only reusable if it is still AT the requested sha. Presence of
+  // `src/index.ts` proves a worktree exists there, not which commit it holds — the
+  // directory name encodes the sha, but nothing verified the contents matched it. A
+  // worktree left by an interrupted run, or one checked out elsewhere, would be reused
+  // silently and the gate would benchmark the WRONG COMMIT while reporting the requested
+  // one. Verify, and rebuild when it does not match: a rebuild is cheap, a confidently
+  // wrong number is not.
+  const stale = (): boolean => {
+    if (!existsSync(path.join(dir, 'src', 'index.ts'))) return true
+    try {
+      return git(['rev-parse', sha], root).trim() !== git(['rev-parse', 'HEAD'], dir).trim()
+    } catch {
+      return true // cannot confirm ⇒ treat as stale
+    }
+  }
+  if (stale()) {
     rmSync(dir, { recursive: true, force: true })
     try { git(['worktree', 'prune'], root) } catch { /* nothing to prune */ }
     try {

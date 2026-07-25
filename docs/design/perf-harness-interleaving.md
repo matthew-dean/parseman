@@ -193,6 +193,35 @@ it is the gate's ordinary operation, on an ordinary PR, in CI. A gate that fails
 documentation change will fail real ones, and the win-rate rule that is supposed to
 separate noise from signal did not separate this.
 
+### A second defect, and what it does to the record
+
+Reviewing the cross-process script surfaced a bug in the gates themselves. Both
+`materialise()` implementations — `bench/grammar-perf-guard.ts` and the shared one
+in `bench/ab-harness.ts` — decided a cached reference worktree was reusable by
+testing that `.cache/<gate>-<sha>/src/index.ts` **exists**. Existence proves a
+worktree is there. It does not prove which commit it holds. The sha appears in the
+directory *name*, and nothing ever checked the contents against it.
+
+So a worktree left behind by an interrupted run, or one someone checked out to a
+different revision, was reused silently — and the gate benchmarked **a different
+commit from the one it named in its own output**, with no warning. Both now verify
+`git rev-parse HEAD` against the requested sha and rebuild on mismatch.
+
+This is worth stating plainly rather than filing as a fixed bug:
+
+> **It retroactively weakens every number these gates have produced.** Any past
+> result whose reference side came from a reused `.cache/` directory may have been
+> measured against the wrong commit, and there is no way to tell after the fact
+> which ones were — the output recorded the sha it *intended*, not the sha it
+> *used*. Historical readings from `perf:guard:grammars` and `perf:workloads`
+> should be treated as indicative, not as evidence, unless they were produced from
+> a clean `.cache/`.
+
+Combined with the interleaving artifact above, the honest summary is that these
+gates have two independent ways of producing a confident wrong number, one of
+which is invisible in their output. Both are fixed; neither fix recovers the
+historical record.
+
 ### The named limitation: a clean `--self` is not a trust signal here
 
 `pnpm perf:workloads --self` reads clean on `css/stylesheet` (±0.8%). That is
