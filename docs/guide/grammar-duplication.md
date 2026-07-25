@@ -7,7 +7,7 @@ thousands of pairs; nobody reads that, so nobody catches the same comparison ter
 spelled seven times, or the general rule cloned with one slot swapped.
 
 `analyzeDuplication()` walks the same tree [`analyzeGating()`](./first-char-gating)
-walks and reports seven families. Some are tidy-ups. Two of them are bugs.
+walks and reports eight families. Some are tidy-ups. Two of them are bugs.
 
 ```ts
 import { analyzeDuplicationRules, formatDuplicationFindings } from 'parseman'
@@ -27,6 +27,7 @@ for (const line of formatDuplicationFindings(report)) console.warn(line)
 | `regexFragments` | One alternation run re-spelled across several `regex()` terminals | Structural hashing cannot see inside a regex; this pass can |
 | `regexClasses` | Character classes re-spelled — and, more usefully, **near-identical** ones | Two classes this close cannot be told apart by reading. One of them is wrong |
 | `overlaps` | `choice` arms whose first-sets intersect, with the shared prefix named | The same data gating uses, framed as *which* arms and *on what* |
+| `keywordRegexes` | Hand-rolled keyword regexes that should be `word()`/`keywords()` | `/i` without `/u` case-folds non-ASCII wrong, and an unrescued prefix hazard makes the longer alternative unreachable |
 
 ## The two bug classes
 

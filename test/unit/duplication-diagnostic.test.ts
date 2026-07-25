@@ -161,6 +161,14 @@ describe('algebraic rewrites', () => {
     expect(f!.to).toContain('min: 1')
   })
 
+  it("the repetition's own min reaches the reported sepBy bound", () => {
+    // `sequence(X, many(sequence(S, X), { min: 2 }))` needs THREE items, not one.
+    const item = regex(/\w+/)
+    const r = analyzeDuplication(sequence(item, many(sequence(literal(','), item), { min: 2 })))
+    const f = r.rewrites.find(x => x.rewrite === 'hand-rolled-sepby')
+    expect(f!.to).toContain('min: 3')
+  })
+
   it('a trailing optional separator becomes sepBy(..., { trailing: \'allow\' })', () => {
     const item = regex(/\w+/)
     const r = analyzeDuplication(sequence(item, many(sequence(literal(','), item)), optional(literal(','))))

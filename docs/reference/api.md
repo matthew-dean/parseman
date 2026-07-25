@@ -600,7 +600,7 @@ in `report.unanalysable` rather than silently omitted.
 
 ### `analyzeDuplication(entry, opts?)` / `analyzeDuplicationRules(ruleMap, opts?)` → `DuplicationReport`
 
-Static structural-duplication diagnostic over a combinator tree. Reports seven families:
+Static structural-duplication diagnostic over a combinator tree. Reports eight families:
 `rewrites` (mechanical algebra — `choice(sequence(A, B), B)` → `sequence(optional(A), B)`, a
 hand-rolled `sepBy`, idempotent nesting, and the two dead-arm BUGS `duplicate-arm` /
 `shadowed-arm`), `divergentNodes` (one `node()` type built by several productions),
@@ -616,7 +616,7 @@ prefix named and whether the `sharedPrefix` strategy already handles it).
 
 A `keywordRegexes` finding with an UNRESCUED prefix hazard is a third bug class: regex
 alternation is first-match, so with no boundary guard to force a backtrack the longer
-alternative can never match. Only the two dead-arm rewrite findings are `astNeutral`. Everything else changes the child array the
+alternative can never match. Only the two dead-arm rewrite findings and unwrapping a one-arm `choice` are `astNeutral`. Everything else changes the child array the
 site produces and is reported as a CANDIDATE to verify, never as a fix. `hand-rolled-sepby`
 carries a per-site `sepByVerdict` — `convertible`, `blocked-by-capture` (the repetition
 `field()`s its separator, which `sepBy` cannot express) or `reducer-stride-review`.

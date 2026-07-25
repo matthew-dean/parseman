@@ -5,7 +5,7 @@
  * "did I write this production twice?" is a structural one a machine answers
  * exactly, and a reviewer answers badly. A few hundred productions is tens of
  * thousands of pairs; nobody reads that. This module walks the same tree
- * `analyzeGating` walks and reports six families:
+ * `analyzeGating` walks and reports eight families:
  *
  *   1. `duplicates`     — subtrees that are structurally IDENTICAL, in ≥2 places.
  *   2. `nearDuplicates` — subtrees identical except at ONE slot. This is the
@@ -15,14 +15,19 @@
  *   3. `regexFragments` — alternation runs re-spelled across several `regex()`
  *                          terminals. Structural hashing cannot see inside a
  *                          regex, so this is its own pass.
- *   4. `overlaps`       — `choice` arms whose first-sets intersect, reported as
+ *   4. `regexClasses`   — character classes re-spelled across terminals, and, more
+ *                          usefully, NEAR-identical ones with the drift shown side
+ *                          by side.
+ *   5. `overlaps`       — `choice` arms whose first-sets intersect, reported as
  *                          "these two arms, on these chars, sharing these leading
  *                          terms" rather than gating's "dispatch failed".
- *   5. `rewrites`       — ALGEBRAIC simplifications: mechanically-derived exact
+ *   6. `rewrites`       — ALGEBRAIC simplifications: mechanically-derived exact
  *                          rewrites (`choice(sequence(A,B), B)` → `sequence(
  *                          optional(A), B)`), plus the dead-arm cases that are
  *                          outright bugs.
- *   6. `keywordRegexes` — hand-rolled keyword regexes (`regex(/not(?![-\w])/i)`)
+ *   7. `divergentNodes` — ONE `node()` type built by several structurally different
+ *                          productions that are nonetheless variants of one shape.
+ *   8. `keywordRegexes` — hand-rolled keyword regexes (`regex(/not(?![-\w])/i)`)
  *                          that should be `word()`/`keywords()`. Not a style note:
  *                          `/i` without `/u` gets non-ASCII case folding wrong,
  *                          and the fix that lives inside `keywords()` (see
@@ -1529,7 +1534,11 @@ function detectHandRolledSepBy(
     if (t.tag !== 'optional' || shapeOf(t.parser) !== shapeOf(sep)) return null
     trailing = true
   }
-  return { item, sep, trailing, min: rep.tag === 'oneOrMore' ? 1 + rep.min : 1 }
+  // The leading item plus whatever the repetition itself requires. `rep.min` is
+  // already RESOLVED for both tags (`many` defaults it to 0, `oneOrMore` to 1), so
+  // one expression covers both — special-casing the tag dropped an explicit
+  // `many(…, { min: n })` back to 1 and under-reported the rewrite's bound.
+  return { item, sep, trailing, min: 1 + rep.min }
 }
 
 // ── 5b. one node type, several divergent productions ─────────────────────────
