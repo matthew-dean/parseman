@@ -52,13 +52,29 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   five rollback cases sit inside ±3% while the new `expected/wide` case reads
   **+25.6% median / +26.9% min / 0-of-12 pairs won**.
 
-  Two changes: an `expected/*` sweep (0 and 4 optional terms per choice arm, same
-  operand alphabet, so the derivation re-reaches the same tokens), and a
-  `rollback/extreme` case at 30 probes/value (~1260/KB). The sweep previously
-  stopped at 16 (~672/KB) with the worst real grammar at 599 — the dialect that
-  broke sat at the very edge of the bracket. `caseGrammar`/`caseInput` replace the
-  single `guardsPerValue` knob so a third axis is an entry in one array, which is
-  the point: a gate parameterised on one axis only ever catches that axis.
+  The change is an `expected/*` sweep — 0, 1 and 4 optional terms per choice arm
+  over one operand alphabet, so the derivation re-reaches the same tokens.
+  `narrow` and `wide` both carry a nullable prefix and so share a dispatch shape,
+  differing only in derived width; `none` is the disjoint-arm baseline.
+  `caseGrammar`/`caseInput` replace the single `guardsPerValue` knob so a third
+  axis is an entry in one array, which is the point: a gate parameterised on one
+  axis only ever catches that axis.
+
+  The rollback sweep is NOT extended, and the reason is a correction. Its
+  documented calibration said `guardsPerValue × 42`, which put `rollback/dense`
+  at ~672 probes/KB and made jess's Less grammar (599) look like it sat at the
+  edge of the bracket. Instrumenting the emitted artifact measures **94 per KB
+  per guard** — 0 / 94 / 377 / 1508, with the interpreter counting identically —
+  so css 20, jess 121 and less 599 all land inside the sweep and `dense` sits
+  2.5× above the worst of them. The sweep was never under-ranged; the constant
+  was wrong by 2.2×. A `rollback/extreme` case added on the old reading has been
+  removed rather than kept for reassurance.
+
+  Also re-measured, and documented rather than fixed: the gate's stated
+  same-build-vs-itself floor (1.9% median / 1.0% min) is a quiet-machine figure.
+  At load average ~5 the worst self-vs-self case moves 8.3% median / 7.6% min,
+  past the 6% thresholds — so a single red run is not a regression, and the
+  replay evidence above is reported over five runs rather than one.
 
 ## 0.35.0 — 2026-07-24
 

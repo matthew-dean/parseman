@@ -183,6 +183,19 @@ export function densityInput(rules = 700): string {
  * arrays materialised there scale with the derived width — and each one feeds the
  * ENCLOSING choice's concat, which is why the cost compounds rather than adds.
  *
+ * This choice is deliberately NOT first-character-disjoint, and cannot be made so
+ * without deleting the thing it measures: a shared nullable prefix is precisely
+ * what makes the derivation re-reach the same tokens, and arms gated on distinct
+ * first characters have nothing to re-reach. The repo's disjoint-gating guidance
+ * is about grammars written to be fast; this is a fixture written to reproduce a
+ * shape a real grammar has (jess's Less value position) and did regress on.
+ *
+ * The non-disjoint dispatch it implies is not a confound. The gate A/Bs a case
+ * against ITSELF across two parseman builds, so any fixed arm-selection cost is
+ * present on both sides and cancels; and `narrow` (1 optional term) versus `wide`
+ * (4) holds the dispatch shape identical while moving only the derived width, so
+ * the width reading does not have to be taken against the disjoint `none`.
+ *
  * `prefixDepth` is that width knob. The SHARED input already drives the losing
  * path — `oneOrMore(Value)` ends every declaration by failing `Value` on the `;`,
  * which is an all-arms-failed choice per declaration, six per rule. No separate
@@ -243,24 +256,36 @@ export function expectedWidthGrammar(prefixDepth: number): Combinator<unknown> {
 /**
  * The gate's cases, across BOTH axes.
  *
- * `rollback/*` — speculative probes per byte. `guardsPerValue → probes/KB` is
- * roughly `guardsPerValue × 42` on this input (12 value terms per ~285-byte
- * rule), so the five land near 42 / 126 / 630 / 1260. The measured real grammars
- * were css 20 / jess 121 / less 599: `dense` no longer sits AT the top of the
- * sweep with the worst real grammar past it, which is how 599 was outside the
- * bracket the first time.
+ * `rollback/*` — speculative probes per byte. The conversion is MEASURED, not
+ * estimated: instrumenting the emitted artifact and parsing `densityInput(200)`
+ * (37.7 KB) counts 3,556 / 14,224 / 56,896 `not()` executions at
+ * `guardsPerValue` 1 / 4 / 16, i.e. **94 per KB per guard** — 0 / 94 / 377 /
+ * 1508. The interpreter counts identically, so the figure is not engine-specific.
  *
- * `expected/*` — derived expected-set width at a losing choice. `narrow` is the
- * pre-0.35.0 shape (no nullable prefix to derive through); `wide` is what a real
- * value grammar looks like once optional leading terms are in play.
+ * Against the real grammars in the 0.34.0 event — css 20, jess 121, less 599 per
+ * KB — every one of them lands INSIDE this sweep: css between `none` and
+ * `sparse`, jess between `sparse` and `medium`, less between `medium` and
+ * `dense`, with `dense` sitting 2.5x above the worst of them. An earlier version
+ * of this comment claimed `× 42`, which made `dense` look like ~672/KB and less
+ * like a grammar at the edge of the bracket; it was not, and a `rollback/extreme`
+ * case added on that premise has been removed rather than kept for reassurance.
+ * Recheck this constant if the input generator changes.
+ *
+ * `expected/*` — derived expected-set width at a choice that loses every arm.
+ * `none` is the disjoint-arm baseline (no nullable prefix at all, so first-char
+ * dispatch is O(1)); `narrow` and `wide` both carry a nullable prefix and so
+ * share the same dispatch shape, differing ONLY in how many times the derivation
+ * re-reaches the operand alphabet. Reading `narrow` against `wide` therefore
+ * isolates width; reading either against `none` also picks up the dispatch
+ * change, which is why `none` is a baseline and not the control.
  */
 export const DENSITY_CASES = [
   { id: 'rollback/none', kind: 'rollback', n: 0 },
   { id: 'rollback/sparse', kind: 'rollback', n: 1 },
   { id: 'rollback/medium', kind: 'rollback', n: 4 },
   { id: 'rollback/dense', kind: 'rollback', n: 16 },
-  { id: 'rollback/extreme', kind: 'rollback', n: 30 },
-  { id: 'expected/narrow', kind: 'expected', n: 0 },
+  { id: 'expected/none', kind: 'expected', n: 0 },
+  { id: 'expected/narrow', kind: 'expected', n: 1 },
   { id: 'expected/wide', kind: 'expected', n: 4 },
 ] as const
 

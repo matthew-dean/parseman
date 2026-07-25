@@ -39,19 +39,20 @@
  *
  * ## Per-case, never aggregated — and on TWO axes
  *
- * `rollback/*`: five cases differing only in how many negative lookaheads guard
- * each value term — 0 / 1 / 4 / 16 / 30. The SPREAD is the signal. Replaying
- * 0.34.0 the unguarded case moves +1.2% while the dense one moves +113%, an
- * ordering that says the cost is per-EXECUTION. Any aggregate would show
- * something mild and pass.
+ * `rollback/*`: four cases differing only in how many negative lookaheads guard
+ * each value term — 0 / 1 / 4 / 16, which INSTRUMENTING THE EMITTED ARTIFACT
+ * measures at 0 / 94 / 377 / 1508 probes per KB (css 20, jess 121 and less 599
+ * all land inside that). The SPREAD is the signal. Replaying 0.34.0 the unguarded
+ * case moves +1.2% while the dense one moves +113%, an ordering that says the
+ * cost is per-EXECUTION. Any aggregate would show something mild and pass.
  *
- * `expected/*`: two cases differing only in how WIDE the derived `expected` set
- * is at a choice that loses every arm. This axis exists because the first version
- * of this gate had only the rollback one, and 0.35.0 then shipped a 32% Less
+ * `expected/*`: three cases differing in how WIDE the derived `expected` set is
+ * at a choice that loses every arm. This axis exists because the first version of
+ * this gate had only the rollback one, and 0.35.0 then shipped a 32% Less
  * regression straight through it: `fix(expect)` widened the derived sets, which
- * the rollback cases cannot see. Replaying that change reads `expected/wide`
- * +25.6% median / +26.9% min / 0-of-12 pairs won while all five rollback cases
- * sit inside ±3%.
+ * the rollback cases cannot see. `none` is the disjoint-arm baseline; `narrow`
+ * and `wide` share a dispatch shape and differ only in width, so the width
+ * reading does not rest on the baseline.
  *
  * A gate parameterised on one axis only ever catches that axis. When the next
  * regression rides a third, add the third rather than widening a threshold.

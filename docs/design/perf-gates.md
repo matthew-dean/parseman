@@ -40,19 +40,31 @@ Not a stylesheet. Two **sweeps** over one grammar shape
 (`bench/grammar-density/grammar.ts`) and one ~38 KB input, each holding
 everything constant except one axis.
 
-**`rollback/*` — speculative probes per byte.** 0, 1, 4, 16 and 30 negative
-lookaheads in front of every value term, roughly 0 / 42 / 168 / 672 / 1260 probes
-per KB. The real grammars in the 0.34.0 event measured 20 / 121 / 599, so the
-worst of them now sits INSIDE the sweep rather than past its top — the first
-version stopped at 16 (~672/KB) with less at 599, close enough to the edge that
-the dialect that broke was effectively unbracketed.
+**`rollback/*` — speculative probes per byte.** 0, 1, 4 and 16 negative
+lookaheads in front of every value term. The conversion is MEASURED by
+instrumenting the emitted artifact, not estimated: 3,556 / 14,224 / 56,896
+`not()` executions over the 37.7 KB input, i.e. **94 per KB per guard** — 0 / 94
+/ 377 / 1508. The real grammars in the 0.34.0 event measured css 20, jess 121,
+less 599, so all three land inside the sweep and `dense` sits 2.5x above the
+worst of them.
 
-**`expected/*` — derived expected-set width at a losing choice.** 0 and 4
+> An earlier revision of this document said `x 42`, which put `dense` at ~672/KB
+> and made less (599) look like a grammar sitting at the very edge of the
+> bracket. It was not, and a `rollback/extreme` case added to "extend the range"
+> on that reading has been removed. If the input generator changes, re-measure
+> this constant rather than scaling the old one.
+
+**`expected/*` — derived expected-set width at a losing choice.** 0, 1 and 4
 optional terms in front of every choice arm, all drawing on the same operand
 alphabet, so deriving through the nullable prefix re-reaches the same tokens once
 per term per arm. The emitted total-failure path is `_ctx._fx = [...arm0,
 ...arm1, …]`, and those arrays feed the enclosing choice's concat, so the cost
 compounds up the nesting rather than adding.
+
+`none` (0 terms) is a disjoint-arm baseline: with no nullable prefix its arms gate
+on distinct first characters, so it differs from the other two in dispatch as well
+as in width. `narrow` (1) and `wide` (4) both carry a prefix and so share a
+dispatch shape, differing only in width — read the width axis across those two.
 
 This second axis exists because the first version of this gate had only the
 first, and 0.35.0 shipped a 32% Less regression straight through it — see
@@ -116,16 +128,25 @@ cost is per-execution, which is exactly how the real regression was diagnosed
 
 Replaying the 0.35.0 regression — `--ref=9c6fee2 --head-ref=a464372`, the merge
 of `fix(expect)` — reads the other way round, which is the whole argument for
-having both axes:
+having both axes. **Five** replay runs, because one is not a measurement:
 
-| case | | median delta | min delta | pairs won |
-| --- | --- | --- | --- | --- |
-| `rollback/none` … `rollback/extreme` | 0–30 probes | −2.8% … +2.2% | −3.3% … +4.5% | 3–11 / 12 |
-| `expected/narrow` | 0 opt/arm | −1.0% | +0.3% | 9/12 |
-| **`expected/wide`** | 4 opt/arm | **+25.6%** | **+26.9%** | **0/12** |
+| case | | median delta, 5 runs | pairs won |
+| --- | --- | --- | --- |
+| `rollback/none` … `rollback/dense` | 0–16 probes | −17.3% … +6.2%, no consistent sign | 0–12 / 12 |
+| `expected/none` | 0 opt/arm | −0.7% … +1.2% | 5–9 / 12 |
+| `expected/narrow` | 1 opt/arm | +1.8% … +21.1% | 0–3 / 12 |
+| **`expected/wide`** | 4 opt/arm | **+6.9% … +39.3%, fired 5 of 5** | **0/12, every run** |
 
-The rollback sweep — the entire gate as first landed — reads flat on a change
-that cost jess's Less grammar 32% of its parse time.
+`expected/wide` is the only case that breaches on every run. `expected/narrow`
+breaches on two of five, which is the right ordering — it carries a nullable
+prefix too, just one term of it. The rollback sweep — the entire gate as first
+landed — never fires consistently on a change that cost jess's Less grammar 32%
+of its parse time.
+
+> The wide spread inside each row is the machine, not the change. See the
+> threshold caveat below: these runs were taken at load average ~5, where the
+> harness's own self-vs-self floor measures far worse than the quiet-machine
+> figure the thresholds were calibrated against.
 
 ### Median AND min AND win rate
 
@@ -158,13 +179,31 @@ most **1.9%** and the min by at most **1.0%**. 6% is over 3× the worse of those
   number here as roughly a quarter of itself on a real grammar: a 6% breach is
   something like a 1.5% real-grammar regression. That amplification is the gate's
   value (it sees small things early) and its limit (it cannot tell you what a
-  given delta costs a *particular* consumer).
+  given delta costs a *particular* consumer). The `expected/*` amplification is
+  milder — `expected/wide` read +25.6% on a change worth +49.6% to jess's Less
+  grammar, so under 1×; a breach there is at least as bad in real terms.
 
-- **It watches the rollback/speculation axis specifically.** A regression in
-  trivia scanning, first-set dispatch, node construction or the interpreter can
-  move all four cases together, which the gate will report but the spread will
-  not explain. `perf:guard`'s deterministic `composeLeaf` dispatch assertion
-  still carries first-set-dispatch coverage.
+- **It watches two axes, and only two.** `rollback/*` moves speculative probes
+  per byte; `expected/*` moves derived expected-set width at a losing choice. A
+  regression in trivia scanning, first-set dispatch, node construction or the
+  interpreter can move every case in BOTH sweeps together — the gate will report
+  that, but neither spread will explain it, because nothing is being held
+  constant against it. `perf:guard`'s deterministic `composeLeaf` dispatch
+  assertion still carries first-set-dispatch coverage.
+
+  The history here is the argument for reading this bullet literally rather than
+  as boilerplate: the gate shipped with one axis and a regression rode the other
+  through it in the very next PR. A third axis is an entry in `DENSITY_CASES`;
+  adding one is cheaper than the release that finds it for you.
+
+- **The 1.9% / 1.0% noise floor is a QUIET-MACHINE figure.** Re-measured
+  self-vs-self (`--ref=X --head-ref=X`) at load average ~5, the worst case moved
+  the median 8.3% and the min 7.6% — past the 6% thresholds. Interleaving and
+  per-round rotation cancel a steady load; they do not cancel a bursty one at
+  ~3 ms samples. In practice this shows up as a case breaching once and not
+  breaching on a re-run. **A single red run is not a regression.** Re-run it, and
+  re-run self-vs-self alongside if the machine is busy; a real regression loses
+  0-of-12 pairs every time, which is what distinguishes it from load.
 
 - **The synthetic grammar is not a correctness corpus.** It asserts only that
   both sides parse identically; it says nothing about whether that parse is
