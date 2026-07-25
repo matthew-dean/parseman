@@ -102,6 +102,41 @@ describe('interpreter: rollback helpers never rewrite a length they already had'
     for (const a of s.all) expect(a.length).toBe(a === s.triviaLog ? 3 : 1)
   })
 
+  // The BUFFERED node-capture path (`_cstBuf.ch` / `_cstBuf.raw`, via
+  // rollbackBufList) is a separate branch of rollbackCstCapture that the flat
+  // cases above never reach — `rollbackCstCapture` returns early when `_cstBuf`
+  // is set. It is also interpreter-ONLY: the compiled engine inlines its own
+  // capture and never calls here, so no source assertion can cover it and
+  // nothing else in this file would notice it losing the guard.
+  it('the buffered node-capture lists do not rewrite a length they already had', () => {
+    const ch = new CountingSink()
+    const raw = new CountingSink()
+    ch.push(1, 2, 3)
+    raw.push(1, 2, 3)
+    const ctx = { trackLines: false, _cstBuf: { ch, raw } } as unknown as ParseContext
+    const mark = saveCstMark(ctx)
+    rollbackCstCapture(ctx, mark)
+    expect({ chRedundant: ch.redundant, rawRedundant: raw.redundant }).toEqual({ chRedundant: 0, rawRedundant: 0 })
+    expect(ch.length).toBe(3)
+    expect(raw.length).toBe(3)
+  })
+
+  it('the buffered node-capture lists still truncate for real', () => {
+    const ch = new CountingSink()
+    const raw = new CountingSink()
+    ch.push(1, 2)
+    raw.push(1, 2)
+    const ctx = { trackLines: false, _cstBuf: { ch, raw } } as unknown as ParseContext
+    const mark = saveCstMark(ctx)          // marks at 2 — above the single-slot branches
+    ch.push(3, 4)
+    raw.push(3, 4)
+    rollbackCstCapture(ctx, mark)
+    expect({ chRedundant: ch.redundant, rawRedundant: raw.redundant }).toEqual({ chRedundant: 0, rawRedundant: 0 })
+    expect({ ch: ch.real, raw: raw.real }).toEqual({ ch: 1, raw: 1 })
+    expect(ch.length).toBe(2)
+    expect(raw.length).toBe(2)
+  })
+
   it('rollbackTrivia to an UNCHANGED mark writes nothing, and still rewinds a real one', () => {
     const s = sinks()
     for (const a of s.all) a.push(1)
