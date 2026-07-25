@@ -9,6 +9,10 @@ You still call `run()` / `parse()` to execute that grammar, so parseman remains 
 runtime import in your code. What the macro removes is the grammar-construction machinery
 (every combinator, the whole compiler), not the small driver that runs the result.
 
+If you are **shipping a package** that contains a compiled parser, import the driver from
+[`parseman/run`](#shipping-a-compiled-parser) rather than the main entry — it is three
+modules instead of the whole library.
+
 ## 1. Register the plugin
 
 Parséman ships an [unplugin](https://github.com/unjs/unplugin)-based plugin, so the same
@@ -178,8 +182,22 @@ Two things keep this in perspective:
 
 - **The combinator library does not ship.** Macro output has no external references, so
   you're not shipping the combinator trees, the compiler, and the codegen *and* the
-  generated parser — just the parser, plus the small driver (`run`/`parse`) that executes
-  it.
+  generated parser — just the parser, plus the small driver that executes it.
+
+  ### Shipping a compiled parser
+
+  For a library whose published package contains a compiled grammar, import the driver
+  from the dedicated entry:
+
+  ```ts
+  import { run } from 'parseman/run'
+  ```
+
+  Its whole module closure is three files — the driver, the recovery helpers it hands to
+  tolerant parses, and the capture buffer those use. The main entry pulls the combinator
+  set, `compile()`, the first-set analysis and the CST builders, none of which a compiled
+  parser touches. `test/unit/run-entry-closure.test.ts` pins that closure by module list,
+  so it cannot quietly grow.
 - **Generated JS is repetitive, so it gzips hard.** GraphQL's 100 kB of source is ~16.6 kB
   over the wire — the number your users actually download. Raw LOC looks large; the shipped
   cost is a fraction of it.

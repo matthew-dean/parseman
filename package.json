@@ -28,6 +28,11 @@
       "import": "./dist/plugin/index.js",
       "require": "./dist/plugin/index.cjs"
     },
+    "./run": {
+      "types": "./dist/run/index.d.ts",
+      "import": "./dist/run/index.js",
+      "require": "./dist/run/index.cjs"
+    },
     "./spec": {
       "types": "./dist/spec/index.d.ts",
       "import": "./dist/spec/index.js",
