@@ -68,6 +68,66 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   No sibling checkout, no network fetch, no setup step: `pnpm install && pnpm
   perf:guard:grammars`.
 
+## 0.35.0 — 2026-07-24
+
+- **New `parseman/run` entry — the driver without the library.** The macro removes
+  the combinators, the compiler and the codegen from your bundle, but executing a
+  compiled grammar is still a `run()` call, so a package that *ships* a parser keeps
+  a runtime import of parseman. Importing that from the main entry pulled the whole
+  library along.
+
+  ```ts
+  import { run } from 'parseman/run'   // three modules, not the whole library
+  ```
+
+  The closure is `functional/run.ts`, `recovery/scan.ts` and `cst/capture-buffer.ts`
+  — 7.2 kB built, against 349.6 kB for the main entry.
+  `test/unit/run-entry-closure.test.ts` pins it by module list rather than byte
+  budget, so an import added to the driver fails the suite instead of quietly
+  re-inflating every downstream bundle.
+
+  This is what put `parseman` in a published parser's `peerDependencies`: the
+  driver was only reachable through the full entry.
+
+- **Fix: `expect()` derives expectations through a nullable prefix.** A sequence
+  whose leading terms can all match empty reported the wrong expected set — the
+  derivation stopped at the first term instead of continuing past the ones that
+  match nothing. Recursive rules reached that way could also cycle; the walk now
+  cuts the cycle rather than recursing.
+
+- **Perf: speculative rollback skips the write when nothing changed.** Every
+  capture truncation now checks the length first, in both the flat and the
+  buffered-node paths. A rollback that restores a buffer to the length it already
+  has does no work, which is the common case on a failed choice arm.
+
+- **`parseman/run` closure is pinned by test.** `test/unit/run-entry-closure.test.ts`
+  asserts the driver's module list — not a byte budget — so an import added to
+  `functional/run.ts` fails the suite instead of quietly re-inflating every
+  downstream bundle.
+
+- **Docs: the macro removes the combinators, not the driver.** Six places said, in
+  different words, that "the `parseman` import disappears" — homepage, getting
+  started, modes (twice), macro mode (twice). Read together they promised that a
+  macro-compiled parser needs no parseman at runtime at all. The macro'd import
+  does disappear and the compiled grammar carries no parseman reference; running it
+  is still a `run()`/`parse()` call. Corrected in place, and "Macro build (zero
+  runtime cost)" is now "(no runtime compile step)", which is the claim being made.
+
+- **Docs: the README summarizes and points.** It carried the benchmark story twice
+  (headline claims, then the same µs figures again with methodology and grammar
+  provenance that live in the benchmarks guide). Now: the claims, one proof point,
+  the charts, and links — 1205 → ~920 words with the feature surface roughly
+  tripled, since railroad diagrams, EBNF, grammar observability, gating
+  diagnostics, composition and editor integration were absent entirely.
+
+- **CI tests every supported Node line.** The matrix runs one leg per supported LTS
+  line instead of a single pinned major, and `pnpm docs:verify` — which executes
+  every documented example — now runs in CI, where it previously ran in no
+  automated check at all. Both found real breakage immediately: Node 20 could not
+  run the test toolchain (`fs.globSync` is Node 22+; chevrotain calls
+  `Object.groupBy`, Node 21+), so the floor declared in 0.34.0 was not actually
+  exercisable until this release.
+
 ## 0.34.0 — 2026-07-24
 
 - **`peek(combinator)` — the positive lookahead.** PEG's `&X`, the counterpart to
@@ -242,33 +302,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   reaches for `_ctx._rec`, so the host supplies parseman's recovery machinery at
   run time.) The runtime bundle itself uses no `node:` builtins and no post-Node-18
   built-ins.
-
-- **New `parseman/run` entry — the driver without the library.** The macro removes
-  the combinators, the compiler and the codegen from your bundle, but executing a
-  compiled grammar is still a `run()` call, so a package that *ships* a parser keeps
-  a runtime import of parseman. Importing that from the main entry pulled the whole
-  library along.
-
-  ```ts
-  import { run } from 'parseman/run'   // three modules, not the whole library
-  ```
-
-  The closure is `functional/run.ts`, `recovery/scan.ts` and `cst/capture-buffer.ts`
-  — 7.2 kB built, against 349.6 kB for the main entry.
-  `test/unit/run-entry-closure.test.ts` pins it by module list rather than byte
-  budget, so an import added to the driver fails the suite instead of quietly
-  re-inflating every downstream bundle.
-
-  This is what put `parseman` in a published parser's `peerDependencies`: the
-  driver was only reachable through the full entry.
-
-- **Docs: the macro removes the combinators, not the driver.** Six places said, in
-  different words, that "the `parseman` import disappears" — homepage, getting
-  started, modes (twice), macro mode (twice). Read together they promised that a
-  macro-compiled parser needs no parseman at runtime at all. The macro'd import
-  does disappear and the compiled grammar carries no parseman reference; running it
-  is still a `run()`/`parse()` call. Corrected in place, and "Macro build (zero
-  runtime cost)" is now "(no runtime compile step)", which is the claim being made.
 
 ## 0.33.0 — 2026-07-24
 
