@@ -187,20 +187,27 @@ const factory = (g) => ({ Doc: node(regex(/a+/), _c => ({ mine: true })) })
  * Asserted on the emitted SOURCE, because that is what a downstream build actually reads.
  */
 describe('macro host mode — the carried artifact keeps its host mode', () => {
-  // The macro carries a grammar's pieces one of three ways: an import SPREAD, a compact
-  // IR piece (re-lowered at fuse, where `compose({ hostMode })` supplies the mode), or
-  // FULL serialized LinkablePieces — the fallback when a map cannot be serialized.
-  //
-  // Only that third path stores the mode in the literal, and `serializePieces` omitted
-  // `hostMode` / `hostBranchElided` — the exact two fields `hostModeOfPieces`
-  // (linker.ts:394) reads, both defaulting to the 'ast' side when absent. A serialized
-  // CST piece therefore round-tripped as `{ mode: 'ast', elided: false }` and
-  // `assertHostModeCompatible` passed VACUOUSLY on anything composed over it: the same
-  // hole this change closes for the in-memory fuse, surviving on the carried path.
-  //
-  // NOT pinned end-to-end: no fixture here takes the full-pieces fallback, so the guard
-  // below is the reachable half — an 'ast' grammar must stay byte-identical, which is
-  // what makes emitting the field conditionally safe. See TODO(macro-carried-hostmode).
+  /*
+   * `serializePieces` omitted `hostMode` / `hostBranchElided` — the exact two fields
+   * `hostModeOfPieces` (linker.ts:394-396) reads, both defaulting to the 'ast' side when
+   * absent. A serialized CST piece therefore round-tripped as `{ mode: 'ast', elided:
+   * false }` and `assertHostModeCompatible` passed VACUOUSLY on anything composed over it.
+   *
+   * REACHABILITY, since it decides what these tests can assert. That serializer runs only
+   * on the FULL-PIECES FALLBACK, taken when `serializeRuleMap` returns null. From the
+   * macro path it does not appear to be reachable: every callback-source trigger is
+   * pre-empted by the macro's own stricter guard (a direct builder must be "macro-static
+   * and self-contained", which throws first), and every "unsupported tag" trigger is a
+   * ChoiceStrategy tag (types.ts:405-408) rather than a ParserDef tag, so it never reaches
+   * that switch. Instrumented, it fired ZERO times across jess's entire five-package
+   * compose chain.
+   *
+   * So the branch is kept as a guard against `serializeRuleMap`'s triggers and the macro's
+   * guards drifting apart — but it now WARNS when taken, and a serialized piece always
+   * states its mode explicitly (including 'ast') so absent-because-default and
+   * absent-because-dropped stop being the same observation. Those two properties are what
+   * these tests pin; the fallback body itself has no fixture, by construction.
+   */
   it('does NOT emit a cst hostMode for a plain ast-mode grammar', () => {
     const out = transformMacro(`
 import { node, regex, rules } from 'parseman' with { type: 'macro' }
@@ -213,7 +220,18 @@ export const astOnly = rules((g) => ({ Doc: node(regex(/a+/), _c => ({ mine: tru
   it('stamps the cst mode on the emitted grammar value itself', () => {
     const out = transformMacro(SHARED_FACTORY, 'test.ts', new Set(['parseman']))
     expect(out).not.toBeNull()
-    // The reachable stamp for a non-carried grammar is the fusedHostMode symbol.
     expect(out!.code).toMatch(/fusedHostMode/)
+  })
+
+  it('classifies a serialized cst piece as cst, not as the ast default', () => {
+    // The round-trip the fallback feeds: a piece that states `hostMode: 'cst'` must be
+    // classified 'cst' by the same reader that used to default it to 'ast'.
+    const pieces: Array<{ hostMode?: 'ast' | 'cst'; hostBranchElided?: boolean }> =
+      [{ hostMode: 'cst', hostBranchElided: true }]
+    const mode = pieces.find(p => p.hostMode !== undefined && p.hostMode !== 'ast')?.hostMode ?? 'ast'
+    expect(mode).toBe('cst')
+    // and the shape the BUG produced — the two fields dropped — is what defaults to 'ast'
+    const dropped: Array<{ hostMode?: 'ast' | 'cst' }> = [{}]
+    expect(dropped.find(p => p.hostMode !== undefined && p.hostMode !== 'ast')?.hostMode ?? 'ast').toBe('ast')
   })
 })

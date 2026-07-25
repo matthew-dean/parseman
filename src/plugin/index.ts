@@ -741,21 +741,20 @@ export function transformMacro(
       // to always-try — the regression Greptile flagged). Ordered-chain (`{alts}`)
       // and legacy (`{concrete, refs}`) recipes are both plain JSON.
       + `firstSetRecipes: ${p.firstSetRecipes ? mapLit(p.firstSetRecipes) : 'new Map()'}, deps: ${mapLit(p.deps)}, `
-      // TODO(macro-carried-hostmode): fixed by inspection, NOT pinned end-to-end — no
-      // test fixture here takes the full-pieces fallback (the normal paths are an import
-      // spread or a compact IR piece), so nothing fails if this regresses. A fixture that
-      // forces the fallback is the missing coverage.
-      //
       // Carry the HOST MODE across serialization. `hostModeOfPieces` (linker.ts) reads
       // exactly these two to classify a fused artifact, and both default to the 'ast'
       // side when absent — so omitting them made a serialized CST piece round-trip as
       // `{ mode: 'ast', elided: false }` and `assertHostModeCompatible` pass VACUOUSLY
       // on the composed result. That is the same hole this change closes for the
-      // in-memory fuse, surviving on the macro's carried path — which is the path a
-      // real grammar package composes over. Emitted only when set, so an 'ast' artifact
-      // stays byte-identical to before.
-      + `${p.hostMode !== undefined ? `hostMode: ${JSON.stringify(p.hostMode)}, ` : ''}`
-      + `${p.hostBranchElided === true ? 'hostBranchElided: true, ' : ''}`
+      // in-memory fuse, surviving on the macro's carried path.
+      //
+      // Written UNCONDITIONALLY, including `'ast'`. Elsewhere `'ast'` is "never stamped"
+      // and absence means the default, but a serialized piece is exactly where that
+      // conflation caused the bug: absent-because-ast and absent-because-dropped are
+      // indistinguishable to the reader. A serialized piece therefore always states its
+      // mode, so a future missing field is a MISSING FIELD rather than a silent 'ast'.
+      + `hostMode: ${JSON.stringify(p.hostMode ?? 'ast')}, `
+      + `hostBranchElided: ${p.hostBranchElided === true}, `
       + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
@@ -1037,6 +1036,24 @@ export function transformMacro(
     // downstream re-compose. The full-pieces fallback bakes it via the compile option.
     const ir = serializeRuleMap(entries as never, scanSkip)
     if (ir) return { carried: [{ ns, ir }] }
+    // FULL-PIECES FALLBACK — never taken silently.
+    //
+    // This branch has no test fixture, and not for want of trying: every callback-source
+    // trigger in `serializeRuleMap` is pre-empted by the macro's own stricter guard (a
+    // direct builder must be "macro-static and self-contained", which throws first), and
+    // every "unsupported tag" trigger is a ChoiceStrategy tag (`types.ts:405-408`), not a
+    // ParserDef tag, so it never reaches that switch. It also fired ZERO times across
+    // jess's whole five-package compose chain, measured.
+    //
+    // It is kept rather than deleted because `serializeRuleMap` is a general utility whose
+    // trigger set is NOT owned by this call site: if its guards and the macro's guards
+    // ever drift apart, this is the path that catches it. What is not acceptable is
+    // reaching it without knowing. A silent fallback costs the compact IR (so a downstream
+    // re-compose cannot re-lower) and produces a larger artifact — a real degradation that
+    // previously looked like normal operation.
+    warn(0, `${label}: rule map could not be serialized to IR; carrying FULL pieces instead. `
+      + 'The artifact is correct but larger, and a downstream compose cannot re-lower it. '
+      + 'Re-run with PARSEMAN_IR_DEBUG=1 to print the exact combinator that blocked serialization.')
     const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), ...(scanSkip ? { scanSkip } : {}), recovery })
     return p ? { carried: [p] } : null
   }
