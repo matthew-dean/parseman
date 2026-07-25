@@ -110,7 +110,7 @@ export function node<N>(
   // an empty trivia log is indistinguishable from a node that genuinely had none.
   //
   // The COMPILED engine settles this at build time (`compile(g, { hostMode: 'cst' })`,
-  // added in 0.40.0), where it costs nothing. The interpreter has no compile step and
+  // added in 0.37.0), where it costs nothing. The interpreter has no compile step and
   // stays dynamic, so it re-decides per parse — which is the same answer, reached the
   // only way this engine can reach it.
   const capturesTrivia = captureTrivia || trailingTrivia || (build ? buildReadsTrivia(def) : true)
