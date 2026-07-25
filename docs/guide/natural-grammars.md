@@ -42,11 +42,22 @@ parse(choice(literal('<'), literal('<=')), '<=').value
 
 This is a considered choice, not an accident: an operator table or keyword set written
 in the obvious order almost never means "match `<` and strand the `=`", and the
-alternative is making every author hand-sort their literals by length. Two mechanisms
-implement it — `literalsLongestFirst` reorders when *every* arm is a literal, and
-`autoNot` rejects a shorter literal arm when a later arm is a longer literal that also
-matches — so it holds on both the `literalsLongestFirst` and `firstMatch` paths, in
-both engines.
+alternative is making every author hand-sort their literals by length.
+
+**Two different mechanisms implement it**, which matters because they fire on different
+choices. `literalsLongestFirst` reorders when *every* arm is a literal. When the arms are
+mixed, the choice stays on `firstMatch` and [`autoNot`](#autonot-literal-arms-get-a-word-boundary)
+does the same job by rejecting the shorter literal instead. Knowing only the first one
+predicts the wrong answer here — this choice has a regex arm, so it is **not**
+`literalsLongestFirst`:
+
+```ts
+// [verify]
+import { choice, literal, regex, parse } from 'parseman'
+
+parse(choice(literal('<'), literal('<='), regex(/[a-z]+/)), '<=').value
+// → '<='
+```
 
 It applies to **literals only**. The moment the longer alternative is anything else —
 a sequence, a node, a rule reference — strict ordered choice is back:
@@ -176,13 +187,19 @@ measurable above run-to-run noise on a 156 KB stylesheet. Ordered dispatch is a
 constant-factor difference, not a category change.
 
 ::: tip Then what *is* the cliff?
-An arm whose first set is `any` — it can't be guarded, so it is entered speculatively at
-every position. That is the cost worth chasing, and it is exactly what the
-[gating diagnostic](./first-char-gating) reports. In the jess grammars 36% of
-the arms in ordered choices are in this category, and they dominate everything the
-dispatch strategy does. A leading `not(...)`, a nullable prefix, a `scanTo`, or a rule
-reference that resolves to `any` are the usual causes — fix those and the choice gets
+An arm whose first set is `any` — it can't be guarded, so it is entered at every
+position the choice is reached. That is the cost worth chasing, and it is exactly what
+the [gating diagnostic](./first-char-gating) reports. Measured on the compiled jess
+artifacts, **15.2% of all arm entries** are on arms that got no guard — a leading
+`not(...)`, a nullable prefix, a `scanTo`, or a rule reference that resolved to `any`.
+[Fixing those](./first-char-gating#the-shapes-that-actually-occur) makes the choice
 faster whether or not it ever reaches O(1) dispatch.
+
+Counting the *grammar* rather than the compiled output overstates this badly — a
+static walk puts 36% of arms in ordered choices in the `any` category. Most of that
+gap closes at compile time: 72.5% of arm entries land on arms whose guard came from a
+first-set resolved at **fuse** time, which a walk of the unfused graph cannot see.
+Measure the artifact, not the combinator tree.
 :::
 
 Prefix-trie dispatch — grouping arms that collide on character 1 and discriminating on
@@ -246,6 +263,59 @@ const word = choice(literal('true'), literal('false'), ident)
 The detection is conservative: `greedyClassify` requires exactly one regex arm that
 provably matches every literal arm's value exactly, with all other arms literals;
 anything else falls back to ordered `firstMatch`.
+
+## `autoNot`: literal arms get a word boundary
+
+On the ordered `firstMatch` path, a **bare `literal` arm is rejected when a later arm
+could match the same text and keep going**. Parséman works this out at build time
+(`computeAutoNot`) and compiles the check inline, so it costs a single character test on
+the arm's success path.
+
+Two things trigger it, and the second is the one that surprises people:
+
+1. a later arm is a **longer literal** starting with this one (`<` vs `<=`) — the
+   longest-literal rule above;
+2. a later arm is a **regex that can match this literal and continue** — which makes the
+   literal behave as if it had a word boundary.
+
+```ts
+// [verify]
+import { choice, literal, regex, parse } from 'parseman'
+
+const ident = regex(/[a-z]+/)
+// `@x` is not something `ident` can match, so this is plain `firstMatch`:
+const kw = choice(literal('if'), ident, literal('@x'))
+
+// The keyword stands on its own:
+parse(kw, 'if').value
+// → 'if'
+
+// `ident` can continue past `if`, so the literal arm is REJECTED:
+parse(kw, 'ifdef').value
+// → 'ifdef'
+
+// `9` is not in [a-z] — nothing can continue, so the literal stands:
+parse(kw, 'if9').value
+// → 'if'
+```
+
+::: warning This is *not* what a bare `literal` does
+[`literal` guards no word boundary](./combinators#literal) — `parse(literal('if'), 'ifdef')`
+matches `'if'` and stops. Inside a `firstMatch` choice with a regex arm that can continue,
+`autoNot` effectively adds one. Both statements are true; the behaviour comes from the
+choice, not the literal.
+:::
+
+**Where it does *not* apply**, because these choices never compute an `autoNot` table:
+
+- a **disjoint** choice (O(1) dispatch — arms can't overlap, so nothing to reject);
+- an **all-literal** choice (`literalsLongestFirst` reorders instead);
+- a choice with **any gated arm** — adding a `gate()` to one arm switches `autoNot` off
+  for *every* arm, so a keyword arm that was being boundary-checked silently stops being
+  checked. If you gate an arm in a choice with keyword literals, re-test the keywords.
+
+The arm must also be a **bare** literal: wrap it in a `sequence` or a `node` and it is no
+longer a core literal, so no check is generated and strict ordering returns.
 
 ## Shared leading prefixes
 

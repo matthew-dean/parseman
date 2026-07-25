@@ -111,6 +111,14 @@ parse(literal('HELLO', { caseInsensitive: true }), 'hello').value
 // → 'hello'
 ```
 
+::: tip Inside a `choice`, that can change
+A bare `literal` arm in an ordered `choice` is rejected when a later arm could match the
+same text and keep going — so `choice(literal('if'), ident, …)` matches `'ifdef'` as
+`'ifdef'`, not `'if'`. The boundary comes from the choice, not the literal. See
+[`autoNot`](./natural-grammars#autonot-literal-arms-get-a-word-boundary); where you want
+a boundary unconditionally, use [`word()`](#word-and-keywords).
+:::
+
 **Gating:** exact first-set, always dispatches. → compare with
 [`word` vs `literal` vs `regex`](#recognizing-a-keyword-word-vs-literal-vs-regex).
 

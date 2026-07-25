@@ -64,7 +64,7 @@ arm's first-set to `any` (or make two arms overlap) and break that proof:
 | **`not(not(...))`** — hand-rolled first-char gating | first-set `any` **and it miscompiles** among shared-first-char siblings | delete it; first-char gating is automatic |
 | **leading `optional`/`many`** | a skippable prefix lets a later, possibly-broad term start the arm | split the empty case into its own arm, or gate on the prefix |
 | **`gate()` / `guard()` as a leading arm term** | a state predicate's first-set is `any` | use the gated-arm **field** to SELECT a branch (it keeps dispatch); put `gate()` after a terminal |
-| **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | the ref is resolved at fuse time; if it is still `any`, the target rule is itself ungated — fix it there. In a [shared shape](#shared-shapes-the-verdict-belongs-to-the-fuse) the ref is a HOLE, and the finding is reported against the artifact that binds it |
+| **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | often **not yours to fix** — see [warnings you cannot act on](#warnings-you-cannot-act-on). In a [shared shape](#shared-shapes-the-verdict-belongs-to-the-fuse) the ref is a HOLE, and the finding is reported against the artifact that binds it |
 | **shared prefix** — two arms starting with the same terminal | first-sets overlap, so no unique dispatch key | left-factor: parseman auto-detects `sharedPrefix` for bare sequences — make the arms bare sequences with the common leading terminal |
 
 ## Common mistakes (and what the build warning tells you)
@@ -98,6 +98,170 @@ default-on warning is that you don't have to remember them; the build tells you.
 4. **Two arms sharing a leading token** (`Dimension` and `Num` both leading with the number
    regex). → *overlap on `+ - . 0-9` … left-factor.* Parse the shared prefix once and
    branch on what follows.
+
+## The shapes that actually occur
+
+The table above lists everything that *can* poison a first-set. This section lists what
+actually **does**, in what proportion, with the rewrite for each.
+
+The ordering is measured, not editorial. Across the four [jess](https://github.com/jesscss/jess)
+dialect grammars compiled to their shipping artifacts, 15.2% of all arm entries land on
+an arm that got no first-char guard. Splitting those by cause and weighting by **real arm
+entries** on `bootstrap4.css` and a 4.4k-line Less benchmark:
+
+| Cause | Share of unguarded arm entries | Fixable in your grammar? |
+| --- | --- | --- |
+| nullable prefix | 37% | yes — §1 |
+| broad `regex` | 21% | yes — §2 |
+| unresolved cross-artifact ref | 41% | **no** — [see below](#warnings-you-cannot-act-on) |
+| leading `not(...)` / `not(not(...))` / `gate()` | 0% | yes — but they did not occur at all |
+
+So the two rewrites below cover **all** of the actionable half. The hand-rolled-gating
+mistakes in the list above are worth knowing precisely because they are so rare in
+grammars that have had a gating diagnostic running — but a mistake being rare in this
+table does not make it harmless in **your** grammar. The warning names the choice; let it
+tell you which one you have.
+
+### 1. A nullable prefix in front of a broad term
+
+An arm that starts with something skippable lets a **later** term begin the arm, so the
+arm inherits that term's first-set.
+
+```
+parseman gating: choice @ declaration is UNGATED [firstMatch] — no first-char dispatch; every position speculatively enters doomed arms.
+  · arm[0] first-set ANY (nullable-prefix): nullable prefix → broad recognizer (regex)
+```
+
+Read that detail line carefully: it takes **both** halves. A nullable head in front of a
+*narrow* term is fine — the first-sets simply union, and the arm still gates. It only
+poisons the arm when the term it exposes is itself broad:
+
+```ts
+// [verify]
+import { literal, optional, regex, sequence } from 'parseman'
+
+const broadValue = regex(/[^;]+/)
+
+// ⚠️ `--` is skippable, so `broadValue` can start the arm → ANY
+sequence(optional(literal('--')), broadValue)._meta.firstSet.kind
+// → 'any'
+
+// ✅ the prefix is required here; the empty case becomes its own arm
+sequence(literal('--'), broadValue)._meta.firstSet.kind
+// → 'ranges'
+```
+
+The trap is that `optional(...)` is not the only nullable head. `many()`, a `regex` that
+can match empty, and a **default `sepBy`** — which is `(item (sep item)*)?`, so it matches
+the empty string — all qualify:
+
+```ts
+// [verify]
+import { literal, regex, sepBy, sequence } from 'parseman'
+
+const ident = regex(/[a-z]+/)
+const broadValue = regex(/[^;]+/)
+
+// ⚠️ a default sepBy matches nothing, so the broad term can lead
+sequence(sepBy(ident, literal(',')), broadValue)._meta.firstSet.kind
+// → 'any'
+
+// ✅ a list that cannot be empty keeps its own first char
+sequence(sepBy(ident, literal(','), { min: 1 }), broadValue)._meta.firstSet.kind
+// → 'ranges'
+```
+
+**Three rewrites, cheapest first:**
+
+- **`sepBy(item, sep, { min: 1 })`** when the list can't actually be empty. Usually just a
+  correctness fix: a default `sepBy` claims to match nothing, which is rarely the intent.
+- **Narrow the broad term** instead of the prefix — often the honest fix, since the
+  nullable head was never the real problem. That is §2.
+- **Split the empty case into its own arm**, so each arm has a concrete lead.
+
+::: warning What the rewrite costs
+`{ min: 1 }` is free — same tree, same reducer, same output. Splitting one arm into two is
+**not**: two arms means two reducers, and whatever consumed a single node now sees one of
+two shapes. That is a refactor, not a tuning knob. Try the first two first.
+:::
+
+### 2. A broad `regex` — usually a negated character class
+
+The realistic offender is a value/fallback token written as "anything up to a
+delimiter". A negated class has no finite first-set, so the analyzer can only report
+`any`:
+
+```ts
+// [verify]
+import { regex } from 'parseman'
+
+// ⚠️ negated classes are broad by construction
+regex(/[^;]+/)._meta.firstSet.kind
+// → 'any'
+
+regex(/\S+/)._meta.firstSet.kind
+// → 'any'
+
+// ✅ say what the token can actually start with
+regex(/[a-z-]+/)._meta.firstSet.kind
+// → 'ranges'
+```
+
+::: warning What the rewrite costs
+Narrowing a recogniser **changes the language it accepts** — that is the whole point, and
+it is the one rewrite here that can silently start rejecting valid input. Widen the class
+until the tests pass rather than guessing, and if the arm genuinely must accept anything,
+it is not fixable: [accept it in the snapshot](#accepting-an-intentional-ungated-choice-the-snapshot-allowlist).
+A `scanTo` error-recovery fallback is always in this category.
+:::
+
+**A related lint, not the same problem.** `regex(/@supports/)` used as a keyword *does*
+expose a first-set, so it is not what the `any` numbers above are counting — but it still
+earns the `keyword-regex` anti-pattern, because `word()`/`keywords()` give an exact set
+*and* a word boundary, and lower to the same `charCodeAt` scan:
+
+```ts
+// [verify]
+import { keywords, word } from 'parseman'
+
+word('@supports', '-\\w')._meta.firstSet.kind
+// → 'ranges'
+
+keywords(['and', 'or', 'not'])._meta.firstSet.kind
+// → 'ranges'
+```
+
+Switching to `word()` adds the boundary — `word('if', '-\\w')` will not match `ifdef`
+where `regex(/if/)` would. That is nearly always the intent, but it *is* a behaviour
+change; re-run the tests rather than assuming.
+
+## Warnings you cannot act on
+
+Some `cross-artifact-ref` findings are a **parseman limitation, not a defect in your
+grammar**, and no rewrite will clear them. In the measurement above they were **41% of
+all unguarded arm entries** — the single largest bucket, and none of it is grammar-side.
+
+The shape is:
+
+```
+  · arm[0] first-set ANY (cross-artifact-ref): unresolved ref g.CssAstSyntaxSupportsAtKeyword
+```
+
+…where `CssAstSyntaxSupportsAtKeyword` **is** defined, **is** compiled into the artifact,
+and **does** have a perfectly good first-set. The fuse knows its winner map — the gating
+diagnostic itself resolves names through it (`runFusedGatingDiagnostic` passes a
+`resolveRef`) — but codegen's guard derivation calls `firstSetOf` without a resolver, so
+the `lazy` thunk throws and the set degrades to `any`. The information exists; the guard
+path just doesn't consult it.
+
+**How to tell you are looking at one:** the detail line names a `g.Foo` you can point at
+in your own sources, and the referenced rule is not itself reported as ungated. If the
+target rule *is* also warned about, that one is real — fix it there and this one clears
+too.
+
+**What to do meanwhile:** accept these ids in the snapshot with a comment saying why, so
+they stay silent without hiding the real findings. Do not restructure a correct grammar
+to chase them.
 
 ## Accepting an intentional ungated choice (the snapshot allowlist)
 
