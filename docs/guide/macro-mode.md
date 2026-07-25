@@ -169,14 +169,14 @@ the plugin compiles what it can and quietly leaves the rest to the interpreter.
 
 Compiling trades **bundle size for speed**: a compact combinator grammar expands into
 flat, inlined JavaScript, and that generated code ships in your bundle. Expect roughly
-**3–14× the source lines**, growing with grammar complexity. Measured on the bundled
+**4–8× the source lines**, growing with grammar complexity. Measured on the bundled
 example grammars (`pnpm bench:size`):
 
 | Grammar | Source LOC | Generated LOC | Size | Gzip size | Line multiplier |
 | --- | --- | --- | --- | --- | --- |
-| JSON | 97 | 321 | 10.7 kB | 2.3 kB | 3.3× |
-| CSV | 39 | 423 | 16.1 kB | 3.1 kB | 10.8× |
-| GraphQL | 196 | 2,699 | 100.6 kB | 16.6 kB | 13.8× |
+| JSON | 97 | 409 | 13.9 kB | 3.0 kB | 4.2× |
+| CSV | 39 | 269 | 7.4 kB | 1.8 kB | 6.9× |
+| GraphQL | 196 | 1,590 | 63.9 kB | 11.9 kB | 8.1× |
 
 Two things keep this in perspective:
 
