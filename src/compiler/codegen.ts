@@ -11,7 +11,7 @@ import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combi
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
-import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel } from '../analysis/gating.ts'
+import { analyzeGating, analyzeGatingRules, classifyBroadArm, formatGatingWarnings, type GatingReport, type GatingWarnLevel } from '../analysis/gating.ts'
 
 /**
  * A rule's LEADING first-set as a fuse-resolvable recipe.
@@ -1503,6 +1503,9 @@ function emitDisjointArmGated(
 }
 
 function emitChoice(parser: Combinator<unknown>, def: Extract<ParserDef, { tag: 'choice' }>, ctx: Ctx, pos: string): ER {
+  // MEASUREMENT SCAFFOLDING — attribute this choice's arms to a real rule name.
+  if (MEASURE_DISPATCH === 'arms')
+    _measureChoiceName = (parser as unknown as { _ruleName?: string })._ruleName ?? ctx.ruleNames?.get(parser) ?? _measureChoiceName
   const coverageIds = ctx.coverage?.plan.choices.get(parser)
   const coverageBase = coverageIds?.[0]?.slice(0, -1)
   const allExpected = deriveExpectedArr(def.parsers)
@@ -1712,7 +1715,9 @@ function emitFirstMatch(
   // ordering matches the interpreter wrapper exactly.
   const autoRejectedV = coverageBase === undefined ? undefined : v(ctx, '_carej')
   const ind0 = ind(ctx)
+  const myChoiceName = _measureChoiceName   // MEASUREMENT SCAFFOLDING
   const stmts: string[] = [
+    ...(MEASURE_DISPATCH === 'counters' ? [`${ind0}globalThis.__cv = (globalThis.__cv|0) + 1`] : []),
     `${ind0}let ${resValV}, ${resEndV} = ${pos}, ${resOkV} = false`,
     `${ind0}let ${slots.join(', ')}`,
     ...(autoRejectedV === undefined ? [] : [`${ind0}const ${autoRejectedV} = []`]),
@@ -1781,7 +1786,35 @@ function emitFirstMatch(
     const failSlot = atStart ? staticFx : '_ctx._fx'
 
     stmts.push(`${ind0}if (${skipCond}) {`)
+    // MEASUREMENT SCAFFOLDING — inert when PARSEMAN_MEASURE_DISPATCH is unset.
+    if (fsGuard && MEASURE_DISPATCH === 'double')
+      stmts.push(`${ind(ctx)}globalThis.__sink = (globalThis.__sink|0) ^ ((${fsGuard}) ? 1 : 0)`)
+    if (fsGuard && MEASURE_DISPATCH === 'sink')
+      stmts.push(`${ind(ctx)}globalThis.__sink = (globalThis.__sink|0) ^ 1`)
+    if (fsGuard && MEASURE_DISPATCH === 'counters') {
+      // Count the comparison TERMS the chain evaluates, not just the arms.
+      const terms = (fsGuard.match(/&&|\|\|/g)?.length ?? 0) + 1
+      stmts.push(`${ind(ctx)}globalThis.__gt = (globalThis.__gt|0) + ${terms}`)
+    }
+    if (MEASURE_DISPATCH === 'arms') {
+      registerRegistryDump()
+      const shallowAny = p._meta.firstSet.kind === 'any'
+      const deepAny = firstSetOf(p).kind === 'any'
+      const guardKind: MeasuredArm['guardKind'] = deferRuleName !== undefined ? 'deferred'
+        : fsGuard === null ? 'none'
+        : shallowAny ? 'deep-recovered' : 'shallow'
+      const c = (guardKind === 'none' || shallowAny) ? classifyBroadArm(p) : { cause: 'gated', detail: '' }
+      const id = _armRegistry.length
+      _armRegistry.push({
+        id, rule: myChoiceName, armIndex: i, guardKind,
+        arm: (p as unknown as { _ruleName?: string })._ruleName ?? ctx.ruleNames?.get(p) ?? '',
+        shallowAny, deepAny, nullable: matchesEmpty(p), cause: c.cause, detail: c.detail,
+      })
+      stmts.push(`${ind(ctx)}(globalThis.__ah ??= [])[${id}] = ((globalThis.__ah[${id}])|0) + 1`)
+    }
     if (fsGuard) stmts.push(`${ind(ctx)}if (${fsGuard}) {`)
+    if (MEASURE_DISPATCH === 'counters')
+      stmts.push(`${ind(ctx)}globalThis.__ae = (globalThis.__ae|0) + 1`)
     ctx.indent += fsGuard ? 2 : 1
     if (coverageBase !== undefined) stmts.push(`${ind(ctx)}_ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'attempt', offset: ${pos} })`)
 
@@ -3847,7 +3880,89 @@ function runGatingDiagnosticRules(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opt: GatingOption | undefined,
 ): GatingReport | undefined {
+  _choiceProbe?.(ruleMap)
   return reportGating(opt, o => analyzeGatingRules(ruleMap, o))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEASUREMENT SCAFFOLDING — NOT FOR MERGE. See .measure/README.md.
+//
+// Two hooks, both inert unless explicitly switched on:
+//
+//  · `__setChoiceProbe` observes every rule map the macro compiles, so a static
+//    analysis can walk the SAME combinator graph the compiler saw (including the
+//    fused/linkable maps, which no public API exposes).
+//  · `PARSEMAN_MEASURE_DISPATCH` compiles counters (or extra work) into the
+//    emitted `firstMatch` guard chain, so its cost can be measured end-to-end.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _choiceProbe: ((m: ReadonlyArray<readonly [string, Combinator<unknown>]>) => void) | null = null
+/** Observe every rule map compiled through compileRuleMap/compileLinkable. */
+export function __setChoiceProbe(fn: typeof _choiceProbe): void { _choiceProbe = fn }
+
+/**
+ * Build-time dispatch measurement mode, read once at codegen:
+ *
+ *  · `counters` — count firstMatch VISITS, guard TERMS evaluated, and arms ENTERED
+ *    into `globalThis.__cv/__gt/__ae`. Answers "what does the guard chain do?".
+ *  · `sink` — one global store per guarded arm, no counting. The control for
+ *    `double`: it pays the store cost without the extra guard evaluation.
+ *  · `double` — `sink`, plus the whole guard chain evaluated a second time and
+ *    discarded. `double - sink` is an UPPER BOUND on what any smarter dispatch
+ *    (switch, prefix trie) could give back, since a perfect dispatcher can at
+ *    best remove one full chain evaluation.
+ *
+ * Every mode changes emitted code, so a build is per-mode — snapshot the built
+ * artifacts and interleave them in one process rather than comparing builds.
+ */
+const MEASURE_DISPATCH = typeof process !== 'undefined' ? process.env?.PARSEMAN_MEASURE_DISPATCH : undefined
+
+/**
+ * `arms` mode: one registry row per emitted `firstMatch` arm, classified AT EMIT
+ * TIME — the only place that knows which guard the arm actually got, which the
+ * shallow/deep first-sets alone cannot tell you (codegen recovers a deep guard
+ * when the cached set is `any`, and defers to a `@FS:` placeholder under compose).
+ * `globalThis.__ah[id]` counts entries at runtime, so the triage can be weighted
+ * by real arm visits instead of static site counts.
+ */
+export type MeasuredArm = {
+  id: number
+  /** Enclosing choice's rule name. */
+  rule: string
+  /** The arm's own rule name, when it is a ref. */
+  arm: string
+  armIndex: number
+  /** `none` = no guard at all (entered at every position); `deferred` = fuse-time. */
+  guardKind: 'none' | 'shallow' | 'deep-recovered' | 'deferred'
+  shallowAny: boolean
+  deepAny: boolean
+  nullable: boolean
+  /** Why the first-set is broad — the (a)/(b)/(c) discriminator. */
+  cause: string
+  detail: string
+}
+/** Enclosing choice's rule name, set by emitChoice so arms are attributable. */
+let _measureChoiceName = '<anon>'
+const _armRegistry: MeasuredArm[] = []
+export function __getArmRegistry(): readonly MeasuredArm[] { return _armRegistry }
+
+// The registry is built inside the BUILD process (the macro plugin), so it has to
+// be written out for the measurement harness to read. `PARSEMAN_MEASURE_OUT`
+// names the file; the dump is registered once, on first use.
+let _dumpRegistered = false
+function registerRegistryDump(): void {
+  if (_dumpRegistered || typeof process === 'undefined') return
+  const out = process.env?.PARSEMAN_MEASURE_OUT
+  if (!out) return
+  _dumpRegistered = true
+  process.on('exit', () => {
+    try {
+      // Sync builtin access that works under ESM (Node >=20.16 / >=22.3).
+      const fs = (process as unknown as { getBuiltinModule(m: string): typeof import('node:fs') }).getBuiltinModule('node:fs')
+      const prior = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) as MeasuredArm[] : []
+      fs.writeFileSync(out, JSON.stringify([...prior, ..._armRegistry], null, 1))
+    } catch { /* measurement only */ }
+  })
 }
 
 /**
@@ -4350,6 +4465,7 @@ export function compileLinkable(
   opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
+  _choiceProbe?.(ruleMapArg)   // MEASUREMENT SCAFFOLDING — see above.
   // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
   // (`compileRuleMap` / `compile`); compileLinkable re-lowers the SAME map for the
   // carried/linkable form, so running it by default would double every warning.

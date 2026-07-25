@@ -230,9 +230,10 @@ const SUGGESTIONS: Record<FirstSetCause, string> = {
 
 /** The classifier's verdict for one arm: the poison, and whether it is a hole that
  *  only a downstream fuse can fill (`unresolvedExternal`). */
-type ArmCause = { cause: FirstSetCause; detail: string; unresolvedExternal?: boolean }
+export type ArmCause = { cause: FirstSetCause; detail: string; unresolvedExternal?: boolean }
 
-function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmCause {
+/** Exported for the measurement scaffolding (.measure/README.md) — NOT FOR MERGE. */
+export function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmCause {
   const seen = new Set<Combinator<unknown>>()
   /** Re-label an inner verdict, carrying its `unresolvedExternal` through unchanged —
    *  the cause changes, but who can FIX it does not. */
