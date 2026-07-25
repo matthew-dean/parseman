@@ -13,8 +13,8 @@ ways:
 
 - **Interpreted** — zero setup, runs anywhere (including tests and REPLs).
 - **Compiled at build time** — a bundler plugin evaluates your grammar and replaces
-  it with flat, allocation-light JavaScript. The `parseman` import vanishes from the
-  bundle.
+  it with flat, allocation-light JavaScript. The macro'd combinator import vanishes; you
+  still import `run`/`parse` to execute the result.
 - **Compiled at runtime** — `compile()` runs the same optimizer on demand, for
   grammars assembled dynamically.
 
@@ -96,7 +96,7 @@ reusable `.parse(input)` method — wrap your root combinator with
 - **[The three modes](./modes)** — interpreter vs. macro vs. `compile()`, and when
   each matters.
 - **[Combinators](./combinators)** — the full building-block vocabulary.
-- **[Macro mode](./macro-mode)** — add the plugin and compile away the runtime cost.
+- **[Macro mode](./macro-mode)** — add the plugin and move compilation to build time.
 - **[Error recovery](./error-recovery)** — keep parsing (and reporting) on broken
   input.
 - **[Editor / language-server integration](./editor-integration)** — recovery,

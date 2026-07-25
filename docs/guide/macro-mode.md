@@ -1,8 +1,17 @@
 # Macro mode
 
 Add the plugin once and your parser imports are evaluated and compiled at build time.
-The `parseman` import disappears from the bundle entirely, leaving flat, allocation-light
-JavaScript in its place.
+The combinator import you mark `with { type: 'macro' }` disappears entirely, leaving flat,
+allocation-light JavaScript in its place — the compiled grammar has no parseman import in
+it at all.
+
+You still call `run()` / `parse()` to execute that grammar, so parseman remains an ordinary
+runtime import in your code. What the macro removes is the grammar-construction machinery
+(every combinator, the whole compiler), not the small driver that runs the result.
+
+If you are **shipping a package** that contains a compiled parser, import the driver from
+[`parseman/run`](#shipping-a-compiled-parser) rather than the main entry — it is three
+modules instead of the whole library.
 
 ## 1. Register the plugin
 
@@ -160,19 +169,35 @@ the plugin compiles what it can and quietly leaves the rest to the interpreter.
 
 Compiling trades **bundle size for speed**: a compact combinator grammar expands into
 flat, inlined JavaScript, and that generated code ships in your bundle. Expect roughly
-**3–14× the source lines**, growing with grammar complexity. Measured on the bundled
+**4–8× the source lines**, growing with grammar complexity. Measured on the bundled
 example grammars (`pnpm bench:size`):
 
 | Grammar | Source LOC | Generated LOC | Size | Gzip size | Line multiplier |
 | --- | --- | --- | --- | --- | --- |
-| JSON | 97 | 321 | 10.7 kB | 2.3 kB | 3.3× |
-| CSV | 39 | 423 | 16.1 kB | 3.1 kB | 10.8× |
-| GraphQL | 196 | 2,699 | 100.6 kB | 16.6 kB | 13.8× |
+| JSON | 97 | 409 | 13.9 kB | 3.0 kB | 4.2× |
+| CSV | 39 | 269 | 7.4 kB | 1.8 kB | 6.9× |
+| GraphQL | 196 | 1,590 | 63.9 kB | 11.9 kB | 8.1× |
 
 Two things keep this in perspective:
 
-- **The `parseman` runtime import disappears.** Macro output has no external references, so
-  you're not shipping the combinator library *and* the generated code — just the code.
+- **The combinator library does not ship.** Macro output has no external references, so
+  you're not shipping the combinator trees, the compiler, and the codegen *and* the
+  generated parser — just the parser, plus the small driver that executes it.
+
+  ### Shipping a compiled parser
+
+  For a library whose published package contains a compiled grammar, import the driver
+  from the dedicated entry:
+
+  ```ts
+  import { run } from 'parseman/run'
+  ```
+
+  Its whole module closure is three files — the driver, the recovery helpers it hands to
+  tolerant parses, and the capture buffer those use. The main entry pulls the combinator
+  set, `compile()`, the first-set analysis and the CST builders, none of which a compiled
+  parser touches. `test/unit/run-entry-closure.test.ts` pins that closure by module list,
+  so it cannot quietly grow.
 - **Generated JS is repetitive, so it gzips hard.** GraphQL's 100 kB of source is ~16.6 kB
   over the wire — the number your users actually download. Raw LOC looks large; the shipped
   cost is a fraction of it.
