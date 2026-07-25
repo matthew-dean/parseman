@@ -25,7 +25,7 @@ import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
-import type { LinkablePieces } from '../compiler/codegen.ts'
+import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
@@ -457,6 +457,40 @@ export function transformMacro(
 
   if (macroImports.length === 0) return null
 
+  /*
+   * Module-level `const <name> = (g) => …` factory declarations, so a `rules()` call
+   * can be handed its factory BY NAME instead of inline.
+   *
+   * This is what makes one grammar source compilable twice:
+   *
+   *   const factory = (g) => ({ … })
+   *   export const grammar    = rules({ trivia: rw }, factory)
+   *   export const cstGrammar = rules({ trivia: rw, hostMode: 'cst' }, factory)
+   *
+   * Without it, `rules({ hostMode: 'cst' }, factory)` reports "factory isn't statically
+   * evaluable" and falls back to the interpreter, and the ONE thing compile-time host
+   * mode exists to enable — two artifacts from one source — cannot be written down. The
+   * only alternative is duplicating the whole factory at both call sites.
+   *
+   * Deliberately narrow: a top-level function-valued binding, matched by name. Anything
+   * else still takes the existing inline path.
+   */
+  const factoryDecls = new Map<string, Expression>()
+  for (const stmt of body) {
+    const decl = stmt.type === 'ExportNamedDeclaration'
+      ? (stmt as unknown as { declaration?: unknown }).declaration
+      : stmt
+    if ((decl as { type?: string } | undefined)?.type !== 'VariableDeclaration') continue
+    for (const d of (decl as unknown as VariableDeclaration).declarations) {
+      const id = d.id as unknown as { type: string; name?: string }
+      const init = d.init as Expression | null | undefined
+      if (id.type !== 'Identifier' || !id.name || !init) continue
+      if (init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') {
+        factoryDecls.set(id.name, init)
+      }
+    }
+  }
+
   // --- Pass 2: evaluate declarations in source order ---
   // Scope stores enriched ScopeEntry objects so evaluateParserFactory can
   // replay mfSrcs when outer-scope combinators are referenced inside factories.
@@ -507,11 +541,13 @@ export function transformMacro(
     const arg0 = args[0] as AnyNode | undefined
     const arg1 = args[1] as AnyNode | undefined
     const optionsFirst = arg0?.type === 'ObjectExpression'
-    const factoryArg = (optionsFirst ? arg1 : arg0) as Expression | undefined
-    if (!factoryArg) { warn(init.start, `${label}: rules() needs a factory argument`); return null }
-
-    const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
-    if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
+    const factoryArgRaw = (optionsFirst ? arg1 : arg0) as Expression | undefined
+    if (!factoryArgRaw) { warn(init.start, `${label}: rules() needs a factory argument`); return null }
+    /* A factory named by identifier resolves to its module-level declaration, so two
+     * `rules()` call sites can SHARE one factory — see `factoryDecls`. */
+    const factoryArg = factoryArgRaw.type === 'Identifier'
+      ? (factoryDecls.get((factoryArgRaw as unknown as { name: string }).name) ?? factoryArgRaw)
+      : factoryArgRaw
 
     // Grammar-level options object — evaluate `trivia` / `scanSkip` so the compiled
     // map seeds them as the ambient defaults (build-time mirror of rules() tagging
@@ -523,6 +559,23 @@ export function transformMacro(
             p => (p as { key?: { name?: string } }).key?.name === name,
           ) as { value?: Expression } | undefined)?.value
         : undefined
+
+    // Read and VALIDATE hostMode before evaluating the factory, so a mode the macro
+    // cannot honour is reported even when the factory also fails to evaluate. Getting
+    // this order wrong means the one option whose silent loss is a wrong TREE gets
+    // swallowed by an unrelated warning.
+    const hostModeValue = optionValue('hostMode')
+    const gHostMode = hostModeValue?.type === 'Literal'
+      ? (hostModeValue as unknown as { value?: unknown }).value
+      : undefined
+    if (hostModeValue !== undefined && gHostMode !== 'ast' && gHostMode !== 'cst') {
+      warn(init.start, `${label}: rules({ hostMode }) must be the literal 'ast' or 'cst'`)
+      return null
+    }
+
+    const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
+    if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
+
     const triviaValue = optionValue('trivia')
     const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
     const scanSkipValue = optionValue('scanSkip')
@@ -547,6 +600,23 @@ export function transformMacro(
       }
     }
 
+    // STAMP `_meta.grammarHostMode` for exactly the reason the scanSkip stamp above
+    // gives: every macro-side lowering path (`compileRuleMap`, `compileLinkable`,
+    // `materializePiece`) falls back to this field, so no call site can forget to
+    // thread the option — and forgetting THIS one is silent, not slow.
+    //
+    // This is what makes `rules({ hostMode: 'cst' }, factory)` work under the macro,
+    // which is the only way one grammar source can be compiled for both consumers:
+    // two `rules()` call sites over one shared factory become two independent
+    // top-level artifacts, each tree-shakeable, neither paying the other's cost.
+    if (gHostMode === 'cst') {
+      for (const rule of ruleMap.values()) {
+        if (rule && !rule._meta.isTrivia) {
+          ;(rule._meta as { grammarHostMode?: 'ast' | 'cst' }).grammarHostMode = 'cst'
+        }
+      }
+    }
+
     return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}) }
   }
 
@@ -558,11 +628,19 @@ export function transformMacro(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
+  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
     const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), recovery, coverage: grammarCoverage })
-    return { replacement: compiled?.replacement ?? null, ruleMap: evaluated.ruleMap, ...(compiled?.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}), ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}) }
+    return {
+      replacement: compiled?.replacement ?? null,
+      ruleMap: evaluated.ruleMap,
+      hostMode: compiled?.hostMode ?? 'ast',
+      hostBranchElided: compiled?.hostBranchElided ?? false,
+      ...(compiled?.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}),
+      ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}),
+      ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}),
+    }
   }
 
   const isRulesCall = (init: Expression): boolean =>
@@ -685,6 +763,27 @@ export function transformMacro(
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
   const withLeafMarker = (grammarExpr: string): string =>
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.leafComposed'), { value: true, enumerable: false })`
+  /**
+   * Stamp a macro-emitted `rules()` map with the host mode it was lowered for, and with
+   * whether any direct builder's positioned-CST branch was dropped.
+   *
+   * `compose()` output gets this from inside `fusedBody`, but a plain `rules()` grammar
+   * is emitted by `compileRuleMap` and had NO stamp at all — which is not cosmetic. The
+   * drivers read exactly these two symbols to refuse an artifact/host mismatch, so an
+   * unstamped map reads as `{ mode: 'ast', elided: false }` and every check passes
+   * vacuously. That is how a direct builder in a CST grammar reached a positioned-CST
+   * host with nothing raised and the node dropped from the tree.
+   *
+   * Stamped on the rule FUNCTIONS as well as the map, because `run(map.Rule, …)` is
+   * handed the rule and never sees the map. Mirrors `fusedBody`.
+   */
+  const withHostMode = (grammarExpr: string, mode: HostMode, elided: boolean): string =>
+    `/* @__PURE__ */ (m => { for (const k of Object.keys(m)) { `
+      + `Object.defineProperty(m[k], Symbol.for('parseman.fusedHostMode'), { value: ${JSON.stringify(mode)}, enumerable: false }); `
+      + `Object.defineProperty(m[k], Symbol.for('parseman.fusedHostElided'), { value: ${JSON.stringify(elided)}, enumerable: false }) } `
+      + `Object.defineProperty(m, Symbol.for('parseman.fusedHostMode'), { value: ${JSON.stringify(mode)}, enumerable: false }); `
+      + `Object.defineProperty(m, Symbol.for('parseman.fusedHostElided'), { value: ${JSON.stringify(elided)}, enumerable: false }); `
+      + `return m })(${grammarExpr})`
   /** Coverage-only macro output carries the exact IDs emitted in its generated
    * hooks. The metadata is non-enumerable so grammar maps keep their ordinary
    * public shape, and it is absent entirely from production builds. */
@@ -1312,6 +1411,12 @@ export function transformMacro(
             source,
             compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source),
           )
+          // Only a genuinely lowered map is stamped. The SHARED-SHAPE fallback above keeps
+          // its `rules(…)` source, and that value is built by the interpreter at runtime —
+          // which stamps itself, and which never elides a branch.
+          if (compiledRules.replacement !== null) {
+            replacement = withHostMode(replacement, compiledRules.hostMode, compiledRules.hostBranchElided)
+          }
           if (exportPrefix && pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
             // Carry the compact IR when serializable; else the full lowered pieces.
             // Thread the grammar's scanSkip into the IR so a downstream compose of
@@ -1371,6 +1476,11 @@ export function transformMacro(
             ;(scope as Map<string, unknown>).set(varName, combiArray)
             continue
           }
+          // A `rules()` FACTORY is not a combinator and never was one — it is a function
+          // that returns the rule map. It only reaches this branch now that a factory can
+          // be shared by name (see `factoryDecls`), and warning here would tell the author
+          // to "simplify" the one declaration the two-artifact pattern requires.
+          if (factoryDecls.has(varName)) continue
           warn(init.start, `"${varName}" references a parseman macro import but isn't a statically-evaluable combinator`)
           continue
         }

@@ -187,6 +187,36 @@ local/manual helper outside `rules()`.
 Walk it with [`walk` / `createVisitor`](#walking-the-tree), and turn its trivia into a
 `before`/`after` lookup with [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
+### When the grammar has its OWN builders {#host-mode}
+
+The "host set or host unset" switch above is a genuine per-parse choice for **structural**
+nodes — that is the `node(parser)` contract and it is unchanged.
+
+A node with its own `build` callback is different. The callback owns the result, so the
+artifact has to be told at COMPILE time which consumer it is for:
+
+```ts
+const factory = (g) => ({ /* … the whole grammar, written once … */ })
+
+export const grammar    = rules({ trivia: rw }, factory)                    // eval AST
+export const cstGrammar = rules({ trivia: rw, hostMode: 'cst' }, factory)   // positioned CST
+```
+
+One source, two compilations — and each bundle tree-shakes away the artifact it does not
+import, so the eval path carries no CST capture and the tooling path carries no eval
+builders. The same option exists on [`compile`](../reference/api#compile) and
+[`compose`](../reference/api#compose).
+
+Why not decide per parse? `hostMode` does not just pick which builder runs; it decides
+what every node captures (children, raw children, trivia log, fields, state). A runtime
+switch would keep all of that live on both paths, so an eval parse would pay for CST
+capture it never reads.
+
+Getting it wrong is an error, not a degraded tree: driving an `'ast'` artifact with a
+positioned-CST host throws, naming the fix. Without that check the builder's own object
+travels into the tree as a non-CST child, a CST child filter drops it, and the node simply
+vanishes from an otherwise successful parse.
+
 ## Unwrapping and collapsing wrapper rules
 
 Layered grammars accumulate "wrapper" rules that exist only for structure — an expression

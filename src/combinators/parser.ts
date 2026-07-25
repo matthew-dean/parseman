@@ -1,4 +1,5 @@
 import type { Combinator } from '../types.ts'
+import type { HostMode } from '../compiler/codegen.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 
@@ -54,6 +55,31 @@ export type RulesOptions = {
    * and inherited everywhere, mirroring `trivia`. `null`/absent = none.
    */
   scanSkip?: Combinator<unknown>[] | null
+  /**
+   * Compile-time host mode for this grammar, same meaning as `compile(g, { hostMode })`
+   * and `compose(items, { hostMode })`: `'ast'` (default) emits each direct builder's
+   * own result and NO positioned-CST branch; `'cst'` builds every node through the
+   * `ctx.build` host and captures unconditionally.
+   *
+   * Declaring it HERE is what lets ONE grammar source serve both consumers under the
+   * macro, which cannot take a compile option any other way:
+   *
+   * ```ts
+   * const factory = (g: any) => ({ … })
+   * export const grammar    = rules({ trivia: rw }, factory)
+   * export const cstGrammar = rules({ trivia: rw, hostMode: 'cst' }, factory)
+   * ```
+   *
+   * Two call sites over one factory, so the macro emits two independent top-level
+   * artifacts and each bundle tree-shakes away the one it does not import. Neither
+   * pays the other's cost — which is the whole reason host mode is a compile-time
+   * decision rather than a per-node runtime read.
+   *
+   * The INTERPRETER routes dynamically off the host and does not need this; it is
+   * still recorded, so `run()` can refuse a mismatched host once per parse instead of
+   * quietly producing the wrong tree shape.
+   */
+  hostMode?: HostMode
 }
 
 // Options-first, mirroring `parser({ opts }, combinator)` — set once on the grammar
@@ -129,6 +155,17 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
     for (const key of Object.keys(definitions)) {
       const rule = (cache as Record<string, Combinator<unknown>>)[key]
       if (rule && !rule._meta.isTrivia) (rule._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip = options.scanSkip
+    }
+  }
+
+  // Grammar-level host mode, mirroring the two stamps above. Only `'cst'` is recorded:
+  // `'ast'` is the default everywhere, so stamping it would put a field on every rule of
+  // every grammar to say "unchanged". Trivia rules are skipped for the same reason as
+  // above — they build no nodes, so the mode is meaningless on them.
+  if (options?.hostMode === 'cst') {
+    for (const key of Object.keys(definitions)) {
+      const rule = (cache as Record<string, Combinator<unknown>>)[key]
+      if (rule && !rule._meta.isTrivia) (rule._meta as { grammarHostMode?: HostMode }).grammarHostMode = 'cst'
     }
   }
 

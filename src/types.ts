@@ -367,6 +367,13 @@ export type ParserMeta = {
    * `scanTo`/`balanced` with no explicit `skip` consults it ambiently.
    */
   grammarScanSkip?: Combinator<unknown>[] | undefined
+  /**
+   * Grammar-level host mode declared via `rules({ hostMode }, factory)`. Stamped on
+   * every rule, mirroring the two above. The macro reads it statically to choose what
+   * to EMIT; the interpreter routes dynamically and only reads it so `run()` can refuse
+   * a mismatched host once per parse. `'ast'` is the default and is never stamped.
+   */
+  grammarHostMode?: 'ast' | 'cst' | undefined
 }
 
 /** A first set is either "any" (unknown/unbounded) or a list of char code ranges */

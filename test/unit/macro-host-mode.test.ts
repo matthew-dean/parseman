@@ -1,0 +1,121 @@
+/**
+ * ONE grammar source, TWO compilations — under the MACRO.
+ *
+ * 0.40.0 made host mode a compile-time decision, which is what keeps the eval-AST
+ * artifact free of per-node host probing. But the macro plugin never passed `hostMode`,
+ * so a macro-built grammar was ALWAYS `'ast'` — and the macro is how a real grammar
+ * package is built. The feature was unreachable exactly where it matters.
+ *
+ * These tests pin the two halves of the fix that are easy to lose:
+ *   1. two `rules()` call sites over one SHARED factory produce two different artifacts;
+ *   2. every macro-emitted map is STAMPED, because the drivers' host check reads that
+ *      stamp and an unstamped map passes every check vacuously.
+ */
+import { describe, it, expect } from 'vitest'
+import { transformMacro } from '../../src/plugin/index.ts'
+
+const FM = Symbol.for('parseman.fusedHostMode')
+const FE = Symbol.for('parseman.fusedHostElided')
+
+/** A positioned-CST host, marking itself as one. */
+const cstHost = Object.assign(
+  (type: string, _c: unknown, _f: unknown, span: unknown, raw: ReadonlyArray<unknown>) => ({
+    _tag: 'node',
+    type,
+    span,
+    children: raw.filter(x => !!x && typeof x === 'object' && ((x as { _tag?: string })._tag === 'node' || (x as { _tag?: string })._tag === 'leaf')),
+  }),
+  { _parsemanCstOutput: true as const },
+)
+
+/** Transform macro source and evaluate the result, returning its exports. */
+async function build(code: string): Promise<{ mod: Record<string, any>; warnings: string[] }> {
+  const out = transformMacro(code, 'test.ts', new Set(['parseman']))
+  if (!out) throw new Error('macro did not transform')
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(out.code).toString('base64')}`)
+  return { mod, warnings: out.warnings ?? [] }
+}
+
+const SHARED_FACTORY = `
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+const factory = (g) => ({ Doc: node(regex(/a+/), _c => ({ mine: true })) })
+export const astGrammar = rules(factory)
+export const cstGrammar = rules({ hostMode: 'cst' }, factory)
+`.trim()
+
+describe('macro host mode — two artifacts from one source', () => {
+  it('compiles a SHARED factory at two call sites, each in its own mode', async () => {
+    const { mod, warnings } = await build(SHARED_FACTORY)
+    expect(warnings).toEqual([])
+
+    // The 'ast' artifact: the direct builder owns its result.
+    expect(mod.astGrammar.Doc('aaa', 0, {}).value).toEqual({ mine: true })
+
+    // The 'cst' artifact: the SAME rule, built through the positioned-CST host.
+    const cst = mod.cstGrammar.Doc('aaa', 0, { build: cstHost }).value
+    expect(cst).toMatchObject({ _tag: 'node', type: 'Doc' })
+    expect(cst.children).toHaveLength(1)
+  })
+
+  it('stamps BOTH the map and each rule function, so either can be checked', async () => {
+    const { mod } = await build(SHARED_FACTORY)
+    expect(mod.astGrammar[FM]).toBe('ast')
+    expect(mod.cstGrammar[FM]).toBe('cst')
+    // `run(map.Rule, …)` is handed the rule and never sees the map.
+    expect(mod.astGrammar.Doc[FM]).toBe('ast')
+    expect(mod.cstGrammar.Doc[FM]).toBe('cst')
+  })
+
+  it('records that the "ast" artifact DROPPED a direct builder\'s CST branch', async () => {
+    const { mod } = await build(SHARED_FACTORY)
+    // This is the fact the driver check turns on: 'ast' + a CST host is only an error
+    // when a branch was actually elided.
+    expect(mod.astGrammar[FE]).toBe(true)
+    expect(mod.cstGrammar[FE]).toBe(false)
+  })
+
+  it('leaves an all-STRUCTURAL grammar usable with either host', async () => {
+    const { mod } = await build(`
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = rules((g) => ({ Doc: node(regex(/a+/)) }))
+`.trim())
+    // No direct builder means no branch to drop — the long-standing node(parser)
+    // contract, which this feature must not disturb.
+    expect(mod.g[FE]).toBe(false)
+    expect(mod.g[FM]).toBe('ast')
+    expect(mod.g.Doc('aaa', 0, { build: cstHost }).value).toMatchObject({ _tag: 'node', type: 'Doc' })
+  })
+
+  it('rejects a non-literal hostMode rather than silently ignoring it', async () => {
+    const out = transformMacro(`
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+const mode = 'cst'
+export const g = rules({ hostMode: mode }, (g) => ({ Doc: node(regex(/a+/)) }))
+`.trim(), 'test.ts', new Set(['parseman']))
+    expect(out!.warnings!.join('\n')).toContain("must be the literal 'ast' or 'cst'")
+  })
+})
+
+describe('macro host mode — the driver refuses a mismatch', () => {
+  it('throws when an "ast" macro artifact is driven with a positioned-CST host', async () => {
+    const { mod } = await build(SHARED_FACTORY)
+    const { run } = await import('../../src/index.ts')
+    // Before the stamp existed this returned ok:true with the node MISSING from the
+    // tree — the direct builder's object is not a CST child, so the host's filter
+    // dropped it. That is the silent wrong output this whole mechanism prevents.
+    expect(() => run(mod.astGrammar.Doc, 'aaa', { build: cstHost })).toThrow(/compiled for host mode "ast"/)
+  })
+
+  it('throws when a "cst" macro artifact is driven with NO host', async () => {
+    const { mod } = await build(SHARED_FACTORY)
+    const { run } = await import('../../src/index.ts')
+    expect(() => run(mod.cstGrammar.Doc, 'aaa')).toThrow(/compiled for host mode "cst"/)
+  })
+
+  it('accepts each artifact with its own host', async () => {
+    const { mod } = await build(SHARED_FACTORY)
+    const { run } = await import('../../src/index.ts')
+    expect(run(mod.astGrammar.Doc, 'aaa').value).toEqual({ mine: true })
+    expect(run(mod.cstGrammar.Doc, 'aaa', { build: cstHost }).value).toMatchObject({ _tag: 'node' })
+  })
+})

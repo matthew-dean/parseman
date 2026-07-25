@@ -5,6 +5,78 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.37.0 — 2026-07-25
 
+- **Compile-time host mode reaches the MACRO — `rules({ hostMode })`, and two artifacts
+  from one grammar source.** 0.40.0 made host mode a compile-time decision, which is what
+  keeps the eval-AST artifact free of per-node host probing. But `src/plugin/index.ts`
+  called `compileRuleMap` / `compileLinkable` with `{ trivia, scanSkip, recovery, coverage }`
+  and never passed `hostMode` — so a macro-built grammar was **always `'ast'`**, and the
+  macro is how a real grammar package is built. The feature was unreachable exactly where
+  it was needed: "ONE grammar source, two compilations" could not be written down.
+
+  ```ts
+  const factory = (g) => ({ … })                              // written ONCE
+  export const grammar    = rules({ trivia: rw }, factory)
+  export const cstGrammar = rules({ trivia: rw, hostMode: 'cst' }, factory)
+  ```
+
+  Two call sites over one shared factory. The macro emits two independent top-level
+  artifacts, so each bundle **tree-shakes away the one it does not import** — the compiler
+  ships the AST image, the language service ships the CST image, and neither pays the
+  other's cost. Each image is compiled exactly as it is today; nothing became switchable
+  at runtime, which is the point.
+
+  A single runtime-switchable artifact was the alternative and is deliberately NOT what
+  this does. `hostMode` does not merely select a build expression: `cstOut` drives
+  `capturesTrivia` / `clonesState` / `capturesChildren` / `capturesRaw` / `capturesFields`.
+  Deciding per parse means every collector stays live on both paths, so the AST parse pays
+  CST capture — the per-token `cstTriviaLog` push that is ~28% of a real jess parse, and
+  the cost 0.40.0 existed to remove.
+
+  `hostMode` is threaded the way `trivia` and `scanSkip` already are: the plugin stamps
+  `_meta.grammarHostMode`, and all three lowering paths (`compile`, `compileRuleMap`,
+  `compileLinkable`) fall back to that stamp. That is the pattern this file's own comment
+  recommends, because a per-call-site option gets forgotten — and forgetting THIS one is
+  silent, not slow. `compose()` picks the mode up from its pieces with no explicit option.
+
+  Supporting change: a `rules()` factory may now be given **by name**
+  (`rules(opts, factory)` where `factory` is a module-level `const`). Without it the shared
+  factory reports "isn't statically evaluable" and falls back to the interpreter, and the
+  only way to write the two-artifact pattern would be to duplicate the whole factory.
+
+- **Fix: a macro-emitted `rules()` map carried NO host-mode stamp, so every driver-side
+  host check passed vacuously.** `fuseRules` (the runtime fuse) stamped
+  `parseman.fusedHostMode` / `fusedHostElided`; `emitFusedSource` (the macro fuse) and
+  `compileRuleMap` did not. `assertHostModeCompatible` reads exactly those symbols, so an
+  unstamped artifact reads as `{ mode: 'ast', elided: false }` and passes every check.
+
+  This is not theoretical. Found in jess: giving a CST grammar's `Declaration` rule a
+  direct builder made `parseCssCst('.a { color: red }')` return a Ruleset with **no
+  Declaration child** and `ok: true` — the builder's own object is not a CST child, so the
+  host's filter dropped it. 0.40.0's guard was supposed to make that loud and could not
+  see it. Both fuses now stamp from inside `fusedBody`, so they cannot label the same
+  artifact differently, and the mixed-mode rejection moved there too — `emitFusedSource`
+  had never had it.
+
+- **Fix: `run()` never checked host-mode compatibility.** The assertion ran from
+  `parseDoc` and from a compiled parser's `parseWithContext`, but `run()` is the entry a
+  one-shot CST parse uses. It is handed a RULE, not the registry, so it had nothing to
+  read the mode off; the fused rule functions now carry the stamp themselves (set once at
+  fuse time, before any call, so no per-parse cost).
+
+  The INTERPRETER passes `elided: false` and that is not a shortcut: it has no compile
+  step, re-decides the host route per parse, and has never dropped a branch. Only its
+  `'cst'`-without-a-host half can be wrong.
+
+- **Internal.** `HostMode`, the two fused-map symbols and `assertHostModeCompatible` moved
+  to `src/cst/host-mode.ts`. The DRIVER has to enforce this contract and cannot import the
+  compiler to reach it — and a second copy in the driver is how the two engines drift. The
+  module is import-free by design, so the `parseman/run` closure grows by exactly one leaf
+  module and still builds no grammars; `test/unit/run-entry-closure.test.ts` records that
+  as a deliberate decision rather than absorbing it.
+
+  Perf: no rule body changed — the added statements run at fuse/module-init time only.
+  `perf:guard:grammars` ok on all 7 cases; `perf:workloads` ok on all 5, breached 0/3.
+
 - **`parseman/oracle` — an AST-identity oracle for grammar refactors.** Digest a
   corpus through your parse entry points before and after a change and compare:
   identical digests mean the cleanup is output-neutral, different ones mean it is a

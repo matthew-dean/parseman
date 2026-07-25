@@ -1,5 +1,8 @@
 import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
 import { REC } from '../recovery/scan.ts'
+/* `cst/host-mode.ts` is import-free by design, so this keeps the `parseman/run`
+ * closure minimal — see test/unit/run-entry-closure.test.ts. */
+import { assertHostModeCompatible, FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 
 /**
  * Run a compiled/interpreted grammar entry against an input and collect the raw
@@ -148,6 +151,30 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   // override locally.
   const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
   const grammarScanSkip = typeof entry !== 'function' ? entry._meta.grammarScanSkip : undefined
+  /*
+   * Refuse an artifact/host mismatch ONCE per parse, exactly as `parseDoc` and a
+   * compiled parser's `parseWithContext` already do. `run()` is handed a RULE, not the
+   * registry, so the fused rule functions carry the stamp themselves (see `fusedBody`);
+   * an interpreter entry carries it on `_meta`. Neither is on a hot path — this runs
+   * once, before `invoke`.
+   *
+   * Without this, `run()` was the one driver that could silently produce the wrong tree
+   * shape: an 'ast' artifact driven with a positioned-CST host returns its own AST
+   * objects where the caller asked for a CST, and a CST child filter then drops them
+   * and the node simply vanishes.
+   *
+   * The INTERPRETER passes `elided: false` unconditionally, and that is not a shortcut:
+   * it has no compile step, re-decides the host route per parse, and so has never
+   * dropped a branch. Only its `'cst'`-without-a-host half can be wrong.
+   */
+  const stamped = entry as Partial<Record<symbol, unknown>>
+  assertHostModeCompatible(
+    typeof entry === 'function'
+      ? ((stamped[FUSED_HOST_MODE] as HostMode | undefined) ?? 'ast')
+      : (entry._meta.grammarHostMode ?? 'ast'),
+    options.build,
+    typeof entry === 'function' && stamped[FUSED_HOST_ELIDED] === true,
+  )
   const ctx: ParseContext = {
     trackLines: false,
     ...(skipGlobalSinks
