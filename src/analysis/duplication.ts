@@ -1762,6 +1762,16 @@ function findStructureLoss(
       for (let j = i + 1; j < arms.length; j++) {
         if (nodeTypes[j] !== type) continue
         const B = fs[j]!
+        // OVER-APPROXIMATION, and the one place this finding can be wrong. A shared
+        // first character is NECESSARY for the earlier arm to shadow the later one,
+        // not sufficient: two arms can both start on `-` and still accept disjoint
+        // languages (`-webkit-x` vs `-5px`), in which case no input reaches both and
+        // nothing is shadowed. Deciding "do these two arms share an input" is
+        // language intersection, which is undecidable for a general CFG, so a
+        // first-set test is the strongest decidable proxy available. The finding is
+        // therefore "these arms overlap on these characters, and IF an input reaches
+        // both then structure is lost" — which is what the suggestion text says, and
+        // why a reader is pointed at the two shapes rather than handed a verdict.
         if (B.kind === 'any' || !intersects(A, B)) continue
         const lost = nested(resolved[j]!)
         if (lost.size === 0) continue

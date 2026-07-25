@@ -102,6 +102,19 @@ Two deliberate limits keep it a signal rather than a lint:
 - **A gated arm is never reported.** `choice({ gate, combinator }, …)` says which
   branch applies when. That is a deliberate split, not a shadow.
 
+And one limit that is not deliberate but unavoidable. Overlap is decided on **first
+sets**, so the finding reads *"these arms overlap on these characters, and if an input
+reaches both then structure is lost"*. A shared leading character is necessary for the
+shadowing, not sufficient: two arms can both start on `-` and still accept disjoint
+languages (`-webkit-x` versus `-5px`), and then nothing is shadowed. Deciding whether
+two arms genuinely share an input is language intersection, which is undecidable for a
+general grammar — a first-set test is the strongest decidable proxy there is. So
+`structure-loss` can over-report, which is why it names both shapes and the characters
+rather than simply asserting a verdict. Under `duplication: 'error'` that means a
+false positive can fail a build; if you hit one, the arms in question accept disjoint
+languages and the honest fix is to say so in an issue, because the analysis cannot
+see it.
+
 This is the ordered, consequential half of `divergentNodes`. That family reports two
 productions building one type and expressly allows *"the variants exist for a parse-order
 reason (a fast path tried first)"*. `structureLoss` is the case where that defence is
