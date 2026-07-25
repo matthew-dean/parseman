@@ -3,6 +3,71 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **Perf: rollback truncations are guarded on a CHANGED length — in both engines.**
+  Assigning `array.length` is not a plain field store: it runs V8's length setter,
+  which must decide whether to trim the backing store, and it costs the same
+  whether or not the value changes. Rollbacks overwhelmingly restore a length that
+  never moved — the speculative branch captured nothing — so the store was pure
+  overhead on the common path. Every rollback now emits/executes
+  `if (sink && sink.length !== mark) sink.length = mark`.
+
+  This is the fix for a **+32% Less parse regression 0.33.0 → 0.34.0**. 0.34.0's
+  `not()` probe-leak fix is correct and stays; what it could not afford was six
+  UNCONDITIONAL length stores on a probe that jess's Less grammar executes ~600
+  times per KB (62,447 executions parsing `benchmark.less`). Measured on that
+  corpus, interleaved in one process, 4 rounds × 3 runs, 8 warmup + 25 timed:
+
+  | build | vs 0.33.0 median |
+  | --- | --- |
+  | 0.34.0 | +32.5% |
+  | 0.34.0, `not()`'s six stores guarded | +4.3% |
+  | 0.34.0, ALL ~3000 rollback sites guarded | **−12.0%** |
+
+  The guard is worth more than the regression it repays, because it applies to
+  every `attempt` / `choice` arm / `many` item / sequence term as well. Against
+  0.32.0, the version jess pins, the guarded 0.34.0 is faster on every corpus:
+  Less `benchmark.less` −3.9%, `bootstrap.css` −18.5%, jess corpus −18.5%, each
+  winning 12/12 interleaved pairs.
+
+  Why it ordered the way it did across dialects: the cost is per-EXECUTION, not
+  per-SITE. `not()` executions per KB — css **20**, jess **121**, less **599** —
+  match the observed regression ordering, while site counts do not (scss has 43
+  `not()` sites and zero in its compiled artifact's hot path).
+
+  Landed in both engines, since they have drifted on exactly this kind of change
+  before: codegen emits the guarded form at all 33 emission sites, and
+  `rollbackCstCapture` / `rollbackTrivia` / `attempt` / `choice` carry the same
+  guard in the interpreter. `test/unit/rollback-store-guard-parity.test.ts` fails
+  the specific engine that loses it.
+
+- **A grammar performance gate — `pnpm perf:guard:grammars`, required on every
+  code PR.** `perf:guard` measures a 47-byte `css/decls` and a 34-byte
+  `css/selector`. It passed on every PR of the 0.34.0 cycle, including the one
+  that made a real downstream Less grammar parse 25% slower. Its trigger ("did
+  parseman's microbenchmarks move?") was not its goal ("did the code parseman
+  emits get slower?").
+
+  The new gate measures a **rollback-density sweep** that lives entirely in this
+  repo — one grammar shape over one ~38 KB input at 0 / 1 / 4 / 16 speculative
+  probes per value term, bracketing the 20 / 121 / 599 `not()`-per-KB measured
+  across the real grammars in that event. It A/Bs against a pinned reference
+  commit of this repo, **interleaved in one process** with per-round rotation, and
+  reports **per case** — median, min AND win rate, never one aggregate. Replaying
+  0.34.0 against 0.33.0 it reads +1.2% / +54.9% / +89.0% / +112.8%: the spread is
+  the finding, because it says the cost is per-execution.
+
+  Thresholds (6% median / 6% min, with 3/4 of paired samples lost) come from a
+  measured same-build-vs-itself floor of 1.9% median / 1.0% min. The ~3%
+  resolution limit and the ~4.4× amplification versus a real grammar are stated in
+  `docs/design/perf-gates.md` rather than implied. `--ref` / `--head-ref` replay a
+  known regression so the gate can be watched going red; a missing reference
+  commit is a hard failure, never a skip.
+
+  No sibling checkout, no network fetch, no setup step: `pnpm install && pnpm
+  perf:guard:grammars`.
+
 ## 0.34.0 — 2026-07-24
 
 - **`peek(combinator)` — the positive lookahead.** PEG's `&X`, the counterpart to

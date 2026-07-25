@@ -780,17 +780,33 @@ function planDisjointDispatch(
 // repeat item, optional, and choice arm — turned into a measurable de-opt
 // (compiled CSS regressed ~2.3×). We gate the whole save/restore on a single
 // boolean: when no buffer is live the marks are 0 and the restore is one test.
+//
+// Every restore below is emitted as `if (sink && sink.length !== mark) sink.length = mark`
+// — never the bare `sink.length = mark`. Setting an array's `length` is NOT a
+// plain field store: it goes through V8's length setter, which must consider
+// trimming the backing store, and it costs the same whether or not the value
+// changes. Rollbacks overwhelmingly restore a length that never moved (the
+// speculative branch captured nothing), so the compare is the common path and
+// the setter call is the rare one. `sink.length !== mark` is an in-object load
+// plus an integer compare.
+//
+// This is not a micro-tuning nicety. `not()`'s rollback (0.34.0, correct and
+// required) put six unconditional length stores on a probe that jess's Less
+// grammar executes ~600 times per KB: +32% parse time on benchmark.less.
+// Guarding the stores took that to +4%, and applying the same guard at ALL
+// ~3000 rollback sites made 0.34.0 12% FASTER than 0.33.0 on the same corpus.
+// Keep the guard when adding a rollback site.
 /** Body of a capture restore — resets each live buffer to its saved length. */
 function captureRestoreBody(mL: string, mR: string, mTl: string, mLg: string | null, mF: string | null = null): string {
-  const fieldRestore = mF ? `; if (_ctx._fields) _ctx._fields.length = ${mF}` : ''
-  const base = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${mL}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${mR}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${mTl}${fieldRestore}`
+  const fieldRestore = mF ? `; if (_ctx._fields && _ctx._fields.length !== ${mF}) _ctx._fields.length = ${mF}` : ''
+  const base = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${mL}) _ctx._cstLeaves.length = ${mL}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${mR}) _ctx._cstRawChildren.length = ${mR}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${mTl}) _ctx._cstTriviaLog.length = ${mTl}${fieldRestore}`
   // `_triviaLog` is the standalone diagnostic trivia log. The interpreter only
   // rewinds it on a failed *choice* arm (choice.ts), NOT on a failed sequence
   // term — a sequence returns the failure with earlier trivia still logged. To
   // stay byte-for-byte at parity with the interpreter, only rewind it where the
   // interpreter does (choice arms); sequence-term rollbacks (emitFallible) leave
   // it intact.
-  return mLg ? `${base}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${mLg}` : base
+  return mLg ? `${base}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${mLg}) _ctx._triviaLog.length = ${mLg}` : base
 }
 
 /**
@@ -1294,7 +1310,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; }`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; }`,
         )
         valueVars.push(r.valueVar)
         continue
@@ -2086,7 +2102,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
         `${ind(ctx)}const ${npV} = ${capFn}(input, ${curV}, _ctx, 1)`,
       )
       itemPos = npV
-      rollback = `if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; `
+      rollback = `if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; `
     } else {
       const trivFn = ensureTriviaFn(ctx)
       const npV = v(ctx, '_np')
@@ -2183,7 +2199,7 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
   const log = v(ctx, '_atg')
   const fields = v(ctx, '_atf')
   const errors = v(ctx, '_ate')
-  const rollback = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${log}; if (_ctx._fields) _ctx._fields.length = ${fields}; if (_ctx._errors) _ctx._errors.length = ${errors}`
+  const rollback = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${leaves}) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${raw}) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${trivia}) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${log}) _ctx._triviaLog.length = ${log}; if (_ctx._fields && _ctx._fields.length !== ${fields}) _ctx._fields.length = ${fields}; if (_ctx._errors && _ctx._errors.length !== ${errors}) _ctx._errors.length = ${errors}`
   const traceId = ctx.coverage?.plan.attempts.get(p)
   const traceRollback = traceId === undefined ? '' : ` _ctx._grammarTrace?.write({ id: ${JSON.stringify(traceId)}, phase: 'rollback', offset: ${pos} });`
   // First-set fail-fast before the transaction marks. `attempt(inner)` reads six
@@ -2282,7 +2298,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         `${ind(ctx)}const ${tl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
         `${ind(ctx)}const ${lg} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
       ],
-      rb: `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${lg}; `,
+      rb: `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${lv}) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${rw}) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${lg}) _ctx._triviaLog.length = ${lg}; `,
     }
   }
 
@@ -2338,7 +2354,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         `${ind(ctx)}const ${spV} = ${capFn}(input, ${curV}, _ctx, 1)`,
       )
       sepAtPos = spV
-      const rollbackToSep = `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${markLog}; `
+      const rollbackToSep = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; `
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}break }`)
 
@@ -2388,7 +2404,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
     stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) break`)
     const nextRb = markLv
-      ? `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markRw}; `
+      ? `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markRw}) _ctx._cstRawChildren.length = ${markRw}; `
       : ''
     const post = postSepMarks()
     stmts.push(...post.decl)
@@ -2542,7 +2558,7 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
       ] : []),
       ...stmts,
       ...(sinksLive ? [
-        `${ind(ctx)}if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${log}; if (_ctx._fields) _ctx._fields.length = ${fields}; if (_ctx._errors) _ctx._errors.length = ${errors}`,
+        `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${leaves}) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${raw}) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${log}) _ctx._triviaLog.length = ${log}; if (_ctx._fields && _ctx._fields.length !== ${fields}) _ctx._fields.length = ${fields}; if (_ctx._errors && _ctx._errors.length !== ${errors}) _ctx._errors.length = ${errors}`,
       ] : []),
       ...emitIfFail(ctx, okVar, failBody(ctx, label, pos)),
     ],
