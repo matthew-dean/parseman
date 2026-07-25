@@ -23,7 +23,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   the codegen, so the two cannot drift here.
 
 - **Internal.** `perf:guard:grammars` gains an `expected/*` sweep, so derived-set
-  width is an axis the gate can see.
+  width is an axis the gate can see. Every PR now has to carry its own version bump
+  and a changelog section naming it — `scripts/check-changelog.mjs`, CI job
+  `release-gate`, design in `docs/design/release-gates.md`.
 
 ## 0.35.0 — 2026-07-24
 
