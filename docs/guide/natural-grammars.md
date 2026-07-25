@@ -22,7 +22,48 @@ const value = choice(Dimension, Number, Color, Keyword)
 That's [PEG ordered choice](https://en.wikipedia.org/wiki/Parsing_expression_grammar).
 There is no separate grammar-ambiguity phase, no conflict to resolve, and you do not have
 to left-factor two arms that happen to start the same way to keep the grammar *correct*.
-If two arms can both match at a position, the earlier one wins.
+If two arms can both match at a position, the earlier one wins. When the arms
+*don't* overlap, Parséman notices and speeds things up (next section) — but that's an
+optimization layered on top of semantics you already control by ordering, not something
+you have to arrange by hand.
+
+::: warning The one deliberate divergence: longest *literal* wins
+Between two **bare literal** arms where one is a prefix of the other, Parséman takes
+the **longer** one regardless of order:
+
+```ts
+// [verify]
+import { choice, literal, parse } from 'parseman'
+
+// Pure PEG would take the earlier arm, '<', and leave '=' unconsumed:
+parse(choice(literal('<'), literal('<=')), '<=').value
+// → '<='
+```
+
+This is a considered choice, not an accident: an operator table or keyword set written
+in the obvious order almost never means "match `<` and strand the `=`", and the
+alternative is making every author hand-sort their literals by length. Two mechanisms
+implement it — `literalsLongestFirst` reorders when *every* arm is a literal, and
+`autoNot` rejects a shorter literal arm when a later arm is a longer literal that also
+matches — so it holds on both the `literalsLongestFirst` and `firstMatch` paths, in
+both engines.
+
+It applies to **literals only**. The moment the longer alternative is anything else —
+a sequence, a node, a rule reference — strict ordered choice is back:
+
+```ts
+// [verify]
+import { choice, literal, sequence, parse } from 'parseman'
+
+// The longer alternative is a sequence, not a bare literal → order wins:
+parse(choice(literal('<'), sequence(literal('<='), literal('x'))), '<=x').value
+// → '<'
+```
+
+So if you want the shorter arm to win, order alone won't do it; make the arms
+non-literal, or don't list the shorter one first. Everything else on this page is
+strict PEG ordering.
+:::
 
 What you avoid: computing FIRST/FOLLOW sets yourself, and rewriting `choice(a·x, a·y)`
 into `a·(x | y)` just to satisfy the tool. Write the arms; order them; done.
@@ -99,15 +140,50 @@ range chain.
 **When it kicks in, and the honest limits:**
 
 - The arms must have **pairwise-disjoint first sets** — no two arms can start with the
-  same character. If they overlap, the choice stays on ordered `firstMatch` (still
-  correct, just not O(1)); see the fail-fast and shared-prefix sections for how the
-  overlap case is made cheap anyway.
+  same character. If they overlap, the choice stays on ordered `firstMatch`. Read that
+  as "not O(1)", **not** as "back to speculative scanning" — see
+  [what ordered actually costs](#what-ordered-actually-costs) below.
 - No arm may match the empty string. A nullable arm matches at *any* position, so
   first-char dispatch can't represent it; such a choice stays on `firstMatch`.
 - The **`switch` jump-table** form is used only when the arms key off a few discrete code
   points (roughly ≥3 and ≤48 cases total — `SWITCH_MIN_CASES`/`SWITCH_MAX_CASES`/
   `SWITCH_RANGE_LIMIT` in `codegen.ts`). A wide char-class arm like `[a-z]+` would explode
   into dozens of `case` labels, so those keep the `if/else` range-comparison form instead.
+
+## What ordered actually costs
+
+"Falls back to ordered `firstMatch`" sounds like a cliff, and it reads like one if you
+picture the arms being *tried* one after another. That is not what happens. An ordered
+choice still gives every arm a **single-character guard**, computed from that arm's own
+first set — the same test disjoint dispatch would have used, just asked per arm instead
+of resolved by one jump. So an arm whose first set excludes the current character is
+skipped on one integer comparison, without entering the arm, allocating anything, or
+taking a rollback mark. And once an arm succeeds, the remaining arms are not even
+guard-tested.
+
+Measured over the four [jess](https://github.com/jesscss/jess) dialect grammars — 427
+`choice` sites, 363 of them ordered — an ordered choice costs on average **3.8–5.4 guard
+comparisons** per visit and enters **1.02–1.47 arms**. Doubling every guard chain in the
+compiled output (an upper bound on what *any* smarter dispatch could give back) is not
+measurable above run-to-run noise on a 156 KB stylesheet. Ordered dispatch is a
+constant-factor difference, not a category change.
+
+::: tip Then what *is* the cliff?
+An arm whose first set is `any` — it can't be guarded, so it is entered speculatively at
+every position. That is the cost worth chasing, and it is exactly what the
+[gating diagnostic](./first-char-gating) reports. In the jess grammars 36% of
+the arms in ordered choices are in this category, and they dominate everything the
+dispatch strategy does. A leading `not(...)`, a nullable prefix, a `scanTo`, or a rule
+reference that resolves to `any` are the usual causes — fix those and the choice gets
+faster whether or not it ever reaches O(1) dispatch.
+:::
+
+Prefix-trie dispatch — grouping arms that collide on character 1 and discriminating on
+character 2 — was measured against these grammars and **deliberately not built**. The
+collisions it would resolve are already rare (in 179 of the 333 plain-`firstMatch` sites
+the worst character reaches at most 2 guarded arms, and in 87 of those it reaches exactly
+one), the comparisons it would save are already below the noise floor, and it cannot
+touch the `any`-arm cost that actually dominates.
 
 ## Fail-fast without hand-optimizing
 
@@ -216,6 +292,20 @@ choice(node('A', parser({ trivia }, sequence(regex(/::?/), a)), rA),        // n
        node('B', parser({ trivia }, sequence(regex(/::?/), b)), rB))
 choice(transform(sequence(literal('--'), a), fA), sequence(literal('--'), b))
 ```
+
+**It is all-or-nothing across the whole choice.** `detectSharedPrefix` requires *every*
+arm to be a (wrapped) sequence leading with the *same* concrete literal/regex. One arm
+that leads with something else — or isn't a sequence at all — and the entire choice
+falls back to `firstMatch`; there is no per-group factoring of the arms that *do*
+share. That keeps the strategy easy to reason about and byte-identical, at the cost of
+missing partial groups. It is rarer than it sounds: across the four jess dialect
+grammars only 7 of the 333 plain-`firstMatch` sites contain a shared-prefix subgroup at
+all, and the largest such subgroup is 3 arms.
+
+Note also that `detectStrategy` picks exactly **one** strategy per choice. A choice
+never gets, say, `sharedPrefix` factoring *and* a separate optimization for an unrelated
+group of arms — the first shape that matches, in the order `greedyClassify` →
+`literalsLongestFirst` → `sharedPrefix`, is the one that runs.
 
 **How it stays byte-identical.** Only the *scan* is shared. Each arm is otherwise emitted
 by the ordinary `firstMatch` machinery, unchanged — it enters its own `node()` frame,
