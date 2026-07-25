@@ -8,6 +8,7 @@
  */
 import type { Combinator, ParserDef } from '../types.ts'
 import { RULE_ORDER } from '../combinators/parser.ts'
+import { recoverComposedRules } from '../compiler/linker.ts'
 
 // ---------------------------------------------------------------------------
 // Spec node tree
@@ -336,6 +337,25 @@ function toRecord(grammar: GrammarInput): Record<string, Combinator<unknown>> {
   if (isCombinator(grammar)) {
     const name = ruleNameOf(grammar) ?? 'start'
     return { [name]: grammar }
+  }
+  // A `compose()` result is a map of FUSED rule FUNCTIONS, not combinators — walking
+  // it read `_def` off a function and threw a bare `TypeError: Cannot read properties
+  // of undefined (reading 'tag')`. The combinator graph is recoverable from the
+  // carried IR, so recover it rather than fail. (Same recovery the gating analysis
+  // uses — see `recoverComposedRules`.)
+  const recovered = recoverComposedRules(grammar as Record<string, unknown>)
+  if (recovered !== undefined) {
+    if (recovered.opaque.length > 0) {
+      // Fail LOUDLY and specifically. A partial spec is worse than none: it renders a
+      // grammar that looks complete while silently omitting whole artifacts.
+      const named = recovered.opaque.map(o => `"${o.ns}"${o.ruleNames.length > 0 ? ` (${o.ruleNames.length} rule(s))` : ''}`).join(', ')
+      throw new TypeError(
+        `parseman spec: this composed grammar includes opaque precompiled artifact(s) ${named} that carry compiled rule `
+        + 'functions rather than re-lowerable IR. Their rules cannot be rendered, and emitting a spec without them would '
+        + 'silently understate the grammar. Recompile the contributing grammar(s) so they carry IR.',
+      )
+    }
+    return Object.fromEntries(recovered.rules)
   }
   return grammar
 }
