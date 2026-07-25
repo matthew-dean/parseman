@@ -167,6 +167,45 @@ jobs:
           path: coverage/
           retention-days: 14
 
+  # Grammar perf gate — did the code parseman EMITS get slower?
+  #
+  # `perf:guard` (inside the matrix) measures 47-byte microbenchmarks. It passed on
+  # every PR of the 0.34.0 cycle while a real Less grammar got 25% slower. This job
+  # measures a rollback-density sweep instead — see docs/design/perf-gates.md.
+  #
+  # It runs on EVERY code PR rather than nightly or at release, because it costs
+  # ~10 s locally and well under a minute here. Speed is a correctness property: a
+  # gate too slow to run gets skipped, and then everything gets skipped with it.
+  #
+  # It is a REQUIRED check by way of the `test` aggregate below, not merely a
+  # report. A perf gate nobody has to satisfy is a dashboard.
+  #
+  # Shared-runner noise is handled by the measurement, not by a loose threshold:
+  # both sides are interleaved in ONE process with per-round rotation, so there is
+  # no cross-machine term, and a case fails only when it also loses 3/4 of its
+  # paired samples.
+  grammar-perf:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history: the gate builds the reference side from a sha pinned in
+          # bench/grammar-density/config.json, and a shallow clone cannot see it.
+          # A missing reference is a hard failure, never a skip.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Rollback-density perf gate vs the pinned reference commit
+        run: pnpm perf:guard:grammars
+
   # The single required status check. The ruleset on `main` requires a context
   # named exactly `test`; a matrix job publishes one context PER LEG
   # (`test (node lts/*)`, …) and none named `test`, so making the matrix the
@@ -178,7 +217,7 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: [changes, test-matrix, docs-verify]
+    needs: [changes, test-matrix, docs-verify, grammar-perf]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -187,8 +226,9 @@ jobs:
           set -euo pipefail
           matrix='${{ needs.test-matrix.result }}'
           docs='${{ needs.docs-verify.result }}'
+          perf='${{ needs.grammar-perf.result }}'
           code='${{ needs.changes.outputs.code }}'
-          echo "test-matrix=$matrix  docs-verify=$docs  code-changed=$code"
+          echo "test-matrix=$matrix  docs-verify=$docs  grammar-perf=$perf  code-changed=$code"
 
           # docs-verify gates every change — it is never skipped.
           [ "$docs" = "success" ] || { echo "::error::docs:verify did not pass"; exit 1; }
@@ -203,4 +243,17 @@ jobs:
               [ "$code" = "false" ] || { echo "::error::matrix skipped but code changed"; exit 1; }
               echo "documentation-only change — Node matrix intentionally skipped" ;;
             *) echo "::error::test-matrix result: $matrix"; exit 1 ;;
+          esac
+
+          # Same rule for the grammar perf gate: skipped is acceptable ONLY for a
+          # documentation-only PR. Anything else — failure, cancellation, or a skip
+          # from some other cause — fails the required check rather than sliding
+          # through as "not failed". That is what makes this gate block rather than
+          # report.
+          case "$perf" in
+            success) ;;
+            skipped)
+              [ "$code" = "false" ] || { echo "::error::grammar-perf skipped but code changed"; exit 1; }
+              echo "documentation-only change — grammar perf gate intentionally skipped" ;;
+            *) echo "::error::grammar-perf result: $perf"; exit 1 ;;
           esac

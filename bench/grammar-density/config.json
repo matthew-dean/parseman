@@ -1,0 +1,28 @@
+{
+  "_comment": "Configuration for `pnpm perf:guard:grammars` — see bench/grammar-perf-guard.ts and docs/design/perf-gates.md.",
+
+  "referenceSha": "7f1ddcd",
+  "_referenceNote": "The A/B reference: v0.33.0, the last release measured good on the rollback paths. Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the released sha at every release, in the release PR, with the numbers read in that PR.",
+
+  "input": {
+    "rules": 200,
+    "_note": "~38 KB. Large enough that a single parse of even the cheapest case is not dominated by call overhead, small enough that the whole gate finishes in well under a minute."
+  },
+
+  "measurement": {
+    "targetSampleMs": 4,
+    "warmup": 8,
+    "timed": 15,
+    "rounds": 4,
+    "runs": 3,
+    "_note": "Repetitions per timed sample are CALIBRATED at startup so every case's sample lands near targetSampleMs. Without that the sparse cases run in ~0.5 ms, where timer granularity and a single GC pause dominate — self-vs-self noise measured 3.5% there versus 0.4% on the dense case. The calibration runs on the REFERENCE side only and the same repetition count is applied to both sides, so it can never advantage one."
+  },
+
+  "thresholds": {
+    "medianPct": 6,
+    "minPct": 6,
+    "winRateCeiling": 0.25,
+    "_note": "MEASURED noise floor, not guessed. The same build compared against ITSELF through this harness moved the per-case median by at most 1.9% and the min by at most 1.0% across the four cases (4 rounds x 3 runs, calibrated samples, interleaved with per-round rotation). 6% is >3x the worst of those. A case FAILS only when it breaches the median OR min threshold AND loses at least 3/4 of its interleaved pairs — win rate alone is lopsided even at noise-level deltas, while a real regression loses every pair (the 0.34.0 rollback regression won 0/12 on all three guarded cases).",
+    "_resolutionLimit": "Per-case regressions below ~3% are below this harness's resolution and will not be caught. What the gate buys is AMPLIFICATION, not resolution: the same 0.34.0 change that cost jess's Less grammar +25.5% costs `rollback/dense` +113%, roughly 4.4x, because the synthetic case is almost nothing but speculative probes. Read a reading here as about a quarter of itself on a real grammar — a 6% breach is roughly a 1.5% real-grammar regression."
+  }
+}
