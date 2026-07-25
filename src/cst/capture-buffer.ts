@@ -152,22 +152,30 @@ export function rollbackCstCapture(ctx: ParseContext, mark: CstRollbackMark): vo
   // Truncate the flat recovery-error sink alongside the CST, so a rolled-back
   // speculative branch leaves no ghost error (see saveCstMark). Guarded on a
   // present sink + a defined mark (rollbackTrivia forwards the same field).
-  if (ctx._errors && mark.errors !== undefined) ctx._errors.length = mark.errors
+  //
+  // Each truncation is guarded on `length !== mark`, mirroring the compiled
+  // engine (codegen.ts `captureRestoreBody`). Assigning `array.length` runs V8's
+  // length setter — a backing-store trim decision — and costs the same when the
+  // value is unchanged, which is the overwhelmingly common case here: a
+  // speculative branch that captured nothing still pays for every store. The
+  // compare is an in-object load. Both engines must carry the guard or the
+  // interpreted path silently keeps the cost the compiled path shed.
+  if (ctx._errors && mark.errors !== undefined && ctx._errors.length !== mark.errors) ctx._errors.length = mark.errors
   const b = ctx._cstBuf
   if (b) {
     rollbackBufList(b, 'raw', 'rawSingle', mark.raw)
     rollbackBufList(b, 'ch', 'single', mark.leaves)
     if (b.tl) {
       if (mark.tlog === 0) b.tl = undefined
-      else b.tl.length = mark.tlog
+      else if (b.tl.length !== mark.tlog) b.tl.length = mark.tlog
     }
-    if (ctx._fields) ctx._fields.length = mark.fields
+    if (ctx._fields && ctx._fields.length !== mark.fields) ctx._fields.length = mark.fields
     return
   }
-  if (ctx._cstRawChildren) ctx._cstRawChildren.length = mark.raw
-  if (ctx._cstTriviaLog) ctx._cstTriviaLog.length = mark.tlog
-  if (ctx._cstLeaves) ctx._cstLeaves.length = mark.leaves
-  if (ctx._fields) ctx._fields.length = mark.fields
+  if (ctx._cstRawChildren && ctx._cstRawChildren.length !== mark.raw) ctx._cstRawChildren.length = mark.raw
+  if (ctx._cstTriviaLog && ctx._cstTriviaLog.length !== mark.tlog) ctx._cstTriviaLog.length = mark.tlog
+  if (ctx._cstLeaves && ctx._cstLeaves.length !== mark.leaves) ctx._cstLeaves.length = mark.leaves
+  if (ctx._fields && ctx._fields.length !== mark.fields) ctx._fields.length = mark.fields
 }
 
 export function pushCstTriviaEntry(
