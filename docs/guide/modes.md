@@ -4,11 +4,11 @@ The central idea in Parséman is that one grammar runs three ways, with identica
 results. You write combinators once; the mode only changes *when and how* they're
 turned into running code.
 
-| Mode | Setup | Runtime cost | Where it fits |
+| Mode | Setup | Per-parse work | Where it fits |
 | --- | --- | --- | --- |
-| **Interpreter** | None | Walks the combinator tree per parse | Tests, REPLs, dynamic grammars, anywhere a bundler isn't around |
-| **Macro build** | Bundler plugin + `with { type: 'macro' }` | **Zero** — compiled to inline JS at build time | Production apps built with Vite/Rollup/webpack |
-| **`compile()`** | Call `compile()` | One-time JIT, then flat JS | Grammars assembled dynamically at runtime |
+| **Interpreter** | None | Walks the combinator tree | Tests, REPLs, dynamic grammars, anywhere a bundler isn't around |
+| **Macro build** | Bundler plugin + `with { type: 'macro' }` — compiles at build time | Runs flat inline JS | Production apps built with Vite/Rollup/webpack |
+| **`compile()`** | Call `compile()` — one-time JIT at runtime | Runs flat generated JS | Grammars assembled dynamically at runtime |
 
 Most production use lands on one of the first two; `compile()` is there for dynamic
 grammars that need it.

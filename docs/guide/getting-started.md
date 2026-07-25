@@ -96,7 +96,7 @@ reusable `.parse(input)` method — wrap your root combinator with
 - **[The three modes](./modes)** — interpreter vs. macro vs. `compile()`, and when
   each matters.
 - **[Combinators](./combinators)** — the full building-block vocabulary.
-- **[Macro mode](./macro-mode)** — add the plugin and compile away the runtime cost.
+- **[Macro mode](./macro-mode)** — add the plugin and move compilation to build time.
 - **[Error recovery](./error-recovery)** — keep parsing (and reporting) on broken
   input.
 - **[Editor / language-server integration](./editor-integration)** — recovery,

@@ -50,7 +50,7 @@ Parséman appears as up to three bars:
 | --- | --- |
 | **interpreted** | The default combinator interpreter — zero setup |
 | **compiled** | `compile()` at runtime — costs **75–650 µs** once, depending on grammar size |
-| **macro** | Build-time compilation via the bundler plugin — zero runtime cost |
+| **macro** | Build-time compilation via the bundler plugin — zero runtime setup |
 
 Most production use lands on **interpreted** (tests, REPLs) or **macro** (shipped apps).
 See [The three modes](./modes). Speed isn't free: `compile()` and **macro** expand a
