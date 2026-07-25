@@ -86,6 +86,7 @@ export default defineConfig({
             { text: 'Grammar spec generation', link: '/guide/spec-generation' },
             { text: 'Grammar observability', link: '/guide/grammar-observability' },
             { text: 'Grammar duplication', link: '/guide/grammar-duplication' },
+            { text: 'The identity oracle', link: '/guide/identity-oracle' },
           ],
         },
       ],

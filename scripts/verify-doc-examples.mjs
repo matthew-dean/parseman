@@ -177,8 +177,14 @@ for (const file of DOCS) {
         return c ? `__emit(${checks.indexOf(c)}, () => (${c.expr}))` : l
       })
       .join('\n')
+    // `parseman` and every SUBPATH entry (`parseman/spec`, `parseman/oracle`, …)
+    // are redirected at the TS source. The subpath case is not cosmetic: without
+    // it, a doc example importing a secondary entry point resolves to the
+    // published package or to nothing, so the entries that most need a checked
+    // example are the ones that cannot have one.
     const imports = lines.filter(l => l.trim().startsWith('import ')).join('\n')
-      .replace(/from ['"]parseman['"]/g, `from ${JSON.stringify(SRC_ENTRY)}`)
+      .replace(/from ['"]parseman(\/[\w-]+)?['"]/g, (_m, sub) =>
+        `from ${JSON.stringify(sub ? `../../src${sub}/index.ts` : SRC_ENTRY)}`)
     // The child renders each value ITSELF and emits the finished display string,
     // so the only thing crossing the process boundary is text. Passing raw values
     // through JSON first is what let `undefined`/symbols collapse to `null` and

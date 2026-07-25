@@ -466,6 +466,41 @@ Return the notation-agnostic model (`{ productions: { name, expr }[] }`) that `t
 `toRailroadHtml` consume — walk it to emit a custom notation. `renderEBNF` / `renderExpr` are
 also exported for rendering a model or a single `SpecNode`.
 
+## Identity oracle
+
+Prove a grammar refactor did not move the output. Imported from the `parseman/oracle`
+subpath; Node-only. See [The identity oracle](../guide/identity-oracle).
+
+### `digestCorpus(surfaces, corpus, options?)`
+
+Run every surface (`{ name, parse }`) over every corpus entry (`{ id, source }`) and return an
+`IdentityReport`: a per-surface `aggregate` hash, a `threw` count, and a `perEntry` fingerprint
+map. Thrown errors and returned failures are hashed alongside successes. Options: `projectError`
+(shape a thrown value before hashing — use it when messages carry absolute paths or timestamps)
+and `determinismSample` (how many entries to re-parse to prove the grammar is deterministic;
+`0` disables). Throws on a nondeterministic surface, a duplicate surface name, or a duplicate
+corpus id.
+
+### `compareReports(before, after)`
+
+Compare two reports. Verdict is `identical` (output-neutral), `moved` (not a refactor), or
+`incomparable` — the last when the reports came from different harness versions, which is
+never reported as a pass. Also returns per-surface `moved` entry ids and any corpus entries
+gained or lost. `formatComparison(comparison, opts?)` renders it for a log.
+
+### `loadCorpus(options)`
+
+Walk `roots` under `base` collecting files matching `extensions`, returning entries whose ids
+are POSIX paths **relative to `base`**. Throws on a root that does not resolve unless
+`allowMissingRoots` is set, in which case they come back in `missingRoots`. `maxBytes` skips
+oversized files into `skippedLarge`.
+
+### `canonicalize(value)` · `HARNESS_DIGEST`
+
+`canonicalize` is the key-sorted, cycle-safe token projection the digests are taken over —
+diff two of them to see *what* moved. `HARNESS_DIGEST` is the harness's own behavioural
+fingerprint, stamped into every report.
+
 ## Composing grammars
 
 Fuse grammars into one parser, with override, à la carte selection, and no base-grammar
