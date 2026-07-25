@@ -6,7 +6,7 @@
  * composite body is never entered — matching the compiled path — while staying
  * byte-identical (the parity suites elsewhere prove interpreter ≡ compiled output).
  */
-import { many, oneOrMore, node, attempt, sequence, literal, field, withCtx, skip, expect as required, parse, compile, type Combinator, type ParseContext } from '../../src/index.ts'
+import { many, oneOrMore, node, attempt, sequence, literal, optional, not, field, withCtx, skip, expect as required, parse, compile, type Combinator, type ParseContext } from '../../src/index.ts'
 import { deriveExpected } from '../../src/combinators/expect.ts'
 import { describe, expect, it } from 'vitest'
 
@@ -106,5 +106,50 @@ describe('first-set-miss failure is wrapper-complete (guard == normal start-fail
     expect(deriveExpected(withCtx({}, literal('@')))).toEqual(['"@"'])
     expect(deriveExpected(skip(literal('@'), literal('!')))).toEqual(['"@"'])
     expect(deriveExpected(required(literal('@')))).toEqual(['"@"'])
+  })
+})
+
+/**
+ * A NULLABLE leading term means term 0 is not the only one that can fail first.
+ * `deriveExpected` used to stop at term 0 regardless, so `sequence(optional('@'), 'x')`
+ * guarded behind `attempt`/`node` reported `"@"` on input 'z' — a token the parse never
+ * requires — while the same body parsed directly reports `"x"`. Both engines read the
+ * one `deriveExpected`, so both were identically wrong; these assert both, so a fix
+ * reaching only one of them fails here.
+ */
+describe('first-set-miss failure derives through a nullable prefix', () => {
+  const body = sequence(optional(literal('@')), literal('x'))
+
+  it('deriveExpected unions the nullable prefix, then stops at the required term', () => {
+    // '@' is reachable (the optional may match) and so is 'x' (it may not) — but the
+    // union STOPS at the required 'x'; a term after it can never fail first.
+    expect(deriveExpected(body)).toEqual(['"@"', '"x"'])
+    expect(deriveExpected(sequence(optional(literal('@')), literal('x'), literal('y')))).toEqual(['"@"', '"x"'])
+    // Non-nullable term 0 is unchanged — term 1 is not reachable as a first failure.
+    expect(deriveExpected(sequence(literal('@'), literal('x')))).toEqual(['"@"'])
+    // A leading `not(…)` is zero-width: nullable, but contributes no expected token.
+    expect(deriveExpected(sequence(not(literal('!')), literal('x')))).toEqual(['"x"'])
+  })
+
+  it('attempt & node no longer name a token the parse does not require — both engines', () => {
+    // Baseline: parsed directly the sequence skips the optional and fails wanting 'x'.
+    const normal = parse(body, 'z', { trackLines: false } as ParseContext)
+    expect(normal.ok).toBe(false)
+    expect((normal as { expected: string[] }).expected).toEqual(['"x"'])
+
+    for (const guarded of [attempt(body), node('N', body, (c: unknown) => c)]) {
+      const ri = parse(guarded, 'z', { trackLines: false } as ParseContext)
+      expect(ri.ok).toBe(false)
+      const gi = (ri as { expected: string[] }).expected
+      // The static guard cannot know the optional would be skipped, so it names the
+      // whole candidate set — but it must CONTAIN the token the run actually wanted,
+      // which is exactly what stopping at term 0 got wrong.
+      expect(gi).toEqual(['"@"', '"x"'])
+      expect(gi).toContain('"x"')
+
+      const rc = compile(guarded).parse('z', 0) as { ok: boolean; expected?: string[] }
+      expect(rc.ok).toBe(false)
+      expect(rc.expected).toEqual(gi)
+    }
   })
 })
