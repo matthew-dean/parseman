@@ -357,21 +357,37 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
 /** Fuse at RUNTIME (via `new Function`) — used by `compose()` when not compiled
  * by the macro (like `compile()`). The macro path uses `emitFusedSource` instead. */
 export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
+  const mode = pieces.find(p => p.hostMode !== undefined && p.hostMode !== 'ast')?.hostMode ?? 'ast'
+  const elided = pieces.filter(p => p.hostBranchElided === true)
+  // A MIXED fusion is the one way the per-parse host check could be defeated. Carried IR
+  // re-lowers under this compose's mode, but a piece that arrived ALREADY COMPILED
+  // (`linkable()` / `pick()` / a macro artifact) keeps the mode it was built with — so a
+  // 'cst' fusion can contain an 'ast' piece whose direct builders dropped their host
+  // branch. The map would be labeled 'cst', `assertHostModeCompatible` would pass, and
+  // that piece would hand AST-shaped objects into a positioned CST: precisely the silent
+  // wrong output this whole mechanism exists to prevent. Reject it at fuse time, where
+  // both facts are still in hand.
+  if (mode === 'cst' && elided.length > 0) {
+    throw new Error(
+      `compose/fuseRules: cannot build a positioned-CST artifact from pieces that were `
+        + `compiled for host mode "ast" — ${elided.map(p => `"${p.ns}"`).join(', ')} `
+        + `${elided.length === 1 ? 'dropped its' : 'dropped their'} direct builders' CST branch, `
+        + `so ${elided.length === 1 ? 'it' : 'they'} would return AST objects inside the CST. `
+        + `An already-compiled piece keeps the mode it was built with; only pieces carried as `
+        + `IR are re-lowered by this compose. Re-compile ${elided.length === 1 ? 'it' : 'them'} `
+        + `with hostMode: 'cst', or pass the source grammar so it can be re-lowered.`,
+    )
+  }
   const { body, env } = fusedBody(pieces)
   // eslint-disable-next-line no-new-func
   const map = new Function('_env', body)(env) as Record<string, FusedRule>
   // Record what the fused artifact was lowered for, so the drivers (`run`, `parseDoc`)
-  // can refuse a mismatched host once per parse instead of the artifact silently
-  // handing back the wrong tree shape. Pieces are fused together, so a mixed fusion is
-  // itself a mistake — report the first non-default mode and let the check catch it.
-  const mode = pieces.find(p => p.hostMode !== undefined && p.hostMode !== 'ast')?.hostMode ?? 'ast'
+  // can refuse a mismatched host once per parse instead of the artifact silently handing
+  // back the wrong tree shape.
   Object.defineProperty(map, FUSED_HOST_MODE, { value: mode, enumerable: false })
   // Only pieces that actually dropped a direct builder's host branch make the fused map
   // incompatible with a CST host; an all-structural fusion is fine either way.
-  Object.defineProperty(map, FUSED_HOST_ELIDED, {
-    value: pieces.some(p => p.hostBranchElided === true),
-    enumerable: false,
-  })
+  Object.defineProperty(map, FUSED_HOST_ELIDED, { value: elided.length > 0, enumerable: false })
   return map
 }
 
