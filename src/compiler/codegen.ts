@@ -11,7 +11,7 @@ import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combi
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
-import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel } from '../analysis/gating.ts'
+import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel, type Unanalysable } from '../analysis/gating.ts'
 
 /**
  * A rule's LEADING first-set as a fuse-resolvable recipe.
@@ -3893,13 +3893,32 @@ function runGatingDiagnosticRules(
 export function runFusedGatingDiagnostic(
   getRuleMaps: () => ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
   opt?: GatingOption,
+  /** Carried pieces that could NOT be re-lowered to combinators (opaque precompiled
+   *  artifacts). Threaded by BOTH engines — the runtime linker and the macro plugin —
+   *  so neither can report a clean fuse over a grammar it only partly saw. */
+  getOpaque?: () => ReadonlyArray<{ ns: string; ruleNames: string[] }>,
 ): GatingReport | undefined {
   if (resolveGatingLevel(opt) === 'off') return undefined
   const ruleMaps = getRuleMaps()
+  const opaque = getOpaque?.() ?? []
+  const opaqueFindings: Unanalysable[] = opaque.map(o => ({
+    rule: o.ruleNames.length > 0 ? o.ruleNames.join(', ') : `<artifact ${o.ns}>`,
+    kind: 'opaque-artifact' as const,
+    reason: `precompiled artifact "${o.ns}" carries compiled rule functions, not re-lowerable IR — `
+      + 'its choices were not examined at this fuse.',
+  }))
   // Only a SHARED SHAPE can have deferred a verdict, and only a deferred verdict is
   // reportable here — so a fuse of hole-free grammars has nothing to say and is not
   // walked at all. (This is also the no-double-reporting guarantee's fast path.)
-  if (!ruleMaps.some(map => hasExternalRuleRef(map))) return undefined
+  // An opaque piece is the exception: there IS something to say, namely that part of
+  // this fuse was never seen. Silence there is the bug this guard used to cause.
+  if (!ruleMaps.some(map => hasExternalRuleRef(map))) {
+    if (opaqueFindings.length === 0) return undefined
+    return reportGating(opt, () => ({
+      totalChoices: 0, gated: 0, recoverable: 0, unanalysable: opaqueFindings,
+      ungated: [], accepted: [], deferred: [], acceptedUnused: [], choices: [], antiPatterns: [],
+    }))
+  }
   // Override-winner order (later wins), matching the linker. An accessed-but-undefined
   // `g.X` leaks into a `rules()` cache as an unresolved-lazy entry — that is a
   // REFERENCE, not a definition, and must never shadow the artifact that defines X.
@@ -3912,7 +3931,12 @@ export function runFusedGatingDiagnostic(
   return reportGating(opt, o => {
     const deferredHere = new Set(analyzeGatingRules(entries, o).deferred.map(c => c.id))
     const fused = analyzeGatingRules(entries, { ...o, resolveRef: name => winners.get(name) })
-    return { ...fused, ungated: fused.ungated.filter(c => deferredHere.has(c.id)), antiPatterns: [] }
+    return {
+      ...fused,
+      ungated: fused.ungated.filter(c => deferredHere.has(c.id)),
+      antiPatterns: [],
+      unanalysable: [...fused.unanalysable, ...opaqueFindings],
+    }
   })
 }
 
@@ -3929,10 +3953,26 @@ function reportGating(
     : undefined
   let report: GatingReport
   try { report = analyze(analyzeOpts) }
-  catch { return undefined }
+  catch (e) {
+    // NEVER `return undefined` here. This catch used to swallow the error, which made
+    // a CRASHED analysis look exactly like a clean grammar — the diagnostic ships
+    // default-on, so every consumer whose grammar it could not walk was told nothing
+    // and reasonably concluded there was nothing to tell. A failed analysis is now
+    // itself a finding: it warns, and it fails the `'error'` gate.
+    const reason = e instanceof Error ? `${e.name}: ${e.message}` : String(e)
+    const failed: GatingReport = {
+      totalChoices: 0, gated: 0, recoverable: 0,
+      unanalysable: [{ rule: '<whole grammar>', kind: 'not-a-combinator', reason: `gating analysis threw — ${reason}` }],
+      ungated: [], accepted: [], deferred: [], acceptedUnused: [], choices: [], antiPatterns: [],
+    }
+    const failLines = formatGatingWarnings(failed)
+    if (level === 'error') throw new Error(`parseman: gating analysis FAILED (no verdict available)\n${failLines.join('\n')}`)
+    for (const l of failLines) console.warn(l)
+    return failed
+  }
   const lines = formatGatingWarnings(report)
   if (lines.length > 0) {
-    if (level === 'error') throw new Error(`parseman: ${report.ungated.length} ungated hot choice(s) / ${report.antiPatterns.length} anti-pattern(s)\n${lines.join('\n')}`)
+    if (level === 'error') throw new Error(`parseman: ${report.ungated.length} ungated hot choice(s) / ${report.antiPatterns.length} anti-pattern(s) / ${report.unanalysable.length} unanalysable rule(s)\n${lines.join('\n')}`)
     for (const l of lines) console.warn(l)
   }
   return report

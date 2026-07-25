@@ -26,7 +26,7 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
-import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
+import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -809,14 +809,32 @@ export function transformMacro(
    * fuse-time gating diagnostic. Opaque baked pieces have no combinator graph and are
    * skipped: a hole one of them would bind stays unresolved, so its choice stays
    * DEFERRED (silent) instead of being warned about on a guess. */
-  const carriedRuleMaps = (items: CarriedItem[]): Array<Array<[string, Combinator<unknown>]>> => {
-    const out: Array<Array<[string, Combinator<unknown>]>> = []
-    const add = (it: CarriedItem): void => { if (isIR(it)) out.push(evalRuleMapIR(it.ir)) }
+  /** The carried list's re-lowerable rule maps PLUS the opaque pieces skipped along the
+   * way. The macro engine keeps its
+   * own carried-item representation, so it needs its own detailed variant — but it
+   * must report the SAME opaque findings the runtime linker does, or the two engines
+   * disagree about how much of a fuse was actually analysed. `parity` test:
+   * test/unit/gating-composed-grammar.test.ts. */
+  const carriedRuleMapsDetailed = (
+    items: CarriedItem[],
+  ): { maps: Array<Array<[string, Combinator<unknown>]>>; opaque: Array<{ ns: string; ruleNames: string[] }> } => {
+    const maps: Array<Array<[string, Combinator<unknown>]>> = []
+    const opaque: Array<{ ns: string; ruleNames: string[] }> = []
+    const add = (it: CarriedItem): void => {
+      if (isIR(it)) { maps.push(evalRuleMapIR(it.ir)); return }
+      // `ruleFns` is a Map — see the note on the runtime linker's twin. `Object.keys`
+      // on it silently yields [], anonymising every opaque piece.
+      const o = it as { ns?: string; ruleFns?: Map<string, string> }
+      opaque.push({
+        ns: o.ns ?? '<unknown>',
+        ruleNames: o.ruleFns instanceof Map ? [...o.ruleFns.keys()] : [],
+      })
+    }
     for (const it of items) {
       if (isSpread(it)) for (const p of importedPieces(it.__spreadLocal) ?? []) add(p as CarriedItem)
       else add(it)
     }
-    return out
+    return { maps, opaque }
   }
 
   /** Materialize the exact combinator identities that will be lowered for a
@@ -1017,7 +1035,13 @@ export function transformMacro(
     }
     // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
     // only site that can answer whether the choices it leads actually gate.
-    runFusedGatingDiagnostic(() => carriedRuleMaps(carried))
+    // ONE hydration shared by both thunks — see `once` in the linker.
+    const detailed = once(() => carriedRuleMapsDetailed(carried))
+    runFusedGatingDiagnostic(
+      () => detailed().maps,
+      undefined,
+      () => detailed().opaque,
+    )
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
     const pieces = materializeCarried(carried, composing)
@@ -1085,7 +1109,12 @@ export function transformMacro(
       const localNs = nsFor(`composeLeaf${init.start}`)
       // The local leaf map is the LAST (winning) contributor, and is usually the one
       // that binds the imported shapes' holes — so it must be part of the fused view.
-      runFusedGatingDiagnostic(() => [...carriedRuleMaps(carried), [...localRules] as Array<[string, Combinator<unknown>]>])
+      const detailedLeaf = once(() => carriedRuleMapsDetailed(carried))
+      runFusedGatingDiagnostic(
+        () => [...detailedLeaf().maps, [...localRules] as Array<[string, Combinator<unknown>]>],
+        undefined,
+        () => detailedLeaf().opaque,
+      )
       const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
       if (!plainLocalPiece) {
         warn(init.start, 'composeLeaf(): local rules could not be statically compiled')

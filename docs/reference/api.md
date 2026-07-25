@@ -574,6 +574,30 @@ arm is an unresolved NAMED cross-artifact hole (`g.Value` in a
 `compose()`d. See
 [Shared shapes and the fuse](../guide/first-char-gating#shared-shapes-the-verdict-belongs-to-the-fuse).
 
+`report.unanalysable` lists rules the walk could NOT introspect. **A non-empty
+`unanalysable` means the report is PARTIAL**: `ungated` being empty does not then mean
+the grammar is clean. `formatGatingWarnings` always emits a banner for it, and the
+`'error'` gate fails on it. Treating "no findings" as a pass without checking this field
+is the mistake the field exists to prevent.
+
+### `analyzeGrammarGating(grammar, opts?)` → `GatingReport`
+
+Analyze a WHOLE grammar — a `rules()` map **or** a `compose()` result.
+
+`analyzeGating` / `analyzeGatingRules` walk combinators. A `compose()` result contains
+none: fusion lowers every rule to an executable function, so its map holds rule
+FUNCTIONS and walking it yields nothing. `analyzeGrammarGating` recovers the combinator
+graph from the composition's carried IR first, then analyzes the override-winner map
+with cross-artifact holes bound — so a choice that is `deferred` when you analyze the
+contributing `rules()` map alone resolves here to a real `yes` / `recoverable` / `no`.
+
+Use it when you want a composed grammar's gating verdict programmatically. (`compose()`
+already runs the fuse-time diagnostic and warns; this is the API for asking directly.)
+
+A contributing piece that is an opaque precompiled artifact — one carrying compiled rule
+functions rather than re-lowerable IR — cannot be introspected. Its rules are reported
+in `report.unanalysable` rather than silently omitted.
+
 ## IDE support
 
 ### `completionsAt(target, input, offset, options?)`

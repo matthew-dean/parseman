@@ -3,6 +3,48 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.38.0 — 2026-07-25
+
+- **Fix: a gating analysis that crashed reported the same as one that passed.**
+  `reportGating` wrapped the analysis in `try { … } catch { return undefined }`. A
+  throw therefore produced no report, no warning, and a passing `'error'` gate —
+  byte-identical to `gating: 'off'` and to a genuinely clean grammar. The diagnostic
+  ships default-on, so anyone whose grammar it could not walk was told nothing and
+  reasonably concluded there was nothing to tell.
+
+  Something did make it throw. `compose()` returns a map of FUSED rule functions:
+  fusion lowers each rule to executable code, so the returned map carries no `_def`
+  combinator graph. Walking one read `_def` off a function and threw
+  `TypeError: Cannot read properties of undefined (reading 'tag')` — on every rule.
+  Reproduced on 0.32.0 (the version jess pins) and unchanged on `main`.
+
+  Three things change:
+
+  - `GatingReport` gains `unanalysable: Unanalysable[]`. The walk now RECORDS a value
+    it cannot introspect instead of throwing, and `formatGatingWarnings` emits a
+    "report is PARTIAL" banner for it unconditionally — including when there are no
+    other findings, which is exactly the case that used to look clean. `'error'`
+    fails on it. Silence is no longer reachable: an empty `ungated` over an
+    unanalysable grammar now says so.
+  - New `analyzeGrammarGating(grammar, opts?)` accepts a `rules()` map **or** a
+    `compose()` result, recovering the combinator graph from the composition's
+    carried IR. This is not cosmetic: analyzing a contributing `rules()` map alone
+    reports a cross-artifact choice as `deferred`, because the shape site cannot
+    answer it — only the fused view binds the hole and returns a real verdict. It
+    also sees the union of base + delta rules, which no single `rules()` map does.
+  - The same defect existed in `parseman/spec`: `toEBNF` / `toRailroadSvg` on a
+    composed grammar threw the identical bare `TypeError`. Both now share ONE
+    recovery helper (`recoverComposedRules`), so a future fix cannot land on one
+    walker and miss the other. An opaque precompiled artifact makes the spec path
+    throw a specific, actionable error rather than silently rendering a grammar that
+    omits whole artifacts.
+
+  Both engines thread opaque carried pieces into the fuse-time diagnostic — the
+  runtime linker via `carriedRuleMapsDetailed`, and the macro plugin via its own
+  copy over its private carried-item representation — with a parity test, since
+  these are separate implementations and this repo has shipped one-engine fixes
+  before.
+
 ## 0.36.0 — 2026-07-24
 
 - **A broad, realistic-workload perf gate — `pnpm perf:workloads`.** parseman

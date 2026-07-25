@@ -145,10 +145,36 @@ export type AnalyzeGatingOptions = {
   resolveRef?: RefResolver
 }
 
+/**
+ * A rule the walk could NOT introspect. Its choices were never examined, so no
+ * verdict about it — clean or otherwise — is available.
+ *
+ * This exists because the alternative is silence. A `compose()` result is a map of
+ * FUSED rule functions with no `_def` combinator graph; walking one used to throw a
+ * bare `TypeError: Cannot read properties of undefined (reading 'tag')`, and the
+ * default-on diagnostic swallowed that throw and returned `undefined` — a failed
+ * analysis and a clean grammar were indistinguishable. Every unanalysable input is
+ * now counted and named here, and `formatGatingWarnings` always reports it.
+ */
+export type Unanalysable = {
+  /** The rule name (or seed name) whose walk stopped. */
+  rule: string
+  /** Why it could not be walked, in terms the caller can act on. */
+  reason: string
+  kind: 'fused-rule' | 'opaque-artifact' | 'not-a-combinator'
+}
+
 export type GatingReport = {
   totalChoices: number
   gated: number
   recoverable: number
+  /**
+   * Rules the walk could not introspect (see `Unanalysable`). NON-EMPTY MEANS THE
+   * REPORT IS PARTIAL: `totalChoices === 0` with a non-empty `unanalysable` is a
+   * blind walk, not a clean grammar. Callers that treat an empty `ungated` as a pass
+   * MUST also assert this is empty.
+   */
+  unanalysable: Unanalysable[]
   /** Genuinely-ungated choices NOT in the accepted allowlist — warned + gate-failing. */
   ungated: ChoiceGating[]
   /** Ungated choices whose id was in the accepted allowlist — silent, accepted with intent. */
@@ -391,12 +417,41 @@ export function analyzeGatingRules(
 ): GatingReport {
   const raw: { g: Omit<ChoiceGating, 'id' | 'accepted'>; rule: string }[] = []
   const antiPatterns: AntiPattern[] = []
+  const unanalysable: Unanalysable[] = []
+  const seenUnanalysable = new Set<string>()
   const visited = new Set<Combinator<unknown>>()
+
+  const noteUnanalysable = (u: Unanalysable): void => {
+    const key = `${u.rule} ${u.kind}`
+    if (seenUnanalysable.has(key)) return
+    seenUnanalysable.add(key)
+    unanalysable.push(u)
+  }
 
   const visit = (p: Combinator<unknown>, enclosingRule: string): void => {
     if (visited.has(p)) return
     visited.add(p)
-    const d = p._def as ParserDef
+    // A grammar VALUE that carries no combinator descriptor cannot be walked. The
+    // dominant case is a `compose()` result: fusion lowers every rule to an executable
+    // function, discarding the combinator graph. Record it — never throw, and never
+    // let the caller mistake the resulting empty walk for a clean grammar.
+    const def = (p as { _def?: unknown } | null | undefined)?._def
+    if (def === null || typeof def !== 'object') {
+      noteUnanalysable(
+        typeof p === 'function'
+          ? {
+              rule: enclosingRule, kind: 'fused-rule',
+              reason: 'fused rule function — a compose()/fuse result has no combinator graph. '
+                + 'Analyze the composed grammar itself (analyzeGrammarGating) so the carried IR is re-lowered first.',
+            }
+          : {
+              rule: enclosingRule, kind: 'not-a-combinator',
+              reason: `value of type ${p === null ? 'null' : typeof p} is not a combinator and carries no _def descriptor.`,
+            },
+      )
+      return
+    }
+    const d = def as ParserDef
     const rule = ruleNameOf(p) ?? enclosingRule
     if (d.tag === 'choice') {
       raw.push({ g: analyzeChoice(p, d, rule, opts?.resolveRef), rule })
@@ -446,7 +501,10 @@ export function analyzeGatingRules(
   const accepted = choices.filter(c => c.gates === 'no' && c.accepted)
   const deferred = choices.filter(c => c.gates === 'no' && !c.accepted && c.deferred)
   const acceptedUnused = [...accept].filter(id => !usedAccept.has(id))
-  return { totalChoices: choices.length, gated, recoverable, ungated, accepted, deferred, acceptedUnused, choices, antiPatterns }
+  return {
+    totalChoices: choices.length, gated, recoverable, unanalysable,
+    ungated, accepted, deferred, acceptedUnused, choices, antiPatterns,
+  }
 }
 
 // analyzeChoice returns a ChoiceGating WITHOUT id/accepted — analyzeGating assigns
@@ -512,6 +570,17 @@ export type GatingWarnLevel = 'off' | 'warn' | 'error'
  */
 export function formatGatingWarnings(report: GatingReport): string[] {
   const lines: string[] = []
+  // FIRST, and unconditionally: a partial walk must never present as a clean one.
+  // These lines are emitted even when there are no findings at all, because "no
+  // findings" over an unanalysable grammar is precisely the failure this reports.
+  if (report.unanalysable.length > 0) {
+    lines.push(
+      `parseman gating: ${report.unanalysable.length} rule(s) UNANALYSABLE — this report is PARTIAL `
+      + `(${report.totalChoices} choice(s) examined). An empty finding list below does NOT mean the grammar is clean.`,
+    )
+    for (const u of report.unanalysable)
+      lines.push(`  · ${u.rule} [${u.kind}]: ${u.reason}`)
+  }
   for (const c of report.ungated) {
     lines.push(`parseman gating: choice @ ${c.id} is UNGATED [${c.strategy}] — no first-char dispatch; every position speculatively enters doomed arms.`)
     for (const a of c.anyArms)

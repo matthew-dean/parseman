@@ -38,9 +38,14 @@ export type { CompiledParser, LinkablePieces, GatingOption } from './compiler/co
 
 export { analyzeGating, analyzeGatingRules, formatGatingWarnings, firstSetToString } from './analysis/gating.ts'
 export type {
-  GatingReport, ChoiceGating, AnyArm, Overlap, AntiPattern,
+  GatingReport, ChoiceGating, AnyArm, Overlap, AntiPattern, Unanalysable,
   FirstSetCause, GatingWarnLevel, ChoiceStrategyTag, AnalyzeGatingOptions,
 } from './analysis/gating.ts'
+// Analyze a WHOLE grammar, including a `compose()` result — whose fused map holds
+// rule FUNCTIONS, not combinators, and so cannot be walked by `analyzeGatingRules`
+// directly. This is the entry point a composed grammar's author wants.
+export { analyzeGrammarGating } from './analysis/grammar.ts'
+export type { AnalysableGrammar } from './analysis/grammar.ts'
 // `pick()` is deliberately NOT re-exported: build-inlining a `pick()` of an imported
 // grammar can't yet carry that grammar's ambient trivia across the module boundary, so
 // the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)

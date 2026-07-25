@@ -387,6 +387,16 @@ export function emitFusedSource(pieces: LinkablePieces[]): string {
  * itself a `compose([...])` result. */
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
+/** The carried pieces a `compose()`/`composeLeaf()` result holds, or `undefined` when
+ * the value is not a composed grammar. This is what makes a fused grammar analysable:
+ * the pieces are re-lowerable IR even though the fused map itself is only functions. */
+export function composedPiecesOf(
+  grammar: Record<string, unknown>,
+): ReadonlyArray<LinkablePieces | IRPiece> | undefined {
+  const pieces = (grammar as unknown as Record<symbol, unknown>)[COMPOSED_PIECES]
+  return Array.isArray(pieces) ? pieces as ReadonlyArray<LinkablePieces | IRPiece> : undefined
+}
+
 /**
  * A terminal fused grammar may be used to run a parser, but not as an input to
  * another composition. Macro `composeLeaf()` uses this for a local semantic
@@ -417,12 +427,75 @@ function isIRPiece(p: unknown): p is IRPiece {
     && !('ruleFns' in (p as object))
 }
 
+/** Memoize a zero-arg thunk, keeping it LAZY. Used where two diagnostic thunks want
+ * the same carried-IR hydration: the work must not happen when the diagnostic is off,
+ * and must not happen twice when it is on. */
+export function once<T>(fn: () => T): () => T {
+  let done = false
+  let value: T
+  return () => {
+    if (!done) { value = fn(); done = true }
+    return value
+  }
+}
+
 /** The re-lowerable carried pieces' rule maps, in compose order — the input to the
  * fuse-time gating diagnostic. An opaque precompiled artifact contributes no
- * combinator graph, so it is simply skipped: a hole it would have bound stays
- * unresolved and its choice stays deferred (silent), never falsely warned. */
+ * combinator graph, so it is skipped: a hole it would have bound stays unresolved
+ * and its choice stays deferred, never falsely warned.
+ *
+ * Skipping is not the same as having nothing to say. Use `carriedRuleMapsDetailed`
+ * where the skip must be REPORTED — a diagnostic that drops part of the grammar and
+ * then returns a clean result is indistinguishable from one that verified it. */
 export function carriedRuleMaps(carried: ReadonlyArray<LinkablePieces | IRPiece>): Array<Array<[string, Combinator<unknown>]>> {
-  return carried.filter(isIRPiece).map(p => evalRuleMapIR(p.ir))
+  return carriedRuleMapsDetailed(carried).maps
+}
+
+/** `carriedRuleMaps` plus the pieces it could NOT re-lower, named by namespace and
+ * rule count, so a caller can report exactly how much of the grammar went unseen. */
+export function carriedRuleMapsDetailed(
+  carried: ReadonlyArray<LinkablePieces | IRPiece>,
+): { maps: Array<Array<[string, Combinator<unknown>]>>; opaque: Array<{ ns: string; ruleNames: string[] }> } {
+  const maps: Array<Array<[string, Combinator<unknown>]>> = []
+  const opaque: Array<{ ns: string; ruleNames: string[] }> = []
+  for (const p of carried) {
+    if (isIRPiece(p)) { maps.push(evalRuleMapIR(p.ir)); continue }
+    // `ruleFns` is a Map, not a plain object — `Object.keys` on it silently yields []
+    // and every opaque piece would degrade to an anonymous `<artifact _lkN_>`, which is
+    // exactly the "reported, but uselessly" failure this whole change is against.
+    const ruleFns = (p as { ruleFns?: Map<string, string> }).ruleFns
+    opaque.push({ ns: p.ns, ruleNames: ruleFns instanceof Map ? [...ruleFns.keys()] : [] })
+  }
+  return { maps, opaque }
+}
+
+/**
+ * Recover the override-winner COMBINATOR map behind a `compose()` result, plus the
+ * pieces that could not be recovered.
+ *
+ * A fused map holds rule functions, so any consumer that walks a combinator graph
+ * (gating analysis, the spec/EBNF/railroad model) cannot read it directly. The graph
+ * is not lost, though — `compose()` retains re-lowerable IR — so this is the single
+ * shared recovery both consumers use. Sharing it is the point: two copies of this
+ * logic is how one walker gets fixed and the other silently keeps failing.
+ *
+ * Returns `undefined` when `grammar` is not a composed result.
+ */
+export function recoverComposedRules(
+  grammar: Record<string, unknown>,
+): { rules: Map<string, Combinator<unknown>>; opaque: Array<{ ns: string; ruleNames: string[] }> } | undefined {
+  const carried = composedPiecesOf(grammar)
+  if (carried === undefined) return undefined
+  const { maps, opaque } = carriedRuleMapsDetailed(carried)
+  const rules = new Map<string, Combinator<unknown>>()
+  // Later wins, matching the linker's own fuse semantics. An accessed-but-undefined
+  // `g.X` leaks in as an unresolved lazy — a REFERENCE, not a definition — and must
+  // never shadow the artifact that really defines X.
+  for (const map of maps) for (const [name, rule] of map) {
+    if (rule._def.tag === 'lazy') { try { rule._def.thunk() } catch { continue } }
+    rules.set(name, rule)
+  }
+  return { rules, opaque }
 }
 
 function coverageRulesOf(carried: Array<LinkablePieces | IRPiece>): Record<string, Combinator<unknown>> | undefined {
@@ -560,7 +633,16 @@ export function compose(
   const carried = items.flatMap(item => itemCarried(item, used, trivia))
   // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
   // only site that can answer whether the choices it leads actually gate.
-  runFusedGatingDiagnostic(() => carriedRuleMaps(carried))
+  // ONE hydration, shared by both thunks. Re-lowering carried IR runs `evalRuleMapIR`
+  // and `new Function` per piece, and the diagnostic is default-on, so calling
+  // `carriedRuleMapsDetailed` once per thunk did that work twice on every compose.
+  // Still lazy: nothing is hydrated when the gating level is 'off'.
+  const detailed = once(() => carriedRuleMapsDetailed(carried))
+  runFusedGatingDiagnostic(
+    () => detailed().maps,
+    undefined,
+    () => detailed().opaque,
+  )
   const pieces = carried.map(p => materializePiece(p, trivia))
   const map = fuseRules(pieces)
   Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })
