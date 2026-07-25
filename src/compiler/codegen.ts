@@ -2901,13 +2901,17 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
       const decls: string[] = []
       if (directCstV) decls.push(`${i}const ${directCstV} = ${directCstGate}`)
       const gates: string[] = []
+      // `_dcst` LEADS every gate. It is already live, and it is false on the ordinary
+      // eval-AST path (no CST host, no profiling), so each gate short-circuits on one
+      // boolean read instead of re-testing the profiling phase locals. `_dcst` is
+      // `_cap || <cst host>`, so leading with it cannot drop the profiling-capture case.
       if (capTLv) {
         gates.push(capturesTrivia
           ? `${capTLv} = !(${profileRecognizer})`
-          : `${capTLv} = !(${profileRecognizer}) && (${profileCapture} || (${directCstV} && (${directTriviaGate})))`)
+          : `${capTLv} = ${directCstV} && !(${profileRecognizer}) && (${profileCapture} || (${directTriviaGate}))`)
       }
-      if (capSTv) gates.push(`${capSTv} = !(${profileRecognizer} || ${profileCapture}) && ${directCstV} && ${directStateGate}`)
-      if (capFv) gates.push(`${capFv} = !(${profileRecognizer}) && (${profileCapture} || (${directCstV} && ${directFieldsGate}))`)
+      if (capSTv) gates.push(`${capSTv} = ${directCstV} && !(${profileRecognizer} || ${profileCapture}) && ${directStateGate}`)
+      if (capFv) gates.push(`${capFv} = ${directCstV} && !(${profileRecognizer}) && (${profileCapture} || ${directFieldsGate})`)
       if (gates.length > 0) decls.push(`${i}const ${gates.join(', ')}`)
       const allocs = [
         `${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}`,
