@@ -67,6 +67,10 @@ strictly greater than the base's.
 The published surface is:
 
 - anything under `src/**` — it compiles into `dist/`, which is what `files` ships
+- the files that decide what `dist/` *contains* rather than living in it:
+  `scripts/build.mjs`, `tsup.config.ts`, `tsconfig.build.json`. A bundler-config
+  change can move every shipped byte with `src/` sitting still. Named individually,
+  not by exempting `scripts/` wholesale — the rest of that directory is CI machinery
 - the `package.json` fields a consumer receives: `name`, `type`, `main`, `module`,
   `types`, `exports`, `files`, `bin`, `dependencies`, `peerDependencies`,
   `optionalDependencies`, `engines`, `license`

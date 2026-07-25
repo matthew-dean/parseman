@@ -205,6 +205,30 @@ describe('bump gate', () => {
     expect(r.out).toMatch(/package\.json exports/)
   })
 
+  it('REQUIRES a bump when a build input changes', () => {
+    // `scripts/build.mjs` and the bundler config decide what dist/ CONTAINS. They can
+    // change every shipped byte — different externals, a dropped entry — with src/
+    // and package.json sitting still.
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: { 'scripts/build.mjs': 'a\n' } },
+      { changelog: released('0.36.0'), files: { 'scripts/build.mjs': 'b\n' } },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/build input scripts\/build\.mjs/)
+  })
+
+  it('does NOT treat the rest of scripts/ as a build input', () => {
+    // The other half: CI machinery in the same directory reaches no consumer.
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: { 'scripts/coverage-guard.mjs': 'a\n' } },
+      { changelog: released('0.36.0'), files: { 'scripts/coverage-guard.mjs': 'b\n' } },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(true)
+    expect(r.out).toMatch(/no published surface changed/)
+  })
+
   it('REQUIRES a bump when a consumer-executed lifecycle script changes', () => {
     // `postinstall` runs on the machine of whoever installs parseman. Changing what
     // executes at install time is a consumer-visible change with nothing in src/.

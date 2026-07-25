@@ -104,6 +104,19 @@ const CONSUMER_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'pre
 const lifecycleProjection = (pkgJson) =>
   CONSUMER_LIFECYCLE_SCRIPTS.map((k) => `${k}=${pkgJson?.scripts?.[k] ?? ''}`).join('\n')
 
+/**
+ * Files that decide what `dist/` CONTAINS, without being in it. `src/**` is the input
+ * to the build; these are the build. A change to the bundler config or the build
+ * script can change every shipped byte — different externals, a dropped entry point,
+ * a changed target — while `src/` and `package.json` sit still, and a rule that only
+ * watched `src/` would call that "no published surface changed".
+ *
+ * Named individually rather than exempting `scripts/` wholesale: the rest of that
+ * directory (this file, the coverage guard, the doc verifier) is CI machinery that
+ * reaches no consumer.
+ */
+const BUILD_INPUTS = ['scripts/build.mjs', 'tsup.config.ts', 'tsconfig.build.json']
+
 /** Parse `1.2.3` / `v1.2.3-rc.1` into comparable parts, or `null` if it isn't one. */
 const parseVersion = (raw) => {
   const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(raw.trim())
@@ -234,6 +247,7 @@ if (changed.length === 0) {
 }
 
 const srcTouched = changed.filter((f) => f.startsWith('src/'))
+const buildTouched = changed.filter((f) => BUILD_INPUTS.includes(f))
 
 let pkgSurfaceChanged = []
 if (changed.includes('package.json')) {
@@ -251,18 +265,20 @@ if (changed.includes('package.json')) {
   }
 }
 
-const publishedSurfaceChanged = srcTouched.length > 0 || pkgSurfaceChanged.length > 0
+const publishedSurfaceChanged =
+  srcTouched.length > 0 || buildTouched.length > 0 || pkgSurfaceChanged.length > 0
 
 if (!publishedSurfaceChanged) {
   console.log(
-    `✓ no published surface changed (${changed.length} file(s): none under src/, no consumer-facing\n` +
-      '  package.json field) — no version bump required.',
+    `✓ no published surface changed (${changed.length} file(s): nothing under src/, no build\n` +
+      '  input, no consumer-facing package.json field) — no version bump required.',
   )
   process.exit(0)
 }
 
 const why = [
   srcTouched.length > 0 ? `${srcTouched.length} file(s) under src/` : null,
+  buildTouched.length > 0 ? `build input ${buildTouched.join(', ')}` : null,
   pkgSurfaceChanged.length > 0 ? `package.json ${pkgSurfaceChanged.join(', ')}` : null,
 ].filter(Boolean).join(' and ')
 
