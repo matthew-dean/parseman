@@ -5,6 +5,8 @@ import type { Combinator, ParseContext, ParseError, ParseResult, ParserDef, Span
 import type { NodeLike, CSTLeaf, CSTError } from '../cst/types.ts'
 import { relativizeCST, absoluteSpanCST } from '../cst/relative-spans.ts'
 import { REC } from '../recovery/scan.ts'
+import { fusedHostModeOf, fusedHostElidedOf } from '../compiler/linker.ts'
+import { assertHostModeCompatible } from '../compiler/codegen.ts'
 
 /**
  * Build the parse ctx for a (re)parse. In `tolerant` mode the same recovery bundle
@@ -15,7 +17,13 @@ import { REC } from '../recovery/scan.ts'
  * threads the SAME flag, so a probe's tolerance matches the parse it is checking
  * (a mismatch would spuriously diverge and forgo reuse, never miscompare).
  */
-function mkCtx(state: unknown, build: ParseContext['build'], tolerant: boolean): ParseContext {
+function mkCtx(rawState: unknown, build: ParseContext['build'], tolerant: boolean): ParseContext {
+  // A CST node stores `state ?? null`, so "unset" comes back as `null`. Feeding that
+  // null straight back in makes a REPARSE diverge from a fresh parse: the state-clone
+  // guard tests `!== undefined`, and `Object.assign({}, null)` is `{}` — so a reused
+  // subtree carries `state: {}` where a fresh parse carries `state: null`. Normalize the
+  // round-trip back to "unset" at this single seeding site.
+  const state = rawState ?? undefined
   return tolerant
     ? { trackLines: false, state, build, _tolerant: true, _rec: REC, _errors: [] }
     : { trackLines: false, state, build }
@@ -862,6 +870,10 @@ export function parseDoc<N extends NodeLike>(
 ): ParseDoc<N> {
   const entry = registry[rootRule]
   if (!entry) throw new Error(`No rule '${rootRule}' in registry`)
+  // Once per document, not once per node: the fused artifact records the host mode it
+  // was lowered for, so a mismatched driver is an error here rather than a wrong-shaped
+  // tree later. Every reparse this doc performs reuses the same registry and host.
+  assertHostModeCompatible(fusedHostModeOf(registry), opts.build, fusedHostElidedOf(registry))
   const ctx: ParseContext = mkCtx(opts.state, opts.build, !!opts.tolerant)
   const r: ParseResult<N> = asRuleFn(entry)(input, 0, ctx)
   if (r.ok) {

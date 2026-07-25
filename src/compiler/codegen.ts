@@ -221,6 +221,29 @@ type Ctx = {
    * sync sentinel; the machinery is dormant unless the parse is run tolerant.
    */
   recovery?: boolean | undefined
+  /**
+   * Compile-time HOST MODE (opt-in via `compile(g, { hostMode: 'cst' })`), exactly the
+   * shape of the `recovery` gate above.
+   *
+   * A `node()` with its OWN build is re-routed through a positioned-CST `ctx.build`
+   * host when that host marks itself `_parsemanCstOutput` — that is what lets ONE
+   * grammar serve eval-AST and positioned-CST/language-service modes. But `ctx.build`
+   * arrives at PARSE time, so asking "is a CST host installed?" was a per-node property
+   * chain on the hot path of every grammar, even though an eval-AST parse can never
+   * take that branch. Measured, that per-node read is enough to move which large
+   * compiled functions V8 elects to optimize.
+   *
+   * The mode is knowable at compile time, so it is decided there:
+   *   - `'ast'` (default) — direct builders own their result. The `_parsemanCstOutput`
+   *     ternary and the `_dcst` host probe are not emitted at all; capture follows the
+   *     builder's arity alone. Byte-identical to a build with no host machinery.
+   *   - `'cst'` — direct builders always build through the host, and the collectors the
+   *     host reads are captured unconditionally. No per-node probing either way.
+   *
+   * Misuse cannot be silent: driving an `'ast'` artifact with a positioned-CST host
+   * throws (see `assertHostModeCompatible`) rather than producing a thin tree.
+   */
+  hostMode?: HostMode | undefined
   /** Regex declarations hoisted to module scope */
   regexDecls: string[]
   /** Dedup map: "source/flags" → variable name (_re0 etc.) */
@@ -245,6 +268,8 @@ type Ctx = {
   needsEmptyTl?: boolean | undefined
   /** Whether any structural node() arity-gates host capture and needs the `_hostReads` helper. */
   needsHostReads?: boolean | undefined
+  /** Set when a DIRECT builder's positioned-CST branch was omitted (host mode 'ast'). */
+  hostBranchElided?: boolean | undefined
   /** Lazy/ref parsers and trivia helpers: parser identity → generated function name */
   namedParsers: Map<Combinator<unknown>, string>
   /**
@@ -2781,12 +2806,26 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // rest/default param or `arguments` forces full capture, so a spread host never
   // silently loses data. jess hosts can ask for fields with arity 3 while trivia/state stay dead
   // (the cstTriviaLog per-token push dominates — ~28% of a real jess parse).
-  const capturesTrivia = mkType !== null || def.captureTrivia === true || def.trailingTrivia === true || (!structural && buildReadsTrivia(def))
-  const clonesState = !structural && buildReadsState(def)
-  const capturesChildren = !structural && (mkType !== null || def.unwrap || def.collapse || buildReadsChildren(def))
-  const capturesRaw = !structural && (mkType !== null || buildReadsRaw(def))
+  // COMPILE-TIME HOST MODE. In `'cst'` every non-structural node builds through the
+  // positioned-CST host instead of its own `build`, so capture must follow that HOST,
+  // not the builder's arity — and since the mode is a compile-time constant, "follow the
+  // host" is simply "capture", with no per-node probe. This is the whole point of moving
+  // the decision to build time: in `'ast'` the host branch does not exist, and in `'cst'`
+  // there is nothing to decide.
+  const cstOut = ctx.hostMode === 'cst' && !structural
+  // Did this artifact actually DROP a positioned-CST branch? Only a node with its own
+  // build has one to drop. A purely STRUCTURAL grammar builds through `ctx.build` at
+  // runtime by design — that is the documented `node(parser)` contract, unchanged here —
+  // so an 'ast' compilation of it remains perfectly usable with a CST host, and the
+  // compatibility check below must not fire for it. This flag is what keeps the check
+  // precise instead of merely conservative.
+  if (!structural && !cstOut) ctx.hostBranchElided = true
+  const capturesTrivia = cstOut || mkType !== null || def.captureTrivia === true || def.trailingTrivia === true || (!structural && buildReadsTrivia(def))
+  const clonesState = !structural && (cstOut || buildReadsState(def))
+  const capturesChildren = !structural && (cstOut || mkType !== null || def.unwrap || def.collapse || buildReadsChildren(def))
+  const capturesRaw = !structural && (cstOut || mkType !== null || buildReadsRaw(def))
   const hasFields = parserHasOwnFields(def.parser)
-  const capturesFields = hasFields && !structural && buildReadsFields(def)
+  const capturesFields = hasFields && !structural && (cstOut || buildReadsFields(def))
   // A nested parser({ captureTrivia: true }) needs this node's collector, but
   // must not activate it until that parser scope is entered. Keep the collector
   // decision separate from the active capture flag below.
@@ -2830,10 +2869,15 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // truthful by dynamically restoring those collectors only for those explicit
   // modes. The normal AST route pays a boolean/property read instead of a fresh
   // array for every elided collector.
-  const directCstV = !structural && (!capturesChildren || !capturesRaw) ? v(ctx, '_dcst') : null
-  const directCstGate = directCstV === null
-    ? 'false'
-    : `${profileCapture} || _ctx.build?._parsemanCstOutput === true`
+  // In `'cst'` mode a direct builder ALWAYS routes to the host, so its children/raw
+  // collectors are always live — no gate, no probe. In `'ast'` mode the host branch is
+  // not emitted at all, so the only thing that can still want those collectors is the
+  // profiling capture pass, which is already a hoisted LOCAL (`_cap`) rather than a
+  // property chain on `_ctx.build`. Either way the per-node `_parsemanCstOutput` read
+  // that used to sit on every direct node is gone.
+  const cstMode = ctx.hostMode === 'cst'
+  const directCstV = !structural && !cstMode && (!capturesChildren || !capturesRaw) ? v(ctx, '_dcst') : null
+  const directCstGate = directCstV === null ? 'false' : profileCapture
   // A structural node can make its CST-trivia contract grammar-owned. That is
   // stronger than a host preference: `node(..., undefined, { captureTrivia:
   // true })` must keep its log even when the injected host explicitly opts out.
@@ -2980,12 +3024,16 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // sole exception, so a direct object never becomes a CST child. Linkability
   // must not change that ownership rule.
   const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
+  // A direct builder's consumer is fixed at COMPILE time, so this is a constant choice,
+  // not a per-node `_ctx.build?._parsemanCstOutput === true` read. `'cst'` builds through
+  // the host (so a direct semantic object can never become a CST child); `'ast'` never
+  // emits the host branch at all. Structural nodes are unchanged: their host is the
+  // documented `node(parser)` contract and is genuinely a per-parse choice.
   const ndExpr = structural
     ? `_ctx.build !== undefined ? (${hostBuildExpr}) : (${buildExpr})`
-    // Direct builders stay direct for ordinary hosts. cstBuildHost marks its
-    // mode internally so nested direct nodes cannot leak arbitrary AST objects
-    // into a positioned CST's children.
-    : `_ctx.build?._parsemanCstOutput === true ? (${hostBuildExpr}) : (${buildExpr})`
+    : cstOut
+      ? hostBuildExpr
+      : buildExpr
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
   const hostCollapseExpr = structural
@@ -3490,6 +3538,54 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+/**
+ * Which consumer a compiled artifact was built for.
+ *
+ * - `'ast'` (default) — the grammar's own `build` callbacks produce the result.
+ * - `'cst'` — a positioned-CST `ctx.build` host produces it (linter / IDE / language
+ *   service), and every node's capture is sized for that host.
+ *
+ * ONE grammar source serves both; they are two COMPILATIONS of it, not two grammars.
+ * Deciding at compile time is what keeps the eval-AST artifact free of per-node host
+ * probing — see the `hostMode` note on the codegen Ctx.
+ */
+export type HostMode = 'ast' | 'cst'
+
+/**
+ * A compiled artifact and the host it is driven with must agree — and when they do not,
+ * that has to be an ERROR, never a quietly-degraded tree.
+ *
+ * An `'ast'` artifact does not emit the positioned-CST branch at all, so attaching a
+ * `_parsemanCstOutput` host to one would silently get the grammar's own AST objects
+ * where the caller asked for a CST. A `'cst'` artifact builds every node through the
+ * host, so running one without a host would call `undefined`. Both are compile/run
+ * mismatches with an obvious fix, so both say so.
+ *
+ * Called once per parse from the TypeScript entry points, never from generated code.
+ */
+export function assertHostModeCompatible(mode: HostMode, build: unknown, hostBranchElided = true): void {
+  const isCstHost = (build as { _parsemanCstOutput?: true } | undefined)?._parsemanCstOutput === true
+  // A purely STRUCTURAL artifact never had a direct-builder host branch to drop, so it
+  // serves a CST host in either mode — that is the long-standing `node(parser)` contract
+  // and this change does not touch it.
+  if (mode === 'ast' && isCstHost && hostBranchElided) {
+    throw new Error(
+      'parseman: this parser was compiled for host mode "ast" (the default), so its nodes '
+        + 'build through their own `build` callbacks and no positioned-CST branch was emitted. '
+        + 'It cannot be driven with a positioned-CST host (cstBuildHost / a language-service '
+        + 'host). Compile a second artifact from the SAME grammar with '
+        + "`compile(grammar, { hostMode: 'cst' })` and drive that one instead.",
+    )
+  }
+  if (mode === 'cst' && !isCstHost) {
+    throw new Error(
+      'parseman: this parser was compiled for host mode "cst", so every node builds through '
+        + 'a positioned-CST `ctx.build` host. Pass one (e.g. `{ build: cstBuildHost }`), or use '
+        + 'an artifact compiled with the default `hostMode: "ast"` to get the grammar\'s own AST.',
+    )
+  }
+}
+
 export type CompiledParser<T> = {
   parse(input: string, pos?: number): ParseResult<T>
   /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
@@ -4059,7 +4155,7 @@ function runDuplicationDiagnosticRules(
   return reportDuplication(opt, o => analyzeDuplicationRules(ruleMap, o))
 }
 
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption }): CompiledParser<T> {
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption }): CompiledParser<T> {
   const gatingReport = runGatingDiagnostic(combinator, opts?.gating)
   runDuplicationDiagnostic(combinator, opts?.duplication)
   markUnusedValues(combinator)
@@ -4088,6 +4184,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     namedFnDecls: [],
     capturing: hasNodeDef(combinator as Combinator<unknown>),
     recovery: opts?.recovery ?? false,
+    hostMode: opts?.hostMode ?? 'ast',
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
@@ -4190,6 +4287,11 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
       return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, defaultCtx)
     },
     parseWithContext(input: string, parseCtx: ParseContext, pos = 0): ParseResult<T> {
+      // ONE check per parse, in TypeScript — not per node, and not in generated code.
+      // That is the point of deciding the mode at compile time: the artifact knows what
+      // it was built for, so the mismatch is caught here for free instead of by a
+      // property read on every node of every parse.
+      assertHostModeCompatible(ctx.hostMode ?? 'ast', parseCtx.build, !!ctx.hostBranchElided)
       return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, parseCtx)
     },
     // Note: collects expect() errors via _errors. Unlike interpreter
@@ -4259,7 +4361,7 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
 ): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   runGatingDiagnosticRules(ruleMap, opts?.gating)
   runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
@@ -4299,6 +4401,7 @@ export function compileRuleMap(
     namedFnDecls: [],
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
+    hostMode: opts?.hostMode ?? 'ast',
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule), coverageWinners) } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
@@ -4468,6 +4571,10 @@ export type LinkablePieces = {
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
+  /** Compile-time host mode this piece was lowered for ('ast' when absent). */
+  hostMode?: HostMode
+  /** Set when a direct builder's positioned-CST branch was omitted. */
+  hostBranchElided?: boolean
   /** True when this piece contains any direct `node(..., build)` reduction. */
   hasDirectBuilders?: boolean
   /** True only when this piece has no direct builder or callback-based semantics. */
@@ -4486,7 +4593,7 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
@@ -4536,6 +4643,7 @@ export function compileLinkable(
     // merely returning their scalar parse values.
     capturing: opts?.captureTerminals === true || ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
+    hostMode: opts?.hostMode ?? 'ast',
     ...(opts?.coverage ? { coverage: { plan: opts.coverage } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
@@ -4720,6 +4828,8 @@ export function compileLinkable(
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
+    hostMode: ctx.hostMode ?? 'ast',
+    hostBranchElided: !!ctx.hostBranchElided,
     hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule), externalRefs),
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),

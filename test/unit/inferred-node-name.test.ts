@@ -19,7 +19,7 @@ describe('node() inferred rule names', () => {
       Ident: node(regex(/[a-z]+/)),
     }))
 
-    const r = compile(g.Ident).parseWithContext('abc', { trackLines: false, build: cstBuildHost() }, 0)
+    const r = compile(g.Ident, undefined, { hostMode: 'cst' }).parseWithContext('abc', { trackLines: false, build: cstBuildHost() }, 0)
 
     expect(r.ok).toBe(true)
     if (!r.ok) return
