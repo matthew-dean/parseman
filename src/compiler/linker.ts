@@ -20,7 +20,7 @@
  */
 import { compileLinkable, firstSetCond, runFusedGatingDiagnostic, HOST_READS_DECL } from './codegen.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
-import type { LinkablePieces, FirstSetRecipe } from './codegen.ts'
+import type { LinkablePieces, FirstSetRecipe, HostMode } from './codegen.ts'
 import { union } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'
@@ -40,8 +40,17 @@ export function linkable(
   rulesMap: Record<string, Combinator<unknown>>,
   ns?: string,
   trivia?: Combinator<unknown>,
+  // Compile-time host mode, same meaning as `compile(g, { hostMode })`: 'ast' (default)
+  // emits the grammar's own builders and NO positioned-CST branch; 'cst' builds every
+  // node through the host. A linked/fused artifact is version- and mode-locked, so a
+  // language service links its own 'cst' artifact rather than switching at parse time.
+  hostMode?: HostMode,
 ): LinkablePieces {
-  const pieces = compileLinkable(Object.entries(rulesMap), ns ?? `_lk${_nsCounter++}_`, trivia ? { trivia } : undefined)
+  const pieces = compileLinkable(
+    Object.entries(rulesMap),
+    ns ?? `_lk${_nsCounter++}_`,
+    { ...(trivia ? { trivia } : {}), ...(hostMode ? { hostMode } : {}) },
+  )
   if (!pieces) throw new Error('linkable(): this grammar cannot be compiled to a linkable artifact (contains a runtime-only parser fallback)')
   return pieces
 }
@@ -350,7 +359,36 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
 export function fuseRules(pieces: LinkablePieces[]): Record<string, FusedRule> {
   const { body, env } = fusedBody(pieces)
   // eslint-disable-next-line no-new-func
-  return new Function('_env', body)(env) as Record<string, FusedRule>
+  const map = new Function('_env', body)(env) as Record<string, FusedRule>
+  // Record what the fused artifact was lowered for, so the drivers (`run`, `parseDoc`)
+  // can refuse a mismatched host once per parse instead of the artifact silently
+  // handing back the wrong tree shape. Pieces are fused together, so a mixed fusion is
+  // itself a mistake — report the first non-default mode and let the check catch it.
+  const mode = pieces.find(p => p.hostMode !== undefined && p.hostMode !== 'ast')?.hostMode ?? 'ast'
+  Object.defineProperty(map, FUSED_HOST_MODE, { value: mode, enumerable: false })
+  // Only pieces that actually dropped a direct builder's host branch make the fused map
+  // incompatible with a CST host; an all-structural fusion is fine either way.
+  Object.defineProperty(map, FUSED_HOST_ELIDED, {
+    value: pieces.some(p => p.hostBranchElided === true),
+    enumerable: false,
+  })
+  return map
+}
+
+/** Host mode a fused rule map was lowered for; absent on hand-built maps → 'ast'. */
+export const FUSED_HOST_MODE = Symbol.for('parseman.fusedHostMode')
+/** Whether any fused piece omitted a direct builder's positioned-CST branch. */
+export const FUSED_HOST_ELIDED = Symbol.for('parseman.fusedHostElided')
+
+/** The host mode a fused/composed rule map was built for. Defaults to 'ast'. */
+export function fusedHostModeOf(registry: object): HostMode {
+  const m = (registry as Record<symbol, unknown>)[FUSED_HOST_MODE]
+  return m === 'cst' ? 'cst' : 'ast'
+}
+
+/** Whether a fused/composed rule map dropped any direct builder's CST branch. */
+export function fusedHostElidedOf(registry: object): boolean {
+  return (registry as Record<symbol, unknown>)[FUSED_HOST_ELIDED] === true
 }
 
 /**
@@ -528,11 +566,17 @@ export function materializePiece(
   p: LinkablePieces | IRPiece,
   trivia?: Combinator<unknown>,
   captureTerminals = false,
+  hostMode?: HostMode,
 ): LinkablePieces {
+  // A piece carried as IR is RE-LOWERED here, which is what lets `compose()` choose the
+  // host mode: the same carried grammar can be fused into an eval-AST artifact and into
+  // a positioned-CST one. An already-lowered piece keeps whatever mode it was built
+  // with — that is why `compose({ hostMode: 'cst' })` only works on carried IR.
   if (!isIRPiece(p)) return p
   const pieces = compileLinkable(evalRuleMapIR(p.ir), p.ns, {
     ...(trivia ? { trivia } : {}),
     ...(captureTerminals ? { captureTerminals: true } : {}),
+    ...(hostMode ? { hostMode } : {}),
   })
   if (!pieces) throw new Error(`compose: carried IR for ns "${p.ns}" could not be re-lowered`)
   return pieces
@@ -557,6 +601,10 @@ function itemCarried(
   item: LinkablePieces | Record<string, unknown>,
   used: Set<string>,
   trivia?: Combinator<unknown>,
+  // Only reaches the non-serializable fallback below, where the grammar is baked
+  // immediately instead of carried as re-lowerable IR. The IR path gets the mode later,
+  // in `materializePiece`.
+  hostMode?: HostMode,
 ): Array<LinkablePieces | IRPiece> {
   const carried = (item as Record<symbol, unknown>)[COMPOSED_PIECES]
   // A prior composed result (runtime or macro-compiled): its carried list is already
@@ -596,7 +644,7 @@ function itemCarried(
     .map(([, val]) => (val._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip)
     .find(Boolean)
   const ir = serializeRuleMap(entries, scanSkip)
-  return ir ? [{ ns, ir }] : [linkable(map, ns, trivia)]
+  return ir ? [{ ns, ir }] : [linkable(map, ns, trivia, hostMode)]
 }
 
 /** The composed grammar's ambient trivia = the LAST composed item that declares a
@@ -618,6 +666,15 @@ function composingTriviaOf(items: Array<LinkablePieces | Record<string, unknown>
 
 export function compose(
   items: Array<LinkablePieces | Record<string, unknown>>,
+  /**
+   * Compile-time host mode for the fused artifact, same meaning as
+   * `compile(g, { hostMode })`. Omit (or `'ast'`) for the eval driver — the fused rules
+   * build through the grammar's own `build` callbacks and carry no positioned-CST
+   * branch. Pass `'cst'` to fuse a SECOND artifact from the same pieces for the linter /
+   * IDE / language-service driver. Two compilations of one grammar, decided here, rather
+   * than one artifact deciding per node on every parse.
+   */
+  opts?: { hostMode?: HostMode },
 ): Record<string, FusedRule> {
   if (items.some(item => (item as Record<symbol, unknown>)[LEAF_COMPOSED] === true)) {
     throw new Error('compose: a composeLeaf() result is terminal and cannot be composed again')
@@ -630,7 +687,7 @@ export function compose(
   // Carried items are RE-LOWERABLE (IR); materialize them ONCE with this compose's
   // trivia for the now-fuse, but STORE the un-materialized carried list so a later
   // compose can re-lower it under a different trivia (multi-level composing-wins).
-  const carried = items.flatMap(item => itemCarried(item, used, trivia))
+  const carried = items.flatMap(item => itemCarried(item, used, trivia, opts?.hostMode))
   // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
   // only site that can answer whether the choices it leads actually gate.
   // ONE hydration, shared by both thunks. Re-lowering carried IR runs `evalRuleMapIR`
@@ -643,7 +700,7 @@ export function compose(
     undefined,
     () => detailed().opaque,
   )
-  const pieces = carried.map(p => materializePiece(p, trivia))
+  const pieces = carried.map(p => materializePiece(p, trivia, false, opts?.hostMode))
   const map = fuseRules(pieces)
   Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })
   if (trivia) Object.defineProperty(map, COMPOSED_TRIVIA, { value: trivia, enumerable: false })

@@ -6,7 +6,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
-  choice, compose, cstBuildHost, expect as required, literal, node, oneOrMore, parse, parser, regex, rules, run,
+  choice, compile, compose, cstBuildHost, expect as required, literal, node, oneOrMore, parse, parser, regex, rules, run,
   sequence, trivia,
 } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
@@ -146,12 +146,28 @@ describe('direct node child raw source', () => {
         ],
       }],
     })
+    // The interpreter routes direct builders to a positioned-CST host dynamically.
     const interpreted = run(CstOuter, 'red', { build: cstBuildHost() })
     expect(interpreted.ok).toBe(true)
     if (interpreted.ok) assertCst(interpreted.value)
-    const compiled = macro.CstOuter('red', 0, { trackLines: false, build: cstBuildHost() } as never)
+    // A COMPILED artifact is mode-locked, so the same guarantee comes from compiling
+    // for 'cst' — where it holds by construction rather than by a per-node runtime
+    // check. Compiled-'cst' must equal interpreter-with-a-CST-host.
+    const compiled = compile(CstOuter, undefined, { hostMode: 'cst' })
+      .parseWithContext('red', { trackLines: false, build: cstBuildHost() }, 0)
     expect(compiled.ok).toBe(true)
     if (compiled.ok) assertCst(compiled.value)
+    if (interpreted.ok && compiled.ok) {
+      expect(JSON.stringify(compiled.value)).toBe(JSON.stringify(interpreted.value))
+    }
+  })
+
+  it("an 'ast' artifact keeps its own builders even under a CST host — and says so", () => {
+    // The other half of the mode contract: without `hostMode: 'cst'` the host branch is
+    // not emitted, so a direct builder stays direct. The drivers refuse this pairing
+    // (see rule-fusion), and a raw fused/compiled call simply keeps AST ownership.
+    const astOnly = compile(Color).parseWithContext('red', { trackLines: false }, 0)
+    expect(astOnly.ok && astOnly.value).toEqual({ kind: 'color' })
   })
 
   it('keeps direct-builder ownership across run() and linkable compose(), except for the CST host', () => {
@@ -165,7 +181,9 @@ describe('direct node child raw source', () => {
     expect(linked.ok).toBe(true)
     expect(linked.value).toEqual({ kind: 'direct' })
 
-    const cst = composed.Root!('x', 0, { build: cstBuildHost() })
+    // The CST view is a SECOND fusion of the same pieces, compiled for 'cst'.
+    const composedCst = compose([directRules], { hostMode: 'cst' })
+    const cst = composedCst.Root!('x', 0, { build: cstBuildHost() })
     expect(cst.ok).toBe(true)
     expect(cst.value).toMatchObject({
       _tag: 'node', type: 'Root', children: [{ _tag: 'node', type: 'Direct' }],

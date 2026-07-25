@@ -122,7 +122,11 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
   })
   it('typed arity-3 → raw CST collector is AST-only lazy, not eagerly allocated', () => {
     const src = compile(typed3).source
-    expect(src).toMatch(/const _dcst\d+ = _cap\d+ \|\| _ctx\.build\?\._parsemanCstOutput === true/)
+    // Host mode is a COMPILE-TIME constant, so an 'ast' artifact carries no
+    // `_ctx.build?._parsemanCstOutput` probe at all — the only thing that can still
+    // want the raw collector is the profiling capture pass, which is a hoisted local.
+    expect(src).toMatch(/const _dcst\d+ = _cap\d+$/m)
+    expect(src).not.toContain('_parsemanCstOutput')
     expect(src).toMatch(/_raw\d+ = _rec\d+ \? undefined : _dcst\d+ \? \[\] : undefined/)
   })
   it('typed arity-5 → allocates a per-node _tl array', () => {
@@ -136,7 +140,9 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
     expect((compile(typed3).parse('ab') as { ok: boolean; value: unknown }).value).toEqual({ n: 2 })
   })
   it('direct AST elision still restores the complete public CST host contract', () => {
-    const compiled = compile(typed3)
+    // The CST contract now comes from a SECOND compilation of the same grammar rather
+    // than from a per-node runtime branch in the first one.
+    const compiled = compile(typed3, undefined, { hostMode: 'cst' })
     const cst = compiled.parseWithContext('ab', { trackLines: false, build: cstBuildHost() })
     expect(cst.ok).toBe(true)
     expect(cst.ok && cst.value).toMatchObject({
@@ -162,7 +168,9 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
 `, 'P')
 
     expect(source).toContain('_EMPTY_TL')
-    expect(source).toMatch(/const _dcst\d+ = _cap\d+ \|\| _ctx\.build\?\._parsemanCstOutput === true/)
+    // Macro output defaults to host mode 'ast', so it carries no host probe either.
+    expect(source).toMatch(/const _dcst\d+ = _cap\d+$/m)
+    expect(source).not.toContain('_parsemanCstOutput')
     expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start:/)
     expect(source).toMatch(/_EMPTY_TL, undefined\)/)
     expect(fn('ab', 0, {}).value).toEqual({

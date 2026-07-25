@@ -23,7 +23,7 @@ describe('cstBuildHost({ collapse })', () => {
   })
 
   it('compile(): applies the same host policy without a post-walk', () => {
-    const compiled = compile(Doc)
+    const compiled = compile(Doc, undefined, { hostMode: 'cst' })
     const ctx = { trackLines: false, build: cstBuildHost({ collapse: type => type === 'Wrap' }) }
     const result = compiled.parseWithContext('ab', ctx, 0)
 

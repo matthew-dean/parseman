@@ -407,6 +407,12 @@ describe('fusion — the three drivers over one fused map (RULE_ABI_PLAN §7, st
     Num: node('Num', regex(/[0-9]+/), (_c, _r, s) => ({ kind: 'Num', at: s.start })),
   }))
   const R = fuseRules([link(g, '_d_')]) as unknown as Registry<NodeLike>
+  // The CST driver is a SECOND fusion of the same grammar, compiled for host mode
+  // 'cst'. That is the design: one grammar source, two artifacts — rather than one
+  // artifact asking "is a CST host installed?" on every node of every parse.
+  const Rcst = fuseRules([
+    compileLinkable([...Object.entries(g)], '_dc_', { hostMode: 'cst' })!,
+  ]) as unknown as Registry<NodeLike>
 
   it('eval driver (default build) → the grammar’s eval AST', () => {
     const r = (R.Sum as unknown as (i: string, p: number, c: object) => { ok: boolean; value?: unknown })('1+2', 0, {})
@@ -415,14 +421,21 @@ describe('fusion — the three drivers over one fused map (RULE_ABI_PLAN §7, st
 
   it('linter/IDE driver (cstBuildHost) → a positioned CST from the SAME grammar', () => {
     // One-shot CST (linter):
-    const r = (R.Sum as unknown as (i: string, p: number, c: object) => { ok: boolean; value?: { _tag: string; type: string } })('1+2', 0, { build: cstBuildHost })
+    const r = (Rcst.Sum as unknown as (i: string, p: number, c: object) => { ok: boolean; value?: { _tag: string; type: string } })('1+2', 0, { build: cstBuildHost })
     expect(r.value!._tag).toBe('node')
     expect(r.value!.type).toBe('Sum')
     // Incremental CST (IDE): parseDoc threads the same host into every reparse.
-    const doc = parseDoc(R, 'Sum', '1+2', { build: cstBuildHost })
+    const doc = parseDoc(Rcst, 'Sum', '1+2', { build: cstBuildHost })
     expect((doc.tree as unknown as { _tag: string })._tag).toBe('node')
     const edited = doc.edit(0, 1, '9') // 1+2 -> 9+2
-    const fresh = parseDoc(R, 'Sum', '9+2', { build: cstBuildHost })
+    const fresh = parseDoc(Rcst, 'Sum', '9+2', { build: cstBuildHost })
     expect(JSON.stringify(edited.tree)).toBe(JSON.stringify(fresh.tree))
+  })
+
+  it('the eval artifact REFUSES a positioned-CST host rather than degrading', () => {
+    // The mismatch that used to produce a quietly thin tree is now an error naming the
+    // fix. This is what makes the compile-time decision safe to default to 'ast'.
+    expect(() => parseDoc(R, 'Sum', '1+2', { build: cstBuildHost }))
+      .toThrow(/compiled for host mode "ast"[\s\S]*hostMode: 'cst'/)
   })
 })
