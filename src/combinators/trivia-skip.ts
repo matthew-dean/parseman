@@ -41,7 +41,8 @@ export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
 
 export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): void {
   rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields, errors: mark.errors })
-  if (ctx._triviaLog) ctx._triviaLog.length = mark.log
+  // Guarded like every other truncation — see rollbackCstCapture.
+  if (ctx._triviaLog && ctx._triviaLog.length !== mark.log) ctx._triviaLog.length = mark.log
 }
 
 /**

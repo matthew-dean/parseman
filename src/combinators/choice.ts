@@ -153,14 +153,14 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
         const result = parsers[i]!.parse(input, pos, ctx)
         if (!result.ok) {
           rollbackCstCapture(ctx, mark)
-          if (logLen !== undefined && ctx._triviaLog) ctx._triviaLog.length = logLen
+          if (logLen !== undefined && ctx._triviaLog && ctx._triviaLog.length !== logLen) ctx._triviaLog.length = logLen
           expected.push(...result.expected)
           continue
         }
         const checks = autoNot[i]
         if (checks && autoNotFires(input, result.span.end, checks)) {
           rollbackCstCapture(ctx, mark)
-          if (logLen !== undefined && ctx._triviaLog) ctx._triviaLog.length = logLen
+          if (logLen !== undefined && ctx._triviaLog && ctx._triviaLog.length !== logLen) ctx._triviaLog.length = logLen
           continue
         }
         return result as ParseResult<UnionArms<T>>
