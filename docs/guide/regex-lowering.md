@@ -189,9 +189,15 @@ engine, and it must actually be **faster**.
 **Differential fuzzing against native `RegExp`.** Each shape family is checked by generating
 tens of thousands of randomized inputs and asserting the lowered scan agrees with
 `RegExp.exec`, byte-for-byte, on match/no-match and match length. The lookahead,
-alternation, and keyword fast paths each carry 100k+ fuzzed inputs. The suite also holds a
-**deliberately-bypassed** case that *does* mismatch, so a safety guard that stopped
-working would fail the suite rather than pass it silently.
+alternation, and keyword fast paths each carry 100k+ fuzzed inputs.
+
+The safety guards are checked by asserting the **lowering decision itself**, not only the
+output. A shape that must lower asserts the emitted source contains no `.exec(input)`; a
+shape the guard must *decline* — a non-ASCII `/i` pattern like `/café/i`, where an
+ASCII-only fold would miss `CAFÉ` — asserts the opposite, that it fell back to
+`RegExp.exec`. Both then assert agreement with the interpreter across case variants. A
+guard that stopped declining therefore fails on the decision assertion directly, rather
+than being caught downstream only if some input happens to expose the mismatch.
 
 **Cross-mode parity.** The same grammar is run through the interpreter, `compile()`, and
 the macro build, and the outputs are asserted identical. Lowering lives in the compiled
