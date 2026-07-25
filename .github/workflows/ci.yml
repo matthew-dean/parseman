@@ -6,25 +6,37 @@ on:
   push:
     branches: [main]
 
+# Least privilege: nothing here writes to the repo. Every step only reads the
+# checkout; the coverage artifact is uploaded through the Actions API, which does
+# not need `contents: write`.
+permissions:
+  contents: read
+
 jobs:
   test-matrix:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # One leg per SUPPORTED LTS line. Spelled as aliases, not pinned versions, so
-      # the window follows Node instead of rotting: when the next line goes LTS
-      # these shift on their own, whereas pins keep testing an ever-staler set while
-      # `engines` still claims otherwise. Silent divergence between what the package
-      # says it supports and what CI actually runs is the failure worth avoiding.
+      # One leg per SUPPORTED LTS line, matching `engines`
+      # (`^20.19.0 || >=22.12.0`): today 24 / 22 / 20.
       #
-      # Three lines, matching `engines` (`^20.19.0 || >=22.12.0`): today 24/22/20.
+      # The two upper legs are ALIASES so they follow Node instead of rotting —
+      # when the next line goes LTS they shift on their own.
+      #
+      # The FLOOR leg is PINNED, and deliberately not `lts/-2`. An alias tracks a
+      # moving window; `engines` states a fixed contract. The moment Node 26 becomes
+      # the current LTS, `lts/-2` resolves to 22 and Node 20 stops being tested
+      # while `^20.19.0` still promises it — the matrix would drift off the contract
+      # silently, in the opposite direction from stale pins. Pinning the boundary is
+      # the only leg where the exact version is the point: it is the literal claim
+      # the manifest makes. The upper lines have no such boundary to verify.
       #
       # A single pinned major — what this was — tests neither end of the range and
       # let a real bug through: `case-fold.test.ts` pinned a Unicode-derived count
       # that is 2313 on Node 22 and 2307 on Node 24, so it passed locally and failed
       # CI. Anything ICU-, Intl- or Unicode-derived drifts silently between lines.
       matrix:
-        node-version: ['lts/*', 'lts/-1', 'lts/-2']
+        node-version: ['lts/*', 'lts/-1', '20.19.0']
     name: test (node ${{ matrix.node-version }})
     steps:
       - name: Checkout
