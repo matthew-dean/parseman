@@ -23,13 +23,20 @@ parse(shadowed, 'instanceof x').value
 // → 'in'
 ```
 
-One exception, and only one: when **every** arm is a bare `literal()`, the choice
-resolves by longest match instead of by position
-([`literalsLongestFirst`](./natural-grammars#the-one-place-order-defers-to-length)), in
-both the interpreter and the compiled parser — so an all-literal `choice` is
-order-insensitive. Mix in a `sequence()` or `word()` arm and ordering is load-bearing
-again — so write the long arm first regardless, and don't make a grammar's correctness
-depend on the rewrite applying.
+Two shapes are exceptions, and both resolve by longest match rather than by position —
+in the interpreter and the compiled parser alike:
+
+- **Every arm is a bare `literal()`**
+  ([`literalsLongestFirst`](./natural-grammars#the-one-place-order-defers-to-length)), so
+  an all-literal `choice` is order-insensitive.
+- **One regex arm provably subsumes every other arm, and the rest are literals**
+  ([`greedyClassify`](./natural-grammars#literal-heavy-choices-collapse-to-one-scan)) —
+  the regex runs once and the matched text is classified by string equality, so the
+  keywords win over the general token whichever order they are written in.
+
+Both detections are conservative. Mix in a `sequence()` or `word()` arm, or add a second
+regex, and neither applies — ordering is load-bearing again. Write the long arm first
+regardless, and don't make a grammar's correctness depend on a rewrite applying.
 
 When an alternative needs to consume past a shared prefix before deciding, wrap
 that alternative in `attempt()`. A failed attempt restores Parseman's CST,
