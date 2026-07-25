@@ -68,8 +68,9 @@ The published surface is:
 
 - anything under `src/**` — it compiles into `dist/`, which is what `files` ships
 - the files that decide what `dist/` *contains* rather than living in it:
-  `scripts/build.mjs`, `tsup.config.ts`, `tsconfig.build.json`. A bundler-config
-  change can move every shipped byte with `src/` sitting still. Named individually,
+  `scripts/build.mjs`, `tsconfig.build.json`, `tsconfig.json`. A build-script change
+  can move every shipped byte with `src/` sitting still, and the root tsconfig reaches
+  the emitted declarations through `tsconfig.build.json`'s `extends`. Named individually,
   not by exempting `scripts/` wholesale — the rest of that directory is CI machinery
 - the `package.json` fields a consumer receives: `name`, `type`, `main`, `module`,
   `types`, `exports`, `files`, `bin`, `dependencies`, `peerDependencies`,
@@ -79,7 +80,7 @@ The published surface is:
   `prepare` (run when it is installed from a git URL)
 
 Everything else is exempt: `test/`, `bench/`, `examples/`, `fixtures/`, `scripts/`,
-`docs/`, `notes/`, `.github/`, the lockfile, the tsconfigs, `devDependencies`, and
+`docs/`, `notes/`, `.github/`, the lockfile, `devDependencies`, and
 every other `scripts` entry. None of them can change what `npm install parseman`
 produces or runs.
 
