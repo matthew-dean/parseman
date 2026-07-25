@@ -1,0 +1,35 @@
+{
+  "_comment": "Configuration for `pnpm perf:workloads` — see bench/workload-perf-guard.ts and docs/design/perf-gates.md.",
+
+  "referenceSha": "3562f78",
+  "_referenceNote": "The A/B reference: v0.35.0. Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the released sha at every release, in the release PR, with the numbers read in that PR. Do NOT bump it to silence a red gate.",
+
+  "measurement": {
+    "targetSampleMs": 8,
+    "warmup": 6,
+    "timed": 11,
+    "rounds": 4,
+    "runs": 3,
+    "passes": 3,
+    "_passesNote": "A workload fails only when a strict MAJORITY of independent passes breach. This is how the gate tells a regression from a busy machine without widening the threshold, which would blind it to the band it exists to watch (0.34.0's css row moved -1.6%; the 0.35.0 repayment was -12.3%). Three is the smallest count where a majority means something; raise it if a self-check ever false-fails.",
+    "_note": "Parses per timed sample are CALIBRATED at startup so every workload's sample lands near targetSampleMs, on the REFERENCE side only, and the same count is applied to both sides so it can never advantage one. targetSampleMs is higher here than in the density gate because these inputs are ~50 KB rather than a synthetic loop: a single parse already takes milliseconds, so the calibration mostly resolves to 1-3 parses and the target only matters for the cheap rows."
+  },
+
+  "thresholds": {
+    "medianPct": 5,
+    "minPct": 5,
+    "winRateCeiling": 0.25,
+
+    "signTest": {
+      "winRateCeiling": 0.25,
+      "medianPct": 1.5,
+      "minPct": 1.5
+    },
+
+    "_note": "MEASURED, not guessed. Same build against ITSELF through this harness (`pnpm perf:workloads --self`), on a machine at load average 5-9 because that is what a shared runner looks like: worst single-pass median +9.9%, worst single-pass min +3.4%, and NO pass breached — because a noise pass swings its percentage but keeps its win rate near 50%, and every breach rule here requires the win rate too. The percentage thresholds are 5%; the win-rate conjunction is what makes them safe at that level.",
+
+    "_signTestNote": "The percentage rule alone catches a big regression. It could not reliably catch `fix(expect)`, which cost the realistic Less workloads +2%..+9% — genuinely under the threshold. The sign test catches it: with sides measured in adjacent order-alternated pairs, losing <= 3 of 12 pairs while also being >= 1.5% slower on BOTH median and min is not something a busy machine produces. 12 pairs, 3 wins, p ~ 0.07 per pass; required in a majority of 3 passes, ~1 in 500.",
+
+    "_resolutionLimit": "The floor is roughly 1.5-2% per workload, set by the sign test's percentage requirement. Below that the gate cannot distinguish a real regression from drift and will read green. There is no amplification here — unlike the density sweep, these numbers are end-to-end parses of realistic input, so a reading IS the downstream cost, not a multiple of it."
+  }
+}
