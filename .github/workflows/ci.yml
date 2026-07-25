@@ -45,9 +45,17 @@ jobs:
             "${{ github.event.pull_request.base.sha }}" \
             "${{ github.event.pull_request.head.sha }}")
           echo "changed files:"; echo "$files" | sed 's/^/  /'
-          # Anything that is NOT markdown or under docs/ counts as code. Note that
+          # Anything that is NOT markdown or under docs/ counts as code.
+          #
           # `.github/` counts as code — a workflow change must run the full suite.
-          if echo "$files" | grep -qvE '(^docs/|\.md$)'; then
+          #
+          # CHANGELOG.md counts as code too, and that exception is load-bearing:
+          # `pnpm check:changelog` runs INSIDE the matrix, so a blanket `\.md$`
+          # exclusion would let a changelog-only PR skip the very check that
+          # validates it — an invalid changelog would merge green and only surface
+          # later, at publish time.
+          if echo "$files" | grep -qvE '(^docs/|\.md$)' \
+             || echo "$files" | grep -qE '^CHANGELOG\.md$'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
             echo "code=false" >> "$GITHUB_OUTPUT"
