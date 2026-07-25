@@ -1,4 +1,6 @@
-node_modules/
+# No trailing slash: scratch worktrees symlink node_modules rather than
+# installing it, and a trailing slash would only match a real directory.
+node_modules
 dist/
 # Declaration files belong in dist/ (see tsconfig.build.json). Any *.d.ts under
 # src/ is an accidental tsc emit — ignore so it can never be committed again.
