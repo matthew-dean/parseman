@@ -118,6 +118,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # This job reads history and pushes nothing, so the token has no reason to
+          # survive into the step that runs the gate. Every git call the script makes
+          # (`merge-base`, `diff`, `show`) is local to the checkout.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*

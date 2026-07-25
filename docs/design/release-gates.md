@@ -7,11 +7,15 @@ One script, `scripts/check-changelog.mjs`, enforces that. It runs in two places:
 
 | where | what it sees | what it asserts |
 | --- | --- | --- |
-| CI job `release-gate`, every PR and every push to `main` | the diff against the PR base | release integrity **and** the bump |
+| CI job `release-gate`, on a pull request | the diff against the PR base | release integrity **and** the bump |
+| CI job `release-gate`, on a push to `main` | no base to diff | release integrity only |
 | `prepublishOnly`, at `npm publish` | the working tree only | release integrity |
 
-The second is a backstop, not the gate. It used to be the gate, and that is the
-whole reason this document exists.
+Only the first row is the gate. `BASE_SHA` is populated for `pull_request` events
+only, so a push to `main` — a direct push, or an admin merge that went around the
+required check — is caught for an `Unreleased` changelog but **not** for a missing
+bump. The last two rows are backstops. The third used to be the whole mechanism, and
+that is the reason this document exists.
 
 ## What went wrong
 
