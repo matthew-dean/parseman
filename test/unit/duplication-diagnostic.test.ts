@@ -649,7 +649,40 @@ describe('compile-time wiring', () => {
     // The analysis is advisory: if it throws for any reason, the compile it was
     // attached to must still produce its artifact.
     const hostile = { [Symbol.iterator](): never { throw new Error('boom') } }
-    expect(() => compileRuleMap(entries(dupGrammar()), { duplication: { level: 'error', accept: hostile } }))
-      .not.toThrow()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      expect(() => compileRuleMap(entries(dupGrammar()), { duplication: { level: 'error', accept: hostile } }))
+        .not.toThrow()
+    } finally { warn.mockRestore() }
+  })
+
+  it('a diagnostic failure is advisory but NOT silent', () => {
+    // Advisory does not mean invisible. A throw inside the analysis means NOTHING
+    // was checked, and that must not read the same as a clean grammar — the exact
+    // failure the gating diagnostic shipped for two minor versions.
+    const hostile = { [Symbol.iterator](): never { throw new Error('boom') } }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      compileRuleMap(entries(dupGrammar()), { duplication: { level: 'error', accept: hostile } })
+      const out = warn.mock.calls.flat().join('\n')
+      expect(out).toContain('could not run')
+      expect(out).toContain('boom')
+    } finally { warn.mockRestore() }
+  })
+
+  it('PARSEMAN_DUPLICATION does not double-report through compileLinkable', () => {
+    // The level also resolves from the env var, and the macro path lowers the same
+    // map through compileRuleMap AND compileLinkable. compileLinkable is opt-IN, so
+    // the env var alone must not make it repeat the owning site's findings.
+    const prev = process.env.PARSEMAN_DUPLICATION
+    process.env.PARSEMAN_DUPLICATION = 'warn'
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      compileLinkable(entries(dupGrammar()), '_dup_env_')
+      expect(warn.mock.calls.flat().join('\n')).not.toContain('parseman rewrite')
+    } finally {
+      warn.mockRestore()
+      if (prev === undefined) delete process.env.PARSEMAN_DUPLICATION; else process.env.PARSEMAN_DUPLICATION = prev
+    }
   })
 })

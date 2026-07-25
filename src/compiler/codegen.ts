@@ -4027,7 +4027,19 @@ function reportDuplication(
   }
   let report: DuplicationReport
   try { report = analyze(analyzeOpts) }
-  catch { return undefined }
+  catch (err) {
+    // The analysis is ADVISORY — it must never break a compile that is otherwise
+    // correct, so this does not rethrow even at `'error'`. But it must not be
+    // SILENT either: `assertAnalyzable` throws a deliberately actionable TypeError
+    // when handed a composed (already-fused) map, and swallowing that reported the
+    // same "no findings" as a genuinely clean grammar. That is the exact failure
+    // the gating diagnostic shipped for two minor versions.
+    console.warn(
+      `parseman: the duplication diagnostic could not run, so NOTHING was checked — `
+      + `this is not a clean result.\n  ${err instanceof Error ? err.message : String(err)}`,
+    )
+    return undefined
+  }
   const lines = formatDuplicationFindings(report)
   if (lines.length > 0) {
     if (level === 'error') throw new Error(`parseman: ${duplicationFindingCount(report)} duplication/overlap finding(s)\n${lines.join('\n')}`)
@@ -4484,10 +4496,13 @@ export function compileLinkable(
   // holes are still unbound, so it can only repeat the shape's own non-verdict. The
   // fused question is asked once over the merged map — `runFusedGatingDiagnostic`.
   if (opts?.gating !== undefined) runGatingDiagnosticRules(ruleMapArg, opts.gating)
-  // Duplication is opt-in EVERYWHERE (default `'off'`), so unlike gating there is no
-  // double-reporting to guard against here — if the caller asked for it on this path,
-  // it runs on this path. Structural findings do not depend on fuse-time binding.
-  runDuplicationDiagnosticRules(ruleMapArg, opts?.duplication)
+  // Same opt-IN guard as gating, and for the same reason. Duplication defaults to
+  // `'off'`, but the level ALSO resolves from `PARSEMAN_DUPLICATION` — so without
+  // this guard, setting that env var printed every structural finding twice on the
+  // macro path, which lowers the same map through `compileRuleMap`/`compile` and
+  // then again here. Structural findings do not depend on fuse-time binding, so the
+  // owning site's run is the complete one; this one would only ever be a duplicate.
+  if (opts?.duplication !== undefined) runDuplicationDiagnosticRules(ruleMapArg, opts.duplication)
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
   // Grammar-level ambient trivia through compose(): a piece from rules({ trivia },
   // …) tags `grammarTrivia` on its rules (runtime path), or the macro threads it via
