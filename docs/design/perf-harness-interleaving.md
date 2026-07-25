@@ -151,20 +151,46 @@ answer one question — "is this case slower when the two builds have never shar
 a heap?" — and a neutral answer there against a confident red in the gate is
 enough to stop treating the red as a regression.
 
-## The same question applies to `perf:workloads`, unconfirmed
+## `perf:workloads` shows the same shape — and its `--self` check cannot see it
 
-`bench/workload-perf-guard.ts` is also single-process, and it runs five
-workloads together. In the same investigation a workload measured clean under
-`--only=css` and breached when run alongside the other four in one process.
+`bench/workload-perf-guard.ts` is also single-process, and it runs five workloads
+together. It shows the same bimodality: on one change, `css/stylesheet` breached
+3/3 and, on the identical working tree twenty minutes later, breached 0/3. On CI
+the same branch read `breached 1/3` in one run and passed outright in another.
+The `main` control stayed flat throughout, and the generated code for that branch
+was **10,734 bytes smaller** with one fewer property chain per node and no dead
+branch — that is, strictly less work, measured slower.
 
-That is one observation and it has no control behind it — nothing there is as
-strong as the identical-code control above, and there are ordinary explanations
-(the workloads allocate heavily, and `--only` changes the GC history a workload
-inherits, which is the reason that gate measures in adjacent order-alternated
-pairs in the first place). Treat it as a question worth answering rather than a
-known defect. If someone wants to settle it, the shape of the experiment is the
-one above: run `pnpm perf:workloads --self` with and without `--only`, several
-times, and see whether a workload is bimodal between the two.
+### The named limitation: a clean `--self` is not a trust signal here
+
+`pnpm perf:workloads --self` reads clean on `css/stylesheet` (±0.8%). That is
+**not** evidence the gate's A/B readings are sound, because `--self` cannot
+reproduce this failure mode by construction:
+
+> `--self` compares a commit against **itself**. Both sides are the same code, so
+> both sides compile to the same-sized code image. The artifact appears to need two
+> **differently-sized** images sharing one heap and one JIT profile — which is
+> exactly the situation `--self` removes.
+
+So the self-check is sound for what it measures (machine noise, timer
+granularity, GC drift) and blind to the thing that actually fires this gate. A
+clean `--self` says "the harness is not noisy today". It does not say "this A/B
+number is real".
+
+This is the same shape as the `analyzeGating` defect fixed in 0.39.0: a check that
+reported success because it could not see the failure, and whose passing result
+was therefore indistinguishable from a genuine pass. Treat "the self-check was
+clean" the same way — as the absence of one class of evidence, never as the
+presence of another.
+
+### What to do instead
+
+Confirm cross-process (`pnpm perf:xproc`, above). Where a workload rather than a
+grammar-density case is in question, the equivalent recipe is one fresh process
+per side, order alternated per round, at least a dozen rounds — the same design,
+applied to the workload's own grammar and corpus. On the change described above
+that gave **+2.0% median, +1.0% min, winning 5 of 14**, against the same gate's
+`+15 … +29%`.
 
 ## What this does not mean
 

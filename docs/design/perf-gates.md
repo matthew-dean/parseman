@@ -343,6 +343,14 @@ laughed at the first time it false-fails:
 - worst absolute swing in either direction **12.3%**
 - **passes that breached: 0 of 15.** No workload false-failed.
 
+> **What this calibration does NOT cover.** `--self` runs a commit against itself,
+> so both sides compile to the same-sized code image. It therefore measures machine
+> noise, timer granularity and GC drift — and is blind to the interleaving artifact
+> that arises when two **differently-sized** code images share one heap and one JIT
+> profile, which is every real A/B. A clean `--self` means "the harness is not noisy
+> today", never "this A/B number is real". See
+> [Single-process interleaving artifacts](./perf-harness-interleaving.md).
+
 A 9.9% swing past a 5% threshold that does not breach is the design working. Every
 breach rule requires the WIN RATE as well as a percentage, and a noise pass swings
 its percentage while keeping its win rate near 50%. The percentage thresholds are
