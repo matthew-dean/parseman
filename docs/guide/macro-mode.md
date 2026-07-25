@@ -76,7 +76,7 @@ TypeScript only accepts import-attribute syntax when
 [`module`](https://www.typescriptlang.org/tsconfig/#module) is set to `esnext`,
 `nodenext`, or `preserve`. With anything else you'll get:
 
-```
+```text
 TS2823: Import attributes are only supported when the --module option is set to
 esnext, nodenext, or preserve.
 ```

@@ -99,6 +99,15 @@ export type AnalyzeGatingOptions = {
    * SINGLE per-choice suppression mechanism.
    */
   accept?: Iterable<string>
+  /**
+   * Name to attribute an UNNAMED entry to, instead of the synthetic `<entry>`.
+   * The macro plugin passes the binding's own variable name, so a warning on a
+   * top-level combinator const reads `choice @ directMixinReferenceAhead`
+   * (actionable, and a discriminating `accept` key) rather than `choice @
+   * <entry>` repeated once per const. Ignored when the entry already carries a
+   * `_ruleName`.
+   */
+  entryName?: string
 }
 
 export type GatingReport = {
@@ -167,9 +176,9 @@ const SUGGESTIONS: Record<FirstSetCause, string> = {
   'broad-recognizer':
     "if this arm leads with a keyword regex, use word('kw', boundary) / keywords([...]) — they expose an EXACT, gating first-set and lower to the same charCodeAt scan. A genuine scanTo fallback is fine; accept it in the gating snapshot if intentional.",
   'leading-not':
-    'let the arm lead with its actual consuming terminal (first-sets gate it automatically); keep not(...) only as a TRAILING boundary. Do not hand-roll not(not(...)) to fake gating.',
+    'let the arm lead with its actual consuming terminal (first-sets gate it automatically); keep not(...) only as a TRAILING boundary. Do not hand-roll not(not(...)) to fake gating — use peek(X), which is zero-width AND carries X first-set.',
   'nullable-prefix':
-    'a leading optional/many lets a later, broad term start the arm. Split the empty case into its own arm, or gate on the prefix first char.',
+    'a leading optional/many lets a later, broad term start the arm. Split the empty case into its own arm, or gate on the prefix first char. A plain sepBy(item, sep) is ALSO nullable — pass { min: 1 } for a list that cannot be empty.',
   'cross-artifact-ref':
     'parseman >=0.32.0 resolves a g.Foo ref first-set at fuse time; if still ANY the target rule is itself ungated — analyze it and give it a concrete non-nullable lead.',
   'opaque-wrapper':
@@ -189,6 +198,10 @@ function classifyBroadArm(arm: Combinator<unknown>): { cause: FirstSetCause; det
         return isAny(p._meta.firstSet) ? { cause: 'broad-recognizer', detail: `broad recognizer (${d.tag})` } : null
       case 'not':
         return { cause: 'leading-not', detail: 'leading not(...) (first-set ANY)' }
+      // peek() CARRIES its body's first-set, so it is only broad when the body is
+      // (or the body is nullable) — walk in for the real cause.
+      case 'peek':
+        return walk(d.parser)
       case 'scanTo':
         return { cause: 'broad-recognizer', detail: 'scanTo (any first char)' }
       // `guard` (the `gate()` state predicate) has a genuinely-`any` first-set of
@@ -282,7 +295,7 @@ function detectAntiPatterns(rule: string, arms: readonly Combinator<unknown>[]):
       const inner = (ld as { parser: Combinator<unknown> }).parser
       if ((inner._def as ParserDef).tag === 'not') {
         out.push({ kind: 'double-not', rule, armIndex: i,
-          message: 'not(not(...)) hand-rolls automatic first-char gating and MISCOMPILES among shared-first-char sibling arms (its first-set is ANY, poisoning dispatch). Remove it; let the arm lead with its consuming terminal, or use word()/keywords() for an exact first-set.' })
+          message: 'not(not(...)) hand-rolls automatic first-char gating and MISCOMPILES among shared-first-char sibling arms (its first-set is ANY, poisoning dispatch). Prefer letting the arm lead with its consuming terminal; where a real positive lookahead IS needed, use peek(X) — zero-width like not(not(X)) but it CARRIES X\'s first-set, so the arm still dispatches.' })
       } else {
         out.push({ kind: 'leading-not', rule, armIndex: i,
           message: 'a leading not(...) on a choice arm hand-rolls gating and poisons the choice first-set (not() is ANY). Reorder so a consuming terminal leads; keep not(...) as a TRAILING boundary only.' })
@@ -301,6 +314,25 @@ function detectAntiPatterns(rule: string, arms: readonly Combinator<unknown>[]):
 // ── the walk ──
 
 export function analyzeGating(entry: Combinator<unknown>, opts?: AnalyzeGatingOptions): GatingReport {
+  return analyzeGatingRules([[ruleNameOf(entry) ?? opts?.entryName ?? '<entry>', entry]], opts)
+}
+
+/**
+ * Multi-root variant: analyze a WHOLE `rules()` map in one walk, so every choice
+ * is attributed to the rule that owns it.
+ *
+ * The macro build compiles a grammar through `compileRuleMap`/`compileLinkable`,
+ * never through the single-entry `compile()`. Analyzing one entry at a time (or
+ * not at all) is what produced unnamed `choice @ <entry>` warnings and ZERO
+ * anti-patterns for grammars that in fact have dozens: an unnamed warning in a
+ * multi-thousand-line grammar is unactionable. Seeding the walk with EVERY named
+ * root is what recovers the rule names — and, because the walk is shared, each
+ * choice is still analyzed exactly once however many rules reach it.
+ */
+export function analyzeGatingRules(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opts?: AnalyzeGatingOptions,
+): GatingReport {
   const raw: { g: Omit<ChoiceGating, 'id' | 'accepted'>; rule: string }[] = []
   const antiPatterns: AntiPattern[] = []
   const visited = new Set<Combinator<unknown>>()
@@ -325,7 +357,10 @@ export function analyzeGating(entry: Combinator<unknown>, opts?: AnalyzeGatingOp
     for (const k of kids) visit(k, rule)
   }
 
-  visit(entry, ruleNameOf(entry) ?? '<entry>')
+  // Seed with the map's OWN names first: a rule root is usually a `ref()` that
+  // already carries `_ruleName`, but a plain (untagged) root would otherwise
+  // inherit whichever rule reached it first.
+  for (const [name, root] of ruleMap) visit(root, ruleNameOf(root) ?? name)
 
   // Assign a stable per-choice id: bare rule name when unique in the rule, else
   // `rule#N` (occurrence order). This is the key the accepted allowlist uses.

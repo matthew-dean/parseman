@@ -40,6 +40,7 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
     case 'expect':
     case 'withCtx':
     case 'not':
+    case 'peek':
       return parserHasOwnFields(d.parser, seen)
     default:
       return false
@@ -91,6 +92,7 @@ export function parserHasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator
     case 'expect':
     case 'withCtx':
     case 'not':
+    case 'peek':
     case 'field':
       return parserHasTriviaSite(d.parser, seen)
     case 'choice': return d.parsers.some(x => parserHasTriviaSite(x, seen))
@@ -132,7 +134,8 @@ export function parserEnablesTriviaCapture(p: Combinator<unknown>, seen: Set<Com
     case 'field':
     case 'expect':
     case 'withCtx':
-    case 'not': return parserEnablesTriviaCapture(d.parser, seen)
+    case 'not':
+    case 'peek': return parserEnablesTriviaCapture(d.parser, seen)
     // leaf() clears the inner CST/trivia collector and publishes only its own
     // terminal result. An inner parser() capture cannot reach this node.
     case 'leaf': return false

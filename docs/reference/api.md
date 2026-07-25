@@ -31,11 +31,23 @@ regex(/[0-9]+/)
 regex(/[a-z]+/i)
 ```
 
-### `word(str, boundary?)`
+### `word(str, boundary?, opts?)` · `word(str, opts)`
 
 A single keyword with a trailing word-boundary guard, so `word('if')` won't match the
 `if` in `ifdef`. `boundary` is the character class that must *not* follow (default
-`_0-9A-Za-z`).
+`_0-9A-Za-z`). `opts` takes the same `caseInsensitive` flag as
+[`keywords`](#keywords-words-opts).
+
+```ts
+word('if')
+word('color', 'A-Za-z-')
+word('media', 'A-Za-z0-9_-', { caseInsensitive: true })  // CSS at-keywords
+word('true', { caseInsensitive: true })                  // default boundary
+```
+
+Case-insensitive matching is ASCII-only, and the first-set is ASCII case-**folded**
+(`{m, M}`), so a case-insensitive keyword still first-char-dispatches. Prefer this
+over `regex(/media/i)`, which the gating diagnostic flags as `keyword-regex`.
 
 ### `keywords(words, opts?)`
 
@@ -83,10 +95,38 @@ const value = choice(
 // `a` selects the fallback; no partial `a` capture leaks from the first arm.
 ```
 
-### `many(combinator)` · `oneOrMore(combinator)` · `optional(combinator)` · `sepBy(combinator, sep)`
+### `many(c, opts?)` · `oneOrMore(c, opts?)` · `sepBy(c, sep, opts?)` · `oneOrMoreSep(c, sep, opts?)` · `optional(c)`
 
-Repetition and optionality. `many` is zero-or-more, `oneOrMore` fails on zero, `optional`
-returns `null` on no match, `sepBy` matches items separated by `sep`.
+Repetition and optionality. The named combinators are sugar for the common option
+combinations — `oneOrMore(x)` **is** `many(x, { min: 1 })`, and `oneOrMoreSep(i, s)`
+**is** `sepBy(i, s, { min: 1 })`.
+
+| | nullable (min 0) | non-empty (min 1) |
+|---|---|---|
+| plain | `many` | `oneOrMore` |
+| separated | `sepBy` | `oneOrMoreSep` |
+
+- `min` / `max` count **items**, not separators. Defaults: `min: 0`, `max` unbounded.
+- `trailing: 'forbid' | 'allow'` (separated forms only, default `'forbid'`) decides
+  what happens to a separator with no item after it: leave it for the enclosing rule,
+  or consume it. A list that *requires* a separator after every item is not a
+  separated list — it has n separators for n items, not n-1 — so spell that one
+  `many(sequence(item, term))`.
+- `optional(c)` returns `null` on no match and takes no options.
+
+```ts
+many(decl)                                  // zero or more
+many(hexDigit, { min: 3, max: 8 })
+oneOrMoreSep(selector, literal(','))        // a selector list is never empty
+sepBy(decl, literal(';'), { trailing: 'allow' })
+```
+
+::: warning Nullability is a gating property
+Plain `sepBy` is `(item (sep item)*)?` — it **matches the empty string**. A nullable
+arm matches at every position, so it disables its `choice`'s first-char dispatch. Use
+`oneOrMoreSep` (or `{ min: 1 }`) for any list that cannot actually be empty. Same for
+`many` vs `oneOrMore`. `max` never affects nullability.
+:::
 
 ### `transform(combinator, fn)`
 
@@ -131,9 +171,24 @@ This is useful when a parent reducer needs a flat terminal (here `'*'` or `'/'`)
 but the language accepts structured comments or spacing around it. Static `leaf()`
 calls macro-compile and retain the inner grammar's normal coverage and trace IDs.
 
-### `not(combinator)`
+### `not(combinator)` · `peek(combinator)`
 
-Negative lookahead — succeeds consuming nothing when `combinator` fails.
+The two lookaheads. Both are zero-width — they assert and consume nothing.
+
+- `not(c)` — **negative** (PEG `!c`). Succeeds when `c` does *not* match.
+- `peek(c)` — **positive** (PEG `&c`). Succeeds when `c` *does* match.
+
+```ts
+sequence(literal('true'), not(regex(/\w/)))   // keyword boundary
+sequence(peek(regex(/[.#]/)), mixinCall)      // "only try this on . or #"
+```
+
+`not()`'s first-set is `any` (it cannot know what it forbids), so keep it as a
+**trailing** boundary — leading an arm with it poisons the choice's dispatch.
+`peek()` is the opposite: it carries its body's first-set, so a **leading** `peek()`
+narrows the arm's first chars and keeps dispatch. That is why `peek(X)` exists rather
+than `not(not(X))`, which the gating diagnostic flags as `double-not`. (A nullable
+body constrains no first character, so `peek()` reports `any` in that case.)
 
 ### `label(name, combinator)`
 

@@ -11,7 +11,7 @@ import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combi
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
-import { analyzeGating, formatGatingWarnings, type GatingReport, type GatingWarnLevel } from '../analysis/gating.ts'
+import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel } from '../analysis/gating.ts'
 
 /**
  * A rule's LEADING first-set as a fuse-resolvable recipe.
@@ -819,6 +819,9 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     case 'keywords':
     case 'guard':
     case 'not':
+    // peek(): emitted under a non-capturing probe ctx and zero-width on both
+    // outcomes, so it can never leave a partial capture behind.
+    case 'peek':
     case 'trivia':
     case 'token':
     case 'leaf':
@@ -889,6 +892,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'leaf':
       return true
     case 'not':
+    case 'peek':
     case 'guard':
     case 'trivia':
     case 'unknown':
@@ -1086,6 +1090,10 @@ function escapeKeywordRe(s: string): string {
  *     is a defensive, not a practical, limitation
  *   - a boundary class this file can't parse (defensive; `parseClassRanges`
  *     handles every realistic boundary string, e.g. `_0-9A-Za-z`)
+ *   - `caseInsensitive` over a keyword containing a non-ASCII code point —
+ *     `litFold` folds ASCII letters only, so `ä` would compile to an exact
+ *     compare and never match `Ä` (the same hazard `caseFoldLiteralOrAlt`
+ *     declines for regex-derived shapes)
  *   - `caseInsensitive` combined with a boundary — the boundary class would
  *     ALSO need ASCII case-folding to match the original regex's `/i` flag
  *     (the general "`/i` on a char class" problem, PERF_IDEAS §8d, not yet
@@ -1096,6 +1104,12 @@ function emitKeywordsFast(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx
   if (def.words.length === 0 || def.words.some(w => w.length === 0)) return null
   if (def.words.some(w => Array.from(w).length !== w.length)) return null
   if (def.caseInsensitive && def.boundary) return null
+  // `litFold` folds ASCII letters ONLY (scannable-run.ts `foldEq`), so a keyword
+  // holding a non-ASCII code point with a case pair (ä/Ä, σ/Σ/ς) would compile to
+  // an exact compare and silently miss the other case — while the interpreter's
+  // `/iy` regex matches it. `caseFoldLiteralOrAlt` already declines exactly this
+  // for regex-derived shapes; the keywords path had simply omitted the guard.
+  if (def.caseInsensitive && def.words.some(w => w.split('').some(c => c.charCodeAt(0) > 127))) return null
 
   let boundary: { ranges: Array<[number, number]>; negated: boolean } | null = null
   if (def.boundary) {
@@ -1151,7 +1165,13 @@ function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, po
 
   const alt = def.words.map(escapeKeywordRe).join('|')
   const boundary = def.boundary ? `(?![${def.boundary}])` : ''
-  const flags = def.caseInsensitive ? 'iuy' : 'uy'
+  // MUST mirror `keywords()`'s own flags exactly (see `src/combinators/keywords.ts`):
+  // case-insensitive drops `u` so that matching folds the SAME set the first-set
+  // enumerates. Emitting `iuy` here folded by Unicode simple case folding instead,
+  // so the COMPILED build matched `ſtroke` against `keywords(['stroke'], …)` while
+  // the ASCII first-set gated `ſ` away — the unsound gate, and an interpreter/
+  // compiled divergence on top of it.
+  const flags = def.caseInsensitive ? 'iy' : 'uy'
   const source = `(?:${alt})${boundary}`
   const key = `${source}/${flags}`
   let rName = ctx.regexMap.get(key)
@@ -1341,7 +1361,7 @@ function deriveExpectedArr(parsers: Combinator<unknown>[]): string {
 function failsAtStart(p: Combinator<unknown>): boolean {
   const d = p._def
   switch (d.tag) {
-    case 'literal': case 'regex': case 'keywords': case 'guard': case 'not':
+    case 'literal': case 'regex': case 'keywords': case 'guard': case 'not': case 'peek':
       return true
     case 'transform': case 'label': case 'field':
       return failsAtStart(d.parser)
@@ -2027,16 +2047,25 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   const mySyncV = ctx.recovery ? v(ctx, '_mysy') : ''
   if (ctx.recovery) stmts.push(`${ind(ctx)}const ${mySyncV} = _ctx._sync`)
 
-  if (def.min === 1) {
-    // Inline first mandatory match with early-return on failure
+  // `min` MANDATORY matches, inlined with early-return on failure. min 0/1 is the
+  // whole world today, so the loop runs 0 or 1 times and the output is unchanged;
+  // `many(x, { min: n })` simply inlines n of them.
+  for (let i = 0; i < def.min; i++) {
     const firstR = emit(def.parser, ctx, curV)
     stmts.push(...firstR.stmts)
     if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${firstR.valueVar})`)
     stmts.push(`${ind(ctx)}${curV} = ${firstR.endVar}`)
   }
 
+  // `max` — a bounded repeat needs a live item count. `wantValue` lists can read
+  // `arr.length`; a value-elided one needs its own counter. Emitted ONLY when a
+  // finite max was asked for, so the unbounded default stays byte-identical.
+  const maxV = def.max === undefined ? null : (wantValue ? `${arrV}.length` : v(ctx, '_cnt'))
+  if (maxV !== null && !wantValue) stmts.push(`${ind(ctx)}let ${maxV} = ${def.min}`)
+
   stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
   ctx.indent++
+  if (maxV !== null) stmts.push(`${ind(ctx)}if (${maxV} >= ${def.max}) break`)
 
   // Mirror interpreter repeat.ts — skip trivia before each iteration. In capture
   // mode the trivia is committed to rawChildren immediately and rolled back
@@ -2104,7 +2133,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
       `${ind(ctx)}if (!${iterOk}) {`,
       `${ind(ctx)}  ${rollback}if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPos}, _ctx)) {`,
       `${ind(ctx)}    const ${rrV} = _ctx._rec.scan(input, ${itemPos}, _ctx, ${mySyncV}, ${exp})`,
-      ...(wantValue ? [`${ind(ctx)}    ${arrV}.push(${rrV}.error)`] : []),
+      ...(wantValue ? [`${ind(ctx)}    ${arrV}.push(${rrV}.error)`] : maxV !== null ? [`${ind(ctx)}    ${maxV}++`] : []),
       `${ind(ctx)}    _ctx._rec.capture(_ctx, ${rrV}.error)`,
       `${ind(ctx)}    ${curV} = ${rrV}.end`,
       `${ind(ctx)}    continue`,
@@ -2117,6 +2146,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     stmts.push(`${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`)
   }
   if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${iterVal})`)
+  else if (maxV !== null) stmts.push(`${ind(ctx)}${maxV}++`)
   stmts.push(`${ind(ctx)}${curV} = ${iterEnd}`)
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
@@ -2213,8 +2243,10 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   // (byte-identical). Tolerant → skip to the sync, emit a ParseError, and continue
   // (unless already sitting on the enclosing sync). `originalFail` is that site's
   // exact strict string (the three sites differ — braces / rollback).
-  const failItem = (nextOkVar: string, itemPosVar: string, rb: string, originalFail: string): string[] => {
-    if (!rec) return [originalFail]
+  const failItem = (nextOkVar: string, itemPosVar: string, breakStmt: string): string[] => {
+    // A bare `break` stays brace-less — the emitted source is byte-identical to
+    // the pre-options output for every default-option sepBy.
+    if (!rec) return [`${ind(ctx)}if (!${nextOkVar}) ${breakStmt === 'break' ? 'break' : `{ ${breakStmt} }`}`]
     const rr = v(ctx, '_rr')
     return [
       `${ind(ctx)}if (!${nextOkVar}) {`,
@@ -2222,9 +2254,36 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       `${ind(ctx)}    const ${rr} = _ctx._rec.scan(input, ${itemPosVar}, _ctx, ${scanSync}, ${exp})`,
       `${ind(ctx)}    ${arrV}.push(${rr}.error); _ctx._rec.capture(_ctx, ${rr}.error); ${curV} = ${rr}.end; continue`,
       `${ind(ctx)}  }`,
-      `${ind(ctx)}  ${rb}break`,
+      `${ind(ctx)}  ${breakStmt}`,
       `${ind(ctx)}}`,
     ]
+  }
+
+  /**
+   * The break taken when the item AFTER a separator fails.
+   *
+   * 'forbid' (default) unwinds the separator with it — the list ends before it.
+   * 'allow' keeps the separator CONSUMED: only what was captured PAST it unwinds
+   * (`postSepRb`), and `cur` advances to the separator's end.
+   */
+  const itemFailBreak = (sepEndVar: string, sepRb: string, postSepRb: string): string =>
+    def.trailing === undefined
+      ? `${sepRb}break`
+      : `${postSepRb}${curV} = ${sepEndVar}; break`
+
+  /** Marks taken AFTER the separator, so `trailing` can unwind only past it. */
+  const postSepMarks = (): { decl: string[]; rb: string } => {
+    if (def.trailing === undefined || !ctx.capturing) return { decl: [], rb: '' }
+    const lv = v(ctx, '_tlv'), rw = v(ctx, '_trw'), tl = v(ctx, '_ttl'), lg = v(ctx, '_tlg')
+    return {
+      decl: [
+        `${ind(ctx)}const ${lv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
+        `${ind(ctx)}const ${rw} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
+        `${ind(ctx)}const ${tl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
+        `${ind(ctx)}const ${lg} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+      ],
+      rb: `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog) _ctx._triviaLog.length = ${lg}; `,
+    }
   }
 
   // First element + loop entry. Strict keeps the exact `if (firstOk) { … while }`
@@ -2256,6 +2315,8 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     ctx.indent++
   }
 
+  if (def.max !== undefined) stmts.push(`${ind(ctx)}if (${arrV}.length >= ${def.max}) break`)
+
   // Mirror interpreter sepBy — separate rollback marks for pre-sep and post-sep trivia.
   let sepAtPos = curV
   if (ctx.activeTrivia) {
@@ -2281,6 +2342,8 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}break }`)
 
+      const post = postSepMarks()
+      stmts.push(...post.decl)
       const npV = v(ctx, '_np')
       stmts.push(`${ind(ctx)}const ${npV} = ${capFn}(input, ${sepEnd}, _ctx, 1)`)
       const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
@@ -2288,7 +2351,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       stmts.push(
         ...nextStmts,
         // item failed → unwind the separator too, back to the end of the last item
-        ...failItem(nextOk, npV, rollbackToSep, `${ind(ctx)}if (!${nextOk}) { ${rollbackToSep}break }`),
+        ...failItem(nextOk, npV, itemFailBreak(sepEnd, rollbackToSep, post.rb)),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -2306,7 +2369,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         emitFallible(def.parser, ctx, npV, true)
       stmts.push(
         ...nextStmts,
-        ...failItem(nextOk, npV, '', `${ind(ctx)}if (!${nextOk}) break`),
+        ...failItem(nextOk, npV, itemFailBreak(sepEnd, '', '')),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -2327,11 +2390,13 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     const nextRb = markLv
       ? `if (_ctx._cstLeaves) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren) _ctx._cstRawChildren.length = ${markRw}; `
       : ''
+    const post = postSepMarks()
+    stmts.push(...post.decl)
     const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } =
       emitFallible(def.parser, ctx, sepEnd, true)
     stmts.push(
       ...nextStmts,
-      ...failItem(nextOk, sepEnd, nextRb, `${ind(ctx)}if (!${nextOk}) { ${nextRb}break }`),
+      ...failItem(nextOk, sepEnd, itemFailBreak(sepEnd, nextRb, post.rb)),
       `${ind(ctx)}${arrV}.push(${nextVal})`,
       `${ind(ctx)}${curV} = ${nextEnd}`,
     )
@@ -2340,6 +2405,16 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   stmts.push(`${ind(ctx)}}`)
   ctx.indent--
   stmts.push(`${ind(ctx)}}`)
+
+  // `min >= 1`: too few items ⇒ the whole list FAILS. (The min-0 default's empty
+  // alternative is exactly what makes plain sepBy nullable and un-gateable.)
+  // Anchored at `curV`, not `pos`: a list failure reports what would have let it
+  // CONTINUE, at the furthest position it reached. See the `failAt` comment in
+  // `sepBy()` (repeat.ts) for why, and `test/parity/repeat-options-parity.test.ts`
+  // for the check that keeps the two engines on the same rule.
+  if (def.min >= 1) {
+    stmts.push(...emitIfFail(ctx, `${arrV}.length < ${def.min}`, failArrBody(ctx, deriveExpectedArr([def.parser]), curV)))
+  }
 
   return { stmts, valueVar: arrV, endVar: curV }
 }
@@ -2434,6 +2509,29 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
     stmts: [
       ...stmts,
       ...emitIfFail(ctx, okVar, failBody(ctx, label, pos)),
+    ],
+    valueVar: 'null',
+    endVar: pos,
+  }
+}
+
+/**
+ * Positive lookahead. Zero-width on BOTH outcomes, so the body is emitted under a
+ * NON-CAPTURING ctx (the same probe treatment `emitScanTo` gives its sentinel):
+ * a lookahead that leaves CST leaves behind would double-capture whatever the
+ * following term then consumes for real.
+ */
+function emitPeek(def: Extract<ParserDef, { tag: 'peek' }>, ctx: Ctx, pos: string): ER {
+  const probeCtx: Ctx = { ...ctx, capturing: false, noHoist: true }
+  // The inner failure is discarded (inner failing = peek failing, reported at
+  // peek's own pos with its own label) — swallow the sub-parse bookkeeping.
+  const { stmts, okVar } = emitFallible(def.parser, probeCtx, pos, true)
+  ctx.vars = probeCtx.vars
+  const label = JSON.stringify(`peek(${def.parser._tag})`)
+  return {
+    stmts: [
+      ...stmts,
+      ...emitIfFail(ctx, `!${okVar}`, failBody(ctx, label, pos)),
     ],
     valueVar: 'null',
     endVar: pos,
@@ -3259,6 +3357,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       }
     }
     case 'not':     return emitNot(def, ctx, pos)
+    case 'peek':    return emitPeek(def, ctx, pos)
     case 'node':    return emitNode(def, ctx, pos)
     case 'scanTo':  return emitScanTo(def, ctx, pos)
     case 'recover': return emitRecover(def, ctx, pos)
@@ -3393,6 +3492,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'many':
     case 'oneOrMore':
     case 'not':
+    case 'peek':
     case 'transform': return hasNodeDef(d.parser, seen)
     case 'skip':      return hasNodeDef(d.main, seen) || hasNodeDef(d.skipped, seen)
     case 'sequence':
@@ -3434,15 +3534,16 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'field':
     case 'grammar':
     case 'not':
+    case 'peek':
     case 'node':
     case 'withCtx':
     case 'expect':    return [def.parser]
-    // emitMany's oneOrMore branch and emitSepBy both codegen `def.parser` TWICE
-    // (a mandatory first match, then again inside the repeat loop) — two real
-    // emit() call sites, so the usage analysis must see two edges here or it
+    // emitMany's min>=1 branch and emitSepBy both codegen `def.parser` more than
+    // once (`min` mandatory matches, then again inside the repeat loop) — each is a
+    // real emit() call site, so the usage analysis must see one edge per site or it
     // undercounts a single-use `parser` ref as inline-safe when it's actually
-    // referenced from two positions within this one compiled function.
-    case 'oneOrMore': return [def.parser, def.parser]
+    // referenced from several positions within this one compiled function.
+    case 'oneOrMore': return Array.from({ length: def.min + 1 }, () => def.parser)
     case 'sepBy':     return [def.parser, def.parser, def.separator]
     case 'skip':      return [def.main, def.skipped]
     case 'recover':   return [def.parser, def.sentinel]
@@ -3679,7 +3780,7 @@ export function ruleDependencies(
  * object form adds the accepted-snapshot `accept` allowlist (choice ids that are
  * intentionally ungated — silent, and excluded from the `'error'` gate).
  */
-export type GatingOption = GatingWarnLevel | { level?: GatingWarnLevel; accept?: Iterable<string> }
+export type GatingOption = GatingWarnLevel | { level?: GatingWarnLevel; accept?: Iterable<string>; entryName?: string }
 
 function resolveGatingLevel(opt: GatingOption | undefined): GatingWarnLevel {
   const explicit = typeof opt === 'string' ? opt : opt?.level
@@ -3697,12 +3798,35 @@ function resolveGatingLevel(opt: GatingOption | undefined): GatingWarnLevel {
  * the listed choice ids. Returns the report to attach (undefined when `'off'`).
  */
 function runGatingDiagnostic<T>(combinator: Combinator<T>, opt: GatingOption | undefined): GatingReport | undefined {
+  return reportGating(opt, o => analyzeGating(combinator as Combinator<unknown>, o))
+}
+
+/**
+ * The rule-map form of the diagnostic. `compileRuleMap`/`compileLinkable` are the
+ * ONLY paths a macro-built `rules()` grammar takes, so without this the whole
+ * grammar was silently unanalyzed — every warning the build did print came from
+ * the stray single-combinator `compile()` calls, unnamed and anti-pattern-free.
+ */
+function runGatingDiagnosticRules(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opt: GatingOption | undefined,
+): GatingReport | undefined {
+  return reportGating(opt, o => analyzeGatingRules(ruleMap, o))
+}
+
+function reportGating(
+  opt: GatingOption | undefined,
+  analyze: (o: { accept?: Iterable<string>; entryName?: string } | undefined) => GatingReport,
+): GatingReport | undefined {
   const level = resolveGatingLevel(opt)
   if (level === 'off') return undefined
   // `typeof null === 'object'` — guard so `gating: null` can't throw on `.accept`.
-  const accept = opt !== null && typeof opt === 'object' ? opt.accept : undefined
+  const obj = opt !== null && typeof opt === 'object' ? opt : undefined
+  const analyzeOpts = obj?.accept !== undefined || obj?.entryName !== undefined
+    ? { ...(obj.accept !== undefined ? { accept: obj.accept } : {}), ...(obj.entryName !== undefined ? { entryName: obj.entryName } : {}) }
+    : undefined
   let report: GatingReport
-  try { report = analyzeGating(combinator as Combinator<unknown>, accept ? { accept } : undefined) }
+  try { report = analyze(analyzeOpts) }
   catch { return undefined }
   const lines = formatGatingWarnings(report)
   if (lines.length > 0) {
@@ -3911,8 +4035,9 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; coverage?: boolean },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; coverage?: boolean; gating?: GatingOption },
 ): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
+  runGatingDiagnosticRules(ruleMap, opts?.gating)
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Named lazy proxies already carry their stable rule identity and redirect
   // their children through the final winner graph. Register only ordinary
@@ -4136,9 +4261,13 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
+  // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
+  // (`compileRuleMap` / `compile`); compileLinkable re-lowers the SAME map for the
+  // carried/linkable form, so running it by default would double every warning.
+  if (opts?.gating !== undefined) runGatingDiagnosticRules(ruleMapArg, opts.gating)
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
   // Grammar-level ambient trivia through compose(): a piece from rules({ trivia },
   // …) tags `grammarTrivia` on its rules (runtime path), or the macro threads it via

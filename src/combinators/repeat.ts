@@ -67,14 +67,56 @@ function repItem<T>(
   return { value: result.value, end: result.span.end }
 }
 
-export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
+export type RepeatOptions = {
+  /**
+   * Minimum number of ITEMS. Default `0`.
+   *
+   * `min >= 1` is not a validation nicety — it is what makes the combinator
+   * NON-NULLABLE. A nullable arm matches at every position, which disables its
+   * `choice`'s first-char dispatch by parseman's own first-set rule; a `min >= 1`
+   * repeat keeps the item's first-set, so an arm led by it still gates.
+   */
+  min?: number
+  /** Maximum number of ITEMS. Default: unbounded. Never affects nullability. */
+  max?: number
+}
+
+/** Shared `min`/`max` validation — a bad bound is an authoring error, not a parse
+ *  outcome, so it throws at CONSTRUCTION where the stack points at the grammar. */
+function resolveBounds(what: string, opts: { min?: number; max?: number }): { min: number; max: number } {
+  const min = opts.min ?? 0
+  const max = opts.max ?? Infinity
+  const bad = (msg: string): never => { throw new RangeError(`parseman: ${what} ${msg}`) }
+  if (!Number.isInteger(min) || min < 0) bad(`min must be a non-negative integer (got ${String(opts.min)})`)
+  if (max !== Infinity && (!Number.isInteger(max) || max < 1)) bad(`max must be a positive integer (got ${String(opts.max)})`)
+  if (max < min) bad(`max (${max}) is less than min (${min}) — the combinator could never succeed`)
+  return { min, max }
+}
+
+/**
+ * Repetition: `item*` by default, bounded by `{ min, max }` (both count ITEMS).
+ *
+ *   many(g.Decl)                       // zero or more — NULLABLE
+ *   many(g.Decl, { min: 1 })           // one or more  — same as oneOrMore(g.Decl)
+ *   many(g.HexDigit, { min: 3, max: 8 })
+ *
+ * `oneOrMore(x)` is kept as the sugar for the common `{ min: 1 }` case.
+ */
+export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Combinator<T[]> {
+  const { min, max } = resolveBounds('many()', opts)
+  // `min >= 1` routes to the SAME implementation `oneOrMore` has always used, so
+  // `many(x, { min: 1 })` and `oneOrMore(x)` are the identical combinator — not
+  // merely equivalent-looking. (They differ from the min-0 loop in one real way:
+  // the mandatory items parse at `pos` with no leading-trivia skip, which is the
+  // enclosing context's job.)
+  if (min >= 1) return atLeast(combinator, min, max)
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
-  const def: { tag: 'many'; parser: Combinator<unknown>; min: 0; valueUnused?: boolean } =
-    { tag: 'many', parser: combinator as Combinator<unknown>, min: 0 }
+  const def: { tag: 'many'; parser: Combinator<unknown>; min: 0; max?: number; valueUnused?: boolean } =
+    { tag: 'many', parser: combinator as Combinator<unknown>, min: 0, ...(max === Infinity ? {} : { max }) }
   let expected: string[] | undefined
   // A non-nullable body can be first-set-gated per loop iteration (see repItem).
   const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
@@ -88,7 +130,9 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
       // items still parse and self-capture into the enclosing node's children.
       const values: T[] | undefined = def.valueUnused ? undefined : []
       let cur = pos
+      let count = 0
       while (cur < input.length) {
+        if (count >= max) break
         const item = repItem(combinator, input, cur, ctx, guardable)
         if (item === 'stop') break
         if ('fail' in item) {
@@ -107,10 +151,12 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
           const { error, end } = recoverScan(input, item.failPos, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
           captureError(ctx, error)
+          count++
           cur = end
           continue
         }
         if (values !== undefined) values.push(item.value)
+        count++
         cur = item.end
       }
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
@@ -119,14 +165,27 @@ export function many<T>(combinator: Combinator<T>): Combinator<T[]> {
   }
 }
 
-export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
+/**
+ * Sugar for the commonest bound: `many(combinator, { min: 1 })` — the identical
+ * combinator, not merely an equivalent one.
+ */
+export function oneOrMore<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Combinator<T[]> {
+  return many(combinator, { ...opts, min: opts.min ?? 1 })
+}
+
+/**
+ * `min >= 1` repetition: `min` MANDATORY items (whose failure propagates) then a
+ * greedy loop up to `max`. The tag stays `oneOrMore` — every downstream switch
+ * keys on it for "non-nullable repeat" — and `min` carries the real count.
+ */
+function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combinator<T[]> {
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline,
     isTrivia: false,
   }
-  const def: { tag: 'oneOrMore'; parser: Combinator<unknown>; min: 1; valueUnused?: boolean } =
-    { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min: 1 }
+  const def: { tag: 'oneOrMore'; parser: Combinator<unknown>; min: number; max?: number; valueUnused?: boolean } =
+    { tag: 'oneOrMore', parser: combinator as Combinator<unknown>, min, ...(max === Infinity ? {} : { max }) }
   let expected: string[] | undefined
   // A non-nullable body can be first-set-gated per loop iteration (see repItem).
   const guardable = combinator._meta.firstSet.kind !== 'any' && !matchesEmpty(combinator)
@@ -143,7 +202,27 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
       // Aggregate skipped when never observed (see `many`).
       const values: T[] | undefined = def.valueUnused ? undefined : [first.value]
       let cur = first.span.end
+      let count = 1
+      // Mandatory items 2..min (only entered for min > 1) — each failure propagates,
+      // exactly like the first. They go through repItem so the trivia BETWEEN items
+      // is consumed the same way the loop consumes it.
+      while (count < min) {
+        const item = repItem(combinator, input, cur, ctx, guardable)
+        if (item === 'stop' || 'fail' in item) {
+          // Anchored at `cur` — the furthest position the repeat reached — not at
+          // its start. `many(regex(/x/), { min: 3 })` over "xx" consumed both x's
+          // and got stuck at 2 wanting a third; reporting offset 0 points the
+          // caret at input that matched. Same rule as `sepBy`'s `failAt`, and the
+          // compiled emitter already anchored here — this side was the outlier.
+          expected ??= deriveExpected(combinator)
+          return { ok: false, expected: expected.length > 0 ? expected : [combinator._tag], span: { start: cur, end: cur } }
+        }
+        if (values !== undefined) values.push(item.value)
+        cur = item.end
+        count++
+      }
       while (cur < input.length) {
+        if (count >= max) break
         const item = repItem(combinator, input, cur, ctx, guardable)
         if (item === 'stop') break
         if ('fail' in item) {
@@ -155,10 +234,12 @@ export function oneOrMore<T>(combinator: Combinator<T>): Combinator<T[]> {
           const { error, end } = recoverScan(input, item.failPos, ctx, sync, expected)
           if (values !== undefined) values.push(error as unknown as T)
           captureError(ctx, error)
+          count++
           cur = end
           continue
         }
         if (values !== undefined) values.push(item.value)
+        count++
         cur = item.end
       }
       // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
@@ -193,18 +274,89 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
   }
 }
 
-export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>): Combinator<T[]> {
+/**
+ * Non-empty separated list — `oneOrMore`'s relationship to `many`, for separated
+ * lists. `oneOrMoreSep(item, sep)` is exactly `sepBy(item, sep, { min: 1 })`.
+ *
+ *   oneOrMoreSep(g.Selector, literal(','))   // a selector list is never empty
+ *
+ * REACH FOR THIS, NOT `sepBy`, for any list that cannot actually be empty —
+ * selector lists, value lists, media-query preludes, keyframe selectors. `sepBy`'s
+ * min-0 default matches the EMPTY STRING, which makes it nullable, and a nullable
+ * arm disables its `choice`'s first-char dispatch by parseman's own first-set
+ * rule. This form is non-nullable and keeps the item's first-set, so an arm led by
+ * it still gates.
+ */
+export function oneOrMoreSep<T, S>(combinator: Combinator<T>, separator: Combinator<S>, opts: SepByOptions = {}): Combinator<T[]> {
+  return sepBy(combinator, separator, { ...opts, min: opts.min ?? 1 })
+}
+
+/** How a separator with NO item after it is treated. */
+export type TrailingSeparator =
+  /**
+   * DEFAULT, and what `sepBy` has always done: the trailing separator is NOT
+   * consumed — the list ends before it and the enclosing grammar sees it. (It is
+   * not an error here; "forbid" means the list refuses to own it.)
+   */
+  | 'forbid'
+  /** Consume a trailing separator when present (`a, b,` → 2 items, comma eaten). */
+  | 'allow'
+
+export type SepByOptions = RepeatOptions & {
+  /** What to do with a separator that has no item after it. Default `'forbid'`. */
+  trailing?: TrailingSeparator
+}
+
+/**
+ * Separated list: `(item (sep item)*)?` by default — note that it MATCHES THE
+ * EMPTY STRING, which makes it nullable and therefore un-gateable as a choice arm.
+ * For a list that cannot be empty reach for `oneOrMoreSep`, or pass `{ min: 1 }`.
+ *
+ *   sepBy(g.Value, literal(','))                  // may be empty — NULLABLE
+ *   oneOrMoreSep(g.Selector, literal(','))        // non-empty — gates as a choice arm
+ *   sepBy(g.Decl, literal(';'), { trailing: 'allow' })
+ *
+ * `min`/`max` count ITEMS, not separators.
+ */
+export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>, opts: SepByOptions = {}): Combinator<T[]> {
+  const { min, max } = resolveBounds('sepBy()', opts)
+  const trailing = opts.trailing ?? 'forbid'
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
     canMatchNewline: combinator._meta.canMatchNewline || separator._meta.canMatchNewline,
     isTrivia: false,
   }
   let expected: string[] | undefined
+  /**
+   * A list-level failure is anchored at the FURTHEST position the list reached,
+   * and reports what would have allowed it to CONTINUE there — never at the
+   * list's own start.
+   *
+   * Anchoring at the start throws away everything the parse learned: for
+   * `sepBy(item, ',', { min: 3 })` over `"a,b"` the list consumed `a,b` perfectly
+   * and got stuck at offset 3 wanting a third item, so a failure reported at 0
+   * points the caret at a token that parsed fine. It also mislocates
+   * `completionsAt`, which asks what may appear AT a cursor — the answer belongs
+   * at the stuck position, not at the list's start.
+   *
+   * BOTH engines must follow this rule; it drifted three separate ways across
+   * this option surface, and `test/parity/repeat-options-parity.test.ts` is what
+   * now holds them together. The empty-set fallback mirrors codegen's
+   * `deriveExpectedArr`, so the two payloads are identical.
+   */
+  const failAt = (at: number): ParseResult<T[]> => {
+    expected ??= deriveExpected(combinator)
+    return { ok: false, expected: expected.length > 0 ? expected : [combinator._tag], span: { start: at, end: at } }
+  }
 
   return {
     _tag: 'sepBy',
     _meta: meta,
-    _def: { tag: 'sepBy', parser: combinator as Combinator<unknown>, separator: separator as Combinator<unknown> },
+    _def: {
+      tag: 'sepBy', parser: combinator as Combinator<unknown>, separator: separator as Combinator<unknown>, min,
+      ...(max === Infinity ? {} : { max }),
+      ...(trailing === 'forbid' ? {} : { trailing }),
+    },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       const first = combinator.parse(input, pos, ctx)
       const values: T[] = []
@@ -213,12 +365,18 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
         values.push(first.value)
         cur = first.span.end
       } else {
-        // Cold path. Strict: an empty/absent first element is a legal empty list.
+        // Cold path. Strict: an empty/absent first element is a legal empty list
+        // for `sepBy`, and a FAILURE for `sepBy1` (min 1 — that is the whole point).
         // Tolerant: if the first element is JUNK (a terminator is inferable and we
         // are not already sitting on it) recover it and enter the loop; otherwise
         // it is a genuine empty list.
         const term = ctx._tolerant ? ctx._sync : undefined
         if (term === undefined || matchesAt(term, input, pos, ctx)) {
+          // `min >= 1` — nothing was consumed, so the furthest position IS `pos`.
+          // The compiled form swallows the first element's sub-parse (it is
+          // discarded on the min-0 path), so it cannot reproduce the inner
+          // failure's exact payload; both sides report this same derived set.
+          if (min >= 1) return failAt(pos)
           return { ok: true, value: [], span: { start: pos, end: pos } }
         }
         expected ??= deriveExpected(combinator)
@@ -228,6 +386,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
         cur = rec.end
       }
       while (cur < input.length) {
+        if (values.length >= max) break
         // One mark for the whole iteration (separator + following item): if the
         // item fails, the trailing separator must be rolled back with it, or its
         // captured leaves leak past the end of the list.
@@ -247,6 +406,9 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
           rollbackTrivia(ctx, loopMark)
           break
         }
+        // Mark taken AFTER the separator: `trailing` keeps the separator but must
+        // still unwind the trivia + leaves captured past it.
+        const sepMark = trailing === 'forbid' ? undefined : saveTriviaMark(ctx)
         let nextPos = sep.span.end
         if (ctx.trivia) {
           if (needsDeferredTriviaCommit(ctx)) {
@@ -263,6 +425,20 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
           // the separator we just consumed is real, so resync the bad element after
           // it. If a terminator is inferable and already present at nextPos, the
           // separator was a trailing one (e.g. `a;}`) → roll it back and stop.
+          //
+          // RECOVERY IS TESTED FIRST, and is ORTHOGONAL to `trailing`. This block
+          // used to lead with the `sepMark !== undefined` branch — but sepMark is
+          // non-undefined for EVERY 'allow' list, so that branch always won and the
+          // resync below became unreachable the moment a grammar opted into a
+          // trailing separator. `{a,,b}` recovered under the default 'forbid' and
+          // hard-failed under 'allow', which is not a policy anyone would choose:
+          // permitting a trailing comma has nothing to do with whether a tolerant
+          // parse may resynchronize. (The compiled `failItem` already ordered it
+          // this way — the engines disagreed because of this.)
+          //
+          // Junk after a REAL separator is recovered whatever `trailing` says, and
+          // no rollback happens on that path: both the separator and the recovered
+          // error element belong to the list.
           const term = ctx._tolerant ? ctx._sync : undefined
           if (term !== undefined && !matchesAt(term, input, nextPos, ctx)) {
             expected ??= deriveExpected(combinator)
@@ -272,12 +448,21 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>)
             cur = rec.end
             continue
           }
+          if (sepMark !== undefined) {
+            // 'allow': the separator we just consumed IS part of the list — a
+            // genuine trailing one, since no resync applied above.
+            rollbackTrivia(ctx, sepMark)
+            cur = sep.span.end
+            break
+          }
           rollbackTrivia(ctx, loopMark)
           break
         }
         values.push(next.value)
         cur = next.span.end
       }
+      // Too few items: the list is stuck at `cur` wanting another ITEM.
+      if (values.length < min) return failAt(cur)
       return { ok: true, value: values, span: { start: pos, end: cur } }
     },
   }

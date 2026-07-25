@@ -8,3 +8,4 @@ src/**/*.d.ts.map
 .claude/worktrees/
 docs/.vitepress/cache/
 coverage/
+.doc-verify/

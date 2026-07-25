@@ -1,4 +1,4 @@
-import type { Combinator, ParseContext } from '../types.ts'
+import type { Combinator, ParseContext, ParseFail } from '../types.ts'
 import { parseClassRanges } from '../regex/classes.ts'
 import {
   analyzeLabeledTrivia,
@@ -42,6 +42,34 @@ export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
 export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): void {
   rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields, errors: mark.errors })
   if (ctx._triviaLog) ctx._triviaLog.length = mark.log
+}
+
+/**
+ * A ZERO-WIDTH LOOKAHEAD's mark: everything `saveTriviaMark` covers, plus the
+ * completions probe's current best failure.
+ *
+ * `_probe` is a sink like any other — `failAt` (probe.ts) replaces
+ * `ctx._probe.best` whenever a failure lands at or before the cursor — but it is
+ * deliberately NOT part of `rollbackTrivia`, because most rollbacks must leave it
+ * alone. A failed `choice` arm or `sequence` term SHOULD keep its contribution:
+ * merging the expectations of alternatives that failed at the cursor is exactly
+ * how `completionsAt` builds its set.
+ *
+ * A lookahead is the exception. `peek`/`not` consume nothing on EITHER outcome
+ * and promise to leave no observable trace, so expectations raised INSIDE the
+ * probe are not reachable from the enclosing grammar at the cursor:
+ * `peek(sequence(literal('a'), literal('zzz')))` over `"ab"` offered `"zzz"` as
+ * the ONLY completion, though no input can ever reach it there.
+ */
+export type LookaheadMark = TriviaRollbackMark & { probeBest: ParseFail | null }
+
+export function saveLookaheadMark(ctx: ParseContext): LookaheadMark {
+  return { ...saveTriviaMark(ctx), probeBest: ctx._probe ? ctx._probe.best : null }
+}
+
+export function rollbackLookahead(ctx: ParseContext, mark: LookaheadMark): void {
+  rollbackTrivia(ctx, mark)
+  if (ctx._probe) ctx._probe.best = mark.probeBest
 }
 
 function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaScan {

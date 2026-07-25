@@ -75,7 +75,14 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
       catch { return true }
     case 'many':
     case 'optional':
-    case 'not':       return true          // zero repetitions / absent / lookahead
+    case 'not':
+    case 'peek':     return true          // zero repetitions / absent / lookahead
+    // Default `sepBy` is `(item (sep item)*)?` — it MATCHES THE EMPTY STRING.
+    // Any `min >= 1` requires that many ITEMS, so it is nullable only when the
+    // item is. (Keying this off `min === 1` reported every `{ min: 2 }` list as
+    // nullable — safe, but wrong, and it put a bogus `nullable-prefix` note on
+    // the gating diagnostic for a list that can never match empty.)
+    case 'sepBy':     return d.min >= 1 ? me(d.parser) : true
     case 'oneOrMore': return me(d.parser)
     case 'sequence':  return d.parsers.every(me)
     case 'choice':
@@ -93,7 +100,7 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'skip':      return me(d.main)
     case 'lazy':
       try { return me(d.thunk()) } catch { return true }
-    default:          return true          // sepBy / scanTo / guard / unknown → assume nullable (safe)
+    default:          return true          // scanTo / guard / unknown → assume nullable (safe)
   }
 }
 
@@ -109,18 +116,58 @@ export function matchesEmpty(p: Combinator<unknown>, seen: Set<Combinator<unknow
  * widens the set of possible first chars beyond Y. So firstSet(Y) is a sound (and
  * tighter) superset.
  *
- * Parseman has NO positive-lookahead combinator (`(?=X)` exists only INSIDE a
- * `regex()` pattern, where the regex first-set analyzer handles it). If one is ever
- * added, its tight first-set is firstSet(body) ∩ firstSet(Y) when `body` is
- * NON-nullable (both must be satisfiable at the same position), else firstSet(Y)
- * (a nullable `(?=body)` succeeds on empty, so it imposes no first-char constraint
- * and intersecting would UNSOUNDLY exclude valid chars). It must NOT be added to
- * this predicate without that intersection logic — a future assertion combinator
- * left out of this set merely contributes its shallow `any` first-set, which stays
- * sound (over-approximation), only losing tightness.
+ * The POSITIVE lookahead `peek(X)` is zero-width too, but it is NOT in this
+ * predicate: unlike `not`, it knows what it requires, so its first-set is a real
+ * constraint that must be INTERSECTED into the sequence's set rather than dropped
+ * (see `isPositiveLookahead` and `sequenceFirstSet`).
  */
 export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
   return (p._def as ParserDef).tag === 'not'
+}
+
+/**
+ * A POSITIVE zero-width assertion (`peek(X)`). It consumes nothing, so like
+ * `not(X)` it does not contribute a first char of its own — but it does REQUIRE
+ * that X match here, so `peek(X) Y` can only start with a char in
+ * firstSet(X) ∩ firstSet(Y). That intersection is what makes a leading `peek()`
+ * gate its choice arm; `not(not(X))`, the only previous spelling, reports `any()`
+ * and poisons the dispatch instead.
+ *
+ * Soundness: first-sets are SUPERSETS of the true first chars, and
+ * (A ⊇ a) ∧ (B ⊇ b) ⇒ A ∩ B ⊇ a ∩ b — so intersecting stays a superset and can
+ * never skip a real match. A NULLABLE body succeeds on the empty string and
+ * therefore constrains nothing; `peek()` reports `any()` in that case, which the
+ * intersection treats as "no constraint".
+ */
+export function isPositiveLookahead(p: Combinator<unknown>): boolean {
+  return (p._def as ParserDef).tag === 'peek'
+}
+
+/** Intersect a lookahead constraint into an accumulator; `any` = no constraint. */
+function narrowBy(acc: FirstSet | null, constraint: FirstSet): FirstSet | null {
+  if (constraint.kind === 'any') return acc
+  if (acc === null) return constraint
+  if (acc.kind === 'any') return constraint
+  if (acc.kind === 'empty' || constraint.kind === 'empty') return { kind: 'empty' }
+  const ranges: CharRange[] = []
+  for (const a of acc.ranges) for (const b of constraint.ranges) {
+    const lo = Math.max(a.lo, b.lo)
+    const hi = Math.min(a.hi, b.hi)
+    if (lo <= hi) ranges.push({ lo, hi })
+  }
+  return ranges.length === 0 ? { kind: 'empty' } : { kind: 'ranges', ranges }
+}
+
+/**
+ * Apply the accumulated `peek()` constraints to a sequence's first-set. When the
+ * consuming terms contributed NOTHING (the sequence is all zero-width/nullable,
+ * e.g. a bare `peek(X)` arm), the assertion IS the first-set: the sequence can
+ * only succeed — even zero-width — where X matches.
+ */
+function applyAssertion(fs: FirstSet, assertion: FirstSet | null): FirstSet {
+  if (assertion === null) return fs
+  if (fs.kind === 'empty') return assertion
+  return narrowBy(fs, assertion) ?? fs
 }
 
 /**
@@ -134,11 +181,17 @@ export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
  */
 export function sequenceFirstSet(parsers: readonly Combinator<unknown>[]): FirstSet {
   let fs: FirstSet = empty()
+  let assertion: FirstSet | null = null
   for (const p of parsers) {
+    if (isPositiveLookahead(p)) {
+      // Zero-width but CONSTRAINING: intersect, keep scanning (it consumes nothing).
+      assertion = narrowBy(assertion, p._meta.firstSet)
+      continue
+    }
     if (!isZeroWidthAssertion(p)) fs = union(fs, p._meta.firstSet)
-    if (!matchesEmpty(p)) return fs
+    if (!matchesEmpty(p)) return applyAssertion(fs, assertion)
   }
-  return fs
+  return applyAssertion(fs, assertion)
 }
 
 /**
@@ -174,13 +227,22 @@ export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>
       // Union through the nullable prefix (a leading nullable term lets a later
       // term's first chars start the sequence) — ref-resolving `sequenceFirstSet`.
       // A leading zero-width assertion (`not`) contributes nothing (its `any` would
-      // poison the union) but is still nullable, so keep scanning past it.
+      // poison the union) but is still nullable, so keep scanning past it. A
+      // positive `peek()` is zero-width AND constraining → intersect.
       let out: FirstSet = empty()
+      let assertion: FirstSet | null = null
       for (const term of d.parsers) {
+        if (isPositiveLookahead(term)) { assertion = narrowBy(assertion, fs(term)); continue }
         if (!isZeroWidthAssertion(term)) out = union(out, fs(term))
-        if (!matchesEmpty(term)) return out
+        if (!matchesEmpty(term)) return applyAssertion(out, assertion)
       }
-      return out
+      return applyAssertion(out, assertion)
+    }
+    case 'peek': {
+      // Deep-resolve the body: a `ref()` reads `any()` at CONSTRUCTION, so the
+      // shallow `_meta.firstSet` baked into peek() would lose the gate.
+      const inner = d.parser
+      return matchesEmpty(inner) ? any() : fs(inner)
     }
     case 'oneOrMore':
     case 'many':
@@ -193,7 +255,7 @@ export function firstSetOf(p: Combinator<unknown>, seen: Set<Combinator<unknown>
     case 'node':
     case 'grammar':
     case 'expect':    return fs(d.parser)
-    case 'sepBy':     return fs(d.parser)
+    case 'sepBy':     return fs(d.parser)   // both min 0 and min 1 start with the item
     case 'skip':      return fs(d.main)
     default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
   }

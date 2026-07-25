@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rules, choice, sequence, literal, regex, optional, sepBy, many, oneOrMore,
-  not, keywords, trivia, transform, node, type Combinator,
+  not, peek, keywords, trivia, transform, node, type Combinator,
 } from '../../src/index.ts'
 import { toEBNF, toRailroadHtml, toRailroadSvg, RAILROAD_CSS, buildSpecModel } from '../../src/spec/index.ts'
 
@@ -19,11 +19,13 @@ function demoGrammar() {
     const number = regex(/[0-9]+/)
     return {
       expr: choice(self.call, self.list, ident, number),
-      call: sequence(ident, literal('('), optional(sepBy(self.expr as Combinator<unknown>, literal(','))), literal(')')),
-      list: sequence(literal('['), sepBy(self.expr as Combinator<unknown>, literal(',')), literal(']')),
+      call: sequence(ident, literal('('), sepBy(self.expr as Combinator<unknown>, literal(',')), literal(')')),
+      list: sequence(literal('['), sepBy(self.expr as Combinator<unknown>, literal(','), { min: 1 }), literal(']')),
       kw: keywords(['if', 'else', 'while']),
       stars: sequence(many(ident), oneOrMore(number)),
       neg: sequence(not(literal('#')), ident),
+      pos: sequence(peek(literal('@')), ident),
+      opt: sequence(optional(literal('-')), ident),
     }
   })
 }
@@ -44,12 +46,56 @@ describe('spec — combinator → EBNF mapping', () => {
     expect(lines.expr).toBe('call | list | /[a-zA-Z_][a-zA-Z0-9_]*/ | /[0-9]+/')
   })
 
-  it('sequence + optional + sepBy, with precedence parens', () => {
+  it('sequence + nullable sepBy renders the empty alternative it really has', () => {
     expect(lines.call).toBe('/[a-zA-Z_][a-zA-Z0-9_]*/ "(" (expr ("," expr)*)? ")"')
   })
 
-  it('sepBy expands to item (sep item)*', () => {
+  it('sepBy { min: 1 } expands to item (sep item)* — no empty alternative', () => {
     expect(lines.list).toBe('"[" expr ("," expr)* "]"')
+  })
+
+  it('BOUNDED repeats render their real bounds instead of collapsing to * / +', () => {
+    // 0.34.0 gave the whole repeat family { min, max } (and sepBy `trailing`), but
+    // the spec model dropped every one of them: `many(x, { min: 3, max: 8 })` came
+    // out as plain `x+`, and a `sepBy` with `min >= 2` came out wrapped in `( … )?`
+    // — claiming a list that requires two items can match EMPTY, and that one item
+    // would do. A generated spec that understates the grammar is worse than none.
+    const item = regex(/[a-z]+/)
+    const comma = literal(',')
+    const lines = ebnfLines(toEBNF(rules(() => ({
+      nullable: sepBy(item, comma),
+      atLeast1: sepBy(item, comma, { min: 1 }),
+      atLeast2: sepBy(item, comma, { min: 2 }),
+      oneToThree: sepBy(item, comma, { min: 1, max: 3 }),
+      trailAllow: sepBy(item, comma, { min: 1, trailing: 'allow' }),
+      starMax: many(item, { max: 4 }),
+      threeToEight: many(item, { min: 3, max: 8 }),
+      exactly2: many(item, { min: 2, max: 2 }),
+      plainStar: many(item),
+      plainPlus: oneOrMore(item),
+    }))))
+    const I = '/[a-z]+/'
+    expect(lines.nullable).toBe(`(${I} ("," ${I})*)?`)
+    expect(lines.atLeast1).toBe(`${I} ("," ${I})*`)
+    // The tail repeats ONE FEWER time than there are items: 2+ items → 1+ tails.
+    expect(lines.atLeast2).toBe(`${I} ("," ${I})+`)
+    expect(lines.oneToThree).toBe(`${I} ("," ${I}){0,2}`)
+    expect(lines.trailAllow).toBe(`${I} ("," ${I})* ","?`)
+    expect(lines.starMax).toBe(`${I}{0,4}`)
+    expect(lines.threeToEight).toBe(`${I}{3,8}`)
+    expect(lines.exactly2).toBe(`${I}{2}`)
+    // The unbounded spellings are untouched.
+    expect(lines.plainStar).toBe(`${I}*`)
+    expect(lines.plainPlus).toBe(`${I}+`)
+  })
+
+  it('a non-empty sepBy is never wrapped in the OPTIONAL that means "can match empty"', () => {
+    const item = regex(/[a-z]+/)
+    for (const min of [1, 2, 5]) {
+      const line = ebnfLines(toEBNF(rules(() => ({ r: sepBy(item, literal(','), { min }) })))).r!
+      expect(line, `min ${min}`).not.toMatch(/^\(.*\)\?$/)
+    }
+    expect(ebnfLines(toEBNF(rules(() => ({ r: sepBy(item, literal(','), { min: 0 }) })))).r).toMatch(/^\(.*\)\?$/)
   })
 
   it('keywords → alternation of quoted literals', () => {
@@ -64,6 +110,14 @@ describe('spec — combinator → EBNF mapping', () => {
 
   it('not → negation annotation', () => {
     expect(lines.neg).toBe('!"#" /[a-zA-Z_][a-zA-Z0-9_]*/')
+  })
+
+  it('peek → PEG positive-lookahead annotation', () => {
+    expect(lines.pos).toBe('&"@" /[a-zA-Z_][a-zA-Z0-9_]*/')
+  })
+
+  it('optional → ? postfix', () => {
+    expect(lines.opt).toBe('"-"? /[a-zA-Z_][a-zA-Z0-9_]*/')
   })
 })
 
@@ -112,7 +166,7 @@ describe('spec — ordering', () => {
   // author's declaration order regardless.
   it('defaults to declaration order (entry rule leads)', () => {
     const model = buildSpecModel(demoGrammar())
-    expect(model.productions.map(p => p.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg'])
+    expect(model.productions.map(p => p.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg', 'pos', 'opt'])
   })
 
   it("sort: 'reachable' introduces each rule at its first reference; unreachable rules trail", () => {
@@ -179,7 +233,7 @@ describe('spec — railroad HTML', () => {
   })
 
   it('emits one diagram container + DSL builder per production', () => {
-    for (const name of ['expr', 'call', 'list', 'kw', 'stars', 'neg']) {
+    for (const name of ['expr', 'call', 'list', 'kw', 'stars', 'neg', 'pos', 'opt']) {
       expect(html).toContain(`data-rule="${name}"`)
     }
     expect(html).toContain('Diagram(')
@@ -189,6 +243,20 @@ describe('spec — railroad HTML', () => {
 
   it('sets the page title', () => {
     expect(html).toContain('<title>Demo</title>')
+  })
+
+  it('does not wrap a non-empty sepBy in Optional, and labels a bounded repeat', () => {
+    const item = regex(/[a-z]+/)
+    const dsl = (r: Combinator<unknown>): string =>
+      toRailroadHtml(rules(() => ({ r }))).match(/name: "r", dsl: function\(\)\{ return Diagram\((.*)\); \}/)![1]!
+    // `Optional(` is the diagram's way of saying "this path can be skipped".
+    expect(dsl(sepBy(item, literal(',')))).toContain('Optional(')
+    expect(dsl(sepBy(item, literal(','), { min: 1 }))).not.toContain('Optional(')
+    expect(dsl(sepBy(item, literal(','), { min: 2 }))).not.toContain('Optional(')
+    // A real bound rides the loop-back path, since railroad has no count primitive.
+    expect(dsl(sepBy(item, literal(','), { min: 2 }))).toContain('Comment("2+ times")')
+    expect(dsl(many(item, { min: 3, max: 8 }))).toContain('Comment("3–8 times")')
+    expect(dsl(many(item))).not.toContain('Comment(')
   })
 })
 
@@ -210,7 +278,7 @@ describe('spec — static railroad SVG', () => {
   })
 
   it('renders one static SVG per production, headlessly (no DOM, no client script)', () => {
-    expect(svgs.map((s) => s.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg'])
+    expect(svgs.map((s) => s.name)).toEqual(['expr', 'call', 'list', 'kw', 'stars', 'neg', 'pos', 'opt'])
     for (const { svg } of svgs) {
       expect(svg).toMatch(/^<svg class="railroad-diagram"/)
       expect(svg).toContain('</svg>')

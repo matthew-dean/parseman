@@ -17,11 +17,18 @@ import { RULE_ORDER } from '../combinators/parser.ts'
 export type SpecNode =
   | { kind: 'seq'; items: SpecNode[] }
   | { kind: 'choice'; items: SpecNode[] }
-  | { kind: 'star'; item: SpecNode }
-  | { kind: 'plus'; item: SpecNode }
+  /** `item*`, or `item{0,max}` when `many(…, { max })` bounded it. */
+  | { kind: 'star'; item: SpecNode; max?: number }
+  /** `item+`, or `item{min,max}` when `many(…, { min, max })` bounded it. `min`
+   *  defaults to 1 and is always >= 1 (a min-0 repeat is a `star`). */
+  | { kind: 'plus'; item: SpecNode; min?: number; max?: number }
   | { kind: 'opt'; item: SpecNode }
-  /** Separated repetition (`sepBy`): `item (sep item)*` (min 0) or `item (sep item)+` — always ≥1 here. */
-  | { kind: 'sepBy'; item: SpecNode; sep: SpecNode }
+  /**
+   * Separated repetition. `min`/`max` count ITEMS, not separators: `min: 0` is
+   * `(item (sep item)*)?` — NULLABLE — and any `min >= 1` requires that many
+   * items, so it is not. `trailing` mirrors `sepBy`'s option of the same name.
+   */
+  | { kind: 'sepBy'; item: SpecNode; sep: SpecNode; min: number; max?: number; trailing?: 'allow' }
   /** Reference to a named production (non-terminal). */
   | { kind: 'ref'; name: string }
   /**
@@ -32,6 +39,8 @@ export type SpecNode =
   | { kind: 'terminal'; text: string; literal: boolean }
   /** Negative lookahead (`not`). Rendered as an annotation, not consumed input. */
   | { kind: 'not'; item: SpecNode }
+  /** Positive lookahead (`ahead`). Zero-width, like `not`. */
+  | { kind: 'peek'; item: SpecNode }
   /** An out-of-band annotation (guards, error-recovery, unknowns). */
   | { kind: 'annotation'; text: string }
   /** Matches nothing (elided trivia / semantic-only wrappers). */
@@ -228,19 +237,32 @@ class Builder {
         return flattenChoice(items)
       }
 
+      // `max`/`min` are carried through so a BOUNDED repeat does not render as an
+      // unbounded one — the spec is generated to be read as the truth about what
+      // parses, and `many(x, { min: 3, max: 8 })` is not `x+`.
       case 'many':
-        return { kind: 'star', item: this.walk(def.parser) }
+        return { kind: 'star', item: this.walk(def.parser), ...(def.max === undefined ? {} : { max: def.max }) }
       case 'oneOrMore':
-        return { kind: 'plus', item: this.walk(def.parser) }
+        return {
+          kind: 'plus', item: this.walk(def.parser),
+          ...(def.min === 1 ? {} : { min: def.min }),
+          ...(def.max === undefined ? {} : { max: def.max }),
+        }
       case 'optional':
         return { kind: 'opt', item: this.walk(def.parser) }
       case 'attempt':
         return this.walk(def.parser)
       case 'sepBy':
-        return { kind: 'sepBy', item: this.walk(def.parser), sep: this.walk(def.separator) }
+        return {
+          kind: 'sepBy', item: this.walk(def.parser), sep: this.walk(def.separator), min: def.min,
+          ...(def.max === undefined ? {} : { max: def.max }),
+          ...(def.trailing === undefined ? {} : { trailing: def.trailing }),
+        }
 
       case 'not':
         return { kind: 'not', item: this.walk(def.parser) }
+      case 'peek':
+        return { kind: 'peek', item: this.walk(def.parser) }
 
       // Transparent semantic wrappers — render the inner syntax.
       case 'transform':
