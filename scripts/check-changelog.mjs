@@ -106,10 +106,10 @@ const lifecycleProjection = (pkgJson) =>
 
 /**
  * Files that decide what `dist/` CONTAINS, without being in it. `src/**` is the input
- * to the build; these are the build. A change to the bundler config or the build
- * script can change every shipped byte — different externals, a dropped entry point,
- * a changed target — while `src/` and `package.json` sit still, and a rule that only
- * watched `src/` would call that "no published surface changed".
+ * to the build; these are the build. A change to the build script — which drives
+ * esbuild inline — can change every shipped byte: different externals, a dropped
+ * entry point, a changed target, while `src/` and `package.json` sit still, and a
+ * rule that only watched `src/` would call that "no published surface changed".
  *
  * Named individually rather than exempting `scripts/` wholesale: the rest of that
  * directory (this file, the coverage guard, the doc verifier) is CI machinery that
@@ -122,7 +122,7 @@ const lifecycleProjection = (pkgJson) =>
  * through the extends chain. Watching only the file that does the extending would
  * let a consumer-visible change to the emitted types merge unbumped.
  */
-const BUILD_INPUTS = ['scripts/build.mjs', 'tsup.config.ts', 'tsconfig.build.json', 'tsconfig.json']
+const BUILD_INPUTS = ['scripts/build.mjs', 'tsconfig.build.json', 'tsconfig.json']
 
 /** Parse `1.2.3` / `v1.2.3-rc.1` into comparable parts, or `null` if it isn't one. */
 const parseVersion = (raw) => {
