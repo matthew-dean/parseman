@@ -258,6 +258,46 @@ jobs:
       - name: Rollback-density perf gate vs the pinned reference commit
         run: pnpm perf:guard:grammars
 
+  # Broad workload perf gate — did realistic parsing get slower, on ANY axis?
+  #
+  # `grammar-perf` above sweeps two axes and thresholds each. That is the right
+  # shape for attributing a regression and the wrong shape for finding one: it
+  # shipped with a rollback sweep, and `fix(expect)` regressed expected-set width
+  # straight through it in the very next PR. A targeted gate can only ever catch
+  # the regression someone already thought of.
+  #
+  # This job parses realistic stylesheets, documents and payloads end to end and
+  # thresholds each workload on its own, so a cost on any axis shows up as time.
+  # It is separate from `grammar-perf` rather than folded into it because the two
+  # answer different questions and a reader should be able to see which one went
+  # red: this one says "downstream got slower", that one says "and here is the
+  # axis".
+  #
+  # Runs on EVERY code PR. It costs ~50 s here — three independent measurement
+  # passes so one busy moment on a shared runner cannot fail a PR on its own. See
+  # docs/design/perf-gates.md for what it can and cannot see.
+  workload-perf:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history: the gate builds the reference side from a sha pinned in
+          # bench/workloads/config.json, and a shallow clone cannot see it.
+          # A missing reference is a hard failure, never a skip.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Realistic-workload perf gate vs the pinned reference commit
+        run: pnpm perf:workloads
+
   # The single required status check. The ruleset on `main` requires a context
   # named exactly `test`; a matrix job publishes one context PER LEG
   # (`test (node lts/*)`, …) and none named `test`, so making the matrix the
@@ -269,7 +309,7 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: [changes, test-matrix, docs-verify, grammar-perf, release-gate]
+    needs: [changes, test-matrix, docs-verify, grammar-perf, release-gate, workload-perf]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -280,8 +320,9 @@ jobs:
           docs='${{ needs.docs-verify.result }}'
           perf='${{ needs.grammar-perf.result }}'
           release='${{ needs.release-gate.result }}'
+          workload='${{ needs.workload-perf.result }}'
           code='${{ needs.changes.outputs.code }}'
-          echo "test-matrix=$matrix  docs-verify=$docs  grammar-perf=$perf  release-gate=$release  code-changed=$code"
+          echo "test-matrix=$matrix  docs-verify=$docs  grammar-perf=$perf  release-gate=$release  workload-perf=$workload  code-changed=$code"
 
           # docs-verify gates every change — it is never skipped.
           [ "$docs" = "success" ] || { echo "::error::docs:verify did not pass"; exit 1; }
@@ -315,4 +356,14 @@ jobs:
               [ "$code" = "false" ] || { echo "::error::grammar-perf skipped but code changed"; exit 1; }
               echo "documentation-only change — grammar perf gate intentionally skipped" ;;
             *) echo "::error::grammar-perf result: $perf"; exit 1 ;;
+          esac
+
+          # And the same rule again for the broad workload gate. Two perf gates,
+          # two independent required results: a green here must mean BOTH ran.
+          case "$workload" in
+            success) ;;
+            skipped)
+              [ "$code" = "false" ] || { echo "::error::workload-perf skipped but code changed"; exit 1; }
+              echo "documentation-only change — workload perf gate intentionally skipped" ;;
+            *) echo "::error::workload-perf result: $workload"; exit 1 ;;
           esac

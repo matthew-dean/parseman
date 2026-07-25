@@ -5,6 +5,95 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.36.0 — 2026-07-24
 
+- **A broad, realistic-workload perf gate — `pnpm perf:workloads`.** parseman
+  shipped three consecutive Less parse regressions that its own gates did not
+  catch. The last of them is the argument for this one: `fix(expect)` regressed
+  derived expected-set width, `perf:guard:grammars` swept speculative-rollback
+  density, and it read flat. That is not a bug in the sweep — it is the
+  structural limit of any targeted gate. It can only catch the regression someone
+  already thought of, and `fix(expect)` was a *correctness* fix to error-message
+  quality that nobody would have predicted a 50% cost from.
+
+  So the new gate is parameterised on nothing. It parses five realistic
+  workloads end to end — two Less, one CSS, one GraphQL, one JSON, ~50 KB each —
+  and reports the time, so a cost on ANY axis shows up. Everything it needs is in
+  this repository: the grammars are `bench/workloads/`, the corpora are
+  hand-authored under `bench/workloads/fixtures/`, and `pnpm install && pnpm
+  perf:workloads` is the whole contract. No sibling checkout, no clone, no
+  network.
+
+  **Per-workload, never aggregated.** Replaying `fix(not)`, `less/stylesheet`
+  moves +41.8% while `css/stylesheet` moves −0.5% in the same process; any mean of
+  the five rows is mild and passes. That ordering also matches the real event
+  (less +25.5%, css −1.6%), which is the evidence that the workloads are worth
+  having.
+
+  **Watched going red on all three known regressions**, five runs each, on a
+  machine at load average 5–9:
+
+  | replay | `less/*` median | verdict |
+  | --- | --- | --- |
+  | `fix(not)` — unconditional rollback stores | **+34.4% … +43.9%**, 0–2/12 pairs | **RED, 5 of 5 runs** |
+  | `fix(expect)` — nullable-prefix derivation | **+2% … +13.9%**, 1–5/12 pairs | **RED in 4 of 5 runs** |
+  | the fixed state (0.35.0 + dedup) | −5.0% … +7.3% | green, 3 of 3 |
+
+  No other workload failed in any of those thirteen runs. The `fix(expect)` row is
+  reported as it measured rather than as "caught": it is the weak detection of the
+  three, it sits near this gate's resolution floor, and one run in five was green.
+  That is exactly why the amplifying `expected/wide` sweep, which fires 5 of 5, is
+  not redundant with it. The two gates are complementary — this one FINDS a
+  regression, the sweep EXPLAINS it — and both are required checks.
+
+  Three measurement decisions are load-bearing and were arrived at by measuring,
+  not by choosing:
+
+  - **Sides are measured in adjacent, order-alternated pairs**, not as two blocks
+    with a rotation. Measured the block way, the reference side of a 50 KB CST
+    workload read **38% slower than an identical build of itself** — the
+    workloads allocate heavily and whichever side runs first eats the previous
+    one's garbage. Directional bias of that size masks a regression on the head
+    side. Pairing dropped the self-vs-self floor from 38% to 2%.
+
+  - **Three independent passes, majority verdict.** The gate fails a workload only
+    when a strict majority of passes breach. The floor was measured at load
+    average 5–9 deliberately, because that is what a shared runner looks like:
+    worst single-pass median +9.9%, worst single-pass min +3.4%, worst absolute
+    swing 12.3% — and **0 of 15 passes breached**, because every breach rule
+    requires the win rate as well as a percentage, and a noise pass keeps its win
+    rate near 50%.
+
+  - **A sign test, for effects too small for a percentage threshold.** The
+    percentage rules caught `fix(not)` and could not reliably catch `fix(expect)`,
+    which genuinely costs the realistic workloads only +2%…+9%. Widening the
+    threshold would have been backwards — it would blind the gate to the band
+    where 0.34.0's css row moved −1.6%. What separated signal from noise there was
+    direction, not magnitude: paired samples make each pair a coin flip, and the
+    affected rows lost 1–4 of 12 pass after pass while unaffected rows sat at 5–9.
+    A workload therefore also breaches when it loses ≤ 25% of its pairs AND is
+    ≥ 1.5% slower on both median and min.
+
+  Documented blind spots, in `docs/design/perf-gates.md`: below ~1.5–2% per
+  workload it reads green; a regression appearing in only half the passes reads
+  green (the deliberate price of not false-failing); it cannot attribute a cause;
+  the corpora are repeated rather than 50 KB of unique source; and five workloads
+  is five shapes — nothing here parses a template language, real operator
+  precedence, or anything using `expect`/recovery heavily.
+
+  One more, worth reading before trusting any workload benchmark: **a workload can
+  be realistic and still structurally blind.** The first draft of
+  `bench/workloads/less.ts` routed every value alternative through a named rule —
+  a perfectly reasonable way to write a grammar — and read FLAT on the
+  `fix(expect)` replay, because a rule reference is a function boundary and the
+  enclosing choice never sees the widened set. Same dialect, same vocabulary, same
+  input, opposite answer, from nothing but where the rule boundaries were drawn.
+  `bench/workloads/fxprobe.ts` measures that exposure directly.
+
+  The A/B machinery is factored into `bench/ab-harness.ts` so the two gates cannot
+  drift apart on the parts that make a measurement a measurement.
+  `perf:guard:grammars` still carries its own copy; migrating it onto the shared
+  harness is deliberately left out of this change to avoid conflicting with the
+  `fix(expect)` PR it sits on top of.
+
 - **Expectation sets are deduplicated.** An `expected` array on a parse failure no
   longer repeats an entry. Deriving an expectation through a nullable prefix reaches
   the same tokens once per term it derives through, per choice arm; the repeats were
