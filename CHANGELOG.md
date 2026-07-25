@@ -59,7 +59,35 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     before this change.
 
   Measured cross-process (one fresh process per side, alternating): `rollback/none`
-  −0.6% (5/9), `expected/narrow` +0.0% (5/9). `perf:guard` ok.
+  −0.6% (5/9), `expected/narrow` +0.0% (5/9). `perf:guard` ok, `perf:guard:grammars` ok.
+
+- **KNOWN COST, stated rather than smoothed: `perf:workloads` `css/stylesheet`
+  regresses.** Repeated runs on an idle machine read **+16% … +27% median, +29% … +34%
+  min, winning 0–2 of 12 pairs, breaching all three passes**. The control — `main`
+  without this change, same harness, same five-workload process, same machine — is
+  stable clean across two runs (+0.4…+1.2%, +0.2…+1.4%, breached 0/3). So the cost is
+  real and it is this change's.
+
+  It is a REALLOCATION, not added work. The same build reads **−15…−18% on
+  `less/stylesheet` and `less/mixins`** where `main` reads −5…0%. Per-node work did not
+  grow by 20%; what changed is which large compiled functions V8 chooses to optimize.
+  The readings are bimodal on `css/stylesheet` (one run read −19%) and the workload
+  measures clean when run alone (`--only=css`), which is the signature of an
+  optimization cliff rather than of a cost that can be shaved. Three successive
+  text-shrinking passes — lazy state, the `_hostBuild` and `_wantTL` prelude helpers,
+  and a plain trivia-log assignment — each moved other axes but none settled this one.
+
+  The mechanism is the honest conclusion: the direct-builder gate is a RUNTIME decision
+  because `ctx.build` arrives at parse time, so it perturbs the eval-AST path of every
+  grammar even though that path can never take the branch. The fix is to settle it at
+  BUILD time — a compile option that makes these gates compile-time constants, so an
+  eval-AST artifact emits exactly what it emitted before and a CST/language-service
+  artifact captures unconditionally. That removes the perturbation instead of tuning
+  around it, and it is deliberately NOT bundled into this changeset.
+
+  **This release is therefore correctness-first: it trades a measured, localized
+  compiled-CSS cost for the removal of a silent data loss.** Do not read the `less/*`
+  improvement as a win to bank; it is the other half of the same reallocation.
 
   **A harness note worth recording.** `perf:guard:grammars` — single-process, both sides
   interleaved in one heap — reported `expected/narrow` at +21.9%…+26.2%, won 0/12, on
