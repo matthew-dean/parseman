@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## Unreleased
+## 0.39.0 — 2026-07-25
 
 - **New: `analyzeDuplication()` — a structural duplication / overlap / rewrite
   diagnostic.** A parseman grammar is a combinator tree, so "did I write this
