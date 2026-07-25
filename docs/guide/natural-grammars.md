@@ -19,16 +19,52 @@ You list alternatives in the order you want them tried. First one that matches w
 const value = choice(Dimension, Number, Color, Keyword)
 ```
 
-That's the whole contract — [PEG ordered choice](https://en.wikipedia.org/wiki/Parsing_expression_grammar).
+That's [PEG ordered choice](https://en.wikipedia.org/wiki/Parsing_expression_grammar).
 There is no separate grammar-ambiguity phase, no conflict to resolve, and you do not have
 to left-factor two arms that happen to start the same way to keep the grammar *correct*.
-If two arms can both match at a position, the earlier one wins, full stop. When the arms
-*don't* overlap, Parséman notices and speeds things up (next section) — but that's an
-optimization layered on top of semantics you already control by ordering, not something
-you have to arrange by hand.
+If two arms can both match at a position, the earlier one wins.
 
 What you avoid: computing FIRST/FOLLOW sets yourself, and rewriting `choice(a·x, a·y)`
 into `a·(x | y)` just to satisfy the tool. Write the arms; order them; done.
+
+### The one place order defers to length
+
+There is exactly one exception, and it is worth knowing precisely. A `choice` whose arms
+are **all plain `literal`s** — or all literals plus a single `regex` arm that matches every
+one of them — resolves by **longest match** rather than by authored order. The alternative
+that consumes the most input wins; authored order only breaks ties between alternatives of
+equal length. Both engines apply this rule, so the interpreter and the compiled parser
+agree.
+
+```ts
+// [verify]
+import { choice, literal, regex, parse } from 'parseman'
+
+// All arms are literals: the longest match wins even though `<` is written first.
+parse(choice(literal('<'), literal('<=')), '<=').value
+// → '<='
+
+// Literals plus one regex that matches them all: the regex's extent decides.
+parse(choice(literal('tr'), regex(/[a-z]+/)), 'true').value
+// → 'true'
+
+// Any other mix is ordered choice: the first arm that matches wins.
+parse(choice(literal('<'), regex(/<=/), literal('!')), '<=').value
+// → '<'
+```
+
+The reason is that a bare set of operators or keywords is the one shape where strict PEG
+ordering is a trap rather than a tool: under it `choice(literal('<'), literal('<='))`
+makes `<=` unreachable, and the remedy is to hand-sort the arms by descending length and
+keep them sorted forever. Longest-match removes that chore, and it is the same property
+that lets the whole choice collapse into a single scan
+([below](#literal-heavy-choices-collapse-to-one-scan)).
+
+Because the rule applies only to that narrow shape, don't build a grammar's *correctness*
+on it — adding one `sequence()` or `word()` arm makes order load-bearing again. Write the
+longer arm first regardless, and where a shorter alternative must win, say so with a
+guard rather than with position. [Ordered choice & keywords](./keywords) covers the
+practical patterns.
 
 ## Automatic first-set dispatch
 
@@ -81,26 +117,24 @@ never had a chance. Parséman removes that cost for you, so you can write the na
 `choice(a, b)` without pre-optimizing away the misses.
 
 A speculative construct rejects on its **first character — before it allocates or mutates
-anything**. This landed first on the **compiled** path in **0.29.0** — the codegen guards:
+anything**:
 
-- `emitMany` — a `many`/`oneOrMore` loop, at the iteration that terminates it, checks the
-  body's first set *before* allocating the iteration's collector arrays.
-- `emitNode` — a `node()` capture rejects on the first byte *before* swapping in the
-  CST-capture context and allocating its child/leaf/trivia buffers.
-- `emitAttempt` — an `attempt(inner)` checks first *before* taking its rollback marks.
+- `many`/`oneOrMore` — at the iteration that terminates the loop, the body's first set is
+  checked *before* the iteration's collector arrays are allocated.
+- `node()` — a capture rejects on the first byte *before* swapping in the CST-capture
+  context and allocating its child/leaf/trivia buffers.
+- `attempt(inner)` — checks first *before* taking its rollback marks.
+- `optional(inner)` — same check, same condition.
 
-The guard is only emitted when it's **sound**: the body must have a discrete (non-`any`)
-first set and be unable to match empty, so a first-set miss genuinely *cannot* match —
-bailing early is behavior-identical, and it records the same expected token a normal
-start-failure would, so your error messages don't change. It is also skipped under
+The guard applies only where it is **sound**: the body must have a discrete (non-`any`)
+first set and be unable to match empty, so a first-set miss genuinely *cannot* match.
+Bailing early is then behavior-identical, and it records the same expected token a normal
+start-failure would, so your error messages don't change. It is skipped under
 error-recovery mode, where a swallowed failure still needs to feed the completions probe.
 
-**0.30.0** brings the interpreter to parity: the runtime `many`/`oneOrMore`/`node`/
-`attempt` combinators (and `optional`, which already had it in an earlier release) now
-apply the same first-set fail-fast, on the same soundness condition and the same
-probe/recovery skip-gates — a doomed body is never entered, no capture frame is allocated,
-no rollback marks are taken. So the interpreter and the compiled output skip the *same*
-doomed setup, and the parity suites hold the two byte-identical.
+Both engines do this — the interpreter's combinators and the compiled output apply the
+same check on the same soundness condition and the same probe/recovery skip-gates, and
+produce byte-identical results.
 
 ## Literal-heavy choices collapse to one scan
 
@@ -123,7 +157,7 @@ against the literals — one parse call total, zero backtracking.
 ```ts
 // `ident` matches everything the keywords match, and more:
 const word = choice(literal('true'), literal('false'), ident)
-// → run `ident` once; if the text is exactly "true"/"false", it's that arm, else ident.
+// Runs `ident` once; if the text is exactly "true"/"false" it's that arm, else ident.
 ```
 
 The detection is conservative: `greedyClassify` requires exactly one regex arm that
@@ -185,7 +219,8 @@ choice(transform(sequence(literal('--'), a), fA), sequence(literal('--'), b))
 
 **How it stays byte-identical.** Only the *scan* is shared. Each arm is otherwise emitted
 by the ordinary `firstMatch` machinery, unchanged — it enters its own `node()` frame,
-runs its own trivia, builds its own subtree, and rolls back on failure exactly as before.
+runs its own trivia, builds its own subtree, and rolls back on failure exactly as it would
+un-factored.
 The one difference is that the arm's leading terminal replays the once-computed end
 position and value, and pushes an identical leaf into that arm's own capture scope. The
 result is that your reducer's `children[0]` (value **and** span), the node's trivia log,

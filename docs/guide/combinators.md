@@ -45,7 +45,7 @@ Three words that sound alike but play different roles:
 | `peek(c)` | **Positive** lookahead — succeeds (consuming nothing) when `c` matches, carrying its first-set. |
 | `node(c, build?, opts?)` / `node(type, c, build?, opts?)` | CST/AST rule: captures terminals + trivia. Inside `rules()`, the node type is inferred from the rule key. See [CST / AST nodes](./ast). |
 | `ref<T>()` | Low-level forward-declaration slot (prefer `rules()`). |
-| `gate(predicate)` | Zero-width ASSERT: succeeds only when `predicate(ctx.state)` is true. See [Context](./context). (Formerly `guard()` — kept as a deprecated alias.) |
+| `gate(predicate)` | Zero-width ASSERT: succeeds only when `predicate(ctx.state)` is true. See [Context](./context). (`guard()` is a deprecated alias.) |
 | `withCtx(extra, c)` | Merge `extra` into the user context for the duration of `c`. |
 | `expect(c, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Skips ambient trivia + `scanSkip` opaque units by default. |
@@ -433,8 +433,8 @@ const good = choice(sequence(peek(regex(/[.#]/)), broadBody), literal('@rule'))
 good._def.disjoint
 // → true
 
-// `not(not(X))` — the only previous spelling — is merely zero-width, so it is
-// SKIPPED rather than intersected and the broad body decides the first chars.
+// `not(not(X))` is merely zero-width, so it is SKIPPED rather than
+// intersected, and the broad body decides the first chars.
 const bad = choice(sequence(not(not(regex(/[.#]/))), broadBody), literal('@rule'))
 bad._def.disjoint
 // → false

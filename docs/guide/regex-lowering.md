@@ -188,10 +188,16 @@ engine, and it must actually be **faster**.
 
 **Differential fuzzing against native `RegExp`.** Each shape family is checked by generating
 tens of thousands of randomized inputs and asserting the lowered scan agrees with
-`RegExp.exec`, byte-for-byte, on match/no-match and match length. The lookahead, alternation,
-and keyword fast paths were each fuzzed this way (100k+ inputs, zero mismatches) — and,
-crucially, we also keep a **deliberately-bypassed** case that *does* mismatch, to prove the
-safety guard is load-bearing and not just decorative.
+`RegExp.exec`, byte-for-byte, on match/no-match and match length. The lookahead,
+alternation, and keyword fast paths each carry 100k+ fuzzed inputs.
+
+The safety guards are checked by asserting the **lowering decision itself**, not only the
+output. A shape that must lower asserts the emitted source contains no `.exec(input)`; a
+shape the guard must *decline* — a non-ASCII `/i` pattern like `/café/i`, where an
+ASCII-only fold would miss `CAFÉ` — asserts the opposite, that it fell back to
+`RegExp.exec`. Both then assert agreement with the interpreter across case variants. A
+guard that stopped declining therefore fails on the decision assertion directly, rather
+than being caught downstream only if some input happens to expose the mismatch.
 
 **Cross-mode parity.** The same grammar is run through the interpreter, `compile()`, and
 the macro build, and the outputs are asserted identical. Lowering lives in the compiled
@@ -239,7 +245,6 @@ grammar), see [Macro mode → Code size](./macro-mode#code-size-what-to-expect).
 
 The recognizer and emitters are in
 [`src/compiler/scannable-run.ts`](https://github.com/matthew-dean/parseman/blob/main/src/compiler/scannable-run.ts);
-the running catalog of landed and proposed lowerings (with per-shape rationale and
-measurements) is in
-[`PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/PERF_IDEAS.md). This
-page is the conceptual overview; `PERF_IDEAS.md` is the roadmap.
+the per-shape catalog, with rationale and measurements, is in
+[`notes/PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/notes/PERF_IDEAS.md).
+This page is the conceptual overview; the catalog is the shape-by-shape detail.

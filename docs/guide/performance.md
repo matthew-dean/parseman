@@ -121,5 +121,5 @@ large slice of parse time on value-dense grammars. See
 
 For the full catalog of library-level codegen and macro optimizations (choice fast-paths,
 trivia loop specialization, transform/build inlining, and more), see
-[`PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/PERF_IDEAS.md) in the
-repo.
+[`notes/PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/notes/PERF_IDEAS.md)
+in the repo.

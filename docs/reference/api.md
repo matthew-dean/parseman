@@ -485,12 +485,6 @@ already-compiled artifact.
   — the same JIT `compile()` uses (so, like `compile()`, it needs `'unsafe-eval'` under a
   strict CSP). Parsing is never eval; only the one-time fuse is.
 
-### `pick(grammar, names)`
-
-Restrict a grammar/artifact to `names` plus their transitive rule-dependency closure
-(à la carte). Returns an artifact for `compose()`:
-`compose([css, pick(less, ['MixinCall'])])`.
-
 ## Error recovery
 
 ### Tolerant lists (`run(entry, input, { tolerant: true })`)
@@ -547,9 +541,9 @@ Declare the ambient set once with `rules({ scanSkip: [...] }, factory)` (see
 
 ### `gate(predicate)`
 
-Zero-width success only when `predicate(ctx.state)` is true. Formerly `guard()`, which
-remains as a deprecated alias (`guard === gate`). The name matches the `gate:` field on a
-gated `choice` arm: the arm field SELECTS a branch, the combinator ASSERTS mid-sequence.
+Zero-width success only when `predicate(ctx.state)` is true. The name matches the `gate:`
+field on a gated `choice` arm: the arm field SELECTS a branch, the combinator ASSERTS
+mid-sequence. `guard` is a deprecated alias (`guard === gate`).
 
 ### `guard(predicate)` <Badge type="warning" text="deprecated" />
 
@@ -637,5 +631,5 @@ choice's O(1) first-char dispatch — the gate is evaluated only when the input 
 arm's first character. On this dispatch path, a gate that returns false **fails the choice**
 right there; it does **not** fall through to a later arm, because disjoint first-sets mean
 no other arm could match that character. If any arm is nullable or first-sets overlap, the
-choice uses the linear first-match scan instead (as does any gated choice before parseman
-0.26.1) — and there a false gate *does* skip to the next arm.
+choice uses the linear first-match scan instead — and there a false gate *does* skip to
+the next arm.
