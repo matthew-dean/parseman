@@ -6,7 +6,7 @@
  * composite body is never entered — matching the compiled path — while staying
  * byte-identical (the parity suites elsewhere prove interpreter ≡ compiled output).
  */
-import { many, oneOrMore, node, attempt, sequence, literal, optional, not, field, withCtx, skip, expect as required, parse, compile, type Combinator, type ParseContext } from '../../src/index.ts'
+import { many, oneOrMore, node, attempt, sequence, literal, optional, not, choice, ref, field, withCtx, skip, expect as required, parse, compile, type Combinator, type ParseContext } from '../../src/index.ts'
 import { deriveExpected } from '../../src/combinators/expect.ts'
 import { describe, expect, it } from 'vitest'
 
@@ -129,6 +129,28 @@ describe('first-set-miss failure derives through a nullable prefix', () => {
     expect(deriveExpected(sequence(literal('@'), literal('x')))).toEqual(['"@"'])
     // A leading `not(…)` is zero-width: nullable, but contributes no expected token.
     expect(deriveExpected(sequence(not(literal('!')), literal('x')))).toEqual(['"x"'])
+  })
+
+  it('a recursive rule behind the nullable prefix terminates, and derives minimally', () => {
+    // Deriving through the nullable prefix newly REACHES the self-reference that
+    // term-0-only derivation stopped short of. Without a cycle guard this recursed to
+    // the stack limit — and did not even crash: the `lazy` arm's own try/catch swallowed
+    // the RangeError, returning ~1000 duplicated entries as the "expected" set.
+    const list = ref<unknown>()
+    list.define(choice(literal('end'), sequence(optional(literal('i')), list)))
+    expect(deriveExpected(list)).toEqual(['"end"', '"i"'])
+
+    // Mutual recursion, each hop behind its own nullable prefix.
+    const a = ref<unknown>(), b = ref<unknown>()
+    a.define(choice(literal('a'), sequence(optional(literal('x')), b)))
+    b.define(choice(literal('b'), sequence(optional(literal('y')), a)))
+    expect(deriveExpected(a)).toEqual(['"a"', '"x"', '"b"', '"y"'])
+
+    // The guard is an in-progress stack, not a visited set: a rule referenced twice
+    // NON-cyclically must still contribute both times.
+    const leaf = ref<unknown>()
+    leaf.define(literal('L'))
+    expect(deriveExpected(choice(leaf, leaf))).toEqual(['"L"', '"L"'])
   })
 
   it('attempt & node no longer name a token the parse does not require — both engines', () => {

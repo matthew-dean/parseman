@@ -19,6 +19,11 @@ export type { ParseError }
  * runtime `expected` array, so it reads this precomputed set instead).
  */
 export function deriveExpected(c: Combinator<unknown>): string[] {
+  return derive(c, new Set())
+}
+
+function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[] {
+  const deriveExpected = (p: Combinator<unknown>): string[] => derive(p, seen)
   const def = c._def
   switch (def.tag) {
     case 'literal':   return [JSON.stringify(def.value)]
@@ -65,8 +70,17 @@ export function deriveExpected(c: Combinator<unknown>): string[] {
       // definition yet — its `thunk()` throws until fusion supplies it. Fall back
       // to the rule name as the expected label instead of descending.
       const name = (c as { _ruleName?: string })._ruleName
+      // Cycle guard: a RECURSIVE rule re-enters its own definition forever. Reaching
+      // one is newly possible now that `sequence` derives through a nullable prefix
+      // (`list = choice('end', sequence(optional(item), list))` — term-0-only
+      // derivation used to stop short of the self-reference). Falling back to the rule
+      // name, exactly as for an unresolved external ref, cuts the cycle. Removed again
+      // on the way out, so a rule referenced twice NON-cyclically still derives fully.
+      if (seen.has(c)) return name ? [name] : []
+      seen.add(c)
       try { return deriveExpected(def.thunk()) }
       catch { return name ? [name] : [] }
+      finally { seen.delete(c) }
     }
     default:          return []
   }
