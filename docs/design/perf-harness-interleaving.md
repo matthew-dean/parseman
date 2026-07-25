@@ -253,6 +253,37 @@ applied to the workload's own grammar and corpus. On the change described above
 that gave **+2.0% median, +1.0% min, winning 5 of 14**, against the same gate's
 `+15 … +29%`.
 
+## A related blind spot, in the correctness gates rather than the perf ones
+
+The same failure shape — a check reporting clean because it cannot see the class of
+defect in question — has now appeared in the equivalence checking too, and it is
+worth recording next to this because the lesson is identical.
+
+An **AST-only differential cannot see a CST regression.** Comparing parseman 0.32.0
+against 0.40.0 over a real corpus, the eval-AST aggregate was **identical across 707
+files** — genuinely zero movement — while the positioned-CST aggregate moved on **68
+files**: 231 structural nodes flattened to bare leaves, and 55 source tokens dropped
+outright, so spans no longer cover the input.
+
+An earlier evaluation had reported "zero AST movement across 3,053 file-parses" as
+its strongest evidence. That statement was true, and reconfirmed. It was also not
+evidence about the CST.
+
+So: **every equivalence claim gated on the AST aggregate alone has a known blind
+spot**, and the two aggregates are not substitutes. A differential oracle should
+carry BOTH as a matter of course, and any spec that depends on one should say which.
+
+Two cheap invariants would have caught these at the commit that introduced them,
+and neither requires a reference version to compare against:
+
+- **Token coverage.** The concatenation of a CST's leaves, in source order, must
+  reconstruct the input. A dropped token fails this immediately and locally.
+- **No structural node flattened.** A rule that declares a node type must not yield a
+  bare leaf where it previously yielded a node.
+
+Both are properties of a single parse, which is what makes them stronger than a
+differential: they hold without a baseline, so they cannot go stale.
+
 ## What this does not mean
 
 It does not mean the gate is unreliable in general. Three of the four control
