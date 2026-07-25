@@ -81,6 +81,16 @@ function writeScalar(v: unknown, out: string[]): void {
     case 'string':
       out.push(`s${str(v)}`)
       return
+    // TODO(oracle-callable-identity): a callable is projected by NAME and a symbol by
+    // DESCRIPTION, so two distinct same-named functions — or two same-description
+    // symbols — digest identically, and a change between them reads as "identical".
+    // This is a real hole in a tool whose whole claim is paranoia, and it is left open
+    // deliberately: closing it means either hashing `Function.prototype.toString()`,
+    // which flips the digest on a comment edit inside a builder, or REFUSING to digest
+    // any value carrying a callable, which rejects legitimate ASTs that park a callback
+    // on a node. Both are worse than the hole for some caller, and picking between them
+    // is a product decision, not a bug fix. Documented under "What it is not" in
+    // `docs/guide/identity-oracle.md` so no reader infers a guarantee that is not here.
     case 'symbol':
       out.push(`y${str(v.description ?? '')}`)
       return

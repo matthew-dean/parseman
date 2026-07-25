@@ -157,3 +157,15 @@ It is also not a substitute for `analyzeGating()`. Gating tells you what your
 grammar's dispatch *shape* is, statically, and will tell you when a collapse cost
 you first-char dispatch. The oracle tells you whether the collapse changed the
 output. A cleanup wants both answers.
+
+And it does not distinguish two **callables** that share a name, or two symbols that
+share a description. A function is projected as `f"<name>"`, so if your AST parks a
+callback on a node and a refactor swaps it for a different function of the same name,
+the digest does not move. Anonymous functions all project as `f""`.
+
+This is a known hole rather than an oversight. Closing it means hashing the function's
+source text, which would flip the digest on a comment edit inside a builder, or
+refusing to digest any value that carries a callable, which rejects ASTs that
+legitimately hold one. Neither default is right for every caller, so the projection
+states what it sees and leaves the choice open. If your trees carry callables and you
+need them covered, strip or normalise them in the surface you hand to `digestCorpus`.

@@ -295,4 +295,53 @@ describe('loadCorpus', () => {
     expect(missingRoots).toEqual(['gone'])
     expect(entries.length).toBe(3)
   })
+
+  // The default ignore list reads `node_modules/.cache`, and the walk used to test it
+  // against a BASENAME — which a path never equals, so the exclusion matched nothing
+  // and every cache file entered the corpus. A digest that moves with the local build
+  // cache is precisely the filesystem-dependent reading this module exists to stop, so
+  // it is pinned here rather than left to the default's wording.
+  it('applies a PATH-valued ignore, not just a directory name', () => {
+    const root = fixture()
+    writeFileSync(join(root, 'node_modules', 'dep.less'), 'dep')
+    const { entries } = loadCorpus({ base: root, roots: ['.'], extensions: ['.less'] })
+    expect(entries.map(e => e.id)).not.toContain('node_modules/.cache/junk.less')
+    // and it is a suffix match on the path, so the package tree it names is still walked
+    expect(entries.map(e => e.id)).toContain('node_modules/dep.less')
+  })
+
+  it('still honours a bare directory NAME in the ignore list', () => {
+    const root = fixture()
+    const { entries } = loadCorpus({
+      base: root, roots: ['.'], extensions: ['.less'], ignoreDirs: ['node_modules'],
+    })
+    expect(entries.map(e => e.id).filter(id => id.startsWith('node_modules/'))).toEqual([])
+  })
+
+  // Two roots that alias one directory used to share a cycle-detection set, so the
+  // second returned immediately and contributed nothing — and because the id comes
+  // from the path as REACHED, swapping the root order renamed every entry. The corpus
+  // must be a function of the files and the base, never of the order of `roots`.
+  it('gives the same corpus whichever order aliased roots are listed in', () => {
+    const root = mkdtempSync(join(tmpdir(), 'oracle-alias-'))
+    mkdirSync(join(root, 'actual'), { recursive: true })
+    writeFileSync(join(root, 'actual', 'x.less'), 'x')
+    symlinkSync(join(root, 'actual'), join(root, 'alias'), 'dir')
+
+    const ids = (roots: string[]): string[] =>
+      loadCorpus({ base: root, roots, extensions: ['.less'] }).entries.map(e => e.id)
+
+    expect(ids(['actual', 'alias'])).toEqual(ids(['alias', 'actual']))
+    // one physical file is one entry, under the lexicographically smaller id
+    expect(ids(['alias', 'actual'])).toEqual(['actual/x.less'])
+  })
+
+  it('does not drop a second root that merely overlaps the first', () => {
+    const root = mkdtempSync(join(tmpdir(), 'oracle-overlap-'))
+    mkdirSync(join(root, 'outer', 'inner'), { recursive: true })
+    writeFileSync(join(root, 'outer', 'o.less'), 'o')
+    writeFileSync(join(root, 'outer', 'inner', 'i.less'), 'i')
+    const { entries } = loadCorpus({ base: root, roots: ['outer', 'outer/inner'], extensions: ['.less'] })
+    expect(entries.map(e => e.id)).toEqual(['outer/inner/i.less', 'outer/o.less'])
+  })
 })

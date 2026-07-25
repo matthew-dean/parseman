@@ -153,15 +153,20 @@ One genuine gap, and it is a direction rather than a missing property:
 Structurally that is the same harness with a different `materialise`, and the
 interleaving, calibration and scoring are reusable as they stand.
 
-**Deliberately not done here.** `bench/ab-harness.ts` is unmerged, in PR #72, and is
-the file that PR touches. Generalising it in a second branch would put the
-conflict in exactly the file whose correctness argument is the hardest to review a
-merge of. The follow-up is: land #72, then parameterise `materialise` on which side
-is pinned, and export the harness so a consumer can drive it. Neither is urgent —
-the perf question is the weaker of the two gates, and the strong one now ships.
+**Deliberately not done here.** Not for a merge-ordering reason — #72 has landed, and
+`bench/ab-harness.ts` has since been revised again by #82 — but because it is a
+distinct capability rather than part of this gate. Parameterising which side is
+pinned means a second calibration story (the pinned grammar has to be *built*, not
+just checked out), an exported harness surface for consumers to drive, and its own
+tests. Bolting that onto the branch that introduces the oracle would mean one PR
+making two arguments, and the perf question is the weaker of the two gates.
 
-`bench/grammar-perf-guard.ts` keeps its own copy of the machinery for the reason
-already recorded in #72: a conflicting PR. That is unchanged by any of this.
+The follow-up, unblocked and unclaimed: parameterise `materialise` on which side is
+pinned, and export the harness so a consumer can drive it.
+
+`bench/grammar-perf-guard.ts` still keeps its own copy of the machinery. #82 shared
+the cache-verification logic between the two, but not `materialise` itself, so the
+duplication is smaller than it was and has not gone away.
 
 ## What stays downstream
 
