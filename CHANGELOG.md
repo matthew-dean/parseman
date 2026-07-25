@@ -3,7 +3,76 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.39.0 — 2026-07-25
+## 0.40.0 — 2026-07-25
+
+- **Host mode is now a COMPILE-TIME decision.** A `node()` with its own `build` is
+  re-routed through a positioned-CST `ctx.build` host when that host marks itself
+  `_parsemanCstOutput` — that is what lets ONE grammar serve the eval-AST consumer and
+  the positioned-CST / language-service consumer. But `ctx.build` arrives at PARSE time,
+  so every direct node in every grammar carried
+  `_ctx.build?._parsemanCstOutput === true ? host : build` on its hot path, plus the
+  `_dcst` probe gating its collectors — for a branch an eval-AST parse can never take.
+
+  ```ts
+  compile(g, { hostMode: 'cst' })
+  linkable(map, ns, trivia, 'cst')
+  compose(items, { hostMode: 'cst' })
+  ```
+
+  - `'ast'` (default) — direct builders own their result; the host branch and the probe
+    are **not emitted at all**. Capture follows the builder's arity, exactly as before.
+  - `'cst'` — direct builders always build through the host, and children / rawChildren /
+    triviaLog / fields / state are captured unconditionally. Nothing to probe either way.
+
+  One grammar source, two compilations — instead of one artifact asking, per node, per
+  parse, which consumer it has. This is the same shape as the existing
+  `compile(g, { recovery: true })` gate: a compile flag, off by default, that decides
+  what is EMITTED rather than what is tested at runtime.
+
+  **Structural nodes are deliberately unchanged.** `node(parser)` with no build callback
+  is the documented "the host builds it" contract and is genuinely a per-parse choice, so
+  it keeps its runtime `ctx.build` and its `_hostReads` arity gates. An all-structural
+  grammar is unaffected by this release.
+
+  **Silence stays unreachable.** `assertHostModeCompatible` runs ONCE per parse from
+  `parseWithContext` and `parseDoc` — never from generated code — and throws, naming the
+  fix, when an artifact that dropped a direct builder's CST branch is driven with a
+  positioned-CST host, or when a `'cst'` artifact is driven without one. It is precise
+  rather than merely conservative: `hostBranchElided` records whether a direct builder's
+  branch was actually dropped, so an all-structural artifact still serves a CST host in
+  either mode and never trips the check.
+
+  MIGRATION: driving a compiled/fused artifact that contains direct builders with
+  `cstBuildHost` now requires compiling that artifact with `hostMode: 'cst'`. The error
+  message names the change. The interpreter (`run`, `parse`) still routes dynamically.
+
+- **Fix: an incremental reparse diverged from a fresh parse on `state`.** A CST node
+  stores `state ?? null`, and `Doc.edit()` fed that `null` back into the next parse. The
+  state-clone guard tests `!== undefined`, and `Object.assign({}, null)` is `{}` — so a
+  reused subtree carried `state: {}` where a fresh parse carried `null`. Normalized at
+  the single seeding site. Reachable only once direct builders clone state, which
+  `'cst'` mode makes them do.
+
+- **Perf note, and an unresolved disagreement between two ways of measuring it.** In
+  `'ast'` mode the emitted code is strictly smaller and does strictly less per node: the
+  CSS and Less workload grammars compile to **10,734 fewer bytes**, with one fewer
+  property chain and no dead host branch per direct node.
+
+  `perf:workloads` nonetheless reports `css/stylesheet` at **+15% … +29%, breaching
+  3/3**, on an idle machine — while the same working tree read **clean (breached 0/3)**
+  twenty minutes earlier, and `main` reads stable clean. Measured **cross-process**
+  instead (one fresh process per side, order alternated, 14 rounds) the same two commits
+  read **+2.0% median, +1.0% min, with the change winning 5 of 14** — neutral within a
+  spread where individual round medians range 1.52–2.29 ms on BOTH sides.
+
+  Three lines of evidence therefore disagree with the gate: the generated code is
+  smaller and does less; the gate's own verdict flips between runs on identical input;
+  and cross-process measurement reads neutral. Note that `perf:workloads --self` is clean
+  here and does **not** cover this case — identical sides produce identical code images,
+  and the artifact appears to arise from two DIFFERENTLY-SIZED images sharing one heap
+  and one JIT profile. See `docs/design/perf-harness-interleaving.md`.
+
+  No threshold was widened and the gate's number is recorded as it stands.
 
 - **New: `analyzeDuplication()` — a structural duplication / overlap / rewrite
   diagnostic.** A parseman grammar is a combinator tree, so "did I write this
