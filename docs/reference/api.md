@@ -603,7 +603,10 @@ in `report.unanalysable` rather than silently omitted.
 Static structural-duplication diagnostic over a combinator tree. Reports eight families:
 `rewrites` (mechanical algebra — `choice(sequence(A, B), B)` → `sequence(optional(A), B)`, a
 hand-rolled `sepBy`, idempotent nesting, and the two dead-arm BUGS `duplicate-arm` /
-`shadowed-arm`), `divergentNodes` (one `node()` type built by several productions),
+`shadowed-arm`), `structureLoss` (a BUG: an earlier `choice` arm that FLATTENS the node a
+later arm structures — same `node()` type, overlapping first-sets, and the earlier body
+contains no `node()` at all, so on the inputs both accept the tree silently loses the named
+child types while the parse still succeeds), `divergentNodes` (one `node()` type built by several productions),
 `nearDuplicates` (subtrees identical except at one slot), `duplicates` (identical subtrees in
 ≥2 places, ranked by nodes saved), `regexFragments` (an alternation run re-spelled across
 several `regex()` terminals), `regexClasses` (character classes re-spelled — and, more
@@ -614,9 +617,10 @@ keyword set written the hard way, and `hazards`/`longestFirst` report whether it
 hand-maintained order lets a shorter alternative shadow a longer one), and `overlaps` (`choice` arms whose first-sets intersect, with the shared
 prefix named and whether the `sharedPrefix` strategy already handles it).
 
-A `keywordRegexes` finding with an UNRESCUED prefix hazard is a third bug class: regex
+A `keywordRegexes` finding with an UNRESCUED prefix hazard is a further bug class: regex
 alternation is first-match, so with no boundary guard to force a backtrack the longer
-alternative can never match. Only the two dead-arm rewrite findings and unwrapping a one-arm `choice` are `astNeutral`. Everything else changes the child array the
+alternative can never match. A GATED earlier arm is never reported as `structureLoss` — a
+runtime predicate is a deliberate branch, not a shadow. Only the two dead-arm rewrite findings and unwrapping a one-arm `choice` are `astNeutral`. Everything else changes the child array the
 site produces and is reported as a CANDIDATE to verify, never as a fix. `hand-rolled-sepby`
 carries a per-site `sepByVerdict` — `convertible`, `blocked-by-capture` (the repetition
 `field()`s its separator, which `sepBy` cannot express) or `reducer-stride-review`.

@@ -59,6 +59,18 @@ but slow, and nothing but the build warning tells you.
 - DON'T lead a `choice` arm with `optional`/`many`/`gate`/`guard`/plain `sepBy` —
   all are NULLABLE and widen the first-set. Put a concrete terminal first, or use
   the non-nullable form (`many(x, { min: 1 })` / `oneOrMore`, `oneOrMoreSep`).
+- DON'T put a leaf-only "fast path" arm ahead of a structured one that builds the
+  SAME `node()` type. On every input both accept, the fast path wins and yields
+  that node over bare leaves — the parse succeeds, the span is right, the text
+  round-trips, and only the TREE moved, so no test and no output diff reports it.
+  Either the structured tree is the contract (delete the fast arm) or the flat one
+  is (make it flat for every input of that shape). (Warning:
+  `BUG [structure-loss]`, from `analyzeDuplication`.)
+- DON'T wrap a spaced region in `noTrivia` and hand-roll `optional(ws)` back in to
+  exclude comments. `noTrivia` clears trivia, so a matched `regex(/\s+/)` is
+  CONTENT — the whitespace lands in the node's children as a value leaf. An inner
+  trivia scope says it in one place: `parser({ trivia: wsOnly }, …)` (innermost
+  wins). Reach for `noTrivia` only for a genuinely GLUED run.
 - DON'T reach for `ctx.state` (`withCtx`/`gate`) when structure (separate rules),
   a document option, or recursion/`balanced` would express the distinction. See
   `docs/guide/context.md` § "Which tool".

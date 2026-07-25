@@ -7,7 +7,7 @@ thousands of pairs; nobody reads that, so nobody catches the same comparison ter
 spelled seven times, or the general rule cloned with one slot swapped.
 
 `analyzeDuplication()` walks the same tree [`analyzeGating()`](./first-char-gating)
-walks and reports eight families. Some are tidy-ups. Two of them are bugs.
+walks and reports nine families. Some are tidy-ups. Three of them are bugs.
 
 ```ts
 import { analyzeDuplicationRules, formatDuplicationFindings } from 'parseman'
@@ -21,6 +21,7 @@ for (const line of formatDuplicationFindings(report)) console.warn(line)
 | Family | What it finds | Why it matters |
 | --- | --- | --- |
 | `rewrites` | Mechanical algebra: `choice(sequence(A, B), B)` → `sequence(optional(A), B)`, a hand-rolled `sepBy`, `optional(optional(X))`, a duplicated or shadowed arm | Exact rewrites, not judgement calls. Two of them are latent **bugs** |
+| `structureLoss` | An earlier `choice` arm that **flattens** the node a later arm structures | The parse still succeeds and the text still round-trips. Only the tree moved, so nothing else reports it |
 | `divergentNodes` | One `node()` type built by several different productions that share terms | An edit to "the declaration shape" has to land in all of them, and nothing checks that it did |
 | `nearDuplicates` | Subtrees identical **except at one slot** | The clone family: one production with a `choice` in the varying slot, not N copies of the scaffolding |
 | `duplicates` | Structurally identical subtrees in ≥2 places | Ranked by nodes saved, so real copies outrank `optional(ws)` noise |
@@ -29,7 +30,7 @@ for (const line of formatDuplicationFindings(report)) console.warn(line)
 | `overlaps` | `choice` arms whose first-sets intersect, with the shared prefix named | The same data gating uses, framed as *which* arms and *on what* |
 | `keywordRegexes` | Hand-rolled keyword regexes that should be `word()`/`keywords()` | `/i` without `/u` case-folds non-ASCII wrong, and an unrescued prefix hazard makes the longer alternative unreachable |
 
-## The two bug classes
+## The unreachable-arm bug classes
 
 Most findings are refactors you may decline. These two are not:
 
@@ -47,6 +48,77 @@ analyzeDuplication(g).rewrites.filter(f => f.bug).map(f => [f.rewrite, f.astNeut
 `duplicate-arm` (the same arm twice) is the other. Both are `astNeutral: true`: an
 arm that can never be selected contributes nothing to any parse, so deleting it
 cannot move the tree.
+
+## The third bug class: an arm that flattens what its sibling structures
+
+`shadowed-arm` catches an arm that can never run. `structureLoss` catches the
+opposite and much quieter failure — an arm that runs when it should not have, and
+produces a **shallower tree** than the sibling it intercepted.
+
+The shape is a "fast path" placed first in a `choice`: same `node()` type as the arm
+below it, overlapping first characters, and a body containing no `node()` at all. On
+every input both arms accept, the fast path wins and yields that node over bare
+leaves.
+
+```ts
+// [verify]
+import { analyzeDuplicationRules, choice, literal, node, oneOrMore, optional, regex, rules, sequence } from 'parseman'
+
+const prop = regex(/[a-z-]+/)
+const num = regex(/\d+(?:[a-z]+|%)?/)
+
+const g = rules(r => ({
+  Dimension: node('Dimension', num),
+  // The "fast path": one numeric value, kept as a raw token.
+  Scalar: node('Declaration', sequence(prop, literal(':'), num, optional(literal(';')))),
+  Full: node('Declaration', sequence(prop, literal(':'), oneOrMore(r.Dimension), optional(literal(';')))),
+  Declaration: choice(r.Scalar, r.Full),
+}))
+
+analyzeDuplicationRules(Object.entries(g)).structureLoss.map(f => [f.nodeType, f.earlier, f.later, f.lostNodeTypes])
+// → [['Declaration', 0, 1, ['Dimension']]]
+```
+
+`margin: 0px` now parses through arm 0 and has **no** `Dimension` child;
+`margin: 0px 0px` falls through to arm 1 and has two. Both parse, both spans are
+right, both round-trip to the same text, and — if the value is re-read from source
+downstream — both compile to the same output. A test suite asserting *does it parse*
+stays green, and so does a corpus diff. The defect surfaces only in whatever reads the
+tree: an editor lint keyed on the number node, a formatter, a rename.
+
+So the finding names the arm, the arm it shadows, the characters the shadowing bites
+on, and the node types deleted — and prints as `parseman BUG [structure-loss]`. The
+fix is a decision, not a rewrite: **either** the structured tree is the contract, and
+the flattening arm is deleted or moved below its sibling, **or** the flat tree is, and
+it has to be flat for every input of that shape rather than the subset one arm happens
+to match. A fast path that is not tree-neutral is not a fast path.
+
+Two deliberate limits keep it a signal rather than a lint:
+
+- **Only the empty case fires.** "Earlier arm is *poorer* than later arm" is the same
+  family, but grading it means comparing two ref-reachable type sets, and in a
+  recursive grammar the later set reaches most of the grammar — so the graded rule
+  fires on nearly every pair. Empty-versus-non-empty needs no threshold.
+- **A gated arm is never reported.** `choice({ gate, combinator }, …)` says which
+  branch applies when. That is a deliberate split, not a shadow.
+
+And one limit that is not deliberate but unavoidable. Overlap is decided on **first
+sets**, so the finding reads *"these arms overlap on these characters, and if an input
+reaches both then structure is lost"*. A shared leading character is necessary for the
+shadowing, not sufficient: two arms can both start on `-` and still accept disjoint
+languages (`-webkit-x` versus `-5px`), and then nothing is shadowed. Deciding whether
+two arms genuinely share an input is language intersection, which is undecidable for a
+general grammar — a first-set test is the strongest decidable proxy there is. So
+`structure-loss` can over-report, which is why it names both shapes and the characters
+rather than simply asserting a verdict. Under `duplication: 'error'` that means a
+false positive can fail a build; if you hit one, the arms in question accept disjoint
+languages and the honest fix is to say so in an issue, because the analysis cannot
+see it.
+
+This is the ordered, consequential half of `divergentNodes`. That family reports two
+productions building one type and expressly allows *"the variants exist for a parse-order
+reason (a fast path tried first)"*. `structureLoss` is the case where that defence is
+the bug.
 
 ## Everything else is a candidate, not a fix
 

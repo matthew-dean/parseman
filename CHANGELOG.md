@@ -119,6 +119,44 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
   No threshold was widened and the gate's number is recorded as it stands.
 
+- **New: `structure-loss` — an arm that FLATTENS what its sibling structures.** The
+  quiet counterpart to `shadowed-arm`. That finding catches an arm that can never
+  run; this one catches an arm that runs when it should not have and produces a
+  SHALLOWER tree than the sibling it intercepted.
+
+  The shape is a "fast path" placed first in a `choice`: same `node()` type as the
+  arm below it, overlapping first characters, and a body containing no `node()` at
+  all. Found in a real Less grammar, where a single-numeric-value declaration arm
+  sat ahead of the ordinary one — so `margin: 0px` produced a `Declaration` with no
+  number node while `margin: 0px 0px` produced two. The commonest shape in CSS was
+  the one that lost its structure.
+
+  Nothing else reports this. Both inputs parse, both spans are right, both
+  round-trip to the same text, and the emitted CSS is identical — so a suite that
+  asserts *does it parse* stays green and so does a corpus diff. It surfaces only in
+  whatever reads the tree: an editor lint keyed on the number node, a formatter, a
+  rename.
+
+  The finding names the flattening arm, the arm it shadows, the characters the
+  shadowing bites on, and the node types deleted, and prints as
+  `parseman BUG [structure-loss]`. Refs are followed, because the structure usually
+  lives behind one (`g.valueList`) and an analysis that stopped at the ref would
+  report a structured grammar as flat. `leaf()`/`token()` are opaque: they collapse
+  their interior on purpose, so a `node()` inside one does not count.
+
+  Two deliberate limits keep it a signal rather than a lint. Only the EMPTY case
+  fires — "earlier arm is poorer than later arm" is the same family, but grading it
+  means comparing two ref-reachable type sets, and in a recursive grammar the later
+  set reaches most of the grammar, so the graded rule would fire on nearly every
+  pair. And a GATED arm is never reported: a runtime predicate is a deliberate
+  branch, not a shadow.
+
+  This is the ordered, consequential half of `divergentNodes`, which reports two
+  productions building one type and expressly allows *"a fast path tried first"*.
+  `structure-loss` is the case where that defence is the bug.
+
+  Docs: [Grammar duplication](docs/guide/grammar-duplication.md#the-third-bug-class-an-arm-that-flattens-what-its-sibling-structures).
+
 - **New: `analyzeDuplication()` — a structural duplication / overlap / rewrite
   diagnostic.** A parseman grammar is a combinator tree, so "did I write this
   production twice?" has an exact answer. Finding it by reading does not scale: a
@@ -126,7 +164,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   turn out to carry a comparison terminal spelled seven times, a character class
   spelled eleven ways across 80 terminals, and 39 hand-rolled separated lists.
 
-  Eight families, all located by rule name and structural path: `rewrites`
+  Nine families (`structureLoss` is the entry above), all located by rule name and
+  structural path: `rewrites`
   (mechanical algebra — `choice(sequence(A, B), B)` → `sequence(optional(A), B)`, a
   hand-rolled `sepBy`, idempotent nesting, and the two dead-arm BUGS
   `duplicate-arm` / `shadowed-arm`), `divergentNodes` (one `node()` type built by
