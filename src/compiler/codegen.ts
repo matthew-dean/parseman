@@ -12,6 +12,7 @@ import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel, type Unanalysable } from '../analysis/gating.ts'
+import { analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings, duplicationFindingCount, type DuplicationReport, type DuplicationWarnLevel } from '../analysis/duplication.ts'
 
 /**
  * A rule's LEADING first-set as a fuse-resolvable recipe.
@@ -3978,8 +3979,77 @@ function reportGating(
   return report
 }
 
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; coverage?: boolean; gating?: GatingOption }): CompiledParser<T> {
+
+/**
+ * The `duplication` compile option. A bare level is shorthand for `{ level }`; the
+ * object form adds the `accept` allowlist (finding ids acknowledged as intentional)
+ * and the ranking knobs.
+ *
+ * DEFAULT IS `'off'`, unlike gating. An ungated hot choice is a cliff with no other
+ * symptom; a duplicated subtree is a maintenance cost the author may have chosen.
+ * More to the point, most findings here are CANDIDATES that need an AST check
+ * before they are applied — a diagnostic that prints "candidate, verify" on every
+ * build teaches people to stop reading it. Run it deliberately (a lint script, a
+ * review pass, `PARSEMAN_DUPLICATION=warn`), not on every compile.
+ */
+export type DuplicationOption =
+  | DuplicationWarnLevel
+  | { level?: DuplicationWarnLevel; accept?: Iterable<string>; minSize?: number; maxFindings?: number; entryName?: string }
+
+function resolveDuplicationLevel(opt: DuplicationOption | undefined): DuplicationWarnLevel {
+  const explicit = typeof opt === 'string' ? opt : opt?.level
+  if (explicit !== undefined) return explicit
+  const env = typeof process !== 'undefined' ? (process.env?.PARSEMAN_DUPLICATION as DuplicationWarnLevel | undefined) : undefined
+  if (env === 'off' || env === 'warn' || env === 'error') return env
+  return 'off'
+}
+
+/**
+ * Run the duplication diagnostic and surface it per the resolved level. Never
+ * throws from the analysis itself — only `'error'` deliberately throws on a real
+ * finding. Shared by ALL THREE lowering paths (`compile`, `compileRuleMap`,
+ * `compileLinkable`): the macro build never calls `compile()`, and a diagnostic
+ * wired only there is a diagnostic that reports zero findings forever — which is
+ * exactly what happened to the gating diagnostic for two minor versions.
+ */
+function reportDuplication(
+  opt: DuplicationOption | undefined,
+  analyze: (o: { accept?: Iterable<string>; minSize?: number; maxFindings?: number; entryName?: string } | undefined) => DuplicationReport,
+): DuplicationReport | undefined {
+  const level = resolveDuplicationLevel(opt)
+  if (level === 'off') return undefined
+  const obj = opt !== null && typeof opt === 'object' ? opt : undefined
+  const analyzeOpts = obj === undefined ? undefined : {
+    ...(obj.accept !== undefined ? { accept: obj.accept } : {}),
+    ...(obj.minSize !== undefined ? { minSize: obj.minSize } : {}),
+    ...(obj.maxFindings !== undefined ? { maxFindings: obj.maxFindings } : {}),
+    ...(obj.entryName !== undefined ? { entryName: obj.entryName } : {}),
+  }
+  let report: DuplicationReport
+  try { report = analyze(analyzeOpts) }
+  catch { return undefined }
+  const lines = formatDuplicationFindings(report)
+  if (lines.length > 0) {
+    if (level === 'error') throw new Error(`parseman: ${duplicationFindingCount(report)} duplication/overlap finding(s)\n${lines.join('\n')}`)
+    for (const l of lines) console.warn(l)
+  }
+  return report
+}
+
+function runDuplicationDiagnostic<T>(combinator: Combinator<T>, opt: DuplicationOption | undefined): DuplicationReport | undefined {
+  return reportDuplication(opt, o => analyzeDuplication(combinator as Combinator<unknown>, o))
+}
+
+function runDuplicationDiagnosticRules(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opt: DuplicationOption | undefined,
+): DuplicationReport | undefined {
+  return reportDuplication(opt, o => analyzeDuplicationRules(ruleMap, o))
+}
+
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption }): CompiledParser<T> {
   const gatingReport = runGatingDiagnostic(combinator, opts?.gating)
+  runDuplicationDiagnostic(combinator, opts?.duplication)
   markUnusedValues(combinator)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
   // as the default activeTrivia so every rule bakes it (unless a local
@@ -4177,9 +4247,10 @@ function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): s
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; coverage?: boolean; gating?: GatingOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
 ): { keys: string[]; replacement: string; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   runGatingDiagnosticRules(ruleMap, opts?.gating)
+  runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Named lazy proxies already carry their stable rule identity and redirect
   // their children through the final winner graph. Register only ordinary
@@ -4403,7 +4474,7 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
@@ -4413,6 +4484,10 @@ export function compileLinkable(
   // holes are still unbound, so it can only repeat the shape's own non-verdict. The
   // fused question is asked once over the merged map — `runFusedGatingDiagnostic`.
   if (opts?.gating !== undefined) runGatingDiagnosticRules(ruleMapArg, opts.gating)
+  // Duplication is opt-in EVERYWHERE (default `'off'`), so unlike gating there is no
+  // double-reporting to guard against here — if the caller asked for it on this path,
+  // it runs on this path. Structural findings do not depend on fuse-time binding.
+  runDuplicationDiagnosticRules(ruleMapArg, opts?.duplication)
   for (const [, rule] of ruleMapArg) markUnusedValues(rule)
   // Grammar-level ambient trivia through compose(): a piece from rules({ trivia },
   // …) tags `grammarTrivia` on its rules (runtime path), or the macro threads it via
