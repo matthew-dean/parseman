@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  test-matrix:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -78,3 +78,23 @@ jobs:
           name: coverage-report-${{ strategy.job-index }}
           path: coverage/
           retention-days: 14
+
+  # The single required status check. The ruleset on `main` requires a context
+  # named exactly `test`; a matrix job publishes one context PER LEG
+  # (`test (node lts/*)`, …) and none named `test`, so making the matrix the
+  # required check would block every PR forever — which is exactly what happened
+  # on the first run of this one.
+  #
+  # This job keeps that name stable no matter how the matrix changes: it is green
+  # only when every leg succeeded, so coverage is not weakened by the indirection.
+  # `if: always()` is required — without it a failed leg would SKIP this job, and a
+  # skipped required check reads as "not failed" rather than as a failure.
+  test:
+    needs: test-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All Node legs passed
+        run: |
+          echo "test-matrix result: ${{ needs.test-matrix.result }}"
+          [ "${{ needs.test-matrix.result }}" = "success" ]
