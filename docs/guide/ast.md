@@ -154,6 +154,7 @@ AST for evaluation (host unset, or a `build` callback). Inside `rules()`, the ob
 the node type. Pass the built-in `cstBuildHost` and every rule becomes a uniform positioned node:
 
 ```ts
+// [verify]
 import { rules, node, regex, literal, sequence, many, parser, trivia, run, cstBuildHost } from 'parseman'
 
 const ws = trivia(regex(/\s+/))
@@ -163,6 +164,19 @@ const g = rules(gg => ({
 }))
 
 const r = run(g.Expr, '1 + 2', { build: cstBuildHost })
+
+r.ok
+// → true
+r.value.type
+// → 'Expr'
+r.value.span
+// → { start: 0, end: 5 }
+r.value.children.length
+// → 3
+
+// No host at all: the SAME default CST node, spans included.
+run(g.Expr, '1 + 2').value.span
+// → { start: 0, end: 5 }
 ```
 
 `r.value` is the CST — every node the same [`NodeLike`](../reference/types#node-types) shape,
@@ -187,7 +201,25 @@ local/manual helper outside `rules()`.
 Walk it with [`walk` / `createVisitor`](#walking-the-tree), and turn its trivia into a
 `before`/`after` lookup with [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
+That is the whole of it for a structural grammar. **No `hostMode`, no compile options** —
+write productions, omit `build`, pass a host. If this is what you came for, you are done.
+
+::: tip What you get with no host at all
+Omitting `build` **and** the host is not an error and does not fall back to something
+lesser. A structural node with no `ctx.build` constructs the same default CST node —
+`{ _tag: 'node', type, span, state, children }`, spans included. For the grammar above the
+two trees are byte-identical.
+
+`cstBuildHost` earns its place for two other reasons: it is what makes a grammar that
+*does* have `build` callbacks produce a uniform CST anyway, and it takes a
+[`collapse`](../reference/api#cstbuildhost) option for public syntax trees.
+:::
+
 ### When the grammar has its OWN builders {#host-mode}
+
+**A grammar with no direct builders serves either consumer. The moment you add one, you
+need a second compilation for the CST consumer.** That is the whole reason `hostMode`
+exists, and it is why nothing above this section mentioned it.
 
 The "host set or host unset" switch above is a genuine per-parse choice for **structural**
 nodes — that is the `node(parser)` contract and it is unchanged.
@@ -206,6 +238,11 @@ One source, two compilations — and each bundle tree-shakes away the artifact i
 import, so the eval path carries no CST capture and the tooling path carries no eval
 builders. The same option exists on [`compile`](../reference/api#compile) and
 [`compose`](../reference/api#compose).
+
+`hostMode` defaults to **`'ast'`**, so a grammar with `build` callbacks runs them, which is
+almost always what you want and is why nothing before this point had to mention the option.
+You add `hostMode: 'cst'` for the *second* artifact, not the first. This two-artifact
+pattern is the advanced case: most first grammars are structural and never need it.
 
 Why not decide per parse? `hostMode` does not just pick which builder runs; it decides
 what every node captures (children, raw children, trivia log, fields, state). A runtime

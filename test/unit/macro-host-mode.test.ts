@@ -119,3 +119,55 @@ describe('macro host mode — the driver refuses a mismatch', () => {
     expect(run(mod.cstGrammar.Doc, 'aaa', { build: cstHost }).value).toMatchObject({ _tag: 'node' })
   })
 })
+
+/**
+ * Substituting a stored initializer for a NAME has to reproduce the binding semantics
+ * that name actually has. Greptile P1 on the PR that added named factories: the pre-pass
+ * collected every function-valued declaration in the module, regardless of `const` vs
+ * `let`/`var` and regardless of whether the declaration preceded the call — so the macro
+ * could compile a grammar the program does not have, or resolve a binding that is still
+ * in its temporal dead zone.
+ *
+ * Both cases fall back to the inline path, which reports "isn't statically evaluable"
+ * rather than inventing an answer. A macro that silently emits a DIFFERENT grammar is
+ * the failure class these gates exist to prevent.
+ */
+describe('macro host mode — a named factory only resolves when the name is safe', () => {
+  it('resolves a `const` factory declared BEFORE the call', async () => {
+    const { mod, warnings } = await build(SHARED_FACTORY)
+    expect(warnings).toEqual([])
+    expect(mod.astGrammar.Doc('aaa', 0, {}).value).toEqual({ mine: true })
+  })
+
+  it('REFUSES a `let` factory — it could be reassigned before the call', async () => {
+    const out = transformMacro(`
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+let factory = (g) => ({ Doc: node(regex(/a+/), _c => ({ mine: true })) })
+factory = (g) => ({ Doc: node(regex(/b+/), _c => ({ other: true })) })
+export const astGrammar = rules(factory)
+`.trim(), 'test.ts', new Set(['parseman']))
+    // Not compiled from the stale initializer: it either declines to transform, or
+    // warns that the shape is not statically evaluable. What it must never do is
+    // silently emit the /a+/ grammar the source has already replaced.
+    if (out) expect((out.warnings ?? []).join('\n')).toMatch(/statically evaluable|isn't|cannot/i)
+  })
+
+  it('REFUSES a `var` factory for the same reason', async () => {
+    const out = transformMacro(`
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+var factory = (g) => ({ Doc: node(regex(/a+/), _c => ({ mine: true })) })
+export const astGrammar = rules(factory)
+`.trim(), 'test.ts', new Set(['parseman']))
+    if (out) expect((out.warnings ?? []).join('\n')).toMatch(/statically evaluable|isn't|cannot/i)
+  })
+
+  it('REFUSES a factory used ABOVE its declaration — that is a TDZ error at runtime', async () => {
+    const out = transformMacro(`
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+export const astGrammar = rules(factory)
+const factory = (g) => ({ Doc: node(regex(/a+/), _c => ({ mine: true })) })
+`.trim(), 'test.ts', new Set(['parseman']))
+    // Resolving this would SUPPRESS a ReferenceError the real program raises.
+    if (out) expect((out.warnings ?? []).join('\n')).toMatch(/statically evaluable|isn't|cannot/i)
+  })
+})

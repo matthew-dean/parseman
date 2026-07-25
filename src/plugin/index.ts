@@ -472,21 +472,40 @@ export function transformMacro(
    * mode exists to enable — two artifacts from one source — cannot be written down. The
    * only alternative is duplicating the whole factory at both call sites.
    *
-   * Deliberately narrow: a top-level function-valued binding, matched by name. Anything
-   * else still takes the existing inline path.
+   * Deliberately narrow: a top-level `const` function-valued binding, matched by name.
+   * Anything else still takes the existing inline path.
+   *
+   * The narrowness is load-bearing, because this substitutes a stored initializer for a
+   * NAME and so has to reproduce the binding semantics the name actually has:
+   *
+   *  - `const` ONLY. A `let`/`var` factory can be reassigned between the declaration and
+   *    the `rules()` call, and substituting the initializer would compile a grammar the
+   *    program does not have. `const` makes reassignment a syntax error, so matching only
+   *    `const` removes the case rather than trying to detect it.
+   *  - DECLARED BEFORE USE. The map is built from the whole module body up front, so
+   *    without a position check a `rules(…, factory)` sitting ABOVE `const factory = …`
+   *    would resolve here while the real program throws a temporal-dead-zone
+   *    ReferenceError. Suppressing an error the source would raise is the same class of
+   *    defect as emitting the wrong grammar. `declaredAt` is compared against the call
+   *    site below.
    */
-  const factoryDecls = new Map<string, Expression>()
+  const factoryDecls = new Map<string, { fn: Expression; declaredAt: number }>()
   for (const stmt of body) {
     const decl = stmt.type === 'ExportNamedDeclaration'
       ? (stmt as unknown as { declaration?: unknown }).declaration
       : stmt
     if ((decl as { type?: string } | undefined)?.type !== 'VariableDeclaration') continue
+    // `let`/`var` are rebindable; only `const` can be substituted by name safely.
+    if ((decl as unknown as { kind?: string }).kind !== 'const') continue
     for (const d of (decl as unknown as VariableDeclaration).declarations) {
       const id = d.id as unknown as { type: string; name?: string }
       const init = d.init as Expression | null | undefined
       if (id.type !== 'Identifier' || !id.name || !init) continue
       if (init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') {
-        factoryDecls.set(id.name, init)
+        factoryDecls.set(id.name, {
+          fn: init,
+          declaredAt: (d as unknown as { end: number }).end,
+        })
       }
     }
   }
@@ -544,9 +563,16 @@ export function transformMacro(
     const factoryArgRaw = (optionsFirst ? arg1 : arg0) as Expression | undefined
     if (!factoryArgRaw) { warn(init.start, `${label}: rules() needs a factory argument`); return null }
     /* A factory named by identifier resolves to its module-level declaration, so two
-     * `rules()` call sites can SHARE one factory — see `factoryDecls`. */
-    const factoryArg = factoryArgRaw.type === 'Identifier'
-      ? (factoryDecls.get((factoryArgRaw as unknown as { name: string }).name) ?? factoryArgRaw)
+     * `rules()` call sites can SHARE one factory — see `factoryDecls`. Only when the
+     * declaration PRECEDES this call: a later one is a temporal dead zone in the real
+     * program, and resolving it here would compile a grammar out of a binding that does
+     * not exist yet. Falling through leaves `factoryArgRaw`, which takes the ordinary
+     * inline path and reports "isn't statically evaluable" rather than inventing an answer. */
+    const namedFactory = factoryArgRaw.type === 'Identifier'
+      ? factoryDecls.get((factoryArgRaw as unknown as { name: string }).name)
+      : undefined
+    const factoryArg = namedFactory !== undefined && namedFactory.declaredAt <= init.start
+      ? namedFactory.fn
       : factoryArgRaw
 
     // Grammar-level options object — evaluate `trivia` / `scanSkip` so the compiled
