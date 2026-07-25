@@ -161,6 +161,38 @@ The `main` control stayed flat throughout, and the generated code for that branc
 was **10,734 bytes smaller** with one fewer property chain per node and no dead
 branch — that is, strictly less work, measured slower.
 
+### It failed THIS pull request, which changes no runtime code at all
+
+The strongest instance is the PR that added this document. Its diff is:
+
+```
+ bench/xproc-ab.ts                        | 236 +++++++++++++++++++++++++++
+ docs/design/perf-gates.md                |  33 +++
+ docs/design/perf-harness-interleaving.md | 207 +++++++++++++++++++++++
+ package.json                             |   1 +
+```
+
+No file under `src/`. The compiled parsers are byte-identical to the base commit —
+`bench/xproc-ab.ts` is a new standalone script that no gate imports, and the
+`package.json` line is a script entry. There is no mechanism by which this change
+can alter parse throughput.
+
+`workload-perf` failed it anyway, on an idle CI runner (load 0.80):
+
+```
+FAIL  json/document  59 KB  median +1.7% … +3.7%  min +1.5% … +3.9%
+                            won 2/12 0/12 0/12   breached 3/3
+```
+
+Breaching **all three** passes, with win rates of 2/12, 0/12 and 0/12 — the exact
+signature the gate documents as "a real regression loses every pair". Every other
+workload in the same run read flat.
+
+This is worth more than the synthetic control above, because it is not a control:
+it is the gate's ordinary operation, on an ordinary PR, in CI. A gate that fails a
+documentation change will fail real ones, and the win-rate rule that is supposed to
+separate noise from signal did not separate this.
+
 ### The named limitation: a clean `--self` is not a trust signal here
 
 `pnpm perf:workloads --self` reads clean on `css/stylesheet` (±0.8%). That is
