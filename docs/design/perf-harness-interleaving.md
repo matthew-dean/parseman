@@ -259,15 +259,26 @@ The same failure shape — a check reporting clean because it cannot see the cla
 defect in question — has now appeared in the equivalence checking too, and it is
 worth recording next to this because the lesson is identical.
 
-An **AST-only differential cannot see a CST regression.** Comparing parseman 0.32.0
+An **AST-only differential cannot see CST movement.** Comparing parseman 0.32.0
 against 0.40.0 over a real corpus, the eval-AST aggregate was **identical across 707
-files** — genuinely zero movement — while the positioned-CST aggregate moved on **68
-files**: 231 structural nodes flattened to bare leaves, and 55 source tokens dropped
-outright, so spans no longer cover the input.
+files** — genuinely zero movement — while the positioned-CST aggregate moved on **68**.
 
 An earlier evaluation had reported "zero AST movement across 3,053 file-parses" as
 its strongest evidence. That statement was true, and reconfirmed. It was also not
 evidence about the CST.
+
+> **A second lesson, from getting this wrong.** The first reading of that CST movement
+> called it "55 source tokens dropped" — because it compared **leaf counts per file**.
+> A count delta cannot distinguish *a duplicate was removed* from *a token was lost*,
+> and the truth was the former: 0.32.0 leaked duplicate leaves (compiled `not()` relied
+> on a rollback that fires only on the inner-*failure* path, so a successful probe left
+> its captured leaves for an enclosing `optional`/`many` to absorb), and 0.40.0 removes
+> them. Diffing as a **per-offset multiset** shows every 0.32.0-only leaf sitting at an
+> offset the 0.40.0 tree still covers.
+>
+> So: compare trees **per offset**, not by count. And when a differential moves, the
+> baseline-free invariant — does the concatenation of leaves reconstruct the source? —
+> settles which side is wrong without needing to trust either version.
 
 So: **every equivalence claim gated on the AST aggregate alone has a known blind
 spot**, and the two aggregates are not substitutes. A differential oracle should
