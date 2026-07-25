@@ -45,6 +45,9 @@ parse(requestLine, 'GET /api/v1 HTTP/1.1')
 // { ok: true, value: { verb: 'GET', path: '/api/v1', version: 'HTTP/1.1' }, span: ... }
 ```
 
+New here? **[What is Parséman?](https://matthew-dean.github.io/parseman/guide/getting-started)**
+walks the same ground more slowly.
+
 ## Three modes, one grammar
 
 The same combinator code runs three ways, with identical results:
@@ -64,20 +67,48 @@ See **[The three modes](https://matthew-dean.github.io/parseman/guide/modes)**.
 
 ## What's in the box
 
-- **[Combinators](https://matthew-dean.github.io/parseman/guide/combinators)** — `literal`,
+**✍️ Writing grammars**
+
+- 🧩 **[Combinators](https://matthew-dean.github.io/parseman/guide/combinators)** — `literal`,
   `regex`, `sequence`, `choice`, `many`, `sepBy`, `token`, `peek`, `not`, and more.
-- **[Whitespace & trivia](https://matthew-dean.github.io/parseman/guide/trivia)** —
-  grammar-defined filler skipping, with per-chunk kind capture.
-- **[Recursive rules](https://matthew-dean.github.io/parseman/guide/recursive-rules)** —
+- 🌀 **[Recursive rules](https://matthew-dean.github.io/parseman/guide/recursive-rules)** —
   `rules()` for mutually recursive grammars; fully macro-compilable.
-- **[CST / AST nodes](https://matthew-dean.github.io/parseman/guide/ast)** — `node()`
-  captures terminals, named fields, and trivia, with policies for wrapping and collapsing.
-- **[Incremental re-parsing](https://matthew-dean.github.io/parseman/guide/incremental)** —
-  `parseDoc` re-parses just the edited subtree on each keystroke.
-- **[Error recovery](https://matthew-dean.github.io/parseman/guide/error-recovery)** —
-  keep parsing broken input and report every error.
-- **[Context-sensitive parsing](https://matthew-dean.github.io/parseman/guide/context)** —
+- 🫧 **[Whitespace & trivia](https://matthew-dean.github.io/parseman/guide/trivia)** —
+  grammar-defined filler skipping, with per-chunk kind capture.
+- 🎯 **[Ordered choice, done right](https://matthew-dean.github.io/parseman/guide/keywords)** —
+  PEG semantics you control by ordering, with keyword boundaries that don't bite.
+- 🪶 **[Grammars the way you write them](https://matthew-dean.github.io/parseman/guide/natural-grammars)** —
+  no FIRST/FOLLOW sets to compute, no left-factoring `choice(a·x, a·y)` into `a·(x | y)`
+  to satisfy the tool. The compiler does that for you.
+- 🧬 **[Extending grammars](https://matthew-dean.github.io/parseman/guide/extending)** —
+  `compose()` a dialect onto a base grammar instead of forking it.
+- 🎛️ **[Context-sensitive parsing](https://matthew-dean.github.io/parseman/guide/context)** —
   `withCtx` / `gate` without mutating shared state.
+
+**🌳 Getting structure out**
+
+- 🌲 **[CST / AST nodes](https://matthew-dean.github.io/parseman/guide/ast)** — `node()`
+  captures terminals, named fields, and trivia, with policies for wrapping and collapsing.
+- 🩹 **[Error recovery](https://matthew-dean.github.io/parseman/guide/error-recovery)** —
+  keep parsing broken input and report every error.
+- ⚡ **[Incremental re-parsing](https://matthew-dean.github.io/parseman/guide/incremental)** —
+  `parseDoc` re-parses just the edited subtree on each keystroke.
+- 💡 **[Editor / LSP integration](https://matthew-dean.github.io/parseman/guide/editor-integration)** —
+  completions and lint keyed by rule name; the grammar stays pure structure.
+
+**🔬 Seeing what your grammar does**
+
+- 🚂 **[Railroad diagrams & EBNF](https://matthew-dean.github.io/parseman/guide/spec-generation)** —
+  `toRailroadHtml()` and `toEBNF()` generate the grammar reference *from the parser*, so
+  the spec can't drift from what actually parses.
+- 🔎 **[Grammar observability](https://matthew-dean.github.io/parseman/guide/grammar-observability)** —
+  coverage ("which rules and choice arms ran?") and trace ("what did it try, select, and
+  backtrack through?").
+- 🚦 **[First-char gating diagnostics](https://matthew-dean.github.io/parseman/guide/first-char-gating)** —
+  the build tells you which `choice` lost its O(1) dispatch, names the overlapping arms,
+  and says how to fix it.
+- 📈 **[Performance guide](https://matthew-dean.github.io/parseman/guide/performance)** —
+  the levers that actually move a grammar, and [how regexes lower](https://matthew-dean.github.io/parseman/guide/regex-lowering).
 
 Full API in the **[reference](https://matthew-dean.github.io/parseman/reference/api)**; how
 it stacks up against Peggy, Chevrotain, Lezer, tree-sitter, Parsimmon, Nearley and
