@@ -13,7 +13,71 @@ permissions:
   contents: read
 
 jobs:
+  # Which KIND of change is this? Used only to skip the heavy matrix for
+  # documentation-only PRs.
+  #
+  # Deliberately a job output rather than a workflow-level `paths-ignore`. A
+  # workflow that does not TRIGGER never reports its contexts at all, and `test`
+  # is a required check on `main` — so `paths-ignore` here would leave every
+  # docs-only PR permanently blocked waiting for a check that will never arrive.
+  # Same trap as renaming the job (see the `test` job below): the fix is to keep
+  # the workflow running and skip work inside it.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.f.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: f
+        name: Detect whether anything outside docs changed
+        run: |
+          set -euo pipefail
+          # Pushes to main always run everything: there is no reliable "base" to
+          # diff a merge commit against, and main is the branch that must stay green.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "push event — running everything"
+            exit 0
+          fi
+          files=$(git diff --name-only \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}")
+          echo "changed files:"; echo "$files" | sed 's/^/  /'
+          # Anything that is NOT markdown or under docs/ counts as code. Note that
+          # `.github/` counts as code — a workflow change must run the full suite.
+          if echo "$files" | grep -qvE '(^docs/|\.md$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "documentation-only change — skipping the Node matrix"
+          fi
+
+  # Executes every `// [verify]` example in the guide and compares its real output
+  # to the `// →` line pasted beneath it.
+  #
+  # Runs on EVERY change, not just doc changes: the examples execute real parseman
+  # code, so a change to `src/` can invalidate a documented output just as easily
+  # as editing the prose can. It was previously in no automated check at all —
+  # neither CI nor the pre-commit hook — which made the guide's own claim ("if the
+  # engine changes, the check fails") true only when someone remembered to run it.
+  docs-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify documented examples
+        run: pnpm docs:verify
+
   test-matrix:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -102,11 +166,29 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: test-matrix
+    needs: [changes, test-matrix, docs-verify]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: All Node legs passed
+      - name: All required work succeeded
         run: |
-          echo "test-matrix result: ${{ needs.test-matrix.result }}"
-          [ "${{ needs.test-matrix.result }}" = "success" ]
+          set -euo pipefail
+          matrix='${{ needs.test-matrix.result }}'
+          docs='${{ needs.docs-verify.result }}'
+          code='${{ needs.changes.outputs.code }}'
+          echo "test-matrix=$matrix  docs-verify=$docs  code-changed=$code"
+
+          # docs-verify gates every change — it is never skipped.
+          [ "$docs" = "success" ] || { echo "::error::docs:verify did not pass"; exit 1; }
+
+          case "$matrix" in
+            success) ;;
+            # A documentation-only PR skips the matrix ON PURPOSE. Accept that
+            # exactly once — and only when `changes` actually said so, so a matrix
+            # skipped for any OTHER reason still fails this gate rather than
+            # sliding through as "not failed".
+            skipped)
+              [ "$code" = "false" ] || { echo "::error::matrix skipped but code changed"; exit 1; }
+              echo "documentation-only change — Node matrix intentionally skipped" ;;
+            *) echo "::error::test-matrix result: $matrix"; exit 1 ;;
+          esac
