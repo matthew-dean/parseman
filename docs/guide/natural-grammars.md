@@ -60,9 +60,11 @@ parse(choice(literal('<'), sequence(literal('<='), literal('x'))), '<=x').value
 // → '<'
 ```
 
-So if you want the shorter arm to win, order alone won't do it; make the arms
-non-literal, or don't list the shorter one first. Everything else on this page is
-strict PEG ordering.
+So if you want the shorter arm to win, **reordering cannot get you there** — make one
+of the arms non-literal. Putting the shorter arm first does nothing when every arm is a
+bare literal (they are sorted longest-first before any is tried), and on the ordered
+path putting the *longer* one first is what makes it win, not the shorter. Everything
+else on this page is strict PEG ordering.
 :::
 
 What you avoid: computing FIRST/FOLLOW sets yourself, and rewriting `choice(a·x, a·y)`
@@ -153,13 +155,18 @@ range chain.
 ## What ordered actually costs
 
 "Falls back to ordered `firstMatch`" sounds like a cliff, and it reads like one if you
-picture the arms being *tried* one after another. That is not what happens. An ordered
-choice still gives every arm a **single-character guard**, computed from that arm's own
-first set — the same test disjoint dispatch would have used, just asked per arm instead
-of resolved by one jump. So an arm whose first set excludes the current character is
-skipped on one integer comparison, without entering the arm, allocating anything, or
-taking a rollback mark. And once an arm succeeds, the remaining arms are not even
-guard-tested.
+picture the arms being *tried* one after another. That is not what happens **in
+compiled output**, which is what ships: `compile()` and the macro give every arm a
+**single-character guard**, computed from that arm's own first set — the same test
+disjoint dispatch would have used, just asked per arm instead of resolved by one jump.
+An arm whose first set excludes the current character is skipped on one integer
+comparison, without entering the arm, allocating anything, or taking a rollback mark.
+Once an arm succeeds, the remaining arms are not even guard-tested.
+
+The interpreter (`parse()`) does not do this: its `firstMatch` loop calls each arm in
+turn, taking a capture mark before and rolling it back on failure. So the guard costs
+quoted below are a property of the compiled engine — which is the one you measure and
+ship — not of a `parse()` call in a test.
 
 Measured over the four [jess](https://github.com/jesscss/jess) dialect grammars — 427
 `choice` sites, 363 of them ordered — an ordered choice costs on average **3.8–5.4 guard
