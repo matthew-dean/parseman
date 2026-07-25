@@ -61,13 +61,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   Measured cross-process (one fresh process per side, alternating): `rollback/none`
   −0.6% (5/9), `expected/narrow` +0.0% (5/9). `perf:guard` ok, `perf:guard:grammars` ok.
 
-- **`perf:workloads` `css/stylesheet` is machine-sensitive on this change — recorded
-  because it was seen, not because it is settled.** On the CI runner (load 0.76, the
-  gate of record) the workload passes: **min −12.8% … −7.5%, winning 8–10 of 12 pairs,
-  breached 0/3**, with one outlier pass dragging the median spread to −19.5% … +68.5%.
-  On a *contended* development machine the same two commits repeatedly read **+16% …
-  +27% median, breaching 3/3**, while the `main` control on that same machine stayed
-  stable clean — so the sensitivity is this change's even though the gate passes.
+- **UNRESOLVED: this change destabilizes `perf:workloads` `css/stylesheet`.** Not a flat
+  regression — an *instability*, which is worse, because it makes the gate flaky and the
+  production number unpredictable. Two consecutive CI runs on a dedicated runner
+  (load 0.76 and 0.91) read median **−19.5% … +68.5%** (breached 0/3, passed) and median
+  **−35.7% … +74.0%** (min +11.5…+13.8%, breached 2/3, failed). A contended development
+  machine read **+16% … +27%, breaching 3/3**. Across every environment the `main`
+  control stayed stable clean, so the instability is attributable to this change.
 
   The shape says REALLOCATION, not added work: the same build reads −15…−18% on
   `less/*` where `main` reads −5…0%, the `css/stylesheet` reading is bimodal (one local
@@ -82,11 +82,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   grammar even though that path can never take the branch. Settling it at BUILD time — a
   compile option making these gates compile-time constants, so an eval-AST artifact emits
   exactly what it emitted before and a CST/language-service artifact captures
-  unconditionally — removes the sensitivity rather than tuning around it. Deliberately
-  not bundled into this changeset.
+  unconditionally — removes the instability rather than tuning around it.
 
-  Do not bank the `less/*` improvement as a win; it is the other half of the same
-  reallocation.
+  **This changeset should not ship until that is done.** The correctness fix is right and
+  the tests pin it, but a workload that swings from −36% to +74% between runs is not a
+  number anyone can plan against. Do not bank the `less/*` improvement as a win either;
+  it is the other half of the same reallocation.
 
   **A harness note worth recording.** `perf:guard:grammars` — single-process, both sides
   interleaved in one heap — reported `expected/narrow` at +21.9%…+26.2%, won 0/12, on
