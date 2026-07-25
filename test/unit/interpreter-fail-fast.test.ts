@@ -147,10 +147,29 @@ describe('first-set-miss failure derives through a nullable prefix', () => {
     expect(deriveExpected(a)).toEqual(['"a"', '"x"', '"b"', '"y"'])
 
     // The guard is an in-progress stack, not a visited set: a rule referenced twice
-    // NON-cyclically must still contribute both times.
+    // NON-cyclically must still be DESCENDED into both times — it is the dedup at
+    // the end, not a visited-set short-circuit, that collapses the two to one entry.
+    // (Were the guard a visited set, a rule whose second reference sat under a
+    // DIFFERENT prefix would lose that prefix's tokens entirely.)
     const leaf = ref<unknown>()
     leaf.define(literal('L'))
-    expect(deriveExpected(choice(leaf, leaf))).toEqual(['"L"', '"L"'])
+    expect(deriveExpected(choice(leaf, leaf))).toEqual(['"L"'])
+  })
+
+  it('names each expected token ONCE, however many nullable terms reach it', () => {
+    // The shape a value grammar actually has: several optional leading terms that
+    // all start with the same token set. Un-deduped this derives '"@"' four times
+    // and '"("' twice, and every losing choice then materializes those duplicates
+    // into a fresh array that the enclosing choice concatenates in turn — the cost
+    // compounds up the nesting. It is also simply wrong to offer a reader the same
+    // token four times.
+    const operand = choice(literal('@'), literal('('))
+    const value = sequence(optional(operand), optional(operand), operand)
+    expect(deriveExpected(value)).toEqual(['"@"', '"("'])
+
+    // Dedup preserves FIRST-seen order, so the leftmost derivation still reads first.
+    const ordered = sequence(optional(literal('b')), optional(literal('a')), literal('b'))
+    expect(deriveExpected(ordered)).toEqual(['"b"', '"a"'])
   })
 
   it('attempt & node no longer name a token the parse does not require — both engines', () => {

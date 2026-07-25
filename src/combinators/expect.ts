@@ -17,9 +17,21 @@ export type { ParseError }
  * This is what lets expect() report a meaningful, IDENTICAL expectation in both
  * the interpreter and the compiled output (the compiled path does not rebuild the
  * runtime `expected` array, so it reads this precomputed set instead).
+ *
+ * The result is DEDUPLICATED. Deriving through a nullable prefix re-reaches the
+ * same token from several terms — a value grammar whose leading terms are all
+ * optional names its value-start set once per term — and an expectation list that
+ * offers `"@{"` five times is wrong for a reader and expensive for a parser: a
+ * choice that loses every arm materializes `[...arm0, ...arm1, …]` at runtime, and
+ * those arrays feed the enclosing choice's concat in turn, so duplicates compound
+ * multiplicatively up the nesting. On jess's Less grammar the un-deduped sets cost
+ * 32% of parse time on `benchmark.less` (medians 20.7 → 14.2 ms over 100
+ * interleaved pairs, 99/100 wins, min 19.1 → 13.0), which is the whole of the Less
+ * regression 0.35.0 shipped. Dedup is not an optimisation bolted onto the
+ * derivation — a SET is what the derivation always meant.
  */
 export function deriveExpected(c: Combinator<unknown>): string[] {
-  return derive(c, new Set())
+  return [...new Set(derive(c, new Set()))]
 }
 
 function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[] {

@@ -36,17 +36,32 @@ That gap — trigger versus goal — is what `perf:guard:grammars` closes.
 
 ## What it measures
 
-Not a stylesheet. A **rollback-density sweep**: one grammar shape
-(`bench/grammar-density/grammar.ts`), one ~38 KB input, instantiated at four
-densities of speculative probe — 0, 1, 4 and 16 negative lookaheads in front of
-every value term, which on this input is roughly 0 / 42 / 168 / 672 probes per
-KB. That brackets the 20 / 121 / 599 `not()`-per-KB measured across the three
-real grammars in the 0.34.0 event.
+Not a stylesheet. Two **sweeps** over one grammar shape
+(`bench/grammar-density/grammar.ts`) and one ~38 KB input, each holding
+everything constant except one axis.
+
+**`rollback/*` — speculative probes per byte.** 0, 1, 4, 16 and 30 negative
+lookaheads in front of every value term, roughly 0 / 42 / 168 / 672 / 1260 probes
+per KB. The real grammars in the 0.34.0 event measured 20 / 121 / 599, so the
+worst of them now sits INSIDE the sweep rather than past its top — the first
+version stopped at 16 (~672/KB) with less at 599, close enough to the edge that
+the dialect that broke was effectively unbracketed.
+
+**`expected/*` — derived expected-set width at a losing choice.** 0 and 4
+optional terms in front of every choice arm, all drawing on the same operand
+alphabet, so deriving through the nullable prefix re-reaches the same tokens once
+per term per arm. The emitted total-failure path is `_ctx._fx = [...arm0,
+...arm1, …]`, and those arrays feed the enclosing choice's concat, so the cost
+compounds up the nesting rather than adding.
+
+This second axis exists because the first version of this gate had only the
+first, and 0.35.0 shipped a 32% Less regression straight through it — see
+"Watching it go red" below. A gate parameterised on one axis only ever catches
+that axis.
 
 The point is not to look like CSS. It is to hold everything constant except the
-one axis the regression rides on, so the result is legible: a per-**execution**
-cost shows up as an ordering across the four, and a per-site or per-input cost
-does not.
+axis under test, so the result is legible: a per-**execution** cost shows up as
+an ordering across a sweep, and a per-site or per-input cost does not.
 
 Every case builds nodes with trivia capture, which is load-bearing rather than
 decorative: the emitted rollback is gated on `ctx.capturing`, and each truncation
@@ -98,6 +113,19 @@ Replaying 0.34.0 against 0.33.0:
 Any aggregate shows something mild. The **spread** is the finding: it says the
 cost is per-execution, which is exactly how the real regression was diagnosed
 (css 20 / jess 121 / less 599 `not()` per KB, ordering −1.6% / +6.6% / +25.5%).
+
+Replaying the 0.35.0 regression — `--ref=9c6fee2 --head-ref=a464372`, the merge
+of `fix(expect)` — reads the other way round, which is the whole argument for
+having both axes:
+
+| case | | median delta | min delta | pairs won |
+| --- | --- | --- | --- | --- |
+| `rollback/none` … `rollback/extreme` | 0–30 probes | −2.8% … +2.2% | −3.3% … +4.5% | 3–11 / 12 |
+| `expected/narrow` | 0 opt/arm | −1.0% | +0.3% | 9/12 |
+| **`expected/wide`** | 4 opt/arm | **+25.6%** | **+26.9%** | **0/12** |
+
+The rollback sweep — the entire gate as first landed — reads flat on a change
+that cost jess's Less grammar 32% of its parse time.
 
 ### Median AND min AND win rate
 

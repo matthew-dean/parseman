@@ -167,15 +167,111 @@ export function densityInput(rules = 700): string {
 }
 
 /**
- * The gate's cases. Named for what they are — a probe count — not for a dialect.
+ * The SECOND axis: how wide the derived `expected` set is at a choice that loses
+ * every arm.
  *
- * `guardsPerValue` → probes/KB is roughly `guardsPerValue × 42` on this input
- * (12 value terms per ~285-byte rule). The three land near 42 / 126 / 630,
- * bracketing the 20 / 121 / 599 measured across css / jess / less.
+ * The rollback sweep above watches probes-per-byte, because that is the axis
+ * 0.34.0's regression rode. It would not have caught 0.35.0's, which rode this
+ * one — `fix(expect)` deriving through a nullable prefix widened the derived sets
+ * on jess's Less grammar and cost 32% of parse time, with the rollback cases
+ * reading flat. A gate parameterised on one axis only ever catches that axis.
+ *
+ * The shape: a value is a choice whose arms each begin with a NULLABLE prefix,
+ * and every arm's prefix starts from the SAME operand alphabet. Deriving through
+ * the prefix therefore re-reaches those tokens once per optional term, per arm.
+ * The emitted total-failure path is `_ctx._fx = [...arm0, ...arm1, …]`, so the
+ * arrays materialised there scale with the derived width — and each one feeds the
+ * ENCLOSING choice's concat, which is why the cost compounds rather than adds.
+ *
+ * `prefixDepth` is that width knob. The SHARED input already drives the losing
+ * path — `oneOrMore(Value)` ends every declaration by failing `Value` on the `;`,
+ * which is an all-arms-failed choice per declaration, six per rule. No separate
+ * input is needed, and using the same one keeps the two axes comparable.
+ */
+export function expectedWidthGrammar(prefixDepth: number): Combinator<unknown> {
+  // One shared operand alphabet behind every optional term — the duplication is
+  // the point. `attempt` keeps a losing value from tearing the capture.
+  const operand = choice(literal('~'), literal('^'), literal('&'), literal('|'))
+  const prefix: Array<Combinator<unknown>> = []
+  for (let i = 0; i < prefixDepth; i++) prefix.push(optional(operand))
+
+  const { Stylesheet } = rules((r: {
+    Stylesheet: Combinator<unknown>
+    Rule: Combinator<unknown>
+    Declaration: Combinator<unknown>
+    Value: Combinator<unknown>
+    Dimension: Combinator<unknown>
+  }) => {
+    const Stylesheet = node('Stylesheet',
+      parser({ trivia: rw }, many(r.Rule)),
+      (c, _f, s, raw, tl) => mk('Stylesheet', c, raw, s, tl))
+
+    const Rule = node('Rule',
+      parser({ trivia: rw }, sequence(
+        oneOrMore(ident),
+        literal('{'),
+        many(r.Declaration),
+        literal('}'),
+      )),
+      (c, _f, s, raw, tl) => mk('Rule', c, raw, s, tl))
+
+    const Declaration = node('Declaration',
+      attempt(parser({ trivia: rw }, sequence(
+        ident,
+        literal(':'),
+        oneOrMore(r.Value),
+        literal(';'),
+      ))),
+      (c, _f, s, raw, tl) => mk('Declaration', c, raw, s, tl))
+
+    // Each arm: the nullable prefix, then that arm's own terminal.
+    const arm = (tail: Combinator<unknown>): Combinator<unknown> => sequence(...prefix, tail)
+    const Value = parser({ trivia: rw }, choice(
+      arm(r.Dimension), arm(hex), arm(str), arm(ident),
+    ))
+
+    const Dimension = node('Dimension',
+      sequence(num, optional(unit)),
+      (c, _f, s, raw, tl) => mk('Dimension', c, raw, s, tl))
+
+    return { Stylesheet, Rule, Declaration, Value, Dimension }
+  })
+
+  return Stylesheet
+}
+
+/**
+ * The gate's cases, across BOTH axes.
+ *
+ * `rollback/*` — speculative probes per byte. `guardsPerValue → probes/KB` is
+ * roughly `guardsPerValue × 42` on this input (12 value terms per ~285-byte
+ * rule), so the five land near 42 / 126 / 630 / 1260. The measured real grammars
+ * were css 20 / jess 121 / less 599: `dense` no longer sits AT the top of the
+ * sweep with the worst real grammar past it, which is how 599 was outside the
+ * bracket the first time.
+ *
+ * `expected/*` — derived expected-set width at a losing choice. `narrow` is the
+ * pre-0.35.0 shape (no nullable prefix to derive through); `wide` is what a real
+ * value grammar looks like once optional leading terms are in play.
  */
 export const DENSITY_CASES = [
-  { id: 'rollback/none', guardsPerValue: 0 },
-  { id: 'rollback/sparse', guardsPerValue: 1 },
-  { id: 'rollback/medium', guardsPerValue: 4 },
-  { id: 'rollback/dense', guardsPerValue: 16 },
+  { id: 'rollback/none', kind: 'rollback', n: 0 },
+  { id: 'rollback/sparse', kind: 'rollback', n: 1 },
+  { id: 'rollback/medium', kind: 'rollback', n: 4 },
+  { id: 'rollback/dense', kind: 'rollback', n: 16 },
+  { id: 'rollback/extreme', kind: 'rollback', n: 30 },
+  { id: 'expected/narrow', kind: 'expected', n: 0 },
+  { id: 'expected/wide', kind: 'expected', n: 4 },
 ] as const
+
+export type DensityCase = (typeof DENSITY_CASES)[number]
+
+/** The grammar for one case — the gate never picks a shape itself. */
+export function caseGrammar(c: { kind: string; n: number }): Combinator<unknown> {
+  return c.kind === 'expected' ? expectedWidthGrammar(c.n) : densityGrammar(c.n)
+}
+
+/** The input for one case. Held constant within an axis. */
+export function caseInput(_c: { kind: string }, rules: number): string {
+  return densityInput(rules)
+}

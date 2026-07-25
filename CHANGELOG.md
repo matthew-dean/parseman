@@ -3,6 +3,63 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **Fix: a derived `expected` set names each token once — and that is 32% of Less
+  parse time.** 0.35.0's `fix(expect)` (deriving expectations through a nullable
+  prefix) is correct and stays. What it did not account for is that a nullable
+  prefix re-reaches the SAME tokens from every term it derives through: a value
+  grammar whose leading terms are all optional named its value-start set once per
+  term, per choice arm. One constant in jess's compiled Less grammar went from 20
+  entries to 70+.
+
+  That is not merely a cosmetic problem in an error message. A choice that loses
+  every arm emits `_ctx._fx = [...arm0, ...arm1, …]`, materialising a fresh array
+  from those sets — and the result becomes an arm snapshot for the ENCLOSING
+  choice's concat, so duplication compounds up the nesting rather than adding.
+  A grammar that backtracks constantly pays it constantly.
+
+  Measured on `benchmark.less` (106 KB), interleaved in one process, 4 rounds ×
+  25 pairs with per-round rotation, 8 warmup:
+
+  | build | vs 0.32.0, the version jess pins | pairs won |
+  | --- | --- | --- |
+  | 0.35.0 as shipped | **+35.3%** median / +33.1% min | 1/100 |
+  | 0.35.0 with `fix(expect)` reverted | −8.0% / −7.4% | 92/100 |
+  | **0.35.0 with the set deduplicated** | **−4.9% … −7.9%** / −5.2% … −7.1% | 81–92/100 |
+
+  So the dedup recovers the whole regression while keeping the correctness fix —
+  the widened sets were duplicates, not newly-reachable tokens. Same-build-vs-
+  itself through this harness moved the median ±0.5%.
+
+  One derivation, one site: `deriveExpected` is what both the interpreter and
+  codegen read, so the interpreter cannot drift from the compiled engine here.
+
+  This also settles the standing question about 0.35.0's rollback guard, which
+  had repaid css/scss/jess and appeared to have done nothing for Less. It did:
+  measured with the `not()` rollback held out of both sides, the guard alone is
+  **−12.3%** median / −13.7% min, 97/100, on `benchmark.less`. Two independent
+  changes moved in opposite directions and the release measured only their sum.
+  Residually, `not()`'s guarded six-sink mark-and-compare still costs about 4%
+  there (62,447 executions on that file, of which 94.5% restore a length that
+  never moved and 98.4% of individual sink stores are skipped by the guard) —
+  real, secondary, and left for its own change.
+
+- **The grammar perf gate gets the axis that broke it.** `perf:guard:grammars`
+  landed one PR before `fix(expect)` and passed it: its sweep varied speculative
+  probes per byte, and the regression rode derived expected-set width, which that
+  sweep cannot see. Replaying the merge (`--ref=9c6fee2 --head-ref=a464372`) all
+  five rollback cases sit inside ±3% while the new `expected/wide` case reads
+  **+25.6% median / +26.9% min / 0-of-12 pairs won**.
+
+  Two changes: an `expected/*` sweep (0 and 4 optional terms per choice arm, same
+  operand alphabet, so the derivation re-reaches the same tokens), and a
+  `rollback/extreme` case at 30 probes/value (~1260/KB). The sweep previously
+  stopped at 16 (~672/KB) with the worst real grammar at 599 — the dialect that
+  broke sat at the very edge of the bracket. `caseGrammar`/`caseInput` replace the
+  single `guardsPerValue` knob so a third axis is an entry in one array, which is
+  the point: a gate parameterised on one axis only ever catches that axis.
+
 ## 0.35.0 — 2026-07-24
 
 - **New `parseman/run` entry — the driver without the library.** The macro removes

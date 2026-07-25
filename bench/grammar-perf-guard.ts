@@ -37,13 +37,24 @@
  * working tree — so both sides compile byte-identical grammar input and the only
  * difference is parseman itself.
  *
- * ## Per-case, never aggregated
+ * ## Per-case, never aggregated — and on TWO axes
  *
- * Four cases differing only in how many negative lookaheads guard each value
- * term: 0 / 1 / 4 / 16. The SPREAD is the signal. Replaying 0.34.0 the
- * unguarded case moves +1.2% while the dense one moves +113% — an ordering that
- * says the cost is per-EXECUTION, which is exactly how the real regression was
- * diagnosed. Any aggregate would show something mild and pass.
+ * `rollback/*`: five cases differing only in how many negative lookaheads guard
+ * each value term — 0 / 1 / 4 / 16 / 30. The SPREAD is the signal. Replaying
+ * 0.34.0 the unguarded case moves +1.2% while the dense one moves +113%, an
+ * ordering that says the cost is per-EXECUTION. Any aggregate would show
+ * something mild and pass.
+ *
+ * `expected/*`: two cases differing only in how WIDE the derived `expected` set
+ * is at a choice that loses every arm. This axis exists because the first version
+ * of this gate had only the rollback one, and 0.35.0 then shipped a 32% Less
+ * regression straight through it: `fix(expect)` widened the derived sets, which
+ * the rollback cases cannot see. Replaying that change reads `expected/wide`
+ * +25.6% median / +26.9% min / 0-of-12 pairs won while all five rollback cases
+ * sit inside ±3%.
+ *
+ * A gate parameterised on one axis only ever catches that axis. When the next
+ * regression rides a third, add the third rather than widening a threshold.
  *
  * ## Median AND min AND win rate
  *
@@ -137,9 +148,9 @@ function materialise(sha: string | null): string {
 type Side = {
   label: string
   compile: (c: unknown) => { parseWithContext: (input: string, ctx: unknown, pos?: number) => unknown }
-  grammar: (guards: number) => unknown
-  cases: ReadonlyArray<{ id: string; guardsPerValue: number }>
-  input: string
+  grammar: (c: { kind: string; n: number }) => unknown
+  cases: ReadonlyArray<{ id: string; kind: string; n: number }>
+  input: (c: { kind: string }, rules: number) => string
 }
 
 async function loadSide(label: string, dir: string): Promise<Side> {
@@ -147,11 +158,11 @@ async function loadSide(label: string, dir: string): Promise<Side> {
     compile: Side['compile']
   }
   const g = await import(path.join(dir, 'bench', 'grammar-density', 'grammar.ts')) as {
-    densityGrammar: Side['grammar']
-    densityInput: (rules: number) => string
+    caseGrammar: Side['grammar']
+    caseInput: Side['input']
     DENSITY_CASES: Side['cases']
   }
-  return { label, compile: pm.compile, grammar: g.densityGrammar, cases: g.DENSITY_CASES, input: g.densityInput(CONFIG.input.rules) }
+  return { label, compile: pm.compile, grammar: g.caseGrammar, cases: g.DENSITY_CASES, input: g.caseInput }
 }
 
 // ── measurement ─────────────────────────────────────────────────────────────
@@ -166,8 +177,8 @@ type Impl = { label: string; id: string; run: (reps: number) => void; parse: () 
 
 function buildImpls(side: Side): Impl[] {
   return side.cases.map(c => {
-    const compiled = side.compile(side.grammar(c.guardsPerValue))
-    const input = side.input
+    const compiled = side.compile(side.grammar(c))
+    const input = side.input(c, CONFIG.input.rules)
     const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
     return {
       label: side.label,
@@ -227,7 +238,13 @@ console.log(`grammar-perf-guard: ${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${h
 const ref = await loadSide('ref', refDir)
 const head = await loadSide('head', headDir)
 
-if (ref.input !== head.input) fail('the two sides generated different input — the grammar copy did not take.')
+// Every case's input must be byte-identical across the sides, per AXIS — the
+// copy is what makes the comparison about parseman rather than about the bench.
+for (const c of ref.cases) {
+  if (ref.input(c, CONFIG.input.rules) !== head.input(c, CONFIG.input.rules)) {
+    fail(`the two sides generated different input for ${c.id} — the grammar copy did not take.`)
+  }
+}
 if (ref.cases.length !== head.cases.length) fail('the two sides declare different cases — the grammar copy did not take.')
 
 const refImpls = buildImpls(ref)
@@ -236,7 +253,7 @@ assertSameParse(refImpls, headImpls)
 
 const reps = calibrate(refImpls)
 console.log(
-  `  ${(ref.input.length / 1024).toFixed(1)} KB input`
+  `  ${(ref.input(ref.cases[0]!, CONFIG.input.rules).length / 1024).toFixed(1)} KB input`
   + `   ${M.rounds} rounds x ${M.runs} runs, ${M.warmup} warmup + ${M.timed} timed samples, interleaved in one process`
   + `${QUICK ? '  [--quick: TRIAGE ONLY, not a gate]' : ''}`,
 )
@@ -280,7 +297,7 @@ for (const c of ref.cases) {
   const sign = (n: number): string => `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`
   console.log(
     `  ${breach ? 'FAIL' : 'ok  '}  ${c.id.padEnd(17)}`
-    + ` ${String(c.guardsPerValue).padStart(2)} probes/value`
+    + ` ${String(c.n).padStart(2)} ${c.kind === 'expected' ? 'opt/arm    ' : 'probes/value'}`
     + `   median ${median(a).toFixed(2)} → ${median(b).toFixed(2)} ms (${sign(dMed)})`
     + `   min ${Math.min(...a).toFixed(2)} → ${Math.min(...b).toFixed(2)} ms (${sign(dMin)})`
     + `   won ${wins}/${b.length}`,
@@ -296,9 +313,12 @@ if (failures.length > 0) {
   console.error(`\ngrammar-perf-guard: REGRESSION in ${failures.length} case(s) vs ${REF}:`)
   for (const f of failures) console.error(`  ${f}`)
   console.error(
-    '\nThe cases differ only in speculative probes per byte, so read the SPREAD: a delta that grows with'
-    + '\nthe probe count is a per-execution cost on a rollback path, and that is the shape that reaches'
-    + '\nreal grammars amplified by their own density.'
+    '\nRead the SPREAD, per axis. Within `rollback/*` only the probes per byte move, so a delta that'
+    + '\ngrows with the probe count is a per-EXECUTION cost on a rollback path. Within `expected/*` only'
+    + '\nthe derived expected-set width moves, so a delta that appears at `wide` and not at `narrow` is a'
+    + '\ncost that scales with how many tokens a losing choice names. Either shape reaches real grammars'
+    + '\namplified by their own density — and a regression on ONE axis reads flat on the other, which is'
+    + '\nhow 0.35.0 shipped a 32% Less regression past a sweep that watched rollbacks only.'
     + '\n\nDo not widen the threshold to make this pass. Either fix it, or land the number visibly.',
   )
   process.exit(1)
