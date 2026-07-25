@@ -9,6 +9,23 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # One leg per SUPPORTED LTS line. Spelled as aliases, not pinned versions, so
+      # the window follows Node instead of rotting: when the next line goes LTS
+      # these shift on their own, whereas pins keep testing an ever-staler set while
+      # `engines` still claims otherwise. Silent divergence between what the package
+      # says it supports and what CI actually runs is the failure worth avoiding.
+      #
+      # Three lines, matching `engines` (`^20.19.0 || >=22.12.0`): today 24/22/20.
+      #
+      # A single pinned major — what this was — tests neither end of the range and
+      # let a real bug through: `case-fold.test.ts` pinned a Unicode-derived count
+      # that is 2313 on Node 22 and 2307 on Node 24, so it passed locally and failed
+      # CI. Anything ICU-, Intl- or Unicode-derived drifts silently between lines.
+      matrix:
+        node-version: ['lts/*', 'lts/-1', 'lts/-2']
+    name: test (node ${{ matrix.node-version }})
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,7 +38,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - name: Install dependencies
@@ -58,6 +75,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: coverage-report-${{ strategy.job-index }}
           path: coverage/
           retention-days: 14
