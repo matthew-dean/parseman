@@ -114,8 +114,15 @@ const lifecycleProjection = (pkgJson) =>
  * Named individually rather than exempting `scripts/` wholesale: the rest of that
  * directory (this file, the coverage guard, the doc verifier) is CI machinery that
  * reaches no consumer.
+ *
+ * `tsconfig.json` is here for an INHERITED reason, not a direct one. The shipped
+ * declarations come from `tsc -p tsconfig.build.json` (see `scripts/build.mjs`), and
+ * `tsconfig.build.json` is four lines that `extends` the root config — so `target`,
+ * `lib`, `strict`, `exactOptionalPropertyTypes` and friends reach `dist/*.d.ts`
+ * through the extends chain. Watching only the file that does the extending would
+ * let a consumer-visible change to the emitted types merge unbumped.
  */
-const BUILD_INPUTS = ['scripts/build.mjs', 'tsup.config.ts', 'tsconfig.build.json']
+const BUILD_INPUTS = ['scripts/build.mjs', 'tsup.config.ts', 'tsconfig.build.json', 'tsconfig.json']
 
 /** Parse `1.2.3` / `v1.2.3-rc.1` into comparable parts, or `null` if it isn't one. */
 const parseVersion = (raw) => {

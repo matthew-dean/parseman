@@ -218,6 +218,20 @@ describe('bump gate', () => {
     expect(r.out).toMatch(/build input scripts\/build\.mjs/)
   })
 
+  it('REQUIRES a bump when the INHERITED tsconfig changes', () => {
+    // `tsconfig.build.json` is four lines that `extends` the root config, and the
+    // shipped declarations come from `tsc -p tsconfig.build.json`. A declaration-
+    // affecting option edited in `tsconfig.json` therefore reaches dist/*.d.ts
+    // without `tsconfig.build.json` being touched at all.
+    const { dir, baseSha } = repo(
+      { changelog: released('0.36.0'), files: { 'tsconfig.json': '{"compilerOptions":{"strict":true}}\n' } },
+      { changelog: released('0.36.0'), files: { 'tsconfig.json': '{"compilerOptions":{"strict":false}}\n' } },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/build input tsconfig\.json/)
+  })
+
   it('does NOT treat the rest of scripts/ as a build input', () => {
     // The other half: CI machinery in the same directory reaches no consumer.
     const { dir, baseSha } = repo(
