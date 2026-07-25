@@ -26,7 +26,7 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { LinkablePieces } from '../compiler/codegen.ts'
-import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
+import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -1035,10 +1035,12 @@ export function transformMacro(
     }
     // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
     // only site that can answer whether the choices it leads actually gate.
+    // ONE hydration shared by both thunks — see `once` in the linker.
+    const detailed = once(() => carriedRuleMapsDetailed(carried))
     runFusedGatingDiagnostic(
-      () => carriedRuleMapsDetailed(carried).maps,
+      () => detailed().maps,
       undefined,
-      () => carriedRuleMapsDetailed(carried).opaque,
+      () => detailed().opaque,
     )
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
@@ -1107,10 +1109,11 @@ export function transformMacro(
       const localNs = nsFor(`composeLeaf${init.start}`)
       // The local leaf map is the LAST (winning) contributor, and is usually the one
       // that binds the imported shapes' holes — so it must be part of the fused view.
+      const detailedLeaf = once(() => carriedRuleMapsDetailed(carried))
       runFusedGatingDiagnostic(
-        () => [...carriedRuleMapsDetailed(carried).maps, [...localRules] as Array<[string, Combinator<unknown>]>],
+        () => [...detailedLeaf().maps, [...localRules] as Array<[string, Combinator<unknown>]>],
         undefined,
-        () => carriedRuleMapsDetailed(carried).opaque,
+        () => detailedLeaf().opaque,
       )
       const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
       if (!plainLocalPiece) {

@@ -427,6 +427,18 @@ function isIRPiece(p: unknown): p is IRPiece {
     && !('ruleFns' in (p as object))
 }
 
+/** Memoize a zero-arg thunk, keeping it LAZY. Used where two diagnostic thunks want
+ * the same carried-IR hydration: the work must not happen when the diagnostic is off,
+ * and must not happen twice when it is on. */
+export function once<T>(fn: () => T): () => T {
+  let done = false
+  let value: T
+  return () => {
+    if (!done) { value = fn(); done = true }
+    return value
+  }
+}
+
 /** The re-lowerable carried pieces' rule maps, in compose order — the input to the
  * fuse-time gating diagnostic. An opaque precompiled artifact contributes no
  * combinator graph, so it is skipped: a hole it would have bound stays unresolved
@@ -621,10 +633,15 @@ export function compose(
   const carried = items.flatMap(item => itemCarried(item, used, trivia))
   // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
   // only site that can answer whether the choices it leads actually gate.
+  // ONE hydration, shared by both thunks. Re-lowering carried IR runs `evalRuleMapIR`
+  // and `new Function` per piece, and the diagnostic is default-on, so calling
+  // `carriedRuleMapsDetailed` once per thunk did that work twice on every compose.
+  // Still lazy: nothing is hydrated when the gating level is 'off'.
+  const detailed = once(() => carriedRuleMapsDetailed(carried))
   runFusedGatingDiagnostic(
-    () => carriedRuleMapsDetailed(carried).maps,
+    () => detailed().maps,
     undefined,
-    () => carriedRuleMapsDetailed(carried).opaque,
+    () => detailed().opaque,
   )
   const pieces = carried.map(p => materializePiece(p, trivia))
   const map = fuseRules(pieces)
