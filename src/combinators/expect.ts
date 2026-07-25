@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseError } from '../types.ts'
 import { captureError } from '../recovery/scan.ts'
+import { matchesEmpty, isZeroWidthAssertion } from './first-set.ts'
 
 export type { ParseError }
 
@@ -10,7 +11,7 @@ export type { ParseError }
  *   literal('}')        -> ['"}"']
  *   keywords(['a','b']) -> ['"a"', '"b"']
  *   choice(x, y)        -> expected(x) ++ expected(y)   (all alternatives)
- *   sequence(a, b, …)   -> expected(a)                  (only the first term can fail first)
+ *   sequence(a, b, …)   -> expected(a) ++ … through the NULLABLE prefix
  *   label('s', x)       -> ['s']                        (an explicit name wins)
  *
  * This is what lets expect() report a meaningful, IDENTICAL expectation in both
@@ -18,6 +19,11 @@ export type { ParseError }
  * runtime `expected` array, so it reads this precomputed set instead).
  */
 export function deriveExpected(c: Combinator<unknown>): string[] {
+  return derive(c, new Set())
+}
+
+function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[] {
+  const deriveExpected = (p: Combinator<unknown>): string[] => derive(p, seen)
   const def = c._def
   switch (def.tag) {
     case 'literal':   return [JSON.stringify(def.value)]
@@ -25,7 +31,20 @@ export function deriveExpected(c: Combinator<unknown>): string[] {
     case 'keywords':  return def.words.map(w => JSON.stringify(w))
     case 'label':     return [def.label]
     case 'choice':    return def.parsers.flatMap(deriveExpected)
-    case 'sequence':  return def.parsers.length > 0 ? deriveExpected(def.parsers[0]!) : []
+    // Union through the NULLABLE prefix, mirroring `sequenceFirstSet`. A leading
+    // `optional(…)`/`many(…)` can match nothing, so the term after it is equally
+    // able to fail first — deriving from term 0 alone named a token the parse
+    // never actually required. A leading `not(…)` is zero-width and contributes
+    // nothing (its own expectation is about what must NOT be here), but it is
+    // nullable, so keep scanning past it. Stop at the first term that must match.
+    case 'sequence': {
+      const out: string[] = []
+      for (const term of def.parsers) {
+        if (!isZeroWidthAssertion(term)) out.push(...deriveExpected(term))
+        if (!matchesEmpty(term)) break
+      }
+      return out
+    }
     case 'attempt':   return deriveExpected(def.parser)
     // Delegating wrappers whose first-token failure is their inner parser's — must
     // pass through so a start-failure (and the first-set-miss fast-path in attempt/
@@ -51,8 +70,17 @@ export function deriveExpected(c: Combinator<unknown>): string[] {
       // definition yet — its `thunk()` throws until fusion supplies it. Fall back
       // to the rule name as the expected label instead of descending.
       const name = (c as { _ruleName?: string })._ruleName
+      // Cycle guard: a RECURSIVE rule re-enters its own definition forever. Reaching
+      // one is newly possible now that `sequence` derives through a nullable prefix
+      // (`list = choice('end', sequence(optional(item), list))` — term-0-only
+      // derivation used to stop short of the self-reference). Falling back to the rule
+      // name, exactly as for an unresolved external ref, cuts the cycle. Removed again
+      // on the way out, so a rule referenced twice NON-cyclically still derives fully.
+      if (seen.has(c)) return name ? [name] : []
+      seen.add(c)
       try { return deriveExpected(def.thunk()) }
       catch { return name ? [name] : [] }
+      finally { seen.delete(c) }
     }
     default:          return []
   }
