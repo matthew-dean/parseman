@@ -13,6 +13,7 @@
  * with the gating consequence.
  */
 import { describe, it, expect, vi } from 'vitest'
+import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
 import {
   analyzeGating, choice, compile, keywords, literal, many, not, oneOrMore,
   oneOrMoreSep, optional, parse, peek, regex, rules, sepBy, sequence, word,
@@ -35,15 +36,19 @@ const firstChars = (c: Combinator<unknown>): string => {
   return out.sort().join('')
 }
 
-/** Run a combinator through BOTH engines — the interpreter and compiled output. */
+/**
+ * Run a combinator through BOTH engines — the interpreter and compiled output.
+ *
+ * Delegates the comparison to `assertEnginesAgree`, which compares the WHOLE
+ * result object plus the context sinks. This used to compare `ok`, and then
+ * `value`/`span.end` only when BOTH engines succeeded — so two engines could
+ * fail the same input with different `expected` arrays and different
+ * `span.start` and the helper stayed silent. That is precisely how the sepBy
+ * `trailing: 'require'` payload divergence reached review. Do not re-narrow it
+ * to a field checklist; see the header of `engine-parity.ts`.
+ */
 function bothEngines<T>(c: Combinator<T>, input: string): { ok: boolean; end: number; value: unknown } {
-  const interpreted = parse(c, input)
-  const compiled = compile(c, undefined, { gating: 'off' }).parse(input)
-  expect(compiled.ok).toBe(interpreted.ok)
-  if (interpreted.ok && compiled.ok) {
-    expect(compiled.span.end).toBe(interpreted.span.end)
-    expect(compiled.value).toEqual(interpreted.value)
-  }
+  const interpreted = assertEnginesAgree(c, input)
   return interpreted.ok
     ? { ok: true, end: interpreted.span.end, value: interpreted.value }
     : { ok: false, end: -1, value: undefined }

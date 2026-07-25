@@ -2413,9 +2413,12 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
 
   // `min >= 1`: too few items ⇒ the whole list FAILS. (The min-0 default's empty
   // alternative is exactly what makes plain sepBy nullable and un-gateable.)
-  // Mirrors the interpreter, which reports the item's derived expected at `pos`.
+  // Anchored at `curV`, not `pos`: a list failure reports what would have let it
+  // CONTINUE, at the furthest position it reached. See the `failAt` comment in
+  // `sepBy()` (repeat.ts) for why, and `test/parity/repeat-options-parity.test.ts`
+  // for the check that keeps the two engines on the same rule.
   if (def.min >= 1) {
-    stmts.push(...emitIfFail(ctx, `${arrV}.length < ${def.min}`, failArrBody(ctx, deriveExpectedArr([def.parser]), pos)))
+    stmts.push(...emitIfFail(ctx, `${arrV}.length < ${def.min}`, failArrBody(ctx, deriveExpectedArr([def.parser]), curV)))
   }
   // `trailing: 'require'` — a NON-EMPTY list must end on a consumed separator; an
   // empty one has no item to follow, so it is vacuously satisfied.

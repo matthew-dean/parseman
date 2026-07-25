@@ -209,8 +209,13 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       while (count < min) {
         const item = repItem(combinator, input, cur, ctx, guardable)
         if (item === 'stop' || 'fail' in item) {
+          // Anchored at `cur` — the furthest position the repeat reached — not at
+          // its start. `many(regex(/x/), { min: 3 })` over "xx" consumed both x's
+          // and got stuck at 2 wanting a third; reporting offset 0 points the
+          // caret at input that matched. Same rule as `sepBy`'s `failAt`, and the
+          // compiled emitter already anchored here — this side was the outlier.
           expected ??= deriveExpected(combinator)
-          return { ok: false, expected: expected.length > 0 ? expected : [combinator._tag], span: { start: pos, end: pos } }
+          return { ok: false, expected: expected.length > 0 ? expected : [combinator._tag], span: { start: cur, end: cur } }
         }
         if (values !== undefined) values.push(item.value)
         cur = item.end
@@ -324,11 +329,30 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
     isTrivia: false,
   }
   let expected: string[] | undefined
-  const failMin = (pos: number): ParseResult<T[]> => {
-    expected ??= deriveExpected(combinator)
-    // Same empty-set fallback codegen's `deriveExpectedArr` applies, so the
-    // interpreted and compiled failures carry the same payload.
-    return { ok: false, expected: expected.length > 0 ? expected : [combinator._tag], span: { start: pos, end: pos } }
+  let sepExpected: string[] | undefined
+  /**
+   * A list-level failure is anchored at the FURTHEST position the list reached,
+   * and reports what would have allowed it to CONTINUE there — never at the
+   * list's own start.
+   *
+   * Anchoring at the start throws away everything the parse learned: for
+   * `sepBy(item, ',', { trailing: 'require' })` over `"a,b"` the list consumed
+   * `a,b` perfectly and got stuck at offset 3 wanting a separator, so a failure
+   * reported as "expected <item> at 0" points the caret at a token that parsed
+   * fine. It also mislocates `completionsAt`, which asks what may appear AT a
+   * cursor — the answer at the stuck position, not at the list's start.
+   *
+   * BOTH engines must follow this rule. It is the one that drifted three
+   * separate ways in this option surface (item-at-start vs separator-at-current
+   * vs item-at-current); `test/parity/repeat-options-parity.test.ts` is what
+   * now holds them together. The empty-set fallback mirrors codegen's
+   * `deriveExpectedArr`, so the two payloads are identical.
+   */
+  const failAt = (p: Combinator<unknown>, at: number): ParseResult<T[]> => {
+    const exp = p === (combinator as Combinator<unknown>)
+      ? (expected ??= deriveExpected(combinator))
+      : (sepExpected ??= deriveExpected(separator))
+    return { ok: false, expected: exp.length > 0 ? exp : [p._tag], span: { start: at, end: at } }
   }
 
   return {
@@ -354,11 +378,11 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
         // it is a genuine empty list.
         const term = ctx._tolerant ? ctx._sync : undefined
         if (term === undefined || matchesAt(term, input, pos, ctx)) {
-          // `min >= 1` — report the item's DERIVED expected at the list's own start.
+          // `min >= 1` — nothing was consumed, so the furthest position IS `pos`.
           // The compiled form swallows the first element's sub-parse (it is
           // discarded on the min-0 path), so it cannot reproduce the inner
           // failure's exact payload; both sides report this same derived set.
-          if (min >= 1) return failMin(pos)
+          if (min >= 1) return failAt(combinator as Combinator<unknown>, pos)
           return { ok: true, value: [], span: { start: pos, end: pos } }
         }
         expected ??= deriveExpected(combinator)
@@ -409,13 +433,20 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
           // the separator we just consumed is real, so resync the bad element after
           // it. If a terminator is inferable and already present at nextPos, the
           // separator was a trailing one (e.g. `a;}`) → roll it back and stop.
-          if (sepMark !== undefined) {
-            // 'allow' / 'require': the separator we just consumed IS part of the list.
-            rollbackTrivia(ctx, sepMark)
-            cur = sep.span.end
-            sawTrailing = true
-            break
-          }
+          //
+          // RECOVERY IS TESTED FIRST, and is ORTHOGONAL to `trailing`. This block
+          // used to lead with the `sepMark !== undefined` branch — but sepMark is
+          // non-undefined for EVERY 'allow'/'require' list, so that branch always
+          // won and the resync below became unreachable the moment a grammar opted
+          // into a trailing separator. `{a,,b}` recovered under the default
+          // 'forbid' and hard-failed under 'allow', which is not a policy anyone
+          // would choose: permitting a trailing comma has nothing to do with
+          // whether a tolerant parse may resynchronize. (The compiled `failItem`
+          // already ordered it this way — the engines disagreed because of this.)
+          //
+          // Junk after a REAL separator is recovered whatever `trailing` says, and
+          // no rollback happens on that path: both the separator and the recovered
+          // error element belong to the list.
           const term = ctx._tolerant ? ctx._sync : undefined
           if (term !== undefined && !matchesAt(term, input, nextPos, ctx)) {
             expected ??= deriveExpected(combinator)
@@ -425,16 +456,28 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
             cur = rec.end
             continue
           }
+          if (sepMark !== undefined) {
+            // 'allow' / 'require': the separator we just consumed IS part of the
+            // list — a genuine trailing one, since no resync applied above.
+            rollbackTrivia(ctx, sepMark)
+            cur = sep.span.end
+            sawTrailing = true
+            break
+          }
           rollbackTrivia(ctx, loopMark)
           break
         }
         values.push(next.value)
         cur = next.span.end
       }
-      if (values.length < min) return failMin(pos)
+      // Too few items: the list is stuck at `cur` wanting another ITEM.
+      if (values.length < min) return failAt(combinator as Combinator<unknown>, cur)
       // 'require': a non-empty list must END with a separator. An empty list has no
-      // item to follow, so it is vacuously satisfied.
-      if (trailing === 'require' && values.length > 0 && !sawTrailing) return failMin(pos)
+      // item to follow, so it is vacuously satisfied. Stuck at `cur` wanting a
+      // SEPARATOR — reporting the item's expected here would name the wrong token.
+      if (trailing === 'require' && values.length > 0 && !sawTrailing) {
+        return failAt(separator as Combinator<unknown>, cur)
+      }
       return { ok: true, value: values, span: { start: pos, end: cur } }
     },
   }

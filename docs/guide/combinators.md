@@ -730,11 +730,14 @@ parse(scanTo(regex(/;/), { orEOF: true }), 'no terminator').value
 
 Both are "scanning" combinators — they look for a delimiter across arbitrary text.
 The classic hazard is a delimiter that appears **inside a string or a comment**: a
-naïve scan for `)` stops at the `)` inside `"a)b"`. To close that hazard, both skip
-two kinds of region by default:
+naïve scan for `)` stops at the `)` inside `"a)b"`. To close that hazard, they skip
+opaque regions by default — `scanTo` two kinds, `balanced` one:
 
-- **Ambient trivia.** Whatever `trivia` the grammar declares (whitespace, comments)
-  is skipped during the scan, so a sentinel hidden in a comment is never matched.
+- **Ambient trivia** *(`scanTo` only)*. Whatever `trivia` the grammar declares
+  (whitespace, comments) is skipped during the scan, so a sentinel hidden in a
+  comment is never matched. `balanced` deliberately does **not** consult trivia —
+  its delimiters are structural, and a bracket is a bracket whether or not a
+  comment sits beside it.
 - **Ambient `scanSkip`.** Opaque *non-trivia* units — strings, `balanced` brackets —
   declared once at the grammar level:
 
@@ -759,7 +762,7 @@ two kinds of region by default:
 
 | Option | Effect |
 | --- | --- |
-| `skip: [...]` | Extra opaque units for THIS call. **Extends** (does not replace) the ambient trivia + `scanSkip`. |
+| `skip: [...]` | Extra opaque units for THIS call. **Extends** (does not replace) what the combinator already skips ambiently — trivia + `scanSkip` for `scanTo`, `scanSkip` alone for `balanced`. |
 | `raw: true` | Hard opt-out: skip nothing ambiently — the pre-ambient raw byte walk. |
 | `orEOF: true` | *(scanTo only)* Reaching end-of-input without the sentinel succeeds, returning everything consumed. |
 
