@@ -167,15 +167,136 @@ export function densityInput(rules = 700): string {
 }
 
 /**
- * The gate's cases. Named for what they are — a probe count — not for a dialect.
+ * The SECOND axis: how wide the derived `expected` set is at a choice that loses
+ * every arm.
  *
- * `guardsPerValue` → probes/KB is roughly `guardsPerValue × 42` on this input
- * (12 value terms per ~285-byte rule). The three land near 42 / 126 / 630,
- * bracketing the 20 / 121 / 599 measured across css / jess / less.
+ * The rollback sweep above watches probes-per-byte, because that is the axis
+ * 0.34.0's regression rode. It would not have caught 0.35.0's, which rode this
+ * one — `fix(expect)` deriving through a nullable prefix widened the derived sets
+ * on jess's Less grammar and cost 32% of parse time, with the rollback cases
+ * reading flat. A gate parameterised on one axis only ever catches that axis.
+ *
+ * The shape: a value is a choice whose arms each begin with a NULLABLE prefix,
+ * and every arm's prefix starts from the SAME operand alphabet. Deriving through
+ * the prefix therefore re-reaches those tokens once per optional term, per arm.
+ * The emitted total-failure path is `_ctx._fx = [...arm0, ...arm1, …]`, so the
+ * arrays materialised there scale with the derived width — and each one feeds the
+ * ENCLOSING choice's concat, which is why the cost compounds rather than adds.
+ *
+ * This choice is deliberately NOT first-character-disjoint, and cannot be made so
+ * without deleting the thing it measures: a shared nullable prefix is precisely
+ * what makes the derivation re-reach the same tokens, and arms gated on distinct
+ * first characters have nothing to re-reach. The repo's disjoint-gating guidance
+ * is about grammars written to be fast; this is a fixture written to reproduce a
+ * shape a real grammar has (jess's Less value position) and did regress on.
+ *
+ * The non-disjoint dispatch it implies is not a confound. The gate A/Bs a case
+ * against ITSELF across two parseman builds, so any fixed arm-selection cost is
+ * present on both sides and cancels; and `narrow` (1 optional term) versus `wide`
+ * (4) holds the dispatch shape identical while moving only the derived width, so
+ * the width reading does not have to be taken against the disjoint `none`.
+ *
+ * `prefixDepth` is that width knob. The SHARED input already drives the losing
+ * path — `oneOrMore(Value)` ends every declaration by failing `Value` on the `;`,
+ * which is an all-arms-failed choice per declaration, six per rule. No separate
+ * input is needed, and using the same one keeps the two axes comparable.
+ */
+export function expectedWidthGrammar(prefixDepth: number): Combinator<unknown> {
+  // One shared operand alphabet behind every optional term — the duplication is
+  // the point. `attempt` keeps a losing value from tearing the capture.
+  const operand = choice(literal('~'), literal('^'), literal('&'), literal('|'))
+  const prefix: Array<Combinator<unknown>> = []
+  for (let i = 0; i < prefixDepth; i++) prefix.push(optional(operand))
+
+  const { Stylesheet } = rules((r: {
+    Stylesheet: Combinator<unknown>
+    Rule: Combinator<unknown>
+    Declaration: Combinator<unknown>
+    Value: Combinator<unknown>
+    Dimension: Combinator<unknown>
+  }) => {
+    const Stylesheet = node('Stylesheet',
+      parser({ trivia: rw }, many(r.Rule)),
+      (c, _f, s, raw, tl) => mk('Stylesheet', c, raw, s, tl))
+
+    const Rule = node('Rule',
+      parser({ trivia: rw }, sequence(
+        oneOrMore(ident),
+        literal('{'),
+        many(r.Declaration),
+        literal('}'),
+      )),
+      (c, _f, s, raw, tl) => mk('Rule', c, raw, s, tl))
+
+    const Declaration = node('Declaration',
+      attempt(parser({ trivia: rw }, sequence(
+        ident,
+        literal(':'),
+        oneOrMore(r.Value),
+        literal(';'),
+      ))),
+      (c, _f, s, raw, tl) => mk('Declaration', c, raw, s, tl))
+
+    // Each arm: the nullable prefix, then that arm's own terminal.
+    const arm = (tail: Combinator<unknown>): Combinator<unknown> => sequence(...prefix, tail)
+    const Value = parser({ trivia: rw }, choice(
+      arm(r.Dimension), arm(hex), arm(str), arm(ident),
+    ))
+
+    const Dimension = node('Dimension',
+      sequence(num, optional(unit)),
+      (c, _f, s, raw, tl) => mk('Dimension', c, raw, s, tl))
+
+    return { Stylesheet, Rule, Declaration, Value, Dimension }
+  })
+
+  return Stylesheet
+}
+
+/**
+ * The gate's cases, across BOTH axes.
+ *
+ * `rollback/*` — speculative probes per byte. The conversion is MEASURED, not
+ * estimated: instrumenting the emitted artifact and parsing `densityInput(200)`
+ * (37.7 KB) counts 3,556 / 14,224 / 56,896 `not()` executions at
+ * `guardsPerValue` 1 / 4 / 16, i.e. **94 per KB per guard** — 0 / 94 / 377 /
+ * 1508. The interpreter counts identically, so the figure is not engine-specific.
+ *
+ * Against the real grammars in the 0.34.0 event — css 20, jess 121, less 599 per
+ * KB — every one of them lands INSIDE this sweep: css between `none` and
+ * `sparse`, jess between `sparse` and `medium`, less between `medium` and
+ * `dense`, with `dense` sitting 2.5x above the worst of them. An earlier version
+ * of this comment claimed `× 42`, which made `dense` look like ~672/KB and less
+ * like a grammar at the edge of the bracket; it was not, and a `rollback/extreme`
+ * case added on that premise has been removed rather than kept for reassurance.
+ * Recheck this constant if the input generator changes.
+ *
+ * `expected/*` — derived expected-set width at a choice that loses every arm.
+ * `none` is the disjoint-arm baseline (no nullable prefix at all, so first-char
+ * dispatch is O(1)); `narrow` and `wide` both carry a nullable prefix and so
+ * share the same dispatch shape, differing ONLY in how many times the derivation
+ * re-reaches the operand alphabet. Reading `narrow` against `wide` therefore
+ * isolates width; reading either against `none` also picks up the dispatch
+ * change, which is why `none` is a baseline and not the control.
  */
 export const DENSITY_CASES = [
-  { id: 'rollback/none', guardsPerValue: 0 },
-  { id: 'rollback/sparse', guardsPerValue: 1 },
-  { id: 'rollback/medium', guardsPerValue: 4 },
-  { id: 'rollback/dense', guardsPerValue: 16 },
+  { id: 'rollback/none', kind: 'rollback', n: 0 },
+  { id: 'rollback/sparse', kind: 'rollback', n: 1 },
+  { id: 'rollback/medium', kind: 'rollback', n: 4 },
+  { id: 'rollback/dense', kind: 'rollback', n: 16 },
+  { id: 'expected/none', kind: 'expected', n: 0 },
+  { id: 'expected/narrow', kind: 'expected', n: 1 },
+  { id: 'expected/wide', kind: 'expected', n: 4 },
 ] as const
+
+export type DensityCase = (typeof DENSITY_CASES)[number]
+
+/** The grammar for one case — the gate never picks a shape itself. */
+export function caseGrammar(c: { kind: string; n: number }): Combinator<unknown> {
+  return c.kind === 'expected' ? expectedWidthGrammar(c.n) : densityGrammar(c.n)
+}
+
+/** The input for one case. Held constant within an axis. */
+export function caseInput(_c: { kind: string }, rules: number): string {
+  return densityInput(rules)
+}

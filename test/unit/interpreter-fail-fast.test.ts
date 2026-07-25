@@ -147,10 +147,70 @@ describe('first-set-miss failure derives through a nullable prefix', () => {
     expect(deriveExpected(a)).toEqual(['"a"', '"x"', '"b"', '"y"'])
 
     // The guard is an in-progress stack, not a visited set: a rule referenced twice
-    // NON-cyclically must still contribute both times.
+    // NON-cyclically must still be DESCENDED into both times — it is the dedup at
+    // the end, not a visited-set short-circuit, that collapses the two to one entry.
+    // (Were the guard a visited set, a rule whose second reference sat under a
+    // DIFFERENT prefix would lose that prefix's tokens entirely.)
     const leaf = ref<unknown>()
     leaf.define(literal('L'))
-    expect(deriveExpected(choice(leaf, leaf))).toEqual(['"L"', '"L"'])
+    expect(deriveExpected(choice(leaf, leaf))).toEqual(['"L"'])
+  })
+
+  it('names each expected token ONCE, however many nullable terms reach it', () => {
+    // The shape a value grammar actually has: several optional leading terms that
+    // all start with the same token set. Un-deduped this derives '"@"' four times
+    // and '"("' twice, and every losing choice then materializes those duplicates
+    // into a fresh array that the enclosing choice concatenates in turn — the cost
+    // compounds up the nesting. It is also simply wrong to offer a reader the same
+    // token four times.
+    const operand = choice(literal('@'), literal('('))
+    const value = sequence(optional(operand), optional(operand), operand)
+    expect(deriveExpected(value)).toEqual(['"@"', '"("'])
+
+    // Dedup preserves FIRST-seen order, so the leftmost derivation still reads first.
+    const ordered = sequence(optional(literal('b')), optional(literal('a')), literal('b'))
+    expect(deriveExpected(ordered)).toEqual(['"b"', '"a"'])
+  })
+
+  it('the dedup reaches the EMITTED expectation, not just the derivation — both engines', () => {
+    // The test above calls `deriveExpected` directly, which proves nothing about
+    // what the compiled engine bakes in: codegen reaches it through
+    // `deriveExpectedArr`/`hoistExpected`, and this repo has shipped a fix that
+    // landed in one engine only more than once. So assert through a real failure
+    // on BOTH paths, and require them equal to each other as well as to the
+    // expected value — a divergence must fail this test, not just a regression.
+    //
+    // `attempt`/`node` are what surface the STATIC set: parsed bare, the optionals
+    // match empty and the failure is reported at the terminal, so the duplicates
+    // never appear. Verified RED against the un-deduped derivation, where these
+    // read ['"@"', '"("', '"@"', '"("', '"x"'] and ['"b"', '"a"', '"b"'].
+    const operand = choice(literal('@'), literal('('))
+    const body2 = sequence(optional(operand), optional(operand), literal('x'))
+
+    for (const guarded of [attempt(body2), node('N2', body2, (c: unknown) => c)]) {
+      const ri = (parse(guarded, 'z', { trackLines: false } as ParseContext) as { ok: boolean; expected: string[] })
+      const rc = compile(guarded).parse('z', 0) as { ok: boolean; expected?: string[] }
+      expect(ri.ok).toBe(false)
+      expect(rc.ok).toBe(false)
+      expect(ri.expected).toEqual(['"@"', '"("', '"x"'])
+      expect(rc.expected).toEqual(ri.expected)
+    }
+
+    // First-seen order, through the emitted set too.
+    const ordered2 = attempt(sequence(optional(literal('b')), optional(literal('a')), literal('b')))
+    const oi = (parse(ordered2, 'z', { trackLines: false } as ParseContext) as { expected: string[] }).expected
+    const oc = (compile(ordered2).parse('z', 0) as { expected?: string[] }).expected
+    expect(oi).toEqual(['"b"', '"a"'])
+    expect(oc).toEqual(oi)
+
+    // NOT claimed here, deliberately: duplicates ACROSS choice arms. Codegen's
+    // `deriveExpectedArr` flatMaps a per-arm derivation, so two arms sharing a
+    // prefix still each contribute it — `choice(arm('x'), arm('y'))` emits
+    // ['"@"','"("','"x"','"@"','"("','"y"']. That is pre-0.35.0 behaviour, it is
+    // the same on both engines, and collapsing it is a separate change: the
+    // interpreter builds that set at RUNTIME from the arms that actually failed,
+    // so a codegen-only dedup there is exactly the one-engine drift this test
+    // exists to prevent.
   })
 
   it('attempt & node no longer name a token the parse does not require — both engines', () => {
