@@ -154,6 +154,34 @@ narrower `Value`, or left-factor the shape's arms.
 Only DEFERRED choices are reported at the fuse. An ordinary hole-free grammar is analyzed
 once, where it is authored, however many times it is later composed.
 
+### Asking a composed grammar directly
+
+The fuse-time warning above is a build-time side channel. To ask the same question
+programmatically, use `analyzeGrammarGating()` — it accepts a `rules()` map **or** a
+`compose()` result:
+
+```ts
+import { analyzeGrammarGating } from 'parseman'
+
+const report = analyzeGrammarGating(myComposedGrammar)
+if (report.unanalysable.length > 0) throw new Error('gating report is PARTIAL')
+```
+
+Do not reach for `analyzeGatingRules(Object.entries(composed))` instead. A `compose()`
+result is a map of **fused rule functions** — fusion lowers each rule to executable code,
+so there is no combinator graph left in that map to walk. `analyzeGrammarGating` recovers
+the graph from the composition's carried IR first.
+
+Two things this buys you over analyzing a contributing `rules()` map on its own: the
+cross-artifact holes are **bound**, so choices that were `deferred` resolve to a real
+verdict; and you see the **union** of every contributing grammar's rules, which no single
+`rules()` map contains.
+
+Always check `report.unanalysable` before reading `report.ungated` as a pass. It is
+non-empty when part of the grammar could not be examined — for instance a contributing
+piece that is an opaque precompiled artifact — and an empty `ungated` then means "nothing
+was looked at", not "nothing is wrong".
+
 ## CI: budget the ungated set with the allowlist
 
 `analyzeGating(entry)` returns a structured `GatingReport`. Keep an `accept` allowlist of
