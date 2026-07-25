@@ -132,9 +132,12 @@ function materialise(sha: string | null): string {
   const stale = (): boolean => {
     if (!existsSync(path.join(dir, 'src', 'index.ts'))) return true
     try {
-      const want = sh(['rev-parse', sha]).trim()
-      const have = sh(['rev-parse', 'HEAD'], dir).trim()
-      return want !== have
+      if (sh(['rev-parse', sha]).trim() !== sh(['rev-parse', 'HEAD'], dir).trim()) return true
+      // Being AT the sha is not enough — a tracked modification under `src/` means the
+      // benchmark imports code the sha does not name, and the gate would report the clean
+      // sha while measuring the edit. The grammar file is overwritten from the working
+      // tree BY DESIGN and lives outside `src/`, so scope the check to `src/`.
+      return sh(['status', '--porcelain', '--', 'src'], dir).trim() !== ''
     } catch {
       return true // can't confirm ⇒ treat as stale; a rebuild is cheap, a wrong number is not
     }

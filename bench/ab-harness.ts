@@ -124,7 +124,13 @@ export function materialise(
   const stale = (): boolean => {
     if (!existsSync(path.join(dir, 'src', 'index.ts'))) return true
     try {
-      return git(['rev-parse', sha], root).trim() !== git(['rev-parse', 'HEAD'], dir).trim()
+      if (git(['rev-parse', sha], root).trim() !== git(['rev-parse', 'HEAD'], dir).trim()) return true
+      // Being AT the sha is not enough — a tracked modification under `src/` means the
+      // benchmark imports code that is not what the sha names, and the gate would report
+      // the clean sha while measuring the edit. `copyPaths` are overwritten from the
+      // working tree BY DESIGN and live outside `src/`, so scoping the check to `src/`
+      // catches the real case without rebuilding on every run.
+      return git(['status', '--porcelain', '--', 'src'], dir).trim() !== ''
     } catch {
       return true // cannot confirm ⇒ treat as stale
     }
