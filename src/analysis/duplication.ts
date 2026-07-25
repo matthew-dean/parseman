@@ -1281,8 +1281,13 @@ function findRewrites(
   shapeOf: (p: Combinator<unknown>) => number,
 ): RewriteFinding[] {
   const out: RewriteFinding[] = []
-  const push = (f: Omit<RewriteFinding, 'kind' | 'id'>): void => {
-    out.push({ kind: 'rewrite', id: `rewrite:${f.rewrite}:${siteToString(f.site)}`, ...f })
+  // `at` discriminates findings that a single site can produce MORE than one of.
+  // Without it every `duplicate-arm`/`shadowed-arm` pair at one choice shares an
+  // id, so accepting one pair silently suppresses the rest — and these are
+  // `bug: true` findings that error mode is supposed to hold.
+  const push = (f: Omit<RewriteFinding, 'kind' | 'id'>, at?: string): void => {
+    const site = siteToString(f.site)
+    out.push({ kind: 'rewrite', id: `rewrite:${f.rewrite}:${site}${at === undefined ? '' : `:${at}`}`, ...f })
   }
 
   for (const v of visited.values()) {
@@ -1337,7 +1342,7 @@ function findRewrites(
         perf: PERF_ARM,
         bug: true,
         suggestion: `arm[${i}] and arm[${j}] are the SAME shape (\`${clamp(render(arms[i]!, 2))}\`). Under ordered choice arm[${i}] always wins, so arm[${j}] is unreachable — delete it. This is AST-neutral by construction: an arm that can never be selected contributes nothing to any parse.`,
-      })
+      }, `${i}-${j}`)
     }
 
     // (d) shadowed arm: an earlier arm is a strict TERM-PREFIX of a later one.
@@ -1357,7 +1362,7 @@ function findRewrites(
         perf: PERF_ARM,
         bug: true,
         suggestion: `arm[${i}] is a strict prefix of arm[${j}] and comes FIRST. Whenever arm[${j}] would match, arm[${i}] also matches, and ordered choice commits to it — so arm[${j}] can never be selected. Either swap them (longest first) or fold arm[${j}]'s extra terms into arm[${i}] as \`optional(…)\`. Verify by hand where a \`not()\`/\`gate()\` in arm[${i}] makes its success input-dependent in a way this static check cannot see.`,
-      })
+      }, `${i}-${j}`)
     }
 
     // (e) optional prefix / suffix — `choice(sequence(A, R…), R…)` is `sequence(optional(A), R…)`.
@@ -1382,7 +1387,7 @@ function findRewrites(
         perf: PERF_ARM,
         bug: false,
         suggestion: `these two arms differ only by a ${hit.where === 'prefix' ? 'leading' : 'trailing'} \`${clamp(render(hit.term, 2))}\`, so the choice is exactly \`${clamp(to)}\` — same language, one arm instead of two.${reversed !== null ? ` NOTE THE ORDER: the shorter arm is FIRST, so under ordered choice the longer arm is only reachable when the shorter one fails — check that is what you meant.` : ''} CANDIDATE — verify AST identity before applying:${nodeWrapped === null ? '' : ` this sits under \`node('${nodeWrapped}')\`, and`} the two forms produce different child arrays (two children vs. one child plus an absent optional). If a build fn or a downstream consumer reads children positionally, the rewrite MOVES the tree.`,
-      })
+      }, `${i}-${j}`)
     }
 
     // (f) left-factoring.
@@ -1405,7 +1410,7 @@ function findRewrites(
           : PERF_ARM,
         bug: false,
         suggestion: `arm[${i}] and arm[${j}] spell the same ${k} leading term(s). ${handled ? 'The `sharedPrefix` strategy already collapses this AT RUNTIME, so left-factoring buys readability, not speed — but writing it out means the next reader does not have to trust the optimizer.' : 'Left-factor to `sequence(prefix, choice(tailA, tailB))`: the prefix is then recognized once and the inner choice dispatches on its own first char.'} CANDIDATE — verify AST identity: factoring nests the tails one level deeper in the value.`,
-      })
+      }, `${i}-${j}`)
     }
   }
 

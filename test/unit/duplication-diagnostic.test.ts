@@ -524,6 +524,30 @@ describe('accept allowlist', () => {
     expect(r.rewrites.some(f => f.id === id)).toBe(false)
     expect(r.acceptedUnused).toEqual(['no-such-finding'])
   })
+
+  it('two same-kind findings at ONE choice get distinct ids, so accepting one keeps the other', () => {
+    // One choice, two independent dead arms: arm[2] duplicates arm[0], arm[3]
+    // duplicates arm[1]. Both are `duplicate-arm` at the SAME site.
+    const g = rules(() => ({
+      A: choice(
+        sequence(literal('a'), literal('b')),
+        sequence(literal('c'), literal('d')),
+        sequence(literal('a'), literal('b')),
+        sequence(literal('c'), literal('d')),
+      ),
+    }))
+    const base = analyzeDuplicationRules(entries(g))
+    const dups = base.rewrites.filter(f => f.rewrite === 'duplicate-arm')
+    expect(dups.length).toBeGreaterThan(1)
+    expect(new Set(dups.map(f => f.id)).size).toBe(dups.length)
+
+    // Accepting exactly one must suppress exactly one.
+    const r = analyzeDuplicationRules(entries(g), { accept: [dups[0]!.id] })
+    const after = r.rewrites.filter(f => f.rewrite === 'duplicate-arm')
+    expect(after.some(f => f.id === dups[0]!.id)).toBe(false)
+    expect(after.length).toBe(dups.length - 1)
+    expect(r.acceptedUnused).toEqual([])
+  })
 })
 
 describe('sites', () => {
