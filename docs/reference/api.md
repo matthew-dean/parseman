@@ -609,10 +609,14 @@ hand-rolled `sepBy`, idempotent nesting, and the two dead-arm BUGS `duplicate-ar
 several `regex()` terminals), `regexClasses` (character classes re-spelled — and, more
 usefully, near-identical ones, with the drift shown side by side), `keywordRegexes`
 (hand-rolled keywords that should be `word()`/`keywords()`, flagged for the `/i`-without-`/u`
-case-fold bug), and `overlaps` (`choice` arms whose first-sets intersect, with the shared
+case-fold bug, plus large literal ALTERNATIONS — a regex enumerating a fixed vocabulary is a
+keyword set written the hard way, and `hazards`/`longestFirst` report whether its
+hand-maintained order lets a shorter alternative shadow a longer one), and `overlaps` (`choice` arms whose first-sets intersect, with the shared
 prefix named and whether the `sharedPrefix` strategy already handles it).
 
-Only the two dead-arm findings are `astNeutral`. Everything else changes the child array the
+A `keywordRegexes` finding with an UNRESCUED prefix hazard is a third bug class: regex
+alternation is first-match, so with no boundary guard to force a backtrack the longer
+alternative can never match. Only the two dead-arm rewrite findings are `astNeutral`. Everything else changes the child array the
 site produces and is reported as a CANDIDATE to verify, never as a fix. `hand-rolled-sepby`
 carries a per-site `sepByVerdict` — `convertible`, `blocked-by-capture` (the repetition
 `field()`s its separator, which `sepBy` cannot express) or `reducer-stride-review`.

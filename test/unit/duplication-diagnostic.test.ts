@@ -12,7 +12,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings,
   duplicationFindingCount, alternationGroups, charClassMembers, extractCharClasses,
-  keywordRegexShape, siteToString,
+  keywordRegexShape, keywordAlternationHazards, siteToString,
   choice, sequence, literal, regex, many, optional, node, field, ref, withCtx, keywords, rules, compile,
 } from '../../src/index.ts'
 import { compileRuleMap, compileLinkable } from '../../src/compiler/codegen.ts'
@@ -419,6 +419,99 @@ describe('ranking and rendering across several findings', () => {
     expect(r.regexClasses[0]!.drifted).toBe(true)
     expect(r.regexClasses.at(-1)!.drifted).toBe(false)
     expect(formatDuplicationFindings(r).join('\n')).toContain('parseman regex-class')
+  })
+})
+
+describe('literal alternations that should be keywords()', () => {
+  it('a bare vocabulary with NO boundary guard is recognized', () => {
+    // One or two bare words are as likely an ordinary either/or; three is a vocabulary.
+    expect(keywordRegexShape('red|green')).toBeNull()
+    expect(keywordRegexShape('red|green|blue')).toEqual({ words: ['red', 'green', 'blue'], boundary: null })
+    expect(keywordRegexShape('-moz-box|-webkit-box|flex')).toEqual({ words: ['-moz-box', '-webkit-box', 'flex'], boundary: null })
+    // Regex machinery means it is a pattern, not a vocabulary.
+    expect(keywordRegexShape('red|gre+n|blue')).toBeNull()
+    expect(keywordRegexShape('red|[a-z]+|blue')).toBeNull()
+    expect(keywordRegexShape('(?:-moz-)?document|media|layer')).toBeNull()
+  })
+
+  it('a 150-name colour alternation is reported as a vocabulary, not as one keyword', () => {
+    const names = ['lightgoldenrodyellow', 'mediumspringgreen', 'cornflowerblue', 'darkslategray',
+      'rebeccapurple', 'blueviolet', 'chartreuse', 'firebrick', 'gainsboro', 'honeydew',
+      'lavender', 'moccasin', 'seagreen', 'thistle', 'tomato', 'violet', 'wheat', 'aqua',
+      'cyan', 'gold', 'navy', 'peru', 'pink', 'plum', 'snow', 'teal', 'red', 'tan']
+    const r = analyzeDuplication(node('NamedColor', regex(new RegExp(`(?:${names.join('|')})(?![-_a-zA-Z0-9(])`, 'i'))))
+    const f = r.keywordRegexes[0]!
+    expect(f.vocabulary).toBe(true)
+    expect(f.words).toHaveLength(names.length)
+    expect(f.caseFoldRisk).toBe(true)
+    expect(f.suggestion).toContain('FIXED VOCABULARY of 28 literal words')
+    expect(f.suggestion).toContain('keyword set written the hard way')
+    expect(f.suggestion).toContain('LONGEST-FIRST by construction')
+    // The suggested call is elided rather than reprinting 150 names.
+    expect(f.suggestion).toContain('/* … */')
+  })
+
+  it('an UNRESCUED prefix hazard is a live BUG — the longer word can never match', () => {
+    // No boundary guard: `red` wins outright and `redish` is unreachable.
+    const r = analyzeDuplication(regex(/red|redish|blue/))
+    const f = r.keywordRegexes[0]!
+    expect(f.bug).toBe(true)
+    expect(f.longestFirst).toBe(false)
+    expect(f.hazards).toEqual([{ shorter: 'red', longer: 'redish', at: 'i', rescuedByBoundary: false }])
+    expect(f.suggestion).toContain('LIVE BUG')
+    expect(f.suggestion).toContain('can NEVER match')
+    expect(f.suggestion).toContain('FIRST-match, not longest-match')
+  })
+
+  it('a boundary guard that rejects the following char RESCUES the order', () => {
+    // `(?![-\w])` rejects the `i` of `redish`, so the engine backtracks into it.
+    const r = analyzeDuplication(regex(/(?:red|redish|blue)(?![-\w])/))
+    const f = r.keywordRegexes[0]!
+    expect(f.bug).toBe(false)
+    expect(f.hazards).toHaveLength(1)
+    expect(f.hazards[0]!.rescuedByBoundary).toBe(true)
+    expect(f.suggestion).toContain('ORDERING HAZARD (currently harmless)')
+    expect(f.suggestion).toContain('sorts longest-first by construction')
+  })
+
+  it('a guard that does NOT cover the following char leaves the bug live', () => {
+    // `(?![0-9])` does not reject `i`, so `red` still matches inside `redish`.
+    const r = analyzeDuplication(regex(/(?:red|redish)(?![0-9])/))
+    const f = r.keywordRegexes[0]!
+    expect(f.hazards[0]!.rescuedByBoundary).toBe(false)
+    expect(f.bug).toBe(true)
+  })
+
+  it('correctly-ordered longest-first alternations carry no hazard', () => {
+    const r = analyzeDuplication(regex(/redish|blue|red/))
+    const f = r.keywordRegexes[0]!
+    expect(f.hazards).toHaveLength(0)
+    expect(f.bug).toBe(false)
+    expect(f.longestFirst).toBe(true)
+  })
+
+  it('keywordAlternationHazards is exact about which pair and which character', () => {
+    expect(keywordAlternationHazards(['bord', 'border'], null))
+      .toEqual([{ shorter: 'bord', longer: 'border', at: 'e', rescuedByBoundary: false }])
+    expect(keywordAlternationHazards(['border', 'bord'], null)).toEqual([])
+    expect(keywordAlternationHazards(['bord', 'border'], '_0-9A-Za-z')[0]!.rescuedByBoundary).toBe(true)
+    expect(keywordAlternationHazards(['a', 'a-b'], '-\\w')[0]!.rescuedByBoundary).toBe(true)
+    expect(keywordAlternationHazards(['a', 'a-b'], '0-9')[0]!.rescuedByBoundary).toBe(false)
+  })
+
+  it('bugs and the biggest vocabularies rank first', () => {
+    const r = analyzeDuplicationRules(entries(rules(() => ({
+      Small: regex(/not(?![-\w])/i),
+      Big: regex(/alpha|beta|gamma|delta|epsilon/),
+      Broken: regex(/in|instanceof|typeof/),
+    }))))
+    expect(r.keywordRegexes[0]!.bug).toBe(true)
+    expect(r.keywordRegexes[0]!.words).toContain('instanceof')
+    expect(r.keywordRegexes[1]!.words).toHaveLength(5)
+    const text = formatDuplicationFindings(r).join('\n')
+    expect(text).toContain('parseman BUG keyword-regex @ Broken')
+    expect(text).toContain('NOT longest-first')
+    expect(text).toContain('[5 literal words, NOT longest-first]')
   })
 })
 

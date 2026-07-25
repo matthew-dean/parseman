@@ -50,7 +50,7 @@ export type { AnalysableGrammar } from './analysis/grammar.ts'
 export {
   analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings,
   duplicationFindingCount, siteToString, alternationGroups, keywordRegexShape,
-  extractCharClasses, charClassMembers,
+  extractCharClasses, charClassMembers, keywordAlternationHazards,
 } from './analysis/duplication.ts'
 export type {
   DuplicationReport, AnalyzeDuplicationOptions, DuplicationWarnLevel, Site,

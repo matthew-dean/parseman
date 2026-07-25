@@ -86,6 +86,49 @@ Parséman fixed exactly this **inside** `keywords()` (see `combinators/case-fold
 A hand-rolled copy never received the fix, so its first-set is unsound for those
 inputs.
 
+### A regex enumerating a fixed vocabulary is a keyword set written the hard way
+
+The principle generalises past single keywords, and it explains several findings at
+once. When a `regex()` is an alternation of literal words — CSS named colours, at-rule
+names, import options, units — it is a **vocabulary**, and writing it as a regex costs
+three separate things:
+
+- **First-set gating.** `keywords()` exposes an exact first-set, so an enclosing
+  `choice` dispatches on one character. A 150-branch alternation exposes none, and
+  every position that reaches the choice runs the whole alternation.
+- **Ordering, hand-maintained.** Regex alternation is **first-match, not
+  longest-match**. `keywords()` sorts longest-first by construction; a hand-written
+  list does not, and nothing checks it.
+- **Case folding.** With `/i` and no `/u`, the whole vocabulary inherits the bug above.
+
+So a regex of ≥ 3 literal alternatives is reported as `vocabulary: true` even with no
+boundary guard, with `words.length`, `longestFirst`, and the exact `keywords([…])` call
+(elided rather than reprinting 150 names).
+
+The ordering analysis is the part that makes this a **bug class** rather than a
+cleanup. `hazards` lists every earlier alternative that is a strict prefix of a later
+one, and says whether the boundary guard rescues it:
+
+```ts
+// [verify]
+import { keywordAlternationHazards } from 'parseman'
+
+// No guard: `in` matches first and `instanceof` is UNREACHABLE.
+keywordAlternationHazards(['in', 'instanceof'], null)
+// → [{ shorter: 'in', longer: 'instanceof', at: 's', rescuedByBoundary: false }]
+
+// A guard rejecting the following `s` makes the engine backtrack into the longer
+// branch — correct today, but only because the guard covers that character.
+keywordAlternationHazards(['in', 'instanceof'], '_0-9A-Za-z')[0].rescuedByBoundary
+// → true
+```
+
+An unrescued hazard sets `bug: true` and prints as `parseman BUG keyword-regex`: a
+later alternative that can never match is a live defect, not a style preference. A
+rescued one is reported as an ordering hazard, because the correctness rests on a
+hand-maintained order *plus* a guard that happens to cover the right characters —
+neither of which `keywords()` needs.
+
 ## Input: the rules map, never a composed artifact
 
 The analysis walks combinators. The value `compose()` / `composeLeaf()` returns is a

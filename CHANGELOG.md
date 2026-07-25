@@ -31,10 +31,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `reducer-stride-review`, because on a real grammar those split roughly evenly and
   a count of matches would be a list of false work.
 
-  `keywordRegexes` is a correctness finding, not a style note: `/i` without `/u`
-  does not fold case as `{c, upper(c), lower(c)}` suggests, and the fix that lives
-  inside `keywords()` (`combinators/case-fold.ts`) never reached the hand-rolled
-  copies.
+  `keywordRegexes` is a correctness finding, not a style note. It covers single
+  keywords AND large literal alternations, on the principle that **a regex
+  enumerating a fixed vocabulary is a keyword set written the hard way**: it exposes
+  no first-set for `choice` to dispatch on, it hand-maintains an ordering
+  `keywords()` guarantees, and with `/i` and no `/u` it inherits the non-ASCII
+  case-folding bug `keywords()` fixes internally (`combinators/case-fold.ts`).
+
+  The ordering analysis makes that a third BUG class. Regex alternation is
+  first-match, not longest-match, so an earlier alternative that is a strict prefix
+  of a later one makes the longer branch unreachable — unless a trailing boundary
+  guard rejects the following character and forces a backtrack. `hazards` reports
+  each such pair and whether the guard rescues it; an unrescued one is a live
+  defect, not a style preference.
 
   Wired on ALL THREE lowering paths — `compile`, `compileRuleMap`, `compileLinkable`
   — and tested on each. The gating diagnostic was default-on and blind in the macro

@@ -247,12 +247,35 @@ export type KeywordRegexFinding = {
   source: string
   flags: string
   words: string[]
-  /** The boundary character class, as a `word()`/`keywords()` `boundary` argument. */
+  /** The boundary character class, as a `word()`/`keywords()` `boundary` argument.
+   *  `null` when the regex enumerates a vocabulary with no guard at all. */
   boundary: string | null
   /** `/i` without `/u`: the fold class is NOT `{c, upper(c), lower(c)}`. */
   caseFoldRisk: boolean
   /** Sibling arm indices in the same `choice` that are also hand-rolled keywords. */
   siblingArms: number[]
+  /**
+   * >= 3 literal alternatives: a fixed VOCABULARY enumerated by hand rather than a
+   * keyword with a guard. The interesting sub-case, because ordering starts to matter
+   * and the list is usually long enough that nobody re-reads it.
+   */
+  vocabulary: boolean
+  /**
+   * Alternatives are in non-increasing length order. `keywords()` sorts longest-first
+   * by construction; a hand-written alternation does not, and nothing checks it.
+   */
+  longestFirst: boolean
+  /**
+   * Earlier alternatives that are strict PREFIXES of later ones. Regex alternation is
+   * first-match, so the longer branch is reachable only when a trailing boundary guard
+   * rejects the following character and forces a backtrack (`rescuedByBoundary`).
+   */
+  hazards: { shorter: string; longer: string; at: string; rescuedByBoundary: boolean }[]
+  /**
+   * At least one hazard is NOT rescued by a boundary guard — a later alternative can
+   * never match. That is a live bug, not a cleanup.
+   */
+  bug: boolean
   suggestion: string
 }
 
@@ -490,14 +513,39 @@ export function alternationGroups(src: string): string[][] {
   return out
 }
 
-/** A bare word, or a small alternation of bare words. */
-const WORDS_RE = /^[A-Za-z][A-Za-z0-9_-]*(?:\|[A-Za-z][A-Za-z0-9_-]*)*$/
+/**
+ * A LITERAL word: letters, digits, `_`, `-`, optionally vendor-prefixed. No
+ * character class, no quantifier, no escape, no group — anything with regex
+ * machinery in it is a pattern, not a vocabulary entry, and is left alone.
+ */
+const WORD_RE_SRC = '-?[A-Za-z][A-Za-z0-9_-]*'
+const WORDS_RE = new RegExp(`^${WORD_RE_SRC}(?:\\|${WORD_RE_SRC})*$`)
 
 /**
- * Recognize a `regex()` that hand-rolls what `word()`/`keywords()` owns: a literal
- * word (or word alternation) plus a word-boundary guard. Returns the words and the
- * boundary CLASS in the exact form `word(str, boundary)` / `keywords(words, {
- * boundary })` take, so the suggestion names a real call rather than describing one.
+ * How many literal alternatives make a regex a VOCABULARY rather than a pattern,
+ * when there is no boundary guard to mark it as a keyword. With a guard, one word
+ * is already enough (`regex(/not(?![-\w])/)`); without one, two alternatives are
+ * as likely to be an ordinary either/or as a keyword set, so the bar is three.
+ */
+const VOCABULARY_MIN_WORDS = 3
+
+/**
+ * Recognize a `regex()` that hand-rolls what `word()`/`keywords()` owns.
+ *
+ * TWO shapes, because they fail differently:
+ *
+ *  - a word (or word alternation) plus a trailing word-boundary guard —
+ *    `regex(/not(?![-\w])/i)`;
+ *  - a bare alternation of >= 3 literal words with NO guard — a fixed vocabulary
+ *    enumerated by hand. A regex enumerating a fixed vocabulary is a keyword set
+ *    written the hard way: it loses first-set gating, it hand-maintains an ordering
+ *    the combinator guarantees, and with `/i` and no `/u` it inherits the non-ASCII
+ *    case-folding bug `keywords()` fixes internally. The no-guard form is also where
+ *    ordering is load-bearing, since nothing backtracks past a shorter match.
+ *
+ * Returns the words and the boundary CLASS in the exact form `word(str, boundary)` /
+ * `keywords(words, { boundary })` take, so the suggestion names a real call rather
+ * than describing one.
  */
 export function keywordRegexShape(source: string): { words: string[]; boundary: string | null } | null {
   let s = source
@@ -515,9 +563,55 @@ export function keywordRegexShape(source: string): { words: string[]; boundary: 
   // Unwrap one redundant non-capturing group around the word set.
   const grouped = /^\(\?:([^()]*)\)$/.exec(s)
   if (grouped !== null) s = grouped[1]!
-  if (boundary === null) return null       // no boundary → an ordinary regex, not a keyword
+  if (s.endsWith('$')) s = s.slice(0, -1)
   if (!WORDS_RE.test(s)) return null
-  return { words: s.split('|'), boundary }
+  const words = s.split('|')
+  if (boundary === null && words.length < VOCABULARY_MIN_WORDS) return null
+  return { words, boundary }
+}
+
+/** Does a boundary class (`-\w`, `_0-9A-Za-z`, …) match this character? */
+function boundaryMatches(boundary: string, ch: string): boolean {
+  const cp = ch.codePointAt(0)!
+  for (const m of charClassMembers(boundary)) {
+    if (m === '\\w') { if (/[A-Za-z0-9_]/.test(ch)) return true; continue }
+    if (m === '\\d') { if (/[0-9]/.test(ch)) return true; continue }
+    if (m === '\\s') { if (/\s/.test(ch)) return true; continue }
+    const range = /^(.|\\u[0-9a-f]{4})-(.|\\u[0-9a-f]{4})$/.exec(m)
+    if (range !== null) {
+      const dec = (t: string): number => (t.startsWith('\\u') ? parseInt(t.slice(2), 16) : t.codePointAt(0)!)
+      if (cp >= dec(range[1]!) && cp <= dec(range[2]!)) return true
+      continue
+    }
+    if (m === ch) return true
+  }
+  return false
+}
+
+/**
+ * Ordering hazards in a hand-written alternation: an EARLIER alternative that is a
+ * strict prefix of a LATER one. Regex alternation is first-match, not longest-match,
+ * so `red|redish` matches only `red` — unless a trailing boundary guard rejects the
+ * character that follows, which makes the engine backtrack into the longer branch.
+ *
+ * That distinction is the whole point of reporting this: without a rescuing guard the
+ * longer word is UNREACHABLE, which is a live bug, not a style finding. `keywords()`
+ * sorts longest-first by construction and the hazard cannot exist there at all.
+ */
+export function keywordAlternationHazards(
+  words: readonly string[],
+  boundary: string | null,
+): { shorter: string; longer: string; at: string; rescuedByBoundary: boolean }[] {
+  const out: { shorter: string; longer: string; at: string; rescuedByBoundary: boolean }[] = []
+  for (let i = 0; i < words.length; i++) {
+    for (let j = i + 1; j < words.length; j++) {
+      const a = words[i]!, b = words[j]!
+      if (a.length >= b.length || !b.startsWith(a)) continue
+      const at = b[a.length]!
+      out.push({ shorter: a, longer: b, at, rescuedByBoundary: boundary !== null && boundaryMatches(boundary, at) })
+    }
+  }
+  return out
 }
 
 // ── the walk ─────────────────────────────────────────────────────────────────
@@ -1536,9 +1630,14 @@ function findKeywordRegexes(visited: Map<Combinator<unknown>, Visited>): Keyword
     const own = armIndexOf.get(v.p)
     const siblings = own === undefined ? [] : (keywordArms.get(own.owner) ?? []).filter(i => i !== own.index)
     const bq = (s: string): string => `'${s.replace(/\\/g, '\\\\')}'`
+    const vocabulary = shape.words.length >= VOCABULARY_MIN_WORDS
+    const hazards = keywordAlternationHazards(shape.words, shape.boundary)
+    const unrescued = hazards.filter(h => !h.rescuedByBoundary)
+    const longestFirst = shape.words.every((w, i) => i === 0 || shape.words[i - 1]!.length >= w.length)
+    const shown = shape.words.length > 8 ? [...shape.words.slice(0, 6), '/* … */', shape.words[shape.words.length - 1]!] : shape.words
     const call = shape.words.length === 1
       ? `word(${bq(shape.words[0]!)}, ${bq(shape.boundary ?? '_0-9A-Za-z')}${ci ? ', { caseInsensitive: true }' : ''})`
-      : `keywords([${shape.words.map(bq).join(', ')}], { boundary: ${bq(shape.boundary ?? '_0-9A-Za-z')}${ci ? ', caseInsensitive: true' : ''} })`
+      : `keywords([${shown.map(w => (w === '/* … */' ? w : bq(w))).join(', ')}], { boundary: ${bq(shape.boundary ?? '_0-9A-Za-z')}${ci ? ', caseInsensitive: true' : ''} })`
     out.push({
       kind: 'keyword-regex',
       id: `keyword-regex:${siteToString(v.site)}`,
@@ -1549,8 +1648,21 @@ function findKeywordRegexes(visited: Map<Combinator<unknown>, Visited>): Keyword
       boundary: shape.boundary,
       caseFoldRisk: ci && !unicode,
       siblingArms: siblings,
+      vocabulary,
+      longestFirst,
+      hazards,
+      bug: unrescued.length > 0,
       suggestion: [
-        `\`regex(/${d.source}/${d.flags})\` hand-rolls a keyword and its word boundary. Use \`${call}\` — it owns the boundary (so \`${shape.boundary ?? ''}\` is not re-spelled per keyword), exposes an EXACT first-set that \`choice\` can dispatch on, and lowers to the same charCodeAt scan.`,
+        vocabulary
+          ? `this regex enumerates a FIXED VOCABULARY of ${shape.words.length} literal words${shape.words.length > 20 ? ' — the alternation is long enough that nobody re-reads it' : ''}. A regex enumerating a fixed vocabulary is a keyword set written the hard way. Use \`${call}\` — it exposes an EXACT first-set that \`choice\` can dispatch on (the alternation exposes none), it owns the boundary so it is not re-spelled per word, it sorts LONGEST-FIRST by construction, and it lowers to a single charCodeAt scan.`
+          : `\`regex(/${d.source}/${d.flags})\` hand-rolls a keyword and its word boundary. Use \`${call}\` — it owns the boundary (so \`${shape.boundary ?? ''}\` is not re-spelled per keyword), exposes an EXACT first-set that \`choice\` can dispatch on, and lowers to the same charCodeAt scan.`,
+        unrescued.length > 0
+          ? `LIVE BUG — the alternation is ordered so ${unrescued.length} later alternative(s) can NEVER match: ${unrescued.slice(0, 3).map(h => `\`${h.shorter}\` precedes \`${h.longer}\` and nothing rejects the following \`${h.at}\``).join('; ')}${unrescued.length > 3 ? `, and ${unrescued.length - 3} more` : ''}. Regex alternation is FIRST-match, not longest-match, and with no boundary guard to force a backtrack the shorter branch wins outright. \`keywords()\` cannot express this bug: it sorts longest-first.`
+          : hazards.length > 0
+            ? `ORDERING HAZARD (currently harmless): ${hazards.length} earlier alternative(s) are strict prefixes of later ones — e.g. \`${hazards[0]!.shorter}\` before \`${hazards[0]!.longer}\`. Regex alternation is first-match, so these work ONLY because the trailing boundary guard rejects the next character and the engine backtracks into the longer branch. That correctness rests on a hand-maintained order plus a guard that happens to cover the right characters; \`keywords()\` sorts longest-first by construction and does not depend on either.`
+            : !longestFirst && vocabulary
+              ? `The alternation is not in longest-first order. It is correct today${shape.boundary === null ? '' : ' (the boundary guard forces a backtrack where it matters)'}, but the ordering is hand-maintained and nothing checks it — adding a word that extends an existing one is a silent bug. \`keywords()\` sorts longest-first by construction.`
+              : '',
         ci && !unicode
           ? `CORRECTNESS, not style: \`/i\` without \`/u\` does NOT fold case the way \`{c, toUpperCase(c), toLowerCase(c)}\` suggests — 67 BMP code points fold in ways those three miss (ς/σ, µ/μ, the Ǆǅǆ digraphs, combining iota subscript). parseman fixed exactly this INSIDE \`keywords()\` (see combinators/case-fold.ts); a hand-rolled copy never received the fix, so its first-set is unsound for those inputs.`
           : '',
@@ -1560,7 +1672,13 @@ function findKeywordRegexes(visited: Map<Combinator<unknown>, Visited>): Keyword
       ].filter(s => s !== '').join(' '),
     })
   }
-  return out.sort((a, b) => b.siblingArms.length - a.siblingArms.length)
+  // Bugs first, then the biggest vocabularies: a 150-word alternation is both the
+  // most valuable conversion and the least likely to be spotted by reading.
+  return out.sort((a, b) =>
+    Number(b.bug) - Number(a.bug)
+    || b.hazards.length - a.hazards.length
+    || b.words.length - a.words.length
+    || b.siblingArms.length - a.siblingArms.length)
 }
 
 // ── formatting ───────────────────────────────────────────────────────────────
@@ -1589,7 +1707,8 @@ export function formatDuplicationFindings(report: DuplicationReport): string[] {
     lines.push(`   fix: ${f.suggestion}`)
   }
   for (const f of report.keywordRegexes) {
-    lines.push(`parseman keyword-regex @ ${siteToString(f.site)}: /${f.source}/${f.flags}${f.caseFoldRisk ? '  [CASE-FOLD RISK]' : ''}`)
+    const src = f.source.length > 90 ? `${f.source.slice(0, 88)}…` : f.source
+    lines.push(`parseman ${f.bug ? 'BUG ' : ''}keyword-regex @ ${siteToString(f.site)}: /${src}/${f.flags}${f.vocabulary ? `  [${f.words.length} literal words${f.longestFirst ? '' : ', NOT longest-first'}]` : ''}${f.hazards.length > 0 ? `  [${f.hazards.length} prefix hazard(s)${f.bug ? ', UNRESCUED' : ''}]` : ''}${f.caseFoldRisk ? '  [CASE-FOLD RISK]' : ''}`)
     lines.push(`   fix: ${f.suggestion}`)
   }
   for (const f of report.duplicates) {
