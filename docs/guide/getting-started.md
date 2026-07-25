@@ -13,8 +13,8 @@ ways:
 
 - **Interpreted** — zero setup, runs anywhere (including tests and REPLs).
 - **Compiled at build time** — a bundler plugin evaluates your grammar and replaces
-  it with flat, allocation-light JavaScript. The `parseman` import vanishes from the
-  bundle.
+  it with flat, allocation-light JavaScript. The macro'd combinator import vanishes; you
+  still import `run`/`parse` to execute the result.
 - **Compiled at runtime** — `compile()` runs the same optimizer on demand, for
   grammars assembled dynamically.
 

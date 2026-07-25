@@ -1,8 +1,13 @@
 # Macro mode
 
 Add the plugin once and your parser imports are evaluated and compiled at build time.
-The `parseman` import disappears from the bundle entirely, leaving flat, allocation-light
-JavaScript in its place.
+The combinator import you mark `with { type: 'macro' }` disappears entirely, leaving flat,
+allocation-light JavaScript in its place — the compiled grammar has no parseman import in
+it at all.
+
+You still call `run()` / `parse()` to execute that grammar, so parseman remains an ordinary
+runtime import in your code. What the macro removes is the grammar-construction machinery
+(every combinator, the whole compiler), not the small driver that runs the result.
 
 ## 1. Register the plugin
 
@@ -171,8 +176,10 @@ example grammars (`pnpm bench:size`):
 
 Two things keep this in perspective:
 
-- **The `parseman` runtime import disappears.** Macro output has no external references, so
-  you're not shipping the combinator library *and* the generated code — just the code.
+- **The combinator library does not ship.** Macro output has no external references, so
+  you're not shipping the combinator trees, the compiler, and the codegen *and* the
+  generated parser — just the parser, plus the small driver (`run`/`parse`) that executes
+  it.
 - **Generated JS is repetitive, so it gzips hard.** GraphQL's 100 kB of source is ~16.6 kB
   over the wire — the number your users actually download. Raw LOC looks large; the shipped
   cost is a fraction of it.

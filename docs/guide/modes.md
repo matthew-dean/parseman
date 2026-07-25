@@ -29,13 +29,18 @@ parse(yesNo, 'yes') // { ok: true, value: 'yes', … }
 This is the mode your tests use, and the fallback the other two modes degrade to when
 their tooling isn't present.
 
-## Macro build (zero runtime cost)
+## Macro build (no runtime compile step)
 
 Register the [bundler plugin](./macro-mode) and add `with { type: 'macro' }` to your
 `parseman` import — standard [import-attributes](./macro-mode#import-attributes) syntax,
 with `macro` as the bundler convention for compile-time evaluation. At build time the
 plugin evaluates your combinator declarations and replaces them with inline functions — the
-`parseman` import disappears from the output entirely.
+import you marked disappears from the output entirely, and the compiled grammar contains no
+parseman import.
+
+Executing that grammar is still a `run()` / `parse()` call, so parseman stays an ordinary
+import in the code that *drives* the parser. The macro removes the combinators and the
+compiler from your bundle; it does not remove the driver.
 
 ```ts
 import { literal, sequence, choice } from 'parseman' with { type: 'macro' }
@@ -72,8 +77,9 @@ when you parse many inputs with the same compiled parser.
 
 ## Choosing a mode
 
-- **Shipping an app through a bundler?** Use the **macro build** — zero runtime cost,
-  and it falls back to the interpreter automatically anywhere the attribute is stripped.
+- **Shipping an app through a bundler?** Use the **macro build** — no compile step at
+  runtime, and it falls back to the interpreter automatically anywhere the attribute is
+  stripped.
 - **Writing tests, scripts, or a REPL?** Use the **interpreter**. It's the default and
   needs nothing.
 - **Building a grammar from user input or config at runtime?** Use **`compile()`** if
