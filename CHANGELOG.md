@@ -3,6 +3,45 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## Unreleased
+
+- **Perf: rollback truncations are guarded on a CHANGED length — in both engines.**
+  Assigning `array.length` is not a plain field store: it runs V8's length setter,
+  which must decide whether to trim the backing store, and it costs the same
+  whether or not the value changes. Rollbacks overwhelmingly restore a length that
+  never moved — the speculative branch captured nothing — so the store was pure
+  overhead on the common path. Every rollback now emits/executes
+  `if (sink && sink.length !== mark) sink.length = mark`.
+
+  This is the fix for a **+32% Less parse regression 0.33.0 → 0.34.0**. 0.34.0's
+  `not()` probe-leak fix is correct and stays; what it could not afford was six
+  UNCONDITIONAL length stores on a probe that jess's Less grammar executes ~600
+  times per KB (62,447 executions parsing `benchmark.less`). Measured on that
+  corpus, interleaved in one process, 4 rounds × 3 runs, 8 warmup + 25 timed:
+
+  | build | vs 0.33.0 median |
+  | --- | --- |
+  | 0.34.0 | +32.5% |
+  | 0.34.0, `not()`'s six stores guarded | +4.3% |
+  | 0.34.0, ALL ~3000 rollback sites guarded | **−12.0%** |
+
+  The guard is worth more than the regression it repays, because it applies to
+  every `attempt` / `choice` arm / `many` item / sequence term as well. Against
+  0.32.0, the version jess pins, the guarded 0.34.0 is faster on every corpus:
+  Less `benchmark.less` −3.9%, `bootstrap.css` −18.5%, jess corpus −18.5%, each
+  winning 12/12 interleaved pairs.
+
+  Why it ordered the way it did across dialects: the cost is per-EXECUTION, not
+  per-SITE. `not()` executions per KB — css **20**, jess **121**, less **599** —
+  match the observed regression ordering, while site counts do not (scss has 43
+  `not()` sites and zero in its compiled artifact's hot path).
+
+  Landed in both engines, since they have drifted on exactly this kind of change
+  before: codegen emits the guarded form at all 33 emission sites, and
+  `rollbackCstCapture` / `rollbackTrivia` / `attempt` / `choice` carry the same
+  guard in the interpreter. `test/unit/rollback-store-guard-parity.test.ts` fails
+  the specific engine that loses it.
+
 ## 0.34.0 — 2026-07-24
 
 - **`peek(combinator)` — the positive lookahead.** PEG's `&X`, the counterpart to
