@@ -175,8 +175,24 @@ import {
  * Emitted (memoized on `_ctx._pmCapTL`/`_pmCapST`) wherever a structural node()
  * arity-gates host capture; shared, un-namespaced, mirrors `_EMPTY_TL` placement.
  */
-export const HOST_READS_DECL =
+export const HOST_READS_SRC =
   'const _hostReads = (b, n) => { if (b === undefined) return false; let s; try { s = Function.prototype.toString.call(b) } catch (e) { return true } if (/\\barguments\\b/.test(s)) return true; const m = /^[^(]*\\(([\\s\\S]*?)\\)/.exec(s); if (m && /\\.\\.\\.|=/.test(m[1])) return true; return b.length > n }'
+
+/**
+ * Runtime prelude guard: a positioned-CST host must never be handed a collector that
+ * was never populated. An elided triviaLog and a genuinely empty one are identical by
+ * value, so a thin tree reports clean — the exact failure this whole change exists to
+ * remove. Emitted alongside `_hostReads` (it is only ever called where a gate exists,
+ * and every gate sets `needsHostReads`), and reached ONLY on the `_parsemanCstOutput`
+ * path, so the eval-AST hot path never evaluates it. The interpreter twin is
+ * `assertHostCaptureSatisfied` in build-arity.ts; `host-capture-parity.test.ts` pins
+ * the two to the same answers.
+ */
+export const CST_ASSERT_SRC =
+  'const _cstAssert = (t, b, tl, fd, st, hf) => { const m = []; if (!tl && (b._parsemanCaptureTrivia !== undefined ? b._parsemanCaptureTrivia(t) : _hostReads(b, 5))) m.push("triviaLog"); if (hf && !fd && _hostReads(b, 2)) m.push("fields"); if (!st && _hostReads(b, 6)) m.push("state"); if (m.length !== 0) throw new Error("parseman: node \\"" + t + "\\" was built through a positioned-CST host that reads " + m.join(", ") + ", but capture for it was elided. The host would have received a silently thin node. This is a parseman bug: capture elision must be gated on what the HOST reads, not on the direct builder formal arity.") }'
+
+/** Both prelude helpers, emitted as one unit wherever host-arity gating is used. */
+export const HOST_READS_DECL = `${HOST_READS_SRC}; ${CST_ASSERT_SRC}`
 
 // ---------------------------------------------------------------------------
 // Regex-lowering diagnostics
@@ -2792,23 +2808,42 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // decision separate from the active capture flag below.
   const innerEnablesTriviaCapture = parserEnablesTriviaCapture(def.parser)
 
+  // A DIRECT builder is re-routed through a positioned-CST host (`_parsemanCstOutput`)
+  // — see `ndExpr` below — and then the HOST, not the builder, is the consumer. So the
+  // builder's formal arity must not decide elision on that path: an arity-1
+  // `children => …` builder (nearly every AST builder) would hand the host an empty
+  // triviaLog and absent fields/state, and the host cannot tell that apart from a node
+  // that genuinely had none. Gate the elided collectors on what the host reads, exactly
+  // as the structural path already does. All three gates are statically `true` when the
+  // builder itself declares the arg, so nothing is added where nothing was elided; on
+  // the ordinary eval-AST path (no host) each is one short-circuiting property read.
+  const needTLgate = !structural && !capturesTrivia
+  const needSTgate = !structural && !clonesState
+  const needFDgate = !structural && hasFields && !capturesFields
   const chV = v(ctx, '_ch')
   const rawV = v(ctx, '_raw')
-  const capTLv = (structural || capturesTrivia) ? v(ctx, '_ctl') : null
-  const capSTv = structural ? v(ctx, '_cst') : null
-  const capFv = structural && hasFields ? v(ctx, '_cf') : null
-  const tlV = capturesTrivia || structural ? v(ctx, '_tl') : '_EMPTY_TL'
+  const capTLv = (structural || capturesTrivia || needTLgate) ? v(ctx, '_ctl') : null
+  const capSTv = (structural || needSTgate) ? v(ctx, '_cst') : null
+  const capFv = (structural && hasFields) || needFDgate ? v(ctx, '_cf') : null
+  const tlV = capturesTrivia || structural || needTLgate ? v(ctx, '_tl') : '_EMPTY_TL'
   // Direct builders that declare trivia retain the established eager collector.
-  // `_EMPTY_TL` remains necessary for elided direct builders and host-gated
-  // structural nodes only.
+  // `_EMPTY_TL` is the non-capturing value of a host-gated log (direct or structural).
   if (!capturesTrivia || structural) ctx.needsEmptyTl = true
   const sc = v(ctx, '_sc'), sl = v(ctx, '_sl'), sr = v(ctx, '_sr'), st = v(ctx, '_st'), stl = v(ctx, '_stl')
   // Per-node-type trivia-kind mask (structural/host nodes only): a host may want
   // one node type captured comments-only and another whitespace-and-all. Scoped
   // here and restored after the inner parse, exactly like captureTrivia/_cstTriviaLog.
-  const smk = structural ? v(ctx, '_smk') : null
-  if (structural) ctx.needsHostReads = true
+  const smk = (structural || needTLgate) ? v(ctx, '_smk') : null
+  if (structural || needTLgate || needSTgate || needFDgate) ctx.needsHostReads = true
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
+  // The same three gates for a DIRECT builder, additionally conditioned on a
+  // positioned-CST host actually being installed (a plain host never receives a
+  // direct-builder node, so it must not force capture). `_pmCapST`/`_pmCapFD` memoize
+  // the parse-invariant arity probe; the per-TYPE `_parsemanCaptureTrivia` preference
+  // inside `hostTriviaGate` is deliberately NOT memoized.
+  const directTriviaGate = `${hostTriviaGate}`
+  const directStateGate = `(_ctx._pmCapST ??= _hostReads(_ctx.build, 6))`
+  const directFieldsGate = `(_ctx._pmCapFD ??= _hostReads(_ctx.build, 2))`
   // `run({ profile: true })` reuses the established recognition-only boundary
   // (`transform(parser, () => undefined)`) for an already-compiled structural
   // grammar: recognizer suppresses all node output, capture records structure
@@ -2830,7 +2865,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // truthful by dynamically restoring those collectors only for those explicit
   // modes. The normal AST route pays a boolean/property read instead of a fresh
   // array for every elided collector.
-  const directCstV = !structural && (!capturesChildren || !capturesRaw) ? v(ctx, '_dcst') : null
+  // One shared "is a positioned-CST host installed?" boolean per node. Every elided
+  // collector — children/raw (already) and now trivia/state/fields — gates on it, so
+  // the ordinary eval-AST path pays ONE `_ctx.build` property load for all of them
+  // rather than one per collector.
+  const directCstV = !structural && (!capturesChildren || !capturesRaw || needTLgate || needSTgate || needFDgate)
+    ? v(ctx, '_dcst')
+    : null
   const directCstGate = directCstV === null
     ? 'false'
     : `${profileCapture} || _ctx.build?._parsemanCstOutput === true`
@@ -2856,16 +2897,39 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const allocStmt = structural
     ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${structuralCapturesTrivia ? 'true' : hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
       + `${i}const ${chV} = ${chAlloc}, ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
-    : capturesTrivia
-      ? `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}, ${tlV} = ${profileRecognizer} ? undefined : []`
-      : `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}`
+    : (() => {
+      const decls: string[] = []
+      if (directCstV) decls.push(`${i}const ${directCstV} = ${directCstGate}`)
+      const gates: string[] = []
+      if (capTLv) {
+        gates.push(capturesTrivia
+          ? `${capTLv} = !(${profileRecognizer})`
+          : `${capTLv} = !(${profileRecognizer}) && (${profileCapture} || (${directCstV} && (${directTriviaGate})))`)
+      }
+      if (capSTv) gates.push(`${capSTv} = !(${profileRecognizer} || ${profileCapture}) && ${directCstV} && ${directStateGate}`)
+      if (capFv) gates.push(`${capFv} = !(${profileRecognizer}) && (${profileCapture} || (${directCstV} && ${directFieldsGate}))`)
+      if (gates.length > 0) decls.push(`${i}const ${gates.join(', ')}`)
+      const allocs = [
+        `${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}`,
+        `${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}`,
+      ]
+      if (capTLv) {
+        // A builder that DECLARES trivia keeps the established eager collector —
+        // unchanged emission, no gate. Only an elided log is host-gated.
+        allocs.push(`${tlV} = ${profileRecognizer} ? undefined : ${capturesTrivia || innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`)
+      }
+      decls.push(`${i}const ${allocs.join(', ')}`)
+      return decls.join('\n')
+    })()
   // The collector stays installed when a nested grammar can opt in; generated
   // trivia scanners gate their push on `captureTrivia`, so this remains inert
   // until that nested scope activates it.
-  const innerTl = structural || capturesTrivia
-    ? structural && !innerEnablesTriviaCapture ? `${capTLv} ? ${tlV} : undefined` : tlV
-    : 'undefined'
-  const fieldsOn = structural ? (capFv ?? 'false') : `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
+  const innerTl = capTLv === null
+    ? 'undefined'
+    : innerEnablesTriviaCapture ? tlV : `${capTLv} ? ${tlV} : undefined`
+  const fieldsOn = structural
+    ? (capFv ?? 'false')
+    : capFv ?? `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
   const sf = hasFields ? v(ctx, '_sf') : null
   const fArr = hasFields ? v(ctx, '_fa') : null
   const fObj = hasFields ? v(ctx, '_fields') : 'undefined'
@@ -2950,6 +3014,11 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   } else if (clonesState) {
     stV = v(ctx, '_nst')
     stmts.push(`${i}const ${stV} = !(${profileRecognizer} || ${profileCapture}) && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+  } else if (capSTv) {
+    // Direct builder that does not declare `state`, but a positioned-CST host may
+    // read it — clone only when the runtime gate says the host does.
+    stV = v(ctx, '_nst')
+    stmts.push(`${i}const ${stV} = ${capSTv} && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   }
   if (sf && fArr) {
     const fe = v(ctx, '_fe')
@@ -2980,12 +3049,17 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // sole exception, so a direct object never becomes a CST child. Linkability
   // must not change that ownership rule.
   const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
+  // Only where something WAS elided is a thin tree reachable; where the builder
+  // declares every arg the gates are statically true and no check is emitted.
+  const directHostGuard = (needTLgate || needSTgate || needFDgate)
+    ? `_cstAssert(${JSON.stringify(def.type)}, _ctx.build, ${capTLv ?? 'true'}, ${capFv ?? 'true'}, ${capSTv ?? 'true'}, ${hasFields}), `
+    : ''
   const ndExpr = structural
     ? `_ctx.build !== undefined ? (${hostBuildExpr}) : (${buildExpr})`
     // Direct builders stay direct for ordinary hosts. cstBuildHost marks its
     // mode internally so nested direct nodes cannot leak arbitrary AST objects
     // into a positioned CST's children.
-    : `_ctx.build?._parsemanCstOutput === true ? (${hostBuildExpr}) : (${buildExpr})`
+    : `_ctx.build?._parsemanCstOutput === true ? (${directHostGuard}${hostBuildExpr}) : (${buildExpr})`
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
   const hostCollapseExpr = structural

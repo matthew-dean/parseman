@@ -164,7 +164,14 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
     expect(source).toContain('_EMPTY_TL')
     expect(source).toMatch(/const _dcst\d+ = _cap\d+ \|\| _ctx\.build\?\._parsemanCstOutput === true/)
     expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start:/)
-    expect(source).toMatch(/_EMPTY_TL, undefined\)/)
+    // The elided trivia/state slots are now HOST-GATED rather than hard-wired to
+    // `_EMPTY_TL, undefined`: a positioned-CST host bypasses this builder entirely
+    // and would otherwise be handed a permanently thin node. The gate collapses to
+    // the old values whenever no such host is installed — asserted at runtime below.
+    expect(source).toMatch(/_ctl\d+ = !\(_rec\d+\) && \(_cap\d+ \|\| \(_dcst\d+ &&/)
+    expect(source).toMatch(/_tl\d+ = _rec\d+ \? undefined : _ctl\d+ \? \[\] : _EMPTY_TL/)
+    expect(source).toMatch(/_nst\d+ = _cst\d+ && _ctx\.state !== undefined/)
+    expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start: _pos, end: [\w]+ \}, _raw\d+, _tl\d+, _nst\d+\)/)
     expect(fn('ab', 0, {}).value).toEqual({
       childCount: 2,
       fieldsIsUndefined: true,

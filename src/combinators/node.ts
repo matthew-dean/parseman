@@ -1,6 +1,13 @@
 import type { Combinator, FieldMap, ParseContext, ParseResult, ParserMeta, ParserDef } from '../types.ts'
 import { beginCstNodeCapture, endCstNodeCapture, pushCstChild } from '../cst/capture-buffer.ts'
-import { buildReadsTrivia, buildReadsState } from '../compiler/build-arity.ts'
+import {
+  buildReadsTrivia,
+  buildReadsState,
+  hostReads,
+  cstOutputHost,
+  assertHostCaptureSatisfied,
+  HOST_ARG,
+} from '../compiler/build-arity.ts'
 import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import { consumeTrivia } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
@@ -102,9 +109,17 @@ export function node<N>(
   // capture for the inner scope; when it never reads state (5th), skip the state clone.
   // A STRUCTURAL node (no own build) defers to `ctx.build` / a default CST, which
   // may read either, so capture both.
+  //
+  // These are the DIRECT builder's own needs. They are NOT the whole story: a node
+  // with its own build is re-routed through `ctx.build` when that host marks itself
+  // `_parsemanCstOutput` (see the build dispatch below), and then the host — not the
+  // builder — is the consumer. Since the host arrives at PARSE time, the arity-1
+  // `children => …` shape that nearly every AST builder uses would otherwise elide
+  // trivia/fields/state out from under it. `hostCapture()` re-decides per parse.
   const capturesTrivia = captureTrivia || trailingTrivia || (build ? buildReadsTrivia(def) : true)
   const clonesState = build ? buildReadsState(def) : true
-  const capturesFields = parserHasOwnFields(combinator) && (build ? buildReadsFields(def) : true)
+  const hasOwnFields = parserHasOwnFields(combinator)
+  const capturesFields = hasOwnFields && (build ? buildReadsFields(def) : true)
   // First-set fail-fast (mirrors emitNode's codegen guard): a node whose body can't
   // match empty and whose first set can't start here can only fail, so reject BEFORE
   // allocating the CST capture frame. Sound and output-neutral — the failing body
@@ -126,25 +141,43 @@ export function node<N>(
         }
         return { ok: false, expected: failExpected, span: { start: pos, end: pos } }
       }
+      // Host-aware capture. A node with its OWN direct builder is re-routed through a
+      // positioned-CST host (see the build dispatch below), and then the host is the
+      // consumer — so the builder's formal arity must not decide elision. Arity-1
+      // `children => …` builders (nearly every AST builder) otherwise hand the host an
+      // empty triviaLog and absent fields/state. Memoized per parse, matching the
+      // compiled engine's `_pmCapTL`/`_pmCapST`/`_pmCapFD`.
+      const hostCst = build !== undefined && cstOutputHost(ctx.build)
+      // An explicit per-TYPE preference must not be memoized across node types; only
+      // the arity fallback is parse-invariant. Mirrors codegen's `hostTriviaGate`.
+      const triviaPref = hostCst ? ctx.build?._parsemanCaptureTrivia : undefined
+      const effTrivia = capturesTrivia
+        || (hostCst && (triviaPref !== undefined
+          ? triviaPref(def.type ?? '')
+          : (ctx._pmCapTL ??= hostReads(ctx.build, HOST_ARG.triviaLog))))
+      const effState = clonesState
+        || (hostCst && (ctx._pmCapST ??= hostReads(ctx.build, HOST_ARG.state)))
+      const effFields = capturesFields
+        || (hostCst && hasOwnFields && (ctx._pmCapFD ??= hostReads(ctx.build, HOST_ARG.fields)))
       const saved = beginCstNodeCapture(ctx)
       const savedFields = ctx._fields
-      ctx._fields = capturesFields ? [] : undefined
+      ctx._fields = effFields ? [] : undefined
       // Per-node-type trivia-kind mask: a structural (host-built) node may want
       // only certain kinds captured (comments for Ruleset, whitespace for
       // CompoundSelector). Scoped here, restored below — matches the compiled path.
       const savedMask = ctx._triviaCaptureMask
-      if (build === undefined && ctx.build?._parsemanTriviaKinds !== undefined && def.type !== undefined) {
+      if ((build === undefined || hostCst) && ctx.build?._parsemanTriviaKinds !== undefined && def.type !== undefined) {
         ctx._triviaCaptureMask = ctx.build._parsemanTriviaKinds(def.type)
       }
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
       // without touching the global _triviaLog, which is committed independently.
-      if (!capturesTrivia) ctx.captureTrivia = false
+      if (!effTrivia) ctx.captureTrivia = false
       let r = combinator.parse(input, pos, ctx)
       if (r.ok && trailingTrivia && ctx.trivia) {
         const end = consumeTrivia(input, r.span.end, ctx)
         r = { ...r, span: { start: r.span.start, end } }
       }
-      const fields = capturesFields ? buildFieldMap(ctx._fields) : undefined
+      const fields = effFields ? buildFieldMap(ctx._fields) : undefined
       ctx._fields = savedFields
       ctx._triviaCaptureMask = savedMask
       const { children, rawChildren, triviaLog } = endCstNodeCapture(ctx, saved)
@@ -152,9 +185,21 @@ export function node<N>(
       if (!r.ok) return r
 
       // unwrap/collapse: a single captured child IS the value — skip build.
-      const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
+      const st = effState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const nodeType = def.type ?? missingInferredType()
-      const cstOutput = (ctx.build as unknown as { _parsemanCstOutput?: true } | undefined)?._parsemanCstOutput === true
+      const cstOutput = cstOutputHost(ctx.build)
+      // Silence must not be reachable: if this node is about to be built through a
+      // CST host that reads a collector we elided, that is a thin tree the host
+      // cannot detect. Throw instead. Only on the CST-host path — the eval-AST hot
+      // path never evaluates it.
+      if (cstOutput && build !== undefined) {
+        assertHostCaptureSatisfied(nodeType, ctx.build, {
+          trivia: effTrivia,
+          fields: effFields,
+          state: effState,
+          hasFields: hasOwnFields,
+        })
+      }
       const built: unknown = unwrap && children.length === 1
         ? unwrapChild(children[0])
         : collapse && children.length === 1

@@ -227,6 +227,16 @@ export type ParseContext = {
    * positioned-CST / language-service (set) modes. Ignored by non-linkable output.
    */
   build?: BuildHost | undefined
+  /**
+   * Framework-internal: per-parse memo of the host-capture arity gate — "does
+   * `build` read triviaLog / state / fields?". The host is data supplied at parse
+   * time, so the answer costs a `Function.prototype.toString` and is the same for
+   * every node in the parse. The compiled engine writes the same three fields from
+   * generated code; the interpreter reads and writes them through these types.
+   */
+  _pmCapTL?: boolean | undefined
+  _pmCapST?: boolean | undefined
+  _pmCapFD?: boolean | undefined
   /** When set, recovery (tolerant lists / expect()) pushes each ParseError here in addition to embedding it in the tree. */
   _errors?: ParseError[] | undefined
   /**

@@ -15,7 +15,13 @@ import { REC } from '../recovery/scan.ts'
  * threads the SAME flag, so a probe's tolerance matches the parse it is checking
  * (a mismatch would spuriously diverge and forgo reuse, never miscompare).
  */
-function mkCtx(state: unknown, build: ParseContext['build'], tolerant: boolean): ParseContext {
+function mkCtx(rawState: unknown, build: ParseContext['build'], tolerant: boolean): ParseContext {
+  // A CST node stores `state ?? null`, so "unset" comes back as `null`. Feeding that
+  // null straight back in makes a REPARSE diverge from a fresh parse: the state-clone
+  // guard tests `!== undefined`, and `Object.assign({}, null)` is `{}` — so the reused
+  // subtree would carry `state: {}` where a fresh parse carries `state: null`.
+  // Normalize the round-trip back to "unset" here, at the single seeding site.
+  const state = rawState ?? undefined
   return tolerant
     ? { trackLines: false, state, build, _tolerant: true, _rec: REC, _errors: [] }
     : { trackLines: false, state, build }
