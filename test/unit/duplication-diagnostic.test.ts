@@ -241,6 +241,12 @@ describe('hand-rolled keyword regexes', () => {
     expect(keywordRegexShape('(?:and|or)(?![-\\w])')).toEqual({ words: ['and', 'or'], boundary: '-\\w' })
     expect(keywordRegexShape('not')).toBeNull()               // no boundary: an ordinary regex
     expect(keywordRegexShape('\\d+(?![-\\w])')).toBeNull()     // not a word
+    // A negative lookahead of a NEGATED class asserts the opposite of a boundary
+    // (the next char must BE in the class), which `boundary` cannot express. It
+    // must be rejected, not passed through with the `^` still in the class — that
+    // inverts `boundaryMatches` and can invent or hide a `bug` verdict.
+    expect(keywordRegexShape('(?:and|or)(?![^-\\w])')).toBeNull()
+    expect(keywordRegexShape('not(?![^_0-9A-Za-z])')).toBeNull()
   })
 
   it('names the exact call, and reports /i without /u as a CASE-FOLD bug', () => {

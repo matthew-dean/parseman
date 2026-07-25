@@ -12,7 +12,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   turn out to carry a comparison terminal spelled seven times, a character class
   spelled eleven ways across 80 terminals, and 39 hand-rolled separated lists.
 
-  Seven families, all located by rule name and structural path: `rewrites`
+  Eight families, all located by rule name and structural path: `rewrites`
   (mechanical algebra — `choice(sequence(A, B), B)` → `sequence(optional(A), B)`, a
   hand-rolled `sepBy`, idempotent nesting, and the two dead-arm BUGS
   `duplicate-arm` / `shadowed-arm`), `divergentNodes` (one `node()` type built by
@@ -23,8 +23,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   side), `keywordRegexes` and `overlaps`.
 
   Two things it deliberately does not do. It does not claim rewrites are safe: only
-  the dead-arm findings are `astNeutral`, and every other rewrite changes the child
-  array the site produces, so it says *candidate — verify AST identity* and names
+  the dead-arm findings (and unwrapping a one-arm `choice`) are `astNeutral`, and
+  every other rewrite changes the child array the site produces, so it says
+  *candidate — verify AST identity* and names
   the enclosing `node()`. And it does not report a count where a verdict is needed:
   each hand-rolled `sepBy` carries `convertible` / `blocked-by-capture` (the
   repetition `field()`s its separator, which `sepBy` cannot express) /

@@ -562,7 +562,16 @@ export function keywordRegexShape(source: string): { words: string[]; boundary: 
   // Peel a trailing boundary guard.
   const tail = /(?:\(\?!\[([^\]]+)\]\)|\\b)$/.exec(s)
   if (tail !== null) {
-    boundary = tail[1] ?? '_0-9A-Za-z'
+    const cls = tail[1]
+    // `(?![^-\w])` is NOT a boundary guard — a negative lookahead of a NEGATED
+    // class asserts the opposite, that the next char IS in the class. The capture
+    // keeps the leading `^`, so passing it on would hand `word(str, boundary)` a
+    // class meaning the reverse, and `boundaryMatches` would read `^` as a literal
+    // member and return the inverted verdict. `bug` is derived from unrescued
+    // hazards, so that inversion can invent or hide a BUG in error mode. The shape
+    // is simply not expressible as a `boundary` argument: reject it.
+    if (cls !== undefined && cls.startsWith('^')) return null
+    boundary = cls ?? '_0-9A-Za-z'
     s = s.slice(0, tail.index)
   }
   // Unwrap one redundant non-capturing group around the word set.
