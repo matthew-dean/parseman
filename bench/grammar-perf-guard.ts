@@ -103,9 +103,12 @@ function fail(message: string): never {
   process.exit(1)
 }
 
-function sh(args: string[], cwd = ROOT): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+function sh(args: string[], cwd = ROOT, timeout?: number): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(timeout === undefined ? {} : { timeout }) })
 }
+
+/** Bound for the cache-verification git calls — they are local metadata reads. */
+const VERIFY_TIMEOUT_MS = 10_000
 
 // ── sides ───────────────────────────────────────────────────────────────────
 
@@ -132,14 +135,18 @@ function materialise(sha: string | null): string {
   const stale = (): boolean => {
     if (!existsSync(path.join(dir, 'src', 'index.ts'))) return true
     try {
-      if (sh(['rev-parse', sha]).trim() !== sh(['rev-parse', 'HEAD'], dir).trim()) return true
+      if (sh(['rev-parse', sha], ROOT, VERIFY_TIMEOUT_MS).trim() !== sh(['rev-parse', 'HEAD'], dir, VERIFY_TIMEOUT_MS).trim()) return true
       // Being AT the sha is not enough — a tracked modification under `src/` means the
       // benchmark imports code the sha does not name, and the gate would report the clean
       // sha while measuring the edit. The grammar file is overwritten from the working
       // tree BY DESIGN and lives outside `src/`, so scope the check to `src/`.
-      return sh(['status', '--porcelain', '--', 'src'], dir).trim() !== ''
-    } catch {
-      return true // can't confirm ⇒ treat as stale; a rebuild is cheap, a wrong number is not
+      return sh(['status', '--porcelain', '--', 'src'], dir, VERIFY_TIMEOUT_MS).trim() !== ''
+    } catch (error) {
+      // Treat an unverifiable cache as stale — a rebuild is cheap, a wrong number is not —
+      // but do NOT swallow the reason; that is how a hung git becomes an unexplained
+      // rebuild every run and looks like normal operation.
+      console.warn(`grammar-perf-guard: could not verify the cached reference at ${sha} (${String(error).slice(0, 200)}); rebuilding it.`)
+      return true
     }
   }
   if (stale()) {
