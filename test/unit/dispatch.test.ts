@@ -3,6 +3,7 @@ import {
   choice,
   compile,
   dispatch,
+  expect as expectParser,
   literal,
   node,
   otherwise,
@@ -122,6 +123,33 @@ describe('dispatch()', () => {
       span: { start: 3, end: 3 },
       committed: true,
     })
+  })
+
+  it('rolls back selected-tail recovery errors before returning a committed failure', () => {
+    const parser = dispatch(
+      literal('k'),
+      when('k', sequence(
+        expectParser(literal('x'), '"x"'),
+        literal('y'),
+      )),
+    )
+
+    const interpretedErrors: unknown[] = []
+    const interpreted = parser.parse('kz', 0, {
+      trackLines: false,
+      _errors: interpretedErrors,
+    } as ParseContext)
+    const compiled = compile(parser).parseWithErrors('kz')
+
+    const expected = {
+      ok: false,
+      expected: ['"y"'],
+      span: { start: 1, end: 1 },
+      committed: true,
+    }
+    expect(interpreted).toEqual(expected)
+    expect(interpretedErrors).toEqual([])
+    expect(compiled).toEqual({ ...expected, errors: [] })
   })
 
   it('supports grouped and object-unfriendly string keys', () => {

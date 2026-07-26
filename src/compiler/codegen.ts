@@ -1670,12 +1670,57 @@ function emitTailFallible(
   parser: Combinator<unknown>,
   ctx: Ctx,
   pos: string,
-): { stmts: string[]; okVar: string; valVar: string; endVar: string } {
+): FallibleER {
   const savedRecord = ctx.recordFail
   ctx.recordFail = true
   const out = emitFallible(parser, ctx, pos)
   ctx.recordFail = savedRecord
   return out
+}
+
+/** True when `p` can append a ParseError to `ctx._errors` before later failure. */
+function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'expect':
+    case 'recover':
+      return true
+    case 'many':
+    case 'oneOrMore':
+    case 'sepBy':
+      return recovery || mayRecordRecoveryError(d.parser, recovery, seen)
+    case 'choice':
+    case 'sequence':
+      return d.parsers.some(x => mayRecordRecoveryError(x, recovery, seen))
+    case 'dispatch':
+      return mayRecordRecoveryError(d.selector, recovery, seen) ||
+        d.cases.some(x => mayRecordRecoveryError(x.parser, recovery, seen)) ||
+        (d.otherwise ? mayRecordRecoveryError(d.otherwise, recovery, seen) : false)
+    case 'attempt':
+    case 'transform':
+    case 'label':
+    case 'field':
+    case 'grammar':
+    case 'node':
+    case 'token':
+    case 'leaf':
+    case 'withCtx':
+    case 'optional':
+      return mayRecordRecoveryError(d.parser, recovery, seen)
+    case 'skip':
+      return mayRecordRecoveryError(d.main, recovery, seen) || mayRecordRecoveryError(d.skipped, recovery, seen)
+    case 'scanTo':
+      return mayRecordRecoveryError(d.sentinel, recovery, seen) || d.skip.some(x => mayRecordRecoveryError(x, recovery, seen))
+    case 'lazy': {
+      try { return mayRecordRecoveryError(d.thunk(), recovery, seen) } catch { return true }
+    }
+    case 'unknown':
+      return true
+    default:
+      return false
+  }
 }
 
 function emitDispatchCombinator(def: Extract<ParserDef, { tag: 'dispatch' }>, ctx: Ctx, pos: string): ER {
@@ -1696,10 +1741,16 @@ function emitDispatchCombinator(def: Extract<ParserDef, { tag: 'dispatch' }>, ct
       : `${ind(ctx)}${keyword} (${condition}) {`
     stmts.push(head)
     ctx.indent++
+    const mayError = mayRecordRecoveryError(parser, !!ctx.recovery)
+    const errMark = mayError ? v(ctx, '_derr') : null
+    if (errMark) stmts.push(`${ind(ctx)}const ${errMark} = _ctx._errors?.length ?? 0`)
     const tail = emitTailFallible(parser, ctx, selector.endVar)
+    const errorRollback = errMark
+      ? `if (_ctx._errors && _ctx._errors.length !== ${errMark}) _ctx._errors.length = ${errMark}; `
+      : ''
     stmts.push(
       ...tail.stmts,
-      `${ind(ctx)}if (!${tail.okVar}) ${committedFailBody(ctx)}`,
+      `${ind(ctx)}if (!${tail.okVar}) { ${errorRollback}${committedFailBody(ctx)} }`,
       `${ind(ctx)}${outV} = [${selector.valueVar}, ${tail.valVar}]`,
       `${ind(ctx)}${outE} = ${tail.endVar}`,
     )
