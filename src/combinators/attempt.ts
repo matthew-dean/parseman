@@ -32,6 +32,7 @@ export function attempt<T>(parser: Combinator<T>): Combinator<T> {
       if (result.ok) return result
       rollbackCstCapture(ctx, mark)
       if (log !== undefined && ctx._triviaLog && ctx._triviaLog.length !== log) ctx._triviaLog.length = log
+      if (result.committed) return result
       return { ok: false, expected: result.expected, span: { start: pos, end: pos } }
     },
   }

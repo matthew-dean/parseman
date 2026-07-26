@@ -54,6 +54,7 @@ function repItem<T>(
   const result = combinator.parse(input, pos, ctx)
   if (!result.ok) {
     rollbackTrivia(ctx, mark)
+    if (result.committed) return { fail: result, failPos: pos }
     // Surface the POST-trivia position where the element actually failed. The
     // tolerant recovery guard must check the sync token there — not at `cur`,
     // which sits before any leading trivia — so trailing trivia before the sync
@@ -136,6 +137,7 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
         const item = repItem(combinator, input, cur, ctx, guardable)
         if (item === 'stop') break
         if ('fail' in item) {
+          if (!item.fail.ok && item.fail.committed) return item.fail
           // Cold path: only reached on an element failure. Strict mode ⇒ `break`.
           // Tolerant ⇒ resync to the sync sentinel the enclosing sequence inferred
           // and published as ctx._sync (the grammar carries no recovery config). No
@@ -209,6 +211,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       while (count < min) {
         const item = repItem(combinator, input, cur, ctx, guardable)
         if (item === 'stop' || 'fail' in item) {
+          if (item !== 'stop' && !item.fail.ok && item.fail.committed) return item.fail
           // Anchored at `cur` — the furthest position the repeat reached — not at
           // its start. `many(regex(/x/), { min: 3 })` over "xx" consumed both x's
           // and got stuck at 2 wanting a third; reporting offset 0 points the
@@ -226,6 +229,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
         const item = repItem(combinator, input, cur, ctx, guardable)
         if (item === 'stop') break
         if ('fail' in item) {
+          if (!item.fail.ok && item.fail.committed) return item.fail
           // Cold path (element failure). Strict: break. Tolerant: resync — see many().
           const sync = ctx._tolerant ? ctx._sync : undefined
           if (sync === undefined) break
@@ -269,6 +273,7 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
       if (result.ok) return result as ParseResult<T>
       // Inner failed → roll back any CST leaves/trivia it captured before giving up.
       rollbackTrivia(ctx, mark)
+      if (result.committed) return result
       return { ok: true, value: null, span: { start: pos, end: pos } }
     },
   }
@@ -365,6 +370,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
         values.push(first.value)
         cur = first.span.end
       } else {
+        if (first.committed) return first
         // Cold path. Strict: an empty/absent first element is a legal empty list
         // for `sepBy`, and a FAILURE for `sepBy1` (min 1 — that is the whole point).
         // Tolerant: if the first element is JUNK (a terminator is inferable and we
@@ -404,6 +410,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
         const sep = separator.parse(input, sepPos, ctx)
         if (!sep.ok) {
           rollbackTrivia(ctx, loopMark)
+          if (sep.committed) return sep
           break
         }
         // Mark taken AFTER the separator: `trailing` keeps the separator but must
@@ -421,6 +428,7 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
         }
         const next = combinator.parse(input, nextPos, ctx)
         if (!next.ok) {
+          if (next.committed) return next
           // Cold path. Strict: roll back the trailing separator + break. Tolerant:
           // the separator we just consumed is real, so resync the bad element after
           // it. If a terminator is inferable and already present at nextPos, the

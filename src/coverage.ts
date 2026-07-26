@@ -1,6 +1,7 @@
 import { run, type RunOptions, type RunResult, type Runnable } from './functional/run.ts'
-import type { Combinator, ParseContext, ParseResult } from './types.ts'
+import type { Combinator, DispatchCase, ParseContext, ParseResult } from './types.ts'
 import { choice } from './combinators/choice.ts'
+import { dispatch, otherwise, when, type DispatchArm } from './combinators/dispatch.ts'
 import { attempt } from './combinators/attempt.ts'
 import { getCoreLiteralValue } from './combinators/choice.ts'
 import { not } from './combinators/not.ts'
@@ -235,6 +236,12 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'sequence': {
           const unsafeSequence = sequence as unknown as (...items: Combinator<unknown>[]) => Combinator<unknown>
           return unsafeSequence(...def.parsers.map(build))
+        }
+        case 'dispatch': {
+          const arms: DispatchArm<unknown>[] = def.cases.map((entry: DispatchCase) => when(entry.keys, build(entry.parser)))
+          if (def.otherwise) arms.push(otherwise(build(def.otherwise)))
+          const unsafeDispatch = dispatch as (selector: Combinator<string>, ...items: DispatchArm<unknown>[]) => Combinator<unknown>
+          return unsafeDispatch(build(def.selector) as Combinator<string>, ...arms)
         }
         case 'many': return many(build(def.parser))
         case 'oneOrMore': return oneOrMore(build(def.parser))

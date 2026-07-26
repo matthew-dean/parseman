@@ -112,6 +112,8 @@ export function matchesEmpty(
     case 'sequence':  return d.parsers.every(me)
     case 'choice':
       return d.parsers.some(me)
+    case 'dispatch':
+      return me(d.selector)
     case 'transform':
     case 'label':
     case 'trivia':
@@ -251,6 +253,7 @@ export function firstSetOf(
     case 'literal':
     case 'regex':
     case 'keywords':  return p._meta.firstSet  // terminals: no refs, cached set is exact
+    case 'dispatch':  return fs(d.selector)
     case 'lazy':
       try { return fs(d.thunk()) }
       catch { const t = resolveNamedRef(p, resolve); return t ? fs(t) : any() }

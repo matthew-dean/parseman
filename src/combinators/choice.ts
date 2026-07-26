@@ -106,6 +106,7 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
           const result = parsers[idx]!.parse(input, pos, ctx)
           if (result.ok) return result as ParseResult<UnionArms<T>>
           expected.push(...result.expected)
+          if (result.committed) return { ok: false, expected, span: { start: pos, end: pos }, committed: true }
           return { ok: false, expected, span: { start: pos, end: pos } }
         }
         return {
@@ -155,6 +156,7 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
           rollbackCstCapture(ctx, mark)
           if (logLen !== undefined && ctx._triviaLog && ctx._triviaLog.length !== logLen) ctx._triviaLog.length = logLen
           expected.push(...result.expected)
+          if (result.committed) return { ok: false, expected, span: result.span, committed: true }
           continue
         }
         const checks = autoNot[i]

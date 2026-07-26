@@ -29,6 +29,7 @@ Three words that sound alike but play different roles:
 | `regex(pattern)` | Match a regex at the current position. |
 | `sequence(...combinators)` | Match all in order; returns a tuple `[v1, v2, …]`. Skips trivia between terms when trivia is active. |
 | `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. |
+| `dispatch(selector, when(...), otherwise(...))` | Parse a broad selector token once, route selected values to specialized tails, and commit matched-tail failures. |
 | `attempt(c)` | All-or-nothing arm: on failure, every framework side effect from the rejected branch is rolled back. |
 | `many(c, opts?)` | Zero or more; `{ min, max }` bound the item count. |
 | `oneOrMore(c, opts?)` | One or more — sugar for `many(c, { min: 1 })`. |
@@ -249,6 +250,59 @@ applies. Don't rely on it: add one non-literal arm and ordering matters again.
 
 When the arms start with disjoint characters the compiler turns the whole `choice`
 into a single O(1) character dispatch.
+
+### `dispatch`
+
+Token-once routing by a parsed string value. Use it when one broad routing
+combinator is valid generally, and selected values have specialized continuation
+grammars. CSS-like at-rules are the model: parse one at-keyword, route values
+such as `@media` or `@scope` to specific prelude/body tails, and send unmatched
+values to the generic at-rule tail.
+
+The `when(...)` keys are classifier keys for the value already consumed by the
+first `dispatch` argument, not tokens parsed after it. A matched key's bad tail
+is an error. For a grammar that starts with one known keyword, use `word()` or a
+`makeWord()` factory; for `dispatch`, keep the routing combinator broad enough to
+recognize the whole family being routed.
+
+```ts
+// [verify]
+import { dispatch, literal, otherwise, parse, regex, transform, when } from 'parseman'
+
+const atKeyword = transform(
+  regex(/@[A-Za-z_][A-Za-z0-9_-]*/),
+  value => value.toLowerCase(),
+)
+
+const atRule = dispatch(
+  atKeyword,
+  when('@media', literal('{')),
+  otherwise(literal(';')),
+)
+
+parse(atRule, '@media{').value
+// → ['@media', '{']
+
+parse(atRule, '@MEDIA{').value
+// → ['@media', '{']
+
+parse(atRule, '@unknown;').value
+// → ['@unknown', ';']
+
+parse(atRule, '@media;').ok
+// → false
+```
+
+If the selector fails, an enclosing `choice` can still try a later arm. If the
+selector succeeds and a `when` key matches, that tail is committed: its failure is
+returned immediately and neither `otherwise` nor an outer fallback is attempted.
+Duplicate keys, including duplicates across grouped `when([keyA, keyB], tail)`
+arms, fail at grammar construction time.
+
+In macro-compiled `rules()` factories, `when()` and `otherwise()` arms can be
+bound to local `const`s and passed by name. Put the generic continuation in
+`otherwise(...)`. V1 macro lowering expects explicit arm arguments;
+`dispatch(selector, ...arms)` is future work.
 
 ### `attempt`
 

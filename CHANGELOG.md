@@ -3,27 +3,47 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.39.0 — 2026-07-26
+
+- **Add `dispatch(selector, when(...), otherwise(...))` for token-once static
+  routing.** Use this when one broad selector token is valid generally, and
+  selected selector values have specialized continuation grammars. CSS at-rules
+  are the model case: every at-keyword is an at-rule name, while `@media`,
+  `@scope`, `@layer`, etc. each require a specific prelude/body shape.
+  `dispatch` parses the selector once, chooses a static `when(key, tail)` /
+  `when([keys], tail)` arm by selector value, and runs `otherwise(tail)` only
+  when no key matches. A matched key's tail failure is committed, so it does not
+  fall through to `otherwise` or an outer `choice` fallback.
+
+  The interpreter, `compile()`, macro evaluator, IR serializer, coverage walks,
+  first-set analysis, field/trivia walkers, and grammar-quality diagnostics all
+  understand the new combinator. Macro-compiled `rules()` factories may also bind
+  `when()` / `otherwise()` arms to local `const`s before passing them to
+  `dispatch(...)`, matching the normal combinator-authoring style. V1
+  intentionally keeps classification simple: the selector value must already be
+  the dispatch key string, and the macro path supports explicit arm arguments
+  rather than `dispatch(selector, ...arms)` spread tables. Classifier callbacks,
+  spread-arm tables, and pattern cases remain future design work.
+
 ## 0.38.0 — 2026-07-26
 
-- **`makeWord()` now carries the same explicit `caseInsensitive` option as
+- **`makeWord()` carries the same explicit `caseInsensitive` option as
   `word()` and `keywords()`.** Use `makeWord(boundary?, { caseInsensitive: true })`
   or `makeWord({ caseInsensitive: true })` to define a whole keyword family once,
   while the default remains case-sensitive everywhere. The direct `word()` overloads
   also support both `word(str, boundary, opts)` and `word(str, opts)`, so a single
-  keyword and a family factory now share the same option shape.
+  keyword and a family factory share the same option shape.
 
   The macro evaluator understands both forms, including chained
   `makeWord(...)(str)` calls and factories bound inside `rules()` bodies, so
   macro-compiled grammars do not have to fall back to `regex(/kw/i)` for
   spec-defined case-insensitive keyword families.
 
-- **Fix: rule aliases now remain by-name references through `compose()` and the
+- **Fix: rule aliases remain by-name references through `compose()` and the
   macro compiler.** A `rules()` factory can naturally expose one rule as a
-  transparent alias for another, such as `small: g.Value`. Previously that shape
-  could either be carried as a copied body or, in macro-composed output, retagged
-  into a self-recursive rule that overflowed the stack. Aliases now keep their own
+  transparent alias for another, such as `small: g.Value`. Aliases keep their own
   public rule slot while targeting the referenced rule by name, so later composed
-  overrides still flow through the alias. A direct self-alias such as `A: g.A` now
+  overrides still flow through the alias. A direct self-alias such as `A: g.A`
   fails immediately instead of lowering to a recursive call to itself.
 
 ## 0.37.0 — 2026-07-25

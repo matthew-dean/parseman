@@ -5,7 +5,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   analyzeGating, formatGatingWarnings, compile,
-  choice, sequence, literal, regex, not, rules,
+  choice, sequence, literal, regex, not, rules, dispatch, when, otherwise,
 } from '../../src/index.ts'
 import { Stylesheet } from '../../examples/css/parser.ts'
 
@@ -80,6 +80,18 @@ describe('analyzeGating — classification', () => {
     const g = choice(literal('a'), literal('b'))   // gated → nothing to accept
     const r = analyzeGating(g, { accept: ['no-such-choice'] })
     expect(r.acceptedUnused).toEqual(['no-such-choice'])
+  })
+
+  it('walks choices inside dispatch tails', () => {
+    const g = dispatch(
+      literal('@media'),
+      when('@media', choice(literal('{'), regex(/[\s\S]*/))),
+      otherwise(choice(literal(';'), regex(/[\s\S]*/))),
+    )
+    const r = analyzeGating(g)
+    expect(r.choices).toHaveLength(2)
+    expect(r.ungated).toHaveLength(2)
+    expect(r.ungated[0]!.rule).toBe('<entry>')
   })
 })
 

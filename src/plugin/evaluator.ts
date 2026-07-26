@@ -14,6 +14,7 @@ import type {
   ObjectExpression, ObjectProperty,
 } from '@oxc-project/types'
 import type { Combinator } from '../types.ts'
+import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
 import * as parseman from '../index.ts'
 import { directBuilderUnsupportedBindings } from './direct-builder-static.ts'
@@ -100,9 +101,14 @@ type XScopeVal = ScopeEntry | unknown
 type XScope = Map<string, XScopeVal>
 
 type WordFactoryEntry = { tag: 'wordFactory'; boundary: string; caseInsensitive: boolean }
+type StaticValueEntry = { value: unknown; mfSrcs: string[] }
 
 function isWordFactory(v: unknown): v is WordFactoryEntry {
   return !!v && typeof v === 'object' && (v as WordFactoryEntry).tag === 'wordFactory'
+}
+
+function isStaticValueEntry(v: unknown): v is StaticValueEntry {
+  return !!v && typeof v === 'object' && 'value' in v && 'mfSrcs' in v
 }
 
 function wordFactoryFromArgs(args: readonly (Expression | { type: 'SpreadElement' })[], scope: XScope, code?: string, mfs?: string[]): WordFactoryEntry | null {
@@ -209,8 +215,46 @@ function gatedArmParts(e: ObjectExpression): { gate: Expression; combinator: Exp
   return gate && combinator ? { gate, combinator } : null
 }
 
+function dispatchArmValue(node: Expression, scope: XScope, code?: string, mfs?: string[]): DispatchArm<unknown> | null {
+  if (node.type === 'Identifier') {
+    const value = anyValue(node, scope, code, mfs)
+    return isDispatchArm(value) ? value : null
+  }
+
+  if (node.type !== 'CallExpression') return null
+  const callee = node.callee
+  if (callee.type !== 'Identifier') return null
+
+  if (callee.name === 'otherwise') {
+    const [parserArg] = node.arguments
+    if (!parserArg || parserArg.type === 'SpreadElement') return null
+    const parserValue = anyValue(parserArg as Expression, scope, code, mfs)
+    if (!isCombinator(parserValue)) return null
+    return parseman.otherwise(parserValue)
+  }
+
+  if (callee.name === 'when') {
+    const [keyArg, parserArg] = node.arguments
+    if (!keyArg || !parserArg || keyArg.type === 'SpreadElement' || parserArg.type === 'SpreadElement') return null
+    const key = anyValue(keyArg as Expression, scope, code, mfs)
+    const parserValue = anyValue(parserArg as Expression, scope, code, mfs)
+    if (!isCombinator(parserValue)) return null
+    if (typeof key === 'string') return parseman.when(key, parserValue)
+    if (Array.isArray(key) && key.every(item => typeof item === 'string')) return parseman.when(key, parserValue)
+  }
+
+  return null
+}
+
 function isCombinator(v: unknown): v is Combinator<unknown> {
   return !!v && typeof v === 'object' && '_def' in v
+}
+
+function isDispatchArm(v: unknown): v is DispatchArm<unknown> {
+  if (!v || typeof v !== 'object') return false
+  const rec = v as { kind?: unknown; keys?: unknown; parser?: unknown }
+  if (rec.kind === 'otherwise') return isCombinator(rec.parser)
+  return rec.kind === 'when' && Array.isArray(rec.keys) && rec.keys.every(key => typeof key === 'string') && isCombinator(rec.parser)
 }
 
 /**
@@ -529,6 +573,24 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     } catch { return null }
   }
 
+  if (callee.name === 'dispatch') {
+    const [selectorArg, ...armArgs] = node.arguments
+    if (!selectorArg || selectorArg.type === 'SpreadElement') return null
+    const selector = anyValue(selectorArg as Expression, scope, code, mfs)
+    if (!isCombinator(selector)) return null
+    const arms: DispatchArm<unknown>[] = []
+    for (const arg of armArgs) {
+      if (arg.type === 'SpreadElement') return null
+      const arm = dispatchArmValue(arg as Expression, scope, code, mfs)
+      if (!isDispatchArm(arm)) return null
+      arms.push(arm)
+    }
+    try {
+      const unsafeDispatch = parseman.dispatch as (selector: Combinator<string>, ...items: DispatchArm<unknown>[]) => Combinator<unknown>
+      return unsafeDispatch(selector as Combinator<string>, ...arms)
+    } catch { return null }
+  }
+
   // choice(...) WITH at least one gated arm `{ gate, combinator }`. The generic
   // SUPPORTED path evaluates a gated-arm ObjectExpression via anyValue, whose
   // arrow-gate evaluates to `null` — so `choice` would treat the arm as UNGATED
@@ -630,6 +692,10 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
       if (mfs && entry.mfSrcs.length > 0) mfs.push(...entry.mfSrcs)
       return entry.combi
     }
+    if (isStaticValueEntry(entry)) {
+      if (mfs && entry.mfSrcs.length > 0) mfs.push(...entry.mfSrcs)
+      return entry.value
+    }
     return entry
   }
 
@@ -652,6 +718,9 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
     const callee = node.callee
     if (callee.type === 'Identifier' && callee.name === 'makeWord') {
       return wordFactoryFromArgs(node.arguments, scope, code, mfs)
+    }
+    if (callee.type === 'Identifier' && (callee.name === 'when' || callee.name === 'otherwise')) {
+      return dispatchArmValue(node, scope, code, mfs)
     }
     return exprToCombi(node, scope, code, mfs)
   }
@@ -761,6 +830,7 @@ function evalBodyStatements(statements: VariableDeclaration[], scope: XScope, co
       if (val === null) return false
       const thisDeclMfSrcs = bodyMfs.slice(before)
       if (isCombinator(val)) scope.set(name, { combi: val, mfSrcs: thisDeclMfSrcs } satisfies ScopeEntry)
+      else if (isDispatchArm(val)) scope.set(name, { value: val, mfSrcs: thisDeclMfSrcs } satisfies StaticValueEntry)
       else scope.set(name, val)
     }
   }

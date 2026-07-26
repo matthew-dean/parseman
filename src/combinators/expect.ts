@@ -43,6 +43,7 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     case 'keywords':  return def.words.map(w => JSON.stringify(w))
     case 'label':     return [def.label]
     case 'choice':    return def.parsers.flatMap(deriveExpected)
+    case 'dispatch':  return deriveExpected(def.selector)
     // Union through the NULLABLE prefix, mirroring `sequenceFirstSet`. A leading
     // `optional(…)`/`many(…)` can match nothing, so the term after it is equally
     // able to fail first — deriving from term 0 alone named a token the parse
