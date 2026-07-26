@@ -3852,7 +3852,7 @@ export function ruleDependencies(
       // don't descend. `_ruleName` (set by rules()) also catches EXTERNAL refs —
       // rules referenced by name but defined in another artifact.
       const boundary = def.tag === 'lazy'
-        ? ((p as unknown as { _ruleName?: string })._ruleName ?? nameOf.get(p))
+        ? (nameOf.get(p) ?? (p as unknown as { _ruleName?: string })._ruleName)
         : nameOf.get(p)
       if (!isRoot && boundary !== undefined) { found.add(boundary); return }
       if (seen.has(p)) return

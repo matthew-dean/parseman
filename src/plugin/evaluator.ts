@@ -839,6 +839,12 @@ export function evaluateParserFactory(
     ;(r as unknown as { _ruleName?: string })._ruleName = name
     if (r._def.tag === 'node' && r._def.type === undefined) r._def.type = name
   }
+  const ruleNameOf = (r: Combinator<unknown>): string | undefined =>
+    (r as unknown as { _ruleName?: string })._ruleName
+  const isNamedRuleRefForAnotherRule = (r: Combinator<unknown>, key: string): boolean => {
+    const name = r._def.tag === 'lazy' ? ruleNameOf(r) : undefined
+    return name !== undefined && name !== key
+  }
   for (const key of keys) {
     if (!ruleRefs.has(key)) {
       const r = ref<unknown>() as Combinator<unknown> & { define(p: Combinator<unknown>): void }
@@ -882,7 +888,10 @@ export function evaluateParserFactory(
   for (const [key, e] of finalByKey) {
     const val = anyValue(e.value, e.scope, e.code, mapFnSources)
     if (!isCombinator(val)) return null
-    tagRef(val as Combinator<unknown>, key)
+    if (val === ruleRefs.get(key)) return null
+    if (!isNamedRuleRefForAnotherRule(val as Combinator<unknown>, key)) {
+      tagRef(val as Combinator<unknown>, key)
+    }
     ruleRefs.get(key)!.define(val as Combinator<unknown>)
   }
 

@@ -17,6 +17,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   macro-compiled grammars do not have to fall back to `regex(/kw/i)` for
   spec-defined case-insensitive keyword families.
 
+- **Fix: rule aliases now remain by-name references through `compose()` and the
+  macro compiler.** A `rules()` factory can naturally expose one rule as a
+  transparent alias for another, such as `small: g.Value`. Previously that shape
+  could either be carried as a copied body or, in macro-composed output, retagged
+  into a self-recursive rule that overflowed the stack. Aliases now keep their own
+  public rule slot while targeting the referenced rule by name, so later composed
+  overrides still flow through the alias. A direct self-alias such as `A: g.A` now
+  fails immediately instead of lowering to a recursive call to itself.
+
 ## 0.37.0 — 2026-07-25
 
 - **Compile-time host mode reaches the MACRO — `rules({ hostMode })`, and two artifacts

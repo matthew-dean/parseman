@@ -15,6 +15,25 @@ function tagRule(r: Combinator<unknown>, key: string): void {
   if (r._def.tag === 'node' && r._def.type === undefined) r._def.type = key
 }
 
+type DefinableRef = Combinator<unknown> & { define(p: Combinator<unknown>): void }
+
+function isDefinableRef(v: unknown): v is DefinableRef {
+  return !!v
+    && typeof v === 'object'
+    && '_def' in v
+    && (v as { _def: { tag?: string } })._def.tag === 'lazy'
+    && typeof (v as { define?: unknown }).define === 'function'
+}
+
+function ruleNameOf(r: Combinator<unknown>): string | undefined {
+  return (r as unknown as { _ruleName?: string })._ruleName
+}
+
+function isNamedRuleRefForAnotherRule(r: Combinator<unknown>, key: string): boolean {
+  const name = r._def.tag === 'lazy' ? ruleNameOf(r) : undefined
+  return name !== undefined && name !== key
+}
+
 /**
  * Define named grammar rules without forward declarations.
  *
@@ -121,12 +140,22 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
   for (const key of Object.keys(definitions)) {
     const placeholder = (cache as Record<string, Combinator<unknown>>)[key]
     const parser = (definitions as Record<string, Combinator<unknown>>)[key]!
-    if (placeholder !== undefined && typeof (placeholder as any).define === 'function') {
-      tagRule(parser, key)
-      ;(placeholder as any).define(parser)
+    if (placeholder === parser) {
+      throw new Error(`rules(): rule "${key}" cannot be a direct alias to itself`)
+    }
+    if (isDefinableRef(placeholder)) {
+      if (!isNamedRuleRefForAnotherRule(parser, key)) tagRule(parser, key)
+      placeholder.define(parser)
       // Propagate actual first-set so later choices wrapping this ref get correct dispatch.
       placeholder._meta.firstSet = parser._meta.firstSet
       placeholder._meta.canMatchNewline = parser._meta.canMatchNewline
+    } else if (isNamedRuleRefForAnotherRule(parser, key)) {
+      const alias = ref()
+      tagRule(alias, key)
+      alias.define(parser)
+      alias._meta.firstSet = parser._meta.firstSet
+      alias._meta.canMatchNewline = parser._meta.canMatchNewline
+      ;(cache as Record<string, Combinator<unknown>>)[key] = alias
     } else {
       tagRule(parser, key)
       ;(cache as Record<string, Combinator<unknown>>)[key] = parser
