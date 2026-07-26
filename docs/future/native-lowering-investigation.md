@@ -52,7 +52,9 @@ native-lowering experiment must preserve that same explicitness.
   by an identity oracle.
 - No reducer-host abstraction creep. This must not become a new Jess AST host.
 - Do not prioritize this ahead of the grammar fold, dispatch adoption, or
-  boilerplate reducers such as `valueNode` / `drop`.
+  declarative node projection / `drop`-style boilerplate reducers. Prefer
+  extending Parseman's existing functional combinator shape unless a new helper
+  proves leaner against real grammars.
 
 ## Suggested First Agent Task
 
