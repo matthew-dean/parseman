@@ -35,6 +35,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   the Parseman docs site so connected documentation tools can resolve the published
   docs source without a repo-specific prompt.
 
+- **Add dispatch-vs-choice performance evidence for shared-opener grammars.**
+  `pnpm bench:dispatch` now compares equivalent at-rule-shaped `choice` and `dispatch`
+  grammars and records a media-feature head fixture for the `(width >= 50em)` vs
+  `(min-width: 50em)` scannerless-routing docs story. The normal suite checks
+  correctness and diagnostic shape; opt-in timing stays outside the hard release gate.
+  The evidence note is `notes/PERF-dispatch-vs-choice.md`.
+
 ## 0.39.1 — 2026-07-26
 
 - **Extend `dispatch` with case-insensitive cases, matcher keys, and

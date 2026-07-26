@@ -104,6 +104,13 @@ keys. Matcher keys such as `startsWith(prefix)`, `endsWith(suffix)`, and
 `opts.caseInsensitive` folds ASCII case for comparison only; the parse value
 stays authored.
 
+This is the preferred shape when branches share an opener and then diverge by
+the opener's value or by the next structural marker. A hand-written
+`choice(sequence(literal('@media'), ...), ..., sequence(regex(/@[A-Za-z-]+/), ...))`
+can recognize the same language, but late and generic arms recheck the shared
+opener. `dispatch` makes the lexical decision once and leaves the branch table
+to the grammar.
+
 ```ts
 const combinator = regex(/@[A-Za-z_][A-Za-z0-9_-]*/)
 
@@ -145,6 +152,30 @@ Here `URL(` routes to the `url(` arm and remains `URL(` in the returned tuple.
 `url` without `(` routes to the keyword tail without first trying a function
 parser. `url (` does not produce a glued opener and can parse as an identifier
 followed by a paren only in contexts that allow that shape.
+
+Media feature heads show the same pattern without an at-rule or function. Parse
+the parenthesized feature name plus the marker that decides the grammar shape,
+then route range comparisons and declaration-style features to separate tails:
+
+```ts
+const mediaHead = token(sequence(
+  literal('('),
+  cssIdent,
+  regex(/[ \t]*/),
+  regex(/>=|<=|[><=:]/),
+))
+
+const MediaFeature = dispatch(
+  mediaHead,
+  when(matches(/(?:>=|<=|>|<|=)$/), rangeFeatureTail),
+  when(matches(/:$/), declarationFeatureTail),
+)
+```
+
+For example, `(width >= 50em)` routes to the range tail, while
+`(min-width: 50em)` routes to the declaration-style feature tail. The shared
+head is consumed once, so the grammar does not speculatively try sibling arms
+that both start with `(` and an identifier.
 
 Pseudo selectors use the same lexical-shape split. The selector consumes
 `:hover`, `:is(`, `:nth-child(`, or `::part(` as the routed value; exact special

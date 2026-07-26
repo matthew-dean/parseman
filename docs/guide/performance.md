@@ -73,6 +73,45 @@ Collapsing reduces the *number* of combinators; [`compile()`](./modes#compile-ru
 compound — a collapsed grammar compiled is the fastest configuration. Use the macro build
 for production so you pay the compile cost once, at build time.
 
+## Shared opener branches: prefer `dispatch`
+
+When several branches first recognize the same broad token and only then differ by that
+token's value, a plain `choice` can be correct but still do repeated opener checks. CSS
+at-rules are the easy example: exact arms for `@media`, `@supports`, `@property`, plus a
+generic `@anything;` fallback all begin with `@`.
+
+Use [`dispatch`](../reference/api#dispatch-combinator-when-otherwise) for that shape:
+parse the at-keyword once, route exact names with `when(...)`, and keep the generic
+continuation in `otherwise(...)`. The grammar says what is happening and the compiled
+parser avoids rechecking the shared opener for late/generic arms.
+
+This is also the scannerless story in miniature. Parséman does not need a separate lexer
+to freeze every token kind before the grammar sees it, and it still keeps token-style
+routing where it matters: parse the meaningful shared prefix once, then choose the
+continuation by the returned value or the next structural marker. CSS function values,
+SCSS/Jess `@supports`/`@media` overlaps with interpolation and dialect-specific routes,
+and media feature heads such as `(width >= 50em)` vs `(min-width: 50em)` all fit this
+shape. A sibling `choice(...)` may be correct, but `dispatch(...)` expresses the route the
+language actually takes.
+
+`pnpm bench:dispatch` keeps a small proof fixture for this recommendation. On the local
+0.40.0 release branch run, the equivalent at-rule workload measured:
+
+| Shape | Median |
+| --- | ---: |
+| shared-opener `choice` | 58.85–74.44 µs/op |
+| `dispatch` | 31.65–39.77 µs/op |
+
+That is a directional benchmark artifact, not a hard release gate: absolute timings move
+with the machine, and the normal suite only asserts that the two grammars are equivalent
+and exercise the intended diagnostic paths. The same fixture also includes a media-feature
+head case to prove the docs pattern and the gating diagnostics, but the timing assertion is
+limited to the at-rule workload above. Opt into the timing check with:
+
+```bash
+PARSEMAN_PERF=1 pnpm vitest run --config vitest.perf.config.ts test/perf/dispatch-vs-choice.test.ts
+```
+
 ## Measuring
 
 ```bash
@@ -82,6 +121,7 @@ pnpm bench:svg              # chart-only benchmarks + regenerate assets/bench-*.
 pnpm bench:baseline         # refresh the regression baseline + append a history snapshot
 pnpm bench:release-compare-svg # regenerate committed 0.26/0.27/0.28 release evidence SVGs
 pnpm bench:compile-grammars # regenerate the precompiled Peggy/Nearley/Jison parsers
+pnpm bench:dispatch         # dispatch vs equivalent shared-opener choice A/B
 pnpm perf:guard             # fast pre-commit CSS speed regression check
 
 node --import tsx bench/compose-dispatch.ts   # composed-grammar first-char dispatch A/B

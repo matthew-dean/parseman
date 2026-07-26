@@ -119,6 +119,18 @@ tools can classify tokens, of course; the Parséman shape keeps classification,
 fallback, commitment, and tree ownership inside ordinary grammar composition
 instead of splitting the work across a lexer action and parser-side rewiring.
 
+That is the practical scannerless tradeoff: Parséman does not have to freeze
+every lexical split before the grammar sees it, and it also does not give up
+token-style routing. Parse the meaningful shared prefix, then route at the
+boundary that actually decides the language construct. CSS functions can share
+an identifier-or-`(` head; media features can parse `(width >=` or
+`(min-width:` as the head before choosing range vs declaration-style tails; a
+SCSS/Jess grammar can route `@supports`/`@media` shapes alongside interpolation
+and dialect-specific at-rule continuations. A sibling `choice(...)` may accept
+the same strings, but it describes overlapping guesses. `dispatch(...)`
+describes the grammar decision: read the head once, choose the continuation
+that owns it.
+
 Real languages aren't purely context-free: `return` is only legal inside a function body,
 a here-doc's terminator depends on its opening line, indentation changes meaning, a CSS
 `&` means something different inside a nesting block, an `@extend` target only resolves in

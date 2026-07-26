@@ -68,6 +68,7 @@
     "bench:composeleaf": "node --import tsx/esm bench/composeleaf-firstset.ts",
     "bench:incremental": "node --import tsx/esm bench/incremental-run.ts",
     "bench:literal": "node --import tsx/esm bench/literal-match.ts",
+    "bench:dispatch": "node --import tsx/esm bench/dispatch-vs-choice.ts",
     "bench:codegen": "node --import tsx/esm bench/codegen-ab.ts",
     "bench:sharedprefix": "node --import tsx/esm bench/shared-prefix-ab.ts",
     "bench:baseline": "node --import tsx/esm bench/update-parseman-baseline.ts",
