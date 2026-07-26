@@ -138,6 +138,16 @@ describe('IR serialize round-trip', () => {
     roundTrip(rm, 'Collapsed', ['a', 'abc', '1'])
   })
 
+  it('round-trips declarative node projection as static linkable IR', () => {
+    const rm = Object.entries(rules(() => ({
+      Paren: node('Paren', sequence(literal('('), regex(/[0-9]+/), literal(')')), { project: 1 }),
+    })))
+
+    const src = serializeRuleMap(rm as never)
+    expect(src).toContain('project: 1')
+    roundTrip(rm, 'Paren', ['(1)', '(23)', '1'])
+  })
+
   it('round-trips a captured semantic leaf reducer as static linkable IR', () => {
     const op = leaf(choice(literal('*'), literal('/')), (v: unknown) => v)
     if (op._def.tag === 'leaf') op._def.fnSrc = '(v) => v'

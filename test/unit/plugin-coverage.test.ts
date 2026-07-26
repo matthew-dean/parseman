@@ -372,6 +372,21 @@ describe('evaluator — transform / node / sepBy / oneOrMore', () => {
     }
   })
 
+  it('evaluateExpr builds node() rules with optional project', () => {
+    const code = `node('X', sequence(literal('('), literal('a'), literal(')')), { project: 1 })`
+    const combi = evaluateExpr(parseInit(code), new Map(), code)
+    expect(combi?._def.tag).toBe('node')
+    if (combi?._def.tag === 'node') {
+      expect(combi._def.project).toBe(1)
+      expect(combi._def.buildSrc).toBeUndefined()
+    }
+  })
+
+  it('evaluateExpr rejects invalid node() project options', () => {
+    expect(evaluateExpr(parseInit(`node('X', literal('a'), { project: -1 })`), new Map(), `node('X', literal('a'), { project: -1 })`)).toBeNull()
+    expect(evaluateExpr(parseInit(`node('X', literal('a'), { project: someProject })`), new Map(), `node('X', literal('a'), { project: someProject })`)).toBeNull()
+  })
+
   it('evaluateExpr rejects ambiguous node() unwrap+collapse options', () => {
     const code = `node('X', literal('a'), () => null, { unwrap: true, collapse: true })`
     expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()

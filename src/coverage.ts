@@ -328,7 +328,7 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'not': return not(build(def.parser))
         case 'peek': return peek(build(def.parser))
         case 'node': {
-          const opts = { ...(def.unwrap ? { unwrap: true } : {}), ...(def.collapse ? { collapse: true } : {}), ...(def.captureTrivia ? { captureTrivia: true } : {}), ...(def.trailingTrivia ? { trailingTrivia: true } : {}) }
+          const opts = { ...(def.unwrap ? { unwrap: true } : {}), ...(def.collapse ? { collapse: true } : {}), ...(def.project !== undefined ? { project: def.project } : {}), ...(def.captureTrivia ? { captureTrivia: true } : {}), ...(def.trailingTrivia ? { trailingTrivia: true } : {}) }
           return def.type === undefined ? node(build(def.parser), def.build, opts) : node(def.type, build(def.parser), def.build, opts)
         }
         case 'guard': return gate(def.predicate)

@@ -3083,6 +3083,13 @@ function emitLeaf(def: Extract<ParserDef, { tag: 'leaf' }>, ctx: Ctx, pos: strin
   }
 }
 
+function emitNodeProjectExpr(type: string, project: NonNullable<Extract<ParserDef, { tag: 'node' }>['project']>, chV: string): string {
+  const child = `${chV}[${project}]`
+  const missing = `(() => { throw new Error(${JSON.stringify(`node(${JSON.stringify(type)}) project child ${project} was not captured`)}) })()`
+  const value = `(${child} !== null && typeof ${child} === 'object' && ${child}._tag === 'leaf' ? ${child}.value : ${child})`
+  return `(${project} in ${chV} ? ${value} : ${missing})`
+}
+
 /**
  * CST node rule. Collects the inner parse's terminals/trivia into fresh local
  * arrays (capture is emitted inline by the terminals while capChildren is set),
@@ -3094,10 +3101,10 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   }
   // A STRUCTURAL node has no own build — it builds via the `ctx.build` host at
   // parse time, else a default positioned CST. No build fn is captured.
-  const structural = def.build === undefined
-  const mkType = structural ? null : analyzeMkInlineBuild(def)
+  const structural = def.build === undefined && def.project === undefined
+  const mkType = structural || def.project !== undefined ? null : analyzeMkInlineBuild(def)
   let buildIdx: number | null = null
-  if (!mkType && !structural) {
+  if (!mkType && !structural && def.project === undefined) {
     buildIdx = ctx.buildFns.length
     ctx.buildFns.push(def.build!)
     ctx.buildSrcs.push(def.buildSrc ?? null)
@@ -3135,12 +3142,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // compatibility check below must not fire for it. This flag is what keeps the check
   // precise instead of merely conservative.
   if (!structural && !cstOut) ctx.hostBranchElided = true
-  const capturesTrivia = cstOut || mkType !== null || def.captureTrivia === true || def.trailingTrivia === true || (!structural && buildReadsTrivia(def))
-  const clonesState = !structural && (cstOut || buildReadsState(def))
-  const capturesChildren = !structural && (cstOut || mkType !== null || def.unwrap || def.collapse || buildReadsChildren(def))
-  const capturesRaw = !structural && (cstOut || mkType !== null || buildReadsRaw(def))
+  const hasProject = def.project !== undefined
+  const capturesTrivia = cstOut || mkType !== null || def.captureTrivia === true || def.trailingTrivia === true || (!structural && !hasProject && buildReadsTrivia(def))
+  const clonesState = !structural && (cstOut || (!hasProject && buildReadsState(def)))
+  const capturesChildren = !structural && (cstOut || mkType !== null || def.unwrap || def.collapse || def.project !== undefined || buildReadsChildren(def))
+  const capturesRaw = !structural && (cstOut || mkType !== null || (def.project === undefined && buildReadsRaw(def)))
   const hasFields = parserHasOwnFields(def.parser)
-  const capturesFields = hasFields && !structural && (cstOut || buildReadsFields(def))
+  const capturesFields = hasFields && !structural && (cstOut || (!hasProject && buildReadsFields(def)))
   // A nested parser({ captureTrivia: true }) needs this node's collector, but
   // must not activate it until that parser scope is entered. Keep the collector
   // decision separate from the active capture flag below.
@@ -3333,7 +3341,9 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? `{ _tag: 'node', type: ${JSON.stringify(def.type)}, span: { start: ${pos}, end: ${endVar} }, state: ${stV} ?? null, children: ${chV} }`
     : mkType
       ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
-      : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
+      : def.project !== undefined
+        ? emitNodeProjectExpr(def.type, def.project, chV)
+        : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
   // A structural node builds through the per-parse host. A direct builder owns
   // its semantic result in every lowering mode; the positioned-CST host is the
   // sole exception, so a direct object never becomes a CST child. Linkability

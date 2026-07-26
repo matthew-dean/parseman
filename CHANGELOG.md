@@ -3,6 +3,38 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.40.0 — 2026-07-26
+
+- **Add declarative `node(..., { project: index })` semantic child projection.**
+  Projection covers AST rules that recognize syntax scaffolding a CST host must still
+  see while the semantic AST value is one captured child. For example,
+  `node('Paren', sequence(literal('('), Expr, literal(')')), { project: 1 })`
+  returns `Expr` in AST mode while `hostMode: 'cst'` still gives the positioned-CST
+  host the full child/raw/trivia frame, including both parentheses.
+
+  This is deliberately an extension of `node()` rather than a separate value-wrapper
+  combinator: `node()` already owns CST capture, host-mode selection, IR serialization,
+  coverage, trace, and generated specs. The option is plain serializable data, so macro
+  lowering and composed grammar IR do not need direct-builder callback source just to
+  drop punctuation. Projected leaves unwrap to their string value; projected sub-nodes
+  are returned as-is. More dynamic shapes such as "first value child", filtered child
+  lists, exact CST-leaf projection, or token-string reconstruction remain normal
+  `build` callbacks.
+
+  The interpreter, runtime compiler, macro evaluator, coverage rebuilds, and IR
+  serializer understand the option. TypeScript infers a projected sequence slot when
+  the index is a literal, so a punctuation wrapper around a typed sub-rule preserves
+  the sub-rule's `Combinator<T>` result type.
+
+  Perf note: this is a bytecode/allocation cleanup for grammars that replace trivial
+  direct builders with projection, but this release does not claim a parser speedup.
+  The benchmark note in `notes/PERF-node-project.md` records a focused callback-slot
+  check and the remaining caveats.
+
+- **Add Context7 documentation authority metadata.** The release branch carries
+  `context7.json` for the Parseman docs site, so connected documentation tools can
+  resolve the published docs source without a repo-specific prompt.
+
 ## 0.39.1 — 2026-07-26
 
 - **Extend `dispatch` with case-insensitive cases, matcher keys, and

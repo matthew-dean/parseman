@@ -312,6 +312,37 @@ the macro build**: the compiled output emits a
 the plugin reads static `{ unwrap: true }` / `{ collapse: true }` literals as the 4th
 argument.
 
+## Projecting one semantic child
+
+Some AST rules are not one-child wrappers. They recognize punctuation, comments, or
+other syntactic scaffolding that a CST host must still see, while the AST value is one
+semantic child. A parenthesized expression is the small version:
+
+```ts
+const paren = node('Paren',
+  sequence(literal('('), expr, literal(')')),
+  { project: 1 },
+)
+```
+
+AST mode returns captured child `1`; the `(` and `)` leaves are still captured inside
+the node frame. Compile the same grammar with `hostMode: 'cst'`, and the positioned-CST
+host receives the full child list, raw children, spans, fields, and trivia exactly like
+an ordinary direct node.
+
+Projection is semantic value shaping, so a selected leaf becomes its string value, matching
+`unwrap`. A selected sub-node is returned as-is.
+
+This deliberately lives on `node()` rather than in a separate value wrapper: `node()` is
+the grammar boundary that owns CST capture, host-mode selection, serialization, specs,
+coverage, and tracing. A projection option is plain serializable data, so composed
+grammars can carry it through IR without callback source.
+
+Reach for `project` only when the selected child index is part of the grammar shape. The
+API is intentionally just a number. If the rule needs predicates such as "first value
+child", "all statement children", exact CST-leaf projection, or string reconstruction from
+several tokens, use a normal `build` callback.
+
 ::: tip Grammar collapse vs host collapse
 `node(..., { collapse: true })` is a grammar-local decision for one wrapper rule. For a
 public CST parser, `cstBuildHost({ collapse })` lets the caller apply a host-wide collapse

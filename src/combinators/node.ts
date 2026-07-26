@@ -38,6 +38,8 @@ export type BuildNode<N> = (
  *   returned as-is.
  * - `collapse` — a structural wrapper rule that returns its single child exactly
  *   as captured. A leaf stays a CSTLeaf; a node stays a node.
+ * - `project` — return one captured semantic child by index while retaining the
+ *   complete node frame for CST hosts. Leaves unwrap to their string value.
  * - `captureTrivia` — capture trivia consumed inside this node even when its
  *   enclosing `parser()` did not opt into document-wide trivia capture. This is
  *   scoped to the node; sibling and parent nodes retain their own setting.
@@ -47,7 +49,15 @@ export type BuildNode<N> = (
  * Both skip `build` only for a one-child match; zero or two-plus children go
  * through `build` normally.
  */
-export type NodeOptions = { unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean; trailingTrivia?: boolean }
+type ParserValue<P> = P extends Combinator<infer T> ? T : never
+type ProjectValue<P extends Combinator<unknown>, I extends number> =
+  ParserValue<P> extends readonly unknown[]
+    ? I extends keyof ParserValue<P> ? ParserValue<P>[I] : unknown
+    : I extends 0 ? ParserValue<P> : unknown
+
+export type NodeOptions = { unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean }
+export type NodeProjectOptions<I extends number = number> =
+  Omit<NodeOptions, 'project' | 'unwrap' | 'collapse'> & { project: I; unwrap?: never; collapse?: never }
 
 /** A captured child's value form: a leaf unwraps to its string value, else as-is. */
 function unwrapChild(child: unknown): unknown {
@@ -68,19 +78,43 @@ function missingInferredType(): never {
   throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
 }
 
+function normalizeProject(project: number | undefined): number | undefined {
+  if (project === undefined) return undefined
+  if (!Number.isInteger(project) || project < 0) {
+    throw new Error('node() project child must be a non-negative integer')
+  }
+  return project
+}
+
+function projectChild(children: ReadonlyArray<unknown>, project: number, type: string): unknown {
+  if (!(project in children)) {
+    throw new Error(`node(${JSON.stringify(type)}) project child ${project} was not captured`)
+  }
+  return unwrapChild(children[project])
+}
+
+export function node<P extends Combinator<unknown>, const I extends number>(combinator: P, opts: NodeProjectOptions<I>): Combinator<ProjectValue<P, I>>
 export function node<N>(combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions): Combinator<N>
+export function node<N>(combinator: Combinator<unknown>, opts?: NodeOptions): Combinator<N>
+export function node<P extends Combinator<unknown>, const I extends number>(type: string, combinator: P, opts: NodeProjectOptions<I>): Combinator<ProjectValue<P, I>>
 export function node<N>(type: string, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions): Combinator<N>
+export function node<N>(type: string, combinator: Combinator<unknown>, opts?: NodeOptions): Combinator<N>
 export function node<N>(
   typeOrCombinator: string | Combinator<unknown>,
-  combinatorOrBuild?: Combinator<unknown> | BuildNode<N>,
+  combinatorOrBuild?: Combinator<unknown> | BuildNode<N> | NodeOptions,
   buildOrOpts?: BuildNode<N> | NodeOptions,
   maybeOpts?: NodeOptions,
 ): Combinator<N> {
   const hasExplicitType = typeof typeOrCombinator === 'string'
   const type = hasExplicitType ? typeOrCombinator : undefined
   const combinator = (hasExplicitType ? combinatorOrBuild : typeOrCombinator) as Combinator<unknown>
-  const build = (hasExplicitType ? buildOrOpts : combinatorOrBuild) as BuildNode<N> | undefined
-  const opts = (hasExplicitType ? maybeOpts : buildOrOpts) as NodeOptions | undefined
+  const buildArg = hasExplicitType ? buildOrOpts : combinatorOrBuild
+  const build = typeof buildArg === 'function' ? buildArg as BuildNode<N> : undefined
+  const opts = (typeof buildArg === 'function' ? maybeOpts : buildArg ?? maybeOpts) as NodeOptions | undefined
+  const project = normalizeProject(opts?.project)
+  if (project !== undefined && build !== undefined) {
+    throw new Error('node() options cannot combine project with a build callback')
+  }
   const baseDef = { tag: 'node' as const, parser: combinator, ...(type === undefined ? {} : { type }), ...(build === undefined ? {} : { build }) }
   const meta: ParserMeta = {
     firstSet: combinator._meta.firstSet,
@@ -94,8 +128,11 @@ export function node<N>(
   if (unwrap && collapse) {
     throw new Error('node() options cannot set both unwrap and collapse')
   }
-  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || captureTrivia || trailingTrivia
-    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}) }
+  if (project !== undefined && (unwrap || collapse)) {
+    throw new Error('node() options cannot combine project with unwrap or collapse')
+  }
+  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || project !== undefined || captureTrivia || trailingTrivia
+    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(project !== undefined ? { project } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}) }
     : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
@@ -113,10 +150,10 @@ export function node<N>(
   // added in 0.37.0), where it costs nothing. The interpreter has no compile step and
   // stays dynamic, so it re-decides per parse — which is the same answer, reached the
   // only way this engine can reach it.
-  const capturesTrivia = captureTrivia || trailingTrivia || (build ? buildReadsTrivia(def) : true)
-  const clonesState = build ? buildReadsState(def) : true
+  const capturesTrivia = captureTrivia || trailingTrivia || (build ? buildReadsTrivia(def) : project === undefined)
+  const clonesState = build ? buildReadsState(def) : project === undefined
   const hasOwnFields = parserHasOwnFields(combinator)
-  const capturesFields = hasOwnFields && (build ? buildReadsFields(def) : true)
+  const capturesFields = hasOwnFields && (build ? buildReadsFields(def) : project === undefined)
   // First-set fail-fast (mirrors emitNode's codegen guard): a node whose body can't
   // match empty and whose first set can't start here can only fail, so reject BEFORE
   // allocating the CST capture frame. Sound and output-neutral — the failing body
@@ -141,7 +178,8 @@ export function node<N>(
       // Under a positioned-CST host a direct builder is bypassed, so capture must follow
       // what the HOST reads. Mirrors `hostMode: 'cst'` in the compiled engine, which
       // captures unconditionally there because it knows the mode at compile time.
-      const hostCst = build !== undefined && cstOutputHost(ctx.build)
+      const hasDirectValue = build !== undefined || project !== undefined
+      const hostCst = hasDirectValue && cstOutputHost(ctx.build)
       const effTrivia = capturesTrivia || hostCst
       const effFields = capturesFields || (hostCst && hasOwnFields)
       const saved = beginCstNodeCapture(ctx)
@@ -190,6 +228,10 @@ export function node<N>(
           && rawChildren.length === 1
           && ctx.build._parsemanCstCollapse(nodeType, children[0], children, rawChildren)
           ? children[0]
+        : project !== undefined
+          ? cstOutput && ctx.build
+            ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, hostState)
+            : projectChild(children, project, nodeType)
         : build
           // A direct builder normally owns its result. The positioned-CST host is
           // the one exception: it must never receive an arbitrary AST object as a

@@ -96,6 +96,11 @@ function repeatOpts(min: number, max: number | undefined, trailing?: string): st
   return parts.length === 0 ? '' : `, { ${parts.join(', ')} }`
 }
 
+function projectOpt(project: Extract<ParserDef, { tag: 'node' }>['project']): string | undefined {
+  if (project === undefined) return undefined
+  return `project: ${project}`
+}
+
 function matcherExpr(entry: DispatchMatcherCase): string {
   switch (entry.kind) {
     case 'startsWith':
@@ -451,9 +456,11 @@ class Serializer {
       }
       case 'node': {
         if (def.build !== undefined && def.buildSrc === undefined) throw new Unserializable('node build without buildSrc')
+        const projectEntry = projectOpt(def.project)
         const optEntries = [
           ...(def.unwrap ? ['unwrap: true'] : []),
           ...(def.collapse ? ['collapse: true'] : []),
+          ...(projectEntry === undefined ? [] : [projectEntry]),
           ...(def.captureTrivia ? ['captureTrivia: true'] : []),
           ...(def.trailingTrivia ? ['trailingTrivia: true'] : []),
         ]
