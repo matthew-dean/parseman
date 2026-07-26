@@ -754,6 +754,44 @@ describe('dispatch()', () => {
     })
   })
 
+  it('compile() keeps exact, matcher, case-insensitive, and routed dispatch on generated paths', () => {
+    const fnCase = makeWhen({ caseInsensitive: true })
+    const head = token(regex(/(?:url\(|foo\(|--custom|plain)/i))
+    const parser = dispatch(
+      head,
+      fnCase('url(', sequence(routed(), literal('raw'))),
+      when(startsWith('--'), literal('custom'), { caseInsensitive: true }),
+      when(endsWith('('), literal('generic')),
+      when(matches(/^plain$/), literal('plain')),
+      otherwise(literal('fallback')),
+    )
+    const compiled = compile(parser)
+
+    expect(compiled.source).not.toContain('_rp[')
+    expect(compiled.source).not.toMatch(/\bstartsWith\s*\(/)
+    expect(compiled.source).not.toMatch(/\bendsWith\s*\(/)
+    expect(compiled.source).not.toMatch(/\bmatches\s*\(/)
+    expect(compiled.source).toContain('charCodeAt')
+    expect(compiled.source).toContain('/^plain$/.test')
+    expect(compiled.parse('URL(raw')).toEqual({
+      ok: true,
+      value: ['URL(', ['URL(', 'raw']],
+      span: { start: 0, end: 7 },
+    })
+    expect(compiled.parse('--CUSTOMcustom')).toMatchObject({
+      ok: true,
+      value: ['--CUSTOM', 'custom'],
+    })
+    expect(compiled.parse('foo(generic')).toMatchObject({
+      ok: true,
+      value: ['foo(', 'generic'],
+    })
+    expect(compiled.parse('plainplain')).toMatchObject({
+      ok: true,
+      value: ['plain', 'plain'],
+    })
+  })
+
   it('macro-lowers dispatch(), when(), and otherwise()', () => {
     const source = `
 import { dispatch, literal, otherwise, when } from 'parseman' with { type: 'macro' }

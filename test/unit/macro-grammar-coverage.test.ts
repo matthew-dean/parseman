@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, leaf, label, literal, many, otherwise, regex, rules, run, runWithGrammarCoverage, sequence, startsWith, when, type GatedArm } from '../../src/index.ts'
+import { choice, compile, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, leaf, label, literal, many, otherwise, regex, rules, run, runWithGrammarCoverage, sequence, startsWith, when, type GatedArm } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 
@@ -105,6 +105,63 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
       { id: 'dispatch:entry/when:%40media', phase: 'attempt', offset: 0 },
       { id: 'dispatch:entry/when:%40media', phase: 'selected', offset: 0, end: 7 },
       { id: 'dispatch:entry/when:%40media', phase: 'success', offset: 0, end: 7 },
+    ])
+  })
+
+  it('emits compiled dispatch trace hooks for matcher, otherwise, and failure routes', () => {
+    const parser = dispatch(
+      regex(/(?:@[A-Za-z-]+|[A-Za-z-]+\()/),
+      when('@media', literal('{'), { caseInsensitive: true }),
+      when(startsWith('@-'), literal('v')),
+      when(endsWith('('), literal('f')),
+      otherwise(literal(';')),
+    )
+    const compiled = compile(parser, undefined, { coverage: true })
+
+    const matcherHits: string[] = []
+    const matcherEvents: Array<{ id: string; phase: string; offset: number; end?: number }> = []
+    expect(compiled.parseWithContext('foo(f', {
+      trackLines: false,
+      _grammarCoverage: (id: string) => matcherHits.push(id),
+      _grammarTrace: { write: (event: { id: string; phase: string; offset: number; end?: number }) => matcherEvents.push(event) },
+    } as never).ok).toBe(true)
+    expect(matcherHits).toEqual(['dispatch:entry/matcher:endsWith:('])
+    expect(matcherEvents).toEqual([
+      { id: 'dispatch:entry/matcher:endsWith:(', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/matcher:endsWith:(', phase: 'selected', offset: 0, end: 5 },
+      { id: 'dispatch:entry/matcher:endsWith:(', phase: 'success', offset: 0, end: 5 },
+    ])
+
+    const otherwiseHits: string[] = []
+    const otherwiseEvents: Array<{ id: string; phase: string; offset: number; end?: number }> = []
+    expect(compiled.parseWithContext('@unknown;', {
+      trackLines: false,
+      _grammarCoverage: (id: string) => otherwiseHits.push(id),
+      _grammarTrace: { write: (event: { id: string; phase: string; offset: number; end?: number }) => otherwiseEvents.push(event) },
+    } as never).ok).toBe(true)
+    expect(otherwiseHits).toEqual(['dispatch:entry/otherwise'])
+    expect(otherwiseEvents).toEqual([
+      { id: 'dispatch:entry/otherwise', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/otherwise', phase: 'selected', offset: 0, end: 9 },
+      { id: 'dispatch:entry/otherwise', phase: 'success', offset: 0, end: 9 },
+    ])
+
+    const failureHits: string[] = []
+    const failureEvents: Array<{ id: string; phase: string; offset: number; end?: number }> = []
+    expect(compiled.parseWithContext('@MEDIA;', {
+      trackLines: false,
+      _grammarCoverage: (id: string) => failureHits.push(id),
+      _grammarTrace: { write: (event: { id: string; phase: string; offset: number; end?: number }) => failureEvents.push(event) },
+    } as never)).toEqual({
+      ok: false,
+      expected: ['"{"'],
+      span: { start: 6, end: 6 },
+      committed: true,
+    })
+    expect(failureHits).toEqual([])
+    expect(failureEvents).toEqual([
+      { id: 'dispatch:entry/when:%40media', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/when:%40media', phase: 'failure', offset: 6 },
     ])
   })
 

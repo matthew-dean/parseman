@@ -51,6 +51,7 @@ Three words that sound alike but play different roles:
 | `expect(c, label?)` | Required token: on failure, record an error and recover in place. See [Error recovery](./error-recovery). |
 | `scanTo(sentinel, opts?)` | Scan forward until `sentinel` matches (sentinel not consumed). Skips ambient trivia + `scanSkip` opaque units by default. |
 | `balanced(open, close, opts?)` | Match a single balanced delimited region — e.g. `(…)` — including the delimiters. |
+| `routed()` | Use the value/span already consumed by an enclosing `dispatch()` branch. |
 
 ## Helpers (produce combinators at definition time)
 
@@ -59,6 +60,9 @@ Three words that sound alike but play different roles:
 | `trivia(c)` | Label a combinator as skippable filler. Pass the result to `parser({ trivia })` to turn on auto-skipping. |
 | `noTrivia(c)` | Run `c` with active trivia cleared — terms must be contiguous. |
 | `makeWord(boundary?, opts?)` | Returns `(str) => Combinator` with a fixed word-boundary class and keyword options. Not a combinator. |
+| `when(key, tail, opts?)` | Defines a `dispatch()` route. Not a combinator. |
+| `otherwise(tail)` | Defines a `dispatch()` fallback route. Not a combinator. |
+| `startsWith` / `endsWith` / `matches` | Define matcher keys for `when(...)`. Not combinators. |
 | `makeWhen(opts?)` | Returns `(key, tail) => when(key, tail, opts)` for dispatch tables with shared arm options. Not a combinator. |
 | `rules(factory)` / `rules({ trivia, scanSkip }, factory)` | Named, mutually-recursive rule bundle. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
 | `parser({ trivia }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia). |
@@ -268,12 +272,14 @@ such as `@media` or `@scope` to specific prelude/body tails, and send unmatched
 values to the generic at-rule tail.
 
 The `when(...)` keys are exact full values returned by the first `dispatch`
-argument, not prefixes and not tokens parsed
-after it. `when(key, tail, { caseInsensitive: true })` folds ASCII case for the
-comparison only; the returned value remains the authored source value.
-A matched key's bad tail is an error. For a grammar that starts with one known
-keyword, use `word()` or a `makeWord()` factory; for `dispatch`, keep the routing
-combinator broad enough to recognize the whole family being routed.
+argument, not prefixes and not tokens parsed after it. `when(key, tail,
+{ caseInsensitive: true })` folds ASCII case for the comparison only; the
+returned value remains the authored source value. A matched key's bad tail is
+an error.
+
+For a grammar that starts with one known keyword, use `word()` or a `makeWord()`
+factory. For `dispatch`, keep the routing combinator broad enough to recognize
+the whole family being routed.
 
 ```ts
 // [verify]
@@ -429,8 +435,9 @@ outer category node; use `routed()` inside branch nodes when each selected form
 should own that same source span.
 
 If the first parser fails, an enclosing `choice` can still try a later arm. If
-the first parser succeeds and a `when` key matches, that tail is committed: its failure is
-returned immediately and neither `otherwise` nor an outer fallback is attempted.
+the first parser succeeds and a `when` key matches, that tail is committed: its
+failure is returned immediately and neither `otherwise` nor an outer fallback is
+attempted.
 Duplicate keys, including duplicates across grouped `when([keyA, keyB], tail)`
 arms, fail at grammar construction time. Case-insensitive arms also reject any
 other key that could match the same returned value.

@@ -6,6 +6,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   analyzeGating, formatGatingWarnings, compile,
   choice, sequence, literal, regex, not, rules, dispatch, when, otherwise,
+  startsWith,
 } from '../../src/index.ts'
 import { Stylesheet } from '../../examples/css/parser.ts'
 
@@ -92,6 +93,19 @@ describe('analyzeGating — classification', () => {
     expect(r.choices).toHaveLength(2)
     expect(r.ungated).toHaveLength(2)
     expect(r.ungated[0]!.rule).toBe('<entry>')
+  })
+
+  it('walks the selector, exact when(), matcher when(), and otherwise() arms', () => {
+    const g = dispatch(
+      choice(literal('@'), regex(/[\s\S]*/)),
+      when('@media', choice(literal('{'), regex(/[\s\S]*/))),
+      when(startsWith('@-'), choice(literal('v'), regex(/[\s\S]*/))),
+      otherwise(choice(literal(';'), regex(/[\s\S]*/))),
+    )
+    const r = analyzeGating(g)
+
+    expect(r.choices).toHaveLength(4)
+    expect(r.ungated).toHaveLength(4)
   })
 })
 

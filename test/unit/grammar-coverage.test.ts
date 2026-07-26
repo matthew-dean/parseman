@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compose, composedGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, grammarCoverageDefinitions, label, literal, otherwise, regex, routed, rules, runWithGrammarCoverage, sequence, startsWith, transform, when, type GatedArm } from '../../src/index.ts'
+import { choice, compose, composedGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, grammarCoverageDefinitions, label, literal, otherwise, regex, routed, rules, runWithGrammarCoverage, sequence, startsWith, transform, when, type GatedArm } from '../../src/index.ts'
 
 describe('grammar semantic coverage', () => {
   const grammar = rules(g => ({
@@ -137,6 +137,49 @@ describe('grammar semantic coverage', () => {
       { id: 'dispatch:entry/when:%40media', phase: 'attempt', offset: 0 },
       { id: 'dispatch:entry/when:%40media', phase: 'selected', offset: 0, end: 7 },
       { id: 'dispatch:entry/when:%40media', phase: 'success', offset: 0, end: 7 },
+    ])
+  })
+
+  it('traces matcher, otherwise, and committed-failure dispatch routes', () => {
+    const parser = dispatch(
+      regex(/(?:@[A-Za-z-]+|[A-Za-z-]+\()/),
+      when('@media', literal('{'), { caseInsensitive: true }),
+      when(startsWith('@-'), literal('v')),
+      when(endsWith('('), literal('f')),
+      otherwise(literal(';')),
+    )
+
+    const matcherTrace = createGrammarTraceSink({ capacity: 20 })
+    const matcher = runWithGrammarCoverage(parser, 'foo(f', { trace: matcherTrace })
+    expect(matcher.result.ok).toBe(true)
+    expect(matcher.coverage.hits).toEqual(['dispatch:entry/matcher:endsWith:('])
+    expect(matcherTrace.snapshot().events).toEqual([
+      { id: 'dispatch:entry/matcher:endsWith:(', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/matcher:endsWith:(', phase: 'selected', offset: 0, end: 5 },
+      { id: 'dispatch:entry/matcher:endsWith:(', phase: 'success', offset: 0, end: 5 },
+    ])
+
+    const otherwiseTrace = createGrammarTraceSink({ capacity: 20 })
+    const fallback = runWithGrammarCoverage(parser, '@unknown;', { trace: otherwiseTrace })
+    expect(fallback.result.ok).toBe(true)
+    expect(fallback.coverage.hits).toEqual(['dispatch:entry/otherwise'])
+    expect(otherwiseTrace.snapshot().events).toEqual([
+      { id: 'dispatch:entry/otherwise', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/otherwise', phase: 'selected', offset: 0, end: 9 },
+      { id: 'dispatch:entry/otherwise', phase: 'success', offset: 0, end: 9 },
+    ])
+
+    const failureTrace = createGrammarTraceSink({ capacity: 20 })
+    const failure = runWithGrammarCoverage(parser, '@MEDIA;', { trace: failureTrace })
+    expect(failure.result).toMatchObject({
+      ok: false,
+      expected: ['"{"'],
+      span: { start: 6, end: 6 },
+    })
+    expect(failure.coverage.hits).toEqual([])
+    expect(failureTrace.snapshot().events).toEqual([
+      { id: 'dispatch:entry/when:%40media', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/when:%40media', phase: 'failure', offset: 6 },
     ])
   })
 
