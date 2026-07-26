@@ -104,6 +104,13 @@ keys. Matcher keys such as `startsWith(prefix)`, `endsWith(suffix)`, and
 `opts.caseInsensitive` folds ASCII case for comparison only; the parse value
 stays authored.
 
+This is the preferred shape when branches share an opener and then diverge by
+the opener's value or by the next structural marker. A hand-written
+`choice(sequence(literal('@media'), ...), ..., sequence(regex(/@[A-Za-z-]+/), ...))`
+can recognize the same language, but late and generic arms recheck the shared
+opener. `dispatch` makes the lexical decision once and leaves the branch table
+to the grammar.
+
 ```ts
 const combinator = regex(/@[A-Za-z_][A-Za-z0-9_-]*/)
 
@@ -145,6 +152,30 @@ Here `URL(` routes to the `url(` arm and remains `URL(` in the returned tuple.
 `url` without `(` routes to the keyword tail without first trying a function
 parser. `url (` does not produce a glued opener and can parse as an identifier
 followed by a paren only in contexts that allow that shape.
+
+Media feature heads show the same pattern without an at-rule or function. Parse
+the parenthesized feature name plus the marker that decides the grammar shape,
+then route range comparisons and declaration-style features to separate tails:
+
+```ts
+const mediaHead = token(sequence(
+  literal('('),
+  cssIdent,
+  regex(/[ \t]*/),
+  regex(/>=|<=|[><=:]/),
+))
+
+const MediaFeature = dispatch(
+  mediaHead,
+  when(matches(/(?:>=|<=|>|<|=)$/), rangeFeatureTail),
+  when(matches(/:$/), declarationFeatureTail),
+)
+```
+
+For example, `(width >= 50em)` routes to the range tail, while
+`(min-width: 50em)` routes to the declaration-style feature tail. The shared
+head is consumed once, so the grammar does not speculatively try sibling arms
+that both start with `(` and an identifier.
 
 Pseudo selectors use the same lexical-shape split. The selector consumes
 `:hover`, `:is(`, `:nth-child(`, or `::part(` as the routed value; exact special
@@ -470,8 +501,27 @@ local/manual nodes outside `rules()`.
 in value form: a captured leaf becomes its string value; a sub-node is returned as-is.
 `opts.collapse` also skips `build` for one-child matches, but returns the captured child
 exactly, so a leaf remains a `CSTLeaf` with its span. Set at most one of `unwrap` and
-`collapse`. `opts.captureTrivia` makes this node the explicit owner of its per-node trivia
-log; `parser({ captureTrivia: true })` merely activates recording for a grammar scope, and
+`collapse`.
+
+`opts.project` returns one captured semantic child by index while preserving the complete
+node frame for positioned-CST hosts. It is for punctuation wrappers and similar rules where
+the AST value is a fixed child, but tools still need the full CST:
+
+```ts
+const Paren = node('Paren',
+  sequence(literal('('), Expr, literal(')')),
+  { project: 1 },
+)
+```
+
+In AST mode, `Paren` returns child `1`. A projected leaf is unwrapped to its string value;
+a projected sub-node is returned as-is. In `hostMode: 'cst'`, the same rule builds through
+the CST host with all children, raw children, spans, fields, and trivia intact. `project`
+cannot be combined with `build`, `unwrap`, or `collapse`; use a normal `build` callback for
+dynamic selection, filtering, or reconstructing values from several tokens.
+
+`opts.captureTrivia` makes this node the explicit owner of its per-node trivia log;
+`parser({ captureTrivia: true })` merely activates recording for a grammar scope, and
 plain combinators own no log. A direct build that declares the fifth `triviaLog` parameter
 keeps the established arity-based capture behavior. See [CST / AST nodes](../guide/ast).
 `opts.trailingTrivia` is a document-boundary opt-in: after a successful node body it commits

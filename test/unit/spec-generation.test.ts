@@ -212,6 +212,24 @@ describe('spec — node() rules are transparent', () => {
     const lines = ebnfLines(toEBNF(g))
     expect(lines.pair).toBe('/[a-z]+/ ":" pair')
   })
+
+  it('node projection changes semantic values, not generated syntax specs', () => {
+    const g = rules(() => ({
+      paren: node('Paren', sequence(literal('('), regex(/[0-9]+/), literal(')')), { project: 1 }),
+    }))
+    const lines = ebnfLines(toEBNF(g))
+    expect(lines.paren).toBe('"(" /[0-9]+/ ")"')
+
+    const html = toRailroadHtml(g)
+    expect(html).toContain('Terminal("(")')
+    expect(html).toContain('Terminal("/[0-9]+/")')
+    expect(html).toContain('Terminal(")")')
+
+    const svg = toRailroadSvg(g)[0]!.svg
+    expect(svg).toMatch(/^<svg class="railroad-diagram"/)
+    expect(svg).toContain('/&#91;0-9&#93;+/')
+    expect(svg).not.toContain('project')
+  })
 })
 
 describe('spec — single combinator input', () => {

@@ -4,10 +4,11 @@
  * compile(), and macro-plugin parity, leaf-vs-node children, nesting, and that
  * build is skipped.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, expectTypeOf, vi } from 'vitest'
 import {
-  literal, regex, sequence, many, optional, node, rules, compile, parse,
+  literal, regex, sequence, many, optional, node, rules, compile, parse, cstBuildHost,
 } from '../../src/index.ts'
+import type { Combinator } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 // ── A precedence-ladder-style unwrapping rule ───────────────────────────────
@@ -196,6 +197,73 @@ export const Collapsed = node('Collapsed', regex(/[0-9]+/), (ch) => ({ t: 'colla
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain('node(')
     expect(result.code).toMatch(/length === 1 \?/)
+    expect(result.warnings).toEqual([])
+  })
+})
+
+describe('project — indexed child passthrough', () => {
+  const Paren = node('Paren', sequence(literal('('), num, literal(')')), { project: 1 })
+
+  it('interpreter: returns the selected semantic child and drops punctuation from the AST value', () => {
+    const r = parse(Paren, '(7)')
+    expect(r).toEqual({ ok: true, value: '7', span: { start: 0, end: 3 } })
+  })
+
+  it('type inference follows the projected sequence slot', () => {
+    expectTypeOf(Paren).toEqualTypeOf<Combinator<string>>()
+    const Inner = node('Inner', regex(/[0-9]+/), () => ({ kind: 'num' as const }))
+    const Outer = node('Outer', sequence(literal('('), Inner, literal(')')), { project: 1 })
+    expectTypeOf(Outer).toEqualTypeOf<Combinator<{ kind: 'num' }>>()
+  })
+
+  it('rejects ambiguous project options', () => {
+    expect(() => node('Ambiguous', num, { project: 0, unwrap: true }))
+      .toThrow('node() options cannot combine project with unwrap or collapse')
+    expect(() => node('Ambiguous', num, { project: 0, collapse: true }))
+      .toThrow('node() options cannot combine project with unwrap or collapse')
+    expect(() => node('Ambiguous', num, () => null, { project: 0 }))
+      .toThrow('node() options cannot combine project with a build callback')
+  })
+
+  it('rejects an invalid project index at construction time', () => {
+    expect(() => node('Bad', num, { project: -1 })).toThrow('node() project child must be a non-negative integer')
+    expect(() => node('Bad', num, { project: 0.5 })).toThrow('node() project child must be a non-negative integer')
+  })
+
+  it('reports a missing projected child after a successful empty parse', () => {
+    const Empty = node('Empty', optional(literal('a')), { project: 0 })
+    expect(() => parse(Empty, '')).toThrow('node("Empty") project child 0 was not captured')
+  })
+
+  it('compile() parity for projection', () => {
+    expect(compile(Paren).parse('(42)')).toEqual(parse(Paren, '(42)'))
+  })
+
+  it('hostMode cst keeps the full node children while ast mode projects', () => {
+    const input = '(7)'
+    const ast = compile(Paren).parse(input)
+    expect(ast.ok && ast.value).toBe('7')
+
+    const cst = compile(Paren, undefined, { hostMode: 'cst' })
+      .parseWithContext(input, { trackLines: false, build: cstBuildHost() }, 0)
+    expect(cst.ok).toBe(true)
+    if (!cst.ok) return
+    const cstValue: unknown = cst.value
+    expect(cstValue).toMatchObject({ _tag: 'node', type: 'Paren', span: { start: 0, end: 3 } })
+    const cstNode = cstValue as { children: ReadonlyArray<{ value?: string }> }
+    expect(cstNode.children.map(child => child.value)).toEqual(['(', '7', ')'])
+  })
+
+  it('macro plugin compiles project options', () => {
+    const code = `
+import { regex, sequence, literal, node } from 'parseman' with { type: 'macro' }
+export const Paren = node('Paren', sequence(literal('('), regex(/[0-9]+/), literal(')')), { project: 1 })
+`.trim()
+    const result = transformMacro(code, 'test.ts')!
+    expect(result.code).not.toContain("from 'parseman'")
+    expect(result.code).not.toContain("node('Paren'")
+    expect(result.code).not.toContain('_build')
+    expect(result.code).toContain('_ch')
     expect(result.warnings).toEqual([])
   })
 })

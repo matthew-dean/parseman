@@ -28,7 +28,7 @@ export { ref } from './combinators/ref.ts'
 export { not } from './combinators/not.ts'
 export { peek } from './combinators/peek.ts'
 export { node } from './combinators/node.ts'
-export type { BuildNode, NodeOptions } from './combinators/node.ts'
+export type { BuildNode, NodeOptions, NodeProjectOptions } from './combinators/node.ts'
 // lazy() is intentionally NOT exported.
 export { transform, skip, trivia, label, field } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'

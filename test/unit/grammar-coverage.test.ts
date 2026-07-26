@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compose, composedGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, grammarCoverageDefinitions, label, literal, otherwise, regex, routed, rules, runWithGrammarCoverage, sequence, startsWith, transform, when, type GatedArm } from '../../src/index.ts'
+import { choice, compose, composedGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, grammarCoverageDefinitions, label, literal, node, otherwise, regex, routed, rules, runWithGrammarCoverage, sequence, startsWith, transform, when, type GatedArm } from '../../src/index.ts'
 
 describe('grammar semantic coverage', () => {
   const grammar = rules(g => ({
@@ -47,6 +47,18 @@ describe('grammar semantic coverage', () => {
       'choice:Entry/sequence:0/lazy:0/arm:0',
       'label:Entry/sequence:0/lazy:0/choice:0',
     ]))
+  })
+
+  it('keeps coverage and trace ownership through node projection rebuilds', () => {
+    const projected = rules(() => ({
+      Entry: node('Entry', sequence(literal('('), label('digit', regex(/[0-9]+/)), literal(')')), { project: 1 }),
+    }))
+    const trace = createGrammarTraceSink({ capacity: 20 })
+    const { result, coverage } = runWithGrammarCoverage(projected.Entry, '(7)', { trace })
+    expect(result).toMatchObject({ ok: true, value: '7', span: { start: 0, end: 3 } })
+    expect(coverage.hits).toEqual(['label:Entry/node:0/sequence:1', 'rule:Entry'])
+    expect(trace.snapshot().events).toContainEqual({ id: 'label:Entry/node:0/sequence:1', phase: 'success', offset: 1, end: 2 })
+    expect(trace.snapshot().events).toContainEqual({ id: 'rule:Entry', phase: 'success', offset: 0, end: 3 })
   })
 
   it('uses the final compose winner when resolving a referenced rule', () => {

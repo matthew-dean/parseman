@@ -16,7 +16,7 @@ import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { fuseRules } from '../../src/compiler/linker.ts'
 import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
 
-type RunMap = Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+type RunMap = Record<string, (i: string, p: number, c: object) => { ok: boolean; value?: unknown; span: { end: number } }>
 
 // Materialize a rule map (as the fuse path does) into a callable parser map.
 function run(rm: ReadonlyArray<readonly [string, unknown]>): RunMap {
@@ -136,6 +136,22 @@ describe('IR serialize round-trip', () => {
     expect(serializeRuleMap(rm as never)).toContain('trailingTrivia: true')
     roundTrip(rm, 'Mapped', ['1', '123', 'a'])
     roundTrip(rm, 'Collapsed', ['a', 'abc', '1'])
+  })
+
+  it('round-trips declarative node projection as static linkable IR', () => {
+    const rm = Object.entries(rules(() => ({
+      Paren: node('Paren', sequence(literal('('), regex(/[0-9]+/), literal(')')), { project: 1 }),
+    })))
+
+    const src = serializeRuleMap(rm as never)
+    expect(src).toContain('project: 1')
+    if (src === null) throw new Error('projection rule map was not serializable')
+    roundTrip(rm, 'Paren', ['(1)', '(23)', '1'])
+    const rebuilt = run(evalRuleMapIR(src))
+    const projected = rebuilt.Paren!('(23)', 0, {})
+    expect(projected.ok).toBe(true)
+    expect(projected.value).toBe('23')
+    expect(projected.span.end).toBe(4)
   })
 
   it('round-trips a captured semantic leaf reducer as static linkable IR', () => {

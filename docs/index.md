@@ -48,4 +48,9 @@ features:
     details: Interpreter mode runs your combinator source directly. Macro build compiles it away but keeps breakpoints working via source maps — you step through choice(...), not charCode dispatch.
     link: /guide/modes#debugging-compiled-grammars
     linkText: Debugging by mode
+  - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/><path d="m17 6-4 6"/><path d="m7 6 4 6"/></svg>'
+    title: Scannerless, with routing
+    details: dispatch() parses a shared head once, then routes by the value or marker the grammar just read. You keep scannerless flexibility without turning overlapping lexical shapes into broad backtracking.
+    link: /guide/combinators#dispatch
+    linkText: Dispatch
 ---

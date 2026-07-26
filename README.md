@@ -36,6 +36,12 @@ Reach for it when you want CST/AST nodes with spans and trivia, error recovery a
 incremental re-parsing for editor tooling, or simply a fast parser for a DSL, config
 language, formatter, or linter.
 
+Parséman is scannerless without giving up token-style routing. When several branches share
+a meaningful opener, `dispatch(selector, when(...), otherwise(...))` lets the grammar parse
+that head once, then route by the returned value or structural marker. CSS-like grammars use
+that for at-rules, identifier-or-function values, media features, and dialect routes where
+interpolation and dedicated syntax overlap.
+
 > **📖 Full documentation: [matthew-dean.github.io/parseman](https://matthew-dean.github.io/parseman/)**
 
 ## Install
@@ -108,6 +114,8 @@ See **[The three modes](https://matthew-dean.github.io/parseman/guide/modes)**.
   `compose()` a dialect onto a base grammar instead of forking it.
 - 🎛️ **[Context-sensitive parsing](https://matthew-dean.github.io/parseman/guide/context)** —
   `withCtx` / `gate` without mutating shared state.
+- 🧭 **[Scannerless routing](https://matthew-dean.github.io/parseman/guide/combinators#dispatch)** —
+  `dispatch` parses a shared head once and routes at the grammar boundary that matters.
 
 **🌳 Getting structure out**
 

@@ -341,6 +341,24 @@ function scopeGet(scope: XScope, name: string, mfs?: string[]): Combinator<unkno
 // ---------------------------------------------------------------------------
 
 /** Read static node opts that affect generated grammar shape. */
+function staticLiteralValue(expr: unknown): unknown {
+  const val = expr as { type?: string; value?: unknown }
+  return val.type === 'Literal' || val.type === 'BooleanLiteral' || val.type === 'NumericLiteral'
+    ? val.value
+    : undefined
+}
+
+type StaticNodeProject = { ok: true; value: number } | { ok: false }
+
+function staticNodeProject(expr: Expression): StaticNodeProject | undefined {
+  const literalValue = staticLiteralValue(expr)
+  if (typeof literalValue === 'number' && Number.isInteger(literalValue) && literalValue >= 0) {
+    return { ok: true, value: literalValue }
+  }
+  if (typeof literalValue === 'number' || literalValue !== undefined) return { ok: false }
+  return { ok: false }
+}
+
 function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
   if (expr.type !== 'ObjectExpression') return undefined
   const opts: parseman.NodeOptions = {}
@@ -352,11 +370,14 @@ function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
       : key.type === 'Literal' ? String(key.value)
       : undefined
     if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
-      const val = p.value as unknown as { type: string; value?: unknown }
-      if ((val.type === 'Literal' || val.type === 'BooleanLiteral') && val.value === true) opts[name] = true
+      if (staticLiteralValue(p.value) === true) opts[name] = true
+    } else if (name === 'project') {
+      const project = staticNodeProject(p.value as Expression)
+      if (project?.ok === false) return { project: -1 }
+      if (project !== undefined) opts.project = project.value
     }
   }
-  return opts.unwrap || opts.collapse || opts.captureTrivia || opts.trailingTrivia ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia ? opts : undefined
 }
 
 /**
@@ -429,9 +450,10 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     } catch { return null }
   }
 
-  // node(parser, build?, opts?) / node(type, parser, build?, opts?) — CST node rule. Capture the build callback
-  // source (like transform) so codegen inlines it; the inner parser carries the
-  // capture. Optional `{ unwrap: true }` / `{ collapse: true }` opts are read statically.
+  // node(parser, build?, opts?) / node(type, parser, build?, opts?) — CST node rule.
+  // Capture the build callback source (like transform) so codegen inlines it; the
+  // inner parser carries the capture. Options may be the trailing argument or the
+  // third argument when no build callback is present.
   if (callee.name === 'node' && code !== undefined) {
     const [firstArg, secondArg, thirdArg, fourthArg] = node.arguments
     if (!firstArg || firstArg.type === 'SpreadElement') return null
@@ -448,10 +470,12 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     // injected `ctx.build` host; codegen keys that off `def.build === undefined`.
     const be = buildArg as { type: string; start: number; end: number; name?: string } | undefined
     const hasBuild = be !== undefined && be.type !== 'SpreadElement'
+      && be.type !== 'ObjectExpression'
       && !(be.type === 'Identifier' && be.name === 'undefined')
     const buildSrc = hasBuild ? stripTsFromSource(be! as Node, code) : undefined
-    const opts = optsArg !== undefined && optsArg.type !== 'SpreadElement'
-      ? staticNodeOptions(optsArg as Expression)
+    const optionsArg = hasBuild ? optsArg : (be?.type === 'ObjectExpression' ? buildArg : optsArg)
+    const opts = optionsArg !== undefined && optionsArg.type !== 'SpreadElement'
+      ? staticNodeOptions(optionsArg as Expression)
       : undefined
     try {
       const combi = explicitType !== undefined

@@ -86,7 +86,7 @@ export type ParserDef =
   // it requires, so it carries `parser`'s first-set and a leading `peek()` gates
   // its choice arm (see `isPositiveLookahead` / `sequenceFirstSet`).
   | { tag: 'peek';    parser: Combinator<unknown> }
-  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; buildStaticError?: readonly string[]; unwrap?: boolean; collapse?: boolean; captureTrivia?: boolean; trailingTrivia?: boolean }
+  | { tag: 'node';     type?: string; parser: Combinator<unknown>; build?: ((children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, rawChildren: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown) | undefined; buildSrc?: string; buildStaticError?: readonly string[]; unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean }
   // `predSrc`/`extraSrc` (set by the macro evaluator): SOURCE TEXT of the guard
   // predicate / the withCtx `extra` value, so codegen inlines them into `_mf`
   // rather than pushing a `null` source. Absent under runtime compile() (the real
