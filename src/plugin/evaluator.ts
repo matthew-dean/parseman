@@ -109,9 +109,10 @@ function wordFactoryFromArgs(args: readonly (Expression | { type: 'SpreadElement
   const [boundaryOrOptsArg, optsArg] = args
   if (boundaryOrOptsArg?.type === 'SpreadElement' || optsArg?.type === 'SpreadElement') return null
 
-  const boundaryOrOpts = boundaryOrOptsArg === undefined
-    ? '_0-9A-Za-z'
+  const rawBoundaryOrOpts = boundaryOrOptsArg === undefined
+    ? undefined
     : anyValue(boundaryOrOptsArg as Expression, scope, code, mfs)
+  const boundaryOrOpts = rawBoundaryOrOpts === undefined ? '_0-9A-Za-z' : rawBoundaryOrOpts
   const opts = optsArg === undefined
     ? undefined
     : anyValue(optsArg as Expression, scope, code, mfs)

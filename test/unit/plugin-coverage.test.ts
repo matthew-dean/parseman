@@ -460,6 +460,8 @@ describe('evaluator — factory and define edge cases', () => {
       .toMatchObject({ boundary: 'A-Za-z0-9_-', caseInsensitive: true })
     expect(evaluateWordFactory(parseInit('makeWord({ caseInsensitive: true })'), new Map()))
       .toMatchObject({ boundary: '_0-9A-Za-z', caseInsensitive: true })
+    expect(evaluateWordFactory(parseInit('makeWord(undefined, { caseInsensitive: true })'), new Map()))
+      .toMatchObject({ boundary: '_0-9A-Za-z', caseInsensitive: true })
   })
 
   it('evaluateRefDeclaration rejects ref() with arguments', () => {

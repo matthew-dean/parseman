@@ -352,6 +352,17 @@ const color = makeWord('A-Za-z0-9_-', { caseInsensitive: true })('color')
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain('_rp[')
   })
+
+  it('inlines makeWord(undefined, opts)(str) chained calls', () => {
+    const code = `
+import { makeWord } from 'parseman' with { type: 'macro' }
+const color = makeWord(undefined, { caseInsensitive: true })('color')
+`.trim()
+    const result = transform(code)!
+    expect(result.code).not.toContain("from 'parseman'")
+    expect(result.code).not.toContain('_rp[')
+    expect(result.code).toContain('/(?:color)(?![_0-9A-Za-z])/iy')
+  })
 })
 
 describe('transformMacro — source maps', () => {
