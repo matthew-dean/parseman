@@ -253,17 +253,17 @@ into a single O(1) character dispatch.
 
 ### `dispatch`
 
-Token-once routing by a parsed string value. Use it when one broad selector
-token is valid generally, and selected selector values have specialized
-continuation grammars. CSS-like at-rules are the model: the selector consumes
-one at-keyword token; values such as `@media` or `@scope` choose specific
-prelude/body tails; unmatched values take the generic at-rule tail.
+Token-once routing by a parsed string value. Use it when one broad routing
+combinator is valid generally, and selected values have specialized continuation
+grammars. CSS-like at-rules are the model: parse one at-keyword, route values
+such as `@media` or `@scope` to specific prelude/body tails, and send unmatched
+values to the generic at-rule tail.
 
-The `when(...)` keys are classifier keys for the consumed selector value, not
-tokens parsed after the selector. A matched key's bad tail is an error. For a
-grammar that starts with one known keyword, use `word()` or a `makeWord()`
-factory; for `dispatch`, keep the selector broad enough to recognize the whole
-family being routed.
+The `when(...)` keys are classifier keys for the value already consumed by the
+first `dispatch` argument, not tokens parsed after it. A matched key's bad tail
+is an error. For a grammar that starts with one known keyword, use `word()` or a
+`makeWord()` factory; for `dispatch`, keep the routing combinator broad enough to
+recognize the whole family being routed.
 
 ```ts
 // [verify]
