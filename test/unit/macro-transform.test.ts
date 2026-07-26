@@ -309,6 +309,17 @@ const kw = word('true')
     expect(result.code).not.toContain('.exec(input)')
   })
 
+  it('inlines word(str, opts)', () => {
+    const code = `
+import { word } from 'parseman' with { type: 'macro' }
+const kw = word('true', { caseInsensitive: true })
+`.trim()
+    const result = transform(code)!
+    expect(result.code).not.toContain("from 'parseman'")
+    expect(result.code).not.toContain('_rp[')
+    expect(result.code).toContain('/(?:true)(?![_0-9A-Za-z])/iy')
+  })
+
   it('inlines makeWord() factory calls', () => {
     const code = `
 import { makeWord } from 'parseman' with { type: 'macro' }
@@ -326,6 +337,16 @@ const ifKw = kw('if')
     const code = `
 import { makeWord } from 'parseman' with { type: 'macro' }
 const color = makeWord('A-Za-z0-9_-')('color')
+`.trim()
+    const result = transform(code)!
+    expect(result.code).not.toContain("from 'parseman'")
+    expect(result.code).not.toContain('_rp[')
+  })
+
+  it('inlines makeWord(boundary, opts)(str) chained calls', () => {
+    const code = `
+import { makeWord } from 'parseman' with { type: 'macro' }
+const color = makeWord('A-Za-z0-9_-', { caseInsensitive: true })('color')
 `.trim()
     const result = transform(code)!
     expect(result.code).not.toContain("from 'parseman'")

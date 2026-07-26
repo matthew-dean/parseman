@@ -32,6 +32,43 @@ describe('keywords', () => {
     expect(parse(kw, 'RED').ok).toBe(true)
     expect(parse(kw, 'Red').ok).toBe(true)
   })
+
+  it('keeps word() and makeWord() case-sensitive by default across call shapes', () => {
+    expect(parse(word('media'), 'MEDIA').ok).toBe(false)
+    expect(parse(word('media', 'A-Za-z0-9_-'), 'MEDIA').ok).toBe(false)
+    expect(parse(makeWord()('media'), 'MEDIA').ok).toBe(false)
+    expect(parse(makeWord('A-Za-z0-9_-')('media'), 'MEDIA').ok).toBe(false)
+  })
+
+  it('supports case-insensitive word() and makeWord() option shapes', () => {
+    const cases = [
+      {
+        label: 'word(str, opts)',
+        kw: word('media', { caseInsensitive: true }),
+        rejected: 'mediaquery'
+      },
+      {
+        label: 'word(str, boundary, opts)',
+        kw: word('media', 'A-Za-z0-9_-', { caseInsensitive: true }),
+        rejected: 'media-query'
+      },
+      {
+        label: 'makeWord(opts)(str)',
+        kw: makeWord({ caseInsensitive: true })('media'),
+        rejected: 'mediaquery'
+      },
+      {
+        label: 'makeWord(boundary, opts)(str)',
+        kw: makeWord('A-Za-z0-9_-', { caseInsensitive: true })('media'),
+        rejected: 'media-query'
+      }
+    ] as const
+
+    for (const c of cases) {
+      expect(parse(c.kw, 'MEDIA').ok, c.label).toBe(true)
+      expect(parse(c.kw, c.rejected).ok, c.label).toBe(false)
+    }
+  })
 })
 
 describe('keywords compile', () => {

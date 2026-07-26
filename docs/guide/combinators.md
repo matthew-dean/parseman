@@ -57,7 +57,7 @@ Three words that sound alike but play different roles:
 | --- | --- |
 | `trivia(c)` | Label a combinator as skippable filler. Pass the result to `parser({ trivia })` to turn on auto-skipping. |
 | `noTrivia(c)` | Run `c` with active trivia cleared — terms must be contiguous. |
-| `makeWord(boundary?)` | Returns `(str) => Combinator` with a fixed word-boundary class. Not a combinator. |
+| `makeWord(boundary?, opts?)` | Returns `(str) => Combinator` with a fixed word-boundary class and keyword options. Not a combinator. |
 | `rules(factory)` / `rules({ trivia, scanSkip }, factory)` | Named, mutually-recursive rule bundle. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
 | `parser({ trivia }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia). |
 | `parse(c, input, opts?)` | Run a combinator once, without building a `parser()`. |
@@ -175,17 +175,17 @@ as `keyword-regex`.
 
 ### `makeWord`
 
-A definition-time factory that fixes the boundary class, for grammars where every
-keyword shares one.
+A definition-time factory that fixes the boundary class and keyword options, for
+grammars where every keyword shares them.
 
 ```ts
 // [verify]
 import { makeWord, parse } from 'parseman'
 
-const cssKw = makeWord('A-Za-z0-9_-')
+const cssKw = makeWord('A-Za-z0-9_-', { caseInsensitive: true })
 
-parse(cssKw('screen'), 'screen and (x)').value
-// → 'screen'
+parse(cssKw('screen'), 'SCREEN and (x)').value
+// → 'SCREEN'
 parse(cssKw('screen'), 'screen-only').ok
 // → false
 ```

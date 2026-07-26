@@ -3,6 +3,20 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.38.0 — 2026-07-26
+
+- **`makeWord()` now carries the same explicit `caseInsensitive` option as
+  `word()` and `keywords()`.** Use `makeWord(boundary?, { caseInsensitive: true })`
+  or `makeWord({ caseInsensitive: true })` to define a whole keyword family once,
+  while the default remains case-sensitive everywhere. The direct `word()` overloads
+  also support both `word(str, boundary, opts)` and `word(str, opts)`, so a single
+  keyword and a family factory now share the same option shape.
+
+  The macro evaluator understands both forms, including chained
+  `makeWord(...)(str)` calls and factories bound inside `rules()` bodies, so
+  macro-compiled grammars do not have to fall back to `regex(/kw/i)` for
+  spec-defined case-insensitive keyword families.
+
 ## 0.37.0 — 2026-07-25
 
 - **Compile-time host mode reaches the MACRO — `rules({ hostMode })`, and two artifacts
