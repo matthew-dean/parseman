@@ -86,11 +86,11 @@ describe('analyzeGating — classification', () => {
     const g = dispatch(
       literal('@media'),
       when('@media', choice(literal('{'), regex(/[\s\S]*/))),
-      otherwise(sequence(literal('@'), literal(';'))),
+      otherwise(choice(literal(';'), regex(/[\s\S]*/))),
     )
     const r = analyzeGating(g)
-    expect(r.choices).toHaveLength(1)
-    expect(r.ungated).toHaveLength(1)
+    expect(r.choices).toHaveLength(2)
+    expect(r.ungated).toHaveLength(2)
     expect(r.ungated[0]!.rule).toBe('<entry>')
   })
 })

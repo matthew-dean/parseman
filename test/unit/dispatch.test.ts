@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
+  attempt,
   choice,
   compile,
   dispatch,
   expect as expectParser,
   literal,
+  many,
   node,
+  oneOrMore,
+  optional,
   otherwise,
   parser,
   regex,
+  sepBy,
   sequence,
   trivia,
   when,
@@ -59,7 +64,7 @@ describe('dispatch()', () => {
       when('@media', literal('{')),
     )
 
-    expect(run(parser, '@unknown;')).toEqual({
+    expect(assertEnginesAgree(parser, '@unknown;')).toEqual({
       ok: false,
       expected: ['"@media"'],
       span: { start: 8, end: 8 },
@@ -107,6 +112,28 @@ describe('dispatch()', () => {
     })
   })
 
+  it('propagates matched tail commitment through swallowing combinators', () => {
+    const matchedTail = () => dispatch(literal('k'), when('k', literal('x')))
+    const expected = {
+      ok: false,
+      expected: ['"x"'],
+      span: { start: 1, end: 1 },
+      committed: true,
+    }
+
+    const entries: Combinator<unknown>[] = [
+      many(matchedTail()),
+      oneOrMore(matchedTail()),
+      optional(matchedTail()),
+      attempt(matchedTail()),
+      sepBy(matchedTail(), literal(',')),
+    ]
+
+    for (const entry of entries) {
+      expect(assertEnginesAgree(entry, 'kq')).toEqual(expected)
+    }
+  })
+
   it('rolls back selected-tail captures before returning a committed failure', () => {
     const parser = sequence(
       node('Head', literal('@')),
@@ -152,6 +179,28 @@ describe('dispatch()', () => {
     expect(interpreted).toEqual(expected)
     expect(interpretedErrors).toEqual([])
     expect(compiled).toEqual({ ...expected, errors: [] })
+  })
+
+  it('does not leak recovered tail commitment into an enclosing choice fallback', () => {
+    const parser = choice(
+      sequence(
+        expectParser(
+          dispatch(
+            literal('k'),
+            when('k', literal('x')),
+          ),
+          'dispatch tail',
+        ),
+        literal('z'),
+      ),
+      literal('kq'),
+    )
+
+    expect(assertEnginesAgree(parser, 'kq', { recovery: true })).toEqual({
+      ok: true,
+      value: 'kq',
+      span: { start: 0, end: 2 },
+    })
   })
 
   it('rolls back selected-tail trivia log entries before returning a committed failure', () => {

@@ -29,7 +29,7 @@ Three words that sound alike but play different roles:
 | `regex(pattern)` | Match a regex at the current position. |
 | `sequence(...combinators)` | Match all in order; returns a tuple `[v1, v2, …]`. Skips trivia between terms when trivia is active. |
 | `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. |
-| `dispatch(selector, when(...), otherwise(...))` | Parse a selector once, route by its string value, and commit matched-tail failures. |
+| `dispatch(selector, when(...), otherwise(...))` | Parse a broad selector token once, route selected values to specialized tails, and commit matched-tail failures. |
 | `attempt(c)` | All-or-nothing arm: on failure, every framework side effect from the rejected branch is rolled back. |
 | `many(c, opts?)` | Zero or more; `{ min, max }` bound the item count. |
 | `oneOrMore(c, opts?)` | One or more — sugar for `many(c, { min: 1 })`. |
@@ -253,9 +253,14 @@ into a single O(1) character dispatch.
 
 ### `dispatch`
 
-Token-once routing by a parsed string value. Use it when the grammar has one
-selector token whose value chooses a static tail, especially when a matched key's
-bad tail must be an error rather than a chance to try a generic fallback.
+Token-once routing by a parsed string value. Use it when one broad selector
+token is valid generally, and selected selector values have specialized
+continuation grammars. CSS at-rules are the model: the selector consumes one
+at-keyword token; values such as `@media` or `@scope` choose specific
+prelude/body tails; unmatched values take the generic at-rule tail.
+
+The `when(...)` keys are classifier keys for the consumed selector value, not
+tokens parsed after the selector. A matched key's bad tail is an error.
 
 ```ts
 // [verify]
@@ -289,10 +294,9 @@ Duplicate keys, including duplicates across grouped `when([keyA, keyB], tail)`
 arms, fail at grammar construction time.
 
 In macro-compiled `rules()` factories, `when()` and `otherwise()` arms can be
-bound to local `const`s and passed by name. Keep the generic fallback inside the
-same `dispatch(...)` as `otherwise(...)`; `choice(dispatch(knownCases), generic)`
-does not express the same commitment rule. V1 macro lowering expects explicit
-arm arguments; `dispatch(selector, ...arms)` is future work.
+bound to local `const`s and passed by name. Put the generic continuation in
+`otherwise(...)`. V1 macro lowering expects explicit arm arguments;
+`dispatch(selector, ...arms)` is future work.
 
 ### `attempt`
 

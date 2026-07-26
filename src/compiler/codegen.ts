@@ -1734,6 +1734,116 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
   }
 }
 
+function canFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return true
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'literal':
+    case 'regex':
+    case 'keywords':
+    case 'guard':
+    case 'not':
+    case 'peek':
+    case 'scanTo':
+    case 'unknown':
+      return true
+    case 'expect':
+    case 'recover':
+    case 'optional':
+    case 'many':
+      return false
+    case 'choice':
+      return d.parsers.every(item => canFail(item, seen))
+    case 'sequence':
+      return d.parsers.some(item => canFail(item, seen))
+    case 'dispatch':
+      return true
+    case 'oneOrMore':
+      return canFail(d.parser, seen)
+    case 'sepBy':
+      return d.min >= 1 ? canFail(d.parser, seen) : false
+    case 'attempt':
+    case 'transform':
+    case 'label':
+    case 'field':
+    case 'grammar':
+    case 'node':
+    case 'token':
+    case 'leaf':
+    case 'withCtx':
+      return canFail(d.parser, seen)
+    case 'skip':
+      return canFail(d.main, seen) || canFail(d.skipped, seen)
+    case 'lazy': {
+      try { return canFail(d.thunk(), seen) } catch { return true }
+    }
+    default:
+      return true
+  }
+}
+
+function mayRecordRecoveryErrorBeforeFailure(
+  p: Combinator<unknown>,
+  recovery: boolean,
+  seen: Set<Combinator<unknown>> = new Set(),
+): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'expect':
+    case 'recover':
+      return false
+    case 'sequence': {
+      let recordedEarlier = false
+      for (const item of d.parsers) {
+        if (recordedEarlier && canFail(item)) return true
+        if (mayRecordRecoveryErrorBeforeFailure(item, recovery, seen)) return true
+        if (mayRecordRecoveryError(item, recovery)) recordedEarlier = true
+      }
+      return false
+    }
+    case 'choice':
+      return d.parsers.some(item => mayRecordRecoveryErrorBeforeFailure(item, recovery, seen))
+    case 'dispatch': {
+      if (mayRecordRecoveryErrorBeforeFailure(d.selector, recovery, seen)) return true
+      for (const item of d.cases) {
+        if (mayRecordRecoveryErrorBeforeFailure(item.parser, recovery, seen)) return true
+      }
+      return d.otherwise ? mayRecordRecoveryErrorBeforeFailure(d.otherwise, recovery, seen) : false
+    }
+    case 'many':
+    case 'oneOrMore':
+    case 'sepBy':
+      return mayRecordRecoveryErrorBeforeFailure(d.parser, recovery, seen)
+    case 'attempt':
+    case 'transform':
+    case 'label':
+    case 'field':
+    case 'grammar':
+    case 'node':
+    case 'token':
+    case 'leaf':
+    case 'withCtx':
+    case 'optional':
+      return mayRecordRecoveryErrorBeforeFailure(d.parser, recovery, seen)
+    case 'skip':
+      return mayRecordRecoveryErrorBeforeFailure(d.main, recovery, seen) ||
+        mayRecordRecoveryErrorBeforeFailure(d.skipped, recovery, seen)
+    case 'scanTo':
+      if (mayRecordRecoveryErrorBeforeFailure(d.sentinel, recovery, seen)) return true
+      return d.skip.some(item => mayRecordRecoveryErrorBeforeFailure(item, recovery, seen))
+    case 'lazy': {
+      try { return mayRecordRecoveryErrorBeforeFailure(d.thunk(), recovery, seen) } catch { return true }
+    }
+    case 'unknown':
+      return true
+    default:
+      return false
+  }
+}
+
 function emitDispatchCombinator(def: Extract<ParserDef, { tag: 'dispatch' }>, ctx: Ctx, pos: string): ER {
   const selector = emit(def.selector, ctx, pos)
   const outV = v(ctx, '_dval')
@@ -2002,14 +2112,21 @@ function emitFirstMatch(
     const armNeedsRollback = ctx.capturing &&
       (mayLeavePartialCapture(p) || (armHasAutoNot && capturesLeaf(p)))
     const armNeedsFieldRollback = armNeedsRollback && parserHasOwnFields(p)
+    const armMayRecordError = mayRecordRecoveryErrorBeforeFailure(p, !!ctx.recovery) ||
+      (armHasAutoNot && mayRecordRecoveryError(p, !!ctx.recovery))
     const markLeaves = armNeedsRollback ? v(ctx, '_cml') : null
     const markRaw    = armNeedsRollback ? v(ctx, '_cmr') : null
     const markTl     = armNeedsRollback ? v(ctx, '_cmtl') : null
     const markLog    = armNeedsRollback ? v(ctx, '_cmlg') : null
     const markFields = armNeedsFieldRollback ? v(ctx, '_cmf') : null
-    const rollback   = markLeaves
+    const markErrors = armMayRecordError ? v(ctx, '_cme') : null
+    const captureRollback = markLeaves
       ? captureRestoreBody(markLeaves, markRaw!, markTl!, markLog!, markFields)
       : ''
+    const errorRollback = markErrors
+      ? `if (_ctx._errors && _ctx._errors.length !== ${markErrors}) _ctx._errors.length = ${markErrors}`
+      : ''
+    const rollback = [captureRollback, errorRollback].filter(Boolean).join('; ')
     const failSlot = atStart ? staticFx : '_ctx._fx'
 
     stmts.push(`${ind0}if (${skipCond}) {`)
@@ -2026,6 +2143,7 @@ function emitFirstMatch(
         ...(markFields ? [`${ind(ctx)}const ${markFields} = _ctx._fields?.length ?? 0`] : []),
       )
     }
+    if (markErrors) stmts.push(`${ind(ctx)}const ${markErrors} = _ctx._errors?.length ?? 0`)
     const arm = emitFallible(p, ctx, pos, atStart)
     const { stmts: armStmts, okVar, valVar, endVar } = arm
     stmts.push(...armStmts)
@@ -3273,7 +3391,7 @@ function emitRuntimeFallback(parser: Combinator<unknown>, ctx: Ctx, pos: string)
   const failStmt = ctx.failLabel
     ? (ctx.recordFail
         ? `{ _ctx._fe = ${rv}.span.start; _ctx._fx = ${rv}.expected; _ctx._fc = ${rv}.committed === true; break ${ctx.failLabel} }`
-        : `break ${ctx.failLabel}`)
+        : `{ _ctx._fc = ${rv}.committed === true; break ${ctx.failLabel} }`)
     : `return { ok: false, expected: ${rv}.expected, span: ${rv}.span, ...(${rv}.committed ? { committed: true } : {}) }`
   const stmts = [
     `${ind(ctx)}const ${rv} = _rp[${idx}].parse(input, ${pos}, _ctx)`,
@@ -3401,7 +3519,7 @@ function emitRecover(def: Extract<ParserDef, { tag: 'recover' }>, ctx: Ctx, pos:
 
 // ── expect: try inner; on failure record a ParseError + recover in place ─────
 function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: string): ER {
-  const { stmts: innerStmts, okVar, valVar, endVar } = emitFallible(def.parser, ctx, pos)
+  const { stmts: innerStmts, okVar, valVar, endVar, mayCommit } = emitFallible(def.parser, ctx, pos)
   const ind0 = ind(ctx)
   const errV = v(ctx, '_err')
   const stmts: string[] = [
@@ -3413,6 +3531,7 @@ function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: s
     // interpreter (expect.ts) and the list-recovery emit sites — guarded on
     // `_ctx._tolerant`, under which the driver always installs `_ctx._rec`.
     `${ind0}  if (_ctx._tolerant) _ctx._rec.capture(_ctx, ${errV})`,
+    ...(mayCommit ? [`${ind0}  _ctx._fc = false`] : []),
     `${ind0}  ${valVar} = ${errV}`,
     `${ind0}  ${endVar} = ${pos}`,
     `${ind0}  ${okVar} = true`,

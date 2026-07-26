@@ -424,7 +424,7 @@ function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
     case 'leaf':      return `leaf ${fnKey(d.fnSrc, d.fn)}`
     case 'many': case 'oneOrMore': return `${d.tag} ${d.min} ${d.max ?? ''}`
     case 'sepBy':     return `sepBy ${d.min} ${d.max ?? ''} ${d.trailing ?? ''}`
-    case 'dispatch':  return `dispatch ${d.cases.map(c => c.keys.join('')).join('')} ${d.otherwise !== undefined}`
+    case 'dispatch':  return `dispatch ${d.cases.map(c => JSON.stringify(c.keys)).join('')} ${d.otherwise !== undefined}`
     case 'expect':    return `expect ${d.label ?? ''} ${d.expected.join('')}`
     case 'scanTo':    return `scanTo ${d.raw} ${d.orEOF}`
     case 'guard':     return `guard ${fnKey(d.predSrc, d.predicate)}`
@@ -486,7 +486,7 @@ function render(p: Combinator<unknown>, depth = 3): string {
     case 'sequence': return `sequence(${kids.join(', ')})`
     case 'choice': return `choice(${kids.join(', ')})`
     case 'dispatch': {
-      const arms = d.cases.map((c, i) => `when([${c.keys.map(k => `'${k}'`).join(', ')}], ${kids[i + 1] ?? ''})`)
+      const arms = d.cases.map((c, i) => `when([${c.keys.map(k => JSON.stringify(k)).join(', ')}], ${kids[i + 1] ?? ''})`)
       if (d.otherwise !== undefined) arms.push(`otherwise(${kids[kids.length - 1] ?? ''})`)
       return `dispatch(${kids[0] ?? ''}, ${arms.join(', ')})`
     }

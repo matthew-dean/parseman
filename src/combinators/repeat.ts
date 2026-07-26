@@ -409,8 +409,8 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
         }
         const sep = separator.parse(input, sepPos, ctx)
         if (!sep.ok) {
-          if (sep.committed) return sep
           rollbackTrivia(ctx, loopMark)
+          if (sep.committed) return sep
           break
         }
         // Mark taken AFTER the separator: `trailing` keeps the separator but must

@@ -88,7 +88,11 @@ linear scan. (A nullable or overlapping arm forces the linear path.)
 ### `dispatch(selector, when(...), otherwise(...))`
 
 Parse `selector` once, use its string value as a static dispatch key, then parse
-the selected tail from the selector end. `when(key, tail)` matches one key;
+the selected tail from the selector end. Use this when one broad selector token
+is valid generally, and selected selector values have specialized continuation
+grammars. CSS at-rules are the canonical example: every at-keyword is an
+at-rule name, while `@media`, `@scope`, `@layer`, and friends each have a
+specific prelude/body shape. `when(key, tail)` matches one key;
 `when([keyA, keyB], tail)` shares a tail across keys; `otherwise(tail)` handles
 only unmatched selector values.
 
@@ -105,6 +109,9 @@ If the selector itself fails, `dispatch` fails normally and an enclosing
 `choice()` may try a later arm. If a key matches and its tail fails, the failure
 is committed: `otherwise(...)` and outer fallback arms are not tried. Duplicate
 keys are rejected at grammar construction time.
+
+The case strings are classifier keys for the selector value, not terminals
+parsed after the selector. Put the generic continuation in `otherwise(...)`.
 
 Inside a macro-compiled `rules()` factory, dispatch arms can be named like other
 local grammar pieces:
