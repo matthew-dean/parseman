@@ -1,4 +1,5 @@
 import type { Combinator, DispatchCase, ParseContext, ParseResult, ParserMeta } from '../types.ts'
+import { rollbackCstCapture, saveCstMark } from '../cst/capture-buffer.ts'
 
 export type DispatchWhen<T> = {
   readonly kind: 'when'
@@ -84,8 +85,12 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
         return { ok: false, expected, span: { start: selected.span.end, end: selected.span.end } }
       }
 
+      const mark = saveCstMark(ctx)
       const result = tail.parse(input, selected.span.end, ctx)
-      if (!result.ok) return { ...result, committed: true }
+      if (!result.ok) {
+        rollbackCstCapture(ctx, mark)
+        return { ...result, committed: true }
+      }
 
       return {
         ok: true,

@@ -4,6 +4,7 @@ import {
   compile,
   dispatch,
   literal,
+  node,
   otherwise,
   regex,
   sequence,
@@ -99,6 +100,26 @@ describe('dispatch()', () => {
       ok: false,
       expected: ['";"'],
       span: { start: 9, end: 9 },
+      committed: true,
+    })
+  })
+
+  it('rolls back selected-tail captures before returning a committed failure', () => {
+    const parser = sequence(
+      node('Head', literal('@')),
+      dispatch(
+        literal('k'),
+        when('k', sequence(
+          node('Tail', literal('x')),
+          literal('y'),
+        )),
+      ),
+    )
+
+    expect(assertEnginesAgree(parser, '@kxZ')).toEqual({
+      ok: false,
+      expected: ['"y"'],
+      span: { start: 3, end: 3 },
       committed: true,
     })
   })
