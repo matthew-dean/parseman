@@ -1692,12 +1692,19 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
     case 'sepBy':
       return recovery || mayRecordRecoveryError(d.parser, recovery, seen)
     case 'choice':
-    case 'sequence':
-      return d.parsers.some(x => mayRecordRecoveryError(x, recovery, seen))
-    case 'dispatch':
-      return mayRecordRecoveryError(d.selector, recovery, seen) ||
-        d.cases.some(x => mayRecordRecoveryError(x.parser, recovery, seen)) ||
-        (d.otherwise ? mayRecordRecoveryError(d.otherwise, recovery, seen) : false)
+    case 'sequence': {
+      for (const item of d.parsers) {
+        if (mayRecordRecoveryError(item, recovery, seen)) return true
+      }
+      return false
+    }
+    case 'dispatch': {
+      if (mayRecordRecoveryError(d.selector, recovery, seen)) return true
+      for (const item of d.cases) {
+        if (mayRecordRecoveryError(item.parser, recovery, seen)) return true
+      }
+      return d.otherwise ? mayRecordRecoveryError(d.otherwise, recovery, seen) : false
+    }
     case 'attempt':
     case 'transform':
     case 'label':
@@ -1712,7 +1719,11 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
     case 'skip':
       return mayRecordRecoveryError(d.main, recovery, seen) || mayRecordRecoveryError(d.skipped, recovery, seen)
     case 'scanTo':
-      return mayRecordRecoveryError(d.sentinel, recovery, seen) || d.skip.some(x => mayRecordRecoveryError(x, recovery, seen))
+      if (mayRecordRecoveryError(d.sentinel, recovery, seen)) return true
+      for (const item of d.skip) {
+        if (mayRecordRecoveryError(item, recovery, seen)) return true
+      }
+      return false
     case 'lazy': {
       try { return mayRecordRecoveryError(d.thunk(), recovery, seen) } catch { return true }
     }
