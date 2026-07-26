@@ -470,8 +470,27 @@ local/manual nodes outside `rules()`.
 in value form: a captured leaf becomes its string value; a sub-node is returned as-is.
 `opts.collapse` also skips `build` for one-child matches, but returns the captured child
 exactly, so a leaf remains a `CSTLeaf` with its span. Set at most one of `unwrap` and
-`collapse`. `opts.captureTrivia` makes this node the explicit owner of its per-node trivia
-log; `parser({ captureTrivia: true })` merely activates recording for a grammar scope, and
+`collapse`.
+
+`opts.project` returns one captured semantic child by index while preserving the complete
+node frame for positioned-CST hosts. It is for punctuation wrappers and similar rules where
+the AST value is a fixed child, but tools still need the full CST:
+
+```ts
+const Paren = node('Paren',
+  sequence(literal('('), Expr, literal(')')),
+  { project: 1 },
+)
+```
+
+In AST mode, `Paren` returns child `1`. A projected leaf is unwrapped to its string value;
+a projected sub-node is returned as-is. In `hostMode: 'cst'`, the same rule builds through
+the CST host with all children, raw children, spans, fields, and trivia intact. `project`
+cannot be combined with `build`, `unwrap`, or `collapse`; use a normal `build` callback for
+dynamic selection, filtering, or reconstructing values from several tokens.
+
+`opts.captureTrivia` makes this node the explicit owner of its per-node trivia log;
+`parser({ captureTrivia: true })` merely activates recording for a grammar scope, and
 plain combinators own no log. A direct build that declares the fifth `triviaLog` parameter
 keeps the established arity-based capture behavior. See [CST / AST nodes](../guide/ast).
 `opts.trailingTrivia` is a document-boundary opt-in: after a successful node body it commits

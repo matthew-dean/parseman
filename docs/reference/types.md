@@ -102,6 +102,7 @@ type WordOptions     = { caseInsensitive?: boolean }
 type NodeOptions = {
   unwrap?: boolean
   collapse?: boolean
+  project?: number
   captureTrivia?: boolean
   trailingTrivia?: boolean // commit one active-trivia run at this node's terminal boundary
 }
@@ -110,10 +111,26 @@ type NodeOptions = {
 `unwrap` is for AST/value wrapper rules: when exactly one child is captured, `build` is
 skipped and a captured leaf becomes its string value. `collapse` is for structural/CST
 wrapper rules: when exactly one child is captured, `build` is skipped and that child is
-returned exactly. `captureTrivia` owns interior trivia. `trailingTrivia` is for a repeating
-document root at EOF: it commits the active terminal trivia to that node's log; blocks with
-a closing delimiter do not need it. Set at most one of `unwrap` and `collapse`. See
+returned exactly. `project` is for AST/value rules whose semantic value is one fixed captured
+child by index; projected leaves become strings, projected sub-nodes are returned as-is, and
+`hostMode: 'cst'` still gives the CST host the full node frame. `project` cannot be combined
+with `build`, `unwrap`, or `collapse`. `captureTrivia` owns interior trivia. `trailingTrivia`
+is for a repeating document root at EOF: it commits the active terminal trivia to that node's
+log; blocks with a closing delimiter do not need it. Set at most one of `unwrap` and
+`collapse`. See
 [unwrapping and collapsing wrapper rules](../guide/ast#unwrapping-and-collapsing-wrapper-rules).
+
+`node(..., { project: index })` also exports the narrower options helper type used by the
+projection overload:
+
+```ts
+type NodeProjectOptions<I extends number = number> =
+  Omit<NodeOptions, 'project' | 'unwrap' | 'collapse'> & {
+    project: I
+    unwrap?: never
+    collapse?: never
+  }
+```
 
 ### `ScanToOptions`
 

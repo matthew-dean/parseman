@@ -31,9 +31,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   The benchmark note in `notes/PERF-node-project.md` records a focused callback-slot
   check and the remaining caveats.
 
-- **Add Context7 documentation authority metadata.** The release branch carries
-  `context7.json` for the Parseman docs site, so connected documentation tools can
-  resolve the published docs source without a repo-specific prompt.
+- **Add Context7 documentation authority metadata.** `context7.json` points at
+  the Parseman docs site so connected documentation tools can resolve the published
+  docs source without a repo-specific prompt.
 
 ## 0.39.1 — 2026-07-26
 

@@ -106,7 +106,7 @@ defineRules({ trivia: rw }, {
   return parser type, not just `Record<string, Combinator<unknown>>`.
 - Exact options parity: `trivia`, `scanSkip`, and `hostMode` should have exactly the
   same semantics as `rules({ ... }, factory)`.
-- Migration docs: position `defineRules` as the type-DX form for large grammars, while
+- Adoption docs: position `defineRules` as the type-DX form for large grammars, while
   keeping `rules(factory)` as the concise dynamic factory form.
 
 ## Recommendation
