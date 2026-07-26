@@ -1754,14 +1754,19 @@ function emitDispatchCombinator(def: Extract<ParserDef, { tag: 'dispatch' }>, ct
     ctx.indent++
     const mayError = mayRecordRecoveryError(parser, !!ctx.recovery)
     const errMark = mayError ? v(ctx, '_derr') : null
+    const logMark = ctx.activeTrivia ? v(ctx, '_dlog') : null
     if (errMark) stmts.push(`${ind(ctx)}const ${errMark} = _ctx._errors?.length ?? 0`)
+    if (logMark) stmts.push(`${ind(ctx)}const ${logMark} = _ctx._triviaLog?.length ?? 0`)
     const tail = emitTailFallible(parser, ctx, selector.endVar)
     const errorRollback = errMark
       ? `if (_ctx._errors && _ctx._errors.length !== ${errMark}) _ctx._errors.length = ${errMark}; `
       : ''
+    const logRollback = logMark
+      ? `if (_ctx._triviaLog && _ctx._triviaLog.length !== ${logMark}) _ctx._triviaLog.length = ${logMark}; `
+      : ''
     stmts.push(
       ...tail.stmts,
-      `${ind(ctx)}if (!${tail.okVar}) { ${errorRollback}${committedFailBody(ctx)} }`,
+      `${ind(ctx)}if (!${tail.okVar}) { ${errorRollback}${logRollback}${committedFailBody(ctx)} }`,
       `${ind(ctx)}${outV} = [${selector.valueVar}, ${tail.valVar}]`,
       `${ind(ctx)}${outE} = ${tail.endVar}`,
     )

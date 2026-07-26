@@ -1,5 +1,5 @@
 import type { Combinator, DispatchCase, ParseContext, ParseResult, ParserMeta } from '../types.ts'
-import { rollbackCstCapture, saveCstMark } from '../cst/capture-buffer.ts'
+import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
 
 export type DispatchWhen<T> = {
   readonly kind: 'when'
@@ -85,10 +85,10 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
         return { ok: false, expected, span: { start: selected.span.end, end: selected.span.end } }
       }
 
-      const mark = saveCstMark(ctx)
+      const mark = saveTriviaMark(ctx)
       const result = tail.parse(input, selected.span.end, ctx)
       if (!result.ok) {
-        rollbackCstCapture(ctx, mark)
+        rollbackTrivia(ctx, mark)
         return { ...result, committed: true }
       }
 

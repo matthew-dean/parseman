@@ -7,8 +7,10 @@ import {
   literal,
   node,
   otherwise,
+  parser,
   regex,
   sequence,
+  trivia,
   when,
   type Combinator,
   type ParseContext,
@@ -150,6 +152,41 @@ describe('dispatch()', () => {
     expect(interpreted).toEqual(expected)
     expect(interpretedErrors).toEqual([])
     expect(compiled).toEqual({ ...expected, errors: [] })
+  })
+
+  it('rolls back selected-tail trivia log entries before returning a committed failure', () => {
+    const root = parser(
+      { trivia: trivia(regex(/[ ]+/)) },
+      dispatch(
+        literal('k'),
+        when('k', sequence(
+          literal('x'),
+          literal('y'),
+        )),
+      ),
+    )
+
+    const interpretedLog: number[] = []
+    const compiledLog: number[] = []
+    const interpreted = root.parse('kx z', 0, {
+      trackLines: false,
+      _triviaLog: interpretedLog,
+    } as ParseContext)
+    const compiled = compile(root).parseWithContext('kx z', {
+      trackLines: false,
+      _triviaLog: compiledLog,
+    }, 0)
+
+    const expected = {
+      ok: false,
+      expected: ['"y"'],
+      span: { start: 3, end: 3 },
+      committed: true,
+    }
+    expect(interpreted).toEqual(expected)
+    expect(compiled).toEqual(expected)
+    expect(interpretedLog).toEqual([])
+    expect(compiledLog).toEqual([])
   })
 
   it('supports grouped and object-unfriendly string keys', () => {
