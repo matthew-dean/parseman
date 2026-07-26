@@ -88,11 +88,12 @@ type ParserOptions = ParseOptions & {
 }
 ```
 
-### `LiteralOptions` · `KeywordsOptions`
+### `LiteralOptions` · `KeywordsOptions` · `WordOptions`
 
 ```ts
 type LiteralOptions  = { caseInsensitive?: boolean }
 type KeywordsOptions = { caseInsensitive?: boolean; boundary?: string }
+type WordOptions     = { caseInsensitive?: boolean }
 ```
 
 ### `NodeOptions`

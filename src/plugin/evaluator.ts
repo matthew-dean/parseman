@@ -99,10 +99,41 @@ export type Scope = Map<string, ScopeEntry>
 type XScopeVal = ScopeEntry | unknown
 type XScope = Map<string, XScopeVal>
 
-type WordFactoryEntry = { tag: 'wordFactory'; boundary: string }
+type WordFactoryEntry = { tag: 'wordFactory'; boundary: string; caseInsensitive: boolean }
 
 function isWordFactory(v: unknown): v is WordFactoryEntry {
   return !!v && typeof v === 'object' && (v as WordFactoryEntry).tag === 'wordFactory'
+}
+
+function wordFactoryFromArgs(args: readonly (Expression | { type: 'SpreadElement' })[], scope: XScope, code?: string, mfs?: string[]): WordFactoryEntry | null {
+  const [boundaryOrOptsArg, optsArg] = args
+  if (boundaryOrOptsArg?.type === 'SpreadElement' || optsArg?.type === 'SpreadElement') return null
+
+  const rawBoundaryOrOpts = boundaryOrOptsArg === undefined
+    ? undefined
+    : anyValue(boundaryOrOptsArg as Expression, scope, code, mfs)
+  const boundaryOrOpts = rawBoundaryOrOpts === undefined ? '_0-9A-Za-z' : rawBoundaryOrOpts
+  const opts = optsArg === undefined
+    ? undefined
+    : anyValue(optsArg as Expression, scope, code, mfs)
+
+  if (typeof boundaryOrOpts === 'string') {
+    if (opts !== undefined && (typeof opts !== 'object' || opts === null || Array.isArray(opts))) return null
+    const caseInsensitive = typeof opts === 'object' && opts !== null && 'caseInsensitive' in opts
+      ? (opts as { caseInsensitive?: unknown }).caseInsensitive
+      : false
+    if (typeof caseInsensitive !== 'boolean') return null
+    return { tag: 'wordFactory', boundary: boundaryOrOpts, caseInsensitive }
+  }
+
+  if (typeof boundaryOrOpts !== 'object' || boundaryOrOpts === null || Array.isArray(boundaryOrOpts) || opts !== undefined) {
+    return null
+  }
+  const caseInsensitive = 'caseInsensitive' in boundaryOrOpts
+    ? (boundaryOrOpts as { caseInsensitive?: unknown }).caseInsensitive
+    : false
+  if (typeof caseInsensitive !== 'boolean') return null
+  return { tag: 'wordFactory', boundary: '_0-9A-Za-z', caseInsensitive }
 }
 
 /**
@@ -233,19 +264,16 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
 
   const callee = node.callee
 
-  // makeWord(boundary)(str)
+  // makeWord(boundary?, opts?)(str)
   if (callee.type === 'CallExpression'
     && callee.callee.type === 'Identifier'
     && callee.callee.name === 'makeWord') {
-    const boundaryArg = callee.arguments[0]
     const strArg = node.arguments[0]
     if (!strArg || strArg.type === 'SpreadElement') return null
-    const boundary = boundaryArg && boundaryArg.type !== 'SpreadElement'
-      ? anyValue(boundaryArg as Expression, scope, code, mfs)
-      : '_0-9A-Za-z'
+    const factory = wordFactoryFromArgs(callee.arguments, scope, code, mfs)
     const str = anyValue(strArg as Expression, scope, code, mfs)
-    if (typeof boundary !== 'string' || typeof str !== 'string') return null
-    try { return parseman.word(str, boundary) } catch { return null }
+    if (factory === null || typeof str !== 'string') return null
+    try { return parseman.word(str, factory.boundary, { caseInsensitive: factory.caseInsensitive }) } catch { return null }
   }
 
   if (callee.type === 'Identifier') {
@@ -255,7 +283,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       if (!strArg || strArg.type === 'SpreadElement') return null
       const str = anyValue(strArg as Expression, scope, code, mfs)
       if (typeof str !== 'string') return null
-      try { return parseman.word(str, factory.boundary) } catch { return null }
+      try { return parseman.word(str, factory.boundary, { caseInsensitive: factory.caseInsensitive }) } catch { return null }
     }
   }
 
@@ -623,12 +651,7 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
   if (node.type === 'CallExpression') {
     const callee = node.callee
     if (callee.type === 'Identifier' && callee.name === 'makeWord') {
-      const boundaryArg = node.arguments[0]
-      const boundary = boundaryArg && boundaryArg.type !== 'SpreadElement'
-        ? anyValue(boundaryArg as Expression, scope, code, mfs)
-        : '_0-9A-Za-z'
-      if (typeof boundary !== 'string') return null
-      return { tag: 'wordFactory', boundary } satisfies WordFactoryEntry
+      return wordFactoryFromArgs(node.arguments, scope, code, mfs)
     }
     return exprToCombi(node, scope, code, mfs)
   }
@@ -640,7 +663,7 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Evaluate makeWord(boundary?) to a factory entry (not a combinator). */
+/** Evaluate makeWord(boundary?, opts?) to a factory entry (not a combinator). */
 export function evaluateWordFactory(
   node: Expression,
   scope: Scope,
@@ -649,12 +672,7 @@ export function evaluateWordFactory(
   if (node.type !== 'CallExpression') return null
   const callee = node.callee
   if (callee.type !== 'Identifier' || callee.name !== 'makeWord') return null
-  const boundaryArg = node.arguments[0]
-  const boundary = boundaryArg && boundaryArg.type !== 'SpreadElement'
-    ? anyValue(boundaryArg as Expression, scope as XScope, code)
-    : '_0-9A-Za-z'
-  if (typeof boundary !== 'string') return null
-  return { tag: 'wordFactory', boundary }
+  return wordFactoryFromArgs(node.arguments, scope as XScope, code)
 }
 
 /** Evaluate a single combinator expression. Returns null if unresolvable. */
@@ -822,6 +840,12 @@ export function evaluateParserFactory(
     ;(r as unknown as { _ruleName?: string })._ruleName = name
     if (r._def.tag === 'node' && r._def.type === undefined) r._def.type = name
   }
+  const ruleNameOf = (r: Combinator<unknown>): string | undefined =>
+    (r as unknown as { _ruleName?: string })._ruleName
+  const isNamedRuleRefForAnotherRule = (r: Combinator<unknown>, key: string): boolean => {
+    const name = r._def.tag === 'lazy' ? ruleNameOf(r) : undefined
+    return name !== undefined && name !== key
+  }
   for (const key of keys) {
     if (!ruleRefs.has(key)) {
       const r = ref<unknown>() as Combinator<unknown> & { define(p: Combinator<unknown>): void }
@@ -865,7 +889,10 @@ export function evaluateParserFactory(
   for (const [key, e] of finalByKey) {
     const val = anyValue(e.value, e.scope, e.code, mapFnSources)
     if (!isCombinator(val)) return null
-    tagRef(val as Combinator<unknown>, key)
+    if (val === ruleRefs.get(key)) return null
+    if (!isNamedRuleRefForAnotherRule(val as Combinator<unknown>, key)) {
+      tagRef(val as Combinator<unknown>, key)
+    }
     ruleRefs.get(key)!.define(val as Combinator<unknown>)
   }
 

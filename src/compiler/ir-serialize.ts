@@ -221,13 +221,17 @@ class Serializer {
   private emitted = new Set<string>()
   private decls: string[] = []
   private ruleValues = new Set<Comb>()
+  private localRuleNames = new Map<Comb, string>()
   private ruleMap: ReadonlyArray<readonly [string, Comb]>
   private scanSkip: readonly Comb[]
 
   constructor(ruleMap: ReadonlyArray<readonly [string, Comb]>, scanSkip: readonly Comb[] = []) {
     this.ruleMap = ruleMap
     this.scanSkip = scanSkip
-    for (const [, c] of ruleMap) this.ruleValues.add(this.body(c))
+    for (const [name, c] of ruleMap) {
+      this.localRuleNames.set(c, name)
+      this.ruleValues.add(this.body(c))
+    }
   }
 
   /** A grammar-level `scanSkip` unit is an opaque TERMINAL (a string, a balanced
@@ -351,7 +355,8 @@ class Serializer {
     const kid = (x: Comb) => this.ref(x, selfOf)
     switch (def.tag) {
       case 'lazy': {
-        if (ruleNameOf(c) !== undefined) return `g[${JSON.stringify(ruleNameOf(c))}]`
+        const name = this.localRuleNames.get(c) ?? ruleNameOf(c)
+        if (name !== undefined) return `g[${JSON.stringify(name)}]`
         const target = lazyTarget(c)!
         if (selfOf && target === selfOf.comb) return selfOf.var
         return this.ref(target, selfOf)

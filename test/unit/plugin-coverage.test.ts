@@ -452,6 +452,16 @@ describe('evaluator — factory and define edge cases', () => {
 
   it('evaluateWordFactory uses the default boundary when omitted', () => {
     expect(evaluateWordFactory(parseInit('makeWord()'), new Map())?.boundary).toBe('_0-9A-Za-z')
+    expect(evaluateWordFactory(parseInit('makeWord()'), new Map())?.caseInsensitive).toBe(false)
+  })
+
+  it('evaluateWordFactory reads case-insensitive options', () => {
+    expect(evaluateWordFactory(parseInit("makeWord('A-Za-z0-9_-', { caseInsensitive: true })"), new Map()))
+      .toMatchObject({ boundary: 'A-Za-z0-9_-', caseInsensitive: true })
+    expect(evaluateWordFactory(parseInit('makeWord({ caseInsensitive: true })'), new Map()))
+      .toMatchObject({ boundary: '_0-9A-Za-z', caseInsensitive: true })
+    expect(evaluateWordFactory(parseInit('makeWord(undefined, { caseInsensitive: true })'), new Map()))
+      .toMatchObject({ boundary: '_0-9A-Za-z', caseInsensitive: true })
   })
 
   it('evaluateRefDeclaration rejects ref() with arguments', () => {
@@ -477,7 +487,7 @@ describe('evaluator — factory and define edge cases', () => {
 
   it('binds makeWord() factories in a rules() body via anyValue', () => {
     const code = `rules(g => {
-  const mk = makeWord('A-Za-z')
+  const mk = makeWord('A-Za-z', { caseInsensitive: true })
   const kw = mk('if')
   return { kw }
 })`
@@ -485,7 +495,7 @@ describe('evaluator — factory and define edge cases', () => {
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
     expect(map?.get('kw')?._def.tag).toBe('lazy')
-    expect(parse(map!.get('kw')!, 'if').ok).toBe(true)
+    expect(parse(map!.get('kw')!, 'IF').ok).toBe(true)
   })
 })
 

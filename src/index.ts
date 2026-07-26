@@ -14,7 +14,7 @@ import { registerRegexAnalyzer } from './combinators/regex.ts'
 import { firstSetFromRegex } from './regex/first-set.ts'
 registerRegexAnalyzer(firstSetFromRegex)
 export { keywords, word, makeWord } from './combinators/keywords.ts'
-export type { KeywordsOptions } from './combinators/keywords.ts'
+export type { KeywordsOptions, WordOptions } from './combinators/keywords.ts'
 
 export { sequence } from './combinators/sequence.ts'
 export { choice } from './combinators/choice.ts'

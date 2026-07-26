@@ -66,7 +66,7 @@ word('color', 'A-Za-z0-9_-')  // combinator — one-off custom boundary
 
 // makeWord: bake a boundary into a small factory
 const kw    = makeWord()
-const cssKw = makeWord('A-Za-z0-9_-')
+const cssKw = makeWord('A-Za-z0-9_-', { caseInsensitive: true })
 
 const token = choice(
   kw('if'),               // each call yields a combinator
@@ -77,8 +77,9 @@ const token = choice(
 ```
 
 The **boundary** is the character class that must *not* follow the match. Pass it per
-call to `word`, or bake it into a factory with `makeWord`. `makeWord` is optional —
-`(s) => word(s, 'A-Za-z0-9_-')` is equivalent.
+call to `word`, or bake it into a factory with `makeWord`. `makeWord` can also carry
+the same `caseInsensitive` option as `word`; omitting it keeps the shared
+case-sensitive default.
 
 ## Matching many keywords at once
 

@@ -15,7 +15,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
 import {
-  analyzeGating, choice, compile, keywords, literal, many, not, oneOrMore,
+  analyzeGating, choice, compile, keywords, literal, makeWord, many, not, oneOrMore,
   oneOrMoreSep, optional, parse, peek, regex, rules, sepBy, sequence, word,
   type Combinator, type ParserDef,
 } from '../../src/index.ts'
@@ -143,6 +143,21 @@ describe('defect 2 — word() case-insensitive keywords', () => {
     const kw = word('true', { caseInsensitive: true })
     expect(bothEngines(kw, 'TRUE')).toMatchObject({ ok: true, end: 4 })
     expect(bothEngines(kw, 'TRUEISH').ok).toBe(false)
+  })
+
+  it('makeWord() carries explicit case-insensitive policy for a whole keyword family', () => {
+    const cssWord = makeWord('A-Za-z0-9_-', { caseInsensitive: true })
+    const media = cssWord('media')
+
+    expect(bothEngines(media, 'MEDIA')).toMatchObject({ ok: true, end: 5 })
+    expect(bothEngines(media, 'mediaquery').ok).toBe(false)
+  })
+
+  it('makeWord() keeps the shared false default unless case-insensitive is requested', () => {
+    const kw = makeWord('A-Za-z0-9_-')('media')
+
+    expect(bothEngines(kw, 'media')).toMatchObject({ ok: true, end: 5 })
+    expect(bothEngines(kw, 'MEDIA').ok).toBe(false)
   })
 
   it('GATING: the first-set is ASCII case-FOLDED, so the arm still dispatches', () => {

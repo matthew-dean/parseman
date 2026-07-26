@@ -7,8 +7,9 @@ import { describe, it, expect } from 'vitest'
 import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile, parseDoc, many, parser, trivia } from '../../src/index.ts'
 import type { Combinator, Registry, NodeLike } from '../../src/index.ts'
 import { compose } from '../../src/index.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
+import { compileLinkable, ruleDependencies } from '../../src/compiler/codegen.ts'
 import type { LinkablePieces } from '../../src/compiler/codegen.ts'
+import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
 import { PARSEMAN_VERSION } from '../../src/version.ts'
 import { fuseRules, pick, cstBuildHost } from '../../src/compiler/linker.ts'
 
@@ -75,6 +76,23 @@ export const grammar = compose([rules(g => ({
       rw: { _meta?: { triviaKindLabels?: readonly string[] } }
     }
     expect(grammar.rw._meta?.triviaKindLabels).toEqual(['whitespace', 'blockComment'])
+  })
+
+  it('preserves bare aliases as by-name references through macro compose', async () => {
+    const { transformMacro } = await import('../../src/plugin/index.ts')
+    const src = `import { rules, literal, compose } from 'parseman' with { type: 'macro' }
+const base = rules(g => ({ B: literal('b'), a: g.B }))
+const over = rules(g => ({ B: literal('x') }))
+export const parser = compose([base, over])`
+    const out = transformMacro(src, '/pkg/alias.ts', new Set(['parseman']))!
+    expect(out.warnings).toEqual([])
+    expect(/\bcompose\s*\(/.test(out.code)).toBe(false)
+    expect(/function _r_a\(input, _pos, _ctx\)[\s\S]*?const _pfv\d+ = _r_B\(input, _pos, _ctx\)/.test(out.code)).toBe(true)
+
+    const parser = new Function(out.code.replace(/^import[^\n]*\n/m, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    expect(ok(parser.B!('x', 0, {}))).toBe(1)
+    expect(ok(parser.a!('x', 0, {}))).toBe(1)
+    expect(ok(parser.a!('b', 0, {}))).toBe(-1)
   })
 })
 
@@ -228,6 +246,30 @@ describe('extending a grammar via compose() — no base source, no opt-in', () =
     expect(ok(R.Value!('abc', 0, {}))).toBe(3)   // css.Word
     expect(ok(R.Value!('12!', 0, {}))).toBe(3)   // css.Value reroutes to less.Num (open recursion)
     expect(ok(R.Value!('12', 0, {}))).toBe(-1)   // less.Num needs '!'; Word fails
+  })
+
+  it('a bare alias to a rule remains a by-name reference across overrides', () => {
+    const base = rules(g => ({
+      B: node('B', literal('b')),
+      a: g.B,
+    }))
+    const over = rules(() => ({
+      B: node('B', literal('x')),
+    }))
+    const R = compose([base, over])
+    const entries = [...Object.entries(base)]
+    const ir = serializeRuleMap(entries)!
+
+    expect(ir).toContain('"a": g["B"]')
+    expect(ir).not.toContain('"a": g["a"]')
+    expect(ruleDependencies(entries).get('a')).toEqual(['B'])
+    expect(ok(R.B!('x', 0, {}))).toBe(1)
+    expect(ok(R.a!('x', 0, {}))).toBe(1)
+    expect(ok(R.a!('b', 0, {}))).toBe(-1)
+  })
+
+  it('rejects direct self aliases before they can lower to self-recursive functions', () => {
+    expect(() => rules(g => ({ A: g.A }))).toThrow(/cannot be a direct alias to itself/)
   })
 })
 

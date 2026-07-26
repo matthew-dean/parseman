@@ -59,10 +59,16 @@ keywords(['GET', 'POST', 'PUT'])
 keywords(['media', 'supports'], { boundary: 'A-Za-z0-9_-' })
 ```
 
-### `makeWord(boundary?)` <Badge type="tip" text="helper" />
+### `makeWord(boundary?, opts?)` · `makeWord(opts)` <Badge type="tip" text="helper" />
 
-Returns a `(str) => Combinator` factory with a fixed boundary class. Equivalent to
-`(s) => keywords([s], { boundary })`.
+Returns a `(str) => Combinator` factory with a fixed boundary class and keyword
+options. Equivalent to `(s) => keywords([s], { boundary, ...opts })`.
+
+```ts
+const kw = makeWord()
+const cssKw = makeWord('A-Za-z0-9_-', { caseInsensitive: true })
+const caseless = makeWord({ caseInsensitive: true })
+```
 
 ## Composition
 

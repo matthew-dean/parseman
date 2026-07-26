@@ -14,6 +14,8 @@ export type KeywordsOptions = {
   boundary?: string
 }
 
+export type WordOptions = Omit<KeywordsOptions, 'boundary'>
+
 /**
  * Match a single keyword with an automatic word-boundary guard. Prevents
  * matching `true` inside `trueish`. The boundary defaults to `_0-9A-Za-z`,
@@ -30,12 +32,12 @@ export type KeywordsOptions = {
  * `regex(/media/i)` — which `analyzeGating` correctly flags as the `keyword-regex`
  * anti-pattern — or `keywords(['media'], …)` for a single word.
  */
-export function word(str: string, boundary?: string, opts?: Omit<KeywordsOptions, 'boundary'>): Combinator<string>
-export function word(str: string, opts: Omit<KeywordsOptions, 'boundary'>): Combinator<string>
+export function word(str: string, boundary?: string, opts?: WordOptions): Combinator<string>
+export function word(str: string, opts: WordOptions): Combinator<string>
 export function word(
   str: string,
-  boundaryOrOpts?: string | Omit<KeywordsOptions, 'boundary'>,
-  opts?: Omit<KeywordsOptions, 'boundary'>,
+  boundaryOrOpts?: string | WordOptions,
+  opts?: WordOptions,
 ): Combinator<string> {
   const boundary = typeof boundaryOrOpts === 'string' ? boundaryOrOpts : '_0-9A-Za-z'
   const rest = typeof boundaryOrOpts === 'object' && boundaryOrOpts !== null ? boundaryOrOpts : opts
@@ -45,17 +47,23 @@ export function word(
 /**
  * Create a keyword factory with a fixed word-boundary class. Use when many
  * keywords share the same boundary (e.g. CSS identifiers). For a single keyword,
- * `word(str, boundary?)` is enough; you can also roll your own factory with
- * `(s) => word(s, boundary)`.
+ * `word(str, boundary?)` is enough.
  *
- *   const kw = makeWord()                    // default: '_0-9A-Za-z'
- *   const cssKw = makeWord('A-Za-z0-9_-')    // dashes allowed in CSS idents
+ *   const kw = makeWord()                                      // default boundary
+ *   const cssKw = makeWord('A-Za-z0-9_-', { caseInsensitive: true })
  *
  *   const query = kw('query')
- *   const color = cssKw('color')             // matches "color" but not "color-scheme"
+ *   const color = cssKw('color')                               // matches "COLOR" but not "color-scheme"
  */
-export function makeWord(boundary = '_0-9A-Za-z'): (str: string) => Combinator<string> {
-  return (str: string) => keywords([str], { boundary })
+export function makeWord(boundary?: string, opts?: WordOptions): (str: string) => Combinator<string>
+export function makeWord(opts: WordOptions): (str: string) => Combinator<string>
+export function makeWord(
+  boundaryOrOpts: string | WordOptions = '_0-9A-Za-z',
+  opts?: WordOptions,
+): (str: string) => Combinator<string> {
+  const boundary = typeof boundaryOrOpts === 'string' ? boundaryOrOpts : '_0-9A-Za-z'
+  const rest = typeof boundaryOrOpts === 'object' && boundaryOrOpts !== null ? boundaryOrOpts : opts
+  return (str: string) => keywords([str], { ...rest, boundary })
 }
 
 function escapeRe(s: string): string {
