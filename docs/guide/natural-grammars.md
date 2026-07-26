@@ -251,41 +251,47 @@ anything else falls back to ordered `firstMatch`.
 
 Sometimes several alternatives genuinely begin with the **same** token — and in a real
 grammar that shared prefix is usually buried inside your ordinary `node(...)`, trivia
-(`parser({ trivia })`), and helper wrappers, not exposed as a bare literal. The classic
-example is a CSS pseudo-selector, where two arms both open with `:` or `::`:
+(`parser({ trivia })`), and helper wrappers, not exposed as a bare literal. Use this
+shape when the shared opener is just syntax common to the arms and the arms still need
+their own ordinary continuation grammars:
 
 ```ts
-// Both arms start by scanning `::?` — but each is wrapped in its own node + trivia:
-const FunctionalPseudo = node('FunctionalPseudo',
-  parser({ trivia }, sequence(regex(/::?/), name, literal('('), args, literal(')'))),
-  buildFunctional)
+// Both arms start by scanning `%%` — but each is wrapped in its own node + trivia:
+const BlockDirective = node('BlockDirective',
+  parser({ trivia }, sequence(literal('%%'), name, literal('{'), body, literal('}'))),
+  buildBlock)
 
-const SimplePseudo = node('SimplePseudo',
-  parser({ trivia }, sequence(regex(/::?/), not(reserved), name)),
-  buildSimple)
+const LineDirective = node('LineDirective',
+  parser({ trivia }, sequence(literal('%%'), name, args, literal(';'))),
+  buildLine)
 
-const pseudo = choice(FunctionalPseudo, SimplePseudo)
+const directive = choice(BlockDirective, LineDirective)
 ```
 
-Their first sets overlap (both start with `:`), so disjoint dispatch can't split them.
-Left to a naïve ordered `firstMatch`, every pseudo would enter the first arm's `node()`
-frame, scan `::?`, discover it isn't functional, roll back, enter the second arm, and
-**scan `::?` again**.
+Their first sets overlap, so disjoint dispatch can't split them. Left to a naïve
+ordered `firstMatch`, every directive would enter the first arm's `node()` frame,
+scan `%%`, discover that continuation does not match, roll back, enter the second
+arm, and **scan `%%` again**.
 
 Parséman detects this shape automatically (the `sharedPrefix` strategy in
 `detectStrategy`) and **recognizes the shared prefix once**, then lets each arm *replay*
 that already-recognized token instead of re-scanning it. You keep the two readable arms;
-the compiler does the factoring — you never rewrite them into `::?·(functional | simple)`
-with a hand-merged builder.
+the compiler does the factoring — you never rewrite them into `%%·(block | line)` with
+a hand-merged builder.
 
 **This is a scan *dedup*, not a guaranteed speed-up.** How much it saves scales with how
 expensive the shared prefix is and how many arms would otherwise re-scan it. For a cheap,
-short prefix like the CSS pseudo `::?` (two character comparisons) the saving is below the
-noise floor — measured *no* parse-time win on a real stylesheet workload. It becomes worth
-something only when the shared prefix does real work (a long literal, or a regex that scans
+short prefix like `%%` the saving may sit below the noise floor. It becomes worth
+something when the shared prefix does real work (a long literal, or a regex that scans
 a meaningful token run) *and* several arms would re-scan it before one wins. Treat it as a
 correctness-preserving factoring that removes redundant work where redundant work is
 actually expensive — not as a blanket optimization.
+
+When alternatives start by recognizing the same broad lexical family and then branch by
+the value that was returned, use [`dispatch`](./combinators#dispatch) instead. At-rules,
+identifier-or-function values, pseudos, contextual keywords, and dialect-specific
+extensions usually want one opener combinator followed by `when(...)` arms, not sibling
+`choice(...)` arms that rediscover the same token family.
 
 **What it sees through.** To find the shared leading term the detector peels the wrappers
 that don't consume input or skip trivia before the sequence's first term — `node`,
@@ -293,10 +299,10 @@ that don't consume input or skip trivia before the sequence's first term — `no
 all of these group when their inner sequences share a leading terminal:
 
 ```ts
-choice(sequence(regex(/::?/), a), sequence(regex(/::?/), b))                 // bare
-choice(node('A', sequence(regex(/::?/), a), rA), node('B', sequence(regex(/::?/), b), rB))
-choice(node('A', parser({ trivia }, sequence(regex(/::?/), a)), rA),        // node + trivia
-       node('B', parser({ trivia }, sequence(regex(/::?/), b)), rB))
+choice(sequence(literal('%%'), a), sequence(literal('%%'), b))                 // bare
+choice(node('A', sequence(literal('%%'), a), rA), node('B', sequence(literal('%%'), b), rB))
+choice(node('A', parser({ trivia }, sequence(literal('%%'), a)), rA),        // node + trivia
+       node('B', parser({ trivia }, sequence(literal('%%'), b)), rB))
 choice(transform(sequence(literal('--'), a), fA), sequence(literal('--'), b))
 ```
 
@@ -347,8 +353,8 @@ only fires where the factoring is provably behavior-identical:
   whole choice stays on `firstMatch`.
 - Arms group only when their leading terms are **byte-equal** — the same literal string,
   or the same regex source and flags.
-- **Differently-spelled-but-equivalent** prefixes are *not* unified. `regex(/::?/)` in one
-  arm and `choice(literal('::'), literal(':'))` in a sibling accept the same strings, but
+- **Differently-spelled-but-equivalent** prefixes are *not* unified. `regex(/%{2}/)` in one
+  arm and `literal('%%')` in a sibling accept the same strings, but
   proving that equivalence (and that both produce the same leaf) is not attempted — those
   arms are left on `firstMatch`. Likewise a cluster that shares only a first *character*
   through differently-spelled tokens (e.g. an `@`-led at-rule family, one arm
@@ -360,8 +366,8 @@ only fires where the factoring is provably behavior-identical:
   is recognized once into a variable in the *choice's* function; if a grouped arm is a
   shared subtree hoisted into its own `_pf` function, or a named rule in the linkable/fused
   form, its replayed prefix would reference that variable out of scope. So the strategy
-  fires only for **self-contained, single-function** shared-prefix choices (the pseudo case
-  is one); when the arms span a function boundary the choice falls back to `firstMatch`.
+  fires only for **self-contained, single-function** shared-prefix choices; when the arms
+  span a function boundary the choice falls back to `firstMatch`.
 
 These are places the factoring is skipped, not places where output could diverge — anything
 the detector isn't sure about falls back to the ordered `firstMatch` you'd have had anyway.

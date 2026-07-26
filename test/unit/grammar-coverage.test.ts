@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compose, composedGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, grammarCoverageDefinitions, label, literal, regex, rules, runWithGrammarCoverage, sequence, transform, type GatedArm } from '../../src/index.ts'
+import { choice, compose, composedGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, grammarCoverageDefinitions, label, literal, otherwise, regex, routed, rules, runWithGrammarCoverage, sequence, startsWith, transform, when, type GatedArm } from '../../src/index.ts'
 
 describe('grammar semantic coverage', () => {
   const grammar = rules(g => ({
@@ -110,6 +110,49 @@ describe('grammar semantic coverage', () => {
       expect(runWithGrammarCoverage(parser, input, { trace }).result.ok).toBe(true)
       expect(trace.snapshot().events).toContainEqual(expect.objectContaining({ id: 'choice:entry/arm:1', phase: 'selected' }))
     }
+  })
+
+  it('covers and traces only the selected dispatch arm', () => {
+    const parser = dispatch(
+      regex(/@[A-Za-z-]+/),
+      when('@media', literal('{'), { caseInsensitive: true }),
+      when(startsWith('@-'), literal('v')),
+      otherwise(literal(';')),
+    )
+    expect(grammarCoverageDefinitions(parser)).toEqual([
+      { id: 'dispatch:entry/matcher:startsWith:%40-', kind: 'dispatch-arm' },
+      { id: 'dispatch:entry/otherwise', kind: 'dispatch-arm' },
+      { id: 'dispatch:entry/when:%40media', kind: 'dispatch-arm' },
+    ])
+
+    const trace = createGrammarTraceSink({ capacity: 20 })
+    const run = runWithGrammarCoverage(parser, '@MEDIA{', { trace })
+    expect(run.result.ok).toBe(true)
+    expect(run.coverage.hits).toEqual(['dispatch:entry/when:%40media'])
+    expect(run.coverage.unhit).toEqual([
+      'dispatch:entry/matcher:startsWith:%40-',
+      'dispatch:entry/otherwise',
+    ])
+    expect(trace.snapshot().events).toEqual([
+      { id: 'dispatch:entry/when:%40media', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/when:%40media', phase: 'selected', offset: 0, end: 7 },
+      { id: 'dispatch:entry/when:%40media', phase: 'success', offset: 0, end: 7 },
+    ])
+  })
+
+  it('traces routed dispatch branches from the dispatch start', () => {
+    const parser = dispatch(
+      regex(/[A-Za-z]+/),
+      when('url', sequence(routed(), literal('!'))),
+    )
+    const trace = createGrammarTraceSink({ capacity: 20 })
+    const run = runWithGrammarCoverage(parser, 'url!', { trace })
+    expect(run.result.ok).toBe(true)
+    expect(trace.snapshot().events).toEqual([
+      { id: 'dispatch:entry/when:url', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/when:url', phase: 'selected', offset: 0, end: 4 },
+      { id: 'dispatch:entry/when:url', phase: 'success', offset: 0, end: 4 },
+    ])
   })
 
   it('does not trace a gated-off arm attempt', () => {

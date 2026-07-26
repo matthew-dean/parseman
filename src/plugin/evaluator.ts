@@ -101,10 +101,15 @@ type XScopeVal = ScopeEntry | unknown
 type XScope = Map<string, XScopeVal>
 
 type WordFactoryEntry = { tag: 'wordFactory'; boundary: string; caseInsensitive: boolean }
+type WhenFactoryEntry = { tag: 'whenFactory'; caseInsensitive: boolean }
 type StaticValueEntry = { value: unknown; mfSrcs: string[] }
 
 function isWordFactory(v: unknown): v is WordFactoryEntry {
   return !!v && typeof v === 'object' && (v as WordFactoryEntry).tag === 'wordFactory'
+}
+
+function isWhenFactory(v: unknown): v is WhenFactoryEntry {
+  return !!v && typeof v === 'object' && (v as WhenFactoryEntry).tag === 'whenFactory'
 }
 
 function isStaticValueEntry(v: unknown): v is StaticValueEntry {
@@ -142,6 +147,29 @@ function wordFactoryFromArgs(args: readonly (Expression | { type: 'SpreadElement
   return { tag: 'wordFactory', boundary: '_0-9A-Za-z', caseInsensitive }
 }
 
+function dispatchWhenOptions(v: unknown): parseman.DispatchWhenOptions | null {
+  if (v === undefined) return {}
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null
+  for (const key of Object.keys(v)) {
+    if (key !== 'caseInsensitive') return null
+  }
+  const caseInsensitive = 'caseInsensitive' in v
+    ? (v as { caseInsensitive?: unknown }).caseInsensitive
+    : false
+  if (typeof caseInsensitive !== 'boolean') return null
+  return { caseInsensitive }
+}
+
+function whenFactoryFromArgs(args: readonly (Expression | { type: 'SpreadElement' })[], scope: XScope, code?: string, mfs?: string[]): WhenFactoryEntry | null {
+  const [optsArg, extra] = args
+  if (optsArg?.type === 'SpreadElement' || extra !== undefined) return null
+  const rawOpts = optsArg === undefined
+    ? undefined
+    : anyValue(optsArg as Expression, scope, code, mfs)
+  const opts = dispatchWhenOptions(rawOpts)
+  return opts === null ? null : { tag: 'whenFactory', caseInsensitive: opts.caseInsensitive ?? false }
+}
+
 /**
  * Generic fallback table, consulted LAST (see the dispatch at the end of
  * `exprToCombi`). A combinator with an UNCONDITIONAL explicit branch above must
@@ -165,6 +193,7 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),
   noTrivia:  (...a) => parseman.noTrivia(a[0] as Combinator<unknown>),
   token:     (...a) => parseman.token(a[0] as Combinator<unknown>),
+  routed:    () => parseman.routed(),
   leaf:      (...a) => parseman.leaf(a[0] as Combinator<unknown>, a[1] as (value: unknown, span: { start: number; end: number }) => unknown),
   expect:    (...a) => parseman.expect(a[0] as Combinator<unknown>, a[1] as string | undefined),
 }
@@ -225,6 +254,19 @@ function dispatchArmValue(node: Expression, scope: XScope, code?: string, mfs?: 
   const callee = node.callee
   if (callee.type !== 'Identifier') return null
 
+  const factory = scope.get(callee.name)
+  if (isWhenFactory(factory)) {
+    const [keyArg, parserArg, extraArg] = node.arguments
+    if (!keyArg || !parserArg || extraArg !== undefined || keyArg.type === 'SpreadElement' || parserArg.type === 'SpreadElement') return null
+    const key = anyValue(keyArg as Expression, scope, code, mfs)
+    const parserValue = anyValue(parserArg as Expression, scope, code, mfs)
+    if (!isCombinator(parserValue)) return null
+    const opts = { caseInsensitive: factory.caseInsensitive }
+    if (typeof key === 'string') return parseman.when(key, parserValue, opts)
+    if (Array.isArray(key) && key.every(item => typeof item === 'string')) return parseman.when(key, parserValue, opts)
+    return null
+  }
+
   if (callee.name === 'otherwise') {
     const [parserArg] = node.arguments
     if (!parserArg || parserArg.type === 'SpreadElement') return null
@@ -234,13 +276,16 @@ function dispatchArmValue(node: Expression, scope: XScope, code?: string, mfs?: 
   }
 
   if (callee.name === 'when') {
-    const [keyArg, parserArg] = node.arguments
-    if (!keyArg || !parserArg || keyArg.type === 'SpreadElement' || parserArg.type === 'SpreadElement') return null
+    const [keyArg, parserArg, optsArg] = node.arguments
+    if (!keyArg || !parserArg || keyArg.type === 'SpreadElement' || parserArg.type === 'SpreadElement' || optsArg?.type === 'SpreadElement') return null
     const key = anyValue(keyArg as Expression, scope, code, mfs)
     const parserValue = anyValue(parserArg as Expression, scope, code, mfs)
+    const opts = dispatchWhenOptions(optsArg === undefined ? undefined : anyValue(optsArg as Expression, scope, code, mfs))
+    if (opts === null) return null
     if (!isCombinator(parserValue)) return null
-    if (typeof key === 'string') return parseman.when(key, parserValue)
-    if (Array.isArray(key) && key.every(item => typeof item === 'string')) return parseman.when(key, parserValue)
+    if (typeof key === 'string') return parseman.when(key, parserValue, opts)
+    if (Array.isArray(key) && key.every(item => typeof item === 'string')) return parseman.when(key, parserValue, opts)
+    if (isDispatchMatcher(key)) return parseman.when(key, parserValue, opts)
   }
 
   return null
@@ -252,9 +297,27 @@ function isCombinator(v: unknown): v is Combinator<unknown> {
 
 function isDispatchArm(v: unknown): v is DispatchArm<unknown> {
   if (!v || typeof v !== 'object') return false
-  const rec = v as { kind?: unknown; keys?: unknown; parser?: unknown }
+  const rec = v as { kind?: unknown; keys?: unknown; matcher?: unknown; parser?: unknown; caseInsensitive?: unknown }
   if (rec.kind === 'otherwise') return isCombinator(rec.parser)
-  return rec.kind === 'when' && Array.isArray(rec.keys) && rec.keys.every(key => typeof key === 'string') && isCombinator(rec.parser)
+  if (rec.kind === 'whenMatcher') {
+    return isDispatchMatcher(rec.matcher) &&
+      typeof rec.caseInsensitive === 'boolean' &&
+      isCombinator(rec.parser)
+  }
+  return rec.kind === 'when' &&
+    Array.isArray(rec.keys) &&
+    rec.keys.every(key => typeof key === 'string') &&
+    typeof rec.caseInsensitive === 'boolean' &&
+    isCombinator(rec.parser)
+}
+
+function isDispatchMatcher(v: unknown): v is ReturnType<typeof parseman.startsWith> {
+  if (!v || typeof v !== 'object') return false
+  const rec = v as { kind?: unknown; value?: unknown; flags?: unknown }
+  if ((rec.kind === 'startsWith' || rec.kind === 'endsWith') && typeof rec.value === 'string') return true
+  return rec.kind === 'matches' &&
+    typeof rec.value === 'string' &&
+    typeof rec.flags === 'string'
 }
 
 /**
@@ -719,7 +782,25 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
     if (callee.type === 'Identifier' && callee.name === 'makeWord') {
       return wordFactoryFromArgs(node.arguments, scope, code, mfs)
     }
+    if (callee.type === 'Identifier' && callee.name === 'makeWhen') {
+      return whenFactoryFromArgs(node.arguments, scope, code, mfs)
+    }
+    if (callee.type === 'Identifier' && (callee.name === 'startsWith' || callee.name === 'endsWith')) {
+      if (node.arguments.length !== 1 || node.arguments[0]?.type === 'SpreadElement') return null
+      const value = anyValue(node.arguments[0] as Expression, scope, code, mfs)
+      if (typeof value !== 'string') return null
+      return callee.name === 'startsWith' ? parseman.startsWith(value) : parseman.endsWith(value)
+    }
+    if (callee.type === 'Identifier' && callee.name === 'matches') {
+      if (node.arguments.length !== 1 || node.arguments[0]?.type === 'SpreadElement') return null
+      const value = anyValue(node.arguments[0] as Expression, scope, code, mfs)
+      if (!(value instanceof RegExp)) return null
+      return parseman.matches(value)
+    }
     if (callee.type === 'Identifier' && (callee.name === 'when' || callee.name === 'otherwise')) {
+      return dispatchArmValue(node, scope, code, mfs)
+    }
+    if (callee.type === 'Identifier' && isWhenFactory(scope.get(callee.name))) {
       return dispatchArmValue(node, scope, code, mfs)
     }
     return exprToCombi(node, scope, code, mfs)
@@ -742,6 +823,18 @@ export function evaluateWordFactory(
   const callee = node.callee
   if (callee.type !== 'Identifier' || callee.name !== 'makeWord') return null
   return wordFactoryFromArgs(node.arguments, scope as XScope, code)
+}
+
+/** Evaluate makeWhen(opts?) to a dispatch-arm factory entry (not a combinator). */
+export function evaluateWhenFactory(
+  node: Expression,
+  scope: Scope,
+  code?: string,
+): WhenFactoryEntry | null {
+  if (node.type !== 'CallExpression') return null
+  const callee = node.callee
+  if (callee.type !== 'Identifier' || callee.name !== 'makeWhen') return null
+  return whenFactoryFromArgs(node.arguments, scope as XScope, code)
 }
 
 /** Evaluate a single combinator expression. Returns null if unresolvable. */

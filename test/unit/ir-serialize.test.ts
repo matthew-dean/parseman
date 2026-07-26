@@ -9,7 +9,8 @@ import { describe, it, expect } from 'vitest'
 import {
   rules, regex, literal, sequence, choice, many, oneOrMore, optional, sepBy,
   not, scanTo, balanced, parser, trivia, expect as expectC, node,
-  keywords, label, skip, token, leaf, transform,
+  keywords, label, skip, token, leaf, transform, dispatch, when, otherwise,
+  endsWith, makeWhen, matches, routed, startsWith,
 } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { fuseRules } from '../../src/compiler/linker.ts'
@@ -143,6 +144,54 @@ describe('IR serialize round-trip', () => {
     const rm = Object.entries(rules(() => ({ Op: op })))
     expect(serializeRuleMap(rm as never)).toContain('_lf(')
     roundTrip(rm, 'Op', ['*', '/', '+'])
+  })
+
+  it('round-trips case-insensitive dispatch arm keys', () => {
+    const rm = Object.entries(rules(() => ({
+      Fn: dispatch(
+        regex(/[A-Za-z-]+\(/),
+        when('url(', literal('raw'), { caseInsensitive: true }),
+        otherwise(literal('generic')),
+      ),
+    })))
+    const src = serializeRuleMap(rm as never)
+    expect(src).toContain('caseInsensitive: true')
+    roundTrip(rm, 'Fn', ['url(raw', 'URL(raw', 'urlx(generic', 'url (raw'])
+  })
+
+  it('round-trips routed() dispatch branches through serializable IR', () => {
+    const fnCase = makeWhen({ caseInsensitive: true })
+    const opener = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const rm = Object.entries(rules(() => ({
+      Value: dispatch(
+        opener,
+        fnCase('url(', sequence(routed(), literal('raw'), literal(')'))),
+        when(endsWith('('), sequence(routed(), literal('generic'), literal(')'))),
+        otherwise(routed()),
+      ),
+    })))
+    const src = serializeRuleMap(rm as never)
+    expect(src).toContain('routed()')
+    roundTrip(rm, 'Value', ['url(raw)', 'URL(raw)', 'foo(generic)', 'url'])
+  })
+
+  it('round-trips dispatch matcher keys through serializable IR', () => {
+    const head = token(regex(/(?:@-[A-Z]+|foo\(|--[A-Z]+|plain)/))
+    const rm = Object.entries(rules(() => ({
+      Value: dispatch(
+        head,
+        when(startsWith('@-'), literal('v'), { caseInsensitive: true }),
+        when(endsWith('('), literal('f')),
+        when(matches(/^--[a-z]+$/), literal('c'), { caseInsensitive: true }),
+        otherwise(literal('w')),
+      ),
+    })))
+    const src = serializeRuleMap(rm as never)
+    expect(src).toContain('startsWith')
+    expect(src).toContain('endsWith')
+    expect(src).toContain('matches')
+    expect(src).toContain('caseInsensitive: true')
+    roundTrip(rm, 'Value', ['@-MOZv', 'foo(f', '--NAMEc', 'plainw'])
   })
 
   it('returns null when a construct carries no static source (runtime transform fn)', () => {

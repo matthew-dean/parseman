@@ -29,7 +29,7 @@ Three words that sound alike but play different roles:
 | `regex(pattern)` | Match a regex at the current position. |
 | `sequence(...combinators)` | Match all in order; returns a tuple `[v1, v2, …]`. Skips trivia between terms when trivia is active. |
 | `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. |
-| `dispatch(selector, when(...), otherwise(...))` | Parse a broad selector token once, route selected values to specialized tails, and commit matched-tail failures. |
+| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. |
 | `attempt(c)` | All-or-nothing arm: on failure, every framework side effect from the rejected branch is rolled back. |
 | `many(c, opts?)` | Zero or more; `{ min, max }` bound the item count. |
 | `oneOrMore(c, opts?)` | One or more — sugar for `many(c, { min: 1 })`. |
@@ -59,6 +59,7 @@ Three words that sound alike but play different roles:
 | `trivia(c)` | Label a combinator as skippable filler. Pass the result to `parser({ trivia })` to turn on auto-skipping. |
 | `noTrivia(c)` | Run `c` with active trivia cleared — terms must be contiguous. |
 | `makeWord(boundary?, opts?)` | Returns `(str) => Combinator` with a fixed word-boundary class and keyword options. Not a combinator. |
+| `makeWhen(opts?)` | Returns `(key, tail) => when(key, tail, opts)` for dispatch tables with shared arm options. Not a combinator. |
 | `rules(factory)` / `rules({ trivia, scanSkip }, factory)` | Named, mutually-recursive rule bundle. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
 | `parser({ trivia }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia). |
 | `parse(c, input, opts?)` | Run a combinator once, without building a `parser()`. |
@@ -251,6 +252,13 @@ applies. Don't rely on it: add one non-literal arm and ordering matters again.
 When the arms start with disjoint characters the compiler turns the whole `choice`
 into a single O(1) character dispatch.
 
+When alternatives begin by recognizing the same lexical family and then diverge
+by the value already read, prefer [`dispatch`](#dispatch). A shape like
+`choice(specialFunction, genericFunction, keyword)` usually means the grammar is
+speculatively parsing the same opener more than once. `dispatch(combinator,
+when(...), otherwise(...))` parses that opener once, routes by its returned
+string value, and keeps the selected branch committed.
+
 ### `dispatch`
 
 Token-once routing by a parsed string value. Use it when one broad routing
@@ -259,24 +267,23 @@ grammars. CSS-like at-rules are the model: parse one at-keyword, route values
 such as `@media` or `@scope` to specific prelude/body tails, and send unmatched
 values to the generic at-rule tail.
 
-The `when(...)` keys are classifier keys for the value already consumed by the
-first `dispatch` argument, not tokens parsed after it. A matched key's bad tail
-is an error. For a grammar that starts with one known keyword, use `word()` or a
-`makeWord()` factory; for `dispatch`, keep the routing combinator broad enough to
-recognize the whole family being routed.
+The `when(...)` keys are exact full values returned by the first `dispatch`
+argument, not prefixes and not tokens parsed
+after it. `when(key, tail, { caseInsensitive: true })` folds ASCII case for the
+comparison only; the returned value remains the authored source value.
+A matched key's bad tail is an error. For a grammar that starts with one known
+keyword, use `word()` or a `makeWord()` factory; for `dispatch`, keep the routing
+combinator broad enough to recognize the whole family being routed.
 
 ```ts
 // [verify]
-import { dispatch, literal, otherwise, parse, regex, transform, when } from 'parseman'
+import { dispatch, literal, otherwise, parse, regex, when } from 'parseman'
 
-const atKeyword = transform(
-  regex(/@[A-Za-z_][A-Za-z0-9_-]*/),
-  value => value.toLowerCase(),
-)
+const atKeyword = regex(/@[A-Za-z_][A-Za-z0-9_-]*/)
 
 const atRule = dispatch(
   atKeyword,
-  when('@media', literal('{')),
+  when('@media', literal('{'), { caseInsensitive: true }),
   otherwise(literal(';')),
 )
 
@@ -284,7 +291,7 @@ parse(atRule, '@media{').value
 // → ['@media', '{']
 
 parse(atRule, '@MEDIA{').value
-// → ['@media', '{']
+// → ['@MEDIA', '{']
 
 parse(atRule, '@unknown;').value
 // → ['@unknown', ';']
@@ -293,16 +300,144 @@ parse(atRule, '@media;').ok
 // → false
 ```
 
-If the selector fails, an enclosing `choice` can still try a later arm. If the
-selector succeeds and a `when` key matches, that tail is committed: its failure is
+Use `makeWhen()` when a table has the same arm options throughout:
+
+```ts
+// [verify]
+import { dispatch, literal, makeWhen, otherwise, parse, regex } from 'parseman'
+
+const atCase = makeWhen({ caseInsensitive: true })
+const atRule = dispatch(
+  regex(/@[A-Za-z_][A-Za-z0-9_-]*/),
+  atCase('@media', literal('{')),
+  atCase('@scope', literal('(')),
+  otherwise(literal(';')),
+)
+
+parse(atRule, '@SCOPE(').value
+// → ['@SCOPE', '(']
+```
+
+For CSS function calls, put the lexical split before keyword parsing. The first
+combinator consumes either a bare identifier or a glued function opener, then
+dispatch routes by the value it returned:
+
+```ts
+// [verify]
+import { dispatch, endsWith, literal, makeWhen, optional, otherwise, parse, regex, sequence, token, transform, when } from 'parseman'
+
+const fnCase = makeWhen({ caseInsensitive: true })
+const cssIdent = regex(/[A-Za-z-]+/)
+const identOrFunctionOpen = token(sequence(cssIdent, optional(literal('('))))
+const IdentOrFunctionValue = dispatch(
+  identOrFunctionOpen,
+  fnCase('url(', literal('raw')),
+  fnCase('calc(', literal('math')),
+  fnCase('var(', literal('var')),
+  when(endsWith('('), literal('generic')),
+  otherwise(transform(literal(''), () => 'keyword')),
+)
+
+parse(IdentOrFunctionValue, 'url').value
+// → ['url', 'keyword']
+
+parse(IdentOrFunctionValue, 'URL(raw').value
+// → ['URL(', 'raw']
+
+parse(IdentOrFunctionValue, 'URL(raw').value[0].slice(0, -1)
+// → 'URL'
+
+parse(IdentOrFunctionValue, 'foo(generic').value
+// → ['foo(', 'generic']
+
+parse(IdentOrFunctionValue, 'foo (').value
+// → ['foo', 'keyword']
+```
+
+Pseudo selectors follow the same pattern. Consume the source-shaped pseudo head
+once, including a glued `(` when present, then route exact special
+pseudo-functions before the generic function bucket:
+
+```ts
+// [verify]
+import { choice, dispatch, endsWith, literal, makeWhen, optional, parse, regex, sequence, token, transform, when, otherwise } from 'parseman'
+
+const pseudoCase = makeWhen({ caseInsensitive: true })
+const cssIdent = regex(/[A-Za-z-]+/)
+const pseudoHead = token(sequence(choice(literal('::'), literal(':')), cssIdent, optional(literal('('))))
+const PseudoSelector = dispatch(
+  pseudoHead,
+  pseudoCase(':is(', literal('selector-list')),
+  pseudoCase(':nth-child(', literal('An+B')),
+  pseudoCase('::part(', literal('ident')),
+  when(endsWith('('), literal('generic-function')),
+  otherwise(transform(literal(''), () => 'bare')),
+)
+
+parse(PseudoSelector, ':Hover').value
+// → [':Hover', 'bare']
+
+parse(PseudoSelector, ':IS(selector-list').value
+// → [':IS(', 'selector-list']
+
+parse(PseudoSelector, '::PART(ident').value
+// → ['::PART(', 'ident']
+
+parse(PseudoSelector, ':nth-child(generic-function').ok
+// → false
+```
+
+When the routed value belongs inside the selected node, put `routed()` where
+that value should appear. `routed()` reuses the value/span already consumed by
+`dispatch`; it does not scan again.
+
+```ts
+// [verify]
+import { dispatch, endsWith, literal, makeWhen, node, optional, otherwise, parse, regex, routed, sequence, token, when } from 'parseman'
+
+const fnCase = makeWhen({ caseInsensitive: true })
+const cssIdent = regex(/[A-Za-z-]+/)
+const identOrFunction = token(sequence(cssIdent, optional(literal('('))))
+
+const UrlFunction = node('UrlFunction',
+  sequence(routed(), literal('raw'), literal(')')),
+  children => ({ type: 'UrlFunction', name: children[0].value.slice(0, -1), value: children[1].value }),
+)
+
+const Identifier = node('Identifier',
+  routed(),
+  children => ({ type: 'Identifier', name: children[0].value }),
+)
+
+const Value = dispatch(
+  identOrFunction,
+  fnCase('url(', UrlFunction),
+  when(endsWith('('), node('Function', sequence(routed(), literal('generic'), literal(')')))),
+  otherwise(Identifier),
+)
+
+parse(Value, 'URL(raw)').value
+// → ['URL(', { type: 'UrlFunction', name: 'URL', value: 'raw' }]
+
+parse(Value, 'url').value
+// → ['url', { type: 'Identifier', name: 'url' }]
+```
+
+This keeps the lexical split, fallback behavior, and CST/AST ownership in the
+grammar expression. Use tail-only branches when the routed value belongs to an
+outer category node; use `routed()` inside branch nodes when each selected form
+should own that same source span.
+
+If the first parser fails, an enclosing `choice` can still try a later arm. If
+the first parser succeeds and a `when` key matches, that tail is committed: its failure is
 returned immediately and neither `otherwise` nor an outer fallback is attempted.
 Duplicate keys, including duplicates across grouped `when([keyA, keyB], tail)`
-arms, fail at grammar construction time.
+arms, fail at grammar construction time. Case-insensitive arms also reject any
+other key that could match the same returned value.
 
 In macro-compiled `rules()` factories, `when()` and `otherwise()` arms can be
 bound to local `const`s and passed by name. Put the generic continuation in
-`otherwise(...)`. V1 macro lowering expects explicit arm arguments;
-`dispatch(selector, ...arms)` is future work.
+`otherwise(...)`. Macro lowering expects explicit arm arguments.
 
 ### `attempt`
 

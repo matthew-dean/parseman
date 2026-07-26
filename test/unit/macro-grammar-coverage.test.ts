@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, leaf, label, literal, many, regex, rules, run, runWithGrammarCoverage, sequence, type GatedArm } from '../../src/index.ts'
+import { choice, compile, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, leaf, label, literal, many, otherwise, regex, rules, run, runWithGrammarCoverage, sequence, startsWith, when, type GatedArm } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 
@@ -74,6 +74,58 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
       instrumentation: createGrammarInstrumentationContext({ collector }),
     }).ok).toBe(true)
     expect(collector.snapshot()).toMatchObject({ ratio: 0.5, hits: ['choice:entry/arm:1'] })
+  })
+
+  it('emits compiled coverage and trace hooks for selected dispatch arms', () => {
+    const parser = dispatch(
+      regex(/@[A-Za-z-]+/),
+      when('@media', literal('{'), { caseInsensitive: true }),
+      when(startsWith('@-'), literal('v')),
+      otherwise(literal(';')),
+    )
+    const ordinary = compile(parser)
+    const compiled = compile(parser, undefined, { coverage: true })
+    expect(ordinary.source).not.toContain('_grammarCoverage')
+    expect(ordinary.source).not.toContain('_grammarTrace')
+    expect(compiled.coverageDefinitions).toEqual([
+      { id: 'dispatch:entry/matcher:startsWith:%40-', kind: 'dispatch-arm' },
+      { id: 'dispatch:entry/otherwise', kind: 'dispatch-arm' },
+      { id: 'dispatch:entry/when:%40media', kind: 'dispatch-arm' },
+    ])
+
+    const hits: string[] = []
+    const events: Array<{ id: string; phase: string; offset: number; end?: number }> = []
+    expect(compiled.parseWithContext('@MEDIA{', {
+      trackLines: false,
+      _grammarCoverage: (id: string) => hits.push(id),
+      _grammarTrace: { write: (event: { id: string; phase: string; offset: number; end?: number }) => events.push(event) },
+    } as never).ok).toBe(true)
+    expect(hits).toEqual(['dispatch:entry/when:%40media'])
+    expect(events).toEqual([
+      { id: 'dispatch:entry/when:%40media', phase: 'attempt', offset: 0 },
+      { id: 'dispatch:entry/when:%40media', phase: 'selected', offset: 0, end: 7 },
+      { id: 'dispatch:entry/when:%40media', phase: 'success', offset: 0, end: 7 },
+    ])
+  })
+
+  it('attaches dispatch-arm definitions to coverage-enabled macro rule maps', () => {
+    const source = `
+import { dispatch, literal, otherwise, regex, rules, startsWith, when } from 'parseman' with { type: 'macro' }
+const grammar = rules(g => ({
+  Entry: dispatch(regex(/@[A-Za-z-]+/), when('@media', literal('{'), { caseInsensitive: true }), when(startsWith('@-'), literal('v')), otherwise(literal(';')))
+}))
+`.trim()
+    const ordinary = transformMacro(source, 'dispatch-coverage.ts', new Set(['parseman']))!
+    const covered = transformMacro(source, 'dispatch-coverage.ts', new Set(['parseman']), false, false, true)!
+    expect(ordinary.code).not.toContain('_grammarCoverage')
+    expect(covered.code).toContain('_grammarCoverage')
+    const grammar = new Function(`${covered.code}\nreturn grammar`)() as Record<string, unknown>
+    expect(compiledGrammarCoverageDefinitions(grammar)).toEqual([
+      { id: 'dispatch:Entry/lazy:0/matcher:startsWith:%40-', kind: 'dispatch-arm' },
+      { id: 'dispatch:Entry/lazy:0/otherwise', kind: 'dispatch-arm' },
+      { id: 'dispatch:Entry/lazy:0/when:%40media', kind: 'dispatch-arm' },
+      { id: 'rule:Entry', kind: 'rule' },
+    ])
   })
 
   it('records the final classified arm for greedy and longest-literal choices', () => {

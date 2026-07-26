@@ -33,6 +33,12 @@ but slow, and nothing but the build warning tells you.
 - Use `literal('...')` for fixed punctuation/operators with no word boundary.
 - Let each `choice` arm LEAD with a concrete terminal (`literal`/`word`/`keywords`/
   a narrow `regex`). First-char dispatch is then automatic.
+- When alternatives first recognize the SAME broad token family and then branch
+  by the value that came back, use `dispatch(combinator, when(...),
+  otherwise(...))`. The combinator parses once; `when()` routes exact values or
+  matchers; `routed()` lets the selected branch own the already-consumed
+  value/span in its node. This is the canonical shape for identifier-or-function,
+  at-keyword, pseudo, contextual keyword, and dialect-extension splits.
 - To pick a branch by runtime context, use the gated-arm FIELD:
   `choice({ gate: s => cond, combinator: arm }, other)`. It keeps dispatch.
 - Left-factor arms that share a leading terminal: make them bare `sequence`s with
@@ -48,6 +54,10 @@ but slow, and nothing but the build warning tells you.
 
 - DON'T use `regex(/keyword/)` for a keyword → use `word()`/`keywords()`.
   (Warning: `anti-pattern [keyword-regex]`.)
+- DON'T write `choice(specialThing, genericThing, keywordThing)` when those arms
+  all start by parsing the same opener shape. That is speculative parsing in
+  disguise. Factor the opener into `dispatch(...)`, then route with `when(...)`
+  and `otherwise(...)`.
 - DON'T hand-roll first-char gating with `not(not(...))`. It miscompiles among
   shared-first-char sibling arms and its first-set is `any`. First-char gating is
   automatic; just lead with the terminal — and where a real positive lookahead IS

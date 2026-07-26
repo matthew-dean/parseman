@@ -1,9 +1,10 @@
 import type { Combinator, ParserDef } from '../types.ts'
 
-export type GrammarCoverageDefinition = { id: string; kind: 'rule' | 'choice-arm' | 'label' }
+export type GrammarCoverageDefinition = { id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }
 export type GrammarCoveragePlan = {
   definitions: readonly GrammarCoverageDefinition[]
   choices: WeakMap<Combinator<unknown>, readonly string[]>
+  dispatches: WeakMap<Combinator<unknown>, readonly string[]>
   /** Trace-only transaction identity. Attempts are not coverage definitions: a
    * rejected transaction must not create a semantic winner or denominator. */
   attempts: WeakMap<Combinator<unknown>, string>
@@ -11,10 +12,24 @@ export type GrammarCoveragePlan = {
   rules: WeakMap<Combinator<unknown>, string>
 }
 
+function idPart(value: string): string {
+  return encodeURIComponent(value)
+}
+
+function dispatchArmIds(def: Extract<ParserDef, { tag: 'dispatch' }>, path: string): string[] {
+  const ids: string[] = []
+  for (const entry of def.cases) ids.push(`dispatch:${path}/when:${entry.keys.map(idPart).join('|')}`)
+  for (const entry of def.matchers ?? []) {
+    ids.push(`dispatch:${path}/matcher:${entry.kind}:${idPart(entry.value)}${entry.kind === 'matches' && entry.flags ? `:${idPart(entry.flags)}` : ''}`)
+  }
+  if (def.otherwise) ids.push(`dispatch:${path}/otherwise`)
+  return ids
+}
+
 function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>): Combinator<unknown>[] {
   switch (def.tag) {
     case 'sequence': case 'choice': return def.parsers
-    case 'dispatch': return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.otherwise ? [def.otherwise] : [])]
+    case 'dispatch': return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.matchers ? def.matchers.map(entry => entry.parser) : []), ...(def.otherwise ? [def.otherwise] : [])]
     case 'many': case 'oneOrMore': case 'optional': case 'attempt': case 'transform': case 'trivia': case 'token': case 'leaf': case 'label': case 'field': case 'grammar': case 'not': case 'peek': case 'node': case 'guard': case 'withCtx': case 'recover': case 'expect': return 'parser' in def ? [def.parser] : []
     case 'sepBy': return [def.parser, def.separator]
     case 'skip': return [def.main, def.skipped]
@@ -35,6 +50,7 @@ function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>)
 export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinator<unknown>[], winners?: Record<string, Combinator<unknown>>): GrammarCoveragePlan {
   const definitions = new Map<string, GrammarCoverageDefinition>()
   const choices = new WeakMap<Combinator<unknown>, readonly string[]>()
+  const dispatches = new WeakMap<Combinator<unknown>, readonly string[]>()
   const attempts = new WeakMap<Combinator<unknown>, string>()
   const labels = new WeakMap<Combinator<unknown>, readonly string[]>()
   const rules = new WeakMap<Combinator<unknown>, string>()
@@ -68,6 +84,11 @@ export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinato
       choices.set(parser, ids)
       ids.forEach(id => definitions.set(id, { id, kind: 'choice-arm' }))
     }
+    if (parser._def.tag === 'dispatch') {
+      const ids = dispatchArmIds(parser._def, path)
+      dispatches.set(parser, ids)
+      ids.forEach(id => definitions.set(id, { id, kind: 'dispatch-arm' }))
+    }
     if (parser._def.tag === 'attempt') attempts.set(parser, `attempt:${path}`)
     if (parser._def.tag === 'label') {
       const id = `label:${path}`
@@ -84,5 +105,5 @@ export function buildGrammarPlan(entry: Combinator<unknown> | readonly Combinato
     // IDs and omit their rule definitions.
     visit(root, winnerNames.get(root) ?? (root as Combinator<unknown> & { _ruleName?: string })._ruleName ?? 'entry')
   }
-  return { definitions: [...definitions.values()].sort((a, b) => a.id.localeCompare(b.id)), choices, attempts, labels, rules }
+  return { definitions: [...definitions.values()].sort((a, b) => a.id.localeCompare(b.id)), choices, dispatches, attempts, labels, rules }
 }

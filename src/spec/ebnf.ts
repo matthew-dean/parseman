@@ -66,7 +66,7 @@ function render(node: SpecNode): { text: string; level: number } {
       const text = node.items
         .map(it => {
           const r = render(it)
-          return wrap(r.text, r.level, ALT)
+          return r.text.length === 0 ? '/* empty */' : wrap(r.text, r.level, ALT)
         })
         .join(' | ')
       return { text, level: ALT }

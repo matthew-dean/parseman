@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rules, choice, sequence, literal, regex, optional, sepBy, many, oneOrMore,
-  not, peek, keywords, trivia, transform, node, type Combinator,
+  not, peek, keywords, trivia, transform, node, dispatch, when, otherwise, routed, token, type Combinator,
 } from '../../src/index.ts'
 import { toEBNF, toRailroadHtml, toRailroadSvg, RAILROAD_CSS, buildSpecModel } from '../../src/spec/index.ts'
 
@@ -257,6 +257,31 @@ describe('spec — railroad HTML', () => {
     expect(dsl(sepBy(item, literal(','), { min: 2 }))).toContain('Comment("2+ times")')
     expect(dsl(many(item, { min: 3, max: 8 }))).toContain('Comment("3–8 times")')
     expect(dsl(many(item))).not.toContain('Comment(')
+  })
+
+  it('renders dispatch branches without exposing routed() as syntax', () => {
+    const opener = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
+    const grammar = rules(() => ({
+      value: dispatch(
+        opener,
+        when('url(', sequence(routed(), literal('raw'), literal(')'))),
+        otherwise(routed()),
+      ),
+    }))
+    const ebnf = toEBNF(grammar)
+    expect(ebnf.trim()).toBe('value ::= /[A-Za-z-]+/ "("? ("raw" ")" | /* empty */)')
+    expect(ebnf).not.toContain('routed')
+
+    const html = toRailroadHtml(grammar)
+    expect(html).toContain('railroad-diagram')
+    expect(html).toContain('Choice(')
+    expect(html).toContain('Terminal("raw")')
+    expect(html).not.toContain('routed')
+
+    const svg = toRailroadSvg(grammar)[0]!.svg
+    expect(svg).toMatch(/^<svg class="railroad-diagram"/)
+    expect(svg).toContain('raw')
+    expect(svg).not.toContain('routed')
   })
 })
 

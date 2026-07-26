@@ -1,44 +1,227 @@
-import type { Combinator, DispatchCase, ParseContext, ParseResult, ParserMeta } from '../types.ts'
+import type { Combinator, DispatchCase, DispatchMatcherCase, ParseContext, ParseResult, ParserMeta } from '../types.ts'
+import { cstCaptureActive, pushCstLeaf } from '../cst/capture-buffer.ts'
 import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
 
 export type DispatchWhen<T> = {
   readonly kind: 'when'
   readonly keys: readonly string[]
   readonly parser: Combinator<T>
+  readonly caseInsensitive: boolean
+  readonly usesRouted?: boolean
 }
+
+export type DispatchWhenMatcher<T> = {
+  readonly kind: 'whenMatcher'
+  readonly matcher: DispatchStringMatcher
+  readonly parser: Combinator<T>
+  readonly caseInsensitive: boolean
+  readonly usesRouted?: boolean
+}
+
+export type DispatchStringMatcher =
+  | { readonly kind: 'startsWith'; readonly value: string }
+  | { readonly kind: 'endsWith'; readonly value: string }
+  | { readonly kind: 'matches'; readonly value: string; readonly flags: string }
 
 export type DispatchOtherwise<T> = {
   readonly kind: 'otherwise'
   readonly parser: Combinator<T>
+  readonly usesRouted?: boolean
 }
 
-export type DispatchArm<T = unknown> = DispatchWhen<T> | DispatchOtherwise<T>
+export type DispatchArm<T = unknown> = DispatchWhen<T> | DispatchWhenMatcher<T> | DispatchOtherwise<T>
+export type DispatchWhenOptions = {
+  caseInsensitive?: boolean
+}
+export type DispatchWhenFactory = <T>(
+  key: string | readonly string[],
+  parser: Combinator<T>,
+) => DispatchWhen<T>
+export type DispatchWhenKey = string | readonly string[]
+export type DispatchWhenSelector = DispatchWhenKey | DispatchStringMatcher
 
-type ArmValue<T> = T extends DispatchWhen<infer U> ? U : T extends DispatchOtherwise<infer U> ? U : never
+type ArmValue<T> = T extends DispatchWhen<infer U>
+  ? U
+  : T extends DispatchWhenMatcher<infer U>
+  ? U
+  : T extends DispatchOtherwise<infer U>
+  ? U
+  : never
 type UnionArms<T extends readonly DispatchArm<unknown>[]> = {
   [K in keyof T]: ArmValue<T[K]>
 }[number]
 
-export function when<T>(key: string | readonly string[], parser: Combinator<T>): DispatchWhen<T> {
+function parserUsesRouted(parser: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(parser)) return false
+  seen.add(parser)
+  const def = parser._def
+  switch (def.tag) {
+    case 'routed':
+      return true
+    case 'sequence':
+    case 'choice':
+      return def.parsers.some(entry => parserUsesRouted(entry, seen))
+    case 'dispatch':
+      return false
+    case 'sepBy':
+      return parserUsesRouted(def.parser, seen) || parserUsesRouted(def.separator, seen)
+    case 'skip':
+      return parserUsesRouted(def.main, seen) || parserUsesRouted(def.skipped, seen)
+    case 'grammar':
+      return parserUsesRouted(def.parser, seen) || (def.triviaParser ? parserUsesRouted(def.triviaParser, seen) : false)
+    case 'scanTo':
+      return parserUsesRouted(def.sentinel, seen) || def.skip.some(entry => parserUsesRouted(entry, seen))
+    case 'recover':
+      return parserUsesRouted(def.parser, seen) || parserUsesRouted(def.sentinel, seen)
+    case 'lazy':
+      try { return parserUsesRouted(def.thunk(), seen) } catch { return false }
+    case 'many':
+    case 'oneOrMore':
+    case 'optional':
+    case 'attempt':
+    case 'transform':
+    case 'trivia':
+    case 'token':
+    case 'leaf':
+    case 'label':
+    case 'field':
+    case 'not':
+    case 'peek':
+    case 'node':
+    case 'withCtx':
+    case 'expect':
+      return parserUsesRouted(def.parser, seen)
+    default:
+      return false
+  }
+}
+
+function branchUsesRouted(branch: { parser: Combinator<unknown>; usesRouted?: boolean | undefined }): boolean {
+  return branch.usesRouted === true || parserUsesRouted(branch.parser)
+}
+
+function asciiFoldKey(key: string): string {
+  let out = ''
+  for (let i = 0; i < key.length; i++) {
+    const c = key.charCodeAt(i)
+    out += String.fromCharCode(c >= 65 && c <= 90 ? c + 32 : c)
+  }
+  return out
+}
+
+function matchesDispatchMatcher(value: string, matcher: DispatchMatcherCase): boolean {
+  const candidate = matcher.caseInsensitive ? asciiFoldKey(value) : value
+  const expected = matcher.caseInsensitive ? asciiFoldKey(matcher.value) : matcher.value
+  switch (matcher.kind) {
+    case 'startsWith':
+      return candidate.startsWith(expected)
+    case 'endsWith':
+      return candidate.endsWith(expected)
+    case 'matches': {
+      const flags = matcher.caseInsensitive && !matcher.flags?.includes('i')
+        ? `${matcher.flags ?? ''}i`
+        : matcher.flags ?? ''
+      return new RegExp(matcher.value, flags).test(value)
+    }
+  }
+}
+
+function isStringMatcher(value: unknown): value is DispatchStringMatcher {
+  if (typeof value !== 'object' || value === null) return false
+  const kind = (value as { kind?: unknown }).kind
+  return kind === 'startsWith' || kind === 'endsWith' || kind === 'matches'
+}
+
+function fixedMatcher(kind: 'startsWith' | 'endsWith', value: string): DispatchStringMatcher {
+  if (typeof value !== 'string') throw new TypeError(`parseman: ${kind}() value must be a string`)
+  if (value.length === 0) throw new RangeError(`parseman: ${kind}() requires a non-empty value`)
+  return { kind, value }
+}
+
+export function startsWith(prefix: string): DispatchStringMatcher {
+  return fixedMatcher('startsWith', prefix)
+}
+
+export function endsWith(suffix: string): DispatchStringMatcher {
+  return fixedMatcher('endsWith', suffix)
+}
+
+export function matches(pattern: RegExp): DispatchStringMatcher {
+  if (!(pattern instanceof RegExp)) throw new TypeError('parseman: matches() requires a RegExp')
+  if (pattern.flags.includes('g') || pattern.flags.includes('y')) {
+    throw new TypeError('parseman: matches() does not accept global or sticky regex flags')
+  }
+  return { kind: 'matches', value: pattern.source, flags: pattern.flags }
+}
+
+export function when<T>(
+  key: DispatchWhenKey,
+  parser: Combinator<T>,
+  opts?: DispatchWhenOptions,
+): DispatchWhen<T>
+export function when<T>(
+  matcher: DispatchStringMatcher,
+  parser: Combinator<T>,
+  opts?: DispatchWhenOptions,
+): DispatchWhenMatcher<T>
+export function when<T>(
+  key: DispatchWhenSelector,
+  parser: Combinator<T>,
+  opts: DispatchWhenOptions = {},
+): DispatchWhen<T> | DispatchWhenMatcher<T> {
+  const usesRouted = parserUsesRouted(parser as Combinator<unknown>)
+  if (isStringMatcher(key)) {
+    return { kind: 'whenMatcher', matcher: key, parser, caseInsensitive: opts.caseInsensitive ?? false, usesRouted }
+  }
   const keys = Array.isArray(key) ? [...key] : [key]
   if (keys.length === 0) throw new RangeError('parseman: when() requires at least one key')
   for (const item of keys) {
     if (typeof item !== 'string') throw new TypeError('parseman: when() keys must be strings')
   }
-  return { kind: 'when', keys, parser }
+  return { kind: 'when', keys, parser, caseInsensitive: opts.caseInsensitive ?? false, usesRouted }
+}
+
+export function makeWhen(opts: DispatchWhenOptions = {}): DispatchWhenFactory {
+  return (key, parser) => when(key, parser, opts)
 }
 
 export function otherwise<T>(parser: Combinator<T>): DispatchOtherwise<T> {
-  return { kind: 'otherwise', parser }
+  return { kind: 'otherwise', parser, usesRouted: parserUsesRouted(parser as Combinator<unknown>) }
+}
+
+export function routed<T = string>(): Combinator<T> {
+  return {
+    _tag: 'routed',
+    _meta: { firstSet: { kind: 'any' }, canMatchNewline: false, isTrivia: false },
+    _def: { tag: 'routed' },
+    parse(_input: string, pos: number, ctx: ParseContext): ParseResult<T> {
+      const item = ctx._routed
+      if (item === undefined) {
+        return { ok: false, expected: ['routed()'], span: { start: pos, end: pos } }
+      }
+      if (pos !== item.span.start) {
+        return { ok: false, expected: ['routed()'], span: { start: pos, end: pos } }
+      }
+      if (cstCaptureActive(ctx)) {
+        pushCstLeaf(ctx, { _tag: 'leaf', value: item.value, span: item.span })
+      }
+      return { ok: true, value: item.value as T, span: item.span }
+    },
+  }
 }
 
 export function dispatch<S extends string, T extends readonly DispatchArm<unknown>[]>(
   selector: Combinator<S>,
   ...arms: T
 ): Combinator<[S, UnionArms<T>]> {
+  if (parserUsesRouted(selector as Combinator<unknown>)) {
+    throw new Error('parseman: routed() can only appear inside a dispatch() branch')
+  }
   let fallback: Combinator<unknown> | undefined
+  let fallbackUsesRouted = false
+  const matchers: DispatchMatcherCase[] = []
   const cases: DispatchCase[] = []
-  const seen = new Set<string>()
+  const seen: Array<{ raw: string; folded: string; caseInsensitive: boolean }> = []
 
   for (let i = 0; i < arms.length; i++) {
     const arm = arms[i]!
@@ -46,25 +229,56 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
       if (fallback !== undefined) throw new Error('parseman: dispatch() accepts at most one otherwise() arm')
       if (i !== arms.length - 1) throw new Error('parseman: otherwise() must be the last dispatch() arm')
       fallback = arm.parser
+      fallbackUsesRouted = arm.usesRouted === true
+      continue
+    }
+    if (arm.kind === 'whenMatcher') {
+      const matcher = arm.matcher
+      matchers.push({
+        kind: matcher.kind,
+        value: matcher.value,
+        ...(matcher.kind === 'matches' ? { flags: matcher.flags } : {}),
+        parser: arm.parser as Combinator<unknown>,
+        caseInsensitive: arm.caseInsensitive,
+        ...(arm.usesRouted === true ? { usesRouted: true } : {}),
+      })
       continue
     }
     for (const key of arm.keys) {
-      if (seen.has(key)) throw new Error(`parseman: duplicate dispatch key ${JSON.stringify(key)}`)
-      seen.add(key)
+      const folded = asciiFoldKey(key)
+      for (const prior of seen) {
+        const overlaps = arm.caseInsensitive || prior.caseInsensitive
+          ? folded === prior.folded
+          : key === prior.raw
+        if (overlaps) throw new Error(`parseman: duplicate dispatch key ${JSON.stringify(key)}`)
+      }
+      seen.push({ raw: key, folded, caseInsensitive: arm.caseInsensitive })
     }
-    cases.push({ keys: arm.keys, parser: arm.parser as Combinator<unknown> })
+    cases.push({
+      keys: arm.keys,
+      parser: arm.parser as Combinator<unknown>,
+      caseInsensitive: arm.caseInsensitive,
+      ...(arm.usesRouted === true ? { usesRouted: true } : {}),
+    })
   }
 
   const meta: ParserMeta = {
     firstSet: selector._meta.firstSet,
     canMatchNewline: selector._meta.canMatchNewline ||
       cases.some(entry => entry.parser._meta.canMatchNewline) ||
+      matchers.some(entry => entry.parser._meta.canMatchNewline) ||
       (fallback?._meta.canMatchNewline ?? false),
     isTrivia: false,
   }
 
-  const byKey = new Map<string, Combinator<unknown>>()
-  for (const entry of cases) for (const key of entry.keys) byKey.set(key, entry.parser)
+  const byKey = new Map<string, DispatchCase>()
+  const byFoldedKey = new Map<string, DispatchCase>()
+  for (const entry of cases) {
+    for (const key of entry.keys) {
+      if (entry.caseInsensitive) byFoldedKey.set(asciiFoldKey(key), entry)
+      else byKey.set(key, entry)
+    }
+  }
 
   return {
     _tag: 'dispatch',
@@ -73,20 +287,40 @@ export function dispatch<S extends string, T extends readonly DispatchArm<unknow
       tag: 'dispatch',
       selector: selector as Combinator<string>,
       cases,
-      ...(fallback === undefined ? {} : { otherwise: fallback }),
+      ...(matchers.length === 0 ? {} : { matchers }),
+      ...(fallback === undefined ? {} : { otherwise: fallback, ...(fallbackUsesRouted ? { otherwiseUsesRouted: true } : {}) }),
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<[S, UnionArms<T>]> {
+      if (parserUsesRouted(selector as Combinator<unknown>)) {
+        throw new Error('parseman: routed() can only appear inside a dispatch() branch')
+      }
+      const selectorMark = saveTriviaMark(ctx)
       const selected = selector.parse(input, pos, ctx)
       if (!selected.ok) return selected
 
-      const tail = byKey.get(selected.value) ?? fallback
-      if (tail === undefined) {
+      const branch = byKey.get(selected.value) ??
+        (byFoldedKey.size === 0 ? undefined : byFoldedKey.get(asciiFoldKey(selected.value))) ??
+        matchers.find(matcher => matchesDispatchMatcher(selected.value, matcher)) ??
+        (fallback === undefined ? undefined : { keys: [], parser: fallback, caseInsensitive: false, usesRouted: fallbackUsesRouted })
+      if (branch === undefined) {
         const expected = cases.flatMap(entry => entry.keys.map(key => JSON.stringify(key)))
         return { ok: false, expected, span: { start: selected.span.end, end: selected.span.end } }
       }
 
-      const mark = saveTriviaMark(ctx)
-      const result = tail.parse(input, selected.span.end, ctx)
+      const savedRouted = ctx._routed
+      const usesRouted = branchUsesRouted(branch)
+      let mark = saveTriviaMark(ctx)
+      if (usesRouted) {
+        rollbackTrivia(ctx, selectorMark)
+        mark = saveTriviaMark(ctx)
+        ctx._routed = { value: selected.value, span: selected.span }
+      }
+      let result: ParseResult<unknown>
+      try {
+        result = branch.parser.parse(input, usesRouted ? pos : selected.span.end, ctx)
+      } finally {
+        if (usesRouted) ctx._routed = savedRouted
+      }
       if (!result.ok) {
         rollbackTrivia(ctx, mark)
         return { ...result, committed: true }

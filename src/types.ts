@@ -55,7 +55,7 @@ export type ParserDef =
   // force interpreter fallback). Absent under runtime compile() — the real gate
   // closures live in `gates`.
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; gateSrcs?: (string | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
-  | { tag: 'dispatch';  selector: Combinator<string>; cases: readonly DispatchCase[]; otherwise?: Combinator<unknown> | undefined }
+  | { tag: 'dispatch';  selector: Combinator<string>; cases: readonly DispatchCase[]; matchers?: readonly DispatchMatcherCase[] | undefined; otherwise?: Combinator<unknown> | undefined; otherwiseUsesRouted?: boolean | undefined }
   | { tag: 'attempt';   parser: Combinator<unknown> }
   // The TAG carries NULLABILITY (what every downstream switch keys on): `many` is
   // the nullable min-0 repeat, `oneOrMore` the non-nullable min>=1 one. `min`/`max`
@@ -75,6 +75,7 @@ export type ParserDef =
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
   | { tag: 'token';     parser: Combinator<unknown> }
+  | { tag: 'routed' }
   | { tag: 'leaf';      parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'field';     name: string; parser: Combinator<unknown> }
@@ -112,6 +113,19 @@ export type Combinator<T> = {
 export type DispatchCase = {
   keys: readonly string[]
   parser: Combinator<unknown>
+  caseInsensitive: boolean
+  usesRouted?: boolean | undefined
+}
+
+export type DispatchMatcherKind = 'startsWith' | 'endsWith' | 'matches'
+
+export type DispatchMatcherCase = {
+  kind: DispatchMatcherKind
+  value: string
+  flags?: string | undefined
+  parser: Combinator<unknown>
+  caseInsensitive: boolean
+  usesRouted?: boolean | undefined
 }
 
 import type { CstCaptureBuf } from './cst/capture-buffer.ts'
@@ -326,6 +340,8 @@ export type ParseContext = {
   _fields?: Array<{ name: string; value: unknown; span: Span }> | undefined
   /** Framework-internal: lazy capture buffer for active node() parse. */
   _cstBuf?: CstCaptureBuf | undefined
+  /** Framework-internal: value/span already consumed by an enclosing dispatch(). */
+  _routed?: { value: unknown; span: Span } | undefined
   /**
    * Framework-internal: opt-in `run({ profile: true })` pass state. This is
    * deliberately not a parser mode: codegen reads it only while the profiling
