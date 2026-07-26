@@ -1,4 +1,4 @@
-export type { Combinator, ParseResult, ParseOk, ParseFail, ParseContext, ParseError, Span, ParserMeta, FirstSet, CharRange, ParserDef, ChoiceStrategy, AutoNotCheck, GatedArm, BuildHost, CstCollapsePredicate, FieldCapture, FieldMap } from './types.ts'
+export type { Combinator, ParseResult, ParseOk, ParseFail, ParseContext, ParseError, Span, ParserMeta, FirstSet, CharRange, ParserDef, ChoiceStrategy, AutoNotCheck, GatedArm, DispatchCase, BuildHost, CstCollapsePredicate, FieldCapture, FieldMap } from './types.ts'
 
 export { literal } from './combinators/literal.ts'
 export type { LiteralOptions } from './combinators/literal.ts'
@@ -18,6 +18,8 @@ export type { KeywordsOptions, WordOptions } from './combinators/keywords.ts'
 
 export { sequence } from './combinators/sequence.ts'
 export { choice } from './combinators/choice.ts'
+export { dispatch, when, otherwise } from './combinators/dispatch.ts'
+export type { DispatchArm, DispatchOtherwise, DispatchWhen } from './combinators/dispatch.ts'
 export { attempt } from './combinators/attempt.ts'
 export { many, oneOrMore, optional, sepBy, oneOrMoreSep } from './combinators/repeat.ts'
 export type { RepeatOptions, SepByOptions, TrailingSeparator } from './combinators/repeat.ts'

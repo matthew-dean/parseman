@@ -85,6 +85,39 @@ choice compiles to an O(1) first-char dispatch — gated arms included, so gatin
 rare-token alternative (like `&`) stays O(1) rather than dropping the whole choice to a
 linear scan. (A nullable or overlapping arm forces the linear path.)
 
+### `dispatch(selector, when(...), otherwise(...))`
+
+Parse `selector` once, use its string value as a static dispatch key, then parse
+the selected tail from the selector end. `when(key, tail)` matches one key;
+`when([keyA, keyB], tail)` shares a tail across keys; `otherwise(tail)` handles
+only unmatched selector values.
+
+```ts
+const atRule = dispatch(
+  atKeyword,
+  when('@media', mediaTail),
+  when(['@font-face', '@property'], descriptorTail),
+  otherwise(genericTail),
+)
+```
+
+If the selector itself fails, `dispatch` fails normally and an enclosing
+`choice()` may try a later arm. If a key matches and its tail fails, the failure
+is committed: `otherwise(...)` and outer fallback arms are not tried. Duplicate
+keys are rejected at grammar construction time.
+
+Inside a macro-compiled `rules()` factory, dispatch arms can be named like other
+local grammar pieces:
+
+```ts
+const block = when('@media', mediaTail)
+const generic = otherwise(genericTail)
+return { AtRule: dispatch(atKeyword, block, generic) }
+```
+
+V1 macro lowering expects explicit arm arguments. `dispatch(selector, ...arms)`
+and top-level arm aliases are not part of the macro-supported surface yet.
+
 ### `attempt(combinator)`
 
 Make one ordered-choice arm transactional. If its parser fails after consuming

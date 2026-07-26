@@ -25,6 +25,7 @@ import { literal } from '../combinators/literal.ts'
 import { keywords } from '../combinators/keywords.ts'
 import { sequence } from '../combinators/sequence.ts'
 import { choice } from '../combinators/choice.ts'
+import { dispatch, otherwise, when } from '../combinators/dispatch.ts'
 import { attempt } from '../combinators/attempt.ts'
 import { many, oneOrMore, optional, sepBy } from '../combinators/repeat.ts'
 import { not } from '../combinators/not.ts'
@@ -44,6 +45,7 @@ function childrenOf(def: ParserDef): Comb[] {
   switch (def.tag) {
     case 'sequence':
     case 'choice':    return def.parsers
+    case 'dispatch':  return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.otherwise ? [def.otherwise] : [])]
     case 'many':
     case 'oneOrMore':
     case 'optional':
@@ -201,13 +203,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   }
   // eslint-disable-next-line no-new-func
   const fn = new Function(
-    'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'attempt',
+    'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'otherwise', 'attempt',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'peek', 'node', 'parser',
     'scanTo', 'token', 'leaf', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
-    rules, ref, regex, literal, keywords, sequence, choice, attempt,
+    rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, otherwise, attempt,
     many, oneOrMore, optional, sepBy, not, peek, node, parser,
     scanTo, token, leaf, transform, skip, trivia, label, field, expectC, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
@@ -391,6 +393,13 @@ class Serializer {
           return `[${JSON.stringify(src)}, ${kid(p)}]`
         })
         return `_gch([${items.join(', ')}])`
+      }
+      case 'dispatch': {
+        const arms = def.cases.map(entry =>
+          `when(${entry.keys.length === 1 ? JSON.stringify(entry.keys[0]) : JSON.stringify(entry.keys)}, ${kid(entry.parser)})`
+        )
+        if (def.otherwise) arms.push(`otherwise(${kid(def.otherwise)})`)
+        return `dispatch(${kid(def.selector)}${arms.length === 0 ? '' : `, ${arms.join(', ')}`})`
       }
       case 'many':      return `many(${kid(def.parser)}${repeatOpts(def.min, def.max)})`
       // A `oneOrMore` def with min > 1 came from `many(x, { min: n })`; round-trip

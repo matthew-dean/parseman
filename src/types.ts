@@ -27,6 +27,12 @@ export type ParseFail = {
   ok: false
   expected: string[]
   span: Span
+  /**
+   * Framework-internal cut/commit signal. A committed failure means an outer
+   * backtracking construct must propagate the failure instead of trying a later
+   * alternative or swallowing it as an optional/repeat miss.
+   */
+  committed?: boolean
 }
 
 export type ParseResult<T> = ParseOk<T> | ParseFail
@@ -49,6 +55,7 @@ export type ParserDef =
   // force interpreter fallback). Absent under runtime compile() — the real gate
   // closures live in `gates`.
   | { tag: 'choice';    parsers: Combinator<unknown>[]; gates: (((state: unknown) => boolean) | null)[]; gateSrcs?: (string | null)[]; disjoint: boolean; strategy: ChoiceStrategy; autoNot: (AutoNotCheck[] | null)[] }
+  | { tag: 'dispatch';  selector: Combinator<string>; cases: readonly DispatchCase[]; otherwise?: Combinator<unknown> | undefined }
   | { tag: 'attempt';   parser: Combinator<unknown> }
   // The TAG carries NULLABILITY (what every downstream switch keys on): `many` is
   // the nullable min-0 repeat, `oneOrMore` the non-nullable min>=1 one. `min`/`max`
@@ -100,6 +107,11 @@ export type Combinator<T> = {
   readonly _meta: ParserMeta
   readonly _def: ParserDef
   parse(input: string, pos: number, ctx: ParseContext): ParseResult<T>
+}
+
+export type DispatchCase = {
+  keys: readonly string[]
+  parser: Combinator<unknown>
 }
 
 import type { CstCaptureBuf } from './cst/capture-buffer.ts'
@@ -267,6 +279,8 @@ export type ParseContext = {
    */
   _fe?: number
   _fx?: string[]
+  /** Framework-internal compiled-output committed-failure flag. */
+  _fc?: boolean
   /**
    * When set by completionsAt(), tracks the highest-position ParseFail seen
    * during parsing up to _probe.offset. Used to return completions at the cursor

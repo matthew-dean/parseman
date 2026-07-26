@@ -111,6 +111,8 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
       for (const arm of d.parsers) alts.push(...rec(arm).alts)
       return { alts }
     }
+    case 'dispatch':
+      return rec(d.selector)
     case 'sequence': {
       // One ordered chain through the nullable prefix, stopping at (and including)
       // the first non-nullable term — same rule as `sequenceFirstSet`. A leading
@@ -423,6 +425,10 @@ function failReturnArr(expectedArr: string, posExpr: string): string {
   return `return { ok: false, expected: ${expectedArr}, span: { start: ${posExpr}, end: ${posExpr} } }`
 }
 
+function committedReturnArr(expectedArr: string, posExpr: string): string {
+  return `return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} }, committed: true }`
+}
+
 /**
  * Hoist a COMPILE-TIME-CONSTANT expected-set array to a shared module-level
  * const and return its variable name. Leaf failures (literal, regex, keyword,
@@ -505,7 +511,15 @@ function failArrBody(ctx: Ctx, expectedArr: string, posExpr: string, constant = 
 /** Build a ParseResult from the recorded deepest failure, copying `_fx` so the
  * shared frozen array never escapes into user-facing results. */
 function resultFromRecorded(feExpr = '_ctx._fe', fxExpr = '_ctx._fx'): string {
-  return `return { ok: false, expected: [...${fxExpr}], span: { start: ${feExpr}, end: ${feExpr} } }`
+  return `return { ok: false, expected: [...${fxExpr}], span: { start: ${feExpr}, end: ${feExpr} }, ...(_ctx._fc ? { committed: true } : {}) }`
+}
+
+function committedFailBody(ctx: Ctx, expectedArr = '_ctx._fx', posExpr = '_ctx._fe'): string {
+  if (ctx.failLabel) {
+    if (!ctx.recordFail) return `{ _ctx._fc = true; break ${ctx.failLabel} }`
+    return `{ _ctx._fc = true; _ctx._fe = ${posExpr}; _ctx._fx = ${expectedArr}; break ${ctx.failLabel} }`
+  }
+  return committedReturnArr(expectedArr, posExpr)
 }
 
 /**
@@ -521,9 +535,9 @@ function propagateFailBody(ctx: Ctx, srcCtx = '_ctx'): string {
     // when a consumer will read it) before propagating.
     if (ctx.failLabel) {
       if (!ctx.recordFail) return `break ${ctx.failLabel}`
-      return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; break ${ctx.failLabel} }`
+      return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; _ctx._fc = ${srcCtx}._fc; break ${ctx.failLabel} }`
     }
-    return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; ${resultFromRecorded()} }`
+    return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; _ctx._fc = ${srcCtx}._fc; ${resultFromRecorded()} }`
   }
   // Same-ctx: `_ctx._fx` already holds the deepest failure — just break/return.
   if (ctx.failLabel) return `break ${ctx.failLabel}`
@@ -879,6 +893,8 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     // nothing committed remains.
     case 'choice':
       return false
+    case 'dispatch':
+      return capturesLeaf(d.selector, seen) || d.cases.some(x => mayLeavePartialCapture(x.parser, seen) || capturesLeaf(x.parser, seen)) || (d.otherwise ? mayLeavePartialCapture(d.otherwise, seen) || capturesLeaf(d.otherwise, seen) : false)
     case 'attempt':
       return false
     // optional never fails; many/oneOrMore only "fail" with zero captured items.
@@ -943,6 +959,8 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'sequence':
     case 'choice':
       return d.parsers.some(x => capturesLeaf(x, seen))
+    case 'dispatch':
+      return capturesLeaf(d.selector, seen) || d.cases.some(x => capturesLeaf(x.parser, seen)) || (d.otherwise ? capturesLeaf(d.otherwise, seen) : false)
     case 'sepBy':
       return capturesLeaf(d.parser, seen) || capturesLeaf(d.separator, seen)
     case 'many':
@@ -1033,6 +1051,7 @@ function emitFallible(
       `${ind0}const ${mTl} = _ctx._cstTriviaLog?.length ?? 0`,
       ...(mF ? [`${ind0}const ${mF} = _ctx._fields?.length ?? 0`] : []),
     ] : []),
+    `${ind0}_ctx._fc = false`,
     `${ind0}${lbl}: {`,
     ...r.stmts,
     `${ind0}  ${valV} = ${r.valueVar}; ${endV} = ${r.endVar}; ${okV} = true`,
@@ -1603,6 +1622,65 @@ function emitChoice(parser: Combinator<unknown>, def: Extract<ParserDef, { tag: 
   return emitNonDisjoint(def, def.strategy, allExpected, ctx, pos, coverageBase)
 }
 
+function emitTailFallible(
+  parser: Combinator<unknown>,
+  ctx: Ctx,
+  pos: string,
+): { stmts: string[]; okVar: string; valVar: string; endVar: string } {
+  const savedRecord = ctx.recordFail
+  ctx.recordFail = true
+  const out = emitFallible(parser, ctx, pos)
+  ctx.recordFail = savedRecord
+  return out
+}
+
+function emitDispatchCombinator(def: Extract<ParserDef, { tag: 'dispatch' }>, ctx: Ctx, pos: string): ER {
+  const selector = emit(def.selector, ctx, pos)
+  const outV = v(ctx, '_dval')
+  const outE = v(ctx, '_dend')
+  const keyV = v(ctx, '_dkey')
+  const stmts: string[] = [
+    ...selector.stmts,
+    `${ind(ctx)}const ${keyV} = ${selector.valueVar}`,
+    `${ind(ctx)}let ${outV}, ${outE} = ${selector.endVar}`,
+  ]
+
+  let wroteBranch = false
+  const emitSelectedTail = (parser: Combinator<unknown>, keyword: 'if' | 'else if' | 'else', condition?: string): void => {
+    const head = keyword === 'else'
+      ? `${ind(ctx)}else {`
+      : `${ind(ctx)}${keyword} (${condition}) {`
+    stmts.push(head)
+    ctx.indent++
+    const tail = emitTailFallible(parser, ctx, selector.endVar)
+    stmts.push(
+      ...tail.stmts,
+      `${ind(ctx)}if (!${tail.okVar}) ${committedFailBody(ctx)}`,
+      `${ind(ctx)}${outV} = [${selector.valueVar}, ${tail.valVar}]`,
+      `${ind(ctx)}${outE} = ${tail.endVar}`,
+    )
+    ctx.indent--
+    stmts.push(`${ind(ctx)}}`)
+  }
+
+  for (const entry of def.cases) {
+    const condition = entry.keys.map(key => `${keyV} === ${JSON.stringify(key)}`).join(' || ')
+    emitSelectedTail(entry.parser, wroteBranch ? 'else if' : 'if', condition)
+    wroteBranch = true
+  }
+
+  if (def.otherwise) {
+    if (wroteBranch) emitSelectedTail(def.otherwise, 'else')
+    else emitSelectedTail(def.otherwise, 'if', 'true')
+  } else {
+    const expected = JSON.stringify(def.cases.flatMap(entry => entry.keys.map(key => JSON.stringify(key))))
+    const fail = failArrBody(ctx, expected, selector.endVar)
+    stmts.push(wroteBranch ? `${ind(ctx)}else { ${fail} }` : `${ind(ctx)}${fail}`)
+  }
+
+  return { stmts, valueVar: outV, endVar: outE }
+}
+
 // ── greedyClassify: run the super-regex once, classify by string equality ────
 // Single regex exec + O(n_literals) string comparisons. Zero backtracking.
 function emitGreedyClassify(
@@ -1864,12 +1942,14 @@ function emitFirstMatch(
       stmts.push(`${ind(ctx)}}`)
       stmts.push(`${ind(ctx)}else { ${slots[i]} = ${failSlot}; ${coverageBase === undefined ? '' : `_ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'failure', offset: ${atStart ? pos : '_ctx._fe'} }); _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'backtrack', offset: ${pos} });`} }`)
       if (rollback) stmts.push(`${ind(ctx)}if (!${resOkV}) { ${rollback} }`)
+      stmts.push(`${ind(ctx)}if (!${resOkV} && _ctx._fc) ${committedFailBody(ctx)}`)
     } else {
       const rejectedFlush = autoRejectedV === undefined
         ? ''
         : `; for (const _rejectedId of ${autoRejectedV}) { _ctx._grammarTrace?.write({ id: _rejectedId, phase: 'failure', offset: ${pos} }); _ctx._grammarTrace?.write({ id: _rejectedId, phase: 'backtrack', offset: ${pos} }) }`
       stmts.push(`${ind(ctx)}if (${okVar}) { ${resValV} = ${valVar}; ${resEndV} = ${endVar}; ${resOkV} = true${coverageBase === undefined ? '' : `${rejectedFlush}; _ctx._grammarCoverage?.(${JSON.stringify(`${coverageBase}${i}`)}); _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'selected', offset: ${pos}, end: ${endVar} }); _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'success', offset: ${pos}, end: ${endVar} })`} }`)
       stmts.push(`${ind(ctx)}else { ${slots[i]} = ${failSlot}${rollback ? `; ${rollback}` : ''}${coverageBase === undefined ? '' : `; _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'failure', offset: ${atStart ? pos : '_ctx._fe'} }); _ctx._grammarTrace?.write({ id: ${JSON.stringify(`${coverageBase}${i}`)}, phase: 'backtrack', offset: ${pos} })`} }`)
+      stmts.push(`${ind(ctx)}if (!${resOkV} && _ctx._fc) ${committedFailBody(ctx)}`)
     }
 
     ctx.indent -= fsGuard ? 2 : 1
@@ -2186,7 +2266,8 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
       `${ind(ctx)}if (${iterEnd} <= ${itemPos}) { ${rollback}break }`,
     )
   } else {
-    stmts.push(`${ind(ctx)}if (!${iterOk} || ${iterEnd} <= ${itemPos}) { ${rollback}break }`)
+    stmts.push(`${ind(ctx)}if (!${iterOk}) { ${rollback}if (_ctx._fc) ${committedFailBody(ctx)}; break }`)
+    stmts.push(`${ind(ctx)}if (${iterEnd} <= ${itemPos}) { ${rollback}break }`)
   }
   if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${iterVal})`)
   else if (maxV !== null) stmts.push(`${ind(ctx)}${maxV}++`)
@@ -2206,6 +2287,7 @@ function emitOptional(def: Extract<ParserDef, { tag: 'optional' }>, ctx: Ctx, po
   const ind0 = ind(ctx)
   const stmts = [
     ...lblStmts,
+    `${ind0}if (!${okVar} && _ctx._fc) ${committedFailBody(ctx)}`,
     `${ind0}const ${valV} = ${okVar} ? ${valVar} : null`,
     `${ind0}const ${endV} = ${okVar} ? ${endVar} : ${pos}`,
   ]
@@ -2253,7 +2335,7 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
       ...preGuard,
       `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${trivia} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
       ...inner.stmts,
-      ...emitIfFail(ctx, `!${inner.okVar}`, `{ ${rollback};${traceRollback} _ctx._fe = ${pos}; ${propagateFailBody(ctx)} }`),
+      ...emitIfFail(ctx, `!${inner.okVar}`, `{ ${rollback};${traceRollback} if (_ctx._fc) ${committedFailBody(ctx)}; _ctx._fe = ${pos}; ${propagateFailBody(ctx)} }`),
     ],
     valueVar: inner.valVar,
     endVar: inner.endVar,
@@ -2289,10 +2371,11 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   const failItem = (nextOkVar: string, itemPosVar: string, breakStmt: string): string[] => {
     // A bare `break` stays brace-less — the emitted source is byte-identical to
     // the pre-options output for every default-option sepBy.
-    if (!rec) return [`${ind(ctx)}if (!${nextOkVar}) ${breakStmt === 'break' ? 'break' : `{ ${breakStmt} }`}`]
+    if (!rec) return [`${ind(ctx)}if (!${nextOkVar}) { if (_ctx._fc) ${committedFailBody(ctx)}; ${breakStmt} }`]
     const rr = v(ctx, '_rr')
     return [
       `${ind(ctx)}if (!${nextOkVar}) {`,
+      `${ind(ctx)}  if (_ctx._fc) ${committedFailBody(ctx)}`,
       `${ind(ctx)}  if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPosVar}, _ctx)) {`,
       `${ind(ctx)}    const ${rr} = _ctx._rec.scan(input, ${itemPosVar}, _ctx, ${scanSync}, ${exp})`,
       `${ind(ctx)}    ${arrV}.push(${rr}.error); _ctx._rec.capture(_ctx, ${rr}.error); ${curV} = ${rr}.end; continue`,
@@ -2338,6 +2421,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     stmts.push(
       `${ind(ctx)}let ${didV} = false`,
       `${ind(ctx)}if (${firstOk}) { ${arrV}.push(${firstVal}); ${curV} = ${firstEnd}; ${didV} = true }`,
+      `${ind(ctx)}else if (_ctx._fc) ${committedFailBody(ctx)}`,
       `${ind(ctx)}else if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${pos}, _ctx)) {`,
       `${ind(ctx)}  const ${rr0} = _ctx._rec.scan(input, ${pos}, _ctx, ${scanSync}, ${exp})`,
       `${ind(ctx)}  ${arrV}.push(${rr0}.error); _ctx._rec.capture(_ctx, ${rr0}.error); ${curV} = ${rr0}.end; ${didV} = true`,
@@ -2348,6 +2432,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
     ctx.indent++
   } else {
+    stmts.push(`${ind(ctx)}if (!${firstOk} && _ctx._fc) ${committedFailBody(ctx)}`)
     stmts.push(`${ind(ctx)}if (${firstOk}) {`)
     ctx.indent++
     stmts.push(
@@ -2383,7 +2468,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       sepAtPos = spV
       const rollbackToSep = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; `
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
-      stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}break }`)
+      stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}if (_ctx._fc) ${committedFailBody(ctx)}; break }`)
 
       const post = postSepMarks()
       stmts.push(...post.decl)
@@ -2404,7 +2489,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       stmts.push(`${ind(ctx)}const ${spV} = ${trivFn}(input, ${curV}, _ctx)`)
       sepAtPos = spV
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
-      stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) break`)
+      stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { if (_ctx._fc) ${committedFailBody(ctx)}; break }`)
 
       const npV = v(ctx, '_np')
       stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${sepEnd}, _ctx)`)
@@ -2429,7 +2514,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       )
     }
     const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = emitFallible(def.separator, ctx, sepAtPos, true)
-    stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) break`)
+    stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { if (_ctx._fc) ${committedFailBody(ctx)}; break }`)
     const nextRb = markLv
       ? `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markRw}) _ctx._cstRawChildren.length = ${markRw}; `
       : ''
@@ -3069,9 +3154,9 @@ function emitRuntimeFallback(parser: Combinator<unknown>, ctx: Ctx, pos: string)
   // when a consumer will read it).
   const failStmt = ctx.failLabel
     ? (ctx.recordFail
-        ? `{ _ctx._fe = ${rv}.span.start; _ctx._fx = ${rv}.expected; break ${ctx.failLabel} }`
+        ? `{ _ctx._fe = ${rv}.span.start; _ctx._fx = ${rv}.expected; _ctx._fc = ${rv}.committed === true; break ${ctx.failLabel} }`
         : `break ${ctx.failLabel}`)
-    : `return { ok: false, expected: ${rv}.expected, span: ${rv}.span }`
+    : `return { ok: false, expected: ${rv}.expected, span: ${rv}.span, ...(${rv}.committed ? { committed: true } : {}) }`
   const stmts = [
     `${ind(ctx)}const ${rv} = _rp[${idx}].parse(input, ${pos}, _ctx)`,
     ...emitIfFail(ctx, `!${rv}.ok`, failStmt),
@@ -3344,6 +3429,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'keywords':  return emitKeywords(def, ctx, pos)
     case 'sequence':  return emitSeq(def, ctx, pos)
     case 'choice':    return emitChoice(p, def, ctx, pos)
+    case 'dispatch':  return emitDispatchCombinator(def, ctx, pos)
     case 'attempt':   return emitAttempt(p, def, ctx, pos)
     case 'many':
     case 'oneOrMore': return emitMany(def, ctx, pos)
@@ -3608,6 +3694,7 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'skip':      return hasNodeDef(d.main, seen) || hasNodeDef(d.skipped, seen)
     case 'sequence':
     case 'choice':    return d.parsers.some(x => hasNodeDef(x, seen))
+    case 'dispatch':  return hasNodeDef(d.selector, seen) || d.cases.some(x => hasNodeDef(x.parser, seen)) || (d.otherwise ? hasNodeDef(d.otherwise, seen) : false)
     case 'sepBy':     return hasNodeDef(d.parser, seen) || hasNodeDef(d.separator, seen)
     case 'scanTo':    return hasNodeDef(d.sentinel, seen) || d.skip.some(x => hasNodeDef(x, seen))
     case 'recover':   return hasNodeDef(d.parser, seen) || hasNodeDef(d.sentinel, seen)
@@ -3634,6 +3721,7 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
   switch (def.tag) {
     case 'sequence':
     case 'choice':    return def.parsers
+    case 'dispatch':  return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.otherwise ? [def.otherwise] : [])]
     case 'many':
     case 'attempt':
     case 'optional':
@@ -3677,7 +3765,7 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
  * mode) can be baked into a shared body.
  */
 const HOISTABLE_TAGS: ReadonlySet<ParserDef['tag']> = new Set<ParserDef['tag']>([
-  'sequence', 'choice', 'many', 'oneOrMore', 'optional', 'sepBy', 'transform', 'node', 'not',
+  'sequence', 'choice', 'dispatch', 'many', 'oneOrMore', 'optional', 'sepBy', 'transform', 'node', 'not',
 ])
 function isHoistableTag(tag: ParserDef['tag']): boolean {
   return HOISTABLE_TAGS.has(tag)

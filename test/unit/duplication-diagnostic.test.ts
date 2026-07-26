@@ -14,6 +14,7 @@ import {
   duplicationFindingCount, alternationGroups, charClassMembers, extractCharClasses,
   keywordRegexShape, keywordAlternationHazards, siteToString,
   choice, sequence, literal, regex, many, optional, node, field, ref, withCtx, keywords, rules, compile,
+  dispatch, when, otherwise,
 } from '../../src/index.ts'
 import { compileRuleMap, compileLinkable } from '../../src/compiler/codegen.ts'
 import { compose } from '../../src/compiler/linker.ts'
@@ -53,6 +54,21 @@ describe('exact duplicates', () => {
     }))
     expect(analyzeDuplicationRules(entries(g)).duplicates).toHaveLength(0)
     expect(analyzeDuplicationRules(entries(g), { minSize: 2 }).duplicates.length).toBeGreaterThan(0)
+  })
+
+  it('walks dispatch tails as ordinary structural children', () => {
+    const mk = (): Combinator<unknown> => sequence(literal('{'), regex(/\d+/), literal('}'))
+    const r = analyzeDuplication(dispatch(
+      literal('@media'),
+      when('@media', mk()),
+      otherwise(mk()),
+    ))
+    const f = r.duplicates.find(d => d.size === 4 && d.count === 2)
+    expect(f).toBeDefined()
+    expect(f!.sites.map(siteToString)).toEqual([
+      '<entry> › dispatch.when[0]',
+      '<entry> › dispatch.otherwise',
+    ])
   })
 })
 

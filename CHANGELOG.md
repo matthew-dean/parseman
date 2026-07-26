@@ -3,6 +3,28 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.39.0 — 2026-07-26
+
+- **Add `dispatch(selector, when(...), otherwise(...))` for token-once static
+  routing.** `dispatch` parses a selector combinator once, uses its string value
+  to choose a static `when(key, tail)` / `when([keys], tail)` arm, and runs
+  `otherwise(tail)` only when no key matches. A matched key's tail failure is
+  committed, so it does not fall through to `otherwise` or an outer `choice`
+  fallback. This is for grammar shapes such as CSS known at-keyword versus
+  generic at-rule routing, where spelling the generic arm as
+  `choice(knownKeyword..., sequence(not(knownKeyword...), generic))` duplicates
+  the keyword inventory and hides the commitment rule.
+
+  The interpreter, `compile()`, macro evaluator, IR serializer, coverage walks,
+  first-set analysis, field/trivia walkers, and grammar-quality diagnostics all
+  understand the new combinator. Macro-compiled `rules()` factories may also bind
+  `when()` / `otherwise()` arms to local `const`s before passing them to
+  `dispatch(...)`, matching the normal combinator-authoring style. V1
+  intentionally keeps classification simple: the selector value must already be
+  the dispatch key string, and the macro path supports explicit arm arguments
+  rather than `dispatch(selector, ...arms)` spread tables. Classifier callbacks,
+  spread-arm tables, and pattern cases remain future design work.
+
 ## 0.38.0 — 2026-07-26
 
 - **`makeWord()` now carries the same explicit `caseInsensitive` option as

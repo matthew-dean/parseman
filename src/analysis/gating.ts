@@ -337,6 +337,8 @@ function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmC
         for (const a of d.parsers) { const r = walk(a); if (r) return relabel(r, r.cause, `choice arm → ${r.detail}`) }
         return null
       }
+      case 'dispatch':
+        return walk(d.selector)
       default:
         return { cause: 'broad-recognizer', detail: `unmodeled construct (${d.tag})` }
     }
@@ -463,6 +465,11 @@ export function analyzeGatingRules(
     if (Array.isArray(rec.parsers)) kids.push(...(rec.parsers as Combinator<unknown>[]))
     for (const k of ['parser', 'main', 'skipped', 'separator', 'sentinel'] as const)
       if (rec[k]) kids.push(rec[k] as Combinator<unknown>)
+    if (d.tag === 'dispatch') {
+      kids.push(d.selector)
+      for (const c of d.cases) kids.push(c.parser)
+      if (d.otherwise !== undefined) kids.push(d.otherwise)
+    }
     if (Array.isArray(rec.skip)) kids.push(...(rec.skip as Combinator<unknown>[]))
     // Deliberately NOT `resolveRef`-aware: the WALK must visit the same choices with
     // and without a resolver, so a choice's `id` (per-rule occurrence order) is the

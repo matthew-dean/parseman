@@ -29,6 +29,7 @@ Three words that sound alike but play different roles:
 | `regex(pattern)` | Match a regex at the current position. |
 | `sequence(...combinators)` | Match all in order; returns a tuple `[v1, v2, …]`. Skips trivia between terms when trivia is active. |
 | `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. |
+| `dispatch(selector, when(...), otherwise(...))` | Parse a selector once, route by its string value, and commit matched-tail failures. |
 | `attempt(c)` | All-or-nothing arm: on failure, every framework side effect from the rejected branch is rolled back. |
 | `many(c, opts?)` | Zero or more; `{ min, max }` bound the item count. |
 | `oneOrMore(c, opts?)` | One or more — sugar for `many(c, { min: 1 })`. |
@@ -249,6 +250,49 @@ applies. Don't rely on it: add one non-literal arm and ordering matters again.
 
 When the arms start with disjoint characters the compiler turns the whole `choice`
 into a single O(1) character dispatch.
+
+### `dispatch`
+
+Token-once routing by a parsed string value. Use it when the grammar has one
+selector token whose value chooses a static tail, especially when a matched key's
+bad tail must be an error rather than a chance to try a generic fallback.
+
+```ts
+// [verify]
+import { choice, dispatch, literal, otherwise, parse, regex, sequence, when } from 'parseman'
+
+const atRule = dispatch(
+  regex(/@[a-z]+/),
+  when('@media', literal('{')),
+  otherwise(literal(';')),
+)
+
+parse(atRule, '@media{').value
+// → ['@media', '{']
+
+parse(atRule, '@unknown;').value
+// → ['@unknown', ';']
+
+const committed = choice(
+  dispatch(literal('@media'), when('@media', literal('{'))),
+  sequence(literal('@media'), literal('x')),
+)
+
+parse(committed, '@mediax').ok
+// → false
+```
+
+If the selector fails, an enclosing `choice` can still try a later arm. If the
+selector succeeds and a `when` key matches, that tail is committed: its failure is
+returned immediately and neither `otherwise` nor an outer fallback is attempted.
+Duplicate keys, including duplicates across grouped `when([keyA, keyB], tail)`
+arms, fail at grammar construction time.
+
+In macro-compiled `rules()` factories, `when()` and `otherwise()` arms can be
+bound to local `const`s and passed by name. Keep the generic fallback inside the
+same `dispatch(...)` as `otherwise(...)`; `choice(dispatch(knownCases), generic)`
+does not express the same commitment rule. V1 macro lowering expects explicit
+arm arguments; `dispatch(selector, ...arms)` is future work.
 
 ### `attempt`
 

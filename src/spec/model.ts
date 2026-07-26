@@ -238,6 +238,15 @@ class Builder {
         return flattenChoice(items)
       }
 
+      case 'dispatch': {
+        const selector = this.walk(def.selector)
+        const tails = [
+          ...def.cases.map(entry => this.walk(entry.parser)),
+          ...(def.otherwise ? [this.walk(def.otherwise)] : []),
+        ].filter(nonEmpty)
+        return flattenSeq([selector, flattenChoice(tails)])
+      }
+
       // `max`/`min` are carried through so a BOUNDED repeat does not render as an
       // unbounded one — the spec is generated to be read as the truth about what
       // parses, and `many(x, { min: 3, max: 8 })` is not `x+`.

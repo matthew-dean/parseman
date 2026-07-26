@@ -376,6 +376,11 @@ export type AnalyzeDuplicationOptions = {
 function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
   switch (d.tag) {
     case 'sequence': case 'choice': return d.parsers
+    case 'dispatch': return [
+      d.selector,
+      ...d.cases.map(c => c.parser),
+      ...(d.otherwise === undefined ? [] : [d.otherwise]),
+    ]
     case 'skip': return [d.main, d.skipped]
     case 'sepBy': return [d.parser, d.separator]
     case 'recover': return [d.parser, d.sentinel]
@@ -419,6 +424,7 @@ function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
     case 'leaf':      return `leaf ${fnKey(d.fnSrc, d.fn)}`
     case 'many': case 'oneOrMore': return `${d.tag} ${d.min} ${d.max ?? ''}`
     case 'sepBy':     return `sepBy ${d.min} ${d.max ?? ''} ${d.trailing ?? ''}`
+    case 'dispatch':  return `dispatch ${d.cases.map(c => c.keys.join('')).join('')} ${d.otherwise !== undefined}`
     case 'expect':    return `expect ${d.label ?? ''} ${d.expected.join('')}`
     case 'scanTo':    return `scanTo ${d.raw} ${d.orEOF}`
     case 'guard':     return `guard ${fnKey(d.predSrc, d.predicate)}`
@@ -479,6 +485,11 @@ function render(p: Combinator<unknown>, depth = 3): string {
   switch (d.tag) {
     case 'sequence': return `sequence(${kids.join(', ')})`
     case 'choice': return `choice(${kids.join(', ')})`
+    case 'dispatch': {
+      const arms = d.cases.map((c, i) => `when([${c.keys.map(k => `'${k}'`).join(', ')}], ${kids[i + 1] ?? ''})`)
+      if (d.otherwise !== undefined) arms.push(`otherwise(${kids[kids.length - 1] ?? ''})`)
+      return `dispatch(${kids[0] ?? ''}, ${arms.join(', ')})`
+    }
     case 'node': return `node(${d.type ? `'${d.type}', ` : ''}${kids[0] ?? ''})`
     case 'label': return `label('${d.label}', ${kids[0] ?? ''})`
     case 'field': return `field('${d.name}', ${kids[0] ?? ''})`
@@ -496,6 +507,10 @@ function segment(d: ParserDef, index: number): string {
   switch (d.tag) {
     case 'sequence': return `seq[${index}]`
     case 'choice': return `choice[${index}]`
+    case 'dispatch':
+      if (index === 0) return 'dispatch.selector'
+      if (index <= d.cases.length) return `dispatch.when[${index - 1}]`
+      return 'dispatch.otherwise'
     case 'node': return `node(${d.type ?? ''})`
     case 'label': return `label(${d.label})`
     case 'field': return `field(${d.name})`

@@ -58,6 +58,11 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         // value is the winning arm's value — propagate consumed to each arm.
         for (const p of def.parsers) visit(p, consumed)
         return
+      case 'dispatch':
+        visit(def.selector, consumed)
+        for (const entry of def.cases) visit(entry.parser, consumed)
+        if (def.otherwise) visit(def.otherwise, consumed)
+        return
       case 'node':
         // builds from captured children, NOT the inner parser value.
         visit(def.parser, false)
