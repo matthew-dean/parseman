@@ -468,6 +468,7 @@ export function analyzeGatingRules(
     if (d.tag === 'dispatch') {
       kids.push(d.selector)
       for (const c of d.cases) kids.push(c.parser)
+      if (d.matchers) for (const c of d.matchers) kids.push(c.parser)
       if (d.otherwise !== undefined) kids.push(d.otherwise)
     }
     if (Array.isArray(rec.skip)) kids.push(...(rec.skip as Combinator<unknown>[]))

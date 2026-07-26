@@ -103,7 +103,7 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
       // UNNAMED lazy is an inline thunk — recurse into it (cycle-guarded by `seen`).
       try { return rec(d.thunk()) } catch { return { alts: [[seg(any(), false)]] } }
     }
-    case 'literal': case 'regex': case 'keywords':
+    case 'literal': case 'regex': case 'keywords': case 'routed':
       return { alts: [[seg(p._meta.firstSet, matchesEmpty(p))]] }
     case 'choice': {
       // Alternatives union: concat every arm's chains.
@@ -895,7 +895,10 @@ function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unk
     case 'choice':
       return false
     case 'dispatch':
-      return capturesLeaf(d.selector, seen) || d.cases.some(x => mayLeavePartialCapture(x.parser, seen) || capturesLeaf(x.parser, seen)) || (d.otherwise ? mayLeavePartialCapture(d.otherwise, seen) || capturesLeaf(d.otherwise, seen) : false)
+      return capturesLeaf(d.selector, seen) ||
+        d.cases.some(x => mayLeavePartialCapture(x.parser, seen) || capturesLeaf(x.parser, seen)) ||
+        (d.matchers ? d.matchers.some(x => mayLeavePartialCapture(x.parser, seen) || capturesLeaf(x.parser, seen)) : false) ||
+        (d.otherwise ? mayLeavePartialCapture(d.otherwise, seen) || capturesLeaf(d.otherwise, seen) : false)
     case 'attempt':
       return false
     // optional never fails; many/oneOrMore only "fail" with zero captured items.
@@ -991,6 +994,7 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'keywords':
     case 'node':
     case 'token':
+    case 'routed':
     case 'leaf':
       return true
     case 'not':
@@ -1003,7 +1007,10 @@ function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = n
     case 'choice':
       return d.parsers.some(x => capturesLeaf(x, seen))
     case 'dispatch':
-      return capturesLeaf(d.selector, seen) || d.cases.some(x => capturesLeaf(x.parser, seen)) || (d.otherwise ? capturesLeaf(d.otherwise, seen) : false)
+      return capturesLeaf(d.selector, seen) ||
+        d.cases.some(x => capturesLeaf(x.parser, seen)) ||
+        (d.matchers ? d.matchers.some(entry => capturesLeaf(entry.parser, seen)) : false) ||
+        (d.otherwise ? capturesLeaf(d.otherwise, seen) : false)
     case 'sepBy':
       return capturesLeaf(d.parser, seen) || capturesLeaf(d.separator, seen)
     case 'many':
@@ -1703,6 +1710,7 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
       for (const item of d.cases) {
         if (mayRecordRecoveryError(item.parser, recovery, seen)) return true
       }
+      if (d.matchers?.some(item => mayRecordRecoveryError(item.parser, recovery, seen))) return true
       return d.otherwise ? mayRecordRecoveryError(d.otherwise, recovery, seen) : false
     }
     case 'attempt':
@@ -1734,62 +1742,145 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
   }
 }
 
-function emitDispatchCombinator(def: Extract<ParserDef, { tag: 'dispatch' }>, ctx: Ctx, pos: string): ER {
+function emitDispatchCombinator(parser: Combinator<unknown>, def: Extract<ParserDef, { tag: 'dispatch' }>, ctx: Ctx, pos: string): ER {
+  if (parserUsesRouted(def.selector)) {
+    throw new Error('parseman: routed() can only appear inside a dispatch() branch')
+  }
+  const coverageIds = ctx.coverage?.plan.dispatches.get(parser) ?? []
+  const branchUsesRouted = (entry: { parser: Combinator<unknown>; usesRouted?: boolean | undefined }): boolean =>
+    entry.usesRouted === true || parserUsesRouted(entry.parser)
+  const hasRoutedBranch = def.cases.some(branchUsesRouted) ||
+    (def.matchers ? def.matchers.some(branchUsesRouted) : false) ||
+    (def.otherwise ? def.otherwiseUsesRouted === true || parserUsesRouted(def.otherwise) : false)
+  const selectorLeafMark = hasRoutedBranch ? v(ctx, '_dsl') : null
+  const selectorRawMark = hasRoutedBranch ? v(ctx, '_dsr') : null
+  const selectorTriviaMark = hasRoutedBranch ? v(ctx, '_dst') : null
+  const selectorLogMark = hasRoutedBranch ? v(ctx, '_dsg') : null
+  const selectorFieldMark = hasRoutedBranch ? v(ctx, '_dsf') : null
+  const selectorErrorMark = hasRoutedBranch ? v(ctx, '_dse') : null
   const selector = emit(def.selector, ctx, pos)
   const outV = v(ctx, '_dval')
   const outE = v(ctx, '_dend')
   const keyV = v(ctx, '_dkey')
   const stmts: string[] = [
+    ...(selectorLeafMark ? [
+      `${ind(ctx)}const ${selectorLeafMark} = _ctx._cstLeaves?.length ?? 0`,
+      `${ind(ctx)}const ${selectorRawMark} = _ctx._cstRawChildren?.length ?? 0`,
+      `${ind(ctx)}const ${selectorTriviaMark} = _ctx._cstTriviaLog?.length ?? 0`,
+      `${ind(ctx)}const ${selectorLogMark} = _ctx._triviaLog?.length ?? 0`,
+      `${ind(ctx)}const ${selectorFieldMark} = _ctx._fields?.length ?? 0`,
+      `${ind(ctx)}const ${selectorErrorMark} = _ctx._errors?.length ?? 0`,
+    ] : []),
     ...selector.stmts,
     `${ind(ctx)}const ${keyV} = ${selector.valueVar}`,
     `${ind(ctx)}let ${outV}, ${outE} = ${selector.endVar}`,
   ]
 
   let wroteBranch = false
-  const emitSelectedTail = (parser: Combinator<unknown>, keyword: 'if' | 'else if' | 'else', condition?: string): void => {
+  const emitSelectedTail = (entry: { parser: Combinator<unknown>; usesRouted?: boolean | undefined }, keyword: 'if' | 'else if' | 'else', condition?: string, coverageId?: string): void => {
+    const parser = entry.parser
     const head = keyword === 'else'
       ? `${ind(ctx)}else {`
       : `${ind(ctx)}${keyword} (${condition}) {`
     stmts.push(head)
     ctx.indent++
+    const usesRouted = branchUsesRouted(entry)
+    const routedV = usesRouted ? v(ctx, '_drt') : null
     const mayError = mayRecordRecoveryError(parser, !!ctx.recovery)
     const errMark = mayError ? v(ctx, '_derr') : null
     const logMark = ctx.activeTrivia ? v(ctx, '_dlog') : null
+    if (routedV) {
+      stmts.push(
+        `${ind(ctx)}const ${routedV} = _ctx._routed; _ctx._routed = { value: ${selector.valueVar}, span: { start: ${pos}, end: ${selector.endVar} } }`,
+        ...(selectorLeafMark ? [
+          `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${selectorLeafMark}) _ctx._cstLeaves.length = ${selectorLeafMark}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${selectorRawMark}) _ctx._cstRawChildren.length = ${selectorRawMark}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${selectorTriviaMark}) _ctx._cstTriviaLog.length = ${selectorTriviaMark}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${selectorLogMark}) _ctx._triviaLog.length = ${selectorLogMark}; if (_ctx._fields && _ctx._fields.length !== ${selectorFieldMark}) _ctx._fields.length = ${selectorFieldMark}; if (_ctx._errors && _ctx._errors.length !== ${selectorErrorMark}) _ctx._errors.length = ${selectorErrorMark}`,
+        ] : []),
+      )
+    }
     if (errMark) stmts.push(`${ind(ctx)}const ${errMark} = _ctx._errors?.length ?? 0`)
     if (logMark) stmts.push(`${ind(ctx)}const ${logMark} = _ctx._triviaLog?.length ?? 0`)
-    const tail = emitTailFallible(parser, ctx, selector.endVar)
+    const tail = emitTailFallible(parser, ctx, usesRouted ? pos : selector.endVar)
+    stmts.push(...coverageAttempt(ctx, coverageId, pos))
     const errorRollback = errMark
       ? `if (_ctx._errors && _ctx._errors.length !== ${errMark}) _ctx._errors.length = ${errMark}; `
       : ''
     const logRollback = logMark
       ? `if (_ctx._triviaLog && _ctx._triviaLog.length !== ${logMark}) _ctx._triviaLog.length = ${logMark}; `
       : ''
+    const routedRollback = routedV ? `_ctx._routed = ${routedV}; ` : ''
+    const coverageFailure = coverageId === undefined
+      ? ''
+      : `_ctx._grammarTrace?.write({ id: ${JSON.stringify(coverageId)}, phase: 'failure', offset: _ctx._fe }); `
     stmts.push(
       ...tail.stmts,
-      `${ind(ctx)}if (!${tail.okVar}) { ${errorRollback}${logRollback}${committedFailBody(ctx)} }`,
+      `${ind(ctx)}if (!${tail.okVar}) { ${routedRollback}${errorRollback}${logRollback}${coverageFailure}${committedFailBody(ctx)} }`,
+      ...(routedV ? [`${ind(ctx)}_ctx._routed = ${routedV}`] : []),
       `${ind(ctx)}${outV} = [${selector.valueVar}, ${tail.valVar}]`,
       `${ind(ctx)}${outE} = ${tail.endVar}`,
+      ...coverageHit(ctx, coverageId, pos, tail.endVar),
     )
     ctx.indent--
     stmts.push(`${ind(ctx)}}`)
   }
 
+  let coverageIndex = 0
   for (const entry of def.cases) {
-    const condition = entry.keys.map(key => `${keyV} === ${JSON.stringify(key)}`).join(' || ')
-    emitSelectedTail(entry.parser, wroteBranch ? 'else if' : 'if', condition)
+    const condition = entry.keys.map(key => emitDispatchKeyCondition(keyV, key, entry.caseInsensitive)).join(' || ')
+    emitSelectedTail(entry, wroteBranch ? 'else if' : 'if', condition, coverageIds[coverageIndex++])
     wroteBranch = true
   }
 
+  const emitMatcherTails = (): void => {
+    for (const matcher of def.matchers ?? []) {
+      emitSelectedTail(matcher, wroteBranch ? 'else if' : 'if', emitDispatchMatcherCondition(keyV, matcher), coverageIds[coverageIndex++])
+      wroteBranch = true
+    }
+  }
+
   if (def.otherwise) {
-    if (wroteBranch) emitSelectedTail(def.otherwise, 'else')
-    else emitSelectedTail(def.otherwise, 'if', 'true')
+    emitMatcherTails()
+    const otherwiseEntry = { parser: def.otherwise, usesRouted: def.otherwiseUsesRouted }
+    if (wroteBranch) emitSelectedTail(otherwiseEntry, 'else', undefined, coverageIds[coverageIndex++])
+    else emitSelectedTail(otherwiseEntry, 'if', 'true', coverageIds[coverageIndex++])
   } else {
+    emitMatcherTails()
     const expected = JSON.stringify(def.cases.flatMap(entry => entry.keys.map(key => JSON.stringify(key))))
     const fail = failArrBody(ctx, expected, selector.endVar)
     stmts.push(wroteBranch ? `${ind(ctx)}else { ${fail} }` : `${ind(ctx)}${fail}`)
   }
 
   return { stmts, valueVar: outV, endVar: outE }
+}
+
+function emitDispatchKeyCondition(valueVar: string, key: string, caseInsensitive: boolean): string {
+  if (!caseInsensitive) return `${valueVar} === ${JSON.stringify(key)}`
+  const parts = [`${valueVar}.length === ${key.length}`]
+  for (let i = 0; i < key.length; i++) {
+    parts.push(foldEq(`${valueVar}.charCodeAt(${i})`, key.charCodeAt(i)))
+  }
+  return parts.join(' && ')
+}
+
+function emitDispatchMatcherCondition(
+  valueVar: string,
+  matcher: NonNullable<Extract<ParserDef, { tag: 'dispatch' }>['matchers']>[number],
+): string {
+  if (matcher.kind === 'matches') {
+    const flags = matcher.caseInsensitive && !matcher.flags?.includes('i')
+      ? `${matcher.flags ?? ''}i`
+      : matcher.flags ?? ''
+    return `${new RegExp(matcher.value, flags).toString()}.test(${valueVar})`
+  }
+
+  const text = matcher.value
+  const parts = [`${valueVar}.length >= ${text.length}`]
+  const offset = matcher.kind === 'endsWith' ? `${valueVar}.length - ${text.length}` : '0'
+  for (let i = 0; i < text.length; i++) {
+    parts.push(matcher.caseInsensitive
+      ? foldEq(`${valueVar}.charCodeAt(${offset}${i === 0 ? '' : ` + ${i}`})`, text.charCodeAt(i))
+      : `${valueVar}.charCodeAt(${offset}${i === 0 ? '' : ` + ${i}`}) === ${text.charCodeAt(i)}`)
+  }
+  return parts.join(' && ')
 }
 
 // ── greedyClassify: run the super-regex once, classify by string equality ────
@@ -2827,6 +2918,19 @@ function emitPeek(def: Extract<ParserDef, { tag: 'peek' }>, ctx: Ctx, pos: strin
   }
 }
 
+function emitRouted(ctx: Ctx, pos: string): ER {
+  const item = v(ctx, '_rt')
+  return {
+    stmts: [
+      `${ind(ctx)}const ${item} = _ctx._routed`,
+      ...emitIfFail(ctx, `${item} === undefined || ${item}.span.start !== ${pos}`, failBody(ctx, '"routed()"', pos)),
+      ...emitLeafCapture(ctx, `${item}.value`, `${item}.span.start`, `${item}.span.end`),
+    ],
+    valueVar: `${item}.value`,
+    endVar: `${item}.span.end`,
+  }
+}
+
 function escapeTokenLiteral(value: string): string {
   return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')
 }
@@ -3555,7 +3659,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'keywords':  return emitKeywords(def, ctx, pos)
     case 'sequence':  return emitSeq(def, ctx, pos)
     case 'choice':    return emitChoice(p, def, ctx, pos)
-    case 'dispatch':  return emitDispatchCombinator(def, ctx, pos)
+    case 'dispatch':  return emitDispatchCombinator(p, def, ctx, pos)
     case 'attempt':   return emitAttempt(p, def, ctx, pos)
     case 'many':
     case 'oneOrMore': return emitMany(def, ctx, pos)
@@ -3672,6 +3776,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     }
     case 'not':     return emitNot(def, ctx, pos)
     case 'peek':    return emitPeek(def, ctx, pos)
+    case 'routed':  return emitRouted(ctx, pos)
     case 'node':    return emitNode(def, ctx, pos)
     case 'scanTo':  return emitScanTo(def, ctx, pos)
     case 'recover': return emitRecover(def, ctx, pos)
@@ -3820,13 +3925,25 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'skip':      return hasNodeDef(d.main, seen) || hasNodeDef(d.skipped, seen)
     case 'sequence':
     case 'choice':    return d.parsers.some(x => hasNodeDef(x, seen))
-    case 'dispatch':  return hasNodeDef(d.selector, seen) || d.cases.some(x => hasNodeDef(x.parser, seen)) || (d.otherwise ? hasNodeDef(d.otherwise, seen) : false)
+    case 'dispatch':  return hasNodeDef(d.selector, seen) || d.cases.some(x => hasNodeDef(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => hasNodeDef(entry.parser, seen)) : false) || (d.otherwise ? hasNodeDef(d.otherwise, seen) : false)
     case 'sepBy':     return hasNodeDef(d.parser, seen) || hasNodeDef(d.separator, seen)
     case 'scanTo':    return hasNodeDef(d.sentinel, seen) || d.skip.some(x => hasNodeDef(x, seen))
     case 'recover':   return hasNodeDef(d.parser, seen) || hasNodeDef(d.sentinel, seen)
     case 'expect':    return hasNodeDef(d.parser, seen)
     case 'withCtx':   return hasNodeDef(d.parser, seen)
     default:          return false
+  }
+}
+
+function parserUsesRouted(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'routed':    return true
+    case 'lazy':      { try { return parserUsesRouted(d.thunk(), seen) } catch { return false } }
+    case 'dispatch':  return false
+    default:          return childrenOf(d).some(child => parserUsesRouted(child, seen))
   }
 }
 
@@ -3847,7 +3964,7 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
   switch (def.tag) {
     case 'sequence':
     case 'choice':    return def.parsers
-    case 'dispatch':  return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.otherwise ? [def.otherwise] : [])]
+    case 'dispatch':  return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.matchers ? def.matchers.map(entry => entry.parser) : []), ...(def.otherwise ? [def.otherwise] : [])]
     case 'many':
     case 'attempt':
     case 'optional':
@@ -3878,6 +3995,7 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'regex':
     case 'keywords':
     case 'guard':
+    case 'routed':
     case 'unknown':   return []
   }
 }

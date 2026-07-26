@@ -17,7 +17,7 @@
  * Returns null if the map can't be faithfully serialized (a callback without
  * source, or an unsupported construct) — the caller then keeps the lowered source.
  */
-import type { Combinator, ParserDef } from '../types.ts'
+import type { Combinator, DispatchMatcherCase, ParserDef } from '../types.ts'
 import { rules } from '../combinators/parser.ts'
 import { ref } from '../combinators/ref.ts'
 import { regex } from '../combinators/regex.ts'
@@ -25,7 +25,7 @@ import { literal } from '../combinators/literal.ts'
 import { keywords } from '../combinators/keywords.ts'
 import { sequence } from '../combinators/sequence.ts'
 import { choice } from '../combinators/choice.ts'
-import { dispatch, otherwise, when } from '../combinators/dispatch.ts'
+import { dispatch, endsWith, matches, otherwise, routed, startsWith, when } from '../combinators/dispatch.ts'
 import { attempt } from '../combinators/attempt.ts'
 import { many, oneOrMore, optional, sepBy } from '../combinators/repeat.ts'
 import { not } from '../combinators/not.ts'
@@ -45,7 +45,7 @@ function childrenOf(def: ParserDef): Comb[] {
   switch (def.tag) {
     case 'sequence':
     case 'choice':    return def.parsers
-    case 'dispatch':  return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.otherwise ? [def.otherwise] : [])]
+    case 'dispatch':  return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.matchers ? def.matchers.map(entry => entry.parser) : []), ...(def.otherwise ? [def.otherwise] : [])]
     case 'many':
     case 'oneOrMore':
     case 'optional':
@@ -69,6 +69,7 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'literal':
     case 'regex':
     case 'keywords':
+    case 'routed':
     case 'guard':
     case 'recover':
     case 'unknown':   return []
@@ -93,6 +94,17 @@ function repeatOpts(min: number, max: number | undefined, trailing?: string): st
   if (max !== undefined) parts.push(`max: ${max}`)
   if (trailing !== undefined) parts.push(`trailing: ${JSON.stringify(trailing)}`)
   return parts.length === 0 ? '' : `, { ${parts.join(', ')} }`
+}
+
+function matcherExpr(entry: DispatchMatcherCase): string {
+  switch (entry.kind) {
+    case 'startsWith':
+      return `startsWith(${JSON.stringify(entry.value)})`
+    case 'endsWith':
+      return `endsWith(${JSON.stringify(entry.value)})`
+    case 'matches':
+      return `matches(${new RegExp(entry.value, entry.flags ?? '').toString()})`
+  }
 }
 
 export function serializeRuleMap(
@@ -203,13 +215,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   }
   // eslint-disable-next-line no-new-func
   const fn = new Function(
-    'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'otherwise', 'attempt',
+    'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'startsWith', 'endsWith', 'matches', 'otherwise', 'routed', 'attempt',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'peek', 'node', 'parser',
     'scanTo', 'token', 'leaf', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
-    rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, otherwise, attempt,
+    rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
     many, oneOrMore, optional, sepBy, not, peek, node, parser,
     scanTo, token, leaf, transform, skip, trivia, label, field, expectC, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
@@ -396,8 +408,13 @@ class Serializer {
       }
       case 'dispatch': {
         const arms = def.cases.map(entry =>
-          `when(${entry.keys.length === 1 ? JSON.stringify(entry.keys[0]) : JSON.stringify(entry.keys)}, ${kid(entry.parser)})`
+          `when(${entry.keys.length === 1 ? JSON.stringify(entry.keys[0]) : JSON.stringify(entry.keys)}, ${kid(entry.parser)}${entry.caseInsensitive ? ', { caseInsensitive: true }' : ''})`
         )
+        if (def.matchers) {
+          for (const entry of def.matchers) {
+            arms.push(`when(${matcherExpr(entry)}, ${kid(entry.parser)}${entry.caseInsensitive ? ', { caseInsensitive: true }' : ''})`)
+          }
+        }
         if (def.otherwise) arms.push(`otherwise(${kid(def.otherwise)})`)
         return `dispatch(${kid(def.selector)}${arms.length === 0 ? '' : `, ${arms.join(', ')}`})`
       }
@@ -412,6 +429,7 @@ class Serializer {
       case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)}${repeatOpts(def.min, def.max, def.trailing)})`
       case 'not':       return `not(${kid(def.parser)})`
       case 'peek':     return `peek(${kid(def.parser)})`
+      case 'routed':   return 'routed()'
       case 'trivia':    return `trivia(${kid(def.parser)})`
       case 'token':     return `token(${kid(def.parser)})`
       case 'leaf': {

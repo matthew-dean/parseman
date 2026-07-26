@@ -78,6 +78,7 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     case 'transform':
     case 'not':
     case 'peek':     return deriveExpected(def.parser)
+    case 'routed':   return ['routed()']
     case 'lazy': {
       // An EXTERNAL ref (a rule from a composed base grammar) has no local
       // definition yet — its `thunk()` throws until fusion supplies it. Fall back

@@ -61,6 +61,7 @@ export function markUnusedValues(root: Combinator<unknown>): void {
       case 'dispatch':
         visit(def.selector, consumed)
         for (const entry of def.cases) visit(entry.parser, consumed)
+        if (def.matchers) for (const entry of def.matchers) visit(entry.parser, consumed)
         if (def.otherwise) visit(def.otherwise, consumed)
         return
       case 'node':

@@ -4,7 +4,7 @@ Parséman has two opt-in grammar-observability modes. Interpreter coverage uses
 the selected start-rule closure; a coverage-enabled macro grammar map carries
 the stable IDs emitted for that compiled map, including final composed winners.
 
-- Coverage answers “which rules, choice arms, and labels succeeded?”
+- Coverage answers “which rules, choice arms, dispatch arms, and labels succeeded?”
 - Trace answers “what did this parse try, select, fail, and backtrack through?”
 
 Neither mode changes ordinary interpreter parsing or ordinary macro output.
@@ -72,16 +72,17 @@ expect(coverage.ratio).toBe(1) // 100% of structural definitions in this corpus
 ```
 
 `ratio` is `hits.length / definitions.length`: it counts successful named rules,
-choice arms, and labels in the coverage-enabled generated grammar map. It is not V8 line
-coverage, statement coverage, or a claim that every invalid input has been
-tested. Macro output without `grammarCoverage: true` intentionally has no
-definition metadata or hooks; production parsing stays unchanged.
+choice arms, dispatch arms, and labels in the coverage-enabled generated
+grammar map. It is not V8 line coverage, statement coverage, or a claim that
+every invalid input has been tested. Macro output without
+`grammarCoverage: true` intentionally has no definition metadata or hooks;
+production parsing stays unchanged.
 
 ## Trace
 
 Trace is intentionally more verbose. It records lifecycle events with the same
 IDs: rule entry/success/failure, choice-arm attempt/failure/backtrack/selection,
-and successful labels.
+dispatch-arm attempt/selection/success/failure, and successful labels.
 
 ```ts
 import { createGrammarTraceSink, runWithGrammarCoverage } from 'parseman'
@@ -95,6 +96,13 @@ console.log(trace.snapshot().events)
 The sink retains the first `capacity` events. It detaches when full, when a
 stream callback returns `false`, or when that callback throws. Its snapshot
 reports `truncated` and `dropped`; detachment never changes parse results.
+
+`dispatch` traces only the selected route. Arms excluded by the returned string
+do not emit attempts or backtracks; they were never parsed. If a selected tail
+fails, the dispatch arm emits `failure` and the parse failure is committed.
+Branches that use `routed()` still report the dispatch start offset, so the
+trace stays about the grammar route rather than the branch's internal ownership
+mechanics.
 
 ## Macro mode
 

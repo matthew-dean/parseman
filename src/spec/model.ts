@@ -242,8 +242,9 @@ class Builder {
         const selector = this.walk(def.selector)
         const tails = [
           ...def.cases.map(entry => this.walk(entry.parser)),
+          ...(def.matchers ? def.matchers.map(entry => this.walk(entry.parser)) : []),
           ...(def.otherwise ? [this.walk(def.otherwise)] : []),
-        ].filter(nonEmpty)
+        ]
         return flattenSeq([selector, flattenChoice(tails)])
       }
 
@@ -273,6 +274,8 @@ class Builder {
         return { kind: 'not', item: this.walk(def.parser) }
       case 'peek':
         return { kind: 'peek', item: this.walk(def.parser) }
+      case 'routed':
+        return { kind: 'empty' }
 
       // Transparent semantic wrappers — render the inner syntax.
       case 'transform':

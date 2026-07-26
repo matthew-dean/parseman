@@ -111,6 +111,14 @@ Two questions sort most of the field:
 
 This axis is easy to miss and hard to retrofit.
 
+One concrete place this matters is lexical routing. `dispatch(combinator,
+when(...), otherwise(...))` lets a grammar parse a broad token family once,
+route by the value that was actually returned, and use `routed()` when the
+selected branch should own that same value/span in its CST or AST node. Other
+tools can classify tokens, of course; the Parséman shape keeps classification,
+fallback, commitment, and tree ownership inside ordinary grammar composition
+instead of splitting the work across a lexer action and parser-side rewiring.
+
 Real languages aren't purely context-free: `return` is only legal inside a function body,
 a here-doc's terminator depends on its opening line, indentation changes meaning, a CSS
 `&` means something different inside a nesting block, an `@extend` target only resolves in

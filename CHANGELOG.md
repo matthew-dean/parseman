@@ -3,15 +3,37 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.39.1 — 2026-07-26
+
+- **Extend `dispatch` with case-insensitive cases, matcher keys, and
+  `routed()`.** `when(key, tail, { caseInsensitive: true })` and
+  `makeWhen({ caseInsensitive: true })` route from the parsed value while
+  preserving the authored text. `when(startsWith(...))`, `when(endsWith(...))`,
+  and `when(matches(...))` provide ordered matcher buckets for broad lexical
+  families.
+
+  `routed()` is a contextual combinator for branch nodes. `dispatch` consumes
+  its first combinator once; a selected branch that contains `routed()` starts at
+  the original dispatch position, and `routed()` places the already-consumed
+  value/span inside that branch. This lets grammars express lexical routing,
+  fallback behavior, and CST/AST ownership in one grammar shape, without
+  speculative parsing or handwritten semantic rewiring.
+
+  Dispatch arms are included in grammar coverage and trace output. Traces show
+  only the selected route; excluded arms are not reported as attempted or
+  backtracked. Macro lowering, serializable IR, and generated EBNF/railroad
+  specs all understand exact keys, matcher keys, case-insensitive routing, and
+  `routed()` branch ownership.
+
 ## 0.39.0 — 2026-07-26
 
-- **Add `dispatch(selector, when(...), otherwise(...))` for token-once static
-  routing.** Use this when one broad selector token is valid generally, and
-  selected selector values have specialized continuation grammars. CSS at-rules
+- **Add `dispatch(combinator, when(...), otherwise(...))` for token-once static
+  routing.** Use this when one broad combinator is valid generally, and selected
+  values have specialized continuation grammars. CSS at-rules
   are the model case: every at-keyword is an at-rule name, while `@media`,
   `@scope`, `@layer`, etc. each require a specific prelude/body shape.
-  `dispatch` parses the selector once, chooses a static `when(key, tail)` /
-  `when([keys], tail)` arm by selector value, and runs `otherwise(tail)` only
+  `dispatch` parses the combinator once, chooses a static `when(key, tail)` /
+  `when([keys], tail)` arm by returned value, and runs `otherwise(tail)` only
   when no key matches. A matched key's tail failure is committed, so it does not
   fall through to `otherwise` or an outer `choice` fallback.
 
@@ -20,9 +42,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   understand the new combinator. Macro-compiled `rules()` factories may also bind
   `when()` / `otherwise()` arms to local `const`s before passing them to
   `dispatch(...)`, matching the normal combinator-authoring style. V1
-  intentionally keeps classification simple: the selector value must already be
+  intentionally keeps classification simple: the returned value must already be
   the dispatch key string, and the macro path supports explicit arm arguments
-  rather than `dispatch(selector, ...arms)` spread tables. Classifier callbacks,
+  rather than `dispatch(combinator, ...arms)` spread tables. Classifier callbacks,
   spread-arm tables, and pattern cases remain future design work.
 
 ## 0.38.0 — 2026-07-26

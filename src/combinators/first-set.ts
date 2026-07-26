@@ -94,6 +94,7 @@ export function matchesEmpty(
   switch (d.tag) {
     case 'literal':   return d.value.length === 0
     case 'keywords':  return false
+    case 'routed':    return false
     case 'regex':
       // Precise: does the pattern admit a zero-length match? (`a*`, `a?`, `a|`, …)
       try { const m = new RegExp(d.source).exec(''); return m != null && m[0] === '' }
@@ -279,7 +280,7 @@ export function firstSetOf(
     }
     case 'peek': {
       // Deep-resolve the body: a `ref()` reads `any()` at CONSTRUCTION, so the
-      // shallow `_meta.firstSet` baked into peek() would lose the gate.
+      // shallow `_meta.firstSet` baked into the assertion would lose the gate.
       const inner = d.parser
       return empties(inner) ? any() : fs(inner)
     }

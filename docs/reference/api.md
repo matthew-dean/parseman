@@ -85,45 +85,164 @@ choice compiles to an O(1) first-char dispatch — gated arms included, so gatin
 rare-token alternative (like `&`) stays O(1) rather than dropping the whole choice to a
 linear scan. (A nullable or overlapping arm forces the linear path.)
 
-### `dispatch(selector, when(...), otherwise(...))`
+When several arms first parse the same broad token family and then branch by the
+string that token returned, use [`dispatch`](#dispatchcombinator-when-otherwise)
+instead. It avoids backtracking through the same opener shape and makes the
+shared lexical decision explicit.
 
-Parse `selector` once, use its string value as a static dispatch key, then parse
-the selected tail from the selector end. Use this when one broad selector token
-is valid generally, and selected selector values have specialized continuation
-grammars. CSS at-rules are the canonical example: every at-keyword is an
-at-rule name, while `@media`, `@scope`, `@layer`, and friends each have a
-specific prelude/body shape. `when(key, tail)` matches one key;
-`when([keyA, keyB], tail)` shares a tail across keys; `otherwise(tail)` handles
-only unmatched selector values.
+### `dispatch(combinator, when(...), otherwise(...))`
+
+Parse the combinator once, look at the string it returned, then choose what
+comes next. Use this when one broad token is valid generally, but selected
+values have specialized continuation grammars. CSS at-rules are the canonical
+example: every at-keyword is an at-rule name, while `@media`, `@scope`,
+`@layer`, and friends each have a specific prelude/body shape. `when(key, tail,
+opts?)` matches one key; `when([keyA, keyB], tail, opts?)` shares a tail across
+keys. Matcher keys such as `startsWith(prefix)`, `endsWith(suffix)`, and
+`matches(pattern)` test the returned string instead of parsing input again.
+`otherwise(tail)` handles values that no earlier arm matched.
+`opts.caseInsensitive` folds ASCII case for comparison only; the parse value
+stays authored.
 
 ```ts
+const combinator = regex(/@[A-Za-z_][A-Za-z0-9_-]*/)
+
 const atRule = dispatch(
-  atKeyword,
-  when('@media', mediaTail),
+  combinator,
+  when('@media', mediaTail, { caseInsensitive: true }),
   when(['@font-face', '@property'], descriptorTail),
+  otherwise(genericTail),
+)
+
+const atCase = makeWhen({ caseInsensitive: true })
+const atRuleTable = dispatch(
+  combinator,
+  atCase('@media', mediaTail),
+  atCase('@scope', scopeTail),
   otherwise(genericTail),
 )
 ```
 
-If the selector itself fails, `dispatch` fails normally and an enclosing
+Identifier-or-function positions should split lexically before keyword parsing.
+Use one combinator that consumes either the bare identifier or the
+source-shaped glued function opener:
+
+```ts
+const fnCase = makeWhen({ caseInsensitive: true })
+const identOrFunctionOpen = token(sequence(cssIdent, optional(literal('('))))
+
+const IdentOrFunctionValue = dispatch(
+  identOrFunctionOpen,
+  fnCase('url(', urlTail),
+  fnCase('calc(', calcTail),
+  fnCase('var(', varTail),
+  when(endsWith('('), genericFunctionTail),
+  otherwise(keywordTail),
+)
+```
+
+Here `URL(` routes to the `url(` arm and remains `URL(` in the returned tuple.
+`url` without `(` routes to the keyword tail without first trying a function
+parser. `url (` does not produce a glued opener and can parse as an identifier
+followed by a paren only in contexts that allow that shape.
+
+Pseudo selectors use the same lexical-shape split. The selector consumes
+`:hover`, `:is(`, `:nth-child(`, or `::part(` as the routed value; exact special
+pseudo-function openers commit to their own argument grammar, generic
+pseudo-functions share a matcher bucket, and bare pseudos use the fallback:
+
+```ts
+const pseudoCase = makeWhen({ caseInsensitive: true })
+const pseudoHead = token(sequence(
+  choice(literal('::'), literal(':')),
+  cssIdent,
+  optional(literal('(')),
+))
+
+const PseudoSelector = dispatch(
+  pseudoHead,
+  pseudoCase(':is(', selectorListTail),
+  pseudoCase(':nth-child(', nthTail),
+  pseudoCase('::part(', partTail),
+  when(endsWith('('), genericPseudoFunctionTail),
+  otherwise(barePseudoTail),
+)
+```
+
+If the combinator fails, `dispatch` fails normally and an enclosing
 `choice()` may try a later arm. If a key matches and its tail fails, the failure
 is committed: `otherwise(...)` and outer fallback arms are not tried. Duplicate
 keys are rejected at grammar construction time.
 
-The case strings are classifier keys for the selector value, not terminals
-parsed after the selector. Put the generic continuation in `otherwise(...)`.
+The case strings are exact full returned values, not prefixes and not terminals
+parsed after the combinator. Matchers operate on the returned string; the
+combinator owns trivia policy. Put generic matcher continuations before
+`otherwise(...)`.
 
-Inside a macro-compiled `rules()` factory, dispatch arms can be named like other
-local grammar pieces:
+Use `routed()` inside a branch when the value consumed by `dispatch` belongs to
+that branch node:
+
+```ts
+const UrlFunction = node('UrlFunction',
+  sequence(routed(), urlTail, literal(')')),
+  children => ({
+    type: 'UrlFunction',
+    name: children[0].value.slice(0, -1),
+    value: children[1],
+  }),
+)
+
+const Identifier = node('Identifier',
+  routed(),
+  children => ({ type: 'Identifier', name: children[0].value }),
+)
+
+const Value = dispatch(
+  identOrFunctionOpen,
+  fnCase('url(', UrlFunction),
+  when(endsWith('('), GenericFunction),
+  otherwise(Identifier),
+)
+```
+
+`dispatch` still consumes the first combinator once. Branches that use
+`routed()` start from the original dispatch position, and `routed()` places the
+already-consumed value/span there. Branches without `routed()` start after the
+first combinator, which is the right shape for tail-only continuations. This
+keeps lexical routing, fallback behavior, and CST/AST ownership in the grammar
+expression.
+
+Coverage and trace treat each `when(...)`, matcher, and `otherwise(...)` arm as
+its own dispatch arm. Excluded arms are not attempted or backtracked in the
+trace; the selected route emits attempt/selected/success, or attempt/failure if
+its committed tail fails. Grammar specs and railroad diagrams render the
+language shape and elide `routed()` itself.
+
+### `makeWhen(opts?)`
+
+Return a `(key, tail) => when(key, tail, opts)` factory for dispatch tables with
+shared arm options.
+
+```ts
+const keywordCase = makeWhen({ caseInsensitive: true })
+
+dispatch(
+  keyword,
+  keywordCase('only', onlyTail),
+  keywordCase('not', notTail),
+  otherwise(genericTail),
+)
+```
+
+Dispatch arms can be named like other local grammar pieces:
 
 ```ts
 const block = when('@media', mediaTail)
 const generic = otherwise(genericTail)
-return { AtRule: dispatch(atKeyword, block, generic) }
+return { AtRule: dispatch(combinator, block, generic) }
 ```
 
-V1 macro lowering expects explicit arm arguments. `dispatch(selector, ...arms)`
-and top-level arm aliases are not part of the macro-supported surface yet.
+Macro lowering expects explicit arm arguments.
 
 ### `attempt(combinator)`
 

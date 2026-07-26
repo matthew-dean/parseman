@@ -1,7 +1,7 @@
 import { run, type RunOptions, type RunResult, type Runnable } from './functional/run.ts'
-import type { Combinator, DispatchCase, ParseContext, ParseResult } from './types.ts'
+import type { Combinator, DispatchCase, DispatchMatcherCase, ParseContext, ParseResult } from './types.ts'
 import { choice } from './combinators/choice.ts'
-import { dispatch, otherwise, when, type DispatchArm } from './combinators/dispatch.ts'
+import { dispatch, endsWith, matches, otherwise, startsWith, when, type DispatchArm, type DispatchStringMatcher } from './combinators/dispatch.ts'
 import { attempt } from './combinators/attempt.ts'
 import { getCoreLiteralValue } from './combinators/choice.ts'
 import { not } from './combinators/not.ts'
@@ -21,6 +21,17 @@ import { composedCoverageRules } from './compiler/linker.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition, type GrammarCoveragePlan } from './compiler/grammar-coverage-ids.ts'
 
 export type { GrammarCoverageDefinition } from './compiler/grammar-coverage-ids.ts'
+
+function dispatchMatcher(entry: DispatchMatcherCase): DispatchStringMatcher {
+  switch (entry.kind) {
+    case 'startsWith':
+      return startsWith(entry.value)
+    case 'endsWith':
+      return endsWith(entry.value)
+    case 'matches':
+      return matches(new RegExp(entry.value, entry.flags))
+  }
+}
 
 
 export type GrammarCoverageSnapshot = {
@@ -47,7 +58,7 @@ export function compiledGrammarCoverageDefinitions(grammar: Record<string, unkno
     || !definitions.every((definition): definition is GrammarCoverageDefinition => typeof definition === 'object'
       && definition !== null
       && typeof definition.id === 'string'
-      && (definition.kind === 'rule' || definition.kind === 'choice-arm' || definition.kind === 'label'))) {
+      && (definition.kind === 'rule' || definition.kind === 'choice-arm' || definition.kind === 'dispatch-arm' || definition.kind === 'label'))) {
     throw new TypeError('grammar has no coverage definitions; enable grammarCoverage for this macro build')
   }
   return definitions
@@ -130,7 +141,7 @@ export function composedGrammarCoverageDefinitions(grammar: Record<string, unkno
   return grammarCoverageDefinitions(entry, winners)
 }
 
-type CoverageMaps = Pick<GrammarCoveragePlan, 'choices' | 'attempts' | 'labels' | 'rules'>
+type CoverageMaps = Pick<GrammarCoveragePlan, 'choices' | 'dispatches' | 'attempts' | 'labels' | 'rules'>
 
 /**
  * Build a separate interpreter graph for the coverage run. It never mutates the
@@ -238,10 +249,54 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
           return unsafeSequence(...def.parsers.map(build))
         }
         case 'dispatch': {
-          const arms: DispatchArm<unknown>[] = def.cases.map((entry: DispatchCase) => when(entry.keys, build(entry.parser)))
-          if (def.otherwise) arms.push(otherwise(build(def.otherwise)))
+          const ids = maps.dispatches.get(parser) ?? []
+          let armIndex = 0
+          const dispatchStarts: number[] = []
+          const wrapArm = (arm: Combinator<unknown>, id: string | undefined): Combinator<unknown> => {
+            const child = build(arm)
+            return {
+              _tag: child._tag,
+              _meta: child._meta,
+              _def: child._def,
+              parse(input: string, pos: number, ctx: ParseContext) {
+                const dispatchStart = dispatchStarts[dispatchStarts.length - 1] ?? pos
+                if (id) trace?.write({ id, phase: 'attempt', offset: dispatchStart })
+                const result = child.parse(input, pos, ctx)
+                if (result.ok) {
+                  if (id) {
+                    collector.hit(id)
+                    trace?.write({ id, phase: 'selected', offset: dispatchStart, end: result.span.end })
+                    trace?.write({ id, phase: 'success', offset: dispatchStart, end: result.span.end })
+                  }
+                } else if (id) {
+                  trace?.write({ id, phase: 'failure', offset: result.span.end })
+                }
+                return result
+              },
+            } satisfies Combinator<unknown>
+          }
+          const arms: DispatchArm<unknown>[] = def.cases.map((entry: DispatchCase) =>
+            when(entry.keys, wrapArm(entry.parser, ids[armIndex++]), entry.caseInsensitive ? { caseInsensitive: true } : undefined)
+          )
+          if (def.matchers) {
+            for (const entry of def.matchers) {
+              arms.push(when(dispatchMatcher(entry), wrapArm(entry.parser, ids[armIndex++]), entry.caseInsensitive ? { caseInsensitive: true } : undefined))
+            }
+          }
+          if (def.otherwise) arms.push(otherwise(wrapArm(def.otherwise, ids[armIndex++])))
           const unsafeDispatch = dispatch as (selector: Combinator<string>, ...items: DispatchArm<unknown>[]) => Combinator<unknown>
-          return unsafeDispatch(build(def.selector) as Combinator<string>, ...arms)
+          const base = unsafeDispatch(build(def.selector) as Combinator<string>, ...arms)
+          return {
+            ...base,
+            parse(input, pos, ctx) {
+              dispatchStarts.push(pos)
+              try {
+                return base.parse(input, pos, ctx)
+              } finally {
+                dispatchStarts.pop()
+              }
+            },
+          }
         }
         case 'many': return many(build(def.parser))
         case 'oneOrMore': return oneOrMore(build(def.parser))

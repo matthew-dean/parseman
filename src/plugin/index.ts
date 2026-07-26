@@ -23,7 +23,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
@@ -830,12 +830,12 @@ export function transformMacro(
   const withCoverageDefinitions = (grammarExpr: string, definitions: readonly { id: string; kind: string }[]): string =>
     !grammarCoverage ? grammarExpr
       : `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.grammarCoverageDefinitions'), { value: Object.freeze(${JSON.stringify(definitions)}.map(Object.freeze)), enumerable: false })`
-  const emittedCoverageDefinitions = (source: string): Array<{ id: string; kind: 'rule' | 'choice-arm' | 'label' }> => {
+  const emittedCoverageDefinitions = (source: string): Array<{ id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }> => {
     const ids = new Set<string>()
     for (const match of source.matchAll(/id:\s*"([^"]+)"/g)) ids.add(match[1]!)
     return [...ids].sort().map(id => ({
       id,
-      kind: id.startsWith('rule:') ? 'rule' : id.startsWith('label:') ? 'label' : 'choice-arm',
+      kind: id.startsWith('rule:') ? 'rule' : id.startsWith('label:') ? 'label' : id.startsWith('dispatch:') ? 'dispatch-arm' : 'choice-arm',
     }))
   }
   // Same-file `const X = compose([...])` → its carried (re-lowerable) list, so a
@@ -1545,6 +1545,13 @@ export function transformMacro(
           const wordFactory = evaluateWordFactory(init, scope, code)
           if (wordFactory) {
             ;(scope as Map<string, unknown>).set(varName, wordFactory)
+            replacements.push({ start: init.start, end: init.end, replacement: 'undefined' })
+            continue
+          }
+          const whenFactory = evaluateWhenFactory(init, scope, code)
+          if (whenFactory) {
+            ;(scope as Map<string, unknown>).set(varName, whenFactory)
+            replacements.push({ start: init.start, end: init.end, replacement: 'undefined' })
             continue
           }
           // A shared array-of-combinators const (e.g. a reusable `skip` set) — store
