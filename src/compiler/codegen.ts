@@ -1734,116 +1734,6 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
   }
 }
 
-function canFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
-  if (seen.has(p)) return true
-  seen.add(p)
-  const d = p._def
-  switch (d.tag) {
-    case 'literal':
-    case 'regex':
-    case 'keywords':
-    case 'guard':
-    case 'not':
-    case 'peek':
-    case 'scanTo':
-    case 'unknown':
-      return true
-    case 'expect':
-    case 'recover':
-    case 'optional':
-    case 'many':
-      return false
-    case 'choice':
-      return d.parsers.every(item => canFail(item, seen))
-    case 'sequence':
-      return d.parsers.some(item => canFail(item, seen))
-    case 'dispatch':
-      return true
-    case 'oneOrMore':
-      return canFail(d.parser, seen)
-    case 'sepBy':
-      return d.min >= 1 ? canFail(d.parser, seen) : false
-    case 'attempt':
-    case 'transform':
-    case 'label':
-    case 'field':
-    case 'grammar':
-    case 'node':
-    case 'token':
-    case 'leaf':
-    case 'withCtx':
-      return canFail(d.parser, seen)
-    case 'skip':
-      return canFail(d.main, seen) || canFail(d.skipped, seen)
-    case 'lazy': {
-      try { return canFail(d.thunk(), seen) } catch { return true }
-    }
-    default:
-      return true
-  }
-}
-
-function mayRecordRecoveryErrorBeforeFailure(
-  p: Combinator<unknown>,
-  recovery: boolean,
-  seen: Set<Combinator<unknown>> = new Set(),
-): boolean {
-  if (seen.has(p)) return false
-  seen.add(p)
-  const d = p._def
-  switch (d.tag) {
-    case 'expect':
-    case 'recover':
-      return false
-    case 'sequence': {
-      let recordedEarlier = false
-      for (const item of d.parsers) {
-        if (recordedEarlier && canFail(item)) return true
-        if (mayRecordRecoveryErrorBeforeFailure(item, recovery, seen)) return true
-        if (mayRecordRecoveryError(item, recovery)) recordedEarlier = true
-      }
-      return false
-    }
-    case 'choice':
-      return d.parsers.some(item => mayRecordRecoveryErrorBeforeFailure(item, recovery, seen))
-    case 'dispatch': {
-      if (mayRecordRecoveryErrorBeforeFailure(d.selector, recovery, seen)) return true
-      for (const item of d.cases) {
-        if (mayRecordRecoveryErrorBeforeFailure(item.parser, recovery, seen)) return true
-      }
-      return d.otherwise ? mayRecordRecoveryErrorBeforeFailure(d.otherwise, recovery, seen) : false
-    }
-    case 'many':
-    case 'oneOrMore':
-    case 'sepBy':
-      return mayRecordRecoveryErrorBeforeFailure(d.parser, recovery, seen)
-    case 'attempt':
-    case 'transform':
-    case 'label':
-    case 'field':
-    case 'grammar':
-    case 'node':
-    case 'token':
-    case 'leaf':
-    case 'withCtx':
-    case 'optional':
-      return mayRecordRecoveryErrorBeforeFailure(d.parser, recovery, seen)
-    case 'skip':
-      return mayRecordRecoveryErrorBeforeFailure(d.main, recovery, seen) ||
-        mayRecordRecoveryErrorBeforeFailure(d.skipped, recovery, seen)
-    case 'scanTo':
-      if (mayRecordRecoveryErrorBeforeFailure(d.sentinel, recovery, seen)) return true
-      return d.skip.some(item => mayRecordRecoveryErrorBeforeFailure(item, recovery, seen))
-    case 'lazy': {
-      try { return mayRecordRecoveryErrorBeforeFailure(d.thunk(), recovery, seen) } catch { return true }
-    }
-    case 'unknown':
-      return true
-    default:
-      return false
-  }
-}
-
 function emitDispatchCombinator(def: Extract<ParserDef, { tag: 'dispatch' }>, ctx: Ctx, pos: string): ER {
   const selector = emit(def.selector, ctx, pos)
   const outV = v(ctx, '_dval')
@@ -2112,8 +2002,7 @@ function emitFirstMatch(
     const armNeedsRollback = ctx.capturing &&
       (mayLeavePartialCapture(p) || (armHasAutoNot && capturesLeaf(p)))
     const armNeedsFieldRollback = armNeedsRollback && parserHasOwnFields(p)
-    const armMayRecordError = mayRecordRecoveryErrorBeforeFailure(p, !!ctx.recovery) ||
-      (armHasAutoNot && mayRecordRecoveryError(p, !!ctx.recovery))
+    const armMayRecordError = mayRecordRecoveryError(p, !!ctx.recovery)
     const markLeaves = armNeedsRollback ? v(ctx, '_cml') : null
     const markRaw    = armNeedsRollback ? v(ctx, '_cmr') : null
     const markTl     = armNeedsRollback ? v(ctx, '_cmtl') : null

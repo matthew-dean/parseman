@@ -255,19 +255,27 @@ into a single O(1) character dispatch.
 
 Token-once routing by a parsed string value. Use it when one broad selector
 token is valid generally, and selected selector values have specialized
-continuation grammars. CSS at-rules are the model: the selector consumes one
-at-keyword token; values such as `@media` or `@scope` choose specific
+continuation grammars. CSS-like at-rules are the model: the selector consumes
+one at-keyword token; values such as `@media` or `@scope` choose specific
 prelude/body tails; unmatched values take the generic at-rule tail.
 
 The `when(...)` keys are classifier keys for the consumed selector value, not
-tokens parsed after the selector. A matched key's bad tail is an error.
+tokens parsed after the selector. A matched key's bad tail is an error. For a
+grammar that starts with one known keyword, use `word()` or a `makeWord()`
+factory; for `dispatch`, keep the selector broad enough to recognize the whole
+family being routed.
 
 ```ts
 // [verify]
-import { choice, dispatch, literal, otherwise, parse, regex, sequence, when } from 'parseman'
+import { dispatch, literal, otherwise, parse, regex, transform, when } from 'parseman'
+
+const atKeyword = transform(
+  regex(/@[A-Za-z_][A-Za-z0-9_-]*/),
+  value => value.toLowerCase(),
+)
 
 const atRule = dispatch(
-  regex(/@[a-z]+/),
+  atKeyword,
   when('@media', literal('{')),
   otherwise(literal(';')),
 )
@@ -275,15 +283,13 @@ const atRule = dispatch(
 parse(atRule, '@media{').value
 // → ['@media', '{']
 
+parse(atRule, '@MEDIA{').value
+// → ['@media', '{']
+
 parse(atRule, '@unknown;').value
 // → ['@unknown', ';']
 
-const committed = choice(
-  dispatch(literal('@media'), when('@media', literal('{'))),
-  sequence(literal('@media'), literal('x')),
-)
-
-parse(committed, '@mediax').ok
+parse(atRule, '@media;').ok
 // → false
 ```
 
