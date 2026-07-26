@@ -12,7 +12,7 @@
  */
 import {
   analyzeGating, choice, compile, dispatch, formatGatingWarnings, literal,
-  matches, otherwise, regex, routed, sepBy, sequence, token, transform, when,
+  matches, oneOrMoreSep, otherwise, regex, routed, sequence, token, transform, when,
   type Combinator, type ParseResult,
 } from '../src/index.ts'
 
@@ -130,11 +130,11 @@ function mediaFeatureDispatchRule(): Combinator<unknown> {
 }
 
 function list(rule: Combinator<unknown>): Combinator<unknown> {
-  return sepBy(rule, literal(' '), { min: 1 })
+  return oneOrMoreSep(rule, literal(' '))
 }
 
 function andList(rule: Combinator<unknown>): Combinator<unknown> {
-  return sepBy(rule, literal(' and '), { min: 1 })
+  return oneOrMoreSep(rule, literal(' and '))
 }
 
 function compileRule(rule: Combinator<unknown>): CompiledFn {
@@ -254,7 +254,11 @@ export type DispatchChoiceResult = {
 function runCase(c: DispatchChoiceCase, iterations: number): DispatchChoiceResult {
   const choiceResult = c.choiceParser(c.input)
   const dispatchResult = c.dispatchParser(c.input)
-  const ok = JSON.stringify(choiceResult) === JSON.stringify(dispatchResult)
+  const ok = choiceResult.ok
+    && dispatchResult.ok
+    && choiceResult.span.end === c.input.length
+    && dispatchResult.span.end === c.input.length
+    && JSON.stringify(choiceResult) === JSON.stringify(dispatchResult)
   const { choiceUs, dispatchUs } = measurePair(c.choiceParser, c.dispatchParser, c.input, iterations)
   return {
     name: c.name,

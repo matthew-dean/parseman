@@ -24,7 +24,13 @@ describe('dispatch vs choice A/B — validity & correctness', () => {
   it('both grammars return identical values on representative inputs', () => {
     for (const c of cases) {
       for (const input of [...c.examples, c.input]) {
-        expect(c.dispatchParser(input), `${c.name}: ${input}`).toEqual(c.choiceParser(input))
+        const choice = c.choiceParser(input)
+        const dispatch = c.dispatchParser(input)
+        expect(choice.ok, `${c.name} choice: ${input}`).toBe(true)
+        expect(dispatch.ok, `${c.name} dispatch: ${input}`).toBe(true)
+        expect(choice.span.end, `${c.name} choice full parse: ${input}`).toBe(input.length)
+        expect(dispatch.span.end, `${c.name} dispatch full parse: ${input}`).toBe(input.length)
+        expect(dispatch, `${c.name}: ${input}`).toEqual(choice)
       }
     }
   })

@@ -189,7 +189,7 @@ export function node<N>(
       // only certain kinds captured (comments for Ruleset, whitespace for
       // CompoundSelector). Scoped here, restored below — matches the compiled path.
       const savedMask = ctx._triviaCaptureMask
-      if (build === undefined && ctx.build?._parsemanTriviaKinds !== undefined && def.type !== undefined) {
+      if (build === undefined && project === undefined && ctx.build?._parsemanTriviaKinds !== undefined && def.type !== undefined) {
         ctx._triviaCaptureMask = ctx.build._parsemanTriviaKinds(def.type)
       }
       // Short-circuit the per-node trivia push (scanTrivia gates on captureTrivia)
@@ -223,6 +223,7 @@ export function node<N>(
         : collapse && children.length === 1
           ? children[0]
         : !build
+          && project === undefined
           && ctx.build?._parsemanCstCollapse
           && children.length === 1
           && rawChildren.length === 1
