@@ -3,6 +3,49 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.41.0 — 2026-07-27
+
+- **Fix: compiled rule-map entries now expose ambient trivia labels to `run()`.**
+  A `compileRuleMap(..., { trivia })` output bakes labeled trivia capture into every
+  compiled root, but ordinary public rule wrappers did not carry the trivia rule's
+  `triviaKindLabels`. Calling `run(map.Root, input)` therefore returned the right
+  flat root log but decoded it as unlabeled stride-2 entries instead of labeled
+  stride-3 entries. Public wrappers now inherit the ambient grammar trivia label
+  table unless the rule has its own label table, and the same wrapper helper is
+  used by `compileRuleMap`, `compileLinkable`, and macro/fused outputs. The
+  regression covers interpreter, direct compiled-map, and macro/fused `run()` paths.
+
+- **Add sparse root trivia gap queries for AST integrations.** `run()` already
+  returns `result.triviaMap`, a lazy index over the flat root trivia log. That
+  index now also exposes `gapBefore(offset)`, `gapAfter(offset)`, `gaps()`, and
+  `gapsWithKind(kind)` so downstream AST builders and serializers can query
+  contiguous trivia gaps directly instead of rebuilding Parseman's number log
+  into a second parser-specific map.
+
+  `RootTriviaGap` values keep entry indices into `triviaMap.entries`, expose
+  `hasKind(label)` for labeled trivia arms, and slice source text only on demand
+  with `gap.text(input)`. The existing `before` / `after` maps and
+  `entryIndicesBefore` / `entryIndicesAfter` methods remain intact for consumers
+  that want the lower-level entry-index view. The helper stays in
+  `cst/trivia-entries.ts`, preserving the small import closure of
+  `parseman/run`.
+
+- **Dispatch/codegen polish for shared-opener grammars.** Generated dispatch code now
+  recognizes simple tail-only reducers such as `([, tail]) => tail`, keeps same-body
+  `routed()` branches in locals instead of round-tripping through `_ctx._routed`,
+  hoists `matches(...)` predicates into shared regex declarations, and tightens
+  rollback around routed selector capture and `sepBy` field capture. The public
+  dispatch API is unchanged; these are generated-code and macro-output improvements
+  for the `dispatch(selector, when(...), otherwise(...))` shape introduced in the
+  previous minor line.
+
+- **Refresh dispatch-vs-choice performance evidence for broad shared openers.**
+  `pnpm bench:dispatch` now tracks identifier/function, specific-plus-generic
+  function, matcher, multi-branch identifier, and at-rule workloads. The note at
+  `notes/PERF-dispatch-vs-choice.md` records the current directional evidence and
+  explicitly marks matcher-heavy and mostly-specialized cases as tracked rather
+  than hard win gates.
+
 ## 0.40.0 — 2026-07-26
 
 - **Add declarative `node(..., { project: index })` semantic child projection.**

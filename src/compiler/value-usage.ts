@@ -99,9 +99,14 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         visit(def.parser, consumed)
         visit(def.sentinel, false)
         return
+      case 'token':
+        // token() returns the matched source slice, not the wrapped parser value.
+        // Its child still parses and captures one outer token leaf; inner aggregate
+        // values such as sequence tuples are unobserved and can be elided.
+        visit(def.parser, false)
+        return
       case 'label':
       case 'trivia':
-      case 'token':
       case 'attempt':
       case 'withCtx':
       case 'expect':

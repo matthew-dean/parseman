@@ -73,7 +73,12 @@ Collapsing reduces the *number* of combinators; [`compile()`](./modes#compile-ru
 compound — a collapsed grammar compiled is the fastest configuration. Use the macro build
 for production so you pay the compile cost once, at build time.
 
-## Shared opener branches: prefer `dispatch`
+## Shared broad openers: prefer `dispatch`
+
+Keep using [`choice`](../reference/api#choiceargs) for literal alternatives and
+branches with disjoint first sets. The compiler already turns those into cheap
+first-char dispatch, longest-literal checks, greedy classification, or shared-prefix
+code where that is the better shape.
 
 When several branches first recognize the same broad token and only then differ by that
 token's value, a plain `choice` can be correct but still do repeated opener checks. CSS
@@ -90,23 +95,29 @@ to freeze every token kind before the grammar sees it, and it still keeps token-
 routing where it matters: parse the meaningful shared prefix once, then choose the
 continuation by the returned value or the next structural marker. CSS function values,
 SCSS/Jess `@supports`/`@media` overlaps with interpolation and dialect-specific routes,
-and media feature heads such as `(width >= 50em)` vs `(min-width: 50em)` all fit this
-shape. A sibling `choice(...)` may be correct, but `dispatch(...)` expresses the route the
-language actually takes.
+and same-opener node arms such as identifier-or-function values all fit this shape. A
+sibling `choice(...)` may be correct, but `dispatch(...)` expresses the route the language
+actually takes and lets the selected branch own the routed value with `routed()`.
 
-`pnpm bench:dispatch` keeps a small proof fixture for this recommendation. On the local
-0.40.0 release branch run, the equivalent at-rule workload measured:
+`pnpm bench:dispatch` keeps small proof fixtures for this recommendation. It includes the
+same-opener at-rule case, broad identifier/function node arms where both the function arm
+and keyword arm begin by parsing an identifier, and a `matches(...)` route. These are
+intentionally not literal-vs-literal comparisons, because that is a good `choice(...)`
+case.
 
-| Shape | Median |
-| --- | ---: |
-| shared-opener `choice` | 58.85–74.44 µs/op |
-| `dispatch` | 31.65–39.77 µs/op |
+The benchmark prints current medians for each workload. Expect the broad-opener advantage
+to shrink as nearly every item takes the same specialized route; the main win is avoiding
+repeated broad opener parsing and fallback backtracking. Keep `choice(...)` for literal
+or first-set-disjoint arms, closed sets with no generic broad fallback, and cases where
+the first arm dominates and the rejected tails are cheap.
+
+`matches(...)` dispatch arms are included as generated-code coverage for matcher routing.
+They are tracked, not treated as a speed gate: the regex predicate itself is real work,
+so small wins can fall inside run-to-run noise.
 
 That is a directional benchmark artifact, not a hard release gate: absolute timings move
 with the machine, and the normal suite only asserts that the two grammars are equivalent
-and exercise the intended diagnostic paths. The same fixture also includes a media-feature
-head case to prove the docs pattern and the gating diagnostics, but the timing assertion is
-limited to the at-rule workload above. Opt into the timing check with:
+and exercise the intended diagnostic paths. Opt into the timing check with:
 
 ```bash
 PARSEMAN_PERF=1 pnpm vitest run --config vitest.perf.config.ts test/perf/dispatch-vs-choice.test.ts

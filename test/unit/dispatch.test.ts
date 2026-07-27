@@ -30,6 +30,7 @@ import {
   type ParseContext,
   type ParseError,
 } from '../../src/index.ts'
+import { compileRuleMap } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
 
@@ -488,7 +489,7 @@ describe('dispatch()', () => {
     })
   })
 
-  it('routes rules() branch nodes that own the selector through routed()', () => {
+  it('keeps private single-use rules() branch refs on routed locals', () => {
     const identOrFunction = token(sequence(regex(/[A-Za-z-]+/), optional(literal('('))))
     type ValueGrammar = {
       Value: Combinator<unknown>
@@ -517,6 +518,7 @@ describe('dispatch()', () => {
         })),
     }))
 
+    expect(compile(grammar.Value).source).not.toContain('_ctx._routed')
     expectEnginesResult(grammar.Value, 'URL(raw)', {
       ok: true,
       value: ['URL(', { type: 'UrlFunction', opener: 'URL(', name: 'URL', value: 'raw' }],
@@ -526,6 +528,31 @@ describe('dispatch()', () => {
       ok: true,
       value: ['url', { type: 'Identifier', name: 'url' }],
       span: { start: 0, end: 3 },
+    })
+  })
+
+  it('bridges routed() through named rule-map refs', () => {
+    type ValueGrammar = {
+      Value: Combinator<unknown>
+      Branch: Combinator<unknown>
+    }
+    const grammar = rules((g: ValueGrammar) => ({
+      Value: dispatch(
+        literal('a'),
+        when('a', g.Branch),
+      ),
+      Branch: sequence(routed(), literal('!')),
+    }))
+
+    const compiled = compileRuleMap(Object.entries(grammar), { gating: 'off' })
+    expect(compiled).not.toBeNull()
+    if (compiled === null) return
+    expect(compiled.replacement).toContain('_ctx._routed')
+    const compiledRules = new Function(`return ${compiled!.replacement}`)() as Record<string, ParseFn>
+    expect(compiledRules.Value?.('a!', 0, { trackLines: false })).toEqual({
+      ok: true,
+      value: ['a', ['a', '!']],
+      span: { start: 0, end: 2 },
     })
   })
 
@@ -772,7 +799,8 @@ describe('dispatch()', () => {
     expect(compiled.source).not.toMatch(/\bendsWith\s*\(/)
     expect(compiled.source).not.toMatch(/\bmatches\s*\(/)
     expect(compiled.source).toContain('charCodeAt')
-    expect(compiled.source).toContain('/^plain$/.test')
+    expect(compiled.source).not.toContain('/^plain$/.test')
+    expect(compiled.source).toMatch(/const _re\d+ = \/\^plain\$\/$/m)
     expect(compiled.parse('URL(raw')).toEqual({
       ok: true,
       value: ['URL(', ['URL(', 'raw']],
@@ -789,6 +817,111 @@ describe('dispatch()', () => {
     expect(compiled.parse('plainplain')).toMatchObject({
       ok: true,
       value: ['plain', 'plain'],
+    })
+  })
+
+  it('compile() elides the public dispatch pair for immediate tail-only transforms', () => {
+    const parser = transform(
+      dispatch(
+        regex(/[a-z]+(?:\()?/),
+        when(endsWith('('), sequence(routed(), literal('raw'), literal(')'))),
+        otherwise(routed()),
+      ),
+      ([, tail]) => tail,
+    )
+    const compiled = compile(parser)
+
+    expect(compiled.source).not.toMatch(/_dval\d+\s*=\s*\[/)
+    expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
+      ok: true,
+      value: ['url(', 'raw', ')'],
+      span: { start: 0, end: 8 },
+    })
+    expect(assertEnginesAgree(parser, 'red')).toEqual({
+      ok: true,
+      value: 'red',
+      span: { start: 0, end: 3 },
+    })
+  })
+
+  it('compile() preserves the public dispatch pair when the value is observed directly', () => {
+    const parser = dispatch(
+      regex(/[a-z]+(?:\()?/),
+      when(endsWith('('), sequence(routed(), literal('raw'), literal(')'))),
+      otherwise(routed()),
+    )
+    const compiled = compile(parser)
+
+    expect(compiled.source).toMatch(/_dval\d+\s*=\s*\[/)
+    expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
+      ok: true,
+      value: ['url(', ['url(', 'raw', ')']],
+      span: { start: 0, end: 8 },
+    })
+    expect(assertEnginesAgree(parser, 'red')).toEqual({
+      ok: true,
+      value: ['red', 'red'],
+      span: { start: 0, end: 3 },
+    })
+  })
+
+  it('compile() keeps same-function routed branch transforms local and tuple-free', () => {
+    const parser = transform(
+      dispatch(
+        regex(/[a-z]+(?:\()?/),
+        when(endsWith('('), transform(
+          sequence(routed(), literal('raw'), literal(')')),
+          ([head, body]) => `${head}:${body}`,
+        )),
+        otherwise(transform(routed(), head => `${head}:ident`)),
+      ),
+      ([, tail]) => tail,
+    )
+    const compiled = compile(parser)
+
+    expect(compiled.source).not.toMatch(/_dval\d+\s*=\s*\[/)
+    expect(compiled.source).not.toMatch(/const _arr\d+\s*=\s*\[/)
+    expect(compiled.source).not.toContain('_ctx._routed')
+    expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
+      ok: true,
+      value: 'url(:raw',
+      span: { start: 0, end: 8 },
+    })
+    expect(assertEnginesAgree(parser, 'red')).toEqual({
+      ok: true,
+      value: 'red:ident',
+      span: { start: 0, end: 3 },
+    })
+  })
+
+  it('compile() does not allocate token(sequence(...)) selector tuples', () => {
+    const selector = token(sequence(regex(/[a-z]+/), optional(literal('('))))
+    const parser = node('Value',
+      transform(
+        dispatch(
+          selector,
+          when(endsWith('('), transform(
+            sequence(routed(), literal('raw'), literal(')')),
+            ([head, body, close]) => `${head}${body}${close}`,
+          )),
+          otherwise(routed()),
+        ),
+        ([, tail]) => tail,
+      ),
+      children => children.map(child => (child as { value: unknown }).value),
+    )
+    const compiled = compile(parser)
+
+    expect(compiled.source).not.toMatch(/const _arr\d+\s*=\s*\[/)
+    expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
+      ok: true,
+      value: ['url(', 'raw', ')'],
+      span: { start: 0, end: 8 },
+    })
+    expect(assertEnginesAgree(parser, 'red')).toEqual({
+      ok: true,
+      value: ['red'],
+      span: { start: 0, end: 3 },
     })
   })
 

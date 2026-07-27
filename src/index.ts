@@ -94,8 +94,8 @@ export { buildTriviaIndex } from './cst/trivia-index.ts'
 export type { TriviaIndex, TriviaToken, TriviaIndexOptions } from './cst/trivia-index.ts'
 export { walk, createVisitor } from './cst/walk.ts'
 export type { Walkable, WalkVisitor, VisitApi, VisitorHandlers } from './cst/walk.ts'
-export { triviaEntries } from './cst/trivia-entries.ts'
-export type { TriviaEntriesView } from './cst/trivia-entries.ts'
+export { buildRootTriviaIndex, triviaEntries } from './cst/trivia-entries.ts'
+export type { RootTriviaGap, RootTriviaIndex, TriviaEntriesView } from './cst/trivia-entries.ts'
 export { triviaKindMask } from './cst/trivia-kinds.ts'
 
 export {

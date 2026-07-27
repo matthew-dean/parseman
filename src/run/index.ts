@@ -22,6 +22,8 @@
  *
  *   const result = run(myGrammar, source, { trivia })
  */
+export { buildRootTriviaIndex } from '../cst/trivia-entries.ts'
 export { run } from '../functional/run.ts'
 export type { Runnable, RunOptions, RunResult } from '../functional/run.ts'
+export type { RootTriviaGap, RootTriviaIndex, TriviaEntriesView } from '../cst/trivia-entries.ts'
 export type { ParseContext, ParseError, ParseResult } from '../types.ts'

@@ -37,13 +37,15 @@ describe('dispatch vs choice A/B — validity & correctness', () => {
 })
 
 describePerf('dispatch vs choice A/B — perf evidence', () => {
-  it('dispatch wins the adversarial shared-opener workload by a noise-aware margin', () => {
+  it('dispatch wins workloads that declare a speedup target by a noise-aware margin', () => {
     const results = runDispatchChoiceAb()
     for (const r of results) {
       console.log(`  ${r.name}: choice ${r.choiceUs.toFixed(2)}µs dispatch ${r.dispatchUs.toFixed(2)}µs ${r.speedup.toFixed(2)}x`)
       expect(r.valid, r.name).toBe(true)
       expect(r.ok, r.name).toBe(true)
-      expect(r.speedup, r.name).toBeGreaterThan(1.25)
+      if (r.minSpeedup > 0) {
+        expect(r.speedup, r.name).toBeGreaterThan(r.minSpeedup)
+      }
     }
   }, 60_000)
 })

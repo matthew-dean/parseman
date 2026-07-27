@@ -6,7 +6,7 @@
  * grammar's own trivia.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { rules, regex, many, choice, parser, trivia, node, field, sequence, literal, compile, run } from '../../src/index.ts'
+import { rules, regex, many, choice, parser, trivia, node, field, sequence, literal, compile, run, label, oneOrMore } from '../../src/index.ts'
 
 const blockTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))
 const lineTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//), regex(/\/\/[^\n]*/))))
@@ -92,5 +92,40 @@ describe('run() — generic grammar-entry driver', () => {
     expect(result.profile?.hostConstruction.hostCalls).toBeGreaterThan(0)
     expect(result.profile?.hostConstruction.ms).toBeGreaterThanOrEqual(0)
     expect(() => run(profiled as never, 'a : b', { build: host, profile: true })).toThrow(/compiled parser entry/)
+  })
+
+  it('exposes a lazy root trivia map and kind labels from run()', () => {
+    const rw = trivia(oneOrMore(choice(
+      label('whitespace', regex(/[ \t\n\r\f]+/)),
+      label('blockComment', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
+    )))
+    const doc = parser({ trivia: rw }, sequence(regex(/a/), regex(/b/)))
+    const input = 'a /*x*/ b'
+
+    const result = run(doc as never, input)
+
+    expect(result.ok).toBe(true)
+    expect(result.triviaKindLabels).toEqual(['whitespace', 'blockComment'])
+    expect(result.triviaMap.entryIndicesAfter(1)).toEqual([0, 1, 2])
+    expect(result.triviaMap.entryIndicesBefore(8)).toEqual([0, 1, 2])
+    expect(result.triviaMap.entries.kind(1)).toBe('blockComment')
+    expect(result.triviaMap.entries.text(1, input)).toBe('/*x*/')
+  })
+
+  it('can label a compiled parseWithContext root trivia map from opts.trivia', () => {
+    const rw = trivia(oneOrMore(choice(
+      label('whitespace', regex(/[ \t\n\r\f]+/)),
+      label('blockComment', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
+    )))
+    const doc = node('Doc', parser({ trivia: rw }, sequence(regex(/a/), regex(/b/))))
+    const compiled = compile(doc)
+    const entry = (input: string, pos: number, ctx: import('../../src/index.ts').ParseContext) =>
+      compiled.parseWithContext(input, ctx, pos)
+
+    const result = run(entry, 'a /*x*/ b', { trivia: rw as never })
+
+    expect(result.ok).toBe(true)
+    expect(result.triviaKindLabels).toEqual(['whitespace', 'blockComment'])
+    expect(result.triviaMap.entryIndicesBefore(8)).toEqual([0, 1, 2])
   })
 })
