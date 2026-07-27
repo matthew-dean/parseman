@@ -19,6 +19,10 @@ function replaceParam(body: string, param: string, valueVar: string): string {
   return body.replace(new RegExp(`\\b${escapeRegExp(param)}\\b`, 'g'), valueVar)
 }
 
+function hasExplicitObjectKey(body: string, param: string): boolean {
+  return new RegExp(`\\b${escapeRegExp(param)}\\b\\s*:`).test(body)
+}
+
 function stripForIdCheck(body: string): string {
   return body
     .replace(/'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"/g, '""')
@@ -77,7 +81,9 @@ export function tryInlineDestructureTransform(
   const allowed = new Set(valueVars)
   for (let i = 0; i < slots.length; i++) {
     const name = slots[i]
-    if (name) body = replaceParam(body, name, valueVars[i]!)
+    if (!name) continue
+    if (hasExplicitObjectKey(body, name)) return null
+    body = replaceParam(body, name, valueVars[i]!)
   }
   return hasFreeIdentifiers(body, allowed) ? null : body
 }

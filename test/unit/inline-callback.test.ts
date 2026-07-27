@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { transform, sequence, literal } from '../../src/index.ts'
+import { transform, sequence, literal, optional, regex, parse } from '../../src/index.ts'
 import { compile } from '../../src/compiler/codegen.ts'
 import {
   tryInlineUnaryTransform,
@@ -42,6 +42,14 @@ describe('inline transform — sequence fusion', () => {
     expect(body).toContain('_bang ?')
     expect(body).toContain('_t')
   })
+
+  it('declines explicit object-key rewrites that would rename public fields', () => {
+    const body = tryInlineDestructureTransform(
+      '([alias, n]) => ({ alias: alias ?? null, name: n })',
+      ['_opt1', '_name'],
+    )
+    expect(body).toBeNull()
+  })
 })
 
 describe('inline transform — codegen', () => {
@@ -62,6 +70,21 @@ describe('inline transform — codegen', () => {
     const src = compile(p).source
     expect(src).not.toMatch(/_mf\[\d+\]/)
     expect(src).toContain('const _mapped')
+  })
+
+  it('preserves public object keys when destructured transform falls back', () => {
+    const ident = regex(/[a-z]+/)
+    const p = transform(
+      sequence(optional(transform(sequence(ident, literal(':')), ([alias]) => alias)), ident),
+      ([alias, n]) => ({ alias: alias ?? null, name: n }),
+    )
+
+    const interpreted = parse(p, 'viewer')
+    const compiled = compile(p).parse('viewer')
+
+    expect(compiled).toEqual(interpreted)
+    expect(compiled.ok && compiled.value).toEqual({ alias: null, name: 'viewer' })
+    expect(compiled.ok && Object.keys(compiled.value)).toEqual(['alias', 'name'])
   })
 })
 
