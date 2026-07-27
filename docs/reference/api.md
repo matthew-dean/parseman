@@ -85,6 +85,9 @@ choice compiles to an O(1) first-char dispatch — gated arms included, so gatin
 rare-token alternative (like `&`) stays O(1) rather than dropping the whole choice to a
 linear scan. (A nullable or overlapping arm forces the linear path.)
 
+Use `choice(...)` for literal-to-literal alternatives and other branches whose first
+sets are naturally disjoint. Those are already the compiler's fast path.
+
 When several arms first parse the same broad token family and then branch by the
 string that token returned, use [`dispatch`](#dispatchcombinator-when-otherwise)
 instead. It avoids backtracking through the same opener shape and makes the
@@ -104,12 +107,16 @@ keys. Matcher keys such as `startsWith(prefix)`, `endsWith(suffix)`, and
 `opts.caseInsensitive` folds ASCII case for comparison only; the parse value
 stays authored.
 
-This is the preferred shape when branches share an opener and then diverge by
+This is the preferred shape when branches share a broad opener and then diverge by
 the opener's value or by the next structural marker. A hand-written
 `choice(sequence(literal('@media'), ...), ..., sequence(regex(/@[A-Za-z-]+/), ...))`
 can recognize the same language, but late and generic arms recheck the shared
 opener. `dispatch` makes the lexical decision once and leaves the branch table
 to the grammar.
+
+This is not a blanket replacement for `choice(...)`: if the arms are exact literals,
+first-set-disjoint, a closed set with no broad generic fallback, or first-arm-dominant
+with cheap rejected tails, `choice(...)` is already simple and fast.
 
 ```ts
 const combinator = regex(/@[A-Za-z_][A-Za-z0-9_-]*/)
@@ -563,11 +570,30 @@ while `cstBuildHost({ collapse })` is a caller-selected public CST policy.
 Walk a CST and build `before` / `after` maps of trivia tokens keyed by node — turning the
 flat `triviaLog` into a lookup table for whitespace-sensitive analysis.
 
+### `buildRootTriviaIndex(log, labels?)`
+
+Build the same root trivia-gap view that `run()` exposes as `result.triviaMap`. The view is
+lazy: maps are built on first lookup, contiguous labeled chunks are grouped into one gap, and
+values are entry indices into `view.entries` rather than materialized strings.
+
+Use `view.entryIndicesBefore(offset)` for trivia ending at a following token/node start, and
+`view.entryIndicesAfter(offset)` for trivia starting at a preceding token/node end.
+Use `view.gapBefore(offset)` / `view.gapAfter(offset)` when you want the grouped gap object
+itself, and `view.gapsWithKind(kind)` when a serializer or AST integration needs every
+source-ordered gap containing a labeled trivia kind such as `blockComment`.
+
 ### `triviaEntries(log, labels?, opts?)`
 
 An indexed, allocation-free view over a flat trivia log: `.start(i)`, `.end(i)`,
 `.insertIndex(i)` (per-node logs only), `.kind(i)`, `.text(i, input)`. Pass `{ nodeLog: true }`
 for per-node logs (stride 3/4).
+
+### `triviaKindMask(labels, keep)`
+
+Build the bitmask used by `run(entry, input, { triviaCaptureMask })` and
+`parser({ captureTriviaKinds })` to restrict per-node CST trivia capture to selected
+labeled trivia kinds. Unknown names are ignored; without a label table the helper returns
+`undefined`, which preserves the default "capture every kind" behavior.
 
 ## Tree traversal
 
@@ -666,10 +692,13 @@ Run a grammar **entry** — a rule function from a `compose()` / `compile()` map
 interpreter combinator — against `input`, threading the standard ctx (trivia log,
 `recover`/`expect` errors, the `ctx.build` host, grammar state) so a tool doesn't hand-build
 it or branch on function-vs-combinator. Returns a [`RunResult`](./types#runresult):
-`{ ok, value, span, expected, errors, triviaLog, unconsumedFrom }`. Pass `opts.build` for a
+`{ ok, value, span, expected, errors, triviaLog, triviaKindLabels, triviaMap, unconsumedFrom }`.
+Pass `opts.build` for a
 [CST host](#cstbuildhost), `opts.state` for initial grammar state, and `opts.trivia`
 (the grammar's trivia rule) to skip trailing whitespace/comments before reporting
 `unconsumedFrom` — so the dialect's own trivia decides what counts as leftover input.
+Pass `opts.triviaCaptureMask` to filter per-node CST trivia capture by labeled kind while
+leaving the root `triviaLog` untouched.
 
 ```ts
 const g = compose([base])

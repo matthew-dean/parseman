@@ -37,6 +37,12 @@ const throwingToken = token(transform(literal('a'), () => { throw new Error('boo
 const throwingCompiled = compile(throwingToken)
 const nestedTriviaToken = token(sequence(literal('a'), parser({ trivia: ws }, sequence(literal('['), literal(']')))))
 const nestedTriviaCompiled = compile(nestedTriviaToken)
+const identOrFunctionToken = token(sequence(regex(/[a-z]+/), optional(literal('('))))
+const identOrFunctionDoc = parser(
+  { trivia: ws },
+  node('TokenDoc', sequence(identOrFunctionToken, literal(';')), mkNode('TokenDoc')),
+)
+const identOrFunctionCompiled = compile(identOrFunctionDoc)
 const commentGap = oneOrMore(choice(
   regex(/[ \t\n]+/),
   sequence(literal('//'), many(regex(/[^\n]/)), optional(literal('\n'))),
@@ -180,6 +186,18 @@ describe('token()', () => {
     expect(fallbackCompiled.parse('a', 0)).toMatchObject({ ok: true, value: 'a', span: { start: 0, end: 1 } })
     expect(parse(fallbackToken, 'b')).toMatchObject({ ok: true, value: '', span: { start: 0, end: 0 } })
     expect(fallbackCompiled.parse('b', 0)).toMatchObject({ ok: true, value: '', span: { start: 0, end: 0 } })
+  })
+
+  it('does not allocate an inner sequence tuple for token(sequence(...))', () => {
+    expect(identOrFunctionCompiled.source).not.toMatch(/const _arr\d+\s*=\s*\[/)
+    for (const input of ['abc;', 'abc(;']) {
+      const interpreted = parse(identOrFunctionDoc, input)
+      const compiled = identOrFunctionCompiled.parse(input, 0)
+      expect(compiled).toEqual(interpreted)
+      expect(compiled.ok).toBe(true)
+      if (!compiled.ok) continue
+      expect(leafValues(compiled.value)).toEqual(input === 'abc;' ? ['abc', ';'] : ['abc(', ';'])
+    }
   })
 
   it('restores context when the token body throws', () => {

@@ -166,8 +166,8 @@ const { selection, selectionSet } = rules<{
       optional(directives),
       optional(g.selectionSet as Combinator<GQLSelection[]>),
     ),
-    ([alias, n, args, dirs, sel]) => ({
-      alias: alias ?? null, name: n,
+    ([aliasValue, n, args, dirs, sel]) => ({
+      alias: aliasValue ?? null, name: n,
       arguments: args ?? [], directives: dirs ?? [],
       selectionSet: sel ?? null,
     }),

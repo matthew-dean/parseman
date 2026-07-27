@@ -164,6 +164,7 @@ import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from './build-arity.ts'
 import { buildReadsFields, parserEnablesTriviaCapture, parserHasOwnFields, parserHasTriviaSite } from './fields.ts'
 import {
+  isDispatchTailOnlyTransform,
   transformFnSource,
   tryInlineUnaryTransform,
   tryInlineDestructureTransform,
@@ -380,6 +381,12 @@ type Ctx = {
    * every other path → no interception, byte-identical output.
    */
   replayPrefix?: Map<Combinator<unknown>, { valVar: string; endVar: string }> | undefined
+  /**
+   * Active dispatch selector for an inlined `routed()` site. Branches that cross
+   * generated function boundaries still use `_ctx._routed`; inlined branches can
+   * read these locals directly and avoid the object write/read/restore round trip.
+   */
+  routedLocal?: { valueVar: string; startVar: string; endVar: string } | undefined
   /**
    * Precomputed by analyzeLazyUsage() before codegen starts. emitLazy consults
    * this to inline a single-use, non-recursive ref directly at its call site
@@ -646,10 +653,24 @@ function ensureRegexDecl(ctx: Ctx, source: string, flags: string): string {
   return rName
 }
 
+function ensurePlainRegexDecl(ctx: Ctx, source: string, flags: string): string {
+  const f = flags.replace(/[gy]/g, '')
+  const key = `${source}/${f}`
+  let rName = ctx.regexMap.get(key)
+  if (rName === undefined) {
+    rName = `${nsp(ctx)}_re${ctx.regexDecls.length}`
+    ctx.regexDecls.push(`const ${rName} = ${new RegExp(source, f).toString()}`)
+    ctx.regexMap.set(key, rName)
+  }
+  return rName
+}
+
 /**
- * When `cap` is truthy, also records `[start, end]` (and optional insertIdx) into
- * `_ctx._triviaLog` / `_ctx._cstTriviaLog`. One emitted function serves both skip
- * and capture call sites — no duplicate trivia parser tree, no _tc wrapper call.
+ * When `cap` is truthy, also records `[start, end]` into `_ctx._triviaLog`, and
+ * when `cap === 1` also records the CST insert index into `_ctx._cstTriviaLog`.
+ * `cap === 2` is the public root-log-only path used by non-node run() entries.
+ * One emitted function serves every skip/capture call site — no duplicate trivia
+ * parser tree, no _tc wrapper call.
  */
 function ensureTriviaFn(ctx: Ctx): string {
   const trivia = ctx.activeTrivia!
@@ -732,7 +753,7 @@ function ensureTriviaFn(ctx: Ctx): string {
     `  }`,
     `  if (_cap && _e > _pos) {`,
     `    if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_pos, _e)`,
-    `    if (_ctx._cstTriviaLog !== undefined && _ctx.captureTrivia) _ctx._cstTriviaLog.push(_pos, _e, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0)`,
+    `    if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia) _ctx._cstTriviaLog.push(_pos, _e, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0)`,
     `  }`,
     `  return _e`,
     `}`,
@@ -1415,18 +1436,23 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         // Match the interpreter (sequence.ts): scan trivia to a temp position, but
         // only *commit* it (advance cur) if the following term consumes content past
         // it. A term matching empty (optional/many/lookahead) leaves cur pre-trivia,
-        // so trailing whitespace stays out of the sequence's span. The non-capturing
-        // trivFn has no side effects when called without `_cap`, so there is nothing
-        // to roll back — just keep cur unchanged.
+        // so trailing whitespace stays out of the sequence's span. When run() has
+        // installed the public root `_triviaLog`, record that log with `_cap = 2`
+        // without enabling per-node CST trivia capture.
         const trivFn = ensureTriviaFn(ctx)
+        const markLog = v(ctx, '_mklg')
         const scanEndV = v(ctx, '_sne')
-        stmts.push(`${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx)`)
+        const capArg = ctx.noHoist ? '0' : '_ctx._triviaLog !== undefined ? 2 : 0'
+        stmts.push(
+          `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+          `${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx, ${capArg})`,
+        )
         const r = emit(def.parsers[i]!, ctx, scanEndV)
         stmts.push(...r.stmts)
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}`,
         )
         valueVars.push(r.valueVar)
         continue
@@ -1742,7 +1768,13 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
   }
 }
 
-function emitDispatchCombinator(parser: Combinator<unknown>, def: Extract<ParserDef, { tag: 'dispatch' }>, ctx: Ctx, pos: string): ER {
+function emitDispatchCombinator(
+  parser: Combinator<unknown>,
+  def: Extract<ParserDef, { tag: 'dispatch' }>,
+  ctx: Ctx,
+  pos: string,
+  valueMode: 'pair' | 'tail' = 'pair',
+): ER {
   if (parserUsesRouted(def.selector)) {
     throw new Error('parseman: routed() can only appear inside a dispatch() branch')
   }
@@ -1752,12 +1784,19 @@ function emitDispatchCombinator(parser: Combinator<unknown>, def: Extract<Parser
   const hasRoutedBranch = def.cases.some(branchUsesRouted) ||
     (def.matchers ? def.matchers.some(branchUsesRouted) : false) ||
     (def.otherwise ? def.otherwiseUsesRouted === true || parserUsesRouted(def.otherwise) : false)
-  const selectorLeafMark = hasRoutedBranch ? v(ctx, '_dsl') : null
-  const selectorRawMark = hasRoutedBranch ? v(ctx, '_dsr') : null
-  const selectorTriviaMark = hasRoutedBranch ? v(ctx, '_dst') : null
-  const selectorLogMark = hasRoutedBranch ? v(ctx, '_dsg') : null
-  const selectorFieldMark = hasRoutedBranch ? v(ctx, '_dsf') : null
-  const selectorErrorMark = hasRoutedBranch ? v(ctx, '_dse') : null
+  const selectorNeedsRollback = hasRoutedBranch && (
+    (ctx.capturing === true && capturesLeaf(def.selector)) ||
+    (ctx.activeTrivia !== undefined && parserHasTriviaSite(def.selector)) ||
+    parserEnablesTriviaCapture(def.selector) ||
+    parserHasOwnFields(def.selector) ||
+    mayRecordRecoveryError(def.selector, !!ctx.recovery)
+  )
+  const selectorLeafMark = selectorNeedsRollback ? v(ctx, '_dsl') : null
+  const selectorRawMark = selectorNeedsRollback ? v(ctx, '_dsr') : null
+  const selectorTriviaMark = selectorNeedsRollback ? v(ctx, '_dst') : null
+  const selectorLogMark = selectorNeedsRollback ? v(ctx, '_dsg') : null
+  const selectorFieldMark = selectorNeedsRollback ? v(ctx, '_dsf') : null
+  const selectorErrorMark = selectorNeedsRollback ? v(ctx, '_dse') : null
   const selector = emit(def.selector, ctx, pos)
   const outV = v(ctx, '_dval')
   const outE = v(ctx, '_dend')
@@ -1785,13 +1824,14 @@ function emitDispatchCombinator(parser: Combinator<unknown>, def: Extract<Parser
     stmts.push(head)
     ctx.indent++
     const usesRouted = branchUsesRouted(entry)
-    const routedV = usesRouted ? v(ctx, '_drt') : null
+    const needsRoutedContext = usesRouted && routedNeedsContextBridge(parser, ctx)
+    const routedV = needsRoutedContext ? v(ctx, '_drt') : null
     const mayError = mayRecordRecoveryError(parser, !!ctx.recovery)
     const errMark = mayError ? v(ctx, '_derr') : null
     const logMark = ctx.activeTrivia ? v(ctx, '_dlog') : null
-    if (routedV) {
+    if (usesRouted) {
       stmts.push(
-        `${ind(ctx)}const ${routedV} = _ctx._routed; _ctx._routed = { value: ${selector.valueVar}, span: { start: ${pos}, end: ${selector.endVar} } }`,
+        ...(routedV ? [`${ind(ctx)}const ${routedV} = _ctx._routed; _ctx._routed = { value: ${selector.valueVar}, span: { start: ${pos}, end: ${selector.endVar} } }`] : []),
         ...(selectorLeafMark ? [
           `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${selectorLeafMark}) _ctx._cstLeaves.length = ${selectorLeafMark}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${selectorRawMark}) _ctx._cstRawChildren.length = ${selectorRawMark}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${selectorTriviaMark}) _ctx._cstTriviaLog.length = ${selectorTriviaMark}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${selectorLogMark}) _ctx._triviaLog.length = ${selectorLogMark}; if (_ctx._fields && _ctx._fields.length !== ${selectorFieldMark}) _ctx._fields.length = ${selectorFieldMark}; if (_ctx._errors && _ctx._errors.length !== ${selectorErrorMark}) _ctx._errors.length = ${selectorErrorMark}`,
         ] : []),
@@ -1799,7 +1839,17 @@ function emitDispatchCombinator(parser: Combinator<unknown>, def: Extract<Parser
     }
     if (errMark) stmts.push(`${ind(ctx)}const ${errMark} = _ctx._errors?.length ?? 0`)
     if (logMark) stmts.push(`${ind(ctx)}const ${logMark} = _ctx._triviaLog?.length ?? 0`)
+    const savedRoutedLocal = ctx.routedLocal
+    const savedNoHoist = ctx.noHoist
+    if (usesRouted && !needsRoutedContext) {
+      ctx.routedLocal = { valueVar: selector.valueVar, startVar: pos, endVar: selector.endVar }
+      ctx.noHoist = true
+    } else if (usesRouted) {
+      ctx.routedLocal = undefined
+    }
     const tail = emitTailFallible(parser, ctx, usesRouted ? pos : selector.endVar)
+    ctx.routedLocal = savedRoutedLocal
+    ctx.noHoist = savedNoHoist
     stmts.push(...coverageAttempt(ctx, coverageId, pos))
     const errorRollback = errMark
       ? `if (_ctx._errors && _ctx._errors.length !== ${errMark}) _ctx._errors.length = ${errMark}; `
@@ -1815,7 +1865,7 @@ function emitDispatchCombinator(parser: Combinator<unknown>, def: Extract<Parser
       ...tail.stmts,
       `${ind(ctx)}if (!${tail.okVar}) { ${routedRollback}${errorRollback}${logRollback}${coverageFailure}${committedFailBody(ctx)} }`,
       ...(routedV ? [`${ind(ctx)}_ctx._routed = ${routedV}`] : []),
-      `${ind(ctx)}${outV} = [${selector.valueVar}, ${tail.valVar}]`,
+      `${ind(ctx)}${outV} = ${valueMode === 'tail' ? tail.valVar : `[${selector.valueVar}, ${tail.valVar}]`}`,
       `${ind(ctx)}${outE} = ${tail.endVar}`,
       ...coverageHit(ctx, coverageId, pos, tail.endVar),
     )
@@ -1832,7 +1882,7 @@ function emitDispatchCombinator(parser: Combinator<unknown>, def: Extract<Parser
 
   const emitMatcherTails = (): void => {
     for (const matcher of def.matchers ?? []) {
-      emitSelectedTail(matcher, wroteBranch ? 'else if' : 'if', emitDispatchMatcherCondition(keyV, matcher), coverageIds[coverageIndex++])
+      emitSelectedTail(matcher, wroteBranch ? 'else if' : 'if', emitDispatchMatcherCondition(ctx, keyV, matcher), coverageIds[coverageIndex++])
       wroteBranch = true
     }
   }
@@ -1862,6 +1912,7 @@ function emitDispatchKeyCondition(valueVar: string, key: string, caseInsensitive
 }
 
 function emitDispatchMatcherCondition(
+  ctx: Ctx,
   valueVar: string,
   matcher: NonNullable<Extract<ParserDef, { tag: 'dispatch' }>['matchers']>[number],
 ): string {
@@ -1869,7 +1920,7 @@ function emitDispatchMatcherCondition(
     const flags = matcher.caseInsensitive && !matcher.flags?.includes('i')
       ? `${matcher.flags ?? ''}i`
       : matcher.flags ?? ''
-    return `${new RegExp(matcher.value, flags).toString()}.test(${valueVar})`
+    return `${ensurePlainRegexDecl(ctx, matcher.value, flags)}.test(${valueVar})`
   }
 
   const text = matcher.value
@@ -2184,6 +2235,36 @@ function emitsAsNamedFn(p: Combinator<unknown>, ctx: Ctx): boolean {
   const usage = ctx.lazyUsage
   return !!usage && !ctx.noHoist && !ctx.capAsTrivia && isHoistableTag(p._def.tag)
     && (usage.counts.get(p) ?? 0) > 1 && (usage.sizes.get(p) ?? 0) >= HOIST_MIN_SUBTREE
+}
+
+/**
+ * True when a routed-bearing branch must cross a generated function boundary.
+ *
+ * emitDispatchCombinator suppresses ordinary shared-subtree hoisting while
+ * emitting routed branch tails, so same-body `routed()` sites can use locals.
+ * Private single-use non-recursive lazy refs mirror emitLazy and inline through
+ * this analysis. Named rules, recursive/multi-use refs, and already-generated
+ * private functions still cross function bodies; those need the `_ctx._routed`
+ * bridge.
+ */
+function routedNeedsContextBridge(p: Combinator<unknown>, ctx: Ctx, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  if (p._def.tag === 'lazy') {
+    if (ctx.ruleNames?.has(p) || ctx.namedParsers.has(p)) return parserUsesRouted(p)
+    const usage = ctx.lazyUsage
+    if (usage && (usage.counts.get(p) ?? 0) <= 1 && !usage.recursive.has(p)) {
+      try { return routedNeedsContextBridge(p._def.thunk(), ctx, seen) }
+      catch { return parserUsesRouted(p) }
+    }
+    return parserUsesRouted(p)
+  }
+  if (ctx.ruleNames?.has(p)) return parserUsesRouted(p)
+  if (ctx.namedParsers.has(p)) return parserUsesRouted(p)
+  const d = p._def
+  if (d.tag === 'dispatch') return false
+  if (d.tag === 'withCtx') return parserUsesRouted(d.parser)
+  return childrenOf(d).some(child => routedNeedsContextBridge(child, ctx, seen))
 }
 
 /**
@@ -2613,15 +2694,16 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   /** Marks taken AFTER the separator, so `trailing` can unwind only past it. */
   const postSepMarks = (): { decl: string[]; rb: string } => {
     if (def.trailing === undefined || !ctx.capturing) return { decl: [], rb: '' }
-    const lv = v(ctx, '_tlv'), rw = v(ctx, '_trw'), tl = v(ctx, '_ttl'), lg = v(ctx, '_tlg')
+    const lv = v(ctx, '_tlv'), rw = v(ctx, '_trw'), tl = v(ctx, '_ttl'), lg = v(ctx, '_tlg'), fl = v(ctx, '_tlf')
     return {
       decl: [
         `${ind(ctx)}const ${lv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
         `${ind(ctx)}const ${rw} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
         `${ind(ctx)}const ${tl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
         `${ind(ctx)}const ${lg} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+        `${ind(ctx)}const ${fl} = _ctx._fields ? _ctx._fields.length : 0`,
       ],
-      rb: `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${lv}) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${rw}) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${lg}) _ctx._triviaLog.length = ${lg}; `,
+      rb: `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${lv}) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${rw}) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${lg}) _ctx._triviaLog.length = ${lg}; if (_ctx._fields && _ctx._fields.length !== ${fl}) _ctx._fields.length = ${fl}; `,
     }
   }
 
@@ -2667,19 +2749,21 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       const markTl = v(ctx, '_mktl')
       const markLog = v(ctx, '_mklg')
       const markLv = v(ctx, '_mklv')
+      const markFld = v(ctx, '_mkf')
       const spV = v(ctx, '_sp')
       // Marks taken BEFORE the separator. If either the separator OR the following
       // item fails, the whole iteration unwinds to here — crucially undoing the
-      // separator's own captured leaves (markLv) when the item after it fails.
+      // separator's own captured leaves/fields when the item after it fails.
       stmts.push(
         `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
         `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
         `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
         `${ind(ctx)}const ${markLv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
+        `${ind(ctx)}const ${markFld} = _ctx._fields ? _ctx._fields.length : 0`,
         `${ind(ctx)}const ${spV} = ${capFn}(input, ${curV}, _ctx, 1)`,
       )
       sepAtPos = spV
-      const rollbackToSep = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; `
+      const rollbackToSep = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; if (_ctx._fields && _ctx._fields.length !== ${markFld}) _ctx._fields.length = ${markFld}; `
       const sep = emitFallible(def.separator, ctx, sepAtPos, true)
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
@@ -2722,17 +2806,19 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     // failing after the separator unwinds the separator's captured leaves too.
     const markLv = ctx.capturing ? v(ctx, '_mklv') : null
     const markRw = ctx.capturing ? v(ctx, '_mkrw') : null
+    const markFld = ctx.capturing ? v(ctx, '_mkf') : null
     if (markLv) {
       stmts.push(
         `${ind(ctx)}const ${markLv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
         `${ind(ctx)}const ${markRw} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
+        `${ind(ctx)}const ${markFld} = _ctx._fields ? _ctx._fields.length : 0`,
       )
     }
     const sep = emitFallible(def.separator, ctx, sepAtPos, true)
     const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
     stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
     const nextRb = markLv
-      ? `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markRw}) _ctx._cstRawChildren.length = ${markRw}; `
+      ? `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markRw}) _ctx._cstRawChildren.length = ${markRw}; if (_ctx._fields && _ctx._fields.length !== ${markFld}) _ctx._fields.length = ${markFld}; `
       : ''
     const post = postSepMarks()
     stmts.push(...post.decl)
@@ -2868,7 +2954,7 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
   // FIRST emission of that rule would compile the SHARED `_r_<Name>`/`_pf` body
   // non-capturing and silently drop real captures at every other call site. Truncating
   // by length is correct regardless of hoisting or sharing.
-  const sinksLive = !!ctx.capturing || !!ctx.recovery
+  const sinksLive = !!ctx.capturing || !!ctx.recovery || !!ctx.activeTrivia
   const leaves = sinksLive ? v(ctx, '_ntl') : null
   const raw    = sinksLive ? v(ctx, '_ntr') : null
   const tl     = sinksLive ? v(ctx, '_ntt') : null
@@ -2919,6 +3005,17 @@ function emitPeek(def: Extract<ParserDef, { tag: 'peek' }>, ctx: Ctx, pos: strin
 }
 
 function emitRouted(ctx: Ctx, pos: string): ER {
+  const local = ctx.routedLocal
+  if (local !== undefined) {
+    return {
+      stmts: [
+        ...emitIfFail(ctx, `${local.startVar} !== ${pos}`, failBody(ctx, '"routed()"', pos)),
+        ...emitLeafCapture(ctx, local.valueVar, local.startVar, local.endVar),
+      ],
+      valueVar: local.valueVar,
+      endVar: local.endVar,
+    }
+  }
   const item = v(ctx, '_rt')
   return {
     stmts: [
@@ -3677,6 +3774,9 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'sepBy':     return emitSepBy(p, def, ctx, pos)
     case 'transform': {
       const fnSrc = transformFnSource(def.fn, def.fnSrc)
+      if (fnSrc && def.parser._def.tag === 'dispatch' && isDispatchTailOnlyTransform(fnSrc)) {
+        return emitDispatchCombinator(def.parser, def.parser._def, ctx, pos, 'tail')
+      }
       if (fnSrc && def.parser._def.tag === 'sequence') {
         const seqR = emitSeqValues(def.parser._def, ctx, pos)
         const inlined = tryInlineDestructureTransform(fnSrc, seqR.valueVars)
@@ -4658,8 +4758,12 @@ function assertRuleName(name: string): void {
   }
 }
 
-function publicRuleWrapperSource(rule: Combinator<unknown>, fnSource: string): string {
-  const labels = rule._meta.triviaKindLabels
+function publicRuleWrapperSource(
+  rule: Combinator<unknown>,
+  fnSource: string,
+  ambientTriviaKindLabels?: readonly string[],
+): string {
+  const labels = rule._meta.triviaKindLabels ?? ambientTriviaKindLabels
   if (labels === undefined) return fnSource
   return `Object.assign(${fnSource}, { _meta: { triviaKindLabels: ${JSON.stringify(labels)} } })`
 }
@@ -4806,7 +4910,7 @@ export function compileRuleMap(
   // prelude per entry or duplicate its text per entry — both defeat the point).
   const objBody = perEntry
     .map(({ key, rule, r }) => {
-      const src = publicRuleWrapperSource(rule, entryFnText(r, rule))
+      const src = publicRuleWrapperSource(rule, entryFnText(r, rule), ctx.triviaKindLabels)
       return `    ${JSON.stringify(key)}: ${src.split('\n').join('\n    ')}`
     })
     .join(',\n')
@@ -5109,7 +5213,7 @@ export function compileLinkable(
       ...r.stmts,
       `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
       `}`,
-    ].join('\n')))
+    ].join('\n'), ctx.triviaKindLabels))
   }
 
   // Per-rule first-set table for fuse-time dispatch: fusedBody() substitutes each

@@ -7,6 +7,8 @@ import {
   literal,
   many,
   node,
+  oneOrMoreSep,
+  optional,
   parse,
   parser,
   regex,
@@ -55,6 +57,35 @@ describe('field()', () => {
     const r = parse(p, 'ab')
     expect(r.ok && r.value).toEqual({
       good: { value: 'a', span: { start: 0, end: 1 } },
+    })
+  })
+
+  it('rolls back sepBy separator fields when the following item fails', () => {
+    const item = regex(/[a-z]+/)
+    const sep = field('separator', regex(/[;,][ \t\n\r\f]*/))
+    const term = field('trailingSeparator', regex(/[;,][ \t\n\r\f]*/))
+    const p = node('P',
+      sequence(oneOrMoreSep(item, sep), optional(term)),
+      (children, fields) => ({ children, fields }),
+    )
+
+    expect(compile(p).parse('red;')).toEqual(parse(p, 'red;'))
+    expect(compile(p).parse('red, blue;')).toEqual(parse(p, 'red, blue;'))
+    const red = parse(p, 'red;')
+    expect(red.ok).toBe(true)
+    if (red.ok) {
+      expect(red.value.fields).toEqual({
+        trailingSeparator: { value: ';', span: { start: 3, end: 4 } },
+      })
+    }
+    expect(parse(p, 'red, blue;')).toMatchObject({
+      ok: true,
+      value: {
+        fields: {
+          separator: { value: ', ', span: { start: 3, end: 5 } },
+          trailingSeparator: { value: ';', span: { start: 9, end: 10 } },
+        },
+      },
     })
   })
 

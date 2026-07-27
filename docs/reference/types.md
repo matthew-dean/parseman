@@ -175,6 +175,9 @@ type RunOptions = {
   build?: ParseContext['build']   // ctx.build host (structural node() → CST/AST)
   state?: unknown                 // initial ctx.state
   trivia?: Runnable       // skip trailing trivia before computing unconsumedFrom
+  triviaCaptureMask?: number      // per-node CST trivia-kind bitmask
+  tolerant?: boolean              // enable list recovery diagnostics
+  profile?: boolean               // compiled-only profiling passes
 }
 
 type RunResult = {
@@ -183,8 +186,35 @@ type RunResult = {
   span: { start: number; end: number }
   expected: string[]                   // when the top-level parse failed
   errors: ParseError[]                 // tolerant-list / expect() diagnostics
-  triviaLog: number[]                  // flat [start, end] pairs
+  triviaLog: number[]                  // flat [start, end] or [start, end, kind] entries
+  triviaKindLabels?: readonly string[] // label table for the kind column, when known
+  triviaMap: RootTriviaIndex           // lazy sparse gap index over triviaLog
   unconsumedFrom: number | null            // first non-trivia offset left unconsumed, else null
+}
+```
+
+### `RootTriviaIndex`
+
+```ts
+type RootTriviaIndex = {
+  entries: TriviaEntriesView
+  labels: readonly string[] | undefined
+  before: ReadonlyMap<number, readonly number[]> // following content offset -> entry indices
+  after: ReadonlyMap<number, readonly number[]>  // preceding content offset -> entry indices
+  entryIndicesBefore(offset: number): readonly number[]
+  entryIndicesAfter(offset: number): readonly number[]
+  gapBefore(offset: number): RootTriviaGap | undefined
+  gapAfter(offset: number): RootTriviaGap | undefined
+  gaps(): readonly RootTriviaGap[]
+  gapsWithKind(kind: string | readonly string[]): readonly RootTriviaGap[]
+}
+
+type RootTriviaGap = {
+  start: number
+  end: number
+  entryIndices: readonly number[]
+  hasKind(kind: string): boolean
+  text(input: string): string
 }
 ```
 
@@ -352,9 +382,17 @@ type TriviaEntriesView  = {
   stride: number
   start(i: number): number
   end(i: number): number
-  kindIndex(i: number): number
+  insertIndex(i: number): number | undefined
+  kindIndex(i: number): number | undefined
   kind(i: number): string | undefined
   text(i: number, input: string): string
+}
+type RootTriviaGap = {
+  start: number
+  end: number
+  entryIndices: readonly number[]
+  hasKind(kind: string): boolean
+  text(input: string): string
 }
 ```
 
