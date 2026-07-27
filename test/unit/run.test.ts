@@ -27,6 +27,68 @@ describe('run() — generic grammar-entry driver', () => {
     expect(r.unconsumedFrom).toBe(null)
   })
 
+  it('captures root trivia for compiled non-node parser() roots', () => {
+    const rw = trivia(regex(/[ \t]+/))
+    const root = parser({ trivia: rw }, sequence(literal('a'), literal('b')))
+    const compiled = compile(root)
+    const entry = (input: string, pos: number, ctx: import('../../src/index.ts').ParseContext) =>
+      compiled.parseWithContext(input, ctx, pos)
+
+    const interpreted = run(root as never, 'a b ', { trivia: rw as never })
+    const compiledResult = run(entry, 'a b ', { trivia: rw as never })
+
+    expect(interpreted.ok).toBe(true)
+    expect(compiledResult.ok).toBe(true)
+    expect(interpreted.triviaLog).toEqual([1, 2])
+    expect(compiledResult.triviaLog).toEqual(interpreted.triviaLog)
+    expect(compiledResult.unconsumedFrom).toBe(null)
+  })
+
+  it('decodes labeled root trivia gaps for compiled non-node parser() roots', () => {
+    const rw = trivia(oneOrMore(choice(
+      label('whitespace', regex(/[ \t\n\r\f]+/)),
+      label('blockComment', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
+    )))
+    const root = parser({ trivia: rw }, sequence(literal('a'), literal('b')))
+    const compiled = compile(root)
+    const entry = (input: string, pos: number, ctx: import('../../src/index.ts').ParseContext) =>
+      compiled.parseWithContext(input, ctx, pos)
+    const input = 'a /*x*/ b'
+
+    const result = run(entry, input, { trivia: rw as never })
+
+    expect(result.ok).toBe(true)
+    expect(result.triviaKindLabels).toEqual(['whitespace', 'blockComment'])
+    expect(result.triviaLog).toEqual([1, 2, 0, 2, 7, 1, 7, 8, 0])
+    expect(result.triviaMap.entries.kind(1)).toBe('blockComment')
+    expect(result.triviaMap.gapAfter(1)?.entryIndices).toEqual([0, 1, 2])
+    expect(result.triviaMap.gapAfter(1)?.text(input)).toBe(' /*x*/ ')
+    expect(result.triviaMap.gapBefore(8)?.hasKind('blockComment')).toBe(true)
+    expect(result.triviaMap.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
+  })
+
+  it('does not fill CST trivia buffers for non-node root trivia logging', () => {
+    const rw = trivia(regex(/[ \t]+/))
+    const root = parser({ trivia: rw }, sequence(literal('a'), literal('b')))
+    const compiled = compile(root)
+    const triviaLog: number[] = []
+    const cstTriviaLog: number[] = []
+    const rawChildren: unknown[] = []
+
+    const result = compiled.parseWithContext('a b', {
+      trackLines: false,
+      _triviaLog: triviaLog,
+      _cstTriviaLog: cstTriviaLog,
+      _cstRawChildren: rawChildren,
+      captureTrivia: true,
+    }, 0)
+
+    expect(result.ok).toBe(true)
+    expect(triviaLog).toEqual([1, 2])
+    expect(cstTriviaLog).toEqual([])
+    expect(rawChildren).toEqual([])
+  })
+
   it('reports leftover at the first non-trivia offset', () => {
     // `!` is not a word and not trivia → leftover after "a b ".
     const r = run(g.Doc as never, 'a b !', { trivia: blockTrivia as never })

@@ -666,9 +666,11 @@ function ensurePlainRegexDecl(ctx: Ctx, source: string, flags: string): string {
 }
 
 /**
- * When `cap` is truthy, also records `[start, end]` (and optional insertIdx) into
- * `_ctx._triviaLog` / `_ctx._cstTriviaLog`. One emitted function serves both skip
- * and capture call sites — no duplicate trivia parser tree, no _tc wrapper call.
+ * When `cap` is truthy, also records `[start, end]` into `_ctx._triviaLog`, and
+ * when `cap === 1` also records the CST insert index into `_ctx._cstTriviaLog`.
+ * `cap === 2` is the public root-log-only path used by non-node run() entries.
+ * One emitted function serves every skip/capture call site — no duplicate trivia
+ * parser tree, no _tc wrapper call.
  */
 function ensureTriviaFn(ctx: Ctx): string {
   const trivia = ctx.activeTrivia!
@@ -751,7 +753,7 @@ function ensureTriviaFn(ctx: Ctx): string {
     `  }`,
     `  if (_cap && _e > _pos) {`,
     `    if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_pos, _e)`,
-    `    if (_ctx._cstTriviaLog !== undefined && _ctx.captureTrivia) _ctx._cstTriviaLog.push(_pos, _e, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0)`,
+    `    if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia) _ctx._cstTriviaLog.push(_pos, _e, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0)`,
     `  }`,
     `  return _e`,
     `}`,
@@ -1434,18 +1436,23 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         // Match the interpreter (sequence.ts): scan trivia to a temp position, but
         // only *commit* it (advance cur) if the following term consumes content past
         // it. A term matching empty (optional/many/lookahead) leaves cur pre-trivia,
-        // so trailing whitespace stays out of the sequence's span. The non-capturing
-        // trivFn has no side effects when called without `_cap`, so there is nothing
-        // to roll back — just keep cur unchanged.
+        // so trailing whitespace stays out of the sequence's span. When run() has
+        // installed the public root `_triviaLog`, record that log with `_cap = 2`
+        // without enabling per-node CST trivia capture.
         const trivFn = ensureTriviaFn(ctx)
+        const markLog = v(ctx, '_mklg')
         const scanEndV = v(ctx, '_sne')
-        stmts.push(`${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx)`)
+        const capArg = ctx.noHoist ? '0' : '_ctx._triviaLog !== undefined ? 2 : 0'
+        stmts.push(
+          `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+          `${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx, ${capArg})`,
+        )
         const r = emit(def.parsers[i]!, ctx, scanEndV)
         stmts.push(...r.stmts)
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}`,
         )
         valueVars.push(r.valueVar)
         continue
@@ -2947,7 +2954,7 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
   // FIRST emission of that rule would compile the SHARED `_r_<Name>`/`_pf` body
   // non-capturing and silently drop real captures at every other call site. Truncating
   // by length is correct regardless of hoisting or sharing.
-  const sinksLive = !!ctx.capturing || !!ctx.recovery
+  const sinksLive = !!ctx.capturing || !!ctx.recovery || !!ctx.activeTrivia
   const leaves = sinksLive ? v(ctx, '_ntl') : null
   const raw    = sinksLive ? v(ctx, '_ntr') : null
   const tl     = sinksLive ? v(ctx, '_ntt') : null
