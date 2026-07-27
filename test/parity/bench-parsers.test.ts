@@ -12,7 +12,8 @@
  * choice) — semantically identical values, so they must not fail parity.
  */
 import { describe, it, expect } from 'vitest'
-import { parseGraphQL } from '../../examples/graphql/parser.ts'
+import { compile } from '../../src/index.ts'
+import { graphqlDoc, parseGraphQL } from '../../examples/graphql/parser.ts'
 import { jsonDoc } from '../../examples/json/parser.ts'
 import { buildParsimmonGraphQL } from '../../bench/parsimmon-graphql.ts'
 import { buildPeggyGraphQL } from '../../bench/peggy-graphql.ts'
@@ -46,6 +47,36 @@ const chevrotain = HAS_GROUP_BY
       json: (await import('../../bench/chevrotain-json.ts')).buildChevrotainJSON(),
     }
   : null
+
+function generatedKeys(value: unknown, path = '$'): string[] {
+  if (value === null || typeof value !== 'object') return []
+  const out: string[] = []
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = Array.isArray(value) ? `${path}[${key}]` : `${path}.${key}`
+    if (/^_opt\d+$/.test(key)) out.push(childPath)
+    out.push(...generatedKeys(child, childPath))
+  }
+  return out
+}
+
+describe('Parseman GraphQL example compiler parity', () => {
+  it('preserves authored AST keys for optional aliases', () => {
+    const input = `query Dashboard0($id: ID!) {
+  viewer {
+    id
+  }
+}`
+    const interpreted = graphqlDoc.parse(input)
+    const compiled = compile(graphqlDoc).parse(input)
+
+    expect(compiled).toEqual(interpreted)
+    expect(compiled.ok && compiled.value[0]!.selectionSet[0]).toMatchObject({
+      alias: null,
+      name: 'viewer',
+    })
+    expect(compiled.ok && generatedKeys(compiled.value)).toEqual([])
+  })
+})
 
 describe('GraphQL bench parsers build the same AST as Parséman', () => {
   const fixtures = { small: SMALL_GQL, medium: MEDIUM_GQL, large: LARGE_GQL }
