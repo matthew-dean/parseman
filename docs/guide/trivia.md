@@ -137,7 +137,6 @@ For AST reducers and serializers, query the grouped gaps directly:
 
 ```ts
 const beforeNode = result.triviaMap.gapBefore(node.span.start)
-const afterNode = result.triviaMap.gapAfter(node.span.end)
 const preserved: string[] = []
 
 if (beforeNode?.hasKind('blockComment')) {

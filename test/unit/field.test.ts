@@ -71,14 +71,13 @@ describe('field()', () => {
 
     expect(compile(p).parse('red;')).toEqual(parse(p, 'red;'))
     expect(compile(p).parse('red, blue;')).toEqual(parse(p, 'red, blue;'))
-    expect(parse(p, 'red;')).toMatchObject({
-      ok: true,
-      value: {
-        fields: {
-          trailingSeparator: { value: ';', span: { start: 3, end: 4 } },
-        },
-      },
-    })
+    const red = parse(p, 'red;')
+    expect(red.ok).toBe(true)
+    if (red.ok) {
+      expect(red.value.fields).toEqual({
+        trailingSeparator: { value: ';', span: { start: 3, end: 4 } },
+      })
+    }
     expect(parse(p, 'red, blue;')).toMatchObject({
       ok: true,
       value: {

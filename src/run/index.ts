@@ -9,10 +9,11 @@
  * compiled parser touches.
  *
  * This entry exists so it doesn't have to. `run()`'s complete module closure is
- * three files (this, `recovery/scan.ts`, `cst/capture-buffer.ts`) — a fraction of
- * the main entry. `test/unit/run-entry-closure.test.ts` asserts that stays true,
- * so a future import into `functional/run.ts` that widens the closure fails the
- * suite rather than quietly re-inflating everyone's bundle.
+ * four files (this, `recovery/scan.ts`, `cst/capture-buffer.ts`,
+ * `cst/trivia-entries.ts`) — a fraction of the main entry.
+ * `test/unit/run-entry-closure.test.ts` asserts that stays true, so a future
+ * import into `functional/run.ts` that widens the closure fails the suite rather
+ * than quietly re-inflating everyone's bundle.
  *
  * Use the main entry when you BUILD grammars; use this one when you only run
  * output the macro (or `compile()`) already produced.

@@ -1837,6 +1837,8 @@ function emitDispatchCombinator(
     if (usesRouted && !needsRoutedContext) {
       ctx.routedLocal = { valueVar: selector.valueVar, startVar: pos, endVar: selector.endVar }
       ctx.noHoist = true
+    } else if (usesRouted) {
+      ctx.routedLocal = undefined
     }
     const tail = emitTailFallible(parser, ctx, usesRouted ? pos : selector.endVar)
     ctx.routedLocal = savedRoutedLocal
@@ -2254,6 +2256,7 @@ function routedNeedsContextBridge(p: Combinator<unknown>, ctx: Ctx, seen: Set<Co
   if (ctx.namedParsers.has(p)) return parserUsesRouted(p)
   const d = p._def
   if (d.tag === 'dispatch') return false
+  if (d.tag === 'withCtx') return parserUsesRouted(d.parser)
   return childrenOf(d).some(child => routedNeedsContextBridge(child, ctx, seen))
 }
 

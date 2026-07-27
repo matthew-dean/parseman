@@ -26,6 +26,7 @@ import {
   transform,
   trivia,
   when,
+  withCtx,
   type Combinator,
   type ParseContext,
   type ParseError,
@@ -885,6 +886,45 @@ describe('dispatch()', () => {
     expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
       ok: true,
       value: 'url(:raw',
+      span: { start: 0, end: 8 },
+    })
+    expect(assertEnginesAgree(parser, 'red')).toEqual({
+      ok: true,
+      value: 'red:ident',
+      span: { start: 0, end: 3 },
+    })
+  })
+
+  it('compile() bridges nested dispatch routed branches through withCtx boundaries', () => {
+    const inner = transform(
+      dispatch(
+        regex(/[a-z]+/),
+        when('raw', withCtx({ mode: 'inner' }, transform(
+          sequence(routed(), literal(')')),
+          ([head, close]) => `${head}:${close}`,
+        ))),
+        otherwise(routed()),
+      ),
+      ([, tail]) => tail,
+    )
+    const parser = transform(
+      dispatch(
+        regex(/[a-z]+(?:\()?/),
+        when(endsWith('('), transform(
+          sequence(routed(), inner),
+          ([head, body]) => `${head}:${body}`,
+        )),
+        otherwise(transform(routed(), head => `${head}:ident`)),
+      ),
+      ([, tail]) => tail,
+    )
+    const compiled = compile(parser)
+
+    expect(compiled.source).not.toMatch(/_dval\d+\s*=\s*\[/)
+    expect(compiled.source).toContain('_ctx._routed')
+    expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
+      ok: true,
+      value: 'url(:raw:)',
       span: { start: 0, end: 8 },
     })
     expect(assertEnginesAgree(parser, 'red')).toEqual({
