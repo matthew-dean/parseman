@@ -867,11 +867,22 @@ describe('dispatch()', () => {
   })
 
   it('compile() keeps same-function routed branch transforms local and tuple-free', () => {
+    const inner = transform(
+      dispatch(
+        regex(/[a-z]+/),
+        when('raw', transform(
+          sequence(routed(), literal(')')),
+          ([body, close]) => `${body}${close}`,
+        )),
+        otherwise(transform(routed(), body => `${body}:ident`)),
+      ),
+      ([, tail]) => tail,
+    )
     const parser = transform(
       dispatch(
         regex(/[a-z]+(?:\()?/),
         when(endsWith('('), transform(
-          sequence(routed(), literal('raw'), literal(')')),
+          sequence(routed(), inner),
           ([head, body]) => `${head}:${body}`,
         )),
         otherwise(transform(routed(), head => `${head}:ident`)),
@@ -885,7 +896,7 @@ describe('dispatch()', () => {
     expect(compiled.source).not.toContain('_ctx._routed')
     expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
       ok: true,
-      value: 'url(:raw',
+      value: 'url(:raw)',
       span: { start: 0, end: 8 },
     })
     expect(assertEnginesAgree(parser, 'red')).toEqual({
