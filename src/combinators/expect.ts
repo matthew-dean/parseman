@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseError } from '../types.ts'
 import { captureError } from '../recovery/scan.ts'
+import { annotateSpanFromLineContext } from '../compiler/line-index.ts'
 import { matchesEmpty, isZeroWidthAssertion } from './first-set.ts'
 
 export type { ParseError }
@@ -131,7 +132,8 @@ export function expect<T>(combinator: Combinator<T>, label?: string): Combinator
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T | ParseError> {
       const result = combinator.parse(input, pos, ctx)
       if (result.ok) return result as ParseResult<T | ParseError>
-      const error: ParseError = { _tag: 'parseError', span: { start: pos, end: pos }, expected }
+      const span = { start: pos, end: pos }
+      const error: ParseError = { _tag: 'parseError', span: ctx.trackLines ? annotateSpanFromLineContext(span, ctx) : span, expected }
       ctx._errors?.push(error)
       // Embed the missing-token error as a `parseError` CST child (no-op when CST
       // capture is off), so it rides the tree exactly like list-recovery errors —

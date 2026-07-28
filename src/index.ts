@@ -69,7 +69,7 @@ export type {
 export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
-export { buildLineIndex, offsetToLineCol, annotateSpan } from './compiler/line-index.ts'
+export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans } from './compiler/line-index.ts'
 export type { LineIndex } from './compiler/line-index.ts'
 
 export { gate } from './combinators/gate.ts'

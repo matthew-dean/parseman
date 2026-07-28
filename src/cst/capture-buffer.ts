@@ -1,4 +1,5 @@
-import type { ParseContext } from '../types.ts'
+import type { ParseContext, Span } from '../types.ts'
+import { annotateSpanFromLineContext } from '../compiler/line-index.ts'
 
 /** Lazy per-node capture state — arrays materialized on first push. */
 export type CstCaptureBuf = {
@@ -70,7 +71,14 @@ export function endCstNodeCapture(
 }
 
 export function pushCstLeaf(ctx: ParseContext, leaf: unknown): void {
-  pushCstChild(ctx, leaf, leaf)
+  if (!ctx.trackLines) {
+    pushCstChild(ctx, leaf, leaf)
+    return
+  }
+  const annotated = leaf && typeof leaf === 'object' && (leaf as { span?: unknown }).span
+    ? { ...(leaf as Record<string, unknown>), span: annotateSpanFromLineContext((leaf as { span: Span }).span, ctx) }
+    : leaf
+  pushCstChild(ctx, annotated, annotated)
 }
 
 /** Record a built sub-node into the active collector (children vs rawChildren may differ). */

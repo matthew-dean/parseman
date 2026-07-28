@@ -356,6 +356,16 @@ export type ParseContext = {
     fieldSlots: number
     hostCalls: number
   } | undefined
+  /**
+   * Framework-internal optional line-start collector. Compiled parsers emitted
+   * with line tracking append newline-derived line starts here while matching
+   * terminals; the driver normalizes/dedupes once before annotating spans.
+   */
+  _lineStarts?: number[] | undefined
+  /** Framework-internal shared line index for interpreter-side line annotation. */
+  _lineIndex?: { lineStarts: number[] } | undefined
+  /** Framework-internal high-water mark for optional line tracking range scans. */
+  _lineScannedTo?: number | undefined
 }
 
 /**

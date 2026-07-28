@@ -1,5 +1,5 @@
-import type { Combinator, ParseContext, ParseResult, ParseFail } from '../types.ts'
-import { buildLineIndex, annotateSpan } from '../compiler/line-index.ts'
+import type { Combinator, ParseContext, ParseResult, ParseFail, ParseError } from '../types.ts'
+import { createLineIndex, recordLineRange, normalizeLineIndex, annotateSpan, type LineIndex } from '../compiler/line-index.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { triviaKindMask } from '../cst/trivia-kinds.ts'
 
@@ -41,6 +41,24 @@ export interface ParsemanParser<T> extends Combinator<T> {
   parse(input: string, pos: number, ctx: ParseContext): ParseResult<T>
 }
 
+function annotateResultLines<T, R extends ParseResult<T>>(result: R, index: LineIndex): R {
+  const annotated = { ...result, span: annotateSpan(result.span, index) } as R
+  const errors = (annotated as { errors?: ParseError[] }).errors
+  if (errors) {
+    ;(annotated as { errors: ParseError[] }).errors = errors.map(error => ({
+      ...error,
+      span: annotateSpan(error.span, index),
+    }))
+  }
+  return annotated
+}
+
+function createParseLineContext(input: string, pos: number): { lineIndex: LineIndex; lineScannedTo: number } {
+  const lineIndex = createLineIndex()
+  if (pos > 0) recordLineRange(lineIndex, input, 0, pos)
+  return { lineIndex, lineScannedTo: pos }
+}
+
 export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanParser<T> {
   const clearTrivia = opts.trivia === null
   return {
@@ -56,12 +74,18 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
     },
     parse(input: string, pos?: number, _ctx?: ParseContext): ParseResult<T> {
       const trackLines = opts.trackLines ?? _ctx?.trackLines ?? false
+      const lineContext = trackLines && _ctx?._lineIndex === undefined
+        ? createParseLineContext(input, pos ?? 0)
+        : undefined
+      const lineIndex = trackLines ? (_ctx?._lineIndex ?? lineContext!.lineIndex) : undefined
       // Preserve any CST collectors / capture flag from the caller (e.g. an
       // enclosing node()), layering this grammar's trivia on top. Without this,
       // a parser() nested inside a node() would drop the node's child collectors.
       const ctx: ParseContext = {
         ..._ctx,
         trackLines,
+        ...(lineIndex ? { _lineIndex: lineIndex } : {}),
+        ...(lineContext ? { _lineScannedTo: lineContext.lineScannedTo } : {}),
         // trivia: null clears (contiguous terms); a Combinator sets; undefined inherits.
         ...(clearTrivia ? {
           trivia: undefined,
@@ -83,11 +107,7 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
           : {}),
       }
       const result = root.parse(input, pos ?? 0, ctx)
-      if (trackLines) {
-        const idx = buildLineIndex(input)
-        return { ...result, span: annotateSpan(result.span, idx) }
-      }
-      return result
+      return lineIndex ? annotateResultLines(result, normalizeLineIndex(lineIndex)) : result
     },
   } as ParsemanParser<T>
 }
@@ -132,6 +152,8 @@ export function parse<T>(
     markUnusedValues(combinator)
   }
   const trackLines = opts.trackLines ?? false
+  const lineContext = trackLines ? createParseLineContext(input, 0) : undefined
+  const lineIndex = lineContext?.lineIndex
   const _errors = opts.recover ? [] : undefined
   // In recovery mode also track the furthest-position failure, so the caller can
   // report "where it got stuck + what was expected" even when a permissive top
@@ -144,6 +166,8 @@ export function parse<T>(
   const grammarScanSkip = combinator._meta.grammarScanSkip
   const ctx: ParseContext = {
     trackLines,
+    ...(lineIndex ? { _lineIndex: lineIndex } : {}),
+    ...(lineContext ? { _lineScannedTo: lineContext.lineScannedTo } : {}),
     ...(grammarTrivia !== undefined
       ? { trivia: grammarTrivia, ...(grammarTrivia._meta.triviaKindLabels ? { triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}) }
       : {}),
@@ -152,13 +176,9 @@ export function parse<T>(
     ...(_probe !== undefined ? { _probe } : {}),
   }
   const result = combinator.parse(input, 0, ctx)
-  if (!result.ok) return result
+  if (!result.ok) return lineIndex ? annotateResultLines(result, normalizeLineIndex(lineIndex)) : result
   const withErrors = _errors !== undefined
     ? { ...result, errors: _errors, furthestFail: _probe?.best ?? null }
     : result
-  if (trackLines) {
-    const idx = buildLineIndex(input)
-    return { ...withErrors, span: annotateSpan(withErrors.span, idx) }
-  }
-  return withErrors
+  return lineIndex ? annotateResultLines(withErrors, normalizeLineIndex(lineIndex)) : withErrors
 }

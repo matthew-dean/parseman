@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
 import { fromChar, empty } from './first-set.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
+import { recordLineRangeFromContext } from '../compiler/line-index.ts'
 
 /**
  * ASCII case-fold equality — the interpreter twin of the compiler's `foldEq`
@@ -38,6 +39,7 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
     canMatchNewline: value.includes('\n'),
     isTrivia: false,
   }
+  const canMatchNewline = meta.canMatchNewline
 
   if (caseInsensitive) {
     const upper = value.toUpperCase()
@@ -69,6 +71,7 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
         return function parse(input: string, pos: number, ctx: ParseContext): ParseResult<string> {
           if (input.charCodeAt(pos) === code) {
             const span = { start: pos, end: pos + 1 }
+            if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, span.end)
             if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
             return { ok: true, value, span }
           }
@@ -83,6 +86,7 @@ export function literal(value: string, opts: LiteralOptions = {}): Combinator<st
         const matchedValue = caseInsensitive ? input.slice(pos, end) : value
         if (caseInsensitive ? asciiFoldEq(matchedValue, value) : input.startsWith(value, pos)) {
           const span = { start: pos, end }
+          if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, end)
           if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: matchedValue, span })
           return { ok: true, value: matchedValue, span }
         }

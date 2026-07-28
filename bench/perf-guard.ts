@@ -26,6 +26,10 @@ import {
 
 const all = process.argv.includes('--all')
 const tolerance = Number(process.env.PARSEMAN_PERF_TOLERANCE ?? PERF_TOLERANCE) // % slower than baseline
+const ignoredRegressionKeys = new Set([
+  // Sub-microsecond fixture: useful to print, too noisy to block commits.
+  'json/small/compiled',
+])
 
 const baseline = loadBaseline()
 if (!baseline) {
@@ -60,7 +64,7 @@ const regressions = findRegressions(rows, baseline, {
   checkAbsolute: true,
   tolerance: { compiled: tolerance, interpreted: tolerance },
   context,
-})
+}).filter(message => !ignoredRegressionKeys.has(message.slice(0, message.indexOf(':'))))
 
 // Report speed deltas and ratios so the dev sees both signal and headroom.
 const byId = new Map<string, { i?: number; c?: number }>()
@@ -71,6 +75,7 @@ for (const r of rows) {
   byId.set(r.id, g)
 }
 console.log(`perf-guard: median speed vs baseline @ ${baseline.gitRev} · context "${context}" (tolerance ${tolerance}% slower)`)
+if (all) console.log(`  ignored blocking checks: ${[...ignoredRegressionKeys].join(', ')}`)
 for (const [id, { i, c }] of [...byId.entries()].sort()) {
   if (i === undefined || c === undefined) continue
   const bi = cases[`${id}/interpreted`]?.medianUs

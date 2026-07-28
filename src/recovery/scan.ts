@@ -1,5 +1,6 @@
 import type { Combinator, FirstSet, ParseContext, ParseError, ParseResult, RecoveryHelpers } from '../types.ts'
 import { cstCaptureActive, pushCstChild } from '../cst/capture-buffer.ts'
+import { annotateSpanFromLineContext, recordLineRangeFromContext } from '../compiler/line-index.ts'
 
 /**
  * Recovery MECHANISM — sync-source-agnostic. These primitives implement "scan
@@ -112,7 +113,9 @@ export function recoverScan(
 ): { error: ParseError; end: number } {
   let scanPos = from
   while (scanPos < input.length && !probeAt(sync, input, scanPos, ctx)) scanPos++
-  const error: ParseError = { _tag: 'parseError', span: { start: from, end: scanPos }, expected }
+  const span = { start: from, end: scanPos }
+  if (ctx.trackLines) recordLineRangeFromContext(ctx, input, from, scanPos)
+  const error: ParseError = { _tag: 'parseError', span: ctx.trackLines ? annotateSpanFromLineContext(span, ctx) : span, expected }
   ctx._errors?.push(error)
   return { error, end: scanPos }
 }

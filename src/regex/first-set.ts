@@ -170,11 +170,12 @@ function parseRegex(src: string): Node {
     }
     if (src[k] !== ']') throw BAIL
     i = k + 1
-    // A negated class can start with (almost) any char, and can match a newline
-    // unless it excludes it (we don't try to prove exclusion — `true` is the safe
-    // over-approximation).
-    if (negated) return charNode(any(), true)
     const ranges = parseClassRanges(body)
+    // A negated class can start with (almost) any char, so the first-set widens to
+    // `any`, but its newline capability is still cheap and useful to know:
+    // `[^,\r\n]*` is a workhorse "field until line end" regex and must not force
+    // line-tracking code to rescan every field.
+    if (negated) return charNode(any(), !ranges || !rangesHaveNewline(ranges))
     if (!ranges) return charNode(any(), true) // unparseable class → widen
     return charNode(rangesToSet(ranges), rangesHaveNewline(ranges))
   }
@@ -262,23 +263,17 @@ function firstSet(n: Node): FirstSet {
   }
 }
 
-/** Whether the first consumed char can be a newline (tracked separately from
- * `firstSet` because `.`/`\D`/negated classes widen to `any` yet differ on
- * whether that includes a newline). */
-function firstCanBeNewline(n: Node): boolean {
+/** Whether a successful match can consume a newline anywhere. This is tracked
+ * separately from `firstSet`: dispatch only cares about the first consumed char,
+ * while optional line tracking cares whether the matched span needs scanning. */
+function canConsumeNewline(n: Node): boolean {
   switch (n.t) {
     case 'char': return n.nl
     case 'any': return true
     case 'empty': return false
-    case 'rep': return firstCanBeNewline(n.node)
-    case 'alt': return n.arms.some(firstCanBeNewline)
-    case 'seq': {
-      for (const part of n.parts) {
-        if (firstCanBeNewline(part)) return true
-        if (!nullable(part)) break
-      }
-      return false
-    }
+    case 'rep': return canConsumeNewline(n.node)
+    case 'alt': return n.arms.some(canConsumeNewline)
+    case 'seq': return n.parts.some(canConsumeNewline)
   }
 }
 
@@ -299,6 +294,6 @@ export function firstSetFromRegex(source: string): { firstSet: FirstSet; canMatc
   // `choice()` arm it can succeed with an empty match at ANY position, so a
   // narrow first-set would let first-char dispatch wrongly skip it. Only a
   // pattern that must consume ≥1 char has a meaningful first-set.
-  if (nullable(ast)) return { firstSet: any(), canMatchNewline: true }
-  return { firstSet: firstSet(ast), canMatchNewline: firstCanBeNewline(ast) }
+  if (nullable(ast)) return { firstSet: any(), canMatchNewline: canConsumeNewline(ast) }
+  return { firstSet: firstSet(ast), canMatchNewline: canConsumeNewline(ast) }
 }
