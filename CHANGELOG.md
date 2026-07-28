@@ -3,6 +3,34 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.42.0 — 2026-07-28
+
+- **Add optional parse-time line and column tracking.** Parsers can now opt into
+  `trackLines` to populate `startLine`, `startColumn`, `endLine`, and `endColumn`
+  on parse spans. CST nodes and leaves receive line/column fields as their spans
+  are created, and `node()` builders receive the same enriched span so AST builders
+  can carry source locations without a second full-tree pass.
+
+  The default path stays offset-only: compiled parsers emit no line-tracking helper
+  code unless `compile(..., { trackLines: true })` is requested, and interpreted
+  parsers keep the previous trivia/terminal fast paths when tracking is off.
+
+- **Track line starts incrementally for skipped and scanned regions.** The opt-in
+  tracker records newline offsets with an append-only high-water cursor, then
+  derives line/column from that index when spans are materialized. Generated
+  parsers specialize fixed newline literals, skip dynamic tracking for terminals
+  proven newline-free, and backfill newline offsets for trivia, `scanTo`, regex
+  spans, and recovery-skipped error ranges before diagnostics are annotated.
+
+- **Keep post-parse span annotation as a convenience path.** `buildLineIndex`,
+  `annotateSpan`, and `annotateTreeSpans` remain available for already-built trees,
+  but parse-time `trackLines` is the efficient CST/AST integration path.
+
+- **Refine regex newline capability analysis.** Regex first-set analysis now tracks
+  whether a successful match can consume a newline anywhere in the pattern, including
+  negated character classes such as `[^,\r\n]*`. Generated line tracking uses that
+  signal to avoid scanning spans that cannot contain line breaks.
+
 ## 0.41.0 — 2026-07-27
 
 - **Fix: compiled rule-map entries now expose ambient trivia labels to `run()`.**

@@ -13,4 +13,4 @@
  * Kept in sync with `package.json` by `test/unit/version-sync.test.ts`, which fails
  * the build if this constant drifts from the published version.
  */
-export const PARSEMAN_VERSION = '0.41.0'
+export const PARSEMAN_VERSION = '0.42.0'
