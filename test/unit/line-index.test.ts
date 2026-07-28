@@ -105,6 +105,17 @@ describe('parse with trackLines', () => {
     }
   })
 
+  it('parser({ trackLines: true }) reuses a caller-provided compiled line-start buffer', async () => {
+    const { literal, sequence, parser } = await import('../../src/index.ts')
+    const p = parser({ trackLines: true }, sequence(literal('foo'), literal('\n'), literal('bar')))
+    const ctx = { trackLines: true, _lineStarts: [0], _lineScannedTo: 0 } as ParseContext
+    const r = p.parse('foo\nbar', 0, ctx)
+    expect(r.ok).toBe(true)
+    expect(ctx._lineStarts).toEqual([0, 4])
+    expect(ctx._lineScannedTo).toBe(4)
+    if (r.ok) expect(r.span.endLine).toBe(2)
+  })
+
   it('no line/col without trackLines', async () => {
     const { literal, parse } = await import('../../src/index.ts')
     const r = parse(literal('foo'), 'foo')

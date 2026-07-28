@@ -74,10 +74,12 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
     },
     parse(input: string, pos?: number, _ctx?: ParseContext): ParseResult<T> {
       const trackLines = opts.trackLines ?? _ctx?.trackLines ?? false
-      const lineContext = trackLines && _ctx?._lineIndex === undefined
+      const lineContext = trackLines && _ctx?._lineIndex === undefined && _ctx?._lineStarts === undefined
         ? createParseLineContext(input, pos ?? 0)
         : undefined
-      const lineIndex = trackLines ? (_ctx?._lineIndex ?? lineContext!.lineIndex) : undefined
+      const lineIndex = trackLines
+        ? (_ctx?._lineIndex ?? (_ctx?._lineStarts ? { lineStarts: _ctx._lineStarts } : lineContext!.lineIndex))
+        : undefined
       // Preserve any CST collectors / capture flag from the caller (e.g. an
       // enclosing node()), layering this grammar's trivia on top. Without this,
       // a parser() nested inside a node() would drop the node's child collectors.
@@ -107,6 +109,9 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
           : {}),
       }
       const result = root.parse(input, pos ?? 0, ctx)
+      if (trackLines && _ctx && ctx._lineScannedTo !== undefined) {
+        _ctx._lineScannedTo = Math.max(_ctx._lineScannedTo ?? 0, ctx._lineScannedTo)
+      }
       return lineIndex ? annotateResultLines(result, normalizeLineIndex(lineIndex)) : result
     },
   } as ParsemanParser<T>

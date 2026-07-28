@@ -37,10 +37,15 @@ export function recordLineRange(index: LineIndex, input: string, start: number, 
   }
 }
 
+/**
+ * Records newlines from the context high-water mark through `end`. The start
+ * argument is only a caller hint: append-only tracking uses `_lineScannedTo` so
+ * overlapping calls can backfill gaps without double-scanning committed ranges.
+ */
 export function recordLineRangeFromContext(
   ctx: LineTrackingContext,
   input: string,
-  start: number,
+  _startHint: number,
   end: number,
 ): void {
   if (!ctx.trackLines) return

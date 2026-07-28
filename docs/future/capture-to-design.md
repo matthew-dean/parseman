@@ -59,6 +59,10 @@ type CaptureToOptions = {
   /**
    * Compatibility spelling for existing scan-oriented call sites. In the final
    * 0.41 API, prefer `opaque` or `groups` so semantic behavior is explicit.
+   * `skip` is a deprecated alias for `opaque`: skipped regions protect sentinels
+   * and are appended to the semantic text as authored bytes. It is evaluated
+   * after explicit `opaque` entries and before `groups`; it does not inherit
+   * `scanTo`'s non-emitting/probe-only behavior.
    */
   skip?: Combinator<unknown>[]
   raw?: boolean
@@ -280,18 +284,26 @@ parse span, root trivia log, CST node span, or diagnostics.
 
 ## CST And AST Capture
 
-`captureTo` should push one CST leaf when capture is active. The leaf's span is
-the full source span consumed by `captureTo`; its value is the semantic string.
-That means a leaf value is not always `input.slice(span.start, span.end)`.
+`captureTo` should push one CST projection leaf when capture is active. It must
+not reuse the ordinary raw leaf contract, where `leaf.value` is expected to equal
+`input.slice(span.start, span.end)`. The projection leaf should carry both the
+semantic string and the authored source range explicitly:
 
-That mismatch is intentional and must be documented in the CST/reference docs:
-`captureTo` is a projection leaf, not a raw source leaf. Tools that need authored
-bytes can slice by span and use the root trivia map. AST builders can consume the
-string directly without re-scanning or stripping comments.
+```ts
+{
+  _tag: 'projectionLeaf',
+  kind: 'captureTo',
+  value: semanticText,
+  raw: input.slice(start, end),
+  span: { start, end },
+}
+```
 
-If this value/span mismatch proves too surprising in review, the fallback API is
-`captureTo.raw(...)` or an option returning `{ text, raw, span }`. That is not
-the preferred default because it puts boilerplate back into every reducer.
+The exact tag name can change before implementation, but the contract should not:
+ordinary leaves remain raw, while projection leaves say that their value is a
+semantic projection. Tools that need authored bytes can use `raw`, slice by span,
+or use the root trivia map. AST builders can consume the string directly without
+re-scanning or stripping comments.
 
 ## Macro Lowering
 
@@ -323,10 +335,25 @@ while (cur < input.length) {
     cur = opaqueEnd
     continue
   }
+  if (groupOpenAtCur) {
+    text += input.slice(chunkStart, cur)
+    const group = captureGroupRecursively(cur)
+    if (!group.ok) return group.error
+    text += group.text
+    cur = group.end
+    chunkStart = cur
+    continue
+  }
   cur++
 }
 text += input.slice(chunkStart, cur)
 ```
+
+`captureGroupRecursively` uses the group's close delimiter as its local boundary
+and applies the same trivia, opaque, and nested-group policies inside the group.
+Sentinels from the outer capture do not terminate inside a group. An unmatched
+group is a parse failure unless the call site explicitly opts into a recovery
+policy; interpreted and compiled parsers must report the same failure span.
 
 A follow-up optimizer can reuse first-set information from `balanced()` to jump
 between possible sentinel/skipper starts. That is an optimization, not a semantic
@@ -361,6 +388,12 @@ Minimum 0.41 tests:
 - quoted strings containing sentinels are captured as authored text.
 - balanced parens/brackets/braces containing sentinels are captured as authored
   text.
+- nested balanced groups preserve delimiter ownership and do not let inner
+  sentinels terminate the outer capture.
+- unmatched group delimiters produce consistent interpreted and compiled failure
+  spans/diagnostics.
+- group-local opaque regions protect sentinels and are preserved as authored
+  text inside the semantic group projection.
 - sentinels inside comments, strings, and groups do not terminate.
 - `raw: true` includes comments and ignores ambient trivia/scanSkip.
 - `orEOF: true` succeeds at EOF; default fails at EOF.
