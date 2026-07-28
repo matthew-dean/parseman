@@ -9,7 +9,7 @@ import { expect } from './expect.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
-import { recordLineRangeFromContext } from '../compiler/line-index.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 
 export type ScanToOptions = {
   /**

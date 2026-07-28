@@ -9,8 +9,9 @@
  * compiled parser touches.
  *
  * This entry exists so it doesn't have to. `run()`'s complete module closure is
- * four files (this, `recovery/scan.ts`, `cst/capture-buffer.ts`,
- * `cst/trivia-entries.ts`) — a fraction of the main entry.
+ * intentionally tiny (this, `functional/run.ts`, recovery helpers, CST capture /
+ * trivia views, host-mode checks, and the line-index helper) — a fraction of the
+ * main entry.
  * `test/unit/run-entry-closure.test.ts` asserts that stays true, so a future
  * import into `functional/run.ts` that widens the closure fails the suite rather
  * than quietly re-inflating everyone's bundle.

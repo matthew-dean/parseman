@@ -2,7 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta, FirstSet } from
 import { any } from './first-set.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
-import { recordLineRangeFromContext } from '../compiler/line-index.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 import { shorthandRanges, parseClassRanges } from '../regex/classes.ts'
 
 /**

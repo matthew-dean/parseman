@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseError } from '../types.ts'
 import { captureError } from '../recovery/scan.ts'
-import { annotateSpanFromLineContext } from '../compiler/line-index.ts'
+import { annotateSpanFromLineContext } from '../line-index.ts'
 import { matchesEmpty, isZeroWidthAssertion } from './first-set.ts'
 
 export type { ParseError }

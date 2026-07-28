@@ -12,7 +12,7 @@ import {
   rollbackCstCapture,
   saveCstMark,
 } from '../cst/capture-buffer.ts'
-import { recordLineRangeFromContext } from '../compiler/line-index.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 
 /**
  * Result of scanning trivia: the position after it, plus a `commit()` that

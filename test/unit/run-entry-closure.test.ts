@@ -54,6 +54,10 @@ describe('parseman/run — the minimal execution entry', () => {
       // stays a tiny import-free view over the already-collected number log.
       'src/cst/trivia-entries.ts',
       'src/functional/run.ts',
+      // Recovery diagnostics can carry line/column when the caller provides a
+      // tracking ctx. Keep this helper outside compiler/ so the run entry can
+      // annotate parse errors without dragging codegen into compiled-parser users.
+      'src/line-index.ts',
       'src/recovery/scan.ts',
       'src/run/index.ts',
     ])

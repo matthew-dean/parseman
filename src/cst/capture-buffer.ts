@@ -1,5 +1,5 @@
 import type { ParseContext, Span } from '../types.ts'
-import { annotateSpanFromLineContext } from '../compiler/line-index.ts'
+import { annotateSpanFromLineContext } from '../line-index.ts'
 
 /** Lazy per-node capture state — arrays materialized on first push. */
 export type CstCaptureBuf = {

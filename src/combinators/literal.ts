@@ -2,7 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types
 import { fromChar, empty } from './first-set.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
-import { recordLineRangeFromContext } from '../compiler/line-index.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 
 /**
  * ASCII case-fold equality — the interpreter twin of the compiler's `foldEq`

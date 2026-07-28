@@ -1,6 +1,6 @@
 import type { Combinator, FirstSet, ParseContext, ParseError, ParseResult, RecoveryHelpers } from '../types.ts'
 import { cstCaptureActive, pushCstChild } from '../cst/capture-buffer.ts'
-import { annotateSpanFromLineContext, recordLineRangeFromContext } from '../compiler/line-index.ts'
+import { annotateSpanFromLineContext, recordLineRangeFromContext } from '../line-index.ts'
 
 /**
  * Recovery MECHANISM — sync-source-agnostic. These primitives implement "scan

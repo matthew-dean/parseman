@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseResult, ParseFail, ParseError } from '../types.ts'
-import { createLineIndex, recordLineRange, normalizeLineIndex, annotateSpan, type LineIndex } from '../compiler/line-index.ts'
+import { createLineIndex, recordLineRange, normalizeLineIndex, annotateSpan, type LineIndex } from '../line-index.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { triviaKindMask } from '../cst/trivia-kinds.ts'
 
