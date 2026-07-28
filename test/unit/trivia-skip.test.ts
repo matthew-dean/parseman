@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { advanceTrivia, consumeTrivia, scanTrivia } from '../../src/combinators/trivia-skip.ts'
-import { trivia, label, regex, oneOrMore, choice } from '../../src/index.ts'
+import { trivia, label, regex, oneOrMore, choice, sequence, literal } from '../../src/index.ts'
 
 const labeledRw = trivia(oneOrMore(choice(
   label('whitespace', regex(/[ \t]+/)),
@@ -48,6 +48,19 @@ describe('advanceTrivia()', () => {
       RegExp.prototype.exec = exec
     }
   })
+
+  it('tracks lines through the generic trivia fallback', () => {
+    const lineIndex = { lineStarts: [0] }
+    const ctx = {
+      trackLines: true,
+      trivia: sequence(literal('x'), regex(/\n+/)),
+      _lineIndex: lineIndex,
+      _lineScannedTo: 0,
+    }
+    expect(advanceTrivia('x\n\nz', 0, ctx)).toBe(3)
+    expect(ctx._lineScannedTo).toBe(3)
+    expect(lineIndex.lineStarts).toEqual([0, 2, 3])
+  })
 })
 
 describe('scanTrivia()', () => {
@@ -55,6 +68,24 @@ describe('scanTrivia()', () => {
     const scan = scanTrivia('  x', 0, { trackLines: false })
     expect(scan.end).toBe(0)
     expect(() => scan.commit()).not.toThrow()
+  })
+
+  it('tracks lines and commits logs through the generic fallback', () => {
+    const lineIndex = { lineStarts: [0] }
+    const log: number[] = []
+    const ctx = {
+      trackLines: true,
+      trivia: sequence(literal('x'), regex(/\n+/)),
+      _lineIndex: lineIndex,
+      _lineScannedTo: 0,
+      _triviaLog: log,
+    }
+    const scan = scanTrivia('x\nz', 0, ctx)
+    expect(scan.end).toBe(2)
+    expect(ctx._lineScannedTo).toBe(2)
+    expect(lineIndex.lineStarts).toEqual([0, 2])
+    scan.commit()
+    expect(log).toEqual([0, 2])
   })
 })
 
