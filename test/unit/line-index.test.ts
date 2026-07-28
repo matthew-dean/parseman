@@ -138,6 +138,14 @@ describe('compiled line tracking', () => {
     }
   })
 
+  it('honors parser-scoped trackLines when compiled', () => {
+    const p = parser({ trackLines: true }, sequence(literal('foo'), literal('\n'), literal('bar')))
+    const interpreted = p.parse('foo\nbar', 0, { trackLines: false })
+    const compiled = compile(p).parseWithContext('foo\nbar', { trackLines: false }, 0)
+    expect(compiled).toEqual(interpreted)
+    expect(compiled.span.endLine).toBe(2)
+  })
+
   it('uses the dynamic helper only for newline-capable regex spans', () => {
     const c = compile(regex(/(?:.|\n)+/), undefined, { trackLines: true })
     expect(c.source).toContain('_trackLines')

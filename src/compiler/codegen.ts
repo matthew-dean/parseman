@@ -4115,6 +4115,17 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
   }
 }
 
+function hasLineTrackingDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  if (d.tag === 'grammar' && d.trackLines) return true
+  if (d.tag === 'lazy') {
+    try { return hasLineTrackingDef(d.thunk(), seen) } catch { return false }
+  }
+  return childrenOf(d).some(child => hasLineTrackingDef(child, seen))
+}
+
 function parserUsesRouted(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
   if (seen.has(p)) return false
   seen.add(p)
@@ -4660,7 +4671,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     capturing: hasNodeDef(combinator as Combinator<unknown>),
     recovery: opts?.recovery ?? false,
     hostMode: opts?.hostMode ?? grammarHostMode ?? 'ast',
-    lineTracking: opts?.trackLines ?? false,
+    lineTracking: opts?.trackLines === true || hasLineTrackingDef(combinator as Combinator<unknown>),
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
