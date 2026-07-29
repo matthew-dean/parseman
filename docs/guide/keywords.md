@@ -1,8 +1,36 @@
-# Ordered choice & keywords
+# Choice, dispatch & keywords
 
 `choice()` uses PEG ordered-choice semantics: **first match wins**. That single rule has
 two consequences you have to design around — keyword/identifier collisions and
-shared prefixes.
+shared prefixes. `dispatch()` is the companion for the common case where several forms
+start by reading the same token family and only diverge after that token's value is known.
+
+This page is the decision guide. The [Combinators](./combinators#choice-and-dispatch)
+page gives the full API examples; [First-char gating](./first-char-gating) explains the
+performance diagnostic that tells you when a hot choice stopped dispatching.
+
+## Which shape should I use?
+
+| Shape | Use it when | Why |
+| --- | --- | --- |
+| `choice(a, b, c)` | Arms have distinct leading punctuation/keywords, or the ordered fallback is intentional. | PEG semantics stay visible, and disjoint first characters compile to O(1) dispatch. |
+| `keywords([...])` / `word(...)` | You are recognizing keywords, especially before an identifier fallback. | Boundaries are correct and the first-set stays exact. |
+| `dispatch(head, when(...), otherwise(...))` | Every branch starts by parsing the same broad family: command names, name-or-call openers, contextual keywords, at-keywords. | The shared head parses once; the route table decides the specialized tail. |
+| `attempt(arm)` | A rejected arm may consume enough to leave captured fields, recovered errors, or other parseman-owned side effects behind. | The failed arm rolls those framework effects back before the next choice arm runs. |
+
+The smell to watch for is a `choice` where two or more arms begin with the same broad
+recognizer:
+
+```ts
+// Often slow and harder to reason about: every arm reparses the same opener.
+choice(setStatement, printStatement, extensionStatement)
+
+// Usually clearer: parse the opener once, then route by value.
+dispatch(commandName, when('set', setTail), when('print', printTail), otherwise(extensionTail))
+```
+
+Keep `choice` for genuinely different leading shapes. Reach for `dispatch` when the
+branches are "same opener, different continuation."
 
 ## Order matters
 

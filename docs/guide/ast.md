@@ -215,6 +215,48 @@ two trees are byte-identical.
 [`collapse`](../reference/api#cstbuildhost) option for public syntax trees.
 :::
 
+## Line/column spans {#linecolumn-spans}
+
+CST nodes carry offset spans by default:
+
+```ts
+{ span: { start: 12, end: 18 } }
+```
+
+Line/column fields are opt-in. Enable them at the parse call, at a `parser(...)` wrapper,
+or for a whole `rules()` grammar:
+
+```ts
+parse(root, input, { trackLines: true })
+parser({ trackLines: true }, root)
+rules({ trackLines: true }, factory)
+```
+
+With `trackLines` enabled, CST spans are filled as nodes are created:
+
+```ts
+{
+  span: {
+    start: 12,
+    end: 18,
+    startLine: 2,
+    startColumn: 5,
+    endLine: 2,
+    endColumn: 11,
+  }
+}
+```
+
+Use `rules({ trackLines: true }, factory)` when the grammar itself is the artifact you
+ship, especially under the macro. A line-aware macro artifact is standalone: consumers run
+the compiled grammar and receive CST nodes with line/column spans without re-parsing or
+walking the tree afterward.
+
+Keep `trackLines` off for the normal fast path. Offset-only spans are enough for most AST
+work, and the default emits no line-indexing code in macro output. If you only need
+line/column for a few diagnostics after parsing, keep offset spans and use the
+line-index helpers in the [API reference](../reference/api#line-index-utilities).
+
 ### When the grammar has its OWN builders {#host-mode}
 
 **A grammar with no direct builders serves either consumer. The moment you add one, you

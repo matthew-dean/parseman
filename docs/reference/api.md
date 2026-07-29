@@ -97,115 +97,87 @@ shared lexical decision explicit.
 
 Parse the combinator once, look at the string it returned, then choose what
 comes next. Use this when one broad token is valid generally, but selected
-values have specialized continuation grammars. CSS at-rules are the canonical
-example: every at-keyword is an at-rule name, while `@media`, `@scope`,
-`@layer`, and friends each have a specific prelude/body shape. `when(key, tail,
-opts?)` matches one key; `when([keyA, keyB], tail, opts?)` shares a tail across
-keys. Matcher keys such as `startsWith(prefix)`, `endsWith(suffix)`, and
-`matches(pattern)` test the returned string instead of parsing input again.
-`otherwise(tail)` handles values that no earlier arm matched.
-`opts.caseInsensitive` folds ASCII case for comparison only; the parse value
-stays authored.
+values have specialized continuation grammars: command names, contextual
+keywords, name-or-call openers, at-keywords, pseudo heads, and similar families.
+`when(key, tail, opts?)` matches one key; `when([keyA, keyB], tail, opts?)`
+shares a tail across keys. Matcher keys such as `startsWith(prefix)`,
+`endsWith(suffix)`, and `matches(pattern)` test the returned string instead of
+parsing input again. `otherwise(tail)` handles values that no earlier arm
+matched. `opts.caseInsensitive` folds ASCII case for comparison only; the parse
+value stays authored.
 
 This is the preferred shape when branches share a broad opener and then diverge by
-the opener's value or by the next structural marker. A hand-written
-`choice(sequence(literal('@media'), ...), ..., sequence(regex(/@[A-Za-z-]+/), ...))`
+the opener's value or by the next structural marker. A hand-written `choice(...)`
 can recognize the same language, but late and generic arms recheck the shared
-opener. `dispatch` makes the lexical decision once and leaves the branch table
-to the grammar.
+opener. `dispatch` makes the lexical decision once and leaves the branch table to
+the grammar.
 
 This is not a blanket replacement for `choice(...)`: if the arms are exact literals,
 first-set-disjoint, a closed set with no broad generic fallback, or first-arm-dominant
 with cheap rejected tails, `choice(...)` is already simple and fast.
 
 ```ts
-const combinator = regex(/@[A-Za-z_][A-Za-z0-9_-]*/)
+const command = regex(/[A-Za-z_][A-Za-z0-9_]*/)
 
-const atRule = dispatch(
-  combinator,
-  when('@media', mediaTail, { caseInsensitive: true }),
-  when(['@font-face', '@property'], descriptorTail),
-  otherwise(genericTail),
+const statement = dispatch(
+  command,
+  when('set', setTail),
+  when(['print', 'trace'], oneArgumentTail),
+  otherwise(extensionCommandTail),
 )
 
-const atCase = makeWhen({ caseInsensitive: true })
-const atRuleTable = dispatch(
-  combinator,
-  atCase('@media', mediaTail),
-  atCase('@scope', scopeTail),
-  otherwise(genericTail),
+const commandCase = makeWhen({ caseInsensitive: true })
+const commandTable = dispatch(
+  command,
+  commandCase('set', setTail),
+  commandCase('print', oneArgumentTail),
+  otherwise(extensionCommandTail),
 )
 ```
 
-Identifier-or-function positions should split lexically before keyword parsing.
-Use one combinator that consumes either the bare identifier or the
-source-shaped glued function opener:
+Name-or-call positions use the same idea. One combinator consumes either the bare
+name or the source-shaped glued call opener:
 
 ```ts
-const fnCase = makeWhen({ caseInsensitive: true })
-const identOrFunctionOpen = token(sequence(cssIdent, optional(literal('('))))
+const callCase = makeWhen({ caseInsensitive: true })
+const nameOrCallOpen = token(sequence(name, optional(literal('('))))
 
-const IdentOrFunctionValue = dispatch(
-  identOrFunctionOpen,
-  fnCase('url(', urlTail),
-  fnCase('calc(', calcTail),
-  fnCase('var(', varTail),
-  when(endsWith('('), genericFunctionTail),
-  otherwise(keywordTail),
+const Term = dispatch(
+  nameOrCallOpen,
+  callCase('include(', includeTail),
+  callCase('env(', environmentTail),
+  when(endsWith('('), genericCallTail),
+  otherwise(nameTail),
 )
 ```
 
-Here `URL(` routes to the `url(` arm and remains `URL(` in the returned tuple.
-`url` without `(` routes to the keyword tail without first trying a function
-parser. `url (` does not produce a glued opener and can parse as an identifier
+Here `INCLUDE(` routes to the `include(` arm and remains `INCLUDE(` in the
+returned tuple. `include` without `(` routes to the name tail without first trying
+a call parser. `include (` does not produce a glued opener and can parse as a name
 followed by a paren only in contexts that allow that shape.
 
-Media feature heads show the same pattern without an at-rule or function. Parse
-the parenthesized feature name plus the marker that decides the grammar shape,
-then route range comparisons and declaration-style features to separate tails:
+The routing head can include the structural marker that decides the branch. For
+example, a parenthesized feature can route `name >=` differently from `name:`:
 
 ```ts
-const mediaHead = token(sequence(
+const featureHead = token(sequence(
   literal('('),
-  cssIdent,
+  name,
   regex(/[ \t]*/),
   regex(/>=|<=|[><=:]/),
 ))
 
-const MediaFeature = dispatch(
-  mediaHead,
+const Feature = dispatch(
+  featureHead,
   when(matches(/(?:>=|<=|>|<|=)$/), rangeFeatureTail),
   when(matches(/:$/), declarationFeatureTail),
 )
 ```
 
-For example, `(width >= 50em)` routes to the range tail, while
-`(min-width: 50em)` routes to the declaration-style feature tail. The shared
-head is consumed once, so the grammar does not speculatively try sibling arms
-that both start with `(` and an identifier.
-
-Pseudo selectors use the same lexical-shape split. The selector consumes
-`:hover`, `:is(`, `:nth-child(`, or `::part(` as the routed value; exact special
-pseudo-function openers commit to their own argument grammar, generic
-pseudo-functions share a matcher bucket, and bare pseudos use the fallback:
-
-```ts
-const pseudoCase = makeWhen({ caseInsensitive: true })
-const pseudoHead = token(sequence(
-  choice(literal('::'), literal(':')),
-  cssIdent,
-  optional(literal('(')),
-))
-
-const PseudoSelector = dispatch(
-  pseudoHead,
-  pseudoCase(':is(', selectorListTail),
-  pseudoCase(':nth-child(', nthTail),
-  pseudoCase('::part(', partTail),
-  when(endsWith('('), genericPseudoFunctionTail),
-  otherwise(barePseudoTail),
-)
-```
+The same pattern is useful in real CSS-family grammars for at-rules, function
+values, media features, and pseudo selectors, but the mechanism is not tied to
+CSS: it is simply "read the shared head once, then choose the continuation that
+owns it."
 
 If the combinator fails, `dispatch` fails normally and an enclosing
 `choice()` may try a later arm. If a key matches and its tail fails, the failure
@@ -221,25 +193,24 @@ Use `routed()` inside a branch when the value consumed by `dispatch` belongs to
 that branch node:
 
 ```ts
-const UrlFunction = node('UrlFunction',
-  sequence(routed(), urlTail, literal(')')),
+const Call = node('Call',
+  sequence(routed(), argumentsTail, literal(')')),
   children => ({
-    type: 'UrlFunction',
+    type: 'Call',
     name: children[0].value.slice(0, -1),
-    value: children[1],
+    args: children[1],
   }),
 )
 
-const Identifier = node('Identifier',
+const Name = node('Name',
   routed(),
-  children => ({ type: 'Identifier', name: children[0].value }),
+  children => ({ type: 'Name', name: children[0].value }),
 )
 
 const Value = dispatch(
-  identOrFunctionOpen,
-  fnCase('url(', UrlFunction),
-  when(endsWith('('), GenericFunction),
-  otherwise(Identifier),
+  nameOrCallOpen,
+  when(endsWith('('), Call),
+  otherwise(Name),
 )
 ```
 
@@ -275,9 +246,9 @@ dispatch(
 Dispatch arms can be named like other local grammar pieces:
 
 ```ts
-const block = when('@media', mediaTail)
+const set = when('set', setTail)
 const generic = otherwise(genericTail)
-return { AtRule: dispatch(combinator, block, generic) }
+return { Statement: dispatch(command, set, generic) }
 ```
 
 Macro lowering expects explicit arm arguments.
@@ -425,10 +396,12 @@ read fields.
 Named, mutually-recursive rule bundle. The factory receives a proxy of all rule names and
 returns the definitions. See [Recursive rules](../guide/recursive-rules).
 
-Options-first form `rules({ trivia, scanSkip, hostMode }, factory)` sets grammar-wide
-defaults: `trivia` — ambient filler skipped between terms; `scanSkip` — ambient opaque
-units (strings/brackets) that `scanTo`/`balanced` treat as atomic while scanning. Both
-are inherited by every rule. See [Whitespace & trivia](../guide/trivia).
+Options-first form `rules({ trivia, scanSkip, trackLines, hostMode }, factory)` sets
+grammar-wide defaults: `trivia` — ambient filler skipped between terms; `scanSkip` —
+ambient opaque units (strings/brackets) that `scanTo`/`balanced` treat as atomic while
+scanning; `trackLines` — populate line/column fields on spans produced by this grammar.
+These are inherited by every rule. See [Whitespace & trivia](../guide/trivia) and
+[Line/column spans](../guide/ast#linecolumn-spans).
 
 `hostMode: 'ast' | 'cst'` (default `'ast'`) is the compile-time host mode — the same
 option `compile(g, { hostMode })` and `compose(items, { hostMode })` take. `'ast'` emits
@@ -442,11 +415,12 @@ macro, which has no other way to receive a compile option:
 const factory = (g) => ({ /* … the whole grammar, written once … */ })
 
 export const grammar    = rules({ trivia: rw }, factory)
-export const cstGrammar = rules({ trivia: rw, hostMode: 'cst' }, factory)
+export const lines      = rules({ trivia: rw, trackLines: true }, factory)
+export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, factory)
 ```
 
-Two call sites over one shared factory (a factory may be passed by name, as here). The
-macro emits two independent top-level artifacts, so each bundle tree-shakes away the one
+Three call sites over one shared factory (a factory may be passed by name, as here). The
+macro emits independent top-level artifacts, so each bundle tree-shakes away the one
 it does not import — your compiler ships the AST image, your language service ships the
 CST image, and neither pays the other's cost.
 

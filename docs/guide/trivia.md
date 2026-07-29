@@ -54,10 +54,11 @@ const list = parser({ trivia: ws }, sepBy(regex(/[a-z]+/), literal(',')))
 list.parse('foo ,  bar , baz')   // { ok: true, value: ['foo','bar','baz'], … }
 ```
 
-`rules({ … })` and `parser({ … })` take the same options — `trivia`, plus `scanSkip`
-(below); `rules()` applies them to the whole grammar, `parser()` to the one combinator it
-wraps. `parser()` also carries `captureTrivia` / `trackLines` and gives the wrapped
-combinator a `.parse(input)` method.
+`rules({ … })` and `parser({ … })` overlap on document-level settings, but their option
+sets are not identical. `rules()` applies grammar-wide settings (`trivia`, `scanSkip`,
+`trackLines`, `hostMode`) to every rule in the returned registry. `parser()` wraps one
+combinator and carries local run settings such as `trivia`, `captureTrivia`, and
+`trackLines`; it also gives the wrapped combinator a `.parse(input)` method.
 
 ### Grammar-level `scanSkip` — opaque units for scans
 

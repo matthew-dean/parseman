@@ -162,6 +162,24 @@ const { value } = rules(…)   // each rule becomes a top-level function
 const grammar   = rules(…)   // an object literal of compiled rules; grammar.value(…) works
 ```
 
+Grammar-wide `rules(...)` settings are read at the call site. That means one authored
+factory can produce several standalone macro artifacts:
+
+```ts
+import { rules } from 'parseman' with { type: 'macro' }
+import { grammarFactory } from './grammar.js'
+
+export const grammar = rules({ trivia: rw }, grammarFactory)
+export const grammarWithLines = rules({ trivia: rw, trackLines: true }, grammarFactory)
+export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, grammarFactory)
+```
+
+`trackLines` fills line/column fields on spans as CST nodes are created; `hostMode: 'cst'`
+builds through the CST host even when the grammar has direct AST builders. The macro emits
+each call site independently, so importing `grammar` does not drag in the line-aware or CST
+artifact. See [One factory, several macro artifacts](./recursive-rules#one-factory-several-macro-artifacts)
+and [Line/column spans](./ast#linecolumn-spans).
+
 Parsers that close over external variables the evaluator can't resolve are left as-is —
 the plugin compiles what it can and quietly leaves the rest to the interpreter.
 

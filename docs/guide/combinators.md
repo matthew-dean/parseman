@@ -28,8 +28,8 @@ Three words that sound alike but play different roles:
 | `keywords(words, opts?)` | Match one of many keywords (longest-first), with optional boundary and case folding. |
 | `regex(pattern)` | Match a regex at the current position. |
 | `sequence(...combinators)` | Match all in order; returns a tuple `[v1, v2, …]`. Skips trivia between terms when trivia is active. |
-| `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. |
-| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. |
+| `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. See [Choice and dispatch](#choice-and-dispatch). |
+| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. See [Choice and dispatch](#choice-and-dispatch). |
 | `attempt(c)` | All-or-nothing arm: on failure, every framework side effect from the rejected branch is rolled back. |
 | `many(c, opts?)` | Zero or more; `{ min, max }` bound the item count. |
 | `oneOrMore(c, opts?)` | One or more — sugar for `many(c, { min: 1 })`. |
@@ -64,8 +64,8 @@ Three words that sound alike but play different roles:
 | `otherwise(tail)` | Defines a `dispatch()` fallback route. Not a combinator. |
 | `startsWith` / `endsWith` / `matches` | Define matcher keys for `when(...)`. Not combinators. |
 | `makeWhen(opts?)` | Returns `(key, tail) => when(key, tail, opts)` for dispatch tables with shared arm options. Not a combinator. |
-| `rules(factory)` / `rules({ trivia, scanSkip }, factory)` | Named, mutually-recursive rule bundle. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
-| `parser({ trivia }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia). |
+| `rules(factory)` / `rules({ trivia, scanSkip, trackLines, hostMode }, factory)` | Named, mutually-recursive rule bundle with optional grammar-wide settings. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
+| `parser({ trivia, captureTrivia, trackLines }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia) and [Line/column spans](./ast#linecolumn-spans). |
 | `parse(c, input, opts?)` | Run a combinator once, without building a `parser()`. |
 | `compile(c, …, opts?)` | Compile a combinator to optimized JavaScript. See [Compilation](../reference/api#compilation). |
 | `compose([...])` / `composeLeaf([...])` | Fuse independently-compiled grammars. See [Composing grammars](../reference/api#composing-grammars). |
@@ -82,6 +82,11 @@ follow while authoring, see `AGENTS.md` at the repo root.
 `parse(combinator, input)` returns `{ ok, value, span }` on success and
 `{ ok: false, expected, span }` on failure. Most examples below read `.value` or
 `.ok` to keep the output tight.
+
+The generic examples use a tiny statement/expression language: names, numbers,
+assignments, commands, calls, and `return`. CSS-family examples appear when the
+point is specifically CSS-shaped, such as identifier boundaries, trivia, or
+scannerless grammar performance.
 
 ```ts
 // [verify]
@@ -161,17 +166,17 @@ parse(word('if'), 'if (x)').value
 parse(word('if'), 'ifdef').ok
 // → false
 
-// A custom boundary class — CSS identifiers allow `-`.
-parse(word('color', 'A-Za-z0-9_-'), 'color-scheme').ok
+// A custom boundary class — dashed names keep `task` from matching `task-name`.
+parse(word('task', 'A-Za-z0-9_-'), 'task-name').ok
 // → false
 
-// ASCII case-insensitive keywords (CSS at-keywords, units, function names).
-parse(word('media', 'A-Za-z0-9_-', { caseInsensitive: true }), 'MEDIA').value
-// → 'MEDIA'
+// ASCII case-insensitive keywords.
+parse(word('select', 'A-Za-z0-9_', { caseInsensitive: true }), 'SELECT').value
+// → 'SELECT'
 
-// One of many, longest-first — `border` wins over `bord`.
-parse(keywords(['bord', 'border']), 'border-top').value
-// → 'border'
+// One of many, longest-first — `foreach` wins over `for`.
+parse(keywords(['for', 'foreach']), 'foreach item').value
+// → 'foreach'
 ```
 
 **Gating:** exact first-set (the union of the keywords' first characters, ASCII
@@ -188,11 +193,11 @@ grammars where every keyword shares them.
 // [verify]
 import { makeWord, parse } from 'parseman'
 
-const cssKw = makeWord('A-Za-z0-9_-', { caseInsensitive: true })
+const kw = makeWord('A-Za-z0-9_', { caseInsensitive: true })
 
-parse(cssKw('screen'), 'SCREEN and (x)').value
-// → 'SCREEN'
-parse(cssKw('screen'), 'screen-only').ok
+parse(kw('select'), 'SELECT name').value
+// → 'SELECT'
+parse(kw('select'), 'selected').ok
 // → false
 ```
 
@@ -223,10 +228,24 @@ parse(assign, 'x=').ok
 **Gating:** the sequence's first-set comes from its leading non-nullable term, so
 leading with a concrete terminal is what keeps an arm dispatching.
 
+## Choice and dispatch
+
+These are the two main ways a grammar chooses between alternatives:
+
+| Question | Prefer |
+| --- | --- |
+| Do the arms start with different punctuation, keywords, or narrow token classes? | `choice(...)` |
+| Do several arms first parse the same broad family, then branch by the text read? | `dispatch(head, when(...), otherwise(...))` |
+| Is it just a keyword set? | `keywords(...)` or `word(...)` |
+| Can a failed speculative arm leave parseman-owned captures/recovery behind? | `attempt(arm)` inside `choice(...)` |
+
+For the authoring guide version of this decision, see
+[Choice, dispatch & keywords](./keywords).
+
 ### `choice`
 
 Ordered alternatives with PEG semantics: **first match wins**. Write the longer of
-two overlapping alternatives first (see [Ordered choice & keywords](./keywords)).
+two overlapping alternatives first (see [Choice, dispatch & keywords](./keywords)).
 
 ```ts
 // [verify]
@@ -267,9 +286,8 @@ string value, and keeps the selected branch committed.
 
 Token-once routing by a parsed string value. Use it when one broad routing
 combinator is valid generally, and selected values have specialized continuation
-grammars. CSS-like at-rules are the model: parse one at-keyword, route values
-such as `@media` or `@scope` to specific prelude/body tails, and send unmatched
-values to the generic at-rule tail.
+grammars. Think "parse one command name, then pick that command's argument
+grammar" or "parse one name-or-call opener, then pick the specialized call body."
 
 The `when(...)` keys are exact full values returned by the first `dispatch`
 argument, not prefixes and not tokens parsed after it. `when(key, tail,
@@ -283,113 +301,100 @@ the whole family being routed.
 
 ```ts
 // [verify]
-import { dispatch, literal, otherwise, parse, regex, when } from 'parseman'
+import { dispatch, literal, otherwise, parse, regex, sequence, when } from 'parseman'
 
-const atKeyword = regex(/@[A-Za-z_][A-Za-z0-9_-]*/)
+const command = regex(/[A-Za-z_][A-Za-z0-9_]*/)
+const gap = regex(/[ \t]+/)
+const ws = regex(/[ \t]*/)
+const name = regex(/[A-Za-z_][A-Za-z0-9_]*/)
+const number = regex(/[0-9]+/)
 
-const atRule = dispatch(
-  atKeyword,
-  when('@media', literal('{'), { caseInsensitive: true }),
-  otherwise(literal(';')),
+const statement = dispatch(
+  command,
+  when('set', sequence(gap, name, ws, literal('='), ws, number)),
+  when('print', sequence(gap, name)),
+  otherwise(sequence(gap, name)),
 )
 
-parse(atRule, '@media{').value
-// → ['@media', '{']
+parse(statement, 'set count = 42').value
+// → ['set', [' ', 'count', ' ', '=', ' ', '42']]
 
-parse(atRule, '@MEDIA{').value
-// → ['@MEDIA', '{']
+parse(statement, 'print count').value
+// → ['print', [' ', 'count']]
 
-parse(atRule, '@unknown;').value
-// → ['@unknown', ';']
+parse(statement, 'trace count').value
+// → ['trace', [' ', 'count']]
 
-parse(atRule, '@media;').ok
+parse(statement, 'set count').ok
 // → false
 ```
+
+The returned value is `[headValue, tailValue]`: the dispatch head is captured once,
+and the selected tail is parsed after it. A fallback should be a real fallback
+grammar for that family, not a throwaway token. If the head belongs inside a branch
+node, use [`routed()`](#routed) in that branch.
 
 Use `makeWhen()` when a table has the same arm options throughout:
 
 ```ts
 // [verify]
-import { dispatch, literal, makeWhen, otherwise, parse, regex } from 'parseman'
+import { dispatch, literal, makeWhen, otherwise, parse, regex, sequence } from 'parseman'
 
-const atCase = makeWhen({ caseInsensitive: true })
-const atRule = dispatch(
-  regex(/@[A-Za-z_][A-Za-z0-9_-]*/),
-  atCase('@media', literal('{')),
-  atCase('@scope', literal('(')),
-  otherwise(literal(';')),
+const command = regex(/[A-Za-z_][A-Za-z0-9_]*/)
+const gap = regex(/[ \t]+/)
+const ws = regex(/[ \t]*/)
+const name = regex(/[A-Za-z_][A-Za-z0-9_]*/)
+const number = regex(/[0-9]+/)
+const commandCase = makeWhen({ caseInsensitive: true })
+
+const statement = dispatch(
+  command,
+  commandCase('set', sequence(gap, name, ws, literal('='), ws, number)),
+  commandCase('print', sequence(gap, name)),
+  otherwise(sequence(gap, name)),
 )
 
-parse(atRule, '@SCOPE(').value
-// → ['@SCOPE', '(']
+parse(statement, 'SET count = 42').value
+// → ['SET', [' ', 'count', ' ', '=', ' ', '42']]
+
+parse(statement, 'Print count').value
+// → ['Print', [' ', 'count']]
 ```
 
-For CSS function calls, put the lexical split before keyword parsing. The first
-combinator consumes either a bare identifier or a glued function opener, then
-dispatch routes by the value it returned:
+A common dispatch shape is "name or call opener": the same lexical family can be
+a bare name, a known call, or a generic call. Consume the source-shaped head once
+-- either the bare identifier or the glued `name(` opener -- then route by the
+value it returned:
 
 ```ts
 // [verify]
 import { dispatch, endsWith, literal, makeWhen, optional, otherwise, parse, regex, sequence, token, transform, when } from 'parseman'
 
-const fnCase = makeWhen({ caseInsensitive: true })
-const cssIdent = regex(/[A-Za-z-]+/)
-const identOrFunctionOpen = token(sequence(cssIdent, optional(literal('('))))
-const IdentOrFunctionValue = dispatch(
-  identOrFunctionOpen,
-  fnCase('url(', literal('raw')),
-  fnCase('calc(', literal('math')),
-  fnCase('var(', literal('var')),
-  when(endsWith('('), literal('generic')),
-  otherwise(transform(literal(''), () => 'keyword')),
+const callCase = makeWhen({ caseInsensitive: true })
+const name = regex(/[A-Za-z_][A-Za-z0-9_]*/)
+const nameOrCallOpen = token(sequence(name, optional(literal('('))))
+
+const Term = dispatch(
+  nameOrCallOpen,
+  callCase('include(', literal('path')),
+  callCase('env(', literal('NAME')),
+  when(endsWith('('), literal('args')),
+  otherwise(transform(literal(''), () => 'name')),
 )
 
-parse(IdentOrFunctionValue, 'url').value
-// → ['url', 'keyword']
+parse(Term, 'worker').value
+// → ['worker', 'name']
 
-parse(IdentOrFunctionValue, 'URL(raw').value
-// → ['URL(', 'raw']
+parse(Term, 'INCLUDE(path').value
+// → ['INCLUDE(', 'path']
 
-parse(IdentOrFunctionValue, 'URL(raw').value[0].slice(0, -1)
-// → 'URL'
+parse(Term, 'task(args').value
+// → ['task(', 'args']
 
-parse(IdentOrFunctionValue, 'foo(generic').value
-// → ['foo(', 'generic']
+parse(Term, 'task (args').value
+// → ['task', 'name']
 
-parse(IdentOrFunctionValue, 'foo (').value
-// → ['foo', 'keyword']
-```
-
-Pseudo selectors follow the same pattern. Consume the source-shaped pseudo head
-once, including a glued `(` when present, then route exact special
-pseudo-functions before the generic function bucket:
-
-```ts
-// [verify]
-import { choice, dispatch, endsWith, literal, makeWhen, optional, parse, regex, sequence, token, transform, when, otherwise } from 'parseman'
-
-const pseudoCase = makeWhen({ caseInsensitive: true })
-const cssIdent = regex(/[A-Za-z-]+/)
-const pseudoHead = token(sequence(choice(literal('::'), literal(':')), cssIdent, optional(literal('('))))
-const PseudoSelector = dispatch(
-  pseudoHead,
-  pseudoCase(':is(', literal('selector-list')),
-  pseudoCase(':nth-child(', literal('An+B')),
-  pseudoCase('::part(', literal('ident')),
-  when(endsWith('('), literal('generic-function')),
-  otherwise(transform(literal(''), () => 'bare')),
-)
-
-parse(PseudoSelector, ':Hover').value
-// → [':Hover', 'bare']
-
-parse(PseudoSelector, ':IS(selector-list').value
-// → [':IS(', 'selector-list']
-
-parse(PseudoSelector, '::PART(ident').value
-// → ['::PART(', 'ident']
-
-parse(PseudoSelector, ':nth-child(generic-function').ok
+parse(Term, 'env(value').ok
 // → false
 ```
 
@@ -399,34 +404,32 @@ that value should appear. `routed()` reuses the value/span already consumed by
 
 ```ts
 // [verify]
-import { dispatch, endsWith, literal, makeWhen, node, optional, otherwise, parse, regex, routed, sequence, token, when } from 'parseman'
+import { dispatch, endsWith, literal, node, optional, otherwise, parse, regex, routed, sequence, token, when } from 'parseman'
 
-const fnCase = makeWhen({ caseInsensitive: true })
-const cssIdent = regex(/[A-Za-z-]+/)
-const identOrFunction = token(sequence(cssIdent, optional(literal('('))))
+const name = regex(/[A-Za-z_][A-Za-z0-9_]*/)
+const nameOrCallOpen = token(sequence(name, optional(literal('('))))
 
-const UrlFunction = node('UrlFunction',
-  sequence(routed(), literal('raw'), literal(')')),
-  children => ({ type: 'UrlFunction', name: children[0].value.slice(0, -1), value: children[1].value }),
+const Call = node('Call',
+  sequence(routed(), literal('arg'), literal(')')),
+  children => ({ type: 'Call', name: children[0].value.slice(0, -1), arg: children[1].value }),
 )
 
-const Identifier = node('Identifier',
+const Name = node('Name',
   routed(),
-  children => ({ type: 'Identifier', name: children[0].value }),
+  children => ({ type: 'Name', name: children[0].value }),
 )
 
 const Value = dispatch(
-  identOrFunction,
-  fnCase('url(', UrlFunction),
-  when(endsWith('('), node('Function', sequence(routed(), literal('generic'), literal(')')))),
-  otherwise(Identifier),
+  nameOrCallOpen,
+  when(endsWith('('), Call),
+  otherwise(Name),
 )
 
-parse(Value, 'URL(raw)').value
-// → ['URL(', { type: 'UrlFunction', name: 'URL', value: 'raw' }]
+parse(Value, 'job(arg)').value
+// → ['job(', { type: 'Call', name: 'job', arg: 'arg' }]
 
-parse(Value, 'url').value
-// → ['url', { type: 'Identifier', name: 'url' }]
+parse(Value, 'job').value
+// → ['job', { type: 'Name', name: 'job' }]
 ```
 
 This keeps the lexical split, fallback behavior, and CST/AST ownership in the
@@ -542,9 +545,9 @@ parse(sepBy(ident, comma, { trailing: 'allow' }), 'a,b,').span
 // → { start: 0, end: 4 }
 ```
 
-**Gating:** the single most consequential nullability in the library. A selector
-list, value list, media-query prelude or keyframe selector is *never* empty — use
-`oneOrMoreSep`. Plain `sepBy` is for the genuinely-optional list.
+**Gating:** the single most consequential nullability in the library. An argument
+list, parameter list, selector list, or CSV row that requires at least one item
+should use `oneOrMoreSep`. Plain `sepBy` is for the genuinely-optional list.
 
 ### `optional`
 
@@ -600,18 +603,18 @@ a **trailing** boundary; leading an arm with it poisons the whole choice's dispa
 // [verify]
 import { peek, sequence, literal, regex, parse } from 'parseman'
 
-// "only try this arm when the punctuation is ahead" — then let the real
+// "only try this arm when the marker is ahead" — then let the real
 // production consume it.
-const mixinRef = sequence(peek(regex(/[.#]/)), regex(/[.#][\w-]+/))
+const variable = sequence(peek(literal('$')), regex(/\$[A-Za-z_][A-Za-z0-9_]*/))
 
-parse(mixinRef, '.rounded').value
-// → [null, '.rounded']
+parse(variable, '$count').value
+// → [null, '$count']
 
-parse(mixinRef, 'rounded').ok
+parse(variable, 'count').ok
 // → false
 
 // Zero-width, like `not`.
-parse(peek(literal('@')), '@media').span
+parse(peek(literal('$')), '$count').span
 // → { start: 0, end: 0 }
 ```
 
@@ -622,16 +625,16 @@ so it carries its body's first-set and a **leading** `peek()` *narrows* the arm:
 // [verify]
 import { peek, not, sequence, choice, regex, literal } from 'parseman'
 
-const broadBody = regex(/[^\s;{}]+/)
+const broadBody = regex(/[^\s;()]+/)
 
 // The whole choice dispatches: `peek`'s chars are intersected into the arm's.
-const good = choice(sequence(peek(regex(/[.#]/)), broadBody), literal('@rule'))
+const good = choice(sequence(peek(literal('$')), broadBody), literal('return'))
 good._def.disjoint
 // → true
 
 // `not(not(X))` is merely zero-width, so it is SKIPPED rather than
 // intersected, and the broad body decides the first chars.
-const bad = choice(sequence(not(not(regex(/[.#]/))), broadBody), literal('@rule'))
+const bad = choice(sequence(not(not(literal('$'))), broadBody), literal('return'))
 bad._def.disjoint
 // → false
 ```
@@ -744,13 +747,13 @@ callback. See [CST / AST nodes](./ast) for the full model.
 // [verify]
 import { node, sequence, literal, regex, parse } from 'parseman'
 
-const Decl = node('Decl', sequence(regex(/[a-z-]+/), literal(':'), regex(/[a-z0-9]+/)),
-  children => ({ type: 'Decl', prop: children[0], value: children[2] }))
+const Assign = node('Assign', sequence(regex(/[a-z]+/), literal('='), regex(/[0-9]+/)),
+  children => ({ type: 'Assign', name: children[0], value: children[2] }))
 
 // Note what a `build` callback actually receives: CST LEAVES, with spans — not the
 // bare strings `transform` would hand you. That capture is the whole difference.
-parse(Decl, 'color:red').value
-// → { type: 'Decl', prop: { _tag: 'leaf', value: 'color', span: { start: 0, end: 5 } }, value: { _tag: 'leaf', value: 'red', span: { start: 6, end: 9 } } }
+parse(Assign, 'count=42').value
+// → { type: 'Assign', name: { _tag: 'leaf', value: 'count', span: { start: 0, end: 5 } }, value: { _tag: 'leaf', value: '42', span: { start: 6, end: 8 } } }
 ```
 
 ## Recursion and grammars
@@ -797,8 +800,10 @@ parse(g.Value, '((7))').value
 // → ['(', ['(', '7', ')'], ')']
 ```
 
-`rules({ trivia, scanSkip }, factory)` sets grammar-wide options — note the options
-go **first** here, because they configure a scope rather than one combinator.
+`rules({ trivia, scanSkip, trackLines, hostMode }, factory)` sets grammar-wide options —
+note the options go **first** here, because they configure a scope rather than one
+combinator. `trackLines` populates line/column fields on spans produced by this grammar;
+`hostMode` lets the same factory compile once for AST/evaluation and once for CST/tooling.
 
 ### `parser`, `noTrivia` and `trivia`
 
@@ -852,22 +857,22 @@ values into that state for the duration of `c`. See [Context](./context).
 
 ```ts
 // [verify]
-import { gate, withCtx, sequence, literal, parse } from 'parseman'
+import { gate, withCtx, sequence, literal, regex, parse } from 'parseman'
 
-const depth = (s: unknown) => (s as { depth?: number } | undefined)?.depth ?? 0
-const inBlock = sequence(literal('@'), gate(s => depth(s) > 0), literal('x'))
+const inFunction = (s: unknown) => (s as { inFunction?: boolean } | undefined)?.inFunction === true
+const returnStmt = sequence(literal('return'), gate(inFunction), regex(/[ \t]+/), regex(/[0-9]+/))
 
 // `withCtx` is how state gets in — `parse()` itself takes no state option, so a
 // bare gate on absent state simply fails.
-parse(inBlock, '@x').ok
+parse(returnStmt, 'return 1').ok
 // → false
 
-parse(withCtx({ depth: 1 }, inBlock), '@x').ok
+parse(withCtx({ inFunction: true }, returnStmt), 'return 1').ok
 // → true
 
 // The instructive failure: the predicate is an ASSERT, so a false verdict fails
 // the sequence rather than selecting a different branch.
-parse(withCtx({ depth: 0 }, inBlock), '@x').ok
+parse(withCtx({ inFunction: false }, returnStmt), 'return 1').ok
 // → false
 ```
 
@@ -885,8 +890,8 @@ place and keeps parsing. See [Error recovery](./error-recovery).
 // [verify]
 import { expect, isParseError, sequence, literal, regex, parse } from 'parseman'
 
-const decl = sequence(regex(/[a-z]+/), expect(literal(':'), 'colon'), regex(/[a-z]*/))
-const r = parse(decl, 'color red', { recover: true })
+const assign = sequence(regex(/[a-z]+/), expect(literal('='), 'equals'), regex(/[0-9]*/))
+const r = parse(assign, 'count 42', { recover: true })
 
 r.ok
 // → true
@@ -977,9 +982,9 @@ What tokens could legally come next at a cursor offset.
 // [verify]
 import { completionsAt, choice, sequence, literal } from 'parseman'
 
-const g = sequence(literal('@'), choice(literal('media'), literal('supports')))
-completionsAt(g, '@media', 1)
-// → ['"media"', '"supports"']
+const g = sequence(literal('import '), choice(literal('file'), literal('module')))
+completionsAt(g, 'import ', 7)
+// → ['"file"', '"module"']
 ```
 
 ### `compose` and `composeLeaf`
@@ -1004,7 +1009,7 @@ A few combinators overlap in what they can match. The wrong pick usually still
 | Use | When | First-set | Gating |
 | --- | --- | --- | --- |
 | `word('kw', boundary)` | a keyword that must not match inside a longer word (`if` not `ifdef`) | exact | ✅ dispatches |
-| `keywords([...], opts)` | one of many keywords (colors, units, at-rules) | exact (union) | ✅ dispatches |
+| `keywords([...], opts)` | one of many keywords (`for`, `while`, `return`) | exact (union) | ✅ dispatches |
 | `literal('kw')` | a fixed token with **no** word-boundary requirement (punctuation, operators) | exact | ✅ dispatches |
 | `regex(/kw/)` | **avoid for keywords** — use only for genuine patterns (numbers, identifiers) | often `any` | ⚠️ may not dispatch |
 
@@ -1063,14 +1068,14 @@ non-nullable, so an arm led by it keeps first-char dispatch.
 // [verify]
 import { not, peek, literal, parse } from 'parseman'
 
-const at = literal('@')
+const marker = literal('$')
 
 // Opposite verdicts on the same input…
-[parse(not(at), '@x').ok, parse(peek(at), '@x').ok]
+[parse(not(marker), '$x').ok, parse(peek(marker), '$x').ok]
 // → [false, true]
 
 // …and both consume nothing.
-[parse(not(at), 'x').span.end, parse(peek(at), '@x').span.end]
+[parse(not(marker), 'x').span.end, parse(peek(marker), '$x').span.end]
 // → [0, 0]
 ```
 
