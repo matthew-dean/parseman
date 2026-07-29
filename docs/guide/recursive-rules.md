@@ -62,11 +62,10 @@ jsonParser.parse('{ "a": 1 }')
 Each rule returned from the factory is independently callable — that returned object *is*
 the "rule registry" that incremental re-parsing needs.
 
-## Grammar-level options — `rules({ trivia }, factory)`
+## Grammar-level options — `rules(options, factory)`
 
 Pass an **options object first** — mirroring `parser({ trivia }, combinator)` — to set
-options **once for the whole grammar**, instead of wrapping rules individually. Today that's
-`trivia`, the ambient whitespace/comment skipping:
+options **once for the whole grammar**, instead of wrapping rules individually.
 
 ```ts
 const rw = trivia(oneOrMore(choice(ws, comment)))
@@ -90,6 +89,20 @@ It's fine to return your trivia rule itself from the factory (e.g. `rw`, so a dr
 reach it as `g.rw`): a `trivia()` rule is automatically **excluded** from the grammar-level
 trivia, so it never recursively skips filler within itself.
 
+The grammar-wide options are:
+
+| Option | What it does |
+| --- | --- |
+| `trivia` | Ambient whitespace/comment skipping between terms. See [Whitespace & trivia](./trivia). |
+| `scanSkip` | Opaque units that `scanTo` / `balanced` skip while scanning. See [scanTo & balanced](./combinators#scanto-and-balanced). |
+| `trackLines` | Populate `startLine` / `startColumn` / `endLine` / `endColumn` on spans produced by this grammar. See [Line/column spans](./ast#linecolumn-spans). |
+| `hostMode` | Compile-time AST-vs-CST mode for grammars with direct `node(..., build)` callbacks. See [When the grammar has its OWN builders](./ast#host-mode). |
+
+`trackLines` is opt-in because offset-only spans are the fast default. When it is enabled
+on `rules({ trackLines: true }, factory)`, CST nodes built by that grammar receive
+line/column fields in their `span` objects as they are created; consumers do not need to
+run a separate tree annotation pass.
+
 ## `rules()` and the macro
 
 The plugin fully compiles `rules()` factories, **including recursive ones**. Each rule
@@ -108,6 +121,26 @@ over a runtime value, or isn't a recognized combinator shape), it leaves that
 declaration for the interpreter, strips the `with { type: 'macro' }` attribute so the
 import stays valid, and emits a build **warning** pointing at it — so a silent fallback
 never goes unnoticed. See [Macro mode](./macro-mode).
+
+### One factory, several macro artifacts
+
+When you want the same authored grammar with different settings, keep the factory shared
+and put the settings at each `rules(...)` call site. The macro compiles each call site into
+its own standalone artifact:
+
+```ts
+import { rules } from 'parseman' with { type: 'macro' }
+import { grammarFactory } from './grammar.js'
+
+export const grammar = rules({ trivia: rw }, grammarFactory)
+export const grammarWithLines = rules({ trivia: rw, trackLines: true }, grammarFactory)
+export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, grammarFactory)
+```
+
+That pattern is useful for packages that need an evaluation parser and a language-service
+parser from one source. The imported factory is build-time input only: when it is static
+and source-private, the macro inlines it into each output and the generated grammar file
+does not need the factory import at runtime.
 
 ## `ref<T>()` — the low-level primitive
 

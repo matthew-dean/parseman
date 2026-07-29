@@ -425,10 +425,12 @@ read fields.
 Named, mutually-recursive rule bundle. The factory receives a proxy of all rule names and
 returns the definitions. See [Recursive rules](../guide/recursive-rules).
 
-Options-first form `rules({ trivia, scanSkip, hostMode }, factory)` sets grammar-wide
-defaults: `trivia` — ambient filler skipped between terms; `scanSkip` — ambient opaque
-units (strings/brackets) that `scanTo`/`balanced` treat as atomic while scanning. Both
-are inherited by every rule. See [Whitespace & trivia](../guide/trivia).
+Options-first form `rules({ trivia, scanSkip, trackLines, hostMode }, factory)` sets
+grammar-wide defaults: `trivia` — ambient filler skipped between terms; `scanSkip` —
+ambient opaque units (strings/brackets) that `scanTo`/`balanced` treat as atomic while
+scanning; `trackLines` — populate line/column fields on spans produced by this grammar.
+These are inherited by every rule. See [Whitespace & trivia](../guide/trivia) and
+[Line/column spans](../guide/ast#linecolumn-spans).
 
 `hostMode: 'ast' | 'cst'` (default `'ast'`) is the compile-time host mode — the same
 option `compile(g, { hostMode })` and `compose(items, { hostMode })` take. `'ast'` emits
@@ -442,11 +444,12 @@ macro, which has no other way to receive a compile option:
 const factory = (g) => ({ /* … the whole grammar, written once … */ })
 
 export const grammar    = rules({ trivia: rw }, factory)
-export const cstGrammar = rules({ trivia: rw, hostMode: 'cst' }, factory)
+export const lines      = rules({ trivia: rw, trackLines: true }, factory)
+export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, factory)
 ```
 
 Two call sites over one shared factory (a factory may be passed by name, as here). The
-macro emits two independent top-level artifacts, so each bundle tree-shakes away the one
+macro emits independent top-level artifacts, so each bundle tree-shakes away the one
 it does not import — your compiler ships the AST image, your language service ships the
 CST image, and neither pays the other's cost.
 

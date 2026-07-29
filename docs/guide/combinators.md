@@ -28,8 +28,8 @@ Three words that sound alike but play different roles:
 | `keywords(words, opts?)` | Match one of many keywords (longest-first), with optional boundary and case folding. |
 | `regex(pattern)` | Match a regex at the current position. |
 | `sequence(...combinators)` | Match all in order; returns a tuple `[v1, v2, …]`. Skips trivia between terms when trivia is active. |
-| `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. |
-| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. |
+| `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. See [Choice and dispatch](#choice-and-dispatch). |
+| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. See [Choice and dispatch](#choice-and-dispatch). |
 | `attempt(c)` | All-or-nothing arm: on failure, every framework side effect from the rejected branch is rolled back. |
 | `many(c, opts?)` | Zero or more; `{ min, max }` bound the item count. |
 | `oneOrMore(c, opts?)` | One or more — sugar for `many(c, { min: 1 })`. |
@@ -64,8 +64,8 @@ Three words that sound alike but play different roles:
 | `otherwise(tail)` | Defines a `dispatch()` fallback route. Not a combinator. |
 | `startsWith` / `endsWith` / `matches` | Define matcher keys for `when(...)`. Not combinators. |
 | `makeWhen(opts?)` | Returns `(key, tail) => when(key, tail, opts)` for dispatch tables with shared arm options. Not a combinator. |
-| `rules(factory)` / `rules({ trivia, scanSkip }, factory)` | Named, mutually-recursive rule bundle. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
-| `parser({ trivia }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia). |
+| `rules(factory)` / `rules({ trivia, scanSkip, trackLines, hostMode }, factory)` | Named, mutually-recursive rule bundle with optional grammar-wide settings. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
+| `parser({ trivia, trackLines }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia) and [Line/column spans](./ast#linecolumn-spans). |
 | `parse(c, input, opts?)` | Run a combinator once, without building a `parser()`. |
 | `compile(c, …, opts?)` | Compile a combinator to optimized JavaScript. See [Compilation](../reference/api#compilation). |
 | `compose([...])` / `composeLeaf([...])` | Fuse independently-compiled grammars. See [Composing grammars](../reference/api#composing-grammars). |
@@ -223,10 +223,24 @@ parse(assign, 'x=').ok
 **Gating:** the sequence's first-set comes from its leading non-nullable term, so
 leading with a concrete terminal is what keeps an arm dispatching.
 
+## Choice and dispatch
+
+These are the two main ways a grammar chooses between alternatives:
+
+| Question | Prefer |
+| --- | --- |
+| Do the arms start with different punctuation, keywords, or narrow token classes? | `choice(...)` |
+| Do several arms first parse the same broad family, then branch by the text read? | `dispatch(head, when(...), otherwise(...))` |
+| Is it just a keyword set? | `keywords(...)` or `word(...)` |
+| Can a failed speculative arm leave parseman-owned captures/recovery behind? | `attempt(arm)` inside `choice(...)` |
+
+For the authoring guide version of this decision, see
+[Choice, dispatch & keywords](./keywords).
+
 ### `choice`
 
 Ordered alternatives with PEG semantics: **first match wins**. Write the longer of
-two overlapping alternatives first (see [Ordered choice & keywords](./keywords)).
+two overlapping alternatives first (see [Choice, dispatch & keywords](./keywords)).
 
 ```ts
 // [verify]
@@ -797,8 +811,10 @@ parse(g.Value, '((7))').value
 // → ['(', ['(', '7', ')'], ')']
 ```
 
-`rules({ trivia, scanSkip }, factory)` sets grammar-wide options — note the options
-go **first** here, because they configure a scope rather than one combinator.
+`rules({ trivia, scanSkip, trackLines, hostMode }, factory)` sets grammar-wide options —
+note the options go **first** here, because they configure a scope rather than one
+combinator. `trackLines` populates line/column fields on spans produced by this grammar;
+`hostMode` lets the same factory compile once for AST/evaluation and once for CST/tooling.
 
 ### `parser`, `noTrivia` and `trivia`
 
