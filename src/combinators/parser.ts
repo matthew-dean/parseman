@@ -2,6 +2,7 @@ import type { Combinator } from '../types.ts'
 import type { HostMode } from '../compiler/codegen.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
+import { parser as grammarParser } from './grammar.ts'
 
 /**
  * Non-enumerable key on a `rules()` result holding the factory's declaration
@@ -99,6 +100,12 @@ export type RulesOptions = {
    * quietly producing the wrong tree shape.
    */
   hostMode?: HostMode
+  /**
+   * Compile-time line tracking for this grammar. Under the macro this emits a
+   * separate line-aware artifact from the same factory; the default artifact
+   * remains free of line-tracking helpers and branches.
+   */
+  trackLines?: boolean
 }
 
 // Options-first, mirroring `parser({ opts }, combinator)` — set once on the grammar
@@ -195,6 +202,22 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
     for (const key of Object.keys(definitions)) {
       const rule = (cache as Record<string, Combinator<unknown>>)[key]
       if (rule && !rule._meta.isTrivia) (rule._meta as { grammarHostMode?: HostMode }).grammarHostMode = 'cst'
+    }
+  }
+
+  if (options?.trackLines === true) {
+    for (const key of Object.keys(definitions)) {
+      const rule = (cache as Record<string, Combinator<unknown>>)[key]
+      if (rule && !rule._meta.isTrivia) (rule._meta as { grammarTrackLines?: true }).grammarTrackLines = true
+    }
+    for (const key of Object.keys(definitions)) {
+      const rule = (cache as Record<string, Combinator<unknown>>)[key]
+      if (rule && !rule._meta.isTrivia && rule._def.tag !== 'grammar') {
+        const wrapped = grammarParser({ trackLines: true }, rule)
+        tagRule(wrapped, key)
+        ;(wrapped._meta as { grammarTrackLines?: true }).grammarTrackLines = true
+        ;(cache as Record<string, Combinator<unknown>>)[key] = wrapped
+      }
     }
   }
 

@@ -425,6 +425,11 @@ export function transformMacro(
   // import. Lets a `...frag(g)` spread whose factory is imported (tier 2) be
   // resolved from the exporting module's source at build time.
   const importBindings = new Map<string, { source: string; imported: string }>()
+  const ordinaryImports: Array<{
+    start: number
+    end: number
+    specifiers: Array<{ type: string; local: string; start: number; end: number }>
+  }> = []
 
   for (const stmt of body) {
     if (stmt.type !== 'ImportDeclaration') continue
@@ -438,12 +443,17 @@ export function transformMacro(
     })
 
     if (!isMacro) {
+      const specifiers: Array<{ type: string; local: string; start: number; end: number }> = []
       for (const spec of s.specifiers) {
         if (spec.type === 'ImportSpecifier') {
           const imported = (spec.imported as { name?: string }).name ?? spec.local.name
           importBindings.set(spec.local.name, { source: s.source.value, imported })
+          specifiers.push({ type: spec.type, local: spec.local.name, start: spec.start, end: spec.end })
+        } else {
+          specifiers.push({ type: spec.type, local: spec.local.name, start: spec.start, end: spec.end })
         }
       }
+      ordinaryImports.push({ start: s.start, end: s.end, specifiers })
       continue
     }
 
@@ -456,6 +466,14 @@ export function transformMacro(
   }
 
   if (macroImports.length === 0) return null
+
+  const unwrapVd = (stmt: Statement): VariableDeclaration | null =>
+    stmt.type === 'VariableDeclaration'
+      ? (stmt as unknown as VariableDeclaration)
+      : stmt.type === 'ExportNamedDeclaration'
+        && (stmt as unknown as ExportNamedDeclaration).declaration?.type === 'VariableDeclaration'
+        ? ((stmt as unknown as ExportNamedDeclaration).declaration as unknown as VariableDeclaration)
+        : null
 
   /*
    * Module-level `const <name> = (g) => …` factory declarations, so a `rules()` call
@@ -489,7 +507,7 @@ export function transformMacro(
    *    defect as emitting the wrong grammar. `declaredAt` is compared against the call
    *    site below.
    */
-  const factoryDecls = new Map<string, { fn: Expression; declaredAt: number }>()
+  const factoryDecls = new Map<string, { fn: Expression; declaredAt: number; code?: string; scope?: Scope; imported?: boolean }>()
   for (const stmt of body) {
     const decl = stmt.type === 'ExportNamedDeclaration'
       ? (stmt as unknown as { declaration?: unknown }).declaration
@@ -508,6 +526,103 @@ export function transformMacro(
         })
       }
     }
+  }
+
+  const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
+    for (const st of moduleBody) {
+      const decl = st.type === 'ExportNamedDeclaration'
+        ? (st as unknown as { declaration?: AnyNode }).declaration
+        : st
+      const idn = decl?.type === 'FunctionDeclaration'
+        ? (decl as unknown as { id?: { name?: string } }).id
+        : undefined
+      if (idn?.name === name) return decl ?? null
+    }
+    return null
+  }
+  const isParsemanMacroImport = (stmt: AnyNode): boolean => {
+    if (stmt.type !== 'ImportDeclaration') return false
+    const s = stmt as unknown as ImportDeclaration
+    return moduleAliases.has(s.source.value) && s.attributes.some(a => {
+      const key = a.key.type === 'Identifier' ? a.key.name : String(a.key.value)
+      return key === 'type' && a.value.value === 'macro'
+    })
+  }
+  const sourceScopeUntil = (moduleBody: AnyNode[], source: string, until: number): Scope | null => {
+    const out: Scope = new Map()
+    for (const stmt of moduleBody as Statement[]) {
+      if (stmt.type === 'ImportDeclaration') {
+        if (!isParsemanMacroImport(stmt as unknown as AnyNode)) return null
+        continue
+      }
+      if (stmt.type === 'FunctionDeclaration') continue
+      if (stmt.type === 'ExportNamedDeclaration' && (stmt as unknown as ExportNamedDeclaration).declaration?.type === 'FunctionDeclaration') continue
+      if (stmt.type === 'ExportNamedDeclaration' && !(stmt as unknown as ExportNamedDeclaration).declaration) {
+        if ((stmt as unknown as { source?: unknown }).source) return null
+        continue
+      }
+      const vd = unwrapVd(stmt)
+      if (!vd || (vd as unknown as { kind?: string }).kind !== 'const') return null
+      for (const decl of vd.declarations) {
+        const d = decl as VariableDeclarator
+        const idn = d.id as unknown as { type?: string; name?: string }
+        const init = d.init as Expression | null | undefined
+        if ((idn.type !== 'Identifier' && idn.type !== 'BindingIdentifier') || !idn.name || !init) return null
+        if (init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') continue
+        const mapFnSources: string[] = []
+        const combi = evaluateExpr(init, out, source, mapFnSources)
+        if (combi) {
+          if (stmt.start < until) out.set(idn.name, { combi, mfSrcs: mapFnSources })
+          continue
+        }
+        const wordFactory = evaluateWordFactory(init, out, source)
+        if (wordFactory) {
+          if (stmt.start < until) {
+            ;(out as Map<string, unknown>).set(idn.name, wordFactory)
+          }
+          continue
+        }
+        const whenFactory = evaluateWhenFactory(init, out, source)
+        if (whenFactory) {
+          if (stmt.start < until) {
+            ;(out as Map<string, unknown>).set(idn.name, whenFactory)
+          }
+          continue
+        }
+        const combiArray = evaluateCombinatorArray(init, out, source)
+        if (combiArray) {
+          if (stmt.start < until) {
+            ;(out as Map<string, unknown>).set(idn.name, combiArray)
+          }
+          continue
+        }
+        return null
+      }
+      continue
+    }
+    return out
+  }
+  const usedImportedFactories = new Set<string>()
+  const markUsedImportedFactories = (names: readonly string[] | undefined): void => {
+    for (const name of names ?? []) usedImportedFactories.add(name)
+  }
+  for (const [localName, binding] of importBindings) {
+    const file = resolvePrivateSourceModule(id, binding.source)
+    if (!file) continue
+    const mod = parseModuleCached(file)
+    if (!mod) continue
+    const localFor = exportLocalName(mod.body as AnyNode[], binding.imported)
+    const init = localFor ? topLevelInit(mod.body as AnyNode[], localFor) ?? topLevelFunction(mod.body as AnyNode[], localFor) : null
+    if (!init || (init.type !== 'ArrowFunctionExpression' && init.type !== 'FunctionExpression' && init.type !== 'FunctionDeclaration')) continue
+    const factoryScope = sourceScopeUntil(mod.body as AnyNode[], mod.src, init.start)
+    if (!factoryScope) continue
+    factoryDecls.set(localName, {
+      fn: init as unknown as Expression,
+      declaredAt: -1,
+      code: mod.src,
+      scope: factoryScope,
+      imported: true,
+    })
   }
 
   // --- Pass 2: evaluate declarations in source order ---
@@ -552,7 +667,7 @@ export function transformMacro(
   const evaluateRulesFactory = (
     init: Expression,
     label: string,
-  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
+  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
     // Options-first: rules({ trivia }, factory). Disambiguate by type — an
     // ObjectExpression first arg means options lead; otherwise the factory leads
@@ -574,6 +689,11 @@ export function transformMacro(
     const factoryArg = namedFactory !== undefined && namedFactory.declaredAt <= init.start
       ? namedFactory.fn
       : factoryArgRaw
+    const factoryScope = namedFactory?.scope ?? scope
+    const factoryCode = namedFactory?.code ?? code
+    const importedFactory = namedFactory?.imported === true && factoryArg === namedFactory.fn
+      ? (factoryArgRaw as unknown as { name?: string }).name
+      : undefined
 
     // Grammar-level options object — evaluate `trivia` / `scanSkip` so the compiled
     // map seeds them as the ambient defaults (build-time mirror of rules() tagging
@@ -598,8 +718,16 @@ export function transformMacro(
       warn(init.start, `${label}: rules({ hostMode }) must be the literal 'ast' or 'cst'`)
       return null
     }
+    const trackLinesValue = optionValue('trackLines')
+    const gTrackLines = trackLinesValue?.type === 'Literal'
+      ? (trackLinesValue as unknown as { value?: unknown }).value
+      : undefined
+    if (trackLinesValue !== undefined && typeof gTrackLines !== 'boolean') {
+      warn(init.start, `${label}: rules({ trackLines }) must be a boolean literal`)
+      return null
+    }
 
-    const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
+    const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [])
     if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
 
     const triviaValue = optionValue('trivia')
@@ -643,7 +771,21 @@ export function transformMacro(
       }
     }
 
-    return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}) }
+    if (gTrackLines === true) {
+      for (const rule of ruleMap.values()) {
+        if (rule && !rule._meta.isTrivia) {
+          ;(rule._meta as { grammarTrackLines?: true }).grammarTrackLines = true
+        }
+      }
+    }
+
+    return {
+      ruleMap,
+      ...(gTrivia ? { trivia: gTrivia } : {}),
+      ...(gScanSkip ? { scanSkip: gScanSkip } : {}),
+      ...(gTrackLines === true ? { trackLines: true } : {}),
+      ...(importedFactory ? { importedFactory } : {}),
+    }
   }
 
   /** null → the factory itself isn't statically evaluable (already warned).
@@ -654,10 +796,10 @@ export function transformMacro(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
+  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
-    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), recovery, coverage: grammarCoverage })
+    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage })
     return {
       replacement: compiled?.replacement ?? null,
       ruleMap: evaluated.ruleMap,
@@ -666,6 +808,8 @@ export function transformMacro(
       ...(compiled?.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}),
       ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}),
       ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}),
+      ...(evaluated.trackLines ? { trackLines: true } : {}),
+      ...(evaluated.importedFactory ? { importedFactory: evaluated.importedFactory } : {}),
     }
   }
 
@@ -773,7 +917,7 @@ export function transformMacro(
   // the ancestor isn't re-serialized. `local` is the binding name as it appears in
   // THIS module's source (the bundler renames import + references together).
   type ImportSpread = { __spreadLocal: string }
-  type IRItem = { ns: string; ir: string }
+  type IRItem = { ns: string; ir: string; trackLines?: true }
   type CarriedItem = LinkablePieces | ImportSpread | IRItem
   const isSpread = (it: CarriedItem): it is ImportSpread => '__spreadLocal' in it
   const isIR = (it: CarriedItem): it is IRItem => 'ir' in it && !('ruleFns' in it)
@@ -784,7 +928,7 @@ export function transformMacro(
     isSpread(it)
       ? `...(${it.__spreadLocal}[Symbol.for('parseman.composedPieces')] ?? [])`
       : isIR(it)
-        ? `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)} }`
+        ? `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)}${it.trackLines ? ', trackLines: true' : ''} }`
         : serializePieces(it)
   const serializeList = (list: CarriedItem[]): string => `[${list.map(serializeItem).join(', ')}]`
 
@@ -1030,13 +1174,14 @@ export function transformMacro(
   const localCarried = (rm: Iterable<readonly [string, unknown]>, label: string, composing?: Combinator<unknown>, scanSkip?: Combinator<unknown>[]): { carried: CarriedItem[] } | null => {
     const entries = [...rm]
     const ns = nsFor(label)
+    const trackLines = entries.some(([, rule]) => (rule as Combinator<unknown> | undefined)?._meta?.grammarTrackLines === true)
     // scanSkip is PER-PIECE (opaque units are dialect-specific — NOT composing-wins
     // like trivia), so it rides WITH this element's IR: it is emitted into the carried
     // `rules({ scanSkip }, …)` options, which stamps `_meta.grammarScanSkip` when the IR
     // is re-lowered (materializePiece → compileLinkable picks it up), and survives to a
     // downstream re-compose. The full-pieces fallback bakes it via the compile option.
     const ir = serializeRuleMap(entries as never, scanSkip)
-    if (ir) return { carried: [{ ns, ir }] }
+    if (ir) return { carried: [{ ns, ir, ...(trackLines ? { trackLines: true as const } : {}) }] }
     // FULL-PIECES FALLBACK — never taken silently.
     //
     // This branch has no test fixture, and not for want of trying: every callback-source
@@ -1055,11 +1200,11 @@ export function transformMacro(
     warn(0, `${label}: rule map could not be serialized to IR; carrying FULL pieces instead. `
       + 'The artifact is correct but larger, and a downstream compose cannot re-lower it. '
       + 'Re-run with PARSEMAN_IR_DEBUG=1 to print the exact combinator that blocked serialization.')
-    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), ...(scanSkip ? { scanSkip } : {}), recovery })
+    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), ...(scanSkip ? { scanSkip } : {}), ...(trackLines ? { trackLines: true } : {}), recovery })
     return p ? { carried: [p] } : null
   }
 
-  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[] } | null => {
+  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[]; importedFactories?: string[] } | null => {
     // `pick(grammar, ['A', 'B'])` — à-la-carte selection. Resolve the inner grammar's
     // carried items, materialize them under the INNER grammar's OWN trivia (pick freezes
     // its grammar's trivia — it runs standalone, BEFORE any compose, so the outer
@@ -1086,7 +1231,10 @@ export function transformMacro(
       const innerArg = argPieces(inner, `${label}_pick`)
       if (!innerArg) return null
       try {
-        return { carried: pickPieces(materializeCarried(innerArg.carried, ownTrivia(inner)), names) }
+        return {
+          carried: pickPieces(materializeCarried(innerArg.carried, ownTrivia(inner)), names),
+          ...(innerArg.importedFactories ? { importedFactories: innerArg.importedFactories } : {}),
+        }
       } catch (e) { warn(arg.start, `pick(): ${(e as Error).message}`); return null }
     }
     // Inline `rules(g => …)` or `rules({ trivia }, g => …)` (options-first). The
@@ -1099,7 +1247,10 @@ export function transformMacro(
       // trivia): evaluateRulesFactory returns both the rule map and the grammar-level
       // scanSkip option, which localCarried carries with this piece's IR.
       const evaluated = evaluateRulesFactory(arg, label)
-      return evaluated ? localCarried(evaluated.ruleMap, label, composing, evaluated.scanSkip) : null
+      const carried = evaluated ? localCarried(evaluated.ruleMap, label, composing, evaluated.scanSkip) : null
+      return carried
+        ? { ...carried, ...(evaluated?.importedFactory ? { importedFactories: [evaluated.importedFactory] } : {}) }
+        : null
     }
     if (arg.type === 'Identifier') {
       const name = (arg as unknown as { name: string }).name
@@ -1174,7 +1325,7 @@ export function transformMacro(
   /** Compile `compose([...])` to STATIC fused source (eval-free) + its carried
    * (re-lowerable) list (for a sidecar / same-file chaining). null → leave the
    * runtime `compose()` in place (correct, just not build-fused). */
-  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown> } | null => {
+  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -1206,10 +1357,12 @@ export function transformMacro(
     // list that declares one, governs EVERY fused rule — including inherited ones.
     const composing = composingTrivia(elements)
     const carried: CarriedItem[] = []       // re-lowerable; also SERIALIZED onto the value
+    const importedFactories: string[] = []
     for (let i = 0; i < elements.length; i++) {
       const r = argPieces(elements[i]!, `compose${init.start}_${i}`, composing)
       if (!r) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
       carried.push(...r.carried)
+      importedFactories.push(...(r.importedFactories ?? []))
     }
     // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
     // only site that can answer whether the choices it leads actually gate.
@@ -1224,7 +1377,12 @@ export function transformMacro(
     // piece (composing-wins), then fuse.
     const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
     try {
-      return { replacement: emitFusedSource(pieces), carried, ...(composing ? { trivia: composing } : {}) }
+      return {
+        replacement: emitFusedSource(pieces),
+        carried,
+        ...(composing ? { trivia: composing } : {}),
+        ...(importedFactories.length ? { importedFactories } : {}),
+      }
     } catch (e) {
       warn(init.start, `compose(): ${(e as Error).message}; falling back to runtime`)
       return null
@@ -1237,7 +1395,7 @@ export function transformMacro(
    * module. Its direct builders may therefore refer to lexical AST constructors;
    * they are inlined into the fused output and are never serialized or carried.
    */
-  const compileComposeLeafCall = (init: Expression): { replacement: string } | null => {
+  const compileComposeLeafCall = (init: Expression): { replacement: string; importedFactories?: string[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -1256,10 +1414,12 @@ export function transformMacro(
     // opaque units are dialect-specific, so the local declaration is threaded to the
     // local piece's compile.
     let localScanSkip: Combinator<unknown>[] | undefined
+    const importedFactories: string[] = []
     if (isRulesCall(localArg)) {
       const evaluated = evaluateRulesFactory(localArg, `composeLeaf${init.start}`)
       localRules = evaluated?.ruleMap ?? null
       localScanSkip = evaluated?.scanSkip
+      if (evaluated?.importedFactory) importedFactories.push(evaluated.importedFactory)
     } else if (localArg.type === 'Identifier') {
       const name = (localArg as unknown as { name: string }).name
       localRules = localRuleMaps.get(name) ?? null
@@ -1278,6 +1438,7 @@ export function transformMacro(
         return null
       }
       carried.push(...r.carried)
+      importedFactories.push(...(r.importedFactories ?? []))
     }
     try {
       // The imported pieces are recognition-only, but the local leaf grammar
@@ -1311,7 +1472,10 @@ export function transformMacro(
         return null
       }
       const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece]))
-      return { replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) }
+      return {
+        replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)),
+        ...(importedFactories.length ? { importedFactories } : {}),
+      }
     } catch (e) {
       warn(init.start, `composeLeaf(): ${(e as Error).message}`)
       return null
@@ -1326,14 +1490,6 @@ export function transformMacro(
   // interpreter). `.define(...)` statements are stripped from the output since
   // they reference the now-removed import. Only a ref whose define resolves is
   // treated as a macro ref; an unresolved one falls through to the normal warn().
-  const unwrapVd = (stmt: Statement): VariableDeclaration | null =>
-    stmt.type === 'VariableDeclaration'
-      ? (stmt as unknown as VariableDeclaration)
-      : stmt.type === 'ExportNamedDeclaration'
-        && (stmt as unknown as ExportNamedDeclaration).declaration?.type === 'VariableDeclaration'
-        ? ((stmt as unknown as ExportNamedDeclaration).declaration as unknown as VariableDeclaration)
-        : null
-
   // First detect whether any ref() cluster exists; only then do the (more
   // involved) full-scope pre-pass, keeping ordinary macro files on the fast path.
   const refNames = new Set<string>()
@@ -1460,6 +1616,7 @@ export function transformMacro(
           const pieces = exportPrefix || compiledRules.replacement === null
             ? compileLinkable([...compiledRules.ruleMap], ns, {
                 ...(compiledRules.scanSkip ? { scanSkip: compiledRules.scanSkip } : {}),
+                ...(compiledRules.trackLines ? { trackLines: true } : {}),
                 recovery,
               })
             : null
@@ -1501,9 +1658,12 @@ export function transformMacro(
             // Thread the grammar's scanSkip into the IR so a downstream compose of
             // this imported grammar re-lowers its scanTo/balanced sites ambiently.
             const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
-            replacement = withCarriedPieces(replacement, [ir ? { ns, ir } : pieces])
+            replacement = withCarriedPieces(replacement, [ir ? { ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) } : pieces])
           }
           replacements.push({ start: init.start, end: init.end, replacement })
+          if (compiledRules.replacement !== null) {
+            markUsedImportedFactories(compiledRules.importedFactory ? [compiledRules.importedFactory] : undefined)
+          }
           continue
         }
 
@@ -1525,6 +1685,7 @@ export function transformMacro(
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
           replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) })
+          markUsedImportedFactories(fused.importedFactories)
           continue
         }
 
@@ -1536,6 +1697,7 @@ export function transformMacro(
             throw new Error(`${id}:${lineOf(init.start)} — composeLeaf() must macro-fuse; runtime composition is forbidden`)
           }
           replacements.push({ start: init.start, end: init.end, replacement: fused.replacement })
+          markUsedImportedFactories(fused.importedFactories)
           continue
         }
 
@@ -1657,6 +1819,7 @@ export function transformMacro(
           end: stmtEnd,
           replacement: lines.join('\n'),
         })
+        markUsedImportedFactories(compiledRules.importedFactory ? [compiledRules.importedFactory] : undefined)
       }
     }
   }
@@ -1674,6 +1837,54 @@ export function transformMacro(
   }
 
   const ms = new MagicString(code)
+  const replacementRanges = runtimeComposeFallback
+    ? []
+    : replacements.map(({ start, end }) => ({ start, end }))
+  const isInsideReplacement = (start: number, end: number): boolean =>
+    replacementRanges.some(r => start >= r.start && end <= r.end)
+  const importedBindingStillReferenced = (local: string): boolean => {
+    const walk = (node: unknown, parent?: AnyNode, parentKey?: string): boolean => {
+      if (!node || typeof node !== 'object') return false
+      const rec = node as AnyNode
+      if (rec.type === 'ImportDeclaration') return false
+      if (typeof rec.start === 'number' && typeof rec.end === 'number' && isInsideReplacement(rec.start, rec.end)) return false
+      if ((rec.type === 'Identifier' || rec.type === 'BindingIdentifier') && (rec as { name?: string }).name === local) {
+        if (
+          parentKey === 'key' &&
+          (parent?.type === 'ObjectProperty' || parent?.type === 'Property' || parent?.type === 'PropertyDefinition') &&
+          (parent as { computed?: boolean }).computed !== true
+        ) return false
+        if (parentKey === 'property' && parent?.type === 'StaticMemberExpression') return false
+        if (parentKey === 'property' && parent?.type === 'MemberExpression' && (parent as { computed?: boolean }).computed !== true) return false
+        return true
+      }
+      for (const key of Object.keys(rec)) {
+        if (key === 'type' || key === 'start' || key === 'end') continue
+        const value = (rec as Record<string, unknown>)[key]
+        if (Array.isArray(value)) {
+          if (value.some(child => walk(child, rec, key))) return true
+        } else if (walk(value, rec, key)) {
+          return true
+        }
+      }
+      return false
+    }
+    return (body as unknown[]).some(stmt => walk(stmt))
+  }
+
+  for (const imp of ordinaryImports) {
+    if (
+      !runtimeComposeFallback &&
+      imp.specifiers.length > 0 &&
+      imp.specifiers.every(spec =>
+        spec.type === 'ImportSpecifier' &&
+        usedImportedFactories.has(spec.local) &&
+        !importedBindingStillReferenced(spec.local),
+      )
+    ) {
+      ms.remove(imp.start, imp.end)
+    }
+  }
 
   // Strip `x.define(...)` statements — only when every ref() cluster was inlined.
   // If anything fell back to the interpreter the import stays, and those
