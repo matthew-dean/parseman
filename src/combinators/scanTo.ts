@@ -9,6 +9,7 @@ import { expect } from './expect.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 
 export type ScanToOptions = {
   /**
@@ -98,7 +99,7 @@ export function scanTo(
       // The error channel IS forwarded, so a committed skipper (e.g. balanced()
       // whose open delimiter was consumed) can still report an unmatched close.
       const probeCtx: ParseContext = {
-        trackLines: ctx.trackLines,
+        trackLines: false,
         state: ctx.state,
         ...(ctx._errors !== undefined ? { _errors: ctx._errors } : {}),
       }
@@ -117,6 +118,7 @@ export function scanTo(
         // Check sentinel — if it matches here, stop and return consumed text.
         const s = sentinel.parse(input, cur, probeCtx)
         if (s.ok) {
+          if (ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, cur)
           emit(cur)
           return { ok: true, value: input.slice(pos, cur), span: { start: pos, end: cur } }
         }
@@ -138,6 +140,7 @@ export function scanTo(
 
       // Reached EOF without finding sentinel.
       if (orEOF) {
+        if (ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, cur)
         emit(cur)
         return { ok: true, value: input.slice(pos, cur), span: { start: pos, end: cur } }
       }

@@ -76,7 +76,7 @@ describe('inline mk build', () => {
 
 describe('emitInlineMkNodeExpr', () => {
   it('matches mk() field shape', () => {
-    expect(emitInlineMkNodeExpr('Foo', '_ch', '_raw', 'pos', 'end', '_tl')).toBe(
+    expect(emitInlineMkNodeExpr('Foo', '_ch', '_raw', '{ start: pos, end: end }', '_tl')).toBe(
       '{ _tag: \'node\', type: "Foo", span: { start: pos, end: end }, children: _ch, rawCount: _raw.length, localTriviaLen: _tl.length }',
     )
   })

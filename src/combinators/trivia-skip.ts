@@ -1,4 +1,4 @@
-import type { Combinator, ParseContext, ParseFail } from '../types.ts'
+import type { Combinator, ParseContext, ParseFail, ParseResult } from '../types.ts'
 import { parseClassRanges } from '../regex/classes.ts'
 import {
   analyzeLabeledTrivia,
@@ -12,6 +12,7 @@ import {
   rollbackCstCapture,
   saveCstMark,
 } from '../cst/capture-buffer.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 
 /**
  * Result of scanning trivia: the position after it, plus a `commit()` that
@@ -43,6 +44,24 @@ export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): voi
   rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields, errors: mark.errors })
   // Guarded like every other truncation — see rollbackCstCapture.
   if (ctx._triviaLog && ctx._triviaLog.length !== mark.log) ctx._triviaLog.length = mark.log
+}
+
+function parseTriviaNoCapture(
+  triviaP: Combinator<unknown>,
+  input: string,
+  cur: number,
+  ctx: ParseContext,
+): ParseResult<unknown> {
+  const probeCtx: ParseContext = {
+    trackLines: ctx.trackLines,
+    state: ctx.state,
+    ...(ctx._lineIndex ? { _lineIndex: ctx._lineIndex } : {}),
+    ...(ctx._lineStarts ? { _lineStarts: ctx._lineStarts } : {}),
+    ...(ctx._lineScannedTo !== undefined ? { _lineScannedTo: ctx._lineScannedTo } : {}),
+  }
+  const result = triviaP.parse(input, cur, probeCtx)
+  ctx._lineScannedTo = probeCtx._lineScannedTo
+  return result
 }
 
 /**
@@ -95,13 +114,29 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaSc
 export function advanceTrivia(input: string, cur: number, ctx: ParseContext): number {
   const triviaP = ctx.trivia
   if (!triviaP) return cur
+  if (!ctx.trackLines) {
+    const fast = fastTriviaScanner(triviaP)
+    if (fast) return fast(input, cur)
+    if (ctx.triviaKindLabels) {
+      const scan = scanWithLabels(input, cur, ctx)
+      return scan.end
+    }
+    const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
+    return tr.ok && tr.span.end > cur ? tr.span.end : cur
+  }
+  const trackTriviaLines = ctx.trackLines && triviaP._meta.canMatchNewline
   const fast = fastTriviaScanner(triviaP)
-  if (fast) return fast(input, cur)
+  if (fast) {
+    const end = fast(input, cur)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+    return end
+  }
   if (ctx.triviaKindLabels) {
     const scan = scanWithLabels(input, cur, ctx)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, scan.end)
     return scan.end
   }
-  const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
+  const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
   return tr.ok && tr.span.end > cur ? tr.span.end : cur
 }
 
@@ -115,21 +150,52 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
 
   const log = ctx._triviaLog
   const captureTl = ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)
+  if (!ctx.trackLines) {
+    const fast = !ctx.triviaKindLabels ? fastTriviaScanner(triviaP) : null
+    if (fast && log === undefined && !captureTl) {
+      return { end: fast(input, cur), commit: NOOP_COMMIT }
+    }
+
+    if (ctx.triviaKindLabels && (log !== undefined || captureTl)) {
+      return scanWithLabels(input, cur, ctx)
+    }
+
+    if (log !== undefined || captureTl) {
+      const tr = triviaP.parse(input, cur, {
+        trackLines: log !== undefined ? false : ctx.trackLines,
+        state: ctx.state,
+      })
+      if (!tr.ok || tr.span.end === cur) return { end: cur, commit: NOOP_COMMIT }
+      const end = tr.span.end
+      return {
+        end,
+        commit: () => {
+          pushTriviaLogEntry(ctx, cur, end)
+          if (captureTl) pushCstTriviaEntry(ctx, cur, end)
+        },
+      }
+    }
+
+    const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
+    return { end: tr.ok ? tr.span.end : cur, commit: NOOP_COMMIT }
+  }
+  const trackTriviaLines = ctx.trackLines && triviaP._meta.canMatchNewline
 
   const fast = !ctx.triviaKindLabels ? fastTriviaScanner(triviaP) : null
   if (fast && log === undefined && !captureTl) {
-    return { end: fast(input, cur), commit: NOOP_COMMIT }
+    const end = fast(input, cur)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+    return { end, commit: NOOP_COMMIT }
   }
 
   if (ctx.triviaKindLabels && (log !== undefined || captureTl)) {
-    return scanWithLabels(input, cur, ctx)
+    const scan = scanWithLabels(input, cur, ctx)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, scan.end)
+    return scan
   }
 
   if (log !== undefined || captureTl) {
-    const tr = triviaP.parse(input, cur, {
-      trackLines: log !== undefined ? false : ctx.trackLines,
-      state: ctx.state,
-    })
+    const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
     if (!tr.ok || tr.span.end === cur) return { end: cur, commit: NOOP_COMMIT }
     const end = tr.span.end
     return {
@@ -141,7 +207,7 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
     }
   }
 
-  const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
+  const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
   return { end: tr.ok ? tr.span.end : cur, commit: NOOP_COMMIT }
 }
 

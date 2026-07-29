@@ -87,7 +87,7 @@ function buildCstNode(
 ): unknown {
   // Carry the grammar's `ctx.state` snapshot onto the node (null when unset) — the
   // CST contract includes `state` and incremental re-parse replays it on edit.
-  return { _tag: 'node', type, span: { start: span.start, end: span.end }, state: state ?? null, children: [...children] }
+  return { _tag: 'node', type, span: { ...span }, state: state ?? null, children: [...children] }
 }
 
 /**

@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta, FirstSet } from
 import { any } from './first-set.ts'
 import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
+import { recordLineRangeFromContext } from '../line-index.ts'
 import { shorthandRanges, parseClassRanges } from '../regex/classes.ts'
 
 /**
@@ -152,6 +153,7 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
         if (scanEnd === null) return failAt(ctx, [`/${source}/`], pos)
         const value = input.slice(pos, scanEnd)
         const span = { start: pos, end: scanEnd }
+        if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, scanEnd)
         if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value, span })
         return { ok: true, value, span }
       }
@@ -161,6 +163,7 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
         return failAt(ctx, [`/${source}/`], pos)
       }
       const span = { start: pos, end: pos + m[0]!.length }
+      if (canMatchNewline && ctx.trackLines) recordLineRangeFromContext(ctx, input, pos, span.end)
       if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: m[0]!, span })
       return { ok: true, value: m[0]!, span }
     },

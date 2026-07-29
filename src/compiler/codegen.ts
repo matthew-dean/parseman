@@ -169,6 +169,7 @@ import {
   tryInlineUnaryTransform,
   tryInlineDestructureTransform,
 } from './inline-callback.ts'
+import { annotateSpan, normalizeLineIndex, recordLineRange } from './line-index.ts'
 
 /**
  * Runtime prelude helper for the structural-node capture gate. Answers "does the
@@ -181,6 +182,13 @@ import {
  */
 export const HOST_READS_DECL =
   'const _hostReads = (b, n) => { if (b === undefined) return false; let s; try { s = Function.prototype.toString.call(b) } catch (e) { return true } if (/\\barguments\\b/.test(s)) return true; const m = /^[^(]*\\(([\\s\\S]*?)\\)/.exec(s); if (m && /\\.\\.\\.|=/.test(m[1])) return true; return b.length > n }'
+
+export const LINE_TRACK_DECL =
+  'const _trackLines = (_ctx, input, start, end) => { const from = _ctx._lineScannedTo ?? 0; if (end <= from) return; for (let i = from; i < end; i++) if (input.charCodeAt(i) === 10) _ctx._lineStarts.push(i + 1); _ctx._lineScannedTo = end }'
+
+export const LINE_SPAN_DECL =
+  'const _lineCol = (_ctx, offset) => { const starts = _ctx._lineStarts; let lo = 0, hi = starts.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= offset) lo = mid; else hi = mid - 1 } return [lo + 1, offset - starts[lo] + 1] }\n'
+  + 'const _spanLines = (_ctx, start, end) => { const s = _lineCol(_ctx, start), e = _lineCol(_ctx, end); return { start, end, startLine: s[0], startColumn: s[1], endLine: e[0], endColumn: e[1] } }'
 
 // ---------------------------------------------------------------------------
 // Regex-lowering diagnostics
@@ -248,6 +256,13 @@ type Ctx = {
    * throws (see `assertHostModeCompatible`) rather than producing a thin tree.
    */
   hostMode?: HostMode | undefined
+  /**
+   * Compile-time line-start tracking gate. When false/undefined, generated parser
+   * source contains no line tracking helper, branches, or terminal call sites.
+   * When true, successful newline-capable terminals append line starts to
+   * `_ctx._lineStarts`; the driver normalizes once before span annotation.
+   */
+  lineTracking?: boolean | undefined
   /** Regex declarations hoisted to module scope */
   regexDecls: string[]
   /** Dedup map: "source/flags" → variable name (_re0 etc.) */
@@ -272,6 +287,10 @@ type Ctx = {
   needsEmptyTl?: boolean | undefined
   /** Whether any structural node() arity-gates host capture and needs the `_hostReads` helper. */
   needsHostReads?: boolean | undefined
+  /** Whether any emitted terminal needs the dynamic `_trackLines` helper. */
+  needsLineTrack?: boolean | undefined
+  /** Whether generated code materializes line/column fields into span objects. */
+  needsLineSpan?: boolean | undefined
   /** Set when a DIRECT builder's positioned-CST branch was omitted (host mode 'ast'). */
   hostBranchElided?: boolean | undefined
   /** Lazy/ref parsers and trivia helpers: parser identity → generated function name */
@@ -628,16 +647,51 @@ function emitLeafCapture(ctx: Ctx, valExpr: string, startExpr: string, endExpr: 
   if (ctx.capAsTrivia) return []
   const i = ind(ctx)
   const lf = v(ctx, '_lf')
+  const spanExpr = emitSpanExpr(ctx, startExpr, endExpr)
   // Gate on EITHER collector: a structural node whose host reads only
   // `rawChildren` (see `_parsemanReadsChildren`) elides `_cstLeaves`/`_cstChildren`
   // but still needs its terminals in `_cstRawChildren`. When both are present the
   // single leaf object is shared by both pushes — identical to the prior output.
   return [
     `${i}if (_ctx._cstLeaves || _ctx._cstRawChildren) {`,
-    `${i}  const ${lf} = { _tag: 'leaf', value: ${valExpr}, span: { start: ${startExpr}, end: ${endExpr} } }`,
+    `${i}  const ${lf} = { _tag: 'leaf', value: ${valExpr}, span: ${spanExpr} }`,
     `${i}  if (_ctx._cstLeaves) _ctx._cstLeaves.push(${lf})`,
     `${i}  if (_ctx._cstRawChildren) _ctx._cstRawChildren.push(${lf})`,
     `${i}}`,
+  ]
+}
+
+function emitSpanExpr(ctx: Ctx, startExpr: string, endExpr: string): string {
+  if (!ctx.lineTracking) return `{ start: ${startExpr}, end: ${endExpr} }`
+  ctx.needsLineSpan = true
+  return `_spanLines(_ctx, ${startExpr}, ${endExpr})`
+}
+
+function emitLineTrack(ctx: Ctx, startExpr: string, endExpr: string): string[] {
+  if (!ctx.lineTracking) return []
+  ctx.needsLineTrack = true
+  return [`${ind(ctx)}_trackLines(_ctx, input, ${startExpr}, ${endExpr})`]
+}
+
+function emitLiteralLineTrack(ctx: Ctx, startExpr: string, value: string): string[] {
+  if (!ctx.lineTracking) return []
+  const lineDeltas: number[] = []
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) === 10) lineDeltas.push(i + 1)
+  }
+  if (lineDeltas.length === 0) return []
+  const fromV = v(ctx, '_ltFrom')
+  const endExpr = value.length === 0 ? startExpr : `${startExpr} + ${value.length}`
+  return [
+    `${ind(ctx)}const ${fromV} = _ctx._lineScannedTo ?? 0`,
+    `${ind(ctx)}if (${endExpr} > ${fromV}) {`,
+    `${ind(ctx)}  for (let i = ${fromV}; i < ${startExpr}; i++) if (input.charCodeAt(i) === 10) _ctx._lineStarts.push(i + 1)`,
+    ...lineDeltas.map(delta => {
+      const lineStart = `${startExpr} + ${delta}`
+      return `${ind(ctx)}  if (${lineStart} > ${fromV}) _ctx._lineStarts.push(${lineStart})`
+    }),
+    `${ind(ctx)}  _ctx._lineScannedTo = ${endExpr}`,
+    `${ind(ctx)}}`,
   ]
 }
 
@@ -1197,6 +1251,7 @@ function emitLit(def: Extract<ParserDef, { tag: 'literal' }>, ctx: Ctx, pos: str
   }
 
   const endVar = len === 0 ? pos : `${pos} + ${len}`
+  stmts.push(...emitLiteralLineTrack(ctx, pos, value))
   stmts.push(...emitLeafCapture(ctx, vv, pos, endVar))
   return { stmts, valueVar: vv, endVar }
 }
@@ -1328,7 +1383,7 @@ function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, po
   return { stmts, valueVar: vv, endVar }
 }
 
-function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: string): ER {
+function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: string, canMatchNewline = true): ER {
   const expectedStr = JSON.stringify(`/${def.source}/`)
   const shape = scanShapeFromRegex(def.source, def.flags)
   if (shape) {
@@ -1341,7 +1396,11 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
       fresh: (prefix?: string) => v(ctx, prefix),
     })
     if (scanned) {
-      const stmts = [...scanned.stmts, ...emitLeafCapture(ctx, vv, pos, scanned.endVar)]
+      const stmts = [
+        ...scanned.stmts,
+        ...(canMatchNewline ? emitLineTrack(ctx, pos, scanned.endVar) : []),
+        ...emitLeafCapture(ctx, vv, pos, scanned.endVar),
+      ]
       return { stmts, valueVar: vv, endVar: scanned.endVar }
     }
   }
@@ -1367,6 +1426,7 @@ function emitRegex(def: Extract<ParserDef, { tag: 'regex' }>, ctx: Ctx, pos: str
     `${ind(ctx)}const ${vv} = ${mv}[0]`,
   ]
   const endVar = `${pos} + ${vv}.length`
+  if (canMatchNewline) stmts.push(...emitLineTrack(ctx, pos, endVar))
   stmts.push(...emitLeafCapture(ctx, vv, pos, endVar))
   return { stmts, valueVar: vv, endVar }
 }
@@ -1422,6 +1482,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
           `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
           `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
           `${ind(ctx)}const ${scanEndV} = ${capFn}(input, ${curV}, _ctx, 1)`,
+          ...emitLineTrack(ctx, curV, scanEndV),
         )
         const r = emit(def.parsers[i]!, ctx, scanEndV)
         stmts.push(...r.stmts)
@@ -1446,6 +1507,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         stmts.push(
           `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
           `${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx, ${capArg})`,
+          ...emitLineTrack(ctx, curV, scanEndV),
         )
         const r = emit(def.parsers[i]!, ctx, scanEndV)
         stmts.push(...r.stmts)
@@ -2498,13 +2560,14 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
         `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
         `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
         `${ind(ctx)}const ${npV} = ${capFn}(input, ${curV}, _ctx, 1)`,
+        ...emitLineTrack(ctx, curV, npV),
       )
       itemPos = npV
       rollback = `if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; `
     } else {
       const trivFn = ensureTriviaFn(ctx)
       const npV = v(ctx, '_np')
-      stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${curV}, _ctx)`)
+      stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${curV}, _ctx)`, ...emitLineTrack(ctx, curV, npV))
       itemPos = npV
     }
   }
@@ -2761,6 +2824,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         `${ind(ctx)}const ${markLv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
         `${ind(ctx)}const ${markFld} = _ctx._fields ? _ctx._fields.length : 0`,
         `${ind(ctx)}const ${spV} = ${capFn}(input, ${curV}, _ctx, 1)`,
+        ...emitLineTrack(ctx, curV, spV),
       )
       sepAtPos = spV
       const rollbackToSep = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; if (_ctx._fields && _ctx._fields.length !== ${markFld}) _ctx._fields.length = ${markFld}; `
@@ -2771,7 +2835,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       const post = postSepMarks()
       stmts.push(...post.decl)
       const npV = v(ctx, '_np')
-      stmts.push(`${ind(ctx)}const ${npV} = ${capFn}(input, ${sepEnd}, _ctx, 1)`)
+      stmts.push(`${ind(ctx)}const ${npV} = ${capFn}(input, ${sepEnd}, _ctx, 1)`, ...emitLineTrack(ctx, sepEnd, npV))
       const next = emitFallible(def.parser, ctx, npV, true)
       const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } = next
       stmts.push(
@@ -2784,14 +2848,14 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     } else {
       const trivFn = ensureTriviaFn(ctx)
       const spV = v(ctx, '_sp')
-      stmts.push(`${ind(ctx)}const ${spV} = ${trivFn}(input, ${curV}, _ctx)`)
+      stmts.push(`${ind(ctx)}const ${spV} = ${trivFn}(input, ${curV}, _ctx)`, ...emitLineTrack(ctx, curV, spV))
       sepAtPos = spV
       const sep = emitFallible(def.separator, ctx, sepAtPos, true)
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
 
       const npV = v(ctx, '_np')
-      stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${sepEnd}, _ctx)`)
+      stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${sepEnd}, _ctx)`, ...emitLineTrack(ctx, sepEnd, npV))
       const next = emitFallible(def.parser, ctx, npV, true)
       const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } = next
       stmts.push(
@@ -2915,6 +2979,7 @@ function emitScanTo(
 
   const valV = v(ctx)
   stmts.push(`${ind(ctx)}const ${valV} = input.slice(${pos}, ${curV})`)
+  stmts.push(...emitLineTrack(ctx, pos, curV))
   // scanTo records its scanned span as one leaf (matching the interpreter), but
   // only when it actually consumed something.
   if (ctx.capturing) {
@@ -3108,7 +3173,7 @@ function tokenNullableRegex(def: Extract<ParserDef, { tag: 'token' }>): Extract<
 
 function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: string): ER {
   const lowered = tokenNullableRegex(def)
-  if (lowered) return emitRegex(lowered, ctx, pos)
+  if (lowered) return emitRegex(lowered, ctx, pos, def.parser._meta.canMatchNewline)
 
   const savedTrivia = ctx.activeTrivia
   const savedKindLabels = ctx.triviaKindLabels
@@ -3388,7 +3453,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   stmts.push(...innerStmts)
   if (def.trailingTrivia === true && ctx.activeTrivia) {
     const triviaFn = ensureTriviaFn(ctx)
-    stmts.push(`${i}const ${endVar} = ${okVar} ? ${triviaFn}(input, ${innerEndVar}, _ctx, 1) : ${innerEndVar}`)
+    stmts.push(`${i}const ${endVar} = ${okVar} ? ${triviaFn}(input, ${innerEndVar}, _ctx, 1) : ${innerEndVar}`, ...emitLineTrack(ctx, innerEndVar, endVar))
   }
   if (sf && fArr) {
     stmts.push(`${i}const ${fArr} = _ctx._fields`)
@@ -3432,20 +3497,23 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     )
   }
   const ndV = v(ctx, '_nd')
+  const nodeSpanExpr = emitSpanExpr(ctx, pos, endVar)
+  const nodeSpanV = ctx.lineTracking ? v(ctx, '_nspan') : nodeSpanExpr
+  if (ctx.lineTracking) stmts.push(`${i}const ${nodeSpanV} = ${nodeSpanExpr}`)
   // A structural node's own "builder" is a default positioned CST; a built node's
   // is its inline-mk expr or captured build fn.
   const buildExpr = structural
-    ? `{ _tag: 'node', type: ${JSON.stringify(def.type)}, span: { start: ${pos}, end: ${endVar} }, state: ${stV} ?? null, children: ${chV} }`
+    ? `{ _tag: 'node', type: ${JSON.stringify(def.type)}, span: ${nodeSpanV}, state: ${stV} ?? null, children: ${chV} }`
     : mkType
-      ? emitInlineMkNodeExpr(mkType, chV, rawV, pos, endVar, tlV)
+      ? emitInlineMkNodeExpr(mkType, chV, rawV, nodeSpanV, tlV)
       : def.project !== undefined
         ? emitNodeProjectExpr(def.type, def.project, chV)
-        : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
+        : `${buildRef(ctx)}[${buildIdx!}](${chV}, ${fObj}, ${nodeSpanV}, ${rawV}, ${tlV}, ${stV})`
   // A structural node builds through the per-parse host. A direct builder owns
   // its semantic result in every lowering mode; the positioned-CST host is the
   // sole exception, so a direct object never becomes a CST child. Linkability
   // must not change that ownership rule.
-  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, { start: ${pos}, end: ${endVar} }, ${rawV}, ${tlV}, ${stV})`
+  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, ${nodeSpanV}, ${rawV}, ${tlV}, ${stV})`
   // A direct builder's consumer is fixed at COMPILE time, so this is a constant choice,
   // not a per-node `_ctx.build?._parsemanCstOutput === true` read. `'cst'` builds through
   // the host (so a direct semantic object can never become a CST child); `'ast'` never
@@ -3472,7 +3540,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     `${i}const ${ndV} = (${profileRecognizer} || ${profileCapture}) ? undefined : (${finalExpr})`,
     `${i}if (!(${profileRecognizer})) {`,
     `${i}  if (${sc}) ${sc}.push(${ndV})`,
-    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : (typeof ${ndV} === 'object' && ${ndV} !== null ? input.slice(${pos}, ${endVar}) : ''), span: { start: ${pos}, end: ${endVar} } })`,
+    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : (typeof ${ndV} === 'object' && ${ndV} !== null ? input.slice(${pos}, ${endVar}) : ''), span: ${nodeSpanV} })`,
     `${i}}`,
   )
 
@@ -3498,6 +3566,7 @@ function emitRuntimeFallback(parser: Combinator<unknown>, ctx: Ctx, pos: string)
     ...emitIfFail(ctx, `!${rv}.ok`, failStmt),
     `${ind(ctx)}const ${vv} = ${rv}.value`,
     `${ind(ctx)}const ${ev} = ${rv}.span.end`,
+    ...(parser._meta.canMatchNewline ? emitLineTrack(ctx, pos, ev) : []),
   ]
   return { stmts, valueVar: vv, endVar: ev }
 }
@@ -3607,7 +3676,8 @@ function emitRecover(def: Extract<ParserDef, { tag: 'recover' }>, ctx: Ctx, pos:
     `${ind0}    if (${sentOk}) break`,
     `${ind0}    ${scanV}++`,
     `${ind0}  }`,
-    `${ind0}  const ${errV} = { _tag: 'parseError', span: { start: ${pos}, end: ${scanV} }, expected: ${JSON.stringify(deriveExpected(def.parser))} }`,
+    ...emitLineTrack(ctx, pos, scanV).map(s => `${ind0}  ${s.trim()}`),
+    `${ind0}  const ${errV} = { _tag: 'parseError', span: ${emitSpanExpr(ctx, pos, scanV)}, expected: ${JSON.stringify(deriveExpected(def.parser))} }`,
     `${ind0}  if (_ctx._errors) _ctx._errors.push(${errV})`,
     `${ind0}  ${valVar} = ${errV}`,
     `${ind0}  ${endVar} = ${scanV}`,
@@ -3625,7 +3695,7 @@ function emitExpect(def: Extract<ParserDef, { tag: 'expect' }>, ctx: Ctx, pos: s
   const stmts: string[] = [
     ...innerStmts,
     `${ind0}if (!${okVar}) {`,
-    `${ind0}  const ${errV} = { _tag: 'parseError', span: { start: ${pos}, end: ${pos} }, expected: ${JSON.stringify(def.expected)} }`,
+    `${ind0}  const ${errV} = { _tag: 'parseError', span: ${emitSpanExpr(ctx, pos, pos)}, expected: ${JSON.stringify(def.expected)} }`,
     `${ind0}  if (_ctx._errors) _ctx._errors.push(${errV})`,
     // Embed the missing-token error as a `parseError` CST child, mirroring the
     // interpreter (expect.ts) and the list-recovery emit sites — guarded on
@@ -3762,7 +3832,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
   const def = p._def
   switch (def.tag) {
     case 'literal':   return emitLit(def, ctx, pos)
-    case 'regex':     return emitRegex(def, ctx, pos)
+    case 'regex':     return emitRegex(def, ctx, pos, p._meta.canMatchNewline)
     case 'keywords':  return emitKeywords(def, ctx, pos)
     case 'sequence':  return emitSeq(def, ctx, pos)
     case 'choice':    return emitChoice(p, def, ctx, pos)
@@ -4043,6 +4113,17 @@ function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new
     case 'withCtx':   return hasNodeDef(d.parser, seen)
     default:          return false
   }
+}
+
+function hasLineTrackingDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  if (d.tag === 'grammar' && d.trackLines) return true
+  if (d.tag === 'lazy') {
+    try { return hasLineTrackingDef(d.thunk(), seen) } catch { return false }
+  }
+  return childrenOf(d).some(child => hasLineTrackingDef(child, seen))
 }
 
 function parserUsesRouted(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
@@ -4559,7 +4640,7 @@ function runDuplicationDiagnosticRules(
   return reportDuplication(opt, o => analyzeDuplicationRules(ruleMap, o))
 }
 
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption }): CompiledParser<T> {
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption; trackLines?: boolean }): CompiledParser<T> {
   const gatingReport = runGatingDiagnostic(combinator, opts?.gating)
   runDuplicationDiagnostic(combinator, opts?.duplication)
   markUnusedValues(combinator)
@@ -4590,6 +4671,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     capturing: hasNodeDef(combinator as Combinator<unknown>),
     recovery: opts?.recovery ?? false,
     hostMode: opts?.hostMode ?? grammarHostMode ?? 'ast',
+    lineTracking: opts?.trackLines === true || hasLineTrackingDef(combinator as Combinator<unknown>),
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
@@ -4617,10 +4699,14 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
   const emptyTlDecls = ctx.needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []
   const hostReadsDecls = ctx.needsHostReads ? [HOST_READS_DECL] : []
+  const lineTrackDecls = ctx.needsLineTrack ? [LINE_TRACK_DECL] : []
+  const lineSpanDecls = ctx.needsLineSpan ? [LINE_SPAN_DECL] : []
 
   const source = [
     ...emptyTlDecls,
     ...hostReadsDecls,
+    ...lineTrackDecls,
+    ...lineSpanDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     '',
@@ -4634,6 +4720,8 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const fn = new Function('input', '_pos', '_rp', '_mf', '_build', '_ctx', [
     ...emptyTlDecls,
     ...hostReadsDecls,
+    ...lineTrackDecls,
+    ...lineSpanDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     ...namedPrelude,
@@ -4663,6 +4751,26 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     ...(ctx.triviaKindLabels ? { triviaKindLabels: ctx.triviaKindLabels } : {}),
   }
 
+  const annotateWithTrackedLines = <R extends ParseResult<T>>(result: R, lineStarts: number[]): R => {
+    const index = normalizeLineIndex({ lineStarts })
+    const annotated = { ...result, span: annotateSpan(result.span, index) } as R
+    const errors = (annotated as { errors?: ParseError[] }).errors
+    if (errors) {
+      ;(annotated as { errors: ParseError[] }).errors = errors.map(error => ({
+        ...error,
+        span: annotateSpan(error.span, index),
+      }))
+    }
+    return annotated
+  }
+
+  const trackedCtx = (base: ParseContext, input: string, pos: number): ParseContext => {
+    if (!ctx.lineTracking) return base
+    const lineIndex = { lineStarts: [0] }
+    if (pos > 0) recordLineRange(lineIndex, input, 0, pos)
+    return { ...base, trackLines: true, _lineStarts: lineIndex.lineStarts, _lineScannedTo: pos }
+  }
+
   // Prefer per-def sources captured in codegen-traversal order (set by the
   // macro via def.fnSrc). Fall back to a caller-provided positional array.
   // The derived array is only usable when every traversed transform carried a
@@ -4683,13 +4791,46 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const canInline = ctx.runtimeParsers.length === 0 && mfCovered && buildCovered
   const inlineExpression: string | null = canInline ? buildInlineExpression(ctx, r, effectiveSources, buildSources, coverageRootRuleId) : null
 
-  return {
+  const compiledMeta = {
     source,
     inlineExpression,
     ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
     ...(gatingReport === undefined ? {} : { gating: gatingReport }),
+  }
+
+  if (!ctx.lineTracking) {
+    return {
+      ...compiledMeta,
+      parse(input: string, pos = 0): ParseResult<T> {
+        return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, defaultCtx)
+      },
+      parseWithContext(input: string, parseCtx: ParseContext, pos = 0): ParseResult<T> {
+        // ONE check per parse, in TypeScript — not per node, and not in generated code.
+        // That is the point of deciding the mode at compile time: the artifact knows what
+        // it was built for, so the mismatch is caught here for free instead of by a
+        // property read on every node of every parse.
+        assertHostModeCompatible(ctx.hostMode ?? 'ast', parseCtx.build, !!ctx.hostBranchElided)
+        return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, parseCtx)
+      },
+      // Note: collects expect() errors via _errors. Unlike interpreter
+      // parse({recover:true}) it does NOT populate furthestFail — the compiled path
+      // inlines failures for throughput and deliberately skips _probe bookkeeping.
+      // Callers wanting a furthest-position diagnostic detect unconsumed input
+      // (span.end < input.length) instead, which is mode-agnostic.
+      parseWithErrors(input: string, pos = 0): ParseResult<T> & { errors: ParseError[] } {
+        const errors: ParseError[] = []
+        const result = fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, { ...defaultCtx, _errors: errors })
+        return { ...result, errors } as ParseResult<T> & { errors: ParseError[] }
+      },
+    }
+  }
+
+  return {
+    ...compiledMeta,
     parse(input: string, pos = 0): ParseResult<T> {
-      return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, defaultCtx)
+      const parseCtx = trackedCtx(defaultCtx, input, pos)
+      const result = fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, parseCtx)
+      return annotateWithTrackedLines(result, parseCtx._lineStarts!)
     },
     parseWithContext(input: string, parseCtx: ParseContext, pos = 0): ParseResult<T> {
       // ONE check per parse, in TypeScript — not per node, and not in generated code.
@@ -4697,7 +4838,9 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
       // it was built for, so the mismatch is caught here for free instead of by a
       // property read on every node of every parse.
       assertHostModeCompatible(ctx.hostMode ?? 'ast', parseCtx.build, !!ctx.hostBranchElided)
-      return fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, parseCtx)
+      const activeCtx = trackedCtx(parseCtx, input, pos)
+      const result = fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, activeCtx)
+      return activeCtx.trackLines ? annotateWithTrackedLines(result, activeCtx._lineStarts!) : result
     },
     // Note: collects expect() errors via _errors. Unlike interpreter
     // parse({recover:true}) it does NOT populate furthestFail — the compiled path
@@ -4706,8 +4849,9 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     // (span.end < input.length) instead, which is mode-agnostic.
     parseWithErrors(input: string, pos = 0): ParseResult<T> & { errors: ParseError[] } {
       const errors: ParseError[] = []
-      const result = fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, { ...defaultCtx, _errors: errors })
-      return { ...result, errors } as ParseResult<T> & { errors: ParseError[] }
+      const parseCtx = trackedCtx({ ...defaultCtx, _errors: errors }, input, pos)
+      const result = { ...fn(input, pos, ctx.runtimeParsers, ctx.mapFns, ctx.buildFns, parseCtx), errors } as ParseResult<T> & { errors: ParseError[] }
+      return annotateWithTrackedLines(result, parseCtx._lineStarts!) as ParseResult<T> & { errors: ParseError[] }
     },
   }
 }
@@ -4867,6 +5011,8 @@ export function compileRuleMap(
   const hoistedDecls = [
     ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : '',
     ctx.needsHostReads ? `  ${HOST_READS_DECL}` : '',
+    ctx.needsLineTrack ? `  ${LINE_TRACK_DECL}` : '',
+    ctx.needsLineSpan ? `  ${LINE_SPAN_DECL}` : '',
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
     mfDecl,
@@ -5364,13 +5510,17 @@ function buildInlineExpression(
 
   const emptyTlDecl = ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : ''
   const hostReadsDecl = ctx.needsHostReads ? `  ${HOST_READS_DECL}` : ''
-  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl
+  const lineTrackDecl = ctx.needsLineTrack ? `  ${LINE_TRACK_DECL}` : ''
+  const lineSpanDecl = ctx.needsLineSpan ? `  ${LINE_SPAN_DECL}` : ''
+  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl || !!lineTrackDecl || !!lineSpanDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     emptyTlDecl,
     hostReadsDecl,
+    lineTrackDecl,
+    lineSpanDecl,
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
     mfDecl,

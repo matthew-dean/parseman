@@ -5,6 +5,7 @@ import { buildFieldMap, buildReadsFields, parserHasOwnFields } from '../compiler
 import { consumeTrivia } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
+import { annotateSpanFromLineContext } from '../line-index.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
@@ -211,6 +212,7 @@ export function node<N>(
       const st = clonesState && ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
       const nodeType = def.type ?? missingInferredType()
       const cstOutput = cstOutputHost(ctx.build)
+      const span = ctx.trackLines ? annotateSpanFromLineContext(r.span, ctx) : r.span
       // A direct builder that never declared `state` still owes the host its snapshot.
       // The clone happens AFTER the body, so unlike trivia it needs no gate up front —
       // build it here, on a branch the eval-AST path never takes. Matches what
@@ -231,29 +233,29 @@ export function node<N>(
           ? children[0]
         : project !== undefined
           ? cstOutput && ctx.build
-            ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, hostState)
+            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, hostState)
             : projectChild(children, project, nodeType)
         : build
           // A direct builder normally owns its result. The positioned-CST host is
           // the one exception: it must never receive an arbitrary AST object as a
           // child of a CST node, so build this grammar node through that host.
           ? cstOutput && ctx.build
-            ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, hostState)
-            : build(children, fields, r.span, rawChildren, triviaLog, st)
+            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, hostState)
+            : build(children, fields, span, rawChildren, triviaLog, st)
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build
-              ? ctx.build(nodeType, children, fields, r.span, rawChildren, triviaLog, st)
-              : { _tag: 'node', type: nodeType, span: { start: r.span.start, end: r.span.end }, state: st ?? null, children }
+              ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, st)
+              : { _tag: 'node', type: nodeType, span: ctx.trackLines ? { ...span } : { start: r.span.start, end: r.span.end }, state: st ?? null, children }
       const rawEntry = isCstChild(built)
         ? built
         // A direct semantic object is opaque to the raw CST, but its source is
         // not. Preserve the exact matched span so legacy/structural parents can
         // retain text and trivia without fabricating an empty token.
-        : { _tag: 'leaf', value: typeof built === 'string' ? built : typeof built === 'object' && built !== null ? input.slice(r.span.start, r.span.end) : '', span: r.span }
+        : { _tag: 'leaf', value: typeof built === 'string' ? built : typeof built === 'object' && built !== null ? input.slice(r.span.start, r.span.end) : '', span }
       if (saved.buf !== undefined || saved.ch !== undefined) {
         pushCstChild(ctx, built, rawEntry)
       }
-      return { ok: true, value: built as N, span: r.span }
+      return { ok: true, value: built as N, span }
     },
   }
 }

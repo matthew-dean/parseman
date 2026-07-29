@@ -103,11 +103,14 @@ describe('regex first-set — targeted behavior', () => {
     expect(firstSetFromRegex('[z-a').firstSet.kind).toBe('any')
   })
 
-  it('tracks whether the first char can be a newline', () => {
+  it('tracks whether the regex can consume a newline anywhere', () => {
     expect(firstSetFromRegex('\\n').canMatchNewline).toBe(true)
     expect(firstSetFromRegex('[\\n]').canMatchNewline).toBe(true)
+    expect(firstSetFromRegex('a*\\n').canMatchNewline).toBe(true)
     expect(firstSetFromRegex('a').canMatchNewline).toBe(false)
     expect(firstSetFromRegex('\\d').canMatchNewline).toBe(false)
+    expect(firstSetFromRegex('[^,\\r\\n]*').canMatchNewline).toBe(false)
+    expect(firstSetFromRegex('[^,]*').canMatchNewline).toBe(true)
   })
 })
 

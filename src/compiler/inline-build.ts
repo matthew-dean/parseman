@@ -37,9 +37,8 @@ export function emitInlineMkNodeExpr(
   type: string,
   chV: string,
   rawV: string,
-  pos: string,
-  endVar: string,
+  spanExpr: string,
   tlV: string,
 ): string {
-  return `{ _tag: 'node', type: ${JSON.stringify(type)}, span: { start: ${pos}, end: ${endVar} }, children: ${chV}, rawCount: ${rawV}.length, localTriviaLen: ${tlV}.length }`
+  return `{ _tag: 'node', type: ${JSON.stringify(type)}, span: ${spanExpr}, children: ${chV}, rawCount: ${rawV}.length, localTriviaLen: ${tlV}.length }`
 }
