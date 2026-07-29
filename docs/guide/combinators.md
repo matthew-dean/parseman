@@ -29,7 +29,7 @@ Three words that sound alike but play different roles:
 | `regex(pattern)` | Match a regex at the current position. |
 | `sequence(...combinators)` | Match all in order; returns a tuple `[v1, v2, …]`. Skips trivia between terms when trivia is active. |
 | `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. See [Choice and dispatch](#choice-and-dispatch). |
-| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. See [Choice and dispatch](#choice-and-dispatch). |
+| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. Use `routed()` when a branch node should own the already-consumed head. See [Choice and dispatch](#choice-and-dispatch). |
 | `attempt(c)` | All-or-nothing arm: on failure, every framework side effect from the rejected branch is rolled back. |
 | `many(c, opts?)` | Zero or more; `{ min, max }` bound the item count. |
 | `oneOrMore(c, opts?)` | One or more — sugar for `many(c, { min: 1 })`. |
@@ -235,7 +235,7 @@ These are the two main ways a grammar chooses between alternatives:
 | Question | Prefer |
 | --- | --- |
 | Do the arms start with different punctuation, keywords, or narrow token classes? | `choice(...)` |
-| Do several arms first parse the same broad family, then branch by the text read? | `dispatch(head, when(...), otherwise(...))` |
+| Do several arms first parse the same broad family, then branch by the text read? | `dispatch(head, when(...), otherwise(...))`; add `routed()` inside branch nodes that should own the head |
 | Is it just a keyword set? | `keywords(...)` or `word(...)` |
 | Can a failed speculative arm leave parseman-owned captures/recovery behind? | `attempt(arm)` inside `choice(...)` |
 
@@ -280,7 +280,9 @@ by the value already read, prefer [`dispatch`](#dispatch). A shape like
 `choice(specialFunction, genericFunction, keyword)` usually means the grammar is
 speculatively parsing the same opener more than once. `dispatch(combinator,
 when(...), otherwise(...))` parses that opener once, routes by its returned
-string value, and keeps the selected branch committed.
+string value, and keeps the selected branch committed. If the selected branch
+node should include that already-consumed opener in its children, use
+[`routed()`](#routed) inside the branch.
 
 ### `dispatch`
 

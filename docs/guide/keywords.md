@@ -15,7 +15,7 @@ performance diagnostic that tells you when a hot choice stopped dispatching.
 | --- | --- | --- |
 | `choice(a, b, c)` | Arms have distinct leading punctuation/keywords, or the ordered fallback is intentional. | PEG semantics stay visible, and disjoint first characters compile to O(1) dispatch. |
 | `keywords([...])` / `word(...)` | You are recognizing keywords, especially before an identifier fallback. | Boundaries are correct and the first-set stays exact. |
-| `dispatch(head, when(...), otherwise(...))` | Every branch starts by parsing the same broad family: command names, name-or-call openers, contextual keywords, at-keywords. | The shared head parses once; the route table decides the specialized tail. |
+| `dispatch(head, when(...), otherwise(...))` | Every branch starts by parsing the same broad family: command names, name-or-call openers, contextual keywords, at-keywords. | The shared head parses once; the route table decides the specialized tail; `routed()` lets a branch node own that head. |
 | `attempt(arm)` | A rejected arm may consume enough to leave captured fields, recovered errors, or other parseman-owned side effects behind. | The failed arm rolls those framework effects back before the next choice arm runs. |
 
 The smell to watch for is a `choice` where two or more arms begin with the same broad
@@ -30,7 +30,10 @@ dispatch(commandName, when('set', setTail), when('print', printTail), otherwise(
 ```
 
 Keep `choice` for genuinely different leading shapes. Reach for `dispatch` when the
-branches are "same opener, different continuation."
+branches are "same opener, different continuation." If the opener belongs inside
+the selected branch's CST/AST node, put `routed()` in that branch; the
+[Combinators dispatch section](./combinators#dispatch) shows both tail-only and
+`routed()` forms.
 
 ## Order matters
 

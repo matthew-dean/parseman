@@ -104,7 +104,8 @@ shares a tail across keys. Matcher keys such as `startsWith(prefix)`,
 `endsWith(suffix)`, and `matches(pattern)` test the returned string instead of
 parsing input again. `otherwise(tail)` handles values that no earlier arm
 matched. `opts.caseInsensitive` folds ASCII case for comparison only; the parse
-value stays authored.
+value stays authored. Use [`routed()`](#routed) inside a selected branch when
+that branch's node should own the already-consumed head value/span.
 
 This is the preferred shape when branches share a broad opener and then diverge by
 the opener's value or by the next structural marker. A hand-written `choice(...)`
