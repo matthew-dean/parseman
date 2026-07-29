@@ -29,7 +29,7 @@ Three words that sound alike but play different roles:
 | `regex(pattern)` | Match a regex at the current position. |
 | `sequence(...combinators)` | Match all in order; returns a tuple `[v1, v2, …]`. Skips trivia between terms when trivia is active. |
 | `choice(...combinators)` | Ordered alternatives (PEG — first match wins). Disjoint first chars → O(1) dispatch. See [Choice and dispatch](#choice-and-dispatch). |
-| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. See [Choice and dispatch](#choice-and-dispatch). |
+| `dispatch(combinator, when(...), otherwise(...))` | Parse one broad combinator once, route selected values to specialized tails, and commit matched-tail failures. Use `routed()` when a branch node should own the already-consumed head. See [Choice and dispatch](#choice-and-dispatch). |
 | `attempt(c)` | All-or-nothing arm: on failure, every framework side effect from the rejected branch is rolled back. |
 | `many(c, opts?)` | Zero or more; `{ min, max }` bound the item count. |
 | `oneOrMore(c, opts?)` | One or more — sugar for `many(c, { min: 1 })`. |
@@ -235,9 +235,9 @@ These are the two main ways a grammar chooses between alternatives:
 | Question | Prefer |
 | --- | --- |
 | Do the arms start with different punctuation, keywords, or narrow token classes? | `choice(...)` |
-| Do several arms first parse the same broad family, then branch by the text read? | `dispatch(head, when(...), otherwise(...))` |
+| Do several arms first parse the same broad family, then branch by the text read? | `dispatch(head, when(...), otherwise(...))`; add `routed()` inside branch nodes that should own the head |
 | Is it just a keyword set? | `keywords(...)` or `word(...)` |
-| Can a failed speculative arm leave parseman-owned captures/recovery behind? | `attempt(arm)` inside `choice(...)` |
+| Do you need a composite parser to fail as one atomic unit at its entry? | `attempt(composite)` |
 
 For the authoring guide version of this decision, see
 [Choice, dispatch & keywords](./keywords).
@@ -280,7 +280,9 @@ by the value already read, prefer [`dispatch`](#dispatch). A shape like
 `choice(specialFunction, genericFunction, keyword)` usually means the grammar is
 speculatively parsing the same opener more than once. `dispatch(combinator,
 when(...), otherwise(...))` parses that opener once, routes by its returned
-string value, and keeps the selected branch committed.
+string value, and keeps the selected branch committed. If the selected branch
+node should include that already-consumed opener in its children, use
+[`routed()`](#routed) inside the branch.
 
 ### `dispatch`
 
@@ -451,28 +453,39 @@ bound to local `const`s and passed by name. Put the generic continuation in
 
 ### `attempt`
 
-An all-or-nothing arm. An ordinary `choice` arm that fails mid-way leaves the
-framework's speculative side effects (recovered errors, captured fields) behind;
-`attempt` rolls every one of them back.
+A transaction boundary for a composite parser. On success, it returns the inner
+parser's result. On a non-committed failure, it restores Parseman's capture and
+recovery sinks and reports the failure at the attempt's entry offset while keeping
+the inner `expected` tokens.
+
+You rarely need this around an ordinary `choice()` arm: `choice`, `many`,
+`optional`, and `sepBy` already roll back their own rejected speculative paths.
+Use `attempt()` when you want to expose a larger parser as an all-or-nothing unit,
+or when custom composition should not let callers observe partial progress.
+
+Its unique public job is failure re-anchoring for a composite parser: keep the
+inner expectation, but report the failure at the boundary where that composite
+started.
 
 ```ts
 // [verify]
-import { attempt, choice, sequence, literal, regex, parse } from 'parseman'
+import { attempt, sequence, literal, parse } from 'parseman'
 
-const call = attempt(sequence(regex(/[a-z]+/), literal('('), regex(/[a-z]*/), literal(')')))
-const bare = regex(/[a-z]+/)
+const plain = sequence(literal('x'), sequence(literal('a'), literal('b')))
+const atomic = sequence(literal('x'), attempt(sequence(literal('a'), literal('b'))))
 
-parse(choice(call, bare), 'f(x)').value
-// → ['f', '(', 'x', ')']
+// Without `attempt`, the composite reports the exact inner point that failed.
+parse(plain, 'xa')
+// → { ok: false, expected: ['"b"'], span: { start: 2, end: 2 } }
 
-// The call arm gets partway through `foo` then fails at the missing `(` —
-// `attempt` discards it cleanly and `bare` matches instead.
-parse(choice(call, bare), 'foo').value
-// → 'foo'
+// With `attempt`, the expected token is still `"b"`, but the failure is anchored
+// at the start of the attempted composite.
+parse(atomic, 'xa')
+// → { ok: false, expected: ['"b"'], span: { start: 1, end: 1 } }
 ```
 
-Reach for `attempt` when a *rejected* arm could otherwise leave state behind. It is
-not a lookahead — see [`attempt` vs `peek`](#committing-vs-looking-attempt-vs-peek).
+It is not a lookahead — see
+[`attempt` vs `peek`](#committing-vs-looking-attempt-vs-peek).
 
 ## Repetition
 

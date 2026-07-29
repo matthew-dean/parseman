@@ -104,7 +104,8 @@ shares a tail across keys. Matcher keys such as `startsWith(prefix)`,
 `endsWith(suffix)`, and `matches(pattern)` test the returned string instead of
 parsing input again. `otherwise(tail)` handles values that no earlier arm
 matched. `opts.caseInsensitive` folds ASCII case for comparison only; the parse
-value stays authored.
+value stays authored. Use [`routed()`](#routed) inside a selected branch when
+that branch's node should own the already-consumed head value/span.
 
 This is the preferred shape when branches share a broad opener and then diverge by
 the opener's value or by the next structural marker. A hand-written `choice(...)`
@@ -255,18 +256,24 @@ Macro lowering expects explicit arm arguments.
 
 ### `attempt(combinator)`
 
-Make one ordered-choice arm transactional. If its parser fails after consuming
-input, Parseman restores its structural capture, trivia, field, and recovery
-diagnostic sinks before returning a zero-width failure at the attempt entry.
-The inner expectation is preserved, so diagnostics still name the token that
-actually failed. `attempt()` does not clone or roll back `ctx.state`.
+Make a composite parser transactional. If its parser fails after consuming input,
+Parseman restores its structural capture, trivia, field, and recovery diagnostic
+sinks before returning a zero-width failure at the attempt entry. The inner
+expectation is preserved, so diagnostics still name the token that actually
+failed. `attempt()` does not clone or roll back `ctx.state`.
+
+Ordinary `choice`, `many`, `optional`, and `sepBy` already roll back their own
+rejected speculative paths. Use `attempt()` when you want to expose a larger
+parser as one all-or-nothing unit, or when custom composition should not let
+callers observe partial progress.
+
+The user-visible capability other combinators do not provide is failure
+re-anchoring for a composite parser: the failure reports at the composite's entry
+while preserving the inner `expected` token.
 
 ```ts
-const value = choice(
-  attempt(sequence(literal('a'), literal('b'))),
-  literal('a'),
-)
-// `a` selects the fallback; no partial `a` capture leaks from the first arm.
+const value = sequence(literal('x'), attempt(sequence(literal('a'), literal('b'))))
+// On input `xa`, failure is reported at offset 1 with expected `'"b"'`.
 ```
 
 ### `many(c, opts?)` · `oneOrMore(c, opts?)` · `sepBy(c, sep, opts?)` · `oneOrMoreSep(c, sep, opts?)` · `optional(c)`
