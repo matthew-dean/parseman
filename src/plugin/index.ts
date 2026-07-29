@@ -425,6 +425,11 @@ export function transformMacro(
   // import. Lets a `...frag(g)` spread whose factory is imported (tier 2) be
   // resolved from the exporting module's source at build time.
   const importBindings = new Map<string, { source: string; imported: string }>()
+  const ordinaryImports: Array<{
+    start: number
+    end: number
+    specifiers: Array<{ type: string; local: string; start: number; end: number }>
+  }> = []
 
   for (const stmt of body) {
     if (stmt.type !== 'ImportDeclaration') continue
@@ -438,12 +443,17 @@ export function transformMacro(
     })
 
     if (!isMacro) {
+      const specifiers: Array<{ type: string; local: string; start: number; end: number }> = []
       for (const spec of s.specifiers) {
         if (spec.type === 'ImportSpecifier') {
           const imported = (spec.imported as { name?: string }).name ?? spec.local.name
           importBindings.set(spec.local.name, { source: s.source.value, imported })
+          specifiers.push({ type: spec.type, local: spec.local.name, start: spec.start, end: spec.end })
+        } else {
+          specifiers.push({ type: spec.type, local: spec.local.name, start: spec.start, end: spec.end })
         }
       }
+      ordinaryImports.push({ start: s.start, end: s.end, specifiers })
       continue
     }
 
@@ -456,6 +466,14 @@ export function transformMacro(
   }
 
   if (macroImports.length === 0) return null
+
+  const unwrapVd = (stmt: Statement): VariableDeclaration | null =>
+    stmt.type === 'VariableDeclaration'
+      ? (stmt as unknown as VariableDeclaration)
+      : stmt.type === 'ExportNamedDeclaration'
+        && (stmt as unknown as ExportNamedDeclaration).declaration?.type === 'VariableDeclaration'
+        ? ((stmt as unknown as ExportNamedDeclaration).declaration as unknown as VariableDeclaration)
+        : null
 
   /*
    * Module-level `const <name> = (g) => …` factory declarations, so a `rules()` call
@@ -489,7 +507,7 @@ export function transformMacro(
    *    defect as emitting the wrong grammar. `declaredAt` is compared against the call
    *    site below.
    */
-  const factoryDecls = new Map<string, { fn: Expression; declaredAt: number }>()
+  const factoryDecls = new Map<string, { fn: Expression; declaredAt: number; code?: string; scope?: Scope; imported?: boolean }>()
   for (const stmt of body) {
     const decl = stmt.type === 'ExportNamedDeclaration'
       ? (stmt as unknown as { declaration?: unknown }).declaration
@@ -508,6 +526,71 @@ export function transformMacro(
         })
       }
     }
+  }
+
+  const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
+    for (const st of moduleBody) {
+      const decl = st.type === 'ExportNamedDeclaration'
+        ? (st as unknown as { declaration?: AnyNode }).declaration
+        : st
+      const idn = decl?.type === 'FunctionDeclaration'
+        ? (decl as unknown as { id?: { name?: string } }).id
+        : undefined
+      if (idn?.name === name) return decl ?? null
+    }
+    return null
+  }
+  const sourceScopeUntil = (moduleBody: AnyNode[], source: string, until: number): Scope => {
+    const out: Scope = new Map()
+    for (const stmt of moduleBody as Statement[]) {
+      if (stmt.start >= until) break
+      const vd = unwrapVd(stmt)
+      if (!vd || (vd as unknown as { kind?: string }).kind !== 'const') continue
+      for (const decl of vd.declarations) {
+        const d = decl as VariableDeclarator
+        const idn = d.id as unknown as { type?: string; name?: string }
+        const init = d.init as Expression | null | undefined
+        if ((idn.type !== 'Identifier' && idn.type !== 'BindingIdentifier') || !idn.name || !init) continue
+        const mapFnSources: string[] = []
+        const combi = evaluateExpr(init, out, source, mapFnSources)
+        if (combi) {
+          out.set(idn.name, { combi, mfSrcs: mapFnSources })
+          continue
+        }
+        const wordFactory = evaluateWordFactory(init, out, source)
+        if (wordFactory) {
+          ;(out as Map<string, unknown>).set(idn.name, wordFactory)
+          continue
+        }
+        const whenFactory = evaluateWhenFactory(init, out, source)
+        if (whenFactory) {
+          ;(out as Map<string, unknown>).set(idn.name, whenFactory)
+          continue
+        }
+        const combiArray = evaluateCombinatorArray(init, out, source)
+        if (combiArray) {
+          ;(out as Map<string, unknown>).set(idn.name, combiArray)
+        }
+      }
+    }
+    return out
+  }
+  const usedImportedFactories = new Set<string>()
+  for (const [localName, binding] of importBindings) {
+    const file = resolvePrivateSourceModule(id, binding.source)
+    if (!file) continue
+    const mod = parseModuleCached(file)
+    if (!mod) continue
+    const localFor = exportLocalName(mod.body as AnyNode[], binding.imported)
+    const init = localFor ? topLevelInit(mod.body as AnyNode[], localFor) ?? topLevelFunction(mod.body as AnyNode[], localFor) : null
+    if (!init || (init.type !== 'ArrowFunctionExpression' && init.type !== 'FunctionExpression' && init.type !== 'FunctionDeclaration')) continue
+    factoryDecls.set(localName, {
+      fn: init as unknown as Expression,
+      declaredAt: -1,
+      code: mod.src,
+      scope: sourceScopeUntil(mod.body as AnyNode[], mod.src, init.start),
+      imported: true,
+    })
   }
 
   // --- Pass 2: evaluate declarations in source order ---
@@ -552,7 +635,7 @@ export function transformMacro(
   const evaluateRulesFactory = (
     init: Expression,
     label: string,
-  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
+  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
     // Options-first: rules({ trivia }, factory). Disambiguate by type — an
     // ObjectExpression first arg means options lead; otherwise the factory leads
@@ -574,6 +657,11 @@ export function transformMacro(
     const factoryArg = namedFactory !== undefined && namedFactory.declaredAt <= init.start
       ? namedFactory.fn
       : factoryArgRaw
+    const factoryScope = namedFactory?.scope ?? scope
+    const factoryCode = namedFactory?.code ?? code
+    if (namedFactory?.imported === true && factoryArg === namedFactory.fn) {
+      usedImportedFactories.add((factoryArgRaw as unknown as { name?: string }).name ?? '')
+    }
 
     // Grammar-level options object — evaluate `trivia` / `scanSkip` so the compiled
     // map seeds them as the ambient defaults (build-time mirror of rules() tagging
@@ -598,8 +686,16 @@ export function transformMacro(
       warn(init.start, `${label}: rules({ hostMode }) must be the literal 'ast' or 'cst'`)
       return null
     }
+    const trackLinesValue = optionValue('trackLines')
+    const gTrackLines = trackLinesValue?.type === 'Literal'
+      ? (trackLinesValue as unknown as { value?: unknown }).value
+      : undefined
+    if (trackLinesValue !== undefined && typeof gTrackLines !== 'boolean') {
+      warn(init.start, `${label}: rules({ trackLines }) must be a boolean literal`)
+      return null
+    }
 
-    const ruleMap = evaluateParserFactory(factoryArg, scope, code, [])
+    const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [])
     if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
 
     const triviaValue = optionValue('trivia')
@@ -643,7 +739,15 @@ export function transformMacro(
       }
     }
 
-    return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}) }
+    if (gTrackLines === true) {
+      for (const rule of ruleMap.values()) {
+        if (rule && !rule._meta.isTrivia) {
+          ;(rule._meta as { grammarTrackLines?: true }).grammarTrackLines = true
+        }
+      }
+    }
+
+    return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}), ...(gTrackLines === true ? { trackLines: true } : {}) }
   }
 
   /** null → the factory itself isn't statically evaluable (already warned).
@@ -654,10 +758,10 @@ export function transformMacro(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[] } | null => {
+  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
-    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), recovery, coverage: grammarCoverage })
+    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage })
     return {
       replacement: compiled?.replacement ?? null,
       ruleMap: evaluated.ruleMap,
@@ -666,6 +770,7 @@ export function transformMacro(
       ...(compiled?.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}),
       ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}),
       ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}),
+      ...(evaluated.trackLines ? { trackLines: true } : {}),
     }
   }
 
@@ -1326,14 +1431,6 @@ export function transformMacro(
   // interpreter). `.define(...)` statements are stripped from the output since
   // they reference the now-removed import. Only a ref whose define resolves is
   // treated as a macro ref; an unresolved one falls through to the normal warn().
-  const unwrapVd = (stmt: Statement): VariableDeclaration | null =>
-    stmt.type === 'VariableDeclaration'
-      ? (stmt as unknown as VariableDeclaration)
-      : stmt.type === 'ExportNamedDeclaration'
-        && (stmt as unknown as ExportNamedDeclaration).declaration?.type === 'VariableDeclaration'
-        ? ((stmt as unknown as ExportNamedDeclaration).declaration as unknown as VariableDeclaration)
-        : null
-
   // First detect whether any ref() cluster exists; only then do the (more
   // involved) full-scope pre-pass, keeping ordinary macro files on the fast path.
   const refNames = new Set<string>()
@@ -1460,6 +1557,7 @@ export function transformMacro(
           const pieces = exportPrefix || compiledRules.replacement === null
             ? compileLinkable([...compiledRules.ruleMap], ns, {
                 ...(compiledRules.scanSkip ? { scanSkip: compiledRules.scanSkip } : {}),
+                ...(compiledRules.trackLines ? { trackLines: true } : {}),
                 recovery,
               })
             : null
@@ -1674,6 +1772,12 @@ export function transformMacro(
   }
 
   const ms = new MagicString(code)
+
+  for (const imp of ordinaryImports) {
+    if (imp.specifiers.length > 0 && imp.specifiers.every(spec => spec.type === 'ImportSpecifier' && usedImportedFactories.has(spec.local))) {
+      ms.remove(imp.start, imp.end)
+    }
+  }
 
   // Strip `x.define(...)` statements — only when every ref() cluster was inlined.
   // If anything fell back to the interpreter the import stays, and those

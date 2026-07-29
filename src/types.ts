@@ -414,6 +414,12 @@ export type ParserMeta = {
    * a mismatched host once per parse. `'ast'` is the default and is never stamped.
    */
   grammarHostMode?: 'ast' | 'cst' | undefined
+  /**
+   * Grammar-level line tracking declared via `rules({ trackLines: true }, factory)`.
+   * Stamped on every non-trivia rule so runtime compile and macro compile can emit
+   * a separate line-aware artifact from the same authored grammar source.
+   */
+  grammarTrackLines?: true | undefined
 }
 
 /** A first set is either "any" (unknown/unbounded) or a list of char code ranges */

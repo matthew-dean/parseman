@@ -443,15 +443,18 @@ function reindentStmts(stmts: string[], targetLevels: number): string[] {
   return stmts.map(s => (s.trim().length === 0 ? '' : targetPrefix + s.slice(minLeading)))
 }
 
-function failReturn(expected: string, posExpr: string): string {
+function failReturn(ctx: Ctx, expected: string, posExpr: string): string {
+  if (ctx.lineTracking) return `return { ok: false, expected: [${expected}], span: ${emitSpanExpr(ctx, posExpr, posExpr)} }`
   return `return { ok: false, expected: [${expected}], span: { start: ${posExpr}, end: ${posExpr} } }`
 }
 
-function failReturnArr(expectedArr: string, posExpr: string): string {
+function failReturnArr(ctx: Ctx, expectedArr: string, posExpr: string): string {
+  if (ctx.lineTracking) return `return { ok: false, expected: ${expectedArr}, span: ${emitSpanExpr(ctx, posExpr, posExpr)} }`
   return `return { ok: false, expected: ${expectedArr}, span: { start: ${posExpr}, end: ${posExpr} } }`
 }
 
-function committedReturnArr(expectedArr: string, posExpr: string): string {
+function committedReturnArr(ctx: Ctx, expectedArr: string, posExpr: string): string {
+  if (ctx.lineTracking) return `return { ok: false, expected: [...${expectedArr}], span: ${emitSpanExpr(ctx, posExpr, posExpr)}, committed: true }`
   return `return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} }, committed: true }`
 }
 
@@ -510,7 +513,7 @@ function failBody(ctx: Ctx, expected: string, posExpr: string): string {
     if (!ctx.recordFail) return probe ? `{ ${probe}${trace}break ${ctx.failLabel} }` : trace ? `{ ${trace}break ${ctx.failLabel} }` : `break ${ctx.failLabel}`
     return `{ ${probe}_ctx._fe = ${posExpr}; _ctx._fx = ${hoistExpected(ctx, `[${expected}]`)}; ${trace}break ${ctx.failLabel} }`
   }
-  return probe + trace + failReturn(expected, posExpr)
+  return probe + trace + failReturn(ctx, expected, posExpr)
 }
 
 /**
@@ -530,14 +533,15 @@ function failArrBody(ctx: Ctx, expectedArr: string, posExpr: string, constant = 
   // Direct-return (no enclosing fail label). A dynamic source may reference the
   // shared frozen `_ctx._fx`; copy it so the (possibly frozen) constant never
   // escapes into a user-facing result. Constant sources are inline literals.
-  if (!constant) return `${probe}${trace}return { ok: false, expected: [...${expectedArr}], span: { start: ${posExpr}, end: ${posExpr} } }`
-  return probe + trace + failReturnArr(expectedArr, posExpr)
+  if (!constant) return `${probe}${trace}return { ok: false, expected: [...${expectedArr}], span: ${ctx.lineTracking ? emitSpanExpr(ctx, posExpr, posExpr) : `{ start: ${posExpr}, end: ${posExpr} }`} }`
+  return probe + trace + failReturnArr(ctx, expectedArr, posExpr)
 }
 
 /** Build a ParseResult from the recorded deepest failure, copying `_fx` so the
  * shared frozen array never escapes into user-facing results. */
-function resultFromRecorded(feExpr = '_ctx._fe', fxExpr = '_ctx._fx'): string {
-  return `return { ok: false, expected: [...${fxExpr}], span: { start: ${feExpr}, end: ${feExpr} }, ...(_ctx._fc ? { committed: true } : {}) }`
+function resultFromRecorded(ctx: Ctx, feExpr = '_ctx._fe', fxExpr = '_ctx._fx'): string {
+  const spanExpr = ctx.lineTracking ? emitSpanExpr(ctx, feExpr, feExpr) : `{ start: ${feExpr}, end: ${feExpr} }`
+  return `return { ok: false, expected: [...${fxExpr}], span: ${spanExpr}, ...(_ctx._fc ? { committed: true } : {}) }`
 }
 
 function committedFailBody(ctx: Ctx, expectedArr = '_ctx._fx', posExpr = '_ctx._fe'): string {
@@ -545,7 +549,7 @@ function committedFailBody(ctx: Ctx, expectedArr = '_ctx._fx', posExpr = '_ctx._
     if (!ctx.recordFail) return `{ _ctx._fc = true; break ${ctx.failLabel} }`
     return `{ _ctx._fc = true; _ctx._fe = ${posExpr}; _ctx._fx = ${expectedArr}; break ${ctx.failLabel} }`
   }
-  return committedReturnArr(expectedArr, posExpr)
+  return committedReturnArr(ctx, expectedArr, posExpr)
 }
 
 /**
@@ -563,11 +567,11 @@ function propagateFailBody(ctx: Ctx, srcCtx = '_ctx'): string {
       if (!ctx.recordFail) return `break ${ctx.failLabel}`
       return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; _ctx._fc = ${srcCtx}._fc; break ${ctx.failLabel} }`
     }
-    return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; _ctx._fc = ${srcCtx}._fc; ${resultFromRecorded()} }`
+    return `{ _ctx._fe = ${srcCtx}._fe; _ctx._fx = ${srcCtx}._fx; _ctx._fc = ${srcCtx}._fc; ${resultFromRecorded(ctx)} }`
   }
   // Same-ctx: `_ctx._fx` already holds the deepest failure — just break/return.
   if (ctx.failLabel) return `break ${ctx.failLabel}`
-  return resultFromRecorded()
+  return resultFromRecorded(ctx)
 }
 
 function emitIfFail(ctx: Ctx, cond: string, body: string): string[] {
@@ -2680,7 +2684,7 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
     const gExp = armStaticExpected(ctx, def.parser)
     const gFail = ctx.failLabel
       ? `{ _ctx._fe = ${pos};${ctx.recordFail ? ` _ctx._fx = ${gExp};` : ''} break ${ctx.failLabel} }`
-      : `{ _ctx._fe = ${pos}; ${failReturnArr(gExp, pos)} }`
+      : `{ _ctx._fe = ${pos}; ${failReturnArr(ctx, gExp, pos)} }`
     preGuard.push(
       `${ind(ctx)}const ${gcV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
       `${ind(ctx)}if (!(${firstSetCond(gcV, def.parser._meta.firstSet)})) ${gFail}`,
@@ -3435,7 +3439,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     const gExp = armStaticExpected(ctx, def.parser)
     const gFail = ctx.failLabel
       ? (ctx.recordFail ? `{ _ctx._fe = ${pos}; _ctx._fx = ${gExp}; break ${ctx.failLabel} }` : `break ${ctx.failLabel}`)
-      : failReturnArr(gExp, pos)
+      : failReturnArr(ctx, gExp, pos)
     preGuard.push(
       `${i}const ${gcV} = ${pos} < input.length ? (input.codePointAt(${pos}) ?? -1) : -1`,
       `${i}if (!(${firstSetCond(gcV, def.parser._meta.firstSet)})) ${gFail}`,
@@ -4119,6 +4123,7 @@ function hasLineTrackingDef(p: Combinator<unknown>, seen: Set<Combinator<unknown
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def
+  if (p._meta.grammarTrackLines) return true
   if (d.tag === 'grammar' && d.trackLines) return true
   if (d.tag === 'lazy') {
     try { return hasLineTrackingDef(d.thunk(), seen) } catch { return false }
@@ -4651,6 +4656,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const grammarTrivia = (combinator._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
   const grammarScanSkip = (combinator._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip
   const grammarHostMode = (combinator._meta as { grammarHostMode?: HostMode }).grammarHostMode
+  const grammarTrackLines = combinator._meta.grammarTrackLines
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -4671,7 +4677,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     capturing: hasNodeDef(combinator as Combinator<unknown>),
     recovery: opts?.recovery ?? false,
     hostMode: opts?.hostMode ?? grammarHostMode ?? 'ast',
-    lineTracking: opts?.trackLines === true || hasLineTrackingDef(combinator as Combinator<unknown>),
+    lineTracking: opts?.trackLines === true || grammarTrackLines === true || hasLineTrackingDef(combinator as Combinator<unknown>),
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
@@ -4914,7 +4920,7 @@ function publicRuleWrapperSource(
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
 ): { keys: string[]; replacement: string; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   runGatingDiagnosticRules(ruleMap, opts?.gating)
   runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
@@ -4941,6 +4947,8 @@ export function compileRuleMap(
   // under the MACRO, which has no other way to pass a compile option.
   const grammarHostMode = opts?.hostMode
     ?? ruleMap.map(([, r]) => (r._meta as { grammarHostMode?: HostMode }).grammarHostMode).find(Boolean)
+  const grammarTrackLines = opts?.trackLines === true
+    || ruleMap.some(([, r]) => r._meta.grammarTrackLines === true)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
@@ -4961,6 +4969,7 @@ export function compileRuleMap(
     capturing: ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
     hostMode: grammarHostMode ?? 'ast',
+    lineTracking: grammarTrackLines,
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule), coverageWinners) } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
@@ -5004,6 +5013,10 @@ export function compileRuleMap(
   const mfCovered = ctx.mapFns.length === 0 || derivedSrcs !== undefined
   const canInline = ctx.runtimeParsers.length === 0 && mfCovered && buildCovered
   if (!canInline) return null
+  if (ctx.lineTracking) {
+    ctx.needsLineTrack = true
+    ctx.needsLineSpan = true
+  }
 
   const mfDecl = derivedSrcs?.length ? `  const ${mfRef(ctx)} = [${derivedSrcs.join(', ')}]` : ''
   const buildDecl = buildSources?.length ? `  const ${buildRef(ctx)} = [${buildSources.join(', ')}]` : ''
@@ -5031,17 +5044,27 @@ export function compileRuleMap(
   }
   const entryFnText = (r: ER, rule: Combinator<unknown>): string => {
     const ruleId = entryRuleId(rule)
+    const linePreamble = ctx.lineTracking
+      ? [
+          `  if (_ctx._lineStarts === undefined) _ctx = { ..._ctx, trackLines: true, _lineStarts: [0], _lineScannedTo: 0 }`,
+          `  else _ctx.trackLines = true`,
+          `  if (_pos > (_ctx._lineScannedTo ?? 0)) _trackLines(_ctx, input, 0, _pos)`,
+        ]
+      : []
+    const resultSpan = ctx.lineTracking ? `_spanLines(_ctx, _pos, ${r.endVar})` : `{ start: _pos, end: ${r.endVar} }`
     const body = ruleId === undefined
       ? [
+          ...linePreamble,
           `  let pos = _pos`,
           ...r.stmts,
-          `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+          `  return { ok: true, value: ${r.valueVar}, span: ${resultSpan} }`,
         ]
       : [
+          ...linePreamble,
           `  const _coverageResult = (() => {`,
           `    let pos = _pos`,
           ...r.stmts,
-          `    return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+          `    return { ok: true, value: ${r.valueVar}, span: ${resultSpan} }`,
           `  })()`,
           `  if (!_coverageResult.ok) _ctx._grammarTrace?.write({ id: ${JSON.stringify(ruleId)}, phase: 'failure', offset: _coverageResult.span.start })`,
           `  return _coverageResult`,
@@ -5159,7 +5182,7 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
@@ -5189,6 +5212,8 @@ export function compileLinkable(
   // Grammar-level host mode through compose()/linkable(), mirroring the two above.
   const grammarHostMode = opts?.hostMode
     ?? ruleMapArg.map(([, r]) => (r._meta as { grammarHostMode?: HostMode }).grammarHostMode).find(Boolean)
+  const grammarTrackLines = opts?.trackLines === true
+    || ruleMapArg.some(([, r]) => r._meta.grammarTrackLines === true)
   // Drop EXTERNAL entries: `rules(g => …)` returns a cache that also holds every
   // `g.X` that was ACCESSED, so an accessed-but-not-defined rule (defined in
   // another artifact) leaks into `Object.entries` as an undefined `ref`. Those
@@ -5213,6 +5238,7 @@ export function compileLinkable(
     capturing: opts?.captureTerminals === true || ruleMap.some(([, rule]) => hasNodeDef(rule)),
     recovery: opts?.recovery ?? false,
     hostMode: grammarHostMode ?? 'ast',
+    lineTracking: grammarTrackLines,
     ...(opts?.coverage ? { coverage: { plan: opts.coverage } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
@@ -5321,6 +5347,10 @@ export function compileLinkable(
   // inject). Callback fns, by contrast, ARE fusable — inline their source when
   // available (macro), else inject the fn objects via `_env` (runtime).
   if (ctx.runtimeParsers.length !== 0) return null
+  if (ctx.lineTracking) {
+    ctx.needsLineTrack = true
+    ctx.needsLineSpan = true
+  }
   const mfSrcs = ctx.mapFns.length > 0 && ctx.mapFnSrcs.every((s): s is string => s !== null)
     ? ctx.mapFnSrcs as string[] : null
   const buildSrcs = ctx.buildFns.length > 0 && ctx.buildSrcs.every((s): s is string => s !== null)
@@ -5344,6 +5374,8 @@ export function compileLinkable(
     : buildSrcs ? `const ${buildRef(ctx)} = [${buildSrcs.join(', ')}]`
     : `const ${buildRef(ctx)} = _env[${JSON.stringify(nsp(ctx) + 'build')}]`
   const prelude = [
+    ctx.needsLineTrack ? LINE_TRACK_DECL : '',
+    ctx.needsLineSpan ? LINE_SPAN_DECL : '',
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     mfDecl,
@@ -5353,11 +5385,20 @@ export function compileLinkable(
 
   const wrappers = new Map<string, string>()
   for (const { key, rule, r } of perEntry) {
+    const linePreamble = ctx.lineTracking
+      ? [
+          `  if (_ctx._lineStarts === undefined) _ctx = { ..._ctx, trackLines: true, _lineStarts: [0], _lineScannedTo: 0 }`,
+          `  else _ctx.trackLines = true`,
+          `  if (_pos > (_ctx._lineScannedTo ?? 0)) _trackLines(_ctx, input, 0, _pos)`,
+        ]
+      : []
+    const resultSpan = ctx.lineTracking ? `_spanLines(_ctx, _pos, ${r.endVar})` : `{ start: _pos, end: ${r.endVar} }`
     wrappers.set(key, publicRuleWrapperSource(rule, [
       `function(input, _pos, _ctx) {`,
+      ...linePreamble,
       `  let pos = _pos`,
       ...r.stmts,
-      `  return { ok: true, value: ${r.valueVar}, span: { start: _pos, end: ${r.endVar} } }`,
+      `  return { ok: true, value: ${r.valueVar}, span: ${resultSpan} }`,
       `}`,
     ].join('\n'), ctx.triviaKindLabels))
   }

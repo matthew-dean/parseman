@@ -3,6 +3,18 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.42.1 — 2026-07-28
+
+- **Make line-aware macro artifacts ergonomic.** `rules({ trackLines: true }, factory)`
+  now produces line/column-enriched compiled rule-map output under the macro, while
+  `rules(factory)` keeps the default artifact free of line-tracking code.
+
+- **Support entry modules over one imported grammar factory.** A macro entry can
+  import a source-private factory normally, then apply `rules(...)` settings at the
+  entry point. This lets packages publish standalone normal and diagnostic artifacts
+  from one authored grammar source, and the same factory-derived artifact works when
+  fed into macro `compose()`.
+
 ## 0.42.0 — 2026-07-28
 
 - **Add optional parse-time line and column tracking.** Parsers can now opt into

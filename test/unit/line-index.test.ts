@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans, normalizeLineIndex, recordLineRange, compile, cstBuildHost, literal, node, parser, regex, trivia, sequence, sepBy } from '../../src/index.ts'
+import { buildLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans, normalizeLineIndex, recordLineRange, compile, cstBuildHost, literal, node, parser, regex, rules, trivia, sequence, sepBy } from '../../src/index.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { ParseContext } from '../../src/index.ts'
 
@@ -97,6 +97,19 @@ describe('parse with trackLines', () => {
     const { literal, sequence, parser } = await import('../../src/index.ts')
     const p = parser({ trackLines: true }, sequence(literal('foo'), literal('\n'), literal('bar')))
     const r = p.parse('foo\nbar', 0, { trackLines: false })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.span.startLine).toBe(1)
+      expect(r.span.endLine).toBe(2)
+      expect(r.span.endColumn).toBe(4)
+    }
+  })
+
+  it('rules({ trackLines: true }) annotates all grammar entries', () => {
+    const g = rules({ trackLines: true }, _g => ({
+      Doc: sequence(literal('foo'), literal('\n'), literal('bar')),
+    }))
+    const r = g.Doc.parse('foo\nbar', 0, { trackLines: false })
     expect(r.ok).toBe(true)
     if (r.ok) {
       expect(r.span.startLine).toBe(1)

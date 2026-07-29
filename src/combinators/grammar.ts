@@ -156,7 +156,7 @@ export function parse<T>(
     _analyzed.add(combinator)
     markUnusedValues(combinator)
   }
-  const trackLines = opts.trackLines ?? false
+  const trackLines = opts.trackLines ?? combinator._meta.grammarTrackLines ?? false
   const lineContext = trackLines ? createParseLineContext(input, 0) : undefined
   const lineIndex = lineContext?.lineIndex
   const _errors = opts.recover ? [] : undefined
