@@ -1837,9 +1837,51 @@ export function transformMacro(
   }
 
   const ms = new MagicString(code)
+  const replacementRanges = runtimeComposeFallback
+    ? []
+    : replacements.map(({ start, end }) => ({ start, end }))
+  const isInsideReplacement = (start: number, end: number): boolean =>
+    replacementRanges.some(r => start >= r.start && end <= r.end)
+  const importedBindingStillReferenced = (local: string): boolean => {
+    const walk = (node: unknown, parent?: AnyNode, parentKey?: string): boolean => {
+      if (!node || typeof node !== 'object') return false
+      const rec = node as AnyNode
+      if (rec.type === 'ImportDeclaration') return false
+      if (typeof rec.start === 'number' && typeof rec.end === 'number' && isInsideReplacement(rec.start, rec.end)) return false
+      if ((rec.type === 'Identifier' || rec.type === 'BindingIdentifier') && (rec as { name?: string }).name === local) {
+        if (
+          parentKey === 'key' &&
+          (parent?.type === 'ObjectProperty' || parent?.type === 'Property' || parent?.type === 'PropertyDefinition') &&
+          (parent as { computed?: boolean }).computed !== true
+        ) return false
+        if (parentKey === 'property' && parent?.type === 'StaticMemberExpression') return false
+        if (parentKey === 'property' && parent?.type === 'MemberExpression' && (parent as { computed?: boolean }).computed !== true) return false
+        return true
+      }
+      for (const key of Object.keys(rec)) {
+        if (key === 'type' || key === 'start' || key === 'end') continue
+        const value = (rec as Record<string, unknown>)[key]
+        if (Array.isArray(value)) {
+          if (value.some(child => walk(child, rec, key))) return true
+        } else if (walk(value, rec, key)) {
+          return true
+        }
+      }
+      return false
+    }
+    return (body as unknown[]).some(stmt => walk(stmt))
+  }
 
   for (const imp of ordinaryImports) {
-    if (!runtimeComposeFallback && imp.specifiers.length > 0 && imp.specifiers.every(spec => spec.type === 'ImportSpecifier' && usedImportedFactories.has(spec.local))) {
+    if (
+      !runtimeComposeFallback &&
+      imp.specifiers.length > 0 &&
+      imp.specifiers.every(spec =>
+        spec.type === 'ImportSpecifier' &&
+        usedImportedFactories.has(spec.local) &&
+        !importedBindingStillReferenced(spec.local),
+      )
+    ) {
       ms.remove(imp.start, imp.end)
     }
   }
