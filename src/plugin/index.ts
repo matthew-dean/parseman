@@ -557,7 +557,10 @@ export function transformMacro(
       }
       if (stmt.type === 'FunctionDeclaration') continue
       if (stmt.type === 'ExportNamedDeclaration' && (stmt as unknown as ExportNamedDeclaration).declaration?.type === 'FunctionDeclaration') continue
-      if (stmt.type === 'ExportNamedDeclaration' && !(stmt as unknown as ExportNamedDeclaration).declaration) continue
+      if (stmt.type === 'ExportNamedDeclaration' && !(stmt as unknown as ExportNamedDeclaration).declaration) {
+        if ((stmt as unknown as { source?: unknown }).source) return null
+        continue
+      }
       const vd = unwrapVd(stmt)
       if (!vd || (vd as unknown as { kind?: string }).kind !== 'const') return null
       for (const decl of vd.declarations) {

@@ -216,6 +216,31 @@ export const grammar = rules(grammarFactory)
     }
   })
 
+  it('preserves imports for source modules with side-effectful re-exports', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-factory-reexport-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'side-effect.ts'), `
+export const touched = (globalThis.__parsemanReexportSideEffect = true)
+`)
+      fs.writeFileSync(path.join(dir, 'grammar.ts'), `
+import { literal } from 'parseman' with { type: 'macro' }
+export { touched } from './side-effect.js'
+export const grammarFactory = (g) => ({ Doc: literal('a') })
+`)
+      const out = transformMacro(`
+import { rules } from 'parseman' with { type: 'macro' }
+import { grammarFactory } from './grammar.js'
+export const grammar = rules(grammarFactory)
+`.trim(), path.join(dir, 'entry.ts'), new Set(['parseman']))
+
+      expect(out!.warnings.join('\n')).toContain("rules(...) factory isn't statically evaluable")
+      expect(out!.code).toContain('./grammar.js')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('keeps trackLines when downstream macro compose materializes imported carried IR', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-lines-compose-'))
     try {
