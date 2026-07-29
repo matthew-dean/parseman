@@ -16,7 +16,7 @@ performance diagnostic that tells you when a hot choice stopped dispatching.
 | `choice(a, b, c)` | Arms have distinct leading punctuation/keywords, or the ordered fallback is intentional. | PEG semantics stay visible, and disjoint first characters compile to O(1) dispatch. |
 | `keywords([...])` / `word(...)` | You are recognizing keywords, especially before an identifier fallback. | Boundaries are correct and the first-set stays exact. |
 | `dispatch(head, when(...), otherwise(...))` | Every branch starts by parsing the same broad family: command names, name-or-call openers, contextual keywords, at-keywords. | The shared head parses once; the route table decides the specialized tail; `routed()` lets a branch node own that head. |
-| `attempt(arm)` | A rejected arm may consume enough to leave captured fields, recovered errors, or other parseman-owned side effects behind. | The failed arm rolls those framework effects back before the next choice arm runs. |
+| `attempt(composite)` | You need a larger parser's failure reported at the composite's entry, not at the inner token that failed. | It is the public failure re-anchoring boundary for composite parsers; ordinary rejected `choice` arms already roll back. |
 
 The smell to watch for is a `choice` where two or more arms begin with the same broad
 recognizer:
@@ -69,18 +69,15 @@ Both detections are conservative. Mix in a `sequence()` or `word()` arm, or add 
 regex, and neither applies — ordering is load-bearing again. Write the long arm first
 regardless, and don't make a grammar's correctness depend on a rewrite applying.
 
-When an alternative needs to consume past a shared prefix before deciding, wrap
-that alternative in `attempt()`. A failed attempt restores Parseman's CST,
-trivia, field, and recovery-diagnostic capture before the next arm runs; it
-does not roll back user-owned parse state.
+You rarely need `attempt()` just to make an ordinary `choice()` safe: rejected
+choice arms already roll back Parseman's capture and recovery sinks. Reach for
+`attempt()` when the user-facing failure should be anchored at a larger parser's
+entry while preserving the inner expected token.
 
 ```ts
-import { attempt, choice, literal, sequence } from 'parseman'
+import { attempt, literal, sequence } from 'parseman'
 
-const value = choice(
-  attempt(sequence(literal('a'), literal('b'))),
-  literal('a'),
-)
+const value = sequence(literal('x'), attempt(sequence(literal('a'), literal('b'))))
 ```
 
 ## Keyword vs. identifier boundaries
