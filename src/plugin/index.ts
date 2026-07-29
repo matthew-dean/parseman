@@ -540,38 +540,62 @@ export function transformMacro(
     }
     return null
   }
-  const sourceScopeUntil = (moduleBody: AnyNode[], source: string, until: number): Scope => {
+  const isParsemanMacroImport = (stmt: AnyNode): boolean => {
+    if (stmt.type !== 'ImportDeclaration') return false
+    const s = stmt as unknown as ImportDeclaration
+    return moduleAliases.has(s.source.value) && s.attributes.some(a => {
+      const key = a.key.type === 'Identifier' ? a.key.name : String(a.key.value)
+      return key === 'type' && a.value.value === 'macro'
+    })
+  }
+  const sourceScopeUntil = (moduleBody: AnyNode[], source: string, until: number): Scope | null => {
     const out: Scope = new Map()
     for (const stmt of moduleBody as Statement[]) {
-      if (stmt.start >= until) break
+      if (stmt.type === 'ImportDeclaration') {
+        if (!isParsemanMacroImport(stmt as unknown as AnyNode)) return null
+        continue
+      }
+      if (stmt.type === 'FunctionDeclaration') continue
+      if (stmt.type === 'ExportNamedDeclaration' && (stmt as unknown as ExportNamedDeclaration).declaration?.type === 'FunctionDeclaration') continue
+      if (stmt.type === 'ExportNamedDeclaration' && !(stmt as unknown as ExportNamedDeclaration).declaration) continue
       const vd = unwrapVd(stmt)
-      if (!vd || (vd as unknown as { kind?: string }).kind !== 'const') continue
+      if (!vd || (vd as unknown as { kind?: string }).kind !== 'const') return null
       for (const decl of vd.declarations) {
         const d = decl as VariableDeclarator
         const idn = d.id as unknown as { type?: string; name?: string }
         const init = d.init as Expression | null | undefined
-        if ((idn.type !== 'Identifier' && idn.type !== 'BindingIdentifier') || !idn.name || !init) continue
+        if ((idn.type !== 'Identifier' && idn.type !== 'BindingIdentifier') || !idn.name || !init) return null
+        if (init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') continue
         const mapFnSources: string[] = []
         const combi = evaluateExpr(init, out, source, mapFnSources)
         if (combi) {
-          out.set(idn.name, { combi, mfSrcs: mapFnSources })
+          if (stmt.start < until) out.set(idn.name, { combi, mfSrcs: mapFnSources })
           continue
         }
         const wordFactory = evaluateWordFactory(init, out, source)
         if (wordFactory) {
-          ;(out as Map<string, unknown>).set(idn.name, wordFactory)
+          if (stmt.start < until) {
+            ;(out as Map<string, unknown>).set(idn.name, wordFactory)
+          }
           continue
         }
         const whenFactory = evaluateWhenFactory(init, out, source)
         if (whenFactory) {
-          ;(out as Map<string, unknown>).set(idn.name, whenFactory)
+          if (stmt.start < until) {
+            ;(out as Map<string, unknown>).set(idn.name, whenFactory)
+          }
           continue
         }
         const combiArray = evaluateCombinatorArray(init, out, source)
         if (combiArray) {
-          ;(out as Map<string, unknown>).set(idn.name, combiArray)
+          if (stmt.start < until) {
+            ;(out as Map<string, unknown>).set(idn.name, combiArray)
+          }
+          continue
         }
+        return null
       }
+      continue
     }
     return out
   }
@@ -584,11 +608,13 @@ export function transformMacro(
     const localFor = exportLocalName(mod.body as AnyNode[], binding.imported)
     const init = localFor ? topLevelInit(mod.body as AnyNode[], localFor) ?? topLevelFunction(mod.body as AnyNode[], localFor) : null
     if (!init || (init.type !== 'ArrowFunctionExpression' && init.type !== 'FunctionExpression' && init.type !== 'FunctionDeclaration')) continue
+    const factoryScope = sourceScopeUntil(mod.body as AnyNode[], mod.src, init.start)
+    if (!factoryScope) continue
     factoryDecls.set(localName, {
       fn: init as unknown as Expression,
       declaredAt: -1,
       code: mod.src,
-      scope: sourceScopeUntil(mod.body as AnyNode[], mod.src, init.start),
+      scope: factoryScope,
       imported: true,
     })
   }
@@ -878,7 +904,7 @@ export function transformMacro(
   // the ancestor isn't re-serialized. `local` is the binding name as it appears in
   // THIS module's source (the bundler renames import + references together).
   type ImportSpread = { __spreadLocal: string }
-  type IRItem = { ns: string; ir: string }
+  type IRItem = { ns: string; ir: string; trackLines?: true }
   type CarriedItem = LinkablePieces | ImportSpread | IRItem
   const isSpread = (it: CarriedItem): it is ImportSpread => '__spreadLocal' in it
   const isIR = (it: CarriedItem): it is IRItem => 'ir' in it && !('ruleFns' in it)
@@ -889,7 +915,7 @@ export function transformMacro(
     isSpread(it)
       ? `...(${it.__spreadLocal}[Symbol.for('parseman.composedPieces')] ?? [])`
       : isIR(it)
-        ? `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)} }`
+        ? `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)}${it.trackLines ? ', trackLines: true' : ''} }`
         : serializePieces(it)
   const serializeList = (list: CarriedItem[]): string => `[${list.map(serializeItem).join(', ')}]`
 
@@ -1135,13 +1161,14 @@ export function transformMacro(
   const localCarried = (rm: Iterable<readonly [string, unknown]>, label: string, composing?: Combinator<unknown>, scanSkip?: Combinator<unknown>[]): { carried: CarriedItem[] } | null => {
     const entries = [...rm]
     const ns = nsFor(label)
+    const trackLines = entries.some(([, rule]) => (rule as Combinator<unknown> | undefined)?._meta?.grammarTrackLines === true)
     // scanSkip is PER-PIECE (opaque units are dialect-specific — NOT composing-wins
     // like trivia), so it rides WITH this element's IR: it is emitted into the carried
     // `rules({ scanSkip }, …)` options, which stamps `_meta.grammarScanSkip` when the IR
     // is re-lowered (materializePiece → compileLinkable picks it up), and survives to a
     // downstream re-compose. The full-pieces fallback bakes it via the compile option.
     const ir = serializeRuleMap(entries as never, scanSkip)
-    if (ir) return { carried: [{ ns, ir }] }
+    if (ir) return { carried: [{ ns, ir, ...(trackLines ? { trackLines: true as const } : {}) }] }
     // FULL-PIECES FALLBACK — never taken silently.
     //
     // This branch has no test fixture, and not for want of trying: every callback-source
@@ -1160,7 +1187,7 @@ export function transformMacro(
     warn(0, `${label}: rule map could not be serialized to IR; carrying FULL pieces instead. `
       + 'The artifact is correct but larger, and a downstream compose cannot re-lower it. '
       + 'Re-run with PARSEMAN_IR_DEBUG=1 to print the exact combinator that blocked serialization.')
-    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), ...(scanSkip ? { scanSkip } : {}), recovery })
+    const p = compileLinkable(entries as never, ns, { ...(composing ? { trivia: composing } : {}), ...(scanSkip ? { scanSkip } : {}), ...(trackLines ? { trackLines: true } : {}), recovery })
     return p ? { carried: [p] } : null
   }
 
@@ -1599,7 +1626,7 @@ export function transformMacro(
             // Thread the grammar's scanSkip into the IR so a downstream compose of
             // this imported grammar re-lowers its scanTo/balanced sites ambiently.
             const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
-            replacement = withCarriedPieces(replacement, [ir ? { ns, ir } : pieces])
+            replacement = withCarriedPieces(replacement, [ir ? { ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) } : pieces])
           }
           replacements.push({ start: init.start, end: init.end, replacement })
           continue

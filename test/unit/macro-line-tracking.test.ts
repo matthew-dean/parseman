@@ -193,4 +193,70 @@ export const grammar = compose([
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('preserves imports for source modules with top-level side effects', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-factory-side-effect-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'grammar.ts'), `
+import { literal } from 'parseman' with { type: 'macro' }
+globalThis.__parsemanFactorySideEffect = true
+export const grammarFactory = (g) => ({ Doc: literal('a') })
+`)
+      const out = transformMacro(`
+import { rules } from 'parseman' with { type: 'macro' }
+import { grammarFactory } from './grammar.js'
+export const grammar = rules(grammarFactory)
+`.trim(), path.join(dir, 'entry.ts'), new Set(['parseman']))
+
+      expect(out!.warnings.join('\n')).toContain("rules(...) factory isn't statically evaluable")
+      expect(out!.code).toContain('./grammar.js')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps trackLines when downstream macro compose materializes imported carried IR', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-lines-compose-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'grammar.ts'), `
+import { literal, node, sequence } from 'parseman' with { type: 'macro' }
+export const grammarFactory = (g) => ({
+  Doc: node('Doc', sequence(literal('a'), literal('\\n'), literal('b')))
+})
+`)
+      fs.writeFileSync(path.join(dir, 'lines.ts'), `
+import { rules } from 'parseman' with { type: 'macro' }
+import { grammarFactory } from './grammar.js'
+export const lines = rules({ trackLines: true }, grammarFactory)
+`)
+      const out = transformMacro(`
+import { compose } from 'parseman' with { type: 'macro' }
+import { lines } from './lines.js'
+const grammar = compose([lines])
+export const Doc = grammar.Doc
+`.trim(), path.join(dir, 'entry.ts'), new Set(['parseman']))
+
+      expect(out!.warnings).toEqual([])
+      expect(out!.code).toContain('_spanLines')
+      const grammar = new Function(
+        out!.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar',
+      )() as Record<string, RuleFn>
+      const result = grammar.Doc!('a\nb', 0, { build: cstBuildHost() })
+      expect(result.ok).toBe(true)
+      expect(result.span).toMatchObject({
+        startLine: 1,
+        startColumn: 1,
+        endLine: 2,
+        endColumn: 2,
+      })
+      expect((result.value as { span: Record<string, unknown> }).span).toMatchObject({
+        startLine: 1,
+        endLine: 2,
+      })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

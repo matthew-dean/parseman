@@ -496,7 +496,7 @@ const COMPOSED_COVERAGE_RULES = Symbol.for('parseman.composedCoverageRules')
 
 /** The compact IR form a grammar carries instead of its lowered rule source: the
  * combinator-construction expression, re-lowered here at fuse time. */
-export type IRPiece = { ns: string; ir: string }
+export type IRPiece = { ns: string; ir: string; trackLines?: true }
 
 function isIRPiece(p: unknown): p is IRPiece {
   return !!p && typeof p === 'object'
@@ -616,6 +616,7 @@ export function materializePiece(
     ...(trivia ? { trivia } : {}),
     ...(captureTerminals ? { captureTerminals: true } : {}),
     ...(hostMode ? { hostMode } : {}),
+    ...(p.trackLines ? { trackLines: true } : {}),
   })
   if (!pieces) throw new Error(`compose: carried IR for ns "${p.ns}" could not be re-lowered`)
   return pieces
