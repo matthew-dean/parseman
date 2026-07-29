@@ -194,6 +194,97 @@ export const grammar = compose([
     }
   })
 
+  it('preserves imported factories when rules() options reject before lowering', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-factory-invalid-options-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'grammar.ts'), `
+import { literal } from 'parseman' with { type: 'macro' }
+export const grammarFactory = (g) => ({ Doc: literal('a') })
+`)
+      const out = transformMacro(`
+import { rules } from 'parseman' with { type: 'macro' }
+import { grammarFactory } from './grammar.js'
+const enabled = true
+export const grammar = rules({ trackLines: enabled }, grammarFactory)
+`.trim(), path.join(dir, 'entry.ts'), new Set(['parseman']))
+
+      expect(out!.warnings.join('\n')).toContain('rules({ trackLines }) must be a boolean literal')
+      expect(out!.code).toContain('./grammar.js')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves imported factories when a shared shape keeps runtime rules()', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-factory-shared-shape-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'grammar.ts'), `
+import { literal, sequence } from 'parseman' with { type: 'macro' }
+export const shapeFactory = (g) => ({
+  Pair: sequence(g.Atom, literal('/'), g.Atom)
+})
+`)
+      const out = transformMacro(`
+import { rules } from 'parseman' with { type: 'macro' }
+import { shapeFactory } from './grammar.js'
+export const shape = rules(shapeFactory)
+`.trim(), path.join(dir, 'entry.ts'), new Set(['parseman']))
+
+      expect(out!.warnings).toEqual([])
+      expect(out!.code).toContain('./grammar.js')
+      expect(out!.code).toMatch(/\brules\s*\(\s*shapeFactory\s*\)/)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves imported factories when compose() falls back to runtime output', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-factory-compose-fallback-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'grammar.ts'), `
+import { literal } from 'parseman' with { type: 'macro' }
+export const grammarFactory = (g) => ({ Doc: literal('a') })
+`)
+      const out = transformMacro(`
+import { compose, rules } from 'parseman' with { type: 'macro' }
+import { grammarFactory } from './grammar.js'
+export const grammar = compose([rules(grammarFactory), runtimeGrammar])
+`.trim(), path.join(dir, 'entry.ts'), new Set(['parseman']))
+
+      expect(out!.warnings.join('\n')).toContain("compose(): argument 1 isn't a build-resolvable grammar")
+      expect(out!.code).toContain('./grammar.js')
+      expect(out!.code).toMatch(/\brules\s*\(\s*grammarFactory\s*\)/)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves imported factories when compose() fallback rolls back earlier replacements', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-factory-compose-rollback-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+      fs.writeFileSync(path.join(dir, 'grammar.ts'), `
+import { literal } from 'parseman' with { type: 'macro' }
+export const grammarFactory = (g) => ({ Doc: literal('a') })
+`)
+      const out = transformMacro(`
+import { compose, rules } from 'parseman' with { type: 'macro' }
+import { grammarFactory } from './grammar.js'
+export const base = rules(grammarFactory)
+export const grammar = compose([runtimeGrammar])
+`.trim(), path.join(dir, 'entry.ts'), new Set(['parseman']))
+
+      expect(out!.warnings.join('\n')).toContain("compose(): argument 0 isn't a build-resolvable grammar")
+      expect(out!.code).toContain('./grammar.js')
+      expect(out!.code).toMatch(/\brules\s*\(\s*grammarFactory\s*\)/)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('preserves imports for source modules with top-level side effects', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-imported-factory-side-effect-'))
     try {

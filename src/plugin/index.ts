@@ -603,6 +603,9 @@ export function transformMacro(
     return out
   }
   const usedImportedFactories = new Set<string>()
+  const markUsedImportedFactories = (names: readonly string[] | undefined): void => {
+    for (const name of names ?? []) usedImportedFactories.add(name)
+  }
   for (const [localName, binding] of importBindings) {
     const file = resolvePrivateSourceModule(id, binding.source)
     if (!file) continue
@@ -664,7 +667,7 @@ export function transformMacro(
   const evaluateRulesFactory = (
     init: Expression,
     label: string,
-  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean } | null => {
+  ): { ruleMap: Map<string, Combinator<unknown>>; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const args = (init as unknown as { arguments: unknown[] }).arguments
     // Options-first: rules({ trivia }, factory). Disambiguate by type — an
     // ObjectExpression first arg means options lead; otherwise the factory leads
@@ -688,9 +691,9 @@ export function transformMacro(
       : factoryArgRaw
     const factoryScope = namedFactory?.scope ?? scope
     const factoryCode = namedFactory?.code ?? code
-    if (namedFactory?.imported === true && factoryArg === namedFactory.fn) {
-      usedImportedFactories.add((factoryArgRaw as unknown as { name?: string }).name ?? '')
-    }
+    const importedFactory = namedFactory?.imported === true && factoryArg === namedFactory.fn
+      ? (factoryArgRaw as unknown as { name?: string }).name
+      : undefined
 
     // Grammar-level options object — evaluate `trivia` / `scanSkip` so the compiled
     // map seeds them as the ambient defaults (build-time mirror of rules() tagging
@@ -776,7 +779,13 @@ export function transformMacro(
       }
     }
 
-    return { ruleMap, ...(gTrivia ? { trivia: gTrivia } : {}), ...(gScanSkip ? { scanSkip: gScanSkip } : {}), ...(gTrackLines === true ? { trackLines: true } : {}) }
+    return {
+      ruleMap,
+      ...(gTrivia ? { trivia: gTrivia } : {}),
+      ...(gScanSkip ? { scanSkip: gScanSkip } : {}),
+      ...(gTrackLines === true ? { trackLines: true } : {}),
+      ...(importedFactory ? { importedFactory } : {}),
+    }
   }
 
   /** null → the factory itself isn't statically evaluable (already warned).
@@ -787,7 +796,7 @@ export function transformMacro(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean } | null => {
+  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
     const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage })
@@ -800,6 +809,7 @@ export function transformMacro(
       ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}),
       ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}),
       ...(evaluated.trackLines ? { trackLines: true } : {}),
+      ...(evaluated.importedFactory ? { importedFactory: evaluated.importedFactory } : {}),
     }
   }
 
@@ -1194,7 +1204,7 @@ export function transformMacro(
     return p ? { carried: [p] } : null
   }
 
-  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[] } | null => {
+  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[]; importedFactories?: string[] } | null => {
     // `pick(grammar, ['A', 'B'])` — à-la-carte selection. Resolve the inner grammar's
     // carried items, materialize them under the INNER grammar's OWN trivia (pick freezes
     // its grammar's trivia — it runs standalone, BEFORE any compose, so the outer
@@ -1221,7 +1231,10 @@ export function transformMacro(
       const innerArg = argPieces(inner, `${label}_pick`)
       if (!innerArg) return null
       try {
-        return { carried: pickPieces(materializeCarried(innerArg.carried, ownTrivia(inner)), names) }
+        return {
+          carried: pickPieces(materializeCarried(innerArg.carried, ownTrivia(inner)), names),
+          ...(innerArg.importedFactories ? { importedFactories: innerArg.importedFactories } : {}),
+        }
       } catch (e) { warn(arg.start, `pick(): ${(e as Error).message}`); return null }
     }
     // Inline `rules(g => …)` or `rules({ trivia }, g => …)` (options-first). The
@@ -1234,7 +1247,10 @@ export function transformMacro(
       // trivia): evaluateRulesFactory returns both the rule map and the grammar-level
       // scanSkip option, which localCarried carries with this piece's IR.
       const evaluated = evaluateRulesFactory(arg, label)
-      return evaluated ? localCarried(evaluated.ruleMap, label, composing, evaluated.scanSkip) : null
+      const carried = evaluated ? localCarried(evaluated.ruleMap, label, composing, evaluated.scanSkip) : null
+      return carried
+        ? { ...carried, ...(evaluated?.importedFactory ? { importedFactories: [evaluated.importedFactory] } : {}) }
+        : null
     }
     if (arg.type === 'Identifier') {
       const name = (arg as unknown as { name: string }).name
@@ -1309,7 +1325,7 @@ export function transformMacro(
   /** Compile `compose([...])` to STATIC fused source (eval-free) + its carried
    * (re-lowerable) list (for a sidecar / same-file chaining). null → leave the
    * runtime `compose()` in place (correct, just not build-fused). */
-  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown> } | null => {
+  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -1341,10 +1357,12 @@ export function transformMacro(
     // list that declares one, governs EVERY fused rule — including inherited ones.
     const composing = composingTrivia(elements)
     const carried: CarriedItem[] = []       // re-lowerable; also SERIALIZED onto the value
+    const importedFactories: string[] = []
     for (let i = 0; i < elements.length; i++) {
       const r = argPieces(elements[i]!, `compose${init.start}_${i}`, composing)
       if (!r) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
       carried.push(...r.carried)
+      importedFactories.push(...(r.importedFactories ?? []))
     }
     // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
     // only site that can answer whether the choices it leads actually gate.
@@ -1359,7 +1377,12 @@ export function transformMacro(
     // piece (composing-wins), then fuse.
     const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
     try {
-      return { replacement: emitFusedSource(pieces), carried, ...(composing ? { trivia: composing } : {}) }
+      return {
+        replacement: emitFusedSource(pieces),
+        carried,
+        ...(composing ? { trivia: composing } : {}),
+        ...(importedFactories.length ? { importedFactories } : {}),
+      }
     } catch (e) {
       warn(init.start, `compose(): ${(e as Error).message}; falling back to runtime`)
       return null
@@ -1372,7 +1395,7 @@ export function transformMacro(
    * module. Its direct builders may therefore refer to lexical AST constructors;
    * they are inlined into the fused output and are never serialized or carried.
    */
-  const compileComposeLeafCall = (init: Expression): { replacement: string } | null => {
+  const compileComposeLeafCall = (init: Expression): { replacement: string; importedFactories?: string[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -1391,10 +1414,12 @@ export function transformMacro(
     // opaque units are dialect-specific, so the local declaration is threaded to the
     // local piece's compile.
     let localScanSkip: Combinator<unknown>[] | undefined
+    const importedFactories: string[] = []
     if (isRulesCall(localArg)) {
       const evaluated = evaluateRulesFactory(localArg, `composeLeaf${init.start}`)
       localRules = evaluated?.ruleMap ?? null
       localScanSkip = evaluated?.scanSkip
+      if (evaluated?.importedFactory) importedFactories.push(evaluated.importedFactory)
     } else if (localArg.type === 'Identifier') {
       const name = (localArg as unknown as { name: string }).name
       localRules = localRuleMaps.get(name) ?? null
@@ -1413,6 +1438,7 @@ export function transformMacro(
         return null
       }
       carried.push(...r.carried)
+      importedFactories.push(...(r.importedFactories ?? []))
     }
     try {
       // The imported pieces are recognition-only, but the local leaf grammar
@@ -1446,7 +1472,10 @@ export function transformMacro(
         return null
       }
       const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece]))
-      return { replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) }
+      return {
+        replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)),
+        ...(importedFactories.length ? { importedFactories } : {}),
+      }
     } catch (e) {
       warn(init.start, `composeLeaf(): ${(e as Error).message}`)
       return null
@@ -1632,6 +1661,9 @@ export function transformMacro(
             replacement = withCarriedPieces(replacement, [ir ? { ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) } : pieces])
           }
           replacements.push({ start: init.start, end: init.end, replacement })
+          if (compiledRules.replacement !== null) {
+            markUsedImportedFactories(compiledRules.importedFactory ? [compiledRules.importedFactory] : undefined)
+          }
           continue
         }
 
@@ -1653,6 +1685,7 @@ export function transformMacro(
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
           replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) })
+          markUsedImportedFactories(fused.importedFactories)
           continue
         }
 
@@ -1664,6 +1697,7 @@ export function transformMacro(
             throw new Error(`${id}:${lineOf(init.start)} — composeLeaf() must macro-fuse; runtime composition is forbidden`)
           }
           replacements.push({ start: init.start, end: init.end, replacement: fused.replacement })
+          markUsedImportedFactories(fused.importedFactories)
           continue
         }
 
@@ -1785,6 +1819,7 @@ export function transformMacro(
           end: stmtEnd,
           replacement: lines.join('\n'),
         })
+        markUsedImportedFactories(compiledRules.importedFactory ? [compiledRules.importedFactory] : undefined)
       }
     }
   }
@@ -1804,7 +1839,7 @@ export function transformMacro(
   const ms = new MagicString(code)
 
   for (const imp of ordinaryImports) {
-    if (imp.specifiers.length > 0 && imp.specifiers.every(spec => spec.type === 'ImportSpecifier' && usedImportedFactories.has(spec.local))) {
+    if (!runtimeComposeFallback && imp.specifiers.length > 0 && imp.specifiers.every(spec => spec.type === 'ImportSpecifier' && usedImportedFactories.has(spec.local))) {
       ms.remove(imp.start, imp.end)
     }
   }
