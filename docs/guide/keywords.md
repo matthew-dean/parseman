@@ -15,7 +15,7 @@ performance diagnostic that tells you when a hot choice stopped dispatching.
 | --- | --- | --- |
 | `choice(a, b, c)` | Arms have distinct leading punctuation/keywords, or the ordered fallback is intentional. | PEG semantics stay visible, and disjoint first characters compile to O(1) dispatch. |
 | `keywords([...])` / `word(...)` | You are recognizing keywords, especially before an identifier fallback. | Boundaries are correct and the first-set stays exact. |
-| `dispatch(head, when(...), otherwise(...))` | Every branch starts by parsing the same broad family: at-keywords, identifiers-or-functions, pseudo heads, contextual keywords. | The shared head parses once; the route table decides the specialized tail. |
+| `dispatch(head, when(...), otherwise(...))` | Every branch starts by parsing the same broad family: command names, name-or-call openers, contextual keywords, at-keywords. | The shared head parses once; the route table decides the specialized tail. |
 | `attempt(arm)` | A rejected arm may consume enough to leave captured fields, recovered errors, or other parseman-owned side effects behind. | The failed arm rolls those framework effects back before the next choice arm runs. |
 
 The smell to watch for is a `choice` where two or more arms begin with the same broad
@@ -23,10 +23,10 @@ recognizer:
 
 ```ts
 // Often slow and harder to reason about: every arm reparses the same opener.
-choice(mediaAtRule, scopeAtRule, genericAtRule)
+choice(setStatement, printStatement, extensionStatement)
 
 // Usually clearer: parse the opener once, then route by value.
-dispatch(atKeyword, when('@media', mediaTail), when('@scope', scopeTail), otherwise(genericTail))
+dispatch(commandName, when('set', setTail), when('print', printTail), otherwise(extensionTail))
 ```
 
 Keep `choice` for genuinely different leading shapes. Reach for `dispatch` when the
