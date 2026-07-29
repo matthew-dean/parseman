@@ -419,7 +419,7 @@ export const lines      = rules({ trivia: rw, trackLines: true }, factory)
 export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, factory)
 ```
 
-Two call sites over one shared factory (a factory may be passed by name, as here). The
+Three call sites over one shared factory (a factory may be passed by name, as here). The
 macro emits independent top-level artifacts, so each bundle tree-shakes away the one
 it does not import — your compiler ships the AST image, your language service ships the
 CST image, and neither pays the other's cost.

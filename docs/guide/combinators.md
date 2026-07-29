@@ -65,7 +65,7 @@ Three words that sound alike but play different roles:
 | `startsWith` / `endsWith` / `matches` | Define matcher keys for `when(...)`. Not combinators. |
 | `makeWhen(opts?)` | Returns `(key, tail) => when(key, tail, opts)` for dispatch tables with shared arm options. Not a combinator. |
 | `rules(factory)` / `rules({ trivia, scanSkip, trackLines, hostMode }, factory)` | Named, mutually-recursive rule bundle with optional grammar-wide settings. See [Recursive rules](./recursive-rules) and [scanTo & balanced](#scanto-and-balanced). |
-| `parser({ trivia, trackLines }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia) and [Line/column spans](./ast#linecolumn-spans). |
+| `parser({ trivia, captureTrivia, trackLines }, c)` | Wrap a root combinator with document-level options. See [Whitespace & trivia](./trivia) and [Line/column spans](./ast#linecolumn-spans). |
 | `parse(c, input, opts?)` | Run a combinator once, without building a `parser()`. |
 | `compile(c, …, opts?)` | Compile a combinator to optimized JavaScript. See [Compilation](../reference/api#compilation). |
 | `compose([...])` / `composeLeaf([...])` | Fuse independently-compiled grammars. See [Composing grammars](../reference/api#composing-grammars). |
