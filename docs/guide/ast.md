@@ -455,28 +455,104 @@ The tree is plain objects, so you can recurse it yourself. For typed traversal,
 `node(..., { tags })`. The same call works with an interpreted `rules()` grammar or a
 compiled/macro/`compose()` grammar.
 
+### Tagging related node types
+
+Use `tags` when several concrete node types belong to the same semantic family. The node's
+`type` stays specific, while each tag gives visitors another stable dispatch key:
+
 ```ts
-import { createVisitor } from 'parseman'
+import { choice, literal, node, rules, sequence } from 'parseman'
+
+const grammar = rules(g => ({
+  Statement: choice(g.AtRuleWithBlock, g.AtRuleStatement, g.Declaration),
+
+  AtRuleWithBlock: node(
+    'AtRuleWithBlock',
+    sequence(literal('@media'), literal('{'), literal('}')),
+    { tags: ['AtRule', 'Statement'] },
+  ),
+
+  AtRuleStatement: node(
+    'AtRuleStatement',
+    sequence(literal('@import'), literal(';')),
+    { tags: ['AtRule', 'Statement'] },
+  ),
+
+  Declaration: node(
+    'Declaration',
+    sequence(literal('color'), literal(':'), literal('red'), literal(';')),
+    { tags: ['Statement'] },
+  ),
+}))
+```
+
+Tags are grammar metadata by default. They are available to `createVisitor(...)` without
+adding a `tags` property to every CST node.
+
+### Creating a visitor
+
+Pass the grammar and a handler object to `createVisitor`. The returned function visits a
+tree depth-first:
+
+```ts
+import { createVisitor, cstBuildHost, parseDoc } from 'parseman'
+
+const doc = parseDoc(grammar, 'Statement', '@media{}', { build: cstBuildHost })
+const tree = doc.tree
 
 const visit = createVisitor(grammar, {
   type: {
-    AtRuleWithBlock(node) {},
-    Declaration(node) {},
+    AtRuleWithBlock(node) {
+      // Only block-form at-rules.
+    },
+    Declaration(node) {
+      // Only declarations.
+    },
   },
   tag: {
-    AtRule(node) {},
-    Statement(node) {},
+    AtRule(node) {
+      // Both AtRuleWithBlock and AtRuleStatement.
+    },
+    Statement(node) {
+      // At-rules and declarations.
+    },
   },
   enter(node) {},
   leave(node) {},
 })
 
-visit(tree)
+if (tree) visit(tree)
 ```
 
 `type` keys are checked against the grammar's CST node types. `tag` keys are checked
 against tags declared by the grammar, and a node with multiple tags runs each matching tag
-handler in declared tag order. Return `false` from `enter` to skip a node's children.
+handler in declared tag order. `enter` runs before `type`/`tag` handlers and `leave` runs
+after children. Return `false` from `enter` to skip a node's children.
+
+The visitor does not need `node.tags` at runtime; it reads the grammar's reflection table
+and maps a node's `type` to its declared tags. That keeps the default CST shape lean and
+lets the same visitor work for interpreted grammars, compiled grammars, macro artifacts,
+and composed grammars.
+
+### Materializing tags on CST nodes
+
+When a downstream tool wants to inspect tags directly from the tree, opt in at the CST host:
+
+```ts
+import { cstBuildHost, run } from 'parseman'
+
+const result = run(grammar.AtRuleWithBlock, '@media{}', {
+  build: cstBuildHost({ tags: true }),
+})
+
+if (result.ok) {
+  result.value.tags
+  // => ['AtRule', 'Statement']
+}
+```
+
+The materialized array is the rule's static tag array. Untagged nodes still omit the
+property, and the default `cstBuildHost` omits all `tags` properties.
 
 ## Next
 

@@ -44,7 +44,7 @@ Three words that sound alike but play different roles:
 | `field(name, c)` | Capture a named value/span for the nearest enclosing `node()` builder. |
 | `not(c)` | **Negative** lookahead — succeeds (consuming nothing) when `c` fails. |
 | `peek(c)` | **Positive** lookahead — succeeds (consuming nothing) when `c` matches, carrying its first-set. |
-| `node(c, build?, opts?)` / `node(type, c, build?, opts?)` | CST/AST rule: captures terminals + trivia. Inside `rules()`, the node type is inferred from the rule key. See [CST / AST nodes](./ast). |
+| `node(c, build?, opts?)` / `node(type, c, build?, opts?)` | CST/AST rule: captures terminals + trivia. `opts.tags` declares visitor categories; inside `rules()`, the node type is inferred from the rule key. See [CST / AST nodes](./ast). |
 | `ref<T>()` | Low-level forward-declaration slot (prefer `rules()`). |
 | `gate(predicate)` | Zero-width ASSERT: succeeds only when `predicate(ctx.state)` is true. See [Context](./context). (`guard()` is a deprecated alias.) |
 | `withCtx(extra, c)` | Merge `extra` into the user context for the duration of `c`. |
@@ -71,7 +71,8 @@ Three words that sound alike but play different roles:
 | `compose([...])` / `composeLeaf([...])` | Fuse independently-compiled grammars. See [Composing grammars](../reference/api#composing-grammars). |
 | `completionsAt(target, input, offset)` | What could come next at a cursor. See [IDE support](../reference/api#ide-support). |
 | `isParseError(v)` | Type guard for a recovered `ParseError` embedded in a value. |
-| `cstBuildHost(opts?)` | A ready-made `build` host that produces the default CST shape. |
+| `cstBuildHost(opts?)` | A ready-made `build` host that produces the default CST shape; `opts.tags` can materialize node tags. |
+| `createVisitor(grammar, spec)` | Grammar-aware tree visitor with handlers keyed by concrete node type and `node(..., { tags })` categories. See [Walking the tree](./ast#walking-the-tree). |
 
 For the full list of exports — including the line-index utilities — see the
 [API reference](../reference/api). For the terse DO/DON'T rules an agent should

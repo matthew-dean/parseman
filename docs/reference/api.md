@@ -529,6 +529,11 @@ run(AtRuleWithBlock, input, { build: cstBuildHost({ tags: true }) })
 // => { _tag: 'node', type: 'AtRuleWithBlock', tags: ['AtRule', 'Statement'], ... }
 ```
 
+Use tags for categories that cut across concrete node types. For example,
+`AtRuleWithBlock` and `AtRuleStatement` can both carry `AtRule`, while declarations and
+at-rules can all carry `Statement`. Tags do not replace the node `type`; they are additional
+visitor keys.
+
 ### `cstBuildHost(opts?)` {#cstbuildhost}
 
 Generic CST host for structural `node()` grammars. Pass the default host directly:
@@ -608,9 +613,11 @@ skip a node's children.
 ```ts
 const visit = createVisitor(grammar, {
   type: {
+    AtRuleWithBlock(node) {},
     Declaration(node) {},
   },
   tag: {
+    AtRule(node) {},
     Statement(node) {},
   },
   enter(node) {},
@@ -619,6 +626,30 @@ const visit = createVisitor(grammar, {
 
 visit(tree)
 ```
+
+Handler order for each node is:
+
+1. `enter(node, parent, ctx)`
+2. matching `type[node.type]`
+3. matching `tag[...]` handlers in the node type's declared tag order
+4. child traversal, unless `enter` returned `false`
+5. `leave(node, parent, ctx)`
+
+A node with several tags may therefore run several tag handlers. The visitor gets those tags
+from grammar reflection, so CST nodes do not need a `tags` property. Use
+[`cstBuildHost({ tags: true })`](#cstbuildhost) only when a consumer wants tags physically
+present on each produced CST node.
+
+`createVisitor` is grammar-aware, not CST-host-specific. The same call accepts:
+
+- an interpreted `rules()` registry;
+- a macro-compiled `rules()` artifact;
+- a normal compiled rule map;
+- a `compose()` result whose reflection was merged from its winning rules.
+
+TypeScript checks `type` handler keys against node types inferred from the grammar and `tag`
+handler keys against declared `node(..., { tags })` values. Unknown keys are type errors when
+the grammar carries static type metadata.
 
 ## Whitespace
 

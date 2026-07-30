@@ -249,6 +249,7 @@ CST child object; leaves are not unwrapped to strings. The predicate is typed ov
 `cstBuildHost({ tags: true })` copies a tagged rule's static `node(..., { tags })`
 array onto the produced CST node as `node.tags`. Without this option, tags remain
 grammar metadata for `createVisitor(grammar, spec)` and do not change the CST shape.
+The array is reused as static rule metadata; it is not copied per handler dispatch.
 
 ## Building nodes
 
@@ -352,6 +353,30 @@ type VisitorSpec<G, N extends Walkable = CSTChild, C = undefined> = {
   type?: { [Type in GrammarNodeTypes<G>]?: VisitorHandler<NodeForType<N, Type>, N, C> }
   tag?: { [Tag in GrammarTags<G>]?: VisitorHandler<NodeForType<N, GrammarNodeTypes<G>>, N, C> }
 }
+```
+
+`G` is the grammar object passed to `createVisitor(grammar, spec)`. When `G` carries
+reflection from `rules()`, macro output, compilation, or `compose()`, TypeScript narrows
+`type` keys to concrete node types and `tag` keys to declared `node(..., { tags })` values.
+
+`N` is the tree node shape you are traversing. Leave it as the default for Parseman's CST
+nodes, or pass your own AST/CST-compatible node union when a build host produces a richer
+tree. `NodeForType<N, Type>` narrows a type handler to the member of `N` with that concrete
+`type`; tag handlers receive a node whose type is one of the grammar's node types because a
+tag may belong to several concrete types.
+
+`C` is an optional caller context. Pass it as the second argument to the returned visitor:
+
+```ts
+const visit = createVisitor<typeof grammar, CSTChild, { declarations: number }>(grammar, {
+  type: {
+    Declaration(_node, _parent, ctx) {
+      ctx.declarations++
+    },
+  },
+})
+
+visit(tree, { declarations: 0 })
 ```
 
 ## Incremental re-parsing
