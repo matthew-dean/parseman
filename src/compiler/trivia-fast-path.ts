@@ -1,6 +1,7 @@
 import type { Combinator } from '../types.ts'
 import { getCoreRegexDef } from '../combinators/choice.ts'
 import type { LabeledTriviaSpec } from '../cst/trivia-kinds.ts'
+import { SELECTED_ROOT_STRIDE } from '../cst/trivia-entries.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { type ScanShape, type Mint, scanShapeFromRegex, scanBranch, scanBranchLabeled } from './scannable-run.ts'
 
@@ -77,6 +78,12 @@ const CAP_RECORD = [
   `  }`,
 ].join('\n')
 
+const SELECTED_ROOT_FINISH = [
+  `  if (_cap && _ctx._rootTriviaCapture !== false && _ctx._rootTriviaLog !== undefined && _ctx._rootTriviaLog.length !== _rootMark) {`,
+  `    for (let _ri = _rootMark; _ri < _ctx._rootTriviaLog.length; _ri += ${SELECTED_ROOT_STRIDE}) { _ctx._rootTriviaLog[_ri] = _pos; _ctx._rootTriviaLog[_ri + 1] = _e }`,
+  `  }`,
+].join('\n')
+
 /** One char-scan loop carrying a branch per scannable shape, dispatched on `c`. */
 function composeFastLoop(shapes: ScanShape[]): string {
   const mint = makeMint()
@@ -104,21 +111,20 @@ export function buildFastTriviaFnDecl(fnName: string, shapes: ScanShape[]): stri
 /**
  * A LABELED trivia parser whose every arm is scannable → per-arm shape + kind
  * index, or null. Same recognition as analyzeTriviaFastPath, but keyed by the
- * labeled arm kinds so the fast loop can log each chunk's kind. Generalizes what
- * used to be a hardcoded ws-run + block-comment special case to any scannable
- * shape set / arm count.
+ * label table so the fast loop can log each chunk's category. It accepts any
+ * structurally scannable arm set / arm count; labels do not affect recognition.
  */
 export function analyzeLabeledScannableRun(
   trivia: Combinator<unknown>,
-): Array<{ shape: ScanShape; kindIndex: number }> | null {
+): Array<{ shape: ScanShape; kindIndex: number; label: string }> | null {
   const spec = analyzeLabeledTrivia(trivia)
   if (!spec) return null
-  const out: Array<{ shape: ScanShape; kindIndex: number }> = []
+  const out: Array<{ shape: ScanShape; kindIndex: number; label: string }> = []
   for (const arm of spec.arms) {
     const d = getCoreRegexDef(arm.parser)
     const shape = d ? scanShapeFromRegex(d.source, d.flags) : null
     if (!shape) return null
-    out.push({ shape, kindIndex: arm.kindIndex })
+    out.push({ shape, kindIndex: arm.kindIndex, label: arm.label })
   }
   return out
 }
@@ -126,17 +132,19 @@ export function analyzeLabeledScannableRun(
 /** Emit a labeled scannable trivia `_tfN`: char-scan loop with per-chunk kind capture. */
 export function buildLabeledScannableTriviaFnDecl(
   fnName: string,
-  arms: ReadonlyArray<{ shape: ScanShape; kindIndex: number }>,
+  arms: ReadonlyArray<{ shape: ScanShape; kindIndex: number; label: string }>,
 ): string {
   const mint = makeMint()
   return [
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
     `  let _e = _pos`,
+    `  const _rootMark = _cap && _ctx._rootTriviaLog !== undefined ? _ctx._rootTriviaLog.length : 0`,
     `  while (_e < input.length) {`,
     `    const c = input.charCodeAt(_e)`,
-    ...arms.map(a => scanBranchLabeled(a.shape, a.kindIndex, mint)),
+    ...arms.map(a => scanBranchLabeled(a.shape, a.kindIndex, a.label, mint)),
     `    break`,
     `  }`,
+    SELECTED_ROOT_FINISH,
     `  return _e`,
     `}`,
   ].join('\n')
@@ -158,6 +166,8 @@ export function buildLabeledRegexTriviaFnDecl(
       `      const _ce = _e + _m${i}[0].length`,
       `      if (_cap) {`,
       `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, _ce, ${k})`,
+      `        const _rk${i} = _ctx._rootTriviaCapture === false || _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(arm.label)}] ?? -1)`,
+      `        if (_rk${i} >= 0) _ctx._rootTriviaLog.push(0, 0, _e, _ce, _rk${i})`,
       `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << k}))) _ctx._cstTriviaLog.push(_e, _ce, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${k})`,
       `      }`,
       `      _e = _ce`,
@@ -170,11 +180,13 @@ export function buildLabeledRegexTriviaFnDecl(
   return [
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
     `  let _e = _pos`,
+    `  const _rootMark = _cap && _ctx._rootTriviaLog !== undefined ? _ctx._rootTriviaLog.length : 0`,
     `  while (_e < input.length) {`,
     `    let _matched = false`,
     tryArms,
     `    if (!_matched) break`,
     `  }`,
+    SELECTED_ROOT_FINISH,
     `  return _e`,
     `}`,
   ].join('\n')
@@ -204,6 +216,8 @@ export function buildLabeledRuntimeTriviaFnDecl(
       `      const _ce = _r${i}.span.end`,
       `      if (_cap) {`,
       `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, _ce, ${k})`,
+      `        const _rk${i} = _ctx._rootTriviaCapture === false || _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(arm.label)}] ?? -1)`,
+      `        if (_rk${i} >= 0) _ctx._rootTriviaLog.push(0, 0, _e, _ce, _rk${i})`,
       `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << k}))) _ctx._cstTriviaLog.push(_e, _ce, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${k})`,
       `      }`,
       `      _e = _ce`,
@@ -216,11 +230,13 @@ export function buildLabeledRuntimeTriviaFnDecl(
   return [
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
     `  let _e = _pos`,
+    `  const _rootMark = _cap && _ctx._rootTriviaLog !== undefined ? _ctx._rootTriviaLog.length : 0`,
     `  while (_e < input.length) {`,
     `    let _matched = false`,
     tryArms,
     `    if (!_matched) break`,
     `  }`,
+    SELECTED_ROOT_FINISH,
     `  return _e`,
     `}`,
   ].join('\n')

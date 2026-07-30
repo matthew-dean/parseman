@@ -90,6 +90,13 @@ const META = new Set('()[]{}*+?|^$.'.split(''))
 // and `parseClassRanges` are re-exported here because codegen's boundary-class
 // lowering imports them from this module.
 import { CLASS_ESCAPES, SPACE_RANGES, shorthandRanges, readUnicodeEscape, parseClassRanges } from '../regex/classes.ts'
+import { SELECTED_ROOT_STRIDE } from '../cst/trivia-entries.ts'
+
+/** Placeholder fields filled with the trivia span once the enclosing run ends. */
+const SELECTED_ROOT_OWNED_RANGE_PLACEHOLDER = Array.from(
+  { length: SELECTED_ROOT_STRIDE - 3 },
+  () => '0',
+).join(', ')
 export { SPACE_RANGES, parseClassRanges }
 
 /** A single class token (`[...]` or `\d`/`\w`) to ranges, or null. Rejects negation. */
@@ -941,7 +948,7 @@ function splitDelimArms(body: string): string[] | null {
  * match a string that contains the `close` literal: then greedy repetition stops
  * exactly before the first `close`, which is where the scan lands too.
  *
- * We only PROVE this for the block-comment idiom (the sole shape that expresses
+ * We only prove this for the two-code-point delimiter-safe idiom (the sole shape that expresses
  * "any char that doesn't form the close"):
  *
  *   n === 1 (`close` is one char l0):   body must be exactly `[^l0]`.
@@ -1559,13 +1566,15 @@ export function scanBranch(shape: ScanShape, mint: Mint): string {
  * A labeled branch: match one token and, on progress, log its [start, end,
  * kindIndex] trivia chunk. Same completion semantics as scanBranch.
  */
-export function scanBranchLabeled(shape: ScanShape, kindIndex: number, mint: Mint): string {
+export function scanBranchLabeled(shape: ScanShape, kindIndex: number, label: string, mint: Mint): string {
   const m = emitShapeMatch(shape, '_e', mint, '    ', 'c')
   return [
     ...m.setup,
     `    if (${m.end} > _e) {`,
     `      if (_cap) {`,
     `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, ${m.end}, ${kindIndex})`,
+    `        const _rk = _ctx._rootTriviaCapture === false || _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(label)}] ?? -1)`,
+    `        if (_rk >= 0) _ctx._rootTriviaLog.push(${SELECTED_ROOT_OWNED_RANGE_PLACEHOLDER}, _e, ${m.end}, _rk)`,
     `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << kindIndex}))) _ctx._cstTriviaLog.push(_e, ${m.end}, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${kindIndex})`,
     `      }`,
     `      _e = ${m.end}`,

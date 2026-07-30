@@ -28,10 +28,12 @@ export function attempt<T>(parser: Combinator<T>): Combinator<T> {
       }
       const mark = saveCstMark(ctx)
       const log = ctx._triviaLog?.length
+      const rootLog = ctx._rootTriviaLog?.length
       const result = parser.parse(input, pos, ctx)
       if (result.ok) return result
       rollbackCstCapture(ctx, mark)
       if (log !== undefined && ctx._triviaLog && ctx._triviaLog.length !== log) ctx._triviaLog.length = log
+      if (rootLog !== undefined && ctx._rootTriviaLog && ctx._rootTriviaLog.length !== rootLog) ctx._rootTriviaLog.length = rootLog
       if (result.committed) return result
       return { ok: false, expected: result.expected, span: { start: pos, end: pos } }
     },

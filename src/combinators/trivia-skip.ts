@@ -3,8 +3,9 @@ import { parseClassRanges } from '../regex/classes.ts'
 import {
   analyzeLabeledTrivia,
   recordTriviaChunks,
+  scanLabeledTriviaEnd,
   scanLabeledTriviaChunks,
-  tryFastLabeledScan,
+  visitLabeledTrivia,
 } from '../cst/trivia-kinds.ts'
 import {
   pushCstTriviaEntry,
@@ -24,7 +25,7 @@ import { recordLineRangeFromContext } from '../line-index.ts'
 export type TriviaScan = { end: number; commit: () => void }
 
 /** Saved lengths for rolling back speculative trivia commits. */
-export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; log: number }
+export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; log: number; rootLog: number }
 
 const NOOP_COMMIT = () => {}
 type FastTriviaScanner = (input: string, cur: number) => number
@@ -32,18 +33,27 @@ const fastTriviaCache = new WeakMap<Combinator<unknown>, FastTriviaScanner | nul
 
 /** True when trivia recording must be deferred until the following term commits. */
 export function needsDeferredTriviaCommit(ctx: ParseContext): boolean {
-  return ctx._triviaLog !== undefined || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined
+  return ctx._triviaLog !== undefined || ctx._rootTriviaLog !== undefined || ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined
 }
 
 export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
   const m = saveCstMark(ctx)
-  return { raw: m.raw, tlog: m.tlog, leaves: m.leaves, fields: m.fields, errors: m.errors, log: ctx._triviaLog ? ctx._triviaLog.length : 0 }
+  return {
+    raw: m.raw,
+    tlog: m.tlog,
+    leaves: m.leaves,
+    fields: m.fields,
+    errors: m.errors,
+    log: ctx._triviaLog ? ctx._triviaLog.length : 0,
+    rootLog: ctx._rootTriviaLog ? ctx._rootTriviaLog.length : 0,
+  }
 }
 
 export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): void {
   rollbackCstCapture(ctx, { raw: mark.raw, tlog: mark.tlog, leaves: mark.leaves, fields: mark.fields, errors: mark.errors })
   // Guarded like every other truncation — see rollbackCstCapture.
   if (ctx._triviaLog && ctx._triviaLog.length !== mark.log) ctx._triviaLog.length = mark.log
+  if (ctx._rootTriviaLog && ctx._rootTriviaLog.length !== mark.rootLog) ctx._rootTriviaLog.length = mark.rootLog
 }
 
 function parseTriviaNoCapture(
@@ -97,14 +107,59 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaSc
   const spec = analyzeLabeledTrivia(triviaP)
   if (!spec) return { end: cur, commit: NOOP_COMMIT }
 
-  const fast = tryFastLabeledScan(input, cur, triviaP)
-  const { end, chunks } = fast ?? scanLabeledTriviaChunks(input, cur, spec)
+  const log = ctx._triviaLog
+  const rootLog = ctx._rootTriviaLog
+  const rootKinds = ctx._rootTriviaKindIndex
+  const captureTl = ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)
+  const mask = ctx._triviaCaptureMask
+  let fullRows: number[] | undefined
+  let rootRows: number[] | undefined
+  let cstRows: number[] | undefined
+  const visitedEnd = visitLabeledTrivia(input, cur, spec, ctx.state, (start, matchEnd, kindIndex) => {
+    if (log !== undefined) (fullRows ??= []).push(start, matchEnd, kindIndex)
+    const selectedKind = rootLog === undefined || rootKinds === undefined || ctx._rootTriviaCapture === false
+      ? undefined
+      : rootKinds[spec.labels[kindIndex] ?? '']
+    if (selectedKind !== undefined) (rootRows ??= []).push(start, matchEnd, selectedKind)
+    if (captureTl && (mask === undefined || (mask & (1 << kindIndex)) !== 0)) {
+      (cstRows ??= []).push(start, matchEnd, kindIndex)
+    }
+  })
+  if (visitedEnd !== undefined) {
+    if (visitedEnd === cur) return { end: cur, commit: NOOP_COMMIT }
+    return {
+      end: visitedEnd,
+      commit: () => {
+        if (fullRows !== undefined && log !== undefined) log.push(...fullRows)
+        if (rootRows !== undefined && rootLog !== undefined) {
+          for (let i = 0; i < rootRows.length; i += 3) {
+            rootLog.push(cur, visitedEnd, rootRows[i]!, rootRows[i + 1]!, rootRows[i + 2]!)
+          }
+        }
+        if (cstRows !== undefined) {
+          for (let i = 0; i < cstRows.length; i += 3) {
+            pushCstTriviaEntry(ctx, cstRows[i]!, cstRows[i + 1]!, cstRows[i + 2]!)
+          }
+        }
+      },
+    }
+  }
+
+  const { end, chunks } = scanLabeledTriviaChunks(input, cur, spec, ctx.state)
   if (end === cur) return { end: cur, commit: NOOP_COMMIT }
 
   return {
     end,
     commit: () => recordTriviaChunks(ctx, chunks),
   }
+}
+
+/** Skip classified trivia without constructing retained chunk records. */
+function skipWithLabels(input: string, cur: number, ctx: ParseContext): number {
+  const spec = analyzeLabeledTrivia(ctx.trivia!)
+  if (spec) return scanLabeledTriviaEnd(input, cur, spec, ctx.state)
+  const tr = parseTriviaNoCapture(ctx.trivia!, input, cur, ctx)
+  return tr.ok && tr.span.end > cur ? tr.span.end : cur
 }
 
 /**
@@ -117,10 +172,7 @@ export function advanceTrivia(input: string, cur: number, ctx: ParseContext): nu
   if (!ctx.trackLines) {
     const fast = fastTriviaScanner(triviaP)
     if (fast) return fast(input, cur)
-    if (ctx.triviaKindLabels) {
-      const scan = scanWithLabels(input, cur, ctx)
-      return scan.end
-    }
+    if (ctx.triviaKindLabels) return skipWithLabels(input, cur, ctx)
     const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
     return tr.ok && tr.span.end > cur ? tr.span.end : cur
   }
@@ -132,9 +184,9 @@ export function advanceTrivia(input: string, cur: number, ctx: ParseContext): nu
     return end
   }
   if (ctx.triviaKindLabels) {
-    const scan = scanWithLabels(input, cur, ctx)
-    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, scan.end)
-    return scan.end
+    const end = skipWithLabels(input, cur, ctx)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+    return end
   }
   const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
   return tr.ok && tr.span.end > cur ? tr.span.end : cur
@@ -149,6 +201,7 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
   if (!triviaP) return { end: cur, commit: NOOP_COMMIT }
 
   const log = ctx._triviaLog
+  const rootLog = ctx._rootTriviaLog
   const captureTl = ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)
   if (!ctx.trackLines) {
     const fast = !ctx.triviaKindLabels ? fastTriviaScanner(triviaP) : null
@@ -156,11 +209,13 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
       return { end: fast(input, cur), commit: NOOP_COMMIT }
     }
 
-    if (ctx.triviaKindLabels && (log !== undefined || captureTl)) {
+    if (ctx.triviaKindLabels && (log !== undefined || rootLog !== undefined || captureTl)) {
       return scanWithLabels(input, cur, ctx)
     }
 
-    if (log !== undefined || captureTl) {
+    if (ctx.triviaKindLabels) return { end: skipWithLabels(input, cur, ctx), commit: NOOP_COMMIT }
+
+    if (log !== undefined || rootLog !== undefined || captureTl) {
       const tr = triviaP.parse(input, cur, {
         trackLines: log !== undefined ? false : ctx.trackLines,
         state: ctx.state,
@@ -188,13 +243,19 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
     return { end, commit: NOOP_COMMIT }
   }
 
-  if (ctx.triviaKindLabels && (log !== undefined || captureTl)) {
+  if (ctx.triviaKindLabels && (log !== undefined || rootLog !== undefined || captureTl)) {
     const scan = scanWithLabels(input, cur, ctx)
     if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, scan.end)
     return scan
   }
 
-  if (log !== undefined || captureTl) {
+  if (ctx.triviaKindLabels) {
+    const end = skipWithLabels(input, cur, ctx)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+    return { end, commit: NOOP_COMMIT }
+  }
+
+  if (log !== undefined || rootLog !== undefined || captureTl) {
     const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
     if (!tr.ok || tr.span.end === cur) return { end: cur, commit: NOOP_COMMIT }
     const end = tr.span.end
@@ -271,7 +332,6 @@ function regexTriviaScanner(parser: Combinator<unknown>): FastTriviaScanner | nu
   const source = parser._def.source
   return classRunSource(source)
     ?? altStarSource(source)
-    ?? (blockCommentSource(source) ? scanBlockComment : null)
 }
 
 function inRanges(cp: number, ranges: Array<[number, number]>): boolean {
@@ -293,10 +353,10 @@ function classScanner(classBody: string): FastTriviaScanner | null {
   }
 }
 
-/** Scanner for a `C[^\n\r]*` line comment — consumes `C` and the rest of the line. */
-function lineCommentScanner(commentCode: number): FastTriviaScanner {
+/** Scanner for a `C[^\n\r]*` arm — consumes its leader through a line break. */
+function untilLineBreakScanner(leaderCode: number): FastTriviaScanner {
   return (input, cur) => {
-    if (input.charCodeAt(cur) !== commentCode) return cur
+    if (input.charCodeAt(cur) !== leaderCode) return cur
     let pos = cur + 1
     while (pos < input.length) {
       const cc = input.charCodeAt(pos)
@@ -316,12 +376,12 @@ function classRunSource(source: string): FastTriviaScanner | null {
 /**
  * One alternation arm of a `(?:…)*` trivia group: a positive char-class run
  * `[class]` (a trailing `+`/`*` is redundant under the enclosing loop) or a line
- * comment `C[^\n\r]*` (`C` = one literal marker char, maybe escaped). Anything
+ * line-terminated arm `C[^\n\r]*` (`C` = one literal leader char, maybe escaped). Anything
  * else is unclassifiable → no fast path, never a wrong one.
  */
 type TriviaArm =
   | { kind: 'class'; ranges: Array<[number, number]> }
-  | { kind: 'comment'; code: number }
+  | { kind: 'untilLineBreak'; code: number }
 
 function classifyTriviaArm(arm: string): TriviaArm | null {
   const cls = /^\[([^\]^](?:[^\]]|\\.)*)\][*+]?$/.exec(arm)
@@ -332,13 +392,13 @@ function classifyTriviaArm(arm: string): TriviaArm | null {
   const lc = /^(\\?.)\[\^\\n\\r\]\*$/.exec(arm)
   if (lc) {
     const marker = lc[1]!
-    return { kind: 'comment', code: (marker.length === 2 ? marker[1]! : marker[0]!).charCodeAt(0) }
+    return { kind: 'untilLineBreak', code: (marker.length === 2 ? marker[1]! : marker[0]!).charCodeAt(0) }
   }
   return null
 }
 
 function armScanner(arm: TriviaArm): FastTriviaScanner {
-  if (arm.kind === 'comment') return lineCommentScanner(arm.code)
+  if (arm.kind === 'untilLineBreak') return untilLineBreakScanner(arm.code)
   const ranges = arm.ranges
   return (input, cur) => {
     let pos = cur
@@ -349,20 +409,20 @@ function armScanner(arm: TriviaArm): FastTriviaScanner {
 
 /**
  * A single tight loop over a merged char-class range list plus (usually one)
- * line-comment marker — the fast form of `(?:[class]|C[^\n\r]*)*`. Requires the
+ * line-terminated leader — the fast form of `(?:[class]|C[^\n\r]*)*`. Requires the
  * caller to have checked marker/class disjointness (so a bare merged scan
  * matches the regex regardless of arm order).
  */
-function fusedTriviaScanner(ranges: Array<[number, number]>, commentCodes: number[]): FastTriviaScanner {
-  const c0 = commentCodes[0]!
-  const single = commentCodes.length === 1
+function fusedTriviaScanner(ranges: Array<[number, number]>, leaders: number[]): FastTriviaScanner {
+  const c0 = leaders[0]!
+  const single = leaders.length === 1
   return (input, cur) => {
     let pos = cur
     const len = input.length
     for (;;) {
       const c = input.charCodeAt(pos)
       if (pos < len && inRanges(c, ranges)) { pos++; continue }
-      if (single ? c === c0 : commentCodes.includes(c)) {
+      if (single ? c === c0 : leaders.includes(c)) {
         pos++
         while (pos < len) {
           const cc = input.charCodeAt(pos)
@@ -396,10 +456,10 @@ function splitTopLevelAlts(body: string): string[] | null {
 
 /**
  * Trivia written as a single regex alternation-star, `(?:arm|arm|…)*` — e.g.
- * GraphQL's `(?:[ \t\n\r,]|#[^\n\r]*)*`. Arms are classified independently and
- * order-independently: char-class arms merge into one range list and comment
- * markers are collected, so `(?:#…|[class])*` scans the same as `(?:[class]|#…)*`.
- * The common (disjoint) case compiles to one fused loop; a marker that also sits
+ * `(?:[ \t\n\r,]|#[^\n\r]*)*`. Arms are classified independently and
+ * order-independently: char-class arms merge into one range list and line-terminated
+ * leaders are collected, so `(?:#…|[class])*` scans the same as `(?:[class]|#…)*`.
+ * The common (disjoint) case compiles to one fused loop; a leader that also sits
  * inside a class is the one spot where arm order matters, so that falls back to
  * the ordered `loopScanner`.
  */
@@ -415,24 +475,14 @@ function altStarSource(source: string): FastTriviaScanner | null {
     arms.push(arm)
   }
   const ranges: Array<[number, number]> = []
-  const commentCodes: number[] = []
+  const leaders: number[] = []
   for (const arm of arms) {
     if (arm.kind === 'class') ranges.push(...arm.ranges)
-    else commentCodes.push(arm.code)
+    else leaders.push(arm.code)
   }
-  if (commentCodes.some(code => inRanges(code, ranges))) {
+  if (leaders.some(code => inRanges(code, ranges))) {
     return loopScanner(arms.map(armScanner)) // order-significant overlap
   }
-  if (commentCodes.length === 0) return armScanner({ kind: 'class', ranges })
-  return fusedTriviaScanner(ranges, commentCodes)
-}
-
-function blockCommentSource(source: string): boolean {
-  return source === '\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/' || source === '\\/\\*[^]*?\\*\\/'
-}
-
-function scanBlockComment(input: string, cur: number): number {
-  if (input.charCodeAt(cur) !== 47 || input.charCodeAt(cur + 1) !== 42) return cur
-  const close = input.indexOf('*/', cur + 2)
-  return close === -1 ? cur : close + 2
+  if (leaders.length === 0) return armScanner({ kind: 'class', ranges })
+  return fusedTriviaScanner(ranges, leaders)
 }

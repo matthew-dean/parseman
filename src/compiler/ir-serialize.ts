@@ -34,7 +34,8 @@ import { node } from '../combinators/node.ts'
 import { parser } from '../combinators/grammar.ts'
 import { scanTo } from '../combinators/scanTo.ts'
 import { token, leaf } from '../combinators/token.ts'
-import { transform, skip, trivia, label, field } from '../combinators/map.ts'
+import { classifiedTrivia, transform, skip, trivia, label, field } from '../combinators/map.ts'
+import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { expect as expectC } from '../combinators/expect.ts'
 import { withCtx } from '../combinators/withCtx.ts'
 
@@ -227,13 +228,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'startsWith', 'endsWith', 'matches', 'otherwise', 'routed', 'attempt',
     'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'peek', 'node', 'parser',
-    'scanTo', 'token', 'leaf', 'transform', 'skip', 'trivia', 'label', 'field', 'expect', '_tf', '_lf', '_nd', '_gch', '_wc',
+    'scanTo', 'token', 'leaf', 'transform', 'skip', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
     many, oneOrMore, optional, sepBy, not, peek, node, parser,
-    scanTo, token, leaf, transform, skip, trivia, label, field, expectC, _tf, _lf, _nd, _gch, _wc,
+    scanTo, token, leaf, transform, skip, trivia, classifiedTrivia, label, field, expectC, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -486,8 +487,15 @@ class Serializer {
         return opts ? `node(${JSON.stringify(def.type)}, ${kid(def.parser)}, undefined${opts})` : `node(${JSON.stringify(def.type)}, ${kid(def.parser)})`
       }
       case 'grammar': {
-        const trivia = def.clearTrivia ? 'null' : def.triviaParser ? kid(def.triviaParser) : 'undefined'
-        return `parser({ trivia: ${trivia}${def.captureTrivia ? ', captureTrivia: true' : ''}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(def.parser)})`
+        const classified = def.triviaParser?._meta.rootTriviaClassified === true
+        const spec = classified && def.triviaParser ? analyzeLabeledTrivia(def.triviaParser) : null
+        if (classified && !spec) throw new Unserializable('classified trivia without labeled arms')
+        const trivia = def.clearTrivia
+          ? 'null'
+          : spec
+            ? `classifiedTrivia({ ${spec.arms.map(arm => `${JSON.stringify(arm.label)}: ${kid(arm.parser)}`).join(', ')} })`
+            : def.triviaParser ? kid(def.triviaParser) : 'undefined'
+        return `parser({ trivia: ${trivia}${def.captureTrivia ? ', captureTrivia: true' : ''}${def.rootCapture ? `, rootCapture: ${JSON.stringify(def.rootCapture)}` : ''}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(def.parser)})`
       }
       case 'withCtx': {
         // A `withCtx` round-trips through `_wc`, which rebuilds it AND re-attaches

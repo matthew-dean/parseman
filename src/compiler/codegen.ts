@@ -350,6 +350,8 @@ type Ctx = {
   balancedRebuildStack?: Set<Combinator<unknown>> | undefined
   /** Label table from grammar trivia for default ParseContext. */
   triviaKindLabels?: readonly string[] | undefined
+  /** Whether grammar-level trivia was built by `classifiedTrivia()`. */
+  rootTriviaClassified?: true | undefined
   /**
    * Whether this compile contains any node() rule. When true, terminals emit a
    * `_ctx._cstLeaves` capture and trivia skips capture trivia tokens — flowing
@@ -423,6 +425,16 @@ type Ctx = {
      * them beats the added call cost are hoisted; tiny shared wrappers stay inline. */
     sizes: Map<Combinator<unknown>, number>
   }
+}
+
+/**
+ * Selected-root retention is an opt-in grammar capability.  Keep it entirely
+ * out of generated code for ordinary trivia grammars: their scanner still gets
+ * structural fast paths, but they have neither a category table nor a root log
+ * to save, restore, or branch on.
+ */
+function hasSelectedRootTrivia(ctx: Ctx): boolean {
+  return ctx.rootTriviaClassified === true
 }
 
 function v(ctx: Ctx, prefix = '_v'): string { return `${prefix}${ctx.vars++}` }
@@ -754,10 +766,9 @@ function ensureTriviaFn(ctx: Ctx): string {
       return fnName
     }
   } else {
-    // LABELED trivia: if every arm is scannable, the same char-scan loop but with
-    // per-chunk kind capture (generalizes the old hardcoded ws-run + block-comment
-    // case to any shape set / arm count). Otherwise fall to the regex/runtime
-    // kind-tracking loops, which handle non-scannable arms.
+    // LABELED trivia: if every arm is scannable, the same char-scan loop with
+    // per-chunk category capture. Recognition is structural; labels are data.
+    // Otherwise fall to the regex/runtime kind-tracking loops.
     const labeledShapes = analyzeLabeledScannableRun(trivia)
     if (labeledShapes) {
       ctx.namedFnDecls.push(buildLabeledScannableTriviaFnDecl(fnName, labeledShapes))
@@ -919,7 +930,7 @@ function planDisjointDispatch(
 // ~3000 rollback sites made 0.34.0 12% FASTER than 0.33.0 on the same corpus.
 // Keep the guard when adding a rollback site.
 /** Body of a capture restore — resets each live buffer to its saved length. */
-function captureRestoreBody(mL: string, mR: string, mTl: string, mLg: string | null, mF: string | null = null): string {
+function captureRestoreBody(ctx: Ctx, mL: string, mR: string, mTl: string, mLg: string | null, mF: string | null = null, mRootLg: string | null = null): string {
   const fieldRestore = mF ? `; if (_ctx._fields && _ctx._fields.length !== ${mF}) _ctx._fields.length = ${mF}` : ''
   const base = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${mL}) _ctx._cstLeaves.length = ${mL}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${mR}) _ctx._cstRawChildren.length = ${mR}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${mTl}) _ctx._cstTriviaLog.length = ${mTl}${fieldRestore}`
   // `_triviaLog` is the standalone diagnostic trivia log. The interpreter only
@@ -928,7 +939,9 @@ function captureRestoreBody(mL: string, mR: string, mTl: string, mLg: string | n
   // stay byte-for-byte at parity with the interpreter, only rewind it where the
   // interpreter does (choice arms); sequence-term rollbacks (emitFallible) leave
   // it intact.
-  return mLg ? `${base}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${mLg}) _ctx._triviaLog.length = ${mLg}` : base
+  const logRestore = mLg ? `; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${mLg}) _ctx._triviaLog.length = ${mLg}` : ''
+  const rootLogRestore = hasSelectedRootTrivia(ctx) && mRootLg ? `; if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${mRootLg}) _ctx._rootTriviaLog.length = ${mRootLg}` : ''
+  return `${base}${logRestore}${rootLogRestore}`
 }
 
 /**
@@ -1188,7 +1201,7 @@ function emitFallible(
     `${ind0}  ${valV} = ${r.valueVar}; ${endV} = ${r.endVar}; ${okV} = true`,
     `${ind0}}`,
     ...(mL ? [
-      `${ind0}if (!${okV}) { ${captureRestoreBody(mL, mR!, mTl!, null, mF)} }`,
+      `${ind0}if (!${okV}) { ${captureRestoreBody(ctx, mL, mR!, mTl!, null, mF)} }`,
     ] : []),
   ]
   return { stmts, okVar: okV, valVar: valV, endVar: endV, mayCommit }
@@ -1481,11 +1494,13 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const markV = v(ctx, '_mk')
         const markTl = v(ctx, '_mktl')
         const markLog = v(ctx, '_mklg')
+        const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
         const scanEndV = v(ctx, '_sne')
         stmts.push(
           `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
           `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
           `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+          ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
           `${ind(ctx)}const ${scanEndV} = ${capFn}(input, ${curV}, _ctx, 1)`,
           ...emitLineTrack(ctx, curV, scanEndV),
         )
@@ -1494,7 +1509,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; }`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} }`,
         )
         valueVars.push(r.valueVar)
         continue
@@ -1507,10 +1522,14 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         // without enabling per-node CST trivia capture.
         const trivFn = ensureTriviaFn(ctx)
         const markLog = v(ctx, '_mklg')
+        const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
         const scanEndV = v(ctx, '_sne')
-        const capArg = ctx.noHoist ? '0' : '_ctx._triviaLog !== undefined ? 2 : 0'
+        const capArg = ctx.noHoist ? '0' : hasSelectedRootTrivia(ctx)
+          ? '(_ctx._triviaLog !== undefined || _ctx._rootTriviaLog !== undefined) ? 2 : 0'
+          : '_ctx._triviaLog !== undefined ? 2 : 0'
         stmts.push(
           `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+          ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
           `${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx, ${capArg})`,
           ...emitLineTrack(ctx, curV, scanEndV),
         )
@@ -1519,7 +1538,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else { if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} }`,
         )
         valueVars.push(r.valueVar)
         continue
@@ -1862,6 +1881,7 @@ function emitDispatchCombinator(
   const selectorRawMark = selectorNeedsRollback ? v(ctx, '_dsr') : null
   const selectorTriviaMark = selectorNeedsRollback ? v(ctx, '_dst') : null
   const selectorLogMark = selectorNeedsRollback ? v(ctx, '_dsg') : null
+  const selectorRootLogMark = selectorNeedsRollback && hasSelectedRootTrivia(ctx) ? v(ctx, '_dsrg') : null
   const selectorFieldMark = selectorNeedsRollback ? v(ctx, '_dsf') : null
   const selectorErrorMark = selectorNeedsRollback ? v(ctx, '_dse') : null
   const selector = emit(def.selector, ctx, pos)
@@ -1874,6 +1894,7 @@ function emitDispatchCombinator(
       `${ind(ctx)}const ${selectorRawMark} = _ctx._cstRawChildren?.length ?? 0`,
       `${ind(ctx)}const ${selectorTriviaMark} = _ctx._cstTriviaLog?.length ?? 0`,
       `${ind(ctx)}const ${selectorLogMark} = _ctx._triviaLog?.length ?? 0`,
+      ...(selectorRootLogMark ? [`${ind(ctx)}const ${selectorRootLogMark} = _ctx._rootTriviaLog?.length ?? 0`] : []),
       `${ind(ctx)}const ${selectorFieldMark} = _ctx._fields?.length ?? 0`,
       `${ind(ctx)}const ${selectorErrorMark} = _ctx._errors?.length ?? 0`,
     ] : []),
@@ -1896,16 +1917,18 @@ function emitDispatchCombinator(
     const mayError = mayRecordRecoveryError(parser, !!ctx.recovery)
     const errMark = mayError ? v(ctx, '_derr') : null
     const logMark = ctx.activeTrivia ? v(ctx, '_dlog') : null
+    const rootLogMark = ctx.activeTrivia && hasSelectedRootTrivia(ctx) ? v(ctx, '_drlog') : null
     if (usesRouted) {
       stmts.push(
         ...(routedV ? [`${ind(ctx)}const ${routedV} = _ctx._routed; _ctx._routed = { value: ${selector.valueVar}, span: { start: ${pos}, end: ${selector.endVar} } }`] : []),
         ...(selectorLeafMark ? [
-          `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${selectorLeafMark}) _ctx._cstLeaves.length = ${selectorLeafMark}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${selectorRawMark}) _ctx._cstRawChildren.length = ${selectorRawMark}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${selectorTriviaMark}) _ctx._cstTriviaLog.length = ${selectorTriviaMark}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${selectorLogMark}) _ctx._triviaLog.length = ${selectorLogMark}; if (_ctx._fields && _ctx._fields.length !== ${selectorFieldMark}) _ctx._fields.length = ${selectorFieldMark}; if (_ctx._errors && _ctx._errors.length !== ${selectorErrorMark}) _ctx._errors.length = ${selectorErrorMark}`,
+          `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${selectorLeafMark}) _ctx._cstLeaves.length = ${selectorLeafMark}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${selectorRawMark}) _ctx._cstRawChildren.length = ${selectorRawMark}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${selectorTriviaMark}) _ctx._cstTriviaLog.length = ${selectorTriviaMark}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${selectorLogMark}) _ctx._triviaLog.length = ${selectorLogMark};${selectorRootLogMark ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${selectorRootLogMark}) _ctx._rootTriviaLog.length = ${selectorRootLogMark};` : ''} if (_ctx._fields && _ctx._fields.length !== ${selectorFieldMark}) _ctx._fields.length = ${selectorFieldMark}; if (_ctx._errors && _ctx._errors.length !== ${selectorErrorMark}) _ctx._errors.length = ${selectorErrorMark}`,
         ] : []),
       )
     }
     if (errMark) stmts.push(`${ind(ctx)}const ${errMark} = _ctx._errors?.length ?? 0`)
     if (logMark) stmts.push(`${ind(ctx)}const ${logMark} = _ctx._triviaLog?.length ?? 0`)
+    if (rootLogMark) stmts.push(`${ind(ctx)}const ${rootLogMark} = _ctx._rootTriviaLog?.length ?? 0`)
     const savedRoutedLocal = ctx.routedLocal
     const savedNoHoist = ctx.noHoist
     if (usesRouted && !needsRoutedContext) {
@@ -1924,13 +1947,16 @@ function emitDispatchCombinator(
     const logRollback = logMark
       ? `if (_ctx._triviaLog && _ctx._triviaLog.length !== ${logMark}) _ctx._triviaLog.length = ${logMark}; `
       : ''
+    const rootLogRollback = rootLogMark
+      ? `if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${rootLogMark}) _ctx._rootTriviaLog.length = ${rootLogMark}; `
+      : ''
     const routedRollback = routedV ? `_ctx._routed = ${routedV}; ` : ''
     const coverageFailure = coverageId === undefined
       ? ''
       : `_ctx._grammarTrace?.write({ id: ${JSON.stringify(coverageId)}, phase: 'failure', offset: _ctx._fe }); `
     stmts.push(
       ...tail.stmts,
-      `${ind(ctx)}if (!${tail.okVar}) { ${routedRollback}${errorRollback}${logRollback}${coverageFailure}${committedFailBody(ctx)} }`,
+      `${ind(ctx)}if (!${tail.okVar}) { ${routedRollback}${errorRollback}${logRollback}${rootLogRollback}${coverageFailure}${committedFailBody(ctx)} }`,
       ...(routedV ? [`${ind(ctx)}_ctx._routed = ${routedV}`] : []),
       `${ind(ctx)}${outV} = ${valueMode === 'tail' ? tail.valVar : `[${selector.valueVar}, ${tail.valVar}]`}`,
       `${ind(ctx)}${outE} = ${tail.endVar}`,
@@ -2216,15 +2242,19 @@ function emitFirstMatch(
     const markRaw    = armNeedsRollback ? v(ctx, '_cmr') : null
     const markTl     = armNeedsRollback ? v(ctx, '_cmtl') : null
     const markLog    = armNeedsRollback ? v(ctx, '_cmlg') : null
+    const markRootLog = ctx.activeTrivia && hasSelectedRootTrivia(ctx) ? v(ctx, '_cmlrg') : null
     const markFields = armNeedsFieldRollback ? v(ctx, '_cmf') : null
     const markErrors = armMayRecordError ? v(ctx, '_cme') : null
     const captureRollback = markLeaves
-      ? captureRestoreBody(markLeaves, markRaw!, markTl!, markLog!, markFields)
+      ? captureRestoreBody(ctx, markLeaves, markRaw!, markTl!, markLog!, markFields, markRootLog)
+      : ''
+    const rootRollback = markRootLog && !markLeaves
+      ? `if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog}`
       : ''
     const errorRollback = markErrors
       ? `if (_ctx._errors && _ctx._errors.length !== ${markErrors}) _ctx._errors.length = ${markErrors}`
       : ''
-    const rollback = [captureRollback, errorRollback].filter(Boolean).join('; ')
+    const rollback = [captureRollback, rootRollback, errorRollback].filter(Boolean).join('; ')
     const failSlot = atStart ? staticFx : '_ctx._fx'
 
     stmts.push(`${ind0}if (${skipCond}) {`)
@@ -2241,6 +2271,7 @@ function emitFirstMatch(
         ...(markFields ? [`${ind(ctx)}const ${markFields} = _ctx._fields?.length ?? 0`] : []),
       )
     }
+    if (markRootLog) stmts.push(`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog?.length ?? 0`)
     if (markErrors) stmts.push(`${ind(ctx)}const ${markErrors} = _ctx._errors?.length ?? 0`)
     const arm = emitFallible(p, ctx, pos, atStart)
     const { stmts: armStmts, okVar, valVar, endVar } = arm
@@ -2559,21 +2590,29 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
       const markV = v(ctx, '_mk')
       const markTl = v(ctx, '_mktl')
       const markLog = v(ctx, '_mklg')
+      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
       const npV = v(ctx, '_np')
       stmts.push(
         `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
         `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
         `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+        ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
         `${ind(ctx)}const ${npV} = ${capFn}(input, ${curV}, _ctx, 1)`,
         ...emitLineTrack(ctx, curV, npV),
       )
       itemPos = npV
-      rollback = `if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; `
+      rollback = `if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} `
     } else {
       const trivFn = ensureTriviaFn(ctx)
+      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
       const npV = v(ctx, '_np')
-      stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${curV}, _ctx)`, ...emitLineTrack(ctx, curV, npV))
+      stmts.push(
+        ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
+        `${ind(ctx)}const ${npV} = ${trivFn}(input, ${curV}, _ctx, ${hasSelectedRootTrivia(ctx) ? '_ctx._rootTriviaLog !== undefined ? 2 : 0' : '0'})`,
+        ...emitLineTrack(ctx, curV, npV),
+      )
       itemPos = npV
+      rollback = markRootLog ? `if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog}; ` : ''
     }
   }
 
@@ -2667,9 +2706,10 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
   const raw = v(ctx, '_atr')
   const trivia = v(ctx, '_att')
   const log = v(ctx, '_atg')
+  const rootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_atrg') : null
   const fields = v(ctx, '_atf')
   const errors = v(ctx, '_ate')
-  const rollback = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${leaves}) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${raw}) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${trivia}) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${log}) _ctx._triviaLog.length = ${log}; if (_ctx._fields && _ctx._fields.length !== ${fields}) _ctx._fields.length = ${fields}; if (_ctx._errors && _ctx._errors.length !== ${errors}) _ctx._errors.length = ${errors}`
+  const rollback = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${leaves}) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${raw}) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${trivia}) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${log}) _ctx._triviaLog.length = ${log};${rootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${rootLog}) _ctx._rootTriviaLog.length = ${rootLog};` : ''} if (_ctx._fields && _ctx._fields.length !== ${fields}) _ctx._fields.length = ${fields}; if (_ctx._errors && _ctx._errors.length !== ${errors}) _ctx._errors.length = ${errors}`
   const traceId = ctx.coverage?.plan.attempts.get(p)
   const traceRollback = traceId === undefined ? '' : ` _ctx._grammarTrace?.write({ id: ${JSON.stringify(traceId)}, phase: 'rollback', offset: ${pos} });`
   // First-set fail-fast before the transaction marks. `attempt(inner)` reads six
@@ -2694,7 +2734,7 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
   return {
     stmts: [
       ...preGuard,
-      `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${trivia} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
+      `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${trivia} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0${rootLog ? `, ${rootLog} = _ctx._rootTriviaLog?.length ?? 0` : ''}, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
       ...inner.stmts,
       ...emitIfFail(ctx, `!${inner.okVar}`, `{ ${rollback};${traceRollback}${inner.mayCommit ? ` if (_ctx._fc) ${committedFailBody(ctx)};` : ''} _ctx._fe = ${pos}; ${propagateFailBody(ctx)} }`),
     ],
@@ -2762,16 +2802,17 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   /** Marks taken AFTER the separator, so `trailing` can unwind only past it. */
   const postSepMarks = (): { decl: string[]; rb: string } => {
     if (def.trailing === undefined || !ctx.capturing) return { decl: [], rb: '' }
-    const lv = v(ctx, '_tlv'), rw = v(ctx, '_trw'), tl = v(ctx, '_ttl'), lg = v(ctx, '_tlg'), fl = v(ctx, '_tlf')
+    const lv = v(ctx, '_tlv'), rw = v(ctx, '_trw'), tl = v(ctx, '_ttl'), lg = v(ctx, '_tlg'), rlg = hasSelectedRootTrivia(ctx) ? v(ctx, '_trlg') : null, fl = v(ctx, '_tlf')
     return {
       decl: [
         `${ind(ctx)}const ${lv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
         `${ind(ctx)}const ${rw} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
         `${ind(ctx)}const ${tl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
         `${ind(ctx)}const ${lg} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+        ...(rlg ? [`${ind(ctx)}const ${rlg} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
         `${ind(ctx)}const ${fl} = _ctx._fields ? _ctx._fields.length : 0`,
       ],
-      rb: `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${lv}) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${rw}) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${lg}) _ctx._triviaLog.length = ${lg}; if (_ctx._fields && _ctx._fields.length !== ${fl}) _ctx._fields.length = ${fl}; `,
+      rb: `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${lv}) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${rw}) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${lg}) _ctx._triviaLog.length = ${lg};${rlg ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${rlg}) _ctx._rootTriviaLog.length = ${rlg};` : ''} if (_ctx._fields && _ctx._fields.length !== ${fl}) _ctx._fields.length = ${fl}; `,
     }
   }
 
@@ -2816,6 +2857,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       const markV = v(ctx, '_mk')
       const markTl = v(ctx, '_mktl')
       const markLog = v(ctx, '_mklg')
+      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
       const markLv = v(ctx, '_mklv')
       const markFld = v(ctx, '_mkf')
       const spV = v(ctx, '_sp')
@@ -2826,13 +2868,14 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
         `${ind(ctx)}const ${markTl} = _ctx._cstTriviaLog ? _ctx._cstTriviaLog.length : 0`,
         `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+        ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
         `${ind(ctx)}const ${markLv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
         `${ind(ctx)}const ${markFld} = _ctx._fields ? _ctx._fields.length : 0`,
         `${ind(ctx)}const ${spV} = ${capFn}(input, ${curV}, _ctx, 1)`,
         ...emitLineTrack(ctx, curV, spV),
       )
       sepAtPos = spV
-      const rollbackToSep = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog}; if (_ctx._fields && _ctx._fields.length !== ${markFld}) _ctx._fields.length = ${markFld}; `
+      const rollbackToSep = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} if (_ctx._fields && _ctx._fields.length !== ${markFld}) _ctx._fields.length = ${markFld}; `
       const sep = emitFallible(def.separator, ctx, sepAtPos, true)
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
@@ -2852,20 +2895,31 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       )
     } else {
       const trivFn = ensureTriviaFn(ctx)
+      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
       const spV = v(ctx, '_sp')
-      stmts.push(`${ind(ctx)}const ${spV} = ${trivFn}(input, ${curV}, _ctx)`, ...emitLineTrack(ctx, curV, spV))
+      stmts.push(
+        ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
+        `${ind(ctx)}const ${spV} = ${trivFn}(input, ${curV}, _ctx, ${hasSelectedRootTrivia(ctx) ? '_ctx._rootTriviaLog !== undefined ? 2 : 0' : '0'})`,
+        ...emitLineTrack(ctx, curV, spV),
+      )
       sepAtPos = spV
       const sep = emitFallible(def.separator, ctx, sepAtPos, true)
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
-      stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
+      const rollbackToSep = markRootLog ? `if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog}; ` : ''
+      stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
 
+      const postRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_psrlg') : null
       const npV = v(ctx, '_np')
-      stmts.push(`${ind(ctx)}const ${npV} = ${trivFn}(input, ${sepEnd}, _ctx)`, ...emitLineTrack(ctx, sepEnd, npV))
+      stmts.push(
+        ...(postRootLog ? [`${ind(ctx)}const ${postRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
+        `${ind(ctx)}const ${npV} = ${trivFn}(input, ${sepEnd}, _ctx, ${hasSelectedRootTrivia(ctx) ? '_ctx._rootTriviaLog !== undefined ? 2 : 0' : '0'})`,
+        ...emitLineTrack(ctx, sepEnd, npV),
+      )
       const next = emitFallible(def.parser, ctx, npV, true)
       const { stmts: nextStmts, okVar: nextOk, valVar: nextVal, endVar: nextEnd } = next
       stmts.push(
         ...nextStmts,
-        ...failItem(nextOk, next.mayCommit, npV, itemFailBreak(sepEnd, '', '')),
+        ...failItem(nextOk, next.mayCommit, npV, itemFailBreak(sepEnd, rollbackToSep, postRootLog ? `if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${postRootLog}) _ctx._rootTriviaLog.length = ${postRootLog}; ` : '')),
         `${ind(ctx)}${arrV}.push(${nextVal})`,
         `${ind(ctx)}${curV} = ${nextEnd}`,
       )
@@ -3029,6 +3083,7 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
   const raw    = sinksLive ? v(ctx, '_ntr') : null
   const tl     = sinksLive ? v(ctx, '_ntt') : null
   const log    = sinksLive ? v(ctx, '_ntg') : null
+  const rootLog = sinksLive && hasSelectedRootTrivia(ctx) ? v(ctx, '_ntrg') : null
   const fields = sinksLive ? v(ctx, '_ntf') : null
   const errors = sinksLive ? v(ctx, '_nte') : null
   const { stmts, okVar } = emitFallible(def.parser, ctx, pos, true)
@@ -3038,11 +3093,11 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
   return {
     stmts: [
       ...(sinksLive ? [
-        `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${tl} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
+        `${ind(ctx)}const ${leaves} = _ctx._cstLeaves?.length ?? 0, ${raw} = _ctx._cstRawChildren?.length ?? 0, ${tl} = _ctx._cstTriviaLog?.length ?? 0, ${log} = _ctx._triviaLog?.length ?? 0${rootLog ? `, ${rootLog} = _ctx._rootTriviaLog?.length ?? 0` : ''}, ${fields} = _ctx._fields?.length ?? 0, ${errors} = _ctx._errors?.length ?? 0`,
       ] : []),
       ...stmts,
       ...(sinksLive ? [
-        `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${leaves}) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${raw}) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${log}) _ctx._triviaLog.length = ${log}; if (_ctx._fields && _ctx._fields.length !== ${fields}) _ctx._fields.length = ${fields}; if (_ctx._errors && _ctx._errors.length !== ${errors}) _ctx._errors.length = ${errors}`,
+        `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${leaves}) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${raw}) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${log}) _ctx._triviaLog.length = ${log};${rootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${rootLog}) _ctx._rootTriviaLog.length = ${rootLog};` : ''} if (_ctx._fields && _ctx._fields.length !== ${fields}) _ctx._fields.length = ${fields}; if (_ctx._errors && _ctx._errors.length !== ${errors}) _ctx._errors.length = ${errors}`,
       ] : []),
       ...emitIfFail(ctx, okVar, failBody(ctx, label, pos)),
     ],
@@ -3196,17 +3251,18 @@ function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: str
   const sk = v(ctx, '_tokKinds')
   const stl = v(ctx, '_tokTl')
   const sol = v(ctx, '_tokLog')
+  const srl = hasSelectedRootTrivia(ctx) ? v(ctx, '_tokRootLog') : null
   const sb = v(ctx, '_tokBuf')
   const valV = v(ctx, '_tok')
 
   return {
     stmts: [
-      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${sv} = _ctx.trivia, ${sk} = _ctx.triviaKindLabels, ${stl} = _ctx._cstTriviaLog, ${sol} = _ctx._triviaLog, ${sb} = _ctx._cstBuf`,
-      `${i}_ctx.trivia = undefined; _ctx.triviaKindLabels = undefined; _ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._triviaLog = undefined; _ctx._cstBuf = undefined`,
+      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${sv} = _ctx.trivia, ${sk} = _ctx.triviaKindLabels, ${stl} = _ctx._cstTriviaLog, ${sol} = _ctx._triviaLog${srl ? `, ${srl} = _ctx._rootTriviaLog` : ''}, ${sb} = _ctx._cstBuf`,
+      `${i}_ctx.trivia = undefined; _ctx.triviaKindLabels = undefined; _ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._triviaLog = undefined;${srl ? ' _ctx._rootTriviaLog = undefined;' : ''} _ctx._cstBuf = undefined`,
       `${i}try {`,
       ...reindentStmts(inner.stmts, ctx.indent + 1).map(stmt => stmt.replace(/^(\s*)(?:const|let)\s+/, '$1var ')),
       `${i}} finally {`,
-      `${i}  _ctx.trivia = ${sv}; _ctx.triviaKindLabels = ${sk}; _ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._triviaLog = ${sol}; _ctx._cstBuf = ${sb}`,
+      `${i}  _ctx.trivia = ${sv}; _ctx.triviaKindLabels = ${sk}; _ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._triviaLog = ${sol};${srl ? ` _ctx._rootTriviaLog = ${srl};` : ''} _ctx._cstBuf = ${sb}`,
       `${i}}`,
       ...emitIfFail(ctx, `!${inner.okVar}`, propagateFailBody(ctx)),
       `${i}const ${valV} = input.slice(${pos}, ${inner.endVar})`,
@@ -3936,6 +3992,12 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'grammar': {
       const savedTrivia = ctx.activeTrivia
       const savedKindLabels = ctx.triviaKindLabels
+      const opaqueRootCapture = hasSelectedRootTrivia(ctx) && def.rootCapture === 'opaque'
+      const strictScopeCheck = hasSelectedRootTrivia(ctx) && def.triviaParser !== undefined
+        && !def.triviaParser._meta.rootTriviaClassified
+        && !opaqueRootCapture
+        ? `${ind(ctx)}if (_ctx._rootTriviaStrictScopes) throw new TypeError(${JSON.stringify('parser(): selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: \'opaque\'.')})`
+        : undefined
       if (def.clearTrivia) {
         // noTrivia / parser({ trivia: null }): contiguous terms, no trivia skipped.
         ctx.activeTrivia = undefined
@@ -3947,13 +4009,38 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         }
       }
       const savedCapture = def.captureTrivia ? v(ctx, '_gcap') : null
+      const savedRootCapture = opaqueRootCapture ? v(ctx, '_grtc') : null
+      const opaqueValue = opaqueRootCapture ? v(ctx, '_grtv') : null
+      const opaqueEnd = opaqueRootCapture ? v(ctx, '_grte') : null
+      if (opaqueRootCapture) ctx.indent++
       const r = emit(def.parser, ctx, pos)
+      if (opaqueRootCapture) ctx.indent--
       ctx.activeTrivia = savedTrivia
       ctx.triviaKindLabels = savedKindLabels
-      if (!savedCapture) return r
+      if (!savedCapture && !opaqueRootCapture) return strictScopeCheck === undefined ? r : {
+        ...r,
+        stmts: [strictScopeCheck, ...r.stmts],
+      }
+      if (opaqueRootCapture) {
+        return {
+          stmts: [
+            ...(strictScopeCheck === undefined ? [] : [strictScopeCheck]),
+            `${ind(ctx)}let ${opaqueValue}, ${opaqueEnd}`,
+            `${ind(ctx)}${savedCapture ? `const ${savedCapture} = _ctx.captureTrivia; ` : ''}const ${savedRootCapture} = _ctx._rootTriviaCapture; _ctx._rootTriviaCapture = false`,
+            `${ind(ctx)}try {`,
+            ...(savedCapture ? [`${ind(ctx)}  _ctx.captureTrivia = true`] : []),
+            ...r.stmts,
+            `${ind(ctx)}  ${opaqueValue} = ${r.valueVar}; ${opaqueEnd} = ${r.endVar}`,
+            `${ind(ctx)}} finally { ${savedCapture ? `_ctx.captureTrivia = ${savedCapture}; ` : ''}_ctx._rootTriviaCapture = ${savedRootCapture} }`,
+          ],
+          valueVar: opaqueValue!,
+          endVar: opaqueEnd!,
+        }
+      }
       return {
         ...r,
         stmts: [
+          ...(strictScopeCheck === undefined ? [] : [strictScopeCheck]),
           `${ind(ctx)}const ${savedCapture} = _ctx.captureTrivia; _ctx.captureTrivia = true`,
           ...r.stmts,
           `${ind(ctx)}_ctx.captureTrivia = ${savedCapture}`,
@@ -4656,6 +4743,8 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   // parser({trivia}) / noTrivia overrides). This is the compiled mirror of the
   // interpreter installing it as ctx.trivia at the entry.
   const grammarTrivia = (combinator._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
+  const rootTriviaClassified = grammarTrivia?._meta.rootTriviaClassified === true
+    || combinator._meta.rootTriviaClassified === true
   const grammarScanSkip = (combinator._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip
   const grammarHostMode = (combinator._meta as { grammarHostMode?: HostMode }).grammarHostMode
   const grammarTrackLines = combinator._meta.grammarTrackLines
@@ -4682,7 +4771,11 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     lineTracking: opts?.trackLines === true || grammarTrackLines === true || hasLineTrackingDef(combinator as Combinator<unknown>),
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
-    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
+    ...(grammarTrivia ? {
+      activeTrivia: grammarTrivia,
+      triviaKindLabels: grammarTrivia._meta.triviaKindLabels,
+    } : {}),
     ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
 
@@ -4914,10 +5007,15 @@ function publicRuleWrapperSource(
   rule: Combinator<unknown>,
   fnSource: string,
   ambientTriviaKindLabels?: readonly string[],
+  ambientRootTriviaClassified?: true,
 ): string {
-  const labels = rule._meta.triviaKindLabels ?? ambientTriviaKindLabels
-  if (labels === undefined) return fnSource
-  return `Object.assign(${fnSource}, { _meta: { triviaKindLabels: ${JSON.stringify(labels)} } })`
+  // A rules({ trivia }) declaration owns the document-root category table. A
+  // nested parser({ trivia }) can use a different local table, but must not
+  // replace the root labels advertised by the public compiled entry.
+  const labels = ambientTriviaKindLabels ?? rule._meta.triviaKindLabels
+  const classified = ambientRootTriviaClassified ?? rule._meta.rootTriviaClassified
+  if (labels === undefined && classified === undefined) return fnSource
+  return `Object.assign(${fnSource}, { _meta: {${labels === undefined ? '' : ` triviaKindLabels: ${JSON.stringify(labels)},`}${classified === undefined ? '' : ' rootTriviaClassified: true,'} } })`
 }
 
 export function compileRuleMap(
@@ -4939,6 +5037,8 @@ export function compileRuleMap(
   // parser({trivia}) / noTrivia overrides). Mirrors the interpreter installing it
   // as ctx.trivia at the entry, and compile()'s single-entry seed.
   const grammarTrivia = opts?.trivia
+  const rootTriviaClassified = grammarTrivia?._meta.rootTriviaClassified === true
+    || ruleMap.some(([, rule]) => rule._meta.rootTriviaClassified === true)
   // Grammar-level ambient scan-skip: explicit opt, else the first rule that carries
   // a `grammarScanSkip` stamp (from `rules({ scanSkip })`). Mirrors grammarTrivia.
   const grammarScanSkip = opts?.scanSkip
@@ -4974,7 +5074,11 @@ export function compileRuleMap(
     lineTracking: grammarTrackLines,
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule), coverageWinners) } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
-    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
+    ...(grammarTrivia ? {
+      activeTrivia: grammarTrivia,
+      triviaKindLabels: grammarTrivia._meta.triviaKindLabels,
+    } : {}),
     ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
 
@@ -5081,7 +5185,7 @@ export function compileRuleMap(
   // prelude per entry or duplicate its text per entry — both defeat the point).
   const objBody = perEntry
     .map(({ key, rule, r }) => {
-      const src = publicRuleWrapperSource(rule, entryFnText(r, rule), ctx.triviaKindLabels)
+      const src = publicRuleWrapperSource(rule, entryFnText(r, rule), ctx.triviaKindLabels, ctx.rootTriviaClassified)
       return `    ${JSON.stringify(key)}: ${src.split('\n').join('\n    ')}`
     })
     .join(',\n')
@@ -5211,6 +5315,8 @@ export function compileLinkable(
   // the compose mirror of compileRuleMap's seed. `parser`/`noTrivia` still override.
   const grammarTrivia = opts?.trivia
     ?? ruleMapArg.map(([, r]) => (r._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia).find(Boolean)
+  const rootTriviaClassified = grammarTrivia?._meta.rootTriviaClassified === true
+    || ruleMapArg.some(([, rule]) => rule._meta.rootTriviaClassified === true)
   // Grammar-level ambient scan-skip through compose(), mirroring grammarTrivia.
   const grammarScanSkip = opts?.scanSkip
     ?? ruleMapArg.map(([, r]) => (r._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip).find(Boolean)
@@ -5249,7 +5355,11 @@ export function compileLinkable(
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
     deferFirstSetRefs: true,
-    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
+    ...(grammarTrivia ? {
+      activeTrivia: grammarTrivia,
+      triviaKindLabels: grammarTrivia._meta.triviaKindLabels,
+    } : {}),
     ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
   // Canonical name per rule. Register in BOTH ruleNames (so sibling `emitLazy`
@@ -5406,7 +5516,7 @@ export function compileLinkable(
       ...r.stmts,
       `  return { ok: true, value: ${r.valueVar}, span: ${resultSpan} }`,
       `}`,
-    ].join('\n'), ctx.triviaKindLabels))
+    ].join('\n'), ctx.triviaKindLabels, ctx.rootTriviaClassified))
   }
 
   // Per-rule first-set table for fuse-time dispatch: fusedBody() substitutes each

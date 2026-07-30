@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext } from '../types.ts'
-import { getCoreRegexDef } from '../combinators/choice.ts'
 import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
+import { startsFirstSet } from '../combinators/first-set.ts'
 
 export type TriviaChunk = { start: number; end: number; kindIndex: number }
 
@@ -9,6 +9,8 @@ export type LabeledTriviaSpec = {
   readonly arms: ReadonlyArray<{ label: string; kindIndex: number; parser: Combinator<unknown> }>
   readonly minRepeats: number
 }
+
+const labeledTriviaSpecs = new WeakMap<Combinator<unknown>, LabeledTriviaSpec | null>()
 
 function unwrapTrivia(p: Combinator<unknown>): Combinator<unknown> {
   let cur = p
@@ -27,6 +29,9 @@ export function peelLabel(p: Combinator<unknown>): { label: string; parser: Comb
  * (or a single labeled arm), return the label table and matchers.
  */
 export function analyzeLabeledTrivia(trivia: Combinator<unknown>): LabeledTriviaSpec | null {
+  const cached = labeledTriviaSpecs.get(trivia)
+  if (cached !== undefined) return cached
+
   let core = unwrapTrivia(trivia)
   let minRepeats = 1
 
@@ -43,16 +48,28 @@ export function analyzeLabeledTrivia(trivia: Combinator<unknown>): LabeledTrivia
   if (core._def.tag === 'choice') {
     for (let i = 0; i < core._def.parsers.length; i++) {
       const peeled = peelLabel(core._def.parsers[i]!)
-      if (!peeled) return null
+      if (!peeled) {
+        labeledTriviaSpecs.set(trivia, null)
+        return null
+      }
       arms.push({ label: peeled.label, kindIndex: i, parser: peeled.parser })
     }
   } else {
     const peeled = peelLabel(core)
-    if (!peeled) return null
+    if (!peeled) {
+      labeledTriviaSpecs.set(trivia, null)
+      return null
+    }
     arms.push({ label: peeled.label, kindIndex: 0, parser: peeled.parser })
   }
 
-  return { labels: arms.map(a => a.label), arms, minRepeats }
+  const spec = {
+    labels: arms.map(a => a.label),
+    arms,
+    minRepeats,
+  }
+  labeledTriviaSpecs.set(trivia, spec)
+  return spec
 }
 
 /** Label table on a `trivia()` combinator, if all arms are labeled. */
@@ -67,8 +84,13 @@ function matchArmAt(
   input: string,
   pos: number,
   arm: Combinator<unknown>,
+  state: unknown,
 ): { end: number } | null {
-  const r = arm.parse(input, pos, { trackLines: false })
+  // The first-set check is structural Parseman metadata. It neither assigns
+  // meaning to a label nor recognizes a particular comment form; it avoids
+  // entering arms whose own grammar proves they cannot start at this offset.
+  if (!startsFirstSet(arm, input, pos)) return null
+  const r = arm.parse(input, pos, { trackLines: false, state })
   if (!r.ok || r.span.end <= pos) return null
   return { end: r.span.end }
 }
@@ -81,6 +103,7 @@ export function scanLabeledTriviaChunks(
   input: string,
   cur: number,
   spec: LabeledTriviaSpec,
+  state?: unknown,
 ): { end: number; chunks: TriviaChunk[] } {
   const chunks: TriviaChunk[] = []
   let pos = cur
@@ -88,7 +111,7 @@ export function scanLabeledTriviaChunks(
   while (pos < input.length) {
     let matched: { end: number; kindIndex: number } | null = null
     for (const arm of spec.arms) {
-      const m = matchArmAt(input, pos, arm.parser)
+      const m = matchArmAt(input, pos, arm.parser, state)
       if (m) {
         matched = { end: m.end, kindIndex: arm.kindIndex }
         break
@@ -105,79 +128,88 @@ export function scanLabeledTriviaChunks(
   return { end: pos, chunks }
 }
 
-/** Hand-rolled ws / block-comment scan with per-chunk kind indices (interpreter). */
-export function scanFastWsCommentsChunks(
+/**
+ * Scan labeled trivia when no caller will retain individual chunks. This is the
+ * ordinary skip path for a classified grammar: labels remain available for an
+ * explicit capture request, but merely having labels must not allocate one
+ * `{ start, end, kindIndex }` object per whitespace/comment run.
+ */
+export function scanLabeledTriviaEnd(
   input: string,
   cur: number,
-  wsKind: number,
-  commentKind: number,
-): { end: number; chunks: TriviaChunk[] } {
-  const chunks: TriviaChunk[] = []
+  spec: LabeledTriviaSpec,
+  state?: unknown,
+): number {
   let pos = cur
+  let count = 0
 
   while (pos < input.length) {
-    const c = input.charCodeAt(pos)
-    if (c === 32 || c === 9 || c === 10 || c === 13 || c === 12) {
-      const start = pos
-      pos++
-      while (pos < input.length) {
-        const c2 = input.charCodeAt(pos)
-        if (c2 === 32 || c2 === 9 || c2 === 10 || c2 === 13 || c2 === 12) pos++
-        else break
-      }
-      chunks.push({ start, end: pos, kindIndex: wsKind })
-      continue
+    let matched: { end: number } | null = null
+    for (const arm of spec.arms) {
+      matched = matchArmAt(input, pos, arm.parser, state)
+      if (matched) break
     }
-    if (c === 47 && input.charCodeAt(pos + 1) === 42) {
-      let j = pos + 2
-      while (j + 1 < input.length && !(input.charCodeAt(j) === 42 && input.charCodeAt(j + 1) === 47)) j++
-      // Require the closing `*/`; an unterminated comment is NOT trivia (the
-      // `/\*…\*/` regex arm would fail), so stop here without consuming it —
-      // matching scanLabeledTriviaChunks and the compiled delimited scan.
-      if (j + 1 < input.length && input.charCodeAt(j) === 42 && input.charCodeAt(j + 1) === 47) {
-        const start = pos
-        pos = j + 2
-        chunks.push({ start, end: pos, kindIndex: commentKind })
-        continue
-      }
-      break
-    }
-    break
+    if (!matched) break
+    pos = matched.end
+    count++
   }
 
-  return { end: pos, chunks }
+  return count < spec.minRepeats ? cur : pos
 }
 
-/** Fast scan when trivia is labeled ws + block-comment (CSS `rw`). */
-export function tryFastLabeledScan(
+/**
+ * Visit classified trivia matches without constructing per-match objects. The
+ * visitor is only invoked after one or more arms matched, which is the shape
+ * used by `classifiedTrivia()`; callers with a stronger repeat minimum keep
+ * the buffered scanner so an unsuccessful minimum cannot leak a partial run.
+ */
+export function visitLabeledTrivia(
   input: string,
   cur: number,
-  trivia: Combinator<unknown>,
-): { end: number; chunks: TriviaChunk[] } | null {
-  const spec = analyzeLabeledTrivia(trivia)
-  if (!spec || spec.arms.length !== 2) return null
+  spec: LabeledTriviaSpec,
+  state: unknown | undefined,
+  visit: (start: number, end: number, kindIndex: number) => void,
+): number | undefined {
+  if (spec.minRepeats > 1) return undefined
+  let pos = cur
+  let count = 0
 
-  const wsArm = spec.arms.find(a => {
-    const src = getCoreRegexDef(a.parser)?.source
-    return src != null && !src.includes('\\*')
-  })
-  const commentArm = spec.arms.find(a => {
-    const src = getCoreRegexDef(a.parser)?.source
-    return src != null && src.includes('\\*')
-  })
-  if (!wsArm || !commentArm) return null
+  while (pos < input.length) {
+    let matched: { end: number; kindIndex: number } | null = null
+    for (const arm of spec.arms) {
+      const match = matchArmAt(input, pos, arm.parser, state)
+      if (match) {
+        matched = { end: match.end, kindIndex: arm.kindIndex }
+        break
+      }
+    }
+    if (!matched) break
+    visit(pos, matched.end, matched.kindIndex)
+    pos = matched.end
+    count++
+  }
 
-  const { chunks } = scanFastWsCommentsChunks(input, cur, wsArm.kindIndex, commentArm.kindIndex)
-  if (chunks.length < spec.minRepeats) return { end: cur, chunks: [] }
-  return scanFastWsCommentsChunks(input, cur, wsArm.kindIndex, commentArm.kindIndex)
+  return count < spec.minRepeats ? cur : pos
 }
 
 export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChunk[]): void {
   const kinds = ctx.triviaKindLabels
   const mask = ctx._triviaCaptureMask
+  const rootLog = ctx._rootTriviaLog
+  const rootKinds = ctx._rootTriviaKindIndex
+  const rootMark = rootLog?.length ?? 0
   for (const ch of chunks) {
     // Global trivia log: always complete (never kind-filtered).
     pushTriviaLogEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
+    const rootKindIndex = ctx._rootTriviaCapture === false || rootLog === undefined || rootKinds === undefined || kinds === undefined
+      ? -1
+      : (rootKinds[kinds[ch.kindIndex] ?? ''] ?? -1)
+    if (rootKindIndex >= 0) {
+      // Fill the enclosing committed gap after the scanner has consumed every
+      // chunk. A selected marker therefore carries its exact authored context
+      // without recording any whitespace-only chunk.
+      rootLog!.push(0, 0, ch.start, ch.end, rootKindIndex)
+    }
     // Per-node CST log: honour the kind mask when both a mask and labels are
     // present, so a host can capture (e.g.) comments only without logging every
     // whitespace run. No mask / no labels → capture everything, as before.
@@ -185,6 +217,14 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
       if (mask === undefined || kinds === undefined || (mask & (1 << ch.kindIndex)) !== 0) {
         pushCstTriviaEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
       }
+    }
+  }
+  if (rootLog !== undefined && rootLog.length !== rootMark && chunks.length > 0) {
+    const start = chunks[0]!.start
+    const end = chunks[chunks.length - 1]!.end
+    for (let offset = rootMark; offset < rootLog.length; offset += 5) {
+      rootLog[offset] = start
+      rootLog[offset + 1] = end
     }
   }
 }

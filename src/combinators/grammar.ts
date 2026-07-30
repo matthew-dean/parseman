@@ -24,6 +24,13 @@ export type ParserOptions = ParseOptions & {
    *                    Re-enable inside a nested region with another parser({ trivia }).
    */
   trivia?: Combinator<unknown> | null
+  /**
+   * Declare that this local trivia scope intentionally does not preserve
+   * selected root categories. Required only by
+   * `rootTrivia: { select }` when the scope does not use
+   * `classifiedTrivia()`.
+   */
+  rootCapture?: 'opaque'
   /** Record consumed trivia as CSTTrivia tokens in rawChildren. Default: skip. */
   captureTrivia?: boolean
   /**
@@ -61,18 +68,38 @@ function createParseLineContext(input: string, pos: number): { lineIndex: LineIn
 
 export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanParser<T> {
   const clearTrivia = opts.trivia === null
+  const opaqueRootCapture = opts.rootCapture === 'opaque'
+  if (opaqueRootCapture && opts.trivia === undefined) {
+    throw new TypeError('parser({ rootCapture: \'opaque\' }) requires an explicit trivia scope.')
+  }
   return {
     _tag: 'grammar',
-    _meta: root._meta,
+    _meta: {
+      ...root._meta,
+      // Trivia classification describes this grammar's own active trivia
+      // scope. A directly nested grammar may have classified trivia of its
+      // own, but that must not advertise classification for this wrapper.
+      triviaKindLabels: undefined,
+      rootTriviaClassified: undefined,
+      ...(opts.trivia?._meta?.triviaKindLabels ? { triviaKindLabels: opts.trivia._meta.triviaKindLabels } : {}),
+      ...(opts.trivia?._meta?.rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
+    },
     _def: {
       tag: 'grammar',
       parser: root as Combinator<unknown>,
       triviaParser: clearTrivia ? undefined : (opts.trivia ?? undefined),
       clearTrivia,
+      ...(opaqueRootCapture ? { rootCapture: 'opaque' as const } : {}),
       ...(opts.captureTrivia ? { captureTrivia: true } : {}),
       trackLines: opts.trackLines ?? false,
     },
     parse(input: string, pos?: number, _ctx?: ParseContext): ParseResult<T> {
+      if (_ctx?._rootTriviaStrictScopes && opts.trivia !== undefined && opts.trivia !== null
+        && !opts.trivia._meta.rootTriviaClassified && !opaqueRootCapture) {
+        throw new TypeError(
+          'parser(): selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: \'opaque\'.',
+        )
+      }
       const trackLines = opts.trackLines ?? _ctx?.trackLines ?? false
       const lineContext = trackLines && _ctx?._lineIndex === undefined && _ctx?._lineStarts === undefined
         ? createParseLineContext(input, pos ?? 0)
@@ -107,6 +134,10 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
         ...(opts.captureTriviaKinds && !clearTrivia
           ? { _triviaCaptureMask: triviaKindMask(opts.trivia?._meta.triviaKindLabels ?? _ctx?.triviaKindLabels, opts.captureTriviaKinds) }
           : {}),
+        // This is a property of the local trivia scope, not a post-parse filter:
+        // nested recognition can still skip its trivia, but selected root rows
+        // must never be written for an explicitly opaque region.
+        ...(opaqueRootCapture ? { _rootTriviaCapture: false } : {}),
       }
       const result = root.parse(input, pos ?? 0, ctx)
       if (trackLines && _ctx && ctx._lineScannedTo !== undefined) {

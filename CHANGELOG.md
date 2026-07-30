@@ -3,6 +3,26 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.44.0 — 2026-07-30
+
+- **Add sparse, selected root trivia capture.** `run(entry, input, { rootTrivia:
+  { selectedKinds } })` records only markers for the named, grammar-defined trivia
+  labels. Each fixed-width row also carries its complete authored owning range, so
+  serializers can still reproduce the surrounding gap without retaining one root
+  entry per whitespace run. Labels are arbitrary grammar policy — `blockComment`,
+  `lineComment`, `pragma`, or a formatter-specific `significantNewline` are equally
+  valid; ordinary whitespace remains implied by source offsets unless explicitly
+  selected.
+
+- **Keep selected capture correct across every parser form.** Rejected choice and
+  `attempt` arms, `optional`/repeat tails, `sepBy`, lookahead, recovery probes,
+  composed grammar factories, macro-fused artifacts, and AST/CST host modes all
+  roll the sparse sink back transactionally. Semantic `leaf()` wrappers retain
+  selected root markers, and selected row kind indexes use the requested label
+  table rather than a scope-local label order. The result is exposed as
+  `RunResult.rootTrivia` and through the same lazy `triviaMap` query interface;
+  legacy `triviaLog` remains available under the default `allEntries` mode.
+
 ## 0.43.0 — 2026-07-30
 
 - **Add CST tags and grammar-aware visitors.** `node(..., { tags })` can now

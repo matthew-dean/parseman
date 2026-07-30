@@ -4,7 +4,7 @@ import type {
 } from '../types.ts'
 import { union, intersects, matchesEmpty } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
-import { saveCstMark, rollbackCstCapture } from '../cst/capture-buffer.ts'
+import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
 
 type ArmParser<T> = T extends GatedArm<infer U> ? Combinator<U> : T extends Combinator<infer U> ? Combinator<U> : never
 type UnionArms<T extends (Combinator<unknown> | GatedArm<unknown>)[]> = {
@@ -149,20 +149,17 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       for (let i = 0; i < parsers.length; i++) {
         if (gates[i] && !gates[i]!(ctx.state)) continue   // gate blocks this arm
         // Save leaf-array lengths so a failed/rejected arm can be rolled back.
-        const mark = saveCstMark(ctx)
-        const logLen = ctx._triviaLog?.length
+        const mark = saveTriviaMark(ctx)
         const result = parsers[i]!.parse(input, pos, ctx)
         if (!result.ok) {
-          rollbackCstCapture(ctx, mark)
-          if (logLen !== undefined && ctx._triviaLog && ctx._triviaLog.length !== logLen) ctx._triviaLog.length = logLen
+          rollbackTrivia(ctx, mark)
           expected.push(...result.expected)
           if (result.committed) return { ok: false, expected, span: result.span, committed: true }
           continue
         }
         const checks = autoNot[i]
         if (checks && autoNotFires(input, result.span.end, checks)) {
-          rollbackCstCapture(ctx, mark)
-          if (logLen !== undefined && ctx._triviaLog && ctx._triviaLog.length !== logLen) ctx._triviaLog.length = logLen
+          rollbackTrivia(ctx, mark)
           continue
         }
         return result as ParseResult<UnionArms<T>>
