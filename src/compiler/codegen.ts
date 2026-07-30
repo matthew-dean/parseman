@@ -173,6 +173,46 @@ import { annotateSpan, normalizeLineIndex, recordLineRange } from './line-index.
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 
 /**
+ * Emission-time constant folding for gate expressions.
+ *
+ * Several per-node gates are compile-time constants once a capability is not
+ * compiled in (profiling is the motivating case: it is interpreted-mode only, so
+ * every profiling gate is the literal `'false'` here). Building the ternary as a
+ * string would leave `false ? undefined : []` in the artifact — correct, but it
+ * is emitted once per node, and a real grammar has thousands of nodes. Folding
+ * at emission keeps the artifact free of provably-dead branches instead of
+ * relying on a downstream minifier that callers may not run.
+ */
+function tern(cond: string, whenTrue: string, whenFalse: string): string {
+  if (cond === 'false') return whenFalse
+  if (cond === 'true') return whenTrue
+  return `${cond} ? ${whenTrue} : ${whenFalse}`
+}
+
+/** Fold `!(cond)` when `cond` is a literal. */
+function notGate(cond: string): string {
+  if (cond === 'false') return 'true'
+  if (cond === 'true') return 'false'
+  return `!(${cond})`
+}
+
+/** Fold `a || b` when either side is a literal. */
+function orGate(a: string, b: string): string {
+  if (a === 'false') return b
+  if (b === 'false') return a
+  if (a === 'true' || b === 'true') return 'true'
+  return `${a} || ${b}`
+}
+
+/** Fold `a && b` when either side is a literal. */
+function andGate(a: string, b: string): string {
+  if (a === 'false' || b === 'false') return 'false'
+  if (a === 'true') return b
+  if (b === 'true') return a
+  return `${a} && ${b}`
+}
+
+/**
  * Runtime prelude helper for the structural-node capture gate. Answers "does the
  * injected `_ctx.build` host read its (n+1)th positional arg?" — `.length` alone
  * under-counts with rest/default params and can't see through a bound fn, so a
@@ -3410,22 +3450,22 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const smk = structural ? v(ctx, '_smk') : null
   if (structural) ctx.needsHostReads = true
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
-  // `run({ profile: true })` reuses the established recognition-only boundary
-  // (`transform(parser, () => undefined)`) for an already-compiled structural
-  // grammar: recognizer suppresses all node output, capture records structure
-  // but skips construction, and host is the unmodified normal path. This is
-  // profiling-only context state, not a public parser mode.
-  // Hoist the profiling-phase reads to ONE `_ctx._pmProfile` read + two boolean
-  // locals per node, instead of re-evaluating `_ctx._pmProfile?.phase === X` ~8×
-  // across the alloc/install lines. On the normal (non-profiling) path `_pm` is
-  // undefined, so both locals fall out of one read + two short-circuiting compares,
-  // and every downstream `${_rec} ? … : …` becomes a cheap boolean-local ternary.
-  // Fixes the per-node overhead the profiling boundary added on tiny inputs (where
-  // it isn't amortized: ~+10–15% on 2–3µs cases, ~0% on bootstrap4).
-  const pmV = v(ctx, '_pm'), recV = v(ctx, '_rec'), capV = v(ctx, '_cap')
-  const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
-  const profileRecognizer = recV
-  const profileCapture = capV
+  // Profiling is INTERPRETED-MODE ONLY and is deliberately not compiled in.
+  //
+  // `run({ profile })` drives its recognizer/capture/host phases through
+  // `_ctx._pmProfile`. Emitting those phase gates into the artifact cost a
+  // `_ctx._pmProfile` read plus two locals on EVERY node, and threaded a ternary
+  // through ~15 further per-node expressions — machinery a normal parse never
+  // executes. The commit that hoisted the reads to two locals recorded the cost it
+  // was walking back: "~+10–15% on 2–3µs cases".
+  //
+  // These stay as string GATES rather than being deleted inline so the emission
+  // sites keep one shape; `tern`/`notGate`/`orGate` fold them away, so the literal
+  // `'false'` here means the dead branch never reaches the artifact at all.
+  // A compiled artifact is stamped un-profilable (see `FUSED_NO_PROFILE`) and
+  // `run()` refuses `profile` on it rather than silently reporting zeros.
+  const profileRecognizer = 'false'
+  const profileCapture = 'false'
   // Direct builders normally produce their own AST and never inspect CST
   // children/rawChildren. Keep cstBuildHost and profile({ capture: true })
   // truthful by dynamically restoring those collectors only for those explicit
@@ -3457,21 +3497,28 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? 'true'
     : `(_ctx._pmReadsCh ??= (_ctx.build === undefined || _ctx.build._parsemanReadsChildren !== false || _ctx.build._parsemanCstCollapse !== undefined))`
   const chAlloc = (def.unwrap || def.collapse)
-    ? `${profileRecognizer} ? undefined : []`
-    : `${profileRecognizer} ? undefined : ((${profileCapture} || ${chNeededExpr}) ? [] : undefined)`
+    ? tern(profileRecognizer, 'undefined', '[]')
+    : tern(profileRecognizer, 'undefined', `${tern(orGate(profileCapture, chNeededExpr), '[]', 'undefined')}`)
+  // `directCstV` is dead once the profiling capture pass is not compiled in: its
+  // ONLY gate was `profileCapture`. Fold the whole binding away rather than emit
+  // `const _dcst = false` plus a `_dcst ? [] : undefined` on every node.
+  const dcstDecl = directCstV && directCstGate !== 'false' ? `${i}const ${directCstV} = ${directCstGate}\n` : ''
+  const dcstAlloc = directCstV === null || directCstGate === 'false'
+    ? 'undefined'
+    : `${directCstV} ? [] : undefined`
   const allocStmt = structural
-    ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${structuralCapturesTrivia ? 'true' : hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
-      + `${i}const ${chV} = ${chAlloc}, ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
+    ? `${i}const ${capTLv} = ${andGate(notGate(profileRecognizer), orGate(profileCapture, structuralCapturesTrivia ? 'true' : hostTriviaGate))}, ${capSTv} = ${andGate(notGate(orGate(profileRecognizer, profileCapture)), '(_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))')}${capFv ? `, ${capFv} = ${andGate(notGate(profileRecognizer), orGate(profileCapture, '(_ctx.build !== undefined && _hostReads(_ctx.build, 2))'))}` : ''}\n`
+      + `${i}const ${chV} = ${chAlloc}, ${rawV} = ${tern(profileRecognizer, 'undefined', '[]')}, ${tlV} = ${tern(profileRecognizer, 'undefined', innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`)}`
     : capturesTrivia
-      ? `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}, ${tlV} = ${profileRecognizer} ? undefined : []`
-      : `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}`
+      ? `${dcstDecl}${i}const ${capTLv} = ${notGate(profileRecognizer)}, ${chV} = ${tern(profileRecognizer, 'undefined', capturesChildren ? '[]' : dcstAlloc)}, ${rawV} = ${tern(profileRecognizer, 'undefined', capturesRaw ? '[]' : dcstAlloc)}, ${tlV} = ${tern(profileRecognizer, 'undefined', '[]')}`
+      : `${dcstDecl}${i}const ${chV} = ${tern(profileRecognizer, 'undefined', capturesChildren ? '[]' : dcstAlloc)}, ${rawV} = ${tern(profileRecognizer, 'undefined', capturesRaw ? '[]' : dcstAlloc)}`
   // The collector stays installed when a nested grammar can opt in; generated
   // trivia scanners gate their push on `captureTrivia`, so this remains inert
   // until that nested scope activates it.
   const innerTl = structural || capturesTrivia
     ? structural && !innerEnablesTriviaCapture ? `${capTLv} ? ${tlV} : undefined` : tlV
     : 'undefined'
-  const fieldsOn = structural ? (capFv ?? 'false') : `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
+  const fieldsOn = structural ? (capFv ?? 'false') : tern(profileRecognizer, 'false', capturesFields ? 'true' : 'false')
   const sf = hasFields ? v(ctx, '_sf') : null
   const fArr = hasFields ? v(ctx, '_fa') : null
   const fObj = hasFields ? v(ctx, '_fields') : 'undefined'
@@ -3509,7 +3556,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // The gate is `needsFirstSetGuard` ALONE. It used to also require
   // `capturesChildren || structural`, on the theory that a node capturing nothing has
   // "no frame to save" and so nothing to protect. That was wrong twice over. Factually:
-  // a non-capturing node still emits `profHoist`, still allocates `chV`/`rawV` bindings,
+  // a non-capturing node still allocates `chV`/`rawV` bindings,
   // and still saves + installs + restores `_cstChildren`/`_cstLeaves`/`_cstRawChildren`
   // (and the trivia frame) before the body recognizes a byte. Structurally: capture is a
   // COST question and the guard is a CORRECTNESS-neutral speedup, so using one as a proxy
@@ -3535,7 +3582,6 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   }
   const stmts: string[] = [
     ...preGuard,
-    profHoist,
     allocStmt,
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,
     `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}${installTrivia}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
@@ -3555,14 +3601,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // the recorded deepest failure, not a coarse ["node"] at the node's start.
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
 
-  stmts.push(
-    `${i}if (_ctx._pmProfile) {`,
-    `${i}  _ctx._pmProfile.nodes++`,
-    `${i}  if (${profileCapture}) {`,
-    `${i}    _ctx._pmProfile.childSlots += ${chV}.length; _ctx._pmProfile.rawSlots += ${rawV}.length; _ctx._pmProfile.triviaSlots += ${tlV}.length${fArr ? `; _ctx._pmProfile.fieldSlots += ${fArr} ? ${fArr}.length : 0` : ''}`,
-    `${i}  }`,
-    `${i}}`,
-  )
+  // (profiling counters intentionally not emitted — interpreted mode only)
 
   let stV = 'undefined'
   if (structural) {
@@ -3570,7 +3609,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     stmts.push(`${i}const ${stV} = ${capSTv} && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   } else if (clonesState) {
     stV = v(ctx, '_nst')
-    stmts.push(`${i}const ${stV} = !(${profileRecognizer} || ${profileCapture}) && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+    stmts.push(`${i}const ${stV} = ${andGate(notGate(orGate(profileRecognizer, profileCapture)), '_ctx.state !== undefined')} ? Object.assign({}, _ctx.state) : undefined`)
   }
   if (sf && fArr) {
     const fe = v(ctx, '_fe')
@@ -3606,7 +3645,9 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // sole exception, so a direct object never becomes a CST child. Linkability
   // must not change that ownership rule.
   const hostBuildArgs = `${JSON.stringify(def.type)}, ${chV}, ${fObj}, ${nodeSpanV}, ${rawV}, ${tlV}, ${stV}${def.tags !== undefined && def.tags.length > 0 ? `, ${JSON.stringify(def.tags)}` : ''}`
-  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${hostBuildArgs})`
+  // No profiling comma-expression: `run({ profile })` counts host calls in
+  // interpreted mode, so the compiled host branch is the bare call.
+  const hostBuildExpr = `_ctx.build(${hostBuildArgs})`
   // A direct builder's consumer is fixed at COMPILE time, so this is a constant choice,
   // not a per-node `_ctx.build?._parsemanCstOutput === true` read. `'cst'` builds through
   // the host (so a direct semantic object can never become a CST child); `'ast'` never
@@ -3638,13 +3679,16 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     : def.collapse
       ? collapseExpr
     : hostCollapseExpr
-  stmts.push(
-    `${i}const ${ndV} = (${profileRecognizer} || ${profileCapture}) ? undefined : (${finalExpr})`,
-    `${i}if (!(${profileRecognizer})) {`,
-    `${i}  if (${sc}) ${sc}.push(${ndV})`,
-    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : (typeof ${ndV} === 'object' && ${ndV} !== null ? input.slice(${pos}, ${endVar}) : ''), span: ${nodeSpanV} })`,
-    `${i}}`,
-  )
+  const ndGate = orGate(profileRecognizer, profileCapture)
+  const recGate = notGate(profileRecognizer)
+  // With profiling out of the compiled path `recGate` is statically true, so the
+  // two pushes are emitted unwrapped instead of inside a dead `if (true) { … }`.
+  const pushIndent = recGate === 'true' ? i : `${i}  `
+  const pushCh = `${pushIndent}if (${sc}) ${sc}.push(${ndV})`
+  const pushRaw = `${pushIndent}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : (typeof ${ndV} === 'object' && ${ndV} !== null ? input.slice(${pos}, ${endVar}) : ''), span: ${nodeSpanV} })`
+  stmts.push(`${i}const ${ndV} = ${tern(ndGate, 'undefined', `(${finalExpr})`)}`)
+  if (recGate === 'true') stmts.push(pushCh, pushRaw)
+  else stmts.push(`${i}if (${recGate}) {`, pushCh, pushRaw, `${i}}`)
 
   return { stmts, valueVar: ndV, endVar }
 }
