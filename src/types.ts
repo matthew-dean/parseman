@@ -344,6 +344,12 @@ export type ParseContext = {
   /** Strict selected-root capture checks local trivia classification once per scope. */
   _rootTriviaStrictScopes?: boolean | undefined
   /**
+   * Scoped selected-root capture switch. `parser({ rootCapture: 'opaque' })`
+   * turns this off for its explicit trivia region so that region cannot leak
+   * selected markers into the document-root capture.
+   */
+  _rootTriviaCapture?: boolean | undefined
+  /**
    * Framework-internal: flat per-node trivia log for CST capture mode.
    * When set alongside _cstRawChildren, each trivia entry is recorded as three
    * numbers [start, end, insertIdx] appended here (one entry = three numbers) instead of allocating a

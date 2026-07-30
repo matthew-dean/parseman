@@ -3981,9 +3981,10 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'grammar': {
       const savedTrivia = ctx.activeTrivia
       const savedKindLabels = ctx.triviaKindLabels
+      const opaqueRootCapture = def.rootCapture === 'opaque'
       const strictScopeCheck = def.triviaParser !== undefined
         && !def.triviaParser._meta.rootTriviaClassified
-        && def.rootCapture !== 'opaque'
+        && !opaqueRootCapture
         ? `${ind(ctx)}if (_ctx._rootTriviaStrictScopes) throw new TypeError(${JSON.stringify('parseman: selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: \'opaque\'.')})`
         : undefined
       if (def.clearTrivia) {
@@ -3997,12 +3998,33 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         }
       }
       const savedCapture = def.captureTrivia ? v(ctx, '_gcap') : null
+      const savedRootCapture = opaqueRootCapture ? v(ctx, '_grtc') : null
+      const opaqueValue = opaqueRootCapture ? v(ctx, '_grtv') : null
+      const opaqueEnd = opaqueRootCapture ? v(ctx, '_grte') : null
+      if (opaqueRootCapture) ctx.indent++
       const r = emit(def.parser, ctx, pos)
+      if (opaqueRootCapture) ctx.indent--
       ctx.activeTrivia = savedTrivia
       ctx.triviaKindLabels = savedKindLabels
-      if (!savedCapture) return strictScopeCheck === undefined ? r : {
+      if (!savedCapture && !opaqueRootCapture) return strictScopeCheck === undefined ? r : {
         ...r,
         stmts: [strictScopeCheck, ...r.stmts],
+      }
+      if (opaqueRootCapture) {
+        return {
+          stmts: [
+            ...(strictScopeCheck === undefined ? [] : [strictScopeCheck]),
+            `${ind(ctx)}let ${opaqueValue}, ${opaqueEnd}`,
+            `${ind(ctx)}${savedCapture ? `const ${savedCapture} = _ctx.captureTrivia; ` : ''}const ${savedRootCapture} = _ctx._rootTriviaCapture; _ctx._rootTriviaCapture = false`,
+            `${ind(ctx)}try {`,
+            ...(savedCapture ? [`${ind(ctx)}  _ctx.captureTrivia = true`] : []),
+            ...r.stmts,
+            `${ind(ctx)}  ${opaqueValue} = ${r.valueVar}; ${opaqueEnd} = ${r.endVar}`,
+            `${ind(ctx)}} finally { ${savedCapture ? `_ctx.captureTrivia = ${savedCapture}; ` : ''}_ctx._rootTriviaCapture = ${savedRootCapture} }`,
+          ],
+          valueVar: opaqueValue!,
+          endVar: opaqueEnd!,
+        }
       }
       return {
         ...r,
@@ -4974,8 +4996,11 @@ function publicRuleWrapperSource(
   ambientTriviaKindLabels?: readonly string[],
   ambientRootTriviaClassified?: true,
 ): string {
-  const labels = rule._meta.triviaKindLabels ?? ambientTriviaKindLabels
-  const classified = rule._meta.rootTriviaClassified ?? ambientRootTriviaClassified
+  // A rules({ trivia }) declaration owns the document-root category table. A
+  // nested parser({ trivia }) can use a different local table, but must not
+  // replace the root labels advertised by the public compiled entry.
+  const labels = ambientTriviaKindLabels ?? rule._meta.triviaKindLabels
+  const classified = ambientRootTriviaClassified ?? rule._meta.rootTriviaClassified
   if (labels === undefined && classified === undefined) return fnSource
   return `Object.assign(${fnSource}, { _meta: {${labels === undefined ? '' : ` triviaKindLabels: ${JSON.stringify(labels)},`}${classified === undefined ? '' : ' rootTriviaClassified: true,'} } })`
 }

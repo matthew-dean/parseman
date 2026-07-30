@@ -79,7 +79,7 @@ const CAP_RECORD = [
 ].join('\n')
 
 const SELECTED_ROOT_FINISH = [
-  `  if (_cap && _ctx._rootTriviaLog !== undefined && _ctx._rootTriviaLog.length !== _rootMark) {`,
+  `  if (_cap && _ctx._rootTriviaCapture !== false && _ctx._rootTriviaLog !== undefined && _ctx._rootTriviaLog.length !== _rootMark) {`,
   `    for (let _ri = _rootMark; _ri < _ctx._rootTriviaLog.length; _ri += ${SELECTED_ROOT_STRIDE}) { _ctx._rootTriviaLog[_ri] = _pos; _ctx._rootTriviaLog[_ri + 1] = _e }`,
   `  }`,
 ].join('\n')
@@ -167,7 +167,7 @@ export function buildLabeledRegexTriviaFnDecl(
       `      const _ce = _e + _m${i}[0].length`,
       `      if (_cap) {`,
       `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, _ce, ${k})`,
-      `        const _rk${i} = _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(arm.label)}] ?? -1)`,
+      `        const _rk${i} = _ctx._rootTriviaCapture === false || _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(arm.label)}] ?? -1)`,
       `        if (_rk${i} >= 0) _ctx._rootTriviaLog.push(0, 0, _e, _ce, _rk${i})`,
       `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << k}))) _ctx._cstTriviaLog.push(_e, _ce, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${k})`,
       `      }`,
@@ -217,7 +217,7 @@ export function buildLabeledRuntimeTriviaFnDecl(
       `      const _ce = _r${i}.span.end`,
       `      if (_cap) {`,
       `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, _ce, ${k})`,
-      `        const _rk${i} = _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(arm.label)}] ?? -1)`,
+      `        const _rk${i} = _ctx._rootTriviaCapture === false || _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(arm.label)}] ?? -1)`,
       `        if (_rk${i} >= 0) _ctx._rootTriviaLog.push(0, 0, _e, _ce, _rk${i})`,
       `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << k}))) _ctx._cstTriviaLog.push(_e, _ce, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${k})`,
       `      }`,

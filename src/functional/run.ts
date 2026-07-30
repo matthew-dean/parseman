@@ -170,8 +170,8 @@ function triviaKindLabelsFromRunnable(r: Runnable | undefined): readonly string[
   if (!r) return undefined
   if (typeof r === 'function') return (r as RunnableMeta)._meta?.triviaKindLabels
   const grammarTrivia = (r._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
-  return r._meta.triviaKindLabels
-    ?? grammarTrivia?._meta.triviaKindLabels
+  return grammarTrivia?._meta.triviaKindLabels
+    ?? r._meta.triviaKindLabels
     ?? (r._def.tag === 'grammar' ? r._def.triviaParser?._meta.triviaKindLabels : undefined)
 }
 
@@ -179,7 +179,7 @@ function rootTriviaClassifiedFromRunnable(r: Runnable | undefined): boolean {
   if (!r) return false
   if (typeof r === 'function') return (r as RunnableMeta)._meta?.rootTriviaClassified === true
   const grammarTrivia = (r._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
-  return r._meta.rootTriviaClassified === true || grammarTrivia?._meta.rootTriviaClassified === true
+  return grammarTrivia?._meta.rootTriviaClassified === true || r._meta.rootTriviaClassified === true
 }
 
 function makeSelectedRootLabelIndex(labels: readonly string[]): Readonly<Record<string, number>> {
@@ -229,7 +229,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
     }
   }
   if (rootTriviaMode !== 'allEntries' && rootTriviaMode.strictScopes
-    && !rootTriviaClassifiedFromRunnable(options.trivia ?? entry)) {
+    && !rootTriviaClassifiedFromRunnable(entry)) {
     throw new TypeError(
       'run(): rootTrivia.select with strictScopes requires classifiedTrivia() at the root.',
     )

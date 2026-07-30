@@ -1573,7 +1573,7 @@ export function scanBranchLabeled(shape: ScanShape, kindIndex: number, label: st
     `    if (${m.end} > _e) {`,
     `      if (_cap) {`,
     `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, ${m.end}, ${kindIndex})`,
-    `        const _rk = _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(label)}] ?? -1)`,
+    `        const _rk = _ctx._rootTriviaCapture === false || _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(label)}] ?? -1)`,
     `        if (_rk >= 0) _ctx._rootTriviaLog.push(${SELECTED_ROOT_OWNED_RANGE_PLACEHOLDER}, _e, ${m.end}, _rk)`,
     `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << kindIndex}))) _ctx._cstTriviaLog.push(_e, ${m.end}, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${kindIndex})`,
     `      }`,

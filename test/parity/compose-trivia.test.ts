@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { rules, compose, composeLeaf, trivia, sequence, literal, oneOrMore, regex, run } from '../../src/index.ts'
+import { classifiedTrivia, parser, rules, compose, trivia, sequence, literal, oneOrMore, regex, run } from '../../src/index.ts'
+import type { Runnable } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 // Eval a fully-macro-compiled module (import already stripped, no `new Function`
@@ -99,6 +100,32 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
     })
   })
 
+  it('runtime IR composition preserves classified local trivia for strict selected capture', () => {
+    // Keep this grammar runtime-built: compose() serializes the base map to IR and
+    // re-lowers it, which is the boundary that previously erased the classification
+    // marker on parser({ trivia }).
+    const root = classifiedTrivia({
+      whitespace: regex(/[ \t\n]+/),
+      blockComment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+    })
+    const base = rules({ trivia: root }, () => ({
+      Pair: parser({ trivia: root }, sequence(literal('a'), literal('b'))),
+    }))
+    const g = compose([
+      base,
+      rules({ trivia: root }, g => ({ Doc: sequence(literal('x'), g.Pair, literal('y')) })),
+    ]) as { Doc: Runnable }
+
+    const result = run(g.Doc, 'x a /*x*/ b y', {
+      rootTrivia: { select: ['blockComment'], strictScopes: true },
+    })
+    expect(result.rootTrivia).toEqual({
+      mode: 'selected',
+      rows: [3, 10, 4, 9, 0],
+      select: ['blockComment'],
+    })
+  })
+
   it('macro-fused composeLeaf carries selected root trivia through a recognition piece', () => {
     const code = `
 import { composeLeaf, rules, trivia, sequence, literal, oneOrMore, choice, label, regex } from 'parseman' with { type: 'macro' }
@@ -131,7 +158,7 @@ const root = classifiedTrivia({
 const collapsed = trivia(label('whitespace', regex(/(?:(?:[ \\t\\n]+)|(?:\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/))+/)))
 export const g = rules({ trivia: root }, (g) => ({
   Doc: parser({ trivia: collapsed }, sequence(literal('a'), literal('b'))),
-  Opaque: parser({ trivia: collapsed, rootCapture: 'opaque' }, sequence(literal('c'), literal('d'))),
+  Opaque: parser({ trivia: root, rootCapture: 'opaque' }, sequence(literal('c'), literal('d'))),
 }))
 `
     const out = transformMacro(code, 'strict-selected-trivia.ts', new Set(['parseman']))

@@ -135,22 +135,34 @@ describe('strict selected root trivia scopes', () => {
     })).toThrow(/classifiedTrivia\(\).*rootCapture: 'opaque'/)
   })
 
-  it('allows an explicit opaque local scope without manufacturing a selected row', () => {
+  it('keeps classified selected markers out of an explicit opaque local scope', () => {
     const entry = parser({ trivia: outer }, sequence(
       literal('a'),
-      parser({ trivia: collapsed, rootCapture: 'opaque' }, sequence(literal('b'), literal('c'))),
+      parser({ trivia: outer, rootCapture: 'opaque' }, sequence(literal('b'), literal('c'))),
     ))
-    const result = run(entry, 'a b/* hidden */c', {
-      trivia: outer,
-      rootTrivia: { select: ['blockComment'], strictScopes: true },
-    })
-
-    expect(result.rootTrivia).toEqual({ mode: 'selected', rows: [], select: ['blockComment'] })
+    const options = { rootTrivia: { select: ['blockComment'] as const, strictScopes: true } }
+    const compiled = compileRuleMap([['Entry', entry]])!
+    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
+    for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
+      const result = run(root, 'a b/* hidden */c', options)
+      expect(result.ok, engine).toBe(true)
+      expect(result.rootTrivia, engine).toEqual({ mode: 'selected', rows: [], select: ['blockComment'] })
+    }
   })
 
   it('requires opaque scopes to declare the trivia they make opaque', () => {
     expect(() => parser({ rootCapture: 'opaque' }, literal('a')))
       .toThrow(/requires an explicit trivia scope/)
+  })
+
+  it('rejects nullable or overlapping arms before they can masquerade as classified trivia', () => {
+    expect(() => classifiedTrivia({
+      whitespace: regex(/[ \t]+/),
+      broad: regex(/[ \t/]+/),
+    })).toThrow(/overlaps/)
+    expect(() => classifiedTrivia({
+      optionalWhitespace: regex(/[ \t]*/),
+    })).toThrow(/non-nullable/)
   })
 
   it('accepts a classified whitespace-only local scope', () => {

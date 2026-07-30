@@ -181,7 +181,7 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
   for (const ch of chunks) {
     // Global trivia log: always complete (never kind-filtered).
     pushTriviaLogEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
-    const rootKindIndex = rootLog === undefined || rootKinds === undefined || kinds === undefined
+    const rootKindIndex = ctx._rootTriviaCapture === false || rootLog === undefined || rootKinds === undefined || kinds === undefined
       ? -1
       : (rootKinds[kinds[ch.kindIndex] ?? ''] ?? -1)
     if (rootKindIndex >= 0) {

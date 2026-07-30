@@ -74,7 +74,11 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
   }
   return {
     _tag: 'grammar',
-    _meta: root._meta,
+    _meta: {
+      ...root._meta,
+      ...(opts.trivia?._meta?.triviaKindLabels ? { triviaKindLabels: opts.trivia._meta.triviaKindLabels } : {}),
+      ...(opts.trivia?._meta?.rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
+    },
     _def: {
       tag: 'grammar',
       parser: root as Combinator<unknown>,
@@ -125,6 +129,10 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
         ...(opts.captureTriviaKinds && !clearTrivia
           ? { _triviaCaptureMask: triviaKindMask(opts.trivia?._meta.triviaKindLabels ?? _ctx?.triviaKindLabels, opts.captureTriviaKinds) }
           : {}),
+        // This is a property of the local trivia scope, not a post-parse filter:
+        // nested recognition can still skip its trivia, but selected root rows
+        // must never be written for an explicitly opaque region.
+        ...(opaqueRootCapture ? { _rootTriviaCapture: false } : {}),
       }
       const result = root.parse(input, pos ?? 0, ctx)
       if (trackLines && _ctx && ctx._lineScannedTo !== undefined) {
