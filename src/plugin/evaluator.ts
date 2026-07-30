@@ -82,6 +82,40 @@ function stripTsFromSource(node: Node, code: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Reducer-declaration resolution
+//
+// `buildSrc` is the source text of the EXPRESSION at the `node(...)` call site, so a
+// reducer passed as a bare identifier — `node('Foo', p, { build: foldOperation })` —
+// arrives as the string `"foldOperation"`. That matches no parameter list, so
+// `confirmedBuildArity` returned `null` and every capture tier stayed on: the runtime
+// cost of a rule depended on how its reducer was SPELLED.
+//
+// This plugin is `enforce: 'pre'` and already holds the whole module's oxc AST, so the
+// declaration is right there. `index.ts` builds the name → declaration-source map (it
+// owns the module body) and installs it here for the duration of one transform; the
+// resolved source is parked on `_def.buildSigSrc`, which is read ONLY by the cost
+// analysis and never emitted, so the generated builder reference is byte-identical.
+//
+// DELIBERATELY CONSERVATIVE — `index.ts` only admits a name when it is bound EXACTLY
+// ONCE in the whole module, by a module-scope `function` declaration or a `const`
+// arrow/function expression. An imported identifier is never admitted: its declaration
+// lives in another module whose AST we do not have, and guessing an arity that is too
+// low would under-capture, which is a correctness bug rather than a cost. Those stay
+// fail-open and are reported by the `build-arity-unconfirmed` diagnostic instead.
+// ---------------------------------------------------------------------------
+let _reducerDecls: ReadonlyMap<string, string> | null = null
+
+/** Install (or clear, with `null`) the module's resolvable reducer declarations. */
+export function setReducerDeclarations(m: ReadonlyMap<string, string> | null): void {
+  _reducerDecls = m
+}
+
+/** TS-stripped source of a subtree — exported so `index.ts` can build the map above. */
+export function sourceOf(node: Node, code: string): string {
+  return stripTsFromSource(node, code)
+}
+
+// ---------------------------------------------------------------------------
 // Scope types
 //
 // Each scope entry is either a raw Combinator, or an enriched entry that
@@ -583,6 +617,10 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         : parseman.node(inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)
       if (combi._def.tag === 'node' && buildSrc !== undefined) {
         combi._def.buildSrc = buildSrc
+        // A bare-identifier reducer: resolve it to its module-scope declaration so the
+        // capture-tier analysis reads the REAL parameter list instead of failing open.
+        const sig = _reducerDecls?.get(buildSrc.trim())
+        if (sig !== undefined) combi._def.buildSigSrc = sig
         const staticError = directBuilderUnsupportedBindings(buildSrc)
         if (staticError.length > 0) combi._def.buildStaticError = staticError
       }

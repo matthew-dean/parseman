@@ -8,7 +8,10 @@ export default defineConfig({
     // hundreds of grammars — many deliberately ungated for coverage — so silence
     // the default warning here; tests that exercise the diagnostic opt in
     // explicitly via `compile(g, undefined, { gating: 'warn' })` / `analyzeGating()`.
-    env: { PARSEMAN_GATING: 'off' },
+    // The degradation diagnostic is likewise DEFAULT-ON for real consumers. Same
+    // reasoning: this suite compiles hundreds of deliberately-degenerate grammars, so
+    // silence it here; the tests that exercise it set `PARSEMAN_DEGRADATION` explicitly.
+    env: { PARSEMAN_GATING: 'off', PARSEMAN_DEGRADATION: 'off' },
     // Heavy benchmark suite (full grammar sweep + 3-pass CSS ratio guard) —
     // slow by design, and already covered on relevant commits by the
     // pre-commit hook (`pnpm perf:guard`). Run explicitly via `pnpm test:perf`.

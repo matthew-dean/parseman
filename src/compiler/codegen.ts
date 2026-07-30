@@ -3488,10 +3488,25 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // nothing has been captured yet to roll back. Records the same static `expected`
   // a body start-fail would (named-rule bodies run with recordFail), so diagnostics
   // are unchanged. Skipped under compiled recovery (a swallowed failure still feeds
-  // the completions probe there) and when the node captures nothing (no frame to
-  // save). Mirrors the choice/`many` first-set guards.
+  // the completions probe there). Mirrors the choice/`many`/`attempt` first-set guards.
+  //
+  // The gate is `needsFirstSetGuard` ALONE. It used to also require
+  // `capturesChildren || structural`, on the theory that a node capturing nothing has
+  // "no frame to save" and so nothing to protect. That was wrong twice over. Factually:
+  // a non-capturing node still emits `profHoist`, still allocates `chV`/`rawV` bindings,
+  // and still saves + installs + restores `_cstChildren`/`_cstLeaves`/`_cstRawChildren`
+  // (and the trivia frame) before the body recognizes a byte. Structurally: capture is a
+  // COST question and the guard is a CORRECTNESS-neutral speedup, so using one as a proxy
+  // for the other coupled the largest measured parse lever to an unrelated decision — a
+  // confirmed zero-arity `() =>` reducer sets `capturesChildren = false` and thereby
+  // DELETED that node's first-set gate. CST mode forces the flag true, so the loss showed
+  // up only in 'ast' artifacts, which is why it went unnoticed. Sound to drop: the guard
+  // is emitted strictly before every statement this node contributes, `needsFirstSetGuard`
+  // guarantees a first-set miss cannot match, and the recorded `expected`/`_fe` are the
+  // ones a body start-fail would record — `emitAttempt` already gates on
+  // `needsFirstSetGuard` with no capture precondition, for exactly these reasons.
   const preGuard: string[] = []
-  if (!ctx.recovery && !ctx.coverage && (capturesChildren || structural) && needsFirstSetGuard(def.parser)) {
+  if (!ctx.recovery && !ctx.coverage && needsFirstSetGuard(def.parser)) {
     const gcV = v(ctx, '_ngc')
     const gExp = armStaticExpected(ctx, def.parser)
     const gFail = ctx.failLabel
@@ -3588,7 +3603,16 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
       : buildExpr
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
-  const hostCollapseExpr = structural
+  // `cstBuildHost({ collapse })` applies wherever the node's VALUE comes from the host —
+  // that is the only situation in which the produced thing is a CST node the host owns.
+  // It used to be emitted for `structural` alone, which silently made the documented
+  // option a no-op for every `hostMode: 'cst'` grammar whose nodes carry a build reducer
+  // (measured in jess: `predicateCalls === 0` across four dialects, and zero occurrences
+  // of `_parsemanCstCollapse` in the built artifacts). In `'cst'` mode a direct builder is
+  // BYPASSED — `ndExpr` is `hostBuildExpr` — so the node is host-built exactly like a
+  // structural one, and there is no reason for the policy to skip it.
+  const hostCollapses = structural || cstOut
+  const hostCollapseExpr = hostCollapses
     ? `_ctx.build !== undefined && _ctx.build._parsemanCstCollapse !== undefined && ${chV}.length === 1 && ${rawV}.length === 1 && _ctx.build._parsemanCstCollapse(${JSON.stringify(def.type)}, ${chV}[0], ${chV}, ${rawV}) ? ${chV}[0] : (${ndExpr})`
     : ndExpr
   const unwrapExpr = `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`

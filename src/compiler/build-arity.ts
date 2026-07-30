@@ -1,4 +1,5 @@
 import type { ParserDef } from '../types.ts'
+import { recordDegradation } from './degradation.ts'
 
 /**
  * Per-node children/fields/raw/trivia/state capture is dead work when the build
@@ -74,11 +75,68 @@ export function confirmedBuildArity(src: string): number | null {
   return parts.length
 }
 
+/**
+ * The source a def's arity/shape analysis must read.
+ *
+ * `buildSrc` is the source text of the EXPRESSION written at the `node(...)` call
+ * site. When the reducer is passed as a bare identifier — `node('Foo', p, { build:
+ * foldOperation })` — that text is just `"foldOperation"`, which matches no parameter
+ * list and used to fail open into all five capture tiers, silently. The macro plugin
+ * already holds the whole module's AST, so it resolves such an identifier to its
+ * module-scope declaration and parks that declaration's source here. `buildSigSrc` is
+ * ANALYSIS-ONLY: it is never emitted, so the generated builder reference is unchanged.
+ */
+export function buildAnalysisSrc(def: NodeDef): string {
+  return def.buildSigSrc ?? def.buildSrc ?? def.build!.toString()
+}
+
+/**
+ * Why a parameter list could not be read — the actionable half of the diagnostic.
+ * Distinguishing "an import we cannot see" from "a shape we could support" is the
+ * difference between a report the author can act on and a report they cannot.
+ */
+function unconfirmableReason(def: NodeDef, src: string): string {
+  if (def.buildSigSrc === undefined && /^[A-Za-z_$][\w$]*$/.test(src.trim())) {
+    return `\`${src.trim()}\` did not resolve to a module-scope function declaration `
+      + '(imported binding, shadowed name, or a computed value)'
+  }
+  const s = src.trim()
+  if (/\.\.\./.test(s.slice(0, s.indexOf(')') + 1))) return 'the parameter list uses a rest parameter'
+  if (/\barguments\b/.test(s)) return 'the body references `arguments`'
+  return 'the parameter list is not a flat list of plain identifiers (destructuring, defaults, or an unrecognized shape)'
+}
+
+/**
+ * Confirmed formal arity for a node def, reporting once when it cannot be confirmed.
+ *
+ * Fail-open is the correct BEHAVIOR — capturing too much is safe, capturing too little
+ * is a correctness bug. Fail-open with no diagnostic was the defect: the runtime cost
+ * of a rule then depends on how its reducer is SPELLED, invisibly, and the only way to
+ * discover it is to read the generated artifact.
+ */
+export function confirmedArityForDef(def: NodeDef): number | null {
+  const src = buildAnalysisSrc(def)
+  const arity = confirmedBuildArity(src)
+  if (arity !== null) return arity
+  const subject = `build reducer \`${(def.buildSrc ?? '<runtime fn>').trim().split('\n')[0]!.slice(0, 60)}\``
+  recordDegradation({
+    code: 'build-arity-unconfirmed',
+    // An imported reducer is not the author's to change here; an unreadable local one is.
+    severity: def.buildSigSrc === undefined && /^[A-Za-z_$][\w$]*$/.test(src.trim()) ? 'info' : 'warn',
+    where: `node("${def.type ?? '<inferred>'}")`,
+    subject,
+    fellBackTo: `could not confirm its formal parameter list (${unconfirmableReason(def, src)}), `
+      + 'so this node captures children, fields and raw children, logs trivia, and clones `_ctx.state` on every match',
+    otherwise: 'only the tiers the reducer actually declares would be captured '
+      + '(arity >= 1 children, >= 2 fields, >= 4 raw, >= 5 trivia, >= 6 state)',
+  })
+  return null
+}
+
 /** Build reads its 1st (`children`) arg? Unknown/unparseable → true (keep capture). */
 export function buildReadsChildren(def: NodeDef): boolean {
   if (!def.build) return true // structural node: CST output always owns children
-  const src = def.buildSrc ?? def.build.toString()
-  const arity = confirmedBuildArity(src)
+  const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 1
 }
@@ -86,8 +144,7 @@ export function buildReadsChildren(def: NodeDef): boolean {
 /** Build reads its 4th (`rawChildren`) arg? Unknown/unparseable → true (keep capture). */
 export function buildReadsRaw(def: NodeDef): boolean {
   if (!def.build) return true // structural node: host/default CST may read raw children
-  const src = def.buildSrc ?? def.build.toString()
-  const arity = confirmedBuildArity(src)
+  const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 4
 }
@@ -95,8 +152,7 @@ export function buildReadsRaw(def: NodeDef): boolean {
 /** Build reads the 5th (triviaLog) arg? Unknown/unparseable → true (keep capture). */
 export function buildReadsTrivia(def: NodeDef): boolean {
   if (!def.build) return true // structural node: host may read trivia — keep capture
-  const src = def.buildSrc ?? def.build.toString()
-  const arity = confirmedBuildArity(src)
+  const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 5
 }
@@ -104,8 +160,7 @@ export function buildReadsTrivia(def: NodeDef): boolean {
 /** Build reads the 6th (state) arg? Unknown/unparseable → true (keep state clone). */
 export function buildReadsState(def: NodeDef): boolean {
   if (!def.build) return true // structural node: host may read state — keep clone
-  const src = def.buildSrc ?? def.build.toString()
-  const arity = confirmedBuildArity(src)
+  const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 6
 }

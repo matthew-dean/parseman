@@ -5,6 +5,45 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.44.0 — 2026-07-30
 
+- **Never degrade silently.** Every path where the compiler picks a correct-but-slower
+  option now reports on one channel, formatted `[parseman] degraded [<code>] <where>:
+  <subject> — <fell back to>; otherwise <what>`. It is default-on (`PARSEMAN_DEGRADATION=
+  off|warn|error`, mirroring `PARSEMAN_GATING`), surfaces through the macro's ordinary
+  bundler warnings, and is greppable on the literal `[parseman] degraded` so a consumer
+  gate can assert zero degradations. Findings aggregate per code above eight sites: a
+  diagnostic that fires on every rule gets filtered out, which is the same silence.
+
+- **Resolve bare-identifier node reducers before deciding capture cost.** `node('Foo', p,
+  build)` where `build` is an identifier gave `buildSrc === "build"`, which matches no
+  parameter list, so `confirmedBuildArity` returned `null` and the node captured children,
+  fields and raw children, logged trivia, and cloned `_ctx.state` on every match — making
+  a rule's runtime cost depend on how its reducer was spelled, with no warning. The macro
+  plugin now resolves such an identifier against the module AST it already holds (a
+  module-scope `function` declaration or `const` arrow/function expression, admitted only
+  when the name is bound exactly once in the module) and analyses the real parameter list.
+  Imported and shadowed names stay conservative and are reported as
+  `build-arity-unconfirmed`. The resolved source is analysis-only — the emitted builder
+  reference is unchanged.
+
+- **Stop deleting a node's first-set guard for a zero-arity reducer.** The `node()`
+  first-set pre-guard was gated on `capturesChildren || structural`; a confirmed
+  zero-argument `() =>` reducer clears that flag and so removed the guard entirely. CST
+  mode forces the flag true, so the loss was `'ast'`-only. The gate is now
+  `needsFirstSetGuard` alone, matching the `choice`/`many`/`attempt` guards.
+
+- **Admit TypeScript-annotated parameters in the inline-`mk` shape**, and report a
+  near-miss as `mk-inline-missed` rather than silently paying a `_build[n](...)` call per
+  match.
+
+- **Apply `cstBuildHost({ collapse })` to host-built nodes that carry reducers.** The
+  collapse check was emitted for structural node defs only. Under `hostMode: 'cst'` a
+  direct builder is bypassed and the node is built by the host exactly like a structural
+  one — but every rule in a real grammar carries a reducer, so none was structural and the
+  predicate was never consulted (measured across four jess dialects: `predicateCalls === 0`
+  and zero occurrences of `_parsemanCstCollapse` in the built artifacts). A documented
+  option silently did nothing for every CST consumer. Fixed identically in the interpreter
+  and the compiler.
+
 - **Add sparse, selected root trivia capture.** `run(entry, input, { rootTrivia:
   { selectedKinds } })` records only markers for the named, grammar-defined trivia
   labels. Each fixed-width row also carries its complete authored owning range, so

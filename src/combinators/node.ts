@@ -236,8 +236,12 @@ export function node<N>(
         ? unwrapChild(children[0])
         : collapse && children.length === 1
           ? children[0]
-        : !build
-          && project === undefined
+        // Collapse applies wherever the node's VALUE comes from the host: a structural
+        // node, or ANY node under a positioned-CST host, where the direct builder is
+        // bypassed and the produced thing is a host-owned CST node either way. Gating on
+        // `!build` alone made `cstBuildHost({ collapse })` a documented no-op for every
+        // grammar whose rules carry reducers — silently, in both engines.
+        : (cstOutput || (!build && project === undefined))
           && ctx.build?._parsemanCstCollapse
           && children.length === 1
           && rawChildren.length === 1
