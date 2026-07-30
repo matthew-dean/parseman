@@ -481,6 +481,40 @@ describe('bump gate', () => {
  * A policy that lives in a comment and depends on someone remembering it is not a
  * policy. These tests are the policy executed.
  */
+describe('a missing input is a harder failure than a wrong one', () => {
+  /*
+   * The `PARSEMAN_VERSION`-vs-package.json convergence check sat behind
+   * `existsSync(src/version.ts)`, including under `--publish`, where A' says all three
+   * sites must be EQUAL. So deleting the file satisfied the rule by removing one of the
+   * things it compares — a gate passing because it had one fewer thing to check.
+   * package.json and CHANGELOG.md already `fail()` when absent; the version stamp is
+   * the ARTIFACT VERSION LOCK and should be no softer.
+   */
+  it('FAILS when src/ exists but src/version.ts does not', () => {
+    const dir = checkout({ version: '0.36.0', changelog: released('0.36.0'), stamp: null })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'parseman', version: '0.36.0' }))
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'src/a.ts'), 'export const a = 1\n')
+    const r = gate(dir)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/src\/version\.ts is missing/)
+  })
+
+  it('FAILS at publish too — that is the moment all three must agree', () => {
+    const dir = checkout({ version: '0.36.0', changelog: released('0.36.0'), stamp: null })
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'src/a.ts'), 'export const a = 1\n')
+    expect(gate(dir, '--publish').ok).toBe(false)
+  })
+
+  it('tolerates a checkout with no src/ at all — the fixture shape', () => {
+    // Absence is only legitimate where there is no source tree to stamp. Every other
+    // test in this file relies on that.
+    const r = gate(checkout({ version: '0.36.0', changelog: released('0.36.0'), stamp: null }))
+    expect(r.ok).toBe(true)
+  })
+})
+
 describe('bench anchor gate', () => {
   const DENSITY = 'bench/grammar-density/config.json'
   const WORKLOADS = 'bench/workloads/config.json'

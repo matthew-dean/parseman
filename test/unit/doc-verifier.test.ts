@@ -93,3 +93,66 @@ describe('doc-example verifier — values that JSON destroys', () => {
     expect(bad.out).toMatch(/fixture\.md:3/)
   })
 })
+
+/*
+ * The verifier is a REQUIRED, never-skipped CI job (`.github/workflows/ci.yml`, job
+ * `docs-verify`, enforced in the `test` aggregate). Its green is a claim that every
+ * documented output was executed and matched.
+ *
+ * Everything it does hinges on two literals: the ```ts fence `BLOCK_RE` matches and
+ * the `// [verify]` marker. Rename either, or move `docs/`, and every loop iterates
+ * zero times — it printed "0 pass, 0 fixed, 0 fail, 0 error" and exited 0, making
+ * that claim on behalf of a run that checked nothing.
+ */
+describe('doc-example verifier — the discovery floor', () => {
+  /** Run in FULL-GUIDE mode over a fixture tree, which is where the floor applies. */
+  function sweep(docs: Record<string, string>): { out: string; ok: boolean } {
+    const dir = mkdtempSync(join(tmpdir(), 'pm-docfloor-'))
+    for (const [name, body] of Object.entries(docs)) writeFileSync(join(dir, name), body)
+    try {
+      const out = execFileSync(process.execPath, [SCRIPT, `--docs=${dir}`], {
+        cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000,
+      })
+      return { out, ok: true }
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string; message?: string }
+      return { out: `${err.stdout ?? ''}${err.stderr ?? ''}` || (err.message ?? ''), ok: false }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it('FAILS when a sweep finds no verified blocks at all', () => {
+    // The shape of every structural break: docs exist, nothing carries the marker.
+    const r = sweep({ 'a.md': '# Guide\n\nProse only.\n' })
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/DISCOVERY FLOOR/)
+    expect(r.out).toMatch(/found 0 verified block/)
+  })
+
+  it('FAILS when the fence is renamed out from under BLOCK_RE', () => {
+    // ```typescript is the realistic version of this: a valid, ordinary edit that
+    // silently removes every block from the sweep.
+    const r = sweep({
+      'a.md': '# Guide\n\n```typescript\n// [verify]\nconst x = 1\nx // → 1\n```\n',
+    })
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/DISCOVERY FLOOR/)
+  })
+
+  it('FAILS when the guide shrinks below the floor rather than to zero', () => {
+    // The floor is not just a zero check — a sweep finding one block cannot support
+    // the claim the CI job makes either.
+    const r = sweep({ 'a.md': block('const x = 1\nx // → 1') })
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/DISCOVERY FLOOR/)
+  })
+
+  it('does NOT apply to an explicitly named subset', () => {
+    // `node scripts/verify-doc-examples.mjs docs/guide/combinators.md` is a deliberate
+    // subset, and every other test in this file drives single fixture files that way.
+    const r = verify(block('const x = 1\nx // → 1'))
+    expect(r.ok).toBe(true)
+    expect(r.out).not.toMatch(/DISCOVERY FLOOR/)
+  })
+})

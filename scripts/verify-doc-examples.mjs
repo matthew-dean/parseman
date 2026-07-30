@@ -34,9 +34,15 @@ const FIX = process.argv.includes('--fix')
 // Explicit paths check just those files; with none, the whole guide.
 //   node scripts/verify-doc-examples.mjs docs/guide/combinators.md
 const ONLY = process.argv.slice(2).filter(a => !a.startsWith('--'))
+// `--docs=<dir>` sweeps a different tree in full-guide mode, INCLUDING the discovery
+// floor below. It exists so the floor itself is testable: pointed at a tree with no
+// verified blocks, the script must exit 1, and there is no other way to reach that
+// path without emptying the real guide.
+const DOCS_ARG = process.argv.slice(2).find(a => a.startsWith('--docs='))
+const DOCS_ROOT = DOCS_ARG ? resolve(ROOT, DOCS_ARG.slice('--docs='.length)) : join(ROOT, 'docs')
 const DOCS = ONLY.length
   ? ONLY.map(f => resolve(ROOT, f))
-  : mdFilesUnder(join(ROOT, 'docs')).sort()
+  : mdFilesUnder(DOCS_ROOT).sort()
 
 /**
  * Every `.md` under `dir`, recursively.
@@ -147,6 +153,9 @@ rmSync(SCRATCH, { recursive: true, force: true })
 mkdirSync(SCRATCH, { recursive: true })
 const tmp = SCRATCH
 
+/** Verified blocks discovered across every doc, for the discovery floor below. */
+let blocksFound = 0
+
 for (const file of DOCS) {
   const original = readFileSync(file, 'utf8')
   let out = original
@@ -159,6 +168,7 @@ for (const file of DOCS) {
     const { lines, checks } = splitChecks(code)
     if (checks.length === 0) continue
     blockIndex++
+    blocksFound++
     const blockLine = original.slice(0, m.index).split('\n').length
     const id = `${file}:${blockLine}`
     const heading = headingAbove(original, m.index)
@@ -254,4 +264,44 @@ for (const r of results) {
   console.log(`${r.status}  ${r.id}  ${r.expr}${r.detail ? `\n      ${r.detail}` : ''}`)
 }
 console.log(`\ndoc examples: ${by('PASS').length} pass, ${by('FIXED').length} fixed, ${by('FAIL').length} fail, ${by('ERROR').length} error`)
+
+/**
+ * DISCOVERY FLOOR — this gate must fail when it finds NOTHING TO CHECK.
+ *
+ * Everything above hinges on two literals: the ```ts fence that `BLOCK_RE` matches
+ * and the `// [verify]` marker. Rename either, move `docs/`, or change the fence to
+ * ```typescript, and every loop above simply iterates zero times — the script prints
+ * "0 pass, 0 fixed, 0 fail, 0 error" and exits 0. This is a REQUIRED, never-skipped
+ * CI job (`.github/workflows/ci.yml`, job `docs-verify`, enforced in the `test`
+ * aggregate), so that green is a claim that every documented output was executed,
+ * made by a run that executed none of them.
+ *
+ * Measured at the time of writing: 47 verified blocks, 109 checks, across the guide.
+ * The floors sit well under that so ordinary editing never trips them, and far above
+ * the zero that a structural break produces.
+ *
+ * Skipped when explicit paths are given — `node scripts/verify-doc-examples.mjs
+ * docs/guide/combinators.md` is a deliberate subset, and `doc-verifier.test.ts`
+ * drives the script over single fixture files that legitimately hold one block.
+ */
+const BLOCK_FLOOR = 30
+const CHECK_FLOOR = 70
+
+if (ONLY.length === 0 && (blocksFound < BLOCK_FLOOR || results.length < CHECK_FLOOR)) {
+  console.error(
+    `\nverify-doc-examples: DISCOVERY FLOOR — found ${blocksFound} verified block(s) and ` +
+    `${results.length} check(s)\n` +
+    `  across ${DOCS.length} doc(s), below the floor of ${BLOCK_FLOOR} blocks / ${CHECK_FLOOR} checks.\n` +
+    '\n' +
+    '  Nothing failed because almost nothing RAN. The two literals this script keys on are the\n' +
+    '  ```ts fence and the `// [verify]` marker; rename either, or move docs/, and every loop\n' +
+    '  above iterates zero times and this exits 0 having verified nothing. That green would be a\n' +
+    '  claim about documented output made by a run that executed none of it.\n' +
+    '\n' +
+    '  If the guide genuinely shrank this far, lower the floors in this file deliberately, in the\n' +
+    '  same commit, so the reduction is a decision someone made rather than a gate going quiet.',
+  )
+  process.exit(1)
+}
+
 process.exit(by('FAIL').length + by('ERROR').length > 0 ? 1 : 0)

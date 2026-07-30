@@ -281,6 +281,25 @@ if (PUBLISH && headingVsPkg !== 0) {
   )
 }
 
+// A MISSING src/version.ts is a harder failure than a mis-stamped one, and used to be
+// no failure at all: the whole convergence check sat behind `existsSync`, including
+// under `--publish`, where A' says all three sites must be EQUAL. Deleting the file
+// therefore satisfied the rule by removing one of the things it compares. Contrast
+// package.json and CHANGELOG.md above, both of which `fail()` when absent.
+//
+// The one place absence is legitimate is a checkout that has no `src/` at all — the
+// fixture repos in `test/unit/release-gate.test.ts` drive exactly that to cover the
+// stamp rule's edges. So it is required whenever `src/` exists, which is every real
+// checkout of this repo.
+if (!existsSync(VERSION_TS_PATH) && existsSync(resolve(ROOT, 'src'))) {
+  fail(
+    'src/version.ts is missing, but src/ exists. PARSEMAN_VERSION is the ARTIFACT VERSION\n' +
+      '  LOCK (docs/design/artifact-format.md) — every generated artifact is stamped with it and\n' +
+      '  `fusedBody` refuses to link across a mismatch. Absent, there is nothing to converge on,\n' +
+      '  and this gate would have passed by having one less thing to check.',
+  )
+}
+
 if (existsSync(VERSION_TS_PATH)) {
   const stamp = /PARSEMAN_VERSION\s*=\s*['"]([^'"]+)['"]/.exec(readFileSync(VERSION_TS_PATH, 'utf8'))
   if (!stamp) fail('src/version.ts does not define PARSEMAN_VERSION.')

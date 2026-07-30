@@ -33,8 +33,17 @@ const ignoredRegressionKeys = new Set([
 
 const baseline = loadBaseline()
 if (!baseline) {
-  console.error('perf-guard: no baseline (run `pnpm bench:baseline`) — skipping')
-  process.exit(0)
+  // FAIL CLOSED. This runs from `scripts/git-hooks/pre-commit`, where "skipping"
+  // printed a line nobody reads and let the commit through with nothing measured —
+  // and `bench/parseman-baseline.json` going missing is exactly the state in which
+  // that matters. A missing baseline is a FAILURE, not a skip; the same rule
+  // `bench/ab-harness.ts` applies to a missing reference commit.
+  console.error(
+    'perf-guard: no baseline at bench/parseman-baseline.json, so NOTHING was measured.\n' +
+    '  Run `pnpm bench:baseline` and commit the file. A gate that cannot measure must not\n' +
+    '  report success.',
+  )
+  process.exit(1)
 }
 
 // Measure IDENTICALLY to how this context's baseline was captured — same samples,
@@ -46,11 +55,15 @@ if (!baseline) {
 const context = all ? 'all' : 'css'
 const cases = baselineCases(baseline, context)
 if (!cases) {
+  // Also fail closed. A baseline that predates per-context capture leaves this gate
+  // with nothing to compare against, which is indistinguishable — from the exit code —
+  // from a clean run. Re-baselining is a one-line fix; a silently disabled gate is not.
   console.error(
-    `perf-guard: baseline @ ${baseline.gitRev} has no "${context}" context (predates per-context capture) — ` +
-    'run `pnpm bench:baseline` and commit bench/parseman-baseline.json. Skipping.',
+    `perf-guard: baseline @ ${baseline.gitRev} has no "${context}" context (predates per-context\n` +
+    '  capture), so NOTHING was measured. Run `pnpm bench:baseline` and commit\n' +
+    '  bench/parseman-baseline.json.',
   )
-  process.exit(0)
+  process.exit(1)
 }
 
 const rows = runParsemanSuiteRobust({
