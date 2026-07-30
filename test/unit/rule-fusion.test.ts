@@ -33,6 +33,7 @@ describe('compose() namespace allocation', () => {
       wrappers: new Map([['Fake', '(input, pos, ctx) => _r_Fake(input, pos, ctx)']]),
       firstSets: new Map(),
       deps: new Map([['Fake', []]]),
+      nodeMeta: new Map([['Fake', { nodes: [] }]]),
       needsEmptyTl: false,
       needsHostReads: false,
       mfFns: [],

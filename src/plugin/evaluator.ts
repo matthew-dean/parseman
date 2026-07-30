@@ -348,6 +348,25 @@ function staticLiteralValue(expr: unknown): unknown {
     : undefined
 }
 
+function staticStringArray(expr: unknown, scope?: XScope): readonly string[] | undefined {
+  const id = expr as { type?: string; name?: string }
+  if (id.type === 'Identifier' && scope !== undefined && id.name !== undefined) {
+    const scoped = scope.get(id.name)
+    const value = isStaticValueEntry(scoped) ? scoped.value : scoped
+    return Array.isArray(value) && value.every(v => typeof v === 'string') ? value : undefined
+  }
+  const arr = expr as { type?: string; elements?: unknown[] }
+  if (arr.type !== 'ArrayExpression' || !Array.isArray(arr.elements)) return undefined
+  const out: string[] = []
+  for (const el of arr.elements) {
+    if (!el || (el as { type?: string }).type === 'SpreadElement') return undefined
+    const value = staticLiteralValue(el)
+    if (typeof value !== 'string') return undefined
+    out.push(value)
+  }
+  return out
+}
+
 type StaticNodeProject = { ok: true; value: number } | { ok: false }
 
 function staticNodeProject(expr: Expression): StaticNodeProject | undefined {
@@ -359,7 +378,7 @@ function staticNodeProject(expr: Expression): StaticNodeProject | undefined {
   return { ok: false }
 }
 
-function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
+function staticNodeOptions(expr: Expression, scope: XScope): parseman.NodeOptions | undefined {
   if (expr.type !== 'ObjectExpression') return undefined
   const opts: parseman.NodeOptions = {}
   for (const prop of (expr as ObjectExpression).properties) {
@@ -375,9 +394,13 @@ function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
       const project = staticNodeProject(p.value as Expression)
       if (project?.ok === false) return { project: -1 }
       if (project !== undefined) opts.project = project.value
+    } else if (name === 'tags') {
+      const tags = staticStringArray(p.value, scope)
+      if (tags === undefined) return undefined
+      opts.tags = tags
     }
   }
-  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined ? opts : undefined
 }
 
 /**
@@ -475,7 +498,7 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const buildSrc = hasBuild ? stripTsFromSource(be! as Node, code) : undefined
     const optionsArg = hasBuild ? optsArg : (be?.type === 'ObjectExpression' ? buildArg : optsArg)
     const opts = optionsArg !== undefined && optionsArg.type !== 'SpreadElement'
-      ? staticNodeOptions(optionsArg as Expression)
+      ? staticNodeOptions(optionsArg as Expression, scope)
       : undefined
     try {
       const combi = explicitType !== undefined
@@ -738,6 +761,16 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
 
 /** Evaluate any expression to its JS value (not necessarily a Combinator). */
 function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]): unknown {
+  if (node.type === 'TSAsExpression'
+    || node.type === 'TSSatisfiesExpression'
+    || node.type === 'TSNonNullExpression'
+    || node.type === 'TSTypeAssertion'
+    || node.type === 'TSInstantiationExpression'
+    || node.type === 'ParenthesizedExpression') {
+    const inner = (node as unknown as { expression?: Expression }).expression
+    return inner ? anyValue(inner, scope, code, mfs) : null
+  }
+
   if (node.type === 'Literal') {
     if ('regex' in node && node.regex !== null && node.regex !== undefined) {
       return new RegExp(node.regex.pattern, node.regex.flags)
@@ -916,6 +949,14 @@ function collectRuleKeys(retObj: ObjectExpression): string[] | null {
     out.push(key)
   }
   return out
+}
+
+export function evaluateStaticValue(
+  node: Expression,
+  scope: Scope,
+  code?: string,
+): unknown {
+  return anyValue(node, scope as XScope, code, [])
 }
 
 type RuleEntry = { key: string; value: Expression; scope: XScope; code: string }

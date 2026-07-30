@@ -25,6 +25,7 @@ import type { LinkablePieces, FirstSetRecipe, HostMode } from './codegen.ts'
 import { union } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'
+import { grammarReflectionSource, mergeGrammarReflections } from '../cst/reflection.ts'
 
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
@@ -65,6 +66,11 @@ export type CstBuildHostOptions = {
    * - predicate: final policy hook for language-specific public CSTs.
    */
   collapse?: boolean | readonly string[] | CstCollapsePredicate
+  /**
+   * Materialize `node(..., { tags })` grammar metadata onto produced CST nodes.
+   * When omitted, tags stay in grammar reflection for zero per-node tree cost.
+   */
+  tags?: boolean
 }
 
 function normalizeCstCollapse(collapse: CstBuildHostOptions['collapse']): CstCollapsePredicate | undefined {
@@ -84,10 +90,13 @@ function buildCstNode(
   _rawChildren?: ReadonlyArray<unknown>,
   _triviaLog?: readonly number[],
   state?: unknown,
+  tags?: readonly string[] | undefined,
 ): unknown {
   // Carry the grammar's `ctx.state` snapshot onto the node (null when unset) — the
   // CST contract includes `state` and incremental re-parse replays it on edit.
-  return { _tag: 'node', type, span: { ...span }, state: state ?? null, children: [...children] }
+  return tags !== undefined && tags.length > 0
+    ? { _tag: 'node', type, tags, span: { ...span }, state: state ?? null, children: [...children] }
+    : { _tag: 'node', type, span: { ...span }, state: state ?? null, children: [...children] }
 }
 
 /**
@@ -109,6 +118,7 @@ export function cstBuildHost(
   rawChildren?: ReadonlyArray<unknown>,
   triviaLog?: readonly number[],
   state?: unknown,
+  tags?: readonly string[] | undefined,
 ): unknown
 export function cstBuildHost(
   typeOrOptions?: string | CstBuildHostOptions,
@@ -118,11 +128,13 @@ export function cstBuildHost(
   rawChildren?: ReadonlyArray<unknown>,
   triviaLog?: readonly number[],
   state?: unknown,
+  _tags?: readonly string[] | undefined,
 ): unknown {
   if (typeof typeOrOptions === 'string') {
     return buildCstNode(typeOrOptions, children ?? [], _fields, span ?? { start: 0, end: 0 }, rawChildren, triviaLog, state)
   }
   const collapse = normalizeCstCollapse(typeOrOptions?.collapse)
+  const materializeTags = typeOrOptions?.tags === true
   const host: BuildHost = (
     type: string,
     children: ReadonlyArray<unknown> | undefined,
@@ -131,9 +143,10 @@ export function cstBuildHost(
     rawChildren: ReadonlyArray<unknown>,
     triviaLog: readonly number[],
     state: unknown,
+    tags?: readonly string[] | undefined,
     // A CST/collapse host always keeps `children` (chV) — the opt-out never
     // applies — so `?? []` is unreachable defensive modeling for the widened type.
-  ) => buildCstNode(type, children ?? [], fields, span, rawChildren, triviaLog, state)
+  ) => buildCstNode(type, children ?? [], fields, span, rawChildren, triviaLog, state, materializeTags ? tags : undefined)
   ;(host as typeof host & { _parsemanCstOutput?: true })._parsemanCstOutput = true
   if (collapse) host._parsemanCstCollapse = collapse
   return host
@@ -218,7 +231,7 @@ export function pickPieces(pieces: LinkablePieces[], names: string[]): LinkableP
   const filt = <V>(m: Map<string, V>, pc: LinkablePieces): Map<string, V> =>
     new Map([...m].filter(([k]) => keep.has(k) && winner.get(k) === pc))
   return pieces
-    .map(pc => ({ ...pc, keys: pc.keys.filter(k => keep.has(k) && winner.get(k) === pc), ruleFns: filt(pc.ruleFns, pc), wrappers: filt(pc.wrappers, pc), deps: filt(pc.deps, pc) }))
+    .map(pc => ({ ...pc, keys: pc.keys.filter(k => keep.has(k) && winner.get(k) === pc), ruleFns: filt(pc.ruleFns, pc), wrappers: filt(pc.wrappers, pc), deps: filt(pc.deps, pc), nodeMeta: filt(pc.nodeMeta, pc) }))
     .filter(pc => pc.keys.length > 0)
 }
 
@@ -278,6 +291,7 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
     ...[...winner].map(([k, p]) => p.ruleFns.get(k)!),
   ]
   const wrapperEntries = [...winner].map(([k, p]) => `${JSON.stringify(k)}: ${p.wrappers.get(k)!}`)
+  const reflection = mergeGrammarReflections([...winner].map(([k, p]) => p.nodeMeta.get(k) ?? { nodes: [] }))
   // The host-mode stamp is emitted INTO the body rather than applied afterwards by the
   // caller, so the runtime fuse (`fuseRules`) and the build-time fuse
   // (`emitFusedSource`) cannot disagree about it. They have drifted on exactly this
@@ -292,6 +306,7 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
     '}',
     `Object.defineProperty(_map, Symbol.for(${JSON.stringify(FUSED_HOST_MODE.description!)}), { value: ${JSON.stringify(mode)}, enumerable: false })`,
     `Object.defineProperty(_map, Symbol.for(${JSON.stringify(FUSED_HOST_ELIDED.description!)}), { value: ${JSON.stringify(elided)}, enumerable: false })`,
+    `Object.defineProperty(_map, Symbol.for('parseman.grammarReflection'), { value: ${grammarReflectionSource(reflection)}, enumerable: false })`,
     // …and on each rule FUNCTION, because `run(map.Rule, …)` is handed the rule, not the
     // map, and would otherwise have nothing to check against. Done once at fuse time,
     // before any rule has been called, so it costs nothing per parse.

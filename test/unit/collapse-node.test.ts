@@ -210,10 +210,10 @@ describe('project — indexed child passthrough', () => {
   })
 
   it('type inference follows the projected sequence slot', () => {
-    expectTypeOf(Paren).toEqualTypeOf<Combinator<string>>()
+    expectTypeOf(Paren).toMatchTypeOf<Combinator<string>>()
     const Inner = node('Inner', regex(/[0-9]+/), () => ({ kind: 'num' as const }))
     const Outer = node('Outer', sequence(literal('('), Inner, literal(')')), { project: 1 })
-    expectTypeOf(Outer).toEqualTypeOf<Combinator<{ kind: 'num' }>>()
+    expectTypeOf(Outer).toMatchTypeOf<Combinator<{ kind: 'num' }>>()
   })
 
   it('rejects ambiguous project options', () => {

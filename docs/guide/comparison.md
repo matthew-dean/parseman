@@ -276,9 +276,8 @@ several things Parséman doesn't offer:
   (polymorphic tokens), and `longer_alt` — Parséman is scannerless, so none of this
   applies (a simplification, but also a missing capability if you want it).
 - **Per-rule-typed CST visitor base classes** (`getBaseCstVisitor…`) generated from the
-  grammar. Parséman's [`walk` / `createVisitor`](./ast#walking-the-tree) cover the same
-  traversal at runtime, dispatching on a node's `type`, but don't hand you a class typed
-  per rule.
+  grammar. Parséman's [`createVisitor`](./ast#walking-the-tree) covers the same traversal
+  at runtime, dispatching on node `type` and grammar-declared tags.
 - **Configurable LL(k) lookahead** and opt-in `BACKTRACK`.
 - **Grammar-wide automatic error recovery** (heuristic single-token insert/delete +
   resync, with no annotation anywhere). Parséman recovers via

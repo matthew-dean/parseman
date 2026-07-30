@@ -198,7 +198,7 @@ local/manual helper outside `rules()`.
 }
 ```
 
-Walk it with [`walk` / `createVisitor`](#walking-the-tree), and turn its trivia into a
+Visit it with [`createVisitor`](#walking-the-tree), and turn its trivia into a
 `before`/`after` lookup with [`buildTriviaIndex`](../reference/api#buildtriviaindex).
 
 That is the whole of it for a structural grammar. **No `hostMode`, no compile options** —
@@ -450,43 +450,33 @@ The built-in CST leaf/node/error shapes are also exported as types — `CSTNode`
 
 ## Walking the tree
 
-The tree is plain objects, so you can recurse it yourself — but two helpers save you
-writing the same traversal every time.
-
-`walk(root, visitor, ctx?)` is a depth-first traversal with `enter` / `leave` hooks.
-Return `false` from `enter` to skip a subtree:
-
-```ts
-import { walk } from 'parseman'
-
-const leaves: string[] = []
-walk(tree, {
-  enter(node) {
-    if (node._tag === 'leaf') leaves.push(node.value)
-  },
-})
-```
-
-`createVisitor(handlers)` dispatches on each node's `type` — the same shape as a generated
-CST-visitor class. Handlers receive an `api` with `visit` / `visitChildren` to recurse; a
-node whose `type` has no handler falls through to its children, so partial visitors work:
+The tree is plain objects, so you can recurse it yourself. For typed traversal,
+`createVisitor(grammar, spec)` dispatches by concrete node type and by tags declared on
+`node(..., { tags })`. The same call works with an interpreted `rules()` grammar or a
+compiled/macro/`compose()` grammar.
 
 ```ts
 import { createVisitor } from 'parseman'
 
-const evalExpr = createVisitor<number>({
-  Num: (n) => Number((n as NumNode).value),
-  Add: (n, api) => api.visitChildren(n).reduce((a, b) => a + b, 0),
+const visit = createVisitor(grammar, {
+  type: {
+    AtRuleWithBlock(node) {},
+    Declaration(node) {},
+  },
+  tag: {
+    AtRule(node) {},
+    Statement(node) {},
+  },
+  enter(node) {},
+  leave(node) {},
 })
 
-const total = evalExpr(tree)
+visit(tree)
 ```
 
-Both default to the built-in CST shape (`CSTChild`), so with no annotation `node` is typed
-as the leaf/node/error union — narrow on `node._tag` to reach `value`, `children`, etc.
-Parsing to your own AST instead? Pass the node type as a generic — `walk<MyNode>(root, …)`
-or `createVisitor<number, MyNode>({ … })` — and the hooks are typed to your shape. Any node
-carrying a `_tag` (and optional `children` array) works.
+`type` keys are checked against the grammar's CST node types. `tag` keys are checked
+against tags declared by the grammar, and a node with multiple tags runs each matching tag
+handler in declared tag order. Return `false` from `enter` to skip a node's children.
 
 ## Next
 

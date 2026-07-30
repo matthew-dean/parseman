@@ -3,6 +3,7 @@ import type { HostMode } from '../compiler/codegen.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { parser as grammarParser } from './grammar.ts'
+import { attachGrammarReflection, collectGrammarReflection, NODE_TAG, NODE_TYPE, type GrammarWithReflection } from '../cst/reflection.ts'
 
 /**
  * Non-enumerable key on a `rules()` result holding the factory's declaration
@@ -111,12 +112,31 @@ export type RulesOptions = {
 // Options-first, mirroring `parser({ opts }, combinator)` — set once on the grammar
 // vs scope it locally, same options in the same position. The bare `rules(factory)`
 // form is unchanged. The impl also tolerates the legacy `rules(factory, opts)` order.
-export function rules<T extends Record<string, Combinator<unknown>>>(factory: (self: any) => T): T
-export function rules<T extends Record<string, Combinator<unknown>>>(options: RulesOptions, factory: (self: any) => T): T
+type RuleNodeType<K extends string, C> =
+  C extends { readonly [NODE_TYPE]?: infer T extends string }
+    ? [T] extends [never] ? K : T
+    : K
+
+type RuleNodeTag<C> =
+  C extends { readonly [NODE_TAG]?: infer Tag extends string } ? Tag : never
+
+type RuleMapNodeType<T extends Record<string, Combinator<unknown>>> = {
+  [K in keyof T & string]: RuleNodeType<K, T[K]>
+}[keyof T & string]
+
+type RuleMapNodeTag<T extends Record<string, Combinator<unknown>>> = {
+  [K in keyof T & string]: RuleNodeTag<T[K]>
+}[keyof T & string]
+
+type RulesResult<T extends Record<string, Combinator<unknown>>> =
+  T & GrammarWithReflection<RuleMapNodeType<T>, RuleMapNodeTag<T>>
+
+export function rules<T extends Record<string, Combinator<unknown>>>(factory: (self: any) => T): RulesResult<T>
+export function rules<T extends Record<string, Combinator<unknown>>>(options: RulesOptions, factory: (self: any) => T): RulesResult<T>
 export function rules<T extends Record<string, Combinator<unknown>>>(
   a: ((self: any) => T) | RulesOptions,
   b?: (self: any) => T,
-): T {
+): RulesResult<T> {
   const factory = (typeof a === 'function' ? a : b) as (self: any) => T
   const options = (typeof a === 'function' ? b : a) as RulesOptions | undefined
   const cache: Partial<T> = {}
@@ -239,6 +259,7 @@ export function rules<T extends Record<string, Combinator<unknown>>>(
     enumerable: false,
     configurable: true,
   })
+  attachGrammarReflection(cache, collectGrammarReflection(Object.keys(definitions).map(key => [key, (cache as Record<string, Combinator<unknown>>)[key]!])))
 
-  return cache as T
+  return cache as RulesResult<T>
 }

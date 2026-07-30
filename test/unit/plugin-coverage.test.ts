@@ -298,6 +298,25 @@ const ifKw = kw('if')
   })
 })
 
+describe('transformMacro — static node option shapes', () => {
+  it('resolves node tags through same-file static constants, aliases, shorthand, and TS wrappers', () => {
+    const code = `
+import { rules, node, regex } from 'parseman' with { type: 'macro' }
+const baseTags = ['AtRule', 'Statement'] as const
+const tags = baseTags
+export const grammar = rules(g => ({
+  AtRule: node('AtRule', regex(/@[a-z]+/), { tags, debugName: 'ignored' }),
+  Declaration: node('Declaration', regex(/[a-z]+/), { tags: baseTags, extra: true }),
+}))
+`.trim()
+    const result = transform(code)!
+
+    expect(result.warnings).toEqual([])
+    expect(result.code).toContain("Symbol.for('parseman.grammarReflection')")
+    expect(result.code).toContain('"tags":["AtRule","Statement"]')
+  })
+})
+
 describe('evaluator — anyValue edge forms', () => {
   it('reads regex literals and object literals for parser() opts', () => {
     const code = `parser({ trivia: /[ \\t]+/, captureTrivia: true }, literal('x'))`

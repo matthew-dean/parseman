@@ -25,6 +25,8 @@ export type CSTNode = {
   readonly _tag: 'node'
   /** Rule name — the method name that produced this node. */
   readonly type: string
+  /** Optional grammar categories materialized by `cstBuildHost({ tags: true })`. */
+  readonly tags?: readonly string[]
   readonly span: Span
   readonly children: CSTChild[]
   /**

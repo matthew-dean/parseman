@@ -105,6 +105,7 @@ type NodeOptions = {
   project?: number
   captureTrivia?: boolean
   trailingTrivia?: boolean // commit one active-trivia run at this node's terminal boundary
+  tags?: readonly string[] // visitor categories for this CST node type
 }
 ```
 
@@ -116,7 +117,9 @@ child by index; projected leaves become strings, projected sub-nodes are returne
 `hostMode: 'cst'` still gives the CST host the full node frame. `project` cannot be combined
 with `build`, `unwrap`, or `collapse`. `captureTrivia` owns interior trivia. `trailingTrivia`
 is for a repeating document root at EOF: it commits the active terminal trivia to that node's
-log; blocks with a closing delimiter do not need it. Set at most one of `unwrap` and
+log; blocks with a closing delimiter do not need it. `tags` declares grammar-level CST
+categories used by `createVisitor(grammar, { tag: … })`; tags are stored in grammar
+reflection, not copied onto every CST node. Set at most one of `unwrap` and
 `collapse`. See
 [unwrapping and collapsing wrapper rules](../guide/ast#unwrapping-and-collapsing-wrapper-rules).
 
@@ -230,6 +233,7 @@ type CstCollapsePredicate = (
 
 type CstBuildHostOptions = {
   collapse?: boolean | readonly string[] | CstCollapsePredicate
+  tags?: boolean
 }
 ```
 
@@ -240,6 +244,10 @@ lets a language define its public CST policy. The returned child is still the or
 CST child object; leaves are not unwrapped to strings. The predicate is typed over
 `unknown` because `ctx.build` is a general host hook, but with the built-in
 `cstBuildHost` those values are CST children.
+
+`cstBuildHost({ tags: true })` copies a tagged rule's static `node(..., { tags })`
+array onto the produced CST node as `node.tags`. Without this option, tags remain
+grammar metadata for `createVisitor(grammar, spec)` and do not change the CST shape.
 
 ## Building nodes
 
@@ -314,13 +322,12 @@ type ParseError = {
 
 ## Tree traversal
 
-The shapes accepted by [`walk` / `createVisitor`](../guide/ast#walking-the-tree). Both
-default their node type to [`CSTChild`](#cst-types); pass your own AST node as a generic to
-override.
+The shapes accepted by [`createVisitor`](../guide/ast#walking-the-tree). It defaults its
+node type to [`CSTChild`](#cst-types); pass your own AST node as a generic to override.
 
 ### `Walkable`
 
-The minimal contract these helpers traverse — a `_tag`, an optional rule `type`, and
+The minimal contract the visitor traverses — a `_tag`, an optional rule `type`, and
 optional structural `children`. Built-in `CSTChild` satisfies it, and so does any custom
 AST node (the generic-override target).
 
@@ -332,21 +339,18 @@ type Walkable = {
 }
 ```
 
-### `WalkVisitor` · `VisitApi` · `VisitorHandlers` {#walk-types}
+### `VisitorSpec` · `VisitorHandler` {#walk-types}
 
 ```ts
-interface WalkVisitor<N extends Walkable = CSTChild, C = undefined> {
+type VisitorHandler<N extends Walkable, Root extends Walkable = CSTChild, C = undefined> =
+  (node: N, parent: Root | null, ctx: C) => void
+
+type VisitorSpec<G, N extends Walkable = CSTChild, C = undefined> = {
   enter?(node: N, parent: N | null, ctx: C): boolean | void  // false → skip subtree
   leave?(node: N, parent: N | null, ctx: C): void
+  type?: { [Type in GrammarNodeTypes<G>]?: VisitorHandler<CSTNode & { type: Type }, N, C> }
+  tag?: { [Tag in GrammarTags<G>]?: VisitorHandler<CSTNode, N, C> }
 }
-
-interface VisitApi<R, N extends Walkable = CSTChild> {
-  visit(node: N): R | undefined       // dispatch one node to its handler
-  visitChildren(node: N): R[]         // visit each child, collect defined results
-}
-
-type VisitorHandlers<R, N extends Walkable = CSTChild> =
-  Record<string, (node: N, api: VisitApi<R, N>) => R>
 ```
 
 ## Incremental re-parsing
