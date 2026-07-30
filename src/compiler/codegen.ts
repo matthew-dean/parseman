@@ -3270,19 +3270,18 @@ function emitLeaf(def: Extract<ParserDef, { tag: 'leaf' }>, ctx: Ctx, pos: strin
   const sr = v(ctx, '_leafRaw')
   const stl = v(ctx, '_leafTl')
   const sol = v(ctx, '_leafLog')
-  const srl = v(ctx, '_leafRootLog')
   const sb = v(ctx, '_leafBuf')
   const rawV = v(ctx, '_leafRawValue')
   const valV = v(ctx, '_leaf')
   const fnIdx = pushMapFn(ctx, def.fn, def.fnSrc ?? null)
   return {
     stmts: [
-      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${stl} = _ctx._cstTriviaLog, ${sol} = _ctx._triviaLog, ${srl} = _ctx._rootTriviaLog, ${sb} = _ctx._cstBuf`,
-      `${i}_ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._triviaLog = undefined; _ctx._rootTriviaLog = undefined; _ctx._cstBuf = undefined`,
+      `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren, ${stl} = _ctx._cstTriviaLog, ${sol} = _ctx._triviaLog, ${sb} = _ctx._cstBuf`,
+      `${i}_ctx._cstChildren = undefined; _ctx._cstLeaves = undefined; _ctx._cstRawChildren = undefined; _ctx._cstTriviaLog = undefined; _ctx._triviaLog = undefined; _ctx._cstBuf = undefined`,
       `${i}try {`,
       ...reindentStmts(inner.stmts, ctx.indent + 1).map(stmt => stmt.replace(/^(\s*)(?:const|let)\s+/, '$1var ')),
       `${i}} finally {`,
-      `${i}  _ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._triviaLog = ${sol}; _ctx._rootTriviaLog = ${srl}; _ctx._cstBuf = ${sb}`,
+      `${i}  _ctx._cstChildren = ${sc}; _ctx._cstLeaves = ${sl}; _ctx._cstRawChildren = ${sr}; _ctx._cstTriviaLog = ${stl}; _ctx._triviaLog = ${sol}; _ctx._cstBuf = ${sb}`,
       `${i}}`,
       ...emitIfFail(ctx, `!${inner.okVar}`, propagateFailBody(ctx)),
       `${i}const ${rawV} = ${inner.valVar}`,

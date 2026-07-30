@@ -72,8 +72,9 @@ export function token(root: Combinator<unknown>): Combinator<string> {
  *
  * Unlike `token()`, `leaf()` does not change trivia policy: put `noTrivia()` or
  * a scoped `parser({ trivia })` inside the supplied grammar when that region has
- * a local spacing rule.  Internal CST captures are suppressed and one leaf with
- * the reducer's value and the complete consumed span is exposed to the parent.
+ * a local spacing rule. Internal CST captures are suppressed, while selected
+ * root-source trivia remains visible, and one leaf with the reducer's value and
+ * the complete consumed span is exposed to the parent.
  */
 export function leaf<T, U>(
   root: Combinator<T>,
@@ -95,7 +96,6 @@ export function leaf<T, U>(
       const savedRaw = ctx._cstRawChildren
       const savedTriviaLog = ctx._cstTriviaLog
       const savedOuterTriviaLog = ctx._triviaLog
-      const savedRootTriviaLog = ctx._rootTriviaLog
       const wasCapturing = cstCaptureActive(ctx)
       ctx._cstBuf = undefined
       ctx._cstChildren = undefined
@@ -103,7 +103,6 @@ export function leaf<T, U>(
       ctx._cstRawChildren = undefined
       ctx._cstTriviaLog = undefined
       delete ctx._triviaLog
-      delete ctx._rootTriviaLog
       let result: ParseResult<T>
       try { result = root.parse(input, pos, ctx) }
       finally {
@@ -114,8 +113,6 @@ export function leaf<T, U>(
         ctx._cstTriviaLog = savedTriviaLog
         if (savedOuterTriviaLog === undefined) delete ctx._triviaLog
         else ctx._triviaLog = savedOuterTriviaLog
-        if (savedRootTriviaLog === undefined) delete ctx._rootTriviaLog
-        else ctx._rootTriviaLog = savedRootTriviaLog
       }
       if (!result.ok) return result
       const value = fn(result.value, result.span)

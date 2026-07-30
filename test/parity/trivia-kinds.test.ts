@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   sequence, many, literal, regex, trivia, label, parser, node, compile, rules, compose, cstBuildHost,
-  oneOrMore, choice, triviaEntries, run, peek, attempt, optional, sepBy,
+  oneOrMore, choice, triviaEntries, run, peek, attempt, optional, sepBy, leaf,
 } from '../../src/index.ts'
 import type { Runnable } from '../../src/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
@@ -140,7 +140,9 @@ describe('labeled trivia kinds — macro metadata', () => {
   it('selected root capture survives composed factory grammars in AST and CST host modes', () => {
     const rw = labeledRw()
     const base = rules({ trivia: rw }, () => ({
-      Pair: node('Pair', sequence(literal('a'), literal('b')), () => ({ type: 'Pair' })),
+      // The comment is inside a semantic leaf. leaf() hides child CST capture,
+      // but must not make root-source trivia disappear.
+      Pair: leaf(sequence(literal('a'), literal('b')), () => ({ type: 'Pair' })),
     }))
     const delta = rules({ trivia: rw }, g => ({
       Doc: node('Doc', parser({ trivia: rw }, sequence(literal('x'), g.Pair, literal('y'))), () => ({ type: 'Doc' })),

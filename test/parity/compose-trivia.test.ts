@@ -75,12 +75,12 @@ export const g = compose([base, rules({ trivia: rw }, (g) => ({ Doc: sequence(li
 
   it('macro-fused factory composition carries selected root trivia without restoring whitespace rows', () => {
     const code = `
-import { rules, compose, trivia, sequence, literal, oneOrMore, choice, label, regex } from 'parseman' with { type: 'macro' }
+import { rules, compose, trivia, sequence, literal, oneOrMore, choice, label, regex, leaf } from 'parseman' with { type: 'macro' }
 const rw = trivia(oneOrMore(choice(
   label('whitespace', regex(/[ \\t\\n]+/)),
   label('blockComment', regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//)),
 )))
-const base = rules({ trivia: rw }, (g) => ({ Pair: sequence(literal('a'), literal('b')) }))
+const base = rules({ trivia: rw }, (g) => ({ Pair: leaf(sequence(literal('a'), literal('b')), () => 'pair') }))
 export const g = compose([base, rules({ trivia: rw }, (g) => ({ Doc: sequence(literal('x'), g.Pair, literal('y')) }))])
 `
     const out = transformMacro(code, 'selected-compose.ts', new Set(['parseman']))
