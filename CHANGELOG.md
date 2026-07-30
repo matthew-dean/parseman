@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.44.0 — 2026-07-30
+## 0.45.0 — unreleased
 
 - **Never degrade silently.** Every path where the compiler picks a correct-but-slower
   option now reports on one channel, formatted `[parseman] degraded [<code>] <where>:
@@ -49,6 +49,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   and zero occurrences of `_parsemanCstCollapse` in the built artifacts). A documented
   option silently did nothing for every CST consumer. Fixed identically in the interpreter
   and the compiler.
+
+## 0.44.0 — 2026-07-30
 
 - **Add sparse, selected root trivia capture.** `run(entry, input, { rootTrivia:
   { selectedKinds } })` records only markers for the named, grammar-defined trivia

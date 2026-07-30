@@ -110,6 +110,74 @@ afterAll(() => {
 
 const released = (v: string): string => `# Changelog\n\n## ${v} — 2026-07-24\n\n- something\n`
 
+/** A changelog with `next` OPEN for construction above published `published`. */
+const open_ = (next: string, published = '0.36.0'): string =>
+  `# Changelog\n\n## ${next} — unreleased\n\n- the change under construction\n\n## ${published} — 2026-07-24\n\n- shipped\n`
+
+describe('merging is not publishing', () => {
+  /*
+   * The gate used to require a `package.json` bump on any PR touching `src/**`. That
+   * makes a version number the price of MERGING, while this project spends numbers at
+   * PUBLISH — so between two releases every PR burned a number and all but the last
+   * collapsed (0.37 through 0.41 shipped as one 0.37.0). It also forced a PR that could
+   * not bump to file its entry under an ALREADY PUBLISHED heading, documenting changes
+   * into a release that does not contain them, with the `release-exempt` label — meant
+   * for reverts and chained PRs — as the only way out.
+   *
+   * The invariant is now changelog-relative: `main` carries an open section naming the
+   * next unpublished version, every PR files into it, and the numbers converge at
+   * publish.
+   */
+  it('accepts an OPEN section above package.json outside publish mode', () => {
+    const r = gate(checkout({ version: '0.36.0', changelog: open_('0.37.0') }))
+    expect(r.ok).toBe(true)
+    expect(r.out).toMatch(/0\.37\.0 open for construction over published 0\.36\.0/)
+  })
+
+  it('REFUSES TO PUBLISH while a section is still open', () => {
+    // The bump is not optional, only deferred. `--publish` is where it comes due.
+    const r = gate(checkout({ version: '0.36.0', changelog: open_('0.37.0') }), '--publish')
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/cannot publish/)
+    expect(r.out).toMatch(/package\.json AND src\/version\.ts to 0\.37\.0/)
+  })
+
+  it('publishes once the numbers converge', () => {
+    const r = gate(checkout({ version: '0.37.0', changelog: released('0.37.0') }), '--publish')
+    expect(r.ok).toBe(true)
+  })
+
+  it('REJECTS a top section BELOW package.json in every mode', () => {
+    // Ahead is a release under construction; behind is history being rewritten.
+    for (const args of [[], ['--publish']]) {
+      const r = gate(checkout({ version: '0.37.0', changelog: released('0.36.0') }), ...args)
+      expect(r.ok).toBe(false)
+    }
+  })
+
+  it('still refuses `Unreleased` as the open section — it names no version', () => {
+    // Deferring the BUMP is not the same as deferring the DECISION. An open section
+    // still has to say which version is being built, or `main` is back in the state
+    // that let 0.36.0's content sit under a heading naming nothing.
+    const r = gate(
+      checkout({
+        version: '0.36.0',
+        changelog: `# Changelog\n\n## Unreleased\n\n- x\n\n## 0.36.0 — 2026-07-24\n\n- shipped\n`,
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/names no version/)
+  })
+
+  it('still requires src/version.ts to track package.json, not the open section', () => {
+    // The stamp goes into every generated-artifact banner and is read by the fuse-time
+    // version lock, so it moves WITH package.json at publish — never ahead of it.
+    const r = gate(checkout({ version: '0.36.0', changelog: open_('0.37.0'), stamp: '0.37.0' }))
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/src\/version\.ts stamps 0\.37\.0 but package\.json says 0\.36\.0/)
+  })
+})
+
 describe('release integrity', () => {
   it('REJECTS an `Unreleased` top section — the state main was actually in', () => {
     const r = gate(
@@ -161,25 +229,43 @@ describe('release integrity', () => {
 })
 
 describe('bump gate', () => {
-  it('REJECTS a src/ change that does not bump the version', () => {
+  it('REJECTS a src/ change filed under an ALREADY PUBLISHED section', () => {
+    // The top section equals package.json, so it is the version that shipped. Filing a
+    // change there documents it into a release that does not contain it.
     const { dir, baseSha } = repo(
       { version: '0.36.0', changelog: released('0.36.0'), files: { 'src/a.ts': 'export const a = 1\n' } },
       { version: '0.36.0', changelog: released('0.36.0'), files: { 'src/a.ts': 'export const a = 2\n' } },
     )
     const r = gate(dir, `--base=${baseSha}`)
     expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/changes the published surface \(1 file\(s\) under src\/\) but does not bump/)
+    expect(r.out).toMatch(/which is already published/)
+    expect(r.out).toMatch(/Do NOT bump package\.json/)
     expect(r.out).toMatch(/release-exempt/)
   })
 
-  it('ACCEPTS a src/ change that bumps the version', () => {
+  it('ACCEPTS a src/ change filed under an OPEN section, with NO version bump', () => {
+    // This is the whole point. `package.json` does not move; the changelog opens the
+    // next version and the change is filed there.
     const { dir, baseSha } = repo(
       { version: '0.36.0', changelog: released('0.36.0'), files: { 'src/a.ts': 'export const a = 1\n' } },
-      { version: '0.37.0', changelog: released('0.37.0'), files: { 'src/a.ts': 'export const a = 2\n' } },
+      { version: '0.36.0', changelog: open_('0.37.0'), files: { 'src/a.ts': 'export const a = 2\n' } },
     )
     const r = gate(dir, `--base=${baseSha}`)
     expect(r.ok).toBe(true)
-    expect(r.out).toMatch(/version went 0\.36\.0 → 0\.37\.0/)
+    expect(r.out).toMatch(/0\.37\.0 is open for construction/)
+    expect(r.out).toMatch(/the bump lands at publish, not at merge/)
+  })
+
+  it('lets a SECOND PR land into the same open section — the collapse this fixes', () => {
+    // A branch-relative rule ("head version > base version") would demand another bump
+    // here, and that number would collapse into whatever finally ships: 0.37 through
+    // 0.41 all went out as one 0.37.0 exactly this way. The section is already open, so
+    // this PR costs nothing.
+    const { dir, baseSha } = repo(
+      { version: '0.36.0', changelog: open_('0.37.0'), files: { 'src/a.ts': 'export const a = 1\n' } },
+      { version: '0.36.0', changelog: open_('0.37.0'), files: { 'src/a.ts': 'export const a = 2\n' } },
+    )
+    expect(gate(dir, `--base=${baseSha}`).ok).toBe(true)
   })
 
   it('does NOT require a bump for a change that cannot reach a consumer', () => {
@@ -269,28 +355,43 @@ describe('bump gate', () => {
 
   it('orders prerelease identifiers numerically, not lexically', () => {
     // `rc.10` follows `rc.2`. Comparing the tag as one string puts it BELOW, which
-    // would read a legitimate advance as a downgrade and block it.
+    // would read a legitimate open section as a downgrade and block it.
     const { dir, baseSha } = repo(
       { version: '1.0.0-rc.2', changelog: released('1.0.0-rc.2'), files: { 'src/a.ts': 'export const a = 1\n' } },
-      { version: '1.0.0-rc.10', changelog: released('1.0.0-rc.10'), files: { 'src/a.ts': 'export const a = 2\n' } },
+      {
+        version: '1.0.0-rc.2',
+        changelog: open_('1.0.0-rc.10', '1.0.0-rc.2'),
+        files: { 'src/a.ts': 'export const a = 2\n' },
+      },
     )
     const r = gate(dir, `--base=${baseSha}`)
     expect(r.ok).toBe(true)
-    expect(r.out).toMatch(/1\.0\.0-rc\.2 → 1\.0\.0-rc\.10/)
+    expect(r.out).toMatch(/1\.0\.0-rc\.10 is open for construction/)
   })
 
-  it('still rejects a prerelease that goes backwards', () => {
+  it('rejects a top section that goes BACKWARDS from package.json', () => {
     const { dir, baseSha } = repo(
       { version: '1.0.0-rc.10', changelog: released('1.0.0-rc.10'), files: { 'src/a.ts': 'export const a = 1\n' } },
-      { version: '1.0.0-rc.9', changelog: released('1.0.0-rc.9'), files: { 'src/a.ts': 'export const a = 2\n' } },
+      {
+        version: '1.0.0-rc.10',
+        changelog: open_('1.0.0-rc.9', '1.0.0-rc.10'),
+        files: { 'src/a.ts': 'export const a = 2\n' },
+      },
     )
-    expect(gate(dir, `--base=${baseSha}`).ok).toBe(false)
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/never behind it|can be AHEAD/)
   })
 
   it('sorts a prerelease BELOW its release, per semver', () => {
+    // `1.0.0` is above `1.0.0-rc.1`, so opening `1.0.0` over a published rc is valid.
     const { dir, baseSha } = repo(
       { version: '1.0.0-rc.1', changelog: released('1.0.0-rc.1'), files: { 'src/a.ts': 'export const a = 1\n' } },
-      { version: '1.0.0', changelog: released('1.0.0'), files: { 'src/a.ts': 'export const a = 2\n' } },
+      {
+        version: '1.0.0-rc.1',
+        changelog: open_('1.0.0', '1.0.0-rc.1'),
+        files: { 'src/a.ts': 'export const a = 2\n' },
+      },
     )
     expect(gate(dir, `--base=${baseSha}`).ok).toBe(true)
   })

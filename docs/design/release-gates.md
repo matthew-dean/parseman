@@ -3,13 +3,13 @@
 Every pull request lands **releasable**, or it does not land. `main` is never in a
 state where the code is merged and the version that carries it does not exist.
 
-One script, `scripts/check-changelog.mjs`, enforces that. It runs in two places:
+One script, `scripts/check-changelog.mjs`, enforces that. It runs in three places:
 
 | where | what it sees | what it asserts |
 | --- | --- | --- |
-| CI job `release-gate`, on a pull request | the diff against the PR base | release integrity **and** the bump |
+| CI job `release-gate`, on a pull request | the diff against the PR base | release integrity **and** an open section |
 | CI job `release-gate`, on a push to `main` | no base to diff | release integrity only |
-| `prepublishOnly`, at `npm publish` | the working tree only | release integrity |
+| `prepublishOnly --publish`, at `npm publish` | the working tree only | release integrity **and** convergence |
 
 Only the first row is the gate. `BASE_SHA` is populated for `pull_request` events
 only, so a push to `main` — a direct push, or an admin merge that went around the
@@ -44,9 +44,12 @@ consecutive releases went out through the same gap.
 ### A. Release integrity — always, no history needed
 
 1. `CHANGELOG.md`'s **first** `##` heading names a real version. Not `Unreleased`,
-   not `TBD`, not `Next`.
-2. That version equals `package.json`'s `version`.
-3. `src/version.ts`'s `PARSEMAN_VERSION` equals it too.
+   not `TBD`, not `Next`. That version is the **release under construction**.
+2. It is greater than or equal to `package.json`'s `version` — equal when nothing
+   unreleased is pending, greater when a section is open. Never lower: behind means
+   history is being rewritten, or a published version lost its section.
+3. `src/version.ts`'s `PARSEMAN_VERSION` equals `package.json`'s. These two move
+   together, and they move at **publish**.
 
 (3) is not bookkeeping. `PARSEMAN_VERSION` is stamped into every generated-artifact
 banner and read by the fuse-time version lock — see
@@ -59,10 +62,17 @@ release problem produces a *release* error message rather than a unit-test failu
 `Unreleased` is not a state this repo ships from, so it is not a state `main` is
 allowed to sit in.
 
-### B. The bump — on a PR, against its base
+### A'. Publish integrity — at `npm publish`
 
-If the diff touches the **published surface**, `package.json`'s version must be
-strictly greater than the base's.
+`--publish` additionally requires the heading, `package.json` and `src/version.ts` to
+be **equal**. This is the moment the number is spent, so it is the moment they all
+have to agree.
+
+### B. An open section — on a PR, against its base
+
+If the diff touches the **published surface**, the release under construction must be
+a version that has **not been published yet** — the top changelog heading strictly
+above `package.json`'s version.
 
 The published surface is:
 
@@ -102,6 +112,37 @@ tolerability is a correctness property.
 Note that a docs-only PR skips the Node matrix and the perf gate but **not** this
 job. A is cheap and unconditional; B simply reports that nothing publishable moved.
 
+## Merging is not publishing
+
+B used to compare the head version against **the base branch's**: any PR touching
+`src/**` had to bump `package.json`. That was wrong in two ways at once, and the
+second one was worse.
+
+**It made a version number the price of merging.** This project spends numbers at
+publish. When several PRs land between two releases, a bump-per-merge burns one number
+per PR and only the last ever ships — every earlier number collapses into it. That is
+not hypothetical: 0.37 through 0.41 were bumped and never published, and all of that
+work went out as one 0.37.0. The gate was manufacturing exactly the waste it looked
+like discipline against.
+
+**And it contradicted A.** A must hold on `main` at all times, so a PR that did not
+bump was forced to file its entry under a heading naming an *already published*
+version — documenting changes into a release that demonstrably does not contain them.
+The only way out was the `release-exempt` label on a PR that is neither a revert nor
+chained, which puts a false statement exactly where reviewers read.
+
+So the invariant is **changelog-relative, not branch-relative**. `main` carries an open
+section naming the next unpublished version; every PR files into it; the number is spent
+once per release cycle, by whoever publishes, however many PRs land into that cycle.
+
+```md
+## 0.45.0 — unreleased      ← the release under construction; PRs file here
+## 0.44.0 — 2026-07-30      ← published; package.json and src/version.ts say 0.44.0
+```
+
+At publish: rename the heading with a date, bump `package.json` and `src/version.ts`
+to match, and `--publish` passes. Nothing else in the flow changes.
+
 ## Which bump
 
 Pre-1.0, and the changelog's own preamble says so: minor versions may carry breaking
@@ -132,8 +173,9 @@ Whoever merges an exempt PR owns the next release carrying the bump.
 ## Running it yourself
 
 ```sh
-node scripts/check-changelog.mjs                    # release integrity (what publish runs)
-node scripts/check-changelog.mjs --base=origin/main # + the bump rule, as CI sees it
+node scripts/check-changelog.mjs                    # release integrity (local preflight)
+node scripts/check-changelog.mjs --base=origin/main # + the open-section rule, as CI sees it
+node scripts/check-changelog.mjs --publish          # + convergence (what `npm publish` runs)
 ```
 
 `--root=<dir>` points it at another checkout, which is how

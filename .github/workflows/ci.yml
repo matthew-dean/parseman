@@ -104,12 +104,20 @@ jobs:
   # through that gap — the 0.36.0 content sat on `main` under a heading naming no
   # version at all. So the check moved LEFT, to here.
   #
-  # It asserts (a) the changelog's first `##` heading names a version, equal to
-  # package.json's and to `src/version.ts`'s stamp, and (b) if the diff touches the
-  # PUBLISHED SURFACE (`src/**`, or a consumer-facing package.json field) the version
-  # went up. Everything that cannot reach a consumer — tests, benches, scripts, docs,
-  # this file, the lockfile — is exempt from (b) on purpose: a gate that fires on a
-  # comment typo gets bypassed, and then the gates that matter get bypassed with it.
+  # It asserts (a) the changelog's first `##` heading names a version, at or above
+  # package.json's, with `src/version.ts`'s stamp equal to package.json's; and (b) if
+  # the diff touches the PUBLISHED SURFACE (`src/**`, or a consumer-facing package.json
+  # field) that heading names a version which is NOT yet published — an open section.
+  # Everything that cannot reach a consumer — tests, benches, scripts, docs, this file,
+  # the lockfile — is exempt from (b) on purpose: a gate that fires on a comment typo
+  # gets bypassed, and then the gates that matter get bypassed with it.
+  #
+  # (b) is CHANGELOG-relative, not branch-relative. It used to require package.json to
+  # go up against the PR base, which made a version number the price of MERGING while
+  # this project spends numbers at PUBLISH — so between two releases every PR burned a
+  # number and all but the last collapsed (0.37 through 0.41 shipped as one 0.37.0).
+  # Now `main` carries one open section, every PR files into it, and the bump comes due
+  # at `npm publish`, where `prepublishOnly --publish` requires all three to converge.
   #
   # Its own job rather than a matrix step, for two reasons. It needs `fetch-depth: 0`
   # to see the base commit, which the matrix deliberately does not take. And it must

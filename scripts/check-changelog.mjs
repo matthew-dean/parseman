@@ -18,16 +18,49 @@
  * So the check now runs on every PR (see `.github/workflows/ci.yml`, job
  * `release-gate`) and asserts the two things that make `main` shippable at all times.
  *
+ * ── MERGING IS NOT PUBLISHING ───────────────────────────────────────────────────
+ * The gate used to compare the head version against THE BASE BRANCH's: any PR touching
+ * `src/**` had to bump `package.json`. That made a version number the price of MERGING,
+ * and it contradicts how this project actually spends numbers.
+ *
+ * Numbers are spent at PUBLISH. When several PRs merge between two releases, a
+ * bump-per-merge burns one number per PR and only the last one ever ships — every
+ * earlier number collapses into it. That is not hypothetical: 0.37 through 0.41 were
+ * bumped and never published, and all of that work went out as one 0.37.0. The gate was
+ * manufacturing exactly the waste it looks like discipline.
+ *
+ * Worse, the two halves contradicted each other. A had to hold on `main` at all times,
+ * so a PR that could not bump was forced to file its entry under a heading naming an
+ * ALREADY PUBLISHED version — documenting changes into a release that demonstrably does
+ * not contain them. The only way out was the `release-exempt` label, on a PR that is
+ * neither a revert nor chained, which is a lie in a place reviewers read.
+ *
+ * So the invariant is now CHANGELOG-relative rather than branch-relative: `main` always
+ * carries an open section naming the NEXT, unpublished version, and every PR files into
+ * it. The number is spent once per release cycle, by whoever publishes, no matter how
+ * many PRs land into that cycle. `--publish` is where the numbers must all agree, which
+ * is the moment they actually have to.
+ *
  * ── WHAT IT CHECKS ──────────────────────────────────────────────────────────────
  * A. RELEASE INTEGRITY — always, needs no git history:
  *      1. CHANGELOG.md's FIRST `##` heading names a real version, never `Unreleased`.
- *      2. That version equals `package.json`'s.
- *      3. `src/version.ts`'s `PARSEMAN_VERSION` equals it too — the artifact stamp
- *         and the fuse-time version lock read it (`docs/design/artifact-format.md`).
+ *         The version it names is the RELEASE UNDER CONSTRUCTION.
+ *      2. It is >= `package.json`'s version — equal when nothing unreleased is pending,
+ *         greater when a section is open. Never lower: that is history being rewritten.
+ *      3. `src/version.ts`'s `PARSEMAN_VERSION` equals `package.json`'s — the artifact
+ *         stamp and the fuse-time version lock read it
+ *         (`docs/design/artifact-format.md`). These two move together, at publish.
+ *
+ * A'. PUBLISH INTEGRITY — with `--publish`, i.e. `prepublishOnly`:
+ *      4. The heading, `package.json` and `src/version.ts` must be EQUAL. This is the
+ *         moment the number is spent, and the moment they all have to agree.
  *
  * B. BUMP GATE — only with `--base=<ref>`, i.e. in a pull request:
- *      4. If the change touches the PUBLISHED SURFACE (`src/**`, or a package.json
- *         field a consumer receives), the version must go UP relative to the base.
+ *      5. If the change touches the PUBLISHED SURFACE (`src/**`, or a package.json
+ *         field a consumer receives), the release under construction must be a version
+ *         that is NOT yet published — i.e. the top heading is strictly above
+ *         `package.json`. Opening that section is a one-time cost per release cycle,
+ *         not a per-PR one.
  *
  *    Everything else — tests, benches, examples, fixtures, scripts, docs, notes,
  *    CI config, lockfile, tsconfig — is exempt, because none of it can change what a
@@ -44,7 +77,8 @@
  * A never has a hatch. `Unreleased` is not a state this repo ships from.
  *
  * Usage:
- *   node scripts/check-changelog.mjs                  # A only (prepublishOnly, local)
+ *   node scripts/check-changelog.mjs                  # A only (local preflight)
+ *   node scripts/check-changelog.mjs --publish        # A + A' (prepublishOnly)
  *   node scripts/check-changelog.mjs --base=<ref>     # A + B (pull request)
  *   node scripts/check-changelog.mjs --base=<ref> --exempt
  *   node scripts/check-changelog.mjs --root=<dir>     # point at another checkout
@@ -68,6 +102,7 @@ const rootFlag = flag('root')
 const ROOT = typeof rootFlag === 'string' ? resolve(rootFlag) : resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = typeof flag('base') === 'string' ? flag('base') : undefined
 const EXEMPT = flag('exempt') !== undefined
+const PUBLISH = flag('publish') !== undefined
 
 const PKG_PATH = resolve(ROOT, 'package.json')
 const CHANGELOG_PATH = resolve(ROOT, 'CHANGELOG.md')
@@ -201,11 +236,22 @@ if (!headingVersion) {
   )
 }
 
-if (headingVersion.raw !== version) {
+const headingVsPkg = compareVersions(headingVersion, parseVersion(version) ?? headingVersion)
+
+if (headingVsPkg < 0) {
   fail(
     `CHANGELOG.md's top section is ${headingVersion.raw} but package.json says ${version}.\n` +
-      `  The newest changelog section must BE the version being shipped — a matching\n` +
-      `  heading further down the file only proves the version was released once before.`,
+      `  The top section can be AHEAD of package.json (a release under construction), never\n` +
+      `  behind it — behind means history is being rewritten, or a published version lost\n` +
+      `  its section.`,
+  )
+}
+
+if (PUBLISH && headingVsPkg !== 0) {
+  fail(
+    `cannot publish: CHANGELOG.md's top section is ${headingVersion.raw} but package.json says ${version}.\n` +
+      `  This is the moment the number is spent, so it is the moment they must agree. Bump\n` +
+      `  package.json AND src/version.ts to ${headingVersion.raw} and date the heading.`,
   )
 }
 
@@ -222,7 +268,12 @@ if (existsSync(VERSION_TS_PATH)) {
   }
 }
 
-console.log(`✓ CHANGELOG.md's top section is ${version}, matching package.json and src/version.ts.`)
+console.log(
+  headingVsPkg === 0
+    ? `✓ CHANGELOG.md's top section is ${version}, matching package.json and src/version.ts.`
+    : `✓ CHANGELOG.md has ${headingVersion.raw} open for construction over published ${version}`
+      + ' (package.json and src/version.ts agree; they move together at publish).',
+)
 
 // ── B. Bump gate ────────────────────────────────────────────────────────────────
 
@@ -289,46 +340,48 @@ const why = [
   pkgSurfaceChanged.length > 0 ? `package.json ${pkgSurfaceChanged.join(', ')}` : null,
 ].filter(Boolean).join(' and ')
 
-let basePkgVersion
-try {
-  basePkgVersion = JSON.parse(git('show', `${baseSha}:package.json`)).version
-} catch {
-  basePkgVersion = undefined
-}
-
-const baseVersion = typeof basePkgVersion === 'string' ? parseVersion(basePkgVersion) : null
-const headVersion = parseVersion(version)
-
-if (!headVersion) fail(`package.json version "${version}" is not a semantic version.`)
-
-const bumped = baseVersion === null || compareVersions(headVersion, baseVersion) > 0
-
-if (bumped) {
+// The release under construction must be a version that has NOT been published yet.
+//
+// This is deliberately CHANGELOG-relative, not branch-relative. A branch-relative rule
+// ("head version > base version") makes the bump the price of MERGING: the second PR to
+// land between two releases has to bump again, and its number collapses into whatever
+// ships. 0.37 through 0.41 all went out as one 0.37.0 that way. Here, the FIRST PR of a
+// cycle opens `## <next> — unreleased` and every later PR files into the same open
+// section for free. One number per release, spent by whoever publishes.
+//
+// `package.json` is the "last published" marker: `--publish` refuses to ship unless it
+// equals the heading, so on `main` it is exactly the last version that went out.
+if (headingVsPkg > 0) {
   console.log(
-    `✓ published surface changed (${why}) and the version went ${basePkgVersion ?? '?'} → ${version}.`,
+    `✓ published surface changed (${why}) and ${headingVersion.raw} is open for construction\n` +
+      `  over published ${version} — the bump lands at publish, not at merge.`,
   )
   process.exit(0)
 }
 
 if (EXEMPT) {
   console.log(
-    `⚠ RELEASE GATE WAIVED — the published surface changed (${why}) and the version did NOT go up\n` +
-      `  (${basePkgVersion} → ${version}), but the \`release-exempt\` label is set on this PR.\n` +
-      '  Valid only for a revert of a release, or a chained PR whose bump lives underneath it.\n' +
-      '  Whoever merges this owns the next release carrying the bump.',
+    `⚠ RELEASE GATE WAIVED — the published surface changed (${why}) and CHANGELOG.md's top\n` +
+      `  section is the already-published ${version}, but the \`release-exempt\` label is set.\n` +
+      '  Valid only for a revert of a release, or a chained PR whose section lives underneath\n' +
+      '  it. Whoever merges this owns the next release carrying the section.',
   )
   process.exit(0)
 }
 
 fail(
-  `this PR changes the published surface (${why}) but does not bump the version.\n` +
-    `  base ${basePkgVersion ?? '(unknown)'} → head ${version}\n` +
+  `this PR changes the published surface (${why}) but CHANGELOG.md's top section is\n` +
+    `  ${version}, which is already published — so the change would be documented into a\n` +
+    '  release that does not contain it.\n' +
     '\n' +
-    '  Every PR lands releasable. Bump package.json AND src/version.ts together, and open\n' +
-    '  the changelog section that names the new version — pre-1.0, a behaviour change goes\n' +
-    '  in the MINOR (this project has said so since 0.1.0; see CHANGELOG.md\'s preamble).\n' +
+    `  Open the next section: add "## <next> — unreleased" above the ${version} section and\n` +
+    '  put this change under it. Pre-1.0, a behaviour change goes in the MINOR (this project\n' +
+    "  has said so since 0.1.0; see CHANGELOG.md's preamble).\n" +
     '\n' +
-    '  If the bump genuinely belongs elsewhere — you are reverting a release, or this PR is\n' +
-    '  chained on one that already bumped — add the `release-exempt` label to the PR. That\n' +
+    '  Do NOT bump package.json or src/version.ts here. They move together at PUBLISH, so\n' +
+    '  that any number of PRs can land into one release cycle without burning a number each.\n' +
+    '\n' +
+    '  If a section genuinely belongs elsewhere — you are reverting a release, or this PR is\n' +
+    '  chained on one that already opened it — add the `release-exempt` label to the PR. That\n' +
     '  is the hatch; it is on the PR where a reviewer can see it.',
 )
