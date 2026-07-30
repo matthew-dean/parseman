@@ -59,26 +59,8 @@ describe('removed RunResult.triviaMap', () => {
     for (const field of REMOVED) expect(Object.keys({ ...r })).not.toContain(field)
   })
 
-  it('still guards the profiled result, which is assembled by spreading', () => {
-    // The profiled return spreads the host pass's result, and a spread drops a
-    // non-enumerable accessor. Without an explicit reinstall this path would
-    // silently go back to reading `undefined` — so it is pinned separately.
-    const profiled = node(
-      'Doc',
-      parser({ trivia: blockTrivia }, sequence(
-        field('left', node('Word', regex(/[a-z]+/))),
-        literal(':'),
-        field('right', node('Word', regex(/[a-z]+/))),
-      )),
-    )
-    const compiled = compile(profiled)
-    const host = (type: string, children: ReadonlyArray<unknown> | undefined) => ({ _tag: 'node', type, children })
-    const entry = (input: string, pos: number, ctx: ParseContext) => compiled.parseWithContext(input, ctx, pos)
-
-    const result = run(entry, 'a : b', { build: host, profile: true })
-
-    expect(result.profile).toBeDefined()
-    expect(() => readRemoved(result)).toThrow(/triviaMap was REMOVED/)
-    expect(Object.keys(result)).not.toContain('triviaMap')
-  })
+  /* The profiled return path — the one that spread the host pass's result and so
+   * had to reinstall the non-enumerable accessor — was removed along with the
+   * emitted profiling counters. `run({ profile: true })` now throws, so there is no
+   * spread to guard. Restore this pin with the interpreted profiling driver. */
 })

@@ -36,7 +36,7 @@ const build = (name: string, src: string): string => {
 }
 
 /** Did the node allocate the raw-children collector it only needs at arity >= 4? */
-const allocatesRaw = (code: string): boolean => (code.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).length > 0
+const allocatesRaw = (code: string): boolean => (code.match(/_raw\d+ = \[\]/g) ?? []).length > 0
 
 const GRAMMAR = (importLine: string, ref: string) => `
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }

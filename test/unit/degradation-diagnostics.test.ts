@@ -50,7 +50,7 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
     // ...but the node no longer allocates the raw-children collector it never reads.
     // Before the fix `buildSrc` was the string "foldOperation", arity was unknown, and
     // every tier stayed on. `_raw` is allocated as `[]` only when raw capture is live.
-    const rawAllocs = source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []
+    const rawAllocs = source.match(/_raw\d+ = \[\]/g) ?? []
     expect(rawAllocs).toHaveLength(0)
   })
 
@@ -61,7 +61,7 @@ function foldOperation(children) { return { n: children.length } }
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), foldOperation))
 `, 'P')
     expect(fn('a b', 0, {}).value).toEqual({ n: 2 })
-    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).toHaveLength(0)
+    expect(source.match(/_raw\d+ = \[\]/g) ?? []).toHaveLength(0)
   })
 
   it('keeps every tier for a full-arity reducer passed by name (no under-capture)', () => {
@@ -82,7 +82,7 @@ let fold = children => ({ n: children.length })
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
 `, 'P')
     expect(ok.fn('a b', 0, {}).value).toEqual({ n: 2 })
-    expect(ok.source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).toHaveLength(0)
+    expect(ok.source.match(/_raw\d+ = \[\]/g) ?? []).toHaveLength(0)
 
     const reassigned = macro(`
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
@@ -92,7 +92,7 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
 `, 'P')
     // Which function this names is not decidable, so it fails open — the one case where
     // the diagnostic is the right answer rather than a substitute for analysis.
-    expect(reassigned.source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
+    expect(reassigned.source.match(/_raw\d+ = \[\]/g) ?? []).not.toHaveLength(0)
   })
 
   it('follows an alias chain', () => {
@@ -104,7 +104,7 @@ const fold = mid
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
 `, 'P')
     expect(fn('a b', 0, {}).value).toEqual({ n: 2 })
-    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).toHaveLength(0)
+    expect(source.match(/_raw\d+ = \[\]/g) ?? []).toHaveLength(0)
   })
 
   it('counts DEFAULT and DESTRUCTURED parameters positionally', () => {
@@ -116,7 +116,7 @@ const fold = (c, f = undefined, s, r) => ({ n: c.length, r: r.length })
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
 `, 'P')
     // Arity 4 reaches rawChildren, so raw capture is LIVE...
-    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
+    expect(source.match(/_raw\d+ = \[\]/g) ?? []).not.toHaveLength(0)
     // ...but arity 4 is below trivia (5) and state (6), so neither is captured, which is
     // only possible if the arity was actually confirmed rather than failing open.
     expect(source).toContain('_EMPTY_TL')
@@ -131,7 +131,7 @@ import { literal, node, parser, regex, sequence } from 'parseman' with { type: '
 const fold = (...args) => ({ n: args.length })
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
 `.trim(), 'P.ts', new Set(['parseman']))!
-      expect(result.code.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
+      expect(result.code.match(/_raw\d+ = \[\]/g) ?? []).not.toHaveLength(0)
       const w = result.warnings.join('\n')
       expect(w).toContain('rest parameter')
       expect(w).toContain('buildArity')
@@ -147,7 +147,7 @@ import { literal, node, parser, regex, sequence } from 'parseman' with { type: '
 import { foldOperation } from './does-not-exist.ts'
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), foldOperation))
 `.trim(), 'P.ts', new Set(['parseman']))!
-      expect(result.code.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
+      expect(result.code.match(/_raw\d+ = \[\]/g) ?? []).not.toHaveLength(0)
       const w = result.warnings.join('\n')
       expect(w).toContain('[parseman] degraded [build-arity-unconfirmed]')
       expect(w).toContain('node("Fold")')
@@ -168,7 +168,7 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
     // site. Shadowing is decidable, so it is decided — the old "decline if the name is
     // bound more than once anywhere" rule declined perfectly ordinary code.
     expect(fn('a b', 0, {}).value).toEqual({ n: 2 })
-    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).toHaveLength(0)
+    expect(source.match(/_raw\d+ = \[\]/g) ?? []).toHaveLength(0)
   })
 
   it('a name GENUINELY shadowed at the call site resolves to the inner binding', () => {
@@ -182,7 +182,7 @@ export const P = rules((fold) => ({
     // Here `fold` at the call site is the factory's PARAMETER, not the module const.
     // A parameter is not a function declaration, so this declines — correctly, and for
     // the right reason rather than because a name appeared twice.
-    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
+    expect(source.match(/_raw\d+ = \[\]/g) ?? []).not.toHaveLength(0)
   })
 
   it('PARSEMAN_DEGRADATION=error turns the report into a build failure', () => {

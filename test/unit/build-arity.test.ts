@@ -123,16 +123,19 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
   it('typed arity-3 → raw CST collector is AST-only lazy, not eagerly allocated', () => {
     const src = compile(typed3).source
     // Host mode is a COMPILE-TIME constant, so an 'ast' artifact carries no
-    // `_ctx.build?._parsemanCstOutput` probe at all — the only thing that can still
-    // want the raw collector is the profiling capture pass, which is a hoisted local.
-    expect(src).toMatch(/const _dcst\d+ = _cap\d+$/m)
+    // `_ctx.build?._parsemanCstOutput` probe at all. The profiling capture pass used
+    // to be the last remaining consumer of the raw collector here; profiling is no
+    // longer compiled in, so the `_dcst` gate folds away and the collector is simply
+    // never allocated for this shape.
+    expect(src).not.toContain('_dcst')
     expect(src).not.toContain('_parsemanCstOutput')
-    expect(src).toMatch(/_raw\d+ = _rec\d+ \? undefined : _dcst\d+ \? \[\] : undefined/)
+    expect(src).toMatch(/_raw\d+ = undefined/)
+    expect(src).not.toMatch(/_raw\d+ = \[\]/)
   })
   it('typed arity-5 → allocates a per-node _tl array', () => {
     const src = compile(typed5).source
     // Existing direct five-argument builders own a fresh trivia collector.
-    expect(src).toMatch(/_tl\d*\s*=\s*_rec\d*\s*\?\s*undefined\s*:\s*\[\]/)
+    expect(src).toMatch(/_tl\d*\s*=\s*\[\]/)
   })
   it('elision is output-preserving (typed arity-3 parses identically to a kept-capture run)', () => {
     // both should produce { n: 2 } regardless of capture
@@ -169,7 +172,9 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
 
     expect(source).toContain('_EMPTY_TL')
     // Macro output defaults to host mode 'ast', so it carries no host probe either.
-    expect(source).toMatch(/const _dcst\d+ = _cap\d+$/m)
+    // The `_dcst` binding was gated solely on the profiling capture pass, which is
+    // no longer compiled in, so it folds away entirely.
+    expect(source).not.toContain('_dcst')
     expect(source).not.toContain('_parsemanCstOutput')
     expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start:/)
     expect(source).toMatch(/_EMPTY_TL, undefined\)/)

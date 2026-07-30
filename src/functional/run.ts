@@ -367,47 +367,25 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   }
 }
 
-/** Shallow copy of `options.state` per pass so an in-place mutation by one
- * profiling pass doesn't leak into the next (the parity check only compares
- * `ok`/`unconsumedFrom`, so a diverged structural output would go unnoticed).
- * Only the top level is isolated — deeply-nested mutable state is shared; a
- * profiled grammar should keep per-parse state shallow (see the `profile` docs). */
-function clonePassState(state: unknown): unknown {
-  if (state === null || typeof state !== 'object') return state
-  return Array.isArray(state) ? [...state] : { ...(state as Record<string, unknown>) }
-}
-
-function profilePass(entry: Runnable, input: string, options: RunOptions, phase: ProfilePhase): { result: RunResult; profile: RunProfilePass } {
-  const state: ProfileState = { phase, nodes: 0, childSlots: 0, rawSlots: 0, triviaSlots: 0, fieldSlots: 0, hostCalls: 0 }
-  const passOptions: RunOptions = options.state === undefined ? options : { ...options, state: clonePassState(options.state) }
-  const start = performance.now()
-  const result = runOnce(entry, input, passOptions, phase, state)
-  const { phase: _phase, ...counts } = state
-  return { result, profile: { ms: performance.now() - start, ...counts } }
-}
+/* The three-pass profiling driver (`clonePassState` / `profilePass`) was removed
+ * with the emitted counters it read. `runOnce` still accepts `phase`/`profileState`
+ * and `RunProfile`/`RunProfilePass` are still exported, so the interpreted
+ * reimplementation can restore the driver without reshaping the public result. */
 
 export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
   if (!options.profile) return guardRemovedFields(runOnce(entry, input, options))
-  if (typeof entry !== 'function') {
-    throw new TypeError('run({ profile: true }) requires a compiled parser entry')
-  }
-
-  const recognizer = profilePass(entry, input, options, 'recognizer')
-  const capture = profilePass(entry, input, options, 'capture')
-  const host = profilePass(entry, input, options, 'host')
-  if (recognizer.result.ok !== host.result.ok || capture.result.ok !== host.result.ok
-    || recognizer.result.unconsumedFrom !== host.result.unconsumedFrom
-    || capture.result.unconsumedFrom !== host.result.unconsumedFrom) {
-    throw new Error('run({ profile: true }) changed recognition; the grammar is not profile-safe')
-  }
-  // The spread drops the non-enumerable accessor, so it is reinstalled here
-  // rather than inherited.
-  return guardRemovedFields({
-    ...host.result,
-    profile: {
-      recognizer: recognizer.profile,
-      structuralCapture: capture.profile,
-      hostConstruction: host.profile,
-    },
-  })
+  // Profiling counters are no longer emitted into compiled artifacts — they cost a
+  // `_ctx._pmProfile` read plus ~15 threaded ternaries on EVERY node, which is the
+  // "diagnostic machinery in codegen" the compiled path must not pay for. The
+  // interpreter has never implemented `_pmProfile` either, so no route can answer
+  // this today. Fail LOUDLY: the passes below would otherwise all report zero, and
+  // an all-zero profile reads as a real measurement rather than as "I could not
+  // run" — the exact defect `guardRemovedFields` exists to prevent for the removed
+  // 0.44 fields. The pass machinery is retained, unmodified, for the interpreted
+  // reimplementation.
+  throw new TypeError(
+    'run({ profile: true }) is unavailable: profiling counters are no longer compiled into '
+    + 'parser artifacts, and the interpreter does not implement them yet. Profiling is moving '
+    + 'to interpreted mode.',
+  )
 }
