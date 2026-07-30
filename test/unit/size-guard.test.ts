@@ -130,16 +130,20 @@ describe('size gate enforces the budget against the real tree', () => {
     // size-fix lane lands. A gate that passed on 117x would be worse than no gate.
     const r = gate(ROOT)
     expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/CEILING/)
+    expect(r.out).toMatch(/ceiling 10x raw bytes/)
+    expect(r.out).toMatch(/drift tolerance 1%/)
     expect(r.out).toMatch(/over the 10x ceiling/)
-    expect(r.out).toMatch(/CANNOT be waived by/i)
+    expect(r.out).toMatch(/cannot\n?\s*be waived by rebaselining/i)
   })
 
   it('names the offending fixture, expected vs actual, and how to rebaseline', () => {
     const r = gate(ROOT)
     // Actionable: which grammar, by how much, and the deliberate remedy.
-    expect(r.out).toMatch(/example\/css: [\d.]+x raw bytes \(\d+ B generated from \d+ B source\)/)
+    // Which fixture, how far over, and the deliberate remedy.
+    expect(r.out).toMatch(/example\/css\s+[\d.]+x\s+[\d,]+ B/)
+    expect(r.out).toMatch(/Worst: \S+ at [\d.]+x/)
     expect(r.out).toMatch(/pnpm size:baseline/)
+    expect(r.out).toMatch(/pnpm size:probe/)
   })
 
   it('measures a LARGE, a COMPOSING, and a VARIANT fixture, not just the doc toys', () => {
@@ -156,9 +160,79 @@ describe('size gate enforces the budget against the real tree', () => {
 
   it('reports raw bytes, gzip, and the LOC multiplier per fixture', () => {
     const r = gate(ROOT)
-    expect(r.out).toMatch(/gen B/)
-    expect(r.out).toMatch(/gzip B/)
+    expect(r.out).toMatch(/generated/)
+    expect(r.out).toMatch(/gzip/)
     expect(r.out).toMatch(/LOCx/)
+    expect(r.out).toMatch(/comp/)
+  })
+})
+
+describe('size gate separates standing debt from fresh regressions', () => {
+  it('renders known over-ceiling fixtures as TRACKED, not as new regressions', () => {
+    const r = gate(ROOT)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/KNOWN, TRACKED, BLOCKING/)
+    expect(r.out).toMatch(/NOT new regressions and NOT accepted/)
+    // The whole point of the distinction: standing debt must not be announced as
+    // something this change just did.
+    expect(r.out).not.toMatch(/CROSSED THE CEILING/)
+  })
+
+  it('still says the release is blocked, so tracked never reads as tolerated', () => {
+    const r = gate(ROOT)
+    expect(r.out).toMatch(/release stays blocked/)
+    expect(r.out).toMatch(/will NOT silence this/)
+  })
+
+  it('reports a fixture that crosses the ceiling in THIS change as a fresh regression', () => {
+    // Same tree, but a baseline claiming example/css was comfortably under budget.
+    // Crossing from there is news, and must not be filed under standing debt.
+    const d = scratch()
+    const real = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/size-baseline.json'), 'utf8'))
+    real.fixtures['example/css'] = { genBytes: 252441, gzipBytes: 39000, bytesRatio: 5, locMultiplier: 20 }
+    writeBaseline(d, real)
+    // Point it at the real tree's sources by running from ROOT but with this baseline.
+    fs.mkdirSync(path.join(d, 'bench'), { recursive: true })
+    const r = gate(ROOT, `--baseline=${path.join(d, 'bench', 'size-baseline.json')}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/CROSSED THE CEILING/)
+    expect(r.out).toMatch(/this change pushed it over/)
+  })
+
+  it('points at the largest measured lever instead of just saying "make it smaller"', () => {
+    const r = gate(ROOT)
+    expect(r.out).toMatch(/VARIANT DUPLICATION/)
+    expect(r.out).toMatch(/costs [\d.]+x probe\/variants-1 for the same grammar/)
+    expect(r.out).toMatch(/pnpm size:probe/)
+  })
+})
+
+describe('size gate measures multi-variant duplication', () => {
+  it('gates 1 / 2 / 4-variant fixtures', () => {
+    // Real grammars emit four variants from one factory (trackLines x hostMode).
+    // Verified in jess's shipped css artifact: `function _r_Stylesheet(` occurs
+    // exactly 4 times in a 13,124,728 B file. Without these fixtures a fix worth
+    // ~4x on the real product would move this gate by exactly zero.
+    const r = gate(ROOT)
+    expect(r.out).toMatch(/probe\/variants-1/)
+    expect(r.out).toMatch(/probe\/variants-2/)
+    expect(r.out).toMatch(/probe\/variants-4/)
+  })
+
+  it('shows duplication growing about linearly with variant count', () => {
+    const out = execFileSync(process.execPath, ['--import', 'tsx/esm', path.join(ROOT, 'bench/size/probe.ts'), '--json=/dev/stdout'], {
+      cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 180_000,
+    })
+    const parsed = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)) as { rows: { id: string; genBytes: number }[] }
+    const get = (id: string): number => parsed.rows.find(r => r.id === id)!.genBytes
+    const two = get('variants-2') / get('variants-1')
+    const four = get('variants-4') / get('variants-1')
+    // Perfectly shared variants would sit near 1.0x. Full copies sit near N.
+    // This asserts the DEFECT is visible; it is expected to fall when the
+    // collapse work lands, at which point these bounds are what proves it worked.
+    expect(two).toBeGreaterThan(1.5)
+    expect(four).toBeGreaterThan(3)
+    expect(four).toBeGreaterThan(two)
   })
 })
 

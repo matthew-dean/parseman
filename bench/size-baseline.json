@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-07-30",
-  "gitRev": "8389a5c",
+  "updatedAt": "2026-07-31",
+  "gitRev": "503ca81",
   "ceiling": 10,
   "driftTolerancePct": 1,
   "fixtures": {
@@ -144,6 +144,27 @@
       "gzipBytes": 4396,
       "bytesRatio": 22.972,
       "locMultiplier": 29,
+      "overCeiling": true
+    },
+    "probe/variants-1": {
+      "genBytes": 20874,
+      "gzipBytes": 3950,
+      "bytesRatio": 24.85,
+      "locMultiplier": 26.733,
+      "overCeiling": true
+    },
+    "probe/variants-2": {
+      "genBytes": 41361,
+      "gzipBytes": 4678,
+      "bytesRatio": 40.392,
+      "locMultiplier": 43,
+      "overCeiling": true
+    },
+    "probe/variants-4": {
+      "genBytes": 81875,
+      "gzipBytes": 6454,
+      "bytesRatio": 58.15,
+      "locMultiplier": 63,
       "overCeiling": true
     }
   }

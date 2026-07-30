@@ -224,6 +224,64 @@ export const variant = compose([base, rules((g) => ({
   entry: 'variant.ts',
 }
 
+/**
+ * MULTI-VARIANT — the axis every other unit here is blind to, and the one that
+ * hides the single biggest size defect in the product.
+ *
+ * Real grammars do not emit one parser. jess's css parser calls `composeLeaf`
+ * FOUR times over the same shared recognition pieces, differing only in
+ * `trackLines` and `hostMode`:
+ *
+ *   cssGrammar               (neither)
+ *   cssLineGrammar           trackLines: true
+ *   cssCstGrammar            hostMode: 'cst'
+ *   cssDiagnosticCstGrammar  hostMode: 'cst', trackLines: true
+ *
+ * VERIFIED in the shipped artifact, not inferred: `function _r_Stylesheet(`
+ * occurs exactly 4 times in packages/syntax/css/css-parser/lib/grammar.js, with
+ * the four `Symbol.for('parseman.grammarReflection')` markers at byte offsets
+ * 3345020 / 6613125 / 9827503 / 13116652 — four ~3.2 MB blocks in a 13,124,728 B
+ * file. Nearly the whole artifact is four copies of one grammar.
+ *
+ * A single-variant fixture cannot exhibit this, so a fix worth ~4x on the real
+ * product would move a single-variant gate by exactly zero. That is the same
+ * failure the published "4-8x" budget had: it was honest only because it
+ * measured grammars that could not show the problem.
+ *
+ * The 1 / 2 / 4 ladder makes the duplication a NUMBER: if variants were shared
+ * rather than copied, `variants-4` would cost about what `variants-1` costs.
+ * Today it costs ~4x, and the collapse work is verifiable in-repo by watching
+ * that ratio fall.
+ */
+function multiVariant(n: 1 | 2 | 4): { files: Record<string, string>; entry: string } {
+  // Same shape as jess: shared recognition pieces, then N composeLeaf variants
+  // over them, differing ONLY in trackLines / hostMode.
+  const opts = [
+    '{ trivia: ws }',
+    '{ trivia: ws, trackLines: true }',
+    "{ trivia: ws, hostMode: 'cst' }",
+    "{ trivia: ws, hostMode: 'cst', trackLines: true }",
+  ].slice(0, n)
+
+  const variants = opts
+    .map((o, i) => `export const variant${i} = composeLeaf([recognition, rules(${o}, (g) => ({
+  Doc: node('Doc${i}', many(choice(g.List, g.Atom)), (c) => ({ t: 'Doc${i}', c })),
+}))])`)
+    .join('\n')
+
+  return {
+    files: {
+      'recognition.ts': RECOGNITION_MODULE,
+      'variants.ts': `${MACRO}
+import { recognition } from './recognition.js'
+const ws = trivia(oneOrMore(regex(/[ \\t\\n\\r]+/)))
+${variants}
+`,
+    },
+    entry: 'variants.ts',
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Measurement
 // ---------------------------------------------------------------------------
@@ -313,6 +371,14 @@ export function buildUnits(): Unit[] {
   units.push(unit('hostmode-ast', 'hostmode', '0.37.0', { 'g.ts': baseModule('ast') }, 'g.ts'))
   units.push(unit('hostmode-cst', 'hostmode', '0.37.0', { 'g.ts': baseModule('cst') }, 'g.ts'))
   units.push(unit('variant', 'variant', '0.14.0', VARIANT.files, VARIANT.entry))
+
+  // 1 / 2 / 4 variants from one set of shared pieces — the jess shape.
+  // Floors: composeLeaf 0.28.0; the 2- and 4-variant rungs vary hostMode, so
+  // they need 0.37.0.
+  for (const n of [1, 2, 4] as const) {
+    const { files, entry } = multiVariant(n)
+    units.push(unit(`variants-${n}`, 'multi-variant', n === 1 ? '0.28.0' : '0.37.0', files, entry))
+  }
 
   return units
 }
@@ -488,6 +554,11 @@ async function main(): Promise<void> {
   }
   const on = byId.get('trivia-on'), off = byId.get('trivia-off')
   if (on && off) console.log(`  trivia on vs off: ${on.genBytes} B vs ${off.genBytes} B (${(on.genBytes / off.genBytes).toFixed(2)}x)`)
+  const v1 = byId.get('variants-1'), v2 = byId.get('variants-2'), v4 = byId.get('variants-4')
+  if (v1 && v2 && v4) {
+    console.log(`  variant duplication: 1 -> ${v1.genBytes} B, 2 -> ${v2.genBytes} B (${(v2.genBytes / v1.genBytes).toFixed(2)}x), 4 -> ${v4.genBytes} B (${(v4.genBytes / v1.genBytes).toFixed(2)}x)`)
+    console.log('  (perfectly shared variants would hold this near 1.00x; ~Nx means N copies)')
+  }
 
   const jsonPath = argValue('--json')
   if (jsonPath) {

@@ -55,6 +55,26 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   far more node sites per source byte. Source-relative ratios are also **not comparable
   between grammars that compose**. Both docs pages now carry measured numbers and say so.
 
+  The gated set includes **multi-variant fixtures** (`variants-1/2/4`), which is the
+  axis every previous size measurement was blind to. A grammar factory is usually
+  compiled more than once — jess's css parser calls `composeLeaf` four times over the
+  same pieces, varying only `trackLines` and `hostMode` — and **each variant is emitted
+  as a full copy**: measured 1.98x for two variants and 3.92x for four. Verified in the
+  shipped artifact, where `function _r_Stylesheet(` occurs exactly four times in a
+  13,124,728 B file. Without these fixtures a fix worth ~4x on the real product would
+  have moved this gate by exactly zero, which is the same blind spot that made the old
+  "4-8x" budget look honest. The compression ratio climbing with variant count
+  (5.3:1 -> 8.8:1 -> 12.7:1) is the tell.
+
+  Failure output distinguishes **standing debt from fresh regressions**: fixtures already
+  recorded `overCeiling: true` render as "KNOWN, TRACKED, BLOCKING" with the note that the
+  release stays blocked, while a fixture that crosses the ceiling in the current change
+  renders as "CROSSED THE CEILING" with its baseline ratio for contrast. Drift fires
+  normally in both cases, and names whether the added bytes compress better (duplicated
+  output) or worse (distinct content). Every failure names the fixture, the delta in
+  bytes, and the action — including the largest measured lever rather than "make it
+  smaller".
+
   The gate earned its keep on the first rebase: it caught `graphql` at +1.20% and
   `toml-ish` at +1.32% raw bytes against the baseline taken three commits earlier, with
   gzip up 9.21% and 6.92% respectively — i.e. compression got *worse*, so the added bulk
