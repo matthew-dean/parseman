@@ -8,6 +8,21 @@ break a rule below. Read the warning; it names the arm and the fix.
 Full docs: `docs/guide/first-char-gating.md`, `docs/guide/combinators.md`,
 `docs/guide/context.md`.
 
+## Before opening or updating a code PR
+
+Run the local CI preflight and report its result before creating or pushing a
+code PR:
+
+```sh
+pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
+```
+
+`coverage:guard` is a blocking ratchet, not an optional report. If it fails,
+add tests for the changed behavior; do not regenerate the baseline merely to
+make a PR green. Do not claim CI is green until the pushed head SHA has its own
+completed checks. For a docs-only change, run the smallest applicable checks
+and state what was intentionally not run.
+
 ## The one rule that matters most: every hot `choice` must first-char-gate
 
 A `choice` compiles to O(1) character dispatch ONLY when every arm starts with a
