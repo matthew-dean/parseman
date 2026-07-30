@@ -213,6 +213,14 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Control-byte check
+        # Raw control bytes in a source file make it BINARY: `git diff --numstat`
+        # reports `- -`, GitHub will not render the blob, and `grep -rn` skips it
+        # SILENTLY. It has happened twice (ed81612 fixed it in analysis/, and it
+        # came back in compiler/degradation.ts), so it is gated rather than
+        # remembered. See scripts/check-control-bytes.mjs.
+        run: pnpm check:control-bytes
+
       - name: Test with coverage
         # Uses vitest.coverage.config.ts, which excludes all of test/perf/ —
         # those are timing-based benchmarks, not unit tests, and running them

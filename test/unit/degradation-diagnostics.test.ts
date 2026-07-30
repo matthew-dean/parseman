@@ -16,12 +16,14 @@
  * the parse result as well as the emitted shape.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { readdirSync, readFileSync } from 'node:fs'
 import { analyzeMkInlineBuild } from '../../src/compiler/inline-build.ts'
 import { node, sequence, literal, regex, many, choice, parser, compile, parse } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import {
   formatDegradation, formatDegradations, beginDegradationCapture, endDegradationCapture,
   recordDegradation, resolveDegradationLevel, resetDegradationMemo,
+  degradationCaptureDepth, unwindDegradationCapture,
 } from '../../src/compiler/degradation.ts'
 
 type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
@@ -363,5 +365,149 @@ describe('inline-mk near-misses are reported', () => {
   it('declines a structural node with no build of its own', () => {
     const n = node('S', literal('a'))
     expect(analyzeMkInlineBuild(n._def as Extract<import('../../src/index.ts').ParserDef, { tag: 'node' }>)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Integrity of the diagnostic vocabulary and of the channel that carries it.
+//
+// A declared-but-unrecordable code makes the diagnostic surface look more capable than
+// it is: at 0.45.0 the four declared codes had 1, 1, 0 and 0 record sites, so HALF the
+// published vocabulary could never fire. A code with a record site is still not enough —
+// the finding also has to survive the trip to a drain — so the tests below cover both.
+// ---------------------------------------------------------------------------
+describe('degradation vocabulary integrity', () => {
+  const SRC_DIR = new URL('../../src/', import.meta.url)
+
+  const srcFiles = (): string[] => {
+    const out: string[] = []
+    const walk = (dir: URL): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) walk(new URL(`${entry.name}/`, dir))
+        else if (entry.name.endsWith('.ts')) out.push(readFileSync(new URL(entry.name, dir), 'utf8'))
+      }
+    }
+    walk(SRC_DIR)
+    return out
+  }
+
+  /** The `DegradationCode` union members, read from the declaration itself. */
+  const declaredCodes = (): string[] => {
+    const decl = readFileSync(new URL('compiler/degradation.ts', SRC_DIR), 'utf8')
+    const union = /export type DegradationCode =([\s\S]*?)\n\n/.exec(decl)
+    expect(union, 'DegradationCode union not found — did the declaration move?').not.toBeNull()
+    const body = union?.[1] ?? ''
+    return [...body.matchAll(/\|\s*'([a-z-]+)'/g)].map(m => m[1]!)
+  }
+
+  it('declares at least the four documented codes', () => {
+    expect(declaredCodes().length).toBeGreaterThanOrEqual(4)
+  })
+
+  it('every declared code has at least one record site', () => {
+    const files = srcFiles()
+    const orphans = declaredCodes().filter(code =>
+      !files.some(f => f.includes(`code: '${code}'`)))
+    expect(orphans, `declared but never recorded: ${orphans.join(', ')}`).toEqual([])
+  })
+})
+
+describe('a recorded degradation actually reaches a drain', () => {
+  const prev = process.env.PARSEMAN_DEGRADATION
+  beforeEach(() => { resetDegradationMemo() })
+  afterEach(() => {
+    process.env.PARSEMAN_DEGRADATION = prev
+    unwindDegradationCapture(0)
+    resetDegradationMemo()
+  })
+
+  const finding = (n: number) => ({
+    code: 'build-arity-unconfirmed' as const,
+    severity: 'warn' as const,
+    where: `node("D${n}")`,
+    subject: 'build reducer `f`',
+    fellBackTo: 'x',
+    otherwise: 'y',
+  })
+
+  it('macro capture mode: collected, not printed', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    beginDegradationCapture()
+    recordDegradation(finding(1))
+    const found = endDegradationCapture()
+    warn.mockRestore()
+    expect(found).toHaveLength(1)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('runtime compile() mode, warn: printed immediately', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    recordDegradation(finding(2))
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
+  it('runtime compile() mode, error: THROWS — `error` is not a louder `warn`', () => {
+    // The documented contract (docs/guide/degradation-diagnostics.md:41) is
+    // "PARSEMAN_DEGRADATION=error # fail the build", unqualified. With
+    // `endDegradationCapture()`'s only call site inside the macro plugin, library mode
+    // had no drain and `error` silently behaved as `warn`.
+    process.env.PARSEMAN_DEGRADATION = 'error'
+    expect(() => recordDegradation(finding(3))).toThrow(/degraded compilation path/)
+  })
+
+  it('nested captures do not steal each other\'s sink', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    beginDegradationCapture() // outer module
+    recordDegradation(finding(4))
+    beginDegradationCapture() // inner module (transformMacro re-enters itself)
+    recordDegradation(finding(5))
+    expect(endDegradationCapture()).toHaveLength(1) // inner only
+    recordDegradation(finding(6)) // must still land in the OUTER sink, not print
+    expect(endDegradationCapture()).toHaveLength(2)
+  })
+
+  it('an aborted capture does not swallow degradations for the rest of the process', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    const depth = degradationCaptureDepth()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      beginDegradationCapture()
+      recordDegradation(finding(7))
+      throw new Error('macro transform aborted') // e.g. composeLeaf() must macro-fuse
+    } catch {
+      // what transformMacro's `finally` does
+      for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
+    }
+    // The stranded finding was reported rather than dropped …
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(degradationCaptureDepth()).toBe(depth)
+    // … and the sink is closed, so a LATER runtime compile() still prints.
+    warn.mockClear()
+    recordDegradation(finding(8))
+    expect(warn).toHaveBeenCalledTimes(1)
+    warn.mockRestore()
+  })
+
+  // NOTE: this asserts the INVARIANT (transformMacro is capture-neutral) rather than the
+  // throwing path specifically. Every malformed input tried here returns `null` from an
+  // early guard instead of reaching the `composeLeaf() must macro-fuse` throw at
+  // plugin/index.ts, so the abort path is exercised by the simulated test above rather
+  // than end-to-end through the plugin.
+  it('transformMacro is capture-neutral across well-formed and malformed input', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    const depth = degradationCaptureDepth()
+    const inputs = [
+      `import { rules, literal } from 'parseman'\nexport const g = rules({ a: () => literal('a') })\n`,
+      `import { composeLeaf } from 'parseman'\nexport const g = composeLeaf([notARealPiece])\n`,
+      `this is not valid typescript (((`,
+      ``,
+    ]
+    for (const src of inputs) {
+      try { transformMacro(src.trim(), 'neutral.ts', new Set(['parseman'])) } catch { /* either way */ }
+      expect(degradationCaptureDepth()).toBe(depth)
+    }
   })
 })

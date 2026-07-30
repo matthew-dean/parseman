@@ -228,7 +228,16 @@ function detectStrategy(parsers: Combinator<unknown>[]): ChoiceStrategy {
 function bareLeadingTermKey(term: Combinator<unknown>): string | null {
   const d = term._def
   if (d.tag === 'literal' && !d.caseInsensitive) return `L:${d.value}`
-  if (d.tag === 'regex') return `R:${d.source} ${d.flags}`
+  // `JSON.stringify` of the pair, not a delimiter join. `source` is arbitrary regex text
+  // and can contain any character, so a collision here would judge two structurally
+  // DIFFERENT regexes identical and left-factor arms that must not share a prefix — a
+  // correctness bug in the generated parser, not a missed optimization. A JSON array is
+  // injective by construction, so no argument about which delimiter cannot occur in a
+  // regex source is needed. It is also printable: this was a RAW 0x00 byte, which made
+  // the whole file binary to `git diff` and invisible to `grep -rn` (see
+  // `scripts/check-control-bytes.mjs`). Runs once per choice when its strategy is chosen,
+  // never per match.
+  if (d.tag === 'regex') return `R:${JSON.stringify([d.source, d.flags])}`
   return null
 }
 

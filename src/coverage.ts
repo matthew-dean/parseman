@@ -38,7 +38,20 @@ export type GrammarCoverageSnapshot = {
   definitions: readonly GrammarCoverageDefinition[]
   hits: readonly string[]
   unhit: readonly string[]
+  /**
+   * Hit fraction, or `NaN` when there was NOTHING TO MEASURE.
+   *
+   * An empty definition set is not full coverage. This used to report `1` for it, so a
+   * grammar whose definitions failed to load — the exact case
+   * `'coverage-definitions-unavailable'` exists for — presented as 100% covered, and any
+   * consumer gate of the shape `ratio >= threshold` passed on zero evidence. `NaN`
+   * compares false against every threshold, so the gate now FAILS CLOSED by default
+   * instead of passing by default. Read `measurable` to tell "nothing to measure" from a
+   * genuine 0%.
+   */
   ratio: number
+  /** False when the definition set was empty, i.e. `ratio` is not a measurement. */
+  measurable: boolean
 }
 
 export type GrammarCoverageCollector = {
@@ -54,7 +67,12 @@ export const GRAMMAR_COVERAGE_DEFINITIONS: symbol = Symbol.for('parseman.grammar
 
 export function compiledGrammarCoverageDefinitions(grammar: Record<string, unknown>): readonly GrammarCoverageDefinition[] {
   const definitions = (grammar as Record<symbol, unknown>)[GRAMMAR_COVERAGE_DEFINITIONS]
+  // `definitions.length === 0` is checked EXPLICITLY. `[].every(...)` is vacuously true,
+  // so an empty array sailed through this guard and was returned as a valid definition
+  // set — the one input whose name the error message spells out was the one input it let
+  // past, and it went on to report 100% coverage downstream.
   if (!Array.isArray(definitions)
+    || definitions.length === 0
     || !definitions.every((definition): definition is GrammarCoverageDefinition => typeof definition === 'object'
       && definition !== null
       && typeof definition.id === 'string'
@@ -120,7 +138,15 @@ export function createGrammarCoverageCollector(definitions: readonly GrammarCove
     snapshot() {
       const hitList = [...hits].sort()
       const unhit = ordered.map(definition => definition.id).filter(id => !hits.has(id))
-      return { definitions: ordered, hits: hitList, unhit, ratio: ordered.length === 0 ? 1 : hitList.length / ordered.length }
+      // No `ordered.length === 0 ? 1` default. 0/0 is NaN, which is the honest answer and
+      // fails every `>=` threshold; reporting 1 asserted total coverage of nothing.
+      return {
+        definitions: ordered,
+        hits: hitList,
+        unhit,
+        ratio: hitList.length / ordered.length,
+        measurable: ordered.length > 0,
+      }
     },
     reset() { hits.clear() },
   }

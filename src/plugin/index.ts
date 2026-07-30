@@ -26,7 +26,10 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
-import { beginDegradationCapture, endDegradationCapture, formatDegradations, resolveDegradationLevel } from '../compiler/degradation.ts'
+import {
+  beginDegradationCapture, endDegradationCapture, formatDegradation, formatDegradations,
+  resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
+} from '../compiler/degradation.ts'
 import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
@@ -423,6 +426,24 @@ function lowerPrivateSourceModule(
   }
 }
 
+/**
+ * Transform one module, ALWAYS releasing the process-global capture state.
+ *
+ * `beginDegradationCapture()`, `beginLoweringCapture()` and `setReducerResolver()` set
+ * module-level globals that the body's straight-line path released at the end. The body
+ * also THROWS — `composeLeaf() must macro-fuse` at the `compileComposeLeafCall` site is
+ * one of several — and every one of those throws jumped over the release.
+ *
+ * The consequence was process-wide and silent: one failed macro transform left the
+ * degradation sink OPEN forever, so every later `recordDegradation` — including from an
+ * unrelated runtime `compile()` in the same process — was filed into an orphaned Map that
+ * nobody would ever drain, and printed nothing. Measured: 0 `console.warn` calls after an
+ * aborted capture, 1 finding stranded in the orphan.
+ *
+ * So the release lives in a `finally`, and whatever the failed frame had collected is
+ * printed rather than dropped — a degradation that was real before the abort is still
+ * real after it.
+ */
 export function transformMacro(
   code: string,
   id: string,
@@ -430,6 +451,26 @@ export function transformMacro(
   warnUnloweredRegex = false,
   recovery = false,
   grammarCoverage = false,
+): TransformMacroResult | null {
+  const depth = degradationCaptureDepth()
+  try {
+    return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage)
+  } finally {
+    setReducerResolver(null)
+    // Both are idempotent: on the success path the body already released them and these
+    // are no-ops. On an aborted transform they are what stops the leak.
+    endLoweringCapture()
+    for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
+  }
+}
+
+function transformMacroImpl(
+  code: string,
+  id: string,
+  moduleAliases: Set<string>,
+  warnUnloweredRegex: boolean,
+  recovery: boolean,
+  grammarCoverage: boolean,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -1020,9 +1061,29 @@ export function transformMacro(
   const withCoverageDefinitions = (grammarExpr: string, definitions: readonly { id: string; kind: string }[]): string =>
     !grammarCoverage ? grammarExpr
       : `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.grammarCoverageDefinitions'), { value: Object.freeze(${JSON.stringify(definitions)}.map(Object.freeze)), enumerable: false })`
-  const emittedCoverageDefinitions = (source: string): Array<{ id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }> => {
+  /**
+   * Recover the coverage DENOMINATOR by scraping the IDs out of the generated hooks.
+   *
+   * This is a fallback: it reads emitted source with a regex, so it silently returns `[]`
+   * if the emitted hook shape ever changes or the hooks are absent. An empty denominator
+   * is NOT zero coverage — it is NO MEASUREMENT — and it used to travel all the way to a
+   * consumer's gate as 100%. `'coverage-definitions-unavailable'` is the declared code for
+   * exactly this and had no record site anywhere; this is it.
+   */
+  const emittedCoverageDefinitions = (source: string, where: string): Array<{ id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }> => {
     const ids = new Set<string>()
     for (const match of source.matchAll(/id:\s*"([^"]+)"/g)) ids.add(match[1]!)
+    if (grammarCoverage && ids.size === 0) {
+      recordDegradation({
+        code: 'coverage-definitions-unavailable',
+        severity: 'warn',
+        where,
+        subject: 'generated coverage hooks',
+        fellBackTo: 'no coverage definitions could be read out of the generated source, so the '
+          + 'grammar carries an EMPTY definition set — which is no measurement, not full coverage',
+        otherwise: 'the emitted hook IDs would form the coverage denominator',
+      })
+    }
     return [...ids].sort().map(id => ({
       id,
       kind: id.startsWith('rule:') ? 'rule' : id.startsWith('label:') ? 'label' : id.startsWith('dispatch:') ? 'dispatch-arm' : 'choice-arm',
@@ -1519,7 +1580,7 @@ export function transformMacro(
       }
       const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece]))
       return {
-        replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)),
+        replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} composeLeaf()`)),
         ...(importedFactories.length ? { importedFactories } : {}),
       }
     } catch (e) {
@@ -1697,7 +1758,7 @@ export function transformMacro(
           // plain map.
           let replacement = withCoverageDefinitions(
             source,
-            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source),
+            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source, `${id} rules()`),
           )
           // Only a genuinely lowered map is stamped. The SHARED-SHAPE fallback above keeps
           // its `rules(…)` source, and that value is built by the interpreter at runtime —
@@ -1737,7 +1798,7 @@ export function transformMacro(
           const replacement = exportPrefix
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
-          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) })
+          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} compose()`)) })
           markUsedImportedFactories(fused.importedFactories)
           continue
         }

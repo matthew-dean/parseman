@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compose, composedGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, grammarCoverageDefinitions, label, literal, node, otherwise, regex, routed, rules, runWithGrammarCoverage, sequence, startsWith, transform, when, type GatedArm } from '../../src/index.ts'
+import { choice, compiledGrammarCoverageDefinitions, compose, composedGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, grammarCoverageDefinitions, label, literal, node, otherwise, regex, routed, rules, runWithGrammarCoverage, sequence, startsWith, transform, when, type GatedArm } from '../../src/index.ts'
 
 describe('grammar semantic coverage', () => {
   const grammar = rules(g => ({
@@ -250,4 +250,52 @@ describe('grammar semantic coverage', () => {
     expect(trace.snapshot().events).not.toContainEqual(expect.objectContaining({ id: 'choice:Entry/lazy:0/arm:1', phase: 'failure' }))
   })
 
+})
+
+/**
+ * An empty set is NOT full coverage.
+ *
+ * `snapshot()` used to compute `ratio: ordered.length === 0 ? 1 : …`, so a grammar whose
+ * definitions failed to load reported 100% COVERED — and any consumer gate of the shape
+ * `ratio >= threshold` passed on zero evidence. The irony at 0.45.0 was that the release
+ * ADDED a degradation code for exactly this (`'coverage-definitions-unavailable'`,
+ * commented "empty is NOT a zero") and then never wired it up.
+ *
+ * A gate must fail CLOSED when it cannot measure, so the unmeasurable case is now `NaN`
+ * (false against every threshold) with an explicit `measurable: false` beside it.
+ */
+describe('coverage fails closed when there is nothing to measure', () => {
+  it('an empty definition set is unmeasurable, not 100%', () => {
+    const snap = createGrammarCoverageCollector([]).snapshot()
+    expect(snap.measurable).toBe(false)
+    expect(Number.isNaN(snap.ratio)).toBe(true)
+    expect(snap.ratio).not.toBe(1)
+    // The property that actually matters: no threshold accepts it.
+    for (const threshold of [0, 0.5, 0.8, 1]) expect(snap.ratio >= threshold).toBe(false)
+  })
+
+  it('a real but wholly unhit set is 0, and is measurable', () => {
+    const snap = createGrammarCoverageCollector([{ id: 'rule:a', kind: 'rule' }]).snapshot()
+    expect(snap.measurable).toBe(true)
+    expect(snap.ratio).toBe(0)
+  })
+
+  it('a hit set still reports a genuine fraction', () => {
+    const c = createGrammarCoverageCollector([
+      { id: 'rule:a', kind: 'rule' },
+      { id: 'rule:b', kind: 'rule' },
+    ])
+    c.hit('rule:a')
+    const snap = c.snapshot()
+    expect(snap.measurable).toBe(true)
+    expect(snap.ratio).toBe(0.5)
+  })
+
+  it('compiledGrammarCoverageDefinitions rejects an EMPTY array', () => {
+    // `[].every(...)` is vacuously true, so an empty array used to sail through the
+    // validator whose error message names precisely this case.
+    const grammar = {} as Record<string, unknown>
+    Object.defineProperty(grammar, Symbol.for('parseman.grammarCoverageDefinitions'), { value: [] })
+    expect(() => compiledGrammarCoverageDefinitions(grammar)).toThrow(/no coverage definitions/)
+  })
 })

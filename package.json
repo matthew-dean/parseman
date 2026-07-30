@@ -63,6 +63,7 @@
     "coverage:guard": "node scripts/coverage-guard.mjs",
     "typecheck": "tsc",
     "lint": "oxlint --ignore-path .oxlintignore src test examples bench",
+    "check:control-bytes": "node scripts/check-control-bytes.mjs",
     "bench": "node --import tsx/esm bench/run.ts",
     "bench:parseman": "node --import tsx/esm bench/parseman.ts",
     "bench:composeleaf": "node --import tsx/esm bench/composeleaf-firstset.ts",

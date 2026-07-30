@@ -42,7 +42,15 @@ PARSEMAN_DEGRADATION=error   # fail the build
 ```
 
 Under the macro plugin the findings arrive as ordinary bundler warnings (Vite/Rollup
-`this.warn`), anchored to the module. A runtime `compile()` prints them directly.
+`this.warn`), anchored to the module, and `error` throws once at the end of the module
+with every finding listed. A runtime `compile()` prints them directly at `warn`, and
+throws on the first finding at `error` — it has no batch to defer to.
+
+::: tip Both modes honour `error`
+Before 0.45.0 `error` was inert for a runtime `compile()`: the drain that threw lived
+only in the macro plugin, so library users got `warn` behaviour from a setting documented
+as "fail the build".
+:::
 
 ## Asserting zero degradations
 

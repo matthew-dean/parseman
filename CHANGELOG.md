@@ -59,6 +59,62 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `toml-ish` at +1.32% raw bytes against the baseline taken three commits earlier, with
   gzip up 9.21% and 6.92% respectively — i.e. compression got *worse*, so the added bulk
   is distinct content rather than more of the same. Both are recorded in the baseline.
+- **Integrity fixes for the diagnostics this release is named for.** The
+  "never degrade silently" channel had four holes, each of which made a real degradation
+  invisible.
+  - `confirmedBuildArity` answered a confident **`0`** for `function () { [native code] }`
+    — how a bound function, a `Proxy` and every host builtin stringify. A confident answer
+    never reaches `recordDegradation`, so the node silently dropped capture tiers: the same
+    reducer, once direct and once `.bind(null)`, produced different ASTs from the same
+    grammar with zero diagnostics. Unreadable source now answers `null` (unknown → full
+    capture → degradation recorded). The `arguments` guard also moved above the
+    empty-parameter-list case, where it had been unreachable.
+  - The parameter-list parse used `[^)]*`, which stops at the first `)` — the one inside a
+    function-typed annotation. `(children: (n: N) => N, fields) => …` was read as arity
+    **1** instead of 2, silently under-capturing on ordinary TypeScript; a `,` inside type
+    arguments (`Map<K, V>`) tore one parameter into unreadable fragments. Both are now
+    parsed with a balanced scan, so they report 2 and 1 rather than a wrong number.
+  - `beginDegradationCapture()` and its drain were not `try`/`finally`-paired, and the
+    transform throws between them. One failed macro transform left the sink open for the
+    rest of the PROCESS, so every later finding — including from an unrelated runtime
+    `compile()` — went into an orphaned Map and printed nothing. The capture is now a
+    stack (the transform re-enters itself for private source modules, and a single slot
+    let the inner call close the outer module's sink), released in a `finally`, and
+    whatever an aborted frame had collected is reported rather than dropped.
+  - `PARSEMAN_DEGRADATION=error` was **inert** for a runtime `compile()`: the drain that
+    threw lived only in the macro plugin, so library users got `warn` behaviour from a
+    setting documented as "fail the build". It now throws at the record site when no
+    capture is open.
+
+- **Wire up the two declared degradation codes that could never fire.** `opaque-artifact`
+  and `coverage-definitions-unavailable` were declared in `DegradationCode` with **zero**
+  record sites — half the published vocabulary was decoration. They now fire from their
+  real triggers (a composed grammar carrying compiled rule functions rather than
+  re-lowerable IR; a coverage denominator that could not be read out of the generated
+  hooks). A test asserts every declared code has at least one record site, and that a
+  recorded finding actually reaches a drain under each mode.
+
+- **An empty coverage set is no longer reported as 100% covered.**
+  `GrammarCoverageSnapshot.ratio` computed `ordered.length === 0 ? 1 : …`, so a grammar
+  whose definitions failed to load presented as fully covered and any consumer gate of the
+  shape `ratio >= threshold` passed on zero evidence. The unmeasurable case is now `NaN`,
+  which is false against every threshold, alongside a new `measurable: boolean`.
+  Relatedly, `compiledGrammarCoverageDefinitions` rejected everything except the one input
+  its error message names: `[].every(…)` is vacuously true, so an empty array passed
+  validation. **Breaking:** `ratio` is `NaN` rather than `1` for an empty definition set,
+  and `GrammarCoverageSnapshot` gains `measurable`.
+
+- **Gate raw control bytes in source (`scripts/check-control-bytes.mjs`, wired into CI).**
+  A raw `0x00` in a template literal makes the file BINARY to every text tool: `git diff
+  --numstat` reports `-  -`, GitHub will not render the blob, and `grep -rn` skips it
+  SILENTLY — no "binary file matches", no output, exit 0. `src/compiler/degradation.ts`,
+  the largest new file of this release, was invisible to review because of it, and
+  `src/combinators/choice.ts` had the same defect. This had already been fixed once in
+  `src/analysis/`, so it is now gated rather than remembered. Both composite keys are
+  built with `JSON.stringify` of the tuple instead of a magic delimiter — injective by
+  construction, printable, and needing no argument about which characters cannot occur in
+  a regex source or a verbatim slice of reducer text.
+
 - **Never degrade silently.** Every path where the compiler picks a correct-but-slower
   option now reports on one channel, formatted `[parseman] degraded [<code>] <where>:
   <subject> — <fell back to>; otherwise <what>`. It is default-on (`PARSEMAN_DEGRADATION=

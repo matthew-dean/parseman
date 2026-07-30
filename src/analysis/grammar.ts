@@ -16,6 +16,7 @@
 import type { Combinator } from '../types.ts'
 import { analyzeGatingRules, type AnalyzeGatingOptions, type GatingReport, type Unanalysable } from './gating.ts'
 import { recoverComposedRules } from '../compiler/linker.ts'
+import { recordDegradation } from '../compiler/degradation.ts'
 
 /** A `rules()` map, a `compose()` result, or any rule-name → value record. */
 export type AnalysableGrammar = Record<string, unknown>
@@ -47,5 +48,25 @@ export function analyzeGrammarGating(
       + 'its choices cannot be examined. Recompile the contributing grammar so it carries IR '
       + '(the macro emits IR by default) to bring it back into analysis.',
   }))
+  // Also announce it on the degradation channel. `unanalysable` is structured and correct,
+  // but it is only seen by a caller that reads the report and knows to check that field;
+  // the degradation channel is the greppable, countable one a build gate asserts zero of.
+  // `'opaque-artifact'` was a DECLARED degradation code with no record site anywhere — a
+  // published diagnostic vocabulary that could never fire. This is its real trigger.
+  for (const o of opaque) {
+    recordDegradation({
+      code: 'opaque-artifact',
+      // `info`, not `warn`: the artifact is usually someone else's package, so the author
+      // of THIS grammar has nothing to act on — but the blind spot still has to be counted.
+      severity: 'info',
+      where: o.ruleNames.length > 0 ? o.ruleNames.join(', ') : `<artifact ${o.ns}>`,
+      subject: `precompiled artifact "${o.ns}"`,
+      fellBackTo: `it carries compiled rule functions rather than re-lowerable IR, so its `
+        + `${o.ruleNames.length > 0 ? `${o.ruleNames.length} rule(s)` : 'rules'} were NOT analysed `
+        + 'and a clean gating report must not be read as a pass',
+      otherwise: 'its choices would be walked like any other rule. Recompile the contributing '
+        + 'grammar so it carries IR (the macro emits IR by default)',
+    })
+  }
   return fromOpaque.length === 0 ? report : { ...report, unanalysable: [...report.unanalysable, ...fromOpaque] }
 }
