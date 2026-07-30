@@ -1524,11 +1524,27 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const markLog = v(ctx, '_mklg')
         const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
         const scanEndV = v(ctx, '_sne')
+        // The root trivia log, read ONCE. This site used to load `_ctx._triviaLog`
+        // three separate times per sequence-item boundary — to take the mark, to
+        // compute the `_cap` argument, and again to decide the rollback — and root
+        // trivia is OPT-IN, so a grammar that never asks for it (every `run()` without
+        // `rootTrivia`, and every direct `parseWithContext`) paid three property loads
+        // per boundary to re-prove the same field undefined. Token-dense grammars with
+        // little per-token work pay that most: it is the whole of graphql/document's
+        // drift against the pinned v0.35.0 reference in `perf:workloads`.
+        //
+        // Hoisting is sound only because the load and the rollback bracket ONE sequence
+        // item. `_ctx._triviaLog` is reassigned at grammar boundaries (see the
+        // save/clear/restore pair emitted for nested grammars), but that pair restores
+        // the same reference before control returns here, and the rollback is reached
+        // only on the item's success path. A function-wide hoist would NOT be sound.
+        const logV = v(ctx, '_tlg')
         const capArg = ctx.noHoist ? '0' : hasSelectedRootTrivia(ctx)
-          ? '(_ctx._triviaLog !== undefined || _ctx._rootTriviaLog !== undefined) ? 2 : 0'
-          : '_ctx._triviaLog !== undefined ? 2 : 0'
+          ? `(${logV} !== undefined || _ctx._rootTriviaLog !== undefined) ? 2 : 0`
+          : `${logV} !== undefined ? 2 : 0`
         stmts.push(
-          `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+          `${ind(ctx)}const ${logV} = _ctx._triviaLog`,
+          `${ind(ctx)}const ${markLog} = ${logV} !== undefined ? ${logV}.length : 0`,
           ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
           `${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx, ${capArg})`,
           ...emitLineTrack(ctx, curV, scanEndV),
@@ -1538,7 +1554,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else { if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} }`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else { if (${logV} !== undefined && ${logV}.length !== ${markLog}) ${logV}.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} }`,
         )
         valueVars.push(r.valueVar)
         continue

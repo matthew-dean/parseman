@@ -81,6 +81,27 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   unchanged. Same principle as the degradation diagnostics — parseman must give
   notice when it cannot do what a caller expects.
 
+- **Read the root trivia log once per sequence boundary, not six times.** 0.44.0's
+  sparse root-trivia capture added a mark/rollback around every sequence item in the
+  NON-CAPTURING compiled path, and it re-loaded `_ctx._triviaLog` for each of its three
+  jobs — taking the mark, computing the scanner's `_cap` argument, and deciding the
+  rollback — for six property loads per boundary. Root trivia is OPT-IN, so every parse
+  that never asked for it paid all six to re-prove the same field `undefined`. The load
+  is now hoisted to one binding per site (284 → 49 loads in the compiled GraphQL
+  workload). Hoisting is sound only because the mark and the rollback bracket ONE
+  sequence item: `_ctx._triviaLog` is reassigned at nested-grammar boundaries, but that
+  save/restore returns the same reference before control reaches the rollback, which is
+  on the item's success path. A function-wide hoist would NOT be sound.
+
+  This is what `perf:workloads` was reporting on `graphql/document`. That row had been
+  drifting against the pinned v0.35.0 reference since 0.44.0 — it breached one of three
+  passes on `main` and on `release/0.44.0-root-trivia` before this release branch
+  existed — and tipped to a majority here. Measured, `--only=graphql`, three passes,
+  load average 6.7–7.6: before `median +0.3% … +1.7%`, won 4/12 2/12 5/12; after
+  `median −4.1% … −1.0%`, won 9/12 8/12 7/12. `json/document`, the other non-capturing
+  workload, moves `−6.0% … −2.7%` → `−17.1% … −11.6%`. The capturing path (`less/*`,
+  `css/*`) is untouched.
+
 - **Stream the canonical oracle digest instead of materialising it.** `digestInto`
   folds each corpus entry into the running hash as it is produced, so the harness no
   longer retains the whole corpus in order to hash it at the end.
