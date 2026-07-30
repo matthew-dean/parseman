@@ -54,8 +54,10 @@ Parséman appears as up to three bars:
 
 Most production use lands on **interpreted** (tests, REPLs) or **macro** (shipped apps).
 See [The three modes](./modes). Speed isn't free: `compile()` and **macro** expand a
-grammar into flat generated JS — roughly **4–8× the source lines** (gzips to a fraction).
-See [macro code size](./macro-mode#code-size-what-to-expect).
+grammar into flat generated JS. Budget in **bytes**, not lines: small self-contained
+grammars land at **3–9× the source bytes**, and denser or derived ones go well past that.
+Size is roughly linear in `node()` call sites at **≈5.8 kB each**, and the ceiling
+enforced in CI is **10×**. See [macro code size](./macro-mode#code-size-what-to-expect).
 
 For comparison, [Chevrotain](https://chevrotain.io/) always pays **840–1,400 µs** initialization before its first
 parse — that's why it only shows up in the init section.

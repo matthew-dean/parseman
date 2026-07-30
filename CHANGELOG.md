@@ -23,7 +23,42 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   to copy. Migrating: the report shape was never load-bearing on parseman's side, so
   a recorded aggregate stays reproducible as long as you fold the same fingerprints,
   in id order, over the same `OK:`/`ERR:`-prefixed digests.
+- **Gate the code-size budget.** Parseman published a code-size expectation in its own
+  guide and enforced it nowhere: `bench:size` existed in `package.json` and in zero
+  workflows, while speed had two blocking gates. The published figure had drifted by
+  roughly an order of magnitude on real grammars without anything going red. There is now
+  a blocking `size-gate` CI job (`pnpm size:guard`) on the same footing as `workload-perf`,
+  with two independent checks — a hard **10x raw-bytes ceiling** that no rebaseline can
+  waive, and **1% drift** against a committed absolute baseline (`bench/size-baseline.json`)
+  so growth cannot accumulate a couple of percent per commit. Raw bytes fail the build
+  (they are what V8 parses at import); gzip and the LOC multiplier are baselined and
+  reported, because a rising compression ratio at flat raw size means the output is getting
+  more repetitive. The gate fails CLOSED on a missing/malformed/empty baseline, a missing
+  fixture, a build failure, empty output, an unbaselined fixture, or a stale entry, and
+  `test/unit/size-guard.test.ts` proves each of those exits non-zero.
 
+- **A canonical size probe (`pnpm size:probe`).** The gated set no longer consists only of
+  the three smallest example grammars — which are all within budget and always were, which
+  is precisely why nothing caught the drift. It now also covers the larger and derived
+  in-repo grammars (`css`, `lang`, `toml-ish`, and the `jsonc`/`jsonl` variants, none of
+  which `bench:size` ever measured) plus a probe that isolates each cost driver separately:
+  `node()` count scaling, `compose()` depth 1-3, `composeLeaf`, trivia on/off, and
+  `hostMode` ast/cst. It measures the macro-lowered module rather than `compile().source`,
+  because that is what actually ships. The probe is API-floor-tiered (`--tier=core|leaf|full`)
+  and refuses to run rather than silently drop units a checkout is too old to support, so it
+  doubles as a portable historical instrument.
+
+- **Corrected the published code-size guidance.** The guide promised "roughly 4-8x the
+  source lines". Measured across the full size range, generated size is **linear in
+  `node()` call sites at ~5.8 kB each**, with an implied fixed overhead of about zero — the
+  apparently superlinear multiplier is a denominator artifact, since dense grammars pack
+  far more node sites per source byte. Source-relative ratios are also **not comparable
+  between grammars that compose**. Both docs pages now carry measured numbers and say so.
+
+  The gate earned its keep on the first rebase: it caught `graphql` at +1.20% and
+  `toml-ish` at +1.32% raw bytes against the baseline taken three commits earlier, with
+  gzip up 9.21% and 6.92% respectively — i.e. compression got *worse*, so the added bulk
+  is distinct content rather than more of the same. Both are recorded in the baseline.
 - **Never degrade silently.** Every path where the compiler picks a correct-but-slower
   option now reports on one channel, formatted `[parseman] degraded [<code>] <where>:
   <subject> — <fell back to>; otherwise <what>`. It is default-on (`PARSEMAN_DEGRADATION=
