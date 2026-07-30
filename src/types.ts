@@ -337,8 +337,10 @@ export type ParseContext = {
    * keeps compiler rollback as cheap as the legacy root sink.
    */
   _rootTriviaLog?: number[] | undefined
-  /** Bitmask over `triviaKindLabels` for `_rootTriviaLog` selected markers. */
-  _rootTriviaCaptureMask?: number | undefined
+  /** Grammar-label → selected-root-table index. Each trivia scope maps its local
+   * label through this once-built table, so composed grammars may use different
+   * label orders without a per-chunk linear selected-kind search. */
+  _rootTriviaKindIndex?: Readonly<Record<string, number>> | undefined
   /**
    * Framework-internal: flat per-node trivia log for CST capture mode.
    * When set alongside _cstRawChildren, each trivia entry is recorded as three

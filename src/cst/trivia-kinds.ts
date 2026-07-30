@@ -176,16 +176,19 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
   const kinds = ctx.triviaKindLabels
   const mask = ctx._triviaCaptureMask
   const rootLog = ctx._rootTriviaLog
-  const rootMask = ctx._rootTriviaCaptureMask
+  const rootKinds = ctx._rootTriviaKindIndex
   const rootMark = rootLog?.length ?? 0
   for (const ch of chunks) {
     // Global trivia log: always complete (never kind-filtered).
     pushTriviaLogEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
-    if (rootLog !== undefined && rootMask !== undefined && (rootMask & (1 << ch.kindIndex)) !== 0) {
+    const rootKindIndex = rootLog === undefined || rootKinds === undefined || kinds === undefined
+      ? -1
+      : (rootKinds[kinds[ch.kindIndex] ?? ''] ?? -1)
+    if (rootKindIndex >= 0) {
       // Fill the enclosing committed gap after the scanner has consumed every
       // chunk. A selected marker therefore carries its exact authored context
       // without recording any whitespace-only chunk.
-      rootLog.push(0, 0, ch.start, ch.end, ch.kindIndex)
+      rootLog!.push(0, 0, ch.start, ch.end, rootKindIndex)
     }
     // Per-node CST log: honour the kind mask when both a mask and labels are
     // present, so a host can capture (e.g.) comments only without logging every

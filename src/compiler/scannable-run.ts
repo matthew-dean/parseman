@@ -1559,14 +1559,15 @@ export function scanBranch(shape: ScanShape, mint: Mint): string {
  * A labeled branch: match one token and, on progress, log its [start, end,
  * kindIndex] trivia chunk. Same completion semantics as scanBranch.
  */
-export function scanBranchLabeled(shape: ScanShape, kindIndex: number, mint: Mint): string {
+export function scanBranchLabeled(shape: ScanShape, kindIndex: number, label: string, mint: Mint): string {
   const m = emitShapeMatch(shape, '_e', mint, '    ', 'c')
   return [
     ...m.setup,
     `    if (${m.end} > _e) {`,
     `      if (_cap) {`,
     `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, ${m.end}, ${kindIndex})`,
-    `        if (_ctx._rootTriviaLog !== undefined && _ctx._rootTriviaCaptureMask !== undefined && (_ctx._rootTriviaCaptureMask & ${1 << kindIndex})) _ctx._rootTriviaLog.push(0, 0, _e, ${m.end}, ${kindIndex})`,
+    `        const _rk = _ctx._rootTriviaLog === undefined ? -1 : (_ctx._rootTriviaKindIndex?.[${JSON.stringify(label)}] ?? -1)`,
+    `        if (_rk >= 0) _ctx._rootTriviaLog.push(0, 0, _e, ${m.end}, _rk)`,
     `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << kindIndex}))) _ctx._cstTriviaLog.push(_e, ${m.end}, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${kindIndex})`,
     `      }`,
     `      _e = ${m.end}`,

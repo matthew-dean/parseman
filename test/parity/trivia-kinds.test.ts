@@ -138,20 +138,24 @@ describe('label() vs node() — no conflict', () => {
 
 describe('labeled trivia kinds — macro metadata', () => {
   it('selected root capture survives composed factory grammars in AST and CST host modes', () => {
-    const rw = labeledRw()
-    const base = rules({ trivia: rw }, () => ({
+    const innerTrivia = labeledRw()
+    const outerTrivia = trivia(oneOrMore(choice(
+      label('blockComment', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
+      label('whitespace', regex(/[ \t\n\r\f]+/)),
+    )))
+    const base = rules({ trivia: innerTrivia }, () => ({
       // The comment is inside a semantic leaf. leaf() hides child CST capture,
       // but must not make root-source trivia disappear.
       Pair: leaf(sequence(literal('a'), literal('b')), () => ({ type: 'Pair' })),
     }))
-    const delta = rules({ trivia: rw }, g => ({
-      Doc: node('Doc', parser({ trivia: rw }, sequence(literal('x'), g.Pair, literal('y'))), () => ({ type: 'Doc' })),
+    const delta = rules({ trivia: outerTrivia }, g => ({
+      Doc: node('Doc', parser({ trivia: outerTrivia }, sequence(literal('x'), g.Pair, literal('y'))), () => ({ type: 'Doc' })),
     }))
     const ast = compose([base, delta]) as { Doc?: Runnable }
     const cst = compose([base, delta], { hostMode: 'cst' }) as { Doc?: Runnable }
-    const input = 'x /*x*/ a b y'
+    const input = 'x a /*x*/ b y'
     const opts = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
-    const expected = { mode: 'selectedKinds', rows: [1, 8, 2, 7, 1], selectedKinds: ['blockComment'] }
+    const expected = { mode: 'selectedKinds', rows: [3, 10, 4, 9, 0], selectedKinds: ['blockComment'] }
 
     expect(run(ast.Doc!, input, opts).rootTrivia).toEqual(expected)
     expect(run(cst.Doc!, input, { ...opts, build: cstBuildHost() }).rootTrivia).toEqual(expected)
@@ -169,7 +173,7 @@ describe('labeled trivia kinds — macro metadata', () => {
     expect(result.triviaLog).toEqual([])
     expect(result.rootTrivia).toEqual({
       mode: 'selectedKinds',
-      rows: [1, 8, 2, 7, 1],
+      rows: [1, 8, 2, 7, 0],
       selectedKinds: ['blockComment'],
     })
     expect(result.triviaMap.entries.length).toBe(1)
@@ -206,7 +210,7 @@ describe('labeled trivia kinds — macro metadata', () => {
 
     const interpreted = run(grammar.Root, input, selected)
     const macro = run(compiledGrammar.Root, input, selected)
-    const expected = { mode: 'selectedKinds', rows: [1, 8, 2, 7, 1], selectedKinds: ['blockComment'] }
+    const expected = { mode: 'selectedKinds', rows: [1, 8, 2, 7, 0], selectedKinds: ['blockComment'] }
     expect(interpreted.rootTrivia).toEqual(expected)
     expect(macro.rootTrivia).toEqual(expected)
   })
@@ -219,13 +223,13 @@ describe('labeled trivia kinds — macro metadata', () => {
         name: 'ordered choice arm',
         root: choice(sequence(literal('a'), literal('b')), sequence(literal('a'), literal('c'))),
         input: 'a /*x*/ c',
-        rows: [1, 8, 2, 7, 1],
+        rows: [1, 8, 2, 7, 0],
       },
       {
         name: 'attempt arm',
         root: choice(attempt(sequence(literal('a'), literal('b'))), sequence(literal('a'), literal('c'))),
         input: 'a /*x*/ c',
-        rows: [1, 8, 2, 7, 1],
+        rows: [1, 8, 2, 7, 0],
       },
       {
         name: 'optional tail',

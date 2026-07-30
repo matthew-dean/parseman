@@ -164,16 +164,15 @@ function triviaKindLabelsFromRunnable(r: Runnable | undefined): readonly string[
     ?? (r._def.tag === 'grammar' ? r._def.triviaParser?._meta.triviaKindLabels : undefined)
 }
 
-/** Keep the run-entry closure independent from grammar-construction helpers. */
-function selectedKindMask(labels: readonly string[], names: readonly string[]): number {
-  let mask = 0
-  for (const name of names) {
-    const index = labels.indexOf(name)
-    if (index >= 0) mask |= 1 << index
+function makeSelectedRootKindIndex(names: readonly string[]): Readonly<Record<string, number>> {
+  const index: Record<string, number> = Object.create(null) as Record<string, number>
+  for (let i = 0; i < names.length; i++) {
+    if (index[names[i]!] === undefined) index[names[i]!] = i
   }
-  return mask
+  return index
 }
 
+/** Keep the run-entry closure independent from grammar-construction helpers. */
 function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: ProfilePhase, profileState?: ProfileState): RunResult {
   if (typeof entry !== 'function' && typeof (entry as Combinator<unknown> | undefined)?.parse !== 'function') {
     throw new TypeError(
@@ -183,6 +182,9 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   const rootTriviaMode = options.rootTrivia ?? 'allEntries'
   const triviaLog: number[] = []
   const selectedRootLog: number[] | undefined = rootTriviaMode === 'allEntries' ? undefined : []
+  const selectedRootKindIndex = rootTriviaMode === 'allEntries'
+    ? undefined
+    : makeSelectedRootKindIndex(rootTriviaMode.selectedKinds)
   const errors: ParseError[] = []
   const profile = profileState ?? (phase === undefined
     ? undefined
@@ -201,9 +203,6 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   if (rootTriviaMode !== 'allEntries' && triviaKindLabels === undefined) {
     throw new TypeError('run(): rootTrivia.selectedKinds requires labeled grammar trivia.')
   }
-  const selectedRootMask = rootTriviaMode === 'allEntries'
-    ? undefined
-    : selectedKindMask(triviaKindLabels!, rootTriviaMode.selectedKinds)
   /*
    * Refuse an artifact/host mismatch ONCE per parse, exactly as `parseDoc` and a
    * compiled parser's `parseWithContext` already do. `run()` is handed a RULE, not the
@@ -235,7 +234,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
       : {
         ...(rootTriviaMode === 'allEntries'
           ? { _triviaLog: triviaLog }
-          : { _rootTriviaLog: selectedRootLog!, _rootTriviaCaptureMask: selectedRootMask! }),
+          : { _rootTriviaLog: selectedRootLog!, _rootTriviaKindIndex: selectedRootKindIndex! }),
         _errors: errors,
         ...(profile === undefined ? {} : { _pmProfile: profile }),
       }),
@@ -272,7 +271,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
     ...(triviaKindLabels === undefined ? {} : { triviaKindLabels }),
     triviaMap: rootTriviaMode === 'allEntries'
       ? buildRootTriviaIndex(triviaLog, triviaKindLabels)
-      : buildSelectedRootTriviaIndex(selectedRootLog!, triviaKindLabels!),
+      : buildSelectedRootTriviaIndex(selectedRootLog!, rootTriviaMode.selectedKinds),
     rootTrivia: rootTriviaMode === 'allEntries'
       ? { mode: 'allEntries', log: triviaLog }
       : { mode: 'selectedKinds', rows: selectedRootLog!, selectedKinds: rootTriviaMode.selectedKinds },
