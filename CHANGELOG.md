@@ -50,6 +50,24 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   option silently did nothing for every CST consumer. Fixed identically in the interpreter
   and the compiler.
 
+- **BREAKING — remove the unused offset-model trivia surface.** `OffsetIndex`,
+  `buildOffsetIndex`, `collectLeafSlots`, `gapText`, `lineBreaksIn`, `blankLinesIn`,
+  `lineStartWithin`, `indentWidth`, `indentMixed`, `commentsIn`, `gapIsSignificant` and
+  the `Slot` / `Gap` types are gone from the main entry, along with `src/cst/offset-model.ts`.
+  It was a THIRD trivia model — proposed as the "drop-in replacement" for
+  `buildTriviaIndex`, never adopted by anything, referenced by no other module, absent
+  from the docs, and covered only by its own two test files. The sparse `rootTrivia`
+  capture added above is the model parseman actually took. Shipping three trivia models,
+  two of them unused, makes the real one harder to find. **Migration:** none is needed —
+  nothing in the ecosystem imported these. If you did, the gap arithmetic is
+  reconstructible from any leaf's `span`, which is what the module did internally.
+
+- **BREAKING — remove the deprecated `guard()` alias.** It has forwarded to `gate()`
+  unchanged since the rename. **Migration:** `guard(pred)` → `gate(pred)`, a pure
+  rename with identical behaviour. The FAILURE LABEL is still the string `'guard'` —
+  that is the combinator's internal tag and compiled output depends on it, so it is
+  deliberately unchanged and now pinned by `test/unit/gate.test.ts`.
+
 - **Say so when a removed field is read.** Dropping the mandatory
   `RunResult.triviaMap` made it read `undefined` — and `undefined` travels, so the
   failure surfaced as a property access on nothing, deep inside the CONSUMER's

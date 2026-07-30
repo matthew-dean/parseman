@@ -73,8 +73,6 @@ export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, o
 export type { LineIndex } from './line-index.ts'
 
 export { gate } from './combinators/gate.ts'
-/** @deprecated Use `gate()`. Thin alias kept for back-compat. */
-export { guard } from './combinators/guard.ts'
 export { withCtx } from './combinators/withCtx.ts'
 export { isParseError } from './combinators/expect.ts'
 export { expect } from './combinators/expect.ts'
@@ -99,20 +97,6 @@ export { buildRootTriviaIndex, triviaEntries } from './cst/trivia-entries.ts'
 export type { RootTriviaGap, RootTriviaIndex, TriviaEntriesView } from './cst/trivia-entries.ts'
 export { triviaKindMask } from './cst/trivia-kinds.ts'
 
-export {
-  OffsetIndex,
-  buildOffsetIndex,
-  collectLeafSlots,
-  gapText,
-  lineBreaksIn,
-  blankLinesIn,
-  lineStartWithin,
-  indentWidth,
-  indentMixed,
-  commentsIn,
-  gapIsSignificant,
-} from './cst/offset-model.ts'
-export type { Slot, Gap } from './cst/offset-model.ts'
 export {
   relativize,
   absolutize,
