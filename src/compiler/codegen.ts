@@ -4683,6 +4683,12 @@ export function runFusedGatingDiagnostic(
   // `g.X` leaks into a `rules()` cache as an unresolved-lazy entry — that is a
   // REFERENCE, not a definition, and must never shadow the artifact that defines X.
   const winners = new Map<string, Combinator<unknown>>()
+  // NOTE: the `continue` below is NOT a silent blind spot, though it reads like one. An
+  // unresolved lazy here is a REFERENCE (`g.X` accessed but not defined in THIS map), and
+  // skipping it is what lets the map that actually DEFINES X win. The rule is still
+  // analysed — under its definition. Reporting it as `unanalysable` was tried and is
+  // wrong: it fires on every correctly-bound hole (5 tests in gating-shared-shape-fuse
+  // and gating-composed-grammar assert exactly that no warning appears).
   for (const map of ruleMaps) for (const [name, rule] of map) {
     if (rule._def.tag === 'lazy') { try { rule._def.thunk() } catch { continue } }
     winners.set(name, rule)
