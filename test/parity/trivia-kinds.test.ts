@@ -187,6 +187,44 @@ describe('selected root trivia scopes', () => {
       rootTrivia: { select: ['missing'] },
     })).toThrow(/unknown trivia label "missing"/)
   })
+
+  it('does not leak a nested classified opaque scope into its unclassified wrapper', () => {
+    // `parser()` is a real scope boundary even when its child happens to be
+    // another parser. Its metadata must describe only its own opts.trivia;
+    // otherwise run() would permit selected capture on an unclassified root.
+    const classifiedOpaqueChild = parser({ trivia: outer, rootCapture: 'opaque' }, literal('a'))
+    const wrapper = parser({}, classifiedOpaqueChild)
+    const options = { rootTrivia: { select: ['blockComment'] as const } }
+
+    expect(wrapper._meta.rootTriviaClassified).toBeUndefined()
+    expect(wrapper._meta.triviaKindLabels).toBeUndefined()
+    expect(() => run(wrapper, 'a', options)).toThrow(/requires labeled grammar trivia/)
+
+    // Compilation must also accept the wrapper: this makes the test cover the
+    // metadata consumer used by codegen, while run() above pins the public
+    // entry contract (CompiledParser itself is not a Runnable).
+    expect(() => compile(wrapper)).not.toThrow()
+  })
+
+  it('reports an unclassified local scope identically in interpreter and compiled output', () => {
+    const entry = parser({ trivia: outer }, sequence(
+      literal('a'),
+      parser({ trivia: collapsed }, literal('b')),
+    ))
+    const options = { rootTrivia: { select: ['blockComment'] as const } }
+    const message = "parser(): selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: 'opaque'."
+
+    expect(() => run(entry, 'a b', options), 'interpreter').toThrow(message)
+
+    // `compile()` exposes parseWithContext rather than a public runnable rule.
+    // Drive it with the same selected-root strict flag that run() installs and
+    // compare the observable diagnostic byte-for-byte.
+    const compiled = compile(entry)
+    expect(() => compiled.parseWithContext('a b', {
+      trackLines: false,
+      _rootTriviaStrictScopes: true,
+    }), 'compiled').toThrow(message)
+  })
 })
 
 describe('label() vs node() — no conflict', () => {

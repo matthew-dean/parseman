@@ -76,6 +76,11 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
     _tag: 'grammar',
     _meta: {
       ...root._meta,
+      // Trivia classification describes this grammar's own active trivia
+      // scope. A directly nested grammar may have classified trivia of its
+      // own, but that must not advertise classification for this wrapper.
+      triviaKindLabels: undefined,
+      rootTriviaClassified: undefined,
       ...(opts.trivia?._meta?.triviaKindLabels ? { triviaKindLabels: opts.trivia._meta.triviaKindLabels } : {}),
       ...(opts.trivia?._meta?.rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
     },

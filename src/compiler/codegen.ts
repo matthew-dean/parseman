@@ -3985,7 +3985,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       const strictScopeCheck = def.triviaParser !== undefined
         && !def.triviaParser._meta.rootTriviaClassified
         && !opaqueRootCapture
-        ? `${ind(ctx)}if (_ctx._rootTriviaStrictScopes) throw new TypeError(${JSON.stringify('parseman: selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: \'opaque\'.')})`
+        ? `${ind(ctx)}if (_ctx._rootTriviaStrictScopes) throw new TypeError(${JSON.stringify('parser(): selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: \'opaque\'.')})`
         : undefined
       if (def.clearTrivia) {
         // noTrivia / parser({ trivia: null }): contiguous terms, no trivia skipped.
