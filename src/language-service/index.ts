@@ -19,7 +19,7 @@ import type { Combinator, ParseContext, ParseResult, Span, ParseError } from '..
 import { run } from '../functional/run.ts'
 import { completionsAt as coreCompletionsAt } from '../combinators/completions.ts'
 import { cstBuildHost } from '../compiler/linker.ts'
-import { walk, type Walkable } from '../cst/walk.ts'
+import type { Walkable } from '../cst/walk.ts'
 import { parseDoc, type Registry } from '../functional/doc.ts'
 import { absolutizeCST } from '../cst/relative-spans.ts'
 import type { NodeLike } from '../cst/types.ts'
@@ -84,6 +84,15 @@ export type LanguageService = {
 const errorMessage = (expected: readonly string[]): string =>
   expected.length ? `Unexpected input; expected ${expected.join(' or ')}` : 'Unexpected input'
 
+function visitTree(root: LsNode, enter: (node: LsNode) => void): void {
+  const go = (node: LsNode): void => {
+    enter(node)
+    const children = node.children as ReadonlyArray<LsNode> | undefined
+    if (Array.isArray(children)) for (const child of children) go(child)
+  }
+  go(root)
+}
+
 /**
  * Merge every syntax-error source into one deduped diagnostic list:
  *   (a) recovered `parseError` nodes embedded in the tree + per-node lint rules
@@ -125,18 +134,16 @@ function mergeDiagnostics(
 function diagnoseTree(root: LsNode, config: LanguageServiceConfig): Diagnostic[] {
   const out: Diagnostic[] = []
   const rules = config.diagnostics
-  walk(root, {
-    enter(node) {
-      if (node._tag === 'parseError') {
-        out.push({ severity: 'error', message: errorMessage((node as { expected?: string[] }).expected ?? []), span: node.span })
-        return
-      }
-      const h = rules && node.type !== undefined ? rules[node.type] : undefined
-      if (h) {
-        const d = h(node)
-        if (d) out.push(...(Array.isArray(d) ? d : [d]))
-      }
-    },
+  visitTree(root, node => {
+    if (node._tag === 'parseError') {
+      out.push({ severity: 'error', message: errorMessage((node as { expected?: string[] }).expected ?? []), span: node.span })
+      return
+    }
+    const h = rules && node.type !== undefined ? rules[node.type] : undefined
+    if (h) {
+      const d = h(node)
+      if (d) out.push(...(Array.isArray(d) ? d : [d]))
+    }
   })
   return out
 }
@@ -206,11 +213,9 @@ export function languageService(grammar: GrammarInput, config: LanguageServiceCo
 function ruleAtCursor(root: unknown, offset: number): string | null {
   if (!root || typeof root !== 'object') return null
   let best: string | null = null
-  walk(root as LsNode, {
-    enter(node) {
-      const s = node.span
-      if (s && s.start <= offset && offset <= s.end && node.type !== undefined) best = node.type
-    },
+  visitTree(root as LsNode, node => {
+    const s = node.span
+    if (s && s.start <= offset && offset <= s.end && node.type !== undefined) best = node.type
   })
   return best
 }

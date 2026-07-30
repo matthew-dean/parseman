@@ -341,14 +341,54 @@ function scopeGet(scope: XScope, name: string, mfs?: string[]): Combinator<unkno
 // ---------------------------------------------------------------------------
 
 /** Read static node opts that affect generated grammar shape. */
+function unwrapStaticExpr<T extends { type?: string }>(expr: T): T {
+  let cur = expr as unknown as { type?: string; expression?: T }
+  while (cur.type === 'TSAsExpression'
+    || cur.type === 'TSSatisfiesExpression'
+    || cur.type === 'TSNonNullExpression'
+    || cur.type === 'TSTypeAssertion'
+    || cur.type === 'TSInstantiationExpression'
+    || cur.type === 'ParenthesizedExpression') {
+    if (!cur.expression) break
+    cur = cur.expression as unknown as typeof cur
+  }
+  return cur as unknown as T
+}
+
 function staticLiteralValue(expr: unknown): unknown {
-  const val = expr as { type?: string; value?: unknown }
+  const val = unwrapStaticExpr(expr as { type?: string; value?: unknown })
   return val.type === 'Literal' || val.type === 'BooleanLiteral' || val.type === 'NumericLiteral'
     ? val.value
     : undefined
 }
 
+function staticStringArray(expr: unknown, scope?: XScope): readonly string[] | undefined {
+  const id = unwrapStaticExpr(expr as { type?: string; name?: string })
+  if (id.type === 'Identifier' && scope !== undefined && id.name !== undefined) {
+    const scoped = scope.get(id.name)
+    const value = isStaticValueEntry(scoped) ? scoped.value : scoped
+    return Array.isArray(value) && value.every(v => typeof v === 'string') ? value : undefined
+  }
+  const arr = id as { type?: string; elements?: unknown[] }
+  if (arr.type !== 'ArrayExpression' || !Array.isArray(arr.elements)) return undefined
+  const out: string[] = []
+  for (const el of arr.elements) {
+    if (!el || (el as { type?: string }).type === 'SpreadElement') return undefined
+    const value = staticLiteralValue(el)
+    if (typeof value !== 'string') return undefined
+    out.push(value)
+  }
+  return out
+}
+
 type StaticNodeProject = { ok: true; value: number } | { ok: false }
+const STATIC_NODE_OPTIONS_FAILED = Symbol('parseman.staticNodeOptions.failed')
+const STATIC_NODE_OPTIONS_NOT_OPTIONS = Symbol('parseman.staticNodeOptions.notOptions')
+type StaticNodeOptions =
+  | parseman.NodeOptions<readonly string[]>
+  | undefined
+  | typeof STATIC_NODE_OPTIONS_FAILED
+  | typeof STATIC_NODE_OPTIONS_NOT_OPTIONS
 
 function staticNodeProject(expr: Expression): StaticNodeProject | undefined {
   const literalValue = staticLiteralValue(expr)
@@ -359,25 +399,64 @@ function staticNodeProject(expr: Expression): StaticNodeProject | undefined {
   return { ok: false }
 }
 
-function staticNodeOptions(expr: Expression): parseman.NodeOptions | undefined {
-  if (expr.type !== 'ObjectExpression') return undefined
-  const opts: parseman.NodeOptions = {}
-  for (const prop of (expr as ObjectExpression).properties) {
+function scopedStaticValue(expr: Expression, scope: XScope): { found: true; value: unknown } | { found: false } {
+  const unwrapped = unwrapStaticExpr(expr)
+  if (unwrapped.type !== 'Identifier' || unwrapped.name === 'undefined') return { found: false }
+  if (!scope.has(unwrapped.name)) return { found: false }
+  const scoped = scope.get(unwrapped.name)
+  const value = isStaticValueEntry(scoped) ? scoped.value : scoped
+  return { found: true, value }
+}
+
+function staticNodeOptionsFromValue(value: unknown): parseman.NodeOptions<readonly string[]> | undefined | typeof STATIC_NODE_OPTIONS_FAILED | typeof STATIC_NODE_OPTIONS_NOT_OPTIONS {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || isCombinator(value)) return STATIC_NODE_OPTIONS_NOT_OPTIONS
+  const opts: parseman.NodeOptions<readonly string[]> = {}
+  const rec = value as Record<string, unknown>
+  for (const name of Object.keys(rec)) {
+    const v = rec[name]
+    if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
+      if (v === true) opts[name] = true
+      else if (v !== false && v !== undefined) return STATIC_NODE_OPTIONS_FAILED
+    } else if (name === 'project') {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return STATIC_NODE_OPTIONS_FAILED
+      opts.project = v
+    } else if (name === 'tags') {
+      if (!Array.isArray(v) || !v.every(item => typeof item === 'string')) return STATIC_NODE_OPTIONS_FAILED
+      opts.tags = v
+    }
+  }
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined ? opts : undefined
+}
+
+function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
+  const unwrapped = unwrapStaticExpr(expr)
+  const scoped = scopedStaticValue(unwrapped, scope)
+  if (scoped.found) return staticNodeOptionsFromValue(scoped.value)
+  if (unwrapped.type !== 'ObjectExpression') return STATIC_NODE_OPTIONS_NOT_OPTIONS
+  const opts: parseman.NodeOptions<readonly string[]> = {}
+  for (const prop of (unwrapped as ObjectExpression).properties) {
+    if ((prop as { type?: string }).type !== 'Property') return STATIC_NODE_OPTIONS_FAILED
     const p = prop as unknown as ObjectProperty
-    if (p.computed) continue
+    if (p.computed) return STATIC_NODE_OPTIONS_FAILED
     const key = p.key as unknown as { type: string; name?: string; value?: unknown }
     const name = key.type === 'Identifier' ? key.name
       : key.type === 'Literal' ? String(key.value)
       : undefined
     if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
-      if (staticLiteralValue(p.value) === true) opts[name] = true
+      const value = staticLiteralValue(p.value)
+      if (value === true) opts[name] = true
+      else if (value !== false && value !== undefined) return STATIC_NODE_OPTIONS_FAILED
     } else if (name === 'project') {
       const project = staticNodeProject(p.value as Expression)
-      if (project?.ok === false) return { project: -1 }
+      if (project?.ok === false) return STATIC_NODE_OPTIONS_FAILED
       if (project !== undefined) opts.project = project.value
+    } else if (name === 'tags') {
+      const tags = staticStringArray(p.value, scope)
+      if (tags === undefined) return STATIC_NODE_OPTIONS_FAILED
+      opts.tags = tags
     }
   }
-  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined ? opts : undefined
 }
 
 /**
@@ -469,18 +548,35 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     // `undefined` to reach the 4th opts arg). Structural nodes build via the
     // injected `ctx.build` host; codegen keys that off `def.build === undefined`.
     const be = buildArg as { type: string; start: number; end: number; name?: string } | undefined
+    const buildExpr = be === undefined || be.type === 'SpreadElement' ? undefined : unwrapStaticExpr(be as unknown as Expression)
+    const buildArgOptions = be !== undefined && be.type !== 'SpreadElement'
+      ? staticNodeOptions(buildArg as Expression, scope)
+      : STATIC_NODE_OPTIONS_NOT_OPTIONS
+    if (buildArgOptions === STATIC_NODE_OPTIONS_FAILED) return null
+    const buildArgIsOptions = buildArgOptions !== STATIC_NODE_OPTIONS_NOT_OPTIONS
+    const scopedBuild = buildExpr === undefined
+      ? { found: false } as const
+      : scopedStaticValue(buildExpr, scope)
+    const absentBuild = (buildExpr?.type === 'Identifier' && buildExpr.name === 'undefined')
+      || (buildExpr !== undefined && staticLiteralValue(buildExpr) === null)
+      || (scopedBuild.found && (scopedBuild.value === undefined || scopedBuild.value === null))
     const hasBuild = be !== undefined && be.type !== 'SpreadElement'
-      && be.type !== 'ObjectExpression'
-      && !(be.type === 'Identifier' && be.name === 'undefined')
+      && !buildArgIsOptions
+      && !absentBuild
     const buildSrc = hasBuild ? stripTsFromSource(be! as Node, code) : undefined
-    const optionsArg = hasBuild ? optsArg : (be?.type === 'ObjectExpression' ? buildArg : optsArg)
-    const opts = optionsArg !== undefined && optionsArg.type !== 'SpreadElement'
-      ? staticNodeOptions(optionsArg as Expression)
-      : undefined
+    let opts: parseman.NodeOptions<readonly string[]> | undefined
+    if (buildArgIsOptions) {
+      opts = buildArgOptions as parseman.NodeOptions<readonly string[]> | undefined
+    } else if (optsArg !== undefined) {
+      if (optsArg.type === 'SpreadElement') return null
+      const optsResult = staticNodeOptions(optsArg as Expression, scope)
+      if (optsResult === STATIC_NODE_OPTIONS_FAILED || optsResult === STATIC_NODE_OPTIONS_NOT_OPTIONS) return null
+      opts = optsResult
+    }
     try {
       const combi = explicitType !== undefined
-        ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, opts)
-        : parseman.node(inner, hasBuild ? () => null : undefined, opts)
+        ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)
+        : parseman.node(inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)
       if (combi._def.tag === 'node' && buildSrc !== undefined) {
         combi._def.buildSrc = buildSrc
         const staticError = directBuilderUnsupportedBindings(buildSrc)
@@ -738,6 +834,16 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
 
 /** Evaluate any expression to its JS value (not necessarily a Combinator). */
 function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]): unknown {
+  if (node.type === 'TSAsExpression'
+    || node.type === 'TSSatisfiesExpression'
+    || node.type === 'TSNonNullExpression'
+    || node.type === 'TSTypeAssertion'
+    || node.type === 'TSInstantiationExpression'
+    || node.type === 'ParenthesizedExpression') {
+    const inner = (node as unknown as { expression?: Expression }).expression
+    return inner ? anyValue(inner, scope, code, mfs) : null
+  }
+
   if (node.type === 'Literal') {
     if ('regex' in node && node.regex !== null && node.regex !== undefined) {
       return new RegExp(node.regex.pattern, node.regex.flags)
@@ -916,6 +1022,14 @@ function collectRuleKeys(retObj: ObjectExpression): string[] | null {
     out.push(key)
   }
   return out
+}
+
+export function evaluateStaticValue(
+  node: Expression,
+  scope: Scope,
+  code?: string,
+): unknown {
+  return anyValue(node, scope as XScope, code, [])
 }
 
 type RuleEntry = { key: string; value: Expression; scope: XScope; code: string }

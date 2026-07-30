@@ -3,6 +3,20 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.43.0 — 2026-07-30
+
+- **Add CST tags and grammar-aware visitors.** `node(..., { tags })` can now
+  declare category metadata for a CST node type, and `createVisitor(grammar, spec)`
+  dispatches by concrete `type`, declared `tag`, plus `enter` / `leave` hooks.
+  The visitor reads grammar reflection from interpreted, compiled, macro, and
+  composed grammars, so consumers can share one traversal shape across engines.
+
+- **Keep CST tag materialization explicit.** Tags stay in grammar reflection by
+  default so normal CST output remains `{ _tag, type, span, state, children }`.
+  Consumers that want self-describing JSON can opt in with
+  `cstBuildHost({ tags: true })`, which reuses the rule's static tag array instead
+  of allocating a fresh array for every node.
+
 ## 0.42.1 — 2026-07-28
 
 - **Make line-aware macro artifacts ergonomic.** `rules({ trackLines: true }, factory)`

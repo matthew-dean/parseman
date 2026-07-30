@@ -1,117 +1,101 @@
 /**
- * Tree traversal for the CST/AST a grammar produces. Parséman hands back a plain
- * object tree, so you *can* recurse it yourself — these helpers save you from
- * re-writing the same recursion for diagnostics, folding, or lowering a tree.
- *
- * Two entry points:
- *   - `walk`          — imperative depth-first traversal with enter/leave hooks.
- *   - `createVisitor` — Chevrotain-style dispatch keyed on each node's `type`.
- *
- * Both default to the built-in CST shape (`CSTChild` — the `node()` / leaf / error
- * union), so with no annotation you get precise typing out of the box. Parsing to
- * a custom AST? Pass your node type as a generic: `walk<MyNode>(root, …)`.
+ * Grammar-aware CST traversal. `createVisitor(grammar, handlers)` consumes the
+ * reflection stamped on interpreted `rules()` maps and macro/compiled grammar
+ * maps, precomputes tag dispatch once, and returns a reusable `visit(root)` fn.
  */
-import type { CSTChild } from './types.ts'
+import type { CSTChild, CSTNode } from './types.ts'
+import type { Combinator } from '../types.ts'
+import {
+  collectGrammarReflection,
+  grammarReflectionOf,
+  type GrammarWithReflection,
+} from './reflection.ts'
 
-/**
- * The minimal shape these helpers traverse: a `_tag`, an optional rule `type`,
- * and optional structural `children`. The built-in `CSTChild` satisfies it, and
- * so does any custom AST node (that's what the generic override targets).
- */
 export type Walkable = {
   readonly _tag: string
   readonly type?: string
   readonly children?: ReadonlyArray<Walkable>
 }
 
-export interface WalkVisitor<N extends Walkable = CSTChild, C = undefined> {
-  /**
-   * Called on entering a node, before its children. Return `false` to skip
-   * descending into this node's children (`leave` still runs).
-   */
+type GrammarNodeType<G> =
+  G extends GrammarWithReflection<infer NodeType, string>
+    ? NodeType
+    : G extends Record<string, unknown>
+      ? Extract<keyof G, string>
+      : string
+
+type GrammarNodeTag<G> =
+  G extends GrammarWithReflection<string, infer NodeTag> ? NodeTag : never
+
+type NodeForType<N extends Walkable, Type extends string> =
+  Extract<N, { readonly _tag: 'node' }> extends never
+    ? CSTNode & { readonly type: Type }
+    : Extract<N, { readonly _tag: 'node' }> & { readonly type: Type }
+
+export type VisitorHandler<N extends Walkable, Root extends Walkable = CSTChild, C = undefined> =
+  (node: N, parent: Root | null, ctx: C) => void
+
+export type VisitorSpec<G, N extends Walkable = CSTChild, C = undefined> = {
   enter?(node: N, parent: N | null, ctx: C): boolean | void
-  /** Called on leaving a node, after its children. */
   leave?(node: N, parent: N | null, ctx: C): void
-}
-
-/**
- * Depth-first traversal. Visits `root`, then each structural child in order.
- * `ctx` is threaded to both hooks unchanged (use it as an accumulator).
- *
- * Defaults to the CST shape; override with `walk<MyNode>(root, …)`:
- *
- *   const idents: string[] = []
- *   walk(tree, {
- *     enter(node) {
- *       if (node._tag === 'leaf') idents.push(node.value)
- *     },
- *   })
- */
-export function walk<N extends Walkable = CSTChild, C = undefined>(
-  root: N,
-  visitor: WalkVisitor<N, C>,
-  ctx: C = undefined as C,
-): void {
-  const go = (node: N, parent: N | null): void => {
-    const descend = visitor.enter ? visitor.enter(node, parent, ctx) : undefined
-    const children = node.children as ReadonlyArray<N> | undefined
-    if (descend !== false && Array.isArray(children)) {
-      for (const child of children) go(child, node)
-    }
-    visitor.leave?.(node, parent, ctx)
+  type?: {
+    [K in GrammarNodeType<G>]?: VisitorHandler<NodeForType<N, K>, N, C>
   }
-  go(root, null)
+  tag?: {
+    [K in GrammarNodeTag<G>]?: VisitorHandler<NodeForType<N, GrammarNodeType<G>>, N, C>
+  }
 }
 
-export interface VisitApi<R, N extends Walkable = CSTChild> {
-  /** Dispatch a node to its handler (by `type`); returns the handler's result. */
-  visit(node: N): R | undefined
-  /** Visit every structural child, collecting the defined results in order. */
-  visitChildren(node: N): R[]
+function isCombinator(value: unknown): value is Combinator<unknown> {
+  return !!value && typeof value === 'object'
+    && '_def' in value
+    && '_meta' in value
+    && typeof (value as { parse?: unknown }).parse === 'function'
 }
 
-export type VisitorHandlers<R, N extends Walkable = CSTChild> = Record<
-  string,
-  (node: N, api: VisitApi<R, N>) => R
->
+function reflectionFor(grammar: object) {
+  const stamped = grammarReflectionOf(grammar)
+  if (stamped) return stamped
+  const entries = Object.entries(grammar).filter((entry): entry is [string, Combinator<unknown>] => isCombinator(entry[1]))
+  return collectGrammarReflection(entries)
+}
 
-/**
- * Build a visitor that dispatches on each node's `type` — the direct analog of a
- * generated CST-visitor base class. Handlers are keyed by rule name and receive
- * an `api` with `visit` / `visitChildren` to recurse:
- *
- *   const evalExpr = createVisitor<number>({
- *     Num: (n) => Number((n as NumNode).value),
- *     Add: (n, api) => api.visitChildren(n).reduce((a, b) => a + b, 0),
- *   })
- *   const total = evalExpr(tree)
- *
- * Defaults to the CST shape; override the return type and node type together with
- * `createVisitor<number, MyNode>({ … })`. A node whose `type` has no handler
- * falls through to visiting its children (results discarded), so partial visitors
- * work without listing every rule.
- */
-export function createVisitor<R = void, N extends Walkable = CSTChild>(
-  handlers: VisitorHandlers<R, N>,
-): (node: N) => R | undefined {
-  const api: VisitApi<R, N> = {
-    visit(node) {
-      const handler = node.type !== undefined ? handlers[node.type] : undefined
-      if (handler) return handler(node, api)
-      api.visitChildren(node)
-      return undefined
-    },
-    visitChildren(node) {
-      const out: R[] = []
-      const children = node.children as ReadonlyArray<N> | undefined
-      if (Array.isArray(children)) {
-        for (const child of children) {
-          const r = api.visit(child)
-          if (r !== undefined) out.push(r)
+export function createVisitor<G extends object, N extends Walkable = CSTChild, C = undefined>(
+  grammar: G,
+  spec: VisitorSpec<G, N, C>,
+): (root: N, ctx?: C) => void {
+  const reflection = reflectionFor(grammar)
+  const typeHandlers = spec.type as Record<string, VisitorHandler<N, N, C> | undefined> | undefined
+  const tagSpec = spec.tag as Record<string, VisitorHandler<N, N, C> | undefined> | undefined
+  const tagHandlersByType = new Map<string, Array<VisitorHandler<N, N, C>>>()
+
+  if (tagSpec !== undefined) {
+    for (const node of reflection.nodes) {
+      const handlers: Array<VisitorHandler<N, N, C>> = []
+      for (const tag of node.tags) {
+        const handler = tagSpec[tag]
+        if (handler) handlers.push(handler)
+      }
+      if (handlers.length > 0) tagHandlersByType.set(node.type, handlers)
+    }
+  }
+
+  return (root: N, ctx: C = undefined as C): void => {
+    const go = (node: N, parent: N | null): void => {
+      const descend = spec.enter ? spec.enter(node, parent, ctx) : undefined
+      if (node._tag === 'node' && node.type !== undefined) {
+        typeHandlers?.[node.type]?.(node, parent, ctx)
+        const tagHandlers = tagHandlersByType.get(node.type)
+        if (tagHandlers !== undefined) {
+          for (const handler of tagHandlers) handler(node, parent, ctx)
         }
       }
-      return out
-    },
+      const children = node.children as ReadonlyArray<N> | undefined
+      if (descend !== false && Array.isArray(children)) {
+        for (const child of children) go(child, node)
+      }
+      spec.leave?.(node, parent, ctx)
+    }
+    go(root, null)
   }
-  return (node) => api.visit(node)
 }

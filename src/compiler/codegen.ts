@@ -170,6 +170,7 @@ import {
   tryInlineDestructureTransform,
 } from './inline-callback.ts'
 import { annotateSpan, normalizeLineIndex, recordLineRange } from './line-index.ts'
+import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 
 /**
  * Runtime prelude helper for the structural-node capture gate. Answers "does the
@@ -3517,7 +3518,8 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // its semantic result in every lowering mode; the positioned-CST host is the
   // sole exception, so a direct object never becomes a CST child. Linkability
   // must not change that ownership rule.
-  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${JSON.stringify(def.type)}, ${chV}, ${fObj}, ${nodeSpanV}, ${rawV}, ${tlV}, ${stV})`
+  const hostBuildArgs = `${JSON.stringify(def.type)}, ${chV}, ${fObj}, ${nodeSpanV}, ${rawV}, ${tlV}, ${stV}${def.tags !== undefined && def.tags.length > 0 ? `, ${JSON.stringify(def.tags)}` : ''}`
+  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${hostBuildArgs})`
   // A direct builder's consumer is fixed at COMPILE time, so this is a constant choice,
   // not a per-node `_ctx.build?._parsemanCstOutput === true` read. `'cst'` builds through
   // the host (so a direct semantic object can never become a CST child); `'ast'` never
@@ -4921,7 +4923,7 @@ function publicRuleWrapperSource(
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
-): { keys: string[]; replacement: string; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
+): { keys: string[]; replacement: string; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   runGatingDiagnosticRules(ruleMap, opts?.gating)
   runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
   for (const [, rule] of ruleMap) markUnusedValues(rule)
@@ -5100,6 +5102,7 @@ export function compileRuleMap(
     // host check passes vacuously — see `withHostMode` in the plugin.
     hostMode: ctx.hostMode ?? 'ast',
     hostBranchElided: !!ctx.hostBranchElided,
+    reflection: collectGrammarReflection(ruleMap),
     ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
   }
 }
@@ -5168,6 +5171,8 @@ export type LinkablePieces = {
   hasDirectBuilders?: boolean
   /** True only when this piece has no direct builder or callback-based semantics. */
   isRecognitionOnly?: boolean
+  /** Per-rule CST node reflection for grammar-aware visitors. */
+  nodeMeta: Map<string, GrammarReflection>
   /**
    * Transform (`_mf`) / build (`_build`) callback FUNCTIONS, injected into the
    * fused scope via `_env` when their SOURCE isn't available (runtime `compile()`
@@ -5225,6 +5230,7 @@ export function compileLinkable(
     if (d.tag !== 'lazy') return true
     try { d.thunk(); return true } catch { return false }
   })
+  const nodeMeta = new Map(ruleMap.map(([name, rule]) => [name, collectGrammarReflection([[name, rule]], { followLazy: false })]))
   const ctx: Ctx = {
     vars: 0, indent: 1, regexDecls: [], regexMap: new Map(),
     expectedDecls: [], expectedMap: new Map(), recordFail: true,
@@ -5442,6 +5448,7 @@ export function compileLinkable(
     hostBranchElided: !!ctx.hostBranchElided,
     hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule), externalRefs),
+    nodeMeta,
     mfFns: mfSrcs ? [] : (ctx.mapFns as ReadonlyArray<(...a: unknown[]) => unknown>),
     buildFns: buildSrcs ? [] : (ctx.buildFns as ReadonlyArray<(...a: unknown[]) => unknown>),
   }

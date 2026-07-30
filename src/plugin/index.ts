@@ -23,13 +23,14 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
 import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
+import { grammarReflectionSource, type GrammarReflection } from '../cst/reflection.ts'
 import { createHash } from 'node:crypto'
 import type { Combinator } from '../types.ts'
 import type {
@@ -68,6 +69,26 @@ export type ParsecraftPluginOptions = {
 }
 
 const PARSEMAN_MODULE = 'parseman'
+
+function unwrapStaticExpression(expr: Expression): Expression {
+  let cur = expr as unknown as { type?: string; expression?: Expression }
+  while (cur.type === 'TSAsExpression'
+    || cur.type === 'TSSatisfiesExpression'
+    || cur.type === 'TSNonNullExpression'
+    || cur.type === 'TSTypeAssertion'
+    || cur.type === 'TSInstantiationExpression'
+    || cur.type === 'ParenthesizedExpression') {
+    if (!cur.expression) break
+    cur = cur.expression as unknown as typeof cur
+  }
+  return cur as Expression
+}
+
+function isStaticNullishExpression(expr: Expression): boolean {
+  const unwrapped = unwrapStaticExpression(expr) as Expression & { name?: string; value?: unknown }
+  return (unwrapped.type === 'Identifier' && unwrapped.name === 'undefined')
+    || (unwrapped.type === 'Literal' && unwrapped.value === null)
+}
 
 // A grammar's carried linkable pieces live ONLY in its COMPILED output (the macro
 // embeds them there), never in its `.ts` source. So resolving an imported grammar
@@ -796,7 +817,7 @@ export function transformMacro(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
+  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
     const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage })
@@ -805,6 +826,7 @@ export function transformMacro(
       ruleMap: evaluated.ruleMap,
       hostMode: compiled?.hostMode ?? 'ast',
       hostBranchElided: compiled?.hostBranchElided ?? false,
+      reflection: compiled?.reflection ?? { nodes: [] },
       ...(compiled?.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}),
       ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}),
       ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}),
@@ -885,6 +907,7 @@ export function transformMacro(
       // to always-try — the regression Greptile flagged). Ordered-chain (`{alts}`)
       // and legacy (`{concrete, refs}`) recipes are both plain JSON.
       + `firstSetRecipes: ${p.firstSetRecipes ? mapLit(p.firstSetRecipes) : 'new Map()'}, deps: ${mapLit(p.deps)}, `
+      + `nodeMeta: ${mapLit(p.nodeMeta)}, `
       // Carry the HOST MODE across serialization. `hostModeOfPieces` (linker.ts) reads
       // exactly these two to classify a fused artifact, and both default to the 'ast'
       // side when absent — so omitting them made a serialized CST piece round-trip as
@@ -968,6 +991,8 @@ export function transformMacro(
       + `Object.defineProperty(m, Symbol.for('parseman.fusedHostMode'), { value: ${JSON.stringify(mode)}, enumerable: false }); `
       + `Object.defineProperty(m, Symbol.for('parseman.fusedHostElided'), { value: ${JSON.stringify(elided)}, enumerable: false }); `
       + `return m })(${grammarExpr})`
+  const withGrammarReflection = (grammarExpr: string, reflection: GrammarReflection): string =>
+    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.grammarReflection'), { value: ${grammarReflectionSource(reflection)}, enumerable: false })`
   /** Coverage-only macro output carries the exact IDs emitted in its generated
    * hooks. The metadata is non-enumerable so grammar maps keep their ordinary
    * public shape, and it is absent entirely from production builds. */
@@ -1569,7 +1594,13 @@ export function transformMacro(
       if ((d.id as unknown as { type: string }).type === 'Identifier') {
         // ── Simple binding: const name = <expr> ──────────────────────────
         const varName = (d.id as unknown as { name: string }).name
-        if (!referencesAny(init, allNames, scope)) continue
+        if (!referencesAny(init, allNames, scope)) {
+          const staticValue = evaluateStaticValue(init, scope, code)
+          if (staticValue !== null && staticValue !== undefined || isStaticNullishExpression(init)) {
+            ;(scope as Map<string, unknown>).set(varName, staticValue)
+          }
+          continue
+        }
 
         // const name = ref() — resolved by the pre-pass. Compile the (now
         // defined) ref combinator in place; codegen inlines the whole recursive
@@ -1652,6 +1683,7 @@ export function transformMacro(
           // which stamps itself, and which never elides a branch.
           if (compiledRules.replacement !== null) {
             replacement = withHostMode(replacement, compiledRules.hostMode, compiledRules.hostBranchElided)
+            replacement = withGrammarReflection(replacement, compiledRules.reflection)
           }
           if (exportPrefix && pieces && !pieces.mfFns.length && !pieces.buildFns.length) {
             // Carry the compact IR when serializable; else the full lowered pieces.
@@ -1722,6 +1754,11 @@ export function transformMacro(
           const combiArray = evaluateCombinatorArray(init, scope, code)
           if (combiArray) {
             ;(scope as Map<string, unknown>).set(varName, combiArray)
+            continue
+          }
+          const staticValue = evaluateStaticValue(init, scope, code)
+          if (staticValue !== null && staticValue !== undefined || isStaticNullishExpression(init)) {
+            ;(scope as Map<string, unknown>).set(varName, staticValue)
             continue
           }
           // A `rules()` FACTORY is not a combinator and never was one — it is a function

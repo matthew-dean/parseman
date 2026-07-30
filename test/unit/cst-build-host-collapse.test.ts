@@ -6,7 +6,7 @@ const leafValue = (value: unknown) =>
     ? (value as { value: string }).value
     : undefined
 
-describe('cstBuildHost({ collapse })', () => {
+describe('cstBuildHost options', () => {
   const Inner = node('Inner', literal('a'))
   const Wrap = node('Wrap', Inner)
   const Keep = node('Keep', literal('b'))
@@ -92,6 +92,39 @@ describe('cstBuildHost({ collapse })', () => {
       _tag: 'node',
       type: 'Doc',
       state: { mode: 'strict' },
+    })
+  })
+
+  it('materializes grammar tags only when requested', () => {
+    const Tagged = node('Tagged', literal('a'), { tags: ['Statement', 'Primary'] })
+
+    const plain = run(Tagged, 'a', { build: cstBuildHost() })
+    const directDefault = run(Tagged, 'a', { build: cstBuildHost })
+    const tagged = run(Tagged, 'a', { build: cstBuildHost({ tags: true }) })
+
+    expect(plain.ok).toBe(true)
+    expect(directDefault.ok).toBe(true)
+    expect(tagged.ok).toBe(true)
+    expect(plain.ok && plain.value).not.toHaveProperty('tags')
+    expect(directDefault.ok && directDefault.value).not.toHaveProperty('tags')
+    expect(tagged.ok && tagged.value).toMatchObject({
+      _tag: 'node',
+      type: 'Tagged',
+      tags: ['Statement', 'Primary'],
+    })
+  })
+
+  it('compile(): materializes grammar tags through the CST host', () => {
+    const Tagged = node('Tagged', literal('a'), { tags: ['Statement'] })
+    const compiled = compile(Tagged, undefined, { hostMode: 'cst' })
+    const result = compiled.parseWithContext('a', { trackLines: false, build: cstBuildHost({ tags: true }) }, 0)
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value).toMatchObject({
+      _tag: 'node',
+      type: 'Tagged',
+      tags: ['Statement'],
     })
   })
 })

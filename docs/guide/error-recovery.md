@@ -293,4 +293,4 @@ Recovery is never free, and it's never pretty. Be deliberate:
 | Collect all errors from a parse | `run(p, src, { tolerant: true }).errors` |
 | Know why a "successful" parse stopped short | `.furthestFail` |
 | Test a value for a recovered error | `isParseError(value)` |
-| Walk / visit the result tree | `walk(tree, …)` · `createVisitor({ … })` |
+| Visit the result tree | `createVisitor(grammar, { … })(tree)` |

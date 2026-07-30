@@ -8,7 +8,7 @@ import { describe, it, expect, expectTypeOf, vi } from 'vitest'
 import {
   literal, regex, sequence, many, optional, node, rules, compile, parse, cstBuildHost,
 } from '../../src/index.ts'
-import type { Combinator } from '../../src/index.ts'
+import type { NodeCombinator } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 // ── A precedence-ladder-style unwrapping rule ───────────────────────────────
@@ -210,10 +210,16 @@ describe('project — indexed child passthrough', () => {
   })
 
   it('type inference follows the projected sequence slot', () => {
-    expectTypeOf(Paren).toEqualTypeOf<Combinator<string>>()
+    type ParenTypeOk = typeof Paren extends NodeCombinator<string, 'Paren', never> ? true : false
+    type ParenTypeWrong = typeof Paren extends NodeCombinator<string, 'NotParen', never> ? true : false
+    expectTypeOf<ParenTypeOk>().toEqualTypeOf<true>()
+    expectTypeOf<ParenTypeWrong>().toEqualTypeOf<false>()
     const Inner = node('Inner', regex(/[0-9]+/), () => ({ kind: 'num' as const }))
     const Outer = node('Outer', sequence(literal('('), Inner, literal(')')), { project: 1 })
-    expectTypeOf(Outer).toEqualTypeOf<Combinator<{ kind: 'num' }>>()
+    type OuterTypeOk = typeof Outer extends NodeCombinator<{ kind: 'num' }, 'Outer', never> ? true : false
+    type OuterTypeWrong = typeof Outer extends NodeCombinator<{ kind: 'num' }, 'NotOuter', never> ? true : false
+    expectTypeOf<OuterTypeOk>().toEqualTypeOf<true>()
+    expectTypeOf<OuterTypeWrong>().toEqualTypeOf<false>()
   })
 
   it('rejects ambiguous project options', () => {

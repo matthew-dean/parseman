@@ -6,6 +6,7 @@ import { consumeTrivia } from './trivia-skip.ts'
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { annotateSpanFromLineContext } from '../line-index.ts'
+import { NODE_TAG, NODE_TYPE } from '../cst/reflection.ts'
 
 /**
  * A CST/AST node rule. Runs `combinator` while collecting its terminals into
@@ -47,6 +48,8 @@ export type BuildNode<N> = (
  * - `trailingTrivia` — after a successful node body, consume the active grammar
  *   trivia once into THIS node's log. Intended for a document root whose body is
  *   a repetition; do not set it on a block that already has a closing delimiter.
+ * - `tags` — grammar-level CST categories for visitor dispatch. Stored once in
+ *   grammar reflection; not copied onto every CST node.
  * Both skip `build` only for a one-child match; zero or two-plus children go
  * through `build` normally.
  */
@@ -56,7 +59,15 @@ type ProjectValue<P extends Combinator<unknown>, I extends number> =
     ? I extends keyof ParserValue<P> ? ParserValue<P>[I] : unknown
     : I extends 0 ? ParserValue<P> : unknown
 
-export type NodeOptions = { unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean }
+export type NodeCombinator<T, NodeType extends string = never, NodeTag extends string = never> =
+  Combinator<T> & {
+    /** Type-only CST node identity carried for grammar-aware visitors. */
+    readonly [NODE_TYPE]?: NodeType
+    /** Type-only CST tags carried for grammar-aware visitors. */
+    readonly [NODE_TAG]?: NodeTag
+  }
+
+export type NodeOptions<Tags extends readonly string[] = readonly never[]> = { unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean; tags?: Tags }
 export type NodeProjectOptions<I extends number = number> =
   Omit<NodeOptions, 'project' | 'unwrap' | 'collapse'> & { project: I; unwrap?: never; collapse?: never }
 
@@ -94,12 +105,12 @@ function projectChild(children: ReadonlyArray<unknown>, project: number, type: s
   return unwrapChild(children[project])
 }
 
-export function node<P extends Combinator<unknown>, const I extends number>(combinator: P, opts: NodeProjectOptions<I>): Combinator<ProjectValue<P, I>>
-export function node<N>(combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions): Combinator<N>
-export function node<N>(combinator: Combinator<unknown>, opts?: NodeOptions): Combinator<N>
-export function node<P extends Combinator<unknown>, const I extends number>(type: string, combinator: P, opts: NodeProjectOptions<I>): Combinator<ProjectValue<P, I>>
-export function node<N>(type: string, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions): Combinator<N>
-export function node<N>(type: string, combinator: Combinator<unknown>, opts?: NodeOptions): Combinator<N>
+export function node<P extends Combinator<unknown>, const I extends number, const Tags extends readonly string[] = readonly never[]>(combinator: P, opts: NodeProjectOptions<I> & { tags?: Tags }): NodeCombinator<ProjectValue<P, I>, never, Tags[number]>
+export function node<N, const Tags extends readonly string[] = readonly never[]>(combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, never, Tags[number]>
+export function node<N, const Tags extends readonly string[] = readonly never[]>(combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, never, Tags[number]>
+export function node<const Type extends string, P extends Combinator<unknown>, const I extends number, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: P, opts: NodeProjectOptions<I> & { tags?: Tags }): NodeCombinator<ProjectValue<P, I>, Type, Tags[number]>
+export function node<N, const Type extends string, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
+export function node<N, const Type extends string, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
 export function node<N>(
   typeOrCombinator: string | Combinator<unknown>,
   combinatorOrBuild?: Combinator<unknown> | BuildNode<N> | NodeOptions,
@@ -126,14 +137,15 @@ export function node<N>(
   const collapse = opts?.collapse === true
   const captureTrivia = opts?.captureTrivia === true
   const trailingTrivia = opts?.trailingTrivia === true
+  const tags = opts?.tags
   if (unwrap && collapse) {
     throw new Error('node() options cannot set both unwrap and collapse')
   }
   if (project !== undefined && (unwrap || collapse)) {
     throw new Error('node() options cannot combine project with unwrap or collapse')
   }
-  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || project !== undefined || captureTrivia || trailingTrivia
-    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(project !== undefined ? { project } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}) }
+  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || project !== undefined || captureTrivia || trailingTrivia || (tags !== undefined && tags.length > 0)
+    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(project !== undefined ? { project } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}), ...(tags !== undefined && tags.length > 0 ? { tags } : {}) }
     : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
@@ -233,18 +245,18 @@ export function node<N>(
           ? children[0]
         : project !== undefined
           ? cstOutput && ctx.build
-            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, hostState)
+            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, hostState, tags)
             : projectChild(children, project, nodeType)
         : build
           // A direct builder normally owns its result. The positioned-CST host is
           // the one exception: it must never receive an arbitrary AST object as a
           // child of a CST node, so build this grammar node through that host.
           ? cstOutput && ctx.build
-            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, hostState)
+            ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, hostState, tags)
             : build(children, fields, span, rawChildren, triviaLog, st)
           // Structural node: a `ctx.build` host if present, else a default CST.
           : ctx.build
-              ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, st)
+              ? ctx.build(nodeType, children, fields, span, rawChildren, triviaLog, st, tags)
               : { _tag: 'node', type: nodeType, span: ctx.trackLines ? { ...span } : { start: r.span.start, end: r.span.end }, state: st ?? null, children }
       const rawEntry = isCstChild(built)
         ? built

@@ -101,6 +101,11 @@ function projectOpt(project: Extract<ParserDef, { tag: 'node' }>['project']): st
   return `project: ${project}`
 }
 
+function tagsOpt(tags: Extract<ParserDef, { tag: 'node' }>['tags']): string | undefined {
+  if (tags === undefined || tags.length === 0) return undefined
+  return `tags: ${JSON.stringify(tags)}`
+}
+
 function matcherExpr(entry: DispatchMatcherCase): string {
   switch (entry.kind) {
     case 'startsWith':
@@ -457,12 +462,14 @@ class Serializer {
       case 'node': {
         if (def.build !== undefined && def.buildSrc === undefined) throw new Unserializable('node build without buildSrc')
         const projectEntry = projectOpt(def.project)
+        const tagEntry = tagsOpt(def.tags)
         const optEntries = [
           ...(def.unwrap ? ['unwrap: true'] : []),
           ...(def.collapse ? ['collapse: true'] : []),
           ...(projectEntry === undefined ? [] : [projectEntry]),
           ...(def.captureTrivia ? ['captureTrivia: true'] : []),
           ...(def.trailingTrivia ? ['trailingTrivia: true'] : []),
+          ...(tagEntry === undefined ? [] : [tagEntry]),
         ]
         const opts = optEntries.length > 0 ? `, { ${optEntries.join(', ')} }` : ''
         // `_nd` sets `_def.buildSrc` (same reason as `_tf`). No build → plain node.

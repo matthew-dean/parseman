@@ -517,6 +517,23 @@ the active trivia once into that node's log (and therefore forces this node's tr
 Use it for a repeating document root at EOF, not for blocks with a closing delimiter; their
 ordinary following `}` already owns the preceding trivia.
 
+`opts.tags` declares CST categories for this node type. Tags are grammar metadata used by
+[`createVisitor(grammar, spec)`](#createvisitorgrammar-spec). They are not copied onto
+every CST node by default; pass `cstBuildHost({ tags: true })` when you want the produced
+CST nodes to carry the same static tag array:
+
+```ts
+const AtRuleWithBlock = node('AtRuleWithBlock', body, { tags: ['AtRule', 'Statement'] })
+
+run(AtRuleWithBlock, input, { build: cstBuildHost({ tags: true }) })
+// => { _tag: 'node', type: 'AtRuleWithBlock', tags: ['AtRule', 'Statement'], ... }
+```
+
+Use tags for categories that cut across concrete node types. For example,
+`AtRuleWithBlock` and `AtRuleStatement` can both carry `AtRule`, while declarations and
+at-rules can all carry `Statement`. Tags do not replace the node `type`; they are additional
+visitor keys.
+
 ### `cstBuildHost(opts?)` {#cstbuildhost}
 
 Generic CST host for structural `node()` grammars. Pass the default host directly:
@@ -535,6 +552,9 @@ The default host returns uniform positioned CST nodes:
 `{ _tag: 'node', type, span, state, children }`, with terminals as `CSTLeaf` objects.
 `cstBuildHost({ collapse })` removes transparent one-child wrappers while the CST is being
 built, so public syntax trees do not need a second normalization walk.
+`cstBuildHost({ tags: true })` materializes `node(..., { tags })` metadata as a `tags`
+property on tagged CST nodes. The default leaves tags in grammar reflection only, so untagged
+and tag-unaware CST builds keep the lean node shape.
 
 `collapse` accepts:
 
@@ -578,43 +598,58 @@ labeled trivia kinds. Unknown names are ignored; without a label table the helpe
 
 ## Tree traversal
 
-The tree a grammar produces is plain objects, so you can recurse it yourself — these two
-helpers save writing the same traversal. Both default to the CST shape ([`CSTChild`](./types#cst-types))
-and accept a generic for custom AST shapes. See [Walking the tree](../guide/ast#walking-the-tree).
+The tree a grammar produces is plain objects, so you can recurse it yourself. For
+typed CST traversal, use `createVisitor(grammar, spec)`. The grammar may be an
+interpreted `rules()` result or a compiled/macro/`compose()` grammar; Parseman reads
+the same reflection metadata either way. See [Walking the tree](../guide/ast#walking-the-tree).
 
-### `walk(root, visitor, ctx?)`
+### `createVisitor(grammar, spec)`
 
-Depth-first traversal. Calls `visitor.enter(node, parent, ctx)` before a node's children and
-`visitor.leave(node, parent, ctx)` after. Return `false` from `enter` to skip that node's
-subtree (`leave` still runs). `ctx` is threaded to both hooks unchanged (use it as an
-accumulator). Override the node type with `walk<MyNode>(root, …)`.
+Build a depth-first visitor for a grammar. `type` handlers are keyed by concrete CST node
+type; `tag` handlers are keyed by tags declared on `node(..., { tags })`. `enter` runs
+before handlers and children; `leave` runs after children. Return `false` from `enter` to
+skip a node's children.
 
 ```ts
-const leaves: string[] = []
-walk(tree, {
-  enter(node) {
-    if (node._tag === 'leaf') leaves.push(node.value)
+const visit = createVisitor(grammar, {
+  type: {
+    AtRuleWithBlock(node) {},
+    Declaration(node) {},
   },
-})
-```
-
-### `createVisitor(handlers)`
-
-Build a visitor that dispatches on each node's `type` — the runtime analog of a generated
-CST-visitor base class. Handlers are keyed by rule name and receive an
-[`api`](./types#walk-types) with `visit` / `visitChildren` to recurse; a node whose `type`
-has no handler falls through to its children,
-so partial visitors work. Override the return and node types with
-`createVisitor<R, MyNode>({ … })`.
-
-```ts
-const evalExpr = createVisitor<number>({
-  Num: (n) => Number((n.children[0] as CSTLeaf).value),
-  Add: (n, api) => api.visitChildren(n).reduce((a, b) => a + b, 0),
+  tag: {
+    AtRule(node) {},
+    Statement(node) {},
+  },
+  enter(node) {},
+  leave(node) {},
 })
 
-const total = evalExpr(tree)
+visit(tree)
 ```
+
+Handler order for each node is:
+
+1. `enter(node, parent, ctx)`
+2. matching `type[node.type]`
+3. matching `tag[...]` handlers in the node type's declared tag order
+4. child traversal, unless `enter` returned `false`
+5. `leave(node, parent, ctx)`
+
+A node with several tags may therefore run several tag handlers. The visitor gets those tags
+from grammar reflection, so CST nodes do not need a `tags` property. Use
+[`cstBuildHost({ tags: true })`](#cstbuildhost) only when a consumer wants tags physically
+present on each produced CST node.
+
+`createVisitor` is grammar-aware, not CST-host-specific. The same call accepts:
+
+- an interpreted `rules()` registry;
+- a macro-compiled `rules()` artifact;
+- a normal compiled rule map;
+- a `compose()` result whose reflection was merged from its winning rules.
+
+TypeScript checks `type` handler keys against node types inferred from the grammar and `tag`
+handler keys against declared `node(..., { tags })` values. Unknown keys are type errors when
+the grammar carries static type metadata.
 
 ## Whitespace
 
