@@ -307,14 +307,17 @@ if (changed.length === 0) {
 const srcTouched = changed.filter((f) => f.startsWith('src/'))
 const buildTouched = changed.filter((f) => BUILD_INPUTS.includes(f))
 
+// Read unconditionally: the base's `version` is the LAST PUBLISHED marker for check B
+// below, and that is needed whether or not this diff touches package.json at all.
+let basePkg
+try {
+  basePkg = JSON.parse(git('show', `${baseSha}:package.json`))
+} catch {
+  basePkg = {}
+}
+
 let pkgSurfaceChanged = []
 if (changed.includes('package.json')) {
-  let basePkg
-  try {
-    basePkg = JSON.parse(git('show', `${baseSha}:package.json`))
-  } catch {
-    basePkg = {}
-  }
   pkgSurfaceChanged = PUBLISHED_PKG_FIELDS.filter(
     (k) => JSON.stringify(basePkg[k]) !== JSON.stringify(pkg[k]),
   )
@@ -349,12 +352,40 @@ const why = [
 // cycle opens `## <next> — unreleased` and every later PR files into the same open
 // section for free. One number per release, spent by whoever publishes.
 //
-// `package.json` is the "last published" marker: `--publish` refuses to ship unless it
-// equals the heading, so on `main` it is exactly the last version that went out.
-if (headingVsPkg > 0) {
+// The "last published" marker is the BASE's package.json, not HEAD's.
+//
+// It used to be HEAD's, on the reasoning that `--publish` refuses to ship unless
+// package.json equals the heading, so on `main` package.json is exactly the last version
+// that went out. That is true of `main` and false of a RELEASE PR, which is precisely the
+// PR that bumps package.json ahead of npm. Reading HEAD there asks "is the heading above
+// the version this PR is trying to publish?", which is 0 by construction — so a correctly
+// prepped release (heading, package.json and src/version.ts all at the new version, which
+// is exactly what `--publish` demands) failed this check, and failed it with the sentence
+// "0.45.0, which is already published" about a version that was not published at all.
+//
+// Against the BASE, one rule covers both shapes, because both are the same claim — the
+// release under construction is not yet published:
+//
+//   - DEFERRED (a mid-cycle PR): base 0.44.0, heading 0.45.0, package.json still 0.44.0.
+//     The section is open and the number is spent later. No PR is forced to bump, which
+//     is the whole point of the changelog-relative rule — 0.37 through 0.41 collapsed
+//     into one 0.37.0 because a branch-relative rule made a number the price of merging.
+//   - RELEASE PR: base 0.44.0, heading 0.45.0, package.json 0.45.0. The number is spent
+//     HERE, and `--publish` passes on the merge commit, so the release ships on merge.
+//
+// Both are legal. What stays illegal is the thing the gate exists to stop: filing into a
+// heading that names a version already on npm as of the base.
+const basePublished = typeof basePkg.version === 'string' ? parseVersion(basePkg.version) : null
+const headingVsBase = basePublished === null ? 1 : compareVersions(headingVersion, basePublished)
+
+if (headingVsBase > 0) {
   console.log(
-    `✓ published surface changed (${why}) and ${headingVersion.raw} is open for construction\n` +
-      `  over published ${version} — the bump lands at publish, not at merge.`,
+    headingVsPkg > 0
+      ? `✓ published surface changed (${why}) and ${headingVersion.raw} is open for construction\n` +
+        `  over published ${version} — the bump lands at publish, not at merge.`
+      : `✓ published surface changed (${why}) and this is a RELEASE of ${headingVersion.raw}\n` +
+        `  over published ${basePublished?.raw ?? 'unknown'} — heading, package.json and src/version.ts\n` +
+        '  all agree, so `--publish` passes on the merge commit.',
   )
   process.exit(0)
 }
@@ -369,17 +400,26 @@ if (EXEMPT) {
   process.exit(0)
 }
 
+const publishedRaw = basePublished?.raw ?? version
+
 fail(
   `this PR changes the published surface (${why}) but CHANGELOG.md's top section is\n` +
-    `  ${version}, which is already published — so the change would be documented into a\n` +
-    '  release that does not contain it.\n' +
+    `  ${headingVersion.raw}, which was already published as of the base (${publishedRaw}) — so the\n` +
+    '  change would be documented into a release that does not contain it.\n' +
     '\n' +
-    `  Open the next section: add "## <next> — unreleased" above the ${version} section and\n` +
-    '  put this change under it. Pre-1.0, a behaviour change goes in the MINOR (this project\n' +
-    "  has said so since 0.1.0; see CHANGELOG.md's preamble).\n" +
+    '  Either shape fixes it:\n' +
     '\n' +
-    '  Do NOT bump package.json or src/version.ts here. They move together at PUBLISH, so\n' +
-    '  that any number of PRs can land into one release cycle without burning a number each.\n' +
+    `    DEFER — add "## <next> — unreleased" above the ${publishedRaw} section and file this\n` +
+    '    change under it, leaving package.json and src/version.ts alone. They move together\n' +
+    '    at PUBLISH, so any number of PRs can land into one cycle without burning a number\n' +
+    '    each.\n' +
+    '\n' +
+    '    RELEASE — if this PR IS the release, name the new version in the heading AND bump\n' +
+    '    package.json and src/version.ts to match it, so `--publish` passes on the merge\n' +
+    '    commit.\n' +
+    '\n' +
+    '  Pre-1.0, a behaviour change goes in the MINOR (this project has said so since 0.1.0;\n' +
+    "  see CHANGELOG.md's preamble).\n" +
     '\n' +
     '  If a section genuinely belongs elsewhere — you are reverting a release, or this PR is\n' +
     '  chained on one that already opened it — add the `release-exempt` label to the PR. That\n' +

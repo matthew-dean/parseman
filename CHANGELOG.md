@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.45.0 — unreleased
+## 0.45.0 — 2026-07-30
 
 - **Never degrade silently.** Every path where the compiler picks a correct-but-slower
   option now reports on one channel, formatted `[parseman] degraded [<code>] <where>:
@@ -50,8 +50,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   option silently did nothing for every CST consumer. Fixed identically in the interpreter
   and the compiler.
 
-## 0.44.0 — 2026-07-30
-
 - **Say so when a removed field is read.** Dropping the mandatory
   `RunResult.triviaMap` made it read `undefined` — and `undefined` travels, so the
   failure surfaced as a property access on nothing, deep inside the CONSUMER's
@@ -64,6 +62,41 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `JSON.stringify` and identity digests: no output moves and the parse path is
   unchanged. Same principle as the degradation diagnostics — parseman must give
   notice when it cannot do what a caller expects.
+
+- **Stream the canonical oracle digest instead of materialising it.** `digestInto`
+  folds each corpus entry into the running hash as it is produced, so the harness no
+  longer retains the whole corpus in order to hash it at the end.
+
+- **Take the oracle digest OUTSIDE `payload()`'s `try`.** A projection failure used to
+  be caught and folded into the fingerprint, so a broken projection was recorded as a
+  value rather than raised. **This moves fingerprints, and the harness guard cannot see
+  it.** Any corpus entry whose stored baseline recorded a masked projection failure
+  changes both its fingerprint and the report's `threw` count (demonstrated end to end:
+  `threw 1 → 0`, the entry moved). `HARNESS_DIGEST` did NOT move with it, because the
+  frozen canary corpus contains no entry that fails projection — so `compareReports`
+  returned `moved`, reporting a HARNESS change in the vocabulary of a grammar change.
+  That is the exact failure the three guarantees above `HARNESS_DIGEST` claim to make
+  impossible. Fixed by giving the canary an entry that fails projection, so the harness
+  digest moves when this decision changes and an old report is correctly refused as
+  `incomparable` instead of being silently mis-compared. **Re-baseline any stored oracle
+  report taken before this release**; a `moved` verdict across it is not a grammar
+  regression.
+
+- **Raise `CanonicalBudgetError` on an oversize walk**, rather than growing without
+  bound, and **reject a non-finite `maxVisits`**. The budget is spent with
+  `if (--state.visits < 0)`; `--NaN` is `NaN` and `NaN < 0` is `false`, so
+  `maxVisits: NaN` — or any non-finite number — disabled the budget entirely and
+  restored the unbounded walk the option exists to prevent. `newState` now requires a
+  finite, non-negative integer.
+
+- **Document `digestInto`'s two sharp edges.** It leaves a caller-owned hash partially
+  written if the walk throws, and two calls against one target concatenate with no
+  delimiter — so `digestInto(a, h); digestInto(b, h)` can collide with a single call
+  over a differently-split pair. Both are now stated at the call site, and the flush
+  test covers an astral-plane label, which is the surrogate-splitting hazard the
+  streaming change is justified by.
+
+## 0.44.0 — 2026-07-30
 
 - **Add sparse, selected root trivia capture.** `run(entry, input, { rootTrivia:
   { select } })` records only markers for the named, grammar-defined trivia

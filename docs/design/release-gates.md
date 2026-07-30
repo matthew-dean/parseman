@@ -72,7 +72,31 @@ have to agree.
 
 If the diff touches the **published surface**, the release under construction must be
 a version that has **not been published yet** — the top changelog heading strictly
-above `package.json`'s version.
+above the version in **the base's** `package.json`.
+
+Against the *base*, not against HEAD. Two shapes satisfy that, and both are legal:
+
+| shape | base `package.json` | heading | HEAD `package.json` |
+|---|---|---|---|
+| **deferred** — a mid-cycle PR | `0.44.0` | `0.45.0 — unreleased` | `0.44.0` |
+| **release PR** — this PR *is* the release | `0.44.0` | `0.45.0 — <date>` | `0.45.0` |
+
+The deferred shape is why this gate is changelog-relative: no PR is *forced* to bump,
+so any number of PRs land into one open section and the number is spent once (see
+"Merging is not publishing" below).
+
+The release shape is the other half, and reading HEAD instead of the base used to
+reject it. A release PR bumps `package.json` ahead of npm *in that very PR*, so HEAD's
+version is not the "last published" marker — asking whether the heading is above it
+asks whether the heading is above the version being published, which is `0` by
+construction. A correctly prepped release — heading, `package.json` and
+`src/version.ts` all agreeing, exactly the state A′ demands — failed check B, and
+failed it with the sentence *"0.45.0, which is already published"* about a version
+that was not published anywhere.
+
+Both shapes are the same claim once the comparison is against the base: **the release
+under construction is not yet on npm.** What stays rejected is filing into a heading
+that names a version already published as of the base.
 
 The published surface is:
 

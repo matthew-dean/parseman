@@ -238,9 +238,39 @@ describe('bump gate', () => {
     )
     const r = gate(dir, `--base=${baseSha}`)
     expect(r.ok).toBe(false)
-    expect(r.out).toMatch(/which is already published/)
-    expect(r.out).toMatch(/Do NOT bump package\.json/)
+    expect(r.out).toMatch(/already published as of the base/)
+    // Both ways out are offered, because both are legal: defer the number to a later
+    // publish, or make this PR the release. The message used to say "Do NOT bump
+    // package.json" as an absolute, which is false for a release PR.
+    expect(r.out).toMatch(/DEFER/)
+    expect(r.out).toMatch(/RELEASE/)
     expect(r.out).toMatch(/release-exempt/)
+  })
+
+  it('ACCEPTS a RELEASE PR: heading, package.json and src/version.ts all bumped together', () => {
+    // The release-PR shape. `package.json` moves ahead of npm in this very PR, so HEAD's
+    // version is NOT the "last published" marker — the BASE's is. Reading HEAD here asked
+    // "is the heading above the version this PR is publishing?", which is 0 by
+    // construction, and rejected a correctly prepped release with the sentence
+    // "0.45.0, which is already published" about a version that was not published at all.
+    const { dir, baseSha } = repo(
+      { version: '0.36.0', changelog: released('0.36.0'), files: { 'src/a.ts': 'export const a = 1\n' } },
+      { version: '0.37.0', changelog: released('0.37.0'), files: { 'src/a.ts': 'export const a = 2\n' } },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(true)
+    expect(r.out).toMatch(/this is a RELEASE of 0\.37\.0/)
+  })
+
+  it('REJECTS a heading BELOW the base, even when package.json agrees with it', () => {
+    // Guards the direction of the new base comparison: a downgrade must not read as
+    // "not yet published" merely because heading and package.json are consistent.
+    const { dir, baseSha } = repo(
+      { version: '0.37.0', changelog: released('0.37.0'), files: { 'src/a.ts': 'export const a = 1\n' } },
+      { version: '0.36.0', changelog: released('0.36.0'), files: { 'src/a.ts': 'export const a = 2\n' } },
+    )
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
   })
 
   it('ACCEPTS a src/ change filed under an OPEN section, with NO version bump', () => {
