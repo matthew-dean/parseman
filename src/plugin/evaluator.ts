@@ -383,7 +383,12 @@ function staticStringArray(expr: unknown, scope?: XScope): readonly string[] | u
 
 type StaticNodeProject = { ok: true; value: number } | { ok: false }
 const STATIC_NODE_OPTIONS_FAILED = Symbol('parseman.staticNodeOptions.failed')
-type StaticNodeOptions = parseman.NodeOptions<readonly string[]> | undefined | typeof STATIC_NODE_OPTIONS_FAILED
+const STATIC_NODE_OPTIONS_NOT_OPTIONS = Symbol('parseman.staticNodeOptions.notOptions')
+type StaticNodeOptions =
+  | parseman.NodeOptions<readonly string[]>
+  | undefined
+  | typeof STATIC_NODE_OPTIONS_FAILED
+  | typeof STATIC_NODE_OPTIONS_NOT_OPTIONS
 
 function staticNodeProject(expr: Expression): StaticNodeProject | undefined {
   const literalValue = staticLiteralValue(expr)
@@ -394,22 +399,56 @@ function staticNodeProject(expr: Expression): StaticNodeProject | undefined {
   return { ok: false }
 }
 
+function scopedStaticValue(expr: Expression, scope: XScope): { found: true; value: unknown } | { found: false } {
+  const unwrapped = unwrapStaticExpr(expr)
+  if (unwrapped.type !== 'Identifier' || unwrapped.name === 'undefined') return { found: false }
+  if (!scope.has(unwrapped.name)) return { found: false }
+  const scoped = scope.get(unwrapped.name)
+  const value = isStaticValueEntry(scoped) ? scoped.value : scoped
+  return { found: true, value }
+}
+
+function staticNodeOptionsFromValue(value: unknown): parseman.NodeOptions<readonly string[]> | undefined | typeof STATIC_NODE_OPTIONS_FAILED | typeof STATIC_NODE_OPTIONS_NOT_OPTIONS {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) || isCombinator(value)) return STATIC_NODE_OPTIONS_NOT_OPTIONS
+  const opts: parseman.NodeOptions<readonly string[]> = {}
+  const rec = value as Record<string, unknown>
+  for (const name of Object.keys(rec)) {
+    const v = rec[name]
+    if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
+      if (v === true) opts[name] = true
+      else if (v !== false && v !== undefined) return STATIC_NODE_OPTIONS_FAILED
+    } else if (name === 'project') {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return STATIC_NODE_OPTIONS_FAILED
+      opts.project = v
+    } else if (name === 'tags') {
+      if (!Array.isArray(v) || !v.every(item => typeof item === 'string')) return STATIC_NODE_OPTIONS_FAILED
+      opts.tags = v
+    }
+  }
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined ? opts : undefined
+}
+
 function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
   const unwrapped = unwrapStaticExpr(expr)
-  if (unwrapped.type !== 'ObjectExpression') return undefined
+  const scoped = scopedStaticValue(unwrapped, scope)
+  if (scoped.found) return staticNodeOptionsFromValue(scoped.value)
+  if (unwrapped.type !== 'ObjectExpression') return STATIC_NODE_OPTIONS_NOT_OPTIONS
   const opts: parseman.NodeOptions<readonly string[]> = {}
   for (const prop of (unwrapped as ObjectExpression).properties) {
+    if ((prop as { type?: string }).type !== 'Property') return STATIC_NODE_OPTIONS_FAILED
     const p = prop as unknown as ObjectProperty
-    if (p.computed) continue
+    if (p.computed) return STATIC_NODE_OPTIONS_FAILED
     const key = p.key as unknown as { type: string; name?: string; value?: unknown }
     const name = key.type === 'Identifier' ? key.name
       : key.type === 'Literal' ? String(key.value)
       : undefined
     if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
-      if (staticLiteralValue(p.value) === true) opts[name] = true
+      const value = staticLiteralValue(p.value)
+      if (value === true) opts[name] = true
+      else if (value !== false && value !== undefined) return STATIC_NODE_OPTIONS_FAILED
     } else if (name === 'project') {
       const project = staticNodeProject(p.value as Expression)
-      if (project?.ok === false) return { project: -1 }
+      if (project?.ok === false) return STATIC_NODE_OPTIONS_FAILED
       if (project !== undefined) opts.project = project.value
     } else if (name === 'tags') {
       const tags = staticStringArray(p.value, scope)
@@ -510,15 +549,24 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     // injected `ctx.build` host; codegen keys that off `def.build === undefined`.
     const be = buildArg as { type: string; start: number; end: number; name?: string } | undefined
     const buildExpr = be === undefined || be.type === 'SpreadElement' ? undefined : unwrapStaticExpr(be as unknown as Expression)
+    const buildArgOptions = be !== undefined && be.type !== 'SpreadElement'
+      ? staticNodeOptions(buildArg as Expression, scope)
+      : STATIC_NODE_OPTIONS_NOT_OPTIONS
+    if (buildArgOptions === STATIC_NODE_OPTIONS_FAILED) return null
+    const buildArgIsOptions = buildArgOptions !== STATIC_NODE_OPTIONS_NOT_OPTIONS
     const hasBuild = be !== undefined && be.type !== 'SpreadElement'
-      && buildExpr?.type !== 'ObjectExpression'
+      && !buildArgIsOptions
       && !(buildExpr?.type === 'Identifier' && (buildExpr as { name?: string }).name === 'undefined')
     const buildSrc = hasBuild ? stripTsFromSource(be! as Node, code) : undefined
-    const optionsArg = hasBuild ? optsArg : (buildExpr?.type === 'ObjectExpression' ? buildArg : optsArg)
-    const opts = optionsArg !== undefined && optionsArg.type !== 'SpreadElement'
-      ? staticNodeOptions(optionsArg as Expression, scope)
-      : undefined
-    if (opts === STATIC_NODE_OPTIONS_FAILED) return null
+    let opts: parseman.NodeOptions<readonly string[]> | undefined
+    if (buildArgIsOptions) {
+      opts = buildArgOptions as parseman.NodeOptions<readonly string[]> | undefined
+    } else if (optsArg !== undefined) {
+      if (optsArg.type === 'SpreadElement') return null
+      const optsResult = staticNodeOptions(optsArg as Expression, scope)
+      if (optsResult === STATIC_NODE_OPTIONS_FAILED || optsResult === STATIC_NODE_OPTIONS_NOT_OPTIONS) return null
+      opts = optsResult
+    }
     try {
       const combi = explicitType !== undefined
         ? parseman.node(explicitType, inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)

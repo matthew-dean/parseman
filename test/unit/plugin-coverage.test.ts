@@ -317,9 +317,36 @@ export const grammar = rules(g => ({
     expect(result.code).toContain('"tags":["AtRule","Statement"]')
   })
 
+  it('treats same-file static node options identifiers as options, not build callbacks', () => {
+    const code = `
+import { rules, node, regex } from 'parseman' with { type: 'macro' }
+const tags = ['AtRule'] as const
+const opts = { tags }
+export const grammar = rules(g => ({
+  AtRule: node('AtRule', regex(/@[a-z]+/), opts),
+}))
+`.trim()
+    const result = transform(code)!
+
+    expect(result.warnings).toEqual([])
+    expect(result.code).toContain('"tags":["AtRule"]')
+
+    const fnBody = result.code.replace(/\s+as const\b/g, '').replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn grammar'
+    const grammar = new Function(fnBody)() as { AtRule: (input: string, pos: number, ctx: { trackLines: boolean; build: typeof cstBuildHost }) => unknown }
+    expect(() => grammar.AtRule('@media', 0, { trackLines: false, build: cstBuildHost })).not.toThrow()
+  })
+
   it('evaluateExpr rejects unresolved node tags instead of dropping metadata', () => {
     const code = `node('X', literal('a'), { tags: runtimeTags })`
     expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()
+  })
+
+  it('evaluateExpr rejects unsafe node option object shapes instead of lowering them', () => {
+    const spread = `node('X', literal('a'), { tags: ['A'], ...runtime })`
+    const computed = `node('X', literal('a'), { ['tags']: ['A'] })`
+
+    expect(evaluateExpr(parseInit(spread), new Map(), spread)).toBeNull()
+    expect(evaluateExpr(parseInit(computed), new Map(), computed)).toBeNull()
   })
 })
 
