@@ -28,6 +28,253 @@ Interpreter-side ideas are split out to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRE
 
 ---
 
+## P0 — Root trivia: separate recognition, capture, and formatting facts (2026-07-30)
+
+### What is already cheap, and what is not
+
+The premise needs precision. Parseman has already made **skipping** trivia cheap:
+the compiled CSS-shaped loop is `charCodeAt`-based (`src/compiler/trivia-fast-path.ts`),
+and the current per-node logs are packed number arrays rather than token objects.
+Do **not** replace that with a scanner that reparses source, token objects, an Error-like
+diagnostic record, or a per-character table.
+
+The root path is different and currently pays for *all* presentation facts whether a
+consumer needs them or not:
+
+1. `runOnce()` in `src/functional/run.ts` always allocates `triviaLog: number[]` and
+   installs it as `_ctx._triviaLog` on an ordinary parse. Every committed root trivia
+   run therefore takes the capture branch.
+2. For **labeled** trivia (the CSS/Less `whitespace | comment` form), the generated
+   loop pushes `[start, end, kind]` for **every individual whitespace and comment
+   chunk** (`buildLabeledScannableTriviaFnDecl` in
+   `src/compiler/trivia-fast-path.ts`), even if the downstream consumer only asks
+   “does this gap contain a comment?”. `_triviaCaptureMask` cannot fix this: it
+   deliberately filters only the *per-node* CST log; `recordTriviaChunks()` makes
+   the root log complete.
+3. A root `RootTriviaIndex` is lazy only until its first meaningful query. Then
+   `buildRootMaps()` (`src/cst/trivia-entries.ts`) constructs four `Map`s, a gap
+   object for every gap, and an `entryIndices` array that copies every chunk index;
+   it also stores each entry-range twice (`before` and `after`). `gapsWithKind()`
+   subsequently walks every gap and resolves kind strings one entry at a time.
+
+This is not hypothetical. The current Jess Less bootstrap profile, after the separate
+diagnostic fix, attributes visible self-time to Parseman's `appendGap` (2.83%),
+`gapsWithKind` (2.55%), `buildRootMaps` (1.53%), and `getMaps` (0.96%); the complete
+root stream is also retained for a 288 KB input. Those are **formatting-fact costs**,
+not recognizer costs. The existing packed log is the right representation for a
+consumer that truly needs every labeled token; it is the wrong unavoidable default
+for a compiler that only sometimes re-emits comments.
+
+The rule for this lane is therefore:
+
+> Skip trivia on every ordinary grammar edge. Capture exactly the source facts a
+> selected output policy can prove it will consume. Never reconstruct omitted facts
+> by rescanning the source after parse.
+
+The last clause matters: “capture nothing now, find comments later with a source scan”
+simply moves an O(source length) pass back into render, often once per output boundary.
+That is not a win.
+
+### 1. Add an explicit *root* capture policy — HIGH, first prototype
+
+Keep the current complete root log as the compatibility mode, but stop treating it as
+the only `run()` shape. Add a policy separate from the existing **per-node**
+`triviaCaptureMask`; exact spelling is open, but the semantic states must be:
+
+| Root policy | Record while parsing | Correct consumer |
+| --- | --- | --- |
+| `none` | no root trivia data; no `_triviaLog` allocation or pushes | compilers/AST consumers that never preserve comments/layout |
+| `allEntries` (legacy default) | every labeled chunk, current `[start,end,kind]` contract | tooling that really needs every trivia token/kind |
+| `selectedKinds` | only named kinds plus enough gap boundaries to preserve their authored source context | comment/pragma-preserving emitters |
+| `gaps` | one contiguous root gap per committed trivia site, no kind markers | format-preserving tools that only slice complete gaps |
+
+This must be a parse-time policy. `none` should leave `_ctx._triviaLog` undefined from
+the start, which makes the existing compiled `_cap = _ctx._triviaLog !== undefined ?
+2 : 0` path cold and eliminates array growth/pushes. `allEntries` remains byte-for-byte
+compatible for `RunResult.triviaLog` and existing callers. Do **not** silently change
+the public default in a minor release.
+
+**Semantic risk:** a client that calls `triviaMap` / `commentRuns()` after selecting
+`none` must fail loudly or receive an explicitly unavailable view — never an empty map
+that claims there were no comments. Trailing trivia is separately owned today; preserve
+the documented `trailingTrivia` behavior exactly. Every mode must maintain recognition,
+failure offset, recovery diagnostics, and line tracking byte-for-byte.
+
+**Proof / measure:** add a compile+interpreter parity matrix for none/all/selected/gaps
+with whitespace-only, `ws-comment-ws`, line comment, nested parser/noTrivia, failed
+lookahead/attempt rollback, recovery, and terminal-document comments. Add an exact
+Jess CSS/Less fixture to a Parseman workload harness (not a synthetic tokenizer): report
+parse median, retained trivia numbers, root-gap count, selected-marker count, and V8
+allocated bytes. The expected `none` result is *zero root entries*, not merely a faster
+map query. Keep only modes that are neutral-or-better for no-capture parsing and win on
+the real Jess parse+emit workload.
+
+### 2. Represent `selectedKinds` as **gap rows + kind markers**, not filtered chunks — HIGH
+
+For the common CSS/Less requirement, an emitter needs two different facts:
+
+- the exact authored text of the entire boundary gap (to preserve ` /* comment */ `,
+  including its surrounding whitespace when that is semantically chosen), and
+- the source spans/kinds of the meaningful members in it (normally block/line comments).
+
+It does **not** need one root entry for each whitespace run. Record a compact two-stream
+form while the existing trivia scan already knows the answer:
+
+```text
+gapStarts/gapEnds:       [gapStart0, gapEnd0, gapStart1, gapEnd1, ...]
+selectedStarts/Ends/Kinds: [commentStart0, commentEnd0, commentKind0, ...]
+```
+
+The `ws /*x*/ ws` sequence becomes **one gap row plus one comment marker**, rather than
+three full labeled rows; `input.slice(gapStart, gapEnd)` still returns the exact authored
+gap. A root index can answer `gapBefore`/`gapAfter` from the gap stream and “has selected
+kind” from markers. This is a general labeled-trivia feature: pragma, directive, and
+significant-newline clients select different labels; no CSS/comment special case.
+
+Do not try to coalesce entries across a grammar boundary that was not committed. The
+current deferred-commit/rollback rules are ownership semantics: a trivia run before a
+failed optional term is terminal, not a sibling gap. The new stream must be appended and
+truncated at precisely the same commit marks as `_triviaLog`.
+
+**Compatibility shape:** make this a new root-capture result/view, not a disguised new
+stride for `triviaLog`; existing callers reasonably parse `[start,end,kind]` themselves.
+Expose a stable range-oriented API before considering a future major-version default.
+
+**Proof / measure:** a golden test should show identical source slice and selected-kind
+answers for legacy entries vs gap+marker on mixed whitespace/comment input. Differential
+tests must include repeated comments within one gap, adjacent comments, different labels,
+and a label mask of zero. Count emitted numeric cells on Bootstrap Less/CSS and a
+comment-dense stylesheet; this idea is worth implementing only if it materially reduces
+cells/GC and wins Parseman *and* Jess parse+emit.
+
+### 3. Make direct boundary queries truly sparse — HIGH
+
+`gapBefore(offset)` and `gapAfter(offset)` currently force `buildRootMaps()` for the
+whole document. For an ordered gap stream, implement direct lookup with binary search
+over starts/ends (or a flat sorted pair array): O(log gaps) reads, no document-wide map,
+no copied entry-index arrays. A queried gap can carry `{ start, end, firstMarker,
+markerEnd, kindMask }`; materialize a public object only for that requested gap.
+
+The existing `before`/`after` map getters, `gaps()`, and legacy `entryIndices` arrays can
+remain compatibility adapters that materialize lazily **only when those old broad APIs
+are used**. Do not make a `Map` the primary index merely because the legacy surface
+exposes one. If a caller asks for every gap, O(gaps) allocation is honest; a caller that
+asks for one boundary must not pay O(document) work.
+
+**Semantic risk:** source offsets can coincide only at a real boundary; assert sorted,
+non-overlapping committed ranges and pin the existing before/after ownership convention.
+Do not return one mutable flyweight object, because public callers may retain a gap.
+
+**Proof / measure:** retain all `trivia-entries` boundary tests, then add a counter/test
+that `gapBefore(oneOffset)` has not initialized legacy maps or visited unrelated gaps.
+Benchmark one lookup, N random lookups, and a full `entries()` enumeration independently;
+the full enumeration is allowed to be linear, the singleton lookup is not.
+
+### 4. Give kind queries an index, not a repeated full gap scan — MED/HIGH
+
+`gapsWithKind()` presently loops every gap, then loops its entries and resolves label
+strings. Build selected-kind postings while capturing (`kindIndex -> marker/gap ranges`) or,
+for legacy all-entry logs, lazily scan the flat triples once into compact index ranges.
+Within a gap, retain a `kindMask` for up to 32 labels; for wider label sets use a sorted
+small-int span/bitset representation, **not** an object set per gap. Resolve requested
+label names to indices once per query.
+
+This makes comment enumeration O(comments + matching gaps), rather than O(all trivia
+chunks) every time a serializer calls `commentRuns()`. It also makes `hasKind` an integer
+test in normal CSS/Less grammars. Preserve exact label semantics: a gap with two selected
+kinds must be emitted once and in source order.
+
+**Proof / measure:** differential against the legacy `gapsWithKind` for single/multi-kind
+queries, duplicates, unknown labels, and unlabeled trivia. A test must call it twice and
+prove the second query neither rebuilds nor rescans. Report work proportional to matching
+markers, not only wall time.
+
+### 5. Split “need a gap” from “need every trivia token” in host contracts — MED
+
+The current root log is effectively enabled by `run()` itself, while per-node capture has
+a host-aware plan. Add a declarative root demand to the `run`/build-host contract (or a
+small explicit `RunOptions` object) so an AST compiler chooses one policy once at parse
+entry. Examples:
+
+- normal minified compile: `none`;
+- render that preserves only authored comments: `selectedKinds(['blockComment',
+  'lineComment'])` + gap rows;
+- language service/reformatter: `allEntries` only when it truly edits/replays trivia
+  tokens individually.
+
+Do not infer demand from whether a caller happens to access `result.triviaMap` later;
+by then the information either had to be captured or is gone. Do not make a generic
+runtime callback that fires for every gap: that replaces packed writes with call overhead
+and polymorphism. The plan must be fixed per parse, and codegen should see only cheap
+numeric mode/mask checks.
+
+**Proof / measure:** explicit policy is part of the parser wrapper's behavioral contract.
+For Jess, tests must demonstrate the selected policy preserves all output-required comments
+and that `none` is used only where output has no formatting obligation. Run all four dialect
+parse + render corpora; no parser may "pass" simply because comments vanished from its AST.
+
+### 6. Stop allocating the empty root sink and empty index — MED, low risk
+
+Even a no-trivia document currently allocates `triviaLog: []`, `errors: []`, a root-index
+closure, and an entry view in `runOnce()`. For root policy `none`, return shared immutable
+empty result views and do not attach `_triviaLog`; for a parse with `allEntries` that
+encounters no trivia, use a shared empty index after parse. This is not the main Bootstrap
+win, but it matters for the common small/minified stylesheet path and makes “no capture”
+actually zero-sink rather than “capture an empty array.”
+
+**Guard:** never share a mutable `number[]` or error array. The compatibility result may
+expose a frozen/shared readonly empty view; if mutability is presently public, allocate
+only at that API boundary and document the legacy cost.
+
+### 7. Preserve source *ranges*, never eagerly rebuilt formatting strings — MED, invariant
+
+The right representation for reproducible formatting is offsets into the immutable input.
+The source already exists for parse lifetime, so exact output requires `slice(start,end)`
+only at the one renderer that chose to emit it. Do not turn each gap into a string, split
+whitespace into lines, normalize it during parse, or store both raw bytes and a normalized
+copy. Gap+marker capture is deliberately range-only.
+
+This is also the semantic boundary for deciding whether a rule should reproduce formatting:
+that decision belongs to the output contract, not the recognizer. A minifier that never
+re-emits authored layout should choose `none`; a formatter that needs a complete lexical
+trivia stream should choose `allEntries`; comment-preserving output gets the intermediate
+gap+marker form. Do not make every parser pay the language-service formatter's bill.
+
+### 8. Measure a typed-buffer alternative last, and only as an implementation detail — LOW
+
+The current JavaScript number arrays are already packed and append-friendly. Replacing
+them wholesale with `Uint32Array`/`Int32Array` can regress due to growth copies, bounds
+checks, conversion of offsets above 2³², and less-friendly V8 optimization. First land a
+capture policy that removes unnecessary cells. Only then A/B a chunked/growable typed
+writer behind the same root-view API, with ordinary arrays as the control.
+
+**Keep condition:** retained heap materially lower *and* no slowdown on real CSS/Less
+compile+emit. A typed array is not a design win by itself; it is expressly not permission
+to reintroduce per-entry objects, Maps, or source rescans.
+
+### Required workload and review gates for this lane
+
+1. Add a reproducible **root-trivia workload** that uses a real compiled CSS/Less grammar
+   and a real large stylesheet (including the PostCSS Bootstrap Less fixture when available),
+   plus a synthetic comment-dense variant. It must report: source bytes, committed trivia
+   gaps, legacy entries, gap rows, selected markers, numeric cells, parse median, and
+   retained/allocated heap.
+2. Separate timings for recognition/structural host work/root capture/index construction/
+   `commentRuns()` (or equivalent selected-kind enumeration). `run({ profile: true })`
+   currently omits global sinks in its first two passes, so it cannot by itself certify this
+   path; add a dedicated A/B driver.
+3. V8 CPU profiles must show `appendGap`, `buildRootMaps`, and `gapsWithKind` disappear or
+   shrink in the selected/no-root modes. Do not call a regression “neutral” only because a
+   synthetic parse never queried formatting.
+4. Differential tests must assert interpreter, `compile()`, `compileLinkable`, and macro/
+   fused output agree on recognition, source spans, selected kinds, rollback ownership,
+   recovery, and exact preserved source slices.
+5. For Jess integration, run the real parser suites and byte-identical Less output corpus,
+   then the exact PostCSS eval+emit benchmark. A parser-only win that drops a comment or
+   changes output whitespace is a failure, not a performance result.
+
+---
+
 ## High priority
 
 ### ~~1. Choice fast paths disabled in CST grammars~~ ✅
