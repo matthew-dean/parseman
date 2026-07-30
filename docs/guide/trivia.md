@@ -168,8 +168,15 @@ only says that the *whole* broad match is whitespace; it cannot expose a
 comment that matcher consumed internally. Every local `parser({ trivia })`
 scope must likewise use `classifiedTrivia()`, or
 write `rootCapture: 'opaque'` to acknowledge that selected categories do not
-survive inside that scope. Strict mode is opt-in so existing grammars retain
-their current behavior while they migrate.
+survive inside that scope. There is no permissive compatibility mode for
+selected capture.
+
+Category names are opaque caller policy. Parseman does not infer a category's
+meaning from names such as `comment` or `whitespace`, nor from a CSS-shaped
+delimiter. It recognizes the supplied grammar arm. Independently, every
+structurally scannable trivia arm can use the compact scanner whether it is
+unlabeled, retained as a selected category, or not retained at all. Selecting a
+category changes what is recorded, not which trivia syntax is fast.
 
 `run()` also returns `triviaMap`, a lazy root-log gap index. It groups contiguous labeled chunks
 into one boundary gap, so `triviaMap.entryIndicesBefore(node.span.start)` and

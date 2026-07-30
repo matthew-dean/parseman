@@ -676,6 +676,11 @@ silently consume a selected comment category. Selected capture rejects local
 local scope must say
 `parser({ trivia, rootCapture: 'opaque' }, ...)`.
 
+The property names are opaque application categories, not Parseman semantics:
+the library never assigns meaning from a name such as `comment` or `whitespace`.
+Recognition and its fast paths come from the supplied combinator structure;
+classification controls only selected-root retention.
+
 ### `parser(opts, root)` <Badge type="tip" text="helper" />
 
 Wrap a root combinator with document-level options — `trivia`, `trackLines`,
