@@ -17,7 +17,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **Keep selected capture correct across every parser form.** Rejected choice and
   `attempt` arms, `optional`/repeat tails, `sepBy`, lookahead, recovery probes,
   composed grammar factories, macro-fused artifacts, and AST/CST host modes all
-  roll the sparse sink back transactionally. The result is exposed as
+  roll the sparse sink back transactionally. Semantic `leaf()` wrappers retain
+  selected root markers, and selected row kind indexes use the requested label
+  table rather than a scope-local label order. The result is exposed as
   `RunResult.rootTrivia` and through the same lazy `triviaMap` query interface;
   legacy `triviaLog` remains available under the default `allEntries` mode.
 

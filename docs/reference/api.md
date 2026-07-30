@@ -586,8 +586,9 @@ source-ordered gap containing a labeled trivia kind such as `blockComment`.
 ### `buildSelectedRootTriviaIndex(rows, labels)`
 
 Build the same view for selected root capture. Each row is
-`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, kindIndex]`: the marker
-is one explicitly selected grammar label, while the owning range is the complete
+`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, selectedKindIndex]`:
+the marker is one explicitly selected grammar label (indexed into the `labels`
+argument, normally `result.rootTrivia.selectedKinds`), while the owning range is the complete
 source trivia gap. Use this only for stored `result.rootTrivia.rows`; ordinary
 consumers should use `result.triviaMap`, which already selects the correct index.
 
@@ -730,7 +731,8 @@ complete owning trivia range; it does not record ordinary whitespace runs. Label
 are grammar-defined policy, so a formatter may select `significantNewline` while a
 serializer selects comments. `result.triviaMap` keeps the ordinary gap-query API;
 in selected mode the legacy `result.triviaLog` is empty and the raw rows are in
-`result.rootTrivia.rows`.
+`result.rootTrivia.rows`. Their kind index is into `selectedKinds`, which remains
+stable when a composed grammar changes its local trivia-label order.
 
 ```ts
 const g = compose([base])

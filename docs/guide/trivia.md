@@ -142,7 +142,10 @@ result.triviaMap.gapsWithKind(['blockComment', 'lineComment'])
 ```
 
 Selected capture stores one numeric row per selected marker:
-`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, kindIndex]`. The first
+`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, selectedKindIndex]`.
+`selectedKindIndex` indexes the requested `selectedKinds` list, not a local
+grammar scope's label table, so composed grammars and semantic leaves may use
+their own trivia-label order safely. The first
 pair still lets `gapBefore` / `gapAfter` reproduce the full authored range around
 the marker, while whitespace-only ranges allocate nothing. Labels are arbitrary:
 use `significantNewline` if line layout is part of your formatter's policy; do not
