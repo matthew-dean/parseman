@@ -815,11 +815,46 @@ are POSIX paths **relative to `base`**. Throws on a root that does not resolve u
 `allowMissingRoots` is set, in which case they come back in `missingRoots`. `maxBytes` skips
 oversized files into `skippedLarge`.
 
-### `canonicalize(value)` · `HARNESS_DIGEST`
+### `digestInto(target, value, prefix?, options?)` · `digestValue(value, prefix?, options?)`
+
+Deterministic serialization of **one** parse result — the primitive the whole oracle is
+built on, and the part only parseman can supply, because it is parseman's node shapes that
+decide which distinctions are semantically meaningful.
+
+`digestInto` streams the canonical token projection at a caller-supplied hash. The caller
+brings the algorithm and keeps the result:
+
+```ts
+const sha = createHash('sha256')
+digestInto(sha, tree)
+const digest = sha.digest('hex')
+```
+
+Nothing is accumulated, so there is no maximum-string-length ceiling and no tree size at
+which the digest stops being takeable. `digestValue` is the sha256-hex convenience wrapper.
+
+`prefix` is written ahead of the first token with no separator, for callers that need two
+disjoint digest spaces (the oracle writes `OK:` / `ERR:`).
+
+`options.maxVisits` bounds the walk, raising `CanonicalBudgetError` past the limit — see
+`DEFAULT_MAX_VISITS`. A walk that finishes under budget produces byte-identical output, so
+the budget can never move a recorded digest.
+
+### `canonicalize(value, options?)` · `HARNESS_DIGEST`
 
 `canonicalize` is the key-sorted, cycle-safe token projection the digests are taken over —
-diff two of them to see *what* moved. `HARNESS_DIGEST` is the harness's own behavioural
-fingerprint, stamped into every report.
+diff two of them to see *what* moved. It **materialises** the projection, so it is bounded
+by the maximum JS string length; it is a debugging aid, and `digestInto` is what a gate
+should run on. `hash(prefix + canonicalize(v))` and `digestValue(v, prefix)` are the same
+number for every value the former can survive.
+
+`HARNESS_DIGEST` is the harness's own behavioural fingerprint, stamped into every report.
+
+> **Sharing is exponential.** The projection writes a shared subtree once per *path* that
+> reaches it, deliberately (see "Sharing is not a cycle"), so a node referenced from two
+> places at each of `d` levels is written `2^d` times. Streaming removes the memory ceiling
+> but not that work. If your trees share structure, dedupe it before digesting — or expect
+> `CanonicalBudgetError` to tell you so by name.
 
 ## Composing grammars
 

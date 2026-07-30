@@ -41,4 +41,12 @@ export type {
 } from './identity.ts'
 export { loadCorpus } from './corpus.ts'
 export type { LoadCorpusOptions, LoadedCorpus } from './corpus.ts'
-export { canonicalize, DIGEST_FORMAT } from './digest.ts'
+export {
+  canonicalize,
+  digestInto,
+  digestValue,
+  CanonicalBudgetError,
+  DEFAULT_MAX_VISITS,
+  DIGEST_FORMAT,
+} from './digest.ts'
+export type { CanonicalOptions, DigestTarget } from './digest.ts'

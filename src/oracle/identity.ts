@@ -54,7 +54,7 @@
  * corpus and fails loudly if any entry does not reproduce. An oracle that cannot
  * be trusted should say so rather than emit a number.
  */
-import { canonicalize, hash, DIGEST_FORMAT, FINGERPRINT_HEX } from './digest.ts'
+import { digestValue, hash, DIGEST_FORMAT, FINGERPRINT_HEX } from './digest.ts'
 
 /**
  * One parse entry point under test.
@@ -116,6 +116,12 @@ export type DigestOptions = {
    * only if you have another reason to trust it.
    */
   determinismSample?: number
+  /**
+   * Visit budget per digested value — see {@link DEFAULT_MAX_VISITS}. Exceeding
+   * it raises {@link CanonicalBudgetError}, which is NOT caught and NOT counted
+   * in `threw`: the tool giving up is not a fact about the grammar.
+   */
+  maxVisits?: number
 }
 
 const defaultProjectError = (thrown: unknown): unknown =>
@@ -130,16 +136,32 @@ const defaultProjectError = (thrown: unknown): unknown =>
  * most important thing this oracle detects — an error becoming an accept — is
  * the thing it stops detecting.
  */
-function payload(surface: Surface, entry: CorpusEntry, options: DigestOptions): { text: string; threw: boolean } {
+function payload(surface: Surface, entry: CorpusEntry, options: DigestOptions): { digest: string; threw: boolean } {
+  let value: unknown
+  let threw = false
   try {
-    return { text: `OK:${canonicalize(surface.parse(entry.source, entry.id))}`, threw: false }
+    value = surface.parse(entry.source, entry.id)
   } catch (thrown) {
-    const project = options.projectError ?? defaultProjectError
-    return { text: `ERR:${canonicalize(project(thrown, entry.id, surface.name))}`, threw: true }
+    threw = true
+    value = (options.projectError ?? defaultProjectError)(thrown, entry.id, surface.name)
   }
+
+  /*
+   * Digesting happens OUTSIDE the try, and that placement is the whole point.
+   *
+   * When it was inside, a failure of the PROJECTION — a `RangeError` from
+   * joining a canonical string past V8's maximum length, an OOM-adjacent throw,
+   * a budget refusal — was caught here and recorded as `ERR:` with `threw++`.
+   * The tool failing to answer became indistinguishable from the grammar
+   * rejecting the input, which is the one distinction this oracle exists to
+   * make. A gate that reports its own breakage as a grammar change does not
+   * degrade, it LIES; so a digest failure now propagates and takes the run down
+   * with a named error.
+   */
+  return { digest: digestValue(value, threw ? 'ERR:' : 'OK:', { maxVisits: options.maxVisits }), threw }
 }
 
-const fingerprint = (text: string): string => hash(text).slice(0, FINGERPRINT_HEX)
+const fingerprint = (digest: string): string => digest.slice(0, FINGERPRINT_HEX)
 
 /**
  * Run every surface over every entry and produce the report.
@@ -171,23 +193,32 @@ export function digestCorpus(
 
   const perEntry: Record<string, Record<string, string>> = {}
   const threw: Record<string, number> = {}
-  const texts: Map<string, string>[] = []
+  /*
+   * Full digests, not the canonical TEXTS this used to keep. The determinism
+   * re-check only needs to know whether a second parse produces the same bytes,
+   * and comparing two sha256 digests answers that exactly as well as comparing
+   * two strings — while holding 64 hex chars per entry instead of the entire
+   * projection of every tree in the corpus. On a corpus with any DAG-shaped
+   * sharing in it those projections run to hundreds of megabytes EACH, and
+   * retaining all of them is what turned a slow digest into an OOM.
+   */
+  const digests: Map<string, string>[] = []
   for (const s of surfaces) threw[s.name] = 0
 
   for (const entry of entries) {
     const row: Record<string, string> = {}
-    const rowTexts = new Map<string, string>()
+    const rowDigests = new Map<string, string>()
     for (const s of surfaces) {
       const result = payload(s, entry, options)
       if (result.threw) threw[s.name]!++
-      row[s.name] = fingerprint(result.text)
-      rowTexts.set(s.name, result.text)
+      row[s.name] = fingerprint(result.digest)
+      rowDigests.set(s.name, result.digest)
     }
     perEntry[entry.id] = row
-    texts.push(rowTexts)
+    digests.push(rowDigests)
   }
 
-  verifyDeterminism(surfaces, entries, texts, options)
+  verifyDeterminism(surfaces, entries, digests, options)
 
   return {
     format: DIGEST_FORMAT,
@@ -210,7 +241,7 @@ export function digestCorpus(
 function verifyDeterminism(
   surfaces: readonly Surface[],
   entries: readonly CorpusEntry[],
-  texts: ReadonlyArray<Map<string, string>>,
+  digests: ReadonlyArray<Map<string, string>>,
   options: DigestOptions,
 ): void {
   const want = options.determinismSample ?? 32
@@ -219,7 +250,7 @@ function verifyDeterminism(
   for (let n = 0; n < entries.length; n += stride) {
     const entry = entries[n]!
     for (const s of surfaces) {
-      if (payload(s, entry, options).text === texts[n]!.get(s.name)) continue
+      if (payload(s, entry, options).digest === digests[n]!.get(s.name)) continue
       throw new Error(
         `digestCorpus: surface ${JSON.stringify(s.name)} is NOT DETERMINISTIC on ${JSON.stringify(entry.id)} — `
         + 'two parses of the same source produced different output. Every digest from this grammar would move on '
@@ -404,7 +435,7 @@ function canaryReport(): IdentityReport {
     for (const s of surfaces) {
       const result = payload(s, entry, {})
       if (result.threw) threw[s.name]!++
-      row[s.name] = fingerprint(result.text)
+      row[s.name] = fingerprint(result.digest)
     }
     perEntry[entry.id] = row
   }

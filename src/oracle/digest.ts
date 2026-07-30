@@ -35,6 +35,12 @@
  * the digest depend on traversal order for any DAG, which parse trees with
  * interned or shared subtrees routinely are.)
  *
+ * The cost of that choice is stated plainly, because it has now bitten a
+ * consumer: writing a shared subtree once per PATH is EXPONENTIAL in sharing
+ * depth. A node referenced from two places at each of `d` levels is written
+ * `2^d` times. See {@link DEFAULT_MAX_VISITS} for the backstop and for why the
+ * obvious fix is a format change rather than a patch.
+ *
  * ## Own ENUMERABLE keys only
  *
  * `Object.keys`, deliberately, not `getOwnPropertyNames`. The oracle answers "did
@@ -49,6 +55,14 @@
  * `#1` then `#2` into a single buffer would be indistinguishable from `#12`; a
  * projection with an ambiguity in it is a projection that can be made to lie.
  * Strings are JSON-escaped, so no token can contain a raw NUL.
+ *
+ * ## The projection is streamed, never materialised
+ *
+ * {@link digestInto} walks a value and pushes the token stream at a caller-owned
+ * hash. Nothing accumulates, so there is no maximum-string-length ceiling and no
+ * corpus size at which the digest stops being takeable. {@link canonicalize}
+ * still builds the string, because reading it is its entire purpose — but it is
+ * a debugging aid, not the path a gate runs on.
  */
 import { createHash } from 'node:crypto'
 
@@ -60,6 +74,16 @@ import { createHash } from 'node:crypto'
  */
 export const DIGEST_FORMAT = 1
 
+/**
+ * The token separator, in one place.
+ *
+ * {@link canonicalize} joins with it and {@link StreamSink} interleaves it, and
+ * they MUST agree — the equality of those two byte streams is what lets a
+ * streamed digest reproduce one taken from the string form. Sharing the constant
+ * is how that stops being a thing anyone has to remember.
+ */
+const SEPARATOR = String.fromCharCode(0)
+
 const str = (s: string): string => JSON.stringify(s)
 
 const tagOf = (v: object): string => {
@@ -67,7 +91,147 @@ const tagOf = (v: object): string => {
   return typeof ctor === 'function' && typeof ctor.name === 'string' ? ctor.name : ''
 }
 
-function writeScalar(v: unknown, out: string[]): void {
+/**
+ * Where canonical tokens go.
+ *
+ * Two implementations describing the SAME byte stream: {@link ArraySink}
+ * materialises it, {@link StreamSink} pushes it at a hash and forgets it.
+ */
+type CanonicalSink = {
+  push(token: string): void
+}
+
+/** Collects tokens so {@link canonicalize} can join them. */
+class ArraySink implements CanonicalSink {
+  readonly tokens: string[] = []
+
+  push(token: string): void {
+    this.tokens.push(token)
+  }
+}
+
+/**
+ * Anything that absorbs a stream of text. Node's `crypto.Hash` satisfies it, and
+ * so does a three-line test double.
+ *
+ * The CALLER supplies this, and therefore owns the algorithm and the result.
+ * Deciding what the canonical byte stream IS depends on parseman's node shapes
+ * and on nothing else; deciding that you wanted sha256-hex does not.
+ */
+export type DigestTarget = {
+  update(chunk: string): void
+}
+
+/**
+ * Pushes the canonical token stream at a {@link DigestTarget} without ever
+ * materialising it.
+ *
+ * The bytes written are exactly what {@link canonicalize} would have returned —
+ * the separator goes BETWEEN tokens, never after — so hashing either gives the
+ * same digest. That equality is not an implementation detail, it is the entire
+ * safety argument for streaming: every digest ever recorded stays reproducible.
+ * `test/unit/oracle-digest.test.ts` asserts it directly over the canary shapes,
+ * and `PINNED_HARNESS_DIGEST` pins it for the projection as a whole.
+ *
+ * Tokens are buffered and flushed in blocks rather than written one at a time:
+ * one `update()` per token is a call into native code per AST node. Flushing
+ * only ever happens at a token boundary and tokens are whole JS strings, so a
+ * surrogate pair can never be split across two `update()` calls — which would
+ * encode to different UTF-8 bytes than the joined string does.
+ */
+class StreamSink implements CanonicalSink {
+  private readonly target: DigestTarget
+  private buffer: string[] = []
+  private buffered = 0
+  private started = false
+
+  constructor(target: DigestTarget) {
+    this.target = target
+  }
+
+  /**
+   * Write text that is NOT a canonical token and takes no separator — the
+   * `OK:` / `ERR:` discriminator, which the string form concatenates onto the
+   * front rather than joining.
+   */
+  prefix(text: string): void {
+    if (text === '') return
+    this.buffer.push(text)
+    this.buffered += text.length
+  }
+
+  push(token: string): void {
+    if (this.started) {
+      this.buffer.push(SEPARATOR)
+      this.buffered += 1
+    } else {
+      this.started = true
+    }
+    this.buffer.push(token)
+    this.buffered += token.length
+    if (this.buffered >= FLUSH_CHARS) this.flush()
+  }
+
+  flush(): void {
+    if (this.buffer.length === 0) return
+    this.target.update(this.buffer.join(''))
+    this.buffer = []
+    this.buffered = 0
+  }
+}
+
+/**
+ * How much token text to accumulate before handing a block to the target. Large
+ * enough that per-call overhead disappears, small enough that the extra live
+ * memory is a rounding error next to the tree being walked.
+ */
+const FLUSH_CHARS = 1 << 16
+
+/**
+ * Raised when a walk exceeds its visit budget.
+ *
+ * A distinct class, and deliberately NOT an ordinary `Error` a caller might
+ * lump in with a parse failure: this says the TOOL gave up, which is the
+ * opposite of a fact about the grammar.
+ */
+export class CanonicalBudgetError extends Error {
+  override readonly name = 'CanonicalBudgetError'
+
+  constructor(budget: number) {
+    super(
+      `canonicalize: exceeded ${budget} visits. The value is not merely large — it is almost certainly a DAG being `
+      + 'unrolled. This projection writes a shared subtree once per PATH that reaches it (see "Sharing is not a '
+      + 'cycle"), so a node referenced from two places at each of d levels costs 2^d. Deduplicate the shared '
+      + 'structure, or raise `maxVisits` if the value really is that big.',
+    )
+  }
+}
+
+/**
+ * Default visit budget.
+ *
+ * A backstop against unbounded work, not a correctness feature. Any walk that
+ * finishes under budget writes exactly the bytes it always did, so this cannot
+ * move a recorded digest — which is the only reason it can be added to a shipped
+ * format at all.
+ *
+ * It is NOT a fix for the underlying asymmetry. The fix is to dedupe by node
+ * IDENTITY instead of by ancestor path, and that rewrites the byte stream for
+ * every value with any sharing in it: `{ left: shared, right: shared }` stops
+ * being two full writes and becomes a back-reference. That invalidates every
+ * digest, every committed baseline, and {@link DIGEST_FORMAT} itself. It is a
+ * format decision for the owner, not something to slip in behind a bug fix.
+ */
+export const DEFAULT_MAX_VISITS = 100_000_000
+
+type WriteState = {
+  readonly path: Map<object, number>
+  readonly sink: CanonicalSink
+  readonly budget: number
+  visits: number
+}
+
+function writeScalar(v: unknown, out: CanonicalSink): void {
   switch (typeof v) {
     case 'undefined':
       out.push('u')
@@ -111,7 +275,8 @@ function writeScalar(v: unknown, out: string[]): void {
   }
 }
 
-function write(v: unknown, path: Map<object, number>, depth: number, out: string[]): void {
+function write(v: unknown, state: WriteState, depth: number): void {
+  const out = state.sink
   // Everything that is not a live object reference is written here, so the rest
   // of the function has `v: object` and needs no assertion to index or key on it.
   if (typeof v !== 'object' || v === null) {
@@ -119,6 +284,11 @@ function write(v: unknown, path: Map<object, number>, depth: number, out: string
     return
   }
 
+  // Counted per OBJECT visit, not per token: the runaway this guards against is
+  // re-walking structure, and scalars cannot re-walk anything.
+  if (--state.visits < 0) throw new CanonicalBudgetError(state.budget)
+
+  const path = state.path
   const seenAt = path.get(v)
   if (seenAt !== undefined) {
     // Distance to the ancestor, not its identity: a self-reference and a
@@ -133,18 +303,18 @@ function write(v: unknown, path: Map<object, number>, depth: number, out: string
     // `for..of` rather than indexing so a sparse hole reads as the `undefined`
     // it is, consistently with a present `undefined` — the distinction between
     // a hole and an explicit undefined is not observable output.
-    for (const item of v) write(item, path, depth + 1, out)
+    for (const item of v) write(item, state, depth + 1)
     out.push(']')
   } else if (v instanceof Map) {
     out.push('M')
     for (const [k, val] of v) {
-      write(k, path, depth + 1, out)
-      write(val, path, depth + 1, out)
+      write(k, state, depth + 1)
+      write(val, state, depth + 1)
     }
     out.push('}')
   } else if (v instanceof Set) {
     out.push('S')
-    for (const item of v) write(item, path, depth + 1, out)
+    for (const item of v) write(item, state, depth + 1)
     out.push('}')
   } else if (v instanceof Date) {
     out.push(`D${v.getTime()}`)
@@ -155,7 +325,7 @@ function write(v: unknown, path: Map<object, number>, depth: number, out: string
     out.push(`{${str(tag === 'Object' ? '' : tag)}`)
     for (const k of Object.keys(v).sort()) {
       out.push(`k${str(k)}`)
-      write((v as Record<string, unknown>)[k], path, depth + 1, out)
+      write((v as Record<string, unknown>)[k], state, depth + 1)
     }
     out.push('}')
   }
@@ -163,20 +333,87 @@ function write(v: unknown, path: Map<object, number>, depth: number, out: string
   path.delete(v)
 }
 
+/** Options shared by every entry point that walks a value. */
+export type CanonicalOptions = {
+  /**
+   * Maximum object visits before {@link CanonicalBudgetError}. Defaults to
+   * {@link DEFAULT_MAX_VISITS}. A walk that finishes under budget is byte-for-byte
+   * unaffected, so this can never change a digest.
+   */
+  maxVisits?: number | undefined
+}
+
+function newState(sink: CanonicalSink, options: CanonicalOptions | undefined): WriteState {
+  const budget = options?.maxVisits ?? DEFAULT_MAX_VISITS
+  return { path: new Map(), sink, budget, visits: budget }
+}
+
 /**
  * The canonical token string for a value. Exported because a moved digest is
  * only actionable if you can see WHAT moved: diff two canonical strings and the
  * answer is a line, not a hex mismatch.
+ *
+ * This MATERIALISES the projection, so it is bounded by the maximum JS string
+ * length and by available memory. Use it to explain a move you already know
+ * about; take the digest itself with {@link digestInto}, which is bounded by
+ * neither.
  */
-export function canonicalize(value: unknown): string {
-  const out: string[] = []
-  write(value, new Map(), 0, out)
-  return out.join('\u0000')
+export function canonicalize(value: unknown, options?: CanonicalOptions): string {
+  const out = new ArraySink()
+  write(value, newState(out, options), 0)
+  return out.tokens.join(SEPARATOR)
+}
+
+/**
+ * Stream a value's canonical projection into a caller-owned hash.
+ *
+ * This is the primitive: deterministic serialization of ONE parse result, which
+ * is the part only parseman can do — it is parseman's node shapes that decide
+ * which distinctions are semantically meaningful. The caller brings the hash and
+ * keeps the result, so the algorithm, the encoding and the digest width are all
+ * theirs.
+ *
+ * ```ts
+ * const sha = createHash('sha256')
+ * digestInto(sha, tree)
+ * const digest = sha.digest('hex')
+ * ```
+ *
+ * `prefix` is written ahead of the first token with NO separator, for callers
+ * that discriminate one digest space from another (parseman's own oracle writes
+ * `OK:` or `ERR:`). Pass `''` when there is nothing to discriminate.
+ *
+ * Equivalent to `hash(prefix + canonicalize(value))`, and preferable in every
+ * case where you do not need to READ the projection.
+ */
+export function digestInto(
+  target: DigestTarget,
+  value: unknown,
+  prefix = '',
+  options?: CanonicalOptions,
+): void {
+  const sink = new StreamSink(target)
+  sink.prefix(prefix)
+  write(value, newState(sink, options), 0)
+  sink.flush()
 }
 
 /** Full 64-hex sha256 of a string. */
 export function hash(payload: string): string {
   return createHash('sha256').update(payload).digest('hex')
+}
+
+/**
+ * Full 64-hex sha256 of a value's canonical projection, streamed.
+ *
+ * The convenience wrapper over {@link digestInto} for the common case, and what
+ * parseman's own oracle uses. Identical to `hash(prefix + canonicalize(value))`
+ * for every value the latter can survive.
+ */
+export function digestValue(value: unknown, prefix = '', options?: CanonicalOptions): string {
+  const sha = createHash('sha256')
+  digestInto(sha, value, prefix, options)
+  return sha.digest('hex')
 }
 
 /**
