@@ -6,12 +6,18 @@ import {
   canonicalize,
   compareReports,
   digestCorpus,
+  digestValue,
   formatComparison,
   loadCorpus,
   HARNESS_DIGEST,
   type CorpusEntry,
   type Surface,
 } from '../../src/oracle/index.ts'
+import {
+  canaryProjectionFailure,
+  canaryReport,
+  CANARY_PROJECTION_FAILURE_ID,
+} from '../../src/oracle/identity.ts'
 
 /**
  * THE self-check.
@@ -31,7 +37,7 @@ import {
  * nobody had touched, and was caught only because someone happened to compare
  * against a number in an old commit message.
  */
-const PINNED_HARNESS_DIGEST = 'e542b69ede393b0c90021c7c5710e3eab01a86f451fbd7124158f26e3721c0f0'
+const PINNED_HARNESS_DIGEST = '040c23d71c08df883b781687a17218ce7f1a0411124594c7617e28c771e5f1c6'
 
 const corpus = (...ids: string[]): CorpusEntry[] => ids.map(id => ({ id, source: id }))
 const identity = (name: string, parse: (source: string, id: string) => unknown): Surface => ({ name, parse })
@@ -52,6 +58,37 @@ describe('harness self-check', () => {
     expect(c.verdict).toBe('incomparable')
     expect(c.reason).toMatch(/harness drift/)
     expect(formatComparison(c)).toMatch(/^INCOMPARABLE/)
+  })
+
+  /*
+   * The canary must contain an entry that FAILS PROJECTION, or the fingerprint
+   * cannot see where the digest is taken relative to the parse `try`.
+   *
+   * That gap was real. Moving the digest outside the try changed the fingerprint
+   * and the `threw` count of any corpus entry whose baseline had recorded a
+   * MASKED projection failure — but left HARNESS_DIGEST untouched, because no
+   * canary entry failed to project. `compareReports` would then have accepted an
+   * old report as comparable and reported `moved`: a harness change described in
+   * the vocabulary of a grammar change, which is exactly the outcome guarantee
+   * (1) in `identity.ts` claims cannot happen. These assertions keep the entry
+   * from quietly disappearing again.
+   */
+  it('keeps an entry in the canary that FAILS PROJECTION, not merely one that throws', () => {
+    expect(() => digestValue(canaryProjectionFailure())).toThrow(/cannot be projected/)
+
+    const canary = canaryReport()
+    expect(Object.keys(canary.perEntry)).toContain(CANARY_PROJECTION_FAILURE_ID)
+
+    // Recorded in the `PROJ:` space — disjoint from `OK:` and from `ERR:` — and
+    // NOT counted in `threw`. If the digest ever moves back inside the parse
+    // `try` this entry becomes an ordinary `ERR:` with `threw` bumped, both
+    // aggregates move, and the pin above fails.
+    const projected = { name: 'Error', message: 'canary: this value cannot be projected' }
+    expect(canary.perEntry[CANARY_PROJECTION_FAILURE_ID]!.value)
+      .toBe(digestValue(projected, 'PROJ:').slice(0, 16))
+    expect(canary.perEntry[CANARY_PROJECTION_FAILURE_ID]!.value)
+      .not.toBe(digestValue(projected, 'ERR:').slice(0, 16))
+    expect(canary.surfaces.find(s => s.name === 'value')!.threw).toBe(0)
   })
 
   it('refuses across digest formats', () => {

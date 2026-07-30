@@ -339,12 +339,37 @@ export type CanonicalOptions = {
    * Maximum object visits before {@link CanonicalBudgetError}. Defaults to
    * {@link DEFAULT_MAX_VISITS}. A walk that finishes under budget is byte-for-byte
    * unaffected, so this can never change a digest.
+   *
+   * MUST be a non-negative safe integer. `NaN`, `Infinity`, a negative and a
+   * fractional value are all REJECTED rather than clamped — see
+   * {@link newState} for why a bad budget is a thrown error and not a shrug.
    */
   maxVisits?: number | undefined
 }
 
+/**
+ * Build the walk state, validating the budget before anything is written.
+ *
+ * The budget is spent with `--visits < 0`, and that comparison is silently
+ * FALSE for `NaN` — so `maxVisits: NaN` did not raise the ceiling, it removed
+ * it, and the walk it was supposed to bound ran to the OOM the budget exists to
+ * prevent. `Infinity` is the same wish spelled honestly and gets the same
+ * refusal, because an unbounded walk is not an option this offers. A fraction
+ * never reaches `-1` cleanly either.
+ *
+ * So the budget is checked once, here, where the option is read: a bad number is
+ * a caller mistake and says so, rather than turning into a hang under load.
+ */
 function newState(sink: CanonicalSink, options: CanonicalOptions | undefined): WriteState {
   const budget = options?.maxVisits ?? DEFAULT_MAX_VISITS
+  if (!Number.isSafeInteger(budget) || budget < 0) {
+    throw new RangeError(
+      `canonicalize: maxVisits must be a non-negative safe integer, received ${String(budget)}. `
+      + 'A non-finite or fractional budget does not raise the ceiling, it REMOVES it — the budget is spent with '
+      + '`--visits < 0`, which is false forever for NaN and never reached for Infinity — so the walk this bounds '
+      + 'would run unbounded into the OOM the budget exists to prevent.',
+    )
+  }
   return { path: new Map(), sink, budget, visits: budget }
 }
 
@@ -385,6 +410,34 @@ export function canonicalize(value: unknown, options?: CanonicalOptions): string
  *
  * Equivalent to `hash(prefix + canonicalize(value))`, and preferable in every
  * case where you do not need to READ the projection.
+ *
+ * ## Two sharp edges, stated because the target is YOURS
+ *
+ * **A throw leaves the target written-to.** The token stream is pushed at
+ * `target` as the walk proceeds, so a {@link CanonicalBudgetError}, a throwing
+ * getter, or any other failure mid-walk leaves an ARBITRARY PREFIX of the
+ * projection already absorbed. The hash object is then polluted: its digest is
+ * neither the value's nor anything else's, and it is not recoverable — a
+ * `crypto.Hash` cannot be rewound. On any throw, DISCARD the target and start a
+ * fresh one. {@link digestValue} does exactly that by owning its hash for a
+ * single call.
+ *
+ * **Two calls against one target concatenate with NO delimiter.** There is no
+ * record separator between calls: `digestInto(t, a); digestInto(t, b)` writes
+ * exactly `canonicalize(a) + canonicalize(b)`, with nothing in between. That is
+ * ambiguous across the call boundary — the byte stream does not record where one
+ * value ended, so a differently-split sequence can produce the identical stream
+ * and therefore the identical digest. Concretely, `digestInto(t, 1);
+ * digestInto(t, 2)` and the single call `digestInto(t, 2, '#1')` both write
+ * `#1#2`. (Within ONE call the projection is unambiguous — every token is
+ * self-contained and NUL-joined; it is only the seam between calls that is not.)
+ *
+ * This is DOCUMENTED rather than fixed. Any delimiter at the seam — written
+ * before, after, or between — changes the bytes some existing caller already
+ * hashes, and moving a recorded digest is a {@link DIGEST_FORMAT} decision for
+ * the owner, not a patch. Callers hashing a SEQUENCE should digest a wrapper
+ * value (`digestInto(t, [a, b])`), or write their own unambiguous separator
+ * between calls, or use one target per value.
  */
 export function digestInto(
   target: DigestTarget,

@@ -379,9 +379,14 @@ export function formatComparison(c: IdentityComparison, options: { maxMoved?: nu
 /**
  * The frozen canary.
  *
- * One entry per decision {@link canonicalize} and {@link payload} make. Any edit
- * that changes what this harness produces for ANY input changes what it produces
- * for one of these, and therefore changes {@link HARNESS_DIGEST}.
+ * One entry per decision the projection and {@link payload} make — INCLUDING
+ * {@link CANARY_PROJECTION_FAILURE_ID}, whose value parses and then refuses to
+ * project, which is what puts the digest's try-scope inside the fingerprint. Any
+ * edit that changes what this harness produces for ANY input changes what it
+ * produces for one of these, and therefore changes {@link HARNESS_DIGEST}.
+ *
+ * Exported for parseman's own suite, which asserts the projection-failing entry
+ * is still here. It is not part of the published oracle surface.
  *
  * It deliberately builds its values by hand rather than by parsing anything: the
  * harness fingerprint must move when the HARNESS moves and at no other time. If
@@ -389,7 +394,66 @@ export function formatComparison(c: IdentityComparison, options: { maxMoved?: nu
  * it, and a fingerprint that moves for unrelated reasons is one people learn to
  * update without reading.
  */
-function canaryReport(): IdentityReport {
+/**
+ * The canary entry whose value the PROJECTION cannot digest — the one that makes
+ * {@link payload}'s try-scope observable.
+ *
+ * Exported for parseman's own suite, which asserts this entry still fails to
+ * project. Without that assertion the coverage gap below can silently reopen.
+ */
+export const CANARY_PROJECTION_FAILURE_ID = 'j/projection-failure'
+
+/**
+ * A value that PARSES fine and then cannot be projected: an enumerable own key
+ * whose getter throws while the walk is reading it.
+ *
+ * This exists because the canary corpus otherwise contained nothing that fails
+ * projection, and a canary that never exercises a decision cannot fingerprint
+ * it. Moving the digest out of {@link payload}'s `try` changed the fingerprint
+ * and the `threw` count of every corpus entry with a masked projection failure
+ * in it — but left {@link HARNESS_DIGEST} exactly where it was, because no canary
+ * entry had one. {@link compareReports} would then have compared an old report
+ * against a new one and returned `moved`: a HARNESS change, announced in the
+ * vocabulary reserved for a GRAMMAR change, which is precisely the lie that
+ * guarantee (1) at the top of this file says is impossible.
+ *
+ * With this entry in the corpus the guarantee holds: the try-scope decision is
+ * inside the fingerprint, so changing it moves {@link HARNESS_DIGEST}, and an old
+ * report is refused as `incomparable` rather than mis-read as a regression.
+ *
+ * A throwing getter rather than an over-long string or an exhausted budget: it
+ * fails on the first key it is asked for, costs nothing, and its message is fixed
+ * rather than dependent on an engine limit.
+ */
+export function canaryProjectionFailure(): unknown {
+  return {
+    ok: 1,
+    get boom(): never {
+      throw new Error('canary: this value cannot be projected')
+    },
+  }
+}
+
+/**
+ * Digest one canary entry, distinguishing a PROJECTION failure from a PARSE
+ * failure — the distinction {@link payload}'s try-scope exists to draw.
+ *
+ * A projection failure gets its own digest space (`PROJ:`, disjoint from both
+ * `OK:` and `ERR:`) and is deliberately NOT counted in `threw`, because the tool
+ * giving up is not a fact about the grammar. Were the digest ever to move back
+ * inside the parse `try`, `payload` would return normally instead of throwing,
+ * the entry would land in `ERR:` and would bump `threw` — two changes to the
+ * aggregate, and {@link HARNESS_DIGEST} moves. That is this entry's whole job.
+ */
+function canaryPayload(surface: Surface, entry: CorpusEntry): { digest: string; threw: boolean } {
+  try {
+    return payload(surface, entry, {})
+  } catch (thrown) {
+    return { digest: digestValue(defaultProjectError(thrown), 'PROJ:'), threw: false }
+  }
+}
+
+export function canaryReport(): IdentityReport {
   class Tagged {
     x: number
     constructor(x: number) {
@@ -402,6 +466,7 @@ function canaryReport(): IdentityReport {
   cyclic.child = { up: cyclic }
 
   const values: Record<string, unknown> = {
+    [CANARY_PROJECTION_FAILURE_ID]: canaryProjectionFailure(),
     'a/scalars': [0, -0, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 10n, true, false, null],
     'b/absent': [{ a: undefined }, {}, { a: null }, [undefined], []],
     'c/key-order': [{ a: 1, b: 2 }, { b: 2, a: 1 }],
@@ -433,7 +498,7 @@ function canaryReport(): IdentityReport {
   for (const entry of [...corpus].sort((a, b) => (a.id < b.id ? -1 : 1))) {
     const row: Record<string, string> = {}
     for (const s of surfaces) {
-      const result = payload(s, entry, {})
+      const result = canaryPayload(s, entry)
       if (result.threw) threw[s.name]!++
       row[s.name] = fingerprint(result.digest)
     }
