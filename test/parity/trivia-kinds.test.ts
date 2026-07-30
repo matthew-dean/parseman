@@ -137,6 +137,28 @@ describe('label() vs node() — no conflict', () => {
 })
 
 describe('labeled trivia kinds — macro metadata', () => {
+  it('requires labeled trivia for selected capture and keeps only requested marker kinds', () => {
+    expect(() => run(literal('a'), 'a', {
+      rootTrivia: { selectedKinds: ['blockComment'] },
+    })).toThrow('rootTrivia.selectedKinds requires labeled grammar trivia')
+
+    const rw = labeledRw()
+    const grammar = rules({ trivia: rw }, () => ({
+      Root: node('Root', sequence(literal('a'), literal('b'))),
+    }))
+    const result = run(grammar.Root, 'a /*x*/ b', {
+      // The duplicate proves lookup uses one stable registered kind slot; the
+      // absent name proves unrelated labels do not allocate a marker row.
+      rootTrivia: { selectedKinds: ['missing', 'blockComment', 'blockComment'] },
+    })
+
+    expect(result.rootTrivia).toEqual({
+      mode: 'selectedKinds',
+      rows: [1, 8, 2, 7, 1],
+      selectedKinds: ['missing', 'blockComment', 'blockComment'],
+    })
+  })
+
   it('selected root capture survives composed factory grammars in AST and CST host modes', () => {
     const innerTrivia = labeledRw()
     const outerTrivia = trivia(oneOrMore(choice(

@@ -189,11 +189,51 @@ describe('buildSelectedRootTriviaIndex()', () => {
 
     expect(index.rootCaptureMode).toBe('selectedKinds')
     expect(index.entries.length).toBe(2)
+    expect(index.entries.insertIndex(0)).toBeUndefined()
     expect(index.entries.kind(0)).toBe('blockComment')
     expect(index.entries.kind(1)).toBe('significantNewline')
+    expect(index.entries.text(0, '0123456789')).toBe('23456')
     expect(index.gapAfter(1)?.entryIndices).toEqual([0, 1])
     expect(index.gapBefore(12)?.hasKind('blockComment')).toBe(true)
     expect(index.gapBefore(12)?.hasKind('significantNewline')).toBe(true)
     expect(index.gapsWithKind('blockComment').map(gap => [gap.start, gap.end])).toEqual([[1, 12]])
+  })
+
+  it('answers sparse boundary lookups without maps, then materializes and filters its gaps', () => {
+    const labels = ['blockComment', 'lineComment'] as const
+    const input = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    const index = buildSelectedRootTriviaIndex([
+      // Two selected markers in one authored trivia gap.
+      1, 12, 2, 7, 0,
+      1, 12, 8, 11, 1,
+      // A later, independent gap makes the binary-search boundary route prove
+      // it does not depend on the document-wide maps.
+      20, 29, 21, 24, 0,
+    ], labels)
+
+    expect(index.entryIndicesAfter(1)).toEqual([0, 1])
+    expect(index.entryIndicesBefore(12)).toEqual([0, 1])
+    expect(index.entryIndicesAfter(20)).toEqual([2])
+    expect(index.entryIndicesBefore(29)).toEqual([2])
+    expect(index.entryIndicesAfter(13)).toEqual([])
+    expect(index.entryIndicesBefore(13)).toEqual([])
+
+    const first = index.gapAfter(1)
+    expect(first?.entryIndices).toEqual([0, 1])
+    expect(first?.hasKind('lineComment')).toBe(true)
+    expect(first?.hasKind('missing')).toBe(false)
+    expect(first?.text(input)).toBe(input.slice(1, 12))
+    expect(index.gapBefore(12)?.entryIndices).toEqual([0, 1])
+    expect(index.gapAfter(13)).toBeUndefined()
+    expect(index.gapBefore(13)).toBeUndefined()
+
+    expect(index.after.get(1)).toEqual([0, 1])
+    expect(index.before.get(29)).toEqual([2])
+    expect(index.gaps().map(gap => [gap.start, gap.end])).toEqual([
+      [1, 12],
+      [20, 29],
+    ])
+    expect(index.gapsWithKind(['lineComment', 'missing']).map(gap => [gap.start, gap.end])).toEqual([[1, 12]])
+    expect(index.gapsWithKind('missing')).toEqual([])
   })
 })
