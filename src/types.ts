@@ -329,6 +329,17 @@ export type ParseContext = {
    */
   _triviaLog?: number[] | undefined
   /**
+   * Framework-internal: selected root-trivia rows. Each row is
+   * `[gapStart, gapEnd, markerStart, markerEnd, kindIndex]`. Unlike
+   * `_triviaLog`, this never records an ordinary whitespace chunk: a row exists
+   * only for a selected labeled trivia kind, while its first pair preserves the
+   * complete committed gap that owns that marker. The fixed-width numeric log
+   * keeps compiler rollback as cheap as the legacy root sink.
+   */
+  _rootTriviaLog?: number[] | undefined
+  /** Bitmask over `triviaKindLabels` for `_rootTriviaLog` selected markers. */
+  _rootTriviaCaptureMask?: number | undefined
+  /**
    * Framework-internal: flat per-node trivia log for CST capture mode.
    * When set alongside _cstRawChildren, each trivia entry is recorded as three
    * numbers [start, end, insertIdx] appended here (one entry = three numbers) instead of allocating a

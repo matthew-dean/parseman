@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  sequence, many, literal, regex, trivia, label, parser, node, compile, rules,
-  oneOrMore, choice, triviaEntries, run,
+  sequence, many, literal, regex, trivia, label, parser, node, compile, rules, compose, cstBuildHost,
+  oneOrMore, choice, triviaEntries, run, peek, attempt, optional, sepBy,
 } from '../../src/index.ts'
 import type { Runnable } from '../../src/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
@@ -137,6 +137,128 @@ describe('label() vs node() — no conflict', () => {
 })
 
 describe('labeled trivia kinds — macro metadata', () => {
+  it('selected root capture survives composed factory grammars in AST and CST host modes', () => {
+    const rw = labeledRw()
+    const base = rules({ trivia: rw }, () => ({
+      Pair: node('Pair', sequence(literal('a'), literal('b')), () => ({ type: 'Pair' })),
+    }))
+    const delta = rules({ trivia: rw }, g => ({
+      Doc: node('Doc', parser({ trivia: rw }, sequence(literal('x'), g.Pair, literal('y'))), () => ({ type: 'Doc' })),
+    }))
+    const ast = compose([base, delta]) as { Doc?: Runnable }
+    const cst = compose([base, delta], { hostMode: 'cst' }) as { Doc?: Runnable }
+    const input = 'x /*x*/ a b y'
+    const opts = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
+    const expected = { mode: 'selectedKinds', rows: [1, 8, 2, 7, 1], selectedKinds: ['blockComment'] }
+
+    expect(run(ast.Doc!, input, opts).rootTrivia).toEqual(expected)
+    expect(run(cst.Doc!, input, { ...opts, build: cstBuildHost() }).rootTrivia).toEqual(expected)
+  })
+
+  it('selected root capture retains only selected labeled markers and their owning range', () => {
+    const rw = labeledRw()
+    const grammar = rules({ trivia: rw }, () => ({
+      Root: node('Root', sequence(literal('a'), literal('b'))),
+    }))
+    const input = 'a /*x*/ b'
+    const result = run(grammar.Root, input, { rootTrivia: { selectedKinds: ['blockComment'] } })
+
+    expect(result.ok).toBe(true)
+    expect(result.triviaLog).toEqual([])
+    expect(result.rootTrivia).toEqual({
+      mode: 'selectedKinds',
+      rows: [1, 8, 2, 7, 1],
+      selectedKinds: ['blockComment'],
+    })
+    expect(result.triviaMap.entries.length).toBe(1)
+    expect(result.triviaMap.entries.kind(0)).toBe('blockComment')
+    expect(result.triviaMap.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
+  })
+
+  it('selected root capture has interpreter/compiled/macro parity and rolls no whitespace rows into the result', () => {
+    const rw = labeledRw()
+    const input = 'a /*x*/ b'
+    const selected = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
+    const grammar = rules({ trivia: rw }, () => ({
+      Root: node('Root', sequence(literal('a'), literal('b'))),
+    }))
+    const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
+    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
+
+    const interpreted = run(grammar.Root, input, selected)
+    const macro = run(compiledGrammar.Root, input, selected)
+    expect(macro.rootTrivia).toEqual(interpreted.rootTrivia)
+    expect(macro.triviaMap.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
+  })
+
+  it('selected root capture rolls back a zero-width probe before the real parse commits', () => {
+    const rw = labeledRw()
+    const body = () => sequence(literal('a'), literal('b'))
+    const grammar = rules({ trivia: rw }, () => ({
+      Root: node('Root', parser({ trivia: rw }, sequence(peek(body()), body()))),
+    }))
+    const input = 'a /*x*/ b'
+    const selected = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
+    const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
+    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
+
+    const interpreted = run(grammar.Root, input, selected)
+    const macro = run(compiledGrammar.Root, input, selected)
+    const expected = { mode: 'selectedKinds', rows: [1, 8, 2, 7, 1], selectedKinds: ['blockComment'] }
+    expect(interpreted.rootTrivia).toEqual(expected)
+    expect(macro.rootTrivia).toEqual(expected)
+  })
+
+  it('selected root capture leaves no markers from rejected transactional paths', () => {
+    const rw = labeledRw()
+    const selected = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
+    const cases = [
+      {
+        name: 'ordered choice arm',
+        root: choice(sequence(literal('a'), literal('b')), sequence(literal('a'), literal('c'))),
+        input: 'a /*x*/ c',
+        rows: [1, 8, 2, 7, 1],
+      },
+      {
+        name: 'attempt arm',
+        root: choice(attempt(sequence(literal('a'), literal('b'))), sequence(literal('a'), literal('c'))),
+        input: 'a /*x*/ c',
+        rows: [1, 8, 2, 7, 1],
+      },
+      {
+        name: 'optional tail',
+        root: sequence(literal('a'), optional(literal('b'))),
+        input: 'a /*x*/ c',
+        rows: [],
+      },
+      {
+        name: 'repeat tail',
+        root: sequence(literal('a'), many(literal('b'))),
+        input: 'a /*x*/ c',
+        rows: [],
+      },
+      {
+        name: 'separator plus missing item',
+        root: sepBy(literal('a'), literal(',')),
+        input: 'a /*x*/, /*y*/',
+        rows: [],
+      },
+    ] as const
+
+    for (const testCase of cases) {
+      const grammar = rules({ trivia: rw }, () => ({ Root: testCase.root }))
+      const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
+      const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
+      for (const [engine, root] of [['interpreter', grammar.Root], ['compiled', compiledGrammar.Root]] as const) {
+        const result = run(root, testCase.input, selected)
+        expect(result.rootTrivia.mode, `${testCase.name}: ${engine}`).toBe('selectedKinds')
+        if (result.rootTrivia.mode === 'selectedKinds') {
+          expect(result.rootTrivia.rows, `${testCase.name}: ${engine}`).toEqual(testCase.rows)
+        }
+      }
+    }
+  })
+
   it('compileRuleMap preserves triviaKindLabels on public rule wrappers', () => {
     const rw = labeledRw()
     const compiled = compileRuleMap([['rw', rw]])!

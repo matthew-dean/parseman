@@ -11,7 +11,7 @@
  *   - node log, labels      (stride 4)
  */
 import { describe, it, expect } from 'vitest'
-import { buildRootTriviaIndex, triviaEntries } from '../../src/cst/trivia-entries.ts'
+import { buildRootTriviaIndex, buildSelectedRootTriviaIndex, triviaEntries } from '../../src/cst/trivia-entries.ts'
 
 describe('triviaEntries()', () => {
   it('root log without labels: stride 2, start/end read pairs, kindIndex/kind are undefined', () => {
@@ -174,5 +174,24 @@ describe('buildRootTriviaIndex()', () => {
       [10, 18],
     ])
     expect(index.gapsWithKind('missing')).toEqual([])
+  })
+})
+
+describe('buildSelectedRootTriviaIndex()', () => {
+  it('uses generic selected markers while preserving the one owning source range', () => {
+    const labels = ['inlineWhitespace', 'blockComment', 'significantNewline'] as const
+    // Two arbitrary selected markers belong to one committed trivia range.
+    const index = buildSelectedRootTriviaIndex([
+      1, 12, 2, 7, 1,
+      1, 12, 8, 9, 2,
+    ], labels)
+
+    expect(index.entries.length).toBe(2)
+    expect(index.entries.kind(0)).toBe('blockComment')
+    expect(index.entries.kind(1)).toBe('significantNewline')
+    expect(index.gapAfter(1)?.entryIndices).toEqual([0, 1])
+    expect(index.gapBefore(12)?.hasKind('blockComment')).toBe(true)
+    expect(index.gapBefore(12)?.hasKind('significantNewline')).toBe(true)
+    expect(index.gapsWithKind('blockComment').map(gap => [gap.start, gap.end])).toEqual([[1, 12]])
   })
 })

@@ -77,6 +77,12 @@ const CAP_RECORD = [
   `  }`,
 ].join('\n')
 
+const SELECTED_ROOT_FINISH = [
+  `  if (_cap && _ctx._rootTriviaLog !== undefined && _ctx._rootTriviaLog.length !== _rootMark) {`,
+  `    for (let _ri = _rootMark; _ri < _ctx._rootTriviaLog.length; _ri += 5) { _ctx._rootTriviaLog[_ri] = _pos; _ctx._rootTriviaLog[_ri + 1] = _e }`,
+  `  }`,
+].join('\n')
+
 /** One char-scan loop carrying a branch per scannable shape, dispatched on `c`. */
 function composeFastLoop(shapes: ScanShape[]): string {
   const mint = makeMint()
@@ -132,11 +138,13 @@ export function buildLabeledScannableTriviaFnDecl(
   return [
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
     `  let _e = _pos`,
+    `  const _rootMark = _cap && _ctx._rootTriviaLog !== undefined ? _ctx._rootTriviaLog.length : 0`,
     `  while (_e < input.length) {`,
     `    const c = input.charCodeAt(_e)`,
     ...arms.map(a => scanBranchLabeled(a.shape, a.kindIndex, mint)),
     `    break`,
     `  }`,
+    SELECTED_ROOT_FINISH,
     `  return _e`,
     `}`,
   ].join('\n')
@@ -158,6 +166,7 @@ export function buildLabeledRegexTriviaFnDecl(
       `      const _ce = _e + _m${i}[0].length`,
       `      if (_cap) {`,
       `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, _ce, ${k})`,
+      `        if (_ctx._rootTriviaLog !== undefined && _ctx._rootTriviaCaptureMask !== undefined && (_ctx._rootTriviaCaptureMask & ${1 << k})) _ctx._rootTriviaLog.push(0, 0, _e, _ce, ${k})`,
       `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << k}))) _ctx._cstTriviaLog.push(_e, _ce, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${k})`,
       `      }`,
       `      _e = _ce`,
@@ -170,11 +179,13 @@ export function buildLabeledRegexTriviaFnDecl(
   return [
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
     `  let _e = _pos`,
+    `  const _rootMark = _cap && _ctx._rootTriviaLog !== undefined ? _ctx._rootTriviaLog.length : 0`,
     `  while (_e < input.length) {`,
     `    let _matched = false`,
     tryArms,
     `    if (!_matched) break`,
     `  }`,
+    SELECTED_ROOT_FINISH,
     `  return _e`,
     `}`,
   ].join('\n')
@@ -204,6 +215,7 @@ export function buildLabeledRuntimeTriviaFnDecl(
       `      const _ce = _r${i}.span.end`,
       `      if (_cap) {`,
       `        if (_ctx._triviaLog !== undefined) _ctx._triviaLog.push(_e, _ce, ${k})`,
+      `        if (_ctx._rootTriviaLog !== undefined && _ctx._rootTriviaCaptureMask !== undefined && (_ctx._rootTriviaCaptureMask & ${1 << k})) _ctx._rootTriviaLog.push(0, 0, _e, _ce, ${k})`,
       `        if (_cap === 1 && _ctx._cstTriviaLog !== undefined && _ctx.captureTrivia && (_ctx._triviaCaptureMask === undefined || (_ctx._triviaCaptureMask & ${1 << k}))) _ctx._cstTriviaLog.push(_e, _ce, _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0, ${k})`,
       `      }`,
       `      _e = _ce`,
@@ -216,11 +228,13 @@ export function buildLabeledRuntimeTriviaFnDecl(
   return [
     `function ${fnName}(input, _pos, _ctx, _cap) {`,
     `  let _e = _pos`,
+    `  const _rootMark = _cap && _ctx._rootTriviaLog !== undefined ? _ctx._rootTriviaLog.length : 0`,
     `  while (_e < input.length) {`,
     `    let _matched = false`,
     tryArms,
     `    if (!_matched) break`,
     `  }`,
+    SELECTED_ROOT_FINISH,
     `  return _e`,
     `}`,
   ].join('\n')

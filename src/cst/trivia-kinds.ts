@@ -175,9 +175,18 @@ export function tryFastLabeledScan(
 export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChunk[]): void {
   const kinds = ctx.triviaKindLabels
   const mask = ctx._triviaCaptureMask
+  const rootLog = ctx._rootTriviaLog
+  const rootMask = ctx._rootTriviaCaptureMask
+  const rootMark = rootLog?.length ?? 0
   for (const ch of chunks) {
     // Global trivia log: always complete (never kind-filtered).
     pushTriviaLogEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
+    if (rootLog !== undefined && rootMask !== undefined && (rootMask & (1 << ch.kindIndex)) !== 0) {
+      // Fill the enclosing committed gap after the scanner has consumed every
+      // chunk. A selected marker therefore carries its exact authored context
+      // without recording any whitespace-only chunk.
+      rootLog.push(0, 0, ch.start, ch.end, ch.kindIndex)
+    }
     // Per-node CST log: honour the kind mask when both a mask and labels are
     // present, so a host can capture (e.g.) comments only without logging every
     // whitespace run. No mask / no labels → capture everything, as before.
@@ -185,6 +194,14 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
       if (mask === undefined || kinds === undefined || (mask & (1 << ch.kindIndex)) !== 0) {
         pushCstTriviaEntry(ctx, ch.start, ch.end, kinds ? ch.kindIndex : undefined)
       }
+    }
+  }
+  if (rootLog !== undefined && rootLog.length !== rootMark && chunks.length > 0) {
+    const start = chunks[0]!.start
+    const end = chunks[chunks.length - 1]!.end
+    for (let offset = rootMark; offset < rootLog.length; offset += 5) {
+      rootLog[offset] = start
+      rootLog[offset + 1] = end
     }
   }
 }

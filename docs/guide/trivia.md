@@ -128,6 +128,28 @@ run of consecutive numbers, so entry `i` starts at `i * stride`:
 objects. `insertIndex(i)` is the `rawChildren` boundary before which that trivia was consumed;
 it is `undefined` for a root log.
 
+### Sparse root capture
+
+Most root consumers do not need a record for every space. Ask `run()` for only the
+grammar-defined markers you preserve:
+
+```ts
+const result = run(Document, input, {
+  rootTrivia: { selectedKinds: ['blockComment', 'lineComment'] },
+})
+
+result.triviaMap.gapsWithKind(['blockComment', 'lineComment'])
+```
+
+Selected capture stores one numeric row per selected marker:
+`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, kindIndex]`. The first
+pair still lets `gapBefore` / `gapAfter` reproduce the full authored range around
+the marker, while whitespace-only ranges allocate nothing. Labels are arbitrary:
+use `significantNewline` if line layout is part of your formatter's policy; do not
+select broad `whitespace` merely to make line layout observable. In this mode
+`result.triviaLog` is intentionally empty; `result.triviaMap` is the normal API and
+`result.rootTrivia.rows` exposes the raw compact rows when needed.
+
 `run()` also returns `triviaMap`, a lazy root-log gap index. It groups contiguous labeled chunks
 into one boundary gap, so `triviaMap.entryIndicesBefore(node.span.start)` and
 `triviaMap.entryIndicesAfter(node.span.end)` return indices into `triviaMap.entries` without

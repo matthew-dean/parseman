@@ -74,6 +74,18 @@ still the wrong asymptotic contract. Keep this count in the real-workload gate: 
 selected-comment capture that merely makes map construction faster, while retaining
 the full whitespace stream, has not fixed the architecture.
 
+**Prototype evidence (2026-07-30):** a compiled labeled-trivia scanner over the
+current PostCSS benchmark Bootstrap CSS (280,308 bytes) retained 74,271 legacy
+numeric cells / 24,729 root gaps. Selecting only the `blockComment` label
+retained 16 marker rows = 80 numeric cells / 16 owned ranges. After the full
+rollback-safe implementation, 240 median samples of compiled parse plus the
+renderer-relevant `gapsWithKind('blockComment')` query measured **7.99 ms →
+1.24 ms**: **84.4% less elapsed work**. CPU profiles of the legacy path put 28.8% of samples in
+GC, 10.2% in `appendEntryRange`, 3.3% in `buildRootMaps`, and 2.8% in
+`buildGap`; those functions are absent from the selected path. This is a
+root-trivia capture/index measurement, not yet the Jess end-to-end verdict; the
+Jess adoption must repeat it with the exact Less eval+emit workload.
+
 The rule for this lane is therefore:
 
 > Skip trivia on every ordinary grammar edge. Capture exactly the source facts a
@@ -83,6 +95,31 @@ The rule for this lane is therefore:
 The last clause matters: “capture nothing now, find comments later with a source scan”
 simply moves an O(source length) pass back into render, often once per output boundary.
 That is not a win.
+
+### The existing offset model is the baseline, not an optional optimization
+
+`src/cst/offset-model.ts` already states the right representation: leaf/AST source
+spans are the anchors, and a trivia gap is the subtraction between adjacent spans.
+For a source-preserving consumer, `source.slice(left.end, right.start)` recovers the
+exact authored bytes only when it has chosen to replay that gap. Plain horizontal
+whitespace therefore has no independent root fact to retain: one space, many spaces,
+and tabs are all already implied by the two source offsets and can be normalized by a
+normalizing emitter without consulting a log.
+
+The *formatting* facts that are not reducible to ordinary semantic output are sparse:
+
+- a comment marker and the contiguous authored gap that owns it;
+- a line-break/layout marker only for a consumer that preserves line structure;
+- the offset after the last line break when indentation must be recovered without
+  revisiting the gap text.
+
+Do not turn these into one record per whitespace lexer chunk. A selected comment gap
+retains the exact surrounding spaces/newlines as one `[start, end]` pair, and a
+newline-aware mode can store a compact bit/last-break offset per *meaningful* gap.
+`OffsetIndex` tests already pin that pure inline whitespace is insignificant while a
+comment or newline is significant. The root capture redesign must use that model;
+otherwise a new packed log merely preserves the current 22k-fact mistake in a smaller
+array.
 
 ### 1. Add an explicit *root* capture policy — HIGH, first prototype
 
@@ -103,6 +140,10 @@ the start, which makes the existing compiled `_cap = _ctx._triviaLog !== undefin
 compatible for `RunResult.triviaLog` and existing callers. Do **not** silently change
 the public default in a minor release.
 
+**Current release boundary:** 0.44.0 lands `allEntries` and `selectedKinds` only.
+`none` and broad `gaps` remain separately testable policy additions; they are not
+silently represented as an empty selected result.
+
 **Semantic risk:** a client that calls `triviaMap` / `commentRuns()` after selecting
 `none` must fail loudly or receive an explicitly unavailable view — never an empty map
 that claims there were no comments. Trailing trivia is separately owned today; preserve
@@ -118,7 +159,7 @@ allocated bytes. The expected `none` result is *zero root entries*, not merely a
 map query. Keep only modes that are neutral-or-better for no-capture parsing and win on
 the real Jess parse+emit workload.
 
-### 2. Represent `selectedKinds` as **gap rows + kind markers**, not filtered chunks — HIGH
+### 2. Represent `selectedKinds` as **owned-range rows + kind markers**, not filtered chunks — LANDED
 
 For the common CSS/Less requirement, an emitter needs two different facts:
 
@@ -126,28 +167,32 @@ For the common CSS/Less requirement, an emitter needs two different facts:
   including its surrounding whitespace when that is semantically chosen), and
 - the source spans/kinds of the meaningful members in it (normally block/line comments).
 
-It does **not** need one root entry for each whitespace run. Record a compact two-stream
-form while the existing trivia scan already knows the answer:
+It does **not** need one root entry for each whitespace run. The first minor-release
+implementation uses one fixed-width numeric row per selected marker while the existing
+trivia scan already knows the answer:
 
 ```text
-gapStarts/gapEnds:       [gapStart0, gapEnd0, gapStart1, gapEnd1, ...]
-selectedStarts/Ends/Kinds: [commentStart0, commentEnd0, commentKind0, ...]
+[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, kindIndex]
 ```
 
-The `ws /*x*/ ws` sequence becomes **one gap row plus one comment marker**, rather than
-three full labeled rows; `input.slice(gapStart, gapEnd)` still returns the exact authored
-gap. A root index can answer `gapBefore`/`gapAfter` from the gap stream and “has selected
-kind” from markers. This is a general labeled-trivia feature: pragma, directive, and
-significant-newline clients select different labels; no CSS/comment special case.
+The whitespace / comment / whitespace sequence becomes **one five-number selected row**,
+rather than three full labeled rows; `input.slice(ownedRangeStart, ownedRangeEnd)` still
+returns the exact authored gap. Adjacent selected markers in one range repeat the range
+pair—a deliberate fixed-width/rollback tradeoff that keeps the hot scanner monomorphic;
+the sparse index coalesces them on read. This is a general labeled-trivia feature: pragma,
+directive, and significant-newline clients select different labels; no CSS/comment special
+case.
 
 Do not try to coalesce entries across a grammar boundary that was not committed. The
 current deferred-commit/rollback rules are ownership semantics: a trivia run before a
 failed optional term is terminal, not a sibling gap. The new stream must be appended and
 truncated at precisely the same commit marks as `_triviaLog`.
 
-**Compatibility shape:** make this a new root-capture result/view, not a disguised new
-stride for `triviaLog`; existing callers reasonably parse `[start,end,kind]` themselves.
-Expose a stable range-oriented API before considering a future major-version default.
+**Compatibility shape:** `RunOptions.rootTrivia` accepts the legacy `allEntries` default
+or `{ selectedKinds }`. The legacy `triviaLog` shape stays unchanged; the selected result
+is exposed separately as `rootTrivia.rows` and is consumed through the same range-oriented
+`triviaMap` API. Existing callers that parse `[start,end,kind]` themselves therefore keep
+their contract.
 
 **Proof / measure:** a golden test should show identical source slice and selected-kind
 answers for legacy entries vs gap+marker on mixed whitespace/comment input. Differential
@@ -156,10 +201,10 @@ and a label mask of zero. Count emitted numeric cells on Bootstrap Less/CSS and 
 comment-dense stylesheet; this idea is worth implementing only if it materially reduces
 cells/GC and wins Parseman *and* Jess parse+emit.
 
-### 3. Make direct boundary queries truly sparse — HIGH
+### 3. Make direct boundary queries truly sparse — LANDED for selected rows
 
-`gapBefore(offset)` and `gapAfter(offset)` currently force `buildRootMaps()` for the
-whole document. For an ordered gap stream, implement direct lookup with binary search
+Selected-root `gapBefore(offset)` and `gapAfter(offset)` now binary-search the ordered
+rows and do not force `buildRootMaps()` for the whole document. For an ordered gap stream, implement direct lookup with binary search
 over starts/ends (or a flat sorted pair array): O(log gaps) reads, no document-wide map,
 no copied entry-index arrays. A queried gap can carry `{ start, end, firstMarker,
 markerEnd, kindMask }`; materialize a public object only for that requested gap.

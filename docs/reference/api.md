@@ -583,6 +583,14 @@ Use `view.gapBefore(offset)` / `view.gapAfter(offset)` when you want the grouped
 itself, and `view.gapsWithKind(kind)` when a serializer or AST integration needs every
 source-ordered gap containing a labeled trivia kind such as `blockComment`.
 
+### `buildSelectedRootTriviaIndex(rows, labels)`
+
+Build the same view for selected root capture. Each row is
+`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, kindIndex]`: the marker
+is one explicitly selected grammar label, while the owning range is the complete
+source trivia gap. Use this only for stored `result.rootTrivia.rows`; ordinary
+consumers should use `result.triviaMap`, which already selects the correct index.
+
 ### `triviaEntries(log, labels?, opts?)`
 
 An indexed, allocation-free view over a flat trivia log: `.start(i)`, `.end(i)`,
@@ -708,13 +716,21 @@ Run a grammar **entry** — a rule function from a `compose()` / `compile()` map
 interpreter combinator — against `input`, threading the standard ctx (trivia log,
 `recover`/`expect` errors, the `ctx.build` host, grammar state) so a tool doesn't hand-build
 it or branch on function-vs-combinator. Returns a [`RunResult`](./types#runresult):
-`{ ok, value, span, expected, errors, triviaLog, triviaKindLabels, triviaMap, unconsumedFrom }`.
+`{ ok, value, span, expected, errors, triviaLog, triviaKindLabels, triviaMap, rootTrivia, unconsumedFrom }`.
 Pass `opts.build` for a
 [CST host](#cstbuildhost), `opts.state` for initial grammar state, and `opts.trivia`
 (the grammar's trivia rule) to skip trailing whitespace/comments before reporting
 `unconsumedFrom` — so the dialect's own trivia decides what counts as leftover input.
 Pass `opts.triviaCaptureMask` to filter per-node CST trivia capture by labeled kind while
 leaving the root `triviaLog` untouched.
+
+Pass `opts.rootTrivia: { selectedKinds: [...] }` when only a few labeled markers
+need root-level preservation. This stores a compact row per selected marker and its
+complete owning trivia range; it does not record ordinary whitespace runs. Labels
+are grammar-defined policy, so a formatter may select `significantNewline` while a
+serializer selects comments. `result.triviaMap` keeps the ordinary gap-query API;
+in selected mode the legacy `result.triviaLog` is empty and the raw rows are in
+`result.rootTrivia.rows`.
 
 ```ts
 const g = compose([base])

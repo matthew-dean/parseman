@@ -27,6 +27,7 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       const savedRaw = ctx._cstRawChildren
       const savedTriviaLog = ctx._cstTriviaLog
       const savedOuterTriviaLog = ctx._triviaLog
+      const savedRootTriviaLog = ctx._rootTriviaLog
       const wasCapturing = cstCaptureActive(ctx)
 
       ctx.trivia = undefined
@@ -37,6 +38,7 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       ctx._cstRawChildren = undefined
       ctx._cstTriviaLog = undefined
       delete ctx._triviaLog
+      delete ctx._rootTriviaLog
 
       let result: ParseResult<unknown>
       try {
@@ -51,6 +53,8 @@ export function token(root: Combinator<unknown>): Combinator<string> {
         ctx._cstTriviaLog = savedTriviaLog
         if (savedOuterTriviaLog === undefined) delete ctx._triviaLog
         else ctx._triviaLog = savedOuterTriviaLog
+        if (savedRootTriviaLog === undefined) delete ctx._rootTriviaLog
+        else ctx._rootTriviaLog = savedRootTriviaLog
       }
 
       if (!result.ok) return result
@@ -91,6 +95,7 @@ export function leaf<T, U>(
       const savedRaw = ctx._cstRawChildren
       const savedTriviaLog = ctx._cstTriviaLog
       const savedOuterTriviaLog = ctx._triviaLog
+      const savedRootTriviaLog = ctx._rootTriviaLog
       const wasCapturing = cstCaptureActive(ctx)
       ctx._cstBuf = undefined
       ctx._cstChildren = undefined
@@ -98,6 +103,7 @@ export function leaf<T, U>(
       ctx._cstRawChildren = undefined
       ctx._cstTriviaLog = undefined
       delete ctx._triviaLog
+      delete ctx._rootTriviaLog
       let result: ParseResult<T>
       try { result = root.parse(input, pos, ctx) }
       finally {
@@ -108,6 +114,8 @@ export function leaf<T, U>(
         ctx._cstTriviaLog = savedTriviaLog
         if (savedOuterTriviaLog === undefined) delete ctx._triviaLog
         else ctx._triviaLog = savedOuterTriviaLog
+        if (savedRootTriviaLog === undefined) delete ctx._rootTriviaLog
+        else ctx._rootTriviaLog = savedRootTriviaLog
       }
       if (!result.ok) return result
       const value = fn(result.value, result.span)

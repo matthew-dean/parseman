@@ -26,7 +26,7 @@ export type RootTriviaGap = {
 }
 
 export type RootTriviaIndex = {
-  /** Lazy entry-level view over the same root `_triviaLog`. */
+  /** Lazy entry-level view over the root capture representation. */
   readonly entries: TriviaEntriesView
   /** Trivia kind labels, when the grammar labels trivia arms. */
   readonly labels: readonly string[] | undefined
@@ -60,6 +60,7 @@ export type RootTriviaIndex = {
 
 const EMPTY_INDICES: readonly number[] = Object.freeze([])
 const EMPTY_GAPS: readonly RootTriviaGap[] = Object.freeze([])
+const SELECTED_ROOT_STRIDE = 5
 
 type RootTriviaMaps = {
   before: Map<number, number[]>
@@ -235,6 +236,161 @@ export function buildRootTriviaIndex(
             break
           }
         }
+      }
+      return matches.length === 0 ? EMPTY_GAPS : matches
+    },
+  }
+}
+
+/**
+ * Build a root view over selected-kind rows captured as
+ * `[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, kindIndex]`.
+ *
+ * This is intentionally a different input shape from `triviaLog`: each row is
+ * one selected marker, while the first pair names the complete committed trivia
+ * range around it. Thus a whitespace / block-comment / whitespace run costs one
+ * five-number row, not three
+ * legacy trivia entries. Rows are source ordered and equal gap pairs are
+ * contiguous, which lets singleton boundary lookups binary-search the sparse
+ * rows without constructing document-wide maps.
+ */
+export function buildSelectedRootTriviaIndex(
+  log: readonly number[],
+  labels: readonly string[],
+): RootTriviaIndex {
+  const length = Math.floor(log.length / SELECTED_ROOT_STRIDE)
+  const markerOffset = (i: number) => i * SELECTED_ROOT_STRIDE
+  const ownedRangeStart = (i: number) => log[markerOffset(i)]!
+  const ownedRangeEnd = (i: number) => log[markerOffset(i) + 1]!
+  const markerStart = (i: number) => log[markerOffset(i) + 2]!
+  const markerEnd = (i: number) => log[markerOffset(i) + 3]!
+  const markerKind = (i: number) => log[markerOffset(i) + 4]!
+
+  const entries: TriviaEntriesView = {
+    length,
+    labels,
+    stride: SELECTED_ROOT_STRIDE,
+    start: markerStart,
+    end: markerEnd,
+    insertIndex: () => undefined,
+    kindIndex: markerKind,
+    kind(i) {
+      return labels[markerKind(i)]
+    },
+    text(i, input) {
+      return input.slice(markerStart(i), markerEnd(i))
+    },
+  }
+
+  const lowerBound = (offset: number, by: (i: number) => number): number => {
+    let lo = 0
+    let hi = length
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1
+      if (by(mid) < offset) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+
+  const gapRowsAt = (offset: number, direction: 'before' | 'after'): [number, number] | undefined => {
+    const edge = direction === 'before' ? ownedRangeEnd : ownedRangeStart
+    let first = lowerBound(offset, edge)
+    if (first === length || edge(first) !== offset) return undefined
+    const start = ownedRangeStart(first)
+    const end = ownedRangeEnd(first)
+    while (first > 0 && ownedRangeStart(first - 1) === start && ownedRangeEnd(first - 1) === end) first--
+    let last = first + 1
+    while (last < length && ownedRangeStart(last) === start && ownedRangeEnd(last) === end) last++
+    return [first, last]
+  }
+
+  const indices = (first: number, last: number): readonly number[] => {
+    const out: number[] = []
+    for (let i = first; i < last; i++) out.push(i)
+    return out
+  }
+
+  const makeGap = (first: number, last: number): RootTriviaGap => {
+    const start = ownedRangeStart(first)
+    const end = ownedRangeEnd(first)
+    const entryIndices = indices(first, last)
+    return {
+      start,
+      end,
+      entryIndices,
+      hasKind(kind) {
+        for (let i = first; i < last; i++) {
+          if (labels[markerKind(i)] === kind) return true
+        }
+        return false
+      },
+      text(input) {
+        return input.slice(start, end)
+      },
+    }
+  }
+
+  let maps: RootTriviaMaps | undefined
+  const getMaps = () => {
+    if (maps !== undefined) return maps
+    const before = new Map<number, number[]>()
+    const after = new Map<number, number[]>()
+    const beforeGaps = new Map<number, RootTriviaGap>()
+    const afterGaps = new Map<number, RootTriviaGap>()
+    const gaps: RootTriviaGap[] = []
+    for (let first = 0; first < length;) {
+      let last = first + 1
+      while (last < length && ownedRangeStart(last) === ownedRangeStart(first) && ownedRangeEnd(last) === ownedRangeEnd(first)) last++
+      const gap = makeGap(first, last)
+      gaps.push(gap)
+      afterGaps.set(gap.start, gap)
+      beforeGaps.set(gap.end, gap)
+      after.set(gap.start, [...gap.entryIndices])
+      before.set(gap.end, [...gap.entryIndices])
+      first = last
+    }
+    maps = { before, after, beforeGaps, afterGaps, gaps }
+    return maps
+  }
+
+  return {
+    entries,
+    labels,
+    get before() { return getMaps().before },
+    get after() { return getMaps().after },
+    entryIndicesBefore(offset) {
+      const rows = gapRowsAt(offset, 'before')
+      return rows ? indices(rows[0], rows[1]) : EMPTY_INDICES
+    },
+    entryIndicesAfter(offset) {
+      const rows = gapRowsAt(offset, 'after')
+      return rows ? indices(rows[0], rows[1]) : EMPTY_INDICES
+    },
+    gapBefore(offset) {
+      const rows = gapRowsAt(offset, 'before')
+      return rows ? makeGap(rows[0], rows[1]) : undefined
+    },
+    gapAfter(offset) {
+      const rows = gapRowsAt(offset, 'after')
+      return rows ? makeGap(rows[0], rows[1]) : undefined
+    },
+    gaps() {
+      return getMaps().gaps
+    },
+    gapsWithKind(kind) {
+      const kinds = typeof kind === 'string' ? [kind] : kind
+      const matches: RootTriviaGap[] = []
+      for (let first = 0; first < length;) {
+        let last = first + 1
+        while (last < length && ownedRangeStart(last) === ownedRangeStart(first) && ownedRangeEnd(last) === ownedRangeEnd(first)) last++
+        for (let i = first; i < last; i++) {
+          if (kinds.includes(labels[markerKind(i)]!)) {
+            matches.push(makeGap(first, last))
+            break
+          }
+        }
+        first = last
       }
       return matches.length === 0 ? EMPTY_GAPS : matches
     },
