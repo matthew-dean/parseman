@@ -341,7 +341,7 @@ export type ParseContext = {
    * label through this once-built table, so composed grammars may use different
    * label orders without a per-chunk linear selected-label search. */
   _rootTriviaKindIndex?: Readonly<Record<string, number>> | undefined
-  /** Strict selected-root capture checks local trivia classification once per scope. */
+  /** Selected-root capture checks local trivia classification once per scope. */
   _rootTriviaStrictScopes?: boolean | undefined
   /**
    * Scoped selected-root capture switch. `parser({ rootCapture: 'opaque' })`

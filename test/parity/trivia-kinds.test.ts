@@ -13,10 +13,10 @@ import {
 } from './helpers/trivia-log-parity.ts'
 
 function labeledRw() {
-  return trivia(oneOrMore(choice(
-    label('whitespace', regex(/[ \t\n\r\f]+/)),
-    label('blockComment', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
-  )))
+  return classifiedTrivia({
+    whitespace: regex(/[ \t\n\r\f]+/),
+    blockComment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+  })
 }
 
 const KIND_LABELS = ['whitespace', 'blockComment'] as const
@@ -112,7 +112,7 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
   })
 })
 
-describe('strict selected root trivia scopes', () => {
+describe('selected root trivia scopes', () => {
   const blockComment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)
   const outer = classifiedTrivia({
     whitespace: regex(/[ \t\n\r\f]+/),
@@ -131,7 +131,7 @@ describe('strict selected root trivia scopes', () => {
 
     expect(() => run(entry, 'a b/* hidden */c', {
       trivia: outer,
-      rootTrivia: { select: ['blockComment'], strictScopes: true },
+      rootTrivia: { select: ['blockComment'] },
     })).toThrow(/classifiedTrivia\(\).*rootCapture: 'opaque'/)
   })
 
@@ -140,7 +140,7 @@ describe('strict selected root trivia scopes', () => {
       literal('a'),
       parser({ trivia: outer, rootCapture: 'opaque' }, sequence(literal('b'), literal('c'))),
     ))
-    const options = { rootTrivia: { select: ['blockComment'] as const, strictScopes: true } }
+    const options = { rootTrivia: { select: ['blockComment'] as const } }
     const compiled = compileRuleMap([['Entry', entry]])!
     const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
     for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
@@ -173,7 +173,7 @@ describe('strict selected root trivia scopes', () => {
     ))
     const result = run(entry, 'a b c', {
       trivia: outer,
-      rootTrivia: { select: ['blockComment'], strictScopes: true },
+      rootTrivia: { select: ['blockComment'] },
     })
 
     expect(result.ok).toBe(true)
@@ -237,10 +237,10 @@ describe('labeled trivia kinds — macro metadata', () => {
 
   it('selected root capture survives composed factory grammars in AST and CST host modes', () => {
     const innerTrivia = labeledRw()
-    const outerTrivia = trivia(oneOrMore(choice(
-      label('blockComment', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
-      label('whitespace', regex(/[ \t\n\r\f]+/)),
-    )))
+    const outerTrivia = classifiedTrivia({
+      blockComment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+      whitespace: regex(/[ \t\n\r\f]+/),
+    })
     const base = rules({ trivia: innerTrivia }, () => ({
       // The comment is inside a semantic leaf. leaf() hides child CST capture,
       // but must not make root-source trivia disappear.

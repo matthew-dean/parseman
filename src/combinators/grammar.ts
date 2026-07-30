@@ -27,7 +27,7 @@ export type ParserOptions = ParseOptions & {
   /**
    * Declare that this local trivia scope intentionally does not preserve
    * selected root categories. Required only by
-   * `rootTrivia: { select, strictScopes: true }` when the scope does not use
+   * `rootTrivia: { select }` when the scope does not use
    * `classifiedTrivia()`.
    */
   rootCapture?: 'opaque'

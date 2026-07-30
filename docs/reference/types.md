@@ -182,7 +182,6 @@ type RunOptions = {
   triviaCaptureMask?: number      // per-node CST trivia-kind bitmask
   rootTrivia?: 'allEntries' | {
     select: readonly string[]
-    strictScopes?: boolean  // require classifiedTrivia() in every local trivia scope
   }
   tolerant?: boolean              // enable list recovery diagnostics
   profile?: boolean               // compiled-only profiling passes

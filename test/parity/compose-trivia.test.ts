@@ -76,15 +76,15 @@ export const g = compose([base, rules({ trivia: rw }, (g) => ({ Doc: sequence(li
 
   it('macro-fused factory composition carries selected root trivia without restoring whitespace rows', () => {
     const code = `
-import { rules, compose, trivia, sequence, literal, oneOrMore, choice, label, regex, leaf } from 'parseman' with { type: 'macro' }
-const innerTrivia = trivia(oneOrMore(choice(
-  label('whitespace', regex(/[ \\t\\n]+/)),
-  label('blockComment', regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//)),
-)))
-const outerTrivia = trivia(oneOrMore(choice(
-  label('blockComment', regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//)),
-  label('whitespace', regex(/[ \\t\\n]+/)),
-)))
+import { classifiedTrivia, rules, compose, sequence, literal, regex, leaf } from 'parseman' with { type: 'macro' }
+const innerTrivia = classifiedTrivia({
+  whitespace: regex(/[ \\t\\n]+/),
+  blockComment: regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//),
+})
+const outerTrivia = classifiedTrivia({
+  blockComment: regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//),
+  whitespace: regex(/[ \\t\\n]+/),
+})
 const base = rules({ trivia: innerTrivia }, (g) => ({ Pair: leaf(sequence(literal('a'), literal('b')), () => 'pair') }))
 export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: sequence(literal('x'), g.Pair, literal('y')) }))])
 `
@@ -100,7 +100,7 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
     })
   })
 
-  it('runtime IR composition preserves classified local trivia for strict selected capture', () => {
+  it('runtime IR composition preserves classified local trivia for selected capture', () => {
     // Keep this grammar runtime-built: compose() serializes the base map to IR and
     // re-lowers it, which is the boundary that previously erased the classification
     // marker on parser({ trivia }).
@@ -117,7 +117,7 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
     ]) as { Doc: Runnable }
 
     const result = run(g.Doc, 'x a /*x*/ b y', {
-      rootTrivia: { select: ['blockComment'], strictScopes: true },
+      rootTrivia: { select: ['blockComment'] },
     })
     expect(result.rootTrivia).toEqual({
       mode: 'selected',
@@ -128,11 +128,11 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
 
   it('macro-fused composeLeaf carries selected root trivia through a recognition piece', () => {
     const code = `
-import { composeLeaf, rules, trivia, sequence, literal, oneOrMore, choice, label, regex } from 'parseman' with { type: 'macro' }
-const rw = trivia(oneOrMore(choice(
-  label('whitespace', regex(/[ \\t\\n]+/)),
-  label('blockComment', regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//)),
-)))
+import { classifiedTrivia, composeLeaf, rules, sequence, literal, regex } from 'parseman' with { type: 'macro' }
+const rw = classifiedTrivia({
+  whitespace: regex(/[ \\t\\n]+/),
+  blockComment: regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//),
+})
 const syntax = rules(g => ({ Pair: sequence(literal('a'), literal('b')) }))
 export const g = composeLeaf([syntax, rules({ trivia: rw }, g => ({ Doc: sequence(literal('x'), g.Pair, literal('y')) }))])
 `
@@ -148,7 +148,7 @@ export const g = composeLeaf([syntax, rules({ trivia: rw }, g => ({ Doc: sequenc
     })
   })
 
-  it('macro-fused local trivia cannot erase a strict selected root category', () => {
+  it('macro-fused local trivia cannot erase a selected root category', () => {
     const code = `
 import { classifiedTrivia, trivia, label, regex, literal, sequence, parser, rules } from 'parseman' with { type: 'macro' }
 const root = classifiedTrivia({
@@ -161,16 +161,16 @@ export const g = rules({ trivia: root }, (g) => ({
   Opaque: parser({ trivia: root, rootCapture: 'opaque' }, sequence(literal('c'), literal('d'))),
 }))
 `
-    const out = transformMacro(code, 'strict-selected-trivia.ts', new Set(['parseman']))
+    const out = transformMacro(code, 'selected-trivia.ts', new Set(['parseman']))
     expect(out).not.toBeNull()
     const { g } = evalMacroModule(out!.code, 'g')
 
     expect(() => run(g.Doc, 'a /* hidden */ b', {
-      rootTrivia: { select: ['blockComment'], strictScopes: true },
+      rootTrivia: { select: ['blockComment'] },
     })).toThrow(/classifiedTrivia\(\).*rootCapture: 'opaque'/)
 
     expect(run(g.Opaque, 'c /* intentionally opaque */ d', {
-      rootTrivia: { select: ['blockComment'], strictScopes: true },
+      rootTrivia: { select: ['blockComment'] },
     }).rootTrivia).toEqual({ mode: 'selected', rows: [], select: ['blockComment'] })
   })
 })

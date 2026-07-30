@@ -671,9 +671,9 @@ Mark a combinator as skippable filler (sets `isTrivia`). Does not skip until ins
 
 Build labeled trivia for `run(..., { rootTrivia: { select } })`. Each property
 becomes one separate labeled grammar arm, so a broad whitespace matcher cannot
-silently consume a selected comment category. Pair selected capture with
-`strictScopes: true` to reject local `parser({ trivia })` scopes that are not
-also classified. A deliberately opaque local scope must say
+silently consume a selected comment category. Selected capture rejects local
+`parser({ trivia })` scopes that are not also classified. A deliberately opaque
+local scope must say
 `parser({ trivia, rootCapture: 'opaque' }, ...)`.
 
 ### `parser(opts, root)` <Badge type="tip" text="helper" />
@@ -743,9 +743,8 @@ in selected mode the legacy `result.triviaLog` is empty and the raw rows are in
 `result.rootTrivia.rows`. Their label index is into `select`, which remains
 stable when a composed grammar changes its local trivia-label order.
 
-Use `classifiedTrivia()` for this grammar and pass `strictScopes: true` while
-migrating nested trivia scopes. Strict mode rejects a broad local matcher that
-would classify a selected category under another label; use `rootCapture:
+Use `classifiedTrivia()` for this grammar. Selected capture rejects a broad
+local matcher that would classify a selected category under another label; use `rootCapture:
 'opaque'` only where that loss is intentional.
 
 ```ts

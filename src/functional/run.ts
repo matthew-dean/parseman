@@ -64,10 +64,6 @@ export type RunOptions = {
    */
   rootTrivia?: 'allEntries' | {
     readonly select: readonly string[]
-    /** Reject local `parser({ trivia })` scopes that can erase selected
-     * categories unless they use `classifiedTrivia()` or say
-     * `rootCapture: 'opaque'`. Compatibility mode remains permissive. */
-    readonly strictScopes?: boolean
   }
   /**
    * Activate automatic list recovery. When true, `many`/`sepBy`/`oneOrMore` recover
@@ -228,10 +224,9 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
       }
     }
   }
-  if (rootTriviaMode !== 'allEntries' && rootTriviaMode.strictScopes
-    && !rootTriviaClassifiedFromRunnable(entry)) {
+  if (rootTriviaMode !== 'allEntries' && !rootTriviaClassifiedFromRunnable(entry)) {
     throw new TypeError(
-      'run(): rootTrivia.select with strictScopes requires classifiedTrivia() at the root.',
+      'run(): rootTrivia.select requires classifiedTrivia() at the root.',
     )
   }
   /*
@@ -268,7 +263,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
           : {
             _rootTriviaLog: selectedRootLog!,
             _rootTriviaKindIndex: selectedRootLabelIndex!,
-            ...(rootTriviaMode.strictScopes ? { _rootTriviaStrictScopes: true } : {}),
+            _rootTriviaStrictScopes: true,
           }),
         _errors: errors,
         ...(profile === undefined ? {} : { _pmProfile: profile }),

@@ -144,7 +144,7 @@ const rootTrivia = classifiedTrivia({
 
 const result = run(Document, input, {
   trivia: rootTrivia,
-  rootTrivia: { select: ['blockComment', 'lineComment'], strictScopes: true },
+  rootTrivia: { select: ['blockComment', 'lineComment'] },
 })
 
 result.triviaMap.gapsWithKind(['blockComment', 'lineComment'])
@@ -165,8 +165,8 @@ select broad `whitespace` merely to make line layout observable. In this mode
 `classifiedTrivia()` is the safe constructor for selected root capture: each
 name owns a distinct grammar arm. A bare `label('whitespace', broadMatcher)`
 only says that the *whole* broad match is whitespace; it cannot expose a
-comment that matcher consumed internally. With `strictScopes: true`, every
-local `parser({ trivia })` scope must likewise use `classifiedTrivia()`, or
+comment that matcher consumed internally. Every local `parser({ trivia })`
+scope must likewise use `classifiedTrivia()`, or
 write `rootCapture: 'opaque'` to acknowledge that selected categories do not
 survive inside that scope. Strict mode is opt-in so existing grammars retain
 their current behavior while they migrate.
