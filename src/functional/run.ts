@@ -141,6 +141,70 @@ export type RunResult = {
   profile?: RunProfile
 }
 
+/**
+ * 0.44 dropped three `RunResult` fields — `triviaMap` and `triviaLog`, both
+ * MANDATORY in 0.43, and the optional `triviaKindLabels`. Removing them without
+ * a signal makes each read `undefined`, and `undefined` travels: it surfaces as
+ * a property access on nothing somewhere inside the CONSUMER's code, in a
+ * message naming neither parseman, the field, nor the replacement. That is the
+ * same defect as a diagnostic that reports a number when it means "I could not
+ * run" — the tool's inability wearing the costume of a result.
+ *
+ * `triviaKindLabels` is the worst of the three despite being optional: it fed
+ * `triviaKindMask`, which treats `undefined` as "capture everything", so its
+ * removal silently changes behaviour rather than producing so much as a crash.
+ *
+ * So the names are kept as accessors that throw the migration. They are
+ * NON-ENUMERABLE deliberately: absent from `Object.keys`, spreads,
+ * `JSON.stringify` and identity digests, so restoring them moves no output and
+ * costs nothing on the parse path — they exist only to answer a read.
+ */
+const SELECT_EXAMPLE = "run(entry, input, { rootTrivia: { select: ['blockComment', 'lineComment'] } })"
+
+const REMOVED_RUN_RESULT_FIELDS: ReadonlyArray<readonly [string, string]> = [
+  [
+    'triviaMap',
+    'It was a dense root-trivia index built on every parse; root trivia is now an OPT-IN sparse '
+    + 'capture, because most grammars paid for an index they never read. Migration: name the trivia '
+    + `labels your grammar defines — ${SELECT_EXAMPLE} — and read \`RunResult.rootTrivia\`, whose `
+    + '`.index` carries the labels and gap lookups `triviaMap` exposed.',
+  ],
+  [
+    'triviaLog',
+    'It was the flat `start, end[, kindIndex]` log every other trivia view was derived from, and it '
+    + 'is no longer allocated at all — not empty, absent. Migration: request the labels you need '
+    + `— ${SELECT_EXAMPLE} — and read \`RunResult.rootTrivia.rows\`. Do NOT reuse a stride-2/3 reader: `
+    + 'rows are a different width and a different unit (one row per SELECTED marker, not one per '
+    + 'trivia chunk), so an old loop reads confidently wrong offsets rather than failing.',
+  ],
+  [
+    'triviaKindLabels',
+    'It was already optional, so nothing ever flagged its disappearance — and `triviaKindMask(undefined, '
+    + '…)` means "capture everything", so reading it now silently WIDENS capture instead of erroring. '
+    + `Migration: request labels — ${SELECT_EXAMPLE} — then the set you asked for is `
+    + '`RunResult.rootTrivia.select` and the resolved table is `RunResult.rootTrivia.index.labels`.',
+  ],
+]
+
+/**
+ * `rootTrivia` is ABSENT rather than empty when no requested category was
+ * retained, so branch on it — do not index into it.
+ */
+function guardRemovedFields(result: RunResult): RunResult {
+  for (const [name, detail] of REMOVED_RUN_RESULT_FIELDS) {
+    Object.defineProperty(result, name, {
+      configurable: true,
+      enumerable: false,
+      get(): never {
+        throw new TypeError(
+          `RunResult.${name} was REMOVED in parseman 0.44.0 and has no default replacement. ${detail}`,
+        )
+      },
+    })
+  }
+  return result
+}
+
 const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): ParseResult<unknown> =>
   typeof r === 'function' ? r(input, pos, ctx) : r.parse(input, pos, ctx)
 
@@ -323,7 +387,7 @@ function profilePass(entry: Runnable, input: string, options: RunOptions, phase:
 }
 
 export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
-  if (!options.profile) return runOnce(entry, input, options)
+  if (!options.profile) return guardRemovedFields(runOnce(entry, input, options))
   if (typeof entry !== 'function') {
     throw new TypeError('run({ profile: true }) requires a compiled parser entry')
   }
@@ -336,12 +400,14 @@ export function run(entry: Runnable, input: string, options: RunOptions = {}): R
     || capture.result.unconsumedFrom !== host.result.unconsumedFrom) {
     throw new Error('run({ profile: true }) changed recognition; the grammar is not profile-safe')
   }
-  return {
+  // The spread drops the non-enumerable accessor, so it is reinstalled here
+  // rather than inherited.
+  return guardRemovedFields({
     ...host.result,
     profile: {
       recognizer: recognizer.profile,
       structuralCapture: capture.profile,
       hostConstruction: host.profile,
     },
-  }
+  })
 }
