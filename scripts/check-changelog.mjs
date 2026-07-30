@@ -62,6 +62,32 @@
  *         `package.json`. Opening that section is a one-time cost per release cycle,
  *         not a per-PR one.
  *
+ * C. BENCH ANCHOR GATE — only with `--base=<ref>`, and only on a RELEASE PR:
+ *      6. Every perf gate's `referenceSha` must name the PREVIOUS RELEASE — the
+ *         first-parent commit on the base branch that set `package.json` to the
+ *         version the base publishes. See `docs/design/perf-gates.md`.
+ *
+ *    Both config files have said "bump this at every release, in the release PR"
+ *    in a JSON comment since they were written, and both were missed for TEN
+ *    releases: `bench/grammar-density/config.json` still pointed at v0.33.0 and
+ *    `bench/workloads/config.json` at v0.35.0 when 0.45.0 was prepped. A gate
+ *    anchored ten releases back still reads `ok` — it just measures against a
+ *    baseline that has already absorbed every regression since, so the accumulated
+ *    headroom becomes the error bar. `rollback/dense` sat at -62% against v0.33.0:
+ *    a fresh change could have made that path 2.6x SLOWER and the gate would have
+ *    said `ok`. The absolute-baseline rule was satisfied in letter while its
+ *    RESOLUTION was destroyed, silently, and nothing in the repo noticed.
+ *
+ *    A policy in a comment that depends on a human remembering it is not a policy.
+ *    This is that policy, executed. It fires only on a release PR, which is the one
+ *    PR where the bump is due, so ordinary PRs never see it.
+ *
+ *    It has NO hatch, including `--exempt`. The correct response to it going red is
+ *    to bump the anchor, and then to report whatever the newly-strict gate surfaces.
+ *    Re-anchoring to a newer baseline makes a gate STRICTER and may expose a
+ *    regression the stale anchor was hiding — that is the gate working. Both configs
+ *    already say it: "Do NOT bump it to silence a red gate."
+ *
  *    Everything else — tests, benches, examples, fixtures, scripts, docs, notes,
  *    CI config, lockfile, tsconfig — is exempt, because none of it can change what a
  *    consumer installs. That exemption is the whole reason this gate can be required:
@@ -79,7 +105,7 @@
  * Usage:
  *   node scripts/check-changelog.mjs                  # A only (local preflight)
  *   node scripts/check-changelog.mjs --publish        # A + A' (prepublishOnly)
- *   node scripts/check-changelog.mjs --base=<ref>     # A + B (pull request)
+ *   node scripts/check-changelog.mjs --base=<ref>     # A + B + C (pull request)
  *   node scripts/check-changelog.mjs --base=<ref> --exempt
  *   node scripts/check-changelog.mjs --root=<dir>     # point at another checkout
  *
@@ -316,6 +342,135 @@ try {
   basePkg = {}
 }
 
+const basePublished = typeof basePkg.version === 'string' ? parseVersion(basePkg.version) : null
+
+// ── C. Bench anchor gate ────────────────────────────────────────────────────────
+//
+// Runs BEFORE B, and before B's early exits, so it cannot be skipped by a release PR
+// that somehow reads as touching no published surface. It fires on RELEASE PRs only.
+
+/**
+ * The perf gates whose `referenceSha` must name the previous release. Each entry is
+ * a config path relative to the repo root and the `pnpm` script that reads it. A gate
+ * whose config is absent is skipped — this list is allowed to lead or trail the repo.
+ */
+const ANCHORED_GATES = [
+  { config: 'bench/grammar-density/config.json', script: 'pnpm perf:guard:grammars' },
+  { config: 'bench/workloads/config.json', script: 'pnpm perf:workloads' },
+]
+
+/**
+ * The commit that RELEASED `version` on the base branch: walking first-parent back
+ * from `baseSha`, the OLDEST commit in the contiguous run whose package.json reads
+ * `version` — i.e. the commit that introduced it. First-parent, because the version
+ * lives on the merge commit of the release PR and not on its constituent commits.
+ * Oldest-in-run, because ordinary PRs merge after a release and carry the same number
+ * forward; the release is where the number CHANGED.
+ *
+ * Verified against the two anchors that were set by hand: v0.33.0 resolves to 7f1ddcd
+ * and v0.35.0 to 3562f78, which are exactly the values `bench/grammar-density` and
+ * `bench/workloads` were given in their release PRs. The rule is the practice, written
+ * down.
+ *
+ * Returns `null` only when the boundary is genuinely out of reach: the window filled
+ * without the version ever changing, which means the history is truncated. Reaching
+ * the ROOT still holding `atVersion` is not that — the version was introduced there.
+ * A truncated history is a reason to say so, not to wave the release through.
+ */
+const WALK_LIMIT = 500
+
+const releaseShaFor = (fromSha, atVersion) => {
+  let candidate = null
+  let walked
+  try {
+    walked = git('rev-list', '--first-parent', `--max-count=${WALK_LIMIT}`, fromSha).split('\n').filter(Boolean)
+  } catch {
+    return null
+  }
+  for (const sha of walked) {
+    let v
+    try {
+      v = JSON.parse(git('show', `${sha}:package.json`)).version
+    } catch {
+      return candidate
+    }
+    if (v !== atVersion) return candidate
+    candidate = sha
+  }
+  // Ran off the end still matching. Under the limit that end is the ROOT commit, so
+  // `candidate` is where the version began; at the limit the history is truncated.
+  return walked.length < WALK_LIMIT ? candidate : null
+}
+
+// A RELEASE PR is the shape `--publish` demands: the heading, package.json and
+// src/version.ts all name the same version, and it is above what the base publishes.
+// A mid-cycle PR (heading open ABOVE package.json) is not one, and never sees this.
+const isReleasePr =
+  headingVsPkg === 0 && basePublished !== null && compareVersions(headingVersion, basePublished) > 0
+
+// Only the gates this checkout actually HAS. A checkout carrying none of them — a
+// fixture, a trimmed clone — has nothing to re-anchor and is not asked to.
+const presentGates = ANCHORED_GATES.filter((g) => existsSync(resolve(ROOT, g.config)))
+
+if (isReleasePr && presentGates.length > 0) {
+  const expected = releaseShaFor(baseSha, basePublished.raw)
+
+  if (expected === null) {
+    fail(
+      `cannot locate the commit that released ${basePublished.raw} on the base branch, so the\n` +
+        '  bench perf-gate anchors cannot be checked. This gate needs real history: in CI, check\n' +
+        '  out with `fetch-depth: 0` (see .github/workflows/ci.yml, job `release-gate`).',
+    )
+  }
+
+  const wrong = []
+  for (const gate of ANCHORED_GATES) {
+    const p = resolve(ROOT, gate.config)
+    if (!existsSync(p)) continue
+    let cfg
+    try {
+      cfg = JSON.parse(readFileSync(p, 'utf8'))
+    } catch {
+      fail(`${gate.config} is not valid JSON — cannot read its perf-gate anchor.`)
+    }
+    const got = cfg.referenceSha
+    if (typeof got !== 'string' || got.length < 7) {
+      wrong.push({ ...gate, got: got === undefined ? '(absent)' : String(got) })
+      continue
+    }
+    if (!expected.startsWith(got)) wrong.push({ ...gate, got })
+  }
+
+  if (wrong.length > 0) {
+    const short = expected.slice(0, 7)
+    fail(
+      `this is the RELEASE PR for ${headingVersion.raw}, so every perf gate must be RE-ANCHORED to the\n` +
+        `  previous release — ${basePublished.raw}, released by ${short} — and ${wrong.length} is/are not:\n` +
+        '\n' +
+        wrong.map((w) => `    ${w.config}\n      referenceSha ${w.got} → should be ${short}`).join('\n') +
+        '\n\n' +
+        '  These gates measure THIS build against the referenced one, in one interleaved process.\n' +
+        '  Against a stale anchor they still read `ok` — they just compare against a baseline that\n' +
+        '  already absorbed every regression since, so the accumulated headroom becomes the error\n' +
+        '  bar and the gate loses its resolution without losing its green. Both config files have\n' +
+        '  carried "bump this at every release, in the release PR" in a comment from the start, and\n' +
+        '  both were missed for ten consecutive releases. That is why this is executed and not\n' +
+        '  written down.\n' +
+        '\n' +
+        `  Fix: set referenceSha to ${short} in each file above, update the _referenceNote to name\n` +
+        `  ${basePublished.raw}, then RUN the gates (${ANCHORED_GATES.map((g) => g.script).join(', ')}) and\n` +
+        '  put the numbers in this PR.\n' +
+        '\n' +
+        '  A newer anchor is a STRICTER gate and may go red on a regression the old one was hiding.\n' +
+        '  That is the gate working. Report the regression; do not move the anchor to silence it.\n' +
+        '\n' +
+        '  This check has no hatch — `release-exempt` does not waive it.',
+    )
+  }
+
+  console.log(`✓ perf-gate anchors name ${expected.slice(0, 7)}, the commit that released ${basePublished.raw}.`)
+}
+
 let pkgSurfaceChanged = []
 if (changed.includes('package.json')) {
   pkgSurfaceChanged = PUBLISHED_PKG_FIELDS.filter(
@@ -380,7 +535,6 @@ const why = [
 // is a reason to judge conservatively, not a reason to wave the change through: the
 // fallback is the stricter of the two rules, so the worst case is a release PR being
 // asked to justify itself, never an already-published heading sliding past.
-const basePublished = typeof basePkg.version === 'string' ? parseVersion(basePkg.version) : null
 const headingVsBase =
   basePublished === null ? headingVsPkg : compareVersions(headingVersion, basePublished)
 

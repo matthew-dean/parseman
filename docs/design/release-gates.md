@@ -177,6 +177,34 @@ digit is for changes that cannot be observed at all.
 `expected` arrays no longer repeat a token — and consumers assert on those arrays; an
 assertion inside this repo had to be updated for it. Observable, therefore minor.
 
+### C. Bench anchors — on a RELEASE PR, against its base
+
+The two perf gates (`docs/design/perf-gates.md`) measure this build against a
+`referenceSha` pinned in `bench/grammar-density/config.json` and
+`bench/workloads/config.json`. Both files have said "bump this to the released sha at
+every release, in the release PR" in a comment since they were written. Both were
+missed for **ten consecutive releases** — v0.33.0 and v0.35.0 were still the anchors
+when 0.45.0 was prepped.
+
+Nothing complained, because a stale anchor reads `ok`. It compares against a baseline
+that already absorbed every regression since, so the headroom becomes the error bar:
+`rollback/dense` sat at -62%, meaning that path could have got 2.6x slower and still
+passed.
+
+So on a release PR — the shape `--publish` demands, all three version sites naming the
+same not-yet-published version — every anchor must equal **the commit that released the
+base's version**. That is found by walking first-parent from the base and taking the
+oldest commit in the contiguous run carrying that version, not the base tip: ordinary
+PRs merge after a release and carry the number forward. The rule reproduces both
+hand-set anchors (0.33.0 → `7f1ddcd`, 0.35.0 → `3562f78`).
+
+Mid-cycle PRs never see it — the bump is due at release, like the version. And it has
+**no hatch**: `release-exempt` waives B only. Re-anchoring makes the gates stricter and
+may expose a regression the stale anchor was hiding; that is the gate working, and the
+answer is to report the number, not to move the anchor.
+
+A checkout carrying neither config is not asked to re-anchor anything.
+
 ## The escape hatch
 
 Add the **`release-exempt` label** to the PR. It waives **B only**.

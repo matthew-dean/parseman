@@ -463,3 +463,211 @@ describe('bump gate', () => {
     expect(r.out).toMatch(/names no version/)
   })
 })
+
+/*
+ * C. BENCH ANCHOR GATE
+ *
+ * `bench/grammar-density/config.json` and `bench/workloads/config.json` each carry an
+ * A/B `referenceSha` and each carry, in a JSON comment, "bump this to the released sha
+ * at every release, in the release PR". Neither was bumped for TEN releases: when
+ * 0.45.0 was prepped the density gate still measured against v0.33.0 and the workload
+ * gate against v0.35.0.
+ *
+ * A stale anchor does not read red. It reads `ok` against a baseline that has already
+ * absorbed every regression since, so the headroom becomes the error bar —
+ * `rollback/dense` sat at -62%, meaning that path could have got 2.6x SLOWER and still
+ * passed. The absolute-baseline rule held in letter while its resolution was gone.
+ *
+ * A policy that lives in a comment and depends on someone remembering it is not a
+ * policy. These tests are the policy executed.
+ */
+describe('bench anchor gate', () => {
+  const DENSITY = 'bench/grammar-density/config.json'
+  const WORKLOADS = 'bench/workloads/config.json'
+
+  const anchors = (sha: string): Record<string, string> => ({
+    [DENSITY]: `${JSON.stringify({ referenceSha: sha }, null, 2)}\n`,
+    [WORKLOADS]: `${JSON.stringify({ referenceSha: sha }, null, 2)}\n`,
+  })
+
+  /**
+   * A repo whose base branch has a REAL version boundary, which is the only shape the
+   * "previous release" rule can be read from: an older release, the commit that
+   * released `published`, optionally some commits that merged after it and carry the
+   * same number forward, then the PR head.
+   *
+   * Returns the base sha (the branch tip, as a PR sees it) AND the release sha (the
+   * commit that introduced `published`). They differ whenever anything merged after
+   * the release, which is the case the rule has to get right.
+   */
+  function releaseRepo(opts: {
+    previous: string
+    published: string
+    /** Commits merged onto the base AFTER the release, still at `published`. */
+    after?: number
+    head: Checkout
+  }): { dir: string; baseSha: string; releaseSha: string } {
+    const dir = checkout({ version: opts.previous, changelog: released(opts.previous) })
+    git(dir, 'init', '-q', '-b', 'main')
+    git(dir, 'add', '-A')
+    git(dir, 'commit', '-qm', `release ${opts.previous}`)
+
+    write(dir, { version: opts.published, changelog: released(opts.published) })
+    git(dir, 'add', '-A')
+    git(dir, 'commit', '-qm', `release ${opts.published}`)
+    const releaseSha = git(dir, 'rev-parse', 'HEAD')
+
+    for (let i = 0; i < (opts.after ?? 0); i++) {
+      writeFileSync(join(dir, `docs-${i}.md`), `# ${i}\n`)
+      git(dir, 'add', '-A')
+      git(dir, 'commit', '-qm', `docs ${i}`)
+    }
+    const baseSha = git(dir, 'rev-parse', 'HEAD')
+
+    write(dir, opts.head)
+    git(dir, 'add', '-A')
+    git(dir, 'commit', '-qm', 'head')
+    return { dir, baseSha, releaseSha }
+  }
+
+  /** The 0.45.0 release PR, parameterised on what the anchors say. */
+  const releasePr = (anchorSha: string, after = 0) =>
+    releaseRepo({
+      previous: '0.43.0',
+      published: '0.44.0',
+      after,
+      head: {
+        version: '0.45.0',
+        changelog: released('0.45.0'),
+        files: { 'src/a.ts': 'export const a = 1\n', ...anchors(anchorSha) },
+      },
+    })
+
+  it('FAILS a release PR whose anchors still name an older release', () => {
+    // The defect verbatim: the release is prepped, the changelog and both version
+    // stamps agree, `--publish` would pass — and both perf gates are still measuring
+    // against something ten releases back.
+    const { dir, baseSha, releaseSha } = releasePr('0abc123')
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/RELEASE PR for 0\.45\.0/)
+    expect(r.out).toContain(DENSITY)
+    expect(r.out).toContain(WORKLOADS)
+    // It must name the sha to use, not merely complain.
+    expect(r.out).toContain(releaseSha.slice(0, 7))
+  })
+
+  it('PASSES once both anchors name the commit that released the previous version', () => {
+    const seed = releasePr('0abc123')
+    const r0 = gate(seed.dir, `--base=${seed.baseSha}`)
+    expect(r0.ok).toBe(false)
+
+    // Re-anchor in place — the fix the failure message asks for.
+    write(seed.dir, {
+      version: '0.45.0',
+      changelog: released('0.45.0'),
+      files: { 'src/a.ts': 'export const a = 1\n', ...anchors(seed.releaseSha.slice(0, 7)) },
+    })
+    git(seed.dir, 'add', '-A')
+    git(seed.dir, 'commit', '-qm', 're-anchor')
+
+    const r = gate(seed.dir, `--base=${seed.baseSha}`)
+    expect(r.ok).toBe(true)
+    expect(r.out).toMatch(/perf-gate anchors name/)
+  })
+
+  it('names the commit that INTRODUCED the version, not the base tip', () => {
+    // Ordinary PRs merge between releases and carry the same number forward — three of
+    // them sat on top of 0.42.1. The anchor is where the number CHANGED, so the rule
+    // cannot just read the branch tip. Anchoring to the tip must still fail.
+    const { dir, baseSha, releaseSha } = releasePr('0abc123', 3)
+    expect(baseSha).not.toBe(releaseSha)
+
+    const wrong = gate(dir, `--base=${baseSha}`)
+    expect(wrong.ok).toBe(false)
+    expect(wrong.out).toContain(releaseSha.slice(0, 7))
+
+    write(dir, {
+      version: '0.45.0',
+      changelog: released('0.45.0'),
+      files: { 'src/a.ts': 'export const a = 1\n', ...anchors(baseSha.slice(0, 7)) },
+    })
+    git(dir, 'add', '-A')
+    git(dir, 'commit', '-qm', 'anchor at the tip')
+    expect(gate(dir, `--base=${baseSha}`).ok).toBe(false)
+  })
+
+  it('accepts a FULL sha as well as the abbreviated one', () => {
+    const { dir, baseSha, releaseSha } = releasePr('0abc123')
+    write(dir, {
+      version: '0.45.0',
+      changelog: released('0.45.0'),
+      files: { 'src/a.ts': 'export const a = 1\n', ...anchors(releaseSha) },
+    })
+    git(dir, 'add', '-A')
+    git(dir, 'commit', '-qm', 'full sha')
+    expect(gate(dir, `--base=${baseSha}`).ok).toBe(true)
+  })
+
+  it('`release-exempt` does NOT waive it', () => {
+    // The label exists for a revert or a chained PR — reasons a VERSION should not go
+    // up. Neither is a reason to measure against a stale baseline, and the whole point
+    // of moving this out of a comment was that it had a hatch called "forgetting".
+    const { dir, baseSha } = releasePr('0abc123')
+    const r = gate(dir, `--base=${baseSha}`, '--exempt')
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/no hatch/)
+  })
+
+  it('does NOT fire on a mid-cycle PR — the bump is due at RELEASE', () => {
+    // Every PR between two releases files into the open section without spending a
+    // number. Asking each of them to re-anchor would be the per-merge cost the release
+    // gate was rewritten to remove, and would put the anchor ahead of the release.
+    const { dir, baseSha } = releaseRepo({
+      previous: '0.43.0',
+      published: '0.44.0',
+      head: {
+        version: '0.44.0',
+        changelog: open_('0.45.0', '0.44.0'),
+        files: { 'src/a.ts': 'export const a = 1\n', ...anchors('0abc123') },
+      },
+    })
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(true)
+  })
+
+  it('FAILS a release PR whose anchor is absent or a stub', () => {
+    for (const bad of ['', 'HEAD', '123']) {
+      const { dir, baseSha } = releaseRepo({
+        previous: '0.43.0',
+        published: '0.44.0',
+        head: {
+          version: '0.45.0',
+          changelog: released('0.45.0'),
+          files: {
+            'src/a.ts': 'export const a = 1\n',
+            [DENSITY]: `${JSON.stringify({ referenceSha: bad }, null, 2)}\n`,
+          },
+        },
+      })
+      expect(gate(dir, `--base=${baseSha}`).ok).toBe(false)
+    }
+  })
+
+  it('is silent in a checkout that carries neither gate', () => {
+    // The list of anchored gates is allowed to lead or trail the repo. A checkout with
+    // no bench configs has nothing to re-anchor, and must not be failed for it.
+    const { dir, baseSha } = releaseRepo({
+      previous: '0.43.0',
+      published: '0.44.0',
+      head: {
+        version: '0.45.0',
+        changelog: released('0.45.0'),
+        files: { 'src/a.ts': 'export const a = 1\n' },
+      },
+    })
+    const r = gate(dir, `--base=${baseSha}`)
+    expect(r.ok).toBe(true)
+    expect(r.out).not.toMatch(/perf-gate anchors/)
+  })
+})

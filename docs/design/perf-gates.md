@@ -531,6 +531,35 @@ released sha **at every release, in the release PR**, with the numbers read in
 that PR — an unbumped reference slowly turns into an archaeology exercise, and a
 silently bumped one erases whatever it was hiding.
 
+### The bump is enforced, because asking was not enough
+
+That paragraph, and a copy of it in each config's `_referenceNote`, was the whole
+policy until 0.45.0. It was missed **ten releases running**: the density gate was
+still anchored to v0.33.0 and the workload gate to v0.35.0 when 0.45.0 was
+prepped, and `git diff --stat origin/main...release/0.45.0 -- bench/` was empty.
+
+Nothing went red, which is the point. A stale anchor does not fail — it compares
+against a baseline that has already absorbed every regression since, so the
+accumulated headroom becomes the error bar. `rollback/dense` read **-62.0%**
+against v0.33.0: that path could have got **2.6x slower** in this release and the
+gate would still have printed `ok`. The absolute-baseline rule was satisfied in
+letter while its RESOLUTION was destroyed, silently.
+
+So `scripts/check-changelog.mjs` now checks it (§C, and
+`docs/design/release-gates.md`). On a **release PR** — heading, `package.json` and
+`src/version.ts` all naming the same, not-yet-published version — every anchor
+above must equal the commit that released the base's version: walking first-parent
+back from the base, the oldest commit in the contiguous run carrying that version,
+i.e. the one that introduced it. Not the base tip: ordinary PRs merge after a
+release and carry the number forward (three sat on top of 0.42.1). The rule
+reproduces both anchors that were set by hand — 0.33.0 → `7f1ddcd`, 0.35.0 →
+`3562f78`.
+
+It fires on release PRs only, so no mid-cycle PR pays for it, and it has **no
+hatch** — `release-exempt` does not waive it. Re-anchoring makes a gate STRICTER
+and may surface a regression the stale anchor was hiding. That is the gate
+working. Land the number visibly; do not move the anchor to silence it.
+
 A missing reference commit is a **hard failure**, never a skip: CI checks out
 with `fetch-depth: 0` so the pinned sha is present, and if it is not, the gate
 says so and exits non-zero. "The gate did not run" must never render as green —
