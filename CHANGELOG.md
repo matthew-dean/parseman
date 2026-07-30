@@ -52,8 +52,21 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.44.0 — 2026-07-30
 
+- **Say so when a removed field is read.** Dropping the mandatory
+  `RunResult.triviaMap` made it read `undefined` — and `undefined` travels, so the
+  failure surfaced as a property access on nothing, deep inside the CONSUMER's
+  code, in a message naming neither parseman nor the replacement. (Measured on
+  jess: every `parse()` threw `Cannot read properties of undefined (reading
+  'labels')`, six of nine gates red, with no mention of the removal anywhere.)
+  The name is now an accessor that throws the migration — what went, what
+  replaces it, and the `rootTrivia: { select: [...] }` call needed to get it. The
+  property is non-enumerable, so it is absent from `Object.keys`, spreads,
+  `JSON.stringify` and identity digests: no output moves and the parse path is
+  unchanged. Same principle as the degradation diagnostics — parseman must give
+  notice when it cannot do what a caller expects.
+
 - **Add sparse, selected root trivia capture.** `run(entry, input, { rootTrivia:
-  { selectedKinds } })` records only markers for the named, grammar-defined trivia
+  { select } })` records only markers for the named, grammar-defined trivia
   labels. Each fixed-width row also carries its complete authored owning range, so
   serializers can still reproduce the surrounding gap without retaining one root
   entry per whitespace run. Labels are arbitrary grammar policy — `blockComment`,
@@ -67,8 +80,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   roll the sparse sink back transactionally. Semantic `leaf()` wrappers retain
   selected root markers, and selected row kind indexes use the requested label
   table rather than a scope-local label order. The result is exposed as
-  `RunResult.rootTrivia` and through the same lazy `triviaMap` query interface;
-  legacy `triviaLog` remains available under the default `allEntries` mode.
+  `RunResult.rootTrivia`, whose `.index` provides the lazy query interface.
+
+  **BREAKING, and previously mis-documented here.** This entry used to claim a
+  `selectedKinds` option and that "legacy `triviaLog` remains available under the
+  default `allEntries` mode". Neither exists: the option is `select`, there is no
+  `allEntries` mode, and `RunResult.triviaLog`, `RunResult.triviaMap` and
+  `RunResult.triviaKindLabels` are all GONE — root trivia is captured only when
+  asked for. Reading any of the three now throws with its migration rather than
+  returning `undefined`.
 
 ## 0.43.0 — 2026-07-30
 
