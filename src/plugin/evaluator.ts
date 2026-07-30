@@ -18,6 +18,7 @@ import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
 import * as parseman from '../index.ts'
 import { directBuilderUnsupportedBindings } from './direct-builder-static.ts'
+import type { ReducerResolver } from './reducer-resolver.ts'
 
 /**
  * Emit an AST subtree's source with TypeScript-only syntax removed. A gate source
@@ -82,7 +83,7 @@ function stripTsFromSource(node: Node, code: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Reducer-declaration resolution
+// Reducer resolution
 //
 // `buildSrc` is the source text of the EXPRESSION at the `node(...)` call site, so a
 // reducer passed as a bare identifier — `node('Foo', p, { build: foldOperation })` —
@@ -90,29 +91,17 @@ function stripTsFromSource(node: Node, code: string): string {
 // `confirmedBuildArity` returned `null` and every capture tier stayed on: the runtime
 // cost of a rule depended on how its reducer was SPELLED.
 //
-// This plugin is `enforce: 'pre'` and already holds the whole module's oxc AST, so the
-// declaration is right there. `index.ts` builds the name → declaration-source map (it
-// owns the module body) and installs it here for the duration of one transform; the
-// resolved source is parked on `_def.buildSigSrc`, which is read ONLY by the cost
-// analysis and never emitted, so the generated builder reference is byte-identical.
-//
-// DELIBERATELY CONSERVATIVE — `index.ts` only admits a name when it is bound EXACTLY
-// ONCE in the whole module, by a module-scope `function` declaration or a `const`
-// arrow/function expression. An imported identifier is never admitted: its declaration
-// lives in another module whose AST we do not have, and guessing an arity that is too
-// low would under-capture, which is a correctness bug rather than a cost. Those stay
-// fail-open and are reported by the `build-arity-unconfirmed` diagnostic instead.
+// `reducer-resolver.ts` does the real work — lexical scope analysis over this module,
+// plus cross-module import following — and this is where its answer is attached. The
+// resolved arity lands on `_def.buildArity` and the resolved source on
+// `_def.buildSigSrc`; both are ANALYSIS-ONLY and never emitted, so the generated builder
+// reference is byte-identical either way.
 // ---------------------------------------------------------------------------
-let _reducerDecls: ReadonlyMap<string, string> | null = null
+let _reducers: ReducerResolver | null = null
 
-/** Install (or clear, with `null`) the module's resolvable reducer declarations. */
-export function setReducerDeclarations(m: ReadonlyMap<string, string> | null): void {
-  _reducerDecls = m
-}
-
-/** TS-stripped source of a subtree — exported so `index.ts` can build the map above. */
-export function sourceOf(node: Node, code: string): string {
-  return stripTsFromSource(node, code)
+/** Install (or clear, with `null`) the resolver for the module being transformed. */
+export function setReducerResolver(r: ReducerResolver | null): void {
+  _reducers = r
 }
 
 // ---------------------------------------------------------------------------
@@ -461,9 +450,12 @@ function staticNodeOptionsFromValue(value: unknown): parseman.NodeOptions<readon
     } else if (name === 'tags') {
       if (!Array.isArray(v) || !v.every(item => typeof item === 'string')) return STATIC_NODE_OPTIONS_FAILED
       opts.tags = v
+    } else if (name === 'buildArity') {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 6) return STATIC_NODE_OPTIONS_FAILED
+      opts.buildArity = v
     }
   }
-  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined || opts.buildArity !== undefined ? opts : undefined
 }
 
 function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
@@ -492,9 +484,13 @@ function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
       const tags = staticStringArray(p.value, scope)
       if (tags === undefined) return STATIC_NODE_OPTIONS_FAILED
       opts.tags = tags
+    } else if (name === 'buildArity') {
+      const arity = staticLiteralValue(p.value)
+      if (typeof arity !== 'number' || !Number.isInteger(arity) || arity < 0 || arity > 6) return STATIC_NODE_OPTIONS_FAILED
+      opts.buildArity = arity
     }
   }
-  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined || opts.buildArity !== undefined ? opts : undefined
 }
 
 /**
@@ -617,10 +613,15 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         : parseman.node(inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)
       if (combi._def.tag === 'node' && buildSrc !== undefined) {
         combi._def.buildSrc = buildSrc
-        // A bare-identifier reducer: resolve it to its module-scope declaration so the
+        // A NAMED reducer (`foldOperation`, `helpers.fold`, an import): resolve it so the
         // capture-tier analysis reads the REAL parameter list instead of failing open.
-        const sig = _reducerDecls?.get(buildSrc.trim())
-        if (sig !== undefined) combi._def.buildSigSrc = sig
+        // `null` means the expression was an inline function, which is self-describing.
+        const resolved = _reducers?.resolve(buildSrc, be!.start)
+        if (resolved) {
+          if (resolved.src !== null) combi._def.buildSigSrc = resolved.src
+          if (resolved.arity !== null) combi._def.buildArity = resolved.arity
+          if (resolved.reason !== undefined) combi._def.buildArityUnresolved = resolved.reason
+        }
         const staticError = directBuilderUnsupportedBindings(buildSrc)
         if (staticError.length > 0) combi._def.buildStaticError = staticError
       }

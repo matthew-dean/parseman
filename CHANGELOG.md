@@ -13,17 +13,23 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   gate can assert zero degradations. Findings aggregate per code above eight sites: a
   diagnostic that fires on every rule gets filtered out, which is the same silence.
 
-- **Resolve bare-identifier node reducers before deciding capture cost.** `node('Foo', p,
-  build)` where `build` is an identifier gave `buildSrc === "build"`, which matches no
-  parameter list, so `confirmedBuildArity` returned `null` and the node captured children,
-  fields and raw children, logged trivia, and cloned `_ctx.state` on every match — making
-  a rule's runtime cost depend on how its reducer was spelled, with no warning. The macro
-  plugin now resolves such an identifier against the module AST it already holds (a
-  module-scope `function` declaration or `const` arrow/function expression, admitted only
-  when the name is bound exactly once in the module) and analyses the real parameter list.
-  Imported and shadowed names stay conservative and are reported as
-  `build-arity-unconfirmed`. The resolved source is analysis-only — the emitted builder
-  reference is unchanged.
+- **Resolve NAMED node reducers before deciding capture cost.** `node('Foo', p, build)`
+  where `build` is a name gave `buildSrc === "build"`, which matches no parameter list, so
+  `confirmedBuildArity` returned `null` and the node captured children, fields and raw
+  children, logged trivia, and cloned `_ctx.state` on every match — making a rule's
+  runtime cost depend on how its reducer was spelled, with no warning. The macro plugin
+  now performs real lexical scope analysis over the module and follows imports across
+  module boundaries, so all of these resolve: module-scope `const`/`function`, `let`/`var`
+  that is never reassigned, alias chains, named / aliased / default / namespace-member
+  imports, and re-exports including `export *`. Parameter lists are read from the AST, so
+  defaults and destructuring count positionally (`(c, f = undefined, s, r)` is arity 4).
+  Shadowing is decided rather than declined. Measured against the four jess grammars: 54
+  of 54 named-reducer sites resolve, none still fail open.
+
+- **Add `node(..., { buildArity })`.** The escape hatch for the shapes that remain
+  genuinely undecidable — a rest parameter, a body reading `arguments`, a reassigned or
+  computed reducer, an unresolvable import. Declaring the arity turns fail-open into a
+  true last resort instead of a common outcome; a declaration is authoritative.
 
 - **Stop deleting a node's first-set guard for a zero-arity reducer.** The `node()`
   first-set pre-guard was gated on `capturesChildren || structural`; a confirmed

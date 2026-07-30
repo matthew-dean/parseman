@@ -71,25 +71,78 @@ Set PARSEMAN_DEGRADATION=error to fail the build on these.
 
 | Code | What was lost | Usual fix |
 | --- | --- | --- |
-| `build-arity-unconfirmed` | The node's build could not be read, so all five capture tiers stay on. | Declare the reducer in the same module (a `function` declaration or a `const` arrow), avoid rest/destructured parameters, and do not shadow its name. |
+| `build-arity-unconfirmed` | The node's build could not be reduced to a parameter list, so all five capture tiers stay on. | See [below](#reducer-arity) — usually a rest parameter or a reassigned binding. Declare it with `node(..., { buildArity: n })`. |
 | `mk-inline-missed` | A reducer looks like an `mk(...)` wrapper but did not match the shape, so each match pays a call instead of an inlined object literal. | Use `(children, fields, span, rawChildren, triviaLog) => mk(type, children, rawChildren, span, triviaLog)` with the node's own type. |
 
-## Why arity is read from source at all
+## Reducer arity {#reducer-arity}
 
 A node's build receives `(children, fields, span, rawChildren, triviaLog, state)`.
 Collecting a facility the build never declares is dead work — and the trivia log's
-per-token push alone dominates real parses. Parseman therefore reads the build's formal
-parameter list and elides the tiers above its arity.
+per-token push alone dominates real parses. Parseman therefore works out the build's
+declared arity and elides every tier above it:
 
-That analysis is **conservative by construction**: anything it cannot parse yields
-"unknown", and unknown keeps full capture. Capturing too much is safe; capturing too
-little would be a correctness bug. The diagnostic exists so that "safe" does not also
-mean "invisible".
+| Arity | Enables |
+| --- | --- |
+| `>= 1` | `children` |
+| `>= 2` | `fields` |
+| `>= 4` | `rawChildren` |
+| `>= 5` | `triviaLog` |
+| `>= 6` | a clone of `_ctx.state` |
 
-Under macro compilation a reducer passed as a bare identifier — `node('Foo', p,
-foldOperation)` — used to be exactly such an unknown, because the captured source was
-the string `"foldOperation"`. The plugin now resolves that name against the module AST
-it already holds, and only when the name is bound **exactly once** in the module by a
-module-scope `function` declaration or `const` arrow/function expression. An imported
-name is never resolved: its declaration lives in a module parseman does not hold, and
-guessing an arity that is too low would under-capture.
+### What the macro resolves
+
+An inline arrow is self-describing. Everything else is a **name**, and the macro plugin
+runs at `enforce: 'pre'` with the module AST and the filesystem available, so it resolves
+the name rather than giving up on it:
+
+```ts
+const foldOperation = children => ({ … })
+node('Fold', body, foldOperation)                      // ✓ module-scope const
+
+function foldOperation(children) { … }
+node('Fold', body, foldOperation)                      // ✓ function declaration
+
+let foldOperation = children => ({ … })                // ✓ `let`/`var`, if never reassigned
+import { foldOperation } from './reducers.ts'          // ✓ named import
+import { foldOperation as fold } from './reducers.ts'  // ✓ aliased import
+import fold from './reducers.ts'                       // ✓ default import
+import * as helpers from './reducers.ts'
+node('Fold', body, helpers.fold)                       // ✓ namespace member
+export { fold } from './impl.ts'                       // ✓ re-exports, including `export *`
+const fold = foldOperation                             // ✓ alias chains
+```
+
+Resolution is real lexical scope analysis, so **shadowing is decided rather than feared**:
+a `foldOperation` declared inside some other function does not affect a call site where
+the module-scope one is in scope, and a call site where an inner binding *does* shadow
+resolves to that inner binding.
+
+Parameter lists are read from the AST, so a **default** or a **destructured** parameter
+counts positionally like any other — `(c, f = undefined, s, r)` is arity 4.
+
+### What genuinely cannot be resolved
+
+These are undecidable rather than merely unread, and they fail open (full capture) and
+report `build-arity-unconfirmed`:
+
+- a **rest parameter** — `(...args) => …` declares an unbounded arity
+- a body that references **`arguments`**
+- a **reassigned** binding — which function it names at parse time is not decidable
+- a **computed** or dynamically constructed reducer
+- an **import that cannot be resolved or parsed**
+
+### Declaring the arity yourself
+
+Fail-open is safe but permanent: the node pays for every tier on every match, forever.
+`buildArity` is the escape hatch.
+
+```ts
+node('Fold', body, fold, { buildArity: 1 })
+```
+
+You are asserting the highest positional argument the reducer reads. Parseman then elides
+everything above it exactly as if it had read the parameter list, and the diagnostic goes
+away. A declaration is authoritative — it wins over anything the source appears to say.
+
+**Declaring too low under-captures.** The reducer will receive an empty `rawChildren` /
+`triviaLog` or an absent `state` rather than a wrong value. Count the parameters.

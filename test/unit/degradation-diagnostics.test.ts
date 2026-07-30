@@ -75,48 +75,113 @@ export const P = parser({ trivia: regex(/ +/) }, node('Full', sequence(literal('
     expect(v.r).toBe(2)
   })
 
-  it('stays conservative for an IMPORTED reducer — and says so', () => {
+  it('resolves a `let` that is never reassigned, and declines one that is', () => {
+    const ok = macro(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+let fold = children => ({ n: children.length })
+export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
+`, 'P')
+    expect(ok.fn('a b', 0, {}).value).toEqual({ n: 2 })
+    expect(ok.source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).toHaveLength(0)
+
+    const reassigned = macro(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+let fold = children => ({ n: children.length })
+fold = (c, f, s, r, tl, st) => ({ n: c.length, st })
+export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
+`, 'P')
+    // Which function this names is not decidable, so it fails open — the one case where
+    // the diagnostic is the right answer rather than a substitute for analysis.
+    expect(reassigned.source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
+  })
+
+  it('follows an alias chain', () => {
+    const { fn, source } = macro(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+function base(children) { return { n: children.length } }
+const mid = base
+const fold = mid
+export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
+`, 'P')
+    expect(fn('a b', 0, {}).value).toEqual({ n: 2 })
+    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).toHaveLength(0)
+  })
+
+  it('counts DEFAULT and DESTRUCTURED parameters positionally', () => {
+    // `(c, f = undefined, s, r)` is arity 4 — a default does not change a positional
+    // slot. The old regex rejected the whole list and fell open.
+    const { source } = macro(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+const fold = (c, f = undefined, s, r) => ({ n: c.length, r: r.length })
+export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
+`, 'P')
+    // Arity 4 reaches rawChildren, so raw capture is LIVE...
+    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
+    // ...but arity 4 is below trivia (5) and state (6), so neither is captured, which is
+    // only possible if the arity was actually confirmed rather than failing open.
+    expect(source).toContain('_EMPTY_TL')
+  })
+
+  it('declines a REST parameter — genuinely undecidable — and says so', () => {
     const prev = process.env.PARSEMAN_DEGRADATION
     process.env.PARSEMAN_DEGRADATION = 'warn'
     try {
       const result = transformMacro(`
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
-import { foldOperation } from './reducers.ts'
+const fold = (...args) => ({ n: args.length })
+export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
+`.trim(), 'P.ts', new Set(['parseman']))!
+      expect(result.code.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
+      const w = result.warnings.join('\n')
+      expect(w).toContain('rest parameter')
+      expect(w).toContain('buildArity')
+    } finally { process.env.PARSEMAN_DEGRADATION = prev }
+  })
+
+  it('reports an import it genuinely cannot resolve', () => {
+    const prev = process.env.PARSEMAN_DEGRADATION
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    try {
+      const result = transformMacro(`
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+import { foldOperation } from './does-not-exist.ts'
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), foldOperation))
 `.trim(), 'P.ts', new Set(['parseman']))!
-      // We cannot see another module's AST; guessing an arity that is too LOW would
-      // under-capture, which is a correctness bug rather than a cost. So it fails open —
-      // and unlike before, it reports that it did.
       expect(result.code.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
       const w = result.warnings.join('\n')
       expect(w).toContain('[parseman] degraded [build-arity-unconfirmed]')
       expect(w).toContain('node("Fold")')
-      expect(w).toContain('foldOperation')
+      expect(w).toContain('could not be resolved')
     } finally { process.env.PARSEMAN_DEGRADATION = prev }
   })
 
-  it('stays conservative for a SHADOWED name (a nested binding of the same identifier)', () => {
-    const { source } = macro(`
-import { literal, node, parser, regex, rules, sequence } from 'parseman' with { type: 'macro' }
-const foldOperation = children => ({ n: children.length })
-const other = (foldOperation) => foldOperation
-export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), foldOperation))
-`, 'P')
-    // `foldOperation` is bound twice in the module (the const, and `other`'s param), so
-    // the resolver declines rather than risk reading a different function's arity.
-    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
-  })
-
-  it('counts destructured, defaulted and rest bindings when checking for shadowing', () => {
-    const { source } = macro(`
+  it('a same-name binding in an UNRELATED scope does not block resolution', () => {
+    const { fn, source } = macro(`
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
 const foldOperation = children => ({ n: children.length })
-const a = ({ foldOperation }) => foldOperation
-const b = (x = 1, ...foldOperation) => foldOperation
-const [c, ...d] = [1, 2]
+const other = (foldOperation) => foldOperation
+const another = ({ foldOperation }) => foldOperation
+const third = (x = 1, ...foldOperation) => foldOperation
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), foldOperation))
 `, 'P')
-    // `foldOperation` is bound three times, so the resolver declines.
+    // Those bindings are in other functions' scopes and are not in scope at the call
+    // site. Shadowing is decidable, so it is decided — the old "decline if the name is
+    // bound more than once anywhere" rule declined perfectly ordinary code.
+    expect(fn('a b', 0, {}).value).toEqual({ n: 2 })
+    expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).toHaveLength(0)
+  })
+
+  it('a name GENUINELY shadowed at the call site resolves to the inner binding', () => {
+    const { source } = macro(`
+import { literal, node, parser, regex, rules, sequence } from 'parseman' with { type: 'macro' }
+const fold = children => ({ n: children.length })
+export const P = rules((fold) => ({
+  Fold: node('Fold', sequence(literal('a'), literal('b')), fold),
+}))
+`, 'P')
+    // Here `fold` at the call site is the factory's PARAMETER, not the module const.
+    // A parameter is not a function declaration, so this declines — correctly, and for
+    // the right reason rather than because a name appeared twice.
     expect(source.match(/_raw\d+ = _rec\d+ \? undefined : \[\]/g) ?? []).not.toHaveLength(0)
   })
 

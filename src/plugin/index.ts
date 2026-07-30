@@ -23,8 +23,9 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerDeclarations, sourceOf, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
+import { createReducerResolver } from './reducer-resolver.ts'
 import { beginDegradationCapture, endDegradationCapture, formatDegradations, resolveDegradationLevel } from '../compiler/degradation.ts'
 import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
@@ -551,92 +552,20 @@ export function transformMacro(
   }
 
   /*
-   * Module-scope reducer declarations, for `node(..., { build: someReducer })`.
+   * Reducer resolution, for `node(..., build)` where `build` is a NAME rather than an
+   * inline function.
    *
-   * `buildSrc` is the call site's EXPRESSION text, so a bare identifier arrives as just
-   * the name — no parameter list, so the capture-tier analysis failed open and charged
-   * the node all five facilities. Resolving the name here is what lets it read the real
-   * arity. The resolved source is analysis-only (`_def.buildSigSrc`); nothing about the
-   * emitted builder reference changes.
+   * `buildSrc` is the call site's EXPRESSION text, so a named reducer arrives as just the
+   * name — no parameter list — and the capture-tier analysis used to fail open and charge
+   * the node all five facilities. Sharing reducers across a grammar and importing them
+   * from another module is ordinary grammar authoring, so the resolver does the analysis
+   * (lexical scope tree, cross-module import following) rather than reporting that it
+   * won't. See `reducer-resolver.ts` for what it decides and what genuinely declines.
    *
-   * Admitted ONLY when the name is bound EXACTLY ONCE in the entire module, by a
-   * module-scope `function` declaration or a `const` arrow/function expression:
-   *
-   *  - Exactly once removes shadowing. A `rules(g => …)` factory (or any nested scope)
-   *    is free to declare its own `foldOperation`; substituting the module-scope one
-   *    there would read a different function's arity, and reading an arity that is too
-   *    LOW under-captures, which is a correctness bug, not a cost. Counting every binder
-   *    in the module and requiring one is a cheap way to remove the case outright rather
-   *    than try to detect it.
-   *  - `const` / `function` only, for the same rebinding reason as `factoryDecls`.
-   *  - IMPORTED names are never admitted. Their declaration is in a module whose AST we
-   *    do not hold, and inventing an arity for it is exactly the unsound direction. They
-   *    stay fail-open and are reported by the `build-arity-unconfirmed` diagnostic.
-   *
-   * No temporal-dead-zone check is needed: this substitutes a SIGNATURE for a cost
-   * decision, never a value into the emitted program.
+   * Everything it produces — `_def.buildArity`, `_def.buildSigSrc` — is ANALYSIS-ONLY and
+   * never emitted, so the generated builder reference is unchanged either way.
    */
-  const bindingCounts = new Map<string, number>()
-  const countPattern = (pat: unknown): void => {
-    if (!pat || typeof pat !== 'object') return
-    const n = pat as AnyNode
-    if (n.type === 'Identifier' && typeof n.name === 'string') {
-      bindingCounts.set(n.name as string, (bindingCounts.get(n.name as string) ?? 0) + 1)
-      return
-    }
-    if (n.type === 'AssignmentPattern') return countPattern(n.left)
-    if (n.type === 'RestElement') return countPattern(n.argument)
-    if (n.type === 'ArrayPattern') { for (const el of (n.elements as unknown[]) ?? []) countPattern(el); return }
-    if (n.type === 'ObjectPattern') {
-      for (const p of (n.properties as AnyNode[]) ?? []) countPattern(p.type === 'RestElement' ? p.argument : p.value)
-    }
-  }
-  const countBindings = (n: unknown): void => {
-    if (!n || typeof n !== 'object') return
-    if (Array.isArray(n)) { for (const item of n) countBindings(item); return }
-    const rec = n as AnyNode
-    switch (rec.type) {
-      case 'VariableDeclarator': countPattern(rec.id); break
-      case 'FunctionDeclaration':
-      case 'FunctionExpression':
-      case 'ArrowFunctionExpression':
-      case 'ClassDeclaration':
-      case 'ClassExpression':
-        if (rec.id) countPattern(rec.id)
-        for (const p of (rec.params as unknown[]) ?? []) countPattern(p)
-        break
-      case 'ImportSpecifier':
-      case 'ImportDefaultSpecifier':
-      case 'ImportNamespaceSpecifier':
-        countPattern(rec.local)
-        break
-      case 'CatchClause': if (rec.param) countPattern(rec.param); break
-      default: break
-    }
-    for (const key of Object.keys(rec)) {
-      if (key === 'type' || key === 'start' || key === 'end') continue
-      countBindings((rec as Record<string, unknown>)[key])
-    }
-  }
-  countBindings(body)
-
-  const reducerDecls = new Map<string, string>()
-  const addReducer = (name: unknown, fnNode: unknown): void => {
-    if (typeof name !== 'string' || bindingCounts.get(name) !== 1) return
-    reducerDecls.set(name, sourceOf(fnNode as never, code))
-  }
-  for (const stmt of body as AnyNode[]) {
-    const decl = (stmt.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt) as AnyNode | undefined
-    if (decl?.type === 'FunctionDeclaration') { addReducer((decl.id as AnyNode | undefined)?.name, decl); continue }
-    if (decl?.type !== 'VariableDeclaration' || (decl as { kind?: string }).kind !== 'const') continue
-    for (const d of (decl as unknown as VariableDeclaration).declarations) {
-      const id = d.id as unknown as { type: string; name?: string }
-      const init = d.init as AnyNode | null | undefined
-      if (id.type !== 'Identifier' || !init) continue
-      if (init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression') addReducer(id.name, init)
-    }
-  }
-  setReducerDeclarations(reducerDecls)
+  setReducerResolver(createReducerResolver(id, body as unknown[], code))
 
   const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
     for (const st of moduleBody) {
@@ -2066,7 +1995,7 @@ export function transformMacro(
     }
   }
 
-  setReducerDeclarations(null)
+  setReducerResolver(null)
   // Every place the compiler chose a correct-but-slower path for this module. Reported
   // on the ordinary warning channel and greppable on `[parseman] degraded`, so a
   // consumer's build gate can assert zero of them the way jess's `check:macro` already

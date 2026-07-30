@@ -92,43 +92,66 @@ export function buildAnalysisSrc(def: NodeDef): string {
 
 /**
  * Why a parameter list could not be read — the actionable half of the diagnostic.
- * Distinguishing "an import we cannot see" from "a shape we could support" is the
- * difference between a report the author can act on and a report they cannot.
+ *
+ * Only genuinely undecidable shapes reach here. The resolver (`plugin/reducer-resolver.
+ * ts`) handles named reducers, cross-module imports, namespace members, aliases,
+ * non-reassigned `let`/`var`, defaults and destructuring; a decline from it carries a
+ * machine-readable reason, which is what the author needs in order to fix or declare it.
  */
+const RESOLVER_REASONS: Record<string, string> = {
+  'rest-parameter': 'its parameter list uses a rest parameter, so the declared arity is unbounded',
+  'arguments': 'its body references `arguments`',
+  'reassigned': 'the binding it names is reassigned, so the function read here is not decidable',
+  'not-a-function': 'the binding it names is not a function declaration',
+  'unresolved-import': 'its module could not be resolved or parsed',
+  'not-found': 'the name did not resolve to any binding',
+  'computed': 'it is a computed expression',
+}
+
 function unconfirmableReason(def: NodeDef, src: string): string {
-  if (def.buildSigSrc === undefined && /^[A-Za-z_$][\w$]*$/.test(src.trim())) {
-    return `\`${src.trim()}\` did not resolve to a module-scope function declaration `
-      + '(imported binding, shadowed name, or a computed value)'
-  }
+  const declared = def.buildArityUnresolved
+  if (declared !== undefined && RESOLVER_REASONS[declared]) return RESOLVER_REASONS[declared]!
   const s = src.trim()
-  if (/\.\.\./.test(s.slice(0, s.indexOf(')') + 1))) return 'the parameter list uses a rest parameter'
-  if (/\barguments\b/.test(s)) return 'the body references `arguments`'
-  return 'the parameter list is not a flat list of plain identifiers (destructuring, defaults, or an unrecognized shape)'
+  const params = s.slice(0, s.indexOf(')') + 1)
+  if (params.includes('...')) return RESOLVER_REASONS['rest-parameter']!
+  if (/\barguments\b/.test(s)) return RESOLVER_REASONS['arguments']!
+  if (/^[A-Za-z_$][\w$]*(\s*\.\s*[A-Za-z_$][\w$]*)?$/.test(s)) {
+    return 'it names a binding this build could not resolve to a function declaration'
+  }
+  return 'its parameter list could not be parsed'
 }
 
 /**
  * Confirmed formal arity for a node def, reporting once when it cannot be confirmed.
  *
+ * Order of authority:
+ *   1. `node(..., { buildArity })` — the author DECLARED it. Nothing overrides that.
+ *   2. `def.buildArity` as resolved by the macro's reducer resolver (real scope analysis
+ *      and cross-module import following).
+ *   3. Reading the parameter list out of whatever source we have.
+ *
  * Fail-open is the correct BEHAVIOR — capturing too much is safe, capturing too little
- * is a correctness bug. Fail-open with no diagnostic was the defect: the runtime cost
- * of a rule then depends on how its reducer is SPELLED, invisibly, and the only way to
- * discover it is to read the generated artifact.
+ * is a correctness bug. Fail-open with no diagnostic was the defect. But a diagnostic is
+ * the right answer only for the genuinely undecidable; for everything a static analysis
+ * can decide, the right answer is to decide it, which is why (2) exists and why (1) gives
+ * the author a way out of (3) entirely.
  */
 export function confirmedArityForDef(def: NodeDef): number | null {
+  if (def.buildArity !== undefined) return def.buildArity
   const src = buildAnalysisSrc(def)
   const arity = confirmedBuildArity(src)
   if (arity !== null) return arity
   const subject = `build reducer \`${(def.buildSrc ?? '<runtime fn>').trim().split('\n')[0]!.slice(0, 60)}\``
   recordDegradation({
     code: 'build-arity-unconfirmed',
-    // An imported reducer is not the author's to change here; an unreadable local one is.
-    severity: def.buildSigSrc === undefined && /^[A-Za-z_$][\w$]*$/.test(src.trim()) ? 'info' : 'warn',
+    severity: 'warn',
     where: `node("${def.type ?? '<inferred>'}")`,
     subject,
-    fellBackTo: `could not confirm its formal parameter list (${unconfirmableReason(def, src)}), `
+    fellBackTo: `could not confirm its declared arity — ${unconfirmableReason(def, src)} — `
       + 'so this node captures children, fields and raw children, logs trivia, and clones `_ctx.state` on every match',
     otherwise: 'only the tiers the reducer actually declares would be captured '
-      + '(arity >= 1 children, >= 2 fields, >= 4 raw, >= 5 trivia, >= 6 state)',
+      + '(arity >= 1 children, >= 2 fields, >= 4 raw, >= 5 trivia, >= 6 state). '
+      + 'Declare it with `node(..., { buildArity: n })` if it cannot be derived',
   })
   return null
 }

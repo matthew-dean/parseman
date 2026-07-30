@@ -474,6 +474,9 @@ class Serializer {
           ...(projectEntry === undefined ? [] : [projectEntry]),
           ...(def.captureTrivia ? ['captureTrivia: true'] : []),
           ...(def.trailingTrivia ? ['trailingTrivia: true'] : []),
+          // Declared or resolved arity. Carried so a re-lowered composed artifact does
+          // not silently re-acquire the fail-open capture cost this module resolved away.
+          ...(def.buildArity === undefined ? [] : [`buildArity: ${def.buildArity}`]),
           ...(tagEntry === undefined ? [] : [tagEntry]),
         ]
         const opts = optEntries.length > 0 ? `, { ${optEntries.join(', ')} }` : ''
