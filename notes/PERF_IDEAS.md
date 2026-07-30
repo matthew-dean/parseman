@@ -65,6 +65,15 @@ not recognizer costs. The existing packed log is the right representation for a
 consumer that truly needs every labeled token; it is the wrong unavoidable default
 for a compiler that only sometimes re-emits comments.
 
+The exact 288,434-byte PostCSS Bootstrap-Less workload makes the representation
+failure concrete: the current root sink retains **22,663 numeric log cells** and
+`buildRootMaps()` materializes **22,631 root gaps**, while only **20** gaps contain
+a comment (1,664 bytes including their surrounding authored boundary runs). A packed
+cell is cheaper than an object, but 22,000 cells and gaps for 20 meaningful facts is
+still the wrong asymptotic contract. Keep this count in the real-workload gate: a
+selected-comment capture that merely makes map construction faster, while retaining
+the full whitespace stream, has not fixed the architecture.
+
 The rule for this lane is therefore:
 
 > Skip trivia on every ordinary grammar edge. Capture exactly the source facts a
