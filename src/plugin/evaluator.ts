@@ -554,9 +554,15 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
       : STATIC_NODE_OPTIONS_NOT_OPTIONS
     if (buildArgOptions === STATIC_NODE_OPTIONS_FAILED) return null
     const buildArgIsOptions = buildArgOptions !== STATIC_NODE_OPTIONS_NOT_OPTIONS
+    const scopedBuild = buildExpr === undefined
+      ? { found: false } as const
+      : scopedStaticValue(buildExpr, scope)
+    const absentBuild = (buildExpr?.type === 'Identifier' && buildExpr.name === 'undefined')
+      || (buildExpr !== undefined && staticLiteralValue(buildExpr) === null)
+      || (scopedBuild.found && (scopedBuild.value === undefined || scopedBuild.value === null))
     const hasBuild = be !== undefined && be.type !== 'SpreadElement'
       && !buildArgIsOptions
-      && !(buildExpr?.type === 'Identifier' && (buildExpr as { name?: string }).name === 'undefined')
+      && !absentBuild
     const buildSrc = hasBuild ? stripTsFromSource(be! as Node, code) : undefined
     let opts: parseman.NodeOptions<readonly string[]> | undefined
     if (buildArgIsOptions) {

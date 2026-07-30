@@ -336,6 +336,43 @@ export const grammar = rules(g => ({
     expect(() => grammar.AtRule('@media', 0, { trackLines: false, build: cstBuildHost })).not.toThrow()
   })
 
+  it('treats scoped undefined/null build placeholders as absent build callbacks', () => {
+    const code = `node('T', literal('a'), noBuild, { tags: ['x'] })`
+    const undef = evaluateExpr(parseInit(code), new Map([['noBuild', undefined]]) as never, code)
+    const nulled = evaluateExpr(parseInit(code), new Map([['noBuild', null]]) as never, code)
+
+    expect(undef?._def.tag).toBe('node')
+    expect(nulled?._def.tag).toBe('node')
+    if (undef?._def.tag === 'node' && nulled?._def.tag === 'node') {
+      expect(undef._def.build).toBeUndefined()
+      expect(undef._def.buildSrc).toBeUndefined()
+      expect(undef._def.tags).toEqual(['x'])
+      expect(nulled._def.build).toBeUndefined()
+      expect(nulled._def.buildSrc).toBeUndefined()
+      expect(nulled._def.tags).toEqual(['x'])
+    }
+  })
+
+  it('macro-lowers scoped undefined build placeholders as structural tagged nodes', () => {
+    const code = `
+import { rules, node, literal } from 'parseman' with { type: 'macro' }
+const noBuild = undefined
+export const grammar = rules(g => ({
+  T: node('T', literal('a'), noBuild, { tags: ['x'] }),
+}))
+`.trim()
+    const result = transform(code)!
+
+    expect(result.warnings).toEqual([])
+    expect(result.code).toContain('"tags":["x"]')
+
+    const fnBody = result.code.replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn grammar'
+    const grammar = new Function(fnBody)() as { T: (input: string, pos: number, ctx: Record<string, unknown>) => { ok: boolean; value?: unknown } }
+    const parsed = grammar.T('a', 0, { trackLines: false, build: cstBuildHost({ tags: true }) })
+    expect(parsed.ok).toBe(true)
+    expect(parsed.value).toMatchObject({ _tag: 'node', type: 'T', tags: ['x'] })
+  })
+
   it('evaluateExpr rejects unresolved node tags instead of dropping metadata', () => {
     const code = `node('X', literal('a'), { tags: runtimeTags })`
     expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()

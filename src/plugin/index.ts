@@ -70,6 +70,26 @@ export type ParsecraftPluginOptions = {
 
 const PARSEMAN_MODULE = 'parseman'
 
+function unwrapStaticExpression(expr: Expression): Expression {
+  let cur = expr as unknown as { type?: string; expression?: Expression }
+  while (cur.type === 'TSAsExpression'
+    || cur.type === 'TSSatisfiesExpression'
+    || cur.type === 'TSNonNullExpression'
+    || cur.type === 'TSTypeAssertion'
+    || cur.type === 'TSInstantiationExpression'
+    || cur.type === 'ParenthesizedExpression') {
+    if (!cur.expression) break
+    cur = cur.expression as unknown as typeof cur
+  }
+  return cur as Expression
+}
+
+function isStaticNullishExpression(expr: Expression): boolean {
+  const unwrapped = unwrapStaticExpression(expr) as Expression & { name?: string; value?: unknown }
+  return (unwrapped.type === 'Identifier' && unwrapped.name === 'undefined')
+    || (unwrapped.type === 'Literal' && unwrapped.value === null)
+}
+
 // A grammar's carried linkable pieces live ONLY in its COMPILED output (the macro
 // embeds them there), never in its `.ts` source. So resolving an imported grammar
 // to read its pieces must prefer the built `import`/`require` entry — NOT the
@@ -1576,7 +1596,7 @@ export function transformMacro(
         const varName = (d.id as unknown as { name: string }).name
         if (!referencesAny(init, allNames, scope)) {
           const staticValue = evaluateStaticValue(init, scope, code)
-          if (staticValue !== null && staticValue !== undefined) {
+          if (staticValue !== null && staticValue !== undefined || isStaticNullishExpression(init)) {
             ;(scope as Map<string, unknown>).set(varName, staticValue)
           }
           continue
@@ -1737,7 +1757,7 @@ export function transformMacro(
             continue
           }
           const staticValue = evaluateStaticValue(init, scope, code)
-          if (staticValue !== null && staticValue !== undefined) {
+          if (staticValue !== null && staticValue !== undefined || isStaticNullishExpression(init)) {
             ;(scope as Map<string, unknown>).set(varName, staticValue)
             continue
           }
