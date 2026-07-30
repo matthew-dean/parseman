@@ -375,8 +375,14 @@ const why = [
 //
 // Both are legal. What stays illegal is the thing the gate exists to stop: filing into a
 // heading that names a version already on npm as of the base.
+// If the base's version cannot be read — an unparseable or absent package.json at the
+// base commit — fall back to the HEAD comparison rather than passing. An unreadable base
+// is a reason to judge conservatively, not a reason to wave the change through: the
+// fallback is the stricter of the two rules, so the worst case is a release PR being
+// asked to justify itself, never an already-published heading sliding past.
 const basePublished = typeof basePkg.version === 'string' ? parseVersion(basePkg.version) : null
-const headingVsBase = basePublished === null ? 1 : compareVersions(headingVersion, basePublished)
+const headingVsBase =
+  basePublished === null ? headingVsPkg : compareVersions(headingVersion, basePublished)
 
 if (headingVsBase > 0) {
   console.log(
