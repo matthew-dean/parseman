@@ -424,7 +424,7 @@ export function analyzeGatingRules(
   const visited = new Set<Combinator<unknown>>()
 
   const noteUnanalysable = (u: Unanalysable): void => {
-    const key = `${u.rule} ${u.kind}`
+    const key = `${u.rule}\u0000${u.kind}`
     if (seenUnanalysable.has(key)) return
     seenUnanalysable.add(key)
     unanalysable.push(u)
