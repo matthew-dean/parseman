@@ -100,6 +100,20 @@ describe('createVisitor(grammar, spec)', () => {
     expect('tags' in root.children[0]!).toBe(false)
   })
 
+  it('collects reflection from a plain unstamped grammar object', () => {
+    const root = cnode('Declaration', [leaf('color'), leaf(':'), leaf('1')])
+    const seen: string[] = []
+    const visit = createVisitor({ Declaration: toyGrammar.Declaration, ignored: 'not a rule' }, {
+      tag: {
+        Statement(node) { seen.push(node.type) },
+      },
+    })
+
+    visit(root)
+
+    expect(seen).toEqual(['Declaration'])
+  })
+
   it('runs enter before handlers, leave after children, and can prune descent', () => {
     const root = cnode('Root', [
       cnode('Declaration', [leaf('color'), leaf(':'), leaf('1')]),

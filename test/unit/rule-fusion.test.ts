@@ -4,7 +4,7 @@
  * (open recursion), à la carte selection, and a name-closure check.
  */
 import { describe, it, expect } from 'vitest'
-import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile, parseDoc, many, parser, trivia } from '../../src/index.ts'
+import { rules, regex, choice, sequence, literal, optional, sepBy, node, compile, parseDoc, many, parser, trivia, createVisitor } from '../../src/index.ts'
 import type { Combinator, Registry, NodeLike } from '../../src/index.ts'
 import { compose } from '../../src/index.ts'
 import { compileLinkable, ruleDependencies } from '../../src/compiler/codegen.ts'
@@ -343,6 +343,31 @@ describe('fusion — override (open recursion)', () => {
     expect(ok(R.Value!('123!', 0, ctx))).toBe(4) // over.Num matches
     expect(ok(R.Value!('123', 0, ctx))).toBe(-1) // over.Num needs '!', Word fails → no match
     expect(ok(R.Value!('abc', 0, ctx))).toBe(3)  // Word still works
+  })
+
+  it('uses reflection metadata from the winning override, not referenced base rules', () => {
+    const base = rules(g => ({
+      A: node('A', g.B, { tags: ['Root'] }),
+      B: node('B', literal('b'), { tags: ['OldB'] }),
+    }))
+    const over = rules(() => ({
+      B: node('B', literal('b'), { tags: ['NewB'] }),
+    }))
+    const R = compose([base, over], { hostMode: 'cst' })
+    const parsed = R.A!('b', 0, { trackLines: false, build: cstBuildHost() })
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+
+    const seen: string[] = []
+    createVisitor(R, {
+      tag: {
+        Root(node) { seen.push(`root:${node.type}`) },
+        OldB(node) { seen.push(`old:${node.type}`) },
+        NewB(node) { seen.push(`new:${node.type}`) },
+      },
+    })(parsed.value as never)
+
+    expect(seen).toEqual(['root:A', 'new:B'])
   })
 })
 

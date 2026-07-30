@@ -67,7 +67,7 @@ export type NodeCombinator<T, NodeType extends string = never, NodeTag extends s
     readonly [NODE_TAG]?: NodeTag
   }
 
-export type NodeOptions<Tags extends readonly string[] = readonly string[]> = { unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean; tags?: Tags }
+export type NodeOptions<Tags extends readonly string[] = readonly never[]> = { unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean; tags?: Tags }
 export type NodeProjectOptions<I extends number = number> =
   Omit<NodeOptions, 'project' | 'unwrap' | 'collapse'> & { project: I; unwrap?: never; collapse?: never }
 
@@ -105,12 +105,12 @@ function projectChild(children: ReadonlyArray<unknown>, project: number, type: s
   return unwrapChild(children[project])
 }
 
-export function node<P extends Combinator<unknown>, const I extends number, const Tags extends readonly string[] = readonly string[]>(combinator: P, opts: NodeProjectOptions<I> & { tags?: Tags }): NodeCombinator<ProjectValue<P, I>, never, Tags[number]>
-export function node<N, const Tags extends readonly string[] = readonly string[]>(combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, never, Tags[number]>
-export function node<N, const Tags extends readonly string[] = readonly string[]>(combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, never, Tags[number]>
-export function node<const Type extends string, P extends Combinator<unknown>, const I extends number, const Tags extends readonly string[] = readonly string[]>(type: Type, combinator: P, opts: NodeProjectOptions<I> & { tags?: Tags }): NodeCombinator<ProjectValue<P, I>, Type, Tags[number]>
-export function node<N, const Type extends string, const Tags extends readonly string[] = readonly string[]>(type: Type, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
-export function node<N, const Type extends string, const Tags extends readonly string[] = readonly string[]>(type: Type, combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
+export function node<P extends Combinator<unknown>, const I extends number, const Tags extends readonly string[] = readonly never[]>(combinator: P, opts: NodeProjectOptions<I> & { tags?: Tags }): NodeCombinator<ProjectValue<P, I>, never, Tags[number]>
+export function node<N, const Tags extends readonly string[] = readonly never[]>(combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, never, Tags[number]>
+export function node<N, const Tags extends readonly string[] = readonly never[]>(combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, never, Tags[number]>
+export function node<const Type extends string, P extends Combinator<unknown>, const I extends number, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: P, opts: NodeProjectOptions<I> & { tags?: Tags }): NodeCombinator<ProjectValue<P, I>, Type, Tags[number]>
+export function node<N, const Type extends string, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
+export function node<N, const Type extends string, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
 export function node<N>(
   typeOrCombinator: string | Combinator<unknown>,
   combinatorOrBuild?: Combinator<unknown> | BuildNode<N> | NodeOptions,

@@ -305,7 +305,7 @@ import { rules, node, regex } from 'parseman' with { type: 'macro' }
 const baseTags = ['AtRule', 'Statement'] as const
 const tags = baseTags
 export const grammar = rules(g => ({
-  AtRule: node('AtRule', regex(/@[a-z]+/), { tags, debugName: 'ignored' }),
+  AtRule: node('AtRule', regex(/@[a-z]+/), ({ tags: ['DirectAtRule'] as const, debugName: 'ignored' })),
   Declaration: node('Declaration', regex(/[a-z]+/), { tags: baseTags, extra: true }),
 }))
 `.trim()
@@ -313,7 +313,13 @@ export const grammar = rules(g => ({
 
     expect(result.warnings).toEqual([])
     expect(result.code).toContain("Symbol.for('parseman.grammarReflection')")
+    expect(result.code).toContain('"tags":["DirectAtRule"]')
     expect(result.code).toContain('"tags":["AtRule","Statement"]')
+  })
+
+  it('evaluateExpr rejects unresolved node tags instead of dropping metadata', () => {
+    const code = `node('X', literal('a'), { tags: runtimeTags })`
+    expect(evaluateExpr(parseInit(code), new Map(), code)).toBeNull()
   })
 })
 

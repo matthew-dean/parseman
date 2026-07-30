@@ -5230,7 +5230,7 @@ export function compileLinkable(
     if (d.tag !== 'lazy') return true
     try { d.thunk(); return true } catch { return false }
   })
-  const nodeMeta = new Map(ruleMap.map(([name, rule]) => [name, collectGrammarReflection([[name, rule]])]))
+  const nodeMeta = new Map(ruleMap.map(([name, rule]) => [name, collectGrammarReflection([[name, rule]], { followLazy: false })]))
   const ctx: Ctx = {
     vars: 0, indent: 1, regexDecls: [], regexMap: new Map(),
     expectedDecls: [], expectedMap: new Map(), recordFail: true,

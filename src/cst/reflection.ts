@@ -89,21 +89,37 @@ function collectFromCombinator(
   parser: Combinator<unknown>,
   out: Map<string, string[]>,
   seen: Set<Combinator<unknown>>,
+  followLazy = true,
 ): void {
   if (seen.has(parser)) return
   seen.add(parser)
   const def = parser._def
   if (def.tag === 'lazy') {
-    try { collectFromCombinator(def.thunk(), out, seen) } catch {}
+    if (followLazy) {
+      try { collectFromCombinator(def.thunk(), out, seen, followLazy) } catch {}
+    }
     return
   }
   if (def.tag === 'node') addNode(out, def)
-  for (const child of childrenOf(def)) collectFromCombinator(child, out, seen)
+  for (const child of childrenOf(def)) collectFromCombinator(child, out, seen, followLazy)
 }
 
-export function collectGrammarReflection(ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): GrammarReflection {
+export function collectGrammarReflection(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opts?: { followLazy?: boolean },
+): GrammarReflection {
   const byType = new Map<string, string[]>()
-  for (const [, rule] of ruleMap) collectFromCombinator(rule, byType, new Set())
+  const followLazy = opts?.followLazy !== false
+  for (const [, rule] of ruleMap) {
+    if (!followLazy && rule._def.tag === 'lazy') {
+      try {
+        const resolved = rule._def.thunk()
+        if (resolved._def.tag !== 'lazy') collectFromCombinator(resolved, byType, new Set(), false)
+      } catch {}
+      continue
+    }
+    collectFromCombinator(rule, byType, new Set(), followLazy)
+  }
   return { nodes: [...byType].map(([type, tags]) => ({ type, tags })) }
 }
 

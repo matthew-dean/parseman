@@ -119,7 +119,8 @@ with `build`, `unwrap`, or `collapse`. `captureTrivia` owns interior trivia. `tr
 is for a repeating document root at EOF: it commits the active terminal trivia to that node's
 log; blocks with a closing delimiter do not need it. `tags` declares grammar-level CST
 categories used by `createVisitor(grammar, { tag: … })`; tags are stored in grammar
-reflection, not copied onto every CST node. Set at most one of `unwrap` and
+reflection, and are not copied onto CST nodes by default. Use
+`cstBuildHost({ tags: true })` to materialize them on produced CST nodes. Set at most one of `unwrap` and
 `collapse`. See
 [unwrapping and collapsing wrapper rules](../guide/ast#unwrapping-and-collapsing-wrapper-rules).
 
@@ -348,8 +349,8 @@ type VisitorHandler<N extends Walkable, Root extends Walkable = CSTChild, C = un
 type VisitorSpec<G, N extends Walkable = CSTChild, C = undefined> = {
   enter?(node: N, parent: N | null, ctx: C): boolean | void  // false → skip subtree
   leave?(node: N, parent: N | null, ctx: C): void
-  type?: { [Type in GrammarNodeTypes<G>]?: VisitorHandler<CSTNode & { type: Type }, N, C> }
-  tag?: { [Tag in GrammarTags<G>]?: VisitorHandler<CSTNode, N, C> }
+  type?: { [Type in GrammarNodeTypes<G>]?: VisitorHandler<NodeForType<N, Type>, N, C> }
+  tag?: { [Tag in GrammarTags<G>]?: VisitorHandler<NodeForType<N, GrammarNodeTypes<G>>, N, C> }
 }
 ```
 
