@@ -157,7 +157,7 @@ describe('selected root trivia scopes', () => {
     for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
       const result = run(root, 'a b/* hidden */c', options)
       expect(result.ok, engine).toBe(true)
-      expect(result.rootTrivia, engine).toEqual({ mode: 'selected', rows: [], select: ['blockComment'] })
+      expect(result.rootTrivia, engine).toBeUndefined()
     }
   })
 
@@ -166,11 +166,15 @@ describe('selected root trivia scopes', () => {
       .toThrow(/requires an explicit trivia scope/)
   })
 
-  it('rejects nullable or overlapping arms before they can masquerade as classified trivia', () => {
-    expect(() => classifiedTrivia({
+  it('keeps grammar-ordered categories when their leading terminals overlap', () => {
+    const overlapping = classifiedTrivia({
       whitespace: regex(/[ \t]+/),
       broad: regex(/[ \t/]+/),
-    })).toThrow(/overlaps/)
+    })
+    const result = run(parser({ trivia: overlapping }, sequence(literal('a'), literal('b'))), 'a / b', {
+      rootTrivia: { select: ['broad'] },
+    })
+    expect(result.rootTrivia).toMatchObject({ rows: [1, 4, 2, 4, 0], select: ['broad'] })
     expect(() => classifiedTrivia({
       optionalWhitespace: regex(/[ \t]*/),
     })).toThrow(/non-nullable/)
@@ -188,7 +192,7 @@ describe('selected root trivia scopes', () => {
     })
 
     expect(result.ok).toBe(true)
-    expect(result.rootTrivia).toEqual({ mode: 'selected', rows: [], select: ['blockComment'] })
+    expect(result.rootTrivia).toBeUndefined()
   })
 
   it('rejects a selected label the root trivia does not define', () => {
@@ -215,15 +219,13 @@ describe('selected root trivia scopes', () => {
     for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
       const result = run(root, 'a #*x*# b', options)
       expect(result.ok, engine).toBe(true)
-      expect(result.rootTrivia, engine).toEqual({
-        mode: 'selected',
+      expect(result.rootTrivia, engine).toMatchObject({
         rows: [1, 8, 2, 7, 0],
         select: ['whitespace'],
       })
     }
 
-    // The legacy full-root contract uses the same generic arm recognition.
-    expect(run(entry, 'a #*x*# b').triviaLog).toEqual([1, 2, 0, 2, 7, 1, 7, 8, 0])
+    expect(run(entry, 'a #*x*# b').rootTrivia).toBeUndefined()
   })
 
   it('leaves Python-style newlines and indentation visible to the grammar', () => {
@@ -242,7 +244,7 @@ describe('selected root trivia scopes', () => {
       const result = run(root, 'a b\n  c d', { rootTrivia: { select: ['annotation'] } })
       expect(result.ok, engine).toBe(true)
       expect(result.span, engine).toEqual({ start: 0, end: 9 })
-      expect(result.rootTrivia, engine).toEqual({ mode: 'selected', rows: [], select: ['annotation'] })
+      expect(result.rootTrivia, engine).toBeUndefined()
     }
   })
 
@@ -263,7 +265,7 @@ describe('selected root trivia scopes', () => {
     for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
       const result = run(root, 'key: |\n  # literal', { rootTrivia: { select: ['annotation'] } })
       expect(result.ok, engine).toBe(true)
-      expect(result.rootTrivia, engine).toEqual({ mode: 'selected', rows: [], select: ['annotation'] })
+      expect(result.rootTrivia, engine).toBeUndefined()
     }
   })
 
@@ -345,8 +347,7 @@ describe('labeled trivia kinds — macro metadata', () => {
       rootTrivia: { select: ['blockComment', 'blockComment'] },
     })
 
-    expect(result.rootTrivia).toEqual({
-      mode: 'selected',
+    expect(result.rootTrivia).toMatchObject({
       rows: [1, 8, 2, 7, 0],
       select: ['blockComment', 'blockComment'],
     })
@@ -370,10 +371,10 @@ describe('labeled trivia kinds — macro metadata', () => {
     const cst = compose([base, delta], { hostMode: 'cst' }) as { Doc?: Runnable }
     const input = 'x a /*x*/ b y'
     const opts = { rootTrivia: { select: ['blockComment'] as const } }
-    const expected = { mode: 'selected', rows: [3, 10, 4, 9, 0], select: ['blockComment'] }
+    const expected = { rows: [3, 10, 4, 9, 0], select: ['blockComment'] }
 
-    expect(run(ast.Doc!, input, opts).rootTrivia).toEqual(expected)
-    expect(run(cst.Doc!, input, { ...opts, build: cstBuildHost() }).rootTrivia).toEqual(expected)
+    expect(run(ast.Doc!, input, opts).rootTrivia).toMatchObject(expected)
+    expect(run(cst.Doc!, input, { ...opts, build: cstBuildHost() }).rootTrivia).toMatchObject(expected)
   })
 
   it('selected root capture retains only selected labeled markers and their owning range', () => {
@@ -385,15 +386,13 @@ describe('labeled trivia kinds — macro metadata', () => {
     const result = run(grammar.Root, input, { rootTrivia: { select: ['blockComment'] } })
 
     expect(result.ok).toBe(true)
-    expect(result.triviaLog).toEqual([])
-    expect(result.rootTrivia).toEqual({
-      mode: 'selected',
+    expect(result.rootTrivia).toMatchObject({
       rows: [1, 8, 2, 7, 0],
       select: ['blockComment'],
     })
-    expect(result.triviaMap.entries.length).toBe(1)
-    expect(result.triviaMap.entries.kind(0)).toBe('blockComment')
-    expect(result.triviaMap.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
+    expect(result.rootTrivia?.index.entries.length).toBe(1)
+    expect(result.rootTrivia?.index.entries.kind(0)).toBe('blockComment')
+    expect(result.rootTrivia?.index.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
   })
 
   it('selected root capture has interpreter/compiled/macro parity and rolls no whitespace rows into the result', () => {
@@ -408,8 +407,11 @@ describe('labeled trivia kinds — macro metadata', () => {
 
     const interpreted = run(grammar.Root, input, selected)
     const macro = run(compiledGrammar.Root, input, selected)
-    expect(macro.rootTrivia).toEqual(interpreted.rootTrivia)
-    expect(macro.triviaMap.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
+    expect(macro.rootTrivia).toMatchObject({
+      rows: interpreted.rootTrivia?.rows,
+      select: interpreted.rootTrivia?.select,
+    })
+    expect(macro.rootTrivia?.index.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
   })
 
   it('selected root capture rolls back a zero-width probe before the real parse commits', () => {
@@ -425,9 +427,9 @@ describe('labeled trivia kinds — macro metadata', () => {
 
     const interpreted = run(grammar.Root, input, selected)
     const macro = run(compiledGrammar.Root, input, selected)
-    const expected = { mode: 'selected', rows: [1, 8, 2, 7, 0], select: ['blockComment'] }
-    expect(interpreted.rootTrivia).toEqual(expected)
-    expect(macro.rootTrivia).toEqual(expected)
+    const expected = { rows: [1, 8, 2, 7, 0], select: ['blockComment'] }
+    expect(interpreted.rootTrivia).toMatchObject(expected)
+    expect(macro.rootTrivia).toMatchObject(expected)
   })
 
   it('selected root capture leaves no markers from rejected transactional paths', () => {
@@ -472,10 +474,8 @@ describe('labeled trivia kinds — macro metadata', () => {
       const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
       for (const [engine, root] of [['interpreter', grammar.Root], ['compiled', compiledGrammar.Root]] as const) {
         const result = run(root, testCase.input, selected)
-        expect(result.rootTrivia.mode, `${testCase.name}: ${engine}`).toBe('selected')
-        if (result.rootTrivia.mode === 'selected') {
-          expect(result.rootTrivia.rows, `${testCase.name}: ${engine}`).toEqual(testCase.rows)
-        }
+        if (testCase.rows.length === 0) expect(result.rootTrivia, `${testCase.name}: ${engine}`).toBeUndefined()
+        else expect(result.rootTrivia?.rows, `${testCase.name}: ${engine}`).toEqual(testCase.rows)
       }
     }
   })
@@ -490,30 +490,23 @@ describe('labeled trivia kinds — macro metadata', () => {
     expect(grammar.rw._meta?.triviaKindLabels).toEqual([...KIND_LABELS])
   })
 
-  it('run(map.Root) decodes labeled ambient root trivia for interpreter, compiled map, and macro map', () => {
+  it('run(map.Root) retains no ambient root trivia for interpreter, compiled map, and macro map', () => {
     const rw = labeledRw()
     const input = 'a /*x*/ b'
-    const assertLabeledRootLog = (name: string, root: Runnable) => {
+    const assertNoRootTrivia = (name: string, root: Runnable) => {
       const result = run(root, input)
       expect(result.ok, name).toBe(true)
-      expect(result.triviaKindLabels, name).toEqual([...KIND_LABELS])
-      expect(result.triviaMap.entries.stride, name).toBe(3)
-      expect(result.triviaMap.entries.length, name).toBe(3)
-      expect(result.triviaMap.entries.kind(0), name).toBe('whitespace')
-      expect(result.triviaMap.entries.kind(1), name).toBe('blockComment')
-      expect(result.triviaMap.entries.kind(2), name).toBe('whitespace')
-      expect(result.triviaMap.gapBefore(8)?.hasKind('blockComment'), name).toBe(true)
-      expect(result.triviaMap.gapBefore(8)?.text(input), name).toBe(' /*x*/ ')
+      expect(result.rootTrivia, name).toBeUndefined()
     }
 
     const grammar = rules({ trivia: rw }, () => ({
       Root: node('Root', sequence(literal('a'), literal('b'))),
     }))
-    assertLabeledRootLog('interpreter', grammar.Root)
+    assertNoRootTrivia('interpreter', grammar.Root)
 
     const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
     const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
-    assertLabeledRootLog('compiled rule map', compiledGrammar.Root)
+    assertNoRootTrivia('compiled rule map', compiledGrammar.Root)
 
     const macroSource = `
 import { choice, compose, label, literal, node, oneOrMore, regex, rules, sequence, trivia } from 'parseman' with { type: 'macro' }
@@ -532,6 +525,6 @@ export const grammar = compose([rules({ trivia: rw }, (g) => ({
     const macroGrammar = new Function(
       transformed.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar',
     )() as { Root: Runnable }
-    assertLabeledRootLog('macro rule map', macroGrammar.Root)
+    assertNoRootTrivia('macro rule map', macroGrammar.Root)
   })
 })

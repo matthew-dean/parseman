@@ -26,12 +26,10 @@ export type RootTriviaGap = {
 }
 
 export type RootTriviaIndex = {
-  /** Whether entry spans are complete root gaps or selected markers within one. */
-  readonly rootCaptureMode: 'allEntries' | 'selected'
-  /** Lazy entry-level view over the root capture representation. */
+  /** Lazy entry-level view over sparse selected-root rows. */
   readonly entries: TriviaEntriesView
-  /** Trivia kind labels, when the grammar labels trivia arms. */
-  readonly labels: readonly string[] | undefined
+  /** Selected-root label table; entry kind indices refer to this array. */
+  readonly labels: readonly string[]
   /**
    * Contiguous trivia gaps keyed by the following content offset. Values are
    * entry indices into `entries`, not materialized `{ value, span }` objects.
@@ -120,134 +118,8 @@ export function triviaEntries(
   }
 }
 
-function appendEntryRange(map: Map<number, number[]>, key: number, first: number, last: number): void {
-  let indices = map.get(key)
-  if (!indices) {
-    indices = []
-    map.set(key, indices)
-  }
-  for (let i = first; i <= last; i++) indices.push(i)
-}
-
-function buildGap(entries: TriviaEntriesView, start: number, end: number, first: number, last: number): RootTriviaGap {
-  const entryIndices: number[] = []
-  for (let i = first; i <= last; i++) entryIndices.push(i)
-
-  return {
-    start,
-    end,
-    entryIndices,
-    hasKind(kind) {
-      for (const i of entryIndices) {
-        if (entries.kind(i) === kind) return true
-      }
-      return false
-    },
-    text(input) {
-      return input.slice(start, end)
-    },
-  }
-}
-
-function buildRootMaps(entries: TriviaEntriesView): RootTriviaMaps {
-  const before = new Map<number, number[]>()
-  const after = new Map<number, number[]>()
-  const beforeGaps = new Map<number, RootTriviaGap>()
-  const afterGaps = new Map<number, RootTriviaGap>()
-  const gaps: RootTriviaGap[] = []
-  if (entries.length === 0) return { before, after, beforeGaps, afterGaps, gaps }
-
-  const appendGap = (first: number, last: number, start: number, end: number): void => {
-    const gap = buildGap(entries, start, end, first, last)
-    gaps.push(gap)
-    afterGaps.set(start, gap)
-    beforeGaps.set(end, gap)
-    appendEntryRange(after, start, first, last)
-    appendEntryRange(before, end, first, last)
-  }
-
-  let first = 0
-  let start = entries.start(0)
-  let end = entries.end(0)
-
-  for (let i = 1; i < entries.length; i++) {
-    const nextStart = entries.start(i)
-    const nextEnd = entries.end(i)
-    if (nextStart === end) {
-      end = nextEnd
-      continue
-    }
-    appendGap(first, i - 1, start, end)
-    first = i
-    start = nextStart
-    end = nextEnd
-  }
-
-  appendGap(first, entries.length - 1, start, end)
-  return { before, after, beforeGaps, afterGaps, gaps }
-}
-
 /**
- * Build a lazy sparse index over a root `_triviaLog` as returned by `run()`.
- * Labeled trivia logs may split one gap into several adjacent chunks; this view
- * groups contiguous chunks so `before.get(nodeStart)` and `after.get(nodeEnd)`
- * return the full gap as entry indices. Text is still sliced only on demand via
- * `index.entries.text(i, input)`.
- */
-export function buildRootTriviaIndex(
-  log: readonly number[],
-  labels?: readonly string[],
-): RootTriviaIndex {
-  const entries = triviaEntries(log, labels)
-  let maps: RootTriviaMaps | undefined
-  const getMaps = () => {
-    maps ??= buildRootMaps(entries)
-    return maps
-  }
-
-  return {
-    rootCaptureMode: 'allEntries',
-    entries,
-    labels,
-    get before() {
-      return getMaps().before
-    },
-    get after() {
-      return getMaps().after
-    },
-    entryIndicesBefore(offset) {
-      return getMaps().before.get(offset) ?? EMPTY_INDICES
-    },
-    entryIndicesAfter(offset) {
-      return getMaps().after.get(offset) ?? EMPTY_INDICES
-    },
-    gapBefore(offset) {
-      return getMaps().beforeGaps.get(offset)
-    },
-    gapAfter(offset) {
-      return getMaps().afterGaps.get(offset)
-    },
-    gaps() {
-      return getMaps().gaps
-    },
-    gapsWithKind(kind) {
-      const kinds = typeof kind === 'string' ? [kind] : kind
-      const matches: RootTriviaGap[] = []
-      for (const gap of getMaps().gaps) {
-        for (const k of kinds) {
-          if (gap.hasKind(k)) {
-            matches.push(gap)
-            break
-          }
-        }
-      }
-      return matches.length === 0 ? EMPTY_GAPS : matches
-    },
-  }
-}
-
-/**
- * Build a root view over selected-label rows captured as
+ * Build a root view over the sparse selected-label rows captured as
  * `[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, kindIndex]`.
  *
  * This is intentionally a different input shape from `triviaLog`: each row is
@@ -257,7 +129,7 @@ export function buildRootTriviaIndex(
  * contiguous, which lets singleton boundary lookups binary-search the sparse
  * rows without constructing document-wide maps.
  */
-export function buildSelectedRootTriviaIndex(
+export function buildRootTriviaIndex(
   log: readonly number[],
   labels: readonly string[],
 ): RootTriviaIndex {
@@ -317,11 +189,13 @@ export function buildSelectedRootTriviaIndex(
   const makeGap = (first: number, last: number): RootTriviaGap => {
     const start = ownedRangeStart(first)
     const end = ownedRangeEnd(first)
-    const entryIndices = indices(first, last)
+    let entryIndices: readonly number[] | undefined
     return {
       start,
       end,
-      entryIndices,
+      get entryIndices() {
+        return entryIndices ??= indices(first, last)
+      },
       hasKind(kind) {
         for (let i = first; i < last; i++) {
           if (labels[markerKind(i)] === kind) return true
@@ -358,7 +232,6 @@ export function buildSelectedRootTriviaIndex(
   }
 
   return {
-    rootCaptureMode: 'selected',
     entries,
     labels,
     get before() { return getMaps().before },
@@ -385,13 +258,26 @@ export function buildSelectedRootTriviaIndex(
     gapsWithKind(kind) {
       const kinds = typeof kind === 'string' ? [kind] : kind
       const matches: RootTriviaGap[] = []
-      for (const gap of getMaps().gaps) {
-        for (const k of kinds) {
-          if (gap.hasKind(k)) {
-            matches.push(gap)
-            break
+      // Do not materialize the document-wide boundary maps for a sparse query.
+      // The primary consumer selects comments: it needs only comment-bearing gaps,
+      // not an object/Map for every whitespace-owned boundary in the document.
+      for (let first = 0; first < length;) {
+        let last = first + 1
+        while (last < length
+          && ownedRangeStart(last) === ownedRangeStart(first)
+          && ownedRangeEnd(last) === ownedRangeEnd(first)) last++
+        let matched = false
+        for (let i = first; i < last && !matched; i++) {
+          const label = labels[markerKind(i)]
+          for (const kind of kinds) {
+            if (label === kind) {
+              matched = true
+              break
+            }
           }
         }
+        if (matched) matches.push(makeGap(first, last))
+        first = last
       }
       return matches.length === 0 ? EMPTY_GAPS : matches
     },

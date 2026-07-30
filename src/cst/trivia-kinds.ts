@@ -128,6 +128,70 @@ export function scanLabeledTriviaChunks(
   return { end: pos, chunks }
 }
 
+/**
+ * Scan labeled trivia when no caller will retain individual chunks. This is the
+ * ordinary skip path for a classified grammar: labels remain available for an
+ * explicit capture request, but merely having labels must not allocate one
+ * `{ start, end, kindIndex }` object per whitespace/comment run.
+ */
+export function scanLabeledTriviaEnd(
+  input: string,
+  cur: number,
+  spec: LabeledTriviaSpec,
+  state?: unknown,
+): number {
+  let pos = cur
+  let count = 0
+
+  while (pos < input.length) {
+    let matched: { end: number } | null = null
+    for (const arm of spec.arms) {
+      matched = matchArmAt(input, pos, arm.parser, state)
+      if (matched) break
+    }
+    if (!matched) break
+    pos = matched.end
+    count++
+  }
+
+  return count < spec.minRepeats ? cur : pos
+}
+
+/**
+ * Visit classified trivia matches without constructing per-match objects. The
+ * visitor is only invoked after one or more arms matched, which is the shape
+ * used by `classifiedTrivia()`; callers with a stronger repeat minimum keep
+ * the buffered scanner so an unsuccessful minimum cannot leak a partial run.
+ */
+export function visitLabeledTrivia(
+  input: string,
+  cur: number,
+  spec: LabeledTriviaSpec,
+  state: unknown | undefined,
+  visit: (start: number, end: number, kindIndex: number) => void,
+): number | undefined {
+  if (spec.minRepeats > 1) return undefined
+  let pos = cur
+  let count = 0
+
+  while (pos < input.length) {
+    let matched: { end: number; kindIndex: number } | null = null
+    for (const arm of spec.arms) {
+      const match = matchArmAt(input, pos, arm.parser, state)
+      if (match) {
+        matched = { end: match.end, kindIndex: arm.kindIndex }
+        break
+      }
+    }
+    if (!matched) break
+    visit(pos, matched.end, matched.kindIndex)
+    pos = matched.end
+    count++
+  }
+
+  return count < spec.minRepeats ? cur : pos
+}
+
 export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChunk[]): void {
   const kinds = ctx.triviaKindLabels
   const mask = ctx._triviaCaptureMask

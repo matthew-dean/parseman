@@ -1,7 +1,7 @@
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { choice } from './choice.ts'
-import { intersects, matchesEmpty } from './first-set.ts'
+import { matchesEmpty } from './first-set.ts'
 import { oneOrMore } from './repeat.ts'
 
 export function transform<T, U>(
@@ -73,14 +73,6 @@ export function classifiedTrivia(
       throw new TypeError(
         `classifiedTrivia(): ${JSON.stringify(name)} must be non-nullable with a concrete finite first set.`,
       )
-    }
-    for (let j = 0; j < i; j++) {
-      const [previousName, previous] = entries[j]!
-      if (intersects(first, previous._meta.firstSet)) {
-        throw new TypeError(
-          `classifiedTrivia(): ${JSON.stringify(name)} overlaps ${JSON.stringify(previousName)}; categories must have disjoint leading terminals.`,
-        )
-      }
     }
   }
   const labeledArms = entries.map(([name, arm]) => label(name, arm)) as [

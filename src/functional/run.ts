@@ -1,6 +1,6 @@
 import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
 import { REC } from '../recovery/scan.ts'
-import { buildRootTriviaIndex, buildSelectedRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
+import { buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
 /* `cst/host-mode.ts` and `cst/trivia-entries.ts` are import-free by design, so
  * this keeps the `parseman/run` closure minimal — see
  * test/unit/run-entry-closure.test.ts. */
@@ -53,16 +53,16 @@ export type RunOptions = {
    * to these trivia kinds — a bitmask over the grammar's `triviaKindLabels`
    * indices (build it with `triviaKindMask(labels, ['comment', …])`). Unlisted
    * kinds (e.g. whitespace) are skipped over but not recorded per node, so a host
-   * that only reads comments doesn't pay to log every whitespace run. The global
-   * `triviaLog` returned by `run()` is unaffected. Omit to capture every kind.
+   * that only reads comments doesn't pay to log every whitespace run. Omit to
+   * capture every kind.
    */
   triviaCaptureMask?: number
   /**
-   * Root trivia demand. The legacy default records every trivia chunk. Selected
-   * capture records only the named labels, each with the one complete
-   * authored gap that owns it; ordinary whitespace has no root entry.
+   * Opt into sparse root trivia capture. `run()` retains no root trivia unless
+   * this is supplied. Capture records only the named labels, each with the one
+   * complete authored gap that owns it; ordinary whitespace has no root entry.
    */
-  rootTrivia?: 'allEntries' | {
+  rootTrivia?: {
     readonly select: readonly string[]
   }
   /**
@@ -87,9 +87,14 @@ export type RunOptions = {
   profile?: boolean
 }
 
-export type RootTriviaCaptureResult =
-  | { readonly mode: 'allEntries'; readonly log: readonly number[] }
-  | { readonly mode: 'selected'; readonly rows: readonly number[]; readonly select: readonly string[] }
+export type RootTriviaCapture = {
+  /** Packed `[gapStart, gapEnd, markerStart, markerEnd, selectedKindIndex]` rows. */
+  readonly rows: readonly number[]
+  /** Labels requested by this caller; row kind indices refer to this array. */
+  readonly select: readonly string[]
+  /** Lazy lookup over `rows`; no tokens or strings are materialized. */
+  readonly index: RootTriviaIndex
+}
 
 export type RunProfilePass = {
   ms: number
@@ -121,25 +126,11 @@ export type RunResult = {
   /** Recovery diagnostics (tolerant lists / `expect()`) collected during the parse (in order). */
   errors: ParseError[]
   /**
-   * Flat trivia log for building a trivia map. Entry width depends on whether the
-   * grammar uses labeled trivia: 2 numbers per entry (`start, end`) for plain
-   * trivia, 3 numbers per entry (`start, end, kindIndex`) for labeled trivia
-   * (grammars with `label()` arms in their trivia choice). Use `triviaMap` /
-   * `triviaEntries` to consume it format-agnostically rather than iterating raw.
-   * Empty when `rootTrivia.select` was requested; use `rootTrivia.rows` or
-   * `triviaMap` in that sparse mode.
+   * Sparse selected root trivia. This is present only when at least one requested
+   * category was actually retained; omitted means the parse retained no root
+   * trivia at all.
    */
-  triviaLog: number[]
-  /** Trivia kind labels for root-capture stride/kind decoding, when known. */
-  triviaKindLabels?: readonly string[]
-  /**
-   * Lazy sparse root trivia index over the active root capture. It groups contiguous labeled
-   * chunks into one gap and returns entry indices, so consumers can query
-   * before/after offsets without materializing trivia token objects or strings.
-   */
-  triviaMap: RootTriviaIndex
-  /** The concrete root-capture representation used for this parse. */
-  rootTrivia: RootTriviaCaptureResult
+  rootTrivia?: RootTriviaCapture
   /** Offset where unparsed input begins — the first non-trivia character the parse
    * left unconsumed (trailing trivia skipped when `trivia` is given), or null if
    * the whole input was consumed. This is how you detect "the grammar stopped short,
@@ -193,12 +184,12 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
       `run(): start production is ${entry === null ? 'null' : typeof entry}, not a rule — the requested grammar rule does not exist (check the rule name).`,
     )
   }
-  const rootTriviaMode = options.rootTrivia ?? 'allEntries'
-  const triviaLog: number[] = []
-  const selectedRootLog: number[] | undefined = rootTriviaMode === 'allEntries' ? undefined : []
-  const selectedRootLabelIndex = rootTriviaMode === 'allEntries'
-    ? undefined
-    : makeSelectedRootLabelIndex(rootTriviaMode.select)
+  const rootTriviaSelection = options.rootTrivia?.select
+  const captureRootTrivia = rootTriviaSelection !== undefined && rootTriviaSelection.length > 0
+  const selectedRootLog = captureRootTrivia ? [] as number[] : undefined
+  const selectedRootLabelIndex = captureRootTrivia
+    ? makeSelectedRootLabelIndex(rootTriviaSelection)
+    : undefined
   const errors: ParseError[] = []
   const profile = profileState ?? (phase === undefined
     ? undefined
@@ -214,17 +205,19 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   const grammarTrivia = typeof entry !== 'function' ? entry._meta.grammarTrivia : undefined
   const grammarScanSkip = typeof entry !== 'function' ? entry._meta.grammarScanSkip : undefined
   const triviaKindLabels = triviaKindLabelsFromRunnable(entry) ?? triviaKindLabelsFromRunnable(options.trivia)
-  if (rootTriviaMode !== 'allEntries' && triviaKindLabels === undefined) {
+  if (captureRootTrivia && triviaKindLabels === undefined) {
     throw new TypeError('run(): rootTrivia.select requires labeled grammar trivia.')
   }
-  if (rootTriviaMode !== 'allEntries') {
-    for (const label of rootTriviaMode.select) {
+  if (captureRootTrivia) {
+    for (const label of rootTriviaSelection) {
       if (!triviaKindLabels!.includes(label)) {
         throw new TypeError(`run(): rootTrivia.select contains unknown trivia label ${JSON.stringify(label)}.`)
       }
     }
   }
-  if (rootTriviaMode !== 'allEntries' && !rootTriviaClassifiedFromRunnable(entry)) {
+  if (captureRootTrivia
+    && !rootTriviaClassifiedFromRunnable(entry)
+    && !rootTriviaClassifiedFromRunnable(options.trivia)) {
     throw new TypeError(
       'run(): rootTrivia.select requires classifiedTrivia() at the root.',
     )
@@ -258,13 +251,13 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
     ...(skipGlobalSinks
       ? { _pmProfile: profile! }
       : {
-        ...(rootTriviaMode === 'allEntries'
-          ? { _triviaLog: triviaLog }
-          : {
-            _rootTriviaLog: selectedRootLog!,
-            _rootTriviaKindIndex: selectedRootLabelIndex!,
-            _rootTriviaStrictScopes: true,
-          }),
+        ...(captureRootTrivia
+          ? {
+              _rootTriviaLog: selectedRootLog!,
+              _rootTriviaKindIndex: selectedRootLabelIndex!,
+              _rootTriviaStrictScopes: true,
+            }
+          : {}),
         _errors: errors,
         ...(profile === undefined ? {} : { _pmProfile: profile }),
       }),
@@ -297,14 +290,15 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
     span: r.span ?? { start: 0, end: 0 },
     expected: r.ok ? [] : ((r as { expected?: string[] }).expected ?? []),
     errors,
-    triviaLog,
-    ...(triviaKindLabels === undefined ? {} : { triviaKindLabels }),
-    triviaMap: rootTriviaMode === 'allEntries'
-      ? buildRootTriviaIndex(triviaLog, triviaKindLabels)
-      : buildSelectedRootTriviaIndex(selectedRootLog!, rootTriviaMode.select),
-    rootTrivia: rootTriviaMode === 'allEntries'
-      ? { mode: 'allEntries', log: triviaLog }
-      : { mode: 'selected', rows: selectedRootLog!, select: rootTriviaMode.select },
+    ...(selectedRootLog !== undefined && selectedRootLog.length > 0
+      ? {
+          rootTrivia: {
+            rows: selectedRootLog!,
+            select: rootTriviaSelection!,
+            index: buildRootTriviaIndex(selectedRootLog!, rootTriviaSelection!),
+          },
+        }
+      : {}),
     unconsumedFrom,
   }
 }

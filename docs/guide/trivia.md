@@ -103,10 +103,10 @@ const rw = trivia(oneOrMore(choice(
   label('blockComment', regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)),
 )))
 
-// After a run(), resolve kinds and boundary gaps lazily:
-const result = run(Document, input, { trivia: rw })
-const entries = result.triviaMap.entries
-entries.kind(0)         // 'whitespace'
+// Root trivia is opt-in; resolve selected kinds and gaps lazily:
+const result = run(Document, input, { trivia: rw, rootTrivia: { select: ['blockComment'] } })
+const entries = result.rootTrivia!.index.entries
+entries.kind(0)         // 'blockComment'
 entries.text(0, input)  // slice on demand
 ```
 
@@ -120,13 +120,11 @@ run of consecutive numbers, so entry `i` starts at `i * stride`:
 
 | Log | Without labels | With labels |
 | --- | --- | --- |
-| Root `_triviaLog` | `[start, end]` (stride 2) | `[start, end, kind]` (stride 3) |
 | Per-node `triviaLog` (`{ nodeLog: true }`) | `[start, end, insertIdx]` (stride 3) | `[start, end, insertIdx, kind]` (stride 4) |
 
 `triviaEntries(log, labels?, opts?)` gives you an indexed view — `.start(i)`, `.end(i)`,
 `.insertIndex(i)` (for a per-node log), `.kind(i)`, `.text(i, input)` — without materializing
-objects. `insertIndex(i)` is the `rawChildren` boundary before which that trivia was consumed;
-it is `undefined` for a root log.
+objects. `insertIndex(i)` is the `rawChildren` boundary before which that trivia was consumed.
 
 ### Sparse root capture
 
@@ -147,7 +145,7 @@ const result = run(Document, input, {
   rootTrivia: { select: ['blockComment', 'lineComment'] },
 })
 
-result.triviaMap.gapsWithKind(['blockComment', 'lineComment'])
+result.rootTrivia!.index.gapsWithKind(['blockComment', 'lineComment'])
 ```
 
 Selected capture stores one numeric row per selected marker:
@@ -158,12 +156,16 @@ their own trivia-label order safely. The first
 pair still lets `gapBefore` / `gapAfter` reproduce the full authored range around
 the marker, while whitespace-only ranges allocate nothing. Labels are arbitrary:
 use `significantNewline` if line layout is part of your formatter's policy; do not
-select broad `whitespace` merely to make line layout observable. In this mode
-`result.triviaLog` is intentionally empty; `result.triviaMap` is the normal API and
-`result.rootTrivia.rows` exposes the raw compact rows when needed.
+select broad `whitespace` merely to make line layout observable. Without
+`rootTrivia.select`, `run()` retains no root trivia at all. With it, a result
+still omits `rootTrivia` when no selected marker occurred; otherwise
+`result.rootTrivia.index` is the normal API and `result.rootTrivia.rows` exposes
+the raw compact rows when needed.
 
 `classifiedTrivia()` is the safe constructor for selected root capture: each
-name owns a distinct grammar arm. A bare `label('whitespace', broadMatcher)`
+name owns a distinct grammar arm. Arms retain ordinary ordered-choice semantics,
+so categories such as `lineComment` and `blockComment` may legitimately share
+their opening character. A bare `label('whitespace', broadMatcher)`
 only says that the *whole* broad match is whitespace; it cannot expose a
 comment that matcher consumed internally. Every local `parser({ trivia })`
 scope must likewise use `classifiedTrivia()`, or
@@ -178,28 +180,29 @@ structurally scannable trivia arm can use the compact scanner whether it is
 unlabeled, retained as a selected category, or not retained at all. Selecting a
 category changes what is recorded, not which trivia syntax is fast.
 
-`run()` also returns `triviaMap`, a lazy root-log gap index. It groups contiguous labeled chunks
-into one boundary gap, so `triviaMap.entryIndicesBefore(node.span.start)` and
-`triviaMap.entryIndicesAfter(node.span.end)` return indices into `triviaMap.entries` without
-slicing strings. If you have only a raw root log, `buildRootTriviaIndex(log, labels?)` builds the
-same view.
+`result.rootTrivia.index` is a lazy sparse root-gap index. It groups selected
+markers sharing one authored range into one boundary gap, so
+`index.entryIndicesBefore(node.span.start)` and `index.entryIndicesAfter(node.span.end)`
+return indices into `index.entries` without slicing strings. If you persist sparse
+rows separately, `buildRootTriviaIndex(rows, select)` rebuilds the same view.
 
 For AST reducers and serializers, query the grouped gaps directly:
 
 ```ts
-const beforeNode = result.triviaMap.gapBefore(node.span.start)
+const index = result.rootTrivia!.index
+const beforeNode = index.gapBefore(node.span.start)
 const preserved: string[] = []
 
 if (beforeNode?.hasKind('blockComment')) {
   preserved.push(beforeNode.text(input))
 }
 
-for (const gap of result.triviaMap.gapsWithKind(['blockComment', 'lineComment'])) {
+for (const gap of index.gapsWithKind(['blockComment', 'lineComment'])) {
   preserved.push(input.slice(gap.start, gap.end))
 }
 ```
 
-The gap object keeps entry indices into `triviaMap.entries`; it does not materialize token
+The gap object keeps entry indices into `index.entries`; it does not materialize token
 objects or copy strings. `gap.text(input)` slices only when you ask for authored text. For older
 CST-tree access that materializes trivia token values, pass the tree to
 [`buildTriviaIndex`](../reference/api#buildtriviaindex).

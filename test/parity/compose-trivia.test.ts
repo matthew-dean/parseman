@@ -93,8 +93,7 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
     const { g } = evalMacroModule(out!.code, 'g')
     const result = run(g.Doc, 'x a /*x*/ b y', { rootTrivia: { select: ['blockComment'] } })
 
-    expect(result.rootTrivia).toEqual({
-      mode: 'selected',
+    expect(result.rootTrivia).toMatchObject({
       rows: [3, 10, 4, 9, 0],
       select: ['blockComment'],
     })
@@ -119,8 +118,7 @@ export const g = compose([base, rules({ trivia: outerTrivia }, (g) => ({ Doc: se
     const result = run(g.Doc, 'x a /*x*/ b y', {
       rootTrivia: { select: ['blockComment'] },
     })
-    expect(result.rootTrivia).toEqual({
-      mode: 'selected',
+    expect(result.rootTrivia).toMatchObject({
       rows: [3, 10, 4, 9, 0],
       select: ['blockComment'],
     })
@@ -141,11 +139,26 @@ export const g = composeLeaf([syntax, rules({ trivia: rw }, g => ({ Doc: sequenc
     const { g } = evalMacroModule(out!.code, 'g')
     const result = run(g.Doc, 'x a /*x*/ b y', { rootTrivia: { select: ['blockComment'] } })
 
-    expect(result.rootTrivia).toEqual({
-      mode: 'selected',
+    expect(result.rootTrivia).toMatchObject({
       rows: [3, 10, 4, 9, 0],
       select: ['blockComment'],
     })
+  })
+
+  it('macro-fuses a classified trivia helper used by a top-level leaf before composeLeaf', () => {
+    const code = `
+import { classifiedTrivia, composeLeaf, leaf, noTrivia, optional, rules, sequence, literal, regex } from 'parseman' with { type: 'macro' }
+const rw = classifiedTrivia({
+  whitespace: regex(/[ \\t\\n]+/),
+  blockComment: regex(/\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\//),
+})
+const operator = leaf(noTrivia(sequence(optional(rw), literal('*'), optional(rw))), children => children[1])
+const syntax = rules(g => ({ Pair: sequence(literal('a'), literal('b')) }))
+export const g = composeLeaf([syntax, rules({ trivia: rw }, g => ({ Doc: sequence(literal('x'), operator, literal('y')) }))])
+`
+    const out = transformMacro(code, 'selected-compose-leaf-helper.ts', new Set(['parseman']))
+    expect(out).not.toBeNull()
+    expect(out!.warnings).toEqual([])
   })
 
   it('macro-fused local trivia cannot erase a selected root category', () => {
@@ -171,6 +184,6 @@ export const g = rules({ trivia: root }, (g) => ({
 
     expect(run(g.Opaque, 'c /* intentionally opaque */ d', {
       rootTrivia: { select: ['blockComment'] },
-    }).rootTrivia).toEqual({ mode: 'selected', rows: [], select: ['blockComment'] })
+    }).rootTrivia).toBeUndefined()
   })
 })

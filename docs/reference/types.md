@@ -180,7 +180,7 @@ type RunOptions = {
   state?: unknown                 // initial ctx.state
   trivia?: Runnable       // skip trailing trivia before computing unconsumedFrom
   triviaCaptureMask?: number      // per-node CST trivia-kind bitmask
-  rootTrivia?: 'allEntries' | {
+  rootTrivia?: {
     select: readonly string[]
   }
   tolerant?: boolean              // enable list recovery diagnostics
@@ -193,16 +193,15 @@ type RunResult = {
   span: { start: number; end: number }
   expected: string[]                   // when the top-level parse failed
   errors: ParseError[]                 // tolerant-list / expect() diagnostics
-  triviaLog: number[]                  // legacy full root log; empty in selected mode
-  triviaKindLabels?: readonly string[] // label table for the kind column, when known
-  triviaMap: RootTriviaIndex           // lazy sparse gap index over the root capture
-  rootTrivia: RootTriviaCaptureResult
+  rootTrivia?: RootTriviaCapture        // only when selected root rows were retained
   unconsumedFrom: number | null            // first non-trivia offset left unconsumed, else null
 }
 
-type RootTriviaCaptureResult =
-  | { mode: 'allEntries'; log: readonly number[] }
-  | { mode: 'selected'; rows: readonly number[]; select: readonly string[] }
+type RootTriviaCapture = {
+  rows: readonly number[]              // packed selected-root rows
+  select: readonly string[]            // label table for the row kind column
+  index: RootTriviaIndex               // lazy sparse gap index over rows
+}
 ```
 
 ### `RootTriviaIndex`

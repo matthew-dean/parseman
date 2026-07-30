@@ -87,7 +87,7 @@ export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, Node
 export { parseDoc } from './functional/doc.ts'
 export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts'
 export { run } from './functional/run.ts'
-export type { RootTriviaCaptureResult, RunResult, RunOptions, RunProfile, RunProfilePass, Runnable } from './functional/run.ts'
+export type { RootTriviaCapture, RunResult, RunOptions, RunProfile, RunProfilePass, Runnable } from './functional/run.ts'
 export { GRAMMAR_COVERAGE_DEFINITIONS, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, grammarCoverageDefinitions, composedGrammarCoverageDefinitions, runWithGrammarCoverage } from './coverage.ts'
 export type { GrammarCoverageCollector, GrammarCoverageDefinition, GrammarCoverageSnapshot, GrammarInstrumentationContext, GrammarTraceEvent, GrammarTracePhase, GrammarTraceSink, GrammarTraceSnapshot } from './coverage.ts'
 export { buildTriviaIndex } from './cst/trivia-index.ts'
@@ -95,7 +95,7 @@ export type { TriviaIndex, TriviaToken, TriviaIndexOptions } from './cst/trivia-
 export { createVisitor } from './cst/walk.ts'
 export type { Walkable, VisitorHandler, VisitorSpec } from './cst/walk.ts'
 export type { GrammarReflection, GrammarNodeReflection, GrammarWithReflection } from './cst/reflection.ts'
-export { buildRootTriviaIndex, buildSelectedRootTriviaIndex, triviaEntries } from './cst/trivia-entries.ts'
+export { buildRootTriviaIndex, triviaEntries } from './cst/trivia-entries.ts'
 export type { RootTriviaGap, RootTriviaIndex, TriviaEntriesView } from './cst/trivia-entries.ts'
 export { triviaKindMask } from './cst/trivia-kinds.ts'
 

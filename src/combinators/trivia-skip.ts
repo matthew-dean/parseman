@@ -3,7 +3,9 @@ import { parseClassRanges } from '../regex/classes.ts'
 import {
   analyzeLabeledTrivia,
   recordTriviaChunks,
+  scanLabeledTriviaEnd,
   scanLabeledTriviaChunks,
+  visitLabeledTrivia,
 } from '../cst/trivia-kinds.ts'
 import {
   pushCstTriviaEntry,
@@ -105,6 +107,44 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaSc
   const spec = analyzeLabeledTrivia(triviaP)
   if (!spec) return { end: cur, commit: NOOP_COMMIT }
 
+  const log = ctx._triviaLog
+  const rootLog = ctx._rootTriviaLog
+  const rootKinds = ctx._rootTriviaKindIndex
+  const captureTl = ctx.captureTrivia && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)
+  const mask = ctx._triviaCaptureMask
+  let fullRows: number[] | undefined
+  let rootRows: number[] | undefined
+  let cstRows: number[] | undefined
+  const visitedEnd = visitLabeledTrivia(input, cur, spec, ctx.state, (start, matchEnd, kindIndex) => {
+    if (log !== undefined) (fullRows ??= []).push(start, matchEnd, kindIndex)
+    const selectedKind = rootLog === undefined || rootKinds === undefined || ctx._rootTriviaCapture === false
+      ? undefined
+      : rootKinds[spec.labels[kindIndex] ?? '']
+    if (selectedKind !== undefined) (rootRows ??= []).push(start, matchEnd, selectedKind)
+    if (captureTl && (mask === undefined || (mask & (1 << kindIndex)) !== 0)) {
+      (cstRows ??= []).push(start, matchEnd, kindIndex)
+    }
+  })
+  if (visitedEnd !== undefined) {
+    if (visitedEnd === cur) return { end: cur, commit: NOOP_COMMIT }
+    return {
+      end: visitedEnd,
+      commit: () => {
+        if (fullRows !== undefined && log !== undefined) log.push(...fullRows)
+        if (rootRows !== undefined && rootLog !== undefined) {
+          for (let i = 0; i < rootRows.length; i += 3) {
+            rootLog.push(cur, visitedEnd, rootRows[i]!, rootRows[i + 1]!, rootRows[i + 2]!)
+          }
+        }
+        if (cstRows !== undefined) {
+          for (let i = 0; i < cstRows.length; i += 3) {
+            pushCstTriviaEntry(ctx, cstRows[i]!, cstRows[i + 1]!, cstRows[i + 2]!)
+          }
+        }
+      },
+    }
+  }
+
   const { end, chunks } = scanLabeledTriviaChunks(input, cur, spec, ctx.state)
   if (end === cur) return { end: cur, commit: NOOP_COMMIT }
 
@@ -112,6 +152,14 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaSc
     end,
     commit: () => recordTriviaChunks(ctx, chunks),
   }
+}
+
+/** Skip classified trivia without constructing retained chunk records. */
+function skipWithLabels(input: string, cur: number, ctx: ParseContext): number {
+  const spec = analyzeLabeledTrivia(ctx.trivia!)
+  if (spec) return scanLabeledTriviaEnd(input, cur, spec, ctx.state)
+  const tr = parseTriviaNoCapture(ctx.trivia!, input, cur, ctx)
+  return tr.ok && tr.span.end > cur ? tr.span.end : cur
 }
 
 /**
@@ -124,10 +172,7 @@ export function advanceTrivia(input: string, cur: number, ctx: ParseContext): nu
   if (!ctx.trackLines) {
     const fast = fastTriviaScanner(triviaP)
     if (fast) return fast(input, cur)
-    if (ctx.triviaKindLabels) {
-      const scan = scanWithLabels(input, cur, ctx)
-      return scan.end
-    }
+    if (ctx.triviaKindLabels) return skipWithLabels(input, cur, ctx)
     const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
     return tr.ok && tr.span.end > cur ? tr.span.end : cur
   }
@@ -139,9 +184,9 @@ export function advanceTrivia(input: string, cur: number, ctx: ParseContext): nu
     return end
   }
   if (ctx.triviaKindLabels) {
-    const scan = scanWithLabels(input, cur, ctx)
-    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, scan.end)
-    return scan.end
+    const end = skipWithLabels(input, cur, ctx)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+    return end
   }
   const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
   return tr.ok && tr.span.end > cur ? tr.span.end : cur
@@ -167,6 +212,8 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
     if (ctx.triviaKindLabels && (log !== undefined || rootLog !== undefined || captureTl)) {
       return scanWithLabels(input, cur, ctx)
     }
+
+    if (ctx.triviaKindLabels) return { end: skipWithLabels(input, cur, ctx), commit: NOOP_COMMIT }
 
     if (log !== undefined || rootLog !== undefined || captureTl) {
       const tr = triviaP.parse(input, cur, {
@@ -200,6 +247,12 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
     const scan = scanWithLabels(input, cur, ctx)
     if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, scan.end)
     return scan
+  }
+
+  if (ctx.triviaKindLabels) {
+    const end = skipWithLabels(input, cur, ctx)
+    if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+    return { end, commit: NOOP_COMMIT }
   }
 
   if (log !== undefined || rootLog !== undefined || captureTl) {

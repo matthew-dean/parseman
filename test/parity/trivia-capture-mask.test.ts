@@ -91,19 +91,14 @@ describe('per-node trivia capture kind-filter (_triviaCaptureMask)', () => {
     expect(c).toEqual(i)
   })
 
-  it('the global _triviaLog stays complete even when the per-node log is filtered', () => {
-    // run() always builds the global log; the mask must not touch it.
+  it('a per-node capture mask does not opt run() into root trivia retention', () => {
     const compiled = compile(grammar())
     const res = run(
       (input, pos, ctx) => compiled.parseWithContext(input, ctx, pos),
       INPUT,
       { triviaCaptureMask: triviaKindMask(KIND_LABELS, ['blockComment'])! },
     )
-    // 6 trivia chunks total (ws,comment,ws,ws,comment,ws) × 3 numbers each = 18.
-    expect(res.triviaLog.length).toBe(18)
-    const globalKinds: number[] = []
-    for (let i = 2; i < res.triviaLog.length; i += 3) globalKinds.push(res.triviaLog[i]!)
-    expect(globalKinds).toEqual([WS, COMMENT, WS, WS, COMMENT, WS])
+    expect(res.rootTrivia).toBeUndefined()
   })
 
   it('captureTriviaKinds parser() option wires the mask (interpreter)', () => {

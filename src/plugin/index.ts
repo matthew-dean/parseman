@@ -1726,7 +1726,11 @@ export function transformMacro(
         if (isComposeLeafCall(init)) {
           const fused = compileComposeLeafCall(init)
           if (!fused) {
-            throw new Error(`${id}:${lineOf(init.start)} — composeLeaf() must macro-fuse; runtime composition is forbidden`)
+            const reasons = warnings.slice(-4)
+            throw new Error(
+              `${id}:${lineOf(init.start)} — composeLeaf() must macro-fuse; runtime composition is forbidden`
+              + (reasons.length ? `\n  causes:\n  - ${reasons.join('\n  - ')}` : ''),
+            )
           }
           replacements.push({ start: init.start, end: init.end, replacement: fused.replacement })
           markUsedImportedFactories(fused.importedFactories)
