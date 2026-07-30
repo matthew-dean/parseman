@@ -756,10 +756,9 @@ function ensureTriviaFn(ctx: Ctx): string {
       return fnName
     }
   } else {
-    // LABELED trivia: if every arm is scannable, the same char-scan loop but with
-    // per-chunk kind capture (generalizes the old hardcoded ws-run + block-comment
-    // case to any shape set / arm count). Otherwise fall to the regex/runtime
-    // kind-tracking loops, which handle non-scannable arms.
+    // LABELED trivia: if every arm is scannable, the same char-scan loop with
+    // per-chunk category capture. Recognition is structural; labels are data.
+    // Otherwise fall to the regex/runtime kind-tracking loops.
     const labeledShapes = analyzeLabeledScannableRun(trivia)
     if (labeledShapes) {
       ctx.namedFnDecls.push(buildLabeledScannableTriviaFnDecl(fnName, labeledShapes))

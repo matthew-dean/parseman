@@ -252,8 +252,7 @@ export function buildRootTriviaIndex(
  *
  * This is intentionally a different input shape from `triviaLog`: each row is
  * one selected marker, while the first pair names the complete committed trivia
- * range around it. Thus a whitespace / block-comment / whitespace run costs one
- * five-number row, not three
+ * range around it. Thus a mixed trivia run costs one five-number row, not three
  * legacy trivia entries. Rows are source ordered and equal gap pairs are
  * contiguous, which lets singleton boundary lookups binary-search the sparse
  * rows without constructing document-wide maps.

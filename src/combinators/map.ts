@@ -53,8 +53,9 @@ export function trivia<T>(combinator: Combinator<T>): Combinator<T> {
  * Build trivia whose category labels are part of its recognition structure.
  *
  * Use this for a grammar that exposes selected root trivia. In contrast to
- * `trivia(label('whitespace', broadRegex))`, every category here owns one arm,
- * so a block comment cannot be silently consumed under the whitespace label.
+ * `trivia(label('categoryA', broadRegex))`, every category here owns one arm,
+ * so one selected category cannot be silently consumed under another category's
+ * broad matcher.
  * `rootTrivia: { select }` rejects ordinary scoped trivia
  * unless that scope explicitly declares itself opaque.
  */

@@ -188,6 +188,74 @@ describe('selected root trivia scopes', () => {
     })).toThrow(/unknown trivia label "missing"/)
   })
 
+  it('treats selected category names as opaque metadata, not trivia semantics', () => {
+    // The labels deliberately lie: `comment` owns spaces, while `whitespace`
+    // owns a banner token with literal `*` characters. Recognition must come
+    // exclusively from the user-provided arm, never a label or inferred shape.
+    const generic = classifiedTrivia({
+      comment: regex(/[ ]+/),
+      whitespace: regex(/#\*[^]*?\*#/),
+    })
+    const entry = parser({ trivia: generic }, sequence(literal('a'), literal('b')))
+    const options = { rootTrivia: { select: ['whitespace'] as const } }
+    const compiled = compileRuleMap([['Entry', entry]])!
+    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
+
+    for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
+      const result = run(root, 'a #*x*# b', options)
+      expect(result.ok, engine).toBe(true)
+      expect(result.rootTrivia, engine).toEqual({
+        mode: 'selected',
+        rows: [1, 8, 2, 7, 0],
+        select: ['whitespace'],
+      })
+    }
+
+    // The legacy full-root contract uses the same generic arm recognition.
+    expect(run(entry, 'a #*x*# b').triviaLog).toEqual([1, 2, 0, 2, 7, 1, 7, 8, 0])
+  })
+
+  it('leaves Python-style newlines and indentation visible to the grammar', () => {
+    const inline = classifiedTrivia({
+      separator: regex(/[ \t]+/),
+      annotation: regex(/#[^\n\r]*/),
+    })
+    const indentation = parser({ trivia: null }, sequence(literal('\n'), literal('  ')))
+    const entry = parser({ trivia: inline }, sequence(
+      literal('a'), literal('b'), indentation, literal('c'), literal('d'),
+    ))
+    const compiled = compileRuleMap([['Entry', entry]])!
+    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
+
+    for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
+      const result = run(root, 'a b\n  c d', { rootTrivia: { select: ['annotation'] } })
+      expect(result.ok, engine).toBe(true)
+      expect(result.span, engine).toEqual({ start: 0, end: 9 })
+      expect(result.rootTrivia, engine).toEqual({ mode: 'selected', rows: [], select: ['annotation'] })
+    }
+  })
+
+  it('keeps YAML-style block content out of ambient trivia', () => {
+    const inline = classifiedTrivia({
+      separation: regex(/[ \t]+/),
+      annotation: regex(/#[^\n\r]*/),
+    })
+    const blockContent = parser({ trivia: null }, sequence(
+      literal('\n'), literal('  '), regex(/#[^\n\r]*/),
+    ))
+    const entry = parser({ trivia: inline }, sequence(
+      literal('key'), literal(':'), literal('|'), blockContent,
+    ))
+    const compiled = compileRuleMap([['Entry', entry]])!
+    const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Entry: Runnable }
+
+    for (const [engine, root] of [['interpreter', entry], ['compiled', compiledGrammar.Entry]] as const) {
+      const result = run(root, 'key: |\n  # literal', { rootTrivia: { select: ['annotation'] } })
+      expect(result.ok, engine).toBe(true)
+      expect(result.rootTrivia, engine).toEqual({ mode: 'selected', rows: [], select: ['annotation'] })
+    }
+  })
+
   it('does not leak a nested classified opaque scope into its unclassified wrapper', () => {
     // `parser()` is a real scope boundary even when its child happens to be
     // another parser. Its metadata must describe only its own opts.trivia;

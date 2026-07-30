@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { trivia, label, regex, oneOrMore } from '../../src/index.ts'
-import { analyzeLabeledTrivia, triviaKindLabels, scanFastWsCommentsChunks, scanLabeledTriviaChunks } from '../../src/cst/trivia-kinds.ts'
+import { analyzeLabeledTrivia, triviaKindLabels, scanLabeledTriviaChunks } from '../../src/cst/trivia-kinds.ts'
 
 describe('analyzeLabeledTrivia() — single labeled arm', () => {
   it('accepts oneOrMore of a single labeled regex (non-choice shape)', () => {
@@ -8,14 +8,6 @@ describe('analyzeLabeledTrivia() — single labeled arm', () => {
     const spec = analyzeLabeledTrivia(rw)
     expect(spec?.labels).toEqual(['whitespace'])
     expect(triviaKindLabels(rw)).toEqual(['whitespace'])
-  })
-})
-
-describe('scanFastWsCommentsChunks()', () => {
-  it('stops at an unterminated block comment without consuming it', () => {
-    const { end, chunks } = scanFastWsCommentsChunks('  /* open', 0, 0, 1)
-    expect(end).toBe(2)
-    expect(chunks).toEqual([{ start: 0, end: 2, kindIndex: 0 }])
   })
 })
 

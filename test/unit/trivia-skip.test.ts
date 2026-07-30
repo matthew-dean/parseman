@@ -29,11 +29,10 @@ describe('advanceTrivia()', () => {
     expect(advanceTrivia('y', 0, ctx)).toBe(0)
   })
 
-  it('fast-skips unlabeled whitespace and block-comment trivia without regex exec', () => {
-    const rw = trivia(oneOrMore(choice(
-      regex(/[ \t\n\r\f]+/),
-      regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
-    )))
+  it('fast-skips a structurally scannable character run without regex exec', () => {
+    // The acceleration is based only on the proven char-run structure. It does
+    // not reserve any punctuation or category name for a particular language.
+    const rw = trivia(regex(/[ \t\n\r\f]+/))
     expect(advanceTrivia('', 0, { trackLines: false, trivia: rw })).toBe(0)
     const exec = RegExp.prototype.exec
     let calls = 0
@@ -42,7 +41,7 @@ describe('advanceTrivia()', () => {
       return exec.call(this, input)
     }
     try {
-      expect(advanceTrivia('  /*x*/  y', 0, { trackLines: false, trivia: rw })).toBe(9)
+      expect(advanceTrivia('  \t\r\ny', 0, { trackLines: false, trivia: rw })).toBe(5)
       expect(calls).toBe(0)
     } finally {
       RegExp.prototype.exec = exec

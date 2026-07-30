@@ -4,7 +4,6 @@ import {
   analyzeLabeledTrivia,
   recordTriviaChunks,
   scanLabeledTriviaChunks,
-  tryFastLabeledScan,
 } from '../cst/trivia-kinds.ts'
 import {
   pushCstTriviaEntry,
@@ -106,8 +105,7 @@ function scanWithLabels(input: string, cur: number, ctx: ParseContext): TriviaSc
   const spec = analyzeLabeledTrivia(triviaP)
   if (!spec) return { end: cur, commit: NOOP_COMMIT }
 
-  const fast = tryFastLabeledScan(input, cur, triviaP)
-  const { end, chunks } = fast ?? scanLabeledTriviaChunks(input, cur, spec)
+  const { end, chunks } = scanLabeledTriviaChunks(input, cur, spec, ctx.state)
   if (end === cur) return { end: cur, commit: NOOP_COMMIT }
 
   return {
@@ -281,7 +279,6 @@ function regexTriviaScanner(parser: Combinator<unknown>): FastTriviaScanner | nu
   const source = parser._def.source
   return classRunSource(source)
     ?? altStarSource(source)
-    ?? (blockCommentSource(source) ? scanBlockComment : null)
 }
 
 function inRanges(cp: number, ranges: Array<[number, number]>): boolean {
@@ -303,10 +300,10 @@ function classScanner(classBody: string): FastTriviaScanner | null {
   }
 }
 
-/** Scanner for a `C[^\n\r]*` line comment — consumes `C` and the rest of the line. */
-function lineCommentScanner(commentCode: number): FastTriviaScanner {
+/** Scanner for a `C[^\n\r]*` arm — consumes its leader through a line break. */
+function untilLineBreakScanner(leaderCode: number): FastTriviaScanner {
   return (input, cur) => {
-    if (input.charCodeAt(cur) !== commentCode) return cur
+    if (input.charCodeAt(cur) !== leaderCode) return cur
     let pos = cur + 1
     while (pos < input.length) {
       const cc = input.charCodeAt(pos)
@@ -326,12 +323,12 @@ function classRunSource(source: string): FastTriviaScanner | null {
 /**
  * One alternation arm of a `(?:…)*` trivia group: a positive char-class run
  * `[class]` (a trailing `+`/`*` is redundant under the enclosing loop) or a line
- * comment `C[^\n\r]*` (`C` = one literal marker char, maybe escaped). Anything
+ * line-terminated arm `C[^\n\r]*` (`C` = one literal leader char, maybe escaped). Anything
  * else is unclassifiable → no fast path, never a wrong one.
  */
 type TriviaArm =
   | { kind: 'class'; ranges: Array<[number, number]> }
-  | { kind: 'comment'; code: number }
+  | { kind: 'untilLineBreak'; code: number }
 
 function classifyTriviaArm(arm: string): TriviaArm | null {
   const cls = /^\[([^\]^](?:[^\]]|\\.)*)\][*+]?$/.exec(arm)
@@ -342,13 +339,13 @@ function classifyTriviaArm(arm: string): TriviaArm | null {
   const lc = /^(\\?.)\[\^\\n\\r\]\*$/.exec(arm)
   if (lc) {
     const marker = lc[1]!
-    return { kind: 'comment', code: (marker.length === 2 ? marker[1]! : marker[0]!).charCodeAt(0) }
+    return { kind: 'untilLineBreak', code: (marker.length === 2 ? marker[1]! : marker[0]!).charCodeAt(0) }
   }
   return null
 }
 
 function armScanner(arm: TriviaArm): FastTriviaScanner {
-  if (arm.kind === 'comment') return lineCommentScanner(arm.code)
+  if (arm.kind === 'untilLineBreak') return untilLineBreakScanner(arm.code)
   const ranges = arm.ranges
   return (input, cur) => {
     let pos = cur
@@ -359,20 +356,20 @@ function armScanner(arm: TriviaArm): FastTriviaScanner {
 
 /**
  * A single tight loop over a merged char-class range list plus (usually one)
- * line-comment marker — the fast form of `(?:[class]|C[^\n\r]*)*`. Requires the
+ * line-terminated leader — the fast form of `(?:[class]|C[^\n\r]*)*`. Requires the
  * caller to have checked marker/class disjointness (so a bare merged scan
  * matches the regex regardless of arm order).
  */
-function fusedTriviaScanner(ranges: Array<[number, number]>, commentCodes: number[]): FastTriviaScanner {
-  const c0 = commentCodes[0]!
-  const single = commentCodes.length === 1
+function fusedTriviaScanner(ranges: Array<[number, number]>, leaders: number[]): FastTriviaScanner {
+  const c0 = leaders[0]!
+  const single = leaders.length === 1
   return (input, cur) => {
     let pos = cur
     const len = input.length
     for (;;) {
       const c = input.charCodeAt(pos)
       if (pos < len && inRanges(c, ranges)) { pos++; continue }
-      if (single ? c === c0 : commentCodes.includes(c)) {
+      if (single ? c === c0 : leaders.includes(c)) {
         pos++
         while (pos < len) {
           const cc = input.charCodeAt(pos)
@@ -406,10 +403,10 @@ function splitTopLevelAlts(body: string): string[] | null {
 
 /**
  * Trivia written as a single regex alternation-star, `(?:arm|arm|…)*` — e.g.
- * GraphQL's `(?:[ \t\n\r,]|#[^\n\r]*)*`. Arms are classified independently and
- * order-independently: char-class arms merge into one range list and comment
- * markers are collected, so `(?:#…|[class])*` scans the same as `(?:[class]|#…)*`.
- * The common (disjoint) case compiles to one fused loop; a marker that also sits
+ * `(?:[ \t\n\r,]|#[^\n\r]*)*`. Arms are classified independently and
+ * order-independently: char-class arms merge into one range list and line-terminated
+ * leaders are collected, so `(?:#…|[class])*` scans the same as `(?:[class]|#…)*`.
+ * The common (disjoint) case compiles to one fused loop; a leader that also sits
  * inside a class is the one spot where arm order matters, so that falls back to
  * the ordered `loopScanner`.
  */
@@ -425,24 +422,14 @@ function altStarSource(source: string): FastTriviaScanner | null {
     arms.push(arm)
   }
   const ranges: Array<[number, number]> = []
-  const commentCodes: number[] = []
+  const leaders: number[] = []
   for (const arm of arms) {
     if (arm.kind === 'class') ranges.push(...arm.ranges)
-    else commentCodes.push(arm.code)
+    else leaders.push(arm.code)
   }
-  if (commentCodes.some(code => inRanges(code, ranges))) {
+  if (leaders.some(code => inRanges(code, ranges))) {
     return loopScanner(arms.map(armScanner)) // order-significant overlap
   }
-  if (commentCodes.length === 0) return armScanner({ kind: 'class', ranges })
-  return fusedTriviaScanner(ranges, commentCodes)
-}
-
-function blockCommentSource(source: string): boolean {
-  return source === '\\/\\*(?:[^*]|\\*(?!\\/))*\\*\\/' || source === '\\/\\*[^]*?\\*\\/'
-}
-
-function scanBlockComment(input: string, cur: number): number {
-  if (input.charCodeAt(cur) !== 47 || input.charCodeAt(cur + 1) !== 42) return cur
-  const close = input.indexOf('*/', cur + 2)
-  return close === -1 ? cur : close + 2
+  if (leaders.length === 0) return armScanner({ kind: 'class', ranges })
+  return fusedTriviaScanner(ranges, leaders)
 }

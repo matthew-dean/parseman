@@ -948,7 +948,7 @@ function splitDelimArms(body: string): string[] | null {
  * match a string that contains the `close` literal: then greedy repetition stops
  * exactly before the first `close`, which is where the scan lands too.
  *
- * We only PROVE this for the block-comment idiom (the sole shape that expresses
+ * We only prove this for the two-code-point delimiter-safe idiom (the sole shape that expresses
  * "any char that doesn't form the close"):
  *
  *   n === 1 (`close` is one char l0):   body must be exactly `[^l0]`.

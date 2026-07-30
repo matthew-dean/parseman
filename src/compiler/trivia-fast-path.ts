@@ -111,9 +111,8 @@ export function buildFastTriviaFnDecl(fnName: string, shapes: ScanShape[]): stri
 /**
  * A LABELED trivia parser whose every arm is scannable → per-arm shape + kind
  * index, or null. Same recognition as analyzeTriviaFastPath, but keyed by the
- * labeled arm kinds so the fast loop can log each chunk's kind. Generalizes what
- * used to be a hardcoded ws-run + block-comment special case to any scannable
- * shape set / arm count.
+ * label table so the fast loop can log each chunk's category. It accepts any
+ * structurally scannable arm set / arm count; labels do not affect recognition.
  */
 export function analyzeLabeledScannableRun(
   trivia: Combinator<unknown>,
