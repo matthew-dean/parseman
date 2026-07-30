@@ -586,9 +586,9 @@ source-ordered gap containing a labeled trivia kind such as `blockComment`.
 ### `buildSelectedRootTriviaIndex(rows, labels)`
 
 Build the same view for selected root capture. Each row is
-`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, selectedKindIndex]`:
+`[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, selectedLabelIndex]`:
 the marker is one explicitly selected grammar label (indexed into the `labels`
-argument, normally `result.rootTrivia.selectedKinds`), while the owning range is the complete
+argument, normally `result.rootTrivia.select`), while the owning range is the complete
 source trivia gap. Use this only for stored `result.rootTrivia.rows`; ordinary
 consumers should use `result.triviaMap`, which already selects the correct index.
 
@@ -667,6 +667,15 @@ the grammar carries static type metadata.
 Mark a combinator as skippable filler (sets `isTrivia`). Does not skip until installed via
 `parser({ trivia })`.
 
+### `classifiedTrivia({ name: combinator, ... })` <Badge type="tip" text="helper" />
+
+Build labeled trivia for `run(..., { rootTrivia: { select } })`. Each property
+becomes one separate labeled grammar arm, so a broad whitespace matcher cannot
+silently consume a selected comment category. Pair selected capture with
+`strictScopes: true` to reject local `parser({ trivia })` scopes that are not
+also classified. A deliberately opaque local scope must say
+`parser({ trivia, rootCapture: 'opaque' }, ...)`.
+
 ### `parser(opts, root)` <Badge type="tip" text="helper" />
 
 Wrap a root combinator with document-level options — `trivia`, `trackLines`,
@@ -725,14 +734,19 @@ Pass `opts.build` for a
 Pass `opts.triviaCaptureMask` to filter per-node CST trivia capture by labeled kind while
 leaving the root `triviaLog` untouched.
 
-Pass `opts.rootTrivia: { selectedKinds: [...] }` when only a few labeled markers
+Pass `opts.rootTrivia: { select: [...] }` when only a few labeled markers
 need root-level preservation. This stores a compact row per selected marker and its
 complete owning trivia range; it does not record ordinary whitespace runs. Labels
 are grammar-defined policy, so a formatter may select `significantNewline` while a
 serializer selects comments. `result.triviaMap` keeps the ordinary gap-query API;
 in selected mode the legacy `result.triviaLog` is empty and the raw rows are in
-`result.rootTrivia.rows`. Their kind index is into `selectedKinds`, which remains
+`result.rootTrivia.rows`. Their label index is into `select`, which remains
 stable when a composed grammar changes its local trivia-label order.
+
+Use `classifiedTrivia()` for this grammar and pass `strictScopes: true` while
+migrating nested trivia scopes. Strict mode rejects a broad local matcher that
+would classify a selected category under another label; use `rootCapture:
+'opaque'` only where that loss is intentional.
 
 ```ts
 const g = compose([base])

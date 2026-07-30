@@ -59,10 +59,16 @@ export type RunOptions = {
   triviaCaptureMask?: number
   /**
    * Root trivia demand. The legacy default records every trivia chunk. Selected
-   * capture records only the named labeled kinds, each with the one complete
+   * capture records only the named labels, each with the one complete
    * authored gap that owns it; ordinary whitespace has no root entry.
    */
-  rootTrivia?: 'allEntries' | { readonly selectedKinds: readonly string[] }
+  rootTrivia?: 'allEntries' | {
+    readonly select: readonly string[]
+    /** Reject local `parser({ trivia })` scopes that can erase selected
+     * categories unless they use `classifiedTrivia()` or say
+     * `rootCapture: 'opaque'`. Compatibility mode remains permissive. */
+    readonly strictScopes?: boolean
+  }
   /**
    * Activate automatic list recovery. When true, `many`/`sepBy`/`oneOrMore` recover
    * from a failed element — skip to a sync point (a resume token inferred from the
@@ -87,7 +93,7 @@ export type RunOptions = {
 
 export type RootTriviaCaptureResult =
   | { readonly mode: 'allEntries'; readonly log: readonly number[] }
-  | { readonly mode: 'selectedKinds'; readonly rows: readonly number[]; readonly selectedKinds: readonly string[] }
+  | { readonly mode: 'selected'; readonly rows: readonly number[]; readonly select: readonly string[] }
 
 export type RunProfilePass = {
   ms: number
@@ -124,7 +130,7 @@ export type RunResult = {
    * trivia, 3 numbers per entry (`start, end, kindIndex`) for labeled trivia
    * (grammars with `label()` arms in their trivia choice). Use `triviaMap` /
    * `triviaEntries` to consume it format-agnostically rather than iterating raw.
-   * Empty when `rootTrivia.selectedKinds` was requested; use `rootTrivia.rows` or
+   * Empty when `rootTrivia.select` was requested; use `rootTrivia.rows` or
    * `triviaMap` in that sparse mode.
    */
   triviaLog: number[]
@@ -153,7 +159,12 @@ const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): Par
 
 type ProfilePhase = NonNullable<ParseContext['_pmProfile']>['phase']
 type ProfileState = NonNullable<ParseContext['_pmProfile']>
-type RunnableMeta = { readonly _meta?: { readonly triviaKindLabels?: readonly string[] } }
+type RunnableMeta = {
+  readonly _meta?: {
+    readonly triviaKindLabels?: readonly string[]
+    readonly rootTriviaClassified?: true
+  }
+}
 
 function triviaKindLabelsFromRunnable(r: Runnable | undefined): readonly string[] | undefined {
   if (!r) return undefined
@@ -164,10 +175,17 @@ function triviaKindLabelsFromRunnable(r: Runnable | undefined): readonly string[
     ?? (r._def.tag === 'grammar' ? r._def.triviaParser?._meta.triviaKindLabels : undefined)
 }
 
-function makeSelectedRootKindIndex(names: readonly string[]): Readonly<Record<string, number>> {
+function rootTriviaClassifiedFromRunnable(r: Runnable | undefined): boolean {
+  if (!r) return false
+  if (typeof r === 'function') return (r as RunnableMeta)._meta?.rootTriviaClassified === true
+  const grammarTrivia = (r._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
+  return r._meta.rootTriviaClassified === true || grammarTrivia?._meta.rootTriviaClassified === true
+}
+
+function makeSelectedRootLabelIndex(labels: readonly string[]): Readonly<Record<string, number>> {
   const index: Record<string, number> = Object.create(null) as Record<string, number>
-  for (let i = 0; i < names.length; i++) {
-    if (index[names[i]!] === undefined) index[names[i]!] = i
+  for (let i = 0; i < labels.length; i++) {
+    if (index[labels[i]!] === undefined) index[labels[i]!] = i
   }
   return index
 }
@@ -182,9 +200,9 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   const rootTriviaMode = options.rootTrivia ?? 'allEntries'
   const triviaLog: number[] = []
   const selectedRootLog: number[] | undefined = rootTriviaMode === 'allEntries' ? undefined : []
-  const selectedRootKindIndex = rootTriviaMode === 'allEntries'
+  const selectedRootLabelIndex = rootTriviaMode === 'allEntries'
     ? undefined
-    : makeSelectedRootKindIndex(rootTriviaMode.selectedKinds)
+    : makeSelectedRootLabelIndex(rootTriviaMode.select)
   const errors: ParseError[] = []
   const profile = profileState ?? (phase === undefined
     ? undefined
@@ -201,7 +219,20 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   const grammarScanSkip = typeof entry !== 'function' ? entry._meta.grammarScanSkip : undefined
   const triviaKindLabels = triviaKindLabelsFromRunnable(entry) ?? triviaKindLabelsFromRunnable(options.trivia)
   if (rootTriviaMode !== 'allEntries' && triviaKindLabels === undefined) {
-    throw new TypeError('run(): rootTrivia.selectedKinds requires labeled grammar trivia.')
+    throw new TypeError('run(): rootTrivia.select requires labeled grammar trivia.')
+  }
+  if (rootTriviaMode !== 'allEntries') {
+    for (const label of rootTriviaMode.select) {
+      if (!triviaKindLabels!.includes(label)) {
+        throw new TypeError(`run(): rootTrivia.select contains unknown trivia label ${JSON.stringify(label)}.`)
+      }
+    }
+  }
+  if (rootTriviaMode !== 'allEntries' && rootTriviaMode.strictScopes
+    && !rootTriviaClassifiedFromRunnable(options.trivia ?? entry)) {
+    throw new TypeError(
+      'run(): rootTrivia.select with strictScopes requires classifiedTrivia() at the root.',
+    )
   }
   /*
    * Refuse an artifact/host mismatch ONCE per parse, exactly as `parseDoc` and a
@@ -234,7 +265,11 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
       : {
         ...(rootTriviaMode === 'allEntries'
           ? { _triviaLog: triviaLog }
-          : { _rootTriviaLog: selectedRootLog!, _rootTriviaKindIndex: selectedRootKindIndex! }),
+          : {
+            _rootTriviaLog: selectedRootLog!,
+            _rootTriviaKindIndex: selectedRootLabelIndex!,
+            ...(rootTriviaMode.strictScopes ? { _rootTriviaStrictScopes: true } : {}),
+          }),
         _errors: errors,
         ...(profile === undefined ? {} : { _pmProfile: profile }),
       }),
@@ -271,10 +306,10 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
     ...(triviaKindLabels === undefined ? {} : { triviaKindLabels }),
     triviaMap: rootTriviaMode === 'allEntries'
       ? buildRootTriviaIndex(triviaLog, triviaKindLabels)
-      : buildSelectedRootTriviaIndex(selectedRootLog!, rootTriviaMode.selectedKinds),
+      : buildSelectedRootTriviaIndex(selectedRootLog!, rootTriviaMode.select),
     rootTrivia: rootTriviaMode === 'allEntries'
       ? { mode: 'allEntries', log: triviaLog }
-      : { mode: 'selectedKinds', rows: selectedRootLog!, selectedKinds: rootTriviaMode.selectedKinds },
+      : { mode: 'selected', rows: selectedRootLog!, select: rootTriviaMode.select },
     unconsumedFrom,
   }
 }

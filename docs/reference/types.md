@@ -180,7 +180,10 @@ type RunOptions = {
   state?: unknown                 // initial ctx.state
   trivia?: Runnable       // skip trailing trivia before computing unconsumedFrom
   triviaCaptureMask?: number      // per-node CST trivia-kind bitmask
-  rootTrivia?: 'allEntries' | { selectedKinds: readonly string[] }
+  rootTrivia?: 'allEntries' | {
+    select: readonly string[]
+    strictScopes?: boolean  // require classifiedTrivia() in every local trivia scope
+  }
   tolerant?: boolean              // enable list recovery diagnostics
   profile?: boolean               // compiled-only profiling passes
 }
@@ -200,7 +203,7 @@ type RunResult = {
 
 type RootTriviaCaptureResult =
   | { mode: 'allEntries'; log: readonly number[] }
-  | { mode: 'selectedKinds'; rows: readonly number[]; selectedKinds: readonly string[] }
+  | { mode: 'selected'; rows: readonly number[]; select: readonly string[] }
 ```
 
 ### `RootTriviaIndex`

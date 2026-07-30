@@ -1,5 +1,7 @@
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
+import { choice } from './choice.ts'
+import { oneOrMore } from './repeat.ts'
 
 export function transform<T, U>(
   combinator: Combinator<T>,
@@ -44,6 +46,31 @@ export function trivia<T>(combinator: Combinator<T>): Combinator<T> {
     _def: { tag: 'trivia', parser: combinator as Combinator<unknown> },
     parse: combinator.parse.bind(combinator),
   }
+}
+
+/**
+ * Build trivia whose category labels are part of its recognition structure.
+ *
+ * Use this for a grammar that exposes selected root trivia. In contrast to
+ * `trivia(label('whitespace', broadRegex))`, every category here owns one arm,
+ * so a block comment cannot be silently consumed under the whitespace label.
+ * `rootTrivia: { select, strictScopes: true }` rejects ordinary scoped trivia
+ * unless that scope explicitly declares itself opaque.
+ */
+export function classifiedTrivia(
+  arms: Readonly<Record<string, Combinator<unknown>>>,
+): Combinator<unknown> {
+  const entries = Object.entries(arms)
+  if (entries.length === 0) {
+    throw new TypeError('classifiedTrivia() requires at least one named trivia arm.')
+  }
+  const labeledArms = entries.map(([name, arm]) => label(name, arm)) as [
+    Combinator<unknown>,
+    ...Combinator<unknown>[],
+  ]
+  const result = trivia(oneOrMore(choice(...labeledArms)))
+  result._meta.rootTriviaClassified = true
+  return result
 }
 
 /**

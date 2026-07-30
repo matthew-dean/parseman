@@ -27,7 +27,7 @@ export type RootTriviaGap = {
 
 export type RootTriviaIndex = {
   /** Whether entry spans are complete root gaps or selected markers within one. */
-  readonly rootCaptureMode: 'allEntries' | 'selectedKinds'
+  readonly rootCaptureMode: 'allEntries' | 'selected'
   /** Lazy entry-level view over the root capture representation. */
   readonly entries: TriviaEntriesView
   /** Trivia kind labels, when the grammar labels trivia arms. */
@@ -62,7 +62,8 @@ export type RootTriviaIndex = {
 
 const EMPTY_INDICES: readonly number[] = Object.freeze([])
 const EMPTY_GAPS: readonly RootTriviaGap[] = Object.freeze([])
-const SELECTED_ROOT_STRIDE = 5
+/** Number of packed fields in one selected-root trivia row. */
+export const SELECTED_ROOT_STRIDE = 5
 
 type RootTriviaMaps = {
   before: Map<number, number[]>
@@ -246,7 +247,7 @@ export function buildRootTriviaIndex(
 }
 
 /**
- * Build a root view over selected-kind rows captured as
+ * Build a root view over selected-label rows captured as
  * `[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, kindIndex]`.
  *
  * This is intentionally a different input shape from `triviaLog`: each row is
@@ -358,7 +359,7 @@ export function buildSelectedRootTriviaIndex(
   }
 
   return {
-    rootCaptureMode: 'selectedKinds',
+    rootCaptureMode: 'selected',
     entries,
     labels,
     get before() { return getMaps().before },
@@ -385,16 +386,13 @@ export function buildSelectedRootTriviaIndex(
     gapsWithKind(kind) {
       const kinds = typeof kind === 'string' ? [kind] : kind
       const matches: RootTriviaGap[] = []
-      for (let first = 0; first < length;) {
-        let last = first + 1
-        while (last < length && ownedRangeStart(last) === ownedRangeStart(first) && ownedRangeEnd(last) === ownedRangeEnd(first)) last++
-        for (let i = first; i < last; i++) {
-          if (kinds.includes(labels[markerKind(i)]!)) {
-            matches.push(makeGap(first, last))
+      for (const gap of getMaps().gaps) {
+        for (const k of kinds) {
+          if (gap.hasKind(k)) {
+            matches.push(gap)
             break
           }
         }
-        first = last
       }
       return matches.length === 0 ? EMPTY_GAPS : matches
     },

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  sequence, many, literal, regex, trivia, label, parser, node, compile, rules, compose, cstBuildHost,
+  sequence, many, literal, regex, trivia, classifiedTrivia, label, parser, node, compile, rules, compose, cstBuildHost,
   oneOrMore, choice, triviaEntries, run, peek, attempt, optional, sepBy, leaf,
 } from '../../src/index.ts'
 import type { Runnable } from '../../src/index.ts'
@@ -112,6 +112,71 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
   })
 })
 
+describe('strict selected root trivia scopes', () => {
+  const blockComment = regex(/\/\*(?:[^*]|\*(?!\/))*\*\//)
+  const outer = classifiedTrivia({
+    whitespace: regex(/[ \t\n\r\f]+/),
+    blockComment,
+  })
+  const collapsed = trivia(label(
+    'whitespace',
+    regex(/(?:(?:[ \t\n\r\f]+)|(?:\/\*(?:[^*]|\*(?!\/))*\*\/))+/),
+  ))
+
+  it('rejects a local composite matcher that erases a selected category', () => {
+    const entry = parser({ trivia: outer }, sequence(
+      literal('a'),
+      parser({ trivia: collapsed }, sequence(literal('b'), literal('c'))),
+    ))
+
+    expect(() => run(entry, 'a b/* hidden */c', {
+      trivia: outer,
+      rootTrivia: { select: ['blockComment'], strictScopes: true },
+    })).toThrow(/classifiedTrivia\(\).*rootCapture: 'opaque'/)
+  })
+
+  it('allows an explicit opaque local scope without manufacturing a selected row', () => {
+    const entry = parser({ trivia: outer }, sequence(
+      literal('a'),
+      parser({ trivia: collapsed, rootCapture: 'opaque' }, sequence(literal('b'), literal('c'))),
+    ))
+    const result = run(entry, 'a b/* hidden */c', {
+      trivia: outer,
+      rootTrivia: { select: ['blockComment'], strictScopes: true },
+    })
+
+    expect(result.rootTrivia).toEqual({ mode: 'selected', rows: [], select: ['blockComment'] })
+  })
+
+  it('requires opaque scopes to declare the trivia they make opaque', () => {
+    expect(() => parser({ rootCapture: 'opaque' }, literal('a')))
+      .toThrow(/requires an explicit trivia scope/)
+  })
+
+  it('accepts a classified whitespace-only local scope', () => {
+    const local = classifiedTrivia({ whitespace: regex(/[ \t]+/) })
+    const entry = parser({ trivia: outer }, sequence(
+      literal('a'),
+      parser({ trivia: local }, sequence(literal('b'), literal('c'))),
+    ))
+    const result = run(entry, 'a b c', {
+      trivia: outer,
+      rootTrivia: { select: ['blockComment'], strictScopes: true },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.rootTrivia).toEqual({ mode: 'selected', rows: [], select: ['blockComment'] })
+  })
+
+  it('rejects a selected label the root trivia does not define', () => {
+    const entry = parser({ trivia: outer }, literal('a'))
+    expect(() => run(entry, 'a', {
+      trivia: outer,
+      rootTrivia: { select: ['missing'] },
+    })).toThrow(/unknown trivia label "missing"/)
+  })
+})
+
 describe('label() vs node() — no conflict', () => {
   it('node type and trivia label occupy separate namespaces', () => {
     const rw = labeledRw()
@@ -139,23 +204,22 @@ describe('label() vs node() — no conflict', () => {
 describe('labeled trivia kinds — macro metadata', () => {
   it('requires labeled trivia for selected capture and keeps only requested marker kinds', () => {
     expect(() => run(literal('a'), 'a', {
-      rootTrivia: { selectedKinds: ['blockComment'] },
-    })).toThrow('rootTrivia.selectedKinds requires labeled grammar trivia')
+      rootTrivia: { select: ['blockComment'] },
+    })).toThrow('rootTrivia.select requires labeled grammar trivia')
 
     const rw = labeledRw()
     const grammar = rules({ trivia: rw }, () => ({
       Root: node('Root', sequence(literal('a'), literal('b'))),
     }))
     const result = run(grammar.Root, 'a /*x*/ b', {
-      // The duplicate proves lookup uses one stable registered kind slot; the
-      // absent name proves unrelated labels do not allocate a marker row.
-      rootTrivia: { selectedKinds: ['missing', 'blockComment', 'blockComment'] },
+      // The duplicate proves lookup uses one stable registered kind slot.
+      rootTrivia: { select: ['blockComment', 'blockComment'] },
     })
 
     expect(result.rootTrivia).toEqual({
-      mode: 'selectedKinds',
-      rows: [1, 8, 2, 7, 1],
-      selectedKinds: ['missing', 'blockComment', 'blockComment'],
+      mode: 'selected',
+      rows: [1, 8, 2, 7, 0],
+      select: ['blockComment', 'blockComment'],
     })
   })
 
@@ -176,8 +240,8 @@ describe('labeled trivia kinds — macro metadata', () => {
     const ast = compose([base, delta]) as { Doc?: Runnable }
     const cst = compose([base, delta], { hostMode: 'cst' }) as { Doc?: Runnable }
     const input = 'x a /*x*/ b y'
-    const opts = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
-    const expected = { mode: 'selectedKinds', rows: [3, 10, 4, 9, 0], selectedKinds: ['blockComment'] }
+    const opts = { rootTrivia: { select: ['blockComment'] as const } }
+    const expected = { mode: 'selected', rows: [3, 10, 4, 9, 0], select: ['blockComment'] }
 
     expect(run(ast.Doc!, input, opts).rootTrivia).toEqual(expected)
     expect(run(cst.Doc!, input, { ...opts, build: cstBuildHost() }).rootTrivia).toEqual(expected)
@@ -189,14 +253,14 @@ describe('labeled trivia kinds — macro metadata', () => {
       Root: node('Root', sequence(literal('a'), literal('b'))),
     }))
     const input = 'a /*x*/ b'
-    const result = run(grammar.Root, input, { rootTrivia: { selectedKinds: ['blockComment'] } })
+    const result = run(grammar.Root, input, { rootTrivia: { select: ['blockComment'] } })
 
     expect(result.ok).toBe(true)
     expect(result.triviaLog).toEqual([])
     expect(result.rootTrivia).toEqual({
-      mode: 'selectedKinds',
+      mode: 'selected',
       rows: [1, 8, 2, 7, 0],
-      selectedKinds: ['blockComment'],
+      select: ['blockComment'],
     })
     expect(result.triviaMap.entries.length).toBe(1)
     expect(result.triviaMap.entries.kind(0)).toBe('blockComment')
@@ -206,7 +270,7 @@ describe('labeled trivia kinds — macro metadata', () => {
   it('selected root capture has interpreter/compiled/macro parity and rolls no whitespace rows into the result', () => {
     const rw = labeledRw()
     const input = 'a /*x*/ b'
-    const selected = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
+    const selected = { rootTrivia: { select: ['blockComment'] as const } }
     const grammar = rules({ trivia: rw }, () => ({
       Root: node('Root', sequence(literal('a'), literal('b'))),
     }))
@@ -226,20 +290,20 @@ describe('labeled trivia kinds — macro metadata', () => {
       Root: node('Root', parser({ trivia: rw }, sequence(peek(body()), body()))),
     }))
     const input = 'a /*x*/ b'
-    const selected = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
+    const selected = { rootTrivia: { select: ['blockComment'] as const } }
     const compiled = compileRuleMap(Object.entries(grammar), { trivia: rw })!
     const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
 
     const interpreted = run(grammar.Root, input, selected)
     const macro = run(compiledGrammar.Root, input, selected)
-    const expected = { mode: 'selectedKinds', rows: [1, 8, 2, 7, 0], selectedKinds: ['blockComment'] }
+    const expected = { mode: 'selected', rows: [1, 8, 2, 7, 0], select: ['blockComment'] }
     expect(interpreted.rootTrivia).toEqual(expected)
     expect(macro.rootTrivia).toEqual(expected)
   })
 
   it('selected root capture leaves no markers from rejected transactional paths', () => {
     const rw = labeledRw()
-    const selected = { rootTrivia: { selectedKinds: ['blockComment'] as const } }
+    const selected = { rootTrivia: { select: ['blockComment'] as const } }
     const cases = [
       {
         name: 'ordered choice arm',
@@ -279,8 +343,8 @@ describe('labeled trivia kinds — macro metadata', () => {
       const compiledGrammar = new Function(`return ${compiled.replacement}`)() as { Root: Runnable }
       for (const [engine, root] of [['interpreter', grammar.Root], ['compiled', compiledGrammar.Root]] as const) {
         const result = run(root, testCase.input, selected)
-        expect(result.rootTrivia.mode, `${testCase.name}: ${engine}`).toBe('selectedKinds')
-        if (result.rootTrivia.mode === 'selectedKinds') {
+        expect(result.rootTrivia.mode, `${testCase.name}: ${engine}`).toBe('selected')
+        if (result.rootTrivia.mode === 'selected') {
           expect(result.rootTrivia.rows, `${testCase.name}: ${engine}`).toEqual(testCase.rows)
         }
       }

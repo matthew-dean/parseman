@@ -79,7 +79,7 @@ export type ParserDef =
   | { tag: 'leaf';      parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'field';     name: string; parser: Combinator<unknown> }
-  | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; trackLines: boolean }
+  | { tag: 'grammar';   parser: Combinator<unknown>; triviaParser: Combinator<unknown> | undefined; clearTrivia?: boolean; captureTrivia?: boolean; rootCapture?: 'opaque'; trackLines: boolean }
   | { tag: 'lazy';     thunk: () => Combinator<unknown> }
   | { tag: 'not';      parser: Combinator<unknown> }
   // Positive lookahead. Zero-width like `not`, but — unlike `not` — it KNOWS what
@@ -339,8 +339,10 @@ export type ParseContext = {
   _rootTriviaLog?: number[] | undefined
   /** Grammar-label → selected-root-table index. Each trivia scope maps its local
    * label through this once-built table, so composed grammars may use different
-   * label orders without a per-chunk linear selected-kind search. */
+   * label orders without a per-chunk linear selected-label search. */
   _rootTriviaKindIndex?: Readonly<Record<string, number>> | undefined
+  /** Strict selected-root capture checks local trivia classification once per scope. */
+  _rootTriviaStrictScopes?: boolean | undefined
   /**
    * Framework-internal: flat per-node trivia log for CST capture mode.
    * When set alongside _cstRawChildren, each trivia entry is recorded as three
@@ -402,6 +404,9 @@ export type ParserMeta = {
   isTrivia: boolean
   /** User-defined labels for labeled trivia arms (`label(name, parser)`). */
   triviaKindLabels?: readonly string[]
+  /** Set only by `classifiedTrivia()`: each root-visible category is a separate
+   * grammar arm rather than an arbitrary label on a broad recognizer. */
+  rootTriviaClassified?: true
   /** choice(): true when all alternative first sets are pairwise disjoint */
   disjoint?: boolean
   /**

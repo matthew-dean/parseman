@@ -134,8 +134,17 @@ Most root consumers do not need a record for every space. Ask `run()` for only t
 grammar-defined markers you preserve:
 
 ```ts
+import { classifiedTrivia, regex, run } from 'parseman'
+
+const rootTrivia = classifiedTrivia({
+  whitespace: regex(/[ \t\n\r\f]+/),
+  blockComment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+  lineComment: regex(/\/\/[^\n]*/),
+})
+
 const result = run(Document, input, {
-  rootTrivia: { selectedKinds: ['blockComment', 'lineComment'] },
+  trivia: rootTrivia,
+  rootTrivia: { select: ['blockComment', 'lineComment'], strictScopes: true },
 })
 
 result.triviaMap.gapsWithKind(['blockComment', 'lineComment'])
@@ -143,7 +152,7 @@ result.triviaMap.gapsWithKind(['blockComment', 'lineComment'])
 
 Selected capture stores one numeric row per selected marker:
 `[ownedRangeStart, ownedRangeEnd, markerStart, markerEnd, selectedKindIndex]`.
-`selectedKindIndex` indexes the requested `selectedKinds` list, not a local
+`selectedLabelIndex` indexes the requested `select` list, not a local
 grammar scope's label table, so composed grammars and semantic leaves may use
 their own trivia-label order safely. The first
 pair still lets `gapBefore` / `gapAfter` reproduce the full authored range around
@@ -152,6 +161,15 @@ use `significantNewline` if line layout is part of your formatter's policy; do n
 select broad `whitespace` merely to make line layout observable. In this mode
 `result.triviaLog` is intentionally empty; `result.triviaMap` is the normal API and
 `result.rootTrivia.rows` exposes the raw compact rows when needed.
+
+`classifiedTrivia()` is the safe constructor for selected root capture: each
+name owns a distinct grammar arm. A bare `label('whitespace', broadMatcher)`
+only says that the *whole* broad match is whitespace; it cannot expose a
+comment that matcher consumed internally. With `strictScopes: true`, every
+local `parser({ trivia })` scope must likewise use `classifiedTrivia()`, or
+write `rootCapture: 'opaque'` to acknowledge that selected categories do not
+survive inside that scope. Strict mode is opt-in so existing grammars retain
+their current behavior while they migrate.
 
 `run()` also returns `triviaMap`, a lazy root-log gap index. It groups contiguous labeled chunks
 into one boundary gap, so `triviaMap.entryIndicesBefore(node.span.start)` and

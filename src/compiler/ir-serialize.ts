@@ -487,7 +487,7 @@ class Serializer {
       }
       case 'grammar': {
         const trivia = def.clearTrivia ? 'null' : def.triviaParser ? kid(def.triviaParser) : 'undefined'
-        return `parser({ trivia: ${trivia}${def.captureTrivia ? ', captureTrivia: true' : ''}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(def.parser)})`
+        return `parser({ trivia: ${trivia}${def.captureTrivia ? ', captureTrivia: true' : ''}${def.rootCapture ? `, rootCapture: ${JSON.stringify(def.rootCapture)}` : ''}${def.trackLines ? ', trackLines: true' : ''} }, ${kid(def.parser)})`
       }
       case 'withCtx': {
         // A `withCtx` round-trips through `_wc`, which rebuilds it AND re-attaches

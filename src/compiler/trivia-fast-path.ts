@@ -1,6 +1,7 @@
 import type { Combinator } from '../types.ts'
 import { getCoreRegexDef } from '../combinators/choice.ts'
 import type { LabeledTriviaSpec } from '../cst/trivia-kinds.ts'
+import { SELECTED_ROOT_STRIDE } from '../cst/trivia-entries.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { type ScanShape, type Mint, scanShapeFromRegex, scanBranch, scanBranchLabeled } from './scannable-run.ts'
 
@@ -79,7 +80,7 @@ const CAP_RECORD = [
 
 const SELECTED_ROOT_FINISH = [
   `  if (_cap && _ctx._rootTriviaLog !== undefined && _ctx._rootTriviaLog.length !== _rootMark) {`,
-  `    for (let _ri = _rootMark; _ri < _ctx._rootTriviaLog.length; _ri += 5) { _ctx._rootTriviaLog[_ri] = _pos; _ctx._rootTriviaLog[_ri + 1] = _e }`,
+  `    for (let _ri = _rootMark; _ri < _ctx._rootTriviaLog.length; _ri += ${SELECTED_ROOT_STRIDE}) { _ctx._rootTriviaLog[_ri] = _pos; _ctx._rootTriviaLog[_ri + 1] = _e }`,
   `  }`,
 ].join('\n')
 

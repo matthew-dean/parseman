@@ -189,6 +189,10 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   optional:  (...a) => parseman.optional(a[0] as Combinator<unknown>),
   skip:      (...a) => parseman.skip(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>),
   trivia:    (...a) => parseman.trivia(a[0] as Combinator<unknown>),
+  classifiedTrivia: (...a) =>
+    parseman.classifiedTrivia(
+      a[0] as Readonly<Record<string, Combinator<unknown>>>,
+    ),
   label:     (...a) => parseman.label(a[0] as string, a[1] as Combinator<unknown>),
   field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),
   noTrivia:  (...a) => parseman.noTrivia(a[0] as Combinator<unknown>),

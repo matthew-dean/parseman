@@ -350,6 +350,8 @@ type Ctx = {
   balancedRebuildStack?: Set<Combinator<unknown>> | undefined
   /** Label table from grammar trivia for default ParseContext. */
   triviaKindLabels?: readonly string[] | undefined
+  /** Whether grammar-level trivia was built by `classifiedTrivia()`. */
+  rootTriviaClassified?: true | undefined
   /**
    * Whether this compile contains any node() rule. When true, terminals emit a
    * `_ctx._cstLeaves` capture and trivia skips capture trivia tokens — flowing
@@ -3979,6 +3981,11 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'grammar': {
       const savedTrivia = ctx.activeTrivia
       const savedKindLabels = ctx.triviaKindLabels
+      const strictScopeCheck = def.triviaParser !== undefined
+        && !def.triviaParser._meta.rootTriviaClassified
+        && def.rootCapture !== 'opaque'
+        ? `${ind(ctx)}if (_ctx._rootTriviaStrictScopes) throw new TypeError(${JSON.stringify('parseman: selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: \'opaque\'.')})`
+        : undefined
       if (def.clearTrivia) {
         // noTrivia / parser({ trivia: null }): contiguous terms, no trivia skipped.
         ctx.activeTrivia = undefined
@@ -3993,10 +4000,14 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       const r = emit(def.parser, ctx, pos)
       ctx.activeTrivia = savedTrivia
       ctx.triviaKindLabels = savedKindLabels
-      if (!savedCapture) return r
+      if (!savedCapture) return strictScopeCheck === undefined ? r : {
+        ...r,
+        stmts: [strictScopeCheck, ...r.stmts],
+      }
       return {
         ...r,
         stmts: [
+          ...(strictScopeCheck === undefined ? [] : [strictScopeCheck]),
           `${ind(ctx)}const ${savedCapture} = _ctx.captureTrivia; _ctx.captureTrivia = true`,
           ...r.stmts,
           `${ind(ctx)}_ctx.captureTrivia = ${savedCapture}`,
@@ -4725,7 +4736,11 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     lineTracking: opts?.trackLines === true || grammarTrackLines === true || hasLineTrackingDef(combinator as Combinator<unknown>),
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(combinator as Combinator<unknown>), entry: combinator as Combinator<unknown> } } : {}),
     lazyUsage: analyzeLazyUsage(combinator as Combinator<unknown>),
-    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(grammarTrivia ? {
+      activeTrivia: grammarTrivia,
+      triviaKindLabels: grammarTrivia._meta.triviaKindLabels,
+      ...(grammarTrivia._meta.rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
+    } : {}),
     ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
 
@@ -4957,10 +4972,12 @@ function publicRuleWrapperSource(
   rule: Combinator<unknown>,
   fnSource: string,
   ambientTriviaKindLabels?: readonly string[],
+  ambientRootTriviaClassified?: true,
 ): string {
   const labels = rule._meta.triviaKindLabels ?? ambientTriviaKindLabels
-  if (labels === undefined) return fnSource
-  return `Object.assign(${fnSource}, { _meta: { triviaKindLabels: ${JSON.stringify(labels)} } })`
+  const classified = rule._meta.rootTriviaClassified ?? ambientRootTriviaClassified
+  if (labels === undefined && classified === undefined) return fnSource
+  return `Object.assign(${fnSource}, { _meta: {${labels === undefined ? '' : ` triviaKindLabels: ${JSON.stringify(labels)},`}${classified === undefined ? '' : ' rootTriviaClassified: true,'} } })`
 }
 
 export function compileRuleMap(
@@ -5017,7 +5034,11 @@ export function compileRuleMap(
     lineTracking: grammarTrackLines,
     ...(opts?.coverage ? { coverage: { plan: buildGrammarPlan(ruleMap.map(([, rule]) => rule), coverageWinners) } } : {}),
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
-    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(grammarTrivia ? {
+      activeTrivia: grammarTrivia,
+      triviaKindLabels: grammarTrivia._meta.triviaKindLabels,
+      ...(grammarTrivia._meta.rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
+    } : {}),
     ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
 
@@ -5124,7 +5145,7 @@ export function compileRuleMap(
   // prelude per entry or duplicate its text per entry — both defeat the point).
   const objBody = perEntry
     .map(({ key, rule, r }) => {
-      const src = publicRuleWrapperSource(rule, entryFnText(r, rule), ctx.triviaKindLabels)
+      const src = publicRuleWrapperSource(rule, entryFnText(r, rule), ctx.triviaKindLabels, ctx.rootTriviaClassified)
       return `    ${JSON.stringify(key)}: ${src.split('\n').join('\n    ')}`
     })
     .join(',\n')
@@ -5292,7 +5313,11 @@ export function compileLinkable(
     lazyUsage: analyzeLazyUsageMulti(ruleMap.map(([, rule]) => rule)),
     ns,
     deferFirstSetRefs: true,
-    ...(grammarTrivia ? { activeTrivia: grammarTrivia, triviaKindLabels: grammarTrivia._meta.triviaKindLabels } : {}),
+    ...(grammarTrivia ? {
+      activeTrivia: grammarTrivia,
+      triviaKindLabels: grammarTrivia._meta.triviaKindLabels,
+      ...(grammarTrivia._meta.rootTriviaClassified ? { rootTriviaClassified: true as const } : {}),
+    } : {}),
     ...(grammarScanSkip ? { activeScanSkip: grammarScanSkip } : {}),
   }
   // Canonical name per rule. Register in BOTH ruleNames (so sibling `emitLazy`
@@ -5449,7 +5474,7 @@ export function compileLinkable(
       ...r.stmts,
       `  return { ok: true, value: ${r.valueVar}, span: ${resultSpan} }`,
       `}`,
-    ].join('\n'), ctx.triviaKindLabels))
+    ].join('\n'), ctx.triviaKindLabels, ctx.rootTriviaClassified))
   }
 
   // Per-rule first-set table for fuse-time dispatch: fusedBody() substitutes each

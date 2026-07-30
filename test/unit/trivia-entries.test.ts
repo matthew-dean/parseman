@@ -187,7 +187,7 @@ describe('buildSelectedRootTriviaIndex()', () => {
       1, 12, 8, 9, 2,
     ], labels)
 
-    expect(index.rootCaptureMode).toBe('selectedKinds')
+    expect(index.rootCaptureMode).toBe('selected')
     expect(index.entries.length).toBe(2)
     expect(index.entries.insertIndex(0)).toBeUndefined()
     expect(index.entries.kind(0)).toBe('blockComment')

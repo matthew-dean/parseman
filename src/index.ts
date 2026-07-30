@@ -30,7 +30,7 @@ export { peek } from './combinators/peek.ts'
 export { node } from './combinators/node.ts'
 export type { BuildNode, NodeCombinator, NodeOptions, NodeProjectOptions } from './combinators/node.ts'
 // lazy() is intentionally NOT exported.
-export { transform, skip, trivia, label, field } from './combinators/map.ts'
+export { transform, skip, trivia, classifiedTrivia, label, field } from './combinators/map.ts'
 export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
 export { token, leaf } from './combinators/token.ts'
