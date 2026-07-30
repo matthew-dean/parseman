@@ -130,8 +130,7 @@ export type DigestTarget = {
  * the separator goes BETWEEN tokens, never after — so hashing either gives the
  * same digest. That equality is not an implementation detail, it is the entire
  * safety argument for streaming: every digest ever recorded stays reproducible.
- * `test/unit/oracle-digest.test.ts` asserts it directly over the canary shapes,
- * and `PINNED_HARNESS_DIGEST` pins it for the projection as a whole.
+ * `test/unit/oracle-digest.test.ts` asserts it directly over the canary shapes.
  *
  * Tokens are buffered and flushed in blocks rather than written one at a time:
  * one `update()` per token is a call into native code per AST node. Flushing
@@ -451,26 +450,15 @@ export function digestInto(
   sink.flush()
 }
 
-/** Full 64-hex sha256 of a string. */
-export function hash(payload: string): string {
-  return createHash('sha256').update(payload).digest('hex')
-}
-
 /**
  * Full 64-hex sha256 of a value's canonical projection, streamed.
  *
- * The convenience wrapper over {@link digestInto} for the common case, and what
- * parseman's own oracle uses. Identical to `hash(prefix + canonicalize(value))`
- * for every value the latter can survive.
+ * The convenience wrapper over {@link digestInto} for the common case.
+ * Identical to `sha256(prefix + canonicalize(value))` for every value the
+ * latter can survive, and unbounded where it is not.
  */
 export function digestValue(value: unknown, prefix = '', options?: CanonicalOptions): string {
   const sha = createHash('sha256')
   digestInto(sha, value, prefix, options)
   return sha.digest('hex')
 }
-
-/**
- * Per-entry fingerprint width. 64 bits over any realistic corpus is far below
- * the collision floor, and a report a human has to read stays readable.
- */
-export const FINGERPRINT_HEX = 16

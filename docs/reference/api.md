@@ -791,35 +791,11 @@ also exported for rendering a model or a single `SpecNode`.
 Prove a grammar refactor did not move the output. Imported from the `parseman/oracle`
 subpath; Node-only. See [The identity oracle](../guide/identity-oracle).
 
-### `digestCorpus(surfaces, corpus, options?)`
-
-Run every surface (`{ name, parse }`) over every corpus entry (`{ id, source }`) and return an
-`IdentityReport`: a per-surface `aggregate` hash, a `threw` count, and a `perEntry` fingerprint
-map. Thrown errors and returned failures are hashed alongside successes. Options: `projectError`
-(shape a thrown value before hashing — use it when messages carry absolute paths or timestamps)
-and `determinismSample` (how many entries to re-parse to prove the grammar is deterministic;
-`0` disables). Throws on a nondeterministic surface, a duplicate surface name, or a duplicate
-corpus id.
-
-### `compareReports(before, after)`
-
-Compare two reports. Verdict is `identical` (output-neutral), `moved` (not a refactor), or
-`incomparable` — the last when the reports came from different harness versions, which is
-never reported as a pass. Also returns per-surface `moved` entry ids and any corpus entries
-gained or lost. `formatComparison(comparison, opts?)` renders it for a log.
-
-### `loadCorpus(options)`
-
-Walk `roots` under `base` collecting files matching `extensions`, returning entries whose ids
-are POSIX paths **relative to `base`**. Throws on a root that does not resolve unless
-`allowMissingRoots` is set, in which case they come back in `missingRoots`. `maxBytes` skips
-oversized files into `skippedLarge`.
-
 ### `digestInto(target, value, prefix?, options?)` · `digestValue(value, prefix?, options?)`
 
-Deterministic serialization of **one** parse result — the primitive the whole oracle is
-built on, and the part only parseman can supply, because it is parseman's node shapes that
-decide which distinctions are semantically meaningful.
+Deterministic serialization of **one** parse result — the part only parseman can supply,
+because it is parseman's node shapes that decide which distinctions are semantically
+meaningful.
 
 `digestInto` streams the canonical token projection at a caller-supplied hash. The caller
 brings the algorithm and keeps the result:
@@ -834,21 +810,32 @@ Nothing is accumulated, so there is no maximum-string-length ceiling and no tree
 which the digest stops being takeable. `digestValue` is the sha256-hex convenience wrapper.
 
 `prefix` is written ahead of the first token with no separator, for callers that need two
-disjoint digest spaces (the oracle writes `OK:` / `ERR:`).
+disjoint digest spaces — write `OK:` for a parse that succeeded and `ERR:` for one that
+threw, so a surface returning exactly your projected error shape cannot hash the same as one
+that threw it.
 
 `options.maxVisits` bounds the walk, raising `CanonicalBudgetError` past the limit — see
 `DEFAULT_MAX_VISITS`. A walk that finishes under budget produces byte-identical output, so
 the budget can never move a recorded digest.
 
-### `canonicalize(value, options?)` · `HARNESS_DIGEST`
+### `canonicalize(value, options?)`
 
-`canonicalize` is the key-sorted, cycle-safe token projection the digests are taken over —
-diff two of them to see *what* moved. It **materialises** the projection, so it is bounded
-by the maximum JS string length; it is a debugging aid, and `digestInto` is what a gate
-should run on. `hash(prefix + canonicalize(v))` and `digestValue(v, prefix)` are the same
-number for every value the former can survive.
+The key-sorted, cycle-safe token projection the digests are taken over — diff two of them to
+see *what* moved. It **materialises** the projection, so it is bounded by the maximum JS
+string length; it is a debugging aid, and `digestInto` is what a gate should run on.
+`sha256(prefix + canonicalize(v))` and `digestValue(v, prefix)` are the same number for every
+value the former can survive.
 
-`HARNESS_DIGEST` is the harness's own behavioural fingerprint, stamped into every report.
+### What is NOT here
+
+Walking a corpus, folding per-entry digests into an aggregate, three-way verdicts and report
+formatting — once `loadCorpus`, `digestCorpus`, `compareReports` and `formatComparison` —
+are a consumer's regression-suite plumbing, not something that helps anyone build or diagnose
+a grammar, so they live with the suite that needs them. jess's is
+`packages/syntax/less/less-parser/test/identity-oracle/` and is a reasonable model to copy.
+Keep the `OK:`/`ERR:` prefixes, and keep "the grammar rejected this input" and "the digest
+could not be computed" on separate channels: the second is a fact about the tool, and
+reporting it as the first is how a gate lies.
 
 > **Sharing is exponential.** The projection writes a shared subtree once per *path* that
 > reaches it, deliberately (see "Sharing is not a cycle"), so a node referenced from two

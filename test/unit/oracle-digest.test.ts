@@ -3,11 +3,8 @@ import { createHash } from 'node:crypto'
 import {
   CanonicalBudgetError,
   canonicalize,
-  digestCorpus,
   digestInto,
   digestValue,
-  type CorpusEntry,
-  type Surface,
 } from '../../src/oracle/index.ts'
 
 /**
@@ -254,33 +251,27 @@ describe('visit budget', () => {
 })
 
 /**
- * A projection failure is NOT a parse failure.
+ * A projection failure RAISES. It never comes back as a digest.
  *
- * This is the soundness hole the streaming work closed. `payload` used to digest
- * inside the same `try` that guarded the parse, so a `RangeError` from joining an
- * over-long canonical string — or any other way the projection could give up —
- * was caught, recorded as `ERR:`, and counted in `threw`. The gate then reported
- * its own breakage as a grammar change, which is the single distinction it exists
- * to make.
+ * A caller's harness classifies a parse that threw as a fact about the grammar,
+ * and it is entitled to assume that anything this module RETURNS is a digest of
+ * something. If the projection could give up and hand back a value anyway, the
+ * tool's own breakage would arrive on the caller's grammar channel — the single
+ * distinction such a gate exists to make. So it throws a named error and leaves
+ * the classification to nobody.
  */
-describe('a digest failure never masquerades as a parse failure', () => {
-  const corpus: CorpusEntry[] = [{ id: 'a', source: 'a' }]
-
-  it('propagates a budget refusal instead of counting it in threw', () => {
+describe('a digest failure raises rather than returning a value', () => {
+  it('refuses a DAG that exceeds the visit budget', () => {
     let node: unknown = { leaf: 1 }
     for (let level = 0; level < 40; level++) node = { left: node, right: node }
-    const surface: Surface = { name: 's', parse: () => node }
-    expect(() => digestCorpus([surface], corpus, { maxVisits: 10_000 })).toThrow(CanonicalBudgetError)
+    expect(() => digestValue(node, 'OK:', { maxVisits: 10_000 })).toThrow(CanonicalBudgetError)
+    expect(() => digestInto(createHash('sha256'), node, 'OK:', { maxVisits: 10_000 }))
+      .toThrow(CanonicalBudgetError)
   })
 
-  it('still counts a genuine parse throw in threw', () => {
-    const surface: Surface = {
-      name: 's',
-      parse: () => {
-        throw new TypeError('genuinely rejected')
-      },
-    }
-    const report = digestCorpus([surface], corpus)
-    expect(report.surfaces[0]!.threw).toBe(1)
+  it('digests a value that fits the budget, prefix and all', () => {
+    const budgeted = digestValue({ leaf: 1 }, 'ERR:', { maxVisits: 10_000 })
+    expect(budgeted).toBe(digestValue({ leaf: 1 }, 'ERR:'))
+    expect(budgeted).not.toBe(digestValue({ leaf: 1 }, 'OK:'))
   })
 })

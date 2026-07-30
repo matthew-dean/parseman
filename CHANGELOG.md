@@ -5,6 +5,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.45.0 — 2026-07-30
 
+- **BREAKING: `parseman/oracle` keeps the projection and drops the harness.**
+  `loadCorpus`, `digestCorpus`, `compareReports` and `formatComparison` are removed,
+  along with the `Surface`, `CorpusEntry`, `SurfaceReport`, `IdentityReport`,
+  `DigestOptions`, `SurfaceComparison`, `IdentityComparison`, `LoadCorpusOptions` and
+  `LoadedCorpus` types and `HARNESS_DIGEST`. The test is whether something helps a
+  grammar author who has never heard of your project, and corpus walking, aggregate
+  digests, three-way verdicts and report formatting fail it: they only mean anything
+  with one consumer's corpus roots and committed baseline in hand. What stays is
+  `digestInto` / `digestValue` / `canonicalize` — deterministic serialization of ONE
+  parse result, which every grammar author needs and no consumer can write correctly,
+  since it is parseman's node shapes that decide which distinctions are semantically
+  meaningful. `docs/guide/identity-oracle.md` now carries the harness discipline as
+  guidance rather than as an API, and each item in it is there because something went
+  wrong without it; jess's replacement is
+  `packages/syntax/less/less-parser/test/identity-oracle/` and is a reasonable model
+  to copy. Migrating: the report shape was never load-bearing on parseman's side, so
+  a recorded aggregate stays reproducible as long as you fold the same fingerprints,
+  in id order, over the same `OK:`/`ERR:`-prefixed digests.
+
 - **Never degrade silently.** Every path where the compiler picks a correct-but-slower
   option now reports on one channel, formatted `[parseman] degraded [<code>] <where>:
   <subject> — <fell back to>; otherwise <what>`. It is default-on (`PARSEMAN_DEGRADATION=

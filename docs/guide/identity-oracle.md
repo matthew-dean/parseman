@@ -15,38 +15,55 @@ refactor — it is a semantics change, and needs the decision that goes with one
 It is a **differential, not a correctness check**. It tells you the output did not
 move. It has no opinion about whether the output was right to begin with.
 
-## The loop
+## What parseman gives you
+
+One primitive: `digestInto(target, value, prefix?, options?)`, the deterministic
+serialization of **one** parse result. It streams a canonical token projection at
+a hash you supply, so you own the algorithm and keep the number.
 
 ```ts
+import { createHash } from 'node:crypto'
 import { compile, parse } from 'parseman'
-import { loadCorpus, digestCorpus, compareReports, formatComparison } from 'parseman/oracle'
+import { digestInto } from 'parseman/oracle'
 import { grammar } from './src/grammar.ts'
 
-const { entries } = loadCorpus({
-  base: process.cwd(),
-  roots: ['test/fixtures', 'corpus'],
-  extensions: ['.less', '.css'],
-})
-
 const compiled = compile(grammar.stylesheet)
-const report = digestCorpus(
-  [
-    { name: 'interpreted', parse: source => parse(grammar.stylesheet, source) },
-    { name: 'compiled', parse: source => compiled.parse(source) },
-  ],
-  entries,
-)
+
+function digest(source) {
+  const sha = createHash('sha256')
+  let value
+  let threw = false
+  try {
+    value = compiled.parse(source)
+  } catch (error) {
+    threw = true
+    value = { name: error.name, message: error.message }
+  }
+  // The prefix keeps a successful parse and a rejection in disjoint hash spaces.
+  digestInto(sha, value, threw ? 'ERR:' : 'OK:')
+  return { digest: sha.digest('hex'), threw }
+}
 ```
 
-1. Run it, save the report as `before.json`.
-2. Edit the grammar. **Rebuild.**
-3. Run it again, save as `after.json`.
-4. `console.log(formatComparison(compareReports(before, after)))`.
+That is the part only parseman can write: it is parseman's node shapes that
+decide which distinctions are semantically meaningful.
 
-`IDENTICAL` accepts the change. `MOVED` names the surface and lists the entries
-whose fingerprints changed, so you can go and look at one.
+## The loop, and the harness you write around it
 
-## Four things that make it worth trusting
+1. Digest every file in your corpus. Keep a short fingerprint per file and fold
+   them, in **id order**, into one aggregate per parse surface.
+2. Save it. Edit the grammar. **Rebuild.**
+3. Digest again and compare: equal aggregates accept the change; a different one
+   names the surface, and the per-file fingerprints say which file to go look at.
+
+Corpus walking, the aggregate, the verdict and the report formatting are yours,
+not parseman's — they only mean anything with your corpus roots and your
+committed baseline in hand. jess's is
+`packages/syntax/less/less-parser/test/identity-oracle/` and is a reasonable
+model to copy. The rest of this page is the discipline that makes such a harness
+worth trusting; every item is something that has gone wrong for real.
+
+## Six things that make it worth trusting
 
 ### Declare every surface, not just the one you are editing
 
@@ -64,6 +81,27 @@ has moved the grammar's contract as surely as one that renames a node. So a corp
 full of invalid inputs is a **feature** — feed it your rejection fixtures on
 purpose. Expect the throw count to be non-zero. Require that it does not move.
 
+Hash the rejections under a **different prefix** than the successes, as above.
+Without it, a surface that returns exactly the shape you project an error into
+digests identically to one that threw it — and the single most important thing
+this kind of gate detects, an error becoming an accept, is the thing it stops
+detecting.
+
+### "It rejected the input" and "I could not digest it" are different facts
+
+The first is a fact about the **grammar** and belongs in the hash. The second —
+`CanonicalBudgetError`, an out-of-memory, a bug in your own projection — is a fact
+about the **tool**, and it is the exact opposite. Keep them on separate channels,
+and make sure the second cannot produce a verdict at all: a run that could not
+digest something has not compared anything, and should say so rather than report
+a number.
+
+The way this goes wrong is banal. Digest inside the same `try` that guards the
+parse and every projection failure silently becomes a rejection: the count moves,
+the fingerprint moves, and the gate reports its own breakage in the vocabulary of
+a grammar regression. Take the digest **outside** that `try` — and any transform
+you apply to the tree before digesting with it.
+
 ### Digest what ships
 
 If your grammar is macro-compiled, digest the **built** artifact and rebuild
@@ -75,11 +113,12 @@ build. The oracle cannot check this for you. Your build can.
 
 ### A corpus cannot quietly shrink
 
-An entry id is *relative to an explicit base*, never absolute, so two machines can
-agree. `loadCorpus` throws on a root that does not resolve rather than returning a
-smaller corpus, and the aggregate covers the entry ids as well as their
-fingerprints — so a corpus that lost files moves the aggregate instead of producing
-a smaller, greener gate. `compareReports` then tells you it was the corpus.
+Derive an entry id *relative to an explicit base*, never from an absolute path, or
+two machines can never agree and the first cross-machine comparison reads as a
+total regression. Fail on a corpus root that does not resolve rather than quietly
+walking a smaller tree. And fold the entry **ids** into the aggregate alongside
+their fingerprints, so a corpus that lost files moves the aggregate instead of
+producing a smaller, greener gate.
 
 ## What the projection sees
 
@@ -123,29 +162,33 @@ ancestor it points at. Marking every repeat as a cycle — the easy version — 
 the digest depend on traversal order for any DAG, which parse trees with shared
 subtrees routinely are.
 
-## The harness cannot drift silently
+### The harness must not be able to drift silently
 
 A digest that moves because the **harness** changed rather than the grammar is
-worse than no oracle: it either invents a regression or, far worse, hides one. This
-is not a hypothetical failure — it is why this module exists in parseman rather
-than being re-derived in each consumer. Three things prevent it:
+worse than no oracle: it either invents a regression or, far worse, hides one. Give
+your harness a behavioural fingerprint of its own — run it over a small frozen
+canary of hand-built values that exercises every shaping decision it makes, hash
+that, and stamp it into every report. Then **refuse** to compare two reports whose
+fingerprints differ: return `incomparable`, never `identical` and never `moved`. A
+drifted harness has to produce an error, not a verdict about your grammar.
 
-- Every report carries `HARNESS_DIGEST`, a behavioural fingerprint of the
-  projection, computed over a frozen canary that exercises every payload-shaping
-  decision it makes.
-- `compareReports` **refuses** to compare two reports whose harness digests differ.
-  It returns `incomparable` — never `identical`, never `moved`. A drifted harness
-  produces an error, not a verdict about your grammar.
-- Parseman's own suite pins `HARNESS_DIGEST` to a literal constant, so changing the
-  projection requires editing that constant in a reviewed diff.
+Pin the fingerprint to a literal in your own suite, so changing the projection
+requires editing that constant in a reviewed diff. `DIGEST_FORMAT` is exported for
+the same purpose from parseman's side: fold it in and a projection format bump
+moves your fingerprint too.
 
-## Nondeterminism is caught, not hashed
+One decision a frozen canary *cannot* cover is whether a projection failure lands
+on the tool's channel or the grammar's — an entry that exercises it produces no
+fingerprint, by definition. Assert that one directly instead.
+
+### Nondeterminism is caught, not hashed
 
 A grammar whose output depends on a timestamp, a counter, or iteration over a
 Map keyed by object identity produces a digest that moves every run — which reads
-exactly like a regression. `digestCorpus` re-parses a sample of the corpus and
-fails loudly if any entry does not reproduce. Tune or disable it with
-`determinismSample`.
+exactly like a regression. Re-parse an evenly spaced sample of the corpus and fail
+loudly, naming the surface and the entry, if any of them does not reproduce. Hold
+the source you already read rather than re-reading the file, or an edit landing
+mid-run reports as grammar nondeterminism.
 
 ## What it is not
 
@@ -168,4 +211,4 @@ source text, which would flip the digest on a comment edit inside a builder, or
 refusing to digest any value that carries a callable, which rejects ASTs that
 legitimately hold one. Neither default is right for every caller, so the projection
 states what it sees and leaves the choice open. If your trees carry callables and you
-need them covered, strip or normalise them in the surface you hand to `digestCorpus`.
+need them covered, strip or normalise them before you digest.
