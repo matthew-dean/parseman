@@ -250,6 +250,99 @@ describe('visit budget', () => {
   })
 })
 
+const dag = (depth: number): unknown => {
+  let node: unknown = { leaf: 1 }
+  for (let level = 0; level < depth; level++) node = { l: node, r: node }
+  return node
+}
+
+/**
+ * An unrollable DAG is refused at the point it becomes suspicious, not after the
+ * budget has been spent one visit at a time.
+ *
+ * At the DEFAULT budget a depth-40 unroll used to spend 40.9 SECONDS reaching
+ * `CanonicalBudgetError` — 100,000,000 object visits, each one real work, none of
+ * it able to produce an answer. The outcome was never in doubt: the walk needs
+ * 2^41 visits and the budget is 10^8.
+ *
+ * So the outcome is computed instead of discovered. Counting the visits is linear
+ * in DISTINCT nodes (41 of them here) where doing them is exponential in paths,
+ * and a count far past the budget means the walk cannot finish however long it is
+ * left to run. Same error, same message, 397ms instead of 40.9s.
+ *
+ * ## Why the bytes are not the assertion here
+ *
+ * There is no correct output to assert. This projection writes a shared subtree
+ * once per PATH, so the canonical text for a depth-`d` unroll is 33·2^d chars —
+ * verified against the law below at depths that fit. Depth 40 is 36 TERABYTES of
+ * canonical text, and a byte-identical implementation must feed every one of
+ * those bytes to the hash: at the 1.37 Gchar/s sha256 throughput measured on this
+ * machine that is 7 hours of hashing with zero traversal cost. Memoising the walk
+ * cannot help, because the walk is already linear in its own output. The digest
+ * does not exist to be computed faster; refusing quickly is the whole remedy.
+ */
+describe('an unrollable DAG is refused before the budget is burned, not after', () => {
+  it('refuses depth 40 in seconds rather than the 40.9s it took to discover', () => {
+    const started = performance.now()
+    expect(() => digestValue(dag(40))).toThrow(CanonicalBudgetError)
+    expect(performance.now() - started).toBeLessThan(10_000)
+  })
+
+  it('says it refused EARLY, and how big the walk would have been', () => {
+    expect(() => digestValue(dag(40))).toThrow(/Refused EARLY/)
+    // 2^41 - 1 object visits: the unrolled node count, not the distinct one.
+    expect(() => digestValue(dag(40))).toThrow(new RegExp(String(2 ** 41 - 1)))
+  })
+
+  it('refuses through canonicalize too, rather than a RangeError from the join', () => {
+    const started = performance.now()
+    expect(() => canonicalize(dag(40))).toThrow(CanonicalBudgetError)
+    expect(performance.now() - started).toBeLessThan(10_000)
+  })
+
+  /**
+   * The pin that makes the above safe.
+   *
+   * Depth 20 costs 2,097,151 object visits, so it crosses the probe threshold:
+   * the projection runs, answers 2,097,151, sees that against a 10^8 budget, and
+   * ALLOWS the walk. These two digests were taken from the implementation before
+   * the probe existed. If the probe ever changes a byte on a value it lets
+   * through, this is where it shows up.
+   */
+  it('does not move a byte of a large value it lets through', () => {
+    expect(digestValue(dag(20))).toBe('02694ab28971b853b4c455d8515e900ded9c8874c2ee0934e7c490d3377a7b3c')
+    expect(digestValue(dag(20), 'OK:')).toBe('1d461cd983da2ad175f34a6a6dc0210f2697b9dd120dede2db72dce5b36e11ba')
+  })
+
+  it('leaves a value below the probe threshold untouched', () => {
+    expect(digestValue(dag(12))).toBe('1316da8113a0edeb3369d9e2903e08aa90bfa087f52d9e7c739903a598813977')
+    expect(canonicalize(dag(12))).toHaveLength(135_151)
+  })
+
+  /**
+   * The cost law, stated as a test because it is the reason there is nothing to
+   * assert at depth 40. Each level doubles the output exactly.
+   */
+  it('writes 33·2^d chars for a depth-d unroll, which is why depth 40 has no answer', () => {
+    for (const depth of [4, 8, 12, 16]) {
+      expect(canonicalize(dag(depth))).toHaveLength(33 * 2 ** depth - 17)
+    }
+  })
+
+  /**
+   * A cycle is not an unroll, and the projection must not confuse them: the
+   * counter cannot answer for a value whose abbreviations depend on the ancestor
+   * set, so it declines and the walk proceeds exactly as it always did.
+   */
+  it('never refuses a cyclic value on the strength of a count it cannot take', () => {
+    const root: Record<string, unknown> = { name: 'root' }
+    root['self'] = root
+    root['kids'] = Array.from({ length: 4 }, (_, i) => ({ i, up: root }))
+    expect(digestValue(root)).toBe(digestValue(root))
+    expect(canonicalize(root)).toContain('^')
+  })
+})
+
 /**
  * A projection failure RAISES. It never comes back as a digest.
  *

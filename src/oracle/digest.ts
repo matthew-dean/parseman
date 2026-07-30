@@ -196,12 +196,16 @@ const FLUSH_CHARS = 1 << 16
 export class CanonicalBudgetError extends Error {
   override readonly name = 'CanonicalBudgetError'
 
-  constructor(budget: number) {
+  constructor(budget: number, projected?: number) {
     super(
       `canonicalize: exceeded ${budget} visits. The value is not merely large — it is almost certainly a DAG being `
       + 'unrolled. This projection writes a shared subtree once per PATH that reaches it (see "Sharing is not a '
       + 'cycle"), so a node referenced from two places at each of d levels costs 2^d. Deduplicate the shared '
-      + 'structure, or raise `maxVisits` if the value really is that big.',
+      + 'structure, or raise `maxVisits` if the value really is that big.'
+      + (projected === undefined
+        ? ''
+        : ` Refused EARLY: the walk was projected to visit ${projected} objects, so it could not have finished `
+        + 'under this budget however long it ran. See {@link projectVisits}.'),
     )
   }
 }
@@ -220,14 +224,160 @@ export class CanonicalBudgetError extends Error {
  * being two full writes and becomes a back-reference. That invalidates every
  * digest, every committed baseline, and {@link DIGEST_FORMAT} itself. It is a
  * format decision for the owner, not something to slip in behind a bug fix.
+ *
+ * ## The tempting middle road does not exist
+ *
+ * Stated because it looks obviously right and is obviously right about the wrong
+ * thing: memoise the canonical BYTES of a subtree by node identity, splice the
+ * cached bytes in at each of the two places, and you get the identical output
+ * with the work done once. It is sound — a subtree's bytes depend only on the
+ * subtree, except for a back-edge leaving it, which is exactly the case
+ * {@link projectVisits} declines — and it does not help.
+ *
+ * It does not help because the walk is ALREADY linear in its own output, and it
+ * is the OUTPUT that is exponential: a depth-`d` two-way unroll writes 33·2^d
+ * chars, measured, and every one of them has to reach the hash. Caching removes
+ * re-derivation, of which there is a constant factor's worth; it cannot remove
+ * bytes the format requires. At depth 40 that is 36 TB of canonical text — 7
+ * hours of sha256 at the 1.37 Gchar/s this machine manages, with traversal,
+ * allocation and splicing all free. Depth 40 has no answer to compute quickly.
+ * There is only refusing quickly, which is what the probe does.
  */
 export const DEFAULT_MAX_VISITS = 100_000_000
+
+/**
+ * Object visits to spend before the walk stops to ask whether it can possibly
+ * finish. Zero cost below it, so nothing a gate actually digests ever pays.
+ *
+ * A million visits is ~0.4s of walking on the machine this was measured on —
+ * far past any real parse tree, far short of the 49 SECONDS an exponential
+ * unroll used to spend before {@link DEFAULT_MAX_VISITS} noticed.
+ */
+const EXPANSION_PROBE_VISITS = 1_000_000
+
+/**
+ * Distinct objects the probe will look at before giving up on answering.
+ *
+ * A value with more distinct nodes than this is genuinely enormous rather than
+ * DAG-shaped, and the probe has nothing useful to say about it — an unrolling
+ * DAG is tiny in DISTINCT nodes (depth 40 is 41 of them) and huge only in paths.
+ * Capping here is what keeps the probe from becoming a second full walk: the cap
+ * is what the probe costs, once, in the worst case, and giving up early costs
+ * only the old behaviour.
+ */
+const EXPANSION_PROBE_NODES = 200_000
+
+/**
+ * How far past the budget a projection must land before it is acted on.
+ *
+ * The projection re-reads the value — including any getters — so it is a
+ * measurement of the value, not of the walk, and a value that answers
+ * differently the second time can make it wrong. A margin this wide means only
+ * an order-of-magnitude disagreement can refuse a walk that would have
+ * finished; anything nearer the line falls through to the walk itself, which is
+ * the authority. Erring costs time, never bytes.
+ */
+const EXPANSION_PROBE_MARGIN = 4
 
 type WriteState = {
   readonly path: Map<object, number>
   readonly sink: CanonicalSink
   readonly budget: number
+  readonly root: unknown
   visits: number
+  /**
+   * The value of {@link visits} at which to run the probe, or `-1` to never run
+   * it. Exact equality, so it fires once and is then unreachable.
+   */
+  probeAt: number
+}
+
+/**
+ * The number of objects {@link write} will visit for `root`, or `undefined` if
+ * that cannot be answered cheaply and exactly.
+ *
+ * This counts what the walk counts — one per object visit, zero for a scalar,
+ * one for a back-edge — but MEMOISED by node identity, so a shared subtree is
+ * counted once instead of once per path. That is the whole trick: counting the
+ * work is linear in DISTINCT nodes even when doing the work is exponential in
+ * paths.
+ *
+ * It answers `undefined` rather than guessing whenever the count could be wrong
+ * in the direction that matters:
+ *
+ * - **A back-edge.** Whether a node abbreviates to `^n` depends on the ancestor
+ *   set at the moment it is reached, so for a cyclic value a memoised count is
+ *   not context-free and can come out HIGH. Any back-edge at all abandons the
+ *   answer.
+ * - **Too many distinct nodes.** {@link EXPANSION_PROBE_NODES}, above.
+ * - **A throw.** A getter, a Proxy trap, or the added stack depth of running a
+ *   recursive count on top of an in-progress recursive walk. None of these are
+ *   the probe's business to diagnose; not answering is always available.
+ */
+function projectVisits(root: unknown): number | undefined {
+  const memo = new Map<object, number>()
+  const path = new Set<object>()
+  let nodes = 0
+  let usable = true
+
+  const count = (v: unknown): number => {
+    if (typeof v !== 'object' || v === null) return 0
+    if (path.has(v)) {
+      usable = false
+      return 1
+    }
+    const done = memo.get(v)
+    if (done !== undefined) return done
+    if (++nodes > EXPANSION_PROBE_NODES) {
+      usable = false
+      return 1
+    }
+
+    path.add(v)
+    // Mirrors `write`'s child enumeration exactly. Key ORDER is irrelevant to a
+    // count, so this does not sort; nothing else here may drift from `write`.
+    let total = 1
+    if (Array.isArray(v)) {
+      for (const item of v) total += count(item)
+    } else if (v instanceof Map) {
+      for (const [k, val] of v) total += count(k) + count(val)
+    } else if (v instanceof Set) {
+      for (const item of v) total += count(item)
+    } else if (!(v instanceof Date) && !(v instanceof RegExp)) {
+      for (const k of Object.keys(v)) total += count((v as Record<string, unknown>)[k])
+    }
+    path.delete(v)
+
+    memo.set(v, total)
+    return total
+  }
+
+  try {
+    const total = count(root)
+    return usable ? total : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Stop a walk that provably cannot finish, at the point it has proved expensive.
+ *
+ * The budget is a backstop that only notices after the work is done, and for an
+ * exponential unroll "after" is minutes. This asks the cheap question instead —
+ * how many visits would the whole walk take — and refuses immediately when the
+ * answer is far past the budget the walk is already spending.
+ *
+ * The OUTCOME is unchanged: a walk projected past its budget is a walk that
+ * raises {@link CanonicalBudgetError}, so this moves nothing but the clock. It
+ * cannot move a digest, because no walk it stops was ever going to produce one.
+ */
+function probeExpansion(state: WriteState): void {
+  state.probeAt = -1
+  const projected = projectVisits(state.root)
+  if (projected !== undefined && projected / EXPANSION_PROBE_MARGIN > state.budget) {
+    throw new CanonicalBudgetError(state.budget, projected)
+  }
 }
 
 function writeScalar(v: unknown, out: CanonicalSink): void {
@@ -286,6 +436,9 @@ function write(v: unknown, state: WriteState, depth: number): void {
   // Counted per OBJECT visit, not per token: the runaway this guards against is
   // re-walking structure, and scalars cannot re-walk anything.
   if (--state.visits < 0) throw new CanonicalBudgetError(state.budget)
+  // One equality against a number already in a register, on a path that already
+  // does three Map operations. Fires at most once per walk; `-1` is unreachable.
+  if (state.visits === state.probeAt) probeExpansion(state)
 
   const path = state.path
   const seenAt = path.get(v)
@@ -359,7 +512,7 @@ export type CanonicalOptions = {
  * So the budget is checked once, here, where the option is read: a bad number is
  * a caller mistake and says so, rather than turning into a hang under load.
  */
-function newState(sink: CanonicalSink, options: CanonicalOptions | undefined): WriteState {
+function newState(sink: CanonicalSink, options: CanonicalOptions | undefined, root: unknown): WriteState {
   const budget = options?.maxVisits ?? DEFAULT_MAX_VISITS
   if (!Number.isSafeInteger(budget) || budget < 0) {
     throw new RangeError(
@@ -369,7 +522,10 @@ function newState(sink: CanonicalSink, options: CanonicalOptions | undefined): W
       + 'would run unbounded into the OOM the budget exists to prevent.',
     )
   }
-  return { path: new Map(), sink, budget, visits: budget }
+  // A budget too small to reach the probe never reaches it: the walk raises
+  // CanonicalBudgetError first, exactly as it always did.
+  const probeAt = budget >= EXPANSION_PROBE_VISITS ? budget - EXPANSION_PROBE_VISITS : -1
+  return { path: new Map(), sink, budget, root, visits: budget, probeAt }
 }
 
 /**
@@ -384,7 +540,7 @@ function newState(sink: CanonicalSink, options: CanonicalOptions | undefined): W
  */
 export function canonicalize(value: unknown, options?: CanonicalOptions): string {
   const out = new ArraySink()
-  write(value, newState(out, options), 0)
+  write(value, newState(out, options, value), 0)
   return out.tokens.join(SEPARATOR)
 }
 
@@ -446,7 +602,7 @@ export function digestInto(
 ): void {
   const sink = new StreamSink(target)
   sink.prefix(prefix)
-  write(value, newState(sink, options), 0)
+  write(value, newState(sink, options, value), 0)
   sink.flush()
 }
 
