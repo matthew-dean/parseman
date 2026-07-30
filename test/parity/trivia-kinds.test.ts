@@ -22,6 +22,17 @@ function labeledRw() {
 const KIND_LABELS = ['whitespace', 'blockComment'] as const
 
 describe('labeled trivia kinds — interpreter vs compiled', () => {
+  it('emits selected-root bookkeeping only for classified grammar roots', () => {
+    const ordinary = parser({ trivia: trivia(regex(/[ \t]+/)) }, sequence(literal('a'), literal('b')))
+    const classified = parser({ trivia: labeledRw() }, sequence(literal('a'), literal('b')))
+
+    // Structural trivia fast paths are available to both grammars. Root-category
+    // retention is not: an ordinary grammar cannot service `rootTrivia.select`,
+    // so its generated hot path must not pay for root-log saves or rollbacks.
+    expect(compile(ordinary).source).not.toContain('_rootTrivia')
+    expect(compile(classified).source).toContain('_rootTrivia')
+  })
+
   it('records per-chunk kind indices in _triviaLog', () => {
     const rw = labeledRw()
     const g = rules(r => {
