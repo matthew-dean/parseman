@@ -26,6 +26,8 @@ export type RootTriviaGap = {
 }
 
 export type RootTriviaIndex = {
+  /** Whether entry spans are complete root gaps or selected markers within one. */
+  readonly rootCaptureMode: 'allEntries' | 'selectedKinds'
   /** Lazy entry-level view over the root capture representation. */
   readonly entries: TriviaEntriesView
   /** Trivia kind labels, when the grammar labels trivia arms. */
@@ -203,6 +205,7 @@ export function buildRootTriviaIndex(
   }
 
   return {
+    rootCaptureMode: 'allEntries',
     entries,
     labels,
     get before() {
@@ -355,6 +358,7 @@ export function buildSelectedRootTriviaIndex(
   }
 
   return {
+    rootCaptureMode: 'selectedKinds',
     entries,
     labels,
     get before() { return getMaps().before },

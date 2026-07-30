@@ -104,6 +104,7 @@ describe('buildRootTriviaIndex()', () => {
   it('indexes an unlabeled root log by the surrounding content offsets', () => {
     const index = buildRootTriviaIndex([3, 6, 9, 12])
 
+    expect(index.rootCaptureMode).toBe('allEntries')
     expect(index.entryIndicesAfter(3)).toEqual([0])
     expect(index.entryIndicesBefore(6)).toEqual([0])
     expect(index.entryIndicesAfter(9)).toEqual([1])
@@ -186,6 +187,7 @@ describe('buildSelectedRootTriviaIndex()', () => {
       1, 12, 8, 9, 2,
     ], labels)
 
+    expect(index.rootCaptureMode).toBe('selectedKinds')
     expect(index.entries.length).toBe(2)
     expect(index.entries.kind(0)).toBe('blockComment')
     expect(index.entries.kind(1)).toBe('significantNewline')
