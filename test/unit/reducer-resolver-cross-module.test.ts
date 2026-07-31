@@ -295,7 +295,11 @@ export const factory = g => ({ Fold: node('Fold', sequence(literal('a'), literal
     // The second file holds byte-identical text, so the key can no longer name a module.
     expect(r.register(path.join(dir, 'dupB/mod.ts'))).toBe(false)
     // And the offset is refused rather than answered from whichever registration won.
-    const offset = shared.trim().indexOf('helper\n')
+    // The FINAL `helper` is the reducer expression — `indexOf('helper\n')` was -1, since
+    // `trim()` takes the trailing newline off. The decline happens before the offset is
+    // read, so the case passed either way; an invalid position would only surface the day
+    // the ambiguity guard moved, which is the day this case has to still mean something.
+    const offset = shared.trim().lastIndexOf('helper')
     expect(r.resolve('helper', offset, shared.trim())).toEqual({
       arity: null, src: null, reason: 'ambiguous-source',
     })

@@ -34,8 +34,8 @@ const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, 'g')
 export const stripSgr = (s: string): string => s.replace(SGR, '')
 
 export type CliRun = {
-  /** `process.exitCode` after the run. `undefined` only if the run never settled. */
-  code: number | undefined
+  /** `process.exitCode` after the run. Always a number — a run that never settled throws. */
+  code: number
   stdout: string
   stderr: string
 }
@@ -47,6 +47,27 @@ export type RunCliOptions = {
   isTTY?: boolean
   /** Terminal width to report, for the `--color` + `process.stdout.columns` branch. */
   columns?: number
+  /**
+   * How long to wait for `process.exitCode` to be assigned, in milliseconds.
+   *
+   * The default is deliberately larger than any single case's vitest budget: a run that
+   * has not settled is a BUG to surface, not a result to return, and the vitest timeout
+   * is the thing that should fire. The old 6 s cap was smaller than the 60 s budget the
+   * `fix` cases carry — those compile `examples/lang/parser.ts` and re-parse a corpus per
+   * candidate rewrite — so a slow machine returned `code: undefined` with partial output
+   * and the case failed on an unrelated assertion with the real cause invisible.
+   */
+  settleMs?: number
+}
+
+/** Thrown when a run never assigned `process.exitCode`, so the failure names itself. */
+export class CliDidNotSettleError extends Error {
+  constructor(args: readonly string[], settleMs: number, stdout: string, stderr: string) {
+    super(`the CLI did not settle within ${settleMs}ms: parseman ${args.join(' ')}\n`
+      + `  stdout so far (${stdout.length} bytes): ${JSON.stringify(stdout.slice(0, 400))}\n`
+      + `  stderr so far (${stderr.length} bytes): ${JSON.stringify(stderr.slice(0, 400))}`)
+    this.name = 'CliDidNotSettleError'
+  }
 }
 
 export async function runCli(args: readonly string[], opts: RunCliOptions = {}): Promise<CliRun> {
@@ -77,11 +98,16 @@ export async function runCli(args: readonly string[], opts: RunCliOptions = {}):
   try {
     caseId += 1
     await import(/* @vite-ignore */ `${CLI}?cliCase=${caseId}`)
-    for (let i = 0; i < 600 && process.exitCode === undefined; i++) {
+    const settleMs = opts.settleMs ?? 300_000
+    const deadline = Date.now() + settleMs
+    while (process.exitCode === undefined && Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 10))
     }
     const code = process.exitCode
-    return { code: typeof code === 'number' ? code : undefined, stdout: out.join(''), stderr: err.join('') }
+    // Returning `{ code: undefined }` here made a timeout look like whatever assertion
+    // happened to run first. Throw instead, so the reason is the reason.
+    if (typeof code !== 'number') throw new CliDidNotSettleError(args, settleMs, out.join(''), err.join(''))
+    return { code, stdout: out.join(''), stderr: err.join('') }
   }
   finally {
     process.stdout.write = prevWrite

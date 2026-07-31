@@ -13,8 +13,8 @@
  * read. The fixture corpus is deliberately three files of three different sizes so the
  * number distinguishes "walked into `sub/`" from "did not".
  */
-import { describe, it, expect } from 'vitest'
-import { mkdtempSync, mkdirSync } from 'node:fs'
+import { afterAll, describe, it, expect } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runCli } from '../helpers/run-cli.ts'
@@ -22,6 +22,19 @@ import { runCli } from '../helpers/run-cli.ts'
 const F = 'test/fixtures/cli-cov'
 const G = `${F}/labels.mjs`
 const CORPUS = `${F}/corpus`
+
+// Scratch corpus directories, removed together at the end rather than left in the OS
+// temp directory on every run. `maxRetries` because Node documents ENOTEMPTY as transient
+// for recursive removal — tidying up must not be what fails a suite that otherwise passed.
+const scratchDirs: string[] = []
+const scratch = (prefix: string): string => {
+  const d = mkdtempSync(join(tmpdir(), prefix))
+  scratchDirs.push(d)
+  return d
+}
+afterAll(() => {
+  for (const d of scratchDirs) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 })
+})
 
 /** `corpus/a.txt` is 4 bytes, `corpus/b.css` is 6, `corpus/sub/c.txt` is 3. */
 const placesReached = (out: string): number => {
@@ -138,7 +151,7 @@ describe('readCorpus', () => {
   })
 
   it('an EMPTY corpus directory is an error, not a silent zero-input pass', async () => {
-    const empty = mkdtempSync(join(tmpdir(), 'cli-cov-empty-'))
+    const empty = scratch('cli-cov-empty-')
     const r = await runCli(['diagnose', G, '--corpus', empty])
     expect(r.stderr).toBe(`corpus ${empty} contains no files\n`)
     expect(r.code).toBe(2)
@@ -151,7 +164,7 @@ describe('readCorpus', () => {
   })
 
   it('a directory holding only subdirectories is empty too', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'cli-cov-dirs-'))
+    const root = scratch('cli-cov-dirs-')
     mkdirSync(join(root, 'nested'))
     const r = await runCli(['diagnose', G, '--corpus', root])
     expect(r.stderr).toBe(`corpus ${root} contains no files\n`)

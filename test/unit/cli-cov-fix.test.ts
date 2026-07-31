@@ -9,8 +9,8 @@
  * Each of those exits 2, because `fix` fails CLOSED — a loop that could not run is not a
  * pass, and 0 would tell CI it was.
  */
-import { describe, it, expect } from 'vitest'
-import { chmodSync, copyFileSync, mkdtempSync, readFileSync } from 'node:fs'
+import { afterAll, describe, it, expect } from 'vitest'
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runCli } from '../helpers/run-cli.ts'
@@ -20,7 +20,22 @@ const LANG = 'examples/lang/parser.ts'
 const LANG_ARGS = [LANG, '--export', 'exprParser', '--corpus', 'examples/lang/corpus'] as const
 const T = 60_000
 
-const tmp = (name: string): string => join(mkdtempSync(join(tmpdir(), 'cli-cov-fix-')), name)
+// Scratch directories, removed together at the end. Each `tmp()` makes its own so the
+// copies cannot collide; leaving them behind put a copy of `examples/lang/parser.ts` in
+// the OS temp directory on every run. `test/unit/size-guard.test.ts` uses this shape:
+// `maxRetries` because Node documents ENOTEMPTY as transient for recursive removal, and
+// tidying up must never be what fails a suite whose cases all passed.
+const scratch: string[] = []
+const tmp = (name: string): string => {
+  const d = mkdtempSync(join(tmpdir(), 'cli-cov-fix-'))
+  scratch.push(d)
+  return join(d, name)
+}
+afterAll(() => {
+  // A case chmods a copy to 0o444 to prove the unwritable-source path; the directory is
+  // still writable, so removal works, but `force` keeps a partial case from failing here.
+  for (const d of scratch) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 })
+})
 
 describe('fix refuses, and says why', () => {
   it('a rule MAP has no single root to re-parse with', async () => {
@@ -97,7 +112,12 @@ describe('fix --apply', () => {
     expect(r.code).toBe(0)
   }, T)
 
-  it('a source it can READ but not WRITE is an I/O failure, not a silent no-op success', async () => {
+  // Mode bits do not deny writes to uid 0, so as root the write SUCCEEDS and there is no
+  // EACCES to assert — the case would fail for a reason that has nothing to do with the
+  // behaviour it covers. Skipping where the condition is unreachable is not weakening it:
+  // everywhere the permission check exists, the case still runs and still asserts exit 2.
+  const asRoot = typeof process.getuid === 'function' && process.getuid() === 0
+  it.skipIf(asRoot)('a source it can READ but not WRITE is an I/O failure, not a silent no-op success', async () => {
     // The hazard this covers: `fix --apply` printing "3 edit(s) written" over a write that
     // never landed. A tool that could not do the thing must not exit 0.
     const copy = tmp('read-only.ts')
