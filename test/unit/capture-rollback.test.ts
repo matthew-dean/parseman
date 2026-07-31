@@ -89,7 +89,12 @@ const CASES: Array<[keyof typeof compiled, string, string[]]> = [
   ['O', 'a[', ['a']],                       // failed optional rolls back `[`
   // sepBy
   ['S', '[a]', ['[', 'a', ']']],
-  ['S', '[a],[b]', ['[', 'a', ']', ',', '[', 'b', ']']], // separator `,` is itself a leaf
+  // A LIST CONTRIBUTES ITS ITEMS AND NOTHING ELSE. The separator `,` is matched by
+  // a real combinator and it IS consumed, but it is not an item, so `sepBy` demotes
+  // it out of `children` into `rawChildren` only. Before 0.47.0 this case read
+  // ['[','a',']',',','[','b',']'] — the comma sat at index 3 and every author who
+  // indexed positionally across a list got it.
+  ['S', '[a],[b]', ['[', 'a', ']', '[', 'b', ']']],
   ['S', '[a],[', ['[', 'a', ']']],          // failed trailing item rolls back `,` + `[`
   // non-disjoint choice
   ['C', '[a]', ['[', 'a', ']']],

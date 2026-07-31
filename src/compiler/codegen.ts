@@ -3242,6 +3242,26 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
    * 'allow' keeps the separator CONSUMED: only what was captured PAST it unwinds
    * (`postSepRb`), and `cur` advances to the separator's end.
    */
+  /**
+   * A LIST CONTRIBUTES ITS ITEMS AND NOTHING ELSE — the compiled half.
+   *
+   * The separator matched, so it is consumed and it stays in `_cstRawChildren`;
+   * it is not an item, so it comes back out of the structural `_cstLeaves`. This
+   * is `demoteCapturedToRaw` in repeat.ts, emitted inline, and it MUST run before
+   * `postSepMarks()` samples the leaf length — otherwise a `trailing: 'allow'`
+   * unwind would restore the separator into `children` on the very path the
+   * default is meant to keep clean.
+   *
+   * Emitted only where there is something to demote: `ctx.capturing` off means no
+   * leaf buffer at all, and `keepSeparators` means the author asked for them.
+   * Empty string on both, so every existing default-option grammar stays
+   * byte-identical apart from this one guarded truncation.
+   */
+  const demoteSep = (markLvVar: string | null): string[] =>
+    markLvVar === null || def.keepSeparators
+      ? []
+      : [`${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLvVar}) _ctx._cstLeaves.length = ${markLvVar}`]
+
   const itemFailBreak = (sepEndVar: string, sepRb: string, postSepRb: string): string =>
     def.trailing === undefined
       ? `${sepRb}break`
@@ -3341,6 +3361,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       const sep = emitFallible(def.separator, ctx, sepAtPos, true)
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
+      stmts.push(...demoteSep(markLv))
 
       const post = postSepMarks()
       stmts.push(...post.decl)
@@ -3402,6 +3423,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     const sep = emitFallible(def.separator, ctx, sepAtPos, true)
     const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
     stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
+    stmts.push(...demoteSep(markLv))
     const nextRb = markLv
       ? `${emitRestore(ctx, [
         ['_ctx._cstLeaves', markLv],

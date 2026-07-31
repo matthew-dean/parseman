@@ -162,6 +162,38 @@ function rollbackBufList(
   if (len === 0) b[keySingle] = undefined
 }
 
+/**
+ * Demote everything captured since `childrenLen` from the STRUCTURAL `children`
+ * array to `rawChildren` only — it stays in the tree, it stops being a child.
+ *
+ * This is the one mechanism behind the rule that a list-producing combinator
+ * contributes the items of the list and NOTHING ELSE. `sepBy`'s separator is
+ * matched by a real combinator, so it pushes through the same nine push sites
+ * every terminal does; there is no separate channel to route it into at match
+ * time. Demoting after the fact is the cheapest correct answer: it reuses the
+ * mark the loop already took for rollback, truncates one array, and leaves
+ * `rawChildren` — the source-order record — untouched, so the separator is
+ * still recoverable WITHOUT re-reading source bytes.
+ *
+ * `raw` is deliberately NOT truncated. That asymmetry is the whole point, and it
+ * is the same asymmetry trivia already has: consumed, absent from `children`,
+ * still reachable.
+ */
+export function demoteCapturedToRaw(ctx: ParseContext, childrenLen: number): void {
+  const b = ctx._cstBuf
+  if (b) {
+    rollbackBufList(b, 'ch', 'single', childrenLen)
+    return
+  }
+  // `_cstChildren` and `_cstLeaves` are installed as the SAME array by both the
+  // compiled prologue (codegen `_ctx._cstChildren = chV; _ctx._cstLeaves = chV`)
+  // and `beginCstNodeCapture`, and `cstLeavesLen`/`rollbackCstCapture` measure and
+  // truncate `_cstLeaves` alone. Mirror them exactly — a second truncation here
+  // would be a no-op on every real path and a silent divergence on any path where
+  // it was not.
+  if (ctx._cstLeaves && ctx._cstLeaves.length !== childrenLen) ctx._cstLeaves.length = childrenLen
+}
+
 export function rollbackCstCapture(ctx: ParseContext, mark: CstRollbackMark): void {
   // Truncate the flat recovery-error sink alongside the CST, so a rolled-back
   // speculative branch leaves no ghost error (see saveCstMark). Guarded on a
