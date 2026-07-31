@@ -14,7 +14,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { parseSync } from 'oxc-parser'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { createReducerResolver } from '../../src/plugin/reducer-resolver.ts'
 
 let dir: string
 beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-reducers-')) })
@@ -160,6 +162,96 @@ export const fold = children => ({ n: children.length })
     write('c1.ts', "export { fold } from './c2.ts'")
     write('c2.ts', "export { fold } from './c1.ts'")
     expect(allocatesRaw(build('g15.ts', GRAMMAR("import { fold } from './c1.ts'", 'fold')))).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// An imported `rules()` factory carries its own offsets
+// ---------------------------------------------------------------------------
+describe('a reducer named inside an IMPORTED factory resolves against that factory\'s module', () => {
+  /*
+   * An imported `rules()` factory is evaluated with `code: mod.src`, so every
+   * `node(…, build)` inside it hands the resolver an offset into THAT file. 0.45 made
+   * the resolver refuse such an offset rather than index it into the entry file's scope
+   * tree and name whatever binding sat at the same absolute position. Refusing is sound
+   * — it fails open to full capture — but it is a permanent fail-open for a shape that
+   * is ordinary grammar authoring, which is exactly what the resolver exists to end.
+   *
+   * The plugin now REGISTERS the factory's module, so the offset resolves against the
+   * scope tree it actually indexes.
+   */
+
+  /*
+   * A factory is only shared across modules through `resolvePrivateSourceModule`, which
+   * refuses to look outside the importing PACKAGE — so these fixtures need a real
+   * package root. Without one the factory is never collected at all and the grammar
+   * silently falls back to the interpreter, which would make every assertion below pass
+   * or fail for the wrong reason.
+   */
+  beforeAll(() => { write('fpkg/package.json', '{ "name": "fpkg", "version": "1.0.0" }') })
+
+  /*
+   * `allocatesRaw` is NOT the probe here: a `rules()` artifact allocates `_raw` at every
+   * arity, so it reads `false` throughout and would pass vacuously. The elision an arity
+   * actually buys under this emission shape is the trivia log and the state snapshot —
+   * `_EMPTY_TL` and a literal `undefined` in the builder call, in place of the live
+   * `_tl`/`_nst` bindings.
+   */
+  const elidesTailTiers = (code: string): boolean => /_build\[0\]\([^;]*_EMPTY_TL/.test(code)
+
+  /** Build an entry module that consumes a factory imported from `./<name>-factory.ts`. */
+  const buildViaFactory = (name: string, factorySrc: string): string => {
+    write(`fpkg/${name}-factory.ts`, factorySrc)
+    const code = build(`fpkg/${name}.ts`, `
+import { regex, rules } from 'parseman' with { type: 'macro' }
+import { factory } from './${name}-factory.ts'
+export const G = rules({ trivia: regex(/ +/) }, factory)
+`)
+    // The whole test is void if the factory did not lower — assert it compiled.
+    expect(code).toContain('_r_Fold')
+    return code
+  }
+
+  /*
+   * NOT covered, because the plugin cannot reach it: a SHARED factory module may not
+   * import anything but the parseman macro import — `sourceScopeUntil` returns null on
+   * the first other `ImportDeclaration` (src/plugin/index.ts:636-637), so the factory is
+   * never collected and the grammar falls back to the interpreter. A factory module
+   * therefore declares its reducers locally, which is what the cases below use.
+   */
+  it('resolves a reducer declared LOCALLY in the factory module', () => {
+    const code = buildViaFactory('fy', `
+import { literal, node, sequence } from 'parseman' with { type: 'macro' }
+const fold = children => ({ n: children.length })
+export const factory = g => ({ Fold: node('Fold', sequence(literal('a'), literal('b')), fold) })
+`)
+    expect(code).toContain('buildArity: 1')
+    expect(elidesTailTiers(code)).toBe(true)
+  })
+
+  it('KEEPS full capture for a full-arity reducer in an imported factory', () => {
+    // Resolving must never make a node capture LESS than its reducer declares — the
+    // registration is about answering correctly, not about answering cheaply.
+    const code = buildViaFactory('fz', `
+import { literal, node, sequence } from 'parseman' with { type: 'macro' }
+const fold = (c, f, s, r, tl, st) => ({ c, f, s, r, tl, st })
+export const factory = g => ({ Fold: node('Fold', sequence(literal('a'), literal('b')), fold) })
+`)
+    expect(code).toContain('buildArity: 6')
+    expect(elidesTailTiers(code)).toBe(false)
+  })
+
+  it('still DECLINES an offset from a module nothing registered', () => {
+    // Registration is explicit. A source the plugin never announced must keep failing
+    // open rather than being matched by a guess.
+    const src = 'const fold = (c, f, s, r, tl, st) => c'
+    const parsed = parseSync('/virtual/g.ts', src)
+    const r = createReducerResolver('/virtual/g.ts', parsed.program.body as unknown[], src)
+    expect(r.resolve('fold', 6, 'const fold = c => c')).toEqual({
+      arity: null, src: null, reason: 'foreign-source',
+    })
+    // An unreadable file cannot be registered, so it cannot turn a decline into a guess.
+    expect(r.register('/nope/does-not-exist.ts')).toBe(false)
   })
 })
 

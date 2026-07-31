@@ -607,7 +607,8 @@ function transformMacroImpl(
    * Everything it produces — `_def.buildArity`, `_def.buildSigSrc` — is ANALYSIS-ONLY and
    * never emitted, so the generated builder reference is unchanged either way.
    */
-  setReducerResolver(createReducerResolver(id, body as unknown[], code))
+  const reducerResolver = createReducerResolver(id, body as unknown[], code)
+  setReducerResolver(reducerResolver)
 
   const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
     for (const st of moduleBody) {
@@ -704,6 +705,11 @@ function transformMacroImpl(
       scope: factoryScope,
       imported: true,
     })
+    // This factory is evaluated with `code: mod.src`, so every `node(…, build)` inside
+    // it hands the resolver an offset into THIS file. Tell the resolver the file exists
+    // so it answers against that module's own scope tree instead of declining
+    // `foreign-source` — a decline is sound but charges the node full capture.
+    reducerResolver.register(file)
   }
 
   // --- Pass 2: evaluate declarations in source order ---
@@ -724,6 +730,8 @@ function transformMacroImpl(
   // fully compiled pieces for downstream composition. The import must survive, but
   // this is not an unresolved shape, so it neither warns nor blocks other cleanups.
   let keepMacroImport = false
+  /** Exported `rules()` factories, whose bodies are left verbatim. See the push site. */
+  const exportedFactories: Array<{ name: string; pos: number }> = []
   let runtimeComposeFallback = false
   // Unique per rules() call site in this file — holds the ONE shared compiled
   // rule-map object; each destructured local name reads its property off it.
@@ -1806,7 +1814,18 @@ function transformMacroImpl(
           // that returns the rule map. It only reaches this branch now that a factory can
           // be shared by name (see `factoryDecls`), and warning here would tell the author
           // to "simplify" the one declaration the two-artifact pattern requires.
-          if (factoryDecls.has(varName)) continue
+          //
+          // Its text is left VERBATIM, which is fine for a local `const` — nothing
+          // references it after lowering, so it is dead code the bundler drops. An
+          // EXPORTED one cannot be dropped, so the macro-only identifiers in its body
+          // (`node`, `sequence`, `literal`, …) survive into the artifact with nothing
+          // binding them once the macro import is removed. Record it; whether that is
+          // actually fatal depends on whether the import IS removed, which is only
+          // decided once every declaration has been seen.
+          if (factoryDecls.has(varName)) {
+            if (exportPrefix) exportedFactories.push({ name: varName, pos: init.start })
+            continue
+          }
           warn(init.start, `"${varName}" references a parseman macro import but isn't a statically-evaluable combinator`)
           continue
         }
@@ -1909,6 +1928,28 @@ function transformMacroImpl(
   // without the "fell back to the interpreter" warning, because nothing failed.
   for (const imp of macroImports) {
     imp.fullyResolved = !anyUnresolved && !keepMacroImport
+  }
+
+  // An exported `rules()` factory whose macro import is about to be removed is an
+  // UNRUNNABLE binding: lowering erases the call sites, but an export must still hold a
+  // value, so the factory body ships verbatim naming `node`/`sequence`/`literal`/… that
+  // nothing imports. It does not fail at build time and it does not fail at import time
+  // — it throws `ReferenceError` the first time anything calls it, which in practice is
+  // in a consumer's process, long after the artifact was published.
+  //
+  // There is no correct value to emit instead. Pinning the macro import would make the
+  // binding run, but only by dragging the whole parseman runtime into an artifact whose
+  // entire point is not to need it — a silent trade the author never asked for. So this
+  // refuses to emit the shape at all. The fix is the author's: drop the `export`, since
+  // a factory is macro-only by construction and no runtime consumer can use one.
+  if (exportedFactories.length > 0 && macroImports.some(imp => imp.fullyResolved)) {
+    const which = exportedFactories.map(f => `  - ${id}:${lineOf(f.pos)} — export const ${f.name}`).join('\n')
+    throw new Error(
+      `${id} — a rules() factory cannot be exported; lowering leaves its body verbatim, so the `
+      + `export would ship a binding that throws ReferenceError on first call:\n${which}\n`
+      + `  Drop the \`export\`. The factory is macro-only; \`rules(${exportedFactories[0]!.name})\` `
+      + `is lowered in place and needs no runtime value.`,
+    )
   }
 
   const ms = new MagicString(code)

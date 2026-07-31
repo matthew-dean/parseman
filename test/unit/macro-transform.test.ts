@@ -396,3 +396,56 @@ const block = sequence(literal('{'), many(regex(/[a-z]+/)), literal('}'))
     expect(off.code).not.toContain('_ctx._rec')
   })
 })
+
+// ---------------------------------------------------------------------------
+// An exported rules() factory is refused, not emitted
+// ---------------------------------------------------------------------------
+describe('transformMacro — an exported rules() factory cannot be lowered', () => {
+  /*
+   * Lowering erases the `rules(factory)` call sites and removes the macro import, but an
+   * EXPORT must still hold a value — so the factory body shipped verbatim, naming
+   * `node`/`sequence`/`literal`/… that nothing binds. It built clean, imported clean,
+   * and threw `ReferenceError` the first time a consumer called it. jess shipped exactly
+   * this for three days across three grammars (26 undefined identifiers in css alone).
+   *
+   * A local `const` factory is fine: nothing references it after lowering, so it is dead
+   * code the bundler drops. Export-ness is precisely what makes it undroppable.
+   */
+  const FACTORY = `export const grammarFactory = (g) => ({ Doc: node('Doc', sequence(literal('a'), literal('b'))) })`
+
+  it('THROWS, naming the export and the line', () => {
+    expect(() => transform(`
+import { literal, node, rules, sequence } from 'parseman' with { type: 'macro' }
+${FACTORY}
+export const G = rules(grammarFactory)
+`.trim())).toThrow(/a rules\(\) factory cannot be exported/)
+
+    expect(() => transform(`
+import { literal, node, rules, sequence } from 'parseman' with { type: 'macro' }
+${FACTORY}
+export const G = rules(grammarFactory)
+`.trim())).toThrow(/test\.ts:2 — export const grammarFactory/)
+  })
+
+  it('lowers the SAME grammar once the `export` is dropped', () => {
+    const out = transform(`
+import { literal, node, rules, sequence } from 'parseman' with { type: 'macro' }
+${FACTORY.replace('export ', '')}
+export const G = rules(grammarFactory)
+`.trim())!
+    expect(out.code).toContain('_r_Doc')
+    // The whole point: no macro-only identifier survives with nothing binding it.
+    expect(out.code).not.toContain("from 'parseman'")
+  })
+
+  it('leaves a FACTORY-ONLY module untouched, so cross-module sharing still works', () => {
+    // A module that exports a factory and lowers nothing has no import to remove, so the
+    // export keeps a real runtime value and another module can still import it for its
+    // own `rules()` (see `factoryDecls`, src/plugin/index.ts). Refusing this too would
+    // break a supported pattern to prevent a problem it does not have.
+    expect(transform(`
+import { literal, node, sequence } from 'parseman' with { type: 'macro' }
+${FACTORY}
+`.trim())).toBeNull()
+  })
+})

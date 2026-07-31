@@ -66,6 +66,30 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   map** (`cssRules`, `lessRules`) alongside `Stylesheet`. Analysis walks a grammar by
   NAME so a site can be reported as `Value › node(Value)` rather than anonymously;
   exporting only the entry rule left every site unnamed. No behaviour change.
+- **Refuse to emit an exported `rules()` factory instead of shipping a binding that
+  throws.** Lowering erases the `rules(factory)` call sites and removes the macro
+  import, but an `export` must still hold a value — so the factory body was emitted
+  VERBATIM, naming `node` / `sequence` / `literal` / … that the artifact no longer
+  imports. It compiled clean, imported clean, and threw `ReferenceError` the first time
+  a consumer called it. jess shipped exactly that for three days across three grammars
+  (26 undefined identifiers in css alone). A local `const` factory was never affected:
+  nothing references it after lowering, so the bundler drops it as dead code —
+  export-ness is precisely what makes the broken text undroppable. This is now a
+  compile-time error naming the export and its line. Pinning the macro import instead
+  would make the binding run, but only by dragging the whole parseman runtime into an
+  artifact whose point is not to need it, so it is refused rather than traded silently.
+  A module that exports a factory and lowers nothing is untouched, so sharing one
+  factory across modules still works.
+- **Resolve a reducer named inside an imported `rules()` factory against that factory's
+  own module.** An imported factory is evaluated with `code: mod.src`, so a
+  `node(…, build)` inside it carries an offset into THAT file; 0.45 stopped the resolver
+  indexing such an offset into the entry file's scope tree — where it would name whatever
+  binding sat at the same absolute position, and a wrong arity UNDER-captures — but could
+  only decline (`foreign-source`), which fails open to full capture. The plugin now
+  registers each factory's module, so the offset resolves against the scope tree it
+  actually indexes and the node pays for the tiers its reducer declares. An offset from a
+  module nothing registered still declines. Completes the fix filed for 0.46 in 0.45's
+  "refuse foreign offsets".
 
 ## 0.45.0 — 2026-07-30
 

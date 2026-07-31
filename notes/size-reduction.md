@@ -58,7 +58,46 @@ regresses (19× vs 2× expansion). Round-trip gate: `test/unit/ir-serialize.test
   Est. ~50–100 KB. Risk: medium (capture correctness).
 - [ ] **Hash-cons identical lowered rule bodies.** Some rules lower to byte-identical
   or near-identical fn bodies (at-rule blocks, selector variants); emit once + alias.
-  Est. unknown until measured; needs a post-codegen dedup pass. Risk: medium.
+  Needs a post-codegen dedup pass. Risk: medium. **MEASURED 2026-07-30 — the estimate
+  this was shelved on was wrong by ~4x.** 0.45 put the recoverable residual at 20.8%
+  (probe) / 8.7% (jess), and the item was nearly dropped as not worth it. Re-measured on
+  `probe/variants-4` by parsing the emitted artifact and keying top-level declarations on
+  their exact body text:
+
+  | unit | IIFEs | gen B | decls | byte-identical dedup | same-name/different-body |
+  |---|---|---|---|---|---|
+  | variants-1 | 1 | 20,901 | 93% | 0 B (0.0%) | 0 B |
+  | variants-2 | 2 | 41,446 | 96% | 9,557 B (**23.1%**) | 18,640 B (45.0%) |
+  | variants-4 | 4 | 82,058 | 98% | 29,286 B (**35.7%**) | 37,933 B (46.2%) |
+
+  The premise holds exactly as designed: of the five `_r_` rule functions in
+  `variants-4`, four (`_r_Word`, `_r_Num`, `_r_Atom`, `_r_List` — 33,492 B) are emitted
+  4x with **one distinct body each**. Only `_r_Doc`, the rule that actually varies with
+  `hostMode`/`trackLines`, has 4 distinct bodies. So the recognition piece IS shareable
+  and it is roughly half the artifact by bytes.
+
+  **The `_pfFail`/`_pfEnd` question is ANSWERED** (it was the stated blocker):
+  - `_pfEnd` (`let`, `src/compiler/linker.ts:286`) is a single-slot out-parameter, not
+    state. The write is the last statement before `return` (`src/compiler/codegen.ts:755`)
+    and the read is the statement immediately after the call
+    (`src/compiler/codegen.ts:775`, `:4373`) — nothing intervenes, and a failed callee
+    returns `_pfFail` so the caller never reads it on that path. Safe to share
+    unconditionally.
+  - `_pfFail` (`const … = {}`, `src/compiler/linker.ts:285`) is an identity sentinel
+    compared with `===` (`src/compiler/codegen.ts:770`, `:4372`). Safe to share ONLY if
+    hoisted **atomically**: exactly one module-level pair, with `linker.ts:285-286`
+    no longer emitting per-IIFE copies. A mix is the worst failure available here — a
+    hoisted `_r_X` returns the module-level sentinel, an IIFE-local caller compares
+    against a different object, and a parse FAILURE reads as success with value `{}`.
+
+  Two hazards remain before building. `_wcf<N>` (`src/compiler/codegen.ts:4336`) is
+  un-namespaced and counter-derived, so two IIFEs' `_wcf0` can carry different bodies
+  under one name — a name-keyed hoist collides; key on body text and refuse any name
+  with ≥2 distinct bodies. And `emitFusedSource` (`src/compiler/linker.ts:457`) returns a
+  self-contained expression spliced into a `const X = …` initializer, so there is no
+  module-level insertion point today: this needs a cross-call accumulator plus a new
+  splice site in `src/plugin/index.ts`. Landing it moves `bench/size-baseline.json` and
+  therefore needs a deliberate rebaseline.
 - [ ] **Minify the carried IR further.** The 30 KB IR is a readable `rules(…)`
   expression; a name-preserving minify (it's re-`eval`'d, not read) could ~halve it.
   Small absolute win (30 KB) — low priority.

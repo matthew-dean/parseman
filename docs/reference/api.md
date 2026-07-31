@@ -444,6 +444,13 @@ export const lines      = rules({ trivia: rw, trackLines: true }, factory)
 export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, factory)
 ```
 
+Note that `factory` is a plain `const` and is **not exported** — that is required, not
+stylistic. Lowering erases the `rules(factory)` call sites and removes the macro import,
+so the factory body would survive verbatim in the artifact naming `node`/`sequence`/…
+that nothing imports. A local `const` is dead code the bundler drops; an `export` cannot
+be dropped, and would ship a binding that throws `ReferenceError` the first time a
+consumer called it. Exporting one is a compile-time error.
+
 Three call sites over one shared factory (a factory may be passed by name, as here). The
 macro emits independent top-level artifacts, so each bundle tree-shakes away the one
 it does not import — your compiler ships the AST image, your language service ships the
