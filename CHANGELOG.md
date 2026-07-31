@@ -5,6 +5,16 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **`dispatch()` keys off a data trie instead of a per-case character chain.** css
+  `ast.js` 3,336,650 → 3,311,657 B (−0.75%, gzip −1,782 B); key-comparison bytes
+  40,269 → 8,772 (−78%). Speed is inside noise — the strategy sweep behind
+  `PARSEMAN_DISPATCH` is in `docs/design/derived-tokenization.md`. **less grows
+  902 B**: the trie is chosen per artifact, not per site, and the per-site cost
+  check that would decline it there is untried (experiment #20).
+- **Fixed `'@' | 32` folding every `@`-led dispatch key to a non-match**, so
+  `@font-face` silently took the opaque at-rule arm. The 288-test css suite passed
+  with the bug present; a full-tree diff against the pre-trie build caught it. Both
+  sides now fold ASCII letters only.
 - **Add a `parseman` CLI — `parseman diagnose` and `parseman fix`.** Exit **0** clean,
   **1** blocking findings, **2** could not analyse. `--json` emits the structured object
   the human rendering is derived from. The bin is its own bundle (`dist/cli/index.js`,
