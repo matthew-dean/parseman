@@ -79,7 +79,10 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     case 'transform':
     case 'not':
     case 'peek':     return deriveExpected(def.parser)
-    case 'routed':   return ['routed()']
+    // A bare routed() can only fail as "there is no routed token here". With a
+    // fallback, THAT is the branch that can fail, so its expectations are the useful
+    // ones — the routed path either succeeds or is not taken.
+    case 'routed':   return def.fallback === undefined ? ['routed()'] : deriveExpected(def.fallback)
     case 'lazy': {
       // An EXTERNAL ref (a rule from a composed base grammar) has no local
       // definition yet — its `thunk()` throws until fusion supplies it. Fall back

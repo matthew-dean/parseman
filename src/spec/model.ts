@@ -275,7 +275,9 @@ class Builder {
       case 'peek':
         return { kind: 'peek', item: this.walk(def.parser) }
       case 'routed':
-        return { kind: 'empty' }
+        // The routed token is spelled by the dispatch selector, so it contributes
+        // nothing here; a fallback IS spelled in place, so render it.
+        return def.fallback === undefined ? { kind: 'empty' } : this.walk(def.fallback)
 
       // Transparent semantic wrappers — render the inner syntax.
       case 'transform':

@@ -222,6 +222,24 @@ first combinator, which is the right shape for tail-only continuations. This
 keeps lexical routing, fallback behavior, and CST/AST ownership in the grammar
 expression.
 
+Pass a fallback — `routed(fallback)` — when the SAME production is reachable both
+through the dispatch and on its own. Inside a selected branch it reuses the routed
+token as above; anywhere else (outside a dispatch, or at a position other than the
+selector's) it parses `fallback` in place. Without it a grammar has to spell the
+shape twice — once with its own lead and once with `routed()` — as two productions
+differing by one element, with the same reducer:
+
+```ts
+// one production, used from a dispatch branch AND standalone
+const AtRuleStatement = node('AtRuleStatement',
+  sequence(routed(atRuleName), prelude, literal(';')),
+  children => ({ type: 'AtRuleStatement', name: children[0].value }),
+)
+```
+
+`routed()` in a dispatch **selector** stays an error with or without a fallback: the
+selector is what produces the routed token, so reading it there is misuse.
+
 Coverage and trace treat each `when(...)`, matcher, and `otherwise(...)` arm as
 its own dispatch arm. Excluded arms are not attempted or backtracked in the
 trace; the selected route emits attempt/selected/success, or attempt/failure if

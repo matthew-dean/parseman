@@ -66,11 +66,11 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'sepBy':     return [def.parser, def.separator]
     case 'skip':      return [def.main, def.skipped]
     case 'scanTo':    return [def.sentinel, ...def.skip]
+    case 'routed':    return def.fallback ? [def.fallback] : []
     case 'lazy':
     case 'literal':
     case 'regex':
     case 'keywords':
-    case 'routed':
     case 'guard':
     case 'recover':
     case 'unknown':   return []
@@ -444,7 +444,7 @@ class Serializer {
       case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)}${repeatOpts(def.min, def.max, def.trailing)})`
       case 'not':       return `not(${kid(def.parser)})`
       case 'peek':     return `peek(${kid(def.parser)})`
-      case 'routed':   return 'routed()'
+      case 'routed':   return def.fallback === undefined ? 'routed()' : `routed(${kid(def.fallback)})`
       case 'trivia':    return `trivia(${kid(def.parser)})`
       case 'token':     return `token(${kid(def.parser)})`
       case 'leaf': {

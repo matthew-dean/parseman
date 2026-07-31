@@ -61,10 +61,11 @@ function childrenOf(def: ParserDef): readonly Combinator<unknown>[] {
       return [def.main, def.skipped]
     case 'scanTo':
       return [def.sentinel, ...def.skip]
+    case 'routed':
+      return def.fallback ? [def.fallback] : []
     case 'literal':
     case 'regex':
     case 'keywords':
-    case 'routed':
     case 'guard':
     case 'lazy':
     case 'unknown':

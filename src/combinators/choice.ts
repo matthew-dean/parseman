@@ -238,6 +238,33 @@ function bareLeadingTermKey(term: Combinator<unknown>): string | null {
   // `scripts/check-control-bytes.mjs`). Runs once per choice when its strategy is chosen,
   // never per match.
   if (d.tag === 'regex') return `R:${JSON.stringify([d.source, d.flags])}`
+  // Two lead shapes look eligible and are deliberately NOT. Both were tried and
+  // measured; see test/unit/routed-fallback.test.ts, which pins the exclusions.
+  //
+  // `routed()` — a bare routed() IS a single-leaf terminal (it reads the
+  // dispatch-consumed token, pushes exactly ONE leaf, skips no trivia, runs no
+  // sub-parse), so it is replay-safe and admitting it here is correct. It is
+  // excluded because it does not PAY. The strategy trades a duplicated lead scan for
+  // a prescan plus a prefix-matched flag; routed()'s emission is a context read and
+  // one comparison, so there is nothing worth factoring out. Measured on
+  // `dispatch(name, when(k, choice(sequence(routed(), tail_i)...)))`, emitted bytes
+  // with the strategy MINUS without it: +242 (2 arms), +260 (4), +296 (8) — it costs
+  // more at every width and never crosses over. The same measurement on the
+  // regex-lead shape the strategy was built for: -468 (2 arms), -1597 (4), -3846 (8).
+  // A routed lead also shares only the ROUTED token; when the expensive shared work
+  // is the next term (a prelude), that term is what needs factoring, not this one.
+  //
+  // `routed(fallback)` — not a leaf at all: on the fallback path it runs a whole
+  // sub-parse, so replaying it as a once-recognized leaf would be wrong, and two
+  // routed() with DIFFERENT fallbacks are not interchangeable to begin with.
+  //
+  // A `lazy` ref lead — excluded for correctness, not for want of a key. The
+  // once-only prescan runs with `ctx.capturing = false`, which suppresses capture
+  // only for code emitted HERE (emitLeafCapture, codegen.ts). A ref compiles to a
+  // call into a function body generated under its OWN ctx (emitLazy), so its
+  // captures and trivia writes would happen during the prescan and then AGAIN in
+  // each arm. Replaying a ref needs recorded-and-spliced capture state, not the
+  // variable reuse a terminal replay gets away with.
   return null
 }
 

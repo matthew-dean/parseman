@@ -5,6 +5,50 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.45.0 — 2026-07-30
 
+- **`routed(fallback)` — one production instead of a `Routed*` twin.** `routed()` took
+  no argument, so it had nothing to do outside a `dispatch()` branch and failed there.
+  A grammar needing the same shape in both places had to spell it twice, as an original
+  with a concrete lead and a twin differing by exactly one element, with a byte-identical
+  reducer — two productions and two compiled emissions for a one-token difference.
+  `routed(fallback)` reuses the dispatch-consumed token when there is one and parses
+  `fallback` in place when there is not, so the pair collapses:
+
+  ```js
+  // before — two productions
+  const AtRuleStatement       = node('AtRuleStatement', sequence(Name,      Prelude, literal(';')), reduce)
+  const RoutedAtRuleStatement = node('AtRuleStatement', sequence(routed(),  Prelude, literal(';')), reduce)
+  // after — one, usable from a dispatch branch AND standalone
+  const AtRuleStatement       = node('AtRuleStatement', sequence(routed(Name), Prelude, literal(';')), reduce)
+  ```
+
+  Measured on a nine-kind model of that shape (a statement form and a block form per
+  kind, each reachable both ways), collapsing ten twin pairs took the linkable/fused
+  emission — the form a `compose()`d grammar actually compiles to — from 54,879 B to
+  35,845 B, **-34.7%**, at half the productions. Note the opposite sign when a grammar
+  is compiled as ONE fully-inlined root: there the collapsed production emits its
+  two-way form at every use site instead of each specialized form once, and the same
+  model grows 8.9%. The win is in the per-rule-function form.
+
+  Bare `routed()` is unchanged in behaviour and in emitted bytes: the two-way form is
+  emitted only when a fallback is present, and is skipped entirely where the routed
+  token is provably at the site's position. `routed()` in a dispatch **selector** is
+  still an error with or without a fallback. All 21 size-guard fixtures are +0.00%.
+
+- **`sharedPrefix` eligibility stays at concrete literal/regex leads — measured, not
+  assumed.** Widening it to `routed()` and `lazy` leads was tried and rejected, and
+  `bareLeadingTermKey` (`src/combinators/choice.ts`) now records why, with
+  `test/unit/routed-fallback.test.ts` pinning each exclusion. A bare `routed()` lead is
+  replay-safe but does not pay: the strategy trades a duplicated lead scan for a
+  prescan plus a prefix-matched flag, and `routed()`'s emission is a context read and
+  one comparison, so it costs +242/+260/+296 bytes at 2/4/8 arms and never crosses
+  over — against -468/-1597/-3846 on the regex-lead shape the strategy exists for. A
+  `routed(fallback)` lead is not a leaf at all. A `lazy` ref lead is unsafe rather than
+  unprofitable: the prescan's `ctx.capturing = false` suppresses capture only for code
+  emitted at that site, while a ref compiles to a call into a body generated under its
+  own ctx, so its captures and trivia writes would land during the prescan and again in
+  every arm. Replaying a ref needs recorded-and-spliced capture state, not variable
+  reuse.
+
 - **BREAKING: `parseman/oracle` keeps the projection and drops the harness.**
   `loadCorpus`, `digestCorpus`, `compareReports` and `formatComparison` are removed,
   along with the `Surface`, `CorpusEntry`, `SurfaceReport`, `IdentityReport`,

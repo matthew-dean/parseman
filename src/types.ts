@@ -75,7 +75,11 @@ export type ParserDef =
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
   | { tag: 'token';     parser: Combinator<unknown> }
-  | { tag: 'routed' }
+  // `fallback` is what `routed()` parses IN PLACE when there is no dispatch-consumed
+  // token to reuse (outside a dispatch branch, or at a position other than the one the
+  // selector matched). It exists so ONE production can serve both contexts instead of
+  // being spelled twice — a `routed()` twin and a concrete-lead original.
+  | { tag: 'routed';    fallback?: Combinator<unknown> }
   | { tag: 'leaf';      parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string }
   | { tag: 'label';     label: string; parser: Combinator<unknown> }
   | { tag: 'field';     name: string; parser: Combinator<unknown> }

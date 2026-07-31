@@ -3185,9 +3185,19 @@ function emitPeek(def: Extract<ParserDef, { tag: 'peek' }>, ctx: Ctx, pos: strin
   }
 }
 
-function emitRouted(ctx: Ctx, pos: string): ER {
+function emitRouted(ctx: Ctx, pos: string, def: Extract<ParserDef, { tag: 'routed' }>): ER {
   const local = ctx.routedLocal
+  const fallback = def.fallback
   if (local !== undefined) {
+    // Same-body dispatch branch. When the routed site sits at the branch's entry
+    // position the guard is textually `X !== X` — the routed token is provably
+    // there, so a fallback is dead code and is not emitted at all.
+    if (fallback !== undefined && local.startVar !== pos) {
+      return emitRoutedWithFallback(ctx, pos, fallback, {
+        test: `${local.startVar} === ${pos}`,
+        valExpr: local.valueVar, startExpr: local.startVar, endExpr: local.endVar,
+      })
+    }
     return {
       stmts: [
         ...emitIfFail(ctx, `${local.startVar} !== ${pos}`, failBody(ctx, '"routed()"', pos)),
@@ -3198,14 +3208,61 @@ function emitRouted(ctx: Ctx, pos: string): ER {
     }
   }
   const item = v(ctx, '_rt')
+  const read = `${ind(ctx)}const ${item} = _ctx._routed`
+  if (fallback !== undefined) {
+    const r = emitRoutedWithFallback(ctx, pos, fallback, {
+      test: `${item} !== undefined && ${item}.span.start === ${pos}`,
+      valExpr: `${item}.value`, startExpr: `${item}.span.start`, endExpr: `${item}.span.end`,
+    })
+    return { ...r, stmts: [read, ...r.stmts] }
+  }
   return {
     stmts: [
-      `${ind(ctx)}const ${item} = _ctx._routed`,
+      read,
       ...emitIfFail(ctx, `${item} === undefined || ${item}.span.start !== ${pos}`, failBody(ctx, '"routed()"', pos)),
       ...emitLeafCapture(ctx, `${item}.value`, `${item}.span.start`, `${item}.span.end`),
     ],
     valueVar: `${item}.value`,
     endVar: `${item}.span.end`,
+  }
+}
+
+/**
+ * `routed(fallback)`: reuse the dispatch-consumed token when it is at `pos`, else
+ * parse `fallback` IN PLACE.
+ *
+ * The fallback goes through the ordinary `emit()` — not `emitFallible` — so its
+ * failure propagates verbatim (same `expected`, same committed-ness, same trivia
+ * state) exactly as if the grammar had spelled the fallback at this position, which
+ * is what the interpreter does (`return fallback.parse(input, pos, ctx)`).
+ */
+function emitRoutedWithFallback(
+  ctx: Ctx,
+  pos: string,
+  fallback: Combinator<unknown>,
+  routed: { test: string; valExpr: string; startExpr: string; endExpr: string },
+): ER {
+  const valV = v(ctx, '_rtv')
+  const endV = v(ctx, '_rte')
+  const i = ind(ctx)
+  ctx.indent++
+  const capture = emitLeafCapture(ctx, routed.valExpr, routed.startExpr, routed.endExpr)
+  const fb = emit(fallback, ctx, pos)
+  const inner = ind(ctx)
+  ctx.indent--
+  return {
+    stmts: [
+      `${i}let ${valV}, ${endV}`,
+      `${i}if (${routed.test}) {`,
+      ...capture,
+      `${inner}${valV} = ${routed.valExpr}; ${endV} = ${routed.endExpr}`,
+      `${i}} else {`,
+      ...fb.stmts,
+      `${inner}${valV} = ${fb.valueVar}; ${endV} = ${fb.endVar}`,
+      `${i}}`,
+    ],
+    valueVar: valV,
+    endVar: endV,
   }
 }
 
@@ -4133,7 +4190,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     }
     case 'not':     return emitNot(def, ctx, pos)
     case 'peek':    return emitPeek(def, ctx, pos)
-    case 'routed':  return emitRouted(ctx, pos)
+    case 'routed':  return emitRouted(ctx, pos, def)
     case 'node':    return emitNode(def, ctx, pos)
     case 'scanTo':  return emitScanTo(def, ctx, pos)
     case 'recover': return emitRecover(def, ctx, pos)
@@ -4359,12 +4416,15 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'skip':      return [def.main, def.skipped]
     case 'recover':   return [def.parser, def.sentinel]
     case 'scanTo':    return [def.sentinel, ...def.skip]
+    // A `routed()` fallback IS emitted at this site (emitRouted), so the usage
+    // analysis must see the edge — otherwise a fallback shared by several routed()
+    // sites is miscounted as single-use and inlined at each.
+    case 'routed':    return def.fallback ? [def.fallback] : []
     case 'lazy':
     case 'literal':
     case 'regex':
     case 'keywords':
     case 'guard':
-    case 'routed':
     case 'unknown':   return []
   }
 }
