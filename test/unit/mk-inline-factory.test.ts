@@ -83,7 +83,9 @@ describe('inline-mk recognition through a node factory', () => {
     const def = n._def as NodeDef
     ;(def as { buildSrc?: string }).buildSrc = '(c, f, s, r, tl) => mk(type, c, r, s, tl)'
     ;(def as { typeSrc?: string }).typeSrc = 'type'
-    const src = compile(parser({}, n), undefined, { gating: 'off' }).source
+    // `gating: 'off'` used to be needed here to keep the diagnostic quiet.
+    // Compiling no longer reports anything — see `diagnoseGrammar()`.
+    const src = compile(parser({}, n)).source
     expect(src).toContain('_tag: \'node\', type: "Pair"')
     expect(src).not.toContain('_build[0](')
   })
