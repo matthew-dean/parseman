@@ -17,6 +17,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import {
   choice, sequence, literal, regex, many, optional, node, rules, compile,
 } from '../../src/index.ts'
@@ -395,6 +396,64 @@ describe('gate policy — absolute baseline, fails closed, no self-rebaseline', 
     expect(JSON.stringify(checkWastedWork(r, base))).toBe(JSON.stringify(checkWastedWork(r, base)))
   })
 
+  // ── the ratchet is TWO-SIDED ───────────────────────────────────────────────
+  //
+  // Growth is the obvious half. The half that rots is the other one: an improvement
+  // that is not banked turns into headroom for the next regression, and the gate
+  // reads green through all of it. `bench/grammar-density/config.json` and
+  // `bench/workloads/config.json` each asked a human politely to bump and each sat
+  // unbumped for ten releases, which is why this is a check and not a comment.
+
+  it('an UNBANKED WIN fails, and says to bank it', () => {
+    const r = { unit: measure(10) }
+    const base = buildWastedWorkBaseline(r, REV)
+    // The grammar got 20% cheaper and the baseline stayed where it was.
+    base.totals.unit!.totalWastedBytes = Math.round(base.totals.unit!.totalWastedBytes * 1.25)
+    const v = checkWastedWork(r, base)
+    expect(v.ok).toBe(false)
+    const shrank = v.breaches.filter(x => x.kind === 'shrank')
+    expect(shrank.length).toBeGreaterThan(0)
+    expect(shrank[0]!.detail).toMatch(/BANK THE WIN/)
+    // It must name the reclaimed bytes, not just the percentage — the number is
+    // what a reviewer checks the rebaseline diff against.
+    expect(shrank[0]!.detail).toMatch(/\d+ bytes you just saved/)
+  })
+
+  it('a PER-SITE win must be banked too, not only the total', () => {
+    const r = { unit: measure(10) }
+    const base = buildWastedWorkBaseline(r, REV)
+    const key = Object.keys(base.sites)[0]!
+    base.sites[key] = base.sites[key]! * 2
+    const v = checkWastedWork(r, base)
+    expect(v.ok).toBe(false)
+    expect(v.breaches.some(x => x.kind === 'shrank' && x.key === key)).toBe(true)
+  })
+
+  it('the band is SYMMETRIC — the same tolerance bounds both directions', () => {
+    const r = { unit: measure(10) }
+    const total = buildWastedWorkBaseline(r, REV).totals.unit!.totalWastedBytes
+    const at = (mult: number) => {
+      const b = buildWastedWorkBaseline(r, REV)
+      b.totals.unit!.totalWastedBytes = Math.round(total * mult)
+      return checkWastedWork(r, b, { driftTolerancePct: 10 })
+    }
+    // Measured is `total`; the baseline moves around it. Inside ±10% either way: quiet.
+    expect(at(1 / 1.05).breaches.some(x => x.kind === 'drift')).toBe(false)
+    expect(at(1 / 0.95).breaches.some(x => x.kind === 'shrank')).toBe(false)
+    // Outside it, in either direction: a breach, and a DIFFERENT one each way.
+    expect(at(1 / 1.5).breaches.some(x => x.kind === 'drift')).toBe(true)
+    expect(at(1 / 0.5).breaches.some(x => x.kind === 'shrank')).toBe(true)
+  })
+
+  it('a banked win PASSES — rebaselining is the remedy, and it works', () => {
+    const r = { unit: measure(10) }
+    const stale = buildWastedWorkBaseline(r, REV)
+    stale.totals.unit!.totalWastedBytes *= 2
+    expect(checkWastedWork(r, stale).ok).toBe(false)
+    // What `pnpm choicecost:baseline` produces, against the same measurement.
+    expect(checkWastedWork(r, buildWastedWorkBaseline(r, REV)).ok).toBe(true)
+  })
+
   it('flags an ORDERING INVERSION only when asked, and only with enough attempts', () => {
     const r = { unit: measure(10) }
     expect(r.unit.inversions.length).toBeGreaterThan(0)
@@ -610,5 +669,62 @@ describe('the gated column changes the ranking, not just the number', () => {
     expect(first.gatedAttempts).toBeGreaterThan(second.gatedAttempts)
     expect(first.gatedWastedBytes).toBeLessThan(second.gatedWastedBytes)
     for (const a of inv) expect(a.gatedFailures).toBe(a.gatedAttempts)
+  })
+})
+
+// ── the SHIPPED gate's committed artifacts ───────────────────────────────────
+//
+// `pnpm choicecost:guard` runs in CI and is the real check. These are the cheap
+// integrity properties of the things it reads, so a hand-edited baseline or a
+// grammar that stopped exporting its rule map fails in milliseconds here rather
+// than several minutes into a CI job.
+
+describe('the committed choice-cost baseline', () => {
+  const baseline = JSON.parse(
+    readFileSync(new URL('../../bench/choice-cost-baseline.json', import.meta.url), 'utf8'),
+  ) as ReturnType<typeof buildWastedWorkBaseline>
+
+  it('is a baseline of the right schema, over a non-empty gated set', () => {
+    expect(baseline.schema).toBe('parseman.wasted-work-baseline/1')
+    expect(Object.keys(baseline.totals).length).toBeGreaterThan(0)
+    expect(Object.keys(baseline.sites).length).toBeGreaterThan(0)
+  })
+
+  it('gates BOTH dialects — the ambiguous one and its low-rollback control', () => {
+    // A single row could not tell "this grammar got slower" from "the compiler did".
+    // Dropping either one silently halves what the gate can conclude.
+    expect(Object.keys(baseline.totals).sort()).toEqual(['css', 'less'])
+  })
+
+  it('every site key belongs to a baselined corpus', () => {
+    const corpora = new Set(Object.keys(baseline.totals))
+    for (const key of Object.keys(baseline.sites)) {
+      const id = key.slice(0, key.indexOf('::'))
+      expect(corpora.has(id), `site key ${key} names no baselined corpus`).toBe(true)
+    }
+  })
+
+  it('records positive corpus bytes for every row — a zero denominator gates nothing', () => {
+    for (const [id, t] of Object.entries(baseline.totals)) {
+      expect(t.corpusBytes, `${id} corpusBytes`).toBeGreaterThan(0)
+      expect(t.instrumentedSites, `${id} instrumentedSites`).toBeGreaterThan(0)
+    }
+  })
+
+  it('the grammar the guard names still exports the rule MAP, not just the entry rule', async () => {
+    // The guard fails closed if this disappears, but it costs minutes to find out
+    // that way. Analysis walks a grammar by name; without the map every choice site
+    // in the report would be anonymous.
+    //
+    // Only the css row is asserted here. `bench/workloads/less.ts` is deliberately
+    // OUTSIDE tsc's graph — see the comment in tsconfig.json, and the reason
+    // test/parity/bench-parsers.test.ts is excluded — and importing it from a
+    // typechecked test drags all of bench/ back in, which surfaces three latent
+    // TS2556s in that file that have nothing to do with this gate. The less row is
+    // covered where it belongs: `pnpm choicecost:guard` in CI, which fails closed
+    // with a named error if the export goes away.
+    const css = await import('../../examples/css/parser.ts')
+    expect(Object.keys(css.cssRules).length).toBeGreaterThan(1)
+    expect(css.cssRules.Stylesheet).toBe(css.Stylesheet)
   })
 })

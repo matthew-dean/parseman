@@ -34,9 +34,14 @@ const urlOpen = regex(/url\(/i)
 const urlInner = regex(/[^)"'\s]+/)
 const anyValueTok = regex(/[+\-*/=<>|~^]+|[^\s;{}\[\]()'",!]+/)
 
-export const {
-  Stylesheet,
-} = rules((g: {
+/** The whole rule map, not just the entry rule.
+ *
+ * Analysis walks a grammar by NAME — `analyzeChoiceInventory` and
+ * `profileWastedWork` both take `[name, combinator]` pairs so a choice site can be
+ * reported as `Value › node(Value)` rather than as an anonymous object. Exporting
+ * only `Stylesheet` would leave every site unnamed, so the map is the export and
+ * `Stylesheet` is destructured from it. */
+export const cssRules = rules((g: {
   AtRuleBlock: Combinator<unknown>
   AtRuleStatement: Combinator<unknown>
   Ruleset: Combinator<unknown>
@@ -153,6 +158,8 @@ export const {
     AtRuleBlock, AtRuleStatement, atRuleBody,
   }
 })
+
+export const { Stylesheet } = cssRules
 
 export type CssParseResult = {
   tree: CssNode

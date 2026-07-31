@@ -93,7 +93,10 @@
     "perf:workloads:describe": "node --import tsx/esm bench/workloads/describe.ts",
     "size:guard": "node --import tsx/esm bench/size-guard.ts",
     "size:baseline": "node --import tsx/esm bench/size-guard.ts --update",
-    "size:probe": "node --import tsx/esm bench/size/probe.ts"
+    "size:probe": "node --import tsx/esm bench/size/probe.ts",
+    "choicecost:guard": "node --import tsx/esm bench/choice-cost-guard.ts",
+    "choicecost:baseline": "node --import tsx/esm bench/choice-cost-guard.ts --update",
+    "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report"
   },
   "keywords": [
     "parser",

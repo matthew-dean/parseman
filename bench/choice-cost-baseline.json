@@ -1,0 +1,30 @@
+{
+  "schema": "parseman.wasted-work-baseline/1",
+  "gitRev": "7ccd8d1",
+  "updatedAt": "2026-07-31",
+  "totals": {
+    "css": {
+      "corpusBytes": 15859,
+      "totalWastedBytes": 511,
+      "instrumentedSites": 13
+    },
+    "less": {
+      "corpusBytes": 17095,
+      "totalWastedBytes": 17169,
+      "instrumentedSites": 22
+    }
+  },
+  "sites": {
+    "css::atRuleBody › grammar › many": 133,
+    "css::simpleSelector": 4,
+    "css::value": 374,
+    "less::simpleSelector": 792,
+    "less::statement": 5006,
+    "less::statement › choice[0]": 70,
+    "less::statement › choice[1]": 7846,
+    "less::term": 1051,
+    "less::term › choice[0]": 1051,
+    "less::term › choice[0] › choice[0] › seq[2]": 302,
+    "less::term › choice[0] › choice[1] › seq[2]": 1051
+  }
+}

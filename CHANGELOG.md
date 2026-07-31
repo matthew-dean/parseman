@@ -6,6 +6,66 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 ## 0.46.0 — unreleased
 
 - Release prep. Entries land as work merges.
+- **Grammar wasted-work analysis, and a gate that ratchets it** (`analyzeChoiceInventory`,
+  `profileWastedWork`, `checkWastedWork`, `buildWastedWorkBaseline`, plus rendering).
+  A PEG `choice` is ordered, so arm *i* is only reached once arms `0..i-1` have been
+  tried and failed — and every one of those failures re-scanned input the winning arm
+  then scans again. That cost is invisible in grammar source, which is why grammar shape
+  drifts without anything going red. Two halves answer two different questions: the
+  STATIC inventory reports every shared-prefix choice site, **including the ones codegen
+  declined to left-factor, with the blocking arm and the reason** — `detectSharedPrefix`
+  is all-or-nothing and returns `null` on the first arm that does not qualify, silently,
+  so that backlog was never written down anywhere. The DYNAMIC profile attributes
+  re-scanned BYTES per site and per arm over a real corpus, which is the weight the
+  static half cannot have: it cannot know that one declined site is on the hot path of
+  every stylesheet and another is reached twice a year.
+  Interpreted-only. `src/combinators/choice.ts` is untouched and codegen emits nothing
+  extra, so this costs zero bytes and zero time in shipped artifacts.
+- **The profile reports two columns, because a naive one lies about the shipped parser.**
+  The interpreter's `firstMatch` enters every alternative unconditionally; compiled
+  output does not — `emitFirstMatch` emits a per-arm first-CHARACTER guard, and
+  first-set gating is this project's single largest parse lever. So `attempts` /
+  `wastedBytes` (interpreted) and `gatedAttempts` / `gatedWastedBytes` (modelling
+  codegen's guard) are both reported, neither derived from the other, and rankings use
+  the compiled column. Measured across six grammar/corpus pairs — jess's four dialects
+  plus this repo's css and less — the guard removes **74–90% of arm ENTRIES and exactly
+  ZERO bytes**. That is structural, not a property of those corpora: the guard derives
+  from the arm's first SET, which over-approximates what the arm can start with, so
+  whenever it rejects, the arm's own leading terminal would have rejected at the same
+  position having consumed nothing. The practical consequence is that byte rankings
+  survive the correction but **failure-RATE and attempt-count claims do not** — a jess
+  `Value` arm reads 25,939 entries at 97% failure interpreted and 7,455 at 90% gated.
+- **`pnpm choicecost:guard` — a two-sided ratchet, wired into CI as a required check.**
+  Following `bench/size-guard.ts`: the committed `bench/choice-cost-baseline.json` is a
+  BAND at ±0.1%, not a floor. Growth fails, and an **unbanked improvement also fails**,
+  with "bank the win" — the half normally left to a comment asking a human politely, and
+  the half that rots (`bench/grammar-density/config.json` and `bench/workloads/config.json`
+  each carried exactly such a comment and sat unbumped for ten releases). The baseline is
+  absolute, never differential, and a ceiling cannot be laundered by rebaselining. It
+  fails closed on every way of not having measured: missing, malformed, empty or
+  over-ceiling baseline, changed corpus, stale or unbaselined entry, zero corpora, zero
+  instrumentable sites, an incomplete grammar walk, or a corpus that did not parse.
+  `failOnInversions` is ON from day one — an arm that failed every attempt while a later
+  arm matched is fatal — because both gated grammars measure ZERO today, so the check
+  keeps an empty backlog empty rather than arriving red.
+  The gated corpus is `bench/workloads/fixtures/{site.css,app.less}`, the hand-authored
+  files the workload perf gate already replays; reusing them adds zero new committed
+  bytes and no licence to carry. The two rows span rather than sample — css re-scans
+  **0.032x** its corpus, less **1.004x**, a 31x spread over the same problem domain — so
+  when less moves and css does not, the cost is in speculation. A `1.0x` target is
+  measured and printed every run and does not block in 0.46, because less sits
+  fractionally over it on arrival and a permanently-red required check trains everyone
+  to ignore CI.
+  **This is not a third perf gate.** Wasted bytes rank ordering, not CPU: the lane that
+  acted on this instrument's headline finding cut rescanned bytes 69.8% and measured
+  zero wall-clock change. That is the expected outcome, and a flat benchmark is not
+  evidence a finding here was wrong. It is also the cheapest and only deterministic gate
+  in CI — the metric is a count, byte-identical across separate processes, so it needs no
+  reference commit, no repeated passes and no full-depth clone.
+- **`examples/css/parser.ts` and `bench/workloads/less.ts` now export their whole rule
+  map** (`cssRules`, `lessRules`) alongside `Stylesheet`. Analysis walks a grammar by
+  NAME so a site can be reported as `Value › node(Value)` rather than anonymously;
+  exporting only the entry rule left every site unnamed. No behaviour change.
 
 ## 0.45.0 — 2026-07-30
 
