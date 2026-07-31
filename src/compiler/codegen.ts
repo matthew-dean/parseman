@@ -2875,10 +2875,10 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   if (ctx.activeTrivia) {
     if (ctx.capturing) {
       const capFn = ensureTriviaCaptureFn(ctx)
-      const markV = v(ctx, '_mk')
-      const markTl = v(ctx, '_mktl')
-      const markLog = v(ctx, '_mklg')
-      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
+      const markV = v(ctx, '_ml')
+      const markTl = v(ctx, '_mltl')
+      const markLog = v(ctx, '_mllg')
+      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mlrlg') : null
       const npV = v(ctx, '_np')
       stmts.push(
         `${ind(ctx)}const ${markV} = _ctx._cstRawChildren ? _ctx._cstRawChildren.length : 0`,
@@ -2897,7 +2897,7 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
       ])}; `
     } else {
       const trivFn = ensureTriviaFn(ctx)
-      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
+      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mlrlg') : null
       const npV = v(ctx, '_np')
       stmts.push(
         ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
@@ -3162,12 +3162,12 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   if (ctx.activeTrivia) {
     if (ctx.capturing) {
       const capFn = ensureTriviaCaptureFn(ctx)
-      const markV = v(ctx, '_mk')
-      const markTl = v(ctx, '_mktl')
-      const markLog = v(ctx, '_mklg')
-      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
-      const markLv = v(ctx, '_mklv')
-      const markFld = v(ctx, '_mkf')
+      const markV = v(ctx, '_ml')
+      const markTl = v(ctx, '_mltl')
+      const markLog = v(ctx, '_mllg')
+      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mlrlg') : null
+      const markLv = v(ctx, '_mllv')
+      const markFld = v(ctx, '_mlf')
       const spV = v(ctx, '_sp')
       // Marks taken BEFORE the separator. If either the separator OR the following
       // item fails, the whole iteration unwinds to here — crucially undoing the
@@ -3210,7 +3210,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       )
     } else {
       const trivFn = ensureTriviaFn(ctx)
-      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
+      const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mlrlg') : null
       const spV = v(ctx, '_sp')
       stmts.push(
         ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
@@ -3242,9 +3242,9 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
   } else {
     // No trivia. Still mark the leaf buffers before the separator so that an item
     // failing after the separator unwinds the separator's captured leaves too.
-    const markLv = ctx.capturing ? v(ctx, '_mklv') : null
-    const markRw = ctx.capturing ? v(ctx, '_mkrw') : null
-    const markFld = ctx.capturing ? v(ctx, '_mkf') : null
+    const markLv = ctx.capturing ? v(ctx, '_mllv') : null
+    const markRw = ctx.capturing ? v(ctx, '_mlrw') : null
+    const markFld = ctx.capturing ? v(ctx, '_mlf') : null
     if (markLv) {
       stmts.push(
         `${ind(ctx)}const ${markLv} = _ctx._cstLeaves ? _ctx._cstLeaves.length : 0`,
