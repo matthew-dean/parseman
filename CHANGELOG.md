@@ -3,6 +3,10 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.46.0 — unreleased
+
+- Release prep. Entries land as work merges.
+
 ## 0.45.0 — 2026-07-30
 
 - **Recognise the inline-`mk` shape when the node type is a factory parameter.** The
