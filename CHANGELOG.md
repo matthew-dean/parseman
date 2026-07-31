@@ -5,6 +5,35 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **`balanced()` gains `strict: true`, making an unmatched close a real failure.**
+  The close is wrapped in `expect()`, which never fails — on a miss it returns a
+  ParseError, pushes it to `ctx._errors`, and reports a zero-width span. So
+  `balanced()` was **unfailable once its opener was consumed**: the rejection was
+  already computed and recorded, but nothing could branch on it.
+- **What that blocked:** `choice()` could not fall through to another arm,
+  `not()` could not negate an unclosed group, and an enclosing `sequence()`
+  proceeded as though the group had closed. `balanced('(', ')')` returns ok on
+  `(a`.
+- **`strict: true` requires the close**, so the group fails and rolls back to the
+  opener. Nested groups inherit it (the interior recurses through the same
+  combinator). Ambient `scanSkip` rebuilds — interpreter and codegen — carry
+  `strict` through, so a grammar declaring `scanSkip` does not silently get the
+  recovering interior back.
+- **Strict mode does not change the accepted language, only failure behaviour.**
+  `balanced()` tracks ONE pair; a delimiter from any other pair is content, by
+  design. `([c}])` stays well-formed to it, so `var(--x, ([c}]))` keeps parsing —
+  pinned as a test on both modes.
+- **Opt-in; the default is untouched.** Recovery is what a tolerant document
+  parse wants and existing grammars are built on it.
+- Verified byte-identical: 25 compiled artifacts across 11 `balanced()` call
+  shapes, the ambient-`scanSkip` rebuild path, and the four example grammars,
+  baseline vs HEAD. The comparison was shown to be sensitive — flipping the
+  default moves 16 of the 25.
+- Tree-identity gate: 111 css files, 111 real trees, 0 mismatched
+  (`bench/tree-identity.ts`).
+- 31 new tests in `test/unit/balanced-strict.test.ts`; full suite 181 files /
+  3,438 passing.
+
 - **A choice arm marks the root trivia log only when the arm can reach it.** Every
   other mark in `emitFirstMatch` asks a question about the arm; this one asked only
   whether the grammar has root trivia at all, so it was emitted at 1,046 css sites
