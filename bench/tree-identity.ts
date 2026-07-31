@@ -36,6 +36,15 @@ import { readFileSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import path from 'node:path'
 
+export type Divergence = {
+  mode: string
+  file: string
+  /** Property path to the first differing value, e.g. `root.children[2].type`. */
+  path: string
+  a: string
+  b: string
+}
+
 export type TreeIdentityResult = {
   files: number
   compared: number
@@ -44,7 +53,75 @@ export type TreeIdentityResult = {
   /** Pairs where both sides threw the same error. Agreement, but weak evidence. */
   identicalThrows: number
   mismatched: number
-  failures: string[]
+  divergences: Divergence[]
+}
+
+/**
+ * A declared rename map, for comparing grammars that are allowed to rename
+ * productions. Identity then means byte-identity MODULO this map: node names are
+ * projected through it, and everything else — structure, nesting, child order,
+ * spans, trivia, tags, thrown-error behaviour — must still match exactly.
+ *
+ * INJECTIVITY IS ENFORCED, and that is the whole point. A non-injective map is a
+ * structural merge wearing a rename's clothing: two distinct productions would
+ * compare equal and the gate would hide the exact collapse it exists to catch.
+ */
+export type RenameMap = Readonly<Record<string, string>>
+
+/** Keys whose string values name a production and are therefore renameable. */
+const RENAMEABLE_KEYS = new Set(['type', 'grammarType'])
+
+export function assertInjective(map: RenameMap): void {
+  const seen = new Map<string, string>()
+  for (const [from, to] of Object.entries(map)) {
+    const prior = seen.get(to)
+    if (prior !== undefined) {
+      throw new Error(
+        `rename map is NOT injective: "${prior}" and "${from}" both map to "${to}". ` +
+        `That merges two productions into one and would make the gate pass on a structural collapse.`,
+      )
+    }
+    seen.set(to, from)
+  }
+}
+
+/**
+ * Detect a build that silently fell back to the interpreter.
+ *
+ * A grammar with forward references can fail static macro evaluation and fall
+ * back, and the build still succeeds and still exports normally — but a fallback
+ * artifact is not AST-equivalent to a compiled one, so every tree compared
+ * against it is compared against something that does not ship. The only visible
+ * symptom is a RUNTIME import of `parseman` in the emitted file where an inlined
+ * table belongs.
+ *
+ * Credit: the css grammar tournament's scorekeeper lane, which makes this a hard
+ * precondition before ranking anyone. It is a precondition here for the same
+ * reason — this oracle is only as sound as the artifacts it is handed.
+ *
+ * SCOPE IT TO THE EMITTED GRAMMAR. A package's runtime helpers (`cst-host.js`,
+ * `chunks/parse-with.js`) import parseman legitimately and always will, so a
+ * recursive search reports every healthy build as a fallback — a false positive
+ * that gets the check disabled, which is worse than not having it. Only files
+ * directly under `grammar/` are compiled output.
+ */
+export async function findInterpreterFallbacks(libDir: string): Promise<string[]> {
+  const grammarDir = path.join(libDir, 'grammar')
+  let names: string[]
+  try {
+    names = (await readdir(grammarDir, { withFileTypes: true }))
+      .filter(e => e.isFile() && (e.name.endsWith('.js') || e.name.endsWith('.cjs')))
+      .map(e => path.join(grammarDir, e.name))
+  } catch {
+    throw new Error(`no grammar/ directory under ${libDir} — point --assert-compiled at a built lib/ root`)
+  }
+  const hits: string[] = []
+  for (const f of names) {
+    let src: string
+    try { src = readFileSync(f, 'utf8') } catch { continue }
+    if (/\bfrom\s*["']parseman["']/.test(src) || /\brequire\(\s*["']parseman["']\s*\)/.test(src)) hits.push(f)
+  }
+  return hits
 }
 
 /**
@@ -81,16 +158,69 @@ export async function collect(dir: string, exts: readonly string[], out: string[
  * rather than informative — which invites someone to drop Doc mode entirely and
  * shrink the gate. A function is parser machinery, not tree data.
  */
-export function serializeTree(v: unknown, seen: Map<unknown, number> = new Map()): string {
+export function serializeTree(
+  v: unknown,
+  seen: Map<unknown, number> = new Map(),
+  rename: RenameMap | null = null,
+): string {
   if (typeof v === 'function') return '#fn'
   if (v === null || typeof v !== 'object') {
     return typeof v === 'string' ? JSON.stringify(v) : String(v)
   }
   if (seen.has(v)) return `#cyc${seen.get(v)}`
   seen.set(v, seen.size)
-  if (Array.isArray(v)) return `[${v.map(x => serializeTree(x, seen)).join(',')}]`
+  if (Array.isArray(v)) return `[${v.map(x => serializeTree(x, seen, rename)).join(',')}]`
   const o = v as Record<string, unknown>
-  return `{${Object.keys(o).sort().map(k => `${k}:${serializeTree(o[k], seen)}`).join(',')}}`
+  return `{${Object.keys(o).sort().map(k => {
+    const raw = o[k]
+    // Project only the production-NAME keys. Renaming anything else would let a
+    // candidate declare its way past a real structural difference.
+    const val = rename && RENAMEABLE_KEYS.has(k) && typeof raw === 'string'
+      ? (rename[raw] ?? raw)
+      : raw
+    return `${k}:${serializeTree(val, seen, rename)}`
+  }).join(',')}}`
+}
+
+/**
+ * First differing property path between two parsed trees. Runs only on a
+ * mismatch, so the fast path stays a single string comparison — but a scorer
+ * needs to know WHERE two grammars diverged, not merely that they did.
+ */
+export function firstDivergence(
+  a: unknown,
+  b: unknown,
+  rename: RenameMap | null = null,
+  at = 'root',
+  seen: Set<unknown> = new Set(),
+): { path: string, a: string, b: string } | null {
+  // `rename` projects the A side only, exactly as `compareTrees` does — B is
+  // the candidate, already using its own names.
+  const sa = serializeTree(a, new Map(), rename), sb = serializeTree(b, new Map(), null)
+  if (sa === sb) return null
+  const brief = (s: string): string => s.length > 120 ? `${s.slice(0, 120)}…` : s
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
+    return { path: at, a: brief(sa), b: brief(sb) }
+  }
+  if (seen.has(a)) return { path: at, a: brief(sa), b: brief(sb) }
+  seen.add(a)
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return { path: `${at}.length`, a: String(a.length), b: String(b.length) }
+    for (let i = 0; i < a.length; i++) {
+      const d = firstDivergence(a[i], b[i], rename, `${at}[${i}]`, seen)
+      if (d) return d
+    }
+    return { path: at, a: brief(sa), b: brief(sb) }
+  }
+  const oa = a as Record<string, unknown>, ob = b as Record<string, unknown>
+  const keys = [...new Set([...Object.keys(oa), ...Object.keys(ob)])].sort()
+  for (const k of keys) {
+    if (!(k in oa) || !(k in ob)) return { path: `${at}.${k}`, a: k in oa ? 'present' : 'ABSENT', b: k in ob ? 'present' : 'ABSENT' }
+    const va = rename && RENAMEABLE_KEYS.has(k) && typeof oa[k] === 'string' ? (rename[oa[k] as string] ?? oa[k]) : oa[k]
+    const d = firstDivergence(va, ob[k], rename, `${at}.${k}`, seen)
+    if (d) return d
+  }
+  return { path: at, a: brief(sa), b: brief(sb) }
 }
 
 type Entry = (src: string) => unknown
@@ -128,32 +258,41 @@ export async function compareTrees(opts: {
   corpus: string
   exts: readonly string[]
   maxBytes?: number
+  /** Declared rename map, applied to the `a` side (the incumbent/reference). */
+  rename?: RenameMap | null
 }): Promise<TreeIdentityResult> {
+  const rename = opts.rename ?? null
+  if (rename) assertInjective(rename)
   const ea = await entriesOf(opts.a)
   const eb = await entriesOf(opts.b)
   const modes = Object.keys(ea).filter(m => m in eb)
   const files = await collect(opts.corpus, opts.exts)
-  const r: TreeIdentityResult = { files: files.length, compared: 0, realTrees: 0, identicalThrows: 0, mismatched: 0, failures: [] }
+  const r: TreeIdentityResult = { files: files.length, compared: 0, realTrees: 0, identicalThrows: 0, mismatched: 0, divergences: [] }
 
   for (const f of files) {
     let src: string
     try { src = readFileSync(f, 'utf8') } catch { continue }
     if (src.length > (opts.maxBytes ?? 400_000)) continue
     for (const mode of modes) {
-      const run = (fn: Entry): string => {
-        try { return serializeTree(fn(src)) } catch (e) { return `THROW:${(e as Error)?.message}` }
+      const call = (fn: Entry): { ok: true, v: unknown } | { ok: false, v: string } => {
+        try { return { ok: true, v: fn(src) } } catch (e) { return { ok: false, v: `THROW:${(e as Error)?.message}` } }
       }
-      const x = run(ea[mode]!), y = run(eb[mode]!)
+      const ra = call(ea[mode]!), rb = call(eb[mode]!)
+      // The rename map projects the A side only: A is the incumbent whose names
+      // the candidate declared it was changing.
+      const x = ra.ok ? serializeTree(ra.v, new Map(), rename) : ra.v
+      const y = rb.ok ? serializeTree(rb.v, new Map()) : rb.v
       r.compared++
       if (x.startsWith('THROW:') && y.startsWith('THROW:')) {
         if (x === y) { r.identicalThrows++; continue }
       } else r.realTrees++
       if (x !== y) {
         r.mismatched++
-        if (r.failures.length < 10) {
-          let i = 0
-          while (i < x.length && i < y.length && x[i] === y[i]) i++
-          r.failures.push(`${mode} ${f}\n  a: …${x.slice(Math.max(0, i - 60), i + 90)}\n  b: …${y.slice(Math.max(0, i - 60), i + 90)}`)
+        if (r.divergences.length < 50) {
+          const d = ra.ok && rb.ok
+            ? firstDivergence(ra.v, rb.v, rename)
+            : { path: 'throw', a: x.slice(0, 160), b: y.slice(0, 160) }
+          r.divergences.push({ mode, file: f, path: d?.path ?? 'root', a: d?.a ?? '', b: d?.b ?? '' })
         }
       }
     }
@@ -174,13 +313,31 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   }
   const exts = (arg('ext') ?? '.css').split(',')
   const minReal = Number(arg('min-real') ?? 0)
-  const modesA = Object.keys(await entriesOf(a))
-  const r = await compareTrees({ a, b, corpus, exts })
+  const renamePath = arg('renames')
+  let rename: RenameMap | null = null
+  if (renamePath) {
+    rename = JSON.parse(readFileSync(renamePath, 'utf8')) as RenameMap
+    try { assertInjective(rename) } catch (e) { console.error(`FAIL: ${(e as Error).message}`); process.exit(3) }
+  }
 
-  console.log(`modes: ${modesA.join(', ')}`)
+  // Precondition, before any tree is compared: an artifact that fell back to the
+  // interpreter is not the artifact that ships, so comparing against it proves
+  // nothing about what ships.
+  for (const side of [arg('assert-compiled'), arg('assert-compiled-b')].filter(Boolean) as string[]) {
+    const hits = await findInterpreterFallbacks(side)
+    if (hits.length > 0) {
+      console.error(`FAIL: interpreter fallback — ${hits.length} emitted file(s) import parseman at runtime:\n  ${hits.slice(0, 5).join('\n  ')}`)
+      process.exit(3)
+    }
+  }
+
+  const modesA = Object.keys(await entriesOf(a))
+  const r = await compareTrees({ a, b, corpus, exts, rename })
+
+  console.log(`modes: ${modesA.join(', ')}${rename ? ` · rename map: ${Object.keys(rename).length} entries (injective)` : ''}`)
   console.log(`files: ${r.files}`)
   console.log(`compared ${r.compared} pairs · ${r.realTrees} REAL TREES · ${r.identicalThrows} identical-throw · ${r.mismatched} MISMATCHED`)
-  for (const f of r.failures) console.log('\n' + f)
+  for (const d of r.divergences) console.log(`\n${d.mode} ${d.file}\n  at ${d.path}\n  a: ${d.a}\n  b: ${d.b}`)
 
   // Coverage is part of the result, not a footnote. A run that examined almost
   // nothing must not exit 0 just because what it examined agreed.
