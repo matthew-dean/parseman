@@ -163,16 +163,23 @@ tree — none would have been visible in a pass/fail test:
 |---|---|
 | `examples/csv` | encodes — 82 words |
 | `examples/json` | encodes — 119 words |
-| `examples/lang` | encodes — 301 words |
-| `bench/workloads/less` (29 rules) | **encodes — 1,190 words, and is tree-identical on its fixtures** |
+| `bench/workloads/less` (29 rules) | **encodes — 1,277 words, and is tree-identical on its fixtures** |
+| `examples/lang` | blocked on `choice(strategy=literalsLongestFirst)` |
 | `examples/graphql` | blocked on `keywords` (7 uses) |
 | `examples/css` | blocked on `expect` (6), `scanTo` (5) |
 
-So the 20 opcodes already cover the largest real grammar in the repo. **Three
-constructs stand between the prototype and every grammar here**: `keywords`,
-`expect`, `scanTo`. Each is a terminal or a recovery wrapper, none needs a new
-execution model — `keywords` is a trie terminal, `expect` a label around a
-child, `scanTo` a sentinel scan the runtime already implements.
+So the 20 opcodes already cover the largest real grammar in the repo. **Four
+constructs stand between the prototype and every grammar here**: the non-default
+choice strategies (`literalsLongestFirst`, `sharedPrefix`, `greedyClassify`),
+`keywords`, `expect`, `scanTo`. None needs a new execution model — `keywords` is
+a trie terminal, `expect` a label around a child, `scanTo` a sentinel scan the
+runtime already implements, and a strategy is an arm ORDER, which is table data.
+
+`examples/lang` is worth calling out: an earlier revision encoded it silently and
+WRONG, because a choice strategy reorders arms and lowering it as a plain ordered
+choice picks a different arm. It now refuses. That is the second time in this
+lane a defect showed up as a moved tree behind a successful parse, and it is why
+the identity oracle is the gate rather than a test suite.
 
 Assumptions in that projection, stated so they can be checked:
 
