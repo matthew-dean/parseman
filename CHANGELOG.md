@@ -5,6 +5,26 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **New `pnpm spelling:gate` — a spelling differential for G20 ("equivalent grammars
+  must emit equivalent artifacts").** Takes a construct, rewrites it into a provably
+  equivalent form, lowers both through the real macro pipeline, and compares the bytes
+  of the shipped artifacts. Equivalence is **established, not assumed**: both artifacts
+  are imported and run over the pair's own corpus (accepting *and* rejecting inputs, so
+  a boundary-policy difference cannot hide) and their trees compared with the
+  tree-identity oracle's serializer; only a pair that passes that proof earns a ratio.
+  `node()` vs `transform()` is carried permanently as a declared **non-pair** — the gate
+  asserts its trees *differ*, which is the standing proof that the gate distinguishes
+  "does more work" from "spelled differently". Reports raw and gzip per pair with a
+  stated mechanism; the tolerance band is one named constant so it is a visible decision.
+- **First full run: three distinct missing normalisations across 8 breaching pairs.**
+  (1) `keywords([N])` vs N `word()` arms under one boundary policy — 1.40x at N=5 rising
+  to 1.92x at N=30 (65,087 vs 33,859 B), marginal cost 1,938 vs 880 B per word.
+  (2) by-const vs `g.X` is a **depth** effect, not a fanout effect: flat fanout F=2/4/8
+  shows a constant ~2.6 kB offset that *shrinks* as a ratio, while nesting each level
+  twice gives by-name exactly linear growth (+1,586 B/level) against superlinear
+  by-const — 1.10x at depth 1 to 1.98x at depth 6. (3) `sharedPrefix` left-factoring is
+  a **matching** optimisation only: the shared term is matched once, but its CST leaf
+  push, trivia skip and result binding are re-emitted in every arm (1.57x over four arms).
 - **A choice arm marks the root trivia log only when the arm can reach it.** Every
   other mark in `emitFirstMatch` asks a question about the arm; this one asked only
   whether the grammar has root trivia at all, so it was emitted at 1,046 css sites

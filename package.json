@@ -108,7 +108,8 @@
     "size:probe": "node --import tsx/esm bench/size/probe.ts",
     "choicecost:guard": "node --import tsx/esm bench/choice-cost-guard.ts",
     "choicecost:baseline": "node --import tsx/esm bench/choice-cost-guard.ts --update",
-    "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report"
+    "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report",
+    "spelling:gate": "node --import tsx/esm bench/spelling-equivalence.ts"
   },
   "keywords": [
     "parser",
