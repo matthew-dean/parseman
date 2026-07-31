@@ -10,6 +10,26 @@ independently on top of the prefix before inclusion — see the pull request bod
 for the per-lane verification status and the measured release-over-release
 numbers.
 
+- **Fixed: the token alphabet's key delimiters were written as raw control BYTES, which
+  made the source file binary and corrupted the emitted artifact.** `keyOf` in
+  `src/compiler/token-alphabet.ts` embedded U+0000 and U+0001 literally rather than as
+  escape sequences. The repair is one line and changes nothing observable — the escapes
+  produce byte-identical strings — but the DETECTION is the part worth recording, because
+  this class of defect has now cost this project roughly sixteen instruments.
+
+  A raw control byte makes a file **binary** to the whole toolchain at once: `git diff`
+  shows `- -` instead of a diff, GitHub declines to render it, and — the one that actually
+  did the damage — **`grep -rn` skips it silently and exits 0**. At a shell, a search that
+  found nothing and a search that *refused to look* are indistinguishable. That is how a
+  305-line module (`src/compiler/token-scanner.ts`, reached only from this file) stayed
+  invisible to every search anyone ran against it.
+
+  The guard is to treat an empty search result as a question rather than an answer: check
+  for the `binary file matches` condition explicitly, or run the tree through
+  `pnpm check:control-bytes`, which is what caught this one. The same defect had already
+  been copy-pasted into the token-cursor measurement rigs and was fixed there too; the
+  measured counts are unchanged.
+
 - **A factory body that fails to evaluate now names the binding and the cause.** The
   dominant real cause is a forward reference — `const A = node('A', B, …)` above
   `const B = …` — and the macro reported it as a generic "rules(...) factory isn't
