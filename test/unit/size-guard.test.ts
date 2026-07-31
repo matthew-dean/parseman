@@ -28,6 +28,37 @@ import { fileURLToPath } from 'node:url'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const SCRIPT = path.join(ROOT, 'bench/size-guard.ts')
 
+/**
+ * TIMEOUTS — every test here spawns the real gate or the real probe, and vitest's
+ * default of 5s is a budget for an in-process unit test, not for a tsx-compiled
+ * child that lowers 24 grammar fixtures.
+ *
+ * At load average ~60 this file failed about half its runs, always on its two
+ * slowest cases: `PASSES on the committed tree` (the first `gate(ROOT)`, which
+ * also pays the cold tsx compile) and `produces byte-identical output across
+ * separate processes` (two probe spawns). Both sit near 1.3s idle, so a 4x
+ * contention stall crossed 5s. `pnpm size:guard` never flaked because nothing
+ * outside vitest was imposing a 5s ceiling on it, and CI is uncontended enough
+ * that it never fired there either — the inverted budget was only ever visible
+ * on a loaded developer box.
+ *
+ * The rule the numbers below encode: a test's vitest budget is strictly GREATER
+ * than the budget of the children it spawns. The ordering matters more than the
+ * absolute size. When a child genuinely hangs, the child's own timeout must be
+ * what fires, because that path returns its stdout and stderr and the assertions
+ * then say what went wrong; vitest firing first reports `Test timed out in
+ * 5000ms` and throws the evidence away.
+ *
+ * So these are NOT noise absorption, and they are not sized against how long a
+ * run takes. They are sized against SPAWN_BUDGET_MS, and a test that exceeds one
+ * is a hang, not a slow machine.
+ */
+const SPAWN_BUDGET_MS = 180_000
+/** Suites in which no single test spawns more than one child. */
+const ONE_SPAWN_MS = SPAWN_BUDGET_MS + 30_000
+/** The determinism suite spawns the probe twice inside one test. */
+const TWO_SPAWN_MS = 2 * SPAWN_BUDGET_MS + 30_000
+
 type Result = { out: string; ok: boolean }
 
 function gate(rootDir: string, ...args: string[]): Result {
@@ -36,7 +67,7 @@ function gate(rootDir: string, ...args: string[]): Result {
       cwd: ROOT,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 180_000,
+      timeout: SPAWN_BUDGET_MS,
     })
     return { out, ok: true }
   } catch (e) {
@@ -53,14 +84,42 @@ function scratch(): string {
   return d
 }
 afterAll(() => {
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true })
+  // `maxRetries` defaults to 0, and Node documents ENOTEMPTY as a transient error
+  // for recursive removal — on a loaded machine that turns tidying up into a suite
+  // failure, after every case has already asserted correctly.
+  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 })
 })
+
+/**
+ * Run the probe and return its JSON document.
+ *
+ * stderr is CAPTURED and folded into the thrown message. The probe reports why it
+ * could not measure on stderr and its JSON on stdout, so discarding stderr — as
+ * these call sites did — turns any probe failure into `Error: Command failed:
+ * node --import tsx/esm …/probe.ts` with no reason attached, which is the exact
+ * shape of unreadable failure `bench/size/probe.ts` documents at STREAM_TARGETS.
+ */
+function probeJson(): { rows: { id: string; genBytes: number }[] } {
+  let out: string
+  try {
+    out = execFileSync(process.execPath, ['--import', 'tsx/esm', path.join(ROOT, 'bench/size/probe.ts'), '--json=/dev/stdout'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: SPAWN_BUDGET_MS,
+    })
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; message?: string }
+    throw new Error(`the size probe failed:\n${err.stderr ?? ''}${err.stdout ?? ''}\n${err.message ?? ''}`)
+  }
+  return JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)) as { rows: { id: string; genBytes: number }[] }
+}
 
 function writeBaseline(dir: string, body: unknown): void {
   fs.writeFileSync(path.join(dir, 'bench', 'size-baseline.json'), typeof body === 'string' ? body : JSON.stringify(body, null, 2))
 }
 
-describe('size gate fails closed when it cannot measure', () => {
+describe('size gate fails closed when it cannot measure', { timeout: ONE_SPAWN_MS }, () => {
   it('FAILS when the baseline file is missing', () => {
     const r = gate(scratch())
     expect(r.ok).toBe(false)
@@ -123,7 +182,7 @@ describe('size gate fails closed when it cannot measure', () => {
   })
 })
 
-describe('size gate enforces the budget against the real tree', () => {
+describe('size gate enforces the budget against the real tree', { timeout: ONE_SPAWN_MS }, () => {
   it('PASSES on the committed tree, because every fixture is exactly at its ceiling', () => {
     // 0.45 policy: the committed genBytes IS the ceiling. The tree that produced
     // the baseline must therefore be green. The 10x target is reported, not
@@ -186,7 +245,7 @@ describe('size gate enforces the budget against the real tree', () => {
  * unbumped from v0.33.0/v0.35.0 for TEN releases. A convention is not a check.
  * So an un-banked improvement fails the build exactly like a regression does.
  */
-describe('the committed ceiling ratchets in both directions', () => {
+describe('the committed ceiling ratchets in both directions', { timeout: ONE_SPAWN_MS }, () => {
   /** The real tree, measured against a doctored copy of the real baseline. */
   function against(mutate: (fixtures: Record<string, { genBytes: number }>) => void): Result {
     const d = scratch()
@@ -222,7 +281,7 @@ describe('the committed ceiling ratchets in both directions', () => {
   })
 })
 
-describe('standing debt never reads as a fresh regression', () => {
+describe('standing debt never reads as a fresh regression', { timeout: ONE_SPAWN_MS }, () => {
   it('renders known over-target fixtures as tracked, not as something this change did', () => {
     const r = gate(ROOT)
     // The distinction that matters to a human: standing debt must not be
@@ -252,7 +311,7 @@ describe('standing debt never reads as a fresh regression', () => {
   })
 })
 
-describe('size gate measures multi-variant duplication', () => {
+describe('size gate measures multi-variant duplication', { timeout: ONE_SPAWN_MS }, () => {
   it('gates 1 / 2 / 4-variant fixtures', () => {
     // Real grammars emit four variants from one factory (trackLines x hostMode).
     // Verified in jess's shipped css artifact: `function _r_Stylesheet(` occurs
@@ -265,10 +324,7 @@ describe('size gate measures multi-variant duplication', () => {
   })
 
   it('holds variant duplication well below one copy per variant', () => {
-    const out = execFileSync(process.execPath, ['--import', 'tsx/esm', path.join(ROOT, 'bench/size/probe.ts'), '--json=/dev/stdout'], {
-      cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 180_000,
-    })
-    const parsed = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)) as { rows: { id: string; genBytes: number }[] }
+    const parsed = probeJson()
     const get = (id: string): number => parsed.rows.find(r => r.id === id)!.genBytes
     const two = get('variants-2') / get('variants-1')
     const four = get('variants-4') / get('variants-1')
@@ -292,21 +348,13 @@ describe('size gate measures multi-variant duplication', () => {
   })
 })
 
-describe('the size probe is deterministic', () => {
+describe('the size probe is deterministic', { timeout: TWO_SPAWN_MS }, () => {
   it('produces byte-identical output across separate processes', () => {
     // The drift tolerance is 1% and that is headroom, not noise absorption. It is
     // only defensible if codegen is deterministic — so prove it, rather than
     // assuming it and quietly widening the tolerance later.
-    const run = (): string =>
-      execFileSync(process.execPath, ['--import', 'tsx/esm', path.join(ROOT, 'bench/size/probe.ts'), '--json=/dev/stdout'], {
-        cwd: ROOT,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 180_000,
-      })
-    const a = run()
-    const b = run()
-    const rows = (s: string): string => JSON.stringify(JSON.parse(s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)).rows)
-    expect(rows(a)).toBe(rows(b))
+    const a = probeJson()
+    const b = probeJson()
+    expect(JSON.stringify(a.rows)).toBe(JSON.stringify(b.rows))
   })
 })
