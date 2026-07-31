@@ -171,7 +171,7 @@ import {
 import { annotateSpan, normalizeLineIndex, recordLineRange } from './line-index.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { beginCompileDegradationDrain } from './degradation.ts'
-import { buildDispatchTrie, dispatchTableDecls, dispatchWalkerDecl } from './token-dispatch.ts'
+import { dispatchConfigFromEnv, emitDispatchId, sharedHelperDecl, type SharedHelper } from './token-dispatch.ts'
 
 /**
  * Emission-time constant folding for gate expressions.
@@ -380,9 +380,9 @@ type Ctx = {
   lineTracking?: boolean | undefined
   /** Regex declarations hoisted to module scope */
   regexDecls: string[]
-  /** True once the shared dispatch trie walker has been hoisted for this artifact. */
-  dispatchWalkerEmitted?: boolean
-  /** Per-artifact counter naming each dispatch site's trie tables. */
+  /** Shared dispatch helpers already hoisted for this artifact. */
+  dispatchHelpers?: Set<SharedHelper>
+  /** Per-artifact counter naming each dispatch site's tables. */
   dispatchTrieCount?: number
   /** Dedup map: "source/flags" → variable name (_re0 etc.) */
   regexMap: Map<string, string>
@@ -2096,10 +2096,19 @@ function emitDispatchCombinator(
   ]
 
   let wroteBranch = false
-  const emitSelectedTail = (entry: { parser: Combinator<unknown>; usesRouted?: boolean | undefined }, keyword: 'if' | 'else if' | 'else', condition?: string, coverageId?: string): void => {
+  const emitSelectedTail = (entry: { parser: Combinator<unknown>; usesRouted?: boolean | undefined }, keyword: 'if' | 'else if' | 'else' | 'case' | 'default', condition?: string, coverageId?: string): void => {
     const parser = entry.parser
+    // `case`/`default` are the token-keyed form: the arm is SELECTED by an
+    // integer rather than reached by falling through a comparison chain. Every
+    // failure exit inside an arm is a LABELED break (`break _pfail`), so the
+    // enclosing switch never captures one; bare breaks only ever appear inside
+    // an arm's own emitted loop.
     const head = keyword === 'else'
       ? `${ind(ctx)}else {`
+      : keyword === 'default'
+      ? `${ind(ctx)}default: {`
+      : keyword === 'case'
+      ? `${ind(ctx)}case ${condition}: {`
       : `${ind(ctx)}${keyword} (${condition}) {`
     stmts.push(head)
     ctx.indent++
@@ -2163,15 +2172,25 @@ function emitDispatchCombinator(
       ...coverageHit(ctx, coverageId, pos, tail.endVar),
     )
     ctx.indent--
-    stmts.push(`${ind(ctx)}}`)
+    stmts.push(keyword === 'case' || keyword === 'default' ? `${ind(ctx)}} break` : `${ind(ctx)}}`)
   }
+
+  const useSwitch = tokenTrie !== null && dispatchConfigFromEnv(process.env).sel === 'switch'
+  // The `case` heads sit at the SAME depth as the chain's `if` heads would.
+  // Indenting the switch body costs one byte per emitted line — 21,764 B across
+  // the css artifact's three dispatch sites, which swamped the saving it makes.
+  if (useSwitch) stmts.push(`${ind(ctx)}switch (${tokenTrie!.idVar}) {`)
 
   let coverageIndex = 0
   for (const [caseIndex, entry] of def.cases.entries()) {
-    const condition = tokenTrie
-      ? `${tokenTrie.idVar} === ${caseIndex + 1}`
-      : entry.keys.map(key => emitDispatchKeyCondition(keyV, key, entry.caseInsensitive)).join(' || ')
-    emitSelectedTail(entry, wroteBranch ? 'else if' : 'if', condition, coverageIds[coverageIndex++])
+    if (useSwitch) {
+      emitSelectedTail(entry, 'case', String(caseIndex + 1), coverageIds[coverageIndex++])
+    } else {
+      const condition = tokenTrie
+        ? `${tokenTrie.idVar} === ${caseIndex + 1}`
+        : entry.keys.map(key => emitDispatchKeyCondition(keyV, key, entry.caseInsensitive)).join(' || ')
+      emitSelectedTail(entry, wroteBranch ? 'else if' : 'if', condition, coverageIds[coverageIndex++])
+    }
     wroteBranch = true
   }
 
@@ -2185,25 +2204,29 @@ function emitDispatchCombinator(
   if (def.otherwise) {
     emitMatcherTails()
     const otherwiseEntry = { parser: def.otherwise, usesRouted: def.otherwiseUsesRouted }
-    if (wroteBranch) emitSelectedTail(otherwiseEntry, 'else', undefined, coverageIds[coverageIndex++])
+    if (useSwitch) emitSelectedTail(otherwiseEntry, 'default', undefined, coverageIds[coverageIndex++])
+    else if (wroteBranch) emitSelectedTail(otherwiseEntry, 'else', undefined, coverageIds[coverageIndex++])
     else emitSelectedTail(otherwiseEntry, 'if', 'true', coverageIds[coverageIndex++])
   } else {
     emitMatcherTails()
     const expected = JSON.stringify(def.cases.flatMap(entry => entry.keys.map(key => JSON.stringify(key))))
     const fail = failArrBody(ctx, expected, selector.endVar)
-    stmts.push(wroteBranch ? `${ind(ctx)}else { ${fail} }` : `${ind(ctx)}${fail}`)
+    if (useSwitch) stmts.push(`${ind(ctx)}default: { ${fail} }`)
+    else stmts.push(wroteBranch ? `${ind(ctx)}else { ${fail} }` : `${ind(ctx)}${fail}`)
   }
+  if (useSwitch) stmts.push(`${ind(ctx)}}`)
 
   return { stmts, valueVar: outV, endVar: outE }
 }
 
 /**
- * Hoist this dispatch's key trie and return the per-site walk. Returns null when
- * the site must keep the character chain: a key set that cannot share one folded
- * walk, or one small enough that the shared walker costs more than it saves.
+ * Hoist this dispatch's id tables and return the per-site call. Returns null
+ * when the site must keep the character chain: a key set that cannot share one
+ * folded comparison, or one small enough that a shared helper costs more than
+ * it saves.
  *
- * The walker itself is emitted ONCE per artifact however many sites use it —
- * only the four small tables are per-site, which is what makes this shrink
+ * The helpers are emitted ONCE per artifact however many sites use them — only
+ * the small per-site tables are duplicated, which is what makes this shrink
  * rather than grow the artifact.
  */
 function emitDispatchTokenTrie(
@@ -2212,28 +2235,39 @@ function emitDispatchTokenTrie(
   pos: string,
   endVar: string,
 ): { idVar: string; walkExpr: string } | null {
-  // Matchers (`startsWith`/`endsWith`/`matches`) still key off the string; a site
-  // that has them keeps the chain so both halves read one key representation.
+  // Matchers (`startsWith`/`endsWith`/`matches`) still key off the string; a
+  // site that has them keeps the chain so both halves read one key form.
   if (def.matchers !== undefined && def.matchers.length > 0) return null
+  // Measurement escape hatch: rebuild the pre-token character-chain artifact in
+  // place so the strategies are compared against the real baseline, not a
+  // remembered number.
+  if (process.env.PARSEMAN_DISPATCH_OFF === '1') return null
   const totalKeys = def.cases.reduce((a, c) => a + c.keys.length, 0)
   if (totalKeys < 3) return null
-  const tables = buildDispatchTrie(def.cases.map(c => ({ keys: c.keys, caseInsensitive: c.caseInsensitive })))
-  if (tables === null) return null
 
-  const walker = `${nsp(ctx)}_dtWalk`
-  const unpack = `${nsp(ctx)}_dtUnpack`
-  if (!ctx.dispatchWalkerEmitted) {
-    ctx.dispatchWalkerEmitted = true
-    ctx.regexDecls.push(dispatchWalkerDecl(walker, unpack))
-  }
+  const helperName = (h: SharedHelper): string => `${nsp(ctx)}_dt_${h}`
   const prefix = `${nsp(ctx)}_dt${ctx.dispatchTrieCount ?? 0}`
+  const site = emitDispatchId(
+    def.cases.map(c => ({ keys: c.keys, caseInsensitive: c.caseInsensitive })),
+    dispatchConfigFromEnv(process.env),
+    prefix,
+    helperName,
+    pos,
+    endVar,
+  )
+  if (site === null) return null
   ctx.dispatchTrieCount = (ctx.dispatchTrieCount ?? 0) + 1
-  for (const d of dispatchTableDecls(prefix, unpack, tables)) ctx.regexDecls.push(d)
 
-  return {
-    idVar: v(ctx, '_dtok'),
-    walkExpr: `${walker}(input, ${pos}, ${endVar}, ${prefix}c, ${prefix}s, ${prefix}n, ${prefix}a)`,
+  const emitted = ctx.dispatchHelpers ?? new Set<SharedHelper>()
+  ctx.dispatchHelpers = emitted
+  for (const h of site.helpers) {
+    if (emitted.has(h)) continue
+    emitted.add(h)
+    ctx.regexDecls.push(sharedHelperDecl(h, helperName))
   }
+  for (const d of site.decls) ctx.regexDecls.push(d)
+
+  return { idVar: v(ctx, '_dtok'), walkExpr: site.callExpr }
 }
 
 function emitDispatchKeyCondition(valueVar: string, key: string, caseInsensitive: boolean): string {
