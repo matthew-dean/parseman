@@ -17,6 +17,7 @@
  * the machinery.
  */
 import type { Combinator, ParserDef } from '../types.ts'
+import { regexCanMatchEmpty } from '../regex/first-set.ts'
 
 /**
  * Can `p` FAIL at all?
@@ -95,10 +96,18 @@ export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> =
  * `''`. Reject those syntactically and `exec('')` covers the rest.
  */
 function regexAlwaysConsumes(source: string): boolean {
-  if (/\(\?<?[=!]/.test(source)) return false   // (?=…) (?!…) (?<=…) (?<!…)
-  if (/\\[bB]/.test(source)) return false       // \b \B — zero-width, position-dependent
-  try { const m = new RegExp(source).exec(''); return m == null || m[0] !== '' }
-  catch { return false }
+  // STRUCTURAL, not a probe. The previous form rejected any pattern CONTAINING a
+  // lookaround and then asked `new RegExp(source).exec('')`. Both halves were
+  // imprecise in the same direction:
+  //   - the blanket lookaround test fails a pattern whose lookaround is buried
+  //     inside mandatory content — `/\/\*(?:[^*]|\*(?!\/))*\*\//` must consume
+  //     `/*` and cannot match empty, yet was reported nullable;
+  //   - `exec('')` cannot see a pattern that matches zero-width only at a
+  //     NON-empty position, which is why the blanket test had to exist.
+  // `regexCanMatchEmpty` walks the same AST `firstSetFromRegex` uses, where
+  // anchors, lookaround and word boundaries are already `EMPTY`, so it answers
+  // both cases correctly and neither guard is needed.
+  return !regexCanMatchEmpty(source)
 }
 
 /**
