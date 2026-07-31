@@ -16,15 +16,45 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   asserts its trees *differ*, which is the standing proof that the gate distinguishes
   "does more work" from "spelled differently". Reports raw and gzip per pair with a
   stated mechanism; the tolerance band is one named constant so it is a visible decision.
-- **First full run: three distinct missing normalisations across 8 breaching pairs.**
-  (1) `keywords([N])` vs N `word()` arms under one boundary policy — 1.40x at N=5 rising
-  to 1.92x at N=30 (65,087 vs 33,859 B), marginal cost 1,938 vs 880 B per word.
-  (2) by-const vs `g.X` is a **depth** effect, not a fanout effect: flat fanout F=2/4/8
-  shows a constant ~2.6 kB offset that *shrinks* as a ratio, while nesting each level
-  twice gives by-name exactly linear growth (+1,586 B/level) against superlinear
-  by-const — 1.10x at depth 1 to 1.98x at depth 6. (3) `sharedPrefix` left-factoring is
-  a **matching** optimisation only: the shared term is matched once, but its CST leaf
-  push, trivia skip and result binding are re-emitted in every arm (1.57x over four arms).
+- **The gate is a ratchet, not a report.** Per-pair ratios are committed to
+  `bench/spelling-baseline.json` and `pnpm spelling:gate` fails on any move away from
+  them — two-sided, like `size-guard`: a widening gap is a REGRESSION naming the fat
+  spelling and its mechanism, an un-banked improvement says BANK THE WIN, and a pair
+  that is new or has silently stopped being measured also fails. Known breaches are
+  baselined at their measured value rather than waived, so they stay visible in every
+  run while being pinned against getting worse. Verified by disabling the normalisation
+  and confirming the gate goes red.
+- **First full run: two real missing normalisations, and one retraction.**
+  (1) `keywords([N])` vs N `word()` arms under one boundary policy — 1.39x at N=5 rising
+  to 1.90x at N=30 (65,869 vs 34,664 B) for **identical matching work** (373 `charCodeAt`
+  sites on each side); the gap was per-arm scaffolding, not recognition.
+  (2) by-const vs `g.X` is a **depth** effect, not the fanout effect it was reported as:
+  flat fanout F=2/4/8 shows a constant ~2.6 kB offset that *shrinks* as a ratio, while
+  nesting each level twice gives by-name exactly linear growth (+1,586 B/level) against
+  superlinear by-const — 1.11x at depth 1 to 1.97x at depth 6. Mechanism located: the
+  hoisted `_pf` helpers are re-emitted once per enclosing scope (`_pf0` declared **5
+  times** at depth 6; 22 function declarations against 9 for the named-rule form).
+  (3) RETRACTED — a 1.57x "left-factoring" finding from the gate's first revision. Once
+  the corpus was strengthened to propagate failures it disqualified itself: on input `"@"`
+  the unfactored choice re-anchors its failure span at the choice position and the
+  hand-factored sequence has already consumed the `@`. Hand-factoring is span-observable
+  and was never an equivalent spelling. It is now carried as a declared non-pair.
+- **Two divergence CLASSES, because collapsing them turns the gate all-red for reasons
+  that have nothing to do with bytes.** A LANGUAGE divergence disqualifies a pair; a
+  DIAGNOSTIC divergence — both sides reject at the same span with different `expected`
+  labels — keeps its ratio and is reported separately. Four pairs are diagnostic-only,
+  including `keywords()` reporting 1 label where the equivalent arm list reports N.
+- **`choice` of keyword arms now compiles to ONE keyword table (closes violation 1).**
+  30 `word()` arms: **65,869 → 36,588 B (−44.4%)**, ratio against the equivalent
+  `keywords()` table **1.90x → 1.06x**, gzip **1.73x → 1.01x**. Soundness, point by point:
+  tries are emitted in ARM order so ordered first-match is reproduced exactly and no
+  prefix-freeness precondition is needed; the block fails with the CHOICE's own
+  `expected` array, not a keyword table's single `"keyword"` label, so the diagnostic
+  divergence the gate found is preserved rather than silently adopted; and it **declines
+  outright on a `disjoint` choice**, so O(1) first-char dispatch is never traded for
+  bytes — it only fires where the choice was already an ordered scan. Gates, `autoNot`
+  and coverage ids each decline the merge rather than being dropped. The repo's own
+  example grammars are byte-identical (`size:guard` unchanged at all 24 fixtures).
 - **A choice arm marks the root trivia log only when the arm can reach it.** Every
   other mark in `emitFirstMatch` asks a question about the arm; this one asked only
   whether the grammar has root trivia at all, so it was emitted at 1,046 css sites

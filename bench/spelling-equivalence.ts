@@ -54,7 +54,7 @@
  * can see it and change it. Every pair reports its ratio whether or not it
  * breaches, so moving the band re-labels the table without hiding a row.
  */
-import { writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { writeFileSync, readFileSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -112,28 +112,54 @@ export type Pair = {
 // the same N words with that same boundary are the same dispatch table: same
 // language, same boundary policy, same returned string, same single CST leaf.
 //
-// EQUIVALENCE PRECONDITION, and it is real: `keywords()` sorts LONGEST-FIRST,
-// `choice()` is ordered first-match. On a set where one word prefixes another
-// the two spellings genuinely differ. WORDS below is prefix-free by
-// construction and `assertPrefixFree` enforces it, so the precondition is
-// checked rather than asserted in a comment.
+// TWO EQUIVALENCE PRECONDITIONS, both real, both found BY THIS GATE rather than
+// reasoned about in advance:
+//
+//   (a) ORDER. `keywords()` sorts its words LONGEST-FIRST at construction
+//       (`src/combinators/keywords.ts`), `choice()` is ordered first-match. On a
+//       set where one word prefixes another the two genuinely disagree about
+//       which wins.
+//
+//   (b) THE `expected` PAYLOAD, which is the one that nearly got past this file.
+//       That same longest-first sort also reorders the arm's diagnostic
+//       `expected` array, so on a REJECTED input a mixed-length table reports
+//       ["beige","coral","aqua"] where the arm list reports ["aqua","beige",
+//       "coral"]. The original corpus could not see it, because `Doc` was
+//       `many(g.Kw)` and `many()` never fails — every Doc in this file is now
+//       `oneOrMore`, so a rejecting input propagates a comparable failure.
+//
+// Both are satisfied by using EQUAL-LENGTH words: `Array.prototype.sort` is
+// stable, so a longest-first sort over equal-length words is the identity, which
+// makes match order and `expected` order agree by construction. Equal length
+// also makes the set prefix-free for free. `assertEqualLengthDistinct` enforces
+// it rather than trusting the list.
+//
+// The mixed-length case is NOT swept away — it is carried below as the declared
+// non-pair `nonpair-keywords-sort-order`, which asserts the divergence.
 // ---------------------------------------------------------------------------
 
+/** 30 distinct FIVE-letter words. Equal length ⇒ prefix-free ⇒ stable sort is
+ *  the identity ⇒ match order and `expected` order both agree with source order. */
 const WORDS_30 = [
-  'aqua', 'beige', 'coral', 'cyan', 'darkred', 'gold', 'green', 'grey',
-  'indigo', 'ivory', 'khaki', 'lavender', 'lime', 'linen', 'magenta',
-  'maroon', 'navy', 'olive', 'orange', 'orchid', 'peru', 'pink', 'plum',
-  'purple', 'salmon', 'sienna', 'silver', 'tan', 'teal', 'tomato',
+  'amber', 'azure', 'beige', 'black', 'blush', 'brown', 'cocoa', 'coral',
+  'cream', 'ebony', 'flame', 'grape', 'green', 'henna', 'ivory', 'khaki',
+  'lemon', 'lilac', 'mauve', 'ochre', 'olive', 'peach', 'pearl', 'sepia',
+  'straw', 'taupe', 'tawny', 'umber', 'wheat', 'white',
 ]
 
-function assertPrefixFree(words: readonly string[], where: string): void {
-  for (const a of words) {
-    for (const b of words) {
-      if (a !== b && b.startsWith(a)) {
-        die(`${where}: "${a}" prefixes "${b}". keywords() matches longest-first and choice() matches in order, so these two spellings are NOT equivalent on this set. Fix the word list rather than the comparison.`)
-      }
+/** Mixed lengths ON PURPOSE — the sort is NOT the identity here. Used only by
+ *  the declared non-pair. */
+const WORDS_MIXED = ['aqua', 'beige', 'coral', 'cyan', 'gold', 'indigo', 'lime', 'navy']
+
+function assertEqualLengthDistinct(words: readonly string[], where: string): void {
+  const len = words[0]?.length
+  if (len === undefined) die(`${where}: empty word list`)
+  for (const w of words) {
+    if (w.length !== len) {
+      die(`${where}: "${w}" is ${w.length} chars, not ${len}. Equal length is what makes keywords()' longest-first sort the identity; a mixed-length set reorders both the match order AND the diagnostic \`expected\` array, so the two spellings would not be equivalent and the ratio would be meaningless.`)
     }
   }
+  if (new Set(words).size !== words.length) die(`${where}: duplicate word`)
 }
 
 const BOUNDARY = '_0-9A-Za-z'
@@ -143,7 +169,7 @@ function keywordTable(words: readonly string[]): string {
 ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Kw: keywords(${JSON.stringify(words)}, { boundary: '${BOUNDARY}' }),
-  Doc: node('Doc', many(g.Kw), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.Kw), (c) => ({ t: 'Doc', c })),
 }))
 `
 }
@@ -153,7 +179,7 @@ function wordArms(words: readonly string[]): string {
 ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Kw: choice(${words.map(w => `word('${w}', '${BOUNDARY}')`).join(', ')}),
-  Doc: node('Doc', many(g.Kw), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.Kw), (c) => ({ t: 'Doc', c })),
 }))
 `
 }
@@ -182,14 +208,14 @@ function keywordCorpus(words: readonly string[]): string[] {
 // the two genuinely the same language.
 // ---------------------------------------------------------------------------
 
-const PUNCTISH = ['aqua', 'beige', 'coral', 'gold', 'lime', 'navy', 'plum', 'teal']
+const PUNCTISH = ['amber', 'azure', 'beige', 'cocoa', 'coral', 'grape', 'olive', 'wheat']
 
 function literalChoice(words: readonly string[]): string {
   return `${MACRO}
 ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Kw: choice(${words.map(w => `literal('${w}')`).join(', ')}),
-  Doc: node('Doc', many(g.Kw), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.Kw), (c) => ({ t: 'Doc', c })),
 }))
 `
 }
@@ -199,7 +225,7 @@ function unboundedKeywords(words: readonly string[]): string {
 ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Kw: keywords(${JSON.stringify(words)}),
-  Doc: node('Doc', many(g.Kw), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.Kw), (c) => ({ t: 'Doc', c })),
 }))
 `
 }
@@ -232,7 +258,7 @@ ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Item: ${SHARED_BODY},
 ${uses}
-  Doc: node('Doc', many(choice(${Array.from({ length: fanout }, (_, i) => `g.Use${i}`).join(', ')})), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(choice(${Array.from({ length: fanout }, (_, i) => `g.Use${i}`).join(', ')})), (c) => ({ t: 'Doc', c })),
 }))
 `
 }
@@ -245,7 +271,7 @@ ${WS}
 const _item = ${SHARED_BODY}
 export const g = rules({ trivia: _ws }, (g) => ({
 ${uses}
-  Doc: node('Doc', many(choice(${Array.from({ length: fanout }, (_, i) => `g.Use${i}`).join(', ')})), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(choice(${Array.from({ length: fanout }, (_, i) => `g.Use${i}`).join(', ')})), (c) => ({ t: 'Doc', c })),
 }))
 `
 }
@@ -276,7 +302,7 @@ function nestByName(depth: number): string {
 ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
 ${lines.join('\n')}
-  Doc: node('Doc', many(g.I${depth}), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.I${depth}), (c) => ({ t: 'Doc', c })),
 }))
 `
 }
@@ -290,7 +316,7 @@ function nestByConst(depth: number): string {
 ${WS}
 ${lines.join('\n')}
 export const g = rules({ trivia: _ws }, (g) => ({
-  Doc: node('Doc', many(_i${depth}), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(_i${depth}), (c) => ({ t: 'Doc', c })),
 }))
 `
 }
@@ -340,7 +366,7 @@ ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Item: regex(/[a-z]+/),
   List: oneOrMoreSep(g.Item, literal(',')),
-  Doc: node('Doc', many(g.List), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.List), (c) => ({ t: 'Doc', c })),
 }))
 `
 
@@ -349,7 +375,7 @@ ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Item: regex(/[a-z]+/),
   List: transform(sequence(g.Item, many(sequence(literal(','), g.Item))), (r) => [r[0], ...r[1].map((p) => p[1])]),
-  Doc: node('Doc', many(g.List), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.List), (c) => ({ t: 'Doc', c })),
 }))
 `
 
@@ -376,14 +402,14 @@ const SUGAR_WORD = `${MACRO}
 ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Kw: word('aqua', '${BOUNDARY}'),
-  Doc: node('Doc', many(g.Kw), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.Kw), (c) => ({ t: 'Doc', c })),
 }))
 `
 const SUGAR_KEYWORDS = `${MACRO}
 ${WS}
 export const g = rules({ trivia: _ws }, (g) => ({
   Kw: keywords(['aqua'], { boundary: '${BOUNDARY}' }),
-  Doc: node('Doc', many(g.Kw), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.Kw), (c) => ({ t: 'Doc', c })),
 }))
 `
 
@@ -415,7 +441,7 @@ export const g = rules({ trivia: _ws }, (g) => ({
     sequence(literal('@'), literal('layer')),
     sequence(literal('@'), literal('import')),
   ),
-  Doc: node('Doc', many(g.Kw), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.Kw), (c) => ({ t: 'Doc', c })),
 }))
 `
 const FACTOR_FACTORED = `${MACRO}
@@ -425,7 +451,7 @@ export const g = rules({ trivia: _ws }, (g) => ({
     sequence(literal('@'), choice(literal('media'), literal('supports'), literal('layer'), literal('import'))),
     (r) => [r[0], r[1]],
   ),
-  Doc: node('Doc', many(g.Kw), (c) => ({ t: 'Doc', c })),
+  Doc: node('Doc', oneOrMore(g.Kw), (c) => ({ t: 'Doc', c })),
 }))
 `
 const FACTOR_CORPUS = [
@@ -458,8 +484,8 @@ export const g = rules({ trivia: _ws }, (g) => ({
 `
 
 export function buildPairs(): Pair[] {
-  assertPrefixFree(WORDS_30, 'WORDS_30')
-  assertPrefixFree(PUNCTISH, 'PUNCTISH')
+  assertEqualLengthDistinct(WORDS_30, 'WORDS_30')
+  assertEqualLengthDistinct(PUNCTISH, 'PUNCTISH')
 
   const pairs: Pair[] = []
 
@@ -572,19 +598,37 @@ export function buildPairs(): Pair[] {
   })
 
   pairs.push({
-    id: 'left-factor-choice-arms',
-    group: 'left-factor',
-    equivalent: true,
+    id: 'nonpair-left-factor',
+    group: 'non-pair',
+    equivalent: false,
     forms: ['4 unfactored sequence arms', 'hand-factored shared prefix'],
     mechanism:
-      'sharedPrefix DOES fire — the emitted code matches the shared "@" exactly once (one `charCodeAt(_pos) !== 64`) ' +
-      'and every arm reads the same `_lbl0v`. The left-factoring is a MATCHING optimisation ONLY: each arm still ' +
-      're-emits the shared term\'s CST leaf push, its trivia skip and its result binding, so the shared prefix costs ' +
-      'bytes once per arm even though it costs runtime once per position. That per-arm re-materialisation, not a ' +
-      'failure to left-factor, is the missing normalisation this row names.',
+      'DECLARED NON-PAIR — and this row is here because the gate CAUGHT ITS OWN AUTHOR. It was written as an ' +
+      'equivalence and reported a 1.57x "missing normalisation" for a whole revision; strengthening the corpus to ' +
+      'propagate failures disqualified it. On input "@" the unfactored choice re-anchors its failure span at the ' +
+      'choice position (end 0) while the hand-factored sequence has already consumed the "@" (end 1). Hand-factoring ' +
+      'is therefore SPAN-OBSERVABLE and is not an equivalent spelling. parseman\'s automatic sharedPrefix is not the ' +
+      'same transformation: it re-anchors, which is exactly why it is allowed to fire and this hand-written version ' +
+      'is not a valid comparison. The earlier 1.57x is retracted.',
     a: FACTOR_UNFACTORED,
     b: FACTOR_FACTORED,
     corpus: FACTOR_CORPUS,
+  })
+
+  pairs.push({
+    id: 'nonpair-keywords-sort-order',
+    group: 'non-pair',
+    equivalent: false,
+    forms: [`keywords([${WORDS_MIXED.length} MIXED-length words])`, `choice of ${WORDS_MIXED.length} word() arms`],
+    mechanism:
+      'DECLARED NON-PAIR, and the reason the equal-length constraint above exists. keywords() sorts longest-first at ' +
+      'construction; that sort also reorders the arm\'s diagnostic `expected` array, so on a REJECTED input the table ' +
+      'reports ["beige","coral",…] where the arm list reports ["aqua","beige",…]. Same language, same tree on every ' +
+      'ACCEPTED input — and still not interchangeable. Closing the keyword-table normalisation must therefore ' +
+      'preserve each choice\'s own `expected` array rather than adopting the merged table\'s.',
+    a: keywordTable(WORDS_MIXED),
+    b: wordArms(WORDS_MIXED),
+    corpus: keywordCorpus(WORDS_MIXED),
   })
 
   pairs.push({
@@ -627,7 +671,11 @@ export type PairResult = {
   proven: boolean
   realTrees: number
   compared: number
+  /** LANGUAGE divergence — disqualifies the pair. */
   divergence: { input: string; path: string; a: string; b: string } | null
+  /** DIAGNOSTIC divergence — same parse, different `expected` labels on a
+   *  rejection. Reported as its own finding; does NOT disqualify the ratio. */
+  diagnostic: { input: string; path: string; a: string; b: string } | null
   a: SideMeasure | null
   b: SideMeasure | null
   /** max/min of raw bytes. Null when the pair is not a proven equivalence. */
@@ -724,6 +772,26 @@ async function entryOf(url: string, id: string, side: string): Promise<Entry> {
   return doc as Entry
 }
 
+type Res = { ok?: unknown; expected?: unknown; span?: { start?: unknown; end?: unknown } }
+
+function isFailure(v: unknown): v is Res {
+  return v !== null && typeof v === 'object' && (v as Res).ok === false
+}
+
+function sameSpan(a: unknown, b: unknown): boolean {
+  const sa = (a as Res).span, sb = (b as Res).span
+  return sa?.start === sb?.start && sa?.end === sb?.end
+}
+
+/** True when the ONLY difference between two failures is the `expected` labels. */
+function divergesOnlyInExpected(a: unknown, b: unknown): boolean {
+  const oa = { ...(a as Record<string, unknown>) }
+  const ob = { ...(b as Record<string, unknown>) }
+  delete oa.expected
+  delete ob.expected
+  return serializeTree(oa) === serializeTree(ob)
+}
+
 /** Run one input through one side, collapsing a throw into a comparable value. */
 function run(entry: Entry, input: string): { threw: string | null; value: unknown } {
   try { return { threw: null, value: entry(input, 0, {}) } }
@@ -756,6 +824,7 @@ export async function measurePair(pair: Pair, lower: Lowerer): Promise<PairResul
 
   let realTrees = 0
   let divergence: PairResult['divergence'] = null
+  let diagnostic: PairResult['divergence'] = null
   for (const input of pair.corpus) {
     const ra = run(ea, input)
     const rb = run(eb, input)
@@ -766,14 +835,33 @@ export async function measurePair(pair: Pair, lower: Lowerer): Promise<PairResul
       }
       continue
     }
-    if (serializeTree(ra.value) !== serializeTree(rb.value)) {
-      const d = firstDivergence(ra.value, rb.value)
-      divergence ??= { input, path: d?.path ?? 'root', a: d?.a ?? '?', b: d?.b ?? '?' }
+    if (serializeTree(ra.value) === serializeTree(rb.value)) continue
+
+    const d = firstDivergence(ra.value, rb.value)
+    const at = { input, path: d?.path ?? 'root', a: d?.a ?? '?', b: d?.b ?? '?' }
+    // TWO KINDS OF DIVERGENCE, and collapsing them turns this gate all-red for a
+    // reason that has nothing to do with bytes.
+    //
+    // A LANGUAGE divergence — one side accepts and the other rejects, the trees
+    // differ, or they fail at different positions — means the two spellings are
+    // not the same parser. Nothing about their byte counts is comparable.
+    //
+    // A DIAGNOSTIC divergence — both reject, at the SAME span, with a different
+    // `expected` label set — means they are the same parser that says something
+    // different about a failure. The forms still accept the same language and
+    // build the same trees, so the byte comparison remains meaningful; what is
+    // NOT meaningful is silently calling them identical. It is reported as its
+    // own finding class instead of being folded into either bucket.
+    const bothFail = isFailure(ra.value) && isFailure(rb.value)
+    if (bothFail && sameSpan(ra.value, rb.value) && divergesOnlyInExpected(ra.value, rb.value)) {
+      diagnostic ??= at
+      continue
     }
+    divergence ??= at
   }
 
   const treesAgree = divergence === null
-  const proven = pair.equivalent ? treesAgree : !treesAgree
+  const proven = pair.equivalent ? treesAgree : !(treesAgree && diagnostic === null)
 
   if (pair.equivalent && realTrees < MIN_REAL_TREES) {
     die(`pair ${pair.id}: only ${realTrees} of ${pair.corpus.length} inputs produced a tree on either side. A pair whose corpus does not actually exercise the construct proves nothing — widen the corpus rather than lowering MIN_REAL_TREES.`)
@@ -793,6 +881,7 @@ export async function measurePair(pair: Pair, lower: Lowerer): Promise<PairResul
     realTrees,
     compared: pair.corpus.length,
     divergence,
+    diagnostic,
     a: measA,
     b: measB,
     rawRatio,
@@ -815,7 +904,7 @@ function report(results: PairResult[]): void {
   console.log('-'.repeat(head.length + 12))
   for (const r of results) {
     const proof = r.equivalent
-      ? (r.proven ? `trees=${r.realTrees}` : 'DISQUAL')
+      ? (r.proven ? (r.diagnostic ? `trees=${r.realTrees}!` : `trees=${r.realTrees}`) : 'DISQUAL')
       : (r.proven ? 'differ ✓' : 'BROKEN')
     const verdict = !r.equivalent
       ? (r.proven ? 'non-pair (expected; no ratio)' : 'HARNESS BROKEN — non-pair compared EQUAL')
@@ -823,7 +912,7 @@ function report(results: PairResult[]): void {
         ? 'DISQUALIFIED — trees diverge, not an equivalence'
         : r.breaches
           ? `MISSING NORMALISATION — ${r.larger === 'a' ? r.forms[0] : r.forms[1]} is the fat form`
-          : 'normalised'
+          : r.diagnostic ? 'normalised (but see diagnostics)' : 'normalised'
     console.log(
       `${pad(r.id, 34)} ${lpad(String(r.a?.rawBytes ?? '-'), 8)} ${lpad(String(r.b?.rawBytes ?? '-'), 8)} ` +
       `${lpad(r.rawRatio === null ? '-' : `${r.rawRatio.toFixed(2)}x`, 8)} ${lpad(r.gzipRatio === null ? '-' : `${r.gzipRatio.toFixed(2)}x`, 8)}  ` +
@@ -853,6 +942,18 @@ function report(results: PairResult[]): void {
     console.log('')
   }
 
+  const diags = results.filter(r => r.equivalent && r.proven && r.diagnostic)
+  if (diags.length > 0) {
+    console.log(`${diags.length} DIAGNOSTIC DIVERGENCE${diags.length === 1 ? '' : 'S'} (marked "!" above).`)
+    console.log(`  Same language, same tree on every accepted input, same failure span — different \`expected\` labels.`)
+    console.log(`  The ratio still stands; what does NOT stand is calling the two forms interchangeable, and any`)
+    console.log(`  normalisation that merges them must preserve each form's own \`expected\` array.`)
+    for (const r of diags) {
+      console.log(`    ${pad(r.id, 34)} on ${JSON.stringify(r.diagnostic!.input)}: A ${r.diagnostic!.a} | B ${r.diagnostic!.b}`)
+    }
+    console.log('')
+  }
+
   if (breaches.length === 0) {
     console.log(`No proven-equivalent pair exceeds ${BAND.toFixed(2)}x.`)
   } else {
@@ -870,6 +971,97 @@ function report(results: PairResult[]): void {
     }
   }
   console.log('')
+}
+
+// ---------------------------------------------------------------------------
+// THE RATCHET — what makes this a gate and not a report.
+//
+// A report that prints a 1.90x divergence and exits 0 is the silence G20 is
+// about: an author picks the expensive spelling, the table grows a row, and
+// nothing fails. So the measured ratios are COMMITTED, and `--check` fails on
+// any move away from them.
+//
+// TWO-SIDED, like `bench/size-guard.ts`. A ratio getting WORSE is a regression;
+// a ratio getting BETTER un-banked is also a failure, because an unbanked win
+// silently raises the ceiling for the next regression to hide under. Both say
+// exactly what to run.
+//
+// KNOWN BREACHES ARE BASELINED, NOT WAIVED. The by-const depth rows sit above
+// the band today and are recorded at their measured value, so they are pinned
+// against getting worse while remaining visible as breaches in every run. A
+// waiver list would have made them disappear.
+// ---------------------------------------------------------------------------
+
+const BASELINE_PATH = path.join(import.meta.dirname, 'spelling-baseline.json')
+
+/**
+ * Slack on a committed ratio. The measurement is fully deterministic — the
+ * identity control proves it at 1.000x, and the byte counts are of fixed-path
+ * lowered modules — so this is not a noise allowance. It is the amount by which
+ * an unrelated codegen change may move a ratio before someone has to look.
+ */
+const RATCHET_TOLERANCE = 0.02
+
+type Baseline = {
+  band: number
+  pairs: Record<string, { rawRatio: number | null; gzipRatio: number | null; equivalent: boolean; breaches: boolean }>
+}
+
+function readBaseline(): Baseline | null {
+  try { return JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as Baseline }
+  catch { return null }
+}
+
+function writeBaseline(results: PairResult[]): void {
+  const pairs: Baseline['pairs'] = {}
+  for (const r of results) {
+    pairs[r.id] = { rawRatio: r.rawRatio, gzipRatio: r.gzipRatio, equivalent: r.equivalent, breaches: r.breaches }
+  }
+  writeFileSync(BASELINE_PATH, `${JSON.stringify({ band: BAND, pairs }, null, 2)}\n`)
+  console.log(`spelling-gate: banked ${results.length} pairs to ${path.relative(process.cwd(), BASELINE_PATH)}`)
+}
+
+/** Returns the list of failures. Empty means the ratchet holds. */
+function checkBaseline(results: PairResult[], base: Baseline): string[] {
+  const fails: string[] = []
+  const seen = new Set<string>()
+
+  for (const r of results) {
+    seen.add(r.id)
+    const b = base.pairs[r.id]
+    if (b === undefined) {
+      fails.push(
+        `NEW PAIR "${r.id}" is not in the baseline. A pair that is not banked is a pair whose ratio nobody has agreed to. ` +
+        `Run \`pnpm spelling:baseline\` and put the resulting ratio in front of a reviewer.`)
+      continue
+    }
+    if (r.equivalent !== b.equivalent) {
+      fails.push(`"${r.id}" changed its equivalence CLAIM (${b.equivalent} → ${r.equivalent}). That is a change to what the pair asserts, not to what it measures.`)
+      continue
+    }
+    if (r.rawRatio === null || b.rawRatio === null) continue
+
+    const delta = r.rawRatio - b.rawRatio
+    if (delta > RATCHET_TOLERANCE) {
+      fails.push(
+        `REGRESSION  "${r.id}"  ${b.rawRatio.toFixed(3)}x → ${r.rawRatio.toFixed(3)}x (+${delta.toFixed(3)}).\n` +
+        `    The two spellings drifted further apart, which means an author picking "${r.larger === 'a' ? r.forms[0] : r.forms[1]}"\n` +
+        `    now pays more than one picking "${r.larger === 'a' ? r.forms[1] : r.forms[0]}" for the SAME parser.\n` +
+        `    mechanism: ${r.mechanism}`)
+    } else if (delta < -RATCHET_TOLERANCE) {
+      fails.push(
+        `BANK THE WIN  "${r.id}"  ${b.rawRatio.toFixed(3)}x → ${r.rawRatio.toFixed(3)}x (${delta.toFixed(3)}).\n` +
+        `    The spellings converged — say WHICH productions stopped being duplicated and why, then run\n` +
+        `    \`pnpm spelling:baseline\`. An unbanked win raises the ceiling the next regression hides under.`)
+    }
+  }
+
+  for (const id of Object.keys(base.pairs)) {
+    if (!seen.has(id)) {
+      fails.push(`MISSING PAIR "${id}" is in the baseline but was not measured. A gate that silently stops examining a case goes green, not red — restore the pair or re-bank deliberately.`)
+    }
+  }
+  return fails
 }
 
 function argValue(flag: string): string | undefined {
@@ -896,15 +1088,39 @@ async function main(): Promise<void> {
     console.log(`wrote ${json}`)
   }
 
-  // A harness failure and a DISQUALIFIED claim are hard errors: both mean a
-  // number in this table cannot be trusted. A BREACH is a FINDING and does not
-  // fail the run — the list of missing normalisations is the deliverable, and a
-  // gate that exits non-zero on its own findings just gets muted.
+  // A failed equivalence proof is always fatal: it means a number in this table
+  // is a comparison between two different parsers.
   const fatal = results.filter(r => !r.proven)
   if (fatal.length > 0) {
     console.error(`${fatal.length} pair(s) failed their equivalence proof — see above.`)
     process.exit(1)
   }
+
+  if (only !== undefined) {
+    console.log('spelling-gate: --pair given, so the ratchet is NOT applied (a subset cannot check the baseline).')
+    return
+  }
+
+  if (process.argv.includes('--update')) { writeBaseline(results); return }
+
+  const base = readBaseline()
+  if (base === null) {
+    die(`no baseline at ${path.relative(process.cwd(), BASELINE_PATH)}. Run \`pnpm spelling:baseline\` to create one.`)
+  }
+  if (base.band !== BAND) {
+    console.log(`spelling-gate: band moved ${base.band} → ${BAND}. Verdict labels change; the ratchet is on the RATIOS and is unaffected.`)
+  }
+  const fails = checkBaseline(results, base)
+  if (fails.length > 0) {
+    console.error(`spelling-gate: FAILED — ${fails.length} ratchet breach${fails.length === 1 ? '' : 'es'}.\n`)
+    for (const f of fails) console.error(`  ${f}\n`)
+    process.exit(1)
+  }
+  const known = results.filter(r => r.breaches).length
+  console.log(
+    `spelling-gate: ok — ${results.length} pairs at their committed ratios` +
+    (known > 0 ? `, ${known} still above the ${BAND.toFixed(2)}x band (baselined, pinned against getting worse)` : '') + '.',
+  )
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

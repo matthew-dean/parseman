@@ -109,7 +109,8 @@
     "choicecost:guard": "node --import tsx/esm bench/choice-cost-guard.ts",
     "choicecost:baseline": "node --import tsx/esm bench/choice-cost-guard.ts --update",
     "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report",
-    "spelling:gate": "node --import tsx/esm bench/spelling-equivalence.ts"
+    "spelling:gate": "node --import tsx/esm bench/spelling-equivalence.ts",
+    "spelling:baseline": "node --import tsx/esm bench/spelling-equivalence.ts --update"
   },
   "keywords": [
     "parser",

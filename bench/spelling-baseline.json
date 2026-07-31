@@ -1,0 +1,125 @@
+{
+  "band": 1.25,
+  "pairs": {
+    "keywords-vs-word-arms-5": {
+      "rawRatio": 1.02,
+      "gzipRatio": 1.002,
+      "equivalent": true,
+      "breaches": false
+    },
+    "keywords-vs-word-arms-12": {
+      "rawRatio": 1.039,
+      "gzipRatio": 1.005,
+      "equivalent": true,
+      "breaches": false
+    },
+    "keywords-vs-word-arms-30": {
+      "rawRatio": 1.056,
+      "gzipRatio": 1.013,
+      "equivalent": true,
+      "breaches": false
+    },
+    "literal-choice-vs-keyword-table": {
+      "rawRatio": 1.038,
+      "gzipRatio": 1.084,
+      "equivalent": true,
+      "breaches": false
+    },
+    "ref-by-name-vs-by-const-f2": {
+      "rawRatio": 1.136,
+      "gzipRatio": 1.121,
+      "equivalent": true,
+      "breaches": false
+    },
+    "ref-by-name-vs-by-const-f4": {
+      "rawRatio": 1.107,
+      "gzipRatio": 1.107,
+      "equivalent": true,
+      "breaches": false
+    },
+    "ref-by-name-vs-by-const-f8": {
+      "rawRatio": 1.075,
+      "gzipRatio": 1.087,
+      "equivalent": true,
+      "breaches": false
+    },
+    "ref-by-name-vs-by-const-d1": {
+      "rawRatio": 1.108,
+      "gzipRatio": 1.08,
+      "equivalent": true,
+      "breaches": false
+    },
+    "ref-by-name-vs-by-const-d2": {
+      "rawRatio": 1.248,
+      "gzipRatio": 1.154,
+      "equivalent": true,
+      "breaches": false
+    },
+    "ref-by-name-vs-by-const-d3": {
+      "rawRatio": 1.411,
+      "gzipRatio": 1.222,
+      "equivalent": true,
+      "breaches": true
+    },
+    "ref-by-name-vs-by-const-d4": {
+      "rawRatio": 1.59,
+      "gzipRatio": 1.301,
+      "equivalent": true,
+      "breaches": true
+    },
+    "ref-by-name-vs-by-const-d5": {
+      "rawRatio": 1.779,
+      "gzipRatio": 1.397,
+      "equivalent": true,
+      "breaches": true
+    },
+    "ref-by-name-vs-by-const-d6": {
+      "rawRatio": 1.972,
+      "gzipRatio": 1.482,
+      "equivalent": true,
+      "breaches": true
+    },
+    "oneormoresep-vs-manual": {
+      "rawRatio": 1.087,
+      "gzipRatio": 1.065,
+      "equivalent": true,
+      "breaches": false
+    },
+    "control-identity": {
+      "rawRatio": 1,
+      "gzipRatio": 1,
+      "equivalent": true,
+      "breaches": false
+    },
+    "control-sugar-word": {
+      "rawRatio": 1,
+      "gzipRatio": 1,
+      "equivalent": true,
+      "breaches": false
+    },
+    "control-sugar-oneormore": {
+      "rawRatio": 1,
+      "gzipRatio": 1,
+      "equivalent": true,
+      "breaches": false
+    },
+    "nonpair-left-factor": {
+      "rawRatio": null,
+      "gzipRatio": null,
+      "equivalent": false,
+      "breaches": false
+    },
+    "nonpair-keywords-sort-order": {
+      "rawRatio": null,
+      "gzipRatio": null,
+      "equivalent": false,
+      "breaches": false
+    },
+    "nonpair-node-vs-transform": {
+      "rawRatio": null,
+      "gzipRatio": null,
+      "equivalent": false,
+      "breaches": false
+    }
+  }
+}
