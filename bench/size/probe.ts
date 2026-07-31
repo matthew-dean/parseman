@@ -477,6 +477,58 @@ function argValue(flag: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined
 }
 
+/**
+ * `--json`/`--csv` targets that name one of THIS process's own streams rather
+ * than a file on disk.
+ *
+ * `/dev/stdout` is not a file, and it must not be opened as one.
+ * `writeFileSync(path)` opens with `O_WRONLY|O_CREAT|O_TRUNC` and gets a SECOND,
+ * independent open file description. When fd 1 is a PIPE — which it is whenever
+ * this probe is spawned and its output captured — that has two failure modes:
+ *
+ *   1. It races. `console.log` to a pipe is asynchronous and queued; a separate
+ *      synchronous fd writes straight past whatever is still queued, so the two
+ *      streams interleave and the JSON can land in the middle of the table.
+ *   2. It can fail outright. On Linux `/dev/stdout` resolves through
+ *      `/proc/self/fd/1`, and opening a pipe that way with create/truncate flags
+ *      is not portable. macOS accepts it; the GitHub Actions runner does not.
+ *
+ * Mode 2 is what made this probe exit 1 on CI while printing a complete, correct
+ * table: every unit measured fine, the report printed, then the JSON write threw,
+ * `main()` rejected into `die()`, and the caller — which captures stdout and
+ * discards stderr — saw a valid table with status 1 and no reason.
+ *
+ * That is a MEASUREMENT tool failing for an output-plumbing reason, which is
+ * exactly the layering this file is supposed to hold: the probe MEASURES and
+ * `bench/size-guard.ts` ENFORCES. The probe has no ceiling, no budget, and no
+ * opinion about whether a number is too big; the only thing it may ever exit
+ * non-zero for is being unable to measure.
+ *
+ * So a stream target is written through the stream this process already owns.
+ */
+const STREAM_TARGETS: Record<string, NodeJS.WriteStream | undefined> = {
+  '-': process.stdout,
+  '/dev/stdout': process.stdout,
+  '/dev/fd/1': process.stdout,
+  '/dev/stderr': process.stderr,
+  '/dev/fd/2': process.stderr,
+}
+
+function emit(target: string, text: string): void {
+  const stream = STREAM_TARGETS[target]
+  if (stream) {
+    stream.write(text)
+    return
+  }
+  try {
+    writeFileSync(target, text)
+  } catch (e) {
+    // A real I/O failure IS a failure — the caller asked for a file and did not
+    // get one. Named, with the path and the reason, rather than a bare status 1.
+    die(`could not write ${target}: ${(e as Error).message}`)
+  }
+}
+
 async function main(): Promise<void> {
   const lower = await loadLowerer()
 
@@ -521,11 +573,24 @@ async function main(): Promise<void> {
   const rows = units.map(u => measure(u, lower))
   if (rows.length === 0) die('zero rows measured')
 
-  console.log(`\nparseman canonical size probe — version ${version}${tier ? ` (tier: ${tier}, floor ${tierFloor})` : ''}`)
-  console.log(FLOOR_NOTE)
-  console.log('\n  unit                 nodes    src B     gen B    bytes/node   ratio    gzip B   comp')
+  const jsonPath = argValue('--json')
+  const csvPath = argValue('--csv')
+
+  /*
+   * When a machine-readable stream is pointed at stdout, the human report moves
+   * to stderr so stdout carries ONE document and nothing else. A caller doing
+   * `probe --json=- | jq` then works, and no caller has to fish a JSON object out
+   * of a report by hunting for the first `{`.
+   */
+  const reportToStderr = (jsonPath !== undefined && STREAM_TARGETS[jsonPath] === process.stdout)
+    || (csvPath !== undefined && STREAM_TARGETS[csvPath] === process.stdout)
+  const report = (line = ''): void => { if (reportToStderr) console.error(line); else console.log(line) }
+
+  report(`\nparseman canonical size probe — version ${version}${tier ? ` (tier: ${tier}, floor ${tierFloor})` : ''}`)
+  report(FLOOR_NOTE)
+  report('\n  unit                 nodes    src B     gen B    bytes/node   ratio    gzip B   comp')
   for (const r of rows) {
-    console.log(
+    report(
       '  ' + r.id.padEnd(20) +
       String(r.nodes).padStart(5) +
       String(r.srcBytes).padStart(9) +
@@ -542,37 +607,35 @@ async function main(): Promise<void> {
   const s4 = byId.get('node-scale-4'), s32 = byId.get('node-scale-32')
   if (s4 && s32) {
     const marginal = Math.round((s32.genBytes - s4.genBytes) / (s32.nodes - s4.nodes))
-    console.log(`\n  marginal bytes per added node() site (4 -> 32): ${marginal}`)
-    console.log(`  fixed overhead implied at 0 nodes: ${Math.round(s4.genBytes - marginal * s4.nodes)} B`)
+    report(`\n  marginal bytes per added node() site (4 -> 32): ${marginal}`)
+    report(`  fixed overhead implied at 0 nodes: ${Math.round(s4.genBytes - marginal * s4.nodes)} B`)
   }
   const ast = byId.get('hostmode-ast'), cst = byId.get('hostmode-cst')
   if (ast && cst) {
-    console.log(`  hostMode ast vs cst: ${ast.genBytes} B vs ${cst.genBytes} B (${(cst.genBytes / ast.genBytes).toFixed(2)}x)`)
+    report(`  hostMode ast vs cst: ${ast.genBytes} B vs ${cst.genBytes} B (${(cst.genBytes / ast.genBytes).toFixed(2)}x)`)
     // Not fatal — but if the two are byte-identical the emitted module does not
     // specialise on host mode at all, which is itself the finding.
-    if (ast.genBytes === cst.genBytes) console.log('  NOTE: ast and cst emit IDENTICAL bytes — the lowering does not specialise on host mode.')
+    if (ast.genBytes === cst.genBytes) report('  NOTE: ast and cst emit IDENTICAL bytes — the lowering does not specialise on host mode.')
   }
   const on = byId.get('trivia-on'), off = byId.get('trivia-off')
-  if (on && off) console.log(`  trivia on vs off: ${on.genBytes} B vs ${off.genBytes} B (${(on.genBytes / off.genBytes).toFixed(2)}x)`)
+  if (on && off) report(`  trivia on vs off: ${on.genBytes} B vs ${off.genBytes} B (${(on.genBytes / off.genBytes).toFixed(2)}x)`)
   const v1 = byId.get('variants-1'), v2 = byId.get('variants-2'), v4 = byId.get('variants-4')
   if (v1 && v2 && v4) {
-    console.log(`  variant duplication: 1 -> ${v1.genBytes} B, 2 -> ${v2.genBytes} B (${(v2.genBytes / v1.genBytes).toFixed(2)}x), 4 -> ${v4.genBytes} B (${(v4.genBytes / v1.genBytes).toFixed(2)}x)`)
-    console.log('  (perfectly shared variants would hold this near 1.00x; ~Nx means N copies)')
+    report(`  variant duplication: 1 -> ${v1.genBytes} B, 2 -> ${v2.genBytes} B (${(v2.genBytes / v1.genBytes).toFixed(2)}x), 4 -> ${v4.genBytes} B (${(v4.genBytes / v1.genBytes).toFixed(2)}x)`)
+    report('  (perfectly shared variants would hold this near 1.00x; ~Nx means N copies)')
   }
 
-  const jsonPath = argValue('--json')
   if (jsonPath) {
-    writeFileSync(jsonPath, JSON.stringify({ version, tier: tier ?? 'all', cwd: process.cwd(), measuredAt: new Date().toISOString(), rows }, null, 2) + '\n')
-    console.log(`\n  wrote ${jsonPath}`)
+    emit(jsonPath, JSON.stringify({ version, tier: tier ?? 'all', cwd: process.cwd(), measuredAt: new Date().toISOString(), rows }, null, 2) + '\n')
+    report(`\n  wrote ${jsonPath}`)
   }
-  const csvPath = argValue('--csv')
   if (csvPath) {
     const head = 'version,id,group,nodes,srcBytes,genBytes,gzipBytes,srcLines,genLines,bytesRatio,locMultiplier,compression,bytesPerNode'
     const body = rows.map(r => [version, r.id, r.group, r.nodes, r.srcBytes, r.genBytes, r.gzipBytes, r.srcLines, r.genLines, r.bytesRatio, r.locMultiplier, r.compression, r.bytesPerNode].join(','))
-    writeFileSync(csvPath, [head, ...body].join('\n') + '\n')
-    console.log(`  wrote ${csvPath}`)
+    emit(csvPath, [head, ...body].join('\n') + '\n')
+    report(`  wrote ${csvPath}`)
   }
-  console.log()
+  report()
 }
 
 // Runs as a script when invoked directly; importable as a library otherwise, so

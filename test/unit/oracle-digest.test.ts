@@ -289,9 +289,18 @@ describe('an unrollable DAG is refused before the budget is burned, not after', 
   })
 
   it('says it refused EARLY, and how big the walk would have been', () => {
-    expect(() => digestValue(dag(40))).toThrow(/Refused EARLY/)
+    // ONE refusal, both assertions read off it. Three separate `toThrow` calls
+    // meant three full refusals for two facts about the same message, which was
+    // 5.1s on CI against the default 5s limit.
+    let message = ''
+    try {
+      digestValue(dag(40))
+    } catch (e) {
+      message = (e as Error).message
+    }
+    expect(message).toMatch(/Refused EARLY/)
     // 2^41 - 1 object visits: the unrolled node count, not the distinct one.
-    expect(() => digestValue(dag(40))).toThrow(new RegExp(String(2 ** 41 - 1)))
+    expect(message).toContain(String(2 ** 41 - 1))
   })
 
   it('refuses through canonicalize too, rather than a RangeError from the join', () => {
@@ -309,10 +318,26 @@ describe('an unrollable DAG is refused before the budget is burned, not after', 
    * the probe existed. If the probe ever changes a byte on a value it lets
    * through, this is where it shows up.
    */
+  /*
+   * TIMEOUT: this one is genuinely expensive and the input cannot be shrunk.
+   *
+   * It has to cross the probe threshold to test anything — the probe only runs
+   * after EXPANSION_PROBE_VISITS (1,000,000) visits have been spent, and depth 20
+   * is the smallest depth with real margin above it (2,097,151 visits; depth 19 is
+   * 1,048,575, only 4.8% past the line). And the two hex strings are the pin: they
+   * were taken from the implementation BEFORE the probe existed, so they cannot be
+   * recomputed at a cheaper depth without destroying the very thing they prove.
+   *
+   * The cost is therefore intrinsic: 33*2^20 = ~34.6M canonical chars walked and
+   * hashed, twice. Measured 1.5s locally and 11.3s on a CI runner sharing two
+   * cores with the rest of the suite. Raised here, deliberately and locally,
+   * rather than globally — the other tests in this file should stay on the default
+   * 5s and fail loudly if they ever start needing more.
+   */
   it('does not move a byte of a large value it lets through', () => {
     expect(digestValue(dag(20))).toBe('02694ab28971b853b4c455d8515e900ded9c8874c2ee0934e7c490d3377a7b3c')
     expect(digestValue(dag(20), 'OK:')).toBe('1d461cd983da2ad175f34a6a6dc0210f2697b9dd120dede2db72dce5b36e11ba')
-  })
+  }, 60_000)
 
   it('leaves a value below the probe threshold untouched', () => {
     expect(digestValue(dag(12))).toBe('1316da8113a0edeb3369d9e2903e08aa90bfa087f52d9e7c739903a598813977')
