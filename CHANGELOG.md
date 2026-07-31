@@ -5,7 +5,29 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
-- **A choice arm marks the root trivia log only when the arm can reach it.** Every
+- **`PARSEMAN_SCANTO=indexof` emits scan-to-terminator as `String.prototype.indexOf`,
+  whose V8 implementation is SIMD.** Covers the `until` shape (`<lit>[^X]*`, single
+  stop char) and the `delimited` shape (`<open>…<close>`, fixed close literal) in
+  `scannable-run.ts`. Defaults OFF and is a proven no-op when off — artifacts built
+  with the flag unset are byte-identical to the unmodified compiler on all four
+  workload grammars. Trees are equal to the toggled baseline on all five workloads.
+  Artifact bytes: css 231,731 → 230,441 raw (−1,290, −0.56%) and 36,067 → 36,034
+  gzip (−33); less 393,474 → 393,356 raw (−118) but gzip 52,616 → 52,626 (**+10** —
+  the `indexOf` line is shorter yet breaks the ubiquitous
+  `while (_j < input.length && !(…)) _j++` run that gzip matches everywhere else).
+  Population is 11 sites on css and 2 on less; graphql and json have none.
+- **Parse-time effect of the above is at or below the instrument's noise floor and is
+  NOT claimed as a win.** Interleaved, batched, one process, 51 rounds: less/stylesheet
+  rel 0.9922 at 36/51 wins, css/stylesheet 0.9814 at 25/51, less/mixins 1.0010 at
+  23/51. The two grammars with zero converted sites are carried in the run as a live
+  calibration and read rel 1.0096 and 0.9999 at 24/51 and 26/51 — so ~1% magnitude
+  with a coin-flip win rate IS this instrument's floor. Only less/stylesheet's win
+  rate is consistently non-random, and its magnitude is inside the floor.
+- **A 4.3× microbenchmark result produced a null in situ, which is the §9.1.1 pattern
+  repeating.** `indexOf` beats the emitted char loop 0.232 rel at 61/61 on a 0.97 MiB
+  corpus for a single stop char, and sticky `/[^{};]*/y` beats it 0.725 at 61/61 for a
+  three-member stop set. Neither survives contact with a whole parse, for the reason
+  the design doc already records: the converted category is a small share of parse time.
   other mark in `emitFirstMatch` asks a question about the arm; this one asked only
   whether the grammar has root trivia at all, so it was emitted at 1,046 css sites
   against 186 for the capture marks beside it. 414 of those sites (39.6%) cannot
