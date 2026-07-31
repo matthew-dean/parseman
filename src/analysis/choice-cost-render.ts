@@ -152,6 +152,8 @@ export function renderChoiceInventory(r: ChoiceInventoryReport, opts: RenderOpti
   const out: string[] = []
 
   out.push(c('bold', 'shared-prefix inventory'))
+  out.push(c('dim', '  Static grammar shape only. A site listed here may already cost nothing at runtime:'))
+  out.push(c('dim', '  compiled output gates each arm on its first character. Rank with profileWastedWork().'))
   out.push(`  ${groupDigits(r.rules)} rules, ${groupDigits(r.choiceSites)} choice sites`)
   out.push(`  ${groupDigits(r.factoredSites)} left-factored by the compiler`)
   out.push(`  ${groupDigits(r.backlogSites)} sites where alternatives share a leading term and the compiler DECLINED (${groupDigits(r.backlogArms)} arms)`)
@@ -201,14 +203,21 @@ export function renderWastedWork(r: WastedWorkReport, opts: RenderOptions = {}):
   const c = paint(opts.color === true)
   const limit = opts.limit ?? 20
   const out: string[] = []
+  const removed = r.arms.reduce((n, a) => n + (a.attempts - a.gatedAttempts), 0)
+  const totalAttempts = r.arms.reduce((n, a) => n + a.attempts, 0)
 
   out.push(c('bold', 'wasted work — input bytes re-scanned after a failed alternative'))
+  out.push(...interpretedBanner(c, removed, totalAttempts))
   out.push(`  corpus: ${groupDigits(r.corpusFiles)} files, ${bytes(r.corpusBytes)} (${groupDigits(r.parsedOk)} parsed, ${groupDigits(r.parsedFailed)} failed)`)
   out.push(`  sites:  ${groupDigits(r.instrumentedSites)} instrumented, ${groupDigits(r.uninstrumentableSites)} not instrumentable`)
-  out.push(`  total:  ${c('bold', bytes(r.totalWastedBytes))} re-scanned` +
-    (r.corpusBytes > 0 ? ` — ${(r.totalWastedBytes / r.corpusBytes).toFixed(2)}x the corpus` : ''))
+  if (r.unresolvedRoots.length > 0) {
+    out.push(`  ${c('yellow', 'PARTIAL')}: ${groupDigits(r.unresolvedRoots.length)} rule(s) could not be resolved and were NOT walked — the total below is a lower bound`)
+  }
+  out.push(`  total:  ${c('bold', bytes(r.totalGatedWastedBytes))} re-scanned` +
+    (r.corpusBytes > 0 ? ` — ${(r.totalGatedWastedBytes / r.corpusBytes).toFixed(2)}x the corpus` : '') +
+    (r.totalWastedBytes === r.totalGatedWastedBytes ? '' : `  (interpreted: ${bytes(r.totalWastedBytes)})`))
 
-  const ranked = r.sites.filter(s => s.wastedBytes > 0)
+  const ranked = r.sites.filter(s => s.gatedWastedBytes > 0 || s.wastedBytes > 0)
   if (ranked.length === 0) {
     out.push('')
     out.push('  no alternative failed on this corpus.')
@@ -216,21 +225,59 @@ export function renderWastedWork(r: WastedWorkReport, opts: RenderOptions = {}):
   }
 
   out.push('')
-  const w = Math.min(56, Math.max(...ranked.slice(0, limit).map(s => s.siteKey.length)))
+  out.push(c('dim', '  per arm: "entered" counts what the COMPILED parser reaches; the parenthesised'))
+  out.push(c('dim', '  number is the interpreted count, shown only where the first-char gate differs.'))
+  out.push('')
+  const w = Math.min(52, Math.max(...ranked.slice(0, limit).map(s => s.siteKey.length)))
   for (const s of ranked.slice(0, limit)) {
-    const share = r.totalWastedBytes > 0 ? ` ${padStart((100 * s.wastedBytes / r.totalWastedBytes).toFixed(1) + '%', 7)}` : ''
-    out.push(`  ${c('cyan', pad(s.siteKey.slice(0, w), w))} ${padStart(bytes(s.wastedBytes), 10)}${c('dim', share)}`)
+    const share = r.totalGatedWastedBytes > 0 ? ` ${padStart((100 * s.gatedWastedBytes / r.totalGatedWastedBytes).toFixed(1) + '%', 7)}` : ''
+    out.push(`  ${c('cyan', pad(s.siteKey.slice(0, w), w))} ${padStart(bytes(s.gatedWastedBytes), 10)}${c('dim', share)}`)
     const arms = r.arms.filter(a => a.siteKey === s.siteKey).sort((a, b) => a.arm - b.arm)
     for (const a of arms) {
-      const verdict = a.failures === a.attempts && a.attempts > 0
-        ? c('red', `failed ${groupDigits(a.failures)} / ${groupDigits(a.attempts)}`)
-        : a.failures === 0
-          ? c('dim', `matched ${groupDigits(a.attempts)}`)
-          : `failed ${groupDigits(a.failures)} / ${groupDigits(a.attempts)}`
-      out.push(`    ${padStart(String(a.arm), 2)}  ${pad(a.label.slice(0, 32), 32)} ${pad(verdict, 30)} ${a.wastedBytes > 0 ? padStart(bytes(a.wastedBytes), 10) : ''}`)
+      const entered = a.gatedAttempts === a.attempts
+        ? groupDigits(a.attempts)
+        : `${groupDigits(a.gatedAttempts)} (${groupDigits(a.attempts)} interp)`
+      // A 100%-failure arm is the actionable shape, but only if the SHIPPED parser
+      // enters it — so the verdict reads the gated columns.
+      const verdict = a.gatedAttempts === 0
+        ? c('dim', 'never entered when compiled')
+        : a.gatedFailures === a.gatedAttempts
+          ? c('red', `failed ALL ${entered}`)
+          : a.gatedFailures === 0
+            ? c('dim', `matched ${entered}`)
+            : `failed ${groupDigits(a.gatedFailures)} / ${entered}`
+      out.push(`    ${padStart(String(a.arm), 2)}  ${pad(a.label.slice(0, 30), 30)} ${pad(verdict, 34)} ${a.gatedWastedBytes > 0 ? padStart(bytes(a.gatedWastedBytes), 10) : ''}`)
     }
     out.push('')
   }
   if (ranked.length > limit) out.push(`  … and ${groupDigits(ranked.length - limit)} more sites (the report holds all of them)`)
+
+  if (r.inversions.length > 0) {
+    out.push(c('bold', '  ordering inversions — arm failed EVERY compiled entry while a later arm matched'))
+    out.push(c('dim', '  ranked by entries, not bytes: an arm can fail 100% of the time and re-scan nothing.'))
+    for (const a of r.inversions.slice(0, limit)) {
+      out.push(`    ${c('cyan', pad(a.siteKey.slice(0, w), w))} arm ${padStart(String(a.arm), 2)}  ${pad(a.label.slice(0, 26), 26)} ${padStart(groupDigits(a.gatedAttempts), 8)} entries  ${a.gatedWastedBytes > 0 ? padStart(bytes(a.gatedWastedBytes), 10) : padStart('0 B', 10)}`)
+    }
+    if (r.inversions.length > limit) out.push(`    … and ${groupDigits(r.inversions.length - limit)} more`)
+  }
   return out.join('\n')
+}
+
+/**
+ * The interpreted-vs-compiled warning, on EVERY rendered report.
+ *
+ * Not a footnote and not a docs link. A consumer who reads only the ranking must be
+ * told, in the ranking, that first-set gating — the largest parse lever this project
+ * has — is modelled rather than measured, or they will chase arms codegen already
+ * skips for free. The measured share of removed entries is included because "some
+ * attempts are gated" is ignorable and "78% of them are" is not.
+ */
+function interpretedBanner(c: (k: 'dim' | 'bold' | 'red' | 'yellow' | 'cyan', s: string) => string, removed: number, total: number): string[] {
+  const share = total > 0 ? ` — ${(100 * removed / total).toFixed(0)}% of interpreted arm entries` : ''
+  return [
+    c('yellow', '  MEASURED IN THE INTERPRETER. Compiled output gates each arm on its first'),
+    c('yellow', `  character; ${groupDigits(removed)} entries below never happen in the shipped parser${share}.`),
+    c('dim', '  Counts shown are the modelled COMPILED ones. Byte totals are unaffected by the'),
+    c('dim', '  gate (a gated-out arm consumes nothing); entry counts and failure RATES are not.'),
+  ]
 }

@@ -170,6 +170,21 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   arm matched. `checkWastedWork(reports, baseline, policy)` is the gate policy over
   either, and `renderChoiceInventory` / `renderWastedWork` are the human layer.
   Analysis, policy and rendering are three separate layers over one structured report.
+  MEASURES THE INTERPRETER, MODELS THE COMPILER. The interpreter's `firstMatch` loop
+  enters every arm; compiled output gates each arm on its first character
+  (src/compiler/codegen.ts:2246-2277), and first-set gating is the largest parse lever
+  this project has. So every count is reported twice — interpreted and gated — and
+  rankings use the gated column, with the warning on every rendered report rather than
+  in a footnote. Measured over jess's four dialects (637 kB CSS, 212 kB Less), the gate
+  removes 74-84% of arm ENTRIES and, in all four, exactly ZERO rescanned bytes: the
+  guard comes from the arm's first set, so when it rejects, the arm's own leading
+  terminal would have rejected at the same position having consumed nothing. Byte
+  rankings therefore survive the correction; failure-RATE and attempt claims do not,
+  which is why `inversions` is computed from the gated columns and ranked by entries.
+  The model replicates codegen's own nullability predicate — deliberately shallow, so a
+  `node()`-wrapped nullable IS guarded — and tests compile real grammars and assert the
+  model matches the emitted guards, because a hand-copy of another module's logic drifts
+  in silence.
   INTERPRETED MODE ONLY: nothing is emitted into a compiled parser and codegen pays
   neither bytes nor time. `src/combinators/choice.ts` is untouched — instrumentation is
   installed by temporarily substituting arm slots and terminal `parse` methods and

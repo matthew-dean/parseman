@@ -18,10 +18,10 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import {
-  choice, sequence, literal, regex, many, optional, node, rules,
+  choice, sequence, literal, regex, many, optional, node, rules, compile,
 } from '../../src/index.ts'
 import {
-  analyzeChoiceInventory, profileWastedWork, choiceSiteKey,
+  analyzeChoiceInventory, profileWastedWork, choiceSiteKey, modelledFirstCharGate,
 } from '../../src/analysis/choice-cost.ts'
 import { checkWastedWork, buildWastedWorkBaseline } from '../../src/analysis/choice-cost-gate.ts'
 import type { Combinator } from '../../src/types.ts'
@@ -437,5 +437,178 @@ describe('cross-PROCESS determinism', () => {
     const run2 = execFileSync(process.execPath, ['--import', 'tsx/esm', '--input-type=module', '-e', script], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
     expect(run1.length).toBeGreaterThan(100)
     expect(run2).toBe(run1)
+  })
+})
+
+// ── the compiled first-char gate ─────────────────────────────────────────────
+
+describe('modelling the COMPILED first-char gate', () => {
+  /**
+   * The instrument measures the INTERPRETER; jess ships CODEGEN. Codegen emits a
+   * per-arm first-char guard (src/compiler/codegen.ts:2246-2277) that the interpreter's
+   * firstMatch loop (src/combinators/choice.ts:149-165) does not have. Unmodelled, that
+   * does not just shift a number — it reorders the ranking, because the inflation is
+   * largest for the arms with the NARROWEST first sets, which are exactly the ones
+   * codegen handles best.
+   *
+   * These tests compile real grammars and compare the emitted guards to the model, arm
+   * by arm. A hand-copy of another module's predicate drifts in silence; this makes the
+   * drift a red test.
+   */
+  const guardLines = (arms: Combinator<unknown>[]): string[] => {
+    const g = rules(() => ({ Doc: choice(...(arms as [Combinator<unknown>, ...Combinator<unknown>[]])) }))
+    const src = compile(g.Doc as Combinator<unknown>).source
+    return src.split('\n').filter(l => /_chcode\d*\s*(===|>=)/.test(l))
+  }
+  const modelled = (arms: Combinator<unknown>[]): number =>
+    arms.filter(a => modelledFirstCharGate(a) !== null).length
+
+  it('a narrow-first-set arm IS gated by codegen, and the model says so', () => {
+    const arms = [
+      node('A', sequence(literal('%a'), literal('x'))),
+      node('B', sequence(literal('%b'), literal('y'))),
+    ]
+    expect(modelled(arms)).toBe(2)
+    expect(guardLines(arms)).toHaveLength(2)
+  })
+
+  it('a BARE nullable arm is NOT gated — and the model agrees', () => {
+    // `many` is nullable at start, so codegen emits no guard: it must always be tried.
+    const arms = [node('A', sequence(literal('%a'), literal('x'))), many(literal('%'))]
+    expect(modelledFirstCharGate(arms[0]!)).not.toBeNull()
+    expect(modelledFirstCharGate(arms[1]!)).toBeNull()
+    expect(modelled(arms)).toBe(1)
+    expect(guardLines(arms)).toHaveLength(1)
+  })
+
+  it('a node()-WRAPPED nullable IS gated — codegen\'s nullability test is shallow', () => {
+    // The trap. `matchesEmpty()` would call this nullable and report it ungated; codegen
+    // falls to `default: false` for `node`, emits a guard, and the shipped parser skips
+    // it. Modelling this with the "more correct" predicate would model the wrong parser.
+    const arms = [
+      node('A', sequence(literal('%a'), literal('x'))),
+      node('M', many(literal('z'))),
+    ]
+    expect(modelledFirstCharGate(arms[1]!)).not.toBeNull()
+    expect(modelled(arms)).toBe(2)
+    expect(guardLines(arms)).toHaveLength(2)
+  })
+
+  it('a nullable-LEAD bare sequence is gated on the whole sequence first-set', () => {
+    const arms = [
+      node('A', sequence(literal('%a'), literal('x'))),
+      sequence(optional(literal('%')), literal('q')),
+    ]
+    expect(modelled(arms)).toBe(2)
+    const lines = guardLines(arms)
+    expect(lines).toHaveLength(2)
+    // '%' (37) and 'q' (113) — the optional lead does not hide the following term.
+    expect(lines.some(l => l.includes('37') && l.includes('113'))).toBe(true)
+  })
+
+  it('an empty-matching regex arm is NOT gated', () => {
+    const arms = [node('A', sequence(literal('%a'), literal('x'))), regex(/[%]*/)]
+    expect(modelledFirstCharGate(arms[1]!)).toBeNull()
+    expect(modelled(arms)).toBe(1)
+  })
+})
+
+describe('the gated column changes the ranking, not just the number', () => {
+  /**
+   * Calibration with an exact known answer, as for the interpreted column.
+   *
+   * `Narrow` can only start with '#'. `Wide` starts with any letter. Over a corpus of
+   * letter-led items, the interpreter enters `Narrow` on every item and it fails every
+   * time — which reads as the top finding. The compiled parser never enters it. The
+   * gated column must report ZERO for it, and the ranking must put the arm that
+   * survives gating first.
+   */
+  const g = rules(() => ({
+    Doc: many(choice(
+      sequence(literal('#'), regex(/[a-z]{4}/), literal(';')),
+      sequence(regex(/[a-z]+/), literal('!')),
+      sequence(regex(/[a-z]+/), literal(';')),
+    )),
+  }))
+
+  it('an arm codegen never enters reports interpreted cost and ZERO gated cost', () => {
+    const n = 12
+    const r = profileWastedWork({
+      rules: entries(g), entry: 'Doc', corpus: [{ id: 'c', text: 'abcd;'.repeat(n) }],
+    })
+    const doc = r.arms.filter(a => a.site.rule === 'Doc')
+    const narrow = doc.find(a => a.arm === 0)!
+    expect(narrow.firstCharGated).toBe(true)
+    expect(narrow.attempts).toBe(n)          // interpreter enters it every time
+    expect(narrow.gatedAttempts).toBe(0)     // compiled output never does
+    expect(narrow.gatedWastedBytes).toBe(0)
+
+    // The arm that survives gating: '!' never matches, so it fails after 4 letters.
+    const survives = doc.find(a => a.arm === 1)!
+    expect(survives.firstCharGated).toBe(true)
+    expect(survives.gatedAttempts).toBe(n)
+    expect(survives.gatedFailures).toBe(n)
+    expect(survives.gatedWastedBytes).toBe(4 * n)   // exact, by construction
+
+    // And the ranking follows the COMPILED column.
+    expect(r.arms[0]!.arm).toBe(1)
+
+    // THE STRUCTURAL POINT, and it is not what it first looks like: gating removes
+    // ATTEMPTS, not bytes. A first-char gate is derived from the arm's first SET, which
+    // over-approximates what the arm can start with — so when the gate rejects, the
+    // arm's own leading terminal would have rejected too, at the same position, having
+    // consumed nothing. A gated-out attempt therefore costs ZERO rescanned bytes in the
+    // interpreter as well, and the two byte columns coincide.
+    expect(narrow.wastedBytes).toBe(0)
+    expect(r.totalGatedWastedBytes).toBe(r.totalWastedBytes)
+  })
+
+  it('gating removes ATTEMPTS, not bytes — the failure RATE is what was misleading', () => {
+    const n = 12
+    const r = profileWastedWork({
+      rules: entries(g), entry: 'Doc', corpus: [{ id: 'c', text: 'abcd;'.repeat(n) }],
+    })
+    const narrow = r.arms.filter(a => a.site.rule === 'Doc').find(a => a.arm === 0)!
+    // Interpreted, this arm reads as "entered on every item and fails every time" — the
+    // shape of a top finding. Compiled, it is never entered, and there is nothing to fix.
+    expect(narrow.failures / narrow.attempts).toBe(1)
+    expect(narrow.gatedAttempts).toBe(0)
+    // Which is why `inversions` is computed from the gated columns: an arm the shipped
+    // parser never enters must not be reported as an ordering defect in it.
+    expect(r.inversions.some(a => a.site.rule === 'Doc' && a.arm === 0)).toBe(false)
+  })
+
+  it('an ungated arm reports identical interpreted and gated numbers', () => {
+    const h = rules(() => ({
+      Doc: many(choice(many(literal('~')), sequence(regex(/[a-z]+/), literal(';')))),
+    }))
+    const r = profileWastedWork({ rules: entries(h), entry: 'Doc', corpus: [{ id: 'c', text: 'ab;' }] })
+    for (const a of r.arms.filter(x => !x.firstCharGated)) {
+      expect(a.gatedAttempts).toBe(a.attempts)
+      expect(a.gatedWastedBytes).toBe(a.wastedBytes)
+    }
+  })
+
+  it('inversions rank by ATTEMPTS, so a frequent cheap defect outranks a rare costly one', () => {
+    // Two always-failing first arms. `Many` is entered 12 times and re-scans 1 byte each;
+    // `Few` is entered 5 times and re-scans 9 bytes each — more bytes, fewer attempts.
+    // Byte ranking puts `Few` first; an ordering defect entered four times as often is
+    // the more useful thing to see, so `inversions` ranks by attempts.
+    const k = rules(() => ({
+      Many: many(choice(sequence(regex(/[a-z]/), literal('!')), sequence(regex(/[a-z]/), literal(';')))),
+      Few:  many(choice(sequence(regex(/[0-9]{9}/), literal('!')), sequence(regex(/[0-9]{9}/), literal(';')))),
+      Doc:  sequence(many(choice(sequence(regex(/[a-z]/), literal('!')), sequence(regex(/[a-z]/), literal(';')))),
+                     many(choice(sequence(regex(/[0-9]{9}/), literal('!')), sequence(regex(/[0-9]{9}/), literal(';'))))),
+    }))
+    const r = profileWastedWork({
+      rules: entries(k), entry: 'Doc',
+      corpus: [{ id: 'c', text: 'a;'.repeat(12) + '123456789;'.repeat(5) }],
+    })
+    const inv = r.inversions.filter(a => a.arm === 0 && a.site.rule === 'Doc')
+    expect(inv.length).toBe(2)
+    const first = inv[0]!, second = inv[1]!
+    expect(first.gatedAttempts).toBeGreaterThan(second.gatedAttempts)
+    expect(first.gatedWastedBytes).toBeLessThan(second.gatedWastedBytes)
+    for (const a of inv) expect(a.gatedFailures).toBe(a.gatedAttempts)
   })
 })
