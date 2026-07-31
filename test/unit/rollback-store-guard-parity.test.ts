@@ -181,19 +181,55 @@ const INPUT = '[a] [bb]! ccc [d] eee [f]! ggg [hh] iii '.repeat(20)
 describe('compiled: emitted rollbacks carry the guard', () => {
   const source = compile(doc).source
 
+  // 0.46 shares large restore bodies through hoisted `_crN` helpers (see
+  // CR_SHARE_MIN in codegen.ts), so a rollback now appears in EITHER of two
+  // forms: inline `_ctx.<buf>.length = mark`, or `aN.length = pN` inside a
+  // helper. Both must be guarded.
+  //
+  // Matching only the inline form would make the "no bare store" test below pass
+  // VACUOUSLY the moment sharing is enabled — the precise way this file warns
+  // that a guard can be lost without any behavioural test noticing. So the
+  // presence check accepts either form and REQUIRES at least one, and the guard
+  // check walks both.
+  const inlineStores = [...source.matchAll(/_ctx\.(_cstLeaves|_cstRawChildren|_cstTriviaLog|_triviaLog|_fields|_errors|_cstChildren)\.length = ([A-Za-z0-9_]+)/g)]
+  const helperDecls = [...source.matchAll(/const (_cr\d+) = \(([^)]*)\) => \{([^}]*)\}/g)]
+
   it('emits at least one rollback (the fixture really exercises them)', () => {
-    expect(/_ctx\._cstLeaves\.length = /.test(source)).toBe(true)
+    expect(inlineStores.length + helperDecls.length).toBeGreaterThan(0)
   })
 
   it('emits NO bare length store — every one is preceded by a !== compare', () => {
     const bare: string[] = []
-    const re = /_ctx\.(_cstLeaves|_cstRawChildren|_cstTriviaLog|_triviaLog|_fields|_errors|_cstChildren)\.length = ([A-Za-z0-9_]+)/g
-    for (const m of source.matchAll(re)) {
+
+    for (const m of inlineStores) {
       const before = source.slice(Math.max(0, m.index - 160), m.index)
       const guarded = new RegExp(`_ctx\\.${m[1]} && _ctx\\.${m[1]}\\.length !== ${m[2]}\\)\\s*$`).test(before)
       if (!guarded) bare.push(source.slice(Math.max(0, m.index - 60), m.index + m[0].length))
     }
+
+    // Inside a shared helper the buffers arrive as plain parameters, so the
+    // guard reads `if (aN && aN.length !== pN)` rather than naming `_ctx`.
+    for (const d of helperDecls) {
+      const body = d[3]!
+      for (const s of body.matchAll(/([A-Za-z0-9_]+)\.length = ([A-Za-z0-9_]+)/g)) {
+        const before = body.slice(0, s.index)
+        const guarded = new RegExp(`if \\(${s[1]} && ${s[1]}\\.length !== ${s[2]}\\)\\s*$`).test(before)
+        if (!guarded) bare.push(`${d[1]}: ${body.slice(Math.max(0, s.index - 60), s.index + s[0].length)}`)
+      }
+    }
+
     expect(bare).toEqual([])
+  })
+
+  it('every shared restore helper actually guards every one of its stores', () => {
+    // Guards against a helper that silently degenerates to bare stores while the
+    // scan above finds nothing to complain about because the body did not match.
+    for (const d of helperDecls) {
+      const body = d[3]!
+      const stores = [...body.matchAll(/([A-Za-z0-9_]+)\.length = /g)].length
+      const guards = [...body.matchAll(/if \([A-Za-z0-9_]+ && [A-Za-z0-9_]+\.length !== [A-Za-z0-9_]+\)/g)].length
+      expect({ helper: d[1], stores, guards }).toEqual({ helper: d[1], stores, guards: stores })
+    }
   })
 })
 
