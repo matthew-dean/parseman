@@ -23,7 +23,8 @@
  *
  * WHAT "PROVEN" MEANS HERE, EXACTLY
  * ---------------------------------
- * Proven OVER THE SUPPLIED CORPUS, on both engines, and that is stated in every
+ * Proven OVER THE SUPPLIED CORPUS, on every engine the grammar supports — both when it
+ * compiles, the interpreted one alone when it does not — and that is stated in every
  * rendering rather than implied. A corpus that never reaches the rewritten arm proves
  * nothing about it, so the evidence carries the sample and byte counts and the caller
  * can judge. Two deliberate exclusions from the comparison:

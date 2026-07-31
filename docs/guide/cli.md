@@ -87,7 +87,10 @@ propose  →  apply  →  recompile  →  compare parse output
                                      changed   → WRONG; discard, never show it
 ```
 
-Every rewrite `fix` offers went through that loop, on both engines, over your corpus.
+Every rewrite `fix` offers went through that loop, on every available engine, over your
+corpus. That is both engines whenever the grammar compiles; a grammar that does not
+compile is verified on the interpreted engine alone, and the report names the engines it
+actually used.
 The evidence prints beside it:
 
 ```text
