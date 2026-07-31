@@ -344,6 +344,19 @@ approximates "not an identifier continuation".
 This argument stands even if the size and speed wins turn out smaller than expected.
 It is the reason to want derived tokenization independent of the artifact numbers.
 
+### 7.3 The same argument generalises: declare equivalences once
+
+Boundary spelling is one equivalence hand-spelled per site. **Escapes, ASCII case
+folding, the `--` prefix and vendor prefixes are others**, and they are handled today
+ad-hoc, inconsistently, or not at all — the escape alternatives inside the ident
+regexes alone repeat at **11** and **9** sites in css. The `| 32` bug (§16.3) was a
+broken special case of ASCII case folding.
+
+**§14.5 records the owner's design direction for this — "auto-alias for token
+detection" — and the four approaches to measure.** In a token model the token id is
+the canonical thing, so escapes and case would stop being the grammar's problem
+entirely rather than being centrally handled.
+
 ---
 
 ## 8. Where the bytes actually are (measured)
@@ -624,7 +637,7 @@ that share a case-folded walk.** Measured artifact deltas:
 | css | **-0.75%** | -24,993 B |
 | scss | -0.09% | |
 | jess | 0.00% | |
-| **less** | **+0.02%** | **+902 B — a REGRE§ION** |
+| **less** | **+0.02%** | **+902 B — a REGRESSION** |
 
 **less regresses** because it has dispatch sites whose key sets make the emitted trie
 tables cost *more* than the character chain they replace. The unconditional rule
@@ -825,7 +838,7 @@ re-entry point.
 
 Derived tokenization is one entry in a larger search over artifact size and parse
 speed. The rest of that search is recorded here so it survives the session that
-produced it. **20 entries; none has been measured.** Status is one of:
+produced it. **24 entries; none has been measured.** Status is one of:
 
 - `untried` — no measurement attempted;
 - `measured — <result>` — a number exists, cited;
@@ -1035,6 +1048,114 @@ emitted code meets the JIT:
 | 18 | **Identifier length against LZ77 match length.** Shorter identifiers shrink raw bytes but may shorten gzip matches. Which dominates? |
 | 19 | **gzip-aware function ordering.** Emitting similar functions adjacently should lengthen matches. Free to try; effect size unknown. |
 
+### 14.5 Auto-alias for token detection — the equivalence-class family
+
+**Owner direction. A design to be measured, not decided on paper.** Four approaches
+are recorded below as separate experiments (#21–#24), all `untried`.
+
+#### The idea
+
+> **Declare, once, what surface forms map to a given token** — instead of
+> hand-spelling each equivalence at every site that cares.
+
+Case folding is one such rule. There are others, and today they are handled **ad-hoc,
+inconsistently, or not at all**.
+
+#### The equivalence classes in play (CSS)
+
+| class | detail | status |
+| --- | --- | --- |
+| **Escapes in identifiers** | `\40` is `@`, `\6D` is `m` — so `@m\065 dia` and `\40 media` are both **`@media`** | currently spelled as escape alternatives **inside every ident regex**: the `[-_a-zA-Z0-9-￿]\|\\(?:…)` fragments repeat at **11** and **9** sites in css alone |
+| **ASCII-only case insensitivity** | and **only** ASCII — **`İ` must not fold to `i`** | the `\| 32` bug (§16.3) that made `@font-face` parse as `OpaqueAtRuleBlock` was **a broken special case of exactly this** |
+| **The `--` custom-property prefix** | including **`\--`** reaching the same token | |
+| **Vendor prefixes** | arguably `-webkit-foo` is an **alias family**, not a distinct name | design question, not just mechanism |
+| **Numeric forms** | `.5`/`0.5`, `1e2`/`100` | **value level, not name level — probably OUT of scope.** Recorded so the boundary is explicit rather than assumed |
+
+**Dialect additions:** Less **`@@name`** indirection and **`~"..."`** escaping; SCSS
+**`#{}`** and jess **`${}`** producing a name **not literally present in the source**.
+
+#### Why this matters beyond convenience
+
+Two arguments, and the first is the same one that carries §7:
+
+1. **A rule declared once cannot drift.** Every equivalence is currently hand-spelled
+   at every site — which is precisely the pattern that produced **three different
+   spellings of one boundary intent across 26 css sites, 16 of them wrong** (§7.1).
+   The `\| 32` bug (§16.3) is the same failure in a different costume. This is not a
+   hypothetical risk; it is the measured failure mode of the status quo.
+2. **In a token model the token id IS the canonical thing.** The grammar would only
+   ever see ids, so **escapes and case stop being the grammar's problem at all** —
+   not "handled centrally", but absent from the grammar's vocabulary. The owner notes
+   this may also make grammars **easier to write**.
+
+#### The four approaches
+
+Owner's framing: *"you could just not normalize, but 'expand' the user-written grammar
+to the larger match set OR you could normalize and match to the user-written
+grammar... or other slight variations."*
+
+| # | Experiment | Status |
+| --- | --- | --- |
+| 21 | **Expand the terminal's match set** | `untried` |
+
+*Idea:* **no normalization.** Each terminal accepts its equivalence class directly.
+
+*Critical constraint:* **literal enumeration is impossible.** Escape forms are
+**unbounded** — any character can be written `\XX`, with optional trailing whitespace.
+So this is a **per-terminal matcher**, closer to what the ident regexes already do,
+not a expanded key list.
+
+*Advantage:* **spans stay trivially correct**, because nothing is rewritten.
+*Cost:* lands in **per-character scanner work**.
+
+| # | Experiment | Status |
+| --- | --- | --- |
+| 22 | **Normalize, then match against the user-written grammar** | `untried` |
+
+*Idea:* the scanner **folds a run to canonical form** and looks it up.
+
+*Advantage:* **cheap on the common path**, since folding is a no-op for plain ASCII.
+
+*The open question — to MEASURE, not reason about:* **folded length differs from
+source length.** Spans and the **`tight` adjacency bit (§4)** must track **source**
+positions while matching on **normalized** bytes. This is the specific interaction
+that makes this approach non-obvious, and it is not resolvable on paper.
+
+| # | Experiment | Status |
+| --- | --- | --- |
+| 23 | **Lazy fold** | `untried` |
+
+*Idea:* scan **raw**; normalize **only when a raw match fails**.
+
+*Advantage:* **escaped input pays; ordinary input does not** — and ordinary input is
+essentially all input. *Risk to check:* the failure path is also the backtracking
+path, so "only on failure" may be less rare than it sounds.
+
+| # | Experiment | Status |
+| --- | --- | --- |
+| 24 | **Macro-time canonicalisation into the trie** | `untried` — **RECOMMENDED STARTING POINT** |
+
+*Idea:* build a trie that **accepts both plain and escaped/case-varied forms**, so the
+walk **absorbs the equivalence** with **no separate pass and no allocation**.
+
+*Why start here:* it **composes directly with the trie that just won the dispatch
+sweep on evidence** (§9.1) — the machinery exists, is shipped, and is already the
+default. That makes it **the cheapest of the four to try**, and the only one that adds
+no new mechanism.
+
+#### Measurement, for all four
+
+Identical, and non-negotiable:
+
+1. **Artifact bytes, raw and gzipped** (per dialect — §9.1.5 shows dialects diverge).
+2. **Parse speed on the comparison corpora** — interleaved rounds in one process
+   (§16.4).
+3. **Correctness via byte-level tree equality against a toggled baseline** (§16.3).
+   This family touches *which characters match which token*, so it is exactly the
+   class of change a passing test suite does not catch.
+
+---
+
 ---
 
 ## 15. Measured dead ends
@@ -1184,6 +1305,12 @@ un-interleaved number in this workstream's history is wrong until re-measured.
   share — neither a ceiling nor a projection. This is the question that decides
   whether the scanner half of the design is a net win at all, and it is wide open.
   Re-measure with §16.4's methodology.
+- **Does alias resolution belong at scan time, or as a separate normalization pass?**
+  (§14.5.) The deciding interaction is specific and known: **escapes change token
+  length**, so a folded run's length differs from its source length, and spans plus
+  the `tight` adjacency bit must track **source** positions while matching on
+  **normalized** bytes. That is not resolvable on paper — it is what experiments
+  #21–#24 exist to settle.
 - **The 46 walker-bail choice points.** Resolving `dispatch` and unresolved holes in
   the static walker would move the token-decidable fraction somewhere between 43% and
   93% (§1). Until that analysis exists, the size of the addressable population is
@@ -1269,7 +1396,7 @@ In rough order of likelihood:
 | Perfect hashing: search works, loses on table bytes | **measured — `works, loses on bytes`, NOT rejected as infeasible** |
 | `firstchar` / `lenswitch` fall back to chain on css at-keywords | **measured — `not applicable to this key set`, NOT rejected** |
 | trie:switch's larger raw size is the downstream formatter, not the emitter | **measured — gzip is the deciding metric for switch-shaped emission** |
-| Per-dialect delta: css -0.75%, scss -0.09%, jess 0.00%, **less +0.02%** | **measured — less REGRE§ES; untried #20 is the fix** |
+| Per-dialect delta: css -0.75%, scss -0.09%, jess 0.00%, **less +0.02%** | **measured — less REGRESSES; untried #20 is the fix** |
 
 ### Measured — everything else
 
@@ -1311,7 +1438,9 @@ In rough order of likelihood:
 | --- | --- |
 | Token-index rewind removes most of the 723,605 B save/rollback | **hypothesis — unmeasured; the largest unverified term in §11.** §8.1.1 narrows it: under half of css mark/restore is the binding case |
 | Per-site table/chain cost check (#20) fixes the less regression | **untried — and a measured regression is waiting for it** |
-| Every item in §14 (20 experiments) | **untried — no measurement attempted** |
+| **Auto-alias for token detection** (#21–#24, §14.5) — expand / normalize / lazy-fold / macro-time trie | **untried — owner design direction, to be measured not decided.** #24 recommended first: composes with the trie already shipped |
+| Whether alias resolution belongs at scan time or a separate pass | **open — decided by escapes changing token length vs. source-position spans** |
+| Every item in §14 (24 experiments) | **untried — no measurement attempted** |
 | Rule-level inline cap; cross-artifact sharing; source-level shape sharing; arity-only shared restore helper | **rejected — evidence in §15** |
 | **Mechanically removable total: 793,374 B, 23.8%, to ~2,543,000 B (22× source)** | **arithmetic over measured categories — NOT an end-to-end result, and the one converted category delivered 62% of its estimate** |
 | That this technique reaches 250 KB, or 10×, or 4× | **NO — see §11; it does not, and nothing measured suggests it does** |
