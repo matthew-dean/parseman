@@ -44,7 +44,8 @@
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { resolve, relative, join, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { diagnoseGrammar, type GrammarDiagnosis } from '../analysis/diagnose.ts'
+import { register } from 'node:module'
+import { diagnoseGrammar, examinedNothing, type GrammarDiagnosis } from '../analysis/diagnose.ts'
 import { renderDiagnosis } from '../analysis/diagnose-render.ts'
 import { DEFAULT_WIDTH } from '../analysis/terminal.ts'
 import { firstSetToString, choiceArms, peelToLeading } from '../analysis/gating.ts'
@@ -126,11 +127,56 @@ async function registerTsIfNeeded(path: string): Promise<void> {
   }
 }
 
+/**
+ * A module hook that drops `with { type: 'macro' }` from an import.
+ *
+ * A grammar written for the macro imports parseman as `import { … } from 'parseman'
+ * with { type: 'macro' }`. Node's default loader rejects any `type` it does not know, so
+ * `parseman diagnose src/grammar.ts` died with `TypeError: Import attribute "type" with
+ * value "macro" is not supported` on EVERY macro-authored grammar — that is, on the
+ * grammars this command exists to serve.
+ *
+ * Dropping the attribute degrades the macro import to a plain runtime import, which is
+ * exactly the shape the analysis wants: `rules()`/`composeLeaf()` then EXECUTE and
+ * produce real combinators instead of compiled functions. It is also what the macro's
+ * own vite plugin does with the attribute, and what the only working workaround (a
+ * vite server with the plugin left out) achieved the long way round.
+ *
+ * The attribute is dropped for `type: 'macro'` ONLY. `type: 'json'` and friends still
+ * reach the default loader and still mean what they mean.
+ *
+ * Source is not rewritten: the attribute is removed from the load/resolve CONTEXT, so
+ * nothing depends on parsing the importer's text.
+ */
+const MACRO_ATTR_HOOK = `
+const strip = (context) => {
+  const attrs = context && context.importAttributes
+  if (!attrs || attrs.type !== 'macro') return context
+  const rest = { ...attrs }
+  delete rest.type
+  return { ...context, importAttributes: rest }
+}
+export async function resolve(specifier, context, nextResolve) {
+  return nextResolve(specifier, strip(context))
+}
+export async function load(url, context, nextLoad) {
+  return nextLoad(url, strip(context))
+}
+`
+let macroAttrRegistered = false
+function registerMacroAttributeHook(): void {
+  if (macroAttrRegistered) return
+  macroAttrRegistered = true
+  register(`data:text/javascript,${encodeURIComponent(MACRO_ATTR_HOOK)}`)
+}
+
 async function loadGrammar(path: string, exportName: string | undefined): Promise<unknown> {
   const abs = resolve(path)
   try { statSync(abs) }
   catch { throw new CliError(`no such grammar module: ${path}`) }
   await registerTsIfNeeded(abs)
+  // AFTER the TS loader, so this hook is outermost and `nextLoad` still runs it.
+  registerMacroAttributeHook()
   let mod: Record<string, unknown>
   try { mod = await import(pathToFileURL(abs).href) as Record<string, unknown> }
   catch (e) {
@@ -284,7 +330,11 @@ async function main(argv: readonly string[]): Promise<number> {
       ...(limit === undefined ? {} : { limit }),
     }))
     if (json !== undefined) writeJson(json, d)
-    return d.ok ? 0 : 1
+    // 2, not 1: a run that walked no choice did not MEASURE this grammar, and `1` is the
+    // "measured, and it failed" code a gate reads as a real finding. Over a fully fused
+    // artifact every rule becomes a blocking finding, so `ok` is false for a reason that
+    // has nothing to do with the grammar's quality. See the exit-code contract above.
+    return examinedNothing(d) ? 2 : d.ok ? 0 : 1
   }
 
   if (args.command === 'fix') {

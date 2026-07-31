@@ -5,6 +5,33 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **A run that examined NOTHING no longer presents as a finding count.** Pointed at a
+  built artifact, `diagnose` produced one blocking finding per unreadable rule and then
+  reported them as discoveries: `✗ 176 problems, 176 failing the check, 1 cause · exiting
+  1 (problems found)` — over **zero examined choices**. Every sentence around it was a
+  claim about defects found ("underlying cause", "fixing one fixes every choice listed
+  under it", "none of this is a correctness bug"), and the report's own `PARTIAL` line,
+  which said the opposite, was one line in the middle of them. `ok` was correctly false,
+  so no caller could tell "measured, and it is bad" from "could not measure". There is now
+  `examinedNothing(d)` (exported), its own rendering — headline `COULD NOT ANALYSE`,
+  `0 choices examined`, rules grouped by *why* they could not be read, no tally — and
+  **exit 2**, the code this CLI already documents for "could not analyse", not exit 1.
+  In a partial report (some choices walked, some rules skipped) unreadable rules are
+  excluded from the problem count and stated separately in the header and the footer.
+  This is the same class of defect as `coverage.ts` reporting 100% over zero analysable
+  input, and it is the reason exit 2 exists.
+
+- **`diagnose` can load a macro-authored grammar.** Every shipping parseman grammar
+  imports as `import { … } from 'parseman' with { type: 'macro' }`, and Node's loader
+  rejects any `type` it does not recognise — so `parseman diagnose src/grammar.ts` died
+  with `TypeError: Import attribute "type" with value "macro" is not supported` on
+  exactly the grammars it exists to serve, in every real project. The CLI now registers a
+  module hook that drops the attribute for `type: 'macro'` only, degrading the import to
+  a plain runtime one; `rules()`/`composeLeaf()` then execute and produce real
+  combinators. The load CONTEXT is edited, not the source, so nothing depends on parsing
+  the importer's text. This replaces the only route that previously worked — standing up
+  a vite server with the macro plugin deliberately left out.
+
 - **A CLI: `parseman diagnose` and `parseman fix`.** 0.45 collapsed three functions a
   caller had to choose between into one `diagnoseGrammar()`, which removed the wrong
   choice but not the real defect — it was still something you had to know existed,

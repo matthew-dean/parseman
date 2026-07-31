@@ -46,8 +46,12 @@ export type { CompiledParser, LinkablePieces, DuplicationOption, HostMode } from
 //   const d = diagnoseGrammar(myGrammar)
 //   if (!d.ok) { console.error(formatGrammarDiagnosis(d).join('\n')); process.exit(1) }
 //
+// `examinedNothing(d)` separates "measured, and it is bad" from "could not measure":
+// `ok` is false for both, and a gate that treats them the same reports a confident
+// finding count over a grammar it never opened.
+//
 // The `analyze*` functions below remain the lower-level surface it is built on.
-export { diagnoseGrammar, formatGrammarDiagnosis } from './analysis/diagnose.ts'
+export { diagnoseGrammar, examinedNothing, formatGrammarDiagnosis } from './analysis/diagnose.ts'
 export type {
   GrammarDiagnosis, DiagnosisFinding, DiagnosisCode, DiagnosisSeverity,
   DiagnosableGrammar, DiagnoseOptions,

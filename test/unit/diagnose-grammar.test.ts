@@ -13,7 +13,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
-  choice, compile, compose, diagnoseGrammar, formatGrammarDiagnosis,
+  choice, compile, compose, diagnoseGrammar, examinedNothing, formatGrammarDiagnosis,
   literal, regex, rules, sequence, withCtx,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
@@ -156,10 +156,41 @@ describe('the human renderer is a view OVER the structured object', () => {
     expect(out).toContain("{ accept: ['Value'] }")
   })
 
-  it('a PARTIAL walk says so before anything else — silence must not read as clean', () => {
-    const lines = formatGrammarDiagnosis(diagnoseGrammar({ Broken: 42 } as Record<string, unknown>))
+  /*
+   * `{ Broken: 42 }` examines NOTHING: zero choices walked, one rule skipped. The old
+   * assertion checked the PARTIAL line, which is the wording for a walk that got part
+   * way; a walk that got nowhere now says so in the FIRST line, and says it without a
+   * finding count. Same intent — silence must not read as clean — stated one notch
+   * stronger, because the failure it guards against is a report that examined nothing
+   * presenting as an audit.
+   */
+  it('a walk that examined NOTHING says so first, and reports no finding count', () => {
+    const d = diagnoseGrammar({ Broken: 42 } as Record<string, unknown>)
+    expect(examinedNothing(d)).toBe(true)
+    const lines = formatGrammarDiagnosis(d)
+    expect(lines[0]).toContain('COULD NOT ANALYSE')
+    expect(lines[0]).toContain('0 choice(s) examined')
+    expect(lines[0]).toContain('No verdict about this grammar is available')
+    // The lie this replaces: `N problem(s)` / `N blocking finding(s)` over zero choices.
+    expect(lines[0]).not.toMatch(/blocking finding/)
+  })
+
+  /* The genuine PARTIAL case — some choices WERE examined and some rules were not. That
+   * report is a finding report, and it must still lead with the partial warning. */
+  it('a PARTIAL walk keeps the warning, and excludes unreadable rules from the tally', () => {
+    const d = diagnoseGrammar([
+      ['Value', ungated()],
+      ['Broken', 42 as unknown as Combinator<unknown>],
+    ])
+    expect(d.summary.totalChoices).toBeGreaterThan(0)
+    expect(d.summary.unanalysable).toBeGreaterThan(0)
+    expect(examinedNothing(d)).toBe(false)
+    const lines = formatGrammarDiagnosis(d)
     expect(lines[1]).toContain('UNANALYSABLE')
     expect(lines[1]).toContain('does NOT mean the grammar is clean')
+    // The headline counts what parseman FOUND; the skipped rule is stated separately.
+    const found = d.findings.length - d.summary.unanalysable
+    expect(lines[0]).toContain(`${found} blocking finding(s)`)
   })
 })
 

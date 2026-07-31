@@ -31,7 +31,7 @@
  * All of that lives in the STYLED path. The plain path is the same content with the same
  * padding and no escapes, so `docs/samples/` stays diffable and the two cannot drift.
  */
-import type { GrammarDiagnosis, DiagnosisFinding } from './diagnose.ts'
+import { examinedNothing, type GrammarDiagnosis, type DiagnosisFinding } from './diagnose.ts'
 import type { ChoiceCorpusCost } from './corpus.ts'
 import {
   DEFAULT_WIDTH, TONE, blank, codeFrame, groupDigits, pad, render, rule, t, wrap,
@@ -226,8 +226,19 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
     return out
   }
 
+  // NOTHING WAS EXAMINED. Rendered as its own report, not as the finding report with a
+  // warning bolted on. The finding report's every sentence — "N problems", "underlying
+  // cause", "fixing one fixes every choice listed under it", "none of this is a
+  // correctness bug" — is a claim about defects parseman FOUND, and there are none:
+  // there is one blocking finding per rule it could not read. Printed over an opaque
+  // artifact that produced `176 problems, 176 failing the check, 1 cause`, which reads
+  // as 176 discovered defects and means the tool inspected zero choices.
+  if (examinedNothing(d)) return unexaminedLines(d, name, width, limit)
+
   const groups = groupByCause(d.findings)
   const blocking = d.findings.filter(f => f.severity === 'blocking')
+  /** Findings that are things parseman FOUND — never the rules it could not read. */
+  const problems = d.findings.length - s.unanalysable
 
   out.push([
     t('✗ ', TONE.loud),
@@ -236,7 +247,12 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
     // `findings` and `totalChoices` count different things — an anti-pattern is a
     // finding about an ARM, not a choice — so they must not be phrased as a ratio. They
     // were, and a two-arm grammar reported "3 of 1 choices".
-    t(`${groupDigits(d.findings.length)} problem${d.findings.length === 1 ? '' : 's'} `
+    //
+    // `unanalysable` is excluded from the problem count on purpose: it is not something
+    // parseman FOUND in the grammar, it is a rule parseman could not look at. Counting
+    // the two together is what let a report that inspected nothing print a confident
+    // problem tally. It is stated separately, on the PARTIAL line below.
+    t(`${groupDigits(problems)} problem${problems === 1 ? '' : 's'} `
       + `in ${groupDigits(s.totalChoices)} choice${s.totalChoices === 1 ? '' : 's'}`, TONE.loud),
   ])
   out.push([
@@ -347,9 +363,12 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
   out.push(blank())
   const fixCount = opts.fixable?.size ?? 0
   const parts = [
-    `${groupDigits(d.findings.length)} problem${d.findings.length === 1 ? '' : 's'}`,
-    `${groupDigits(blocking.length)} failing the check`,
+    `${groupDigits(problems)} problem${problems === 1 ? '' : 's'}`,
+    `${groupDigits(blocking.length - s.unanalysable)} failing the check`,
     `${groupDigits(groups.length)} cause${groups.length === 1 ? '' : 's'}`,
+    // Never folded into the tally above. A rule that could not be read is a hole in the
+    // measurement, and a footer is the last thing a reader sees.
+    ...(s.unanalysable > 0 ? [`${groupDigits(s.unanalysable)} rule(s) NOT examined`] : []),
   ]
   out.push([
     t('✗ ', TONE.loud),
@@ -364,6 +383,91 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
       + 'before it is offered, so nothing is suggested that has not been checked.',
     width - 6, '')) out.push([t('    '), t(l, TONE.faint)])
   }
+  return out
+}
+
+/** What each `Unanalysable.kind` means and what the reader can do about it. Stated once
+ *  per kind, at the head of the group it labels — the same rule the cause groups follow. */
+const KIND_BLURB: Record<string, string> = {
+  'fused-rule':
+    'These rules are compiled functions. Fusion lowers every rule to executable code and '
+    + 'discards the combinator graph, so there is nothing left to read.\n'
+    + 'To analyse them: point this at the grammar SOURCE, or at a grammar value that still '
+    + 'carries its IR (a rules() map, or a compose() result — those keep their pieces).',
+  'opaque-artifact':
+    'These rules come from a precompiled artifact that carries rule functions rather than '
+    + 're-lowerable IR, so its choices cannot be examined.\n'
+    + 'To analyse them: recompile the contributing grammar so it carries IR — the macro '
+    + 'emits IR by default.',
+  'not-a-combinator':
+    'The value handed to parseman was not a grammar it knows how to walk.\n'
+    + 'To analyse it: pass a combinator, a rules() map, a compose() result, or name the '
+    + 'export that holds one with --export.',
+}
+
+/**
+ * The report for a run that examined NOTHING.
+ *
+ * Deliberately not the finding report with a banner on top. Everything that report says
+ * is a claim about defects found — the tally, the "underlying cause", the "fixing one
+ * fixes every choice listed under it", the "none of this is a correctness bug". None of
+ * it is true here, and printed together they read as a confident audit of a grammar the
+ * tool never opened.
+ */
+function unexaminedLines(
+  d: GrammarDiagnosis, name: string, width: number, limit: number,
+): Line[] {
+  const out: Line[] = []
+  const items = d.gating.unanalysable
+  out.push([t('✗ ', TONE.loud), t(name, TONE.strong), t(' — ', TONE.quiet),
+    t('COULD NOT ANALYSE', TONE.loud)])
+  out.push([t(`  0 choices examined · ${groupDigits(items.length)} `
+    + `rule${items.length === 1 ? '' : 's'} unreadable`, TONE.warn)])
+  for (const l of wrap(
+    'parseman has NO verdict about this grammar — not "clean", not "problems". Every line '
+    + 'below is a rule it could not read, not a defect it found.',
+    width - 2, '  ')) out.push([t(l, TONE.faint)])
+
+  // Grouped by KIND: the kind is what a reader acts on, and one artifact usually
+  // contributes hundreds of rules for one reason.
+  const byKind = new Map<string, typeof items[number][]>()
+  for (const u of items) {
+    const g = byKind.get(u.kind)
+    if (g === undefined) byKind.set(u.kind, [u])
+    else g.push(u)
+  }
+  let shown = 0
+  for (const [kind, group] of byKind) {
+    out.push(blank())
+    out.push(rule(width, TONE.frame))
+    out.push([
+      t(' ■ ', TONE.warn),
+      t(`${groupDigits(group.length)} rule${group.length === 1 ? '' : 's'} could not be read`, TONE.strong),
+      t(`   [${kind}]`, TONE.faint),
+    ])
+    for (const l of wrap(KIND_BLURB[kind] ?? group[0]!.reason, width - 6, '')) {
+      out.push([t('    '), t(l, TONE.quiet)])
+    }
+    out.push(blank())
+    for (const u of group) {
+      if (shown >= limit) break
+      shown++
+      out.push([t('   '), t(u.rule, TONE.ident)])
+    }
+    if (shown >= limit) break
+  }
+  if (shown < items.length) {
+    out.push(blank())
+    out.push([t(`  … ${groupDigits(items.length - shown)} more — `, TONE.quiet),
+      t(`--limit ${items.length}`, TONE.strong), t(' shows them, --json holds them all', TONE.quiet)])
+  }
+
+  out.push(blank())
+  // The exit code IN WORDS, and it is 2 — not 1. 1 means "measured, and it failed";
+  // this run did not measure. See the CLI's exit-code contract.
+  out.push([t('✗ ', TONE.loud),
+    t(`could not analyse — 0 of ${groupDigits(items.length)} rule(s) examined`, TONE.strong),
+    t('  ·  exiting 2 (analysis did not run)', TONE.faint)])
   return out
 }
 

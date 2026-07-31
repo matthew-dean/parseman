@@ -104,6 +104,40 @@ describe('parseman CLI exit codes', () => {
     expect(r.code).toBe(2)
   }, T)
 
+  /*
+   * THE REPORTING LIE. A fused artifact yields one blocking finding per unreadable rule,
+   * so `findings.length` counted them as discovered defects: `3 problems, 3 failing the
+   * check, 1 cause · exiting 1 (problems found)` over ZERO examined choices. Exit 1 is
+   * the "measured, and it failed" code, so a CI gate could not tell an audited-and-bad
+   * grammar from one the tool never opened.
+   */
+  it('exits 2 — not 1 — when it examined NOTHING, and says so instead of counting problems', () => {
+    const r = run('diagnose', 'test/fixtures/cli-cov/fused.mjs', '--export', 'fusedGrammar')
+    expect(r.code).toBe(2)
+    expect(r.out).toContain('COULD NOT ANALYSE')
+    expect(r.out).toContain('0 choices examined')
+    expect(r.out).toContain('exiting 2 (analysis did not run)')
+    // None of the finding-report vocabulary may appear: every sentence of it is a claim
+    // about defects parseman found, and it found none.
+    expect(r.out).not.toMatch(/problems? in \d+ choices?/)
+    expect(r.out).not.toContain('failing the check')
+    expect(r.out).not.toContain('underlying cause')
+    expect(r.out).not.toContain('exiting 1')
+  }, T)
+
+  /* A macro-authored grammar — the shape every shipping parseman grammar has. Node
+   * rejects the `type: 'macro'` import attribute, so this used to exit 2 with a
+   * TypeError from the loader before a single rule was looked at. */
+  it('loads a grammar that imports with `type: macro`, and analyses it', () => {
+    const r = run('diagnose', 'test/fixtures/cli-cov/macro-attr.mjs', '--export', 'macroAttrGrammar')
+    expect(r.out).not.toContain('Import attribute')
+    expect(r.out).not.toContain('COULD NOT ANALYSE')
+    // The fixture's second arm is `regex(/[\s\S]*/)` — genuinely ungated, so this is a
+    // real analysis with a real finding, not a load that merely did not crash.
+    expect(r.out).toContain('1 problem in 1 choice')
+    expect(r.code).toBe(1)
+  }, T)
+
   it('emits no ANSI when NO_COLOR is set, even for the code frames', () => {
     const r = run('diagnose', 'examples/css/parser.ts', '--export', 'cssRules',
       '--corpus', 'fixtures/css')
