@@ -613,6 +613,13 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         : parseman.node(inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)
       if (combi._def.tag === 'node' && buildSrc !== undefined) {
         combi._def.buildSrc = buildSrc
+        // The type argument's IDENTIFIER, when it was written as one. A `node(type, …)`
+        // inside a factory resolves `type` to a string here, which loses the fact that
+        // the reducer's `mk(type, …)` names the SAME binding — and losing it is what
+        // made every factory-built node miss the inline-`mk` path.
+        if (explicitType !== undefined && firstArg.type === 'Identifier') {
+          combi._def.typeSrc = (firstArg as unknown as { name: string }).name
+        }
         // A NAMED reducer (`foldOperation`, `helpers.fold`, an import): resolve it so the
         // capture-tier analysis reads the REAL parameter list instead of failing open.
         // `null` means the expression was an inline function, which is self-describing.

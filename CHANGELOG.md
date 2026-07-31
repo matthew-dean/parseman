@@ -5,6 +5,21 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.45.0 — 2026-07-30
 
+- **Recognise the inline-`mk` shape when the node type is a factory parameter.** The
+  matcher required a string LITERAL in the `mk(...)` type position, so the ordinary way
+  to spell a family of nodes — `const N = (type, body) => node(type, body, (c, f, s, r,
+  tl) => mk(type, c, r, s, tl))` — missed the fast path at every site and paid a
+  `_build[n](...)` call per match, while still matching the near-miss heuristic and
+  reporting itself as a degradation. parseman's own vendored Less workload uses one such
+  factory at 31 sites. It is now accepted when the SAME identifier stands in the
+  `node()` type position and in the `mk()` type position, which is a proof rather than a
+  loosening: the arrow's parameters are `(c, f, s, r, tl)`, so nothing between the two
+  occurrences can rebind the name, and the evaluator has already resolved that binding
+  to the node's type. Two DIFFERENT identifiers, or a mismatched argument order, are
+  still refused. This applies to the MACRO path, which is what produces shipped
+  artifacts; a runtime `compile()` reads the reducer through `Function.prototype.toString`
+  and has no call-site identifier to compare against, so the interpreter still reports
+  the near miss there.
 - **A cap on inline expansion (`maxInline` / `PARSEMAN_MAX_INLINE`, default 1000).**
   `emitLazy` pastes the body of a ref that is used exactly once and is not recursive,
   rather than hoisting a function nobody else calls. That is right per ref and had no

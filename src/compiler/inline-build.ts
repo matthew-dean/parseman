@@ -27,6 +27,24 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/**
+ * Same shape, but the type is named by an IDENTIFIER in BOTH positions rather than by a
+ * string literal.
+ *
+ * `node(type, body, (c, f, s, r, tl) => mk(type, c, r, s, tl))` inside a factory is the
+ * ordinary way to write a family of nodes — jess's `less` grammar does it at 31 sites —
+ * and it missed the inline path purely because the matcher demanded a quoted literal.
+ * Requiring the SAME identifier in both positions is what makes this sound rather than a
+ * loosening: the arrow's own parameters are `(c, f, s, r, tl)`, so nothing between the
+ * two occurrences can rebind the name, and the evaluator has already resolved that
+ * binding to `def.type`. Two spellings of one value, not two values.
+ */
+function identMkBuildRe(typeIdent: string): RegExp {
+  return new RegExp(
+    String.raw`^\(\s*(\w+)${ANN}\s*,\s*${ANY_P}\s*,\s*(\w+)${ANN}\s*,\s*(\w+)${ANN}\s*,\s*(\w+)${ANN}\s*\)\s*=>\s*(?:[\w$.]*\.)?mk\s*\(\s*${escapeRegExp(typeIdent)}\s*,\s*\1\s*,\s*\3\s*,\s*\2\s*,\s*\4\s*\)\s*$`,
+  )
+}
+
 /** Any callee — covers `mk`, `import_x.mk`, `__vite_ssr_import_0__.mk`, etc. */
 function looseMkBuildRe(type: string): RegExp {
   return new RegExp(
@@ -59,6 +77,8 @@ export function analyzeMkInlineBuild(def: Extract<ParserDef, { tag: 'node' }>): 
     return null
   }
   if (looseMkBuildRe(def.type).test(src)) return def.type
+  // Factory-authored: `node(t, …, (…) => mk(t, …))`. See `identMkBuildRe`.
+  if (def.typeSrc !== undefined && identMkBuildRe(def.typeSrc).test(src)) return def.type
   if (LOOKS_LIKE_MK_RE.test(src)) {
     reportMkMiss(def.type, src, 'its parameter list or argument order does not match '
       + '`(children, fields, span, rawChildren, triviaLog) => mk(type, children, rawChildren, span, triviaLog)`')
