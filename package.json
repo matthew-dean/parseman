@@ -79,6 +79,7 @@
     "bench:literal": "node --import tsx/esm bench/literal-match.ts",
     "bench:dispatch": "node --import tsx/esm bench/dispatch-vs-choice.ts",
     "bench:codegen": "node --import tsx/esm bench/codegen-ab.ts",
+    "bench:treeidentity": "node --import tsx/esm bench/tree-identity.ts",
     "bench:sharedprefix": "node --import tsx/esm bench/shared-prefix-ab.ts",
     "bench:baseline": "node --import tsx/esm bench/update-parseman-baseline.ts",
     "perf:guard": "node --import tsx/esm bench/perf-guard.ts",
