@@ -2078,7 +2078,7 @@ function emitDispatchCombinator(
   // Token-keyed dispatch: walk the selector's matched span to a small integer
   // case id ONCE, so each case compares an integer instead of re-deriving the
   // key from the string a character at a time. See `token-dispatch.ts`.
-  const tokenTrie = emitDispatchTokenTrie(ctx, def, pos, selector.endVar)
+  const tokenTrie = emitDispatchTokenTrie(ctx, def, pos, selector.endVar, keyV)
   const stmts: string[] = [
     ...(selectorLeafMark ? [
       `${ind(ctx)}const ${selectorLeafMark} = _ctx._cstLeaves?.length ?? 0`,
@@ -2234,6 +2234,7 @@ function emitDispatchTokenTrie(
   def: Extract<ParserDef, { tag: 'dispatch' }>,
   pos: string,
   endVar: string,
+  keyV: string,
 ): { idVar: string; walkExpr: string } | null {
   // Matchers (`startsWith`/`endsWith`/`matches`) still key off the string; a
   // site that has them keeps the chain so both halves read one key form.
@@ -2242,9 +2243,6 @@ function emitDispatchTokenTrie(
   // place so the strategies are compared against the real baseline, not a
   // remembered number.
   if (process.env.PARSEMAN_DISPATCH_OFF === '1') return null
-  const totalKeys = def.cases.reduce((a, c) => a + c.keys.length, 0)
-  if (totalKeys < 3) return null
-
   const helperName = (h: SharedHelper): string => `${nsp(ctx)}_dt_${h}`
   const prefix = `${nsp(ctx)}_dt${ctx.dispatchTrieCount ?? 0}`
   const site = emitDispatchId(
@@ -2256,9 +2254,24 @@ function emitDispatchTokenTrie(
     endVar,
   )
   if (site === null) return null
+
+  // Decide per SITE by measuring both emissions. A key-count rule of thumb got
+  // this wrong in both directions: it took sites whose keys are short enough
+  // that the tables cost more than the chain they replace (less grew 902 B that
+  // way) and declined sites whose keys are long enough to pay at two keys.
+  const emittedHelpers = ctx.dispatchHelpers ?? new Set<SharedHelper>()
+  const chainBytes = def.cases.reduce((a, c) =>
+    a + c.keys.reduce((b, k) => b + emitDispatchKeyCondition(keyV, k, c.caseInsensitive).length + 4, 0), 0)
+  const trieBytes = site.decls.reduce((a, d) => a + d.length + 1, 0) +
+    site.callExpr.length +
+    // one `_dtokN === k` arm condition per case, in place of that case's chain
+    def.cases.length * (keyV.length + 8) +
+    site.helpers.reduce((a, h) => a + (emittedHelpers.has(h) ? 0 : sharedHelperDecl(h, helperName).length + 1), 0)
+  if (trieBytes >= chainBytes) return null
+
   ctx.dispatchTrieCount = (ctx.dispatchTrieCount ?? 0) + 1
 
-  const emitted = ctx.dispatchHelpers ?? new Set<SharedHelper>()
+  const emitted = emittedHelpers
   ctx.dispatchHelpers = emitted
   for (const h of site.helpers) {
     if (emitted.has(h)) continue

@@ -8,9 +8,11 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 - **`dispatch()` keys off a data trie instead of a per-case character chain.** css
   `ast.js` 3,336,650 → 3,311,657 B (−0.75%, gzip −1,782 B); key-comparison bytes
   40,269 → 8,772 (−78%). Speed is inside noise — the strategy sweep behind
-  `PARSEMAN_DISPATCH` is in `docs/design/derived-tokenization.md`. **less grows
-  902 B**: the trie is chosen per artifact, not per site, and the per-site cost
-  check that would decline it there is untried (experiment #20).
+  `PARSEMAN_DISPATCH` is in `docs/design/derived-tokenization.md`.
+- **A `dispatch()` site takes the trie only when the trie's own emission measures
+  smaller than the chain it replaces.** A key-count rule of thumb had grown less
+  `ast.js` by 902 B at its one qualifying site; that site now keeps the chain and
+  less is back to 3,937,767 B, with css and scss unchanged.
 - **Fixed `'@' | 32` folding every `@`-led dispatch key to a non-match**, so
   `@font-face` silently took the opaque at-rule arm. The 288-test css suite passed
   with the bug present; a full-tree diff against the pre-trie build caught it. Both
