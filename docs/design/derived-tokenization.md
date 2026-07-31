@@ -1,12 +1,27 @@
 # Derived tokenization
 
-**Status:** design, **not implemented in `codegen.ts`**. Two standalone prototypes
-have now run — an at-rule dispatch prototype (§9) and a general scanner (§10) — and
-their numbers are quoted as **measured**. Nothing is wired into the compiler. No
-end-to-end artifact produced by this design exists, so no whole-artifact byte or
-parse-time figure for it exists either; §11 gives the arithmetic ceiling instead, and
-says plainly what it does not reach. Sections are marked **settled** (owner decision,
-build to it), **measured**, or **hypothesis** (plausible, unmeasured).
+**Status:** **partially landed.** Token-keyed `dispatch` is **implemented and shipped
+as the default** in `codegen.ts` (§9.1, commits `6feb883` / `879f486`, selectable via
+`PARSEMAN_DISPATCH`). The scanner itself is **not** implemented — it exists only as a
+standalone prototype (§10). Sections are marked **settled** (owner decision, build to
+it), **measured**, or **hypothesis** (plausible, unmeasured).
+
+> ### Read these first — two results that invert earlier expectations
+>
+> 1. **The entire parse-time spread across every dispatch configuration is 2.4%**
+>    (§9.1.1). Dispatch keying is **not** where css parse time goes. The technique
+>    won on every axis it was measured on, and the win is small. **Effort should
+>    redirect to the save/restore mass** (§8.1).
+> 2. **The 1.83× speedup claimed earlier was NOISE and is WITHDRAWN** (§16.4). Three
+>    configurations producing a **byte-identical** artifact measured **5.961, 6.101
+>    and 11.952 ms** in separate processes. The chain baseline is **6.092 ms**, not
+>    12.540 ms, and this document's own "32% of parse time" scan-cost share is
+>    withdrawn with it (§10.3).
+>
+> Two methodological invariants follow, and they bind the whole workstream:
+> **byte-level tree equality against a toggled baseline is the gate, not the test
+> suites** (§16.3 — a shipped bug that 288 tests missed), and **every parse-time
+> claim comes from interleaved rounds in one process** (§16.4).
 
 > ### Baseline correction — this supersedes figures quoted throughout the session
 >
@@ -237,9 +252,10 @@ Read the §9 numbers through that lens and the apparent trade-off dissolves:
 - The **trie**'s 25,223 B was an **emitted comparison tree**. Once the id is a dense
   index, the arm selection becomes **data**, and that bulk goes away.
 
-> **The configuration that plausibly dominates both — trie-walk-to-id + index-based
-> arm selection — has NOT been measured.** It is the obvious next prototype. Neither
-> §9 row is it.
+> **MEASURED SINCE (§9.1): this is what landed.** trie-walk-to-id with if-chain arm
+> selection is now the shipped default, and it did win both axes — fastest *and*
+> smallest, raw and gzipped. The caveat is the size of the prize: the whole spread
+> across every configuration is **2.4%** (§9.1.1).
 
 ### 6.2 Hard requirement: the discriminator must be searched for, not assumed
 
@@ -260,6 +276,13 @@ Adding the **last** character does not fix it: **11 buckets for 13 keys**.
 
 A fallback path (bucket, then verify with a full compare) must exist regardless, since
 no position set is guaranteed to exist for an arbitrary alphabet.
+
+> **MEASURED (SS9.3): the search works.** `phash` finds an **injective** `(position
+> pair, multiplier, modulus)` over the real css at-keyword set. A *searched*
+> discriminator is therefore **available** where the fixed `(len, c1, c2)` failed --
+> the failure above was of the assumption, not of the technique. Perfect hashing lost
+> the sweep on **table bytes**, not on feasibility. Any earlier reading of this section
+> as "a searched discriminator may not exist" is corrected by that result.
 
 ### 6.3 Keep the hybrid open (settled)
 
@@ -474,7 +497,9 @@ And the constraint on it is unchanged: [`artifact-format.md` § "Override invari
 named rule is never inlined"](./artifact-format.md) makes single-use explicitly *not*
 a licence to inline. The collapse must be a **token-keyed shared body with the ten
 named functions preserved as entry points**, never an inlining.
-## 9. Prototype: at-rule dispatch (measured)
+## 9. At-rule dispatch: the prototype, then the landed sweep (measured)
+
+### 9.0 The standalone prototype that the design was argued from
 
 **Standalone prototype. Not wired into `codegen.ts`.** One decision — the 8-key
 at-rule dispatch — implemented four ways over a 470 KB corpus, 20,000 lookups × 50
@@ -503,9 +528,112 @@ What the numbers do establish:
 4. **gzip flattens the byte differences** (1,240 / 475 / 1,052 B): raw-byte
    comparisons between these strategies overstate the shipped difference considerably.
 
-**Not measured: trie-walk-to-id + index-based arm selection**, which §6.1 argues
-should take the trie's speed and the table's size. Until that exists, no row of this
-table is the design.
+**Superseded by §9.1:** trie-walk-to-id + index-based arm selection has since been
+built into `codegen.ts` and swept against three alternatives on the shipped artifact.
+Read §9.1 for the result; this table is retained only because it is the microbenchmark
+the design was argued from, and because comparing the two shows how badly an isolated
+decision-point measurement predicts an end-to-end one.
+
+---
+
+### 9.1 LANDED: the full dispatch sweep in `codegen.ts` (measured)
+
+Token-keyed dispatch is **implemented and shipped as the default**, landed on
+`release/0.46.0` as **`6feb883`** (`feat(codegen): token-keyed dispatch via a data
+trie`) and **`879f486`** (`fix(dispatch): fold ASCII letters only, and pick the id
+strategy by measurement`). Strategies are selectable via the **`PARSEMAN_DISPATCH`**
+environment variable.
+
+**Methodology** (this matters — see §16.4): measured on the **shipped artifact**, trees
+**diffed equal** against a toggled baseline, **medians of 31 interleaved rounds in one
+process**.
+
+| config | ms/parse | rel | raw B | gzip B |
+| --- | ---: | ---: | ---: | ---: |
+| chain (baseline) | 6.092 | 1.000 | 3,336,650 | 426,247 |
+| **trie:ifchain** (landed default) | **5.967** | **0.979** | **3,311,657** | **424,465** |
+| trie:switch | 5.945 | 0.976 | 3,333,421 | 424,895 |
+| phash:switch | 6.011 | 0.987 | 3,331,361 | 424,637 |
+| firstchar:switch | — | — | falls back to chain | — |
+| lenswitch:switch | — | — | falls back to chain | — |
+
+#### 9.1.1 The headline: the entire spread is 2.4%
+
+> **Across every configuration — chain, trie, perfect hash, two id strategies — the
+> whole parse-time spread is 2.4%.** Dispatch keying is **not where css parse time
+> goes.**
+
+This is the most consequential result in the document, and it is a **negative** one. It
+means:
+
+- The **1.55×** from the §9 microbenchmark is real *on that decision in isolation* and
+  worth **~2% end-to-end**. An isolated decision-point measurement overstated the
+  end-to-end effect by roughly **70×**. Treat every future microbenchmark in this
+  workstream accordingly.
+- **Effort should redirect to the save/restore mass** (§8.1: 723,605 B / 21.7%,
+  rollback-dominant; §8.1.1 for which half is addressable). That is where both the
+  bytes and, on this evidence, the time actually are.
+- It does **not** retract the design. Token-keyed dispatch still won on **every**
+  axis it was measured on — fastest, smallest raw, smallest gzip — and the
+  correctness argument of §7 never depended on speed. It retracts the *expectation of
+  a large speed win from dispatch keying*.
+
+#### 9.1.2 Perfect hashing: the search WORKS, and lost on bytes
+
+`phash` **finds an injective `(position pair, multiplier, modulus)`** over the real key
+set. This settles §6.2's open half: a **searched** discriminator is feasible where the
+fixed `(len, c1, c2)` was not.
+
+It then **lost the sweep on table bytes** — 3,331,361 B raw / 424,637 B gz against
+trie:ifchain's 3,311,657 / 424,465, at 0.987 rel against 0.979.
+
+> Status: **`measured — works, loses on bytes`**. Not rejected as infeasible. If the
+> table representation gets cheaper, it is a live candidate again, and the search
+> machinery already exists.
+
+#### 9.1.3 `firstchar` and `lenswitch`: not applicable, which is not rejected
+
+Both **build** but do not **apply** to the css at-keyword set, and fall back to chain:
+
+- **`firstchar`** — every at-keyword key starts with `@`, so the first character
+  discriminates nothing.
+- **`lenswitch`** — key lengths collide.
+
+> Status: **`measured — not applicable to this key set`**. This is a statement about
+> css at-keywords, **not** about the strategies. A dialect or a site with a
+> better-separated key set could select either. Do not remove them on this evidence.
+
+#### 9.1.4 `trie:switch`'s larger raw size is a formatter artifact
+
+`trie:switch` emits **3,333,421 B** raw against `trie:ifchain`'s 3,311,657 — but the
+difference is the **downstream formatter indenting case bodies two extra levels**, not
+the emitter producing more structure. Its gzip figure (424,895 vs 424,465) is far
+closer, as leading-whitespace runs compress away.
+
+> **For switch-shaped emission, gzip is the deciding metric.** Raw bytes measure the
+> formatter as much as the codegen. (This generalises §9's fourth point — gzip
+> flattens these differences — into a rule for choosing between shapes.)
+
+#### 9.1.5 What it cost, per dialect
+
+The conversion rule as landed: **convert a site unconditionally when it has ≥3 keys
+that share a case-folded walk.** Measured artifact deltas:
+
+| dialect | delta | |
+| --- | ---: | --- |
+| css | **-0.75%** | -24,993 B |
+| scss | -0.09% | |
+| jess | 0.00% | |
+| **less** | **+0.02%** | **+902 B — a REGRE§ION** |
+
+**less regresses** because it has dispatch sites whose key sets make the emitted trie
+tables cost *more* than the character chain they replace. The unconditional rule
+converts them anyway. Untried item **#20** (§14.2) is the fix.
+
+Note also that css's measured **-24,993 B** came in **under** the 40,269 B this
+document attributed to dispatch key chains (§8.1) — about **62%** of the predicted
+category. That is a useful calibration on §11's arithmetic: **a category's byte count
+is an upper bound on what converting it removes**, because the replacement is not free.
 
 ---
 
@@ -547,16 +675,23 @@ Excluding those 15 leaves a **42-regex core**:
   **table-driven emission**: the emitted bulk is data wearing a code costume. (This is
   untried item #7, and this is the strongest evidence for it yet recorded.)
 
-### 10.3 The honest upper bound on scan cost
+### 10.3 Scan cost as a share of parse time — WITHDRAWN, denominator was wrong
 
-Current full css parse on the same file: **12.54 ms**. Scanning **every position**
-costs **4.05 ms = 32% of current parse time**.
+> **The "32% of current parse time" figure is withdrawn.** It divided the scanner's
+> 4.05 ms by a full-css-parse baseline of **12.540 ms**, and that baseline was
+> **noise** — see §16.4. The correct chain baseline, measured interleaved in one
+> process, is **6.092 ms**.
 
-> **That 32% is an upper bound, not a projection.** On-demand scanning (§2) calls the
-> scanner far less than once per position — only at decision points. The true cost is
-> unknown and lower. But 32% is the honest ceiling, and it is quoted here so nobody
-> discovers it later as a surprise: **derived tokenization is not free**, and if the
-> parser saves less than the scanner costs, it loses.
+Naively re-dividing gives **~66%**, which would be a far worse result than the one
+originally recorded. But the 4.05 ms numerator came out of the **same unreliable
+separate-process regime** as the 12.540 ms denominator, so it is not trustworthy
+either.
+
+> **Honest status: the scan-cost share is UNKNOWN.** It must be re-measured with the
+> §16.4 methodology — interleaved rounds in one process — before any number is quoted.
+> What survives unchanged is the qualitative point, and it now has *less* margin than
+> it appeared to: **derived tokenization is not free, and if the parser saves less than
+> the scanner costs, it loses.**
 
 ---
 
@@ -575,6 +710,11 @@ categories in §8:
 | **total** | **793,374 B** |
 
 That is **23.8%** of the css artifact, taking it from 3,336,650 B to **~2,543,000 B**.
+
+> **First calibration against a real conversion (§9.1.5).** The key-chain row above was
+> the one category actually converted. Predicted 40,269 B; **delivered 24,993 B —
+> 62%**. The replacement is not free, so **a category's byte count is an upper bound on
+> what converting it removes**. Scale the rest of this table accordingly.
 
 | | now | after | target |
 | --- | ---: | ---: | ---: |
@@ -626,6 +766,12 @@ it is.**
 6. **A named rule is still never inlined** (see §8.5 and `artifact-format.md`).
 7. **Version-locked like every other artifact shape.** A derived scanner table is a
    compiled artifact; per `artifact-format.md` it carries no back-compat read path.
+8. **Every change is gated on a byte-identical parse tree against a toggled baseline**,
+   not on a green test suite. §16.3 — a shipped bug that 288 tests missed is why this
+   is an invariant and not a suggestion.
+9. **Every parse-time claim comes from interleaved rounds in one process.** §16.4 —
+   separate-process A/B of this parse has a noise floor an order of magnitude above
+   the effects being measured.
 
 ---
 
@@ -679,7 +825,7 @@ re-entry point.
 
 Derived tokenization is one entry in a larger search over artifact size and parse
 speed. The rest of that search is recorded here so it survives the session that
-produced it. **None of the items in §14.1–§14.4 has been measured.** Status is one of:
+produced it. **20 entries; none has been measured.** Status is one of:
 
 - `untried` — no measurement attempted;
 - `measured — <result>` — a number exists, cited;
@@ -835,6 +981,33 @@ token, with the named functions preserved as entry points. *How to measure:* byt
 plus the existing override test must stay green. *Priority:* low — the corrected
 saving is **0.88%**, an order of magnitude below what the first revision implied.
 
+| # | Experiment | Status |
+| --- | --- | --- |
+| 20 | **Per-site table/chain cost check** | `untried` — **and there is a measured regression waiting for it** |
+
+*Context (§9.1.5):* token-keyed dispatch converts a site **unconditionally** when it
+has **≥3 keys sharing a case-folded walk**. That rule is right on average and wrong per
+site: css **-0.75%** (-24,993 B), scss -0.09%, jess 0.00%, **less +0.02% (+902 B)**.
+**less regresses** — it has dispatch sites whose key sets make the emitted trie tables
+cost more than the character chain they replace.
+
+*Idea:* at macro time, **emit both forms for a site, compare their sizes, and keep the
+smaller.** Convert only where the tables actually win.
+
+*Why it should work:* the comparison is exact and available at the moment of emission
+-- both forms are already generated by existing code paths, so this is a selection
+rule, not a new representation. It replaces a heuristic (≥3 shared-walk keys) with the
+measurement the heuristic was approximating.
+
+*Expected:* removes the less regression entirely, and **may improve css further** by
+declining marginal sites the current rule converts anyway. Note this is a **bytes**
+experiment — §9.1.1 says there is ~2.4% of parse time in this whole area, so do not
+expect a speed result.
+
+*How to measure:* per-dialect artifact bytes **raw and gzipped**, plus a count of sites
+**converted versus declined**. The site counts are the diagnostic — a rule that
+declines almost nothing has not actually changed the policy.
+
 ### 14.3 Analysis, not optimisation
 
 | # | Experiment | Status |
@@ -941,17 +1114,76 @@ produced without normalisation should be discarded rather than argued with.
 
 ---
 
+### 16.3 Byte-level tree equality against a toggled baseline is THE GATE — not the test suites
+
+**This is a methodological invariant for the whole derived-tokenization workstream, not
+an anecdote.**
+
+`6feb883` shipped a correctness bug that **288 passing tests did not catch**:
+
+- `'@' | 32` is **`` ` ``** (backtick, 96), not `@` (64) — `| 32` is a lowercasing
+  trick that is only valid for ASCII **letters**.
+- Key tables were built from **lowercased** text; input was read with **`| 32`**.
+- So **every `@`-led key fell through.** `@font-face` parsed as `OpaqueAtRuleBlock`.
+
+**The full css suite passed with the bug present.** What caught it was a **byte-level
+diff of the parsed tree against the pre-token build**, which failed on the **first
+differing byte**.
+
+> **The gate for any change in this workstream is: build both configurations, parse the
+> corpus with each, and assert the trees are byte-identical.** Test suites assert the
+> properties someone thought to assert. A tokenization change can alter *which rule
+> matched* while leaving every asserted property intact — which is exactly what
+> happened here. A green suite is not evidence; a byte-identical tree is.
+
+This is why every measurement in §9.1 is reported as "trees diffed equal against a
+toggled baseline". That clause is the load-bearing part of the methodology, not
+boilerplate.
+
+The fix (`879f486`, **fold ASCII letters only**) also removed a **latent
+over-acceptance**: `| 32` mapped `_` (95) and DEL (127) onto each other, so the old
+form accepted key characters it should have rejected. The bug and the latent defect had
+the same cause — treating a bit trick as if it were a case fold.
+
+### 16.4 Separate-process parse measurements are unreliable at this magnitude
+
+**The 1.83× speedup claimed earlier in this workstream is WITHDRAWN. It was noise.**
+
+Proof, and it is unambiguous: **three configurations producing a BYTE-IDENTICAL
+artifact** measured **5.961, 6.101 and 11.952 ms** in separate processes. A **2×
+spread** on the same file with the same bytes.
+
+The chain baseline is **6.092 ms**, not **12.540 ms**. Every figure derived from
+12.540 ms is void — including this document's own "32% of parse time" scan-cost
+share, withdrawn at §10.3.
+
+> **Methodology, required for any parse-time claim in this workstream:**
+> **interleaved round-robin in ONE process**, reporting **medians over many rounds**
+> (§9.1 uses 31). Separate-process A/B of this parse cannot resolve differences of
+> the size being argued about — and the differences being argued about turned out to
+> be **2.4%** (§9.1.1), an order of magnitude below the noise floor of the discarded
+> method.
+
+Note how the two failures compound: the discarded method produced a **1.83×** claim
+where the truth was **2.1%**, and it did so in the *favourable* direction. Assume any
+un-interleaved number in this workstream's history is wrong until re-measured.
+
+---
+
 ## 17. Open questions
 
 - **Rewind unit.** Is a token index sufficient to rewind CST capture, or must a
   capture mark ride alongside it? §11 assumes the former in its arithmetic; nothing
   has tested it, and it is the single largest unverified term in that total.
-- **Does trie-to-id + index selection actually dominate?** §6.1 argues it takes the
-  trie's speed and the table's size. **Nobody has built it.** It is the highest-value
-  next measurement in this document.
-- **How much of the 32% scan ceiling does on-demand scanning actually pay?** §10.3
-  gives the every-position upper bound. The on-demand figure — the one that decides
-  whether this design is a net speed win at all — is unknown.
+- ~~**Does trie-to-id + index selection actually dominate?**~~ **ANSWERED (§9.1):**
+  yes on every axis, by 2.1% of parse time. The question that replaces it is
+  **whether anything in dispatch keying is worth further effort at all** — §9.1.1 says
+  the entire remaining headroom there is under 2.4%.
+- **What does on-demand scanning actually cost?** §10.3's every-position figure is
+  withdrawn along with its denominator, so there is now **no** measured scan-cost
+  share — neither a ceiling nor a projection. This is the question that decides
+  whether the scanner half of the design is a net win at all, and it is wide open.
+  Re-measure with §16.4's methodology.
 - **The 46 walker-bail choice points.** Resolving `dispatch` and unresolved holes in
   the static walker would move the token-decidable fraction somewhere between 43% and
   93% (§1). Until that analysis exists, the size of the addressable population is
@@ -1004,34 +1236,56 @@ In rough order of likelihood:
 
 ## 19. Summary of claim status
 
-### Corrected or superseded since the first revision
+### WITHDRAWN or FALSIFIED
+
+| Claim | Status |
+| --- | --- |
+| **1.83× parse speedup** | **WITHDRAWN — it was NOISE (§16.4).** Three byte-identical artifacts measured 5.961 / 6.101 / 11.952 ms in separate processes |
+| **Chain baseline = 12.540 ms** | **WITHDRAWN.** The interleaved figure is **6.092 ms** |
+| Scanning every position = 32% of parse time | **WITHDRAWN (§10.3)** — wrong denominator; re-dividing gives ~66%, but the numerator is from the same bad regime. **Share is UNKNOWN** |
+| Maximal munch uniform over the whole alphabet | **FALSIFIED (§10.1)** — 7 tokens for 123 KB |
+| A searched discriminator may not be available | **FALSIFIED (§9.1.2)** — `phash` finds an injective (position pair, multiplier, modulus) over the real key set |
+
+### Corrected or superseded
 
 | Claim | Status |
 | --- | --- |
 | css artifact = 3,336,650 B; 29.2× source; 35.9× postcss | **measured — CORRECTS 4,954,294 B / 53×** |
 | Save + rollback = 723,605 B, 21.7% (rollback 17.5%, save 4.2%) | **measured — SUPERSEDES "37.2% / mark+restore 27–29%"** |
-| css alphabet = 118 members (31 literals, 30 keyword sets / 68 words, 57 regexes) | **measured from the live combinator graph — SUPERSEDES 75** |
+| css alphabet = 118 members | **measured from the live combinator graph — SUPERSEDES 75** |
 | `_r_*Block` collapse saves ~29,500 B / 0.88% | **measured — CORRECTS an implied ~148 KB** |
-| Ten block templates are 3,729–4,011 B; nine identical modulo one line | **measured — CORRECTS 4,542–4,875 B** |
 | The two 200 KB+ at-rule rules are 36.1% save/rollback, not key chains | **measured — CORRECTS "two string-comparison chains"** |
-| Maximal munch uniform over the whole alphabet | **FALSIFIED (§10.1) — 7 tokens for 123 KB** |
 | 50 `noTrivia` in css (vs 46 source-level) | **measured — source-level counts are undercounts** |
+| Key-chain conversion delivers 24,993 B against 40,269 B predicted (62%) | **measured (§9.1.5) — a category count is an UPPER BOUND on what converting it removes** |
 
-### Measured
+### Measured — the landed dispatch sweep (§9.1)
+
+| Claim | Status |
+| --- | --- |
+| **Whole spread across every dispatch config = 2.4%** | **measured — THE HEADLINE. Dispatch keying is not where css parse time goes** |
+| trie:ifchain 5.967 ms / 0.979 rel / 3,311,657 B / 424,465 gz (landed default) | **measured** |
+| chain 6.092 / trie:switch 5.945 / phash:switch 6.011 | **measured, 31 interleaved rounds, one process, trees diffed equal** |
+| The §9.0 microbenchmark's 1.55× is worth ~2% end-to-end | **measured — an isolated decision-point figure overstated it ~70×** |
+| Perfect hashing: search works, loses on table bytes | **measured — `works, loses on bytes`, NOT rejected as infeasible** |
+| `firstchar` / `lenswitch` fall back to chain on css at-keywords | **measured — `not applicable to this key set`, NOT rejected** |
+| trie:switch's larger raw size is the downstream formatter, not the emitter | **measured — gzip is the deciding metric for switch-shaped emission** |
+| Per-dialect delta: css -0.75%, scss -0.09%, jess 0.00%, **less +0.02%** | **measured — less REGRE§ES; untried #20 is the fix** |
+
+### Measured — everything else
 
 | Claim | Status |
 | --- | --- |
 | Whole-artifact category breakdown (char scan 8.9%, trivia 5.6%, key chains 1.2%) | **measured** |
+| Mark/restore split: sequence boundary is trivia-only; the other ~53% is the binding case | **measured (§8.1.1)** |
 | Per-rule save+rollback shares; top 20 rules = 62% of artifact | **measured** |
-| Dialect artifact sizes (less / scss / jess) and the postcss bar | **measured** |
+| Dialect artifact sizes and the postcss bar | **measured** |
 | 92 css choice points: 40 token-decidable, 6 clashes, 46 walker-bail | **measured** |
-| Dispatch prototype: trie 34.6–40.5 vs current 53.8–57.0 ns/token (1.55×) | **measured, one decision point, standalone** |
-| Dispatch prototype code sizes 25,223 / 12,540 / 1,998 / 728 B | **measured** |
+| §9.0 prototype ns/token and code sizes | **measured, one decision point, standalone — see the ~70× caveat above** |
 | `(len, c1, c2)` collides; 11 buckets for 13 keys even with last char | **measured** |
-| Gated scanner: 18,238 tokens, 4.05 ms, 30:1 gzip on `benchmark.css` | **measured** |
-| Scanning every position = 32% of current parse time | **measured — an upper bound, not a projection** |
+| Gated scanner: 18,238 tokens, 30:1 gzip on `benchmark.css` | **measured** (the 4.05 ms figure is from the discarded regime) |
 | 16 of 26 css `keywords(boundary:)` sites under-spelled, three spellings | **measured** |
 | The two shipped boundary bugs | **measured** (both reproduced and fixed) |
+| **A correctness bug that 288 tests missed** (`'@' \| 32` is a backtick) | **measured (§16.3)** — caught only by byte-level tree diff |
 | Prefix-pair and interpolation-opener counts | **measured** |
 | css top-ten rules = 53.5% of rule bytes; ~86–90% repeated lines normalised | **measured** |
 
@@ -1044,19 +1298,21 @@ In rough order of likelihood:
 | One token per position; cost bounded by positions visited | **settled** |
 | Adjacency as a scan-time bit | **settled** |
 | Selector context as a mode flag | **settled** |
-| `dispatch` on token id; `routed()` produces a token | **settled** |
-| Trie = how you get the id; table = what you do with it | **settled (§6.1) — supersedes reading §9 as a bake-off** |
-| Codegen must SEARCH for a distinguishing position set at macro time | **settled, hard requirement (§6.2)** |
+| `dispatch` on token id; `routed()` produces a token | **settled — and now LANDED (§9.1)** |
+| Trie = how you get the id; table = what you do with it | **settled (§6.1)** |
+| Codegen must SEARCH for a distinguishing position set at macro time | **settled (§6.2), and the search is now measured to work** |
 | Hybrid: table for cold dispatches, trie-to-id for hot, per-site from profile | **settled (§6.3)** |
+| **Byte-identical tree vs a toggled baseline is the gate, not the suites** | **settled methodological invariant (§16.3)** |
+| **Parse-time claims come from interleaved rounds in one process** | **settled methodological invariant (§16.4)** |
 
 ### Hypothesis, untried, or nonexistent
 
 | Claim | Status |
 | --- | --- |
-| Trie-walk-to-id + index-based arm selection dominates both prototype rows | **hypothesis — the obvious next prototype, NOT measured** |
-| Token-index rewind removes most of the 723,605 B save/rollback | **hypothesis — unmeasured; the largest unverified term in §11** |
-| Every item in §14 (19 experiments) | **untried — no measurement attempted** |
+| Token-index rewind removes most of the 723,605 B save/rollback | **hypothesis — unmeasured; the largest unverified term in §11.** §8.1.1 narrows it: under half of css mark/restore is the binding case |
+| Per-site table/chain cost check (#20) fixes the less regression | **untried — and a measured regression is waiting for it** |
+| Every item in §14 (20 experiments) | **untried — no measurement attempted** |
 | Rule-level inline cap; cross-artifact sharing; source-level shape sharing; arity-only shared restore helper | **rejected — evidence in §15** |
-| **Mechanically removable total: 793,374 B, 23.8%, to ~2,543,000 B (22× source)** | **arithmetic over measured categories — NOT an end-to-end result** |
+| **Mechanically removable total: 793,374 B, 23.8%, to ~2,543,000 B (22× source)** | **arithmetic over measured categories — NOT an end-to-end result, and the one converted category delivered 62% of its estimate** |
 | That this technique reaches 250 KB, or 10×, or 4× | **NO — see §11; it does not, and nothing measured suggests it does** |
-| Any end-to-end artifact size or parse-time figure for this design | **does not exist** |
+| That dispatch keying is a large speed win | **NO — measured at 2.4% total spread (§9.1.1). Redirect to the save/restore mass** |
