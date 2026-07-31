@@ -46,6 +46,7 @@ import { resolve, relative, join, extname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { diagnoseGrammar, type GrammarDiagnosis } from '../analysis/diagnose.ts'
 import { renderDiagnosis } from '../analysis/diagnose-render.ts'
+import { DEFAULT_WIDTH } from '../analysis/terminal.ts'
 import { firstSetToString, choiceArms, peelToLeading } from '../analysis/gating.ts'
 import { armFirstSets, measureChoiceCost, type ChoiceCorpusCost, type CorpusSample } from '../analysis/corpus.ts'
 import { proposeFixes, applyFixEdits } from '../analysis/fix.ts'
@@ -73,6 +74,7 @@ options
   --json[=<path>]     Machine-readable report. With no path it goes to stdout and the
                       human rendering goes to stderr.
   --limit <n>         Findings to expand (default 20).
+  --width <n>         Render width. Default: the terminal's when colouring, else 80.
   --color/--no-color  Force colour on/off. Default: on only when stdout is a TTY.
   -h, --help          This.
 
@@ -96,7 +98,7 @@ function parseArgs(argv: readonly string[]): Args {
     if (eq !== -1) { flags.set(a.slice(2, eq), a.slice(eq + 1)); continue }
     const name = a.slice(2)
     // Value-taking flags consume the next argument; boolean flags do not.
-    if (['corpus', 'export', 'accept', 'source', 'limit', 'ext'].includes(name) && i + 1 < argv.length && !argv[i + 1]!.startsWith('--')) {
+    if (['corpus', 'export', 'accept', 'source', 'limit', 'ext', 'width'].includes(name) && i + 1 < argv.length && !argv[i + 1]!.startsWith('--')) {
       flags.set(name, argv[++i]!)
     }
     else flags.set(name, true)
@@ -210,6 +212,14 @@ async function main(argv: readonly string[]): Promise<number> {
   const color = args.flags.has('color') ? args.flags.get('color') !== 'false'
     : args.flags.has('no-color') ? false
       : process.stdout.isTTY === true && process.env.NO_COLOR === undefined
+  // Pinned off-TTY. A rendering whose width follows the terminal it happened to be piped
+  // from is not diffable, and `docs/samples/` is exactly such a capture.
+  const widthFlag = args.flags.get('width')
+  const width = typeof widthFlag === 'string' && Number(widthFlag) > 0
+    ? Number(widthFlag)
+    : (color && typeof process.stdout.columns === 'number' && process.stdout.columns > 0
+        ? process.stdout.columns
+        : DEFAULT_WIDTH)
   const json = args.flags.get('json')
   // JSON on stdout means stdout is a document; the human rendering moves to stderr so it
   // stays one. Both go through streams this process already owns.
@@ -241,7 +251,8 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     const limitFlag = args.flags.get('limit')
     human(renderDiagnosis(d, {
-      color, name: label, cost, armFirstSets: sets, armLabels: labels,
+      color, width, name: label, cost, armFirstSets: sets, armLabels: labels,
+      ...(typeof corpusFlag === 'string' ? { corpusRoot: resolve(corpusFlag) } : {}),
       ...(typeof limitFlag === 'string' ? { limit: Number(limitFlag) } : {}),
     }))
     if (json !== undefined) writeJson(json, d)
@@ -276,7 +287,7 @@ async function main(argv: readonly string[]): Promise<number> {
         catch (e) { throw new CliError(`could not write ${sourcePath}: ${e instanceof Error ? e.message : String(e)}`) }
       }
     }
-    human(renderFixReport(report, { color, name: label, applied: apply && applied > 0 }))
+    human(renderFixReport(report, { color, width, name: label, sourceRoot: resolve(sourcePath), applied: apply && applied > 0 }))
     if (apply) human(`  ${applied} edit(s) written to ${source.path}`)
     if (json !== undefined) writeJson(json, report)
     // Fails closed: a loop that could not run is not a pass.

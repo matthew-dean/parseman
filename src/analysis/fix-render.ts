@@ -7,129 +7,134 @@
  * rewrite prints that evidence next to it, with the sample and byte counts, because
  * "proven" without a corpus size is a word, not a fact.
  *
- * The diff is the primary interface. `--fix` writing to a file is a second, explicit
+ * The diff is the primary interface. `--apply` writing to a file is a second, explicit
  * step; what a reader gets by default is what would change, in the form they would read
  * it in a review.
  *
  * LOCATED sites print too, and they print the REASON, never advice. A site that cannot
  * be rewritten is still worth knowing about — that is the difference between "here is
  * exactly where the problem is" and silence.
+ *
+ * Like `diagnose-render.ts`, this emits ROWS and never an escape byte; `terminal.ts`
+ * owns every interaction with a terminal.
  */
 import type { FixReport, VerifiedFix, LocatedFinding } from './fix.ts'
-import { groupDigits } from './diagnose-render.ts'
+import { TONE, codeFrame, groupDigits, render, row, wrap, type RenderTarget, type Row } from './terminal.ts'
 
-export type FixRenderOptions = {
-  color?: boolean
+export type FixRenderOptions = RenderTarget & {
   name?: string
   /** True when the edits were written to disk, so the header says so. */
   applied?: boolean
+  /** Absolute path of the edited source, used ONLY for the frame's terminal hyperlink. */
+  sourceRoot?: string
 }
 
-const ANSI = {
-  dim: '\u001b[2m', bold: '\u001b[1m', red: '\u001b[31m',
-  green: '\u001b[32m', yellow: '\u001b[33m', cyan: '\u001b[36m', reset: '\u001b[0m',
-} as const
-type Paint = (code: keyof typeof ANSI, s: string) => string
-const painter = (on: boolean): Paint => (code, s) => (on ? `${ANSI[code]}${s}${ANSI.reset}` : s)
-
-const wrapAt = (text: string, width: number, indent: string): string[] => {
-  const out: string[] = []
-  let line = ''
-  for (const word of text.split(/\s+/).filter(w => w !== '')) {
-    if (line === '') line = word
-    else if (line.length + 1 + word.length <= width) line += ` ${word}`
-    else { out.push(indent + line); line = word }
-  }
-  if (line !== '') out.push(indent + line)
-  return out
-}
-
-export function renderFixReport(r: FixReport, opts: FixRenderOptions = {}): string {
-  const c = painter(opts.color === true)
+export function fixReportRows(r: FixReport, opts: FixRenderOptions = {}): Row[] {
   const name = opts.name ?? 'grammar'
-  const out: string[] = []
+  const out: Row[] = []
 
   if (!r.ok) {
-    out.push(`${c('red', '✗')} ${c('bold', name)} — no fix can be verified`)
-    out.push(...wrapAt(r.blocked ?? 'the verification loop could not run', 76, '  '))
-    out.push(c('dim', '  Nothing is offered: an unverified rewrite is not a fix.'))
-    return out.join('\n')
+    out.push(row(`✗ ${name} — no fix can be verified`, TONE.bad))
+    for (const l of wrap(r.blocked ?? 'the verification loop could not run', 76, '  ')) out.push(row(l))
+    out.push(row('  Nothing is offered: an unverified rewrite is not a fix.', TONE.quiet))
+    return out
   }
 
   const engines = r.engines.join(' + ')
   if (r.verified.length === 0 && r.located.length === 0) {
-    out.push(`${c('green', '✓')} ${c('bold', name)} — nothing to fix`)
-    out.push(c('dim', `  no rewritable site found; corpus ${groupDigits(r.corpus.samples)} sample(s), ${groupDigits(r.corpus.bytes)} bytes`))
-    return out.join('\n')
+    out.push(row(`✓ ${name} — nothing to fix`, TONE.good))
+    out.push(row(`  no rewritable site found; corpus ${groupDigits(r.corpus.samples)} sample(s), `
+      + `${groupDigits(r.corpus.bytes)} bytes`, TONE.quiet))
+    return out
   }
 
-  out.push(
-    `${opts.applied === true ? c('green', '✓') : c('yellow', '●')} ${c('bold', name)} — `
+  out.push(row(
+    `${opts.applied === true ? '✓' : '●'} ${name} — `
     + `${groupDigits(r.verified.length)} verified fix${r.verified.length === 1 ? '' : 'es'}`
     + `${r.located.length > 0 ? `, ${groupDigits(r.located.length)} located site${r.located.length === 1 ? '' : 's'} with no rewrite` : ''}`,
-  )
-  out.push(c('dim',
-    `  verified by re-parsing ${groupDigits(r.corpus.samples)} sample(s) / ${groupDigits(r.corpus.bytes)} bytes on ${engines};`
-    + ' output identical'))
+    opts.applied === true ? TONE.good : TONE.warn,
+  ))
+  out.push(row(
+    `  verified by re-parsing ${groupDigits(r.corpus.samples)} sample(s) / ${groupDigits(r.corpus.bytes)} bytes`
+    + ` on ${engines}; output identical`, TONE.quiet,
+  ))
   if (opts.applied !== true && r.verified.length > 0) {
-    out.push(c('dim', '  PREVIEW — nothing was written. Re-run with --apply to write these edits.'))
+    out.push(row('  PREVIEW — nothing was written. Re-run with --apply to write these edits.', TONE.quiet))
   }
-  out.push('')
+  out.push(row(''))
 
-  for (const f of r.verified) out.push(...renderVerified(f, c))
-  for (const l of r.located) out.push(...renderLocated(l, c))
+  for (const f of r.verified) out.push(...verifiedRows(f, opts))
+  for (const l of r.located) out.push(...locatedRows(l))
 
   if (r.frozen.length > 0) {
-    out.push(c('dim', `  ${groupDigits(r.frozen.length)} subtree(s) reused verbatim (no faithful rebuild): `
+    out.push(row(`  ${groupDigits(r.frozen.length)} subtree(s) reused verbatim (no faithful rebuild): `
       + r.frozen.slice(0, 6).map(f => `${f.rule}/${f.tag}`).join(', ')
-      + (r.frozen.length > 6 ? ', …' : '')))
+      + (r.frozen.length > 6 ? ', …' : ''), TONE.quiet))
   }
-  return out.join('\n')
+  return out
 }
 
-function renderVerified(f: VerifiedFix, c: Paint): string[] {
-  const out: string[] = []
-  out.push(`${c('green', 'ACTIONABLE')} ${c('cyan', f.id)}  ${c('dim', f.code)}`)
-  if (f.edit !== undefined) {
-    out.push(c('dim', `  ${f.edit.path}:${f.edit.line}:${f.edit.column}`))
-    out.push(`  ${c('red', `- ${f.edit.oldText}`)}`)
-    out.push(`  ${c('green', `+ ${f.edit.newText}`)}`)
-  }
-  else {
-    out.push(`  ${c('red', `- ${f.before}`)}`)
-    out.push(`  ${c('green', `+ ${f.after}`)}`)
-  }
+export function renderFixReport(r: FixReport, opts: FixRenderOptions = {}): string {
+  return render(fixReportRows(r, opts), opts)
+}
+
+function verifiedRows(f: VerifiedFix, opts: FixRenderOptions): Row[] {
+  const out: Row[] = []
   const b = f.benefit
   const effects: string[] = []
   if (b.antiPatternsAfter !== b.antiPatternsBefore) effects.push(`anti-patterns ${b.antiPatternsBefore} → ${b.antiPatternsAfter}`)
   if (b.ungatedChoicesAfter !== b.ungatedChoicesBefore) effects.push(`ungated choices ${b.ungatedChoicesBefore} → ${b.ungatedChoicesAfter}`)
   if (b.gatedChoicesAfter !== b.gatedChoicesBefore) effects.push(`choices gating on first char ${b.gatedChoicesBefore} → ${b.gatedChoicesAfter}`)
-  // The first-set line earns its place only when the set MOVED. Printing
-  // `'i' → 'i'` under a heading called "why" is how a diagnostic loses trust.
+  // The first-set line earns its place only when the set MOVED. Printing `'i' → 'i'`
+  // under a heading called "why" is how a diagnostic loses trust.
   if (f.armFirstSetBefore !== f.armFirstSetAfter) {
-    effects.push(`arm ${f.armIndex} dispatches on ${c('red', f.armFirstSetBefore)} → ${c('green', f.armFirstSetAfter)}`)
+    effects.push(`arm ${f.armIndex} dispatches on ${f.armFirstSetBefore} → ${f.armFirstSetAfter}`)
   }
   if (f.choiceGatesBefore !== f.choiceGatesAfter) {
-    effects.push(`${f.choiceId} gates: ${c('red', f.choiceGatesBefore)} → ${c('green', f.choiceGatesAfter)}`)
+    effects.push(`${f.choiceId} gates: ${f.choiceGatesBefore} → ${f.choiceGatesAfter}`)
   }
-  out.push(`  ${c('bold', 'effect')}  ${effects.join(' · ')}`)
+  const effect = effects.join(' · ')
+
+  out.push(row(`ACTIONABLE ${f.id}  ${f.code}`, { color: 'green', bold: true }))
+  // The grammar SOURCE is the world this fix lives in, so show it as a frame with the
+  // caret under the term being replaced rather than as a bare `path:line:col`. The
+  // frame's own message carries the measured effect, so no line is spent repeating the
+  // heading directly above it.
+  if (f.edit !== undefined) {
+    out.push(...codeFrame({
+      path: f.edit.path,
+      fullPath: opts.sourceRoot ?? f.edit.path,
+      line: f.edit.line,
+      column: f.edit.column,
+      endColumn: f.edit.column + f.edit.oldText.length,
+      lineText: f.edit.lineText.replace(/\t/g, ' '),
+      message: effect,
+      shortMessage: `→ ${f.edit.newText}`,
+      type: 'info',
+    }, opts, '  '))
+  }
+  else {
+    out.push(row(`  - ${f.before}`, TONE.bad))
+    out.push(row(`  + ${f.after}`, TONE.good))
+    out.push(row(`  effect  ${effect}`))
+  }
   if (b.codegenBytesBefore !== null && b.codegenBytesAfter !== null && b.codegenBytesAfter !== b.codegenBytesBefore) {
-    const dlt = b.codegenBytesAfter - b.codegenBytesBefore
-    out.push(`  ${c('dim', 'cost')}    compiled artifact ${dlt > 0 ? '+' : ''}${groupDigits(dlt)} B`)
+    const d = b.codegenBytesAfter - b.codegenBytesBefore
+    out.push(row(`  cost    compiled artifact ${d > 0 ? '+' : ''}${groupDigits(d)} B`, TONE.quiet))
   }
-  out.push(`  ${c('bold', 'proven')}  applied, recompiled, ${groupDigits(f.evidence.samples)} sample(s) re-parsed on `
-    + `${f.evidence.engines.join(' + ')} — output identical`)
-  out.push('')
+  out.push(row(`  proven  applied, recompiled, ${groupDigits(f.evidence.samples)} sample(s) re-parsed on `
+    + `${f.evidence.engines.join(' + ')} — output identical`))
+  out.push(row(''))
   return out
 }
 
-function renderLocated(l: LocatedFinding, c: Paint): string[] {
-  const out: string[] = []
-  out.push(`${c('yellow', 'LOCATED')}    ${c('cyan', l.id)}  ${c('dim', l.code)}`)
-  out.push(`  ${c('dim', 'site')}    ${l.site}`)
-  const lines = wrapAt(l.reason, 66, '')
-  out.push(`  ${c('dim', 'reason')}  ${lines[0] ?? ''}`)
-  for (const x of lines.slice(1)) out.push(`          ${x}`)
-  out.push('')
+function locatedRows(l: LocatedFinding): Row[] {
+  const out: Row[] = []
+  out.push(row(`LOCATED    ${l.id}  ${l.code}`, { color: 'yellow', bold: true }))
+  out.push(row(`  site    ${l.site}`, TONE.quiet))
+  const lines = wrap(l.reason, 66, '')
+  out.push(row(`  reason  ${lines[0] ?? ''}`))
+  for (const x of lines.slice(1)) out.push(row(`          ${x}`))
+  out.push(row(''))
   return out
 }

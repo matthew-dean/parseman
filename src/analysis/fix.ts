@@ -92,6 +92,8 @@ export type FixEdit = {
   end: number
   oldText: string
   newText: string
+  /** The whole source line the edit sits on, so a renderer can draw a real code frame. */
+  lineText: string
 }
 
 export type VerifiedFix = {
@@ -349,7 +351,12 @@ function locateEdit(
     let line = 1
     let lastNl = -1
     for (let i = 0; i < start; i++) if (source.text.charCodeAt(i) === 10) { line++; lastNl = i }
-    return { path: source.path, line, column: start - lastNl, start, end, oldText, newText }
+    let lineEnd = source.text.indexOf('\n', lastNl + 1)
+    if (lineEnd === -1) lineEnd = source.text.length
+    return {
+      path: source.path, line, column: start - lastNl, start, end, oldText, newText,
+      lineText: source.text.slice(lastNl + 1, lineEnd),
+    }
   }
   if (c.code === 'keyword-regex') {
     const spellings = [c.before, c.before.replace(/\/\)$/, '/)')]

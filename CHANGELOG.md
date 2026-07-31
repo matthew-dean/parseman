@@ -68,6 +68,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   rendering whose bytes depend on where it is piped cannot be diffed. No timings, no
   dates, no absolute paths.
 
+- **Rendered with `linecraft` (pinned `0.2.6`, matching jess's two pins), not
+  hand-rolled ANSI.** The first cut of this CLI carried its own escape-code table;
+  writing that file dropped the ESC bytes, colour was dead for a whole session, and
+  nothing said so, because `\u001b[2m` with the escape missing still prints as `[2m`.
+  Escape sequences are invisible failure surface. `src/analysis/terminal.ts` is now the
+  only module in parseman that talks to a terminal: the renderers emit ROWS (`{ text,
+  style }`), and the uncoloured form is the rows' own text — **no escape byte is ever
+  produced**, so the diffable output is byte-stable by construction rather than by
+  stripping. Corpus sites and `fix` edit sites are real `CodeDebug` frames, the same
+  component jess renders compiler errors with, so a caret in parseman and a caret in
+  jess look the same. Width is pinned to 80 off-TTY (`--width` overrides), and the
+  rendering is verified byte-identical across `TERM` / `COLORFGBG` / `COLUMNS` /
+  `NO_COLOR`. The dependency does not reach the library: `dist/index.js` contains no
+  `linecraft`, none of the new modules, and every size-guard fixture is still exactly at
+  its committed ceiling.
+
 - **`broad-recognizer` advice is now specific to the arm.** One string per cause was
   quietly wrong in the common case: it told every author "if this arm leads with a
   keyword regex, use `word()`" — including the authors of `regex(/[^()]+/)`, a genuine

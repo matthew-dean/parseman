@@ -30,20 +30,28 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
 
   AtRuleBlock#1   81 corpus positions can enter it
       arm 0  → literal('(')  '('            0 pos
-      arm 1  regex(/[^()]+/) ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:1  first input arm 1 can start on
-         a {
-         ^
+      arm 1  regex(/[^()]+/) ANY            entered at all 81
+  ⚠ arm 1 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── first input arm 1 can start on
+    ╰─
     do  this arm leads with a recognizer that can start at ANY character, so
         no first char can skip it. [A]
     ok as-is? { accept: ['AtRuleBlock#1'] }
 
   AtRuleBlock#2   81 corpus positions can enter it
       arm 0  → literal('[')   '['            0 pos
-      arm 1  regex(/[^[\]]+/) ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:1  first input arm 1 can start on
-         a {
-         ^
+      arm 1  regex(/[^[\]]+/) ANY            entered at all 81
+  ⚠ arm 1 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── first input arm 1 can start on
+    ╰─
     do  this arm leads with a recognizer that can start at ANY character, so
         no first char can skip it. [A]
     ok as-is? { accept: ['AtRuleBlock#2'] }
@@ -60,30 +68,42 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
 
   CustomDeclaration#1   81 corpus positions can enter it
       arm 0  → literal('(')  '('            0 pos
-      arm 1  regex(/[^()]+/) ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:1  first input arm 1 can start on
-         a {
-         ^
+      arm 1  regex(/[^()]+/) ANY            entered at all 81
+  ⚠ arm 1 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── first input arm 1 can start on
+    ╰─
     do  this arm leads with a recognizer that can start at ANY character, so
         no first char can skip it. [A]
     ok as-is? { accept: ['CustomDeclaration#1'] }
 
   CustomDeclaration#2   81 corpus positions can enter it
       arm 0  → literal('[')   '['            0 pos
-      arm 1  regex(/[^[\]]+/) ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:1  first input arm 1 can start on
-         a {
-         ^
+      arm 1  regex(/[^[\]]+/) ANY            entered at all 81
+  ⚠ arm 1 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── first input arm 1 can start on
+    ╰─
     do  this arm leads with a recognizer that can start at ANY character, so
         no first char can skip it. [A]
     ok as-is? { accept: ['CustomDeclaration#2'] }
 
   CustomDeclaration#3   81 corpus positions can enter it
       arm 0  → literal('{')  '{'            4 pos
-      arm 1  regex(/[^{}]+/) ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:3  arm 0 can start here; arm 1 is entered first
-         a {
-           ^
+      arm 1  regex(/[^{}]+/) ANY            entered at all 81
+  ⚠ arm 1 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:3]
+  1 │ a {
+    │   ╿
+    │   ╰── arm 0 can start here; arm 1 is entered first
+    ╰─
     do  this arm leads with a recognizer that can start at ANY character, so
         no first char can skip it. [A]
     ok as-is? { accept: ['CustomDeclaration#3'] }
@@ -92,10 +112,14 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
       arm 0  AtRuleBlock     '@'            0 pos
       arm 1  AtRuleStatement '@'            0 pos
       arm 2  Ruleset         '#','*','-'-'… 40 pos
-      arm 3  scanTo          ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:1  arm 2 can start here; arm 3 is entered first
-         a {
-         ^
+      arm 3  scanTo          ANY            entered at all 81
+  ⚠ arm 3 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── arm 2 can start here; arm 3 is entered first
+    ╰─
       arm[0] ∩ arm[1] overlap on '@'
     do  a scanTo fallback can start anywhere by definition. [C]
     do  arms share a first char — left-factor. [B]
@@ -104,10 +128,14 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
   Url   81 corpus positions can enter it
       arm 0  regex(/'(?:[^'\\]|\\.)*'/) '''            0 pos
       arm 1  regex(/"(?:[^"\\]|\\.)*"/) '"'            0 pos
-      arm 2  regex(/[^)"'\s]+/)         ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:1  first input arm 2 can start on
-         a {
-         ^
+      arm 2  regex(/[^)"'\s]+/)         ANY            entered at all 81
+  ⚠ arm 2 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── first input arm 2 can start on
+    ╰─
     do  this arm leads with a recognizer that can start at ANY character, so
         no first char can skip it. [A]
     ok as-is? { accept: ['Url'] }
@@ -119,9 +147,13 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
       arm 3  Declaration       '-','A'-'Z','… 34 pos
       arm 4  CustomDeclaration '-'            0 pos
       arm 5  literal(';')      ';'            2 pos
-      ↳ fixtures/css/decls.css:1:1  first input arm 2 can start on
-         a {
-         ^
+  ⚠ 42 corpus positions can enter this choice
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── first input arm 2 can start on
+    ╰─
       arm[0] ∩ arm[1] overlap on '@'
       arm[2] ∩ arm[3] overlap on '-','A'-'Z','_','a'-'z',\u128-\u65535
       arm[2] ∩ arm[4] overlap on '-'
@@ -134,10 +166,14 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
       arm 1  CustomDeclaration '-'            0 pos
       arm 2  Ruleset           '#','*','-'-'… 40 pos
       arm 3  literal(';')      ';'            2 pos
-      arm 4  scanTo            ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:1  arm 0 can start here; arm 4 is entered first
-         a {
-         ^
+      arm 4  scanTo            ANY            entered at all 81
+  ⚠ arm 4 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── arm 0 can start here; arm 4 is entered first
+    ╰─
       arm[0] ∩ arm[1] overlap on '-'
       arm[0] ∩ arm[2] overlap on '-','A'-'Z','_','a'-'z',\u128-\u65535
       arm[1] ∩ arm[2] overlap on '-'
@@ -148,10 +184,14 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
   pseudoArg#0   81 corpus positions can enter it
       arm 0  regex(/even|odd|[-+]?\d*n(?:[  '+','-','0'-'… 6 pos
       arm 1  SelectorList                   '#','*','-'-'… 40 pos
-      arm 2  scanTo                         ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:2:6  arm 0 can start here; arm 2 is entered first
-             color: black;
-              ^
+      arm 2  scanTo                         ANY            entered at all 81
+  ⚠ arm 2 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:2:6]
+  2 │     color: black;
+    │      ╿
+    │      ╰── arm 0 can start here; arm 2 is entered first
+    ╰─
       arm[0] ∩ arm[1] overlap on '-','0'-'9','E','N'-'O','e','n'-'o'
     do  a scanTo fallback can start anywhere by definition. [C]
     do  arms share a first char — left-factor. [B]
@@ -159,10 +199,14 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
 
   pseudoArg#1   81 corpus positions can enter it
       arm 0  → literal('(')  '('            0 pos
-      arm 1  regex(/[^()]+/) ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:1:1  first input arm 1 can start on
-         a {
-         ^
+      arm 1  regex(/[^()]+/) ANY            entered at all 81
+  ⚠ arm 1 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:1:1]
+  1 │ a {
+    │ ╿
+    │ ╰── first input arm 1 can start on
+    ╰─
     do  this arm leads with a recognizer that can start at ANY character, so
         no first char can skip it. [A]
     ok as-is? { accept: ['pseudoArg#1'] }
@@ -175,10 +219,14 @@ $ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures
       arm 4  Call      '-','A'-'Z','… 34 pos
       arm 5  Paren     '('            0 pos
       arm 6  Quoted    '"','''        0 pos
-      arm 7  anyValue  ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:3:12  arm 3 can start here; arm 7 is entered first
-             background: white;
-                    ^
+      arm 7  anyValue  ANY            entered at all 81
+  ⚠ arm 7 has an ANY first set — entered at all 81 of these positions
+
+    ╭─[fixtures/css/decls.css:3:12]
+  3 │     background: white;
+    │            ╿
+    │            ╰── arm 3 can start here; arm 7 is entered first
+    ╰─
       arm[0] ∩ arm[1] overlap on '+','-'-'.','0'-'9'
       arm[0] ∩ arm[4] overlap on '-'
       arm[1] ∩ arm[4] overlap on '-'
@@ -218,26 +266,35 @@ $ parseman fix examples/lang/parser.ts --export exprParser --corpus examples/lan
   PREVIEW — nothing was written. Re-run with --apply to write these edits.
 
 ACTIONABLE expr#arm0  keyword-regex
-  examples/lang/parser.ts:76:7
-  - regex(/if(?!\w)/)
-  + word('if', '\w')
-  effect  anti-patterns 3 → 2
+  ℹ anti-patterns 3 → 2
+
+     ╭─[examples/lang/parser.ts:76:7]
+  76 │       regex(/if(?!\w)/), g.expr as Combinator<Expr>,
+     │       ┖────────┬───────┚
+     │                ╰── → word('if', '\w')
+     ╰─
   cost    compiled artifact +179 B
   proven  applied, recompiled, 3 sample(s) re-parsed on interpreted + compiled — output identical
 
 ACTIONABLE expr#arm1  keyword-regex
-  examples/lang/parser.ts:36:3
-  - regex(/true(?!\w)/)
-  + word('true', '\w')
-  effect  anti-patterns 3 → 2
+  ℹ anti-patterns 3 → 2
+
+     ╭─[examples/lang/parser.ts:36:3]
+  36 │   regex(/true(?!\w)/),
+     │   ┖─────────┬────────┚
+     │             ╰── → word('true', '\w')
+     ╰─
   cost    compiled artifact +144 B
   proven  applied, recompiled, 3 sample(s) re-parsed on interpreted + compiled — output identical
 
 ACTIONABLE expr#arm2  keyword-regex
-  examples/lang/parser.ts:41:3
-  - regex(/false(?!\w)/)
-  + word('false', '\w')
-  effect  anti-patterns 3 → 2
+  ℹ anti-patterns 3 → 2
+
+     ╭─[examples/lang/parser.ts:41:3]
+  41 │   regex(/false(?!\w)/),
+     │   ┖─────────┬─────────┚
+     │             ╰── → word('false', '\w')
+     ╰─
   cost    compiled artifact +144 B
   proven  applied, recompiled, 3 sample(s) re-parsed on interpreted + compiled — output identical
 
@@ -375,8 +432,8 @@ $ parseman fix examples/lang/parser.ts --export exprParser --corpus examples/lan
     "antiPatternsAfter": 2,
     "gatedChoicesBefore": 3,
     "gatedChoicesAfter": 3,
-    "codegenBytesBefore": 45205,
-    "codegenBytesAfter": 45384
+    "codegenBytesBefore": 44845,
+    "codegenBytesAfter": 45024
   },
   "evidence": {
     "samples": 3,
@@ -394,7 +451,8 @@ $ parseman fix examples/lang/parser.ts --export exprParser --corpus examples/lan
     "start": 2478,
     "end": 2495,
     "oldText": "regex(/if(?!\\w)/)",
-    "newText": "word('if', '\\w')"
+    "newText": "word('if', '\\w')",
+    "lineText": "      regex(/if(?!\\w)/), g.expr as Combinator<Expr>,"
   }
 }
 ```
@@ -424,6 +482,7 @@ options
   --json[=<path>]     Machine-readable report. With no path it goes to stdout and the
                       human rendering goes to stderr.
   --limit <n>         Findings to expand (default 20).
+  --width <n>         Render width. Default: the terminal's when colouring, else 80.
   --color/--no-color  Force colour on/off. Default: on only when stdout is a TTY.
   -h, --help          This.
 

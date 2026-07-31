@@ -50,10 +50,14 @@ for it — and relating them is the diagnostic:
   value   81 corpus positions can enter it
       arm 3  Url       'U','u'        1 pos
       arm 4  Call      '-','A'-'Z','… 34 pos
-      arm 7  anyValue  ANY            ← entered at all 81
-      ↳ fixtures/css/decls.css:3:12  arm 3 can start here; arm 7 is entered first
-             background: white;
-                    ^
+      arm 7  anyValue  ANY            entered at all 81
+  ⚠ arm 7 has an ANY first set — entered at all 81 of these positions
+
+     ╭─[fixtures/css/decls.css:3:12]
+   3 │     background: white;
+     │            ╿
+     │            ╰── arm 3 can start here; arm 7 is entered first
+     ╰─
 ```
 
 The count is a count of CHARACTERS in the corpus whose value some arm accepts. It is an
@@ -131,6 +135,19 @@ the human report moves to stderr, so stdout stays one parseable document.
 Both documents are deterministic: stable ordering, no timings, no dates, no absolute
 paths. A diagnosis can be committed and diffed.
 
+## Rendering
+
+Output goes through [linecraft](https://www.npmjs.com/package/linecraft) (pinned
+`0.2.6`, the same version jess pins), so a caret and a file link look the same in
+parseman and in jess. Code frames are linecraft's `CodeDebug`, the component jess renders
+compiler errors with.
+
+The renderers emit rows — text plus a semantic style — and never an escape byte
+themselves. Without colour the output is those rows' own text, so the plain form cannot
+drift from the styled one, and there is nothing to strip. Width is pinned to 80 off-TTY,
+which is why a piped run is byte-identical regardless of the terminal it was piped
+from.
+
 ## Options
 
 | option | |
@@ -144,6 +161,7 @@ paths. A diagnosis can be committed and diffed.
 | `--json[=<path>]` | machine-readable report |
 | `--limit <n>` | findings to expand (default 20) |
 | `--color` / `--no-color` | default: colour only when stdout is a TTY and `NO_COLOR` is unset |
+| `--width <n>` | render width; default the terminal's when colouring, else 80 |
 
 A `.ts` grammar needs `tsx` installed; parseman registers it when it is resolvable and
 says so plainly when it is not.

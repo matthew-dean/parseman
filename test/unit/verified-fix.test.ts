@@ -15,7 +15,9 @@ import {
 import { proposeFixes, applyFixEdits } from '../../src/analysis/fix.ts'
 import { rebuildCombinator } from '../../src/analysis/rebuild.ts'
 import { renderFixReport } from '../../src/analysis/fix-render.ts'
-import { renderDiagnosis } from '../../src/analysis/diagnose-render.ts'
+import { renderDiagnosis, diagnosisRows } from '../../src/analysis/diagnose-render.ts'
+import { fixReportRows } from '../../src/analysis/fix-render.ts'
+import { codeFrame, plain, render } from '../../src/analysis/terminal.ts'
 import { diagnoseGrammar } from '../../src/analysis/diagnose.ts'
 import { measureChoiceCost, armFirstSets } from '../../src/analysis/corpus.ts'
 import { choiceArms, analyzeGating } from '../../src/analysis/gating.ts'
@@ -190,5 +192,58 @@ describe('node()/rules() shapes the rebuilder must not corrupt', () => {
     expect(JSON.stringify(parse(root, '(x)'))).toBe(JSON.stringify(parse(g as Combinator<unknown>, '(x)')))
     expect((root._def as { type?: string }).type).toBe('Doc')
     expect((root._def as { collapse?: boolean }).collapse).toBe(true)
+  })
+})
+
+describe('terminal layer — the rendering contract linecraft is here to hold', () => {
+  const ESC = '\u001b'
+
+  it('produces NO escape byte at all without colour — not stripped, never emitted', () => {
+    const r = proposeFixes(keywordGrammar(), { corpus })
+    const rows = fixReportRows(r, { name: 'g.ts' })
+    // The plain form is the rows' own text. There is no second code path that could
+    // drift from the styled one, which is the whole reason rows exist.
+    expect(plain(rows).includes(ESC)).toBe(false)
+    expect(render(rows, { color: false })).toBe(plain(rows))
+    expect(render(rows, { color: true }).includes(ESC)).toBe(true)
+  })
+
+  it('renders identically regardless of terminal environment', () => {
+    const d = diagnoseGrammar(keywordGrammar())
+    const once = renderDiagnosis(d, { name: 'g.ts' })
+    const saved = { ...process.env }
+    try {
+      process.env.TERM = 'dumb'
+      process.env.COLORFGBG = '15;0'
+      process.env.COLUMNS = '200'
+      expect(renderDiagnosis(d, { name: 'g.ts' })).toBe(once)
+    }
+    finally { process.env = saved }
+  })
+
+  it('draws a real code frame, with no absolute path in the plain form', () => {
+    const rows = codeFrame({
+      path: 'a/b.css',
+      fullPath: '/Users/someone/a/b.css',
+      line: 3,
+      column: 5,
+      lineText: '  color: red;',
+      message: 'value',
+      shortMessage: 'arm 2 can start here',
+      type: 'warning',
+    })
+    const text = plain(rows)
+    expect(text).toContain('a/b.css:3:5')
+    expect(text).toContain('color: red;')
+    expect(text).toContain('arm 2 can start here')
+    expect(text.includes('/Users/')).toBe(false)
+    expect(text.includes(ESC)).toBe(false)
+  })
+
+  it('keeps every row inside the requested width', () => {
+    const d = diagnoseGrammar(keywordGrammar())
+    for (const r of diagnosisRows(d, { name: 'g.ts', width: 80 })) {
+      expect(r.text.length).toBeLessThanOrEqual(100)
+    }
   })
 })
