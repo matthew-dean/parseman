@@ -321,6 +321,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Realistic-workload perf gate vs the pinned reference commit
         run: pnpm perf:workloads
+      # The PEAK clause — the same workloads against the fastest release ON RECORD
+      # rather than the previous one. The step above enforces "faster than the last
+      # release"; this one enforces "not below the best we have ever been", which is
+      # the half a per-step comparison structurally cannot see: five consecutive 1%
+      # losses each sit inside the noise floor, no step is flagged, and the sum is
+      # real. Measured at -5.1% accumulating across 0.28.0 -> 0.34.0 on the
+      # standalone sweep.
+      #
+      # Same job, so it reuses the checkout, the install and the warm .cache
+      # worktrees rather than paying for a second runner.
+      - name: Peak clause — no drawdown from the fastest release on record
+        run: pnpm perf:workloads:peak
 
   # Code-size gate. On the same footing as the two perf gates, because until it
   # existed size had NO gate at all: `bench:size` lived in package.json and in

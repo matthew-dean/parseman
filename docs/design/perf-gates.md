@@ -174,14 +174,81 @@ median **or** min threshold **and** loses at least 3/4 of its interleaved pairs.
 Win rate alone is lopsided even at noise-level deltas; a real regression loses
 nearly every pair — the 0.34.0 replay won **0/12** on all three guarded cases.
 
+### …and a MAJORITY OF PASSES — the fix that made the verdict honest
+
+That was still not enough, and the failure was not subtle.
+
+This gate carried its **own copy** of the measurement loop, written before
+`bench/ab-harness.ts` existed. That copy sampled the two sides as **contiguous
+blocks** rotated per round over the concatenated case list, so `ref|expected/narrow`
+and `head|expected/narrow` sat **seven positions apart** and never shared GC state,
+cache state or position in the run. Run with both sides pinned to the **same
+commit** — a byte-identical `src/`, at load average 8.1:
+
+```
+rollback/sparse   median  −9.2%   min  −6.5%   won 12/12
+expected/narrow   median +23.3%   min +10.6%   won  0/12   FAIL
+```
+
+A 32-point spread and a hard FAIL between a build and **itself**. So `won 0/12`
+was proving nothing: it did not discriminate a regression from noise, because the
+two sides were never measured under the same conditions. That is the signature CI
+hit on `40ce56b` and `1c6f6a8` — two commits touching **zero** files under `src/`.
+
+The fix was not a new statistic. `ab-harness.ts` had already diagnosed exactly
+this for the workload gate, and this gate now uses it:
+
+1. **Adjacent pairing with alternating order** — the two sides of a case are
+   measured back to back, so they share GC and cache state, and which one goes
+   first alternates.
+2. **Three independent passes, strict majority** — a burst lands in one pass, a
+   regression lands in all of them.
+3. **The sign test** (`signTest.medianPct: 3`) — a consistent win rate well under
+   50% is unambiguous even when the percentage is small.
+
+`--self` was added so the noise floor can be re-measured wherever you are.
+
+### Validated in both directions
+
+A gate is only known to work when it has been watched **pass on identical source**
+and **fail on a known regression**. Both, deliberately on a badly contended box:
+
+| run | load average | result |
+| --- | --- | --- |
+| `--self` ×3 | 23→31, 31→26, 26→19 | **PASS**, no case false-failed (worst single pass +12.4% median, absorbed by the majority rule) |
+| identical `src/` via `--ref` | 27.8→20.4 | **PASS**, 0/3 breaches on all 7 cases |
+| injected **+86%** | 9→21 | **FAIL**, 7/7 cases, 3/3 passes |
+| injected **+4.5%** | 19.7→19.5 | **FAIL**, 2 cases |
+| injected **+2.2%** | 20→27.8 | **FAIL**, 2 cases |
+| injected **+1.1%** | 22.5→30.6 | **FAIL**, `expected/none` 3/3 passes on a consistent 2/12 win rate |
+
+The injection is a pure per-byte spin cost, calibrated at **0.936 ns/iteration**
+(min of 40 × 2M) against a 38,625-byte input and each case's min-of-120 baseline.
+
+> **Smallest reliably detectable regression: ~1–2% per case.** At the bottom of
+> that band it is the **sign test** carrying detection, not the percentage — the
+> medians are noise-inflated at these load averages and should not be read as
+> effect sizes. Note also that the injection is a *flat* per-byte cost and is
+> therefore **not amplified** by these synthetic cases the way a genuine
+> rollback-density or expected-set-width regression is; a regression riding either
+> axis is caught proportionally smaller.
+
 ### Thresholds, and where they came from
 
-`medianPct: 6`, `minPct: 6`, `winRateCeiling: 0.25`.
+`medianPct: 6`, `minPct: 6`, `winRateCeiling: 0.25`, `signTest: 3`, `passes: 3`.
 
 Measured, not guessed. The **same build compared against itself** through this
 harness (`--ref=<head-sha> --head-ref=<head-sha>`, 4 rounds × 3 runs, calibrated
 samples, interleaved with per-round rotation) moved the per-case median by at
 most **1.9%** and the min by at most **1.0%**. 6% is over 3× the worse of those.
+
+That 1.9% was measured on a **quiet** machine, and is the number the block-sampled
+harness reported before the pairing fix. On a contended one the single-pass floor
+is far larger — up to **+12.4%** median in the runs above. The percentage
+thresholds were **not** widened to cover that; the majority-of-passes rule absorbs
+it instead, which is what keeps the gate sensitive at 1–2% while not firing on a
+busy runner. **Widening the threshold to cover a burst would blind the gate to
+exactly the band it exists to watch.**
 
 ### What it does NOT catch — read this before trusting a green
 
@@ -565,6 +632,90 @@ with `fetch-depth: 0` so the pinned sha is present, and if it is not, the gate
 says so and exits non-zero. "The gate did not run" must never render as green —
 and the `test` aggregate treats a SKIPPED perf job as a failure for the same
 reason, unless `changes` said the PR was documentation-only.
+
+## The peak clause — `pnpm perf:workloads:peak`
+
+### The blind spot every per-step gate has
+
+The release policy is "each release must be faster than the last unless the
+slowdown is deliberate and documented". Everything above enforces that per step,
+and a per-step test **cannot see a slow bleed**: five consecutive 1% losses are
+each inside the noise floor, no step gets flagged, and the sum is a real 5%
+regression.
+
+That is measured, not hypothetical. The standalone version sweep at
+`~/parseman-perf-probe/` (40 rounds, 2,800 samples, 0 digest mismatches) found
+**−3.9%** over 0.28.1→0.32.0 and **−5.1%** over 0.28.0→0.34.0 on its probe
+grammar, with almost every individual step inside its noise floor. **A per-step
+gate would have caught none of it.**
+
+### The clause
+
+A release may not sit below the fastest release **on record** by more than the
+noise floor. The record lives in `bench/workloads/config.json`:
+
+```json
+"peak": { "sha": "7d1817f", "version": "0.45.0", "allowancePct": 5 }
+```
+
+- **Absolute, not differential.** `sha` names a **commit**, never a stored
+  millisecond count, so the comparison is re-measured on whatever machine runs it
+  and reads the same on a laptop and a CI runner.
+- **`allowancePct` is tolerance, not budget.** It is the measured noise floor of
+  this harness — the same 5% the per-release thresholds use, from the same
+  self-check.
+- **Structurally stricter than the per-release rule**: median **and** min must
+  *both* breach, not either. A per-release gate is watching for a change that just
+  happened and should be twitchy; the peak clause answers "are we below the best we
+  have ever been", which is worth answering only when both statistics agree. The
+  win-rate conjunction and the majority-of-passes rule are kept.
+
+Demonstrated at load average **98 → 106**, where `json/document` swung from
+**−20.1% to +67.6%** median across passes while its min held at −2.9%…−0.7% and
+its win rate at 5–8 of 12 — verdict correctly `ok`. That is the whole design in
+one row: **the median is the statistic a contended runner destroys; min and win
+rate are not.**
+
+### The peak is seeded, not swept — and cannot be imported
+
+**Stated rather than left to be discovered.** 0.45.0 is the **starting record**,
+the bar to beat from here. It is *not* the winner of a measured sweep across all
+releases. That sweep was attempted at 0.46.0 and abandoned: the machine sat at
+load average 70–90, where triage runs of this very gate reported the same workload
+anywhere from **−86% to +131%**. A number a control cannot reproduce is worse than
+no number.
+
+What *was* measured, and matters more:
+
+> HEAD runs **~45–50% faster** than 0.28.0, 0.36.0 and 0.38.0 on `css/stylesheet`.
+
+So the sweep's **0.28.0 peak is a property of its own instrument** — a 10-node
+monolithic fused probe grammar — **and must not be copied into this config**. A
+realistic composed grammar and a synthetic monolithic one do not peak in the same
+place. On *this* workload set there is no evidence of a historical peak above HEAD.
+Whatever peak a different instrument reports is evidence about that instrument's
+shape. **Re-measure; never import.**
+
+### Re-baselining is a deliberate, committed diff — and it is enforced
+
+Moving `peak` forward is how a genuine improvement becomes the new bar. Moving it
+**backward**, or **widening `allowancePct`**, makes a slower build the reference —
+which may be a legitimate trade, and is also exactly how a regression gets
+laundered into a baseline.
+
+`scripts/check-changelog.mjs` §D therefore:
+
+1. validates every `peak` block structurally — sha resolvable as a commit, version
+   parseable, allowance a positive number (a malformed record is a gate that
+   silently does not gate);
+2. requires **any** edit to one to be named in the CHANGELOG's current section,
+   calling out backward moves and widened allowances **by name**.
+
+It runs on **every** PR, not release PRs only, because a peak can move at any time
+and the moment it matters is the moment it moves. Like §C it has **no hatch** —
+`release-exempt` does not waive it. This is deliberate repetition of a lesson
+already paid for: both `referenceSha` fields carried "bump this at every release"
+in a *comment* and were missed for ten consecutive releases.
 
 ## When it fires
 
