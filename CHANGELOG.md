@@ -90,6 +90,59 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   actually indexes and the node pays for the tiers its reducer declares. An offset from a
   module nothing registered still declines. Completes the fix filed for 0.46 in 0.45's
   "refuse foreign offsets".
+- **The grammar perf gate no longer fails against a byte-identical `src/`.** It carried
+  its own copy of the measurement loop, predating `bench/ab-harness.ts`, and that copy
+  sampled the two sides as CONTIGUOUS BLOCKS rotated per round over the concatenated case
+  list — so `ref|expected/narrow` and `head|expected/narrow` sat seven positions apart and
+  never shared GC state, cache state, or position in the run. Run with both sides pinned to
+  the same commit (80d0e62, load average 8.1) it reported `expected/narrow` median +23.3%,
+  min +10.6%, won 0/12 and FAILED, while `rollback/sparse` read −9.2% in the same run: a
+  32-point spread between a build and itself. That is the signature CI hit on `40ce56b` and
+  `1c6f6a8`, two commits touching zero files under `src/`, and it is why `won 0/12` did not
+  discriminate a regression from noise. The gate now uses the shared harness, which pairs
+  the two sides ADJACENTLY, alternates which goes first, and — new here — runs three
+  independent passes and fails only on a strict majority. `--self` was added so the noise
+  floor can be re-measured on the machine in front of you.
+  Validated in both directions, deliberately on a badly contended box. Against identical
+  `src/`: four control runs at load average 8, 19–31, 27.8 and 22.5, all PASS, no case
+  false-failed (worst single pass still swung +12.4% median, and the majority rule absorbed
+  it). Against an injected regression, a pure per-byte cost calibrated at 0.936 ns per spin
+  iteration on a 38,625-byte input: `+86%` and `+4.5%` fail on every case, `+2.2%` fails on
+  two, and the smallest caught was **`+1.1%`** on `expected/none`, which breached 3/3 passes
+  on a consistent 2/12 win rate. **Smallest reliably detectable regression: ~1–2% per case,
+  and it is the sign test — not the percentage — that carries detection at the bottom of
+  that band.** The injection is a flat per-byte cost, so it is NOT amplified by these
+  synthetic cases the way a real rollback- or expected-set regression is; a regression
+  riding either axis is caught proportionally smaller.
+- **A PEAK clause: `pnpm perf:workloads --peak`.** A per-step gate enforces "each release
+  must be faster than the last" and structurally cannot see a slow bleed — five consecutive
+  1% losses are each inside the noise floor, no step is flagged, and the sum is real. The
+  standalone version sweep measured exactly that, −5.1% accumulating across 0.28.0 → 0.34.0
+  with almost every step individually insignificant. The new clause holds every release to
+  the fastest one on record, named by COMMIT in `bench/workloads/config.json` so the
+  comparison is re-measured rather than inherited as a stored millisecond count. It is
+  stricter in structure than the per-release rule — median AND min must both breach, not
+  either — and keeps the win-rate conjunction and the majority-of-passes rule. Demonstrated
+  at load average 98 → 106, where `json/document` swung from −20.1% to +67.6% median across
+  passes while its min held at −2.9%…−0.7% and its win rate at 5–8 of 12: verdict correctly
+  `ok`. The **peak is seeded at 0.45.0, not swept** — a full historical sweep on these
+  workloads was attempted and abandoned when triage runs at load 70–90 reported the same
+  workload anywhere from −86% to +131%, and a number a control cannot reproduce is worse
+  than none. What was measured and is recorded in the config: HEAD runs ~45–50% FASTER than
+  0.28.0, 0.36.0 and 0.38.0 on `css/stylesheet`, so **the sweep's 0.28.0 peak is a property
+  of its own 10-node monolithic probe grammar and must not be imported here** — on this
+  workload set there is no evidence of a historical peak above HEAD.
+- **The peak record cannot move quietly.** `scripts/check-changelog.mjs` gains section D:
+  it validates every `peak` block structurally (sha resolvable as a commit, version
+  parseable, allowance a positive number) and requires ANY edit to one to be named in the
+  CHANGELOG's current section, calling out by name the two edits that launder a regression
+  into the baseline — moving the peak BACKWARD and widening `allowancePct`. It runs on
+  EVERY PR rather than release PRs only, because a peak can move at any time. Like the
+  anchor gate above it, there is no exemption hatch: `release-exempt` does not waive it.
+  This is deliberate repetition of a lesson already paid for — both `referenceSha` fields
+  carried "bump this at every release" in a *comment* and were missed for ten consecutive
+  releases, which is why that check was made executable in 0.45.0 and why this one is
+  executable from the start.
 
 ## 0.45.0 — 2026-07-30
 
