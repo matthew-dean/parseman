@@ -27,7 +27,7 @@ import { sequence } from '../combinators/sequence.ts'
 import { choice } from '../combinators/choice.ts'
 import { dispatch, endsWith, matches, otherwise, routed, startsWith, when } from '../combinators/dispatch.ts'
 import { attempt } from '../combinators/attempt.ts'
-import { many, oneOrMore, optional, sepBy } from '../combinators/repeat.ts'
+import { many, oneOrMore, optional, sepBy, keepSeparator } from '../combinators/repeat.ts'
 import { not } from '../combinators/not.ts'
 import { peek } from '../combinators/peek.ts'
 import { node } from '../combinators/node.ts'
@@ -231,13 +231,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   // eslint-disable-next-line no-new-func
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'startsWith', 'endsWith', 'matches', 'otherwise', 'routed', 'attempt',
-    'many', 'oneOrMore', 'optional', 'sepBy', 'not', 'peek', 'node', 'parser',
+    'many', 'oneOrMore', 'optional', 'sepBy', 'keepSeparator', 'not', 'peek', 'node', 'parser',
     'scanTo', 'token', 'leaf', 'transform', 'skip', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
-    many, oneOrMore, optional, sepBy, not, peek, node, parser,
+    many, oneOrMore, optional, sepBy, keepSeparator, not, peek, node, parser,
     scanTo, token, leaf, transform, skip, trivia, classifiedTrivia, label, field, expectC, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
   return Object.entries(map)
@@ -441,7 +441,11 @@ class Serializer {
         : `many(${kid(def.parser)}${repeatOpts(def.min, def.max)})`
       case 'optional':  return `optional(${kid(def.parser)})`
       case 'attempt':   return `attempt(${kid(def.parser)})`
-      case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)}${repeatOpts(def.min, def.max, def.trailing)})`
+      // `keepSeparators` is an opt-in expressed at the SEPARATOR, not in the options
+      // bag, so it must round-trip as `keepSeparator(sep)` — serializing it as an
+      // option would reconstruct a grammar whose call site no longer states its own
+      // children arity, which is the exact defect this API shape exists to prevent.
+      case 'sepBy':     return `sepBy(${kid(def.parser)}, ${def.keepSeparators ? `keepSeparator(${kid(def.separator)})` : kid(def.separator)}${repeatOpts(def.min, def.max, def.trailing)})`
       case 'not':       return `not(${kid(def.parser)})`
       case 'peek':     return `peek(${kid(def.parser)})`
       case 'routed':   return def.fallback === undefined ? 'routed()' : `routed(${kid(def.fallback)})`

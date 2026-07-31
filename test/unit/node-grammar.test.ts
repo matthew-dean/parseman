@@ -180,14 +180,20 @@ describe('node() — mutual recursion', () => {
     expect(items[0]!.span.start).toBeLessThan(items[1]!.span.start)
   })
 
-  it('delimiters appear as leaves alongside Item nodes', () => {
+  it('delimiters appear as leaves alongside Item nodes, but the SEPARATOR does not', () => {
     const r = parse(listGrammar.List, '[x,y]')
     expect(r.ok).toBe(true)
     if (!r.ok) return
     const leaves = r.value.children.filter(c => c._tag === 'leaf') as CSTLeaf[]
+    // `[` and `]` are terms of the enclosing sequence — they are structure, and
+    // they stay.
     expect(leaves.some(l => l.value === '[')).toBe(true)
     expect(leaves.some(l => l.value === ']')).toBe(true)
-    expect(leaves.some(l => l.value === ',')).toBe(true)
+    // `,` is the LIST's separator. A list contributes its items and nothing else,
+    // so it is gone from `children`. This assertion was `true` before 0.47.0 and
+    // flipping it is the whole point of the change: an author reading "a flat item
+    // list" wrote `children[1]` and got a comma.
+    expect(leaves.some(l => l.value === ',')).toBe(false)
   })
 })
 

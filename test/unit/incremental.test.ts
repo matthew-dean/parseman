@@ -375,6 +375,8 @@ describe('parseDoc().edit() — structural list-reuse', () => {
     const fresh = parseDoc<CSTNode>(registry, root, applyEditStr(bigList, { start: from, deleted: to - from, inserted: '' }))
     expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
     const { shared, total } = sharedByIdentity(relTreeOf(base), relTreeOf(inc))
+    // eslint-disable-next-line no-console
+    console.log(`TMPMEASURE delete reuse = ${(100 * shared / total).toFixed(1)}% (${shared}/${total})`)
     expect(shared / total).toBeGreaterThan(0.4)
   })
 })
@@ -421,6 +423,8 @@ describe('parseDoc().edit() — structural reuse is grammar-verified (no footgun
     const inc = base.edit(0, 0, '99,')
     const fresh = parseDoc<CSTNode>(registry, 'List', '99,' + src)
     expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
+    // eslint-disable-next-line no-console
+    console.log(`TMPMEASURE sepBy-splice shared = ${JSON.stringify(sharedByIdentity(relTreeOf(base), relTreeOf(inc)))}`)
     expect(sharedByIdentity(relTreeOf(base), relTreeOf(inc)).shared).toBeGreaterThan(0)
   })
 
@@ -565,12 +569,14 @@ describe('parseDoc — absolute positions from the relative tree', () => {
   const { registry, root } = makeSeqGrammar()
   it('spanAt(path) projects absolute offsets; absolutizeCST reconstructs them', () => {
     const doc = parseDoc<CSTNode>(registry, root, 'foo,12,bar')
-    // Root Seq children: Term Id 'foo' @0..3, ',' , Term '12' @4..6, ',' , Term 'bar' @7..10
+    // Root Seq children are the sepBy's ITEMS only — the ',' separators are
+    // consumed and live in rawChildren, not here:
+    //   Term 'foo' @0..3, Term '12' @4..6, Term 'bar' @7..10
     expect(doc.spanAt([])).toEqual({ start: 0, end: 10 })
-    expect(doc.spanAt([2])).toEqual({ start: 4, end: 6 })     // the '12' Term
+    expect(doc.spanAt([1])).toEqual({ start: 4, end: 6 })     // the '12' Term
     const absTree = absolutizeCST(doc.tree!)
     expect(absTree.span).toEqual({ start: 0, end: 10 })
-    expect((absTree.children[2] as CSTNode).span).toEqual({ start: 4, end: 6 })
+    expect((absTree.children[1] as CSTNode).span).toEqual({ start: 4, end: 6 })
   })
   it('spanAt throws on a failed parse', () => {
     const obj = makeObjGrammar()

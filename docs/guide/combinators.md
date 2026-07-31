@@ -36,6 +36,7 @@ Three words that sound alike but play different roles:
 | `optional(c)` | Zero or one; returns `null` on no match. |
 | `sepBy(c, sep, opts?)` | Separated list; `{ min, max, trailing }`. **Nullable by default.** |
 | `oneOrMoreSep(c, sep, opts?)` | Non-empty separated list — sugar for `sepBy(c, sep, { min: 1 })`. |
+| `keepSeparator(sep)` | Wrap a separator to KEEP it in `children`. Default is items only. |
 | `transform(c, fn)` | Map the result: `fn(value, span) → newValue`. |
 | `skip(main, skipped)` | Match `main` then `skipped`; return `main`'s value. |
 | `token(c)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
@@ -562,6 +563,52 @@ parse(sepBy(ident, comma, { trailing: 'allow' }), 'a,b,').span
 **Gating:** the single most consequential nullability in the library. An argument
 list, parameter list, selector list, or CSV row that requires at least one item
 should use `oneOrMoreSep`. Plain `sepBy` is for the genuinely-optional list.
+
+**Children: items only.** A list contributes the ITEMS of the list and nothing
+else. Under a `node()`, `sepBy(ident, comma)` over `a,b,c` contributes three
+children — not five with commas at the odd indices. `many` and `oneOrMore` always
+behaved this way; `sepBy` was the outlier until 0.47.0, and the mismatch between
+"a flat item list" and what `children[1]` actually held is the single most
+expensive documentation defect this library has shipped.
+
+The separator is still consumed, and it is still in `rawChildren` in source order
+— the same channel trivia uses. Nothing is lost.
+
+```ts
+// [verify]
+import { sepBy, keepSeparator, choice, regex, literal, node, parse } from 'parseman'
+
+const ident = regex(/[a-z]+/)
+const kids = (t: string) => (children: readonly unknown[]) => children.length
+
+// Items only — three children, not five.
+parse(node('L', sepBy(ident, literal(',')), kids('L')), 'a,b,c').value
+// → 3
+
+// Opt back in where the separator could have been more than one thing.
+const slashOrComma = choice(literal(','), literal('/'))
+parse(node('G', sepBy(ident, keepSeparator(slashOrComma)), kids('G')), 'a/b,c').value
+// → 5
+```
+
+### `keepSeparator`
+
+Keeps a list's separators in `children`, interleaved with the items.
+
+Reach for it when the separator could have matched **more than one thing** — a
+`choice`, a regex with alternation or a quantifier, a rule reference — and a
+consumer depends on which one matched. In CSS the separator carries meaning:
+`grid-area: 1 / 2` and `font: 12px/1.5` do not mean what `1, 2` means.
+
+The rule behind it: **a combinator may collapse only what its construction makes
+recoverable.** `sepBy(x, literal(','))` has its separator fixed at construction, so
+dropping it destroys nothing — the same reason `balanced('(', ')')` may legitimately
+collapse to one string. `sepBy(x, choice(literal(','), literal('/')))` does not, so
+the author has to say so.
+
+It wraps the separator rather than riding in the options bag on purpose: the call
+site then states its own children arity, which is the exact failure being fixed. A
+name that lies is what created this.
 
 ### `optional`
 

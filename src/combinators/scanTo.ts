@@ -9,6 +9,7 @@ import { expect } from './expect.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
+import { token } from './token.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
 
 export type ScanToOptions = {
@@ -176,7 +177,7 @@ export function balanced(
   const ownSkip = options.skip ?? []
   const combi = buildBalancedInterior(open, close, ownSkip)
   // `raw` keeps the pre-ambient behavior: the eager interior (per-call skip only).
-  if (options.raw) return combi
+  if (options.raw) return token(combi)
 
   // Ambient-aware in place — the returned combinator KEEPS its identity (its own
   // interior `self` ref points back to it, and ir-serialize / codegen dedup rely
@@ -200,7 +201,33 @@ export function balanced(
     }
     return interior.parse(input, pos, ctx)
   }
-  return combi
+  /**
+   * ONE LEAF, like `scanTo` — the sibling in this file that has always got this
+   * right.
+   *
+   * `balanced` is declared `Combinator<string>` and its interior callback
+   * reassembles the whole match into exactly that one string. But the interior is
+   * spelled `transform(sequence(literal(open), many(...), expect(literal(close))))`
+   * and `transform` is TRANSPARENT to CST capture, so the reassembled string never
+   * reached the parent's `children`: `balanced('(', ')')` over `"(a(b)c)"`
+   * contributed SEVEN children while `scanTo` in the same file contributed one.
+   * The declared type and the emitted arity disagreed, and nothing checked.
+   *
+   * `token()` is the fix rather than a bespoke wrapper because both engines
+   * already understand `tag: 'token'` — the interpreter suppresses the interior
+   * collectors and pushes one leaf, and codegen emits the mirror. Identity is
+   * preserved where it matters: `_balancedAmbient` and the interior `self`
+   * back-edge stay on the INNER combinator, which is what codegen's ambient
+   * `scanSkip` rebuild reads and what nested opens recurse into — so a nested
+   * balanced still contributes nothing of its own, and only the outermost match
+   * becomes a leaf.
+   *
+   * This is the same rule the separated-list change enforces: a combinator may
+   * collapse only what its construction makes recoverable. `balanced`'s
+   * delimiters are FIXED at construction, so collapsing to one string is
+   * legitimate here — which is exactly why it must actually collapse.
+   */
+  return token(combi)
 }
 
 /** Build a balanced open/close interior for a FIXED skip set (no ambient). */
