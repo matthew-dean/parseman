@@ -5,6 +5,78 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **A factory body that fails to evaluate now names the binding and the cause.** The
+  dominant real cause is a forward reference — `const A = node('A', B, …)` above
+  `const B = …` — and the macro reported it as a generic "rules(...) factory isn't
+  statically evaluable", or, through `composeLeaf`, as a complaint about the ARGUMENT
+  SHAPE (`final argument must be a local rules() map`). That message points at the
+  wrong cause and was twice reported as a grammar defect. It now reads: ``Val``
+  references ``Tok`` before its declaration — a temporal dead zone … move the
+  declaration above ``Val``, or use ``g.Tok``, which is order-free. `composeLeaf` no
+  longer restates a shape error when the argument had the right shape and failed to
+  evaluate; when the leaf is an unresolved identifier it names it.
+
+  Worth stating plainly, because it is NOT the same class as the two entries above:
+  this constraint is **JavaScript's, not parseman's**. The interpreter throws
+  `ReferenceError: Cannot access 'Tok' before initialization` on exactly the sources
+  the macro refuses, so the two agree; `g.X` is order-free only because the proxy mints
+  a ref and defines it in a second phase. A `g.X` → bare-const conversion is therefore
+  safe **iff** the const is declared above every use and is not on a reference cycle —
+  and dropping a const from the returned map is not what breaks such a sweep.
+
+- **A terminal inside a `node()` no longer emits three runtime guards the emitter can
+  already decide.** `emitNode` installs both collectors itself
+  (`_ctx._cstLeaves = chV; _ctx._cstRawChildren = rawV`), and for a direct-builder node
+  both are compile-time literals — a fresh `[]` or `undefined`. The per-terminal
+  capture preamble was nonetheless emitting `if (_cstLeaves || _cstRawChildren)` plus
+  two inner branches at every terminal inside every node. Measured per-terminal cost
+  296.3 B → 109.3 B (−63%); a `node()` site at two terminals 2,283 B → 1,901 B over the
+  same body written bare (−17%). The `node-scale` probes, which vary node density, fall
+  10.04% (4 nodes) → 11.50% (32 nodes); `example/css` −3.00%; 48,965 B reclaimed across
+  the size fixtures. Gated on tree identity: 220 real trees over 110 real CSS files,
+  interpreted and compiled, identical to `bb2e587`. This matters beyond bytes —
+  `node()` is the correct spelling where `transform()` corrupts the tree by spreading
+  its result, so the correct spelling was the expensive one and nothing said so. The
+  remaining per-site cost is 1,683 B of capture-scope frame, labelled block and
+  fail-path truncation; the truncation is decidable by the same fact and is the next
+  lever.
+
+- **Fixed a TDZ throw when a recursive combinator has a SHARED interior.** A
+  combinator lying on a self-reference cycle could be hoisted to a shared `const`,
+  i.e. emitted outside the `ref()/define()` closure that binds the cycle's only lazy
+  edge. The back-edge then re-resolved through the cycle target's own const and the
+  two decls read each other eagerly — `const _s1 = many(choice(_s0, …))` declared
+  before `_s0`, `ReferenceError: Cannot access '_s0' before initialization` at compose
+  time. No declaration order fixes it, so cycle-interior nodes are now inlined; they
+  are re-hoisted by identity on re-lowering. A nested recursive combinator that is
+  itself on the cycle keeps its own closure, with the enclosing ref vars still in
+  scope. `balanced()`'s interior is referenced once and never earned a const, so the
+  IR and macro bytes are unchanged at every existing call site — verified identical on
+  both surfaces across the byte gate, against `bb2e587`.
+- **Fixed `compose()` dropping ambient `scanSkip` inside a `balanced()` interior** —
+  an interpreter-versus-compiled divergence in shipped code. `balanced()` records the
+  obligation as `_balancedAmbient`, an own property held outside `_def` so static
+  analysis keeps seeing the eager interior; structural IR serialization therefore lost
+  it, and the composed parser stopped at the first delimiter hidden inside a string or
+  comment while the interpreter and a direct compile did not. A balanced now
+  round-trips as the constructor call that built it, so `balanced()` re-creates the
+  marker; `raw: true` stays structural. Measured over three surfaces in one process:
+  `(')' e)`, `("a)b" e)` and `(a /* ) */ b)` diverged only under compose, and now
+  agree. IR shrinks (a bare balanced 410 → 98 B) because the derived interior is no
+  longer serialized.
+- **Fixed `routed(fallback)` losing its fallback under the macro.** The macro's
+  generic constructor table entered `routed` as zero-arg, so the fallback was dropped
+  silently and a production written to work both inside and outside a `dispatch()`
+  branch lost its out-of-branch behaviour when compiled — while the interpreter kept
+  it. Bare `routed()` is byte-identical.
+- **Fixed a `makeWhen(...)` alias rejecting matcher keys that `when(...)` accepts.**
+  `makeWhen(opts)` is `(key, parser) => when(key, parser, opts)`, so it accepts every
+  key `when` does, but the macro's factory branch handled only string and string-array
+  keys. An arm keyed by `startsWith`/`endsWith`/`matches` through the alias was a hard
+  macro failure — `rules(...) factory isn't statically evaluable` — for a grammar the
+  interpreter builds, while the identical un-aliased `when(matcher, …)` compiled. Two
+  grammar authors cut working function routing to get around it.
+
 - **A choice arm marks the root trivia log only when the arm can reach it.** Every
   other mark in `emitFirstMatch` asks a question about the arm; this one asked only
   whether the grammar has root trivia at all, so it was emitted at 1,046 css sites
