@@ -110,10 +110,18 @@ export const base = rules(g => ({
 })
 
 describe('composeLeaf over imported recognition IR', () => {
-  it('is macro-only and never delegates to runtime compose()', () => {
-    expect(() => parseman.composeLeaf([])).toThrow(
-      'composeLeaf(): requires Parseman macro lowering; runtime composition is forbidden',
-    )
+  it('is macro-only as a COMPILED artifact and never delegates to runtime compose()', () => {
+    // Without the macro, composeLeaf() materializes the INTERPRETED fuse (a combinator
+    // map) — never runtime codegen. Its rules are combinators, not fused functions, and
+    // no carried IR is produced, so the reason it was macro-only (keeping lexical
+    // builders out of carried IR) still holds.
+    const leaf = parseman.composeLeaf([
+      parseman.rules(() => ({ Tail: parseman.literal('y') })),
+      parseman.rules(g => ({ Doc: parseman.sequence(parseman.literal('x'), g.Tail) })),
+    ]) as unknown as Record<string, parseman.Combinator<unknown>>
+    expect(typeof leaf.Doc).toBe('object')
+    expect(parseman.run(leaf.Doc!, 'xy').ok).toBe(true)
+    expect(parseman.isInterpretedFuse(leaf)).toBe(true)
     expect(() => transformMacro(
       `import { composeLeaf, literal, rules } from 'parseman' with { type: 'macro' }
 export const parser = composeLeaf([unresolvedSyntax, rules(g => ({ Document: literal('x') }))])`,

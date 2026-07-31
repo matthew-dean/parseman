@@ -95,7 +95,7 @@ export type {
 // the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)
 // for later exploration of that lowering. `composeLeaf()` is terminal by design;
 // ordinary reusable grammar composition remains `compose()`.
-export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
+export { compose, composeLeaf, cstBuildHost, fuseInterpreted, isInterpretedFuse } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans } from './line-index.ts'

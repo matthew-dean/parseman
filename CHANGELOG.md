@@ -6,6 +6,51 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 ## 0.46.0 — unreleased
 
 - Release prep. Entries land as work merges.
+- **`fuseInterpreted()` — a composed grammar can now be RUN interpreted.** `compose()`
+  fuses by codegen: every piece is compiled to `_r_<Name>` functions dropped into one
+  scope, so a cross-piece reference resolves by NAME and an override reroutes the base
+  piece's own calls. None of that existed interpreted — a cross-piece reference is an
+  ordinary `ref()` placeholder nobody ever `.define()`d, so any interpreted run of a
+  composed grammar threw `ref<T>() used before .define()`. Since every real grammar is
+  composed, and since diagnostics and profiling must stay in interpreted mode and never
+  reach codegen, that rule was unenforceable: work that needed it hand-fused the pieces
+  in throwaway scripts instead. `fuseInterpreted(items)` takes the SAME items
+  `compose()`/`composeLeaf()` take and returns a runnable combinator map — no codegen,
+  no `new Function`, no macro build step — with the compiled fuse's semantics: later
+  piece wins, an override REPOINTS the placeholder every call site already holds (open
+  recursion), the composing grammar's trivia governs every fused rule, per-piece
+  `scanSkip`/`hostMode` are preserved, and a referenced-but-undefined rule is a
+  fuse-time error. `isInterpretedFuse(map)` distinguishes the two shapes; `run()` /
+  `parseDoc()` accept either. **Nothing is added to codegen** — no emitted byte and no
+  compile-time work changes.
+  - Equivalence is asserted, not assumed: `test/parity/interpreted-fuse-parity.test.ts`
+    runs the interpreted fuse and `compose()` over the shared composition battery
+    (`test/parity/helpers/compose-cases.ts`, the same cases that pin interpreter ≡
+    macro) and over a 3-piece stylesheet grammar × a 21-input corpus × 5 entry rules,
+    comparing ok / end / expected / **value** per input.
+  - **MUTATING by construction.** Binding a cross-piece hole rewrites the shared
+    placeholder object — that IS how an override reaches a base piece's own calls. A
+    second, CONFLICTING fusion over the same piece objects therefore throws instead of
+    silently rewriting the first one's parser; build a fresh instance of the piece for
+    the second fusion.
+  - A `pick()`/`linkable()` artifact is rejected (it carries compiled functions, not a
+    combinator graph) rather than being fused around and silently dropped.
+  - Recorded, not papered over: a piece containing **no `node()` at all** compiles to
+    non-capturing rules (a per-piece decision composition invalidates), so the COMPILED
+    fuse hands a later piece's `node()` empty children where the interpreted fuse
+    reports the real ones. Runtime `compose()` and the macro agree with each other on
+    this; adding any `node()` to the piece removes the difference. Pinned in the same
+    parity file.
+- **`composeLeaf()` no longer throws at runtime.** It is still macro-only as a COMPILED
+  artifact — it never falls back to runtime codegen composition, and it produces no
+  carried IR, so the reason it was macro-only (keeping lexical builders out of carried
+  IR) is untouched. Without the macro it now materializes the interpreted fuse of the
+  same items, which is the only way a leaf grammar was reachable interpreted at all.
+  Fusion happens on first rule ACCESS, not at construction: a grammar module typically
+  builds several leaf grammars over one shared recognition piece, and an interpreted
+  fuse binds that piece in place, so eager fusion would make merely importing the module
+  throw. The declared return type stays the macro-path type; use `isInterpretedFuse()`
+  when a caller must tell the two apart.
 - **Grammar wasted-work analysis, and a gate that ratchets it** (`analyzeChoiceInventory`,
   `profileWastedWork`, `checkWastedWork`, `buildWastedWorkBaseline`, plus rendering).
   A PEG `choice` is ordered, so arm *i* is only reached once arms `0..i-1` have been
