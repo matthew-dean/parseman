@@ -143,8 +143,22 @@ export function node<P extends Combinator<unknown>, const I extends number, cons
 export function node<N, const Tags extends readonly string[] = readonly never[]>(combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, never, Tags[number]>
 export function node<N, const Tags extends readonly string[] = readonly never[]>(combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, never, Tags[number]>
 export function node<const Type extends string, P extends Combinator<unknown>, const I extends number, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: P, opts: NodeProjectOptions<I> & { tags?: Tags }): NodeCombinator<ProjectValue<P, I>, Type, Tags[number]>
-export function node<N, const Type extends string, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
-export function node<N, const Type extends string, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
+// `Type` carries a default so that `node<N>('Type', …)` — one explicit type
+// argument, the node value type — still MATCHES these signatures. Without it
+// the arity check rejects them, resolution falls back to the combinator-first
+// overloads above, and the caller gets `TS2345 string is not assignable to
+// Combinator` plus a TS7006 implicit-any reducer from the rejected contextual
+// type. See test/unit/node-type-argument.test.ts.
+//
+// RESIDUAL COST: `= string` is the only shape available. TypeScript fills a
+// missing type argument from its DEFAULT and never infers it (there is no
+// partial type-argument inference), so `node<N>('Type', …)` resolves `Type` to
+// `string` and loses the string literal. Write `node('Type', …)` (no explicit
+// type arguments) or `node<N, 'Type'>('Type', …)` where the literal identity
+// matters to a grammar-aware visitor. The only literal-preserving alternative
+// is a curried call form, which would change the public call surface.
+export function node<N, const Type extends string = string, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: Combinator<unknown>, build?: BuildNode<N>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
+export function node<N, const Type extends string = string, const Tags extends readonly string[] = readonly never[]>(type: Type, combinator: Combinator<unknown>, opts?: NodeOptions<Tags>): NodeCombinator<N, Type, Tags[number]>
 export function node<N>(
   typeOrCombinator: string | Combinator<unknown>,
   combinatorOrBuild?: Combinator<unknown> | BuildNode<N> | NodeOptions,

@@ -67,6 +67,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   escapes written as `\u001B` sequences; output is unchanged and `pnpm check:control-bytes`
   is green.
 - **Captured CLI output for review at `docs/samples/cli-output.md`** — verbatim, non-TTY,
+- **Fixed: `node<N>('Type', …)` no longer fails to type-check.** The `type`-first
+  overloads gave `Type` no default, so a call supplying ONE explicit type argument failed
+  their type-argument arity and fell through to the combinator-first overloads, where
+  argument 0 must be a `Combinator`. One call site therefore emitted two unrelated-looking
+  diagnostics: `TS2345 string is not assignable to Combinator`, and `TS7006` implicit-any
+  on the reducer's `children`, because the rejected overload left the reducer contextually
+  untyped. `Type` now defaults to `string` — jess 411 → 5 diagnostics, scss 342 → 4, of
+  which exactly one is real debt. **The literal is not recovered by this spelling**:
+  TypeScript fills a missing type argument from its default and never infers it, so the
+  brand is `string`. Only a curried call form preserves the literal; that changes the
+  public surface and is deliberately not taken. Spell `node<N, 'Type'>('Type', …)` where
+  the brand matters. A type-level test pins the resolved brand for all three spellings.
   with the command that produced each block.
 - **`fuseInterpreted()` — a composed grammar can now be RUN interpreted.** Any interpreted
   run of a composed grammar previously threw `ref<T>() used before .define()`. It takes
