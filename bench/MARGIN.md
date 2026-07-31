@@ -21,9 +21,57 @@ pnpm bench:margin -- --charts graphql               # just the chart you moved
 pnpm bench:margin -- --rounds 5 --out /tmp/mine.json
 ```
 
-Exit code is **0 when Parséman is fastest in every measured comparison, 1 when it
-is not**, so it can be used as a gate directly. `JSON.parse (native)` is excluded
-from that verdict — it is C++ inside the engine, not a JS parser generator.
+Exit codes:
+
+| code | verdict | meaning |
+| --- | --- | --- |
+| 0 | **BAR HELD** | Parséman leads every competitor, in every group, by at least the floor |
+| 1 | **BAR BROKEN** | some competitor is within the floor — or ahead |
+| 2 | **INDETERMINATE** | the run could not resolve its own claim; see *self-calibration* below |
+
+**Exit 2 is not a pass.** A gate that only distinguishes "good" from "bad" will
+report "good" when it is simply blind, which is how most of a benchmark's life is
+actually spent. Treat 2 as "re-run it", never as "it was fine".
+
+### The floor
+
+The verdict is not `ratio >= 1`. It is `ratio >= MIN_MARGIN`, currently **1.05×**,
+applied to every competitor in every group of every chart.
+
+That constant is **absolute and deliberately loose**, and it is set from the
+*harness's resolution*, not from today's margin. The bar is a rank bar — a
+Parséman that got slower is fine as long as it stays in front — so pinning the
+floor near the currently-measured 1.79× would silently convert it into the
+differential gate this is explicitly not. 1.05× is just "a lead this instrument
+can tell apart from a tie" (see the interpretation table below).
+
+**Changing `MIN_MARGIN` is an owner decision**, on the same footing as a perf
+rebaseline. Do not move it to make a lane green.
+
+### Excluded from the verdict (measured and printed anyway)
+
+| bar | why it cannot break the bar |
+| --- | --- |
+| `JSON.parse (native)` | C++ inside the engine, not a JS parser generator |
+| `parseman-interp` | Parséman's own interpreter build — not a competitor |
+
+The interpreter used to count as a competitor, which meant a build where the
+interpreter happened to beat the macro build would report the bar BROKEN. That is
+a false failure, not a rank loss.
+
+### Artifact evidence
+
+Every run prints, before any timing, the **resolved path and version of every
+artifact it measured** — Parséman's own version and commit SHA (and a loud
+warning if the worktree is dirty), each competitor package's version and resolved
+directory, and for Peggy/Nearley/Jison the **sha256 and mtime of the generated
+parser that actually ran**, because those bars execute a checked-in generated
+file rather than the generator. A stale generated parser and a current one
+produce equally plausible tables; only the hash tells them apart.
+
+If a measured artifact is missing from disk, the run aborts instead of reporting.
+If a bar is charted but has no provenance entry, the run aborts too — an
+unmeasured bar must not read as "covered everything".
 
 A full 3-round run over all four charts takes roughly 15–20 minutes and spawns
 ~90 child processes. **Do not run anything else on the box while it runs**, and
@@ -52,10 +100,25 @@ box's noise. `bench:margin` keeps every round and reports three things.
   win-rate near 50%. It is measured in the **same run** as everything else, so it
   prices *that run's* noise floor rather than a remembered one.
 
-**Read the control before you read anything else.** If the control reads 1.15×,
-the run cannot resolve a 15% margin change and you should re-run on a quieter
-box — not report the number. A margin smaller than the control's spread is not a
-margin.
+**The control is enforced, not advisory.** A margin smaller than the control's
+spread is not a margin, and the harness now acts on that itself rather than
+leaving it to whoever reads the table:
+
+- control spread ≥ the tightest claimed margin → **exit 2**, INDETERMINATE
+- control spread ≥ the floor → **exit 2**, because a run that loose could not
+  have *failed* a borderline case either, so a pass from it would be unearned
+
+This is the part that was missing. The control was measured and printed from the
+start, and the exit code ignored it — so a run whose A/A pair disagreed by 250%
+still reported the bar HELD, on ratios that were mostly noise. Verified: at
+`--rounds 1` on this box the control reads **+257%**, and the gate now returns 2
+where it previously returned 0.
+
+If you want to watch it fail on demand, `--assert-floor <N>` overrides the floor
+for one run. `--assert-floor 1000` demands a 1000× lead, which nothing has, so a
+healthy harness must report BROKEN. It does not change `MIN_MARGIN`, and every
+run that uses it is stamped as a verification run in the banner, in DROPPED, and
+in the verdict.
 
 The measurement protocol underneath is deliberately **identical** to the
 published charts': same `bench/measure-bar.ts` child, one process per bar, same
