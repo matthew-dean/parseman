@@ -71,7 +71,7 @@
  * poisons the whole curve, so there is no "skip" path anywhere in this file.
  */
 
-import { writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { writeFileSync, readFileSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
@@ -402,6 +402,122 @@ export async function loadLowerer(): Promise<Lowerer> {
   die(`could not load transformMacro (the macro lowering entry point).\n  tried:\n    ${failures.join('\n    ')}\n  This probe measures the macro-lowered module, which is what actually ships.\n  If this version predates src/plugin/index.ts, it is BELOW THE API FLOOR — exclude it from the series rather than substituting a different ruler.`)
 }
 
+/**
+ * ISOLATION FOR THE DETERMINISTIC SCRATCH DIRECTORY
+ * ------------------------------------------------
+ * `measure()` needs a directory path that is the SAME on every run (see the
+ * comment on `dir` below), which means concurrent probes cannot each be handed a
+ * private one. Two processes measuring the same unit otherwise share a directory
+ * and delete each other's files mid-lowering. A `pnpm size:guard` run alongside
+ * `pnpm test` is enough, and it does not merely fail loudly: MEASURED, six
+ * concurrent probes on this tree gave five hard failures (ENOTEMPTY, and a
+ * lowering that threw because its files vanished underneath it) and one process
+ * that exited 0 carrying DIFFERENT numbers from an uncontended run. A silently
+ * wrong measurement is the failure mode this whole file is written against.
+ *
+ * So the sharing is made EXPLICIT rather than left to luck: a per-unit advisory
+ * lock at `<dir>.lock`, and a probe that WAITS for its turn instead of racing.
+ *
+ * THE MUTEX IS `mkdir`, AND THE ARTIFACT TYPE IS PART OF THE PROTOCOL.
+ * `mkdir` without `recursive` is atomic and fails EEXIST, which is all a mutex
+ * needs. An exclusive `open(…, 'wx')` file would do the job equally well in
+ * isolation — but not in the shared namespace this lock lives in. `tmpdir()` is
+ * per-USER, not per-checkout, so every parseman worktree on the machine contends
+ * for these same paths, and a probe that writes a FILE where another writes a
+ * DIRECTORY does not interlock with it: each sees the other's lock as EEXIST,
+ * then dies trying to remove it with the wrong `rmSync` flags. That was MEASURED
+ * against `lane/0460-coderabbit`, which locks the same paths with `mkdir`. So
+ * this matches it deliberately. Changing the artifact type is a protocol break
+ * and must be done on every branch at once, or not at all.
+ *
+ * Ownership is recorded INSIDE the lock, in `owner`, for stale detection. It is
+ * advisory: a holder that ignores it still interlocks correctly, because the
+ * exclusion comes from `mkdir` alone.
+ *
+ * A crashed probe must not wedge every later run, so a lock is broken when its
+ * owner process is gone or it has been held past `HOLD_LIMIT_MS`. A lock with no
+ * readable owner is broken on age alone, which is also how a lock taken by an
+ * implementation that writes no owner file is recovered.
+ *
+ * This changes only I/O sequencing. The measured bytes are unaffected — verified
+ * identical to an uncontended run — so a historical series measured with and
+ * without it stays comparable.
+ */
+const HOLD_LIMIT_MS = 10 * 60_000
+const WAIT_LIMIT_MS = 10 * 60_000
+
+/**
+ * Recursive removal must RETRY, because `fs.rmSync` defaults to `maxRetries: 0`.
+ *
+ * Node documents ENOTEMPTY — alongside EBUSY, EMFILE, ENFILE and EPERM — as a
+ * transient error for recursive removal, and provides `maxRetries`/`retryDelay`
+ * to absorb it. The default absorbs nothing, so on a loaded machine the walk's
+ * directory listing can go stale between readdir and rmdir and the call throws.
+ *
+ * That is teardown, not measurement. It surfaced as `size-guard: unhandled:
+ * Error: ENOTEMPTY` after every unit had already measured correctly. This file's
+ * contract is that a non-zero exit means "could not measure", so a cleanup
+ * artifact must never be allowed to spend one.
+ */
+function rmTree(target: string): void {
+  rmSync(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 })
+}
+
+function ownerAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    // EPERM means the process exists but belongs to another user.
+    return (e as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** True when the lock was broken and the caller should retry immediately. */
+function breakIfStale(lockPath: string): boolean {
+  let pid = 0
+  let heldSince = 0
+  try {
+    const [p, t] = readFileSync(path.join(lockPath, 'owner'), 'utf8').trim().split(/\s+/)
+    pid = Number(p)
+    heldSince = Number(t)
+  } catch {
+    // No readable owner: either a holder that records none, or one that has not
+    // written it yet. Fall back to the lock's own age rather than assuming.
+    try {
+      heldSince = statSync(lockPath).mtimeMs
+    } catch {
+      return true // already gone
+    }
+  }
+  const held = Date.now() - heldSince
+  if (held < HOLD_LIMIT_MS && (pid === 0 || ownerAlive(pid))) return false
+  rmTree(lockPath)
+  return true
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function claim(lockPath: string, unitId: string): void {
+  const deadline = Date.now() + WAIT_LIMIT_MS
+  for (;;) {
+    try {
+      mkdirSync(lockPath, { recursive: false })
+      writeFileSync(path.join(lockPath, 'owner'), `${process.pid} ${Date.now()}\n`)
+      return
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+      if (breakIfStale(lockPath)) continue
+      if (Date.now() >= deadline) {
+        die(`unit ${unitId}: waited ${Math.round(WAIT_LIMIT_MS / 1000)}s for ${lockPath}, still held.\n  Another size probe is measuring this unit and has not finished. Waiting is correct — the\n  scratch directory must be deterministic, so it cannot be made private per process.\n  If no probe is running, delete that directory.`)
+      }
+      sleepSync(25)
+    }
+  }
+}
+
 export function measure(u: Unit, lower: Lowerer): Row {
   // DETERMINISTIC directory name, deliberately NOT mkdtemp.
   //
@@ -412,8 +528,12 @@ export function measure(u: Unit, lower: Lowerer): Row {
   // as a phantom +-1 B gzip wobble that would otherwise have been mistaken for a
   // noise floor and used to justify a looser tolerance. With a fixed path the
   // probe is byte-identical across processes.
+  //
+  // Determinism is bought with sharing, so the sharing is locked — see above.
   const dir = path.join(tmpdir(), `pm-size-probe-${u.id}`)
-  rmSync(dir, { recursive: true, force: true })
+  const lockPath = `${dir}.lock`
+  claim(lockPath, u.id)
+  rmTree(dir)
   mkdirSync(dir, { recursive: true })
   try {
     // The macro lowering resolves sibling imports off disk; it needs a package
@@ -466,7 +586,8 @@ export function measure(u: Unit, lower: Lowerer): Row {
       bytesPerNode: Math.round(genBytes / u.nodes),
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    rmTree(dir)
+    rmTree(lockPath)
   }
 }
 
