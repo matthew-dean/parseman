@@ -2,7 +2,10 @@
 
 Every block below is **verbatim**, non-TTY (so colour is off, which is what lands in a
 CI log or a file). The command above each block reproduces it from the repository root.
-Nothing here was hand-edited.
+Nothing here was hand-edited, with one stated exception: the trailing
+`$ echo $?  ->  N` line is an ANNOTATION of the exit code each run returned. A real
+shell prints the number on its own line; the arrow form keeps the code beside the
+command it belongs to. Everything above it in each block is captured output.
 
 ## 1 — a clean grammar
 

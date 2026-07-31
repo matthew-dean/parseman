@@ -2056,6 +2056,13 @@ function transformMacroImpl(
     // `const ws = trivia(…)` is also a replacement, and the hoisted prelude would be
     // emitted ahead of a binding it may read.
     const claiming = applied.filter(r => HOIST_MARKER_PROBE.test(r.replacement))
+    // A non-empty prelude means some replacement claimed declarations, so the probe must
+    // find at least one. If it ever does not, `Math.min()` of nothing is `Infinity` and
+    // the anchor error below reports a position that does not exist — a real invariant
+    // break wearing a nonsense message. Name the invariant instead.
+    if (claiming.length === 0) {
+      throw new Error(`${id} — internal: a module-hoist prelude was produced but no applied replacement carries a hoist marker`)
+    }
     const firstStart = Math.min(...claiming.map(r => r.start))
     const anchor = (body as Statement[]).find(s => s.start <= firstStart && firstStart < s.end)
     if (anchor === undefined) {

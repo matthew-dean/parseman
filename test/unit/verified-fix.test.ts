@@ -143,6 +143,59 @@ describe('proposeFixes', () => {
     expect(applied.text).toContain("word('if', '\\w')")
   })
 
+  it('delimits not(not(X)) past a parenthesis inside a STRING LITERAL', () => {
+    // A raw paren counter closes one level early on `literal(')')`, so `oldText` becomes
+    // the unbalanced `not(not(literal(')'))`. `applyFixEdits` cannot catch that — it
+    // compares against the same mis-delimited span — so `--apply` would write a wrong
+    // edit into the user's file. The whole contract of this module is that an edit
+    // applied to the wrong site is worse than no edit at all.
+    const g = choice(sequence(not(not(literal(')'))), literal(')')), literal('y'))
+    const text = "const g = choice(sequence(not(not(literal(')'))), literal(')')), literal('y'))\n"
+    const r = proposeFixes(g, {
+      corpus: [{ name: 'a', text: ')' }, { name: 'b', text: 'y' }],
+      source: { path: 'g.ts', text },
+    })
+    const f = r.verified.find(x => x.code === 'double-not')
+    expect(f?.edit?.oldText).toBe("not(not(literal(')')))")
+    expect(f?.edit?.newText).toBe("peek(literal(')'))")
+    const applied = applyFixEdits(text, r.verified)
+    expect(applied.applied).toBe(1)
+    expect(applied.text).toContain("sequence(peek(literal(')')), literal(')'))")
+  })
+
+  it('DECLINES a not(not(X)) site whose extent a `/` makes undecidable', () => {
+    // Telling a regex literal from division needs the full expression grammar, and a
+    // regex body may hold unbalanced parens. Declining names the site and prints the
+    // rewrite; guessing would delimit the wrong text.
+    const g = choice(sequence(not(not(regex(/[(]/))), literal('(')), literal('y'))
+    const r = proposeFixes(g, {
+      corpus: [{ name: 'a', text: '(' }, { name: 'b', text: 'y' }],
+      source: { path: 'g.ts', text: 'const g = not(not(regex(/[(]/)))\n' },
+    })
+    expect(r.verified.some(x => x.code === 'double-not')).toBe(false)
+    expect(r.located.some(l => l.reason.includes('regular expression'))).toBe(true)
+  })
+
+  it('gives two choices of ONE rule distinct candidate ids', () => {
+    // `analyzeGating` spells a rule's second choice `rule#1` precisely because a rule can
+    // hold several. An id built from the rule name alone collides across them, and the
+    // report then renders two distinct sites as one — which is what a reader greps and
+    // what `--apply` attribution reads.
+    const m = rules(() => ({
+      Doc: sequence(
+        choice(regex(/if(?!\w)/), regex(/[a-z]+/)),
+        choice(regex(/while(?![\w-])/), regex(/[0-9]+/)),
+      ),
+    })) as Record<string, Combinator<unknown>>
+    const r = proposeFixes(m.Doc!, { corpus: [{ name: 'a', text: 'ifwhile' }] })
+    const ids = [...r.verified, ...r.located].map(x => x.id)
+    expect(ids.length).toBeGreaterThan(1)
+    expect(new Set(ids).size).toBe(ids.length)
+    // And each site names the choice it actually sits in, not the rule's first one.
+    for (const f of r.verified) expect(f.id.startsWith(`${f.choiceId}#arm`)).toBe(true)
+    expect(new Set(r.verified.map(f => f.choiceId)).size).toBeGreaterThan(1)
+  })
+
   it('refuses an edit when the same spelling occurs twice', () => {
     const text = 'a = regex(/if(?!\\w)/)\nb = regex(/if(?!\\w)/)\n'
     const r = proposeFixes(choice(regex(/if(?!\w)/), regex(/[a-z]+/)), {
@@ -284,10 +337,17 @@ describe('terminal layer — the rendering contract linecraft is here to hold', 
     expect(text.includes(ESC)).toBe(false)
   })
 
-  it('keeps every row inside the requested width', () => {
+  // The header's cause/gating summary is emitted as ONE unwrapped line whose length is
+  // its own content — measured at 93 columns for every requested width from 40 to 80.
+  // Every OTHER row honours `width`. The exception is pinned BY NAME rather than hidden
+  // under a slack constant, so a row that overshoots for any other reason fails here.
+  it('keeps every row inside the requested width, except the unwrapped header summary', () => {
     const d = diagnoseGrammar(keywordGrammar())
-    for (const l of diagnosisLines(d, { name: 'g.ts', width: 80 })) {
-      expect(l.map(x => x.text).join('').length).toBeLessThanOrEqual(120)
+    const width = 80
+    for (const l of diagnosisLines(d, { name: 'g.ts', width })) {
+      const text = l.map(x => x.text).join('')
+      if (text.includes('choices already gate')) continue
+      expect(text.length, text).toBeLessThanOrEqual(width)
     }
   })
 })

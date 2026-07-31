@@ -273,6 +273,33 @@ export const factory = g => ({ Fold: node('Fold', sequence(literal('a'), literal
     // An unreadable file cannot be registered, so it cannot turn a decline into a guess.
     expect(r.register('/nope/does-not-exist.ts')).toBe(false)
   })
+
+  it('DECLINES a text key two distinct files both claim', () => {
+    // The registry is keyed by module TEXT, which identifies a module for offsets but not
+    // for import resolution: `fromBinding` follows a hop with `resolveImport(mod.file, …)`,
+    // and identical text means identical RELATIVE specifiers, which resolve to different
+    // absolute files from different directories. Letting the second registration overwrite
+    // the first answers against the WRONG module and yields a wrong arity — and a wrong
+    // arity under-captures, calling the reducer with arguments the compiler elided.
+    const shared = "import { helper } from './helper.ts'\nexport const fold = helper\n"
+    write('dupA/mod.ts', shared)
+    write('dupA/helper.ts', 'export const helper = (c, f, s, r) => c')
+    write('dupB/mod.ts', shared)
+    write('dupB/helper.ts', 'export const helper = c => c')
+
+    const entrySrc = 'const x = 1'
+    const parsed = parseSync('/virtual/g.ts', entrySrc)
+    const r = createReducerResolver('/virtual/g.ts', parsed.program.body as unknown[], entrySrc)
+
+    expect(r.register(path.join(dir, 'dupA/mod.ts'))).toBe(true)
+    // The second file holds byte-identical text, so the key can no longer name a module.
+    expect(r.register(path.join(dir, 'dupB/mod.ts'))).toBe(false)
+    // And the offset is refused rather than answered from whichever registration won.
+    const offset = shared.trim().indexOf('helper\n')
+    expect(r.resolve('helper', offset, shared.trim())).toEqual({
+      arity: null, src: null, reason: 'ambiguous-source',
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

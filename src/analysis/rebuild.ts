@@ -217,6 +217,14 @@ export function rebuildCombinator(
       case 'field': out = field(d.name, one(d.parser)); break
       case 'token': out = token(one(d.parser)); break
       case 'leaf': out = leaf(one(d.parser), d.fn); break
+      // A LABELLED expect reproduces `d.expected` exactly (`expect` sets it to `[label]`).
+      // An unlabelled one RE-DERIVES it from the rebuilt inner parser, so it can differ
+      // from `d.expected` when derivation hit an undefined `lazy` thunk in a different
+      // order than the original construction did. That is diagnostic text, not parse
+      // output: `fix.ts` — the only consumer of this rebuild — compares failures by
+      // POSITION and excludes `expected` labels by design (see its module header).
+      // Preserving `d.expected` verbatim would need an expected-set override on the
+      // public `expect()` signature, which is not worth widening for a label.
       case 'expect': out = expect(one(d.parser), d.label) as Combinator<unknown>; break
       case 'node': {
         const opts = {

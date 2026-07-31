@@ -84,6 +84,20 @@ describe('parseman CLI exit codes', () => {
     expect(r.code).toBe(0)
   }, T)
 
+  it('exits 2 on a `--limit` that is not a non-negative integer', () => {
+    // `Number('abc')` is NaN, and the renderer's `shown >= limit` is then always false —
+    // the flag would be silently ignored and every site expanded. A tool that cannot honour
+    // the flag it was given must say so, not pretend it did.
+    const r = run('diagnose', 'examples/css/parser.ts', '--export', 'cssRules', '--limit', 'abc')
+    expect(r.out).toContain('--limit')
+    expect(r.code).toBe(2)
+  }, T)
+
+  it('honours a valid `--limit`', () => {
+    const r = run('diagnose', 'examples/css/parser.ts', '--export', 'cssRules', '--limit', '1')
+    expect(r.code).toBe(1)
+  }, T)
+
   it('prints usage and exits 2 with no command at all', () => {
     const r = run()
     expect(r.out).toContain('parseman diagnose')

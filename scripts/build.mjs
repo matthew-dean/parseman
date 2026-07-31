@@ -4,7 +4,7 @@
  */
 import { build } from 'esbuild'
 import { execSync } from 'child_process'
-import { chmodSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, readFileSync, rmSync } from 'fs'
 import { builtinModules } from 'module'
 
 rmSync('dist', { recursive: true, force: true })
@@ -40,11 +40,16 @@ await Promise.all([
   build({ ...shared, format: 'cjs', outdir: 'dist', outExtension: { '.js': '.cjs' } }),
 ])
 
-// The bin needs its shebang back: esbuild drops it when it bundles.
+// `src/cli/index.ts` carries the shebang and esbuild PRESERVES it through the bundle, so
+// the line is part of the build and the source map already accounts for it. Assert that
+// rather than prepending it here: a post-build prepend would push every mapping one line
+// out, and the guarded version of it that used to live here was a silent no-op — a check
+// that never ran, which is the same as no check.
 {
   const binPath = 'dist/cli/index.js'
-  const src = readFileSync(binPath, 'utf8')
-  if (!src.startsWith('#!')) writeFileSync(binPath, `#!/usr/bin/env node\n${src}`)
+  if (!readFileSync(binPath, 'utf8').startsWith('#!/usr/bin/env node\n')) {
+    throw new Error(`${binPath} lost its shebang — esbuild no longer preserves the entry point's`)
+  }
   chmodSync(binPath, 0o755)
 }
 

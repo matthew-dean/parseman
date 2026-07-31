@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import * as P from '../../src/index.ts'
-import { fuseInterpreted, isInterpretedFuse } from '../../src/compiler/linker.ts'
+import { fuseInterpreted, isInterpretedFuse, linkable } from '../../src/compiler/linker.ts'
 import { cases } from './helpers/compose-cases.ts'
 
 /**
@@ -272,6 +272,11 @@ describe('fuseInterpreted fuse-time contract', () => {
     // A compiled compose() result re-lowers from carried IR; a `linkable()` artifact
     // does not, and must say so.
     expect(isInterpretedFuse(artifact)).toBe(false)
+    // The rejection itself, not just the classification: a `linkable()` artifact carries
+    // compiled rule functions and no combinator graph, so fusing it must THROW rather
+    // than silently contribute nothing and drop its rules.
+    expect(() => fuseInterpreted([linkable({ A: P.literal('a') })]))
+      .toThrow('no combinator graph')
   })
 })
 

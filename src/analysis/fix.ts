@@ -50,7 +50,7 @@ import { peek } from '../combinators/peek.ts'
 import { parse } from '../combinators/grammar.ts'
 import { compile } from '../compiler/codegen.ts'
 import { digestValue } from '../oracle/digest.ts'
-import { analyzeGating, firstSetToString, peelToLeading, type GatingReport } from './gating.ts'
+import { analyzeGating, choiceArms, firstSetToString, peelToLeading, type GatingReport } from './gating.ts'
 import { rebuildCombinator, type FrozenSubtree } from './rebuild.ts'
 
 /** One corpus document. `name` is a label for the report; it is never a path lookup. */
@@ -244,6 +244,10 @@ type Candidate = {
   code: FixCode
   rule: string
   armIndex: number
+  /** The enclosing choice's `analyzeGating` id — `rule`, or `rule#N` when the rule holds
+   *  more than one choice. Resolved by NODE IDENTITY, never by re-deriving occurrence
+   *  order in a second walk. */
+  choiceId: string
   /** The node to replace. */
   target: Combinator<unknown>
   /** The arm the target leads, for the first-set reading. */
@@ -264,11 +268,27 @@ function renderKeyword(k: KeywordRewrite): string {
     : `word('${k.word}', '${k.boundary}'${ci})`
 }
 
-/** Walk every choice arm, attributing each to the rule that owns it — the same walk shape
- *  `analyzeGatingRules` uses, so ids read `rule#armN` exactly as the diagnosis does. */
-function collectCandidates(root: Combinator<unknown>): Candidate[] {
+/**
+ * Walk every choice arm, attributing each to the CHOICE that owns it.
+ *
+ * The identity a reader greps — and the one `--apply` attribution reads — is the choice,
+ * not the rule: `analyzeGating` already spells a rule's second choice `rule#1` precisely
+ * because a rule can hold several. An id built from the rule alone collides across them,
+ * and the report then sorts and renders two distinct sites as one.
+ *
+ * The choice id is taken from `report` by ARM-ARRAY IDENTITY rather than recomputed here.
+ * `gating.ts` says out loud that a second walk drifts out of step with its `id`
+ * assignment — it did, silently, and mislabelled every arm — so this does not walk twice.
+ */
+function collectCandidates(root: Combinator<unknown>, report: GatingReport): Candidate[] {
   const out: Candidate[] = []
   const seen = new Set<Combinator<unknown>>()
+  // arms array (the choice's own `d.parsers`) → the id `analyzeGating` gave that choice.
+  const idOfChoice = new Map<readonly Combinator<unknown>[], string>()
+  for (const c of report.choices) {
+    const arms = choiceArms(c)
+    if (arms !== undefined) idOfChoice.set(arms, c.id)
+  }
   const visit = (p: Combinator<unknown>, enclosing: string): void => {
     if (seen.has(p)) return
     seen.add(p)
@@ -276,16 +296,20 @@ function collectCandidates(root: Combinator<unknown>): Candidate[] {
     if (d === undefined || typeof d !== 'object') return
     const rule = (p as { _ruleName?: string })._ruleName ?? enclosing
     if (d.tag === 'choice') {
+      // A choice the report did not describe (an unanalysable one) still gets a site; it
+      // falls back to the rule name, which is what the id read before choices were told
+      // apart, and is unique whenever the rule holds only this one.
+      const choiceId = idOfChoice.get(d.parsers) ?? rule
       d.parsers.forEach((arm, armIndex) => {
         const lead = peelToLeading(arm)
         const ld = lead._def as ParserDef
-        const id = `${rule}#arm${armIndex}`
+        const id = `${choiceId}#arm${armIndex}`
         if (ld.tag === 'not') {
           const inner = ld.parser
           if ((inner._def as ParserDef).tag === 'not') {
             const body = (inner._def as Extract<ParserDef, { tag: 'not' }>).parser
             out.push({
-              id, code: 'double-not', rule, armIndex, target: lead, arm,
+              id, code: 'double-not', rule, armIndex, choiceId, target: lead, arm,
               before: 'not(not(…))', replacement: peek(body), after: 'peek(…)', reason: null,
             })
           }
@@ -297,12 +321,12 @@ function collectCandidates(root: Combinator<unknown>): Candidate[] {
             // Only a site `gating.ts` would REPORT is worth locating here; a general
             // regex that happens not to be a keyword is not a finding at all.
             if (/^\^?[@#.-]?[A-Za-z][\w-]*(\(\?![^)]*\))?\$?$/.test(ld.source)) {
-              out.push({ id, code: 'keyword-regex', rule, armIndex, target: lead, arm, before, replacement: null, after: null, reason: k })
+              out.push({ id, code: 'keyword-regex', rule, armIndex, choiceId, target: lead, arm, before, replacement: null, after: null, reason: k })
             }
           }
           else {
             out.push({
-              id, code: 'keyword-regex', rule, armIndex, target: lead, arm, before,
+              id, code: 'keyword-regex', rule, armIndex, choiceId, target: lead, arm, before,
               replacement: keywords([k.word], {
                 ...(k.caseInsensitive ? { caseInsensitive: true } : {}),
                 ...(k.boundary === undefined ? {} : { boundary: k.boundary }),
@@ -341,7 +365,7 @@ function collectCandidates(root: Combinator<unknown>): Candidate[] {
  * proves a GRAPH rewrite is output-neutral, and a text edit is only that rewrite if the
  * text really is the site. So the correspondence has to be exact — one occurrence, in
  * one spelling — and anything else declines. An edit applied to the wrong site is
- * strictly worse than no `--fix` at all.
+ * strictly worse than no `--apply` at all.
  */
 function locateEdit(
   source: { path: string; text: string },
@@ -386,19 +410,102 @@ function locateEdit(
       + 'would be worse than editing none'
   }
   const start = hits[0]!
+  // `not(not(` is the needle, so both opens are at fixed offsets. Deriving the inner one
+  // with `indexOf('(')` would find a paren inside a string literal in the outer argument.
   const openOuter = start + 3
-  let depth = 0
-  let end = -1
-  for (let j = openOuter; j < source.text.length; j++) {
-    const ch = source.text[j]
-    if (ch === '(') depth++
-    else if (ch === ')') { depth--; if (depth === 0) { end = j + 1; break } }
+  const openInner = start + 7
+  const end = matchingParen(source.text, openOuter)
+  if (typeof end === 'string') return end
+  const innerEnd = matchingParen(source.text, openInner)
+  if (typeof innerEnd === 'string') return innerEnd
+  // `not()` takes one argument, so nothing but whitespace may sit between the inner
+  // close and the outer one. Anything else is a shape this rewrite does not describe.
+  if (source.text.slice(innerEnd, end - 1).trim() !== '') {
+    return 'something other than the inner call sits between the `not(not(` parentheses, so parseman cannot tell which text the rewrite replaces'
   }
-  if (end === -1) return 'the parentheses after `not(not(` do not balance, so parseman cannot tell where the site ends'
   const whole = source.text.slice(start, end)
-  const innerOpen = source.text.indexOf('(', openOuter + 1)
-  const body = source.text.slice(innerOpen + 1, end - 2)
+  const body = source.text.slice(openInner + 1, innerEnd - 1)
   return at(start, end, whole, `peek(${body})`)
+}
+
+/**
+ * Index one past the `)` that closes the `(` at `open`, or the reason it cannot be found.
+ *
+ * A raw character scan is NOT enough here. Grammar source is full of string literals, and
+ * `not(not(literal(')')))` closes a naive counter one paren early — which yields an
+ * `oldText` that is not the call. `applyFixEdits` cannot catch that: its `oldText` check
+ * compares against the same mis-delimited span, so it passes and writes a WRONG edit into
+ * the user's file. So this skips strings, template literals, and comments.
+ *
+ * Regex literals are deliberately NOT lexed: telling `/` apart from division needs the
+ * full expression grammar, and a regex body can hold unbalanced parens. A `/` that is not
+ * a comment therefore DECLINES the site rather than risking a guess.
+ */
+function matchingParen(text: string, open: number): number | string {
+  const AMBIGUOUS = 'a `/` inside the `not(not(` site could start a regular expression, and parseman cannot tell where the site ends without reading the whole file as JavaScript'
+  const UNBALANCED = 'the parentheses after `not(not(` do not balance, so parseman cannot tell where the site ends'
+  let depth = 0
+  // Template-literal quasis interleave with `${…}` expressions, which are code again.
+  // `inTemplate` is the stack of enclosing quasis; `braces` counts the `{` of the
+  // expression frame we are in, so its closing `}` is told from a nested object literal.
+  let inTemplate = 0
+  let braces = 0
+  const braceStack: number[] = []
+  let i = open
+  while (i < text.length) {
+    const ch = text[i]!
+    if (inTemplate > 0 && braceStack.length < inTemplate) {
+      // Inside a quasi: only `\`, `` ` `` and `${` mean anything.
+      if (ch === '\\') { i += 2; continue }
+      if (ch === '`') { inTemplate--; i++; continue }
+      if (ch === '$' && text[i + 1] === '{') { braceStack.push(braces); braces = 0; i += 2; continue }
+      i++
+      continue
+    }
+    if (ch === '\'' || ch === '"') {
+      const quote = ch
+      i++
+      for (;;) {
+        if (i >= text.length) return UNBALANCED
+        const c = text[i]!
+        if (c === '\\') { i += 2; continue }
+        if (c === '\n') return UNBALANCED // an unterminated string — this is not the shape we think it is
+        i++
+        if (c === quote) break
+      }
+      continue
+    }
+    if (ch === '`') { inTemplate++; i++; continue }
+    if (ch === '/' && text[i + 1] === '/') {
+      const nl = text.indexOf('\n', i)
+      if (nl === -1) return UNBALANCED
+      i = nl + 1
+      continue
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2)
+      if (close === -1) return UNBALANCED
+      i = close + 2
+      continue
+    }
+    if (ch === '/') return AMBIGUOUS
+    if (ch === '{') { braces++; i++; continue }
+    if (ch === '}') {
+      if (braces === 0 && braceStack.length > 0) { braces = braceStack.pop()!; i++; continue }
+      braces--
+      i++
+      continue
+    }
+    if (ch === '(') { depth++; i++; continue }
+    if (ch === ')') {
+      depth--
+      if (depth === 0) return i + 1
+      i++
+      continue
+    }
+    i++
+  }
+  return UNBALANCED
 }
 
 // ── the loop ─────────────────────────────────────────────────────────────────
@@ -453,7 +560,7 @@ export function proposeFixes(root: Combinator<unknown>, opts: ProposeFixOptions)
   const verified: VerifiedFix[] = []
   const located: LocatedFinding[] = []
 
-  for (const c of collectCandidates(root)) {
+  for (const c of collectCandidates(root, before)) {
     if (c.replacement === null || c.after === null) {
       located.push({ id: c.id, code: c.code, rule: c.rule, armIndex: c.armIndex, site: c.before, reason: c.reason! })
       continue
@@ -488,7 +595,9 @@ export function proposeFixes(root: Combinator<unknown>, opts: ProposeFixOptions)
           + 'worth the diff' })
       continue
     }
-    const choiceId = beforeChoice.has(c.rule) ? c.rule : [...beforeChoice.keys()].find(k => k.startsWith(`${c.rule}#`)) ?? c.rule
+    // `c.choiceId` came from `beforeChoice`'s own id assignment by node identity, so this
+    // is the choice the candidate actually sits in — not the rule's first one.
+    const choiceId = c.choiceId
     const afterChoice = afterReport.choices.find(x => x.id === choiceId)
     const fix: VerifiedFix = {
       id: c.id, code: c.code, rule: c.rule, armIndex: c.armIndex,
@@ -531,7 +640,7 @@ export function proposeFixes(root: Combinator<unknown>, opts: ProposeFixOptions)
  * Apply verified edits to a source text, right-to-left so earlier offsets stay valid.
  *
  * Pure: it returns the new text and never touches the filesystem. Writing is the
- * caller's explicit second step, which is what keeps `--fix` from being something that
+ * caller's explicit second step, which is what keeps `--apply` from being something that
  * happens to you.
  */
 export function applyFixEdits(sourceText: string, fixes: readonly VerifiedFix[]): { text: string; applied: number } {

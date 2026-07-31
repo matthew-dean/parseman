@@ -502,8 +502,11 @@ export const grammar = composeLeaf([
 
 Every item before the final local map must prove recognition-only. `composeLeaf`
 is terminal: it cannot be fed into another `compose()`/`composeLeaf()` call. It
-is publicly exported so macro source can import it, but an unlowered runtime
-call throws rather than silently changing construction semantics.
+is publicly exported so macro source can import it; an unlowered runtime call
+returns an **interpreted** fuse instead — the same shape `fuseInterpreted()`
+produces, fused lazily on first rule access rather than at construction. It is a
+different engine, not a different grammar, so the macro build remains the one
+that ships.
 
 ## Trees
 

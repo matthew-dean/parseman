@@ -46,7 +46,7 @@ parseman diagnose examples/css/parser.ts --export Stylesheet --corpus fixtures/c
 finding has two — the ordered choice whose arms cost the time, and the input that pays
 for it — and relating them is the diagnostic:
 
-```
+```text
   value   81 corpus positions can enter it
       arm 3  Url       'U','u'        1 pos
       arm 4  Call      '-','A'-'Z','… 34 pos
@@ -81,7 +81,7 @@ is *correct*, because there is no cheap oracle for "this rewrite of your program
 the same thing". A parser generator has one — a grammar's whole observable behaviour is
 the tree it produces:
 
-```
+```text
 propose  →  apply  →  recompile  →  compare parse output
                                      unchanged → PROVEN; offer it
                                      changed   → WRONG; discard, never show it
@@ -90,7 +90,7 @@ propose  →  apply  →  recompile  →  compare parse output
 Every rewrite `fix` offers went through that loop, on both engines, over your corpus.
 The evidence prints beside it:
 
-```
+```text
   proven  applied, recompiled, 3 sample(s) re-parsed on interpreted + compiled — output identical
 ```
 
@@ -124,7 +124,7 @@ The diff is the primary interface; `--apply` is an explicit second step. An edit
 offered only when the site's spelling occurs **exactly once** in the source file: the
 loop proves a *graph* rewrite is output-neutral, and a text edit is only that rewrite if
 the text really is the site. Ambiguity declines, with the rewrite printed for you to
-apply by hand. An edit applied to the wrong site is worse than no `--fix` at all.
+apply by hand. An edit applied to the wrong site is worse than no `--apply` at all.
 
 ## `--json`
 

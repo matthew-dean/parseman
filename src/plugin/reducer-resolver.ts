@@ -47,6 +47,9 @@ export type UnresolvedReason =
   | 'not-found'
   | 'computed'
   | 'foreign-source'
+  /** Two DISTINCT registered files hold byte-identical text, so the text no longer
+   *  identifies the module an offset indexes. See `register`. */
+  | 'ambiguous-source'
 
 export type ResolvedReducer = {
   /** Declared positional arity, or `null` when genuinely undecidable. */
@@ -477,10 +480,17 @@ export function createReducerResolver(entryFile: string, body: unknown[], src: s
 
   // Modules OTHER than the entry file whose offsets `resolve` may be handed, keyed by
   // the module text itself — that is the only identity the evaluator carries, since it
-  // threads `code` (a string) and not a path. Registration is explicit rather than a
-  // filesystem search: answering an offset requires being CERTAIN which file it indexes,
-  // and two modules with identical text are the same text, so the key is sound.
+  // threads `code` (a string) and not a path.
   const registered = new Map<string, AnalysedModule>()
+  // Texts claimed by more than one DISTINCT file. Identical text is identical for
+  // offsets, but NOT for import resolution: `fromBinding` follows a hop with
+  // `resolveImport(mod.file, specifier)`, and identical text means identical RELATIVE
+  // specifiers, which resolve to different absolute files from different directories.
+  // Letting the second registration overwrite the first would answer such an offset
+  // against the wrong module and yield a wrong arity — and a wrong arity UNDER-captures,
+  // calling the reducer with arguments the compiler elided. That is the exact failure
+  // this registry exists to prevent, so an ambiguous key declines instead.
+  const ambiguous = new Set<string>()
 
   const fromBinding = (
     mod: AnalysedModule,
@@ -554,8 +564,15 @@ export function createReducerResolver(entryFile: string, body: unknown[], src: s
       if (!mod) return false
       // The entry file needs no entry — it is matched first, and its `body`/`src` came
       // from the caller rather than a re-read, so they are the authoritative pair.
-      if (mod.src !== src) registered.set(mod.src, mod)
-      return true
+      if (mod.src === src) return true
+      const prior = registered.get(mod.src)
+      if (prior !== undefined && prior.file !== mod.file) {
+        ambiguous.add(mod.src)
+        registered.delete(mod.src)
+        return false
+      }
+      if (!ambiguous.has(mod.src)) registered.set(mod.src, mod)
+      return !ambiguous.has(mod.src)
     },
 
     resolve(exprSrc, offset, offsetSrc) {
@@ -575,7 +592,9 @@ export function createReducerResolver(entryFile: string, body: unknown[], src: s
       // still refused, which fails open to full capture and says so on the degradation
       // channel — never answered against the wrong scope tree.
       const mod = offsetSrc === src ? entry : registered.get(offsetSrc)
-      if (!mod) return { arity: null, src: null, reason: 'foreign-source' }
+      if (!mod) {
+        return { arity: null, src: null, reason: ambiguous.has(offsetSrc) ? 'ambiguous-source' : 'foreign-source' }
+      }
 
       const name = ident ?? member![1]!
       const memberName = ident ? undefined : member![2]!

@@ -149,7 +149,9 @@ function verifiedLines(f: VerifiedFix, opts: FixRenderOptions): Line[] {
       fullPath: opts.sourceRoot ?? f.edit.path,
       line: f.edit.line,
       column: f.edit.column,
-      endColumn: f.edit.column + f.edit.oldText.length,
+      // INCLUSIVE, per linecraft's CodeDebug (`highlightEnd - highlightStart + 1`), so the
+      // last underlined column is the last column of `oldText` — not the one after it.
+      endColumn: f.edit.column + Math.max(f.edit.oldText.length - 1, 0),
       lineText: f.edit.lineText.replace(/\t/g, ' '),
       message: effect,
       shortMessage: `→ ${f.edit.newText}`,

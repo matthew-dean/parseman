@@ -268,6 +268,12 @@ async function main(argv: readonly string[]): Promise<number> {
       }
     }
     const limitFlag = args.flags.get('limit')
+    // `Number('abc')` is NaN, and the renderer's `shown >= limit` is then always false —
+    // the flag would be silently ignored and every site expanded. Say so instead.
+    const limit = typeof limitFlag === 'string' ? Number(limitFlag) : undefined
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 0)) {
+      throw new CliError(`\`--limit\` needs a non-negative integer; got \`${String(limitFlag)}\`.`)
+    }
     human(renderDiagnosis(d, {
       color, width, links, name: label, cost, armFirstSets: sets, armLabels: labels,
       fixable,
@@ -275,7 +281,7 @@ async function main(argv: readonly string[]): Promise<number> {
       // Sample names are already cwd-relative, so the hyperlink root is the cwd —
       // joining the corpus dir again produced `fixtures/css/fixtures/css/decls.css`.
       ...(typeof corpusFlag === 'string' ? { corpusRoot: process.cwd() } : {}),
-      ...(typeof limitFlag === 'string' ? { limit: Number(limitFlag) } : {}),
+      ...(limit === undefined ? {} : { limit }),
     }))
     if (json !== undefined) writeJson(json, d)
     return d.ok ? 0 : 1
