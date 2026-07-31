@@ -276,6 +276,59 @@ export function endLoweringCapture(): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Inline-cap reporting
+//
+// When the inline-expansion cap binds it changes what gets emitted, which is a fact a
+// grammar author needs. It is deliberately NOT routed through `recordDegradation`: the
+// cap binding is INTENDED behaviour, and `PARSEMAN_DEGRADATION=error` turns any recorded
+// degradation into a thrown build failure — a consumer that asserts zero degradations
+// would start failing the moment a grammar grew past the budget, which is the opposite
+// of what a cap is for. It is also not printed during compile. It is collected here and
+// drained by whoever asks, so a separate diagnostic call can report it.
+// ---------------------------------------------------------------------------
+
+/** One emitted function whose inline budget was spent, and what it cost. */
+export type InlineCapSite = {
+  /** The emitted function that hit the budget. */
+  fn: string
+  /** Approximate combinator nodes in the ref body that became a call instead. */
+  nodes: number
+}
+
+let _inlineCapSink: InlineCapSite[] | null = null
+
+/** Begin collecting inline-cap sites. */
+export function beginInlineCapCapture(): void {
+  _inlineCapSink = []
+}
+
+/** Stop collecting and return the sites, in emission order (deterministic). */
+export function endInlineCapCapture(): InlineCapSite[] {
+  const sites = _inlineCapSink ?? []
+  _inlineCapSink = null
+  return sites
+}
+
+/**
+ * One line per capped function, in the shape the degradation formatter uses so the two
+ * read alike. Says exactly what happened and exactly what to do about it, because a
+ * diagnostic that does neither is noise.
+ */
+export function formatInlineCapSites(sites: readonly InlineCapSite[], max: number): string[] {
+  if (sites.length === 0) return []
+  const byFn = new Map<string, { count: number; nodes: number }>()
+  for (const s of sites) {
+    const cur = byFn.get(s.fn)
+    if (cur) { cur.count += 1; cur.nodes += s.nodes }
+    else byFn.set(s.fn, { count: 1, nodes: s.nodes })
+  }
+  return [...byFn].map(([fn, { count, nodes }]) =>
+    `[parseman] inline-cap ${fn}: inline budget of ${max} node(s) spent — `
+    + `${count} single-use ref(s) totalling ~${nodes} node(s) became called functions instead of inline bodies. `
+    + `Raise it with maxInline (or PARSEMAN_MAX_INLINE) if this rule is hot.`)
+}
+
+// ---------------------------------------------------------------------------
 // Codegen context
 // ---------------------------------------------------------------------------
 type Ctx = {
@@ -431,6 +484,18 @@ type Ctx = {
    * `_cstLeaves` push would fire during the probe).
    */
   noHoist?: boolean | undefined
+  /**
+   * Inline-expansion cap. See {@link INLINE_MAX_NODES}. `inlineMax` is the per-emitted-
+   * function budget in approximate combinator nodes; `inlineLeft` is what remains of it
+   * inside the function currently being emitted. Both are plain numbers derived from the
+   * grammar and the configured cap — nothing here reads a clock, a map iteration order,
+   * or the environment at emit time, so two compiles of one grammar make the same
+   * decisions in the same order.
+   */
+  inlineMax: number
+  inlineLeft: number
+  /** Name of the emitted function currently being filled — reported when the cap binds. */
+  currentFnName?: string | undefined
   /** Trivia parser → name of its capturing variant fn (separate from namedParsers). */
   triviaCaptureNames: Map<Combinator<unknown>, string>
   /**
@@ -3830,7 +3895,18 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     } catch {
       return emitRuntimeFallback(p, ctx, pos)
     }
-    return emit(resolved, ctx, pos)
+    // INLINE EXPANSION CAP (see INLINE_MAX_NODES). Charge this paste against the
+    // enclosing function's budget. When it does not fit, fall through to the named-
+    // function path below: the ref becomes a `_pfN` and is CALLED. Correctness is
+    // unaffected — that path is the established shape for every multi-use ref — so the
+    // only thing the cap trades is one call for the pasted bytes, and it only ever
+    // binds on functions that have already absorbed a full budget's worth of inlining.
+    const cost = usage.sizes.get(resolved) ?? 1
+    if (cost <= ctx.inlineLeft) {
+      ctx.inlineLeft -= cost
+      return emit(resolved, ctx, pos)
+    }
+    _inlineCapSink?.push({ fn: ctx.currentFnName ?? '<root>', nodes: cost })
   }
 
   if (!ctx.namedParsers.has(p)) {
@@ -3849,6 +3925,9 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     const savedIndent    = ctx.indent
     const savedFailLabel = ctx.failLabel
     const savedRecord    = ctx.recordFail
+    // Fresh function body → fresh inline budget (see INLINE_MAX_NODES).
+    const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
+    ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
     const failureRuleId = p === ctx.coverage?.entry
       ? undefined
       : (ctx.coverage?.plan.rules.get(p) ?? ctx.coverage?.plan.rules.get(resolved))
@@ -3872,6 +3951,8 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
     ctx.recordFail = savedRecord
+    ctx.inlineLeft = savedInlineLeft
+    ctx.currentFnName = savedFnName
     ctx.activeCoverageRuleId = savedActiveRule
     ctx.suppressCoverageFailure = savedSuppressFailure
 
@@ -4005,6 +4086,8 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     const savedIndent    = ctx.indent
     const savedFailLabel = ctx.failLabel
     const savedRecord    = ctx.recordFail
+    const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
+    ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
     ctx.indent    = 1
     ctx.failLabel = '_pfail'  // failures break _pfail (labeled block in the fn body)
     ctx.recordFail = true     // shared body always records; each caller decides propagation
@@ -4012,6 +4095,8 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
     ctx.recordFail = savedRecord
+    ctx.inlineLeft = savedInlineLeft
+    ctx.currentFnName = savedFnName
     pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar)
     return instrument(emitNamedFnCall(ctx, fnName, pos))
   }
@@ -4253,6 +4338,8 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         const savedIndent    = ctx.indent
         const savedFailLabel = ctx.failLabel
         const savedRecord    = ctx.recordFail
+        const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
+        ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
         ctx.indent    = 1
         ctx.failLabel = '_pfail'  // failures break _pfail (same as emitLazy)
         ctx.recordFail = true     // shared body always records (see emitLazy)
@@ -4267,6 +4354,8 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         ctx.indent    = savedIndent
         ctx.failLabel = savedFailLabel
         ctx.recordFail = savedRecord
+        ctx.inlineLeft = savedInlineLeft
+        ctx.currentFnName = savedFnName
         pushNamedFnDecl(ctx, fnName, innerR.stmts, innerR.valueVar, innerR.endVar)
       }
       const fn = ctx.namedParsers.get(innerParser)!
@@ -4473,6 +4562,58 @@ function isHoistableTag(tag: ParserDef['tag']): boolean {
  * Small enough to catch every real explosion (a value `choice` is ~12+), large
  * enough that trivial shared wrappers stay inline and keep the hot path fast. */
 const HOIST_MIN_SUBTREE = 3
+
+/**
+ * INLINE EXPANSION CAP — a bound on how much one emitted function may grow by pasting
+ * single-use ref bodies into it.
+ *
+ * The decision procedure, in one sentence: **each emitted function gets a budget of
+ * `INLINE_MAX_NODES` combinator nodes of inlined single-use refs; once it is spent, the
+ * remaining single-use refs in that function become named functions and are called.**
+ *
+ * What this limits, precisely. `emitLazy` inlines a ref that is used ONCE and is not
+ * recursive, because hoisting a function nobody else calls is pure overhead. That is
+ * correct per ref and unbounded in aggregate: a rule whose body is a chain of
+ * single-use helpers expands transitively, and the expansion has no ceiling that a
+ * grammar author can see or predict. This is NOT the identity-keyed hoisting of a
+ * MULTIPLY-referenced subtree (`HOIST_MIN_SUBTREE` above) — that already works, and a
+ * shared object referenced 1 or 38 times emits flat. Conflating the two is what made
+ * the size problem look like a duplication problem.
+ *
+ * Why a per-function budget rather than a per-ref size limit or a whole-artifact budget:
+ *  - a per-ref limit bounds each paste but not the transitive total, which is the
+ *    quantity that actually grows;
+ *  - a whole-artifact budget needs an eviction order, and any order that depends on
+ *    which function was compiled first is a decision the author cannot predict;
+ *  - a per-function budget needs no eviction order at all. Emission order within one
+ *    function is the grammar's own left-to-right order, so "the refs after the budget
+ *    runs out" is stable and explainable.
+ *
+ * Charge unit is `subtreeSizes` — the same approximate node count `HOIST_MIN_SUBTREE`
+ * uses, so the two policies are denominated in one currency.
+ *
+ * The default is measured, not chosen by taste: see `bench/size/inline-cap.md` for the
+ * size/speed sweep this number came from.
+ */
+export const INLINE_MAX_NODES = 1000
+
+/**
+ * Resolve the cap: explicit option wins, then `PARSEMAN_MAX_INLINE`, then the default.
+ * The escape hatch is deliberately explicit and OFF by default — a grammar that really
+ * wants unbounded inlining sets `Infinity` and says so, rather than discovering that a
+ * silent policy took it away. Read ONCE per compile and stored on the ctx, so a single
+ * compile can never observe two different values.
+ */
+export function resolveInlineMax(explicit?: number): number {
+  if (explicit !== undefined) return explicit
+  const env = typeof process !== 'undefined' ? process.env?.PARSEMAN_MAX_INLINE : undefined
+  if (env !== undefined && env !== '') {
+    if (env === 'off' || env === 'infinity') return Infinity
+    const n = Number(env)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return INLINE_MAX_NODES
+}
 
 /**
  * Static-occurrence analysis for `lazy` (ref()) combinators, ahead of codegen.
@@ -4908,7 +5049,7 @@ function runDuplicationDiagnosticRules(
   return reportDuplication(opt, o => analyzeDuplicationRules(ruleMap, o))
 }
 
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption; trackLines?: boolean }): CompiledParser<T> {
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption; trackLines?: boolean; maxInline?: number }): CompiledParser<T> {
   const gatingReport = runGatingDiagnostic(combinator, opts?.gating)
   runDuplicationDiagnostic(combinator, opts?.duplication)
   markUnusedValues(combinator)
@@ -4922,9 +5063,12 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const grammarScanSkip = (combinator._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip
   const grammarHostMode = (combinator._meta as { grammarHostMode?: HostMode }).grammarHostMode
   const grammarTrackLines = combinator._meta.grammarTrackLines
+  const _inlineMax = resolveInlineMax(opts?.maxInline)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
+    inlineMax: _inlineMax,
+    inlineLeft: _inlineMax,
     regexDecls: [],
     regexMap: new Map(),
     expectedDecls: [],
@@ -5197,7 +5341,7 @@ function publicRuleWrapperSource(
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption; maxInline?: number },
 ): { keys: string[]; replacement: string; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
   runGatingDiagnosticRules(ruleMap, opts?.gating)
   runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
@@ -5228,9 +5372,12 @@ export function compileRuleMap(
     ?? ruleMap.map(([, r]) => (r._meta as { grammarHostMode?: HostMode }).grammarHostMode).find(Boolean)
   const grammarTrackLines = opts?.trackLines === true
     || ruleMap.some(([, r]) => r._meta.grammarTrackLines === true)
+  const _inlineMax = resolveInlineMax(opts?.maxInline)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
+    inlineMax: _inlineMax,
+    inlineLeft: _inlineMax,
     regexDecls: [],
     regexMap: new Map(),
     expectedDecls: [],
@@ -5470,7 +5617,7 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption; maxInline?: number },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
   // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
@@ -5516,8 +5663,9 @@ export function compileLinkable(
     try { d.thunk(); return true } catch { return false }
   })
   const nodeMeta = new Map(ruleMap.map(([name, rule]) => [name, collectGrammarReflection([[name, rule]], { followLazy: false })]))
+  const _inlineMax = resolveInlineMax(opts?.maxInline)
   const ctx: Ctx = {
-    vars: 0, indent: 1, regexDecls: [], regexMap: new Map(),
+    vars: 0, indent: 1, inlineMax: _inlineMax, inlineLeft: _inlineMax, regexDecls: [], regexMap: new Map(),
     expectedDecls: [], expectedMap: new Map(), recordFail: true,
     mapFns: [], mapFnSrcs: [], buildFns: [], buildSrcs: [], runtimeParsers: [],
     namedParsers: new Map(), triviaCaptureNames: new Map(),
@@ -5611,6 +5759,8 @@ export function compileLinkable(
         try { resolved = def.thunk() } catch { return null }
       }
       const savedIndent = ctx.indent, savedFail = ctx.failLabel, savedRec = ctx.recordFail
+      const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
+      ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fn
       ctx.indent = 1; ctx.failLabel = '_pfail'; ctx.recordFail = true
       // A trivia rule must never carry the ambient trivia (it would recursively
       // skip trivia within itself). Mirrors compileRuleMap's guard.
@@ -5621,6 +5771,7 @@ export function compileLinkable(
       ctx.activeTrivia = savedTrivia
       ctx.activeScanSkip = savedScanSkip
       ctx.indent = savedIndent; ctx.failLabel = savedFail; ctx.recordFail = savedRec
+      ctx.inlineLeft = savedInlineLeft; ctx.currentFnName = savedFnName
       // Linkable entries run through their named rule body rather than the
       // public compileRuleMap wrapper. Instrument the named boundary itself so
       // a final compose winner remains observable even when its resolved body

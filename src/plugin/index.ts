@@ -24,7 +24,7 @@ import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
+import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
 import {
   beginDegradationCapture, endDegradationCapture, formatDegradation, formatDegradations,
@@ -460,6 +460,7 @@ export function transformMacro(
     // Both are idempotent: on the success path the body already released them and these
     // are no-ops. On an aborted transform they are what stops the leak.
     endLoweringCapture()
+    endInlineCapCapture()
     for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
   }
 }
@@ -712,6 +713,7 @@ function transformMacroImpl(
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
   beginLoweringCapture()
+  beginInlineCapCapture()
   // Collect degradations instead of printing them, so they arrive on the SAME channel
   // as every other macro warning (the bundler's `this.warn`) with a `file:line` anchor.
   beginDegradationCapture()
@@ -2049,6 +2051,10 @@ function transformMacroImpl(
     )
   }
 
+  // The inline-expansion cap CHANGED what was emitted. Surface it as returned data on
+  // the module's warning channel (not a console print during compile), so a build that
+  // wants to know can see it and a build that does not is unaffected.
+  for (const line of formatInlineCapSites(endInlineCapCapture(), resolveInlineMax())) warnings.push(`${id}: ${line}`)
   const unlowered = endLoweringCapture()
   if (warnUnloweredRegex) {
     for (const src of unlowered) {
