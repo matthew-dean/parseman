@@ -5,6 +5,39 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **A choice arm marks the root trivia log only when the arm can reach it.** Every
+  other mark in `emitFirstMatch` asks a question about the arm; this one asked only
+  whether the grammar has root trivia at all, so it was emitted at 1,046 css sites
+  against 186 for the capture marks beside it. 414 of those sites (39.6%) cannot
+  append to `_rootTriviaLog` at all. Measured on top of the save/restore elision
+  above, with which it is additive: css `ast.js` 3,140,585 -> 3,102,915 B (-1.20%,
+  gzip -4,259), less -0.34%, scss -0.61%, jess -0.19%; `_cmlrg` 83,641 -> 50,548 B
+  and 1,046 -> 632 sites. css expansion 27.45x -> 27.11x its 114,446 B source.
+
+- **`dispatch()` keys off a data trie instead of a per-case character chain.** css
+  `ast.js` 3,336,650 → 3,311,657 B (−0.75%, gzip −1,782 B); key-comparison bytes
+  40,269 → 8,772 (−78%). Speed is inside noise — the strategy sweep behind
+  `PARSEMAN_DISPATCH` is in `docs/design/derived-tokenization.md`.
+- **A `dispatch()` site takes the trie only when the trie's own emission measures
+  smaller than the chain it replaces.** A key-count rule of thumb had grown less
+  `ast.js` by 902 B at its one qualifying site; that site now keeps the chain and
+  less is back to 3,937,767 B, with css and scss unchanged.
+- **Fixed `'@' | 32` folding every `@`-led dispatch key to a non-match**, so
+  `@font-face` silently took the opaque at-rule arm. The 288-test css suite passed
+  with the bug present; a full-tree diff against the pre-trie build caught it. Both
+  sides now fold ASCII letters only.
+- **Static rollback elision — the emitter no longer writes save/restore machinery it can
+  prove will never run.** A new shared `analysis/commitment.ts` answers, over the rule
+  graph, whether a construct can fail after consuming (`mayFail`) and whether it always
+  consumes on success (`alwaysConsumes`); codegen drops the capture save/restore at
+  fallible boundaries whose remainder is total, and the trivia mark/rewind at sequence
+  boundaries whose next term cannot match zero-width. Compiled CSS `ast.js` **3,311,657 →
+  3,140,585 B (−5.17%, against `fd1c5c7`)**, less −4.06%, scss −6.68%, jess −5.73%; parse speed unchanged on
+  corpus (benchmark.css min +1.05%, benchmark.less min −0.20%) and faster on the guard's
+  micro-parses (`css/decls` compiled −48%, `css/selector` −41%). Gated on byte-level parse-tree
+  equality against a non-eliding build — 4,077 AST/CST/ParseDoc tree comparisons over the
+  four dialect corpora, zero differences.
+
 - **Add a `parseman` CLI — `parseman diagnose` and `parseman fix`.** Exit **0** clean,
   **1** blocking findings, **2** could not analyse. `--json` emits the structured object
   the human rendering is derived from. The bin is its own bundle (`dist/cli/index.js`,
@@ -67,6 +100,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   escapes written as `\u001B` sequences; output is unchanged and `pnpm check:control-bytes`
   is green.
 - **Captured CLI output for review at `docs/samples/cli-output.md`** — verbatim, non-TTY,
+- **Fixed: `node<N>('Type', …)` no longer fails to type-check.** The `type`-first
+  overloads gave `Type` no default, so a call supplying ONE explicit type argument failed
+  their type-argument arity and fell through to the combinator-first overloads, where
+  argument 0 must be a `Combinator`. One call site therefore emitted two unrelated-looking
+  diagnostics: `TS2345 string is not assignable to Combinator`, and `TS7006` implicit-any
+  on the reducer's `children`, because the rejected overload left the reducer contextually
+  untyped. `Type` now defaults to `string` — jess 411 → 5 diagnostics, scss 342 → 4, of
+  which exactly one is real debt. **The literal is not recovered by this spelling**:
+  TypeScript fills a missing type argument from its default and never infers it, so the
+  brand is `string`. Only a curried call form preserves the literal; that changes the
+  public surface and is deliberately not taken. Spell `node<N, 'Type'>('Type', …)` where
+  the brand matters. A type-level test pins the resolved brand for all three spellings.
   with the command that produced each block.
 - **`fuseInterpreted()` — a composed grammar can now be RUN interpreted.** Any interpreted
   run of a composed grammar previously threw `ref<T>() used before .define()`. It takes
@@ -193,11 +238,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   5 s default**, which discarded the child output those tests exist to assert on and read
   as a flake that vanished when the file was run alone.
 - **`docs/design/derived-tokenization.md`** — the design for deriving a scanner from the
-  composed grammar's terminal alphabet (css 75, scss 94, jess 114, less 151 terminals),
-  the first two prototypes' measurements, a corrected css artifact baseline
-  (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B, which was the whole css `lib/`
-  across four build variants), and a register of 19 untried experiments. Nothing is wired
-  into `codegen.ts`.
+  composed grammar's terminal alphabet, the prototype and landed-sweep measurements, a
+  corrected css artifact baseline (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B,
+  which was the whole css `lib/` across four build variants), and a register of 24
+  untried experiments — including an auto-alias cluster for declaring escape, case and
+  prefix equivalences once instead of hand-spelling them per site. Every entry and
+  measured result now carries a **contribution tag** (FOUNDATION / ENABLED-BY /
+  ORTHOGONAL / LEGACY) so it is visible which work survives the token-cursor rewrite. Records the dispatch
+  sweep: the whole spread across every configuration is **2.4%**, so dispatch keying is
+  not where parse time goes. **Withdraws
+  the 1.83× speedup as noise** — three byte-identical artifacts measured 5.961/6.101/11.952 ms
+  in separate processes — and makes byte-level tree equality against a toggled baseline
+  the gate, after a bug 288 tests missed.
 - **`proposeFixes` docs say "every available engine"** — `engines` is `['interpreted']`
   when the grammar does not compile, so "on both engines" overstated what was checked.
 
