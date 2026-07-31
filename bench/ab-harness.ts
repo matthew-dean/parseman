@@ -67,6 +67,73 @@ export type Thresholds = {
   }
 }
 
+/**
+ * The committed record of the fastest release this gate has ever measured.
+ *
+ * ## Why a per-step gate is not enough
+ *
+ * The release policy is "each release must be faster than the last unless the
+ * slowdown is deliberate and documented". A gate that only compares against the
+ * PREVIOUS release enforces the letter of that and misses the thing it exists to
+ * prevent, because a run of individually-insignificant losses is a significant
+ * loss. The standalone version sweep at `~/parseman-perf-probe/` measured exactly
+ * that on its own probe grammar: −3.9% over 0.28.1→0.32.0 and −5.1% over
+ * 0.28.0→0.34.0, with almost every individual step inside the noise floor. No
+ * per-step gate would have flagged one of them, and the sum is real.
+ *
+ * So the peak clause: a release may not sit below the best release on record by
+ * more than `allowancePct`, whatever the per-step deltas said.
+ *
+ * ## Absolute, not differential
+ *
+ * `sha` names a COMMIT, so the comparison is re-measured on whatever machine runs
+ * it and never inherits a stored millisecond count. `allowancePct` is the drawdown
+ * the gate tolerates — it is the measured noise floor, not a budget to spend.
+ *
+ * ## Re-baselining is a deliberate, committed diff
+ *
+ * Moving `sha` forward is how a genuine improvement becomes the new bar, and it
+ * requires editing this file in a PR where a reviewer sees it. Moving it BACKWARD,
+ * or widening `allowancePct`, is how a regression gets laundered into the
+ * baseline — `scripts/check-changelog.mjs` requires a CHANGELOG entry for either,
+ * so it cannot happen quietly.
+ *
+ * ## The peak is per-WORKLOAD-SET, and cannot be imported
+ *
+ * Measured, not assumed: the version sweep found 0.28.0 to be the fastest release
+ * on ITS probe grammar, and this repo's `css/stylesheet` workload runs ~50%
+ * FASTER at HEAD than at 0.28.0. A 10-node monolithic fused grammar and a
+ * realistic composed one do not peak in the same place. Whatever peak a different
+ * instrument reports is evidence about that instrument's shape, not this one's.
+ */
+export type Peak = {
+  sha: string
+  version: string
+  allowancePct: number
+}
+
+/**
+ * Thresholds for the peak comparison.
+ *
+ * Deliberately stricter in structure than the per-release rule: median AND min
+ * must BOTH breach, not either. A per-release gate is watching for a change that
+ * just happened and wants to be twitchy; the peak clause is answering "are we
+ * below the best we have ever been", a question worth answering only when both
+ * statistics agree. The win-rate conjunction is kept — it is what makes a
+ * percentage threshold safe on a shared runner.
+ */
+export function peakThresholds(allowancePct: number): Thresholds {
+  return {
+    // `medianPct` alone cannot fire: `score()` treats the pair as OR, so setting
+    // both to the allowance and requiring the sign test to agree is what produces
+    // an AND. The sign test's percentages are the same number for that reason.
+    medianPct: Infinity,
+    minPct: Infinity,
+    winRateCeiling: 0.25,
+    signTest: { winRateCeiling: 0.25, medianPct: allowancePct, minPct: allowancePct },
+  }
+}
+
 export type Case = {
   id: string
   /** Extra text printed after the id — sample size, density, whatever the gate wants shown. */

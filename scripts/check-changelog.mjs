@@ -490,6 +490,134 @@ if (isReleasePr && presentGates.length > 0) {
   console.log(`✓ perf-gate anchors name ${expected.slice(0, 7)}, the commit that released ${basePublished.raw}.`)
 }
 
+// ── D. Peak-record gate ─────────────────────────────────────────────────────────
+//
+// The anchor gate above enforces the PER-STEP half of the release policy: each
+// release is measured against the one before it. This enforces the other half.
+//
+// A per-step gate has a blind spot that matters directly under "each release must be
+// faster than the last": five consecutive 1% losses are each inside the noise floor,
+// no step gets flagged, and the sum is a real 5% regression. The standalone version
+// sweep measured exactly that — −5.1% over 0.28.0→0.34.0 with almost every individual
+// step insignificant. So each gate config may carry a `peak` block naming the fastest
+// release on record, and `pnpm perf:workloads --peak` fails on a drawdown beyond its
+// allowance.
+//
+// That record is only worth having if it cannot move quietly. The anchor gate exists
+// because two configs carried "bump this at every release" in a COMMENT and were
+// missed for ten consecutive releases; a comment asking a human to keep the peak
+// honest would go the same way. So: any edit to a `peak` block must be named in the
+// CHANGELOG, and the two edits that launder a regression into the baseline — moving
+// the peak BACKWARD, or widening its allowance — are called out by name.
+//
+// Unlike C this runs on EVERY PR, not just release PRs: a peak can be moved at any
+// time, and the moment it matters is the moment it moves.
+
+const peakGateConfigs = ANCHORED_GATES.filter((g) => existsSync(resolve(ROOT, g.config)))
+
+const readPeak = (source, label) => {
+  let cfg
+  try {
+    cfg = JSON.parse(source)
+  } catch {
+    fail(`${label} is not valid JSON — cannot read its perf-gate peak record.`)
+  }
+  return cfg.peak ?? null
+}
+
+const peakEdits = []
+for (const gate of peakGateConfigs) {
+  const now = readPeak(readFileSync(resolve(ROOT, gate.config), 'utf8'), gate.config)
+  if (now === null) continue
+
+  // Structural validation: a malformed peak record is a gate that silently does not
+  // gate, which is the failure mode this whole file exists to prevent.
+  if (typeof now.sha !== 'string' || now.sha.length < 7) {
+    fail(`${gate.config}: \`peak.sha\` must name a commit (got ${JSON.stringify(now.sha)}).`)
+  }
+  if (typeof now.version !== 'string' || !parseVersion(now.version)) {
+    fail(`${gate.config}: \`peak.version\` must name the release at \`peak.sha\` (got ${JSON.stringify(now.version)}).`)
+  }
+  if (typeof now.allowancePct !== 'number' || !(now.allowancePct > 0)) {
+    fail(`${gate.config}: \`peak.allowancePct\` must be a positive number (got ${JSON.stringify(now.allowancePct)}).`)
+  }
+  try {
+    git('rev-parse', '--verify', `${now.sha}^{commit}`)
+  } catch {
+    fail(
+      `${gate.config}: \`peak.sha\` ${now.sha} is not a commit in this repository.\n` +
+        '  The peak clause re-measures against that COMMIT — an absolute baseline, not a stored\n' +
+        '  millisecond count — so an unresolvable sha is a gate that cannot run. In CI this needs\n' +
+        '  `fetch-depth: 0`.',
+    )
+  }
+
+  let before = null
+  try {
+    before = readPeak(git('show', `${baseSha}:${gate.config}`), `${gate.config} at ${baseSha.slice(0, 7)}`)
+  } catch {
+    // The config is new on this branch. A brand-new peak record is still an edit.
+  }
+  if (before === null) {
+    peakEdits.push({ ...gate, kind: 'introduced', detail: `peak ${now.version} (${now.sha.slice(0, 7)}), allowance ${now.allowancePct}%` })
+    continue
+  }
+  if (before.sha === now.sha && before.allowancePct === now.allowancePct && before.version === now.version) continue
+
+  const widened = now.allowancePct > before.allowancePct
+  const beforeV = parseVersion(before.version)
+  const nowV = parseVersion(now.version)
+  const movedBack = beforeV && nowV && compareVersions(nowV, beforeV) < 0
+  peakEdits.push({
+    ...gate,
+    kind: widened || movedBack ? 'LAUNDERING RISK' : 'moved',
+    detail:
+      `${before.version} (${String(before.sha).slice(0, 7)}) allowance ${before.allowancePct}%` +
+      ` → ${now.version} (${now.sha.slice(0, 7)}) allowance ${now.allowancePct}%` +
+      (movedBack ? '   [peak moved BACKWARD]' : '') +
+      (widened ? '   [allowance WIDENED]' : ''),
+  })
+}
+
+if (peakEdits.length > 0) {
+  // The heading section only — history must not be able to satisfy a check about a
+  // change being made now.
+  const afterHeading = changelog.slice(firstHeading.index + firstHeading[0].length)
+  const currentSection = afterHeading.split(/^##\s+/m)[0] ?? ''
+  const mentionsPeak = /\bpeak\b/i.test(currentSection)
+
+  if (!mentionsPeak) {
+    fail(
+      `this PR edits a perf-gate PEAK RECORD and the CHANGELOG's ${headingVersion.raw} section does not\n` +
+        '  mention it:\n' +
+        '\n' +
+        peakEdits.map((e) => `    ${e.config}\n      ${e.kind}: ${e.detail}`).join('\n') +
+        '\n\n' +
+        '  The peak record is the committed answer to "what is the fastest this has ever been", and\n' +
+        '  it is what makes the drawdown clause an ABSOLUTE bar rather than a differential one. A\n' +
+        '  differential bar is the thing that failed: every release compared to the one before it can\n' +
+        '  pass forever while the curve bleeds down, because each individual step sits inside the\n' +
+        '  noise floor. The sweep measured -5.1% accumulating that way across 0.28.0 -> 0.34.0.\n' +
+        '\n' +
+        '  Moving the peak FORWARD is the good case — a real improvement becoming the new bar. Say so.\n' +
+        '  Moving it BACKWARD, or widening `allowancePct`, means a slower build is being made the\n' +
+        '  reference. That may be legitimate — a correctness fix that costs time is a real trade — but\n' +
+        '  it is exactly the edit that launders a regression into the baseline, so it gets written down\n' +
+        '  with the numbers that justified it.\n' +
+        '\n' +
+        `  Fix: add a line to the ${headingVersion.raw} section naming the peak change and the measurement\n` +
+        '  behind it (run `pnpm perf:workloads --peak` and quote it, load average included).\n' +
+        '\n' +
+        '  This check has no hatch — `release-exempt` does not waive it.',
+    )
+  }
+
+  for (const e of peakEdits) console.log(`✓ peak record ${e.kind} in ${e.config} and named in the CHANGELOG — ${e.detail}`)
+}
+else if (peakGateConfigs.some((g) => readPeak(readFileSync(resolve(ROOT, g.config), 'utf8'), g.config) !== null)) {
+  console.log('✓ perf-gate peak records unchanged.')
+}
+
 let pkgSurfaceChanged = []
 if (changed.includes('package.json')) {
   pkgSurfaceChanged = PUBLISHED_PKG_FIELDS.filter(

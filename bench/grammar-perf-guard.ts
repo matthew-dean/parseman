@@ -57,288 +57,225 @@
  * A gate parameterised on one axis only ever catches that axis. When the next
  * regression rides a third, add the third rather than widening a threshold.
  *
- * ## Median AND min AND win rate
+ * ## Median AND min AND win rate — and a MAJORITY OF PASSES
  *
  * A single median is not a measurement. The first attempt at measuring the real
  * regression produced a wrong number that way. The gate reports all three and
  * requires two independent signals to fire.
+ *
+ * That was still not enough, and the evidence is unambiguous. This gate used to
+ * carry its OWN copy of the measurement loop, predating `ab-harness.ts`, and that
+ * copy sampled the two sides as CONTIGUOUS BLOCKS with a per-round rotation over
+ * the concatenated case list — so `ref|expected/narrow` and `head|expected/narrow`
+ * sat SEVEN positions apart in the sequence. Run against a BYTE-IDENTICAL `src/`
+ * (both sides at 80d0e62, load average 8.1) it reported:
+ *
+ *   rollback/sparse   median −9.2%   min −6.5%   won 12/12
+ *   expected/narrow   median +23.3%  min +10.6%  won  0/12   FAIL
+ *
+ * A 32-point spread and a hard FAIL between a build and itself. `won 0/12` was
+ * therefore proving nothing: it did not discriminate a regression from noise,
+ * because the two sides were never measured under the same conditions. The same
+ * signature — `expected/none` +12.7% won 0/12, `rollback/none` +64.3% — is what
+ * failed CI on 40ce56b and 1c6f6a8, two commits that touch ZERO files under
+ * `src/`.
+ *
+ * `ab-harness.ts` had already diagnosed and fixed exactly this for the workload
+ * gate: it pairs the two sides ADJACENTLY and alternates which goes first, so
+ * they share GC state, cache state and position in the run. On top of that it
+ * runs N independent PASSES and fails only on a strict majority — a burst lands
+ * in one pass, a regression lands in all of them. This gate now uses it, rather
+ * than a second copy that got one of these properties wrong.
  *
  * Usage:
  *   pnpm perf:guard:grammars                  # the gate
  *   pnpm perf:guard:grammars --quick          # 2 rounds x 1 run — TRIAGE ONLY, does not gate
  *   pnpm perf:guard:grammars --ref=<sha>      # move the A side
  *   pnpm perf:guard:grammars --head-ref=<sha> # build the B side from a commit, not the working tree
+ *   pnpm perf:guard:grammars --self           # measure the noise floor: reference against ITSELF
  *
- * The last two exist to REPLAY a known regression and watch the gate go red. A
- * gate nobody has watched fail is not known to work.
+ * The last three exist to REPLAY a known regression and watch the gate go red,
+ * and to re-derive the thresholds from measured noise on the machine in front of
+ * you. A gate nobody has watched fail is not known to work, and a gate nobody has
+ * watched PASS against identical source is not known to be honest.
  */
-import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, mkdirSync, copyFileSync, symlinkSync, rmSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  materialise, calibrate, assertSameParse, interleave, score, verdicts, git, fail, sign,
+  type Case, type Row, type Thresholds,
+} from './ab-harness.ts'
 
+const GATE = 'grammar-perf-guard'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
 const CONFIG_PATH = path.join(HERE, 'grammar-density', 'config.json')
 
+/** `passes` is this gate's own: the shared harness measures, the gate decides. */
+type GateMeasurement = import('./ab-harness.ts').Measurement & { passes: number }
+
 type Config = {
   referenceSha: string
   input: { rules: number }
-  measurement: { targetSampleMs: number; warmup: number; timed: number; rounds: number; runs: number }
-  thresholds: { medianPct: number; minPct: number; winRateCeiling: number }
+  measurement: GateMeasurement
+  thresholds: Thresholds
 }
 
 const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
 
 const QUICK = process.argv.includes('--quick')
+const SELF = process.argv.includes('--self')
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
 const REF = argValue('--ref') ?? CONFIG.referenceSha
-const HEAD_REF = argValue('--head-ref')
+const HEAD_REF = SELF ? REF : argValue('--head-ref')
 
-const M = QUICK ? { ...CONFIG.measurement, rounds: 2, runs: 1 } : CONFIG.measurement
-
-function fail(message: string): never {
-  console.error(`\ngrammar-perf-guard: ${message}`)
-  process.exit(1)
-}
-
-function sh(args: string[], cwd = ROOT, timeout?: number): string {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(timeout === undefined ? {} : { timeout }) })
-}
-
-/** Bound for the cache-verification git calls — they are local metadata reads. */
-const VERIFY_TIMEOUT_MS = 10_000
-
-// ── sides ───────────────────────────────────────────────────────────────────
+const M: GateMeasurement = QUICK
+  ? { ...CONFIG.measurement, rounds: 2, runs: 1, passes: 1 }
+  : CONFIG.measurement
 
 /**
- * Materialise a side of the A/B as a directory whose `src/` is parseman at `sha`
- * and whose `bench/grammar-density/grammar.ts` is the WORKING TREE's copy. The
- * grammar must be identical on both sides or the comparison measures the grammar
- * instead of the compiler.
- *
- * `node_modules` is symlinked rather than installed: nothing here needs a
- * per-sha dependency tree — `src/index.ts` is loaded through tsx, and tsx only
- * transpiles. That keeps the whole gate at seconds rather than minutes, which is
- * a correctness property: a gate too slow to run gets skipped.
+ * The path copied from the working tree onto BOTH sides. The density grammar must
+ * be byte-identical across sides or the gate measures the benchmark's history
+ * instead of the compiler's. `config.json` rides along in the same directory and
+ * is harmless: both sides read the gate's config from the WORKING TREE, never
+ * from the materialised checkout.
  */
-function materialise(sha: string | null): string {
-  if (sha === null) return ROOT
-  const dir = path.join(ROOT, '.cache', `grammar-gate-${sha}`)
-  // A cached directory is only reusable if it is still AT the requested sha. Presence of
-  // `src/index.ts` proves a worktree exists there, not which commit it holds — the
-  // directory name encodes the sha, but nothing had ever verified the contents matched
-  // it. A worktree left behind by an interrupted run, or one someone checked out
-  // elsewhere, would be reused silently and the gate would benchmark the WRONG COMMIT
-  // while reporting the requested one. Verify, and rebuild when it does not match.
-  const stale = (): boolean => {
-    if (!existsSync(path.join(dir, 'src', 'index.ts'))) return true
-    try {
-      if (sh(['rev-parse', sha], ROOT, VERIFY_TIMEOUT_MS).trim() !== sh(['rev-parse', 'HEAD'], dir, VERIFY_TIMEOUT_MS).trim()) return true
-      // Being AT the sha is not enough — a tracked modification under `src/` means the
-      // benchmark imports code the sha does not name, and the gate would report the clean
-      // sha while measuring the edit. The grammar file is overwritten from the working
-      // tree BY DESIGN and lives outside `src/`, so scope the check to `src/`.
-      return sh(['status', '--porcelain', '--', 'src'], dir, VERIFY_TIMEOUT_MS).trim() !== ''
-    } catch (error) {
-      // Treat an unverifiable cache as stale — a rebuild is cheap, a wrong number is not —
-      // but do NOT swallow the reason; that is how a hung git becomes an unexplained
-      // rebuild every run and looks like normal operation.
-      console.warn(`grammar-perf-guard: could not verify the cached reference at ${sha} (${String(error).slice(0, 200)}); rebuilding it.`)
-      return true
-    }
-  }
-  if (stale()) {
-    rmSync(dir, { recursive: true, force: true })
-    try { sh(['worktree', 'prune']) } catch { /* nothing to prune */ }
-    try {
-      sh(['worktree', 'add', '--detach', '--force', dir, sha])
-    } catch (error) {
-      fail(
-        `could not create a worktree at ${sha}. The gate compares against a pinned commit of THIS repo, `
-        + `so the commit must be present — a shallow clone cannot see it (CI needs actions/checkout with fetch-depth: 0).\n`
-        + `A missing reference is a FAILURE, not a skip.\n${String(error).slice(0, 500)}`,
-      )
-    }
-  }
-  const nm = path.join(dir, 'node_modules')
-  if (!existsSync(nm)) symlinkSync(path.join(ROOT, 'node_modules'), nm, 'dir')
-  mkdirSync(path.join(dir, 'bench', 'grammar-density'), { recursive: true })
-  copyFileSync(
-    path.join(HERE, 'grammar-density', 'grammar.ts'),
-    path.join(dir, 'bench', 'grammar-density', 'grammar.ts'),
-  )
-  return dir
-}
+const COPY = ['bench/grammar-density'] as const
 
+type DensityCase = { id: string; kind: string; n: number }
 type Side = {
-  label: string
   compile: (c: unknown) => { parseWithContext: (input: string, ctx: unknown, pos?: number) => unknown }
-  grammar: (c: { kind: string; n: number }) => unknown
-  cases: ReadonlyArray<{ id: string; kind: string; n: number }>
-  input: (c: { kind: string }, rules: number) => string
+  grammar: (c: DensityCase) => unknown
+  cases: ReadonlyArray<DensityCase>
+  input: (c: DensityCase, rules: number) => string
 }
 
-async function loadSide(label: string, dir: string): Promise<Side> {
-  const pm = await import(path.join(dir, 'src', 'index.ts')) as {
-    compile: Side['compile']
-  }
+async function loadSide(dir: string): Promise<Side> {
+  const pm = await import(path.join(dir, 'src', 'index.ts')) as { compile: Side['compile'] }
   const g = await import(path.join(dir, 'bench', 'grammar-density', 'grammar.ts')) as {
     caseGrammar: Side['grammar']
     caseInput: Side['input']
     DENSITY_CASES: Side['cases']
   }
-  return { label, compile: pm.compile, grammar: g.caseGrammar, cases: g.DENSITY_CASES, input: g.caseInput }
+  return { compile: pm.compile, grammar: g.caseGrammar, cases: g.DENSITY_CASES, input: g.caseInput }
 }
 
-// ── measurement ─────────────────────────────────────────────────────────────
-
-const median = (a: number[]): number => {
-  const s = [...a].sort((x, y) => x - y)
-  const m = s.length >> 1
-  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2
-}
-
-type Impl = { label: string; id: string; run: (reps: number) => void; parse: () => unknown }
-
-function buildImpls(side: Side): Impl[] {
+function toCases(side: Side): Case[] {
   return side.cases.map(c => {
     const compiled = side.compile(side.grammar(c))
     const input = side.input(c, CONFIG.input.rules)
     const parse = (): unknown => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0)
     return {
-      label: side.label,
       id: c.id,
+      detail: `${c.n} ${c.kind === 'expected' ? 'opt/arm' : 'probes/val'}`,
       parse,
       run: (reps: number) => { for (let n = 0; n < reps; n++) parse() },
     }
   })
 }
 
-/**
- * Repetitions per timed sample, chosen so each sample lands near
- * `targetSampleMs`. Calibrated on the REFERENCE side and applied to BOTH, so the
- * choice can never favour one — and reported, so a reader can see the sample size
- * behind every number.
- */
-function calibrate(impls: Impl[]): Map<string, number> {
-  const reps = new Map<string, number>()
-  for (const i of impls) {
-    for (let k = 0; k < 20; k++) i.parse()
-    const ts: number[] = []
-    for (let k = 0; k < 9; k++) {
-      const t0 = performance.now()
-      i.parse()
-      ts.push(performance.now() - t0)
-    }
-    const one = median(ts)
-    reps.set(i.id, Math.max(1, Math.round(CONFIG.measurement.targetSampleMs / Math.max(one, 0.01))))
-  }
-  return reps
-}
+const headSha = git(['rev-parse', '--short', 'HEAD'], ROOT).trim()
+const refDir = materialise(GATE, ROOT, REF, COPY)
+const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
 
-/**
- * Both sides must produce the SAME parse. A gate that times two different parses
- * is not a gate — and the cheapest way for a reference side to look fast is to
- * stop doing work. Compared structurally rather than by identity because the two
- * sides build their nodes from two separate module graphs.
- */
-function assertSameParse(a: Impl[], b: Impl[]): void {
-  for (let n = 0; n < a.length; n++) {
-    const ra = JSON.stringify(a[n]!.parse())
-    const rb = JSON.stringify(b[n]!.parse())
-    if (ra !== rb) {
-      fail(`case ${a[n]!.id}: the two sides produced DIFFERENT parse results, so their timings are not comparable.`)
-    }
-  }
-}
+console.log(
+  `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REF}`}`,
+)
 
-// ── main ────────────────────────────────────────────────────────────────────
+const ref = await loadSide(refDir)
+const head = await loadSide(headDir)
 
-const headSha = sh(['rev-parse', '--short', 'HEAD']).trim()
-const refDir = materialise(REF)
-const headDir = materialise(HEAD_REF)
-
-console.log(`grammar-perf-guard: ${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REF}`)
-
-const ref = await loadSide('ref', refDir)
-const head = await loadSide('head', headDir)
-
-// Every case's input must be byte-identical across the sides, per AXIS — the
-// copy is what makes the comparison about parseman rather than about the bench.
+// Every case's input must be byte-identical across the sides, per AXIS — the copy
+// is what makes the comparison about parseman rather than about the bench.
+if (ref.cases.length !== head.cases.length) fail(GATE, 'the two sides declare different cases — the grammar copy did not take.')
 for (const c of ref.cases) {
   if (ref.input(c, CONFIG.input.rules) !== head.input(c, CONFIG.input.rules)) {
-    fail(`the two sides generated different input for ${c.id} — the grammar copy did not take.`)
+    fail(GATE, `the two sides generated different input for ${c.id} — the grammar copy did not take.`)
   }
 }
-if (ref.cases.length !== head.cases.length) fail('the two sides declare different cases — the grammar copy did not take.')
 
-const refImpls = buildImpls(ref)
-const headImpls = buildImpls(head)
-assertSameParse(refImpls, headImpls)
+const refCases = toCases(ref)
+const headCases = toCases(head)
+assertSameParse(GATE, refCases, headCases)
 
-const reps = calibrate(refImpls)
+const reps = calibrate(refCases, M)
 console.log(
   `  ${(ref.input(ref.cases[0]!, CONFIG.input.rules).length / 1024).toFixed(1)} KB input`
-  + `   ${M.rounds} rounds x ${M.runs} runs, ${M.warmup} warmup + ${M.timed} timed samples, interleaved in one process`
+  + `   ${M.passes} passes x ${M.rounds} rounds x ${M.runs} runs, ${M.warmup} warmup + ${M.timed} timed samples,`
+  + ` sides paired and order-alternated`
   + `${QUICK ? '  [--quick: TRIAGE ONLY, not a gate]' : ''}`,
 )
-console.log(`  repetitions per sample: ${ref.cases.map(c => `${c.id.split('/')[1]} ${reps.get(c.id)}`).join(', ')}`)
-
-const impls = [...refImpls, ...headImpls]
-const samples = new Map<string, number[]>(impls.map(i => [`${i.label}|${i.id}`, []]))
-for (const i of impls) for (let k = 0; k < M.warmup; k++) i.run(reps.get(i.id)!)
-
-for (let round = 0; round < M.rounds; round++) {
-  // Rotate order each round so a fixed position never favours one side.
-  const order = impls.map((_, n) => impls[(n + round) % impls.length]!)
-  for (let run = 0; run < M.runs; run++) {
-    for (const i of order) {
-      const r = reps.get(i.id)!
-      for (let k = 0; k < 2; k++) i.run(r)
-      const ts: number[] = []
-      for (let k = 0; k < M.timed; k++) {
-        const t0 = performance.now()
-        i.run(r)
-        ts.push(performance.now() - t0)
-      }
-      samples.get(`${i.label}|${i.id}`)!.push(median(ts))
-    }
-  }
-}
+console.log(`  repetitions per sample: ${refCases.map(c => `${c.id.split('/')[1]} ${reps.get(c.id)}`).join(', ')}`)
 
 const T = CONFIG.thresholds
-console.log(`\nper-case result (fails on median > ${T.medianPct}% OR min > ${T.minPct}% slower, AND <= ${Math.round(T.winRateCeiling * 100)}% of pairs won)\n`)
-
-const failures: string[] = []
-for (const c of ref.cases) {
-  const a = samples.get(`ref|${c.id}`)!
-  const b = samples.get(`head|${c.id}`)!
-  const dMed = (median(b) / median(a) - 1) * 100
-  const dMin = (Math.min(...b) / Math.min(...a) - 1) * 100
-  let wins = 0
-  for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
-  const winRate = wins / b.length
-  const breach = (dMed > T.medianPct || dMin > T.minPct) && winRate <= T.winRateCeiling
-  const sign = (n: number): string => `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`
-  console.log(
-    `  ${breach ? 'FAIL' : 'ok  '}  ${c.id.padEnd(17)}`
-    + ` ${String(c.n).padStart(2)} ${c.kind === 'expected' ? 'opt/arm    ' : 'probes/value'}`
-    + `   median ${median(a).toFixed(2)} → ${median(b).toFixed(2)} ms (${sign(dMed)})`
-    + `   min ${Math.min(...a).toFixed(2)} → ${Math.min(...b).toFixed(2)} ms (${sign(dMin)})`
-    + `   won ${wins}/${b.length}`,
-  )
-  if (breach) failures.push(`${c.id}: median ${sign(dMed)}, min ${sign(dMin)}, won ${wins}/${b.length}`)
+const load0 = os.loadavg()[0] ?? 0
+const passRows: Row[][] = []
+for (let p = 0; p < M.passes; p++) {
+  passRows.push(score(refCases, interleave(refCases, headCases, reps, M), T))
 }
+const load1 = os.loadavg()[0] ?? 0
+const rows = verdicts(passRows)
 
+console.log(
+  `\nper-case result over ${M.passes} independent passes`
+  + `\n  a pass BREACHES on median > ${T.medianPct}% OR min > ${T.minPct}% slower,`
+  + ` AND <= ${Math.round(T.winRateCeiling * 100)}% of interleaved pairs won`
+  + `\n  or on the sign test: <= ${Math.round(T.signTest.winRateCeiling * 100)}% of pairs won AND`
+  + ` > ${T.signTest.medianPct}% on BOTH median and min`
+  + `\n  a case FAILS only when a strict majority of passes breach — one bad pass is a busy machine, not a regression\n`,
+)
+for (const v of rows) {
+  const worst = v.passes.reduce((a, b) => (b.dMedian > a.dMedian ? b : a))
+  const best = v.passes.reduce((a, b) => (b.dMedian < a.dMedian ? b : a))
+  console.log(
+    `  ${v.failed ? 'FAIL' : 'ok  '}  ${v.id.padEnd(17)} ${v.detail.padStart(12)}`
+    + `   median ${sign(best.dMedian)} … ${sign(worst.dMedian)}`
+    + `   min ${sign(Math.min(...v.passes.map(r => r.dMin)))} … ${sign(Math.max(...v.passes.map(r => r.dMin)))}`
+    + `   won ${v.passes.map(r => `${r.wins}/${r.pairs}`).join(' ')}`
+    + `   breached ${v.breachCount}/${M.passes}`,
+  )
+}
+console.log(`\n  load average ${load0.toFixed(2)} → ${load1.toFixed(2)}`)
+
+if (SELF) {
+  // Reported SIGNED, because only the positive direction gates. A −8% self-check
+  // pass is the same machine noise as a +8% one, but only the second can fail a
+  // PR, so the number the threshold has to clear is the worst POSITIVE one.
+  const all = rows.flatMap(v => v.passes)
+  const worstMedian = Math.max(...all.map(r => r.dMedian))
+  const worstMin = Math.max(...all.map(r => r.dMin))
+  const swing = Math.max(...all.map(r => Math.abs(r.dMedian)))
+  const falseFails = rows.filter(v => v.failed).map(v => v.id)
+  console.log(
+    `\nnoise floor on this machine, worst SINGLE PASS in the gating (slower) direction:`
+    + ` median ${sign(worstMedian)}, min ${sign(worstMin)}`
+    + `\n  worst absolute swing in either direction: ${swing.toFixed(2)}%`
+    + `\n  passes that breached: ${all.filter(r => r.breach).length}/${all.length}`
+    + `\nmajority-of-${M.passes} verdict: ${falseFails.length === 0 ? 'no case false-failed' : `FALSE FAIL on ${falseFails.join(', ')}`}`
+    + `\nConfigured thresholds ${T.medianPct}% / ${T.minPct}%, sign test ${T.signTest.medianPct}%. The single-pass`
+    + `\nfloor is what the threshold has to clear; the majority rule is what absorbs the pass that does not.`
+    + `\nIf a self-check ever false-fails, the gate is reading the machine — spend more passes, or say the`
+    + `\nnumber is wrong. Do not widen.`,
+  )
+  process.exit(falseFails.length === 0 ? 0 : 1)
+}
 if (QUICK) {
   console.log('\n--quick is triage only — it does not gate. Run without it before landing.')
   process.exit(0)
 }
+
+const failures = rows.filter(v => v.failed)
 if (failures.length > 0) {
-  console.error(`\ngrammar-perf-guard: REGRESSION in ${failures.length} case(s) vs ${REF}:`)
-  for (const f of failures) console.error(`  ${f}`)
+  console.error(`\n${GATE}: REGRESSION in ${failures.length} case(s) vs ${REF}:`)
+  for (const f of failures) {
+    console.error(
+      `  ${f.id}: median ${f.passes.map(r => sign(r.dMedian)).join(' ')}`
+      + `, breached ${f.breachCount}/${M.passes} passes`,
+    )
+  }
   console.error(
     '\nRead the SPREAD, per axis. Within `rollback/*` only the probes per byte move, so a delta that'
     + '\ngrows with the probe count is a per-EXECUTION cost on a rollback path. Within `expected/*` only'
@@ -346,8 +283,9 @@ if (failures.length > 0) {
     + '\ncost that scales with how many tokens a losing choice names. Either shape reaches real grammars'
     + '\namplified by their own density — and a regression on ONE axis reads flat on the other, which is'
     + '\nhow 0.35.0 shipped a 32% Less regression past a sweep that watched rollbacks only.'
+    + '\n\nThese cases AMPLIFY: a reading here is roughly a quarter of itself on a real grammar.'
     + '\n\nDo not widen the threshold to make this pass. Either fix it, or land the number visibly.',
   )
   process.exit(1)
 }
-console.log('\ngrammar-perf-guard: ok')
+console.log(`\n${GATE}: ok`)

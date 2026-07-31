@@ -63,8 +63,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, interleave, score, verdicts, git, fail, sign,
-  type Case, type Row, type Thresholds,
+  materialise, calibrate, assertSameParse, interleave, score, verdicts, git, fail, sign, peakThresholds,
+  type Case, type Row, type Thresholds, type Peak,
 } from './ab-harness.ts'
 import type { Workload } from './workloads/index.ts'
 
@@ -78,6 +78,7 @@ type GateMeasurement = import('./ab-harness.ts').Measurement & { passes: number 
 
 type Config = {
   referenceSha: string
+  peak: Peak
   measurement: GateMeasurement
   thresholds: Thresholds
 }
@@ -86,9 +87,19 @@ const CONFIG = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Config
 
 const QUICK = process.argv.includes('--quick')
 const SELF = process.argv.includes('--self')
+/**
+ * The PEAK clause: compare against the fastest release on record rather than the
+ * previous one, and fail on a drawdown beyond the measured noise floor. This is
+ * the half of the release policy a per-step gate structurally cannot enforce —
+ * see `Peak` in `ab-harness.ts`.
+ */
+const PEAK = process.argv.includes('--peak')
 const argValue = (flag: string): string | null =>
   process.argv.find(a => a.startsWith(`${flag}=`))?.slice(flag.length + 1) ?? null
-const REF = argValue('--ref') ?? CONFIG.referenceSha
+if (PEAK && (SELF || argValue('--ref') !== null)) {
+  fail(GATE, '--peak names its own reference (the committed peak sha) and cannot be combined with --ref or --self.')
+}
+const REF = PEAK ? CONFIG.peak.sha : argValue('--ref') ?? CONFIG.referenceSha
 const HEAD_REF = SELF ? REF : argValue('--head-ref')
 const ONLY = argValue('--only')
 
@@ -128,7 +139,12 @@ const refDir = materialise(GATE, ROOT, REF, COPY)
 const headDir = materialise(GATE, ROOT, HEAD_REF, COPY)
 
 console.log(
-  `${GATE}: ${SELF ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)` : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REF}`}`,
+  `${GATE}: ${SELF
+    ? `SELF-CHECK — ${REF} against itself (noise floor, not a gate)`
+    : PEAK
+      ? `PEAK CLAUSE — ${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs the fastest release on record,`
+        + ` ${CONFIG.peak.version} (${REF}), drawdown allowance ${CONFIG.peak.allowancePct}%`
+      : `${HEAD_REF ? `head-ref ${HEAD_REF}` : `HEAD ${headSha}`} vs reference ${REF}`}`,
 )
 
 const refWorkloads = await loadSide(refDir)
@@ -157,7 +173,7 @@ console.log(
 )
 console.log(`  parses per sample: ${refCases.map(c => `${c.id} ${reps.get(c.id)}`).join(', ')}`)
 
-const T = CONFIG.thresholds
+const T = PEAK ? peakThresholds(CONFIG.peak.allowancePct) : CONFIG.thresholds
 const load0 = os.loadavg()[0] ?? 0
 const passRows: Row[][] = []
 for (let p = 0; p < M.passes; p++) {
@@ -167,10 +183,15 @@ const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
 
 console.log(
-  `\nper-workload result over ${M.passes} independent passes`
-  + `\n  a pass BREACHES on median > ${T.medianPct}% OR min > ${T.minPct}% slower,`
-  + ` AND <= ${Math.round(T.winRateCeiling * 100)}% of interleaved pairs won`
-  + `\n  a workload FAILS only when a strict majority of passes breach — one bad pass is a busy machine, not a regression\n`,
+  PEAK
+    ? `\nper-workload drawdown from ${CONFIG.peak.version} over ${M.passes} independent passes`
+      + `\n  a pass BREACHES on median AND min BOTH > ${CONFIG.peak.allowancePct}% slower than the peak,`
+      + ` AND <= ${Math.round(T.winRateCeiling * 100)}% of interleaved pairs won`
+      + `\n  a workload FAILS only when a strict majority of passes breach\n`
+    : `\nper-workload result over ${M.passes} independent passes`
+      + `\n  a pass BREACHES on median > ${T.medianPct}% OR min > ${T.minPct}% slower,`
+      + ` AND <= ${Math.round(T.winRateCeiling * 100)}% of interleaved pairs won`
+      + `\n  a workload FAILS only when a strict majority of passes breach — one bad pass is a busy machine, not a regression\n`,
 )
 for (const v of rows) {
   const worst = v.passes.reduce((a, b) => (b.dMedian > a.dMedian ? b : a))
@@ -212,6 +233,33 @@ if (QUICK) {
 }
 
 const failures = rows.filter(v => v.failed)
+if (PEAK) {
+  if (failures.length === 0) {
+    console.log(`\n${GATE}: ok — no workload sits more than ${CONFIG.peak.allowancePct}% below ${CONFIG.peak.version}.`)
+    process.exit(0)
+  }
+  console.error(`\n${GATE}: DRAWDOWN — ${failures.length} workload(s) sit below the ${CONFIG.peak.version} peak:`)
+  for (const f of failures) {
+    console.error(
+      `  ${f.id}: median ${f.passes.map(r => sign(r.dMedian)).join(' ')}`
+      + `, breached ${f.breachCount}/${M.passes} passes`,
+    )
+  }
+  console.error(
+    '\nThis is the SLOW-BLEED clause, and it fires on a number no per-release comparison produces.'
+    + '\nEvery release since the peak may have passed its own gate and this can still be red: five'
+    + '\nconsecutive 1% losses are each inside the noise floor and together are a real 5% regression.'
+    + '\nThat is not hypothetical — the version sweep measured -5.1% over 0.28.0→0.34.0 with almost'
+    + '\nevery step individually insignificant.'
+    + '\n\nThree honest responses, in order of preference:'
+    + '\n  1. Find and fix the drawdown. It is real time, on realistic input.'
+    + '\n  2. If the cost bought something — a correctness fix, a feature — document it in the CHANGELOG'
+    + '\n     and move `peak` in bench/workloads/config.json, in this PR, with these numbers quoted.'
+    + '\n  3. Nothing else. Widening `allowancePct` to fit the drawdown is laundering a regression into'
+    + '\n     the baseline, and check-changelog will make you say so in the CHANGELOG anyway.',
+  )
+  process.exit(1)
+}
 if (failures.length > 0) {
   console.error(`\n${GATE}: REGRESSION in ${failures.length} workload(s) vs ${REF}:`)
   for (const f of failures) {
