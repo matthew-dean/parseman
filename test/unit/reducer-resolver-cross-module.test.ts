@@ -241,6 +241,26 @@ export const factory = g => ({ Fold: node('Fold', sequence(literal('a'), literal
     expect(elidesTailTiers(code)).toBe(false)
   })
 
+  it('emits the reducer SOURCE, because its NAME does not exist in the consuming module', () => {
+    /*
+     * `buildSrc` is the call site's expression text, and the call site is in the FACTORY's
+     * module — so a named reducer emitted `const _build = [fold]` into the consuming
+     * module, where `fold` is a module-private const of a file nothing imported. The
+     * artifact threw `ReferenceError: fold is not defined` on import. Every assertion
+     * above still passed: they read the emitted text and never ran it.
+     *
+     * Found by the emit-time scope check, which now refuses the shape outright if the
+     * substituted source is not self-contained either.
+     */
+    const code = buildViaFactory('fs', `
+import { literal, node, sequence } from 'parseman' with { type: 'macro' }
+const fold = children => ({ n: children.length })
+export const factory = g => ({ Fold: node('Fold', sequence(literal('a'), literal('b')), fold) })
+`)
+    expect(code).not.toMatch(/_build\s*=\s*\[\s*fold\s*\]/)
+    expect(code).toContain('children => ({ n: children.length })')
+  })
+
   it('still DECLINES an offset from a module nothing registered', () => {
     // Registration is explicit. A source the plugin never announced must keep failing
     // open rather than being matched by a guess.

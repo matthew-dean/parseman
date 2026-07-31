@@ -99,9 +99,16 @@ function stripTsFromSource(node: Node, code: string): string {
 // ---------------------------------------------------------------------------
 let _reducers: ReducerResolver | null = null
 
+/**
+ * The source of the module actually being EMITTED, so a factory evaluated out of some
+ * OTHER file can be told apart from one written here. See `setReducerResolver`.
+ */
+let _entrySource: string | null = null
+
 /** Install (or clear, with `null`) the resolver for the module being transformed. */
-export function setReducerResolver(r: ReducerResolver | null): void {
+export function setReducerResolver(r: ReducerResolver | null, entrySource: string | null = null): void {
   _reducers = r
+  _entrySource = entrySource
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +633,25 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         const resolved = _reducers?.resolve(buildSrc, be!.start, code)
         if (resolved) {
           if (resolved.src !== null) combi._def.buildSigSrc = resolved.src
+          /*
+           * A reducer named from a FOREIGN factory has to be emitted as its SOURCE, not
+           * its name. `buildSrc` is the call site's expression text, and the call site is
+           * in the factory's module — so `node('Fold', …, fold)` in an imported factory
+           * emitted `const _build = [fold]` into the CONSUMING module, where `fold` is a
+           * module-private const of a file that was never imported. That artifact threw
+           * `ReferenceError: fold is not defined` on import, and nothing noticed: the
+           * shape has tests, but they assert on the emitted TEXT and never run it. The
+           * emit-time scope check below `ms.toString()` is what found it.
+           *
+           * The resolver has already read the declaration out of the right module, so the
+           * substitution is exact for a self-contained reducer. One that closes over more
+           * of its own module's privates is NOT fixed by this — it is caught by that same
+           * scope check, which refuses to emit rather than shipping the next ReferenceError.
+           */
+          if (_entrySource !== null && code !== _entrySource
+            && resolved.src !== null && be!.type === 'Identifier') {
+            combi._def.buildSrc = resolved.src
+          }
           // An author-declared `node(..., { buildArity })` is authority 1 in
           // `confirmedArityForDef`; the resolver is authority 2. Both land in the SAME
           // field, so writing unconditionally here demoted the declaration to whatever

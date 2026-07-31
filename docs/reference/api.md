@@ -451,6 +451,15 @@ that nothing imports. A local `const` is dead code the bundler drops; an `export
 be dropped, and would ship a binding that throws `ReferenceError` the first time a
 consumer called it. Exporting one is a compile-time error.
 
+That check reads the `export` prefix on the declaration, and it is not the only way to
+make the binding undroppable — a separate `export { factory }` does the same thing. So
+underneath it, parseman scope-analyses the module it is about to emit and **refuses to
+emit any module that reads an identifier nothing binds**, whatever route the name took.
+The error lists each one with a `file:line:column` in the emitted module and the
+declaration it sits in. Two things are deliberately allowed: a name your SOURCE already
+left free — the module expects its host to supply it, and parseman had no part in that —
+and an unreferenced local function-valued `const`, which is the dead-code case above.
+
 Three call sites over one shared factory (a factory may be passed by name, as here). The
 macro emits independent top-level artifacts, so each bundle tree-shakes away the one
 it does not import — your compiler ships the AST image, your language service ships the

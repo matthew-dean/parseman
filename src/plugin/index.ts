@@ -26,6 +26,7 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
+import { findFreeIdentifiers } from './free-identifiers.ts'
 import {
   beginDegradationCapture, endDegradationCapture, formatDegradation, formatDegradations,
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
@@ -608,7 +609,7 @@ function transformMacroImpl(
    * never emitted, so the generated builder reference is unchanged either way.
    */
   const reducerResolver = createReducerResolver(id, body as unknown[], code)
-  setReducerResolver(reducerResolver)
+  setReducerResolver(reducerResolver, code)
 
   const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
     for (const st of moduleBody) {
@@ -2040,6 +2041,63 @@ function transformMacroImpl(
       `// Version-locked: compile AND fuse/link this artifact with parseman v${PARSEMAN_VERSION} ONLY.\n` +
       `// Parseman does not read artifacts across versions; recompile if the version differs.\n`,
     )
+  }
+
+  /*
+   * REFUSE TO EMIT a module that names something nothing binds.
+   *
+   * Every deletion lowering performs — the `rules(…)` call sites, the `x.define(…)`
+   * statements, and last the macro import — is only safe because the text that read
+   * the deleted binding went with it. Where a shape slips through where it did not,
+   * the artifact builds clean, imports clean, and throws `ReferenceError` the first
+   * time a consumer calls the binding: jess shipped exactly that for three days
+   * across three grammars, 26 undefined identifiers in the css parser alone, and had
+   * to write this check itself downstream. It belongs here.
+   *
+   * This is the NET, not the diagnostic. Shapes we recognise are refused where they
+   * are recognised, with an error that says what to do — an exported `rules()`
+   * factory throws above, before this point, so it is never double-reported. What
+   * reaches here is a name that escaped by a route nobody enumerated, which is the
+   * whole reason for checking the emitted text instead of guessing at shapes.
+   *
+   * Gated on `applied.length > 0` — the same condition as the version banner. A
+   * module that lowered nothing had nothing deleted from it, so it cannot have
+   * acquired a free name, and the scan (one extra parse of the emitted module, at
+   * macro time) is not worth paying for. Nothing here runs in, or is emitted into,
+   * the artifact.
+   */
+  if (applied.length > 0) {
+    /*
+     * Only names lowering MADE free. A module that already read something nothing binds
+     * — a host that injects the name some other way, an ambient the author knows about
+     * — was written that way, and reporting it here would be parseman failing a build
+     * over a decision it had no part in. Subtracting the source's own free names is what
+     * keeps this a check on parseman's output rather than a lint on the author's input.
+     * The source scan runs ONLY when the emitted module already looks wrong, so the
+     * clean path costs one parse, not two.
+     */
+    let sourceFree: Set<string> | null = null
+    const freeInSource = (): Set<string> =>
+      sourceFree ??= new Set(findFreeIdentifiers(code, id).map(f => f.name))
+    const free = findFreeIdentifiers(ms.toString(), id)
+      .filter(f => !freeInSource().has(f.name))
+    if (free.length > 0) {
+      const macroProvided = free.filter(f => allNames.has(f.name))
+      const where = (f: (typeof free)[number]): string =>
+        `  - ${id}:${f.line}:${f.column} — \`${f.name}\``
+        + (f.enclosing ? `, inside \`${f.enclosing}\`` : '')
+      const cause = macroProvided.length > 0
+        ? `\n  ${macroProvided.length === free.length ? 'All' : `${macroProvided.length}`} of these came from the `
+          + `\`with { type: 'macro' }\` import, which was removed because every macro declaration lowered. `
+          + `Something still names them verbatim — a declaration parseman left as text rather than compiling. `
+          + `Make that declaration macro-buildable, or stop exporting it so lowering can drop it.`
+        : ''
+      throw new Error(
+        `${id} — parseman will not emit this module: ${free.length} identifier(s) are read but bound by `
+        + `nothing, so it would throw ReferenceError at runtime (positions are in the EMITTED module):\n`
+        + `${free.map(where).join('\n')}${cause}`,
+      )
+    }
   }
 
   // The inline-expansion cap CHANGED what was emitted. Surface it as returned data on

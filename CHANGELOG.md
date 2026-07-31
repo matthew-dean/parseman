@@ -198,6 +198,40 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   artifact whose point is not to need it, so it is refused rather than traded silently.
   A module that exports a factory and lowers nothing is untouched, so sharing one
   factory across modules still works.
+- **BUILD-TIME BEHAVIOUR CHANGE — parseman now scope-analyses the module it is about to
+  emit, and refuses to emit it if any identifier is read but bound by nothing.** A macro
+  build that used to succeed can now fail. That is the point: lowering DELETES code — the
+  `rules(…)` call sites, the `x.define(…)` statements, and finally the macro import — and
+  every one of those deletions is only safe because the text that read the deleted binding
+  went with it. Where a shape slips through where it did not, the artifact builds clean,
+  imports clean, and throws `ReferenceError` in a consumer's process long after publish.
+  jess shipped exactly that for three days across three grammars — 26 undefined
+  identifiers in the css parser alone, 21 in scss, 24 in jess — and parseman said nothing;
+  the consumer ended up writing parseman's own safety check downstream, which is the
+  signal that it belongs here. The specific shapes stay refused where they are recognised
+  (an exported factory throws its own error, above, and is never double-reported); this is
+  the net beneath them, because the shapes are not enumerable. It caught two on arrival:
+  a factory exported by a separate `export { … }` statement rather than an `export`
+  prefix, which walks straight past the specific predicate, and the imported-reducer bug
+  below. The error names every free identifier with a `file:line:column` in the EMITTED
+  module and the enclosing declaration, and says when the cause is the removed macro
+  import. Macro-build only — one extra parse of the emitted module, gated on having
+  lowered something; zero bytes and zero time in codegen, and `pnpm size:guard` reads all
+  24 fixtures exactly at their committed ceiling. Two classes are deliberately NOT
+  reported: a name the SOURCE already left free (the module expects its host to supply it,
+  and parseman had no part in that decision), and an unreferenced, non-exported,
+  function-valued `const` whose body is never entered — the documented two-artifact
+  pattern, which is dead code a bundler drops.
+- **A reducer named inside an IMPORTED factory is emitted as its SOURCE, not its name.**
+  Found by the check above, on its first run. `buildSrc` is the call site's expression
+  text and the call site is in the FACTORY's module, so `node('Fold', …, fold)` in an
+  imported factory emitted `const _build = [fold]` into the CONSUMING module, where `fold`
+  is a module-private `const` of a file that was never imported. The artifact threw
+  `ReferenceError: fold is not defined` on import — not on first call, on IMPORT. The
+  shape had tests; they assert on the emitted text and never ran it. The resolver has
+  already read the declaration out of the right module, so the substitution is exact for a
+  self-contained reducer; one that closes over more of its own module's privates is caught
+  by the scope check and refused rather than shipped.
 - **Resolve a reducer named inside an imported `rules()` factory against that factory's
   own module.** An imported factory is evaluated with `code: mod.src`, so a
   `node(…, build)` inside it carries an offset into THAT file; 0.45 stopped the resolver
