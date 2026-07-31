@@ -73,6 +73,20 @@ const EFFECT = 'removes 1 of the 3 arms that hide their first character'
 
 const lines = (out: string): string[] => out.split('\n')
 
+/**
+ * DEFECT PINNED BELOW, NOT ENDORSED — plural agreement in the header and footer.
+ *
+ * `fix-render.ts:68` builds `${n} change${n === 1 ? '' : 's'} that are safe to make`,
+ * so one change reads "1 change that ARE safe to make". The place count at the same
+ * site has the same shape ("1 place that NEED you"). The noun is pluralised and the
+ * verb is not.
+ *
+ * These assertions record what the renderer emits TODAY, because a rendering test that
+ * cannot tell you the exact bytes is not doing its job. They are not a claim that the
+ * wording is right. If you fix the agreement, the expectations at the `AGREEMENT`
+ * markers below are the ones to update, and that is the whole cost of the fix.
+ */
+
 describe('fixReportLines — blocked reports', () => {
   it('renders the fallback reason when ok is false and blocked is null', () => {
     const out = renderFixReport(report({ ok: false, blocked: null }))
@@ -129,6 +143,7 @@ describe('fixReportLines — clean reports', () => {
   it('is NOT clean when only located findings exist', () => {
     const out = renderFixReport(report({ located: [loc()] }))
     expect(out).not.toContain('nothing here can be rewritten')
+    // AGREEMENT: see the note at the head of this file.
     expect(lines(out)[0]).toBe('● grammar — 0 changes that are safe to make, 1 place that need you')
   })
 })
@@ -138,7 +153,8 @@ describe('fixReportLines — one verified fix, no edit', () => {
 
   it('renders the exact report, line for line', () => {
     expect(lines(out)).toEqual([
-      '● grammar — 1 change that are safe to make',
+      // AGREEMENT: see the note at the head of this file.
+    '● grammar — 1 change that are safe to make',
       '  Every change below was applied, the parser rebuilt, and your 1 file (12 bytes)',
       '  parsed again with interpreted — the result was identical every time. A change',
       '  that altered the result was thrown away and is not shown.',
@@ -347,6 +363,7 @@ describe('fixReportLines — located findings', () => {
       located: [loc({ id: 'L#arm1' }), loc({ id: 'L#arm2' })],
     }))
     const ls = lines(out)
+    // AGREEMENT: see the note at the head of this file.
     expect(ls[0]).toBe('● grammar — 1 change that are safe to make, 2 places that need you')
     expect(ls.findIndex(l => l.endsWith('V#arm0'))).toBeLessThan(
       ls.findIndex(l => l.endsWith('L#arm1')))
@@ -399,6 +416,7 @@ describe('fixReportLines — frozen note', () => {
 describe('fixReportLines — applied flag', () => {
   it('switches the header glyph, drops the --apply nudge and says written to disk', () => {
     const ls = lines(renderFixReport(report({ verified: [fix()] }), { applied: true }))
+    // AGREEMENT: see the note at the head of this file.
     expect(ls[0]).toBe('✓ grammar — 1 change that are safe to make')
     expect(ls.join('\n')).not.toContain('Nothing has been written')
     expect(ls.at(-1)).toBe('✓ 1 safe to apply  ·  written to disk')
