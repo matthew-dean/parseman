@@ -52,6 +52,44 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   lowerings diff. Removing it is worth **-0.3%** on `probe/hostmode-ast` and under
   0.1% elsewhere; the value is that `'ast'` and `'cst'` lowerings of the same grammar
   no longer disagree about variable numbering.
+- **`size-gate`: the committed baseline IS the ceiling, and it ratchets both ways.**
+  The 10x raw-bytes target is not reachable in 0.45 — marginal cost is ~5,231 generated
+  bytes per `node()` site and near-CONSTANT from 4 to 32 sites, so it does not amortise,
+  and reaching 10x needs ~1,170 B/node, a 4.5x cut that inlined per-site preambles
+  cannot give. Rather than ship a permanently-red required check — which trains people
+  to ignore CI, and is how several gates in this repo went dead — the gate now enforces
+  the property that actually protects the product: **no fixture may be worse than it is
+  today.** Each fixture's committed `genBytes` is its ceiling, with 0.1% slack (codegen
+  is deterministic; the measured noise floor is exactly 0).
+
+  The check is two-sided. Growing past a ceiling fails, as before. **Shrinking below one
+  ALSO fails**, with "bank the win" — because an un-banked improvement is silent headroom
+  for the next regression to grow into, and a convention asking a human to lower it is
+  not a check. `bench/grammar-density/config.json` and `bench/workloads/config.json` both
+  carried exactly such a comment and sat unbumped for ten releases. Raising a ceiling
+  needs owner sign-off; lowering one is mandatory.
+
+  `CEILING = 10` stays in the source, is measured every run, and is reported per fixture
+  — ratio, target, the multiple it must fall by, the byte number to hit, and the measured
+  reason — as a hard `TODO(0.46)` warning that green never silences. 19 of 24 fixtures are
+  above it today, worst `probe/variants-4` at 58.1x. The lever is deferred to 0.46:
+  replace inlined per-site preambles with shared runtime helpers, and share across
+  variants (`probe/variants-4` costs 3.92x `probe/variants-1` for the same grammar, with
+  compression climbing 5.3:1 -> 12.7:1 — output that gzips better is output repeating
+  itself).
+
+- **`bench/size/probe.ts` no longer exits non-zero for having measured something.**
+  `--json=/dev/stdout` was written with `writeFileSync`, which opens a second, independent
+  file description on what is usually a pipe. That both raced the queued async writes
+  `console.log` had already handed to the real stdout, and failed outright on Linux, where
+  `/dev/stdout` resolves through `/proc/self/fd/1`. The probe therefore printed a complete,
+  correct table and then exited 1 with the reason on a stderr its caller discarded. Stream
+  targets (`-`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/{1,2}`) are now written through the
+  stream this process already owns, a genuine file I/O failure is reported with its path
+  and reason, and when a machine-readable stream is pointed at stdout the human report
+  moves to stderr so stdout carries one clean document. The layering this restores: the
+  probe MEASURES, `bench/size-guard.ts` ENFORCES — a measurement tool has no ceiling, no
+  budget, and no opinion about whether a number is too big.
 
 - **`routed(fallback)` — one production instead of a `Routed*` twin.** `routed()` took
   no argument, so it had nothing to do outside a `dispatch()` branch and failed there.
