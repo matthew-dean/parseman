@@ -283,6 +283,21 @@ export function consumeTrivia(input: string, cur: number, ctx: ParseContext): nu
   return scan.end
 }
 
+/**
+ * End of the trivia run at `cur`, WITHOUT recording any of it.
+ *
+ * The read-only twin of `consumeTrivia`, for a zero-width ASSERTION that wants the
+ * adjacency fact and must leave no trace: the deferred path returns a scan whose
+ * `commit()` is simply never called, so nothing lands in any buffer and there is
+ * nothing to roll back. The following term re-scans the same gap and owns the
+ * commit/rewind decision exactly as if the assertion were not there.
+ */
+export function probeTriviaEnd(input: string, cur: number, ctx: ParseContext): number {
+  if (!ctx.trivia) return cur
+  if (needsDeferredTriviaCommit(ctx)) return scanTrivia(input, cur, ctx).end
+  return advanceTrivia(input, cur, ctx)
+}
+
 function fastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner | null {
   const cached = fastTriviaCache.get(trivia)
   if (cached !== undefined) return cached

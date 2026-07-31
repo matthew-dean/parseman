@@ -105,6 +105,8 @@ function hasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator<unknown>>, t
     case 'literal':
     case 'keywords':
     case 'guard':
+    // The adjacency probe scans with capture OFF, so it logs nothing.
+    case 'adjacency':
     case 'token':
     case 'leaf':
       return false

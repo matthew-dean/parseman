@@ -361,6 +361,11 @@ function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmC
       // walk into it for a precise cause.
       case 'guard':
         return { cause: 'opaque-wrapper', detail: `opaque wrapper (${d.tag})` }
+      // Zero-width and dropped from a sequence's first-set (isZeroWidthAssertion),
+      // so it is never the reason an arm is broad — but it can be reached as the
+      // sole term of a degenerate arm. Report it precisely rather than as a wrapper.
+      case 'adjacency':
+        return { cause: 'broad-recognizer', detail: `${d.polarity}() (zero-width assertion)` }
       // attempt/withCtx/recover FORWARD their inner first-set (transparent for
       // dispatch), so a broad result comes from the inner parser — walk into it.
       case 'attempt': case 'withCtx': case 'recover':

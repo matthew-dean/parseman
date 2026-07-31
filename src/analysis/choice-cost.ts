@@ -361,7 +361,7 @@ function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
     case 'recover': return [d.parser, d.sentinel]
     case 'scanTo': return [d.sentinel, ...d.skip]
     case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
-    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'unknown':
+    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'adjacency': case 'unknown':
       return []
     default: {
       const rec = d as unknown as { parser?: Combinator<unknown> }

@@ -106,6 +106,7 @@ export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, o
 export type { LineIndex } from './line-index.ts'
 
 export { gate } from './combinators/gate.ts'
+export { adjacent, notAdjacent } from './combinators/adjacency.ts'
 export { withCtx } from './combinators/withCtx.ts'
 export { isParseError } from './combinators/expect.ts'
 export { expect } from './combinators/expect.ts'

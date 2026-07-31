@@ -244,6 +244,72 @@ export function recordTriviaChunks(ctx: ParseContext, chunks: readonly TriviaChu
  * unaffected either way). If you expect comments and get an empty per-node log,
  * check the name against the grammar's `triviaKindLabels`.
  */
+/**
+ * Resolve an ADJACENCY kind filter against the ACTIVE trivia table — the strict
+ * counterpart of `triviaKindMask` below.
+ *
+ * Deliberately NOT lenient. `triviaKindMask` is a capture preference, where an
+ * unknown name is a legitimate cross-dialect no-op; this is a RECOGNITION
+ * constraint, and a silently-dropped name turns `notAdjacent({kinds:['whitespace']})`
+ * into a bare `notAdjacent()` — i.e. `calc()` quietly accepting a comment where
+ * css-values-4 10.1 demands real whitespace, the exact defect the filter exists to
+ * prevent. Both failure modes are hard errors.
+ */
+export function resolveAdjacencyKindMask(
+  trivia: Combinator<unknown> | undefined,
+  kinds: readonly string[],
+): number {
+  const spec = trivia ? analyzeLabeledTrivia(trivia) : null
+  if (!spec) {
+    throw new TypeError(
+      `notAdjacent({ kinds: [${kinds.map(k => JSON.stringify(k)).join(', ')}] }) requires classified trivia: `
+      + 'the active trivia table has no category labels. Build it with classifiedTrivia({ whitespace: …, comment: … }).',
+    )
+  }
+  let mask = 0
+  for (const name of kinds) {
+    const idx = spec.labels.indexOf(name)
+    if (idx < 0) {
+      throw new TypeError(
+        `notAdjacent(): unknown trivia kind ${JSON.stringify(name)}. `
+        + `The active trivia table declares: ${spec.labels.map(l => JSON.stringify(l)).join(', ')}.`,
+      )
+    }
+    mask |= 1 << idx
+  }
+  return mask
+}
+
+/**
+ * Bitmask of the trivia CATEGORIES occurring in the run starting at `pos`
+ * (`1 << kindIndex` per matched chunk); `0` when no trivia is there at all.
+ * The single source of truth for the interpreter's adjacency kind test — the
+ * compiled probe (`_akN`) mirrors this loop arm for arm.
+ */
+export function triviaKindMaskAt(
+  input: string,
+  pos: number,
+  spec: LabeledTriviaSpec,
+  state?: unknown,
+): number {
+  let cur = pos
+  let mask = 0
+  while (cur < input.length) {
+    let matched: { end: number; kindIndex: number } | null = null
+    for (const arm of spec.arms) {
+      const m = matchArmAt(input, cur, arm.parser, state)
+      if (m) {
+        matched = { end: m.end, kindIndex: arm.kindIndex }
+        break
+      }
+    }
+    if (!matched) break
+    mask |= 1 << matched.kindIndex
+    cur = matched.end
+  }
+  return mask
+}
+
 export function triviaKindMask(
   labels: readonly string[] | undefined,
   keep: readonly string[],

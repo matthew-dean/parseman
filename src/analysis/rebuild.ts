@@ -51,6 +51,7 @@ import { node } from '../combinators/node.ts'
 import { transform, skip, label, field } from '../combinators/map.ts'
 import { token, leaf } from '../combinators/token.ts'
 import { expect } from '../combinators/expect.ts'
+import { adjacent, notAdjacent } from '../combinators/adjacency.ts'
 import { parser } from '../combinators/grammar.ts'
 
 /** A node kind reused verbatim: no public factory reconstructs it without loss. */
@@ -197,6 +198,12 @@ export function rebuildCombinator(
         const kids = d.parsers.map(one) as [Combinator<unknown>, ...Combinator<unknown>[]]
         out = choice(...kids); break
       }
+      // Reconstructible from public factories with no loss, so NOT frozen.
+      case 'adjacency':
+        out = d.polarity === 'adjacent'
+          ? adjacent()
+          : d.kinds === undefined ? notAdjacent() : notAdjacent({ kinds: d.kinds })
+        break
       case 'attempt': out = attempt(one(d.parser)); break
       case 'not': out = not(one(d.parser)); break
       case 'peek': out = peek(one(d.parser)); break

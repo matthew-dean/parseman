@@ -236,6 +236,11 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   routed:    (...a) => parseman.routed(a[0] as Combinator<unknown> | undefined),
   leaf:      (...a) => parseman.leaf(a[0] as Combinator<unknown>, a[1] as (value: unknown, span: { start: number; end: number }) => unknown),
   expect:    (...a) => parseman.expect(a[0] as Combinator<unknown>, a[1] as string | undefined),
+  // Adjacency assertions carry only plain data (a polarity and an optional list of
+  // category names), so the macro reproduces them exactly — no source capture, no
+  // interpreter fallback.
+  adjacent:  () => parseman.adjacent(),
+  notAdjacent: (...a) => parseman.notAdjacent(a[0] as { kinds?: readonly string[] } | undefined),
 }
 
 // ---------------------------------------------------------------------------
