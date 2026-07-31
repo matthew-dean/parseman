@@ -15,14 +15,23 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
   // here rather than parsed as terms. At index 0 there is no preceding term in this
   // sequence, and the gap before `pos` belongs to whoever called us — locally
   // undecidable, so reject it at construction instead of answering it wrongly.
-  const adjacency: (AdjacencyDef | null)[] = parsers.map(adjacencyOf)
-  if (adjacency[0] !== null && adjacency[0] !== undefined) {
-    throw new TypeError(
-      `sequence(): ${adjacency[0].polarity}() cannot be the FIRST term — an adjacency assertion tests the `
-      + 'gap after the PRECEDING term. Put a concrete term first.',
-    )
+  // Stays `null` for the overwhelming majority of sequences, which is the point:
+  // every grammar builds thousands of these, and a per-sequence array to say "no
+  // assertions here" would be a permanent retained allocation for a fact that is
+  // almost always no.
+  let adjacency: (AdjacencyDef | null)[] | null = null
+  for (let i = 0; i < parsers.length; i++) {
+    const a = adjacencyOf(parsers[i]!)
+    if (a === null) continue
+    if (i === 0) {
+      throw new TypeError(
+        `sequence(): ${a.polarity}() cannot be the FIRST term — an adjacency assertion tests the `
+        + 'gap after the PRECEDING term. Put a concrete term first.',
+      )
+    }
+    ;(adjacency ??= Array.from({ length: parsers.length }, () => null))[i] = a
   }
-  const hasAdjacency = adjacency.some(a => a !== null)
+  const hasAdjacency = adjacency !== null
 
   const meta: ParserMeta = {
     // Union through the nullable prefix — a leading optional()/many() lets a later
@@ -64,7 +73,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
         // Publish this term's follow set (or keep the inherited sync when the local
         // follow isn't usable, e.g. the last term or an `any` first set).
         ctx._sync = followSentinels[i] ?? inheritedSync
-        const adj = hasAdjacency ? adjacency[i] : null
+        const adj = adjacency === null ? null : adjacency[i]
         if (adj) {
           if (!holdsAdjacency(input, cur, ctx, adj)) return adjacencyFail(cur, adj)
           if (values !== undefined) values.push(null)
@@ -111,7 +120,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
     let cur = pos
 
     for (let i = 0; i < parsers.length; i++) {
-      const adj = adjacency[i]
+      const adj = adjacency![i]
       if (adj) {
         // Assert over the gap at `cur` and move nothing. The NEXT term re-scans the
         // same gap and owns the commit/rewind decision, so the tree, the spans and
