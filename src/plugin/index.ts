@@ -33,6 +33,7 @@ import {
 } from '../compiler/degradation.ts'
 import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
+import { createModuleHoist, HOIST_MARKER_PROBE } from '../compiler/module-hoist.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -719,6 +720,16 @@ function transformMacroImpl(
   const scope: Scope = new Map<string, ScopeEntry>()
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
+  // Every fused IIFE in this module registers its top-level declarations here, so a
+  // declaration that is byte-identical across N variants can be emitted ONCE at
+  // module scope instead of N times. See src/compiler/module-hoist.ts for why the
+  // decision is keyed on the declared NAME (a partial `_pfFail` hoist would make a
+  // parse FAILURE read as a success).
+  // Disabled under `grammarCoverage`: the coverage denominator is read back OUT of
+  // the emitted replacement (`emittedCoverageDefinitions` scans it for `id: "…"`),
+  // and a hoisted declaration is no longer inside it. Rather than make the two
+  // passes agree about a marker, a coverage build simply keeps the duplication.
+  const moduleHoist = grammarCoverage ? undefined : createModuleHoist()
   beginLoweringCapture()
   beginInlineCapCapture()
   // Collect degradations instead of printing them, so they arrive on the SAME channel
@@ -1455,7 +1466,7 @@ function transformMacroImpl(
     const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
     try {
       return {
-        replacement: emitFusedSource(pieces),
+        replacement: emitFusedSource(pieces, moduleHoist),
         carried,
         ...(composing ? { trivia: composing } : {}),
         ...(importedFactories.length ? { importedFactories } : {}),
@@ -1542,7 +1553,7 @@ function transformMacroImpl(
         warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
         return null
       }
-      const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece]))
+      const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece], moduleHoist))
       return {
         replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} composeLeaf()`)),
         ...(importedFactories.length ? { importedFactories } : {}),
@@ -2028,8 +2039,29 @@ function transformMacroImpl(
   // compiled parser functions with those objects (for example `trivia(ws)` after
   // `ws` was lowered), so an unresolved compose makes the whole module runtime.
   const applied = runtimeComposeFallback ? [] : replacements
+  // Decide the module-level hoist now that every fused IIFE has registered its
+  // declarations, then rewrite each replacement's markers. `resolve` is total: a
+  // hoisted declaration becomes nothing, everything else becomes its original text.
+  const hoisted = applied.length > 0 ? moduleHoist?.finalize() : undefined
   for (const { start, end, replacement } of applied.slice().sort((a, b) => b.start - a.start)) {
-    ms.overwrite(start, end, replacement)
+    ms.overwrite(start, end, hoisted ? hoisted.resolve(replacement) : replacement)
+  }
+  if (hoisted !== undefined && hoisted.prelude !== '') {
+    // Anchor at the START of the earliest top-level statement whose replacement
+    // actually CLAIMED declarations. Every replacement is made from the top-level
+    // `for (const stmt of body)` loop below, so such a statement always exists; every
+    // contributing IIFE sits at or after the anchor, so a module binding those
+    // declarations already depended on is still initialized by the time they run.
+    // Anchoring at the first replacement of ANY kind would be wrong: an earlier
+    // `const ws = trivia(…)` is also a replacement, and the hoisted prelude would be
+    // emitted ahead of a binding it may read.
+    const claiming = applied.filter(r => HOIST_MARKER_PROBE.test(r.replacement))
+    const firstStart = Math.min(...claiming.map(r => r.start))
+    const anchor = (body as Statement[]).find(s => s.start <= firstStart && firstStart < s.end)
+    if (anchor === undefined) {
+      throw new Error(`${id} — internal: no top-level statement encloses macro replacement at ${firstStart}`)
+    }
+    ms.appendLeft(anchor.start, hoisted.prelude)
   }
 
   // Stamp the generated artifact with a version-lock banner. This is the exact spot a

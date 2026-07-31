@@ -311,6 +311,36 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   carried "bump this at every release" in a *comment* and were missed for ten consecutive
   releases, which is why that check was made executable in 0.45.0 and why this one is
   executable from the start.
+- **Module-level hoist of byte-identical fused declarations — `probe/variants-4` is
+  35.5% smaller, `probe/variants-2` 22.9%.** Each `compose()` / `composeLeaf()` lowered
+  to a self-contained IIFE, and the recognition piece's namespace is content-addressed,
+  so a module publishing N variants of one grammar — the jess shape: shared recognition
+  pieces plus N leaves differing ONLY in `hostMode` / `trackLines` — emitted the SAME
+  rule functions, under the SAME names, N times in N sibling scopes. In
+  `probe/variants-4`, four of the five `_r_` rule functions had exactly one distinct
+  body across all four IIFEs; only `_r_Doc` genuinely varied. 20 rule functions, four
+  sentinels, four preludes. Now each distinct declaration is emitted ONCE at module
+  scope: 77,732 B → 50,174 B and 39,284 B → 30,303 B (`bench/size-baseline.json`
+  ratcheted; the other 22 gated fixtures stayed at exactly their committed ceiling,
+  because none of them composes more than once).
+  `probe/variants-4` now costs 2.53x `probe/variants-1` for the same grammar, down from
+  3.92x, and `test/unit/size-guard.test.ts` gates that ratio in the improved direction.
+- **…and the sentinel is hoisted from every scope or from none.** `_pfFail` is an
+  identity sentinel compared with `===`. A PARTIAL hoist — some scopes reading a
+  module-level sentinel, others keeping a local one — makes a parse FAILURE compare
+  unequal to the sentinel its caller holds and therefore read as a SUCCESS carrying the
+  value `{}`: silent wrong output that no "does it parse?" test can see. So the decision
+  is keyed on the declared NAME, not the occurrence — a name is hoistable only when
+  every declaration of it in the module is byte-identical, and then EVERY occurrence is
+  removed. There is no code path that removes one and keeps another. A free-variable
+  fixpoint (over-approximating references, so it can only ever block a hoist) keeps a
+  hoisted body from reaching an IIFE-local, which also disposes of the un-namespaced
+  `_wcf<N>` `withCtx` wrapper: two artifacts can both declare `_wcf0` with different
+  bodies, so that name is never hoisted and neither is anything referencing it.
+  `test/unit/module-hoist.test.ts` pins both directions plus an end-to-end comparison of
+  a 4-variant module against four separate single-variant modules, over successes AND
+  failures. Disabled under `grammarCoverage`, where the coverage denominator is read
+  back out of the emitted replacement text.
 
 - **Capture restores are shared through hoisted helpers instead of inlined at every
   rollback site (`CR_SHARE_MIN`, default 150 B).** A rollback runs only on the failure

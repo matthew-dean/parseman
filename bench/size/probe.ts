@@ -623,6 +623,7 @@ async function main(): Promise<void> {
   if (v1 && v2 && v4) {
     report(`  variant duplication: 1 -> ${v1.genBytes} B, 2 -> ${v2.genBytes} B (${(v2.genBytes / v1.genBytes).toFixed(2)}x), 4 -> ${v4.genBytes} B (${(v4.genBytes / v1.genBytes).toFixed(2)}x)`)
     report('  (perfectly shared variants would hold this near 1.00x; ~Nx means N copies)')
+    report('  (module-level hoist landed in 0.46: was 1.98x / 3.92x — one full copy per variant)')
   }
 
   if (jsonPath) {

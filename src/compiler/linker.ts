@@ -26,6 +26,7 @@ import { union } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'
 import { grammarReflectionSource, mergeGrammarReflections } from '../cst/reflection.ts'
+import type { ModuleHoist } from './module-hoist.ts'
 
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
@@ -241,7 +242,7 @@ export function pickPieces(pieces: LinkablePieces[], names: string[]): LinkableP
  * for any non-inlined callbacks) and the `_env` to bind. In macro mode callbacks
  * are inlined from source, so `_env` is empty and the body is fully static.
  */
-export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record<string, unknown> } {
+export function fusedBody(pieces: LinkablePieces[], hoist?: ModuleHoist): { body: string; env: Record<string, unknown> } {
   // ARTIFACT VERSION LOCK (see src/version.ts): a compiled artifact is fused by the
   // SAME parseman version that produced it — the artifact format carries no
   // cross-version back-compat. Reject BOTH a version MISMATCH and an UNSTAMPED piece
@@ -301,8 +302,7 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
   // `assertHostModeCompatible` — it reads `elided: false` and passes, which is the
   // silent wrong output the whole mechanism exists to prevent.
   const { mode, elided } = hostModeOfPieces(pieces)
-  const rawBody = [
-    ...lines,
+  const tailSrc = [
     'const _map = {',
     wrapperEntries.join(',\n'),
     '}',
@@ -318,6 +318,7 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
     '}',
     'return _map',
   ].join('\n')
+  const rawBody = [...lines, tailSrc].join('\n')
 
   // Fuse-time first-set dispatch: a rule-ref choice arm was emitted (in linkable
   // mode) as `/*@FS:rule:codevar@*​/true`. Resolve it now against the WINNING rule's
@@ -373,7 +374,7 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
     }
     if (!changed) break
   }
-  const body = rawBody.replace(
+  const resolveFS = (src: string): string => src.replace(
     // Rule name + code-point var are both JS identifiers (rule names are validated
     // at compile time — see assertRuleName in codegen), so an identifier class
     // matches every well-formed placeholder.
@@ -384,6 +385,13 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
       return `(${firstSetCond(codevar, fs)})`
     },
   )
+  // Placeholders never span a line, so resolving the declarations one at a time is
+  // identical to resolving the joined body — and it has to happen BEFORE the hoist
+  // claims them, or two variants whose dispatch conditions resolve the same way
+  // would still be compared as different text.
+  const body = hoist === undefined
+    ? resolveFS(rawBody)
+    : [...hoist.claim(lines.map(resolveFS)), resolveFS(tailSrc)].join('\n')
 
   // Non-inlined callbacks (runtime compile() mode), keyed `<ns>mf` / `<ns>build`.
   const env: Record<string, unknown> = {}
@@ -454,8 +462,8 @@ export function fusedHostElidedOf(registry: object): boolean {
  * Requires every callback to be inlined from source (macro mode); throws if any
  * artifact carries runtime-only callback functions.
  */
-export function emitFusedSource(pieces: LinkablePieces[]): string {
-  const { body, env } = fusedBody(pieces)
+export function emitFusedSource(pieces: LinkablePieces[], hoist?: ModuleHoist): string {
+  const { body, env } = fusedBody(pieces, hoist)
   if (Object.keys(env).length > 0) {
     throw new Error('emitFusedSource: artifact carries non-static callbacks (runtime-only); cannot emit static source')
   }

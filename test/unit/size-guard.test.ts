@@ -264,7 +264,7 @@ describe('size gate measures multi-variant duplication', () => {
     expect(r.out).toMatch(/probe\/variants-4/)
   })
 
-  it('shows duplication growing about linearly with variant count', () => {
+  it('holds variant duplication well below one copy per variant', () => {
     const out = execFileSync(process.execPath, ['--import', 'tsx/esm', path.join(ROOT, 'bench/size/probe.ts'), '--json=/dev/stdout'], {
       cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 180_000,
     })
@@ -272,12 +272,23 @@ describe('size gate measures multi-variant duplication', () => {
     const get = (id: string): number => parsed.rows.find(r => r.id === id)!.genBytes
     const two = get('variants-2') / get('variants-1')
     const four = get('variants-4') / get('variants-1')
-    // Perfectly shared variants would sit near 1.0x. Full copies sit near N.
-    // This asserts the DEFECT is visible; it is expected to fall when the
-    // collapse work lands, at which point these bounds are what proves it worked.
-    expect(two).toBeGreaterThan(1.5)
-    expect(four).toBeGreaterThan(3)
+    // Perfectly shared variants would sit near 1.0x. Full copies sit near N, and
+    // that is where this series started: before the module-level hoist the
+    // measured ratios were 1.98x and 3.92x — one whole copy per variant.
+    //
+    // The hoist emits each byte-identical declaration ONCE at module scope, so
+    // what remains per variant is only what genuinely differs (`_r_Doc`, the
+    // public wrappers, `_map` and its stamps). Measured after the hoist:
+    // 30,303/19,821 = 1.53x and 50,174/19,821 = 2.53x.
+    //
+    // These are RATCHET bounds in the same spirit as bench/size-baseline.json —
+    // they may fall further, they may not rise. Deterministic codegen means there
+    // is no noise to absorb, so they sit just above the measured values.
+    expect(two).toBeLessThan(1.6)
+    expect(four).toBeLessThan(2.7)
+    // Still above 1.0x: each variant keeps its own differing rule and wrappers.
     expect(four).toBeGreaterThan(two)
+    expect(two).toBeGreaterThan(1)
   })
 })
 
