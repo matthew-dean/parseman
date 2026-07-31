@@ -83,9 +83,14 @@ export function bytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
+// Written as \u001B escapes, never as raw ESC bytes. A raw control byte makes the
+// whole file BINARY to git: `git diff --numstat` shows `- -`, GitHub declines to
+// render it, and `grep -rn` skips it SILENTLY — no output and exit 0. Enforced by
+// `pnpm check:control-bytes`.
+const ESC = '\u001B'
 const ANSI = {
-  dim: '[2m', bold: '[1m', red: '[31m',
-  yellow: '[33m', cyan: '[36m', reset: '[0m',
+  dim: `${ESC}[2m`, bold: `${ESC}[1m`, red: `${ESC}[31m`,
+  yellow: `${ESC}[33m`, cyan: `${ESC}[36m`, reset: `${ESC}[0m`,
 } as const
 
 const paint = (on: boolean) => (code: keyof typeof ANSI, s: string): string =>
