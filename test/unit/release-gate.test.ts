@@ -22,6 +22,32 @@ import { fileURLToPath } from 'node:url'
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const SCRIPT = join(ROOT, 'scripts/check-changelog.mjs')
 
+/**
+ * TIMEOUTS — every test here spawns the real gate, and several build a throwaway git
+ * repo with a handful of `git` invocations first. vitest's default budget is 5s,
+ * which is a budget for an in-process unit test, not for a chain of child processes.
+ *
+ * That is an INVERTED budget: the child is allowed 60s and the parent 5s, so on a
+ * loaded box vitest fires first and reports `Test timed out in 5000ms` — discarding
+ * the child's stdout and stderr, which is the only diagnostic that says what actually
+ * went wrong. The `gate()` helper below exists precisely to capture those streams.
+ * CI is uncontended enough that this never fires there, so it reads as a local-only
+ * flake rather than as the budget bug it is.
+ *
+ * The rule these encode: a test's vitest budget is strictly GREATER than the budget
+ * of the children it spawns, so a genuine hang is reported by the child's own timeout
+ * with its output attached. No test here spawns the gate more than twice, and the git
+ * setup is bounded by its own budget.
+ *
+ * These are not noise absorption and are not sized against how long a run takes. A
+ * test that exceeds one is a hang, not a slow machine.
+ */
+const SPAWN_BUDGET_MS = 60_000
+/** Repo setup: a bounded number of short `git` invocations. */
+const GIT_BUDGET_MS = 30_000
+/** No test spawns the gate more than twice; add the git setup and a margin. */
+const SUITE_BUDGET_MS = 2 * SPAWN_BUDGET_MS + GIT_BUDGET_MS + 30_000
+
 interface Result {
   out: string
   ok: boolean
@@ -34,7 +60,7 @@ function gate(dir: string, ...args: string[]): Result {
       cwd: dir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 60_000,
+      timeout: SPAWN_BUDGET_MS,
     })
     return { out, ok: true }
   } catch (e) {
@@ -89,6 +115,9 @@ const git = (dir: string, ...args: string[]): string =>
       GIT_AUTHOR_NAME: 'gate', GIT_AUTHOR_EMAIL: 'gate@example.invalid',
       GIT_COMMITTER_NAME: 'gate', GIT_COMMITTER_EMAIL: 'gate@example.invalid',
     },
+    // Unbudgeted, a wedged `git` (an index.lock another checkout holds) hangs the
+    // suite until vitest kills it with no output. Bounded, it throws with its stderr.
+    timeout: GIT_BUDGET_MS,
   }).trim()
 
 /** A two-commit repo: `base` then `head`. Returns the dir and the base sha. */
@@ -114,7 +143,7 @@ const released = (v: string): string => `# Changelog\n\n## ${v} — 2026-07-24\n
 const open_ = (next: string, published = '0.36.0'): string =>
   `# Changelog\n\n## ${next} — unreleased\n\n- the change under construction\n\n## ${published} — 2026-07-24\n\n- shipped\n`
 
-describe('merging is not publishing', () => {
+describe('merging is not publishing', { timeout: SUITE_BUDGET_MS }, () => {
   /*
    * The gate used to require a `package.json` bump on any PR touching `src/**`. That
    * makes a version number the price of MERGING, while this project spends numbers at
@@ -178,7 +207,7 @@ describe('merging is not publishing', () => {
   })
 })
 
-describe('release integrity', () => {
+describe('release integrity', { timeout: SUITE_BUDGET_MS }, () => {
   it('REJECTS an `Unreleased` top section — the state main was actually in', () => {
     const r = gate(
       checkout({
@@ -228,7 +257,7 @@ describe('release integrity', () => {
   })
 })
 
-describe('bump gate', () => {
+describe('bump gate', { timeout: SUITE_BUDGET_MS }, () => {
   it('REJECTS a src/ change filed under an ALREADY PUBLISHED section', () => {
     // The top section equals package.json, so it is the version that shipped. Filing a
     // change there documents it into a release that does not contain it.
@@ -481,7 +510,7 @@ describe('bump gate', () => {
  * A policy that lives in a comment and depends on someone remembering it is not a
  * policy. These tests are the policy executed.
  */
-describe('a missing input is a harder failure than a wrong one', () => {
+describe('a missing input is a harder failure than a wrong one', { timeout: SUITE_BUDGET_MS }, () => {
   /*
    * The `PARSEMAN_VERSION`-vs-package.json convergence check sat behind
    * `existsSync(src/version.ts)`, including under `--publish`, where A' says all three
@@ -515,7 +544,7 @@ describe('a missing input is a harder failure than a wrong one', () => {
   })
 })
 
-describe('bench anchor gate', () => {
+describe('bench anchor gate', { timeout: SUITE_BUDGET_MS }, () => {
   const DENSITY = 'bench/grammar-density/config.json'
   const WORKLOADS = 'bench/workloads/config.json'
 

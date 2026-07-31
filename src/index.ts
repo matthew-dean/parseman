@@ -46,8 +46,12 @@ export type { CompiledParser, LinkablePieces, DuplicationOption, HostMode } from
 //   const d = diagnoseGrammar(myGrammar)
 //   if (!d.ok) { console.error(formatGrammarDiagnosis(d).join('\n')); process.exit(1) }
 //
+// `examinedNothing(d)` separates "measured, and it is bad" from "could not measure":
+// `ok` is false for both, and a gate that treats them the same reports a confident
+// finding count over a grammar it never opened.
+//
 // The `analyze*` functions below remain the lower-level surface it is built on.
-export { diagnoseGrammar, formatGrammarDiagnosis } from './analysis/diagnose.ts'
+export { diagnoseGrammar, examinedNothing, formatGrammarDiagnosis } from './analysis/diagnose.ts'
 export type {
   GrammarDiagnosis, DiagnosisFinding, DiagnosisCode, DiagnosisSeverity,
   DiagnosableGrammar, DiagnoseOptions,
@@ -62,6 +66,20 @@ export type {
 // rule FUNCTIONS, not combinators, and so cannot be walked by `analyzeGatingRules`
 // directly. This is the entry point a composed grammar's author wants.
 export { analyzeGrammarGating } from './analysis/grammar.ts'
+
+// Choice-cost diagnostics: the static shared-prefix inventory, the interpreted
+// corpus wasted-work profile, and the gate policy over them. Quiet by default —
+// nothing here runs or prints unless it is called.
+export { analyzeChoiceInventory, profileWastedWork, choiceSiteKey, armLabel } from './analysis/choice-cost.ts'
+export type {
+  ChoiceSite, ChoiceInventoryEntry, ChoiceInventoryReport, PrefixGroup,
+  ArmDeclineReason, SiteDeclineReason, WastedWorkCorpusEntry, ProfileWastedWorkOptions,
+  WastedWorkArm, WastedWorkSite, WastedWorkReport,
+} from './analysis/choice-cost.ts'
+export { renderChoiceInventory, renderWastedWork, leftFactorPreview } from './analysis/choice-cost-render.ts'
+export type { RenderOptions } from './analysis/choice-cost-render.ts'
+export { checkWastedWork, buildWastedWorkBaseline } from './analysis/choice-cost-gate.ts'
+export type { WastedWorkBaseline, WastedWorkPolicy, GateBreach, GateVerdict } from './analysis/choice-cost-gate.ts'
 export type { AnalysableGrammar } from './analysis/grammar.ts'
 
 export {
@@ -81,7 +99,7 @@ export type {
 // the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)
 // for later exploration of that lowering. `composeLeaf()` is terminal by design;
 // ordinary reusable grammar composition remains `compose()`.
-export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
+export { compose, composeLeaf, cstBuildHost, fuseInterpreted, isInterpretedFuse } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
 export { buildLineIndex, createLineIndex, recordLineRange, normalizeLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans } from './line-index.ts'

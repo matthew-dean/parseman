@@ -38,6 +38,7 @@ The frontier is now essentially the single **982 KB executable fused grammar**.
 | 5 | **Drop `_pfok` flag from named-fn wrappers** — direct `return value` on success, fall-through `_pfFail` on failure | `a9137f6` | 1.22 → 1.21 MB | neutral |
 | 6 | **Intern identical `_mf` map closures** — dedup by source so every `balanced()` merge closure shares one `_mf` slot (40 → 2) | `dfd07c4` | −5.8 KB | free |
 | 7 | **Stop exporting the legacy Chevrotain parsers** (jess-side) — drop the `*RecursiveParser`/`*ParserChevrotain` re-exports so the bundler tree-shakes the old parsers out. less: `f1fc4aaff` (−133 KB); scss: `28e028bf1` (−97 KB). jess already Chevrotain-free. **css blocked** — see follow-up. | jess `f1fc4aaff`, `28e028bf1` | **−230 KB** | free |
+| 8 | **Module-level hoist of byte-identical fused declarations** — each `compose()`/`composeLeaf()` lowered to a self-contained IIFE, so a content-addressed recognition namespace was emitted N times, under the SAME names, in N sibling scopes. Emit each distinct declaration ONCE at module scope (`src/compiler/module-hoist.ts`) | 0.46.0 | `probe/variants-2` −22.9%, `probe/variants-4` −35.5% | predicted neutral-or-better; **not measured** — see below |
 | — | (deep first-set, `a1cd248` — a *correctness* fix, +2 tests, not size) | | | |
 
 CI gate: `test/unit/hoist-shared-explosion.test.ts` trips if the inlining explosion
@@ -56,9 +57,82 @@ regresses (19× vs 2× expansion). Round-trip gate: `test/unit/ir-serialize.test
   helpers. **Caveat:** the *leaf-push* variant was tried and reverted — it put a
   call on the hot capturing path (~5% perf). Restrict to backtrack/restore (cold).
   Est. ~50–100 KB. Risk: medium (capture correctness).
-- [ ] **Hash-cons identical lowered rule bodies.** Some rules lower to byte-identical
+- [x] ~~**Hash-cons identical lowered rule bodies**~~ — the CROSS-SCOPE half is **DONE**
+  (Landed #8). Everything measured below was recovered in full:
+  `probe/variants-2` 39,284 → 30,303 B (−8,981, −22.86%), `probe/variants-4`
+  77,732 → 50,174 B (−27,558, −35.45%). (Measured on top of the cold-capture-helper
+  commit `0665871`, which had already taken those fixtures from 41,448 / 82,060 B; the
+  ratio is unchanged, the absolute residual is smaller.) The other 22 gated fixtures
+  stayed at EXACTLY their committed ceiling — none composes more than once, which is
+  exactly why the 1/2/4 ladder had to exist for this lever to be visible at all.
+  `variants-4` now costs 2.53x `variants-1` for the same grammar (was 3.92x), and
+  `test/unit/size-guard.test.ts` gates that ratio in the improved direction instead of
+  asserting the defect.
+
+  How the two hazards below were settled: the hoist keys its decision on the declared
+  NAME and hoists a name only when EVERY declaration of it in the module is
+  byte-identical, so `_pfFail` is removed from all scopes or none and a mix is
+  unrepresentable — there is no code path that removes one occurrence and keeps
+  another. `_wcf<N>` falls out for free: two artifacts declaring `_wcf0` with different
+  bodies give that name two texts, so it is never hoisted, and a free-variable fixpoint
+  (over-approximating references via `\bNAME\b`, so it can only ever BLOCK a hoist)
+  stops anything that references it from being hoisted either. The missing insertion
+  point is now `ms.appendLeft(anchor.start, prelude)` in `src/plugin/index.ts`, anchored
+  at the earliest top-level statement whose replacement actually claimed declarations —
+  not the earliest replacement of any kind, which would emit the prelude ahead of a
+  `const ws = trivia(…)` it may read.
+
+  **Still open** (this pass dedups EXACT text across sibling scopes only): near-identical
+  bodies that differ in a variable index; duplication WITHIN one IIFE; and the
+  `compile()` inline path, where a module with several plain compiled grammars still
+  pays a `_pfFail`/`_pfEnd`/`_EMPTY_TL` preamble per parser. Also disabled under
+  `grammarCoverage`, because the coverage denominator is read back out of the emitted
+  replacement text (`emittedCoverageDefinitions`) and a hoisted declaration is no longer
+  inside it.
+
+  The original measurement that justified building it:
+- [ ] ~~**Hash-cons identical lowered rule bodies.**~~ Some rules lower to byte-identical
   or near-identical fn bodies (at-rule blocks, selector variants); emit once + alias.
-  Est. unknown until measured; needs a post-codegen dedup pass. Risk: medium.
+  Needs a post-codegen dedup pass. Risk: medium. **MEASURED 2026-07-30 — the estimate
+  this was shelved on was wrong by ~4x.** 0.45 put the recoverable residual at 20.8%
+  (probe) / 8.7% (jess), and the item was nearly dropped as not worth it. Re-measured on
+  `probe/variants-4` by parsing the emitted artifact and keying top-level declarations on
+  their exact body text:
+
+  | unit | IIFEs | gen B | decls | byte-identical dedup | same-name/different-body |
+  |---|---|---|---|---|---|
+  | variants-1 | 1 | 20,901 | 93% | 0 B (0.0%) | 0 B |
+  | variants-2 | 2 | 41,446 | 96% | 9,557 B (**23.1%**) | 18,640 B (45.0%) |
+  | variants-4 | 4 | 82,058 | 98% | 29,286 B (**35.7%**) | 37,933 B (46.2%) |
+
+  The premise holds exactly as designed: of the five `_r_` rule functions in
+  `variants-4`, four (`_r_Word`, `_r_Num`, `_r_Atom`, `_r_List` — 33,492 B) are emitted
+  4x with **one distinct body each**. Only `_r_Doc`, the rule that actually varies with
+  `hostMode`/`trackLines`, has 4 distinct bodies. So the recognition piece IS shareable
+  and it is roughly half the artifact by bytes.
+
+  **The `_pfFail`/`_pfEnd` question is ANSWERED** (it was the stated blocker):
+  - `_pfEnd` (`let`, `src/compiler/linker.ts:286`) is a single-slot out-parameter, not
+    state. The write is the last statement before `return` (`src/compiler/codegen.ts:755`)
+    and the read is the statement immediately after the call
+    (`src/compiler/codegen.ts:775`, `:4373`) — nothing intervenes, and a failed callee
+    returns `_pfFail` so the caller never reads it on that path. Safe to share
+    unconditionally.
+  - `_pfFail` (`const … = {}`, `src/compiler/linker.ts:285`) is an identity sentinel
+    compared with `===` (`src/compiler/codegen.ts:770`, `:4372`). Safe to share ONLY if
+    hoisted **atomically**: exactly one module-level pair, with `linker.ts:285-286`
+    no longer emitting per-IIFE copies. A mix is the worst failure available here — a
+    hoisted `_r_X` returns the module-level sentinel, an IIFE-local caller compares
+    against a different object, and a parse FAILURE reads as success with value `{}`.
+
+  Two hazards remain before building. `_wcf<N>` (`src/compiler/codegen.ts:4336`) is
+  un-namespaced and counter-derived, so two IIFEs' `_wcf0` can carry different bodies
+  under one name — a name-keyed hoist collides; key on body text and refuse any name
+  with ≥2 distinct bodies. And `emitFusedSource` (`src/compiler/linker.ts:457`) returns a
+  self-contained expression spliced into a `const X = …` initializer, so there is no
+  module-level insertion point today: this needs a cross-call accumulator plus a new
+  splice site in `src/plugin/index.ts`. Landing it moves `bench/size-baseline.json` and
+  therefore needs a deliberate rebaseline.
 - [ ] **Minify the carried IR further.** The 30 KB IR is a readable `rules(…)`
   expression; a name-preserving minify (it's re-`eval`'d, not read) could ~halve it.
   Small absolute win (30 KB) — low priority.
@@ -110,6 +184,22 @@ regresses (19× vs 2× expansion). Round-trip gate: `test/unit/ir-serialize.test
   a jess parse benchmark to measure. This is the real perf lever.
 
 ---
+
+## 📏 On measuring the hoist's speed
+
+Predicted neutral-or-better: it is a pure hoist — the same functions, called the same
+way, resolved in an enclosing scope instead of their own. Less source for V8 to parse
+and compile at import, and nothing added on the parse path.
+
+**That prediction was NOT verified.** The machine was at load average 38–63 on ~14 cores
+while this landed, with ~10 lanes running; a lane measured five consecutive runs of one
+workload on a BYTE-IDENTICAL tree at +29.4 / +15.8 / +76.5 / +29.6 / +43.7% — a 61-point
+spread against a 15% tolerance. Contention that severe is a bias, not zero-mean noise,
+so more samples do not fix it and no wall-clock number from that window is worth
+reporting. The evidence banked here is deterministic instead: emitted bytes, gzip bytes,
+identical-body counts, `pnpm size:guard`. Codegen output is byte-identical across runs
+AND processes (pinned by `test/unit/size-guard.test.ts`), so the noise floor on those is
+exactly 0.
 
 ## ⛔ Investigated & not worth it / moot
 

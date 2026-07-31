@@ -26,12 +26,14 @@ import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
 import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
+import { findFreeIdentifiers } from './free-identifiers.ts'
 import {
   beginDegradationCapture, endDegradationCapture, formatDegradation, formatDegradations,
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
 import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
 import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
+import { createModuleHoist, HOIST_MARKER_PROBE } from '../compiler/module-hoist.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -607,7 +609,8 @@ function transformMacroImpl(
    * Everything it produces — `_def.buildArity`, `_def.buildSigSrc` — is ANALYSIS-ONLY and
    * never emitted, so the generated builder reference is unchanged either way.
    */
-  setReducerResolver(createReducerResolver(id, body as unknown[], code))
+  const reducerResolver = createReducerResolver(id, body as unknown[], code)
+  setReducerResolver(reducerResolver, code)
 
   const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
     for (const st of moduleBody) {
@@ -704,6 +707,11 @@ function transformMacroImpl(
       scope: factoryScope,
       imported: true,
     })
+    // This factory is evaluated with `code: mod.src`, so every `node(…, build)` inside
+    // it hands the resolver an offset into THIS file. Tell the resolver the file exists
+    // so it answers against that module's own scope tree instead of declining
+    // `foreign-source` — a decline is sound but charges the node full capture.
+    reducerResolver.register(file)
   }
 
   // --- Pass 2: evaluate declarations in source order ---
@@ -712,6 +720,16 @@ function transformMacroImpl(
   const scope: Scope = new Map<string, ScopeEntry>()
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
+  // Every fused IIFE in this module registers its top-level declarations here, so a
+  // declaration that is byte-identical across N variants can be emitted ONCE at
+  // module scope instead of N times. See src/compiler/module-hoist.ts for why the
+  // decision is keyed on the declared NAME (a partial `_pfFail` hoist would make a
+  // parse FAILURE read as a success).
+  // Disabled under `grammarCoverage`: the coverage denominator is read back OUT of
+  // the emitted replacement (`emittedCoverageDefinitions` scans it for `id: "…"`),
+  // and a hoisted declaration is no longer inside it. Rather than make the two
+  // passes agree about a marker, a coverage build simply keeps the duplication.
+  const moduleHoist = grammarCoverage ? undefined : createModuleHoist()
   beginLoweringCapture()
   beginInlineCapCapture()
   // Collect degradations instead of printing them, so they arrive on the SAME channel
@@ -724,6 +742,8 @@ function transformMacroImpl(
   // fully compiled pieces for downstream composition. The import must survive, but
   // this is not an unresolved shape, so it neither warns nor blocks other cleanups.
   let keepMacroImport = false
+  /** Exported `rules()` factories, whose bodies are left verbatim. See the push site. */
+  const exportedFactories: Array<{ name: string; pos: number }> = []
   let runtimeComposeFallback = false
   // Unique per rules() call site in this file — holds the ONE shared compiled
   // rule-map object; each destructured local name reads its property off it.
@@ -1446,7 +1466,7 @@ function transformMacroImpl(
     const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
     try {
       return {
-        replacement: emitFusedSource(pieces),
+        replacement: emitFusedSource(pieces, moduleHoist),
         carried,
         ...(composing ? { trivia: composing } : {}),
         ...(importedFactories.length ? { importedFactories } : {}),
@@ -1533,7 +1553,7 @@ function transformMacroImpl(
         warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
         return null
       }
-      const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece]))
+      const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece], moduleHoist))
       return {
         replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} composeLeaf()`)),
         ...(importedFactories.length ? { importedFactories } : {}),
@@ -1806,7 +1826,18 @@ function transformMacroImpl(
           // that returns the rule map. It only reaches this branch now that a factory can
           // be shared by name (see `factoryDecls`), and warning here would tell the author
           // to "simplify" the one declaration the two-artifact pattern requires.
-          if (factoryDecls.has(varName)) continue
+          //
+          // Its text is left VERBATIM, which is fine for a local `const` — nothing
+          // references it after lowering, so it is dead code the bundler drops. An
+          // EXPORTED one cannot be dropped, so the macro-only identifiers in its body
+          // (`node`, `sequence`, `literal`, …) survive into the artifact with nothing
+          // binding them once the macro import is removed. Record it; whether that is
+          // actually fatal depends on whether the import IS removed, which is only
+          // decided once every declaration has been seen.
+          if (factoryDecls.has(varName)) {
+            if (exportPrefix) exportedFactories.push({ name: varName, pos: init.start })
+            continue
+          }
           warn(init.start, `"${varName}" references a parseman macro import but isn't a statically-evaluable combinator`)
           continue
         }
@@ -1911,6 +1942,28 @@ function transformMacroImpl(
     imp.fullyResolved = !anyUnresolved && !keepMacroImport
   }
 
+  // An exported `rules()` factory whose macro import is about to be removed is an
+  // UNRUNNABLE binding: lowering erases the call sites, but an export must still hold a
+  // value, so the factory body ships verbatim naming `node`/`sequence`/`literal`/… that
+  // nothing imports. It does not fail at build time and it does not fail at import time
+  // — it throws `ReferenceError` the first time anything calls it, which in practice is
+  // in a consumer's process, long after the artifact was published.
+  //
+  // There is no correct value to emit instead. Pinning the macro import would make the
+  // binding run, but only by dragging the whole parseman runtime into an artifact whose
+  // entire point is not to need it — a silent trade the author never asked for. So this
+  // refuses to emit the shape at all. The fix is the author's: drop the `export`, since
+  // a factory is macro-only by construction and no runtime consumer can use one.
+  if (exportedFactories.length > 0 && macroImports.some(imp => imp.fullyResolved)) {
+    const which = exportedFactories.map(f => `  - ${id}:${lineOf(f.pos)} — export const ${f.name}`).join('\n')
+    throw new Error(
+      `${id} — a rules() factory cannot be exported; lowering leaves its body verbatim, so the `
+      + `export would ship a binding that throws ReferenceError on first call:\n${which}\n`
+      + `  Drop the \`export\`. The factory is macro-only; \`rules(${exportedFactories[0]!.name})\` `
+      + `is lowered in place and needs no runtime value.`,
+    )
+  }
+
   const ms = new MagicString(code)
   const replacementRanges = runtimeComposeFallback
     ? []
@@ -1986,8 +2039,36 @@ function transformMacroImpl(
   // compiled parser functions with those objects (for example `trivia(ws)` after
   // `ws` was lowered), so an unresolved compose makes the whole module runtime.
   const applied = runtimeComposeFallback ? [] : replacements
+  // Decide the module-level hoist now that every fused IIFE has registered its
+  // declarations, then rewrite each replacement's markers. `resolve` is total: a
+  // hoisted declaration becomes nothing, everything else becomes its original text.
+  const hoisted = applied.length > 0 ? moduleHoist?.finalize() : undefined
   for (const { start, end, replacement } of applied.slice().sort((a, b) => b.start - a.start)) {
-    ms.overwrite(start, end, replacement)
+    ms.overwrite(start, end, hoisted ? hoisted.resolve(replacement) : replacement)
+  }
+  if (hoisted !== undefined && hoisted.prelude !== '') {
+    // Anchor at the START of the earliest top-level statement whose replacement
+    // actually CLAIMED declarations. Every replacement is made from the top-level
+    // `for (const stmt of body)` loop below, so such a statement always exists; every
+    // contributing IIFE sits at or after the anchor, so a module binding those
+    // declarations already depended on is still initialized by the time they run.
+    // Anchoring at the first replacement of ANY kind would be wrong: an earlier
+    // `const ws = trivia(…)` is also a replacement, and the hoisted prelude would be
+    // emitted ahead of a binding it may read.
+    const claiming = applied.filter(r => HOIST_MARKER_PROBE.test(r.replacement))
+    // A non-empty prelude means some replacement claimed declarations, so the probe must
+    // find at least one. If it ever does not, `Math.min()` of nothing is `Infinity` and
+    // the anchor error below reports a position that does not exist — a real invariant
+    // break wearing a nonsense message. Name the invariant instead.
+    if (claiming.length === 0) {
+      throw new Error(`${id} — internal: a module-hoist prelude was produced but no applied replacement carries a hoist marker`)
+    }
+    const firstStart = Math.min(...claiming.map(r => r.start))
+    const anchor = (body as Statement[]).find(s => s.start <= firstStart && firstStart < s.end)
+    if (anchor === undefined) {
+      throw new Error(`${id} — internal: no top-level statement encloses macro replacement at ${firstStart}`)
+    }
+    ms.appendLeft(anchor.start, hoisted.prelude)
   }
 
   // Stamp the generated artifact with a version-lock banner. This is the exact spot a
@@ -1999,6 +2080,63 @@ function transformMacroImpl(
       `// Version-locked: compile AND fuse/link this artifact with parseman v${PARSEMAN_VERSION} ONLY.\n` +
       `// Parseman does not read artifacts across versions; recompile if the version differs.\n`,
     )
+  }
+
+  /*
+   * REFUSE TO EMIT a module that names something nothing binds.
+   *
+   * Every deletion lowering performs — the `rules(…)` call sites, the `x.define(…)`
+   * statements, and last the macro import — is only safe because the text that read
+   * the deleted binding went with it. Where a shape slips through where it did not,
+   * the artifact builds clean, imports clean, and throws `ReferenceError` the first
+   * time a consumer calls the binding: jess shipped exactly that for three days
+   * across three grammars, 26 undefined identifiers in the css parser alone, and had
+   * to write this check itself downstream. It belongs here.
+   *
+   * This is the NET, not the diagnostic. Shapes we recognise are refused where they
+   * are recognised, with an error that says what to do — an exported `rules()`
+   * factory throws above, before this point, so it is never double-reported. What
+   * reaches here is a name that escaped by a route nobody enumerated, which is the
+   * whole reason for checking the emitted text instead of guessing at shapes.
+   *
+   * Gated on `applied.length > 0` — the same condition as the version banner. A
+   * module that lowered nothing had nothing deleted from it, so it cannot have
+   * acquired a free name, and the scan (one extra parse of the emitted module, at
+   * macro time) is not worth paying for. Nothing here runs in, or is emitted into,
+   * the artifact.
+   */
+  if (applied.length > 0) {
+    /*
+     * Only names lowering MADE free. A module that already read something nothing binds
+     * — a host that injects the name some other way, an ambient the author knows about
+     * — was written that way, and reporting it here would be parseman failing a build
+     * over a decision it had no part in. Subtracting the source's own free names is what
+     * keeps this a check on parseman's output rather than a lint on the author's input.
+     * The source scan runs ONLY when the emitted module already looks wrong, so the
+     * clean path costs one parse, not two.
+     */
+    let sourceFree: Set<string> | null = null
+    const freeInSource = (): Set<string> =>
+      sourceFree ??= new Set(findFreeIdentifiers(code, id).map(f => f.name))
+    const free = findFreeIdentifiers(ms.toString(), id)
+      .filter(f => !freeInSource().has(f.name))
+    if (free.length > 0) {
+      const macroProvided = free.filter(f => allNames.has(f.name))
+      const where = (f: (typeof free)[number]): string =>
+        `  - ${id}:${f.line}:${f.column} — \`${f.name}\``
+        + (f.enclosing ? `, inside \`${f.enclosing}\`` : '')
+      const cause = macroProvided.length > 0
+        ? `\n  ${macroProvided.length === free.length ? 'All' : `${macroProvided.length}`} of these came from the `
+          + `\`with { type: 'macro' }\` import, which was removed because every macro declaration lowered. `
+          + `Something still names them verbatim — a declaration parseman left as text rather than compiling. `
+          + `Make that declaration macro-buildable, or stop exporting it so lowering can drop it.`
+        : ''
+      throw new Error(
+        `${id} — parseman will not emit this module: ${free.length} identifier(s) are read but bound by `
+        + `nothing, so it would throw ReferenceError at runtime (positions are in the EMITTED module):\n`
+        + `${free.map(where).join('\n')}${cause}`,
+      )
+    }
   }
 
   // The inline-expansion cap CHANGED what was emitted. Surface it as returned data on

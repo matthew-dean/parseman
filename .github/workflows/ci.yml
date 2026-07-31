@@ -250,8 +250,11 @@ jobs:
   # measures a rollback-density sweep instead — see docs/design/perf-gates.md.
   #
   # It runs on EVERY code PR rather than nightly or at release, because it costs
-  # ~10 s locally and well under a minute here. Speed is a correctness property: a
-  # gate too slow to run gets skipped, and then everything gets skipped with it.
+  # ~1.5-2 min locally and stays well inside this job's budget. Speed is a
+  # correctness property: a gate too slow to run gets skipped, and then everything
+  # gets skipped with it. That cost went up at 0.46.0 and bought the gate's
+  # honesty — 5 passes instead of 3, both sides RECOMPILED per pass so the passes
+  # are independent at all, and a control pair measuring the null win rate.
   #
   # It is a REQUIRED check by way of the `test` aggregate below, not merely a
   # report. A perf gate nobody has to satisfy is a dashboard.
@@ -297,9 +300,10 @@ jobs:
   # red: this one says "downstream got slower", that one says "and here is the
   # axis".
   #
-  # Runs on EVERY code PR. It costs ~50 s here — three independent measurement
-  # passes so one busy moment on a shared runner cannot fail a PR on its own. See
-  # docs/design/perf-gates.md for what it can and cannot see.
+  # Runs on EVERY code PR. It costs ~2.5-3 min here — five independent measurement
+  # passes, each recompiling both sides, plus a control pair that measures the null
+  # win rate, so neither a busy runner nor a bad draw of the compilation lottery can
+  # fail a PR on its own. See docs/design/perf-gates.md for what it can and cannot see.
   workload-perf:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -321,6 +325,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Realistic-workload perf gate vs the pinned reference commit
         run: pnpm perf:workloads
+      # The PEAK clause — the same workloads against the fastest release ON RECORD
+      # rather than the previous one. The step above enforces "faster than the last
+      # release"; this one enforces "not below the best we have ever been", which is
+      # the half a per-step comparison structurally cannot see: five consecutive 1%
+      # losses each sit inside the noise floor, no step is flagged, and the sum is
+      # real. Measured at -5.1% accumulating across 0.28.0 -> 0.34.0 on the
+      # standalone sweep.
+      #
+      # Same job, so it reuses the checkout, the install and the warm .cache
+      # worktrees rather than paying for a second runner.
+      - name: Peak clause — no drawdown from the fastest release on record
+        run: pnpm perf:workloads:peak
 
   # Code-size gate. On the same footing as the two perf gates, because until it
   # existed size had NO gate at all: `bench:size` lived in package.json and in
@@ -356,6 +372,50 @@ jobs:
       - name: Code-size gate vs the committed absolute baseline
         run: pnpm size:guard
 
+  # GRAMMAR WASTED-WORK GATE (bench/choice-cost-guard.ts)
+  #
+  # Counts the input bytes a grammar re-scans after an ordered-choice arm was
+  # tried and failed, over `bench/workloads/fixtures/{site.css,app.less}` — the
+  # same hand-authored corpus the workload perf gate already replays.
+  #
+  # This is NOT a third perf gate. Wasted bytes rank grammar ORDERING, not CPU:
+  # the jess lane that acted on this instrument's headline finding cut rescanned
+  # bytes 69.8% and measured zero wall-clock change. What it stops is grammar
+  # SHAPE rotting — an arm migrating to the front of a hot choice, a fifth
+  # alternative added to a site entered a million times — which no timing gate
+  # resolves and no reviewer reliably notices in a diff.
+  #
+  # It is also the CHEAPEST gate here, and the only deterministic one. The metric
+  # is a COUNT, not a timing: byte-identical across separate processes (asserted
+  # by test/unit/choice-cost.test.ts), so unlike `grammar-perf` and
+  # `workload-perf` it needs no reference commit, no repeated passes and no
+  # `fetch-depth: 0` — just the committed baseline and one interpreted parse of
+  # ~33 kB. Seconds, not minutes.
+  #
+  # Blocking checks (see bench/choice-cost-guard.ts for the reasoning):
+  #   RATCHET    — TWO-SIDED against bench/choice-cost-baseline.json at ±0.1%.
+  #                Growing fails; an UNBANKED WIN also fails, because headroom
+  #                left on the table becomes budget for the next regression.
+  #   INVERSIONS — an arm that failed every attempt while a later arm matched.
+  #                On from day one: both gated grammars measure ZERO today, so
+  #                this keeps an empty backlog empty rather than arriving red.
+  choice-cost-gate:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Grammar wasted-work gate vs the committed absolute baseline
+        run: pnpm choicecost:guard
+
   # The single required status check. The ruleset on `main` requires a context
   # named exactly `test`; a matrix job publishes one context PER LEG
   # (`test (node lts/*)`, …) and none named `test`, so making the matrix the
@@ -367,7 +427,7 @@ jobs:
   # `if: always()` is required — without it a failed leg would SKIP this job, and a
   # skipped required check reads as "not failed" rather than as a failure.
   test:
-    needs: [changes, test-matrix, docs-verify, grammar-perf, release-gate, workload-perf, size-gate]
+    needs: [changes, test-matrix, docs-verify, grammar-perf, release-gate, workload-perf, size-gate, choice-cost-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -380,8 +440,9 @@ jobs:
           release='${{ needs.release-gate.result }}'
           workload='${{ needs.workload-perf.result }}'
           size='${{ needs.size-gate.result }}'
+          choicecost='${{ needs.choice-cost-gate.result }}'
           code='${{ needs.changes.outputs.code }}'
-          echo "test-matrix=$matrix  docs-verify=$docs  grammar-perf=$perf  release-gate=$release  workload-perf=$workload  size-gate=$size  code-changed=$code"
+          echo "test-matrix=$matrix  docs-verify=$docs  grammar-perf=$perf  release-gate=$release  workload-perf=$workload  size-gate=$size  choice-cost-gate=$choicecost  code-changed=$code"
 
           # docs-verify gates every change — it is never skipped.
           [ "$docs" = "success" ] || { echo "::error::docs:verify did not pass"; exit 1; }
@@ -437,4 +498,16 @@ jobs:
               [ "$code" = "false" ] || { echo "::error::size-gate skipped but code changed"; exit 1; }
               echo "documentation-only change — size gate intentionally skipped" ;;
             *) echo "::error::size-gate result: $size"; exit 1 ;;
+          esac
+
+          # And the grammar wasted-work gate. Same skip rule as every other gate
+          # here: acceptable ONLY for a documentation-only PR, so a green on this
+          # required check means grammar ordering cost was actually measured and
+          # not merely not-failed.
+          case "$choicecost" in
+            success) ;;
+            skipped)
+              [ "$code" = "false" ] || { echo "::error::choice-cost-gate skipped but code changed"; exit 1; }
+              echo "documentation-only change — grammar wasted-work gate intentionally skipped" ;;
+            *) echo "::error::choice-cost-gate result: $choicecost"; exit 1 ;;
           esac

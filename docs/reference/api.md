@@ -444,6 +444,22 @@ export const lines      = rules({ trivia: rw, trackLines: true }, factory)
 export const cstGrammar = rules({ trivia: rw, trackLines: true, hostMode: 'cst' }, factory)
 ```
 
+Note that `factory` is a plain `const` and is **not exported** — that is required, not
+stylistic. Lowering erases the `rules(factory)` call sites and removes the macro import,
+so the factory body would survive verbatim in the artifact naming `node`/`sequence`/…
+that nothing imports. A local `const` is dead code the bundler drops; an `export` cannot
+be dropped, and would ship a binding that throws `ReferenceError` the first time a
+consumer called it. Exporting one is a compile-time error.
+
+That check reads the `export` prefix on the declaration, and it is not the only way to
+make the binding undroppable — a separate `export { factory }` does the same thing. So
+underneath it, parseman scope-analyses the module it is about to emit and **refuses to
+emit any module that reads an identifier nothing binds**, whatever route the name took.
+The error lists each one with a `file:line:column` in the emitted module and the
+declaration it sits in. Two things are deliberately allowed: a name your SOURCE already
+left free — the module expects its host to supply it, and parseman had no part in that —
+and an unreferenced local function-valued `const`, which is the dead-code case above.
+
 Three call sites over one shared factory (a factory may be passed by name, as here). The
 macro emits independent top-level artifacts, so each bundle tree-shakes away the one
 it does not import — your compiler ships the AST image, your language service ships the
@@ -486,8 +502,11 @@ export const grammar = composeLeaf([
 
 Every item before the final local map must prove recognition-only. `composeLeaf`
 is terminal: it cannot be fed into another `compose()`/`composeLeaf()` call. It
-is publicly exported so macro source can import it, but an unlowered runtime
-call throws rather than silently changing construction semantics.
+is publicly exported so macro source can import it; an unlowered runtime call
+returns an **interpreted** fuse instead — the same shape `fuseInterpreted()`
+produces, fused lazily on first rule access rather than at construction. It is a
+different engine, not a different grammar, so the macro build remains the one
+that ships.
 
 ## Trees
 

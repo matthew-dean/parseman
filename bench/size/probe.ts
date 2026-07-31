@@ -71,7 +71,7 @@
  * poisons the whole curve, so there is no "skip" path anywhere in this file.
  */
 
-import { writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { writeFileSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
@@ -413,6 +413,42 @@ export function measure(u: Unit, lower: Lowerer): Row {
   // noise floor and used to justify a looser tolerance. With a fixed path the
   // probe is byte-identical across processes.
   const dir = path.join(tmpdir(), `pm-size-probe-${u.id}`)
+  // The path is FIXED (see above) and therefore SHARED, so two probes of the same unit
+  // running at once clobber each other: one `rmSync`s the directory the other is writing
+  // into, and the loser reports a fraction of the real byte count — a WRONG measurement
+  // that then fails the build with a confident message ("BANK THE WIN — output got
+  // smaller"). Making the path unique would fix the race and break byte-identity, which
+  // is the more valuable property, so the access is made exclusive instead: take a lock
+  // directory, and wait rather than trample. Observed when the CLI test suite began
+  // spawning subprocesses alongside the size gate.
+  //
+  // TWO THINGS THE LOOP HAS TO GET RIGHT, both of which fail only under the load that
+  // makes the lock necessary in the first place.
+  //
+  // ONLY `EEXIST` MEANS "SOMEONE ELSE HOLDS IT". A bare `catch` cannot tell contention
+  // from EACCES, ENOSPC or a missing TMPDIR, so a fatal condition would spin here
+  // forever instead of being reported. Anything else rethrows.
+  //
+  // STALENESS IS THE LOCK'S AGE, NOT THE WAITER'S PATIENCE. Timing out on how long THIS
+  // process has waited reaps a lock whose holder is alive and simply slow — on a box at
+  // load average 70-200, where a single unit's lowering can legitimately outrun a minute,
+  // that recreates the shared directory underneath a running measurement and produces
+  // exactly the corrupt number the lock exists to prevent. The directory's own mtime is
+  // the property actually being asked about, so it is what gets measured.
+  const lock = `${dir}.lock`
+  for (;;) {
+    try { mkdirSync(lock, { recursive: false }); break }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+      const st = statSync(lock, { throwIfNoEntry: false })
+      // `undefined` means the holder released it between `mkdirSync` and here: retry at once.
+      if (st !== undefined && Date.now() - st.mtimeMs > 60_000) {
+        rmSync(lock, { recursive: true, force: true })
+        continue
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+    }
+  }
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   try {
@@ -446,6 +482,25 @@ export function measure(u: Unit, lower: Lowerer): Row {
     const srcBytes = Buffer.byteLength(srcText, 'utf8')
     const genBytes = Buffer.byteLength(code, 'utf8')
     if (srcBytes === 0) die(`unit ${u.id}: source is empty`)
+
+    // AN IMPLAUSIBLY SMALL MEASUREMENT IS A HARNESS FAILURE, NOT A WIN.
+    //
+    // The lock above closes the race that produced this, but the failure MODE is the
+    // one worth a standing check: a fixture measured 430 B instead of 26,273 B, and
+    // nothing downstream disbelieved it — the two-sided ratchet read the collapse as an
+    // un-banked improvement and failed the build with "BANK THE WIN". A wrong number
+    // delivered with a confident message is strictly worse than a crash, so the probe
+    // refuses to REPORT one rather than leaving the guard to interpret it.
+    //
+    // The floor is the file's own thesis: macro lowering EXPANDS its input, so output
+    // smaller than input means the lowering did not see the input. It is deliberately
+    // far below anything real — the smallest ratio in the committed baseline is
+    // example/json at 2.787x, so this has 2.8x of margin and cannot fire on a genuine
+    // measurement. It is a liveness check, not a budget; `bench/size-guard.ts` owns
+    // every opinion about whether a real number is too big.
+    if (genBytes < srcBytes) {
+      die(`unit ${u.id}: lowering produced ${genBytes} B from ${srcBytes} B of source (ratio ${(genBytes / srcBytes).toFixed(3)}x).\n  Macro lowering expands — the smallest ratio in the committed baseline is 2.787x — so a ratio\n  below 1 means the lowering did not see this unit's files, NOT that the output got smaller.\n  The usual cause is another process sharing ${dir}; this probe locks it, so also check for a\n  stale ${dir}.lock left by a killed run.`)
+    }
     if (u.nodes === 0) die(`unit ${u.id}: declares zero node() sites — bytes-per-node would be meaningless`)
 
     const gzipBytes = gzipSync(code).length
@@ -467,6 +522,7 @@ export function measure(u: Unit, lower: Lowerer): Row {
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })
+    rmSync(lock, { recursive: true, force: true })
   }
 }
 
@@ -623,6 +679,7 @@ async function main(): Promise<void> {
   if (v1 && v2 && v4) {
     report(`  variant duplication: 1 -> ${v1.genBytes} B, 2 -> ${v2.genBytes} B (${(v2.genBytes / v1.genBytes).toFixed(2)}x), 4 -> ${v4.genBytes} B (${(v4.genBytes / v1.genBytes).toFixed(2)}x)`)
     report('  (perfectly shared variants would hold this near 1.00x; ~Nx means N copies)')
+    report('  (module-level hoist landed in 0.46: was 1.98x / 3.92x — one full copy per variant)')
   }
 
   if (jsonPath) {

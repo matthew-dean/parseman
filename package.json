@@ -1,11 +1,11 @@
 {
   "name": "parseman",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "packageManager": "pnpm@10.15.1",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
-  "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
+  "description": "Parser combinators that compile to optimized JavaScript \u2014 use as a library or as a build-time macro",
   "type": "module",
   "author": "Matthew Dean <matthew-dean@users.noreply.github.com>",
   "repository": {
@@ -22,6 +22,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./diagnostics": {
+      "types": "./dist/analysis/diagnostics.d.ts",
+      "import": "./dist/analysis/diagnostics.js",
+      "require": "./dist/analysis/diagnostics.cjs"
     },
     "./plugin": {
       "types": "./dist/plugin/index.d.ts",
@@ -48,6 +53,9 @@
       "import": "./dist/oracle/index.js",
       "require": "./dist/oracle/index.cjs"
     }
+  },
+  "bin": {
+    "parseman": "./dist/cli/index.js"
   },
   "files": [
     "dist",
@@ -90,10 +98,16 @@
     "build:chevrotain-bench": "node --import tsx/esm scripts/build-chevrotain-bench.mjs",
     "bench:compile-grammars": "peggy --format es -o bench/json-parser.js bench/json.pegjs && peggy --format es -o bench/csv-parser.js bench/csv.pegjs && peggy --format es -o bench/graphql-parser.js bench/graphql.pegjs && nearleyc bench/vendor/nearley/json.ne -o bench/json-nearley.cjs && nearleyc bench/vendor/nearley/csv.ne -o bench/csv-nearley.cjs && nearleyc bench/vendor/nearley/graphql.ne -o bench/graphql-nearley.cjs && node bench/compile-jison.mjs",
     "perf:workloads": "node --import tsx/esm bench/workload-perf-guard.ts",
+    "perf:workloads:peak": "node --import tsx/esm bench/workload-perf-guard.ts --peak",
+    "perf:workloads:self": "node --import tsx/esm bench/workload-perf-guard.ts --self",
+    "perf:guard:grammars:self": "node --import tsx/esm bench/grammar-perf-guard.ts --self",
     "perf:workloads:describe": "node --import tsx/esm bench/workloads/describe.ts",
     "size:guard": "node --import tsx/esm bench/size-guard.ts",
     "size:baseline": "node --import tsx/esm bench/size-guard.ts --update",
-    "size:probe": "node --import tsx/esm bench/size/probe.ts"
+    "size:probe": "node --import tsx/esm bench/size/probe.ts",
+    "choicecost:guard": "node --import tsx/esm bench/choice-cost-guard.ts",
+    "choicecost:baseline": "node --import tsx/esm bench/choice-cost-guard.ts --update",
+    "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report"
   },
   "keywords": [
     "parser",
@@ -128,6 +142,7 @@
     "xregexp": "~5.1.2"
   },
   "dependencies": {
+    "linecraft": "0.2.6",
     "magic-string": "~0.30.21",
     "oxc-parser": "~0.137.0",
     "oxc-resolver": "~11.23.0",

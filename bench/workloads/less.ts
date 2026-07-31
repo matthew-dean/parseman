@@ -108,7 +108,9 @@ const argStop = (): Array<Combinator<unknown>> => [
   not(literal(',')),
 ]
 
-export const { Stylesheet } = rules((g: {
+/** The whole rule map — see the note on `cssRules` in examples/css/parser.ts.
+ *  Analysis names choice sites by rule, so it needs the map, not the entry rule. */
+export const lessRules = rules((g: {
   Stylesheet: Combinator<unknown>
   statement: Combinator<unknown>
   block: Combinator<unknown>
@@ -430,3 +432,5 @@ export const { Stylesheet } = rules((g: {
     valueList, Expression, operand, term, Keyword,
   }
 })
+
+export const { Stylesheet } = lessRules

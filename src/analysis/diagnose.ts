@@ -157,22 +157,44 @@ export function diagnoseGrammar(grammar: DiagnosableGrammar, opts?: DiagnoseOpti
   return assemble(report, degradations)
 }
 
+/**
+ * The analysis examined NOTHING: no choice was walked, and rules were skipped.
+ *
+ * This is NOT "problems were found" and must never be presented as a finding count. A
+ * diagnosis over a fully opaque grammar has one blocking finding per skipped rule, which
+ * `findings.length` then reports as "176 problems, 176 failing the check" — a sentence
+ * that reads as 176 discovered defects and actually means the tool inspected zero
+ * choices. `ok` is correctly false either way, so `ok` alone cannot tell the two apart;
+ * a caller that needs to distinguish "measured, and it is bad" from "could not measure"
+ * asks here. The CLI maps this to exit 2 (COULD NOT ANALYSE), not exit 1.
+ *
+ * `unanalysable > 0` is required, so a genuinely choice-free grammar (nothing to walk,
+ * nothing skipped) stays an ordinary clean pass rather than a measurement failure.
+ */
+export function examinedNothing(d: GrammarDiagnosis): boolean {
+  return d.summary.totalChoices === 0 && d.summary.unanalysable > 0
+}
+
 /** Render a diagnosis for a human. The structured object stays the product of record. */
 export function formatGrammarDiagnosis(d: GrammarDiagnosis): string[] {
   const s = d.summary
   const lines: string[] = []
   lines.push(
-    d.ok
-      ? `parseman: grammar OK — ${s.gated}/${s.totalChoices} choice(s) gate on first char`
-        + `${s.recoverable > 0 ? `, ${s.recoverable} recoverable` : ''}`
-        + `${s.accepted > 0 ? `, ${s.accepted} accepted` : ''}`
-        + `${s.deferred > 0 ? `, ${s.deferred} deferred to the fusing artifact` : ''}.`
-      : `parseman: grammar NOT OK — ${blockingOf(d).length} blocking finding(s) over `
-        + `${s.totalChoices} examined choice(s).`,
+    examinedNothing(d)
+      // NOT a finding count. See `examinedNothing`.
+      ? `parseman: COULD NOT ANALYSE — 0 choice(s) examined; ${s.unanalysable} rule(s) `
+        + 'unreadable. No verdict about this grammar is available, good or bad.'
+      : d.ok
+        ? `parseman: grammar OK — ${s.gated}/${s.totalChoices} choice(s) gate on first char`
+          + `${s.recoverable > 0 ? `, ${s.recoverable} recoverable` : ''}`
+          + `${s.accepted > 0 ? `, ${s.accepted} accepted` : ''}`
+          + `${s.deferred > 0 ? `, ${s.deferred} deferred to the fusing artifact` : ''}.`
+        : `parseman: grammar NOT OK — ${blockingOf(d).length - s.unanalysable} blocking finding(s) over `
+          + `${s.totalChoices} examined choice(s).`,
   )
   // Unanalysable first, always: "no findings" over a grammar that was never walked is
   // precisely the failure being reported, and it must not read as a clean bill of health.
-  if (s.unanalysable > 0) {
+  if (s.unanalysable > 0 && !examinedNothing(d)) {
     lines.push(
       `  ${s.unanalysable} rule(s) UNANALYSABLE — THIS REPORT IS PARTIAL. `
       + 'An empty finding list below does NOT mean the grammar is clean.',

@@ -3,6 +3,204 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.46.0 — unreleased
+
+- **Add a `parseman` CLI — `parseman diagnose` and `parseman fix`.** Exit **0** clean,
+  **1** blocking findings, **2** could not analyse. `--json` emits the structured object
+  the human rendering is derived from. The bin is its own bundle (`dist/cli/index.js`,
+  library twin at `parseman/diagnostics`); `dist/index.js` is unchanged and every
+  size-guard fixture is still at its committed ceiling.
+- **`diagnose` can now load a macro-authored grammar.** It died with `TypeError: Import
+  attribute "type" with value "macro" is not supported` on every shipping parseman
+  grammar; a module hook now drops the attribute for `type: 'macro'` only.
+- **Fixed `diagnose` reporting a finding count over a run that examined nothing.** It
+  reported `176 problems, 1 cause` against a built artifact with zero examined choices.
+  Adds `examinedNothing(d)` (exported), a `COULD NOT ANALYSE` rendering with no tally, and
+  **exit 2**. Partial runs exclude unreadable rules from the count and state them
+  separately.
+- **`parseman fix` offers only rewrites it has PROVEN.** Each candidate is applied, the
+  grammar recompiled, the corpus re-parsed on every available engine, and the outputs
+  compared; a rewrite that changes output is discarded and never shown. Ships
+  `regex(/if(?!\w)/)` to `word('if', '\w')` and `not(not(X))` to `peek(X)`. Previews a
+  diff by default and writes only under `--apply`.
+- **Fixed `fix --apply` corrupting source.** `locateEdit` counted a parenthesis inside a
+  string literal, producing an unbalanced `oldText` that `--apply` wrote to the user's
+  file. Also gives colliding sites distinct ids.
+- **Fixed `fix --apply` reporting a PARTIAL run as complete**, and the benefit line
+  claiming "removes 1 of the N arms" whatever the rewrite measured.
+- **The rebuilder checks itself before it is trusted** (`src/analysis/rebuild.ts`). An
+  identity rebuild must reproduce the corpus output before any candidate is considered,
+  and node kinds with no faithful public reconstruction are reused verbatim rather than
+  dropped.
+- **`--corpus` adds per-arm corpus positions and a located input site with a caret.**
+- **Fixed the arm renderer re-walking the grammar and mislabelling every arm** —
+  `ChoiceGating` now carries its arms non-enumerably (`choiceArms()`).
+- **Rewrote every diagnostic in plain English** — no bare term of art, every number with
+  its unit, every observation followed by its consequence. The wording lives in
+  `gating.ts`, so `--json` and `formatGatingWarnings` improved with it.
+- **Group findings by CAUSE, not by site** — a cause is stated once and followed by its
+  sites. **146 lines to 100** on `examples/css/parser.ts`, every explanation exactly once.
+- **A finding carries a wrench and the literal command to run** instead of the word
+  `ACTIONABLE`, and only where a rewrite was actually proved. `LOCATED` is now `NEEDS YOU`
+  and says why; `ACTIONABLE` is `SAFE TO APPLY`.
+- **Fixed the suggested `parseman fix` command not reproducing the run** — it dropped
+  `--ext` and `--accept`, values are now shell-quoted where needed, and a `-`-leading
+  grammar path stays a path rather than becoming an option.
+- **A one-line summary at the end of the report** — tally, causes, exit code in words, and
+  the auto-fixable count with the command that does it.
+- **Clickable file locations (OSC-8)**, zero-width so alignment is unaffected;
+  `--no-links` disables.
+- **Rich on a TTY, plain when piped** — colour for severity, glyphs distinct in SHAPE for
+  cause class, column-aligned arm tables. A clean grammar renders in two lines. No
+  timings, no dates, no absolute paths.
+- **Render through `linecraft` (pinned `0.2.6`) instead of hand-rolled ANSI.**
+  `src/analysis/terminal.ts` is the only module that talks to a terminal; renderers emit
+  rows and never produce an escape byte. Colour is decided by the CLI, never sniffed in a
+  renderer. Width pinned to 80 off-TTY (`--width`). `dist/index.js` contains no
+  `linecraft`.
+- **Fixed `broad-recognizer` advice being one string per cause** — it told the author of a
+  genuine catch-all scanner to use `word()`. The suggestion now follows what the arm leads
+  with.
+- **Fixed four landings of raw control bytes in `src/`** (`choice.ts`, `degradation.ts`,
+  `rebuild.ts`, `diagnose-render.ts`), which made those files binary to git and GitHub and
+  made `grep -rn` skip them silently. Composite keys are `JSON.stringify`d and ANSI
+  escapes written as `\u001B` sequences; output is unchanged and `pnpm check:control-bytes`
+  is green.
+- **Captured CLI output for review at `docs/samples/cli-output.md`** — verbatim, non-TTY,
+  with the command that produced each block.
+- **`fuseInterpreted()` — a composed grammar can now be RUN interpreted.** Any interpreted
+  run of a composed grammar previously threw `ref<T>() used before .define()`. It takes
+  the same items `compose()`/`composeLeaf()` take and returns a runnable combinator map
+  with the compiled fuse's semantics — no codegen, no macro build step, and nothing added
+  to codegen. `isInterpretedFuse(map)` distinguishes the shapes; `run()`/`parseDoc()`
+  accept either. Equivalence pinned by `test/parity/interpreted-fuse-parity.test.ts`.
+- **Interpreted fusion is MUTATING by construction** — a second, conflicting fusion over
+  the same piece objects throws rather than rewriting the first one's parser, and a
+  `pick()`/`linkable()` artifact is rejected rather than silently fused around.
+- **Pinned: a piece containing no `node()` at all** compiles to non-capturing rules, so
+  the compiled fuse hands a later piece's `node()` empty children where the interpreted
+  fuse reports the real ones. Adding any `node()` removes the difference.
+- **`composeLeaf()` no longer throws at runtime** — without the macro it materializes the
+  interpreted fuse on first rule ACCESS. Still macro-only as a compiled artifact.
+- **Refuse to emit an exported `rules()` factory instead of shipping a binding that
+  throws.** The factory body was emitted verbatim, naming imports the artifact no longer
+  has: it compiled clean, imported clean, and threw `ReferenceError` on first call. jess
+  shipped that for three days, 26 undefined identifiers in css alone. Now a compile-time
+  error naming the export and its line. A local `const` factory was never affected.
+- **BUILD-TIME BEHAVIOUR CHANGE — the emitted module is scope-analysed and refused if any
+  identifier is read but bound by nothing.** A macro build that used to succeed can now
+  fail. The error names every free identifier with a `file:line:column` in the EMITTED
+  module. Deliberately not reported: a name the SOURCE already left free, and an
+  unreferenced, non-exported, function-valued `const`. Macro-build only — zero emitted
+  bytes and zero codegen time.
+- **Fixed a reducer named inside an IMPORTED factory being emitted as its SOURCE.**
+  `node('Fold', …, fold)` emitted `const _build = [fold]` into the consuming module, so
+  the artifact threw `ReferenceError` on IMPORT. Found by the scope check above on its
+  first run.
+- **Fixed reducer resolution for an imported `rules()` factory** — the plugin now
+  registers each factory's module, so an offset resolves against the scope tree that
+  indexes it and the node pays for the tiers its reducer declares. Completes the fix filed
+  for 0.46 in 0.45.
+- **Module-level hoist of byte-identical fused declarations — `probe/variants-4` is 35.5%
+  smaller (77,732 B to 50,174 B), `probe/variants-2` 22.9% (39,284 B to 30,303 B).** A
+  module publishing N variants of one grammar emitted the same rule functions N times,
+  once per IIFE. `probe/variants-4` now costs 2.53x `probe/variants-1`, down from 3.92x,
+  gated by `test/unit/size-guard.test.ts`. The other 22 gated fixtures are unchanged.
+- **…and the `_pfFail` sentinel is hoisted from every scope or from none**, because a
+  partial hoist makes a parse FAILURE read as a SUCCESS carrying `{}`. Keyed on the
+  declared NAME, not the occurrence. Disabled under `grammarCoverage`.
+- **Reverted "share cold capture restores through hoisted helpers"** — bisected as the
+  cause of this branch's perf red: `rollback/dense` min +50.2…+52.3%, winning 0/12, 0/12
+  and 1/12 across 36 paired comparisons, against its own predicted 1.4% at worst.
+- **Grammar wasted-work analysis** (`analyzeChoiceInventory`, `profileWastedWork`,
+  `checkWastedWork`, `buildWastedWorkBaseline`, plus rendering). The static inventory
+  reports every shared-prefix choice site — including the ones codegen declined to
+  left-factor, with the blocking arm and the reason, a backlog that was never written down
+  anywhere. The dynamic profile attributes re-scanned bytes per site and per arm over a
+  real corpus. Interpreted-only: `src/combinators/choice.ts` is untouched and codegen
+  emits nothing extra.
+- **The profile reports two columns**, interpreted (`attempts`/`wastedBytes`) and gated
+  (`gatedAttempts`/`gatedWastedBytes`, modelling codegen's first-character guard), with
+  rankings taken from the compiled column. Byte rankings survive the correction;
+  failure-rate and attempt-count claims do not.
+- **`pnpm choicecost:guard` — a two-sided ratchet, wired into CI as a required check.**
+  `bench/choice-cost-baseline.json` is a BAND at ±0.1%: growth fails and an unbanked
+  improvement fails with "bank the win". Absolute, never differential. It fails closed on
+  every way of not having measured — missing, malformed, empty or over-ceiling baseline,
+  changed corpus, stale or unbaselined entry, zero corpora, zero instrumentable sites, an
+  incomplete grammar walk, or a corpus that did not parse. `failOnInversions` is on from
+  day one. The corpus is `bench/workloads/fixtures/{site.css,app.less}`, already
+  committed. A `1.0x` target is measured and printed every run and does not block in 0.46.
+  It ranks bytes, not CPU, and is not a third perf gate.
+- **Fixed the choice-cost gate's fail-open baseline paths.** A `"totals": null` reached
+  `Object.keys` as an uncaught TypeError instead of the documented `invalid-baseline`
+  breach, and a non-numeric entry made `pct` return `NaN` — `NaN > tol` and `NaN < -tol`
+  are both false, so the gate passed over numbers it never compared. Every recorded value
+  is validated finite before any is read.
+- **`examples/css/parser.ts` and `bench/workloads/less.ts` export their whole rule map**
+  (`cssRules`, `lessRules`), so analysis can name a site `Value › node(Value)` instead of
+  reporting it anonymously. No behaviour change.
+- **Fixed the grammar perf gate failing against a byte-identical `src/`.** Its private
+  measurement loop sampled the two sides as contiguous blocks, so paired cases never
+  shared GC state, cache state or position in the run — with both sides pinned to one
+  commit it reported `expected/narrow` +23.3% median and FAILED while `rollback/sparse`
+  read −9.2% in the same run. It now uses the shared `bench/ab-harness.ts` and fails only
+  on a strict majority of independent passes. `--self` re-measures the noise floor.
+- **Fixed both perf gates reading a COMPILATION LOTTERY.** Each side was compiled once
+  before the pass loop and reused for every pass, so a pass resolved one draw twelve times
+  and every pass inherited it — a majority was unanimous by construction. On
+  byte-identical sides, `rollback/none` read 12/12 (−7.8%) and `expected/none` 0/12
+  (+7.8%): a false FAIL in one direction, a BLIND case in the other.
+- **`measurePasses()` resamples, and MEASURES the null instead of assuming it.** Both
+  sides are recompiled every pass; a CONTROL PAIR of two reference instances runs at the
+  same rotated positions and its pooled win rate is printed per case; the win-rate ceiling
+  is null-relative, so calibration can never loosen an unbiased case. `calibrate()` no
+  longer warms one side only. **`passes` 3 to 5** in `bench/grammar-density/config.json`
+  and `bench/workloads/config.json`. No threshold widened, no reference re-baselined.
+- **A PEAK clause: `pnpm perf:workloads --peak`.** The per-step gate structurally cannot
+  see a slow bleed. The clause holds every release to the fastest one on record, named by
+  COMMIT in `bench/workloads/config.json` so it is re-measured rather than inherited;
+  median AND min must both breach. The peak is **seeded at 0.45.0, not swept**.
+- **`scripts/check-changelog.mjs` gains section D, so the peak record cannot move
+  quietly.** It validates every `peak` block structurally and requires any edit to one to
+  be named in the CHANGELOG's current section, calling out by name the two edits that
+  launder a regression into the baseline — moving the peak BACKWARD and widening
+  `allowancePct`. It runs on every PR; `release-exempt` does not waive it.
+- **Fixed `_signTestNote` arguing from pairs it treated as independent.** The pairs of one
+  pass share a compiled pair, and `passes` is 5, not 3. Prose only — every threshold,
+  `peak.sha` and `peak.allowancePct` is byte-identical.
+- **Fixed a shared-temp-directory race in the size probe** (`bench/size/probe.ts`). The
+  probe path is deliberately fixed, which also makes it shared: concurrent probes clobbered
+  each other and the loser failed the build with `BANK THE WIN — output got smaller`.
+  Access is now exclusive via a lock directory.
+- **Fixed the size-probe lock reaping a live holder and swallowing real errors.**
+  Staleness aged the waiting process, not the lock; and a bare `catch` made `EACCES`,
+  `ENOSPC` and a missing `TMPDIR` indistinguishable from contention, so a fatal condition
+  spun forever. Only `EEXIST` now means locked.
+- **Exit codes are asserted by running the CLI** (`test/unit/cli-exit-codes.test.ts`) —
+  nine cases over 0 / 1 / 2 through the real argv parsing, renderers and process exit.
+- **In-process coverage for the CLI and the relative-span model.** `src/cli/index.ts`
+  shipped in 0.46 at 0% on every metric because its only tests spawn a subprocess.
+  `runCli` now takes a budget (default 300 s) and throws `CliDidNotSettleError` naming the
+  command and the output so far, instead of returning `code: undefined`; scratch dirs are
+  no longer leaked.
+- **Coverage for the surfaces 0.46 added without tests** — `fix-render.ts` and
+  `rebuild.ts` (59.7% statements), `choice-cost-render.ts` (5.98% statements, 0% branches
+  and functions, to 100%), the duplication and diagnose surfaces, and the macro
+  evaluator's rejection paths in `src/plugin/{evaluator,index}.ts`, the two largest
+  uncovered branch pools in the repo.
+- **Fixed `size-guard` and `release-gate` tests running a 60–180 s child under vitest's
+  5 s default**, which discarded the child output those tests exist to assert on and read
+  as a flake that vanished when the file was run alone.
+- **`docs/design/derived-tokenization.md`** — the design for deriving a scanner from the
+  composed grammar's terminal alphabet (css 75, scss 94, jess 114, less 151 terminals),
+  the first two prototypes' measurements, a corrected css artifact baseline
+  (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B, which was the whole css `lib/`
+  across four build variants), and a register of 19 untried experiments. Nothing is wired
+  into `codegen.ts`.
+- **`proposeFixes` docs say "every available engine"** — `engines` is `['interpreted']`
+  when the grammar does not compile, so "on both engines" overstated what was checked.
+
 ## 0.45.0 — 2026-07-30
 
 - **Recognise the inline-`mk` shape when the node type is a factory parameter.** The
@@ -149,6 +347,55 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   own ctx, so its captures and trivia writes would land during the prescan and again in
   every arm. Replaying a ref needs recorded-and-spliced capture state, not variable
   reuse.
+- **New: choice-cost diagnostics — a shared-prefix inventory and a corpus wasted-work
+  profile.** A PEG `choice` is ordered, so each additional and each earlier alternative
+  costs time that is invisible in the grammar source; grammar shape drifts with nothing
+  going red. Two new analyses make it measurable.
+  `analyzeChoiceInventory(ruleMap)` reports EVERY reachable `choice` with the groups of
+  arms that share a concrete leading term, whether the compiler left-factored the site,
+  and — the part that did not exist before — WHY it declined, naming the blocking arm.
+  `detectSharedPrefix` (src/combinators/choice.ts) already computed this to choose the
+  `sharedPrefix` strategy, but it is all-or-nothing and returns `null` on the first arm
+  that does not qualify, so a partial group had no representation anywhere. That set is
+  the refactor backlog, generated rather than noticed by a human reading grammar source.
+  `profileWastedWork({ rules, entry, corpus })` counts input bytes RE-SCANNED after a
+  failed alternative, attributed per site and per arm, and ranks them; `inversions`
+  ranks separately by ordering defect — an arm that failed every attempt while a later
+  arm matched. `checkWastedWork(reports, baseline, policy)` is the gate policy over
+  either, and `renderChoiceInventory` / `renderWastedWork` are the human layer.
+  Analysis, policy and rendering are three separate layers over one structured report.
+  MEASURES THE INTERPRETER, MODELS THE COMPILER. The interpreter's `firstMatch` loop
+  enters every arm; compiled output gates each arm on its first character
+  (src/compiler/codegen.ts:2246-2277), and first-set gating is the largest parse lever
+  this project has. So every count is reported twice — interpreted and gated — and
+  rankings use the gated column, with the warning on every rendered report rather than
+  in a footnote. Measured over jess's four dialects (637 kB CSS, 212 kB Less), the gate
+  removes 74-84% of arm ENTRIES and, in all four, exactly ZERO rescanned bytes: the
+  guard comes from the arm's first set, so when it rejects, the arm's own leading
+  terminal would have rejected at the same position having consumed nothing. Byte
+  rankings therefore survive the correction; failure-RATE and attempt claims do not,
+  which is why `inversions` is computed from the gated columns and ranked by entries.
+  The model replicates codegen's own nullability predicate — deliberately shallow, so a
+  `node()`-wrapped nullable IS guarded — and tests compile real grammars and assert the
+  model matches the emitted guards, because a hand-copy of another module's logic drifts
+  in silence.
+  INTERPRETED MODE ONLY: nothing is emitted into a compiled parser and codegen pays
+  neither bytes nor time. `src/combinators/choice.ts` is untouched — instrumentation is
+  installed by temporarily substituting arm slots and terminal `parse` methods and
+  removed in a `finally`, so there is no profiling branch on the shipping hot path to
+  skip. QUIET BY DEFAULT: nothing here prints, or runs, unless called.
+  The metric is a deterministic COUNT, not a timing: byte-identical across repeated
+  runs and across separate processes (both asserted), so it is immune to machine load
+  and has a noise floor of exactly zero — which is what makes it gateable rather than a
+  benchmark. Calibrated against a case with an exact known answer, and fails closed on
+  every way of measuring nothing: an empty rule map, an empty corpus, an empty corpus
+  file, an unknown entry rule, a grammar with no instrumentable choice, a `compose()`
+  artifact, a missing or malformed or over-ceiling baseline, a changed corpus, and a
+  stale baseline entry each throw or fail rather than reporting a clean zero.
+  Known blind spots are documented in the module header rather than left to be
+  discovered: only `firstMatch`/`sharedPrefix` choices are instrumented, non-choice
+  backtracking is not attributed, an `autoNot` rejection reads as a success, and
+  `unresolvedRoots` reports how much of the grammar the walk could not reach.
 
 - **BREAKING: the gating diagnostic left the compile path. Compiling produces an
   artifact and says nothing.** Importing one example grammar (`examples/css/parser.ts`)

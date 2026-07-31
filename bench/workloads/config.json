@@ -1,8 +1,24 @@
 {
   "_comment": "Configuration for `pnpm perf:workloads` — see bench/workload-perf-guard.ts and docs/design/perf-gates.md.",
 
-  "referenceSha": "80d0e62",
-  "_referenceNote": "The A/B reference: v0.44.0, the PREVIOUS RELEASE (merge of PR #97 into main, the first-parent commit that set package.json to 0.44.0). Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the released sha at every release, in the release PR, with the numbers read in that PR. Do NOT bump it to silence a red gate.",
+  "referenceSha": "5d3f60a",
+  "_referenceNote": "The A/B reference: v0.45.0, the PREVIOUS RELEASE (merge of PR #101 into main, the first-parent commit that set package.json to 0.45.0). Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the released sha at every release, in the release PR, with the numbers read in that PR. Do NOT bump it to silence a red gate.",
+
+  "peak": {
+    "sha": "7d1817f",
+    "version": "0.45.0",
+    "allowancePct": 5,
+
+    "_what": "The fastest release ON RECORD for THESE workloads, and the bar `pnpm perf:workloads --peak` holds every later release to. This is the half of the release policy `referenceSha` structurally cannot enforce: a per-step gate passes forever while the curve bleeds down, because each individual step sits inside the noise floor. The standalone sweep at ~/parseman-perf-probe/ measured -5.1% accumulating exactly that way across 0.28.0 -> 0.34.0, with almost every step individually insignificant.",
+
+    "_absolute": "`sha` names a COMMIT, never a millisecond count, so the comparison is re-measured on whatever machine runs it and reads the same on a laptop and a CI runner. `allowancePct` is the drawdown TOLERATED, not a budget to spend: it is the measured noise floor of this harness (the per-release thresholds are 5% for the same reason and from the same self-check).",
+
+    "_rebaseline": "Moving this forward is how a real improvement becomes the new bar, and it is a deliberate committed diff a reviewer sees. scripts/check-changelog.mjs (section D) requires ANY edit here to be named in the CHANGELOG, and calls out by name the two edits that launder a regression into the baseline — moving the peak BACKWARD and widening `allowancePct`. That check runs on every PR, has no exemption hatch, and exists because both `referenceSha` fields carried 'bump this at every release' in a COMMENT and were missed for ten consecutive releases.",
+
+    "_seededNotSwept": "HONEST LIMIT, stated rather than left to be discovered. 0.45.0 is seeded as the STARTING record — the bar to beat from here — NOT as the winner of a measured sweep across all releases. A full historical sweep on these workloads has not been run: it was attempted at 0.46.0 and abandoned because the machine was at load average 70-90, where triage runs of this very gate reported the same workload anywhere from -86% to +131%. Numbers that cannot be reproduced are worse than no numbers. What WAS measured, and is worth recording: HEAD runs ~45-50% FASTER than 0.36.0 and 0.38.0 on css/stylesheet, so on THIS workload set there is no evidence of a historical peak sitting above HEAD.",
+
+    "_notImportable": "The sweep's peak (0.28.0) is NOT this gate's peak and must not be copied here. Measured: this repo's css/stylesheet workload runs ~50% faster at HEAD than at 0.28.0 (aa1e7d2). A 10-node monolithic fused probe grammar and a realistic composed grammar do not peak in the same place. A peak reported by a different instrument is evidence about that instrument's shape, not this one's — re-measure, never import."
+  },
 
   "measurement": {
     "targetSampleMs": 8,
@@ -10,15 +26,16 @@
     "timed": 11,
     "rounds": 4,
     "runs": 3,
-    "passes": 3,
-    "_passesNote": "A workload fails only when a strict MAJORITY of independent passes breach. This is how the gate tells a regression from a busy machine without widening the threshold, which would blind it to the band it exists to watch (0.34.0's css row moved -1.6%; the 0.35.0 repayment was -12.3%). Three is the smallest count where a majority means something; raise it if a self-check ever false-fails.",
-    "_note": "Parses per timed sample are CALIBRATED at startup so every workload's sample lands near targetSampleMs, on the REFERENCE side only, and the same count is applied to both sides so it can never advantage one. targetSampleMs is higher here than in the density gate because these inputs are ~50 KB rather than a synthetic loop: a single parse already takes milliseconds, so the calibration mostly resolves to 1-3 parses and the target only matters for the cheap rows."
+    "passes": 5,
+    "_passesNote": "A workload fails only when a strict MAJORITY of independent passes breach. This is how the gate tells a regression from a busy machine without widening the threshold, which would blind it to the band it exists to watch (0.34.0's css row moved -1.6%; the 0.35.0 repayment was -12.3%). Three was the smallest count where a majority means something. Raised to FIVE at 0.46.0, the sanctioned response to a self-check that false-fails: the gate run against the REFERENCE BY ITSELF, zero code difference, false-failed twice in three self-checks. Do not widen a threshold instead. Passes only became INDEPENDENT at 0.46.0 as well: both sides used to be compiled once and reused across every pass, so all of them inherited one draw of the compilation lottery and a majority was unanimous by construction. `measurePasses` in bench/ab-harness.ts now recompiles per pass.",
+    "_note": "Parses per timed sample are CALIBRATED at startup so every workload's sample lands near targetSampleMs, on a THROWAWAY instance set built from the reference, and the same count is applied to both sides so it can never advantage one. The throwaway matters: the repetition count was always applied to both sides, but until 0.46.0 the ~14 calibration parses WARMED the very instances the reference side then raced with, which is a head start given to exactly one side. targetSampleMs is higher here than in the density gate because these inputs are ~50 KB rather than a synthetic loop: a single parse already takes milliseconds, so the calibration mostly resolves to 1-3 parses and the target only matters for the cheap rows."
   },
 
   "thresholds": {
     "medianPct": 5,
     "minPct": 5,
     "winRateCeiling": 0.25,
+    "_winRateNote": "The win-rate ceiling is a NULL-RELATIVE distance, not an absolute rate. `measurePasses` measures each case's null win rate every run with a control pair of two independently compiled REFERENCE instances, and judges the head side at `null - (0.5 - winRateCeiling)`. A case whose null is 50% is judged at exactly this number, so the calibration can never loosen an unbiased case; a case the instrument favours or disfavours is judged at the same DISTANCE from its own null instead of an absolute one. Measured cause: two independently compiled instances of identical code read 12/12 (-7.8%) and 0/12 (+7.8%) on this repo's density cases, so a flat ceiling both false-fires and goes blind depending on which way the draw fell.",
 
     "signTest": {
       "winRateCeiling": 0.25,
@@ -28,7 +45,7 @@
 
     "_note": "MEASURED, not guessed. Same build against ITSELF through this harness (`pnpm perf:workloads --self`), on a machine at load average 5-9 because that is what a shared runner looks like: worst single-pass median +9.9%, worst single-pass min +3.4%, and NO pass breached — because a noise pass swings its percentage but keeps its win rate near 50%, and every breach rule here requires the win rate too. The percentage thresholds are 5%; the win-rate conjunction is what makes them safe at that level.",
 
-    "_signTestNote": "The percentage rule alone catches a big regression. It could not reliably catch `fix(expect)`, which cost the realistic Less workloads +2%..+9% — genuinely under the threshold. The sign test catches it: with sides measured in adjacent order-alternated pairs, losing <= 3 of 12 pairs while also being >= 1.5% slower on BOTH median and min is not something a busy machine produces. 12 pairs, 3 wins, p ~ 0.07 per pass; required in a majority of 3 passes, ~1 in 500.",
+    "_signTestNote": "The percentage rule alone catches a big regression. It could not reliably catch `fix(expect)`, which cost the realistic Less workloads +2%..+9% — genuinely under the threshold. The sign test catches it: with sides measured in adjacent order-alternated pairs, losing <= 3 of 12 pairs while also being >= 1.5% slower on BOTH median and min is not something a busy machine produces. Do NOT read the 12 pairs as 12 independent trials and quote a coin-flip p-value: bench/ab-harness.ts states that the pairs of one pass share a single compiled pair, so a pass has an effective sample size of ONE, and the older derivation here (3 wins, p ~ 0.07 per pass, ~1 in 500 over three passes) was arithmetic on an assumption the harness does not hold. The calibration that DOES hold is the measured one: `winRateCeiling` is a distance from each case`s own null, measured every run against a control pair of two independently compiled reference instances (see `_winRateNote`), so this rule fires relative to what the instrument actually does rather than to an assumed 50%. The breach must then repeat in a strict majority of the FIVE passes on line 29, each pass recompiling both sides.",
 
     "_resolutionLimit": "The floor is roughly 1.5-2% per workload, set by the sign test's percentage requirement. Below that the gate cannot distinguish a real regression from drift and will read green. There is no amplification here — unlike the density sweep, these numbers are end-to-end parses of realistic input, so a reading IS the downstream cost, not a multiple of it."
   }

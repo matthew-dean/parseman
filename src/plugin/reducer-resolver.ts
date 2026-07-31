@@ -47,6 +47,9 @@ export type UnresolvedReason =
   | 'not-found'
   | 'computed'
   | 'foreign-source'
+  /** Two DISTINCT registered files hold byte-identical text, so the text no longer
+   *  identifies the module an offset indexes. See `register`. */
+  | 'ambiguous-source'
 
 export type ResolvedReducer = {
   /** Declared positional arity, or `null` when genuinely undecidable. */
@@ -452,6 +455,19 @@ export type ReducerResolver = {
    * implementation for what happens when it is not this resolver's.
    */
   resolve(exprSrc: string, offset: number, src: string): ResolvedReducer | null
+  /**
+   * Announce a module whose text the evaluator may later hand to `resolve` as `src` —
+   * an imported `rules()` factory is evaluated with `code: mod.src`, so its `node(…,
+   * build)` offsets index THAT file, not the entry file.
+   *
+   * Registering it makes those offsets answerable against the module's own scope tree.
+   * Without it `resolve` can only decline (`foreign-source`), which fails open to full
+   * capture — correct, but it charges every such node all five facilities.
+   *
+   * Returns whether the file could be analysed; an unreadable or unparseable module
+   * simply stays unregistered and keeps declining.
+   */
+  register(file: string): boolean
 }
 
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/
@@ -461,6 +477,20 @@ export function createReducerResolver(entryFile: string, body: unknown[], src: s
   const scopes = buildScopeTree(body, src.length)
   markReassignments(body, scopes)
   const entry: AnalysedModule = { file: entryFile, src, body, scopes }
+
+  // Modules OTHER than the entry file whose offsets `resolve` may be handed, keyed by
+  // the module text itself — that is the only identity the evaluator carries, since it
+  // threads `code` (a string) and not a path.
+  const registered = new Map<string, AnalysedModule>()
+  // Texts claimed by more than one DISTINCT file. Identical text is identical for
+  // offsets, but NOT for import resolution: `fromBinding` follows a hop with
+  // `resolveImport(mod.file, specifier)`, and identical text means identical RELATIVE
+  // specifiers, which resolve to different absolute files from different directories.
+  // Letting the second registration overwrite the first would answer such an offset
+  // against the wrong module and yield a wrong arity — and a wrong arity UNDER-captures,
+  // calling the reducer with arguments the compiler elided. That is the exact failure
+  // this registry exists to prevent, so an ambiguous key declines instead.
+  const ambiguous = new Set<string>()
 
   const fromBinding = (
     mod: AnalysedModule,
@@ -529,6 +559,22 @@ export function createReducerResolver(entryFile: string, body: unknown[], src: s
   }
 
   return {
+    register(file) {
+      const mod = analyseModuleFile(file)
+      if (!mod) return false
+      // The entry file needs no entry — it is matched first, and its `body`/`src` came
+      // from the caller rather than a re-read, so they are the authoritative pair.
+      if (mod.src === src) return true
+      const prior = registered.get(mod.src)
+      if (prior !== undefined && prior.file !== mod.file) {
+        ambiguous.add(mod.src)
+        registered.delete(mod.src)
+        return false
+      }
+      if (!ambiguous.has(mod.src)) registered.set(mod.src, mod)
+      return !ambiguous.has(mod.src)
+    },
+
     resolve(exprSrc, offset, offsetSrc) {
       const text = exprSrc.trim()
       const ident = IDENT_RE.test(text) ? text : null
@@ -541,16 +587,20 @@ export function createReducerResolver(entryFile: string, body: unknown[], src: s
       // binding happens to live at the same absolute offset, and a wrong arity UNDER-
       // captures — the reducer is then called with arguments the compiler elided.
       //
-      // Answering against the imported module's own scope tree is the real fix and is
-      // filed for 0.46; refusing is the sound answer in the meantime, because refusing
-      // fails open (full capture) and says so on the degradation channel.
-      if (offsetSrc !== src) return { arity: null, src: null, reason: 'foreign-source' }
+      // So the offset picks its OWN module: the entry file, or one the plugin registered
+      // when it decided to evaluate a factory out of it. An offset from anywhere else is
+      // still refused, which fails open to full capture and says so on the degradation
+      // channel — never answered against the wrong scope tree.
+      const mod = offsetSrc === src ? entry : registered.get(offsetSrc)
+      if (!mod) {
+        return { arity: null, src: null, reason: ambiguous.has(offsetSrc) ? 'ambiguous-source' : 'foreign-source' }
+      }
 
       const name = ident ?? member![1]!
       const memberName = ident ? undefined : member![2]!
-      const hit = lookup(scopeAt(scopes, offset), name)
+      const hit = lookup(scopeAt(mod.scopes, offset), name)
       if (!hit) return { arity: null, src: null, reason: 'not-found' }
-      return fromBinding(entry, hit.binding, memberName, 0, new Set())
+      return fromBinding(mod, hit.binding, memberName, 0, new Set())
     },
   }
 }
