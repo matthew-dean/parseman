@@ -73,3 +73,51 @@ compiled GraphQL by ~60%, and inflated each library by a *different* amount.
 
 If a competitor's ratio drops toward 1.0× in any row, that row is the gate and
 your change needs a number on both sides before it lands, not after.
+
+## The margin as of `f78bc9b` (0.46.0, pre-lane)
+
+3 rounds, rotated, one process per bar. Every in-run control read 0.98–1.03×, so
+the noise floor for this run was ~±3%; every competitor row won 3/3 paired
+rounds. Ratios are `competitor_min / parseman_macro_min` — how many times faster
+Parséman is.
+
+| workload | Chevrotain | Lezer | Peggy | Jison | Parsimmon | Nearley | pm interp |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| JSON small | **1.79×** | — | 4.64× | 11.7× | 10.7× | 12.7× | 2.65× |
+| JSON medium | **1.91×** | — | 4.36× | 13.0× | 12.0× | 19.4× | 2.74× |
+| JSON large | **1.98×** | — | 3.86× | 13.5× | 11.7× | 20.6× | 2.97× |
+| CSV small | 13.4× | — | 5.21× | — | 8.91× | 19.7× | 3.64× |
+| CSV large | 13.5× | — | 5.96× | — | 5.69× | 36.9× | 3.30× |
+| GraphQL small | **2.64×** | — | 2.81× | 8.25× | 13.9× | 8.02× | 2.70× |
+| GraphQL medium | **2.22×** | — | 2.80× | 7.33× | 10.1× | 7.35× | 2.49× |
+| GraphQL large | **2.44×** | — | 2.77× | 9.42× | 11.5× | 10.5× | 2.66× |
+| CST small | 11.4× | 3.60× | — | — | — | — | 3.32× |
+| CST medium | 11.7× | 3.51× | — | — | — | — | 3.75× |
+| CST large | 11.4× | 3.66× | — | — | — | — | 3.10× |
+
+**The binding constraint is Chevrotain on JSON, and it is the only bar under 2×.**
+JSON small at **1.79×** is the tightest row in the whole set: a change that costs
+Parséman 44% on small-JSON parse loses the gate outright. GraphQL-vs-Chevrotain
+(2.22–2.64×) is second. Everything else has 3.3× or more of headroom, and CSV and
+CST are not close to contested.
+
+For reference, `JSON.parse` (native C++, excluded from the bar) is 3–4× faster
+than Parséman on the same inputs — 0.169 µs vs 0.554 µs on small JSON.
+
+## What these charts CANNOT read
+
+The four charts run four grammars: `examples/json`, `examples/csv`,
+`examples/graphql`, and the JSON CST build. A change that does not reach those
+grammars will read as a flat null here, and a null here is **not** evidence the
+change is free.
+
+The sharpest current example is `dispatch()`. Grep the repo: no chart grammar
+uses it. The only benchmark that exercises `dispatch()` at all is the
+`pnpm bench:dispatch` microbenchmark (`bench/dispatch-vs-choice.ts`). So a
+dispatch-codegen change is invisible to `bench:margin` *by construction*, and
+also to `pnpm perf:workloads` — its Less workload mentions dispatch only in a
+comment. If your change targets `dispatch()`, say which harness read it; the
+charts did not.
+
+Before trusting a null from this harness, check that your change is on a path
+one of the four chart grammars actually takes.

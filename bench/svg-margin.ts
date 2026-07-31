@@ -103,6 +103,37 @@ type GroupResult = {
 const results: { chart: ChartKey; groups: GroupResult[] }[] = []
 const raw: Record<string, Record<string, number[][]>> = {}
 
+/**
+ * Print one chart's table. Called as each chart FINISHES, not once at the end:
+ * a full four-chart run takes over two hours on this box, and a version that
+ * reported only on completion produced nothing at all from a run that was
+ * interrupted or still going — the numbers existed, in a process nobody could
+ * read. Partial output that is correct beats complete output that arrives late.
+ */
+function reportChart(chart: ChartKey, groups: GroupResult[]): boolean {
+  let held = true
+  console.log(`\n═══ ${chart.toUpperCase()} ═══`)
+  for (const g of groups) {
+    console.log(`\n  ${g.group}`)
+    console.log(`  Parséman (macro build)         ${g.subjectMin.toFixed(3)} µs  (min of ${ROUNDS})`)
+    console.log(`  ${'competitor'.padEnd(30)} ${'min µs'.padStart(9)} ${'×'.padStart(8)}  win-rate`)
+    for (const row of g.rows) {
+      const slower = row.ratio >= 1
+      // A competitor being faster than Parséman is the thing this harness exists
+      // to catch; do not let it read as an ordinary row.
+      const flag = row.slot === CONTROL ? '  (control)' : slower ? '' : '  ← SLOWER THAN COMPETITOR'
+      if (!slower && row.slot !== CONTROL && row.slot !== 'native') held = false
+      console.log(
+        `  ${row.label.padEnd(30)} ${row.min.toFixed(3).padStart(9)} ` +
+          `${row.ratio.toFixed(2).padStart(7)}× ${`${row.wins}/${row.rounds}`.padStart(9)}${flag}`,
+      )
+    }
+  }
+  return held
+}
+
+let fastestEverywhere = true
+
 console.log(
   `bench:margin — ${ROUNDS} rounds, rotated order, one process per bar, ` +
     `charts: ${CHARTS.join(', ')}\n`,
@@ -157,29 +188,11 @@ for (const chart of CHARTS) {
     return { group: g.title, subjectMin, rows }
   })
   results.push({ chart, groups })
+  if (!reportChart(chart, groups)) fastestEverywhere = false
+  // Flush raw samples after every chart for the same reason the table prints
+  // early — an interrupted run should still leave its finished charts behind.
+  if (OUT) writeFileSync(OUT, JSON.stringify({ rounds: ROUNDS, results, raw }, null, 2))
   console.log()
-}
-
-// ── Report ────────────────────────────────────────────────────────────────────
-let fastestEverywhere = true
-for (const { chart, groups } of results) {
-  console.log(`\n═══ ${chart.toUpperCase()} ═══`)
-  for (const g of groups) {
-    console.log(`\n  ${g.group}`)
-    console.log(`  Parséman (macro build)         ${g.subjectMin.toFixed(3)} µs  (min of ${ROUNDS})`)
-    console.log(`  ${'competitor'.padEnd(30)} ${'min µs'.padStart(9)} ${'×'.padStart(8)}  win-rate`)
-    for (const row of g.rows) {
-      const slower = row.ratio >= 1
-      // A competitor being faster than Parséman is the thing this bar exists to
-      // catch; do not let it read as an ordinary row.
-      const flag = row.slot === CONTROL ? '  (control)' : slower ? '' : '  ← SLOWER THAN COMPETITOR'
-      if (!slower && row.slot !== CONTROL && row.slot !== 'native') fastestEverywhere = false
-      console.log(
-        `  ${row.label.padEnd(30)} ${row.min.toFixed(3).padStart(9)} ` +
-          `${row.ratio.toFixed(2).padStart(7)}× ${`${row.wins}/${row.rounds}`.padStart(9)}${flag}`,
-      )
-    }
-  }
 }
 
 console.log(
