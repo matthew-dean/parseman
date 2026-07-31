@@ -74,6 +74,7 @@
     "check:control-bytes": "node scripts/check-control-bytes.mjs",
     "bench": "node --import tsx/esm bench/run.ts",
     "bench:parseman": "node --import tsx/esm bench/parseman.ts",
+    "bench:ast": "node --import tsx/esm bench/ast-path.ts",
     "bench:composeleaf": "node --import tsx/esm bench/composeleaf-firstset.ts",
     "bench:incremental": "node --import tsx/esm bench/incremental-run.ts",
     "bench:literal": "node --import tsx/esm bench/literal-match.ts",

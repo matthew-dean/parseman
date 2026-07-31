@@ -108,9 +108,32 @@ const argStop = (): Array<Combinator<unknown>> => [
   not(literal(',')),
 ]
 
+/**
+ * How a rule turns its body into a node.
+ *
+ * Lifted OUT of the grammar so the same 31 rules can be instantiated on the CST
+ * path and on the AST path without a second copy of the grammar. The two paths
+ * must differ in the reducer and in NOTHING else — a duplicated grammar would
+ * drift, and a drifted grammar turns a path comparison into a grammar
+ * comparison. See `bench/workloads/ast.ts` for what the two factories do and
+ * `bench/ast-perf-guard.ts` for why the distinction is the measurement.
+ */
+export type NodeFactory = (type: string, body: Combinator<unknown>) => Combinator<unknown>
+
+/**
+ * The CST factory: the reducer this grammar has always used.
+ *
+ * Arity FIVE, and that is load-bearing rather than incidental — codegen gates
+ * each capture tier on the builder's `Function.length`, so declaring
+ * `rawChildren` and `triviaLog` keeps every collector live and every leaf
+ * materialised. This is the path `bootstrap4` measures.
+ */
+export const cstNodeFactory: NodeFactory = (type, body) =>
+  node(type, body, (c, _f, s, raw, tl) => mk(type, c, raw, s, tl))
+
 /** The whole rule map — see the note on `cssRules` in examples/css/parser.ts.
  *  Analysis names choice sites by rule, so it needs the map, not the entry rule. */
-export const lessRules = rules((g: {
+export const makeLessRules = (N: NodeFactory) => rules((g: {
   Stylesheet: Combinator<unknown>
   statement: Combinator<unknown>
   block: Combinator<unknown>
@@ -141,9 +164,6 @@ export const lessRules = rules((g: {
   term: Combinator<unknown>
   Keyword: Combinator<unknown>
 }) => {
-  const N = (type: string, body: Combinator<unknown>): Combinator<unknown> =>
-    node(type, body, (c, _f, s, raw, tl) => mk(type, c, raw, s, tl))
-
   const P = (body: Combinator<unknown>): Combinator<unknown> => parser({ trivia: rw }, body)
 
   // ── statements ────────────────────────────────────────────────────────────
@@ -432,5 +452,12 @@ export const lessRules = rules((g: {
     valueList, Expression, operand, term, Keyword,
   }
 })
+
+/**
+ * The CST instantiation, kept under its original name and shape so every
+ * existing consumer — the workload gate, grammar analysis, the density probes —
+ * is untouched by the AST path existing.
+ */
+export const lessRules = makeLessRules(cstNodeFactory)
 
 export const { Stylesheet } = lessRules

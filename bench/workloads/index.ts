@@ -40,7 +40,8 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile, type Combinator } from '../../src/index.ts'
-import { Stylesheet as LessStylesheet } from './less.ts'
+import { Stylesheet as LessStylesheet, makeLessRules, type NodeFactory } from './less.ts'
+import { astNodeFactory } from './ast.ts'
 import { Stylesheet as CssStylesheet } from '../../examples/css/parser.ts'
 import { graphqlDoc } from '../../examples/graphql/parser.ts'
 import { jsonDoc } from '../../examples/json/parser.ts'
@@ -94,8 +95,26 @@ function mixinWeighted(corpus: string): string {
   return kept.join('\n')
 }
 
+/**
+ * WHICH CONSUMER a row measures. Never optional and never inferred: a speed number
+ * from this file that does not say `ast` or `cst` is a bug in the harness, because
+ * the two paths do measurably different amounts of work on identical input and a
+ * lane has already been misled by exactly that ambiguity.
+ *
+ * - `ast` — what a COMPILER takes. Arity-1 reducers, no trivia log, structural
+ *   delimiters discarded. parseman's canonical measure.
+ * - `cst` — what an EDITOR takes. Arity-5 reducers, `_triviaLog` live, every leaf
+ *   retained. A nice-to-have where latency hides behind a human.
+ * - `value` — neither: `transform`-built plain values with no node machinery at
+ *   all. json/graphql are here, and they are the control that says whether a
+ *   change touches capture or the runtime underneath it.
+ */
+export type WorkloadPath = 'ast' | 'cst' | 'value'
+
 export type Workload = {
   id: string
+  /** Which consumer's path this row measures. Printed with every number. */
+  path: WorkloadPath
   /** Bytes of input, reported so a reader can see the sample behind every number. */
   bytes: number
   /** Built fresh per side: compiling is part of neither side's measurement. */
@@ -103,14 +122,34 @@ export type Workload = {
   input: string
 }
 
+/**
+ * The CST consumer: trivia log installed, five-argument reducers upstream.
+ * Unchanged from what this file has always measured.
+ */
 const withCapture = (c: Combinator<unknown>, input: string): (() => { parse: () => unknown }) => () => {
   const compiled = compile(c)
   return { parse: () => compiled.parseWithContext(input, { trackLines: false, _triviaLog: [] }, 0) }
 }
 
+/**
+ * The AST consumer: no trivia log. Paired with an arity-1 reducer upstream, this
+ * is what makes codegen elide the rawChildren/trivia/state tiers.
+ */
 const withoutCapture = (c: Combinator<unknown>, input: string): (() => { parse: () => unknown }) => () => {
   const compiled = compile(c)
   return { parse: () => compiled.parseWithContext(input, { trackLines: false }, 0) }
+}
+
+/**
+ * The Less grammar instantiated on a given node factory.
+ *
+ * ONE grammar, two reducers — see the note on `NodeFactory` in `less.ts`. A second
+ * copy of the grammar would drift, and then the AST-vs-CST comparison would
+ * silently become a grammar-vs-grammar comparison.
+ */
+export const lessEntry = (factory: NodeFactory): Combinator<unknown> => {
+  const { Stylesheet } = makeLessRules(factory)
+  return Stylesheet
 }
 
 export function buildWorkloads(): Workload[] {
@@ -123,12 +162,31 @@ export function buildWorkloads(): Workload[] {
   const gqlInput = graphqlInput(48)
   const jsonInput = jsonPayload(48)
 
+  // Built once per call so the AST and CST rows for a workload are the SAME
+  // grammar text on the SAME input, differing only in the reducer.
+  const lessAst = lessEntry(astNodeFactory)
+
+  // The path is part of the ID, not a column a formatter may drop. Every
+  // consumer of this list — the broad gate, the AST gate, any future one — keys
+  // and prints by id, so making the id carry the path is the only way to
+  // GUARANTEE a number can never be quoted without saying which consumer it
+  // describes. `--only=ast` and `--only=cst` become path filters for free.
+  const row = (
+    name: string, path: WorkloadPath, input: string, make: () => { parse: () => unknown },
+  ): Workload => ({ id: `${name} [${path}]`, path, bytes: input.length, make, input })
+
   return [
-    { id: 'less/stylesheet', bytes: lessInput.length, make: withCapture(LessStylesheet, lessInput), input: lessInput },
-    { id: 'less/mixins', bytes: mixinInput.length, make: withCapture(LessStylesheet, mixinInput), input: mixinInput },
-    { id: 'css/stylesheet', bytes: cssInput.length, make: withCapture(CssStylesheet, cssInput), input: cssInput },
-    { id: 'graphql/document', bytes: gqlInput.length, make: withoutCapture(graphqlDoc, gqlInput), input: gqlInput },
-    { id: 'json/document', bytes: jsonInput.length, make: withoutCapture(jsonDoc, jsonInput), input: jsonInput },
+    // The AST path FIRST, because it is the canonical one and a reader stops at
+    // the top of a table.
+    row('less/stylesheet', 'ast', lessInput, withoutCapture(lessAst, lessInput)),
+    row('less/mixins', 'ast', mixinInput, withoutCapture(lessAst, mixinInput)),
+
+    row('less/stylesheet', 'cst', lessInput, withCapture(LessStylesheet, lessInput)),
+    row('less/mixins', 'cst', mixinInput, withCapture(LessStylesheet, mixinInput)),
+    row('css/stylesheet', 'cst', cssInput, withCapture(CssStylesheet, cssInput)),
+
+    row('graphql/document', 'value', gqlInput, withoutCapture(graphqlDoc, gqlInput)),
+    row('json/document', 'value', jsonInput, withoutCapture(jsonDoc, jsonInput)),
   ]
 }
 
