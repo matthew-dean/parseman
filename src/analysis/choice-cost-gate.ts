@@ -67,9 +67,27 @@ export type WastedWorkBaseline = {
   /** Informational, `YYYY-MM-DD`. Never compared — comparing it would make the
    *  verdict depend on the clock. */
   updatedAt: string
-  /** Absolute per-corpus totals, keyed by corpus id. */
+  /**
+   * Absolute per-corpus totals, keyed by corpus id.
+   *
+   * `totalWastedBytes` is the INTERPRETED column, and that is deliberate even though
+   * `WastedWorkReport` names `totalGatedWastedBytes` as the headline. For BYTES the two
+   * are the same number, structurally: the modelled first-char guard is derived from the
+   * arm's first SET, which over-approximates what the arm can start with, so wherever the
+   * guard rejects, the arm's own leading terminal would have rejected at the same position
+   * having consumed nothing. Measured over four dialect grammars, zero arms differ (see the
+   * header of `choice-cost.ts`). What the guard removes is ATTEMPTS, not rescanned bytes —
+   * so `gatedAttempts`, `gatedFailures` and the inversion ranking DO read the gated columns,
+   * and only the byte totals are recorded from the interpreted one, where it is additionally
+   * the conservative UPPER bound of the two.
+   *
+   * That identity is not enforced anywhere it could be relied on silently: `checkWastedWork`
+   * judges the compiled column against this same band wherever the two columns part, so a
+   * divergence goes red instead of unnoticed.
+   */
   totals: Record<string, { corpusBytes: number; totalWastedBytes: number; instrumentedSites: number }>
-  /** Absolute per-site wasted bytes, keyed by `<corpus>::<siteKey>`. */
+  /** Absolute per-site wasted bytes, keyed by `<corpus>::<siteKey>`. Interpreted column,
+   *  for the reason given on `totals` above. */
   sites: Record<string, number>
 }
 
@@ -166,14 +184,36 @@ export function checkWastedWork(
     add('invalid-baseline', '<baseline>', `baseline schema is ${JSON.stringify(b.schema)}, expected "parseman.wasted-work-baseline/1"`)
     return finish(0, 0)
   }
-  if (b.totals === undefined || b.sites === undefined || typeof b.totals !== 'object' || typeof b.sites !== 'object') {
-    add('invalid-baseline', '<baseline>', 'baseline is missing `totals` or `sites`')
+  // `typeof null === 'object'`, so a `"totals": null` would pass a bare `typeof` test
+  // and reach `Object.keys` below as an uncaught TypeError. A baseline of the wrong
+  // shape is a documented `invalid-baseline` breach, not a crash.
+  const isRecord = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && !Array.isArray(v)
+  if (!isRecord(b.totals) || !isRecord(b.sites)) {
+    add('invalid-baseline', '<baseline>', 'baseline `totals` or `sites` is missing or is not an object')
     return finish(0, 0)
   }
   if (Object.keys(b.totals).length === 0) {
     add('invalid-baseline', '<baseline>', 'baseline records ZERO corpora')
     return finish(0, 0)
   }
+
+  // EVERY recorded value must be a finite number, checked before any of them is read.
+  // `baseline` is `unknown` — parsed JSON off disk — and a non-numeric value does not
+  // announce itself at the comparison: `pct` returns NaN, and `NaN > tolerance` and
+  // `NaN < -tolerance` are BOTH false, so the entry yields no breach and the gate
+  // reports a pass over a number it never compared. That is the fail-open this module
+  // exists to not be, and it is silent, so it is caught at the shape check instead.
+  const finite = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v)
+  for (const [id, t] of Object.entries(b.totals).sort(([x], [y]) => (x < y ? -1 : 1))) {
+    if (!isRecord(t) || !finite(t.corpusBytes) || !finite(t.totalWastedBytes)) {
+      add('invalid-baseline', id, 'baseline entry has no finite numeric `corpusBytes` / `totalWastedBytes` — the comparison against it would silently produce NaN and no breach')
+    }
+  }
+  for (const [key, v] of Object.entries(b.sites).sort(([x], [y]) => (x < y ? -1 : 1))) {
+    if (!finite(v)) add('invalid-baseline', key, 'baseline site value is not a finite number — the comparison against it would silently produce NaN and no breach')
+  }
+  if (breaches.length > 0) return finish(0, 0)
   if (policy.ceilingRatio !== undefined) {
     for (const [id, t] of Object.entries(b.totals).sort(([x], [y]) => (x < y ? -1 : 1))) {
       if (t.corpusBytes > 0 && t.totalWastedBytes / t.corpusBytes > policy.ceilingRatio) {
@@ -236,6 +276,20 @@ export function checkWastedWork(
       add('shrank', id, `total wasted ${base.totalWastedBytes} -> ${r.totalWastedBytes} bytes (${d.toFixed(2)}%, band ±${tolerance}%) — BANK THE WIN: rebaseline so the ${base.totalWastedBytes - r.totalWastedBytes} bytes you just saved cannot become headroom for the next regression`)
     }
 
+    // AND THE COMPILED COLUMN IS HELD TO THE SAME BAND. See `WastedWorkBaseline` for
+    // why the INTERPRETED column is the one recorded. While the two agree — which is
+    // structural, not a property of these corpora — this adds nothing, so it is only
+    // evaluated where they part, and there it says so rather than judging one column
+    // and reporting the other.
+    if (r.totalGatedWastedBytes !== r.totalWastedBytes) {
+      const dg = pct(r.totalGatedWastedBytes, base.totalWastedBytes)
+      if (dg > tolerance) {
+        add('drift', id, `compiled-model total wasted ${base.totalWastedBytes} -> ${r.totalGatedWastedBytes} bytes (${dg >= 0 ? '+' : ''}${dg.toFixed(2)}%, band ±${tolerance}%) — the compiled and interpreted columns have PARTED (${r.totalGatedWastedBytes} vs ${r.totalWastedBytes}); the baseline records the interpreted one`)
+      } else if (dg < -tolerance) {
+        add('shrank', id, `compiled-model total wasted ${base.totalWastedBytes} -> ${r.totalGatedWastedBytes} bytes (${dg.toFixed(2)}%, band ±${tolerance}%) — the compiled and interpreted columns have PARTED (${r.totalGatedWastedBytes} vs ${r.totalWastedBytes}); the baseline records the interpreted one`)
+      }
+    }
+
     for (const s of r.sites) {
       const key = `${id}::${s.siteKey}`
       const bs = b.sites[key]
@@ -247,12 +301,22 @@ export function checkWastedWork(
       const sd = pct(s.wastedBytes, bs)
       if (sd > tolerance) add('drift', key, `${bs} -> ${s.wastedBytes} bytes (${sd >= 0 ? '+' : ''}${sd.toFixed(2)}%, band ±${tolerance}%)`)
       else if (sd < -tolerance) add('shrank', key, `${bs} -> ${s.wastedBytes} bytes (${sd.toFixed(2)}%, band ±${tolerance}%) — BANK THE WIN: rebaseline, or this site's ${bs - s.wastedBytes} recovered bytes become budget`)
+
+      if (s.gatedWastedBytes !== s.wastedBytes) {
+        const sg = pct(s.gatedWastedBytes, bs)
+        if (sg > tolerance) add('drift', key, `compiled-model ${bs} -> ${s.gatedWastedBytes} bytes (${sg >= 0 ? '+' : ''}${sg.toFixed(2)}%, band ±${tolerance}%) — columns PARTED (${s.gatedWastedBytes} vs ${s.wastedBytes})`)
+        else if (sg < -tolerance) add('shrank', key, `compiled-model ${bs} -> ${s.gatedWastedBytes} bytes (${sg.toFixed(2)}%, band ±${tolerance}%) — columns PARTED (${s.gatedWastedBytes} vs ${s.wastedBytes})`)
+      }
     }
 
     if (policy.failOnInversions === true) {
       for (const inv of r.inversions) {
         add('inversion', `${id}::${inv.siteKey}#${inv.arm}`,
-          `arm ${inv.arm} (${inv.label}) failed all ${inv.attempts} attempts while a later arm matched; ${inv.wastedBytes} bytes re-scanned`)
+          // The GATED columns, because that is what `inversions` was computed from
+          // (choice-cost.ts filters on `gatedAttempts`/`gatedFailures`). Printing the
+          // interpreted counts here would state "failed all N" with an N the condition
+          // never tested — the two differ wherever `firstCharGated` is true.
+          `arm ${inv.arm} (${inv.label}) failed all ${inv.gatedAttempts} compiled entries while a later arm matched; ${inv.gatedWastedBytes} bytes re-scanned`)
       }
     }
   }

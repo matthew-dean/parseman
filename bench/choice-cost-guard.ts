@@ -118,7 +118,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   analyzeChoiceInventory,
@@ -201,7 +201,9 @@ async function measure(spec: GrammarSpec): Promise<{ report: WastedWorkReport; b
 
   let mod: Record<string, unknown>
   try {
-    mod = (await import(join(HERE, spec.module))) as Record<string, unknown>
+    // A file URL, not a bare path: ESM specifiers are URLs, and an absolute Windows
+    // path (`C:\…`) is rejected by the loader with ERR_UNSUPPORTED_ESM_URL_SCHEME.
+    mod = (await import(pathToFileURL(join(HERE, spec.module)).href)) as Record<string, unknown>
   } catch (e) {
     fail(
       `${spec.id}: grammar FAILED TO BUILD from ${spec.module} — ${(e as Error).message.split('\n')[0]}\n`
