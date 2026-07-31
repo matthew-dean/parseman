@@ -68,6 +68,11 @@ export const OP_NODE_TRACK = 19
  * shared machinery the interpreter uses, not a second copy of it.
  */
 export const OP_SCOPE = 20
+/**
+ * `EXPECT c e` — `expect()`. Never fails: on a failed child it yields a
+ * zero-width `ParseError` value carrying the expected set at `e`.
+ */
+export const OP_EXPECT = 21
 
 export const OP_NAMES: Record<number, string> = {
   [OP_LIT]: 'LIT', [OP_RX]: 'RX', [OP_SEQ]: 'SEQ', [OP_SEQV]: 'SEQV',
@@ -75,5 +80,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_XFORM]: 'XFORM', [OP_NODE]: 'NODE', [OP_RULE]: 'RULE', [OP_GATE]: 'GATE',
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
-  [OP_SCOPE]: 'SCOPE',
+  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT',
 }

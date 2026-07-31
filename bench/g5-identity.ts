@@ -55,7 +55,16 @@ export function checkIdentity(
   ruleMap: Record<string, Combinator<unknown>>,
   entryRule: string,
   cases: readonly IdentityCase[],
-  opts: { settings?: TableSettings; trivia?: Combinator<unknown> } = {},
+  opts: {
+    settings?: TableSettings
+    trivia?: Combinator<unknown>
+    /**
+     * Gate against the INTERPRETER only. For a grammar that exposes an entry
+     * combinator but not its rule map, `compose()` cannot fuse it — the compiled
+     * leg is unavailable, not passing. Callers must say which they got.
+     */
+    interpreterOnly?: boolean
+  } = {},
 ): IdentityReport {
   const settings = opts.settings ?? {}
   const interp = ruleMap[entryRule]
@@ -67,19 +76,21 @@ export function checkIdentity(
 
   // The shipped compiled path, fused at runtime (same codegen, `new Function`
   // instead of a build-time splice).
-  const compiledMap = compose([ruleMap as never]) as unknown as Record<string, RunnableLike>
-  const comp = compiledMap[entryRule]
-  if (comp === undefined) throw new Error(`compiled map has no rule '${entryRule}'`)
+  const compiledMap = opts.interpreterOnly
+    ? undefined
+    : compose([ruleMap as never]) as unknown as Record<string, RunnableLike>
+  const comp = compiledMap?.[entryRule]
+  if (comp === undefined && !opts.interpreterOnly) throw new Error(`compiled map has no rule '${entryRule}'`)
 
   const report: IdentityReport = { total: 0, matched: 0, mismatches: [] }
   for (const c of cases) {
     report.total++
     const di = digestRun(interp as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
-    const dc = digestRun(comp, c.input, opts.trivia as RunnableLike | undefined)
+    const dc = comp === undefined ? undefined : digestRun(comp, c.input, opts.trivia as RunnableLike | undefined)
     const dt = digestRun(tbl as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
     let ok = true
     if (dt !== di) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs interpreted', a: dt, b: di }) }
-    if (dt !== dc) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs compiled', a: dt, b: dc }) }
+    if (dc !== undefined && dt !== dc) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs compiled', a: dt, b: dc }) }
     if (ok) report.matched++
   }
   return report

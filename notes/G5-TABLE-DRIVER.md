@@ -71,6 +71,55 @@ in `bench/size-baseline.json`) — 15.1x.
 The driver is a fixed cost paid once for a whole bundle: ~26 KB of TS source
 (unminified, comments included), break-even at ~5 rules.
 
+## Speed — measured, with a control, and the scaling explained
+
+### The gap does not widen. It asymptotes.
+
+The three-point reading (+82% small, +228% medium, +275% large) invited the
+conclusion that something in the driver is per-item. `bench/g5-scaling.ts`
+takes eight points on one grammar with linearly-scaling work, control within
+±3.3%:
+
+```
+    records    bytes    gate ratio
+    n=1           81       2.28x
+    n=2          161       2.58x
+    n=4          321       2.95x
+    n=8          641       3.08x
+    n=16        1281       3.02x
+    n=64        5121       3.12x
+    n=256      20481       3.20x
+    n=1024     81921       3.29x
+```
+
+From n=8 to n=1024 — 128x the work — the ratio moves 7%. That is an ASYMPTOTE.
+The small-input numbers are a shared PER-PARSE fixed cost (ctx setup, `run()`
+bookkeeping) that both sides pay identically, diluting the ratio when the parse
+is tiny. **The real figure is ~3.2x in steady state**, and there is no per-item
+defect to hunt: the cost IS the interpretation.
+
+### Two mechanisms proposed, both refuted
+
+`bench/g5-ablate.ts` keeps the previous driver alive in the same process
+(`src/table/exec-baseline.ts`) so one change is measured against a same-path
+control, because cross-run comparison is not available on this machine.
+
+| candidate | mechanism | result |
+|---|---|---|
+| per-item mark ALLOCATION | `saveCstMark`/`saveTriviaMark` allocate per repetition item and per choice attempt | −20.7% large in one run, **+1.6% in the next**, clean control both times. Did not replicate. |
+| TRIVIA handling | `advanceTrivia` per term where codegen inlines a charCode loop | gap on whitespace-free input +94/+281/+251 vs +99/+217/+245 with trivia. **Unmoved.** |
+
+### What did work
+
+**Terminal fast path in `SEQ`** — reaching a `LIT`/`RX` through `exec` costs a JS
+call frame plus a switch dispatch the emitted code does not pay, and terminals
+are the majority of executed instructions. Running them in place:
+**−3.7% / −8.2% / −6.7%** against a control of +2.3% / +2.3% / −0.2%.
+
+The mark guard was kept anyway: when no sink is live nothing was recorded, so
+nothing needs unrecording. Correct on its own terms whatever it is worth in
+wall clock.
+
 ## Speed — measured, with a control
 
 `bench/g5-speed.ts` and `bench/g5-field.ts`, both over `bench/ab-harness.ts`'s
@@ -89,17 +138,25 @@ Best run (loadavg 91, 20 pairs per case):
   REF     compiled->interp  +181.9%    +831.1%   +755.6%
 ```
 
-**The table driver is 1.8-3.8x slower than codegen and 1.6-2.9x faster than the
-interpreter.** Across three runs the gate band on `min` was +62..+82% (small),
-+143..+391% (medium), +162..+275% (large).
+**The table driver is ~3.2x slower than codegen in steady state, and 1.6-2.9x
+faster than the interpreter.**
 
-That cost is real and it is the price of the size result. Goal 1 asks whether
-it costs the FIELD, which is a different question, and `bench/g5-field.ts`
-answers it directly: against the same external parsers the comparison chart
-uses, in one process, **pm/table still beats peggy, parsimmon, nearley and jison
-on every case by 85%-2600%**, and trades with chevrotain — chevrotain edges it
-on the smallest input by a margin inside the control floor, pm/table wins
-medium and large.
+That cost is real and it is the price of the size result. Goal 1 asks whether it
+costs the FIELD, which is a different question. `bench/g5-field.ts`, loadavg
+43.7, control −1.4 / +0.2 / −1.7%:
+
+```
+  GATE   pm/compiled -> pm/table    small  +70.3%   medium +165.0%   large +188.0%
+  FIELD  pm/table    -> chevrotain  small  -10.3%   medium  +31.9%   large  +23.5%
+  FIELD  pm/table    -> peggy       small  +92.0%   medium +159.1%   large +122.7%
+  FIELD  pm/table    -> parsimmon   small +387.5%   medium +610.8%   large +549.4%
+  FIELD  pm/table    -> nearley     small +434.2%   medium+1005.3%   large+1017.4%
+  FIELD  pm/table    -> jison       small +397.4%   medium +639.4%   large +626.7%
+```
+
+**GOAL 1 HOLDS on medium and large**, and fails by 10.3% against chevrotain on
+the 81-byte input — outside the ±1.7% control floor, so a real loss on one chart
+point, not noise. Every other parser in the comparison is beaten on every case.
 
 ## Variants — the point of the exercise
 
@@ -162,24 +219,66 @@ tree — none would have been visible in a pass/fail test:
 | grammar | result |
 |---|---|
 | `examples/csv` | encodes — 82 words |
-| `examples/json` | encodes — 119 words |
-| `bench/workloads/less` (29 rules) | **encodes — 1,277 words, and is tree-identical on its fixtures** |
-| `examples/lang` | blocked on `choice(strategy=literalsLongestFirst)` |
-| `examples/graphql` | blocked on `keywords` (7 uses) |
-| `examples/css` | blocked on `expect` (6), `scanTo` (5) |
+| `examples/json` | encodes — 122 words |
+| `examples/lang` | encodes — 301 words |
+| `examples/graphql` | encodes — 426 words |
+| `bench/workloads/less` (29 rules) | encodes — 1,277 words |
+| `examples/css` | **blocked on `scanTo`** |
 
-So the 20 opcodes already cover the largest real grammar in the repo. **Four
-constructs stand between the prototype and every grammar here**: the non-default
-choice strategies (`literalsLongestFirst`, `sharedPrefix`, `greedyClassify`),
-`keywords`, `expect`, `scanTo`. None needs a new execution model — `keywords` is
-a trie terminal, `expect` a label around a child, `scanTo` a sentinel scan the
-runtime already implements, and a strategy is an arm ORDER, which is table data.
+**Every real grammar in the repo except css now encodes, and every one of them is
+tree-identical on its fixtures** (37/37 cases). What closed the gaps:
 
-`examples/lang` is worth calling out: an earlier revision encoded it silently and
-WRONG, because a choice strategy reorders arms and lowering it as a plain ordered
-choice picks a different arm. It now refuses. That is the second time in this
-lane a defect showed up as a moved tree behind a successful parse, and it is why
-the identity oracle is the gate rather than a test suite.
+- `keywords` needed NO new opcode — `keywords()` compiles to one sticky regex
+  plus a leaf push, which is exactly what `RX` does, so the encoder rebuilds the
+  same regex (`src/combinators/keywords.ts:87-106`).
+- `expect` got one row (`OP_EXPECT`): it never fails, it yields a zero-width
+  `ParseError` value.
+- `literalsLongestFirst` is an arm ORDER, and order is table data — encode the
+  arms in `sortedIndices` order.
+- `sharedPrefix` is documented in `choice.ts:52` as a firstMatch specialization,
+  so declared order is already right for it.
+
+Two choice shapes are REFUSED rather than approximated, because each would pick a
+different arm and build a different tree behind a successful parse:
+
+- `greedyClassify` runs one arm and then re-attributes the match to a DIFFERENT
+  arm by string equality, re-applying that arm's transforms. Different execution,
+  not different order.
+- any choice with a non-null `autoNot` entry — that table rejects an arm which
+  matched but is followed by a char in a sibling's first set.
+
+`scanTo` is the one construct left, and it is the largest: a sentinel scan with a
+skip list, raw mode and `orEOF` (`src/combinators/scanTo.ts`, 12 KB).
+
+### A fourth defect, caught by adding `examples/lang`
+
+`optional()` yields `null` on no-match (`src/combinators/repeat.ts:269,277`) and
+grammars TEST for it — `examples/lang`'s `call` reducer is
+`if (args === null) return callee`. The driver returned `undefined`, so a bare
+identifier became a call node with `args: undefined`. The parse succeeded, the
+span was right, and only the tree moved. Same signature as the other three.
+
+### What jess actually needs — counted, not assumed
+
+Call sites across the four `packages/syntax/*/*-parser/src/grammar.ts` files,
+comment lines excluded:
+
+| construct | sites | status |
+|---|---:|---|
+| `node(` | 402 | covered (direct-builder path) |
+| `field(` | 32 | **missing** — records a named field into `ctx._fields`; one row |
+| `dispatch(` | 29 | **missing** — parse a selector once, route by value; one row plus a case table |
+| `scanTo(` | 22 | **missing** — the large one |
+| `keywords(` | 21 | covered |
+| `balanced(` | 12 | **missing, and was not on anyone's list** |
+| `expect(` | 11 | covered |
+| `guard(` | 0 | not used — `guard` appears only as an identifier fragment |
+| `recover(` | 0 | not used |
+| `withCtx(` | 0 | not used |
+
+Two corrections to the assumed set: **`guard`, `recover` and `withCtx` are not
+called anywhere in jess's grammars**, and **`balanced` is, 12 times, and was not
+in the assumed list at all.**
 
 Assumptions in that projection, stated so they can be checked:
 

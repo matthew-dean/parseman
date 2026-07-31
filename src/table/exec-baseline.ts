@@ -329,7 +329,12 @@ function makeDriver(
         if (v === FAIL) {
           if (mark !== null) rollbackCstCapture(ctx, mark)
           END = pos
-          return undefined
+          // NULL, not undefined. `optional()` yields `null` on no-match
+          // (src/combinators/repeat.ts:269,277) and grammars TEST for it:
+          // examples/lang's `call` reducer is `if (args === null) return callee`,
+          // so `undefined` there turned a bare identifier into a call node with
+          // `args: undefined`. The parse succeeded and only the tree moved.
+          return null
         }
         return v
       }

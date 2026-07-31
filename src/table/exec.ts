@@ -7,7 +7,7 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
@@ -222,6 +222,18 @@ function makeDriver(
       case OP_RULE:
         return exec(code[ip + 1]!, input, pos, ctx)
 
+      case OP_EXPECT: {
+        const v = exec(code[ip + 1]!, input, pos, ctx)
+        if (v !== FAIL) return v
+        // Mirrors src/combinators/expect.ts:135-150 — succeed at zero width with
+        // a ParseError value, and record it in the flat sink when present.
+        const span = { start: pos, end: pos }
+        const err = { _tag: 'parseError' as const, span, expected: fx[code[ip + 2]!] as string[] }
+        ctx._errors?.push(err)
+        END = pos
+        return err
+      }
+
       case OP_SCOPE: {
         const ki = code[ip + 1]!
         const saved = ctx.trivia
@@ -344,7 +356,12 @@ function makeDriver(
         if (v === FAIL) {
           if (mark !== null) rollbackCstCapture(ctx, mark)
           END = pos
-          return undefined
+          // NULL, not undefined. `optional()` yields `null` on no-match
+          // (src/combinators/repeat.ts:269,277) and grammars TEST for it:
+          // examples/lang's `call` reducer is `if (args === null) return callee`,
+          // so `undefined` there turned a bare identifier into a call node with
+          // `args: undefined`. The parse succeeded and only the tree moved.
+          return null
         }
         return v
       }

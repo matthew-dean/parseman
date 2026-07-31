@@ -3,7 +3,7 @@
  */
 import { checkIdentity } from './g5-identity.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
+import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON, SMALL_GQL, MEDIUM_GQL, LARGE_GQL, SMALL_EXPR, MEDIUM_EXPR } from './fixtures.ts'
 import { baseNodes, jsonRules, jsonWs, nodeLadder } from './g5-grammars.ts'
 import type { Combinator } from '../src/types.ts'
 import { readFileSync } from 'node:fs'
@@ -35,7 +35,7 @@ function ladderCases(n: number): Array<{ name: string; input: string }> {
   ]
 }
 
-function main(): void {
+async function main(): Promise<void> {
   console.log('=== G5 table lowering — correctness gate (oracle: parseman/oracle digestValue)')
   const jr = checkIdentity(jsonRules as unknown as Record<string, Combinator<unknown>>, 'Value', JSON_CASES, { trivia: jsonWs })
   console.log(`  json    ${jr.matched}/${jr.total} cases identical across interpreted | compiled | table`)
@@ -80,10 +80,37 @@ function main(): void {
     console.log(`  less    could not run: ${(e as Error).message.split('\n')[0]}`)
   }
 
+  // The grammars the newly added opcodes unlocked. Encoding them proves nothing;
+  // these prove the trees match.
+  const single = (name: string, comb: unknown): Record<string, Combinator<unknown>> => ({ [name]: comb as Combinator<unknown> })
+  try {
+    const { expr } = await import('../examples/lang/parser.ts')
+    const lr = checkIdentity(single('Expr', expr), 'Expr', [
+      { name: 'small', input: SMALL_EXPR },
+      { name: 'medium', input: MEDIUM_EXPR },
+      { name: 'nested', input: 'if a then if b then c else d else e' },
+      { name: 'garbage', input: '@@@' },
+    ])
+    console.log(`  lang    ${lr.matched}/${lr.total} cases identical (choice(literalsLongestFirst) reordering)`)
+    for (const m of lr.mismatches.slice(0, 4)) console.log(`    MISMATCH ${m.case} [${m.path}]`)
+  } catch (e) { console.log(`  lang    could not run: ${(e as Error).message.split('\n')[0]}`) }
+
+  try {
+    const gq = await import('../examples/graphql/parser.ts')
+    const gr = checkIdentity(single('Doc', gq.graphqlDoc), 'Doc', [
+      { name: 'small', input: SMALL_GQL },
+      { name: 'medium', input: MEDIUM_GQL },
+      { name: 'large', input: LARGE_GQL },
+      { name: 'garbage', input: '!!!' },
+    ], { trivia: gq.ws as Combinator<unknown>, interpreterOnly: true })
+    console.log(`  graphql ${gr.matched}/${gr.total} cases identical vs the INTERPRETER only (keywords() as a sticky-regex row; the example exports an entry combinator, not a rule map, so compose() cannot build the compiled leg)`)
+    for (const m of gr.mismatches.slice(0, 4)) console.log(`    MISMATCH ${m.case} [${m.path}]`)
+  } catch (e) { console.log(`  graphql could not run: ${(e as Error).message.split('\n')[0]}`) }
+
   console.log('')
   console.log('=== table shape')
   const p = encodeTable(jsonRules as unknown as Record<string, Combinator<unknown>>)
   console.log(`  json: ${p.code.length} words, ${p.k.length} consts, ${p.fns.length} reducers, ${p.cc.length} classes, ${p.disp.length} dispatch tables, ${Object.keys(p.rules).length} rules`)
 }
 
-main()
+void main()
