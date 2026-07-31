@@ -128,6 +128,16 @@
  *   4. `wastedBytes` is input bytes re-scanned, not CPU. An arm that fails after one
  *      byte but allocated on the way is cheap by this metric and not by the clock.
  *      This ranks ORDERING, and is deliberately not a profiler.
+ *
+ *      SET EXPECTATIONS ACCORDINGLY, because this has been measured. A jess lane acted
+ *      on a finding from this report and cut rescanned bytes at one route from 27,678
+ *      to 8,367 — a 69.8% reduction, exactly as this instrument predicts — for ZERO
+ *      measurable wall-clock change. A large byte win that produces no time win is the
+ *      expected outcome, not a failure of the fix: re-scanning is cheap per byte, and
+ *      what makes a grammar slow is usually allocation and node construction, which
+ *      this metric cannot see. Use it to find and rank ORDERING defects and to prove a
+ *      restructure did what it claimed. Do not use it to predict a speedup, and do not
+ *      let a flat benchmark be read as evidence the finding was wrong.
  *   5. Reach is measured by the furthest position at which a TERMINAL was attempted
  *      (`literal`/`regex`/`keywords`/`scanTo`). A combinator that consumes without
  *      going through one of those would under-report; none exists today.
