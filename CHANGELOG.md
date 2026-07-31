@@ -5,6 +5,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.45.0 — 2026-07-30
 
+- **Hoist the raw-children coercion out of every node site.** Each `node()` emitted a
+  ~300-byte inline expression deciding whether the produced value was already a tagged
+  CST thing or needed wrapping in a synthesized leaf. It is now one shared `_rawEntry`
+  helper in the artifact prelude. Measured on the size gate: **-1.9%** on
+  `example/css`, **-5.5%** on `probe/node-scale-32`, **-6.5%** on `probe/trivia-off`;
+  `probe/compose-leaf` moves **+0.1%** because at that scale the helper declaration
+  costs more than the four sites it replaces. Allocation behaviour is preserved
+  exactly — the `{ start, end }` span literal is still built only on the wrapping
+  branch (the helper takes offsets, not a span, unless line tracking already holds one
+  in a local), so the hoist cannot allocate a span the inline form did not. The code
+  only runs inside `if (_sr)`, so a grammar with raw capture off pays nothing.
+- **Delete the dead `_dcst` binding.** Its only gate was the profiling capture pass,
+  which is not compiled in, so it constant-folded to `undefined` and never reached an
+  artifact — but reserving its variable name still advanced the codegen counter and
+  renumbered every subsequent `_NN` in the file, which made two otherwise-identical
+  lowerings diff. Removing it is worth **-0.3%** on `probe/hostmode-ast` and under
+  0.1% elsewhere; the value is that `'ast'` and `'cst'` lowerings of the same grammar
+  no longer disagree about variable numbering.
+
 - **`routed(fallback)` — one production instead of a `Routed*` twin.** `routed()` took
   no argument, so it had nothing to do outside a `dispatch()` branch and failed there.
   A grammar needing the same shape in both places had to spell it twice, as an original

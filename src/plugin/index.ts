@@ -984,7 +984,7 @@ function transformMacroImpl(
       // mode, so a future missing field is a MISSING FIELD rather than a silent 'ast'.
       + `hostMode: ${JSON.stringify(p.hostMode ?? 'ast')}, `
       + `hostBranchElided: ${p.hostBranchElided === true}, `
-      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
+      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, needsRawEntry: ${p.needsRawEntry}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
    * list for a `compose()` result. */

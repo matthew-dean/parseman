@@ -224,6 +224,26 @@ function andGate(a: string, b: string): string {
 export const HOST_READS_DECL =
   'const _hostReads = (b, n) => { if (b === undefined) return false; let s; try { s = Function.prototype.toString.call(b) } catch (e) { return true } if (/\\barguments\\b/.test(s)) return true; const m = /^[^(]*\\(([\\s\\S]*?)\\)/.exec(s); if (m && /\\.\\.\\.|=/.test(m[1])) return true; return b.length > n }'
 
+/**
+ * Raw-children coercion, hoisted out of every node site.
+ *
+ * The `rawChildren` entry for a produced value is either the value itself (when it
+ * is already a tagged CST thing) or a synthesized leaf. Inlined, that test plus the
+ * leaf literal is ~300 bytes emitted PER `node()` site — measured at 2.6% of
+ * `example/css`, 7.1% of `probe/node-scale-32`, 11.2% of `probe/trivia-off`.
+ *
+ * Allocation behaviour is preserved exactly, which is why `span` is the last
+ * parameter and may be absent:
+ *  - line-tracked grammars already hold their span in a local, so they pass it and
+ *    nothing extra is allocated;
+ *  - untracked grammars pass nothing and the `{ start, end }` literal is built
+ *    INSIDE, on the fallback branch only — exactly where the inline form built it.
+ * Passing the literal as an argument instead would have allocated a span on the
+ * fast path, which is the one thing this hoist must not do.
+ */
+export const RAW_ENTRY_DECL =
+  'const _rawEntry = (v, input, s, e, span) => (typeof v === \'object\' && v !== null && (v._tag === \'node\' || v._tag === \'leaf\' || v._tag === \'parseError\')) ? v : { _tag: \'leaf\', value: typeof v === \'string\' ? v : (typeof v === \'object\' && v !== null ? input.slice(s, e) : \'\'), span: span ?? { start: s, end: e } }'
+
 export const LINE_TRACK_DECL =
   'const _trackLines = (_ctx, input, start, end) => { const from = _ctx._lineScannedTo ?? 0; if (end <= from) return; for (let i = from; i < end; i++) if (input.charCodeAt(i) === 10) _ctx._lineStarts.push(i + 1); _ctx._lineScannedTo = end }'
 
@@ -328,6 +348,7 @@ type Ctx = {
   needsEmptyTl?: boolean | undefined
   /** Whether any structural node() arity-gates host capture and needs the `_hostReads` helper. */
   needsHostReads?: boolean | undefined
+  needsRawEntry?: boolean | undefined
   /** Whether any emitted terminal needs the dynamic `_trackLines` helper. */
   needsLineTrack?: boolean | undefined
   /** Whether generated code materializes line/column fields into span objects. */
@@ -3534,9 +3555,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // profiling capture pass, which is already a hoisted LOCAL (`_cap`) rather than a
   // property chain on `_ctx.build`. Either way the per-node `_parsemanCstOutput` read
   // that used to sit on every direct node is gone.
-  const cstMode = ctx.hostMode === 'cst'
-  const directCstV = !structural && !cstMode && (!capturesChildren || !capturesRaw) ? v(ctx, '_dcst') : null
-  const directCstGate = directCstV === null ? 'false' : profileCapture
+  // The `_dcst` binding that used to live here is GONE, not folded. Its only gate
+  // was `profileCapture`, which is the literal `'false'` above, so it could never
+  // reach the artifact — but reserving its name still advanced `ctx.vars`, which
+  // renumbered every subsequent `_NN` in the file. That renumbering was the bulk of
+  // the measured ast-vs-cst byte delta and made two otherwise-identical lowerings
+  // diff. Nothing downstream reads it; `dcstAlloc` below is unconditionally
+  // `'undefined'` because that is what it always constant-folded to.
   // A structural node can make its CST-trivia contract grammar-owned. That is
   // stronger than a host preference: `node(..., undefined, { captureTrivia:
   // true })` must keep its log even when the injected host explicitly opts out.
@@ -3556,19 +3581,15 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const chAlloc = (def.unwrap || def.collapse)
     ? tern(profileRecognizer, 'undefined', '[]')
     : tern(profileRecognizer, 'undefined', `${tern(orGate(profileCapture, chNeededExpr), '[]', 'undefined')}`)
-  // `directCstV` is dead once the profiling capture pass is not compiled in: its
-  // ONLY gate was `profileCapture`. Fold the whole binding away rather than emit
-  // `const _dcst = false` plus a `_dcst ? [] : undefined` on every node.
-  const dcstDecl = directCstV && directCstGate !== 'false' ? `${i}const ${directCstV} = ${directCstGate}\n` : ''
-  const dcstAlloc = directCstV === null || directCstGate === 'false'
-    ? 'undefined'
-    : `${directCstV} ? [] : undefined`
+  // An elided collector allocates nothing. (Was a `_dcst ? [] : undefined` whose
+  // gate constant-folded to `false`; see the note at the removed binding.)
+  const dcstAlloc = 'undefined'
   const allocStmt = structural
     ? `${i}const ${capTLv} = ${andGate(notGate(profileRecognizer), orGate(profileCapture, structuralCapturesTrivia ? 'true' : hostTriviaGate))}, ${capSTv} = ${andGate(notGate(orGate(profileRecognizer, profileCapture)), '(_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))')}${capFv ? `, ${capFv} = ${andGate(notGate(profileRecognizer), orGate(profileCapture, '(_ctx.build !== undefined && _hostReads(_ctx.build, 2))'))}` : ''}\n`
       + `${i}const ${chV} = ${chAlloc}, ${rawV} = ${tern(profileRecognizer, 'undefined', '[]')}, ${tlV} = ${tern(profileRecognizer, 'undefined', innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`)}`
     : capturesTrivia
-      ? `${dcstDecl}${i}const ${capTLv} = ${notGate(profileRecognizer)}, ${chV} = ${tern(profileRecognizer, 'undefined', capturesChildren ? '[]' : dcstAlloc)}, ${rawV} = ${tern(profileRecognizer, 'undefined', capturesRaw ? '[]' : dcstAlloc)}, ${tlV} = ${tern(profileRecognizer, 'undefined', '[]')}`
-      : `${dcstDecl}${i}const ${chV} = ${tern(profileRecognizer, 'undefined', capturesChildren ? '[]' : dcstAlloc)}, ${rawV} = ${tern(profileRecognizer, 'undefined', capturesRaw ? '[]' : dcstAlloc)}`
+      ? `${i}const ${capTLv} = ${notGate(profileRecognizer)}, ${chV} = ${tern(profileRecognizer, 'undefined', capturesChildren ? '[]' : dcstAlloc)}, ${rawV} = ${tern(profileRecognizer, 'undefined', capturesRaw ? '[]' : dcstAlloc)}, ${tlV} = ${tern(profileRecognizer, 'undefined', '[]')}`
+      : `${i}const ${chV} = ${tern(profileRecognizer, 'undefined', capturesChildren ? '[]' : dcstAlloc)}, ${rawV} = ${tern(profileRecognizer, 'undefined', capturesRaw ? '[]' : dcstAlloc)}`
   // The collector stays installed when a nested grammar can opt in; generated
   // trivia scanners gate their push on `captureTrivia`, so this remains inert
   // until that nested scope activates it.
@@ -3742,7 +3763,10 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // two pushes are emitted unwrapped instead of inside a dead `if (true) { … }`.
   const pushIndent = recGate === 'true' ? i : `${i}  `
   const pushCh = `${pushIndent}if (${sc}) ${sc}.push(${ndV})`
-  const pushRaw = `${pushIndent}if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : (typeof ${ndV} === 'object' && ${ndV} !== null ? input.slice(${pos}, ${endVar}) : ''), span: ${nodeSpanV} })`
+  // See RAW_ENTRY_DECL: the span argument is passed ONLY when it is already a local
+  // (line tracking), so the untracked fast path still allocates no span.
+  ctx.needsRawEntry = true
+  const pushRaw = `${pushIndent}if (${sr}) ${sr}.push(_rawEntry(${ndV}, input, ${pos}, ${endVar}${ctx.lineTracking ? `, ${nodeSpanV}` : ''}))`
   stmts.push(`${i}const ${ndV} = ${tern(ndGate, 'undefined', `(${finalExpr})`)}`)
   if (recGate === 'true') stmts.push(pushCh, pushRaw)
   else stmts.push(`${i}if (${recGate}) {`, pushCh, pushRaw, `${i}}`)
@@ -4950,12 +4974,14 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
   const emptyTlDecls = ctx.needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []
   const hostReadsDecls = ctx.needsHostReads ? [HOST_READS_DECL] : []
+  const rawEntryDecls = ctx.needsRawEntry ? [RAW_ENTRY_DECL] : []
   const lineTrackDecls = ctx.needsLineTrack ? [LINE_TRACK_DECL] : []
   const lineSpanDecls = ctx.needsLineSpan ? [LINE_SPAN_DECL] : []
 
   const source = [
     ...emptyTlDecls,
     ...hostReadsDecls,
+    ...rawEntryDecls,
     ...lineTrackDecls,
     ...lineSpanDecls,
     ...ctx.regexDecls,
@@ -4971,6 +4997,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const fn = new Function('input', '_pos', '_rp', '_mf', '_build', '_ctx', [
     ...emptyTlDecls,
     ...hostReadsDecls,
+    ...rawEntryDecls,
     ...lineTrackDecls,
     ...lineSpanDecls,
     ...ctx.regexDecls,
@@ -5280,6 +5307,7 @@ export function compileRuleMap(
   const hoistedDecls = [
     ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : '',
     ctx.needsHostReads ? `  ${HOST_READS_DECL}` : '',
+    ctx.needsRawEntry ? `  ${RAW_ENTRY_DECL}` : '',
     ctx.needsLineTrack ? `  ${LINE_TRACK_DECL}` : '',
     ctx.needsLineSpan ? `  ${LINE_SPAN_DECL}` : '',
     ...ctx.regexDecls.map(d => `  ${d}`),
@@ -5417,6 +5445,7 @@ export type LinkablePieces = {
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
+  needsRawEntry: boolean
   /** Compile-time host mode this piece was lowered for ('ast' when absent). */
   hostMode?: HostMode
   /** Set when a direct builder's positioned-CST branch was omitted. */
@@ -5704,6 +5733,7 @@ export function compileLinkable(
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
+    needsRawEntry: !!ctx.needsRawEntry,
     hostMode: ctx.hostMode ?? 'ast',
     hostBranchElided: !!ctx.hostBranchElided,
     hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
@@ -5818,15 +5848,17 @@ function buildInlineExpression(
 
   const emptyTlDecl = ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : ''
   const hostReadsDecl = ctx.needsHostReads ? `  ${HOST_READS_DECL}` : ''
+  const rawEntryDecl = ctx.needsRawEntry ? `  ${RAW_ENTRY_DECL}` : ''
   const lineTrackDecl = ctx.needsLineTrack ? `  ${LINE_TRACK_DECL}` : ''
   const lineSpanDecl = ctx.needsLineSpan ? `  ${LINE_SPAN_DECL}` : ''
-  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl || !!lineTrackDecl || !!lineSpanDecl
+  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl || !!rawEntryDecl || !!lineTrackDecl || !!lineSpanDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     emptyTlDecl,
     hostReadsDecl,
+    rawEntryDecl,
     lineTrackDecl,
     lineSpanDecl,
     ...ctx.regexDecls.map(d => `  ${d}`),

@@ -36,6 +36,7 @@ describe('compose() namespace allocation', () => {
       nodeMeta: new Map([['Fake', { nodes: [] }]]),
       needsEmptyTl: false,
       needsHostReads: false,
+      needsRawEntry: false,
       mfFns: [],
       buildFns: [],
     }
