@@ -101,6 +101,27 @@ they are the workaround, not the fix, and they can come out once jess moves to t
 release. `_balancedAmbient` and the interior self back-edge stay on the inner
 combinator, so the ambient-`scanSkip` rebuild and nested recursion are unaffected.
 
+#### A latent defect this EXPOSED rather than created
+
+Downstream consumers that walk `children` to compute a **trivia insert index** were
+already wrong, and this release is what makes it visible.
+
+`pushCstTriviaEntry` computes `const insertIdx = cstRawLen(ctx)`
+(`src/cst/capture-buffer.ts`). **Trivia insert indices have always addressed
+`rawChildren`, never `children`.** Two Less reducers in jess walked `children` and
+used that index as an insert index into it. That only ever worked by coincidence: a
+plain `sepBy` made the two arrays the same length, so the wrong array had the right
+length and the bug was invisible.
+
+Once a list stops contributing separators the two lengths diverge by exactly the
+separator count, and the index silently drops comments and line breaks that sat
+around separators from the emitted value layout. No error, no throw — the same
+silent-wrongness this release exists to remove.
+
+**The list change did not introduce this. It removed the coincidence that was hiding
+it.** If you compute an insert index from a trivia entry, index it against
+`rawChildren`.
+
 #### Notes
 
 - Incremental structural list-reuse now derives a list's separator from the
