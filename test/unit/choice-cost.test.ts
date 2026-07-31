@@ -25,6 +25,7 @@ import {
   analyzeChoiceInventory, profileWastedWork, choiceSiteKey, modelledFirstCharGate,
 } from '../../src/analysis/choice-cost.ts'
 import { checkWastedWork, buildWastedWorkBaseline } from '../../src/analysis/choice-cost-gate.ts'
+import type { WastedWorkBaseline } from '../../src/analysis/choice-cost-gate.ts'
 import type { Combinator } from '../../src/types.ts'
 
 const entries = (g: Record<string, Combinator<unknown>>): [string, Combinator<unknown>][] => Object.entries(g)
@@ -365,6 +366,62 @@ describe('gate policy — absolute baseline, fails closed, no self-rebaseline', 
     expect(checkWastedWork(r, { schema: 'parseman.wasted-work-baseline/1', totals: {}, sites: {} }).ok).toBe(false)
   })
 
+  // A baseline is parsed JSON off disk, so its VALUES are `unknown` too, not just its
+  // top level. A non-numeric one does not announce itself at the comparison: `pct`
+  // returns NaN, `NaN > tolerance` and `NaN < -tolerance` are BOTH false, and the entry
+  // yields no breach — a pass over a number that was never compared. These pin that.
+  const asJson = (b: WastedWorkBaseline): Record<string, unknown> =>
+    JSON.parse(JSON.stringify(b)) as Record<string, unknown>
+
+  it('fails closed on a `null` totals/sites rather than throwing on Object.keys', () => {
+    const r = { unit: measure(4) }
+    for (const bad of [
+      { schema: 'parseman.wasted-work-baseline/1', totals: null, sites: {} },
+      { schema: 'parseman.wasted-work-baseline/1', totals: {}, sites: null },
+      { schema: 'parseman.wasted-work-baseline/1', totals: [], sites: [] },
+    ]) {
+      const v = checkWastedWork(r, bad)
+      expect(v.ok).toBe(false)
+      expect(v.breaches[0]!.kind).toBe('invalid-baseline')
+    }
+  })
+
+  it('fails closed on a NON-NUMERIC baseline total — NaN must never read as "no breach"', () => {
+    const r = { unit: measure(10) }
+    for (const key of ['corpusBytes', 'totalWastedBytes']) {
+      for (const value of ['12', null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const o = asJson(buildWastedWorkBaseline(r, REV));
+        (o.totals as Record<string, Record<string, unknown>>).unit![key] = value
+        const v = checkWastedWork(r, o)
+        expect(v.ok).toBe(false)
+        expect(v.breaches[0]!.kind).toBe('invalid-baseline')
+      }
+    }
+  })
+
+  it('fails closed on a NON-NUMERIC baseline SITE value', () => {
+    const r = { unit: measure(10) }
+    const built = buildWastedWorkBaseline(r, REV)
+    const siteKey = Object.keys(built.sites)[0]
+    expect(siteKey).toBeDefined()
+    for (const value of ['12', null, Number.NaN]) {
+      const o = asJson(built);
+      (o.sites as Record<string, unknown>)[siteKey!] = value
+      const v = checkWastedWork(r, o)
+      expect(v.ok).toBe(false)
+      expect(v.breaches.some(x => x.kind === 'invalid-baseline')).toBe(true)
+    }
+  })
+
+  it('a scalar totals entry is a breach, not an uncaught TypeError', () => {
+    const r = { unit: measure(10) }
+    const o = asJson(buildWastedWorkBaseline(r, REV));
+    (o.totals as Record<string, unknown>).unit = 7
+    const v = checkWastedWork(r, o)
+    expect(v.ok).toBe(false)
+    expect(v.breaches[0]!.kind).toBe('invalid-baseline')
+  })
+
   it('fails closed on zero corpora measured', () => {
     const base = buildWastedWorkBaseline({ unit: measure(4) }, REV)
     const v = checkWastedWork({}, base)
@@ -476,8 +533,8 @@ describe('cross-PROCESS determinism', () => {
    */
   it('two separate node processes produce byte-identical reports', () => {
     const script = `
-      import { choice, sequence, literal, regex, many, rules } from '${JSON.stringify(new URL('../../src/index.ts', import.meta.url).pathname).slice(1, -1)}'
-      import { analyzeChoiceInventory, profileWastedWork } from '${JSON.stringify(new URL('../../src/analysis/choice-cost.ts', import.meta.url).pathname).slice(1, -1)}'
+      import { choice, sequence, literal, regex, many, rules } from ${JSON.stringify(new URL('../../src/index.ts', import.meta.url).href)}
+      import { analyzeChoiceInventory, profileWastedWork } from ${JSON.stringify(new URL('../../src/analysis/choice-cost.ts', import.meta.url).href)}
       const g = rules(() => ({
         Doc: many(choice(
           sequence(literal('#'), regex(/[a-f0-9]{6}/), literal(';')),

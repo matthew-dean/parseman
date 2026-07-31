@@ -849,103 +849,116 @@ export function profileWastedWork(opts: ProfileWastedWorkOptions): WastedWorkRep
   const armRecords: ArmRecord[] = []
   const siteTotals = new Map<string, WastedWorkSite>()
   const restore: (() => void)[] = []
+  // LIFO: terminal `parse` patches are pushed after the slot substitutions, and a
+  // terminal that also sits in a substituted slot must be unpatched before the slot is
+  // restored, or the original object would be handed back still wearing a patch.
+  const undoAll = (): void => { for (let i = restore.length - 1; i >= 0; i--) restore[i]!() }
 
   let instrumentedSites = 0
   let uninstrumentableSites = 0
 
-  for (const w of walked) {
-    if (w.d.tag !== 'choice') continue
-    const siteKey = choiceSiteKey(w.site)
-    const strategy = w.d.strategy.tag as ChoiceStrategyTag
-    const canInstrument = INSTRUMENTABLE.has(strategy) && !w.d.disjoint
-    const rec: WastedWorkSite = {
-      siteKey, site: w.site, strategy, arity: w.d.parsers.length,
-      instrumented: canInstrument, attempts: 0, failures: 0, wastedBytes: 0,
-      gatedAttempts: 0, gatedFailures: 0, gatedWastedBytes: 0,
-    }
-    // Two distinct choice INSTANCES can walk to the same site key only if the same
-    // slot were visited twice, which `seen` prevents. Keep the first and count the
-    // second as uninstrumentable rather than silently merging their numbers.
-    if (siteTotals.has(siteKey)) { uninstrumentableSites++; continue }
-    siteTotals.set(siteKey, rec)
-    if (!canInstrument) { uninstrumentableSites++; continue }
-    instrumentedSites++
-
-    const slots = w.d.parsers
-    for (let i = 0; i < slots.length; i++) {
-      const original = slots[i]!
-      // Computed ONCE per arm, outside the parse loop: the guard is a property of the
-      // grammar, not of a position, so recomputing it per attempt would be the profiler
-      // paying the cost it is measuring.
-      const gate = compiledFirstCharGate(original)
-      const armRec: ArmRecord = {
-        site: w.site, siteKey, arm: i, label: armLabel(original), gate,
-        attempts: 0, failures: 0, wastedBytes: 0,
+  // THE INSTALL IS COVERED TOO, not just the run. Both substitutions mutate a shared
+  // combinator tree, so anything that throws part-way through — `compiledFirstCharGate`,
+  // `armLabel`, the terminal patch loop — would otherwise leave orphaned instrumentation
+  // installed for the rest of the process and every later parse would run through it.
+  try {
+    for (const w of walked) {
+      if (w.d.tag !== 'choice') continue
+      const siteKey = choiceSiteKey(w.site)
+      const strategy = w.d.strategy.tag as ChoiceStrategyTag
+      const canInstrument = INSTRUMENTABLE.has(strategy) && !w.d.disjoint
+      const rec: WastedWorkSite = {
+        siteKey, site: w.site, strategy, arity: w.d.parsers.length,
+        instrumented: canInstrument, attempts: 0, failures: 0, wastedBytes: 0,
         gatedAttempts: 0, gatedFailures: 0, gatedWastedBytes: 0,
       }
-      armRecords.push(armRec)
-      const wrapper: Combinator<unknown> = {
-        _tag: original._tag,
-        _meta: original._meta,
-        _def: original._def,
-        parse(input: string, pos: number, ctx: ParseContext): ParseResult<unknown> {
-          // Would COMPILED output have entered this arm at all? The arm is still run
-          // either way — skipping it would change what the grammar parses, and this is
-          // a measurement, not a mode. Only the accounting differs.
-          const code = pos < input.length ? (input.codePointAt(pos) ?? -1) : -1
-          const entered = gate === null || (code >= 0 && inSet(code, gate))
+      // Two distinct choice INSTANCES can walk to the same site key only if the same
+      // slot were visited twice, which `seen` prevents. Keep the first and count the
+      // second as uninstrumentable rather than silently merging their numbers.
+      if (siteTotals.has(siteKey)) { uninstrumentableSites++; continue }
+      siteTotals.set(siteKey, rec)
+      if (!canInstrument) { uninstrumentableSites++; continue }
+      instrumentedSites++
 
-          const saved = highWater
-          highWater = pos
-          const r = original.parse(input, pos, ctx)
-          const reach = highWater
-          highWater = saved > reach ? saved : reach
+      const slots = w.d.parsers
+      for (let i = 0; i < slots.length; i++) {
+        const original = slots[i]!
+        // Computed ONCE per arm, outside the parse loop: the guard is a property of the
+        // grammar, not of a position, so recomputing it per attempt would be the profiler
+        // paying the cost it is measuring.
+        const gate = compiledFirstCharGate(original)
+        const armRec: ArmRecord = {
+          site: w.site, siteKey, arm: i, label: armLabel(original), gate,
+          attempts: 0, failures: 0, wastedBytes: 0,
+          gatedAttempts: 0, gatedFailures: 0, gatedWastedBytes: 0,
+        }
+        armRecords.push(armRec)
+        const wrapper: Combinator<unknown> = {
+          _tag: original._tag,
+          _meta: original._meta,
+          _def: original._def,
+          parse(input: string, pos: number, ctx: ParseContext): ParseResult<unknown> {
+            // Would COMPILED output have entered this arm at all? The arm is still run
+            // either way — skipping it would change what the grammar parses, and this is
+            // a measurement, not a mode. Only the accounting differs.
+            const code = pos < input.length ? (input.codePointAt(pos) ?? -1) : -1
+            const entered = gate === null || (code >= 0 && inSet(code, gate))
 
-          armRec.attempts++
-          rec.attempts++
-          if (entered) { armRec.gatedAttempts++; rec.gatedAttempts++ }
-          if (!r.ok) {
-            armRec.failures++
-            rec.failures++
-            if (entered) { armRec.gatedFailures++; rec.gatedFailures++ }
-            const wasted = reach - pos
-            if (wasted > 0) {
-              armRec.wastedBytes += wasted
-              rec.wastedBytes += wasted
-              if (entered) { armRec.gatedWastedBytes += wasted; rec.gatedWastedBytes += wasted }
+            const saved = highWater
+            highWater = pos
+            const r = original.parse(input, pos, ctx)
+            const reach = highWater
+            highWater = saved > reach ? saved : reach
+
+            armRec.attempts++
+            rec.attempts++
+            if (entered) { armRec.gatedAttempts++; rec.gatedAttempts++ }
+            if (!r.ok) {
+              armRec.failures++
+              rec.failures++
+              if (entered) { armRec.gatedFailures++; rec.gatedFailures++ }
+              const wasted = reach - pos
+              if (wasted > 0) {
+                armRec.wastedBytes += wasted
+                rec.wastedBytes += wasted
+                if (entered) { armRec.gatedWastedBytes += wasted; rec.gatedWastedBytes += wasted }
+              }
             }
-          }
-          return r
-        },
-      } as Combinator<unknown>
-      // `_ruleName` is read by site naming and by `deriveExpected`; carry it across so
-      // the substituted slot is indistinguishable from the original to everything but
-      // the counter.
-      const rn = ruleNameOf(original)
-      if (rn !== undefined) (wrapper as unknown as { _ruleName?: string })._ruleName = rn
-      slots[i] = wrapper
-      restore.push(() => { slots[i] = original })
+            return r
+          },
+        } as Combinator<unknown>
+        // `_ruleName` is read by site naming and by `deriveExpected`; carry it across so
+        // the substituted slot is indistinguishable from the original to everything but
+        // the counter.
+        const rn = ruleNameOf(original)
+        if (rn !== undefined) (wrapper as unknown as { _ruleName?: string })._ruleName = rn
+        slots[i] = wrapper
+        restore.push(() => { slots[i] = original })
+      }
     }
-  }
 
-  if (instrumentedSites === 0) {
-    for (const undo of restore) undo()
-    throw new TypeError(
-      'choice-cost: the grammar contains NO instrumentable choice site (no `firstMatch` or '
-      + '`sharedPrefix` choice). A wasted-work profile over it would report zero for a reason '
-      + 'that has nothing to do with the grammar being efficient, so it is refused.',
-    )
-  }
+    if (instrumentedSites === 0) {
+      // No explicit undo here — the `catch` below owns it, in LIFO order.
+      throw new TypeError(
+        'choice-cost: the grammar contains NO instrumentable choice site (no `firstMatch` or '
+        + '`sharedPrefix` choice). A wasted-work profile over it would report zero for a reason '
+        + 'that has nothing to do with the grammar being efficient, so it is refused.',
+      )
+    }
 
-  for (const w of walked) {
-    if (!TERMINAL_TAGS.has(w.d.tag)) continue
-    const p = w.p as { parse: Combinator<unknown>['parse'] }
-    const original = p.parse
-    p.parse = ((input: string, pos: number, ctx: ParseContext) => {
-      if (pos > highWater) highWater = pos
-      return original.call(w.p as never, input, pos, ctx)
-    }) as Combinator<unknown>['parse']
-    restore.push(() => { p.parse = original })
+    for (const w of walked) {
+      if (!TERMINAL_TAGS.has(w.d.tag)) continue
+      const p = w.p as { parse: Combinator<unknown>['parse'] }
+      const original = p.parse
+      p.parse = ((input: string, pos: number, ctx: ParseContext) => {
+        if (pos > highWater) highWater = pos
+        return original.call(w.p as never, input, pos, ctx)
+      }) as Combinator<unknown>['parse']
+      restore.push(() => { p.parse = original })
+    }
+  } catch (e) {
+    undoAll()
+    throw e
   }
 
   // ── run ────────────────────────────────────────────────────────────────────
@@ -962,10 +975,7 @@ export function profileWastedWork(opts: ProfileWastedWorkOptions): WastedWorkRep
       else parsedFailed++
     }
   } finally {
-    // LIFO: terminal `parse` patches were pushed after the slot substitutions, and a
-    // terminal that also sits in a substituted slot must be unpatched before the slot
-    // is restored, or the original object would be handed back still wearing a patch.
-    for (let i = restore.length - 1; i >= 0; i--) restore[i]!()
+    undoAll()
   }
 
   const arms: WastedWorkArm[] = armRecords

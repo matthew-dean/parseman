@@ -244,14 +244,19 @@ export function renderWastedWork(r: WastedWorkReport, opts: RenderOptions = {}):
         : `${groupDigits(a.gatedAttempts)} (${groupDigits(a.attempts)} interp)`
       // A 100%-failure arm is the actionable shape, but only if the SHIPPED parser
       // enters it — so the verdict reads the gated columns.
-      const verdict = a.gatedAttempts === 0
-        ? c('dim', 'never entered when compiled')
+      // PAD FIRST, PAINT SECOND. `pad` measures `s.length`, so padding a string that
+      // already carries ANSI escapes spends the column width on invisible bytes and the
+      // arm table loses its alignment in colour mode. Every other cell here does it in
+      // this order; this one is not allowed to be the exception.
+      const verdict: { text: string; color: 'dim' | 'red' | null } = a.gatedAttempts === 0
+        ? { text: 'never entered when compiled', color: 'dim' }
         : a.gatedFailures === a.gatedAttempts
-          ? c('red', `failed ALL ${entered}`)
+          ? { text: `failed ALL ${entered}`, color: 'red' }
           : a.gatedFailures === 0
-            ? c('dim', `matched ${entered}`)
-            : `failed ${groupDigits(a.gatedFailures)} / ${entered}`
-      out.push(`    ${padStart(String(a.arm), 2)}  ${pad(a.label.slice(0, 30), 30)} ${pad(verdict, 34)} ${a.gatedWastedBytes > 0 ? padStart(bytes(a.gatedWastedBytes), 10) : ''}`)
+            ? { text: `matched ${entered}`, color: 'dim' }
+            : { text: `failed ${groupDigits(a.gatedFailures)} / ${entered}`, color: null }
+      const cell = verdict.color === null ? pad(verdict.text, 34) : c(verdict.color, pad(verdict.text, 34))
+      out.push(`    ${padStart(String(a.arm), 2)}  ${pad(a.label.slice(0, 30), 30)} ${cell} ${a.gatedWastedBytes > 0 ? padStart(bytes(a.gatedWastedBytes), 10) : ''}`)
     }
     out.push('')
   }
