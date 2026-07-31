@@ -221,7 +221,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   corrected css artifact baseline (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B,
   which was the whole css `lib/` across four build variants), and a register of 24
   untried experiments — including an auto-alias cluster for declaring escape, case and
-  prefix equivalences once instead of hand-spelling them per site. Records the dispatch
+  prefix equivalences once instead of hand-spelling them per site. Every entry and
+  measured result now carries a **contribution tag** (FOUNDATION / ENABLED-BY /
+  ORTHOGONAL / LEGACY) so it is visible which work survives the token-cursor rewrite. Records the dispatch
   sweep: the whole spread across every configuration is **2.4%**, so dispatch keying is
   not where parse time goes. **Withdraws
   the 1.83× speedup as noise** — three byte-identical artifacts measured 5.961/6.101/11.952 ms

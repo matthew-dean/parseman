@@ -1,7 +1,7 @@
 # Derived tokenization
 
 **Status:** **partially landed.** Token-keyed `dispatch` is **implemented and shipped
-as the default** in `codegen.ts` (§9.1, commits `6feb883` / `879f486`, selectable via
+as the default** in `codegen.ts` (§9.1, commits `caa3d14` / `e8612eb`, selectable via
 `PARSEMAN_DISPATCH`). The scanner itself is **not** implemented — it exists only as a
 standalone prototype (§10). Sections are marked **settled** (owner decision, build to
 it), **measured**, or **hypothesis** (plausible, unmeasured).
@@ -18,10 +18,18 @@ it), **measured**, or **hypothesis** (plausible, unmeasured).
 >    12.540 ms, and this document's own "32% of parse time" scan-cost share is
 >    withdrawn with it (§10.3).
 >
+> 3. **The largest win of the day came from somewhere else entirely.** A
+>    commitment/nullability question — **the `else` is unreachable for a non-nullable
+>    term** — took css from 3,336,650 to **3,014,384 B (−9.66%)** with **no token
+>    cursor involved** (§8.6). That is roughly **13× the entire dispatch thread**,
+>    which is now closed as **LEGACY** (§9.2).
+>
 > Two methodological invariants follow, and they bind the whole workstream:
 > **byte-level tree equality against a toggled baseline is the gate, not the test
 > suites** (§16.3 — a shipped bug that 288 tests missed), and **every parse-time
-> claim comes from interleaved rounds in one process** (§16.4).
+> claim comes from interleaved rounds in one process** (§16.4). The instrument's
+> noise floor is **~1%** — two byte-identical artifacts A/B'd at 5.144 vs 5.200 ms
+> (§16.5), so a 1% spread is harness, not result.
 
 > ### Baseline correction — this supersedes figures quoted throughout the session
 >
@@ -40,6 +48,36 @@ it), **measured**, or **hypothesis** (plausible, unmeasured).
 > Same build, other dialects: **less 3,937,767 B · scss 2,006,731 B · jess
 > 2,052,239 B**. Percentage figures in the first revision that used the inflated
 > denominator are superseded by §8 and are flagged there individually.
+
+## Contribution tags
+
+**Every measured result and every register entry carries one of four tags**, so it is
+visible at a glance how a piece of work relates to the token-cursor design. This exists
+because effort was going into work that improves the **current emitter** but **will not
+survive the rewrite**.
+
+| tag | meaning |
+| --- | --- |
+| **FOUNDATION** | The token design needs this **regardless**. Do it now; it is not speculative. |
+| **ENABLED-BY** | Only reachable **once the token design lands** — or may be **dissolved** by it. |
+| **ORTHOGONAL** | Real work, **unrelated to the architecture**. Correctness fixes, gate repairs. |
+| **LEGACY** | Improves the **current emitter**; **will not survive the rewrite**. Recorded, not worked. |
+
+**FOUNDATION** covers: commitment/nullability analysis; combinator-depth disjointness;
+the shared analysis module consumed by both codegen and interpreter; the derived
+scanner; adjacency as a scan-time bit (§4); selector context as a scanner mode (§5).
+
+Tags on the **measured** sections are the owner's. Tags on **register entries** are
+assigned from the definitions above and are the most likely thing in this document to
+be wrong — each carries a one-line rationale so a wrong one is visible and cheap to
+correct.
+
+> **A LEGACY tag is a PRIORITY statement, not a withdrawal.** The withdrawal rule
+> (§14) is unchanged: an entry may only be withdrawn if **proven impossible** or its
+> **premise proven false**. Tagging something LEGACY says *do not spend on it*; it does
+> not say the finding is wrong, and it does not remove the entry.
+
+---
 
 This document is also the **register of untried experiments** (§14), **measured dead
 ends** (§15), and **methodological notes** (§16) for artifact size and parse speed.
@@ -104,7 +142,7 @@ somewhere between 43% and 93%.
 
 ---
 
-## 2. Scanning is on demand, never a whole-document pass (settled)
+## 2. Scanning is on demand, never a whole-document pass (settled) [FOUNDATION]
 
 The classic objection to lexing CSS-family languages is **modes**: the same bytes
 mean different things in a selector, a value, an at-rule prelude, and an
@@ -148,7 +186,7 @@ unchanged.
 
 ---
 
-## 3. One token per position (settled)
+## 3. One token per position (settled) [FOUNDATION]
 
 > **A token at a position is scanned once. Every arm of that choice reads the same
 > value. Nothing rescans.**
@@ -168,7 +206,7 @@ the same win: an arm that is an integer compare needs no emitted scan code.
 
 ---
 
-## 4. Adjacency is a bit set at scan time (settled)
+## 4. Adjacency is a bit set at scan time (settled) [FOUNDATION]
 
 `noTrivia` asks one question: *was there nothing between the previous token and this
 one?* The scan loop already answers it and throws the answer away — it has a
@@ -194,7 +232,7 @@ common case; it does not remove the general one.
 
 ---
 
-## 5. Selector context is a scanner mode (settled)
+## 5. Selector context is a scanner mode (settled) [FOUNDATION]
 
 `.a .b` and `.a.b` are different selectors. In selector context, whitespace is
 **significant** and must be emitted as a token. Everywhere else it is skipped and
@@ -214,7 +252,7 @@ the calling rule, not a mode the scanner must infer.
 
 ---
 
-## 6. `dispatch` keys on a token; `routed()` produces one (settled)
+## 6. `dispatch` keys on a token; `routed()` produces one (settled) [LEGACY — thread closed, §9.2]
 
 A `dispatch` is already *compute a key, then select*. Today it computes the key by
 scanning characters and comparing strings. As a token id it is an **integer switch**.
@@ -296,7 +334,7 @@ invisible at a dispatch that runs rarely. At a hot dispatch the ratio inverts.
 
 ---
 
-## 7. The correctness argument (settled — and independent of size)
+## 7. The correctness argument (settled — and independent of size) [FOUNDATION]
 
 This is the part of the case that does **not** depend on any performance number.
 
@@ -510,7 +548,50 @@ And the constraint on it is unchanged: [`artifact-format.md` § "Override invari
 named rule is never inlined"](./artifact-format.md) makes single-use explicitly *not*
 a licence to inline. The collapse must be a **token-keyed shared body with the ten
 named functions preserved as entry points**, never an inlining.
-## 9. At-rule dispatch: the prototype, then the landed sweep (measured)
+### 8.6 LANDED — the unreachable `else`: the largest win measured to date [FOUNDATION]
+
+**Tag: FOUNDATION.** This needed **no token cursor at all**, and the token design needs
+it regardless. It is the clearest demonstration of why the tag scheme exists: it is
+worth **13×** the entire dispatch thread (§9.2) and was found by asking a
+*commitment/nullability* question, not a tokenization one.
+
+A sibling lane measured, on css `ast.js`:
+
+| | before | after | delta |
+| --- | ---: | ---: | ---: |
+| artifact | 3,336,650 B | **3,014,384 B** | **−9.66%** |
+| gzip | | | **−7.93%** |
+| expansion vs source | 29.16× | **26.34×** | |
+| boundary mark/restore | 375,524 B | **135,246 B** | **-64%** |
+| boundary clauses | 4,268 | **1,651** | |
+
+**Mechanism: the `else` is unreachable for a non-nullable term**, decided by
+`matchesEmpty` **at macro time**. If a term cannot match empty, the boundary's
+rollback arm cannot be taken, and the whole clause is deleted rather than emitted and
+never executed. It also found that **`_cstRawChildren` never needed a mark even for
+nullable terms**, because no trivia function pushes a raw child.
+
+#### The conversion split is the actionable part
+
+**165 of 558 boundaries converted. 393 fall back SOLELY because the term is reported
+nullable** — and `matchesEmpty` **deliberately errs toward nullable** when it cannot
+resolve.
+
+> So **a sharper nullability analysis converts more, by the same predicate as
+> commitment.** That is not a separate project: commitment analysis and nullability
+> analysis are the same FOUNDATION work, and 393 boundaries are sitting behind its
+> precision. This is the highest-value known lead in the document.
+
+#### Its own caveat, recorded by the lane that produced it
+
+`_mk*` prefixes are **minted by three emitters**, so §8.1.1's "46.6% is sequence
+boundary" attribution is an **upper bound**, not an exact split. The **artifact delta
+is instrument-independent** — it is a byte count of two built files — and **stands**
+regardless.
+
+---
+
+## 9. At-rule dispatch: the prototype, then the landed sweep (measured) [LEGACY]
 
 ### 9.0 The standalone prototype that the design was argued from
 
@@ -552,8 +633,8 @@ decision-point measurement predicts an end-to-end one.
 ### 9.1 LANDED: the full dispatch sweep in `codegen.ts` (measured)
 
 Token-keyed dispatch is **implemented and shipped as the default**, landed on
-`release/0.46.0` as **`6feb883`** (`feat(codegen): token-keyed dispatch via a data
-trie`) and **`879f486`** (`fix(dispatch): fold ASCII letters only, and pick the id
+`release/0.46.0` as **`caa3d14`** (`feat(codegen): token-keyed dispatch via a data
+trie`) and **`e8612eb`** (`fix(dispatch): fold ASCII letters only, and pick the id
 strategy by measurement`). Strategies are selectable via the **`PARSEMAN_DISPATCH`**
 environment variable.
 
@@ -650,7 +731,45 @@ is an upper bound on what converting it removes**, because the replacement is no
 
 ---
 
-## 10. Prototype: general scanner (measured) — and the decisive negative result
+### 9.2 VERDICT on the whole dispatch thread: LEGACY [LEGACY]
+
+**Tag: LEGACY.** Dispatch keying was **only ever ~1.2% of the artifact** (§8.1), and
+the measured spread across every configuration is **2.4% of parse time** (§9.1.1).
+Compare §8.6's **−9.66%** from a single commitment/nullability question: the
+FOUNDATION item is worth roughly **13×** this entire thread.
+
+**It is finished, not abandoned.** What landed:
+
+- The trie shipped (`caa3d14` / `e8612eb`).
+- **Experiment #20 cleared the less regression** (`2413e1f`, "take the trie only where
+  it measures smaller than the chain"): **−902 B**, putting less back at **exactly its
+  pre-trie size**. The per-site cost check worked as predicted in §14.2.
+- **Trie-to-id + dense `switch` was built, and it LOST**: **+10,867 raw / +160 gzip**.
+
+#### Why trie-to-id + dense switch lost — and the honest reading
+
+This was the configuration §6.1 predicted would dominate both prototype rows. It did
+not, and the cause is instructive:
+
+- **The +10,867 B is the artifact printer**, indenting case bodies **one level deeper,
+  one tab per line**, across the three largest bodies. **Net of indentation the case
+  labels are *smaller*.** This is the same formatter effect as §9.1.4, now confirmed
+  as the dominant term rather than a footnote.
+- **No renumbering or `table[]` was warranted**: ids are already **`1..n` with no
+  gaps**, so the "dense index" the design asked for **already existed**. There was
+  nothing to convert.
+
+> So §6.1's prediction is **neither confirmed nor refuted on its own terms** — the
+> index it wanted was already there, and what remained was a printing artifact. The
+> settled-design status of §6.1 stands; its *expected win* does not.
+
+**Left unpushed on `lane/trie-id-dispatch`:** the matcher-site hybrid and key-walking.
+**Printer indentation is an owner call**, worth **10,867 raw / 160 gzip** — small, but
+free if taken.
+
+---
+
+## 10. Prototype: general scanner (measured) — and the decisive negative result [FOUNDATION]
 
 **Standalone prototype. Not wired into `codegen.ts`.**
 
@@ -838,7 +957,8 @@ re-entry point.
 
 Derived tokenization is one entry in a larger search over artifact size and parse
 speed. The rest of that search is recorded here so it survives the session that
-produced it. **24 entries; none has been measured.** Status is one of:
+produced it. **28 entries.** Every entry carries a **contribution tag** (see the
+scheme near the top of this document) and a status. Status is one of:
 
 - `untried` — no measurement attempted;
 - `measured — <result>` — a number exists, cited;
@@ -848,6 +968,41 @@ produced it. **24 entries; none has been measured.** Status is one of:
 **No entry may be marked `rejected` without measurement attached.** An idea that
 merely looks wrong is `untried`.
 
+### 14.0 FOUNDATION queue — the token design needs these regardless
+
+These are not optional and not speculative. **§8.6 is the evidence**: it came from this
+family and returned **−9.66%** without any token cursor.
+
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 26 | **Sharpen the nullability analysis** | **FOUNDATION** | `untried` — **highest-value known lead** |
+
+*Why:* **393 of 558 boundaries fall back SOLELY because the term is reported nullable**,
+and `matchesEmpty` errs toward nullable when it cannot resolve (§8.6). Every boundary
+its precision recovers is deleted outright, by the mechanism already proven to work.
+*Rationale for the tag:* commitment and nullability are the same predicate, and the
+token cursor needs it to know where a choice is decided.
+*How to measure:* boundaries converted (165 → ?), artifact bytes, tree equality.
+
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 27 | **Combinator-depth disjointness** | **FOUNDATION** | `untried` |
+
+*Why:* deciding an arm needs to know at what depth alternatives become distinguishable
+— the same question first-set gating answers at depth 1 and a token answers at depth
+"one token". *Rationale:* it is the analysis that tells codegen how much lookahead a
+choice actually needs, which is a prerequisite for emitting a token-keyed choice at all.
+
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 28 | **A shared analysis module consumed by BOTH codegen and interpreter** | **FOUNDATION** | `untried` |
+
+*Why:* commitment, nullability and disjointness are currently answered inside codegen.
+The interpreter needs the same answers, and two implementations of one predicate is the
+drift pattern §7 and §16.3 both document — in the component that decides *what
+matches*. *Rationale:* the token design makes these answers load-bearing in two places
+at once.
+
 ### 14.1 Capture-bookkeeping family
 
 These all target the same measured mass: **save + rollback is 723,605 B = 21.7% of
@@ -855,9 +1010,11 @@ the css artifact, and rollback alone is 17.5% against save's 4.2%** (§8.1). The
 asymmetry matters: experiments that make *unwinding unnecessary* attack four times the
 mass of experiments that make *marking cheaper*.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 1 | **Commit-discipline inversion** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 1 | **Commit-discipline inversion** | **ENABLED-BY** | `untried` |
+
+*Tag — ENABLED-BY:* the token cursor supplies the rewind unit this needs, and deterministic choices may dissolve the mass outright.
 
 *Idea:* accumulate speculatively and commit only on success, instead of recording
 eagerly and unwinding on failure. **The measured 17.5%-vs-4.2% rollback/save split
@@ -868,18 +1025,22 @@ larger of the two halves — rather than compressing it. *How to measure:* proto
 bytes and the `rollback/dense` benchmark family against the current form.
 *Assessment:* **highest-ceiling untried item in this document.**
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 2 | **Arena / watermark capture** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 2 | **Arena / watermark capture** | **ENABLED-BY** | `untried` |
+
+*Tag — ENABLED-BY:* same mass as #1, at the allocator rather than the control flow.
 
 *Idea:* capture appends into a region; rollback resets a single watermark. *Why it
 might work:* same family as #1, one level down — at the allocator rather than the
 control flow. *How to measure:* as #1; additionally watch allocation-rate and GC in
 the parse benchmarks, since a region changes lifetime, not just bookkeeping.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 3 | **Mark stack with pointer rollback** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 3 | **Mark stack with pointer rollback** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* compresses the current boundary form — §8.6 deleted 64% of that form outright by a FOUNDATION route.
 
 *Idea:* replace the four guarded stores at each boundary with one index assignment
 into a mark stack. *Why it might work:* mechanical, low-risk, no semantic change.
@@ -887,29 +1048,57 @@ into a mark stack. *Why it might work:* mechanical, low-risk, no semantic change
 the same benchmark family; the current guarded form is itself a measured optimisation
 (§8.1) so the comparison must include the ungated-store regression case.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 4 | **Shared failure epilogue per rule** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 4 | **Shared failure epilogue per rule** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* extraction over emitted text the rewrite replaces.
 
 *Idea:* reach the restore sequence by jump rather than by copying it to each failure
 site. *Why it might work:* extraction-family — the restore text exists once per rule
 instead of once per boundary. *Ceiling:* floor-bounded; it compresses the current
 form rather than removing it, so #1 dominates it if #1 works.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 5 | **Rule-level restore** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 5 | **Rule-level restore** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* same — and §8.6 already took the reachable part of this mass.
 
 *Idea:* one unwind at the rule's failure exit, instead of a quartet at every internal
 boundary. *Why it might work:* most internal boundaries never independently fail —
 the rule fails as a unit. *Risk to check when measuring:* boundaries that *do* need
 independent rollback (repetition arms) must be identified, or the semantics change.
 
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 25 | **Deferred leaf materialisation** | **ENABLED-BY** | `untried` |
+
+*Tag — ENABLED-BY, and this placement is the point:* it does **not** stand alone.
+§8.1.1 identified `_cm*` choice-arm mass as the case where captured leaves must be
+withheld until a sequence succeeds. But **lookahead may make those choices
+deterministic**, in which case the arm mass **disappears rather than needing
+deferral** — the technique is dissolved by the design it was meant to complement.
+
+*Idea:* withhold a term's leaf pushes until the owning sequence succeeds, materialising
+from a token-index range at the owning `node()`. §8.1.1 measured the feasibility: of
+766 css leaf-capture sites, **89% are `input.slice(tokStart, tokEnd)` or a constant
+selected by the token id**, with span the token's own extent — reproducible from a
+token range, with a fallback for the ~11% that come from a rule call or a label.
+
+*Do not build this before the choice-determinism question is answered.* Building it
+first risks engineering a solution to a mass that the token design removes.
+
+*How to measure:* `_cm*` bytes before and after lookahead-driven determinism, **then**
+deferral on whatever remains.
+
 ### 14.2 Emission-form family
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 6 | **Superoperators / superinstructions** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 6 | **Superoperators / superinstructions** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* fuses sequences of the current emitted primitives.
 
 *Idea:* fuse frequently co-occurring combinator sequences into a single emitted
 primitive. *Why it might work:* **the one candidate in this list that could be both
@@ -918,9 +1107,11 @@ operations as well as their duplicated text. *How to measure:* mine the emitted
 artifacts for the top co-occurring sequences, fuse the top *n*, compare bytes and
 parse time.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 7 | **Table-driven emission (hot/cold split)** | `untried` — **strongest supporting evidence of any item here** |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 7 | **Table-driven emission (hot/cold split)** | **ENABLED-BY** | `untried` — **strongest supporting evidence of any item here** |
+
+*Tag — ENABLED-BY:* its strongest evidence (§10.2, 30:1 gzip) is the **scanner's** emitted form, so it applies to the post-rewrite emitter and not only this one.
 
 *New evidence (§10.2):* the gated scanner's emitted form compresses **30:1**
 (129,755 → 4,257 B gz). A 30:1 ratio means the bulk is duplicated candidate lines —
@@ -936,9 +1127,11 @@ cutoff from the measured size distribution, interpret below it, compare artifact
 bytes and parse time on the hot benchmarks (which should be unaffected by
 construction — verify that).
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 8 | **Compact emission expanded at load** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 8 | **Compact emission expanded at load** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* a shipping-format change for the current artifact.
 
 *Idea:* ship a compact spec and build the closures at init via `new Function`. *Why
 it might work:* the shipped bytes and the executed form stop being the same artifact,
@@ -946,43 +1139,53 @@ so the size target and the speed target stop competing. *Sanctioned:* the owner 
 explicitly accepted **a small startup cost** for this. *How to measure:* shipped
 bytes, gzipped bytes, and time-to-first-parse (not just steady-state parse time).
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 9 | **Defunctionalisation** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 9 | **Defunctionalisation** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* replaces the current closure representation.
 
 *Idea:* replace closures with tagged values dispatched by a switch. *Why it might
 work:* removes per-closure allocation and gives V8 one monomorphic dispatch site
 instead of many megamorphic call sites. *How to measure:* bytes plus parse time;
 watch for the dispatch switch itself becoming the bottleneck.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 10 | **Rerolling** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 10 | **Rerolling** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* rerolls current emitted text.
 
 *Idea:* turn repeated unrolled sequences back into a loop over data. *Why it might
 work:* the artifact is ~86–90% repeated lines after identifier normalisation
 (§16.2) — that repetition is the population. *How to measure:* bytes; parse time is
 the risk side, since rerolling trades emitted text for runtime indirection.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 11 | **Deforestation / fusion of combinator pipelines** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 11 | **Deforestation / fusion of combinator pipelines** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* fuses current combinator pipelines.
 
 *Idea:* remove intermediate structures passed between pipeline stages. *Why it might
 work:* classic win where a pipeline builds a value only to destructure it
 immediately. *How to measure:* allocation rate first, then bytes and time.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 12 | **Threaded code / bytecode for the cold tail** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 12 | **Threaded code / bytecode for the cold tail** | **LEGACY** | `untried` |
+
+*Tag — LEGACY:* a denser form of #7's cold tail in the current emitter.
 
 *Idea:* the cold half of #7, taken further. *Why it might work:* same population,
 denser representation. *Dependency:* only worth attempting after #7 shows the
 hot/cold split is real in practice.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 13 | **Token-keyed shared body for the nine near-identical `_r_*Block` templates** | `untried` — **and now measured as small: ~29,500 B, 0.88%** |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 13 | **Token-keyed shared body for the nine near-identical `_r_*Block` templates** | **LEGACY** | `untried` — **and now measured as small: ~29,500 B, 0.88%** |
+
+*Tag — LEGACY:* 0.88%, and a relative of the dispatch thread now closed as LEGACY (§9.2).
 
 *Idea:* the nine byte-identical-modulo-one-line block templates, 3,729–4,011 B each
 (§8.5). They differ only in **which at-keyword rule is called** — precisely a token
@@ -994,9 +1197,11 @@ token, with the named functions preserved as entry points. *How to measure:* byt
 plus the existing override test must stay green. *Priority:* low — the corrected
 saving is **0.88%**, an order of magnitude below what the first revision implied.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 20 | **Per-site table/chain cost check** | `untried` — **and there is a measured regression waiting for it** |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 20 | **Per-site table/chain cost check** | **LEGACY** | **DONE — landed `2413e1f`, less regression cleared (−902 B, back to exactly pre-trie size)** |
+
+*Tag — LEGACY:* a per-site rule inside the LEGACY dispatch thread.
 
 *Context (§9.1.5):* token-keyed dispatch converts a site **unconditionally** when it
 has **≥3 keys sharing a case-folded walk**. That rule is right on average and wrong per
@@ -1023,9 +1228,9 @@ declines almost nothing has not actually changed the policy.
 
 ### 14.3 Analysis, not optimisation
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 14 | **Re-Pair or Sequitur over the emitted token stream** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 14 | **Re-Pair or Sequitur over the emitted token stream** | **ORTHOGONAL** | `untried` |
 
 *Idea:* run a grammar-compression algorithm over the emitted artifact **as
 analysis**, not as a shipping format. *Why it is worth doing:* it establishes the
@@ -1040,13 +1245,13 @@ about a different form.
 All `untried`. Each is a small, independently measurable question about how the
 emitted code meets the JIT:
 
-| # | Question |
-| --- | --- |
-| 15 | **Argument-count effects on inlining.** A 14-argument helper was measured as rejected by V8's inlining heuristics (§15.4). What is the actual threshold, and does splitting a helper below it recover the win? |
-| 16 | **Hidden-class shape of emitted closures.** Do the emitted rule closures share a map, or do conditional fields split them? (The analogous split has been confirmed costly elsewhere.) |
-| 17 | **Do small shared helpers get JIT-inlined anyway?** If yes, extraction-family experiments (#4) cost nothing at runtime and the trade is purely bytes. |
-| 18 | **Identifier length against LZ77 match length.** Shorter identifiers shrink raw bytes but may shorten gzip matches. Which dominates? |
-| 19 | **gzip-aware function ordering.** Emitting similar functions adjacently should lengthen matches. Free to try; effect size unknown. |
+| # | Question | Tag |
+| --- | --- | --- |
+| 15 | **Argument-count effects on inlining.** A 14-argument helper was measured as rejected by V8's inlining heuristics (§15.4). What is the actual threshold, and does splitting a helper below it recover the win? | **ORTHOGONAL** |
+| 16 | **Hidden-class shape of emitted closures.** Do the emitted rule closures share a map, or do conditional fields split them? (The analogous split has been confirmed costly elsewhere.) | **ORTHOGONAL** |
+| 17 | **Do small shared helpers get JIT-inlined anyway?** If yes, extraction-family experiments (#4) cost nothing at runtime and the trade is purely bytes. | **ORTHOGONAL** |
+| 18 | **Identifier length against LZ77 match length.** Shorter identifiers shrink raw bytes but may shorten gzip matches. Which dominates? | **LEGACY** |
+| 19 | **gzip-aware function ordering.** Emitting similar functions adjacently should lengthen matches. Free to try; effect size unknown. | **LEGACY** |
 
 ### 14.5 Auto-alias for token detection — the equivalence-class family
 
@@ -1094,9 +1299,11 @@ Owner's framing: *"you could just not normalize, but 'expand' the user-written g
 to the larger match set OR you could normalize and match to the user-written
 grammar... or other slight variations."*
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 21 | **Expand the terminal's match set** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 21 | **Expand the terminal's match set** | **FOUNDATION** | `untried` |
+
+*Tag — FOUNDATION:* the derived scanner is FOUNDATION, and it cannot be built without deciding how equivalences reach a token id.
 
 *Idea:* **no normalization.** Each terminal accepts its equivalence class directly.
 
@@ -1108,9 +1315,11 @@ not a expanded key list.
 *Advantage:* **spans stay trivially correct**, because nothing is rewritten.
 *Cost:* lands in **per-character scanner work**.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 22 | **Normalize, then match against the user-written grammar** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 22 | **Normalize, then match against the user-written grammar** | **FOUNDATION** | `untried` |
+
+*Tag — FOUNDATION:* as #21.
 
 *Idea:* the scanner **folds a run to canonical form** and looks it up.
 
@@ -1121,9 +1330,11 @@ source length.** Spans and the **`tight` adjacency bit (§4)** must track **sour
 positions while matching on **normalized** bytes. This is the specific interaction
 that makes this approach non-obvious, and it is not resolvable on paper.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 23 | **Lazy fold** | `untried` |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 23 | **Lazy fold** | **FOUNDATION** | `untried` |
+
+*Tag — FOUNDATION:* as #21.
 
 *Idea:* scan **raw**; normalize **only when a raw match fails**.
 
@@ -1131,9 +1342,11 @@ that makes this approach non-obvious, and it is not resolvable on paper.
 essentially all input. *Risk to check:* the failure path is also the backtracking
 path, so "only on failure" may be less rare than it sounds.
 
-| # | Experiment | Status |
-| --- | --- | --- |
-| 24 | **Macro-time canonicalisation into the trie** | `untried` — **RECOMMENDED STARTING POINT** |
+| # | Experiment | Tag | Status |
+| --- | --- | --- | --- |
+| 24 | **Macro-time canonicalisation into the trie** | **FOUNDATION** | `untried` — **RECOMMENDED STARTING POINT** |
+
+*Tag — FOUNDATION:* as #21 — and it composes with machinery already shipped.
 
 *Idea:* build a trie that **accepts both plain and escaped/case-varied forms**, so the
 walk **absorbs the equivalence** with **no separate pass and no allocation**.
@@ -1240,7 +1453,7 @@ produced without normalisation should be discarded rather than argued with.
 **This is a methodological invariant for the whole derived-tokenization workstream, not
 an anecdote.**
 
-`6feb883` shipped a correctness bug that **288 passing tests did not catch**:
+`caa3d14` shipped a correctness bug that **288 passing tests did not catch**:
 
 - `'@' | 32` is **`` ` ``** (backtick, 96), not `@` (64) — `| 32` is a lowercasing
   trick that is only valid for ASCII **letters**.
@@ -1261,7 +1474,7 @@ This is why every measurement in §9.1 is reported as "trees diffed equal agains
 toggled baseline". That clause is the load-bearing part of the methodology, not
 boilerplate.
 
-The fix (`879f486`, **fold ASCII letters only**) also removed a **latent
+The fix (`e8612eb`, **fold ASCII letters only**) also removed a **latent
 over-acceptance**: `| 32` mapped `_` (95) and DEL (127) onto each other, so the old
 form accepted key characters it should have rejected. The bug and the latent defect had
 the same cause — treating a bit trick as if it were a case fold.
@@ -1288,6 +1501,37 @@ share, withdrawn at §10.3.
 Note how the two failures compound: the discarded method produced a **1.83×** claim
 where the truth was **2.1%**, and it did so in the *favourable* direction. Assume any
 un-interleaved number in this workstream's history is wrong until re-measured.
+
+#### Settled a second time, by a real git toggle
+
+The env-toggled result has now been confirmed by an **independent method**: building
+`143324e` (pre-trie) and `caa3d14` (post-trie), compiling css-parser after each, with
+the resulting artifacts **`cmp`-verified byte-identical** to the env-toggled builds.
+
+**5.41 ms pre-trie, 5.42 ms post. No gap.**
+
+Two conclusions:
+
+1. **The 1.83× is settled twice**, by two methods that share no machinery. It is not
+   an artifact of the env toggle.
+2. **The V8-budget hypothesis is UNSUPPORTED.** Removing **all 31 KB of chains**
+   changed **nothing measurable**. Whatever bounds this parse, it is not the size of
+   the emitted dispatch code.
+
+### 16.5 The noise floor, as a standing instrument fact [ORTHOGONAL]
+
+> **Two BYTE-IDENTICAL css artifacts A/B'd at 5.144 vs 5.200 ms, winning 6 of 15
+> rounds.**
+
+Same bytes. Same file. Same process discipline. That spread is the **instrument**.
+
+> **~1% spreads in this workstream are HARNESS, not RESULT.** Every lane should cite
+> this number before reporting a delta of that magnitude, and no lane should report one
+> as a finding.
+
+This is why §9.1.1's 2.4% total spread is reported as "there is nothing here" rather
+than as four distinguishable configurations: most of the gaps inside it are at or below
+this floor.
 
 ---
 
@@ -1373,6 +1617,23 @@ In rough order of likelihood:
 | Maximal munch uniform over the whole alphabet | **FALSIFIED (§10.1)** — 7 tokens for 123 KB |
 | A searched discriminator may not be available | **FALSIFIED (§9.1.2)** — `phash` finds an injective (position pair, multiplier, modulus) over the real key set |
 
+### Landed and measured since the sweep
+
+| Claim | Tag | Status |
+| --- | --- | --- |
+| **Unreachable-`else` elimination: css 3,336,650 → 3,014,384 B, −9.66%; gzip −7.93%; expansion 29.16× → 26.34×** | **FOUNDATION** | **measured (§8.6) — largest win to date, and NO token cursor was involved** |
+| Boundary mark/restore 375,524 B / 4,268 clauses → 135,246 B / 1,651 (−64%) | **FOUNDATION** | **measured** |
+| 165 of 558 boundaries converted; **393 fall back solely on reported nullability** | **FOUNDATION** | **measured — a sharper nullability analysis converts more, by the same predicate (#26)** |
+| `_cstRawChildren` never needed a mark even for nullable terms | **FOUNDATION** | **measured** — no trivia function pushes a raw child |
+| `_mk*` prefixes are minted by three emitters | | **caveat — §8.1.1's "46.6% is sequence boundary" is an UPPER BOUND.** The artifact delta is instrument-independent and stands |
+| Experiment #20 cleared the less regression: −902 B, back to exactly pre-trie size | **LEGACY** | **measured, landed `2413e1f`** |
+| trie-to-id + dense `switch`: **+10,867 raw / +160 gzip** | **LEGACY** | **measured — LOST.** Cause is the artifact printer indenting case bodies one level deeper; net of indentation the case labels are *smaller* |
+| Ids are already `1..n` with no gaps | **LEGACY** | **measured — no renumbering or `table[]` was warranted; the dense index already existed** |
+| **The whole dispatch thread is ~1.2% of the artifact** | **LEGACY** | **closed (§9.2) — finished, not abandoned** |
+| **1.83× settled a SECOND time by a real git toggle** | | **measured — 5.41 ms pre-trie vs 5.42 ms post, artifacts `cmp`-verified byte-identical to the env-toggled builds. No gap** |
+| **V8-budget hypothesis** | | **UNSUPPORTED — removing all 31 KB of chains changed nothing measurable** |
+| **Noise floor: two byte-identical artifacts at 5.144 vs 5.200 ms, 6/15 wins** | **ORTHOGONAL** | **measured — ~1% spreads are HARNESS, not result. Cite this before reporting one** |
+
 ### Corrected or superseded
 
 | Claim | Status |
@@ -1437,10 +1698,11 @@ In rough order of likelihood:
 | Claim | Status |
 | --- | --- |
 | Token-index rewind removes most of the 723,605 B save/rollback | **hypothesis — unmeasured; the largest unverified term in §11.** §8.1.1 narrows it: under half of css mark/restore is the binding case |
-| Per-site table/chain cost check (#20) fixes the less regression | **untried — and a measured regression is waiting for it** |
+| Sharper nullability analysis converts more of the 393 fallback boundaries (#26) | **FOUNDATION, untried — the highest-value known lead** |
+| Deferred leaf materialisation (#25) | **ENABLED-BY, untried — may be DISSOLVED if lookahead makes those choices deterministic** |
 | **Auto-alias for token detection** (#21–#24, §14.5) — expand / normalize / lazy-fold / macro-time trie | **untried — owner design direction, to be measured not decided.** #24 recommended first: composes with the trie already shipped |
 | Whether alias resolution belongs at scan time or a separate pass | **open — decided by escapes changing token length vs. source-position spans** |
-| Every item in §14 (24 experiments) | **untried — no measurement attempted** |
+| Every item in §14 (28 entries) | **untried except #20 (done, LEGACY) — see each entry's tag** |
 | Rule-level inline cap; cross-artifact sharing; source-level shape sharing; arity-only shared restore helper | **rejected — evidence in §15** |
 | **Mechanically removable total: 793,374 B, 23.8%, to ~2,543,000 B (22× source)** | **arithmetic over measured categories — NOT an end-to-end result, and the one converted category delivered 62% of its estimate** |
 | That this technique reaches 250 KB, or 10×, or 4× | **NO — see §11; it does not, and nothing measured suggests it does** |
