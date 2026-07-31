@@ -5,6 +5,112 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+### BREAKING — a list now contributes its ITEMS and nothing else
+
+Read this section before upgrading. Both changes below alter the shape of the tree
+your reducers receive. **Your parse will still succeed and nothing will throw** —
+that is precisely why it is called out at the top rather than buried in a bullet.
+
+#### 1. `sepBy` / `oneOrMoreSep` no longer put separators in `children`
+
+`sepBy(item, literal(','))` over `a,b,c` used to contribute **five** children to
+the enclosing `node()` — `['a', ',', 'b', ',', 'c']`, items at even indices and
+separators at odd. It now contributes **three** — `['a', 'b', 'c']`.
+
+The separator is still matched and still consumed. It is simply not an item, and a
+list contributes the items of the list. `many` and `oneOrMore` already behaved this
+way; `sepBy` and `oneOrMoreSep` were the outliers.
+
+**Why this is worth a break.** parseman's own analyzer described a `sepBy` result as
+"a flat item list", which describes the VALUE and not the children — and that is the
+sentence an author reads before writing `children[1]` and getting a comma. It fails
+silently: the parse succeeds, the tree is quietly wrong, nothing errors. In a single
+day it cost six lanes a debugging round each, with full context and the source open.
+
+**How to tell whether you are affected.** You are affected if any reducer for a
+`node()` containing a `sepBy` or `oneOrMoreSep`:
+
+- indexes `children` positionally (`children[1]`, `children[i * 2]`, array
+  destructuring `([a, b, c]) => …`), or
+- correlates a `children` index with a `triviaLog` insert index (those refer to
+  **`rawChildren`**, which still contains the separators — so the two arrays no
+  longer advance in step), or
+- reads `children.length` to count anything, or
+- filters `children` for the separator's own token.
+
+You are NOT affected if your reducer only filters `children` by node type, or
+captures the separator with `field()` — field capture is a separate channel and is
+untouched.
+
+**The mechanical fix**, in order of preference:
+
+1. **Delete the arithmetic.** A reducer that did `children.filter((_, i) => i % 2 === 0)`
+   or `children[i * 2]` should now just use `children`. This is the common case and
+   it makes the reducer shorter.
+2. **Read the separator from `rawChildren`.** Separators remain there, in source
+   order, so nothing is lost. `rawChildren` is the same channel trivia already uses:
+   consumed, absent from `children`, still reachable. Declare the 4th positional
+   parameter of your `build` callback to receive it.
+3. **Opt back in with `keepSeparator()`** — see below.
+
+#### 2. New: `keepSeparator(sep)`
+
+Wrap the SEPARATOR argument to keep separators interleaved in `children`:
+
+```ts
+sepBy(g.Value, literal(','))                    // items only — the default
+sepBy(g.Track, keepSeparator(SLASH_OR_COMMA))   // items AND separators, interleaved
+```
+
+Reach for it when the separator could have matched **more than one thing** — a
+`choice`, a regex with alternation or a quantifier, a rule reference — and a
+consumer depends on which one matched. In CSS the separator carries meaning:
+`grid-area: 1 / 2` and `font: 12px/1.5` do not mean what `1, 2` means.
+
+The underlying rule: **a combinator may collapse only what its construction makes
+recoverable.** `sepBy(x, literal(','))` has a separator fixed at construction, so
+dropping it destroys nothing. `sepBy(x, choice(literal(','), literal('/')))` does
+not, so the author has to say so.
+
+It is deliberately a wrapper on the separator rather than an option in the options
+bag. The call site then STATES its own children arity, which is the exact failure
+being fixed — a name that lies is what created this. `keepSeparator` in the source
+is the only documentation that reaches an author who never reads docs.
+
+#### 3. BREAKING — `balanced()` contributes exactly one leaf
+
+`balanced('(', ')')` over `"(a(b)c)"` contributed **seven** children; it now
+contributes **one**, equal to the whole matched source slice, with the same span —
+matching `scanTo`, its sibling in the same file, which always did this.
+
+`balanced` is declared `Combinator<string>` and its implementation ends in a
+callback that reassembles the interior into exactly that one string. But it is
+spelled `transform(sequence(literal(open), many(…), expect(literal(close))))`, and
+`transform` is transparent to CST capture, so the reassembled string never reached
+the parent. The declared type and the emitted arity disagreed and nothing checked.
+Unterminated input recovered via `expect()` behaves the same way — one leaf over
+what was consumed.
+
+You are affected if a reducer counted or indexed children across a `balanced()`.
+The fix is to stop compensating: a `token(balanced(…))` wrapper added to work
+around the old behaviour is now redundant double-wrapping and should be removed.
+
+**This closes the upstream half of P19.** The defect was upstream all along, so the
+downstream `token(...)` wrappers that jess added to compensate are now removable —
+they are the workaround, not the fix, and they can come out once jess moves to this
+release. `_balancedAmbient` and the interior self back-edge stay on the inner
+combinator, so the ambient-`scanSkip` rebuild and nested recursion are unaffected.
+
+#### Notes
+
+- Incremental structural list-reuse now derives a list's separator from the
+  GRAMMAR (`sepBy`'s own `separator` def) instead of sniffing it out of `children`.
+  A list whose separator is not a `literal` — i.e. not recoverable from
+  construction — no longer qualifies for a structural splice and falls back to a
+  full, correct reparse.
+- Emitted code grows ~101 B per `sepBy` call site (one guarded truncation), around
+  +0.2-0.9% raw and +0.05-0.33% gzip per size-guard fixture.
+
 Six lanes, assembled onto the 0.46.0 shared prefix. Every lane was verified
 independently on top of the prefix before inclusion — see the pull request body
 for the per-lane verification status and the measured release-over-release

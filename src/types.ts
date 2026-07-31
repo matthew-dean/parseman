@@ -70,7 +70,7 @@ export type ParserDef =
   // `trailing` governs a separator with no item after it: 'forbid' (default) leaves
   // it unconsumed, 'allow' consumes it. There is no "one after every item" mode —
   // that is a terminated list, spelled `many(sequence(item, term))`.
-  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: number; max?: number; trailing?: 'allow' }
+  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: number; max?: number; trailing?: 'allow'; /** Author opted in via `keepSeparator()`: separators stay in `children`. Absent = items only. */ keepSeparators?: true }
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; recognitionOnly?: boolean }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }

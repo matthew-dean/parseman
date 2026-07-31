@@ -55,6 +55,50 @@ function defOf(entry: unknown): ParserDef | undefined {
 }
 
 /**
+ * What a rule's grammar proves about how it produces its element children.
+ * `{ kind: 'sep', text }` — a `sepBy`/`oneOrMoreSep` whose separator is a plain
+ * literal, so the exact delimiter bytes are recoverable FROM THE GRAMMAR.
+ * `{ kind: 'bare' }` — a `many`/`oneOrMore` with no separator at all.
+ */
+type Repetition = { kind: 'sep'; text: string } | { kind: 'bare' }
+
+/**
+ * The literal TEXT a separator parser is fixed to, or `null` when it isn't fixed.
+ * Only a case-sensitive `literal()` (behind transparent wrappers) qualifies: its
+ * construction pins the exact bytes. A `choice`, a `regex`, a `keywords`, or a
+ * rule reference could have matched more than one thing, so its text is NOT
+ * recoverable from the grammar and callers must decline reuse rather than guess.
+ */
+function literalTextOf(parser: unknown, depth = 0): string | null {
+  const def = defOf(parser)
+  if (!def || depth > 24) return null
+  const d = def as ParserDef & Record<string, unknown>
+  switch (d.tag) {
+    case 'literal':
+      return d.caseInsensitive ? null : (d.value as string)
+    case 'lazy': {
+      const thunk = d.thunk as (() => unknown) | undefined
+      try { return typeof thunk === 'function' ? literalTextOf(thunk(), depth + 1) : null } catch { return null }
+    }
+    case 'node':
+    case 'transform':
+    case 'attempt':
+    case 'token':
+    case 'leaf':
+    case 'label':
+    case 'field':
+    case 'expect':
+    case 'withCtx':
+    case 'grammar':
+      return literalTextOf(d.parser, depth + 1)
+    case 'skip':
+      return literalTextOf(d.main, depth + 1)
+    default:
+      return null
+  }
+}
+
+/**
  * Does this rule's grammar produce its element children via a genuine, unbounded
  * **repetition** (`sepBy` / `many` / `oneOrMore`) — as opposed to a fixed-arity
  * sequence of same-typed tokens (e.g. `Triple = Num ',' Num ',' Num`)? Only the
@@ -62,26 +106,37 @@ function defOf(entry: unknown): ParserDef | undefined {
  * so splicing one in or out matches it; a fixed-arity rule would not. We walk the
  * def, transparently unwrapping semantic wrappers (`node`, `transform`, …) and
  * looking through a top-level `sequence` / `optional` (the `[ (sepBy)? ]` shape),
- * and return true iff a repetition combinator is reachable that way. Structurally
- * indistinguishable-from-the-CST cases (fixed sequences) return false and fall
+ * and return the repetition's shape iff one is reachable that way. Structurally
+ * indistinguishable-from-the-CST cases (fixed sequences) return `null` and fall
  * back to a full, correct reparse. This is what makes `structuralReuse` sound
  * rather than a promise the caller has to keep.
+ *
+ * The SEPARATOR comes from here, not from the CST: a `sepBy` contributes only its
+ * ITEMS to `children`, so there is no delimiter leaf between two elements to sniff.
+ * A combinator may collapse only what its construction makes recoverable — so a
+ * `sepBy` whose separator is a literal yields its text, and a `sepBy` whose
+ * separator is anything else (or one the author opted out of collapsing with
+ * `keepSeparator`) yields `null`: no structural reuse, full correct reparse.
  */
-function producesRepetition(def: ParserDef | undefined, depth = 0): boolean {
-  if (!def || depth > 24) return false
+function producesRepetition(def: ParserDef | undefined, depth = 0): Repetition | null {
+  if (!def || depth > 24) return null
   const d = def as ParserDef & Record<string, unknown>
   switch (d.tag) {
-    case 'sepBy':
+    case 'sepBy': {
+      if (d.keepSeparators) return null // separators ride `children`; not the items-only shape we splice
+      const text = literalTextOf(d.separator)
+      return text === null || text.length === 0 ? null : { kind: 'sep', text }
+    }
     case 'many':
     case 'oneOrMore':
-      return true
+      return { kind: 'bare' }
     // Rule entries and `ref`s wrap their body in a `lazy` thunk — resolve it. The
     // `depth` cap bounds any self-referential cycle (a repetition, if present, is
     // found shallowly before recursion goes deep).
     case 'lazy': {
       const thunk = d.thunk as (() => { _def?: ParserDef }) | undefined
       let inner: { _def?: ParserDef } | undefined
-      try { inner = typeof thunk === 'function' ? thunk() : undefined } catch { return false }
+      try { inner = typeof thunk === 'function' ? thunk() : undefined } catch { return null }
       return producesRepetition(inner?._def, depth + 1)
     }
     // Transparent wrappers — look through to the inner parser.
@@ -100,10 +155,15 @@ function producesRepetition(def: ParserDef | undefined, depth = 0): boolean {
     case 'skip':
       return producesRepetition(defOf(d.main), depth + 1)
     // A bracketed/anchored list is a sequence whose element run is a repetition.
-    case 'sequence':
-      return (d.parsers as unknown[]).some(p => producesRepetition(defOf(p), depth + 1))
+    case 'sequence': {
+      for (const p of d.parsers as unknown[]) {
+        const rep = producesRepetition(defOf(p), depth + 1)
+        if (rep) return rep
+      }
+      return null
+    }
     default:
-      return false
+      return null
   }
 }
 
@@ -354,14 +414,29 @@ function graftRelative<N extends NodeLike>(root: N, path: number[], newNode: N, 
 type AnyChild = { readonly _tag: string; readonly span: { start: number; end: number }; readonly value?: string; readonly type?: string; readonly state?: unknown; readonly children?: readonly unknown[] }
 
 /**
- * Parse the collection's disturbed middle `[reStart, reEnd)` as an
- * `element (separator element)*` run (optionally with a trailing separator that
- * connects to the reused tail), C-relative. Alternation is STRICT: after an
- * element, if we're not yet at `reEnd`, the separator MUST match — element/element
- * juxtaposition is rejected (that's a `sepBy` violation). When the grammar has no
- * separator (`separator === null`, i.e. a bare repetition), consecutive elements
- * are allowed. Returns the C-relative children, or `null` if the run doesn't tile
- * `[reStart, reEnd)` exactly on token boundaries.
+ * Parse the collection's disturbed middle `[reStart, reEnd)`, C-relative, and
+ * return ONLY its element children — a `sepBy` contributes items and nothing else
+ * to `children`, so the spliced middle must match what a full reparse produces:
+ * separators are matched and CONSUMED here, never emitted.
+ *
+ * The region has a uniform shape. `reStart` is the end of the last reused head
+ * child and `reEnd` the start of the first reused tail element, which is always an
+ * element. So when the head ended on an element NODE the region is `(sep elem)* sep`,
+ * and when it ended on a LEAF (the collection's open delimiter — a `sequence` term,
+ * still a child) or at the collection's own start the region is `elem (sep elem)* sep`.
+ * Either way it ENDS with a separator, which `startsAtElement` seeds and the final
+ * `expectElement` assertion enforces: the region must leave us expecting an element,
+ * i.e. a separator was just eaten. That is the junction guarantee — a splice can
+ * never fuse the middle's last element onto the tail's first with no delimiter
+ * between them, which a full reparse could never produce. (An EMPTY region is
+ * accepted exactly when the head already ended on a separator or the open
+ * delimiter, i.e. `startsAtElement` — the same invariant, vacuously.)
+ *
+ * Alternation is STRICT: element/element juxtaposition is rejected. When the
+ * grammar is separator-free (`separator === null`, a bare `many`/`oneOrMore`)
+ * consecutive elements are allowed and no junction constraint applies. Returns the
+ * C-relative element children, or `null` if the run doesn't tile `[reStart, reEnd)`
+ * exactly on token boundaries.
  */
 function parseMiddle(
   input: string,
@@ -370,6 +445,7 @@ function parseMiddle(
   cStart: number,
   ruleFn: RuleFn<NodeLike>,
   separator: string | null,
+  startsAtElement: boolean,
   build: ParseContext['build'],
   tolerant: boolean,
 ): AnyChild[] | null {
@@ -377,15 +453,14 @@ function parseMiddle(
   const out: AnyChild[] = []
   let pos = reStart
   let guard = 0
+  // For a separator-free repetition every position expects an element.
+  let expectElement = separator === null ? true : startsAtElement
   while (pos < reEnd) {
     if (++guard > reEnd - reStart + 2) return null // no-progress backstop
-    // After an element, a separator is mandatory before the next element (unless
-    // the grammar is separator-free). This is what keeps `elem elem` — invalid in
-    // a `sepBy` — from being accepted as two elements.
-    if (separator && out.length > 0 && out[out.length - 1]!._tag === 'node') {
+    if (separator !== null && !expectElement) {
       if (pos + separator.length > reEnd || !input.startsWith(separator, pos)) return null
-      out.push({ _tag: 'leaf', value: separator, span: { start: pos - cStart, end: pos + separator.length - cStart } })
       pos += separator.length
+      expectElement = true
       continue
     }
     let r: ParseResult<NodeLike>
@@ -397,8 +472,10 @@ function parseMiddle(
     if (!r.ok || r.span.end <= pos || r.span.end > reEnd) return null
     out.push(relativizeCST(r.value as unknown as AnyChild, cStart))
     pos = r.span.end
+    if (separator !== null) expectElement = false
   }
-  return pos === reEnd ? out : null
+  // Exact tiling + the junction guarantee (see above).
+  return pos === reEnd && expectElement ? out : null
 }
 
 /**
@@ -415,6 +492,7 @@ function tryListSplice<N extends NodeLike>(
   from: number,
   to: number,
   delta: number,
+  rep: Repetition,
   registry: Record<string, RuleFn<N>>,
   build: ParseContext['build'],
   tolerant: boolean,
@@ -422,11 +500,12 @@ function tryListSplice<N extends NodeLike>(
   const kids = C.children as ReadonlyArray<AnyChild>
   if (kids.length === 0) return null
 
-  // head = maximal prefix ending before the edit, backed off so it ends at a
-  // leaf (open delimiter or separator) — i.e. where an ELEMENT is next expected.
+  // head = maximal prefix ending before the edit. Its last child is either an
+  // element node (the region then opens on a separator) or a leaf / nothing (the
+  // region then opens on an element) — `parseMiddle` handles both, so no back-off
+  // is needed and the head stays as long as the edit allows.
   let h = 0
   while (h < kids.length && cStart + kids[h]!.span.end <= from) h++
-  while (h > 0 && kids[h - 1]!._tag === 'node') h--
   // tail = maximal suffix starting after the edit, advanced so it BEGINS at an
   // element (node) boundary — a self-contained element run to reuse.
   let t = kids.length
@@ -442,9 +521,9 @@ function tryListSplice<N extends NodeLike>(
   // C must look like a genuine homogeneous COLLECTION — a repetition of one
   // element rule joined by one separator — not a fixed heterogeneous sequence
   // (e.g. `Pair = Key ':' Val`, whose `:` is not a list separator). Require: all
-  // element (node) children share a type, and there are ≥2 elements joined by a
-  // consistent separator leaf. This rejects fixed sequences (their nodes differ
-  // in type, or there's only one) so we never treat them as splice-able lists.
+  // element (node) children share a type, and there are ≥2 of them. This rejects
+  // fixed sequences (their nodes differ in type, or there's only one) so we never
+  // treat them as splice-able lists.
   let elemType: string | undefined
   let elemCount = 0
   for (const k of kids) {
@@ -456,18 +535,12 @@ function tryListSplice<N extends NodeLike>(
   if (elemType === undefined || elemCount < 2) return null
   const ruleFn = registry[elemType]
   if (!ruleFn) return null
-  // The separator is the leaf that appears between two elements; require it to be
-  // consistent everywhere two elements meet (a real list delimiter).
-  let separator: string | null = null
-  for (let i = 1; i < kids.length - 1; i++) {
-    if (kids[i - 1]!._tag === 'node' && kids[i + 1]!._tag === 'node') {
-      if (kids[i]!._tag !== 'leaf') return null
-      const sep = kids[i]!.value ?? null
-      if (separator === null) separator = sep
-      else if (sep !== separator) return null // inconsistent delimiter → not a plain list
-    }
-  }
-  if (separator === null) return null // ≥2 elements but no delimiter between any pair
+  // The separator comes from the GRAMMAR, not from `children`: a `sepBy` contributes
+  // only its items, so there is no delimiter leaf between two elements to sniff.
+  // `producesRepetition` already refused any list whose separator its construction
+  // doesn't pin (a choice, a regex, a rule ref), so what arrives here is either a
+  // fixed literal or a genuinely separator-free repetition.
+  const separator = rep.kind === 'sep' ? rep.text : null
 
   // The disturbed middle must be pure elements + separators. If the collection is
   // bracketed, its OPENING / CLOSING delimiter (a leaf whose value isn't the
@@ -482,21 +555,13 @@ function tryListSplice<N extends NodeLike>(
   const reStart = h > 0 ? cStart + kids[h - 1]!.span.end : cStart
   const reEnd = cStart + kids[t]!.span.start + delta
   if (reEnd < reStart) return null
+  // The region opens on an element unless the head ended on one (then it opens on
+  // the separator that joined it to what follows). `parseMiddle` carries this
+  // through to the junction guarantee.
+  const startsAtElement = !(h > 0 && kids[h - 1]!._tag === 'node')
 
-  const middle = parseMiddle(newInput, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, build, tolerant)
+  const middle = parseMiddle(newInput, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, startsAtElement, build, tolerant)
   if (!middle) return null
-
-  // Junction check: `tail` always begins with an ELEMENT (we advanced `t` to a
-  // node), so a non-empty middle must END with a SEPARATOR to connect validly —
-  // otherwise the edit deleted the delimiter between the middle's last element and
-  // the tail's first, and splicing would fuse two elements with no separator (a
-  // `sepBy` violation the whole-collection reparse would never produce). When the
-  // middle is empty the tail is preceded by `head`'s last token, itself already a
-  // separator or the open delimiter (head was backed off to a leaf), so it's fine.
-  if (middle.length > 0) {
-    const last = middle[middle.length - 1]!
-    if (!(last._tag === 'leaf' && last.value === separator)) return null
-  }
 
   // Lookahead guard: the middle must have read nothing at/after `reEnd`, else it
   // peeked into the reused tail. Re-run over an input whose tail is overwritten
@@ -506,7 +571,7 @@ function tryListSplice<N extends NodeLike>(
     for (const sentinel of [' ', '￿']) {
       if (newInput[reEnd] === sentinel) continue
       const probed = newInput.slice(0, reEnd) + sentinel.repeat(newInput.length - reEnd)
-      const probe = parseMiddle(probed, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, build, tolerant)
+      const probe = parseMiddle(probed, reStart, reEnd, cStart, ruleFn as RuleFn<NodeLike>, separator, startsAtElement, build, tolerant)
       if (!probe || probe.length !== middle.length) return null
       for (let i = 0; i < middle.length; i++) if (!structurallyEqual(probe[i], middle[i])) return null
     }
@@ -614,8 +679,12 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
   private readonly _registry: Registry<N>
   /** Registry entries normalized to callable parse functions (memoized once). */
   private readonly _fns: Record<string, RuleFn<N>>
-  /** Rule names the grammar proves are genuine repetitions — the ONLY splice-safe types. */
-  private readonly _reps: Set<string>
+  /**
+   * Rule names the grammar proves are genuine repetitions — the ONLY splice-safe
+   * types — mapped to the repetition shape (and, for a `sepBy`, the separator text
+   * its construction pins). A rule whose separator isn't recoverable is absent.
+   */
+  private readonly _reps: Map<string, Repetition>
   private readonly _rootRule: string
   private readonly _opts: ParseDocOptions<N>
   /**
@@ -644,10 +713,11 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
   ) {
     this._registry = registry
     this._fns = {}
-    this._reps = new Set()
+    this._reps = new Map()
     for (const [name, entry] of Object.entries(registry)) {
       this._fns[name] = asRuleFn(entry)
-      if (producesRepetition(defOf(entry))) this._reps.add(name)
+      const rep = producesRepetition(defOf(entry))
+      if (rep) this._reps.set(name, rep)
     }
     this._rootRule = rootRule
     this._opts = opts
@@ -786,10 +856,11 @@ class ParseDocImpl<N extends NodeLike> implements ParseDoc<N> {
       // consider it last.
       const spliceCandidates: FoundNode<N>[] = [...candidates, { node: root, path: [] }]
       for (const { node, path } of spliceCandidates) {
-        if (!this._reps.has(node.type)) continue // grammar didn't prove this rule a repetition
+        const rep = this._reps.get(node.type)
+        if (!rep) continue // grammar didn't prove this rule a splice-able repetition
         const { start: cStart, end: cEnd } = absoluteSpanCST(root as unknown as { span: Span; children?: readonly unknown[] }, path)
         if (!(cStart <= from && to <= cEnd)) continue
-        const spliced = tryListSplice(root, path, node, cStart, newInput, from, to, delta, this._fns, this._opts.build, !!this._opts.tolerant)
+        const spliced = tryListSplice(root, path, node, cStart, newInput, from, to, delta, rep, this._fns, this._opts.build, !!this._opts.tolerant)
         if (spliced) return this.wrapReuse(spliced, newInput)
       }
     }
