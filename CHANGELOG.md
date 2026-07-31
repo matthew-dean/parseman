@@ -17,6 +17,18 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `@font-face` silently took the opaque at-rule arm. The 288-test css suite passed
   with the bug present; a full-tree diff against the pre-trie build caught it. Both
   sides now fold ASCII letters only.
+- **Static rollback elision — the emitter no longer writes save/restore machinery it can
+  prove will never run.** A new shared `analysis/commitment.ts` answers, over the rule
+  graph, whether a construct can fail after consuming (`mayFail`) and whether it always
+  consumes on success (`alwaysConsumes`); codegen drops the capture save/restore at
+  fallible boundaries whose remainder is total, and the trivia mark/rewind at sequence
+  boundaries whose next term cannot match zero-width. Compiled CSS `ast.js` **3,311,657 →
+  3,140,585 B (−5.17%, against `fd1c5c7`)**, less −4.06%, scss −6.68%, jess −5.73%; parse speed unchanged on
+  corpus (benchmark.css min +1.05%, benchmark.less min −0.20%) and faster on the guard's
+  micro-parses (`css/decls` compiled −48%, `css/selector` −41%). Gated on byte-level parse-tree
+  equality against a non-eliding build — 4,077 AST/CST/ParseDoc tree comparisons over the
+  four dialect corpora, zero differences.
+
 - **Add a `parseman` CLI — `parseman diagnose` and `parseman fix`.** Exit **0** clean,
   **1** blocking findings, **2** could not analyse. `--json` emits the structured object
   the human rendering is derived from. The bin is its own bundle (`dist/cli/index.js`,
