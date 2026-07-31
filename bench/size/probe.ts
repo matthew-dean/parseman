@@ -71,7 +71,7 @@
  * poisons the whole curve, so there is no "skip" path anywhere in this file.
  */
 
-import { writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { writeFileSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
@@ -422,18 +422,30 @@ export function measure(u: Unit, lower: Lowerer): Row {
   // directory, and wait rather than trample. Observed when the CLI test suite began
   // spawning subprocesses alongside the size gate.
   //
-  // The staleness window is RE-ARMED after a break. Holding it from a single start
-  // instant looks equivalent and is not: once the first 60s elapsed, every later
-  // `EEXIST` would take the break branch and `continue` WITHOUT sleeping, so the
-  // waiter would spin at full tilt deleting the lock of whichever probe had just
-  // legitimately taken it — degenerating into exactly the trampling the lock exists
-  // to prevent, and only ever on a machine slow enough to need the lock.
+  // TWO THINGS THE LOOP HAS TO GET RIGHT, both of which fail only under the load that
+  // makes the lock necessary in the first place.
+  //
+  // ONLY `EEXIST` MEANS "SOMEONE ELSE HOLDS IT". A bare `catch` cannot tell contention
+  // from EACCES, ENOSPC or a missing TMPDIR, so a fatal condition would spin here
+  // forever instead of being reported. Anything else rethrows.
+  //
+  // STALENESS IS THE LOCK'S AGE, NOT THE WAITER'S PATIENCE. Timing out on how long THIS
+  // process has waited reaps a lock whose holder is alive and simply slow — on a box at
+  // load average 70-200, where a single unit's lowering can legitimately outrun a minute,
+  // that recreates the shared directory underneath a running measurement and produces
+  // exactly the corrupt number the lock exists to prevent. The directory's own mtime is
+  // the property actually being asked about, so it is what gets measured.
   const lock = `${dir}.lock`
-  let waited = Date.now()
   for (;;) {
     try { mkdirSync(lock, { recursive: false }); break }
-    catch {
-      if (Date.now() - waited > 60_000) { rmSync(lock, { recursive: true, force: true }); waited = Date.now(); continue }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+      const st = statSync(lock, { throwIfNoEntry: false })
+      // `undefined` means the holder released it between `mkdirSync` and here: retry at once.
+      if (st !== undefined && Date.now() - st.mtimeMs > 60_000) {
+        rmSync(lock, { recursive: true, force: true })
+        continue
+      }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
     }
   }
