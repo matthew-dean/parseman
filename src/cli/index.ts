@@ -244,6 +244,19 @@ const leadLabel = (raw: Combinator<unknown>): string => {
   }
 }
 
+/**
+ * Quote a value for a POSIX shell, and ONLY when it needs it.
+ *
+ * A suggested command is only a suggestion if it can be pasted, and a path or an export
+ * name holding a space, a quote or a glob character silently becomes two arguments (or a
+ * different file) without this. Unquoted is kept for the ordinary case so the common
+ * rendering stays the one a reader would have typed; anything else takes single quotes,
+ * with an embedded `'` closed, escaped and reopened.
+ */
+function sh(v: string): string {
+  return /^[\w@%+=:,./-]+$/.test(v) ? v : `'${v.replaceAll("'", `'\\''`)}'`
+}
+
 function writeJson(target: string | true, doc: unknown): void {
   const text = `${JSON.stringify(doc, null, 2)}\n`
   if (target === true) { process.stdout.write(text); return }
@@ -309,8 +322,15 @@ async function main(argv: readonly string[]): Promise<number> {
       const probe = proposeFixes(root, { corpus, ...(accept === undefined ? {} : { accept }) })
       for (const f of probe.verified) fixable.add(f.id)
       if (fixable.size > 0) {
-        fixCommand = `parseman fix ${label}${typeof exportName === 'string' ? ` --export ${exportName}` : ''}`
-          + `${typeof corpusFlag === 'string' ? ` --corpus ${corpusFlag}` : ''}`
+        // Every option that changed what was VERIFIED has to appear here, or the command
+        // reproduces a different run than the one that earned the wrench: `--ext` and
+        // `--corpus` decide the corpus, `--accept` decides the candidate set, `--export`
+        // decides the root. Values are shell-quoted so a path or an export name holding a
+        // space stays one argument when pasted.
+        const opt = (name: string, v: unknown): string => typeof v === 'string' ? ` --${name} ${sh(v)}` : ''
+        fixCommand = `parseman fix ${sh(label)}`
+          + opt('export', exportName) + opt('corpus', corpusFlag)
+          + opt('ext', extFlag) + opt('accept', acceptFlag)
       }
     }
     const limitFlag = args.flags.get('limit')
@@ -367,7 +387,9 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     human(renderFixReport(report, {
       color, width, links, name: label, sourceRoot: resolve(sourcePath),
-      applied: apply && applied > 0,
+      // The COUNT, not a flag. `applyFixEdits` skips an edit whose span moved, so a
+      // boolean here reported every verified change as written whenever any one was.
+      applied: apply ? applied : 0,
     }))
     if (apply) human(`  ${applied} edit(s) written to ${source.path}`)
     if (json !== undefined) writeJson(json, report)

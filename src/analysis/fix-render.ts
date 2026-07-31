@@ -31,8 +31,14 @@ import {
 
 export type FixRenderOptions = RenderTarget & {
   name?: string
-  /** True when the edits were written to disk, so the header says so. */
-  applied?: boolean
+  /**
+   * How many edits were WRITTEN to disk. A count, not a flag: `applyFixEdits` skips an
+   * edit whose span moved under it, so a run can write some of `r.verified` and skip the
+   * rest. A boolean here made the report say every verified change had been written
+   * whenever any one of them had been — the one number a reader checks after `--apply`,
+   * wrong in exactly the case that matters. Absent (or 0) means nothing was written.
+   */
+  applied?: number
   /** Absolute path of the edited source, used ONLY for the frame's terminal hyperlink. */
   sourceRoot?: string
 }
@@ -61,13 +67,20 @@ export function fixReportLines(r: FixReport, opts: FixRenderOptions = {}): Line[
     return out
   }
 
+  // A count of edits actually written, and whether that is all of them. `skipped > 0` is
+  // the partial case: `applyFixEdits` declined an edit whose span no longer matched.
+  const written = opts.applied ?? 0
+  const wrote = written > 0
+  const skipped = wrote ? r.verified.length - written : 0
   out.push([
-    t(opts.applied === true ? '✓ ' : '● ', opts.applied === true ? TONE.good : TONE.warn),
+    t(wrote ? '✓ ' : '● ', wrote ? TONE.good : TONE.warn),
     t(name, TONE.strong),
     t(' — ', TONE.quiet),
-    t(`${groupDigits(r.verified.length)} change${r.verified.length === 1 ? '' : 's'} that are safe to make`, TONE.good),
+    t(`${groupDigits(r.verified.length)} change${r.verified.length === 1 ? '' : 's'} that `
+      + `${r.verified.length === 1 ? 'is' : 'are'} safe to make`, TONE.good),
     t(r.located.length > 0
-      ? `, ${groupDigits(r.located.length)} place${r.located.length === 1 ? '' : 's'} that need you`
+      ? `, ${groupDigits(r.located.length)} place${r.located.length === 1 ? '' : 's'} that `
+        + `${r.located.length === 1 ? 'needs' : 'need'} you`
       : '', TONE.warn),
   ])
   for (const l of wrap(
@@ -76,7 +89,7 @@ export function fixReportLines(r: FixReport, opts: FixRenderOptions = {}): Line[
     + `${engines === 'interpreted + compiled' ? 'both engines' : engines} — the result was identical `
     + 'every time. A change that altered the result was thrown away and is not shown.',
     width - 2, '  ')) out.push([t(l, TONE.faint)])
-  if (opts.applied !== true && r.verified.length > 0) {
+  if (!wrote && r.verified.length > 0) {
     out.push([t('  Nothing has been written. Add ', TONE.quiet),
       t('--apply', TONE.strong), t(' to make these edits.', TONE.quiet)])
   }
@@ -94,11 +107,16 @@ export function fixReportLines(r: FixReport, opts: FixRenderOptions = {}): Line[
   }
   out.push(blank())
   out.push([
-    t(opts.applied === true ? '✓ ' : '🔧 ', TONE.good),
+    t(wrote ? '✓ ' : '🔧 ', TONE.good),
     t(`${groupDigits(r.verified.length)} safe to apply`, TONE.strong),
     t(r.located.length > 0 ? `, ${groupDigits(r.located.length)} need you` : '', TONE.strong),
-    t(opts.applied === true
-      ? '  ·  written to disk'
+    // Name the skipped edits. Silently reporting "written to disk" over a partial write
+    // is the failure this count exists to prevent: the reader would go on believing the
+    // file holds all of them.
+    t(wrote
+      ? (skipped > 0
+          ? `  ·  ${groupDigits(written)} written to disk, ${groupDigits(skipped)} skipped (the source moved under the edit)`
+          : '  ·  written to disk')
       : '  ·  add --apply to make them  ·  exiting 0 (nothing written)', TONE.faint),
   ])
   return out
@@ -114,7 +132,10 @@ function verifiedLines(f: VerifiedFix, opts: FixRenderOptions): Line[] {
   const b = f.benefit
   const effects: string[] = []
   if (b.antiPatternsAfter !== b.antiPatternsBefore) {
-    effects.push(`removes 1 of the ${b.antiPatternsBefore} arms that hide their first character`)
+    // The measured delta, not a hard-coded 1: the rewrite replaces a COMBINATOR, and a
+    // combinator shared by several arms removes a finding at each of them.
+    const removed = b.antiPatternsBefore - b.antiPatternsAfter
+    effects.push(`removes ${groupDigits(removed)} of the ${b.antiPatternsBefore} arms that hide their first character`)
   }
   if (b.ungatedChoicesAfter !== b.ungatedChoicesBefore) {
     effects.push(`${b.ungatedChoicesBefore - b.ungatedChoicesAfter} fewer choice(s) the parser must guess at`)

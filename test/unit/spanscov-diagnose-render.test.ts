@@ -132,7 +132,7 @@ describe('the failure header, singular and plural', () => {
 
   it('says "1 other choice" in the singular', () => {
     const d = diagnosis({ findings: [finding({ id: 'A#0' })], summary: { totalChoices: 2, gated: 1 } })
-    expect(renderDiagnosis(d, { name: 'g.ts', width: 100 })).toContain('1 other choice already pick')
+    expect(renderDiagnosis(d, { name: 'g.ts', width: 100 })).toContain('1 other choice already picks')
   })
 })
 

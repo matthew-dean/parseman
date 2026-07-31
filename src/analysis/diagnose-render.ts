@@ -262,7 +262,8 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
   ])
   for (const l of wrap(
     (s.gated > 0
-      ? `${groupDigits(s.gated)} other choice${s.gated === 1 ? '' : 's'} already pick the right `
+      ? `${groupDigits(s.gated)} other choice${s.gated === 1 ? '' : 's'} already `
+        + `${s.gated === 1 ? 'picks' : 'pick'} the right `
         + 'alternative straight from the next character. '
       : '')
     + 'None of this is a correctness bug — the grammar parses the same either way; it is work '
