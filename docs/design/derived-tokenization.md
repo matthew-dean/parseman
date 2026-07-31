@@ -819,11 +819,90 @@ originally recorded. But the 4.05 ms numerator came out of the **same unreliable
 separate-process regime** as the 12.540 ms denominator, so it is not trustworthy
 either.
 
-> **Honest status: the scan-cost share is UNKNOWN.** It must be re-measured with the
-> §16.4 methodology — interleaved rounds in one process — before any number is quoted.
-> What survives unchanged is the qualitative point, and it now has *less* margin than
-> it appeared to: **derived tokenization is not free, and if the parser saves less than
-> the scanner costs, it loses.**
+> ~~**Honest status: the scan-cost share is UNKNOWN.**~~ **ANSWERED — see §10.4.**
+> What survives unchanged is the qualitative point: **derived tokenization is not
+> free, and if the parser saves less than the scanner costs, it loses.** §10.4 is
+> the measurement of both sides of that inequality.
+
+### 10.4 MEASURED: the absorbable share [FOUNDATION]
+
+This closes §10.3 and the §17 open question *"what does on-demand scanning actually
+cost?"*. Both sides of the inequality are now numbers, on the **shipping** jess
+grammars and the **AST** path (G10), 61 interleaved rounds in one process with the
+noise floor carried live as a second registration of the same parse.
+
+Method: the shipped artifact is rewritten so **every** `charCodeAt`, `codePointAt`,
+`slice` and regex `exec` is counted and its input position recorded — and the
+rewritten artifact is **gated on producing a tree identical to the shipped one**
+before a single count is reported (§16.3). The recorded work is then **replayed on
+its own**, in the same process as the real parse. Instruments and reproduction:
+`scratchpad/token-cursor/`.
+
+#### The census — exact counts, no sampling
+
+| | css / `benchmark.css` | less / `benchmark.less` |
+| --- | ---: | ---: |
+| corpus bytes | 123,029 | 106,802 |
+| `charCodeAt` + `codePointAt` | 590,937 | 1,248,495 |
+| regex `exec` calls | 33,047 | 20,818 |
+| … of which **FAILED** | **13,933 (42.2%)** | **11,803 (56.7%)** |
+| `input.slice` calls / bytes | 10,943 / 117,427 | 46,694 / 483,251 |
+| **total input char reads** | **697,034** | **1,311,540** |
+| distinct positions touched | 123,029 (**100%**) | 106,802 (**100%**) |
+| **reads per input byte** | **5.67** | **12.28** |
+
+#### The timing
+
+| case | css, share of parse | less, share of parse |
+| --- | ---: | ---: |
+| `parse` (AST) — 5.205 ms css / 15.628 ms less, min-of-mins | — | — |
+| `parse-control` (the in-run noise floor) | +3.0% | +2.8% |
+| `replay-cc` — the recorded char reads | 5.4% | 3.8% |
+| `replay-ex` — the recorded regex execs | 13.5% | 2.9% |
+| **`replay-all` — the ABSORBABLE SHARE** | **18.6%** | **7.1%** |
+| `replay-slice` — leaf materialisation | 0.8% | 1.2% |
+| **`scan-emit` — what the CURSOR PAYS** | **7.9%** | **1.4%** |
+
+> **Net ceiling for a scanner-shaped change: ~10.7 points on css, ~5.7 on less.**
+>
+> **The cursor absorbs 2.4× (css) / 5.1× (less) what a blind one-pass tokenizer
+> does** by time, and **5.7× / 12.3×** by read count. §10.3's question — does a
+> token cursor move substantially *more* char-level work into the scanner than a
+> css-syntax-3 tokenizer does? — is answered **yes**, with a multiple.
+
+`replay-all` is a **lower bound**: it re-executes the reads but not the comparisons,
+branches and loop bookkeeping around them, nor the dispatch-key walks, nor the
+keyword-boundary and `noTrivia` predicates the scanner deletes outright (§4, §7).
+`scan-emit` is a **floor**: a scanner written for this measurement, emitting
+`(kind, start, end, tight)` at the finest context-free grain — it is not a proposal.
+
+#### 10.4.1 The redundancy INVERTS against the time share
+
+**less reads each byte 2.2× more often than css and yet character work is a 2.6×
+smaller share of its parse time.** less's 3× slower parse is not character reading.
+
+> So the scanner headroom is a **css** result, and §9.1.1's "redirect to the
+> save/restore mass" is specifically the **less** prescription. They are not
+> competing recommendations; they are one recommendation each, and which applies
+> depends on the dialect. A single blended figure would have hidden both.
+
+#### 10.4.2 42–57% of every regex terminal execution FAILS
+
+13,933 of 33,047 on css; 11,803 of 20,818 on less. On css that failing population
+sits inside the **largest** single char-cost category — `replay-ex` at 13.5% of
+parse, more than twice `replay-cc`.
+
+> This is §3's arms-tried cost model, measured rather than asserted: a failed arm
+> re-reads the bytes the next arm is about to read. It is the population
+> token-keyed dispatch removes **by construction**, and it is the most concrete
+> target the scanner half of this design has.
+
+#### 10.4.3 A cost that is NOT there
+
+Regex objects allocated during a parse: **0**, both dialects. The emitted regex
+literals sit in a per-rule IIFE closure evaluated once at module load, not per
+call. Recorded because a per-call `RegExp` construction would have been a real cost
+and the emitted shape looks like one; it is not.
 
 ---
 
@@ -1544,11 +1623,11 @@ this floor.
   yes on every axis, by 2.1% of parse time. The question that replaces it is
   **whether anything in dispatch keying is worth further effort at all** — §9.1.1 says
   the entire remaining headroom there is under 2.4%.
-- **What does on-demand scanning actually cost?** §10.3's every-position figure is
-  withdrawn along with its denominator, so there is now **no** measured scan-cost
-  share — neither a ceiling nor a projection. This is the question that decides
-  whether the scanner half of the design is a net win at all, and it is wide open.
-  Re-measure with §16.4's methodology.
+- ~~**What does on-demand scanning actually cost?**~~ **ANSWERED (§10.4).** The
+  absorbable share is **18.6% of css parse time and 7.1% of less**; the cursor pays
+  **7.9% / 1.4%**; net ceiling **~10.7 / ~5.7 points**. The question that replaces
+  it is **which half of the design to build first per dialect** — §10.4.1 shows css
+  and less give opposite answers.
 - **Does alias resolution belong at scan time, or as a separate normalization pass?**
   (§14.5.) The deciding interaction is specific and known: **escapes change token
   length**, so a folded run's length differs from its source length, and spans plus
@@ -1613,7 +1692,7 @@ In rough order of likelihood:
 | --- | --- |
 | **1.83× parse speedup** | **WITHDRAWN — it was NOISE (§16.4).** Three byte-identical artifacts measured 5.961 / 6.101 / 11.952 ms in separate processes |
 | **Chain baseline = 12.540 ms** | **WITHDRAWN.** The interleaved figure is **6.092 ms** |
-| Scanning every position = 32% of parse time | **WITHDRAWN (§10.3)** — wrong denominator; re-dividing gives ~66%, but the numerator is from the same bad regime. **Share is UNKNOWN** |
+| Scanning every position = 32% of parse time | **WITHDRAWN (§10.3)** — wrong denominator. **REPLACED by §10.4:** absorbable share **18.6% css / 7.1% less**, scanner cost **7.9% / 1.4%** |
 | Maximal munch uniform over the whole alphabet | **FALSIFIED (§10.1)** — 7 tokens for 123 KB |
 | A searched discriminator may not be available | **FALSIFIED (§9.1.2)** — `phash` finds an injective (position pair, multiplier, modulus) over the real key set |
 
@@ -1626,6 +1705,11 @@ In rough order of likelihood:
 | 165 of 558 boundaries converted; **393 fall back solely on reported nullability** | **FOUNDATION** | **measured — a sharper nullability analysis converts more, by the same predicate (#26)** |
 | `_cstRawChildren` never needed a mark even for nullable terms | **FOUNDATION** | **measured** — no trivia function pushes a raw child |
 | `_mk*` prefixes are minted by three emitters | | **caveat — §8.1.1's "46.6% is sequence boundary" is an UPPER BOUND.** The artifact delta is instrument-independent and stands |
+| **Absorbable share = 18.6% of css parse time, 7.1% of less; cursor pays 7.9% / 1.4%; net ceiling ~10.7 / ~5.7 points** | **FOUNDATION** | **measured (§10.4) — closes §10.3 and the §17 open question. AST path, shipping grammars, 61 interleaved rounds, instrumented artifact gated on tree identity** |
+| Current parser reads each input byte **5.67×** (css) / **12.28×** (less); coverage 100% both | **FOUNDATION** | **measured (§10.4) — exact counts. A cursor reads it once** |
+| **Redundancy INVERTS against time share**: less reads 2.2× more per byte, char work is a 2.6× smaller share of its parse | **FOUNDATION** | **measured (§10.4.1) — scanner headroom is a css result; save/restore is the less prescription** |
+| **42.2% (css) / 56.7% (less) of regex terminal executions FAIL** | **FOUNDATION** | **measured (§10.4.2) — §3's arms-tried cost model, and the most concrete target the scanner half has** |
+| Regex objects allocated per parse = 0 | **ORTHOGONAL** | **measured (§10.4.3) — literals sit in a load-time IIFE closure, not per call** |
 | Experiment #20 cleared the less regression: −902 B, back to exactly pre-trie size | **LEGACY** | **measured, landed `2413e1f`** |
 | trie-to-id + dense `switch`: **+10,867 raw / +160 gzip** | **LEGACY** | **measured — LOST.** Cause is the artifact printer indenting case bodies one level deeper; net of indentation the case labels are *smaller* |
 | Ids are already `1..n` with no gaps | **LEGACY** | **measured — no renumbering or `table[]` was warranted; the dense index already existed** |

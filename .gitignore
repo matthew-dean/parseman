@@ -14,3 +14,9 @@ coverage/
 
 # Reference worktrees materialised by `pnpm perf:guard:grammars`.
 .cache/
+
+# token-cursor scratch: copied shipping artifacts and recorded traces are inputs,
+# not sources. The instruments are committed; the 13 MB grammars are not.
+scratchpad/token-cursor/rig*/grammar.*.js
+scratchpad/token-cursor/rig*/trace.*
+scratchpad/token-cursor/rig*/node_modules

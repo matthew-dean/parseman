@@ -5,6 +5,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **The token cursor's absorbable share is measured, and it is not the scan cost.**
+  `derived-tokenization.md` §10.3 stood as UNKNOWN — whether a token cursor moves
+  substantially more character-level work into the scanner than a css-syntax-3
+  tokenizer does. It does: the shipping grammars read each input byte **5.67×**
+  (css) and **12.28×** (less) at 100% coverage, against a cursor's one. By time,
+  on the AST path, that work is **18.6% of css parse time and 7.1% of less**,
+  against a scanner cost of **7.9% / 1.4%** — a net ceiling of **~10.7 / ~5.7
+  points**. Two things fall out that were not being asked for: the redundancy
+  **inverts** against the time share, so scanner headroom is a css result while
+  less's mass is elsewhere; and **42–57% of every regex terminal execution fails**,
+  which is §3's arms-tried cost model measured. New in §10.4; instruments in
+  `scratchpad/token-cursor/`.
+
 - **A choice arm marks the root trivia log only when the arm can reach it.** Every
   other mark in `emitFirstMatch` asks a question about the arm; this one asked only
   whether the grammar has root trivia at all, so it was emitted at 1,046 css sites
