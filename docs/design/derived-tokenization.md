@@ -347,6 +347,69 @@ them is a prediction about this design.
 > majority (17.5% vs 4.2%)** — which sharpens the target: the win is in *not having
 > to unwind*, not in cheapening the marks.
 
+### 8.1.1 Which sink each mark guards — and what that does to the claim (measured)
+
+§8.1 says where the bytes are. This says **what they are protecting**, which is the
+question that decides whether a token cursor deletes them or merely renames them.
+
+`bench/size/rollback-attribution.ts` attributes every mark and every guarded restore
+in a built artifact to the `codegen.ts` site that emitted it. Attribution is by
+**mark-variable prefix**: `v(ctx, prefix)` gives each emission site a unique prefix,
+so the mapping is exact rather than pattern-guessed. Run against the shipped
+`lib/grammar/ast.js` of all four jess dialects:
+
+| Grammar | artifact | mark+restore | sequence boundary | everything else |
+| --- | ---: | ---: | ---: | ---: |
+| css | 3,336,650 B | 806,025 B (24.2%) | 375,524 B (**46.6%**) | 430,501 B (**53.4%**) |
+| less | 3,937,767 B | 1,059,125 B (26.9%) | 442,460 B (41.8%) | 616,665 B (58.2%) |
+| scss | 2,006,731 B | 653,805 B (32.6%) | 318,414 B (48.7%) | 335,391 B (51.3%) |
+| jess | 2,052,239 B | 560,207 B (27.3%) | 256,470 B (45.8%) | 303,737 B (54.2%) |
+
+> The css total reads 806,025 B here against §8.1's 723,605 B. Same artifact,
+> **wider category**: this pass also counts the `_fields`, `_errors` and `dispatch`
+> selector marks (`_mkf`, `_derr`, `_ds*`). Use §8.1's 723,605 B for the
+> whole-artifact category table and this pass for the *split*, which is what it
+> exists to produce.
+
+**The sequence boundary is trivia-only.** Its four marks are `_mk`
+(`_cstRawChildren`), `_mktl` (`_cstTriviaLog`), `_mklg` (`_triviaLog`) and `_mkrlg`
+(`_rootTriviaLog`) — `emitSeqValues`, both the capturing and the non-capturing
+branch. Across all **4,268** css sequence-boundary commit sites, the number
+mentioning `_cstLeaves` is **0** and the number mentioning `_cstChildren` is **0**.
+What this rollback undoes is never a leaf and never a node. It is: *I scanned
+whitespace forward and recorded it, then the next term matched empty, so that
+whitespace belongs outside the sequence.* `emitLeafCapture` returns `[]` under
+`ctx.capAsTrivia`, which is why no leaf mark is taken here at all.
+
+So **the CST-commit hazard does not bind at sequence boundaries.** There is no
+committed leaf to defer, therefore no commit point is forced at each boundary,
+therefore the save/restore is **deleted rather than renamed**. On a token cursor the
+boundary's decision — "did the term consume past the scanned trivia?" — is
+`endTok > scanTok`, and the trivia was never speculatively appended anywhere,
+because it is a scan-time property of the token (§4).
+
+**The other half is where the hazard does bind.** `_fc*` (`emitFallible` over a
+sequence term whose `mayLeavePartialCapture` is true — 152,015 B on css) is the
+genuine case: an earlier term captured **leaves** and a later term can fail. `_cm*`
+(choice arms, 180,883 B) and `_ds*`/`_nt*`/`_at*` are the same shape. These delete
+only if a term's leaf pushes can be **withheld** until the sequence succeeds — and
+withholding them into a side buffer just renames the mark.
+
+**They can be withheld, because a leaf is derivable from a token.** Of the **766**
+leaf-capture sites in the css artifact, the emitted `value` expression is a **literal
+constant at 418** and the **matched input slice at 264** — **89%** are exactly
+`input.slice(tokStart, tokEnd)`, or a constant selected by the token id, and `span`
+is the token's own extent. Only **45** come from a named-rule call
+(`_r_AtRuleKeyword`) and ~38 from labels. A sequence can therefore record a token
+index range and materialise its leaves at the owning `node()`, with a per-site
+fallback for the ~11% that are not token-derivable.
+
+**Status.** The sequence-boundary half is **measured** as clean-deleting. The
+`emitFallible`/choice-arm half is **hypothesis**, plausible on the 89% derivability
+figure, with no prototype. The 46.6/53.4 split is the correction to make to the
+plan: **token-cursor sequence emission alone addresses under half** the mark/restore
+bytes on css, and the larger half needs deferred leaf materialisation to follow it.
+
 ### 8.2 Per-rule save + rollback share
 
 | rule | bytes | save+rollback |
