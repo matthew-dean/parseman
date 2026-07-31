@@ -20,10 +20,10 @@ export type {
   FixSample, FixCode, FixEngine, ProposeFixOptions,
 } from './fix.ts'
 
-export { renderFixReport } from './fix-render.ts'
+export { renderFixReport, fixReportLines } from './fix-render.ts'
 export type { FixRenderOptions } from './fix-render.ts'
 
-export { renderDiagnosis, groupDigits } from './diagnose-render.ts'
+export { renderDiagnosis, diagnosisLines, groupDigits } from './diagnose-render.ts'
 export type { DiagnoseRenderOptions } from './diagnose-render.ts'
 
 export { measureChoiceCost, armFirstSets } from './corpus.ts'

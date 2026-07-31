@@ -252,7 +252,9 @@ async function main(argv: readonly string[]): Promise<number> {
     const limitFlag = args.flags.get('limit')
     human(renderDiagnosis(d, {
       color, width, name: label, cost, armFirstSets: sets, armLabels: labels,
-      ...(typeof corpusFlag === 'string' ? { corpusRoot: resolve(corpusFlag) } : {}),
+      // Sample names are already cwd-relative, so the hyperlink root is the cwd —
+      // joining the corpus dir again produced `fixtures/css/fixtures/css/decls.css`.
+      ...(typeof corpusFlag === 'string' ? { corpusRoot: process.cwd() } : {}),
       ...(typeof limitFlag === 'string' ? { limit: Number(limitFlag) } : {}),
     }))
     if (json !== undefined) writeJson(json, d)

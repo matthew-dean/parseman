@@ -60,6 +60,26 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   renderer reads the arms from the walk that assigned the ids instead of re-walking and
   drifting out of step — which it did, and mislabelled every arm.
 
+- **Grouped by CAUSE, not by site.** The first cut printed thirteen findings, each
+  carrying its own copy of the explanation, the `do` line and the `ok as-is?` line: three
+  distinct explanations rendered nine times across 146 lines. Density that comes from
+  repetition is not detail. A cause is now stated ONCE, given a glyph, and followed by
+  its sites; the first site in each group is expanded with its full arm ordering and the
+  corpus frame that illustrates the cause, and the rest are an aligned table naming the
+  offending arm. The accept snapshot is ONE pasteable line at the end rather than one per
+  site. Measured on `examples/css/parser.ts --export cssRules --corpus fixtures/css`:
+  **146 lines → 100**, and every explanation now appears exactly once (asserted by test).
+  There is deliberately NO glossary: a glyph is defined at the head of the only group it
+  labels, so shipping a glossary as well would re-create the duplication this removes.
+
+- **Rich on a TTY, plain when piped.** Colour carries severity and importance-within-a-
+  finding, a glyph carries the cause class (distinct in SHAPE, so the report survives
+  both colour-blindness and a stripped log), horizontal rules separate groups, and the
+  arm tables are column-aligned so an ANY arm or an overlap is a shape before it is
+  text. `ACTIONABLE` and `LOCATED` differ in glyph, colour and weight rather than only in
+  spelling. All of it lives in the styled path; the plain path is the same content
+  without escapes.
+
 - **The rendering is the deliverable, and it is short.** A clean grammar renders in two
   lines. Findings group under one shared explanation instead of repeating a paragraph per
   site, a long note is printed once at the end and referenced, and a repeated instruction
@@ -80,7 +100,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   component jess renders compiler errors with, so a caret in parseman and a caret in
   jess look the same. Width is pinned to 80 off-TTY (`--width` overrides), and the
   rendering is verified byte-identical across `TERM` / `COLORFGBG` / `COLUMNS` /
-  `NO_COLOR`. The dependency does not reach the library: `dist/index.js` contains no
+  `NO_COLOR`. Styling is applied by asking linecraft what a tone's escape codes ARE
+  (once per tone, cached) and wrapping unchanged text in them, rather than by laying the
+  line out with `Grid`/`Styled` components: those own their cell layout — `Styled`
+  left-trims its content, a grid reflows a long cell — and both times a styled line ended
+  up disagreeing with the plain one in CONTENT rather than in styling. Wrapping unchanged
+  text makes that parity structural, and a test strips the escapes and asserts the two
+  are equal. The dependency does not reach the library: `dist/index.js` contains no
   `linecraft`, none of the new modules, and every size-guard fixture is still exactly at
   its committed ceiling.
 
@@ -91,6 +117,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   what the arm actually leads with: a keyword regex gets the `word()`/`keywords()`
   rewrite, a `scanTo` fallback gets "this is usually intentional; accept it", and
   anything else gets the general form.
+
+- **Exit codes are asserted by running the CLI** (`test/unit/cli-exit-codes.test.ts`),
+  not by unit-testing the branch that computes them. A user reported `13 blocking
+  findings` printed with exit 0; the cause was a stale build rather than the source, but
+  that distinction is invisible from outside and irrelevant to whoever's CI passed
+  anyway. Nine cases now cover 0 / 1 / 2 through the real argv parsing, the real
+  renderers and the real process exit, including the rule-map entry as well as a single
+  root.
+
+- **Fixed a shared-temp-directory race in the size probe** (`bench/size/probe.ts`). The
+  probe path is deliberately FIXED so the lowered module's embedded source path cannot
+  make the emitted bytes differ run to run — which also makes it SHARED, so two probes of
+  the same unit running at once clobber each other and the loser reports a fraction of
+  the real byte count. That failed the build with a confident and wrong message (`BANK
+  THE WIN — output got smaller`). The path stays fixed and access is now exclusive via a
+  lock directory, so concurrent probes queue instead of trampling.
 
 - **Captured CLI output** for review at `docs/samples/cli-output.md` — verbatim, non-TTY,
   with the command that produced each block.

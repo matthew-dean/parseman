@@ -11,15 +11,23 @@
  * step; what a reader gets by default is what would change, in the form they would read
  * it in a review.
  *
- * LOCATED sites print too, and they print the REASON, never advice. A site that cannot
- * be rewritten is still worth knowing about — that is the difference between "here is
- * exactly where the problem is" and silence.
+ * TWO STATES, MADE VISUALLY DISTINCT
+ * ----------------------------------
+ * ACTIONABLE and LOCATED are the whole model, and in the first cut they were two words
+ * in the same colour — which is to say, not a distinction at all until you read them.
+ * They now differ in glyph, colour and weight, so a reader triages the report by
+ * scanning the left margin rather than by parsing it. LOCATED prints the REASON and
+ * never advice: a site that cannot be rewritten is still worth knowing about, and that
+ * is the difference between "here is exactly where the problem is" and silence.
  *
- * Like `diagnose-render.ts`, this emits ROWS and never an escape byte; `terminal.ts`
- * owns every interaction with a terminal.
+ * Like `diagnose-render.ts`, this emits LINES OF SPANS and never an escape byte;
+ * `terminal.ts` owns every interaction with a terminal.
  */
 import type { FixReport, VerifiedFix, LocatedFinding } from './fix.ts'
-import { TONE, codeFrame, groupDigits, render, row, wrap, type RenderTarget, type Row } from './terminal.ts'
+import {
+  DEFAULT_WIDTH, TONE, blank, codeFrame, groupDigits, render, rule, t, wrap,
+  type Line, type RenderTarget,
+} from './terminal.ts'
 
 export type FixRenderOptions = RenderTarget & {
   name?: string
@@ -29,57 +37,61 @@ export type FixRenderOptions = RenderTarget & {
   sourceRoot?: string
 }
 
-export function fixReportRows(r: FixReport, opts: FixRenderOptions = {}): Row[] {
+export function fixReportLines(r: FixReport, opts: FixRenderOptions = {}): Line[] {
   const name = opts.name ?? 'grammar'
-  const out: Row[] = []
+  const width = opts.width ?? DEFAULT_WIDTH
+  const out: Line[] = []
 
   if (!r.ok) {
-    out.push(row(`✗ ${name} — no fix can be verified`, TONE.bad))
-    for (const l of wrap(r.blocked ?? 'the verification loop could not run', 76, '  ')) out.push(row(l))
-    out.push(row('  Nothing is offered: an unverified rewrite is not a fix.', TONE.quiet))
+    out.push([t('✗ ', TONE.loud), t(name, TONE.strong), t(' — no fix can be verified', TONE.bad)])
+    for (const l of wrap(r.blocked ?? 'the verification loop could not run', width - 4, '  ')) out.push([t(l)])
+    out.push([t('  Nothing is offered: an unverified rewrite is not a fix.', TONE.quiet)])
     return out
   }
 
   const engines = r.engines.join(' + ')
   if (r.verified.length === 0 && r.located.length === 0) {
-    out.push(row(`✓ ${name} — nothing to fix`, TONE.good))
-    out.push(row(`  no rewritable site found; corpus ${groupDigits(r.corpus.samples)} sample(s), `
-      + `${groupDigits(r.corpus.bytes)} bytes`, TONE.quiet))
+    out.push([t('✓ ', TONE.good), t(name, TONE.strong), t(' — nothing to fix', TONE.good)])
+    out.push([t(`  no rewritable site found; corpus ${groupDigits(r.corpus.samples)} sample(s), `
+      + `${groupDigits(r.corpus.bytes)} bytes`, TONE.quiet)])
     return out
   }
 
-  out.push(row(
-    `${opts.applied === true ? '✓' : '●'} ${name} — `
-    + `${groupDigits(r.verified.length)} verified fix${r.verified.length === 1 ? '' : 'es'}`
-    + `${r.located.length > 0 ? `, ${groupDigits(r.located.length)} located site${r.located.length === 1 ? '' : 's'} with no rewrite` : ''}`,
-    opts.applied === true ? TONE.good : TONE.warn,
-  ))
-  out.push(row(
-    `  verified by re-parsing ${groupDigits(r.corpus.samples)} sample(s) / ${groupDigits(r.corpus.bytes)} bytes`
-    + ` on ${engines}; output identical`, TONE.quiet,
-  ))
+  out.push([
+    t(opts.applied === true ? '✓ ' : '● ', opts.applied === true ? TONE.good : TONE.warn),
+    t(name, TONE.strong),
+    t(' — ', TONE.quiet),
+    t(`${groupDigits(r.verified.length)} verified fix${r.verified.length === 1 ? '' : 'es'}`, TONE.good),
+    t(r.located.length > 0
+      ? `, ${groupDigits(r.located.length)} located site${r.located.length === 1 ? '' : 's'} with no rewrite`
+      : '', TONE.warn),
+  ])
+  out.push([t(`  re-parsed ${groupDigits(r.corpus.samples)} sample(s) / ${groupDigits(r.corpus.bytes)} bytes`
+    + ` on ${engines} — output identical`, TONE.faint)])
   if (opts.applied !== true && r.verified.length > 0) {
-    out.push(row('  PREVIEW — nothing was written. Re-run with --apply to write these edits.', TONE.quiet))
+    out.push([t('  PREVIEW', TONE.strong), t(' — nothing was written. Re-run with ', TONE.quiet),
+      t('--apply', TONE.strong), t(' to write these edits.', TONE.quiet)])
   }
-  out.push(row(''))
 
-  for (const f of r.verified) out.push(...verifiedRows(f, opts))
-  for (const l of r.located) out.push(...locatedRows(l))
+  for (const f of r.verified) out.push(...verifiedLines(f, opts))
+  for (const l of r.located) out.push(...locatedLines(l, opts))
 
   if (r.frozen.length > 0) {
-    out.push(row(`  ${groupDigits(r.frozen.length)} subtree(s) reused verbatim (no faithful rebuild): `
+    out.push(rule(width, TONE.frame))
+    out.push([t(` ${groupDigits(r.frozen.length)} subtree(s) reused verbatim (no faithful rebuild): `
       + r.frozen.slice(0, 6).map(f => `${f.rule}/${f.tag}`).join(', ')
-      + (r.frozen.length > 6 ? ', …' : ''), TONE.quiet))
+      + (r.frozen.length > 6 ? ', …' : ''), TONE.faint)])
   }
   return out
 }
 
 export function renderFixReport(r: FixReport, opts: FixRenderOptions = {}): string {
-  return render(fixReportRows(r, opts), opts)
+  return render(fixReportLines(r, opts), opts)
 }
 
-function verifiedRows(f: VerifiedFix, opts: FixRenderOptions): Row[] {
-  const out: Row[] = []
+function verifiedLines(f: VerifiedFix, opts: FixRenderOptions): Line[] {
+  const out: Line[] = []
+  const width = opts.width ?? DEFAULT_WIDTH
   const b = f.benefit
   const effects: string[] = []
   if (b.antiPatternsAfter !== b.antiPatternsBefore) effects.push(`anti-patterns ${b.antiPatternsBefore} → ${b.antiPatternsAfter}`)
@@ -95,11 +107,18 @@ function verifiedRows(f: VerifiedFix, opts: FixRenderOptions): Row[] {
   }
   const effect = effects.join(' · ')
 
-  out.push(row(`ACTIONABLE ${f.id}  ${f.code}`, { color: 'green', bold: true }))
-  // The grammar SOURCE is the world this fix lives in, so show it as a frame with the
-  // caret under the term being replaced rather than as a bare `path:line:col`. The
-  // frame's own message carries the measured effect, so no line is spent repeating the
-  // heading directly above it.
+  out.push(blank())
+  out.push(rule(width, TONE.frame))
+  out.push([
+    t(' ✔ ', TONE.good),
+    t('ACTIONABLE', { color: 'green', bold: true }),
+    t('  '),
+    t(f.id, TONE.ident),
+    t(`  ${f.code}`, TONE.faint),
+  ])
+  // The grammar SOURCE is the world this fix lives in, so it is a frame with the caret
+  // under the term being replaced rather than a bare `path:line:col`. The frame's own
+  // message carries the measured effect, so no line repeats the heading above it.
   if (f.edit !== undefined) {
     out.push(...codeFrame({
       path: f.edit.path,
@@ -111,30 +130,39 @@ function verifiedRows(f: VerifiedFix, opts: FixRenderOptions): Row[] {
       message: effect,
       shortMessage: `→ ${f.edit.newText}`,
       type: 'info',
-    }, opts, '  '))
+    }, opts, '   '))
   }
   else {
-    out.push(row(`  - ${f.before}`, TONE.bad))
-    out.push(row(`  + ${f.after}`, TONE.good))
-    out.push(row(`  effect  ${effect}`))
+    out.push([t('   - ', TONE.bad), t(f.before, TONE.bad)])
+    out.push([t('   + ', TONE.good), t(f.after, TONE.good)])
+    out.push([t('   effect  ', TONE.quiet), t(effect, TONE.strong)])
   }
   if (b.codegenBytesBefore !== null && b.codegenBytesAfter !== null && b.codegenBytesAfter !== b.codegenBytesBefore) {
     const d = b.codegenBytesAfter - b.codegenBytesBefore
-    out.push(row(`  cost    compiled artifact ${d > 0 ? '+' : ''}${groupDigits(d)} B`, TONE.quiet))
+    out.push([t('   cost    ', TONE.faint),
+      t(`compiled artifact ${d > 0 ? '+' : ''}${groupDigits(d)} B`, TONE.faint)])
   }
-  out.push(row(`  proven  applied, recompiled, ${groupDigits(f.evidence.samples)} sample(s) re-parsed on `
-    + `${f.evidence.engines.join(' + ')} — output identical`))
-  out.push(row(''))
+  out.push([t('   proven  ', TONE.quiet),
+    t(`applied, recompiled, ${groupDigits(f.evidence.samples)} sample(s) re-parsed on `
+      + `${f.evidence.engines.join(' + ')} — output identical`, TONE.good)])
   return out
 }
 
-function locatedRows(l: LocatedFinding): Row[] {
-  const out: Row[] = []
-  out.push(row(`LOCATED    ${l.id}  ${l.code}`, { color: 'yellow', bold: true }))
-  out.push(row(`  site    ${l.site}`, TONE.quiet))
-  const lines = wrap(l.reason, 66, '')
-  out.push(row(`  reason  ${lines[0] ?? ''}`))
-  for (const x of lines.slice(1)) out.push(row(`          ${x}`))
-  out.push(row(''))
+function locatedLines(l: LocatedFinding, opts: FixRenderOptions): Line[] {
+  const out: Line[] = []
+  const width = opts.width ?? DEFAULT_WIDTH
+  out.push(blank())
+  out.push(rule(width, TONE.frame))
+  out.push([
+    t(' ◑ ', TONE.warn),
+    t('LOCATED', { color: 'yellow', bold: true }),
+    t('     '),
+    t(l.id, TONE.ident),
+    t(`  ${l.code}`, TONE.faint),
+  ])
+  out.push([t('   site    ', TONE.faint), t(l.site, TONE.quiet)])
+  const lines = wrap(l.reason, width - 12, '')
+  out.push([t('   reason  ', TONE.quiet), t(lines[0] ?? '', TONE.warn)])
+  for (const x of lines.slice(1)) out.push([t('           '), t(x, TONE.warn)])
   return out
 }

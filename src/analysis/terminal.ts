@@ -1,62 +1,95 @@
 /**
  * The ONLY module in parseman that talks to a terminal.
  *
- * Everything above it produces DATA — rows of text with a semantic style — and this
- * file turns rows into bytes. That split is not tidiness; it is what makes the
- * rendering diffable. A renderer that emits escape sequences inline has two outputs
- * (styled and plain) that can drift apart, and the plain one is the one a snapshot,
- * a CI log and `docs/samples/` all read.
+ * Everything above it produces DATA — lines made of spans, each span carrying text and a
+ * semantic tone — and this file turns lines into bytes. That split is not tidiness; it is
+ * what makes the rendering diffable. A renderer that emits escape sequences inline has
+ * two outputs (styled and plain) that can drift apart, and the plain one is what a
+ * snapshot, a CI log and `docs/samples/` all read.
  *
  * WHY LINECRAFT AND NOT HAND-ROLLED ANSI
  * --------------------------------------
  * The first cut of this CLI carried its own `ANSI` constant table. Writing that file
  * silently dropped the ESC bytes, so colour was dead for an entire session and nothing
- * said so — the output still looked structured, because `[2m` prints as `[2m`. That is
- * the whole argument: escape sequences are invisible failure surface, and a library that
- * owns them removes the surface. jess already renders its diagnostics through
- * linecraft (`packages/compiler/src/diagnostics.ts`, `packages/lint/src/index.ts`), so
- * following the same idiom also means a jess user and a parseman user see the same shape
- * of output rather than two parallel inventions. The version is pinned to `0.2.6`,
- * exactly matching jess's two pins; a compiler and its consumer disagreeing about their
- * renderer is its own problem.
+ * said so — the output still looked structured, because an escape-less `[2m` prints as
+ * `[2m`. Escape sequences are invisible failure surface, and a library that owns them
+ * removes the surface. jess already renders its diagnostics through linecraft
+ * (`packages/compiler/src/diagnostics.ts`, `packages/lint/src/index.ts`), so following
+ * the same idiom also means a jess user and a parseman user see the same shape of output
+ * rather than two parallel inventions. Pinned to `0.2.6`, exactly matching jess's pins.
  *
- * THE IDIOM (from `packages/lint/src/index.ts:562`)
- * ------------------------------------------------
- *   - build `LineContent[]` — `{ text, style }`, one style per row;
- *   - NO colour: `rows.map(r => r.text)`. No escape byte is ever produced, so the
- *     plain output is byte-stable by construction rather than by stripping;
- *   - colour: hand the rows to a `Region({ disableRendering: true, width })` and read
- *     the lines back. The region never touches the terminal.
+ * SPANS, NOT WHOLE-LINE STYLES
+ * ----------------------------
+ * jess's lint table styles a whole row at a time, which is right for a table of one
+ * thing per line. A grammar finding is not that: within one line the arm index, the
+ * production, its first set and the annotation all mean different things, and the
+ * annotation is the part that should be shouting. So a line here is a list of SPANS, and
+ * a styled line is a linecraft `Grid` of `Styled` cells — which also gives the columns
+ * their alignment for free.
  *
- * DETERMINISM
- * -----------
- * `width` is passed explicitly and defaults to 80 off-TTY, so a piped run cannot vary
- * with the terminal it was piped from. Only the coloured path consults the environment
- * (linecraft resolves semantic colours against the terminal theme), and the coloured
- * path is never the one that gets diffed.
+ * THE INVARIANT THAT MUST NOT BREAK
+ * ---------------------------------
+ * Padding happens in ONE place, before either path sees it, and the plain form is the
+ * concatenation of the padded span texts. So the two paths differ in styling and in
+ * nothing else — not in width, not in alignment, not in content. No escape byte is
+ * produced at all when colour is off, so the diffable output is byte-stable by
+ * construction rather than by stripping. `width` is passed explicitly and defaults to 80
+ * off-TTY, so a piped run cannot vary with the terminal it was piped from.
  */
-import { CodeDebug, Region, type LineContent, type TextStyle } from 'linecraft'
+import { CodeDebug, Region, Styled, type TextStyle } from 'linecraft'
 
-/** One rendered row: the text, and how it should be emphasised. */
-export type Row = LineContent
+export type Tone = TextStyle
 
-export type RowStyle = TextStyle
-
-/** Semantic styles, named once so the two renderers cannot drift apart. */
+/**
+ * Semantic tones, named once so the two renderers cannot drift apart.
+ *
+ * The ladder matters more than the individual colours: within a finding, exactly one
+ * thing should be the brightest, and provenance / accept keys / byte costs should
+ * recede. A report where everything is emphasised is a report where nothing is.
+ */
 export const TONE = {
+  /** The single most important thing in its block. */
+  loud: { color: 'brightRed', bold: true } as Tone,
   /** A heading, a count, the thing being named. */
-  strong: { bold: true } as RowStyle,
+  strong: { bold: true } as Tone,
   /** Supporting detail — never the finding itself. */
-  quiet: { color: 'brightBlack' } as RowStyle,
-  /** This row IS the problem. */
-  bad: { color: 'red' } as RowStyle,
+  quiet: { color: 'brightBlack' } as Tone,
+  /** Recedes furthest: provenance, snapshot keys, byte costs. */
+  faint: { color: 'brightBlack', dim: true } as Tone,
+  /** This span IS the problem. */
+  bad: { color: 'red' } as Tone,
   /** Real, but not blocking. */
-  warn: { color: 'yellow' } as RowStyle,
+  warn: { color: 'yellow' } as Tone,
   /** A location or an identifier the reader will search for. */
-  ident: { color: 'cyan' } as RowStyle,
-  /** Clean. */
-  good: { color: 'green' } as RowStyle,
+  ident: { color: 'cyan', bold: true } as Tone,
+  /** Clean, or the thing to do. */
+  good: { color: 'green' } as Tone,
+  /** Structure: rules, box drawing, group frames. */
+  frame: { color: 'blue' } as Tone,
 } as const
+
+/** One styled run of text. `width` pads it, in BOTH paths, so columns line up. */
+export type Span = {
+  text: string
+  style?: Tone
+  /** Pad to this column width. Applied once, before either path renders. */
+  width?: number
+  /** Text that ALREADY contains escapes (a linecraft component's own output). */
+  raw?: boolean
+}
+
+/** A line is its spans. An empty array is a blank line. */
+export type Line = Span[]
+
+export const t = (text: string, style?: Tone, width?: number): Span =>
+  ({ text, ...(style === undefined ? {} : { style }), ...(width === undefined ? {} : { width }) })
+
+export const blank = (): Line => []
+
+/** A horizontal rule. Segmentation is what turns eighty undifferentiated lines into a
+ *  handful of blocks a reader can skip between. */
+export const rule = (width: number, style: Tone = TONE.frame, char = '─'): Line =>
+  [{ text: char.repeat(Math.max(0, width)), style }]
 
 export type RenderTarget = {
   /** Emit ANSI. Default false — never sniffed here; the CLI decides. */
@@ -67,34 +100,89 @@ export type RenderTarget = {
 
 export const DEFAULT_WIDTH = 80
 
-const row = (text: string, style?: RowStyle): Row => (style === undefined ? { text } : { text, style })
-export { row }
+const padTo = (s: string, w: number): string => (s.length >= w ? s : s + ' '.repeat(w - s.length))
 
-/** Plain text of a row list — the byte-stable form, produced without a terminal. */
-export const plain = (rows: readonly Row[]): string => rows.map(r => r.text).join('\n')
+/** The one place padding happens. Both render paths consume the result of this. */
+const spanText = (s: Span): string => (s.width === undefined ? s.text : padTo(s.text, s.width))
 
 /**
- * Rows → a string. Without colour this never constructs a Region at all, so nothing in
+ * The padded, trailing-trimmed spans of one line — the SINGLE source both paths read.
+ *
+ * Both `plain` and `render` consume exactly this, so they cannot disagree about content,
+ * padding or alignment. Only what wraps each span differs.
+ */
+function cellsOf(line: Line): Span[] {
+  const cells = line.map(s => ({ ...s, text: spanText(s) })).filter(s => s.text !== '')
+  // Trailing whitespace is noise in a log and makes two otherwise-identical renderings
+  // compare unequal. Trim it off the END of the line, span by span.
+  for (let i = cells.length - 1; i >= 0; i--) {
+    const trimmed = cells[i]!.text.replace(/ +$/, '')
+    cells[i]!.text = trimmed
+    if (trimmed !== '') break
+    cells.pop()
+  }
+  return cells
+}
+
+/** Plain text of a line list — the byte-stable form, produced without a terminal. */
+export const plain = (lines: readonly Line[]): string =>
+  lines.map(l => cellsOf(l).map(c => c.text).join('')).join('\n')
+
+/**
+ * The escape codes linecraft emits for a tone, learned FROM linecraft and cached.
+ *
+ * The alternative — a `Grid` of `Styled` cells — loses to the component's own layout:
+ * `Styled` left-trims its content and the grid re-flows a long cell, so the styled line
+ * ended up disagreeing with the plain one in CONTENT, which is the one divergence this
+ * module exists to prevent. Asking the library what a tone looks like and wrapping
+ * UNCHANGED text in it makes parity structural rather than something a test has to
+ * catch: the text between the codes is byte-identical to the plain form because it is
+ * the same string.
+ *
+ * This is not hand-rolled ANSI. No escape sequence is written down anywhere in parseman;
+ * every byte of styling comes out of linecraft, once per distinct tone.
+ */
+const CODE_CACHE = new Map<string, { pre: string; post: string }>()
+
+function codesFor(style: Tone | undefined): { pre: string; post: string } {
+  if (style === undefined) return { pre: '', post: '' }
+  const key = JSON.stringify(style)
+  const hit = CODE_CACHE.get(key)
+  if (hit !== undefined) return hit
+  const region = Region({ disableRendering: true, width: 8 })
+  region.set(Styled(style, 'X'))
+  const line = region.getLine(1)
+  region.destroy(false)
+  const at = line.indexOf('X')
+  const codes = at === -1
+    ? { pre: '', post: '' }
+    : { pre: line.slice(0, at), post: line.slice(at + 1).replace(/ /g, '') }
+  CODE_CACHE.set(key, codes)
+  return codes
+}
+
+/**
+ * Lines → a string. Without colour this never constructs a Region at all, so nothing on
  * the diffable path depends on linecraft's environment detection.
  */
-export function render(rows: readonly Row[], target: RenderTarget = {}): string {
-  if (target.color !== true) return plain(rows)
-  const region = Region({ disableRendering: true, width: target.width ?? DEFAULT_WIDTH })
-  region.set(rows as LineContent[])
-  const out: string[] = []
-  for (let line = 1; line <= region.height; line++) out.push(region.getLine(line))
-  region.destroy(false)
-  // A styled row is padded to the region width; trailing spaces are noise in a log and
-  // make an otherwise-identical rendering compare unequal.
-  return out.map(l => l.replace(/\s+$/, '')).join('\n')
+export function render(lines: readonly Line[], target: RenderTarget = {}): string {
+  if (target.color !== true) return plain(lines)
+  return lines.map((line) => {
+    // A pre-rendered component line (a code frame) already carries its own escapes.
+    if (line.length === 1 && line[0]!.raw === true) return line[0]!.text
+    return cellsOf(line).map((c) => {
+      const { pre, post } = codesFor(c.style)
+      return `${pre}${c.text}${post}`
+    }).join('')
+  }).join('\n')
 }
 
 // linecraft's own escapes, for the one component whose plain form is not otherwise
-// reachable. Mirrors `packages/compiler/src/diagnostics.ts:246`.
-// eslint-disable-next-line no-control-regex
-const OSC8 = /\u001b\]8;;.*?\u001b\\/g
-// eslint-disable-next-line no-control-regex
-const SGR = /\u001b\[[0-9;]*m/g
+// reachable. Mirrors `packages/compiler/src/diagnostics.ts:246`. Built from a char code
+// so the ESC byte cannot be lost in transit the way the old constant table's was.
+const ESC = String.fromCharCode(27)
+const OSC8 = new RegExp(`${ESC}\\]8;;.*?${ESC}\\\\`, 'g')
+const SGR = new RegExp(`${ESC}\\[[0-9;]*m`, 'g')
 
 export type CodeFrame = {
   /** Path as the reader should see it — relative, so no absolute path can be diffed. */
@@ -118,12 +206,12 @@ export type CodeFrame = {
  * A source frame with the caret under the offending span — linecraft's `CodeDebug`, the
  * same component jess renders its compiler errors with.
  *
- * Returned as ROWS of pre-rendered text rather than `{ text, style }`, because the
- * component styles per token and a `LineContent` carries one style per line. The plain
- * form is recovered by stripping, which is the one place in this file that has to;
- * `plainFrame` is asserted escape-free and absolute-path-free by test.
+ * Its lines come back as RAW spans: the component styles per token, which a span list
+ * cannot describe, and it is already the shape a reader wants. The plain form is
+ * recovered by stripping — the one place in this file that has to — and is asserted
+ * escape-free and absolute-path-free by test.
  */
-export function codeFrame(frame: CodeFrame, target: RenderTarget = {}, indent = ''): Row[] {
+export function codeFrame(frame: CodeFrame, target: RenderTarget = {}, indent = ''): Line[] {
   const region = Region({ disableRendering: true, width: (target.width ?? DEFAULT_WIDTH) - indent.length })
   region.set(CodeDebug({
     startLine: frame.line,
@@ -139,11 +227,11 @@ export function codeFrame(frame: CodeFrame, target: RenderTarget = {}, indent = 
     fullPath: target.color === true ? frame.fullPath : frame.path,
     type: frame.type ?? 'error',
   }))
-  const out: Row[] = []
+  const out: Line[] = []
   for (let line = 1; line <= region.height; line++) {
     const text = region.getLine(line)
     const body = target.color === true ? text : text.replace(OSC8, '').replace(SGR, '').replace(/\s+$/, '')
-    out.push({ text: body === '' ? '' : indent + body })
+    out.push(body === '' ? [] : [{ text: indent + body, raw: target.color === true }])
   }
   region.destroy(false)
   return out
@@ -160,7 +248,7 @@ export function groupDigits(n: number): string {
   return (n < 0 ? '-' : '') + out
 }
 
-export const pad = (s: string, w: number): string => (s.length >= w ? s : s + ' '.repeat(w - s.length))
+export const pad = padTo
 
 /** Hard-wrap on spaces at `width`, prefixing every line with `indent`. */
 export function wrap(text: string, width: number, indent: string): string[] {

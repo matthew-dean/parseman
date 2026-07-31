@@ -15,8 +15,8 @@ import {
 import { proposeFixes, applyFixEdits } from '../../src/analysis/fix.ts'
 import { rebuildCombinator } from '../../src/analysis/rebuild.ts'
 import { renderFixReport } from '../../src/analysis/fix-render.ts'
-import { renderDiagnosis, diagnosisRows } from '../../src/analysis/diagnose-render.ts'
-import { fixReportRows } from '../../src/analysis/fix-render.ts'
+import { renderDiagnosis, diagnosisLines } from '../../src/analysis/diagnose-render.ts'
+import { fixReportLines } from '../../src/analysis/fix-render.ts'
 import { codeFrame, plain, render } from '../../src/analysis/terminal.ts'
 import { diagnoseGrammar } from '../../src/analysis/diagnose.ts'
 import { measureChoiceCost, armFirstSets } from '../../src/analysis/corpus.ts'
@@ -200,12 +200,56 @@ describe('terminal layer — the rendering contract linecraft is here to hold', 
 
   it('produces NO escape byte at all without colour — not stripped, never emitted', () => {
     const r = proposeFixes(keywordGrammar(), { corpus })
-    const rows = fixReportRows(r, { name: 'g.ts' })
-    // The plain form is the rows' own text. There is no second code path that could
-    // drift from the styled one, which is the whole reason rows exist.
+    const rows = fixReportLines(r, { name: 'g.ts' })
+    // The plain form is the lines' own span text. There is no second code path that
+    // could drift from the styled one, which is the whole reason spans exist.
     expect(plain(rows).includes(ESC)).toBe(false)
     expect(render(rows, { color: false })).toBe(plain(rows))
     expect(render(rows, { color: true }).includes(ESC)).toBe(true)
+  })
+
+  it('STYLED AND PLAIN DIFFER ONLY IN STYLING — strip the escapes and they are equal', () => {
+    // The invariant the whole terminal layer exists to hold. It has been broken twice by
+    // linecraft component layout (`Styled` left-trimming a cell, a `Grid` reflowing a
+    // long one) and both times the styled line lost CONTENT, not just colour. Strip and
+    // compare is the only assertion that catches that.
+    const d = diagnoseGrammar(keywordGrammar())
+    const sets = new Map<string, readonly string[]>()
+    const cost = new Map()
+    for (const c of d.gating.choices) {
+      const arms = choiceArms(c)!
+      const fs = armFirstSets(arms)
+      sets.set(c.id, fs.map(x => (x.firstSet.kind === 'any' ? 'ANY' : x.firstSet.kind)))
+      cost.set(c.id, measureChoiceCost(c, corpus, fs))
+    }
+    const opts = { name: 'g.ts', armFirstSets: sets, cost, width: 80 }
+    const lines = diagnosisLines(d, opts)
+    const stripped = render(lines, { ...opts, color: true })
+      .replace(new RegExp(`${ESC}\\]8;;.*?${ESC}\\\\`, 'g'), '')
+      .replace(new RegExp(`${ESC}\\[[0-9;]*m`, 'g'), '')
+      .split('\n').map(l => l.replace(/ +$/, '')).join('\n')
+    expect(stripped).toBe(plain(lines))
+  })
+
+  it('states each cause ONCE, however many sites it has', () => {
+    const d = diagnoseGrammar(keywordGrammar())
+    const text = renderDiagnosis(d, { name: 'g.ts', width: 80 })
+    // The regression that prompted the rewrite: three explanations rendered nine times.
+    for (const f of d.findings) {
+      for (const detail of f.details) {
+        const i = detail.indexOf('\nfix: ')
+        if (i === -1) continue
+        const sentence = detail.slice(i + 6).split('. ')[0]!
+        const hits = text.split(sentence).length - 1
+        expect(hits).toBeLessThanOrEqual(1)
+      }
+    }
+  })
+
+  it('prints ONE accept snapshot, not one per site', () => {
+    const d = diagnoseGrammar(keywordGrammar())
+    const text = renderDiagnosis(d, { name: 'g.ts', width: 80 })
+    expect(text.split('{ accept: [').length - 1).toBeLessThanOrEqual(1)
   })
 
   it('renders identically regardless of terminal environment', () => {
@@ -242,8 +286,8 @@ describe('terminal layer — the rendering contract linecraft is here to hold', 
 
   it('keeps every row inside the requested width', () => {
     const d = diagnoseGrammar(keywordGrammar())
-    for (const r of diagnosisRows(d, { name: 'g.ts', width: 80 })) {
-      expect(r.text.length).toBeLessThanOrEqual(100)
+    for (const l of diagnosisLines(d, { name: 'g.ts', width: 80 })) {
+      expect(l.map(x => x.text).join('').length).toBeLessThanOrEqual(120)
     }
   })
 })

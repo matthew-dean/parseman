@@ -413,6 +413,23 @@ export function measure(u: Unit, lower: Lowerer): Row {
   // noise floor and used to justify a looser tolerance. With a fixed path the
   // probe is byte-identical across processes.
   const dir = path.join(tmpdir(), `pm-size-probe-${u.id}`)
+  // The path is FIXED (see above) and therefore SHARED, so two probes of the same unit
+  // running at once clobber each other: one `rmSync`s the directory the other is writing
+  // into, and the loser reports a fraction of the real byte count — a WRONG measurement
+  // that then fails the build with a confident message ("BANK THE WIN — output got
+  // smaller"). Making the path unique would fix the race and break byte-identity, which
+  // is the more valuable property, so the access is made exclusive instead: take a lock
+  // directory, and wait rather than trample. Observed when the CLI test suite began
+  // spawning subprocesses alongside the size gate.
+  const lock = `${dir}.lock`
+  const waited = Date.now()
+  for (;;) {
+    try { mkdirSync(lock, { recursive: false }); break }
+    catch {
+      if (Date.now() - waited > 60_000) { rmSync(lock, { recursive: true, force: true }); continue }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+    }
+  }
   rmSync(dir, { recursive: true, force: true })
   mkdirSync(dir, { recursive: true })
   try {
@@ -467,6 +484,7 @@ export function measure(u: Unit, lower: Lowerer): Row {
     }
   } finally {
     rmSync(dir, { recursive: true, force: true })
+    rmSync(lock, { recursive: true, force: true })
   }
 }
 
