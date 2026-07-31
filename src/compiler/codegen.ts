@@ -2363,11 +2363,20 @@ function emitFirstMatch(
     const skipCond = gateCond ? `!${resOkV} && ${gateCond}` : `!${resOkV}`
 
     const armHasAutoNot = !!(autoNot && autoNot.length > 0)
-    // No `mayFail(p)` gate here, deliberately. Every mark below is read only
-    // from the `else` of this arm's `if (ok)`, so an infallible arm would not
-    // need any of them — but MEASURED, the gate changes not one byte of css,
-    // less, scss, jess or any size-guard fixture. A `firstMatch` arm is a real
-    // grammar production; they are all fallible. The dead-arm case is theory.
+    // No `mayFail(p)` gate here, deliberately, and the reason is NOT that the
+    // case does not arise. Gating every mark below on `mayFail` was measured
+    // twice, independently: byte-identical css, less, scss and jess artifacts
+    // both times. But the first reading of that — "a firstMatch arm is a real
+    // grammar production, they are all fallible" — is false. The css grammar has
+    // 64 INFALLIBLE arms.
+    //
+    // The marks vanish for a different reason: infallible arms and mark-bearing
+    // arms are DISJOINT sets. Instrumented over css, all 64 report
+    // `rollback=false rootlog=false err=false` — an arm that cannot fail is
+    // terminal-shaped, and a terminal-shaped arm leaves no partial capture, has
+    // no trivia site and records no error, so every mark was already absent.
+    // `mayFail` therefore has nothing left to remove HERE. It is not evidence
+    // that `mayFail` is useless at other sites, and the 64 arms are real.
     const armNeedsRollback = ctx.capturing &&
       (mayLeavePartialCapture(p, new Set(), ctx.activeTrivia !== undefined) || (armHasAutoNot && capturesLeaf(p)))
     const armNeedsFieldRollback = armNeedsRollback && parserHasOwnFields(p)
