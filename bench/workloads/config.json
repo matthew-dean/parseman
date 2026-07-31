@@ -26,15 +26,16 @@
     "timed": 11,
     "rounds": 4,
     "runs": 3,
-    "passes": 3,
-    "_passesNote": "A workload fails only when a strict MAJORITY of independent passes breach. This is how the gate tells a regression from a busy machine without widening the threshold, which would blind it to the band it exists to watch (0.34.0's css row moved -1.6%; the 0.35.0 repayment was -12.3%). Three is the smallest count where a majority means something; raise it if a self-check ever false-fails.",
-    "_note": "Parses per timed sample are CALIBRATED at startup so every workload's sample lands near targetSampleMs, on the REFERENCE side only, and the same count is applied to both sides so it can never advantage one. targetSampleMs is higher here than in the density gate because these inputs are ~50 KB rather than a synthetic loop: a single parse already takes milliseconds, so the calibration mostly resolves to 1-3 parses and the target only matters for the cheap rows."
+    "passes": 5,
+    "_passesNote": "A workload fails only when a strict MAJORITY of independent passes breach. This is how the gate tells a regression from a busy machine without widening the threshold, which would blind it to the band it exists to watch (0.34.0's css row moved -1.6%; the 0.35.0 repayment was -12.3%). Three was the smallest count where a majority means something. Raised to FIVE at 0.46.0, the sanctioned response to a self-check that false-fails: the gate run against the REFERENCE BY ITSELF, zero code difference, false-failed twice in three self-checks. Do not widen a threshold instead. Passes only became INDEPENDENT at 0.46.0 as well: both sides used to be compiled once and reused across every pass, so all of them inherited one draw of the compilation lottery and a majority was unanimous by construction. `measurePasses` in bench/ab-harness.ts now recompiles per pass.",
+    "_note": "Parses per timed sample are CALIBRATED at startup so every workload's sample lands near targetSampleMs, on a THROWAWAY instance set built from the reference, and the same count is applied to both sides so it can never advantage one. The throwaway matters: the repetition count was always applied to both sides, but until 0.46.0 the ~14 calibration parses WARMED the very instances the reference side then raced with, which is a head start given to exactly one side. targetSampleMs is higher here than in the density gate because these inputs are ~50 KB rather than a synthetic loop: a single parse already takes milliseconds, so the calibration mostly resolves to 1-3 parses and the target only matters for the cheap rows."
   },
 
   "thresholds": {
     "medianPct": 5,
     "minPct": 5,
     "winRateCeiling": 0.25,
+    "_winRateNote": "The win-rate ceiling is a NULL-RELATIVE distance, not an absolute rate. `measurePasses` measures each case's null win rate every run with a control pair of two independently compiled REFERENCE instances, and judges the head side at `null - (0.5 - winRateCeiling)`. A case whose null is 50% is judged at exactly this number, so the calibration can never loosen an unbiased case; a case the instrument favours or disfavours is judged at the same DISTANCE from its own null instead of an absolute one. Measured cause: two independently compiled instances of identical code read 12/12 (-7.8%) and 0/12 (+7.8%) on this repo's density cases, so a flat ceiling both false-fires and goes blind depending on which way the draw fell.",
 
     "signTest": {
       "winRateCeiling": 0.25,

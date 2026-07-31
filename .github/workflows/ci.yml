@@ -250,8 +250,11 @@ jobs:
   # measures a rollback-density sweep instead — see docs/design/perf-gates.md.
   #
   # It runs on EVERY code PR rather than nightly or at release, because it costs
-  # ~10 s locally and well under a minute here. Speed is a correctness property: a
-  # gate too slow to run gets skipped, and then everything gets skipped with it.
+  # ~1.5-2 min locally and stays well inside this job's budget. Speed is a
+  # correctness property: a gate too slow to run gets skipped, and then everything
+  # gets skipped with it. That cost went up at 0.46.0 and bought the gate's
+  # honesty — 5 passes instead of 3, both sides RECOMPILED per pass so the passes
+  # are independent at all, and a control pair measuring the null win rate.
   #
   # It is a REQUIRED check by way of the `test` aggregate below, not merely a
   # report. A perf gate nobody has to satisfy is a dashboard.
@@ -297,9 +300,10 @@ jobs:
   # red: this one says "downstream got slower", that one says "and here is the
   # axis".
   #
-  # Runs on EVERY code PR. It costs ~50 s here — three independent measurement
-  # passes so one busy moment on a shared runner cannot fail a PR on its own. See
-  # docs/design/perf-gates.md for what it can and cannot see.
+  # Runs on EVERY code PR. It costs ~2.5-3 min here — five independent measurement
+  # passes, each recompiling both sides, plus a control pair that measures the null
+  # win rate, so neither a busy runner nor a bad draw of the compilation lottery can
+  # fail a PR on its own. See docs/design/perf-gates.md for what it can and cannot see.
   workload-perf:
     needs: changes
     if: needs.changes.outputs.code == 'true'

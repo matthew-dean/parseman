@@ -448,6 +448,48 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   failures. Disabled under `grammarCoverage`, where the coverage denominator is read
   back out of the emitted replacement text.
 
+- **The perf gates were reading a COMPILATION LOTTERY, and their passes were not
+  independent of each other.** Both gates compiled each side once, before the pass
+  loop, and reused those two instances for every pass. Two independently compiled
+  instances of *identical code* do not run at identical speed — V8 tiers and inlines
+  them separately — and whichever wins stays the winner for the life of the process.
+  So a pass never resolved twelve independent trials; it resolved **one draw**,
+  twelve times, and the passes all inherited the same draw, which made a majority
+  unanimous by construction. Measured, every side byte-identical, three
+  independently compiled pairs in one loop at the same rotated positions:
+  `rollback/none` read **12/12 (−7.8%)**, 5/12 (+1.0%), 6/12 (+1.0%); another run
+  read `expected/none` at **0/12 (+7.8%)**, 8/12, 8/12. A perfect sweep in either
+  direction on code that cannot differ. That is both failure modes at once — a draw
+  against the head side is a **false FAIL** at any threshold, and a draw for it makes
+  the case **BLIND**, because a win rate whose null sits near 0.9 can never reach a
+  flat 0.25 ceiling. Two hypotheses were tested and refuted on the way: it is not the
+  two module graphs (under `--self` both sides resolve to the same `compile`
+  function, asserted identical, and the skew is still there) and it is not a stable
+  property of a case (the skew lands somewhere different nearly every session, so an
+  offline per-case calibration table would have been wrong).
+
+- **`measurePasses()` resamples, and MEASURES the null instead of assuming it.**
+  Both sides are recompiled **every pass**, so `passes` independent passes are
+  finally independent in the term that dominates. A **control pair** of two
+  reference instances — identical code, so everything it wins is instrument and not
+  compiler — runs in the same passes at the same rotated positions, with the gate
+  pair and the control alternating which is compiled first, and its pooled win rate
+  is printed per case. The win-rate ceiling is now **null-relative**: a case is
+  judged at `null − (0.5 − winRateCeiling)`, so a case whose null is 50% is judged
+  at exactly the configured 25% and the calibration **can never loosen an unbiased
+  case**, while a case the instrument favours stops being blind. `calibrate()` also
+  stopped warming one side: it parses ~14 times before the pass loop and used to do
+  it on the very instances the reference side then raced with — the repetition count
+  was applied to both sides, the warming was not. **`passes` 3 → 5** in both
+  `bench/grammar-density/config.json` and `bench/workloads/config.json`: the gate's
+  own `--self` block prescribes spending more passes when a self-check false-fails,
+  and it had. No threshold was widened and no reference was re-baselined. Validated in both
+  directions on a shared box at load 2.9-8.6: **ten `--self` runs, five of each gate, and no case
+  false-failed in any of them** — density run 4 caught the old failure in the act, drawing 0/12 at
+  +10.9% median in its first pass and 7/12, 8/12, 6/12, 6/12 in the rest, where the old design would
+  have made that one draw the whole run. Replaying `fix(not)` still goes red on 5/5 passes at
+  +36.7%…+40.5% with 0/12 pairs won, while the three unaffected workloads stay green.
+
 ## 0.45.0 — 2026-07-30
 
 - **Recognise the inline-`mk` shape when the node type is a factory parameter.** The

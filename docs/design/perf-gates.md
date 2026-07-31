@@ -6,8 +6,8 @@ difference is the whole point.
 | gate | asks | cost |
 | --- | --- | --- |
 | `pnpm perf:guard` | did parseman's own microbenchmarks move? | seconds |
-| `pnpm perf:guard:grammars` | did a known cost AXIS move? | ~10 s |
-| `pnpm perf:workloads` | did realistic parsing get slower, on any axis at all? | ~50 s |
+| `pnpm perf:guard:grammars` | did a known cost AXIS move? | ~1.5-2 min |
+| `pnpm perf:workloads` | did realistic parsing get slower, on any axis at all? | ~2.5-3 min |
 
 All three run on every PR, and all three are required. None needs a checkout of
 any other repository, a network fetch, or a setup step: `pnpm install && pnpm
@@ -233,9 +233,117 @@ The injection is a pure per-byte spin cost, calibrated at **0.936 ns/iteration**
 > rollback-density or expected-set-width regression is; a regression riding either
 > axis is caught proportionally smaller.
 
+### …and the passes were not independent — the COMPILATION LOTTERY (0.46.0)
+
+Everything above is true and none of it was sufficient, because the majority rule
+and the sign test both rest on an assumption nobody had tested: that the 12 pairs
+of a pass are 12 independent trials, and that the passes are independent of each
+other. **Neither was true.** Both gates compiled each side **once**, before the
+pass loop, and reused those two instances for every pass.
+
+Two independently compiled instances of **identical code** do not run at identical
+speed. V8 tiers, inlines and assigns feedback to them separately, and whichever
+instance wins stays the winner for the life of the process. So a pass does not
+resolve twelve coin flips; it resolves **one draw of a compilation lottery**,
+twelve times. The sign test's effective sample size was 1, and its quoted `p ≈
+0.003` was a fiction.
+
+Measured on this repo's density cases, every side byte-identical, three
+independently compiled pairs measured **in the same loop at the same rotated run
+positions** so that nothing but the instances differed:
+
+| case | pair 0 | pair 1 | pair 2 |
+| --- | --- | --- | --- |
+| `rollback/none` | **12/12, −7.8%** | 5/12, +1.0% | 6/12, +1.0% |
+| `expected/wide` | **11/12, −6.0%** | 7/12, +0.6% | 6/12, −0.0% |
+| `expected/none` (another run) | **0/12, +7.8%** | 8/12, −0.1% | 8/12, −1.3% |
+
+A perfect 12/12 and a perfect 0/12, with ±8% medians, on code that cannot differ.
+That single number is both of this gate's failure modes at once:
+
+- a draw **against** the head side is a **false FAIL** at any percentage
+  threshold, and reusing the instances made all three passes agree on it, so the
+  majority rule endorsed it rather than absorbing it;
+- a draw **for** the head side makes the case **BLIND** — a win rate whose null
+  sits near 0.9 can never come down to a flat 0.25 ceiling, so a real regression
+  there reads green, and any speedup it reports is the draw talking.
+
+Two hypotheses were tested and **refuted** on the way to that. It is not the
+two module graphs: under `--self` both sides resolve to the same directory, so
+`import()` returns the *same* module object and the *same* `compile` function
+(asserted, both `true`) — and the skew is still there. It is not a stable
+property of a case either: the skew lands on a different case in almost every
+session, which is why an offline per-case calibration table would have been
+wrong.
+
+**The fix is resampling, in `measurePasses()` (`bench/ab-harness.ts`).**
+
+1. **Both sides are recompiled every pass.** `passes` independent passes are
+   finally independent draws of the thing that dominates, which is what the
+   majority rule always claimed to be doing. `passes` was raised **3 → 5** at the
+   same time — the response the `--self` block prescribes for a gate that reads
+   the machine, and the response that tightens rather than widens.
+2. **A CONTROL pair measures the null win rate, in-process, every run.** Two
+   independently compiled **reference** instances — identical code, so every pair
+   it wins is instrument and not compiler — measured in the same passes, at the
+   same rotated positions, with the gate pair and the control pair alternating
+   which gets compiled first (the first-compiled pair draws the skew
+   disproportionately). Its pooled win rate is printed per case.
+3. **The win-rate ceiling is null-relative, not absolute.** A case is judged at
+   `null − (0.5 − winRateCeiling)`. A case whose null is 50% is judged at exactly
+   the configured 25%, so the calibration **can never loosen an unbiased case**;
+   a case the instrument favours or disfavours is judged at the same *distance*
+   from its own null instead of at an absolute rate it can never reach.
+4. **Calibration no longer warms one side.** `calibrate()` parses ~14 times
+   before the pass loop and used to do it on the very instances the reference side
+   then raced with. The repetition count it produces was always applied to both
+   sides; the **warming** was not. It now runs on a throwaway instance set.
+
+The null is measured rather than assumed because it is not stable, and it is
+worth reading. On a self-check after the fix, `rollback/none` drew 12/12 at
+−9.5% median in its **first** pass and 6/12, 8/12, 4/12, 6/12 in the other four:
+under the old design that first draw was the whole run, and the case would have
+reported a −9.5% "speedup" against a byte-identical tree. Any reading of that
+shape — 0.46.0's post-revert `rollback/none` at −22.5%…−11.4% is the live example
+— is the lottery, and the null column now says so on the same screen.
+
+#### Validated on the null, five runs of each gate
+
+Both gates, `--self` (the reference against itself, so **every** number below is
+instrument), on a shared machine at load average 2.9–8.6 — which is what this box
+looks like with other lanes on it.
+
+| run | `perf:guard:grammars --self` | `perf:workloads --self` |
+| --- | --- | --- |
+| 1 | 0/35 passes breached, worst +1.7% median / +1.7% min | 0/25, +12.6% / +2.0% |
+| 2 | 0/35, +1.3% / +2.4% | 0/25, +1.8% / +2.4% |
+| 3 | 0/35, +2.1% / +1.5% | 0/25, +2.2% / +3.5% |
+| 4 | **1/35**, +10.9% / +10.5% | 0/25, +1.7% / +2.7% |
+| 5 | 0/35, +1.9% / +1.6% | 0/25, +2.0% / +4.2% |
+
+**No case false-failed in any of the ten runs.** Measured null win rates stayed
+inside 36.7%–70.0% throughout, so the calibrated ceilings ranged 11.7%–45.0%.
+
+Run 4 is the one worth reading, because it is the old failure caught in the act.
+`rollback/none` drew **0/12 at +10.9% median and +10.5% min** in its first
+pass — a textbook false-fail signature, on byte-identical source — and its other
+four passes read 7/12, 8/12, 6/12, 6/12 at −1.4%…+0.0%. Under the old design that
+first draw *was* the run: all three passes shared those instances, all three would
+have breached, and the gate would have reported a hard FAIL against a build and
+itself. Resampling turned it into 1 breach of 5, which the majority rule absorbs.
+
+The mirror image showed up in the first density self-check: `rollback/none` drew
+**12/12 at −9.5%** in one pass and 6/12, 8/12, 4/12, 6/12 in the rest. That is
+where a quotable "speedup" against an identical tree comes from, and it is the
+same lottery with the sign flipped.
+
 ### Thresholds, and where they came from
 
-`medianPct: 6`, `minPct: 6`, `winRateCeiling: 0.25`, `signTest: 3`, `passes: 3`.
+`medianPct: 6`, `minPct: 6`, `winRateCeiling: 0.25`, `signTest: 3`, `passes: 5`.
+
+`winRateCeiling` is the ceiling **for a null of 0.5**; the ceiling actually
+applied is that number shifted onto the case's measured null, per the section
+above.
 
 Measured, not guessed. The **same build compared against itself** through this
 harness (`--ref=<head-sha> --head-ref=<head-sha>`, 4 rounds × 3 runs, calibrated
@@ -398,8 +506,15 @@ section.
 ```
 medianPct 5   minPct 5   winRateCeiling 0.25
 signTest: winRateCeiling 0.25, medianPct 1.5, minPct 1.5
-passes 3, majority required
+passes 5, majority required
 ```
+
+`winRateCeiling` is the ceiling **for a null of 0.5**. Both gates share
+`measurePasses()`, so the ceiling actually applied here is that number shifted
+onto each workload's measured null — see
+[the compilation lottery](#and-the-passes-were-not-independent--the-compilation-lottery-0460),
+which is where `passes` went from 3 to 5 and where the passes started being
+independent of each other at all.
 
 Measured with `pnpm perf:workloads --self`, which runs the reference against
 itself, **on a machine at load average 5–9** — because that is what a shared
@@ -436,7 +551,17 @@ direction. Sides are measured in adjacent order-alternated pairs, so under the
 null hypothesis "these two builds are the same" each pair is a coin flip. Across
 the five `fix(expect)` replay runs the less/* rows lost 1–4 of 12 pairs, pass
 after pass, while the unaffected rows sat at 5–9. Losing 3 of 12 has p ≈ 0.07 per
-pass; required in a majority of three passes, roughly 1 in 500.
+pass; required in a majority of passes.
+
+> **The `p ≈ 0.07` and the `1 in 500` above are WRONG as stated**, and are kept
+> because the reasoning they motivated is right and the correction is the point.
+> Both numbers assume the 12 pairs are independent trials and that the passes are
+> independent of each other. Until 0.46.0 neither held: one compiled pair of
+> instances served every pass, and a single draw of the compilation lottery
+> produces 0/12 or 12/12 on byte-identical code. `measurePasses()` recompiles per
+> pass and measures the null, which is what makes a win rate mean what this
+> section says it means. The `fix(expect)` evidence stands — it was reproduced
+> across five separate runs, i.e. five separate draws.
 
 So a workload also breaches when it loses ≤ 25% of its pairs AND is ≥ 1.5% slower
 on **both** median and min. Both a percentage floor and the win rate are needed,
@@ -462,6 +587,22 @@ pnpm perf:workloads --ref=3175734 --head-ref=fbeb43e --allow-parse-diff
 | `css/stylesheet` | −3.3% … +2.2% | 2–9 / 12 | ok, 5 of 5 |
 | `graphql/document` | −1.3% … +4.8% | 1–9 / 12 | ok, 5 of 5 |
 | `json/document` | −0.9% … +0.7% | 5–11 / 12 | ok, 5 of 5 |
+
+**Re-validated after the 0.46.0 lottery fix** (5 passes, recompiled per pass,
+null-calibrated ceilings), same command, load average 6.0 → 4.5:
+
+| workload | median delta, 5 passes | pairs won | measured null / ceiling | verdict |
+| --- | --- | --- | --- | --- |
+| `less/stylesheet` | +36.7% … +40.5% | **0/12 every pass** | 66.7% / 41.7% | **FAIL, 5/5 passes** |
+| `less/mixins` | +36.7% … +39.8% | **0–1/12** | 48.3% / 23.3% | **FAIL, 5/5 passes** |
+| `css/stylesheet` | −1.0% … +1.0% | 5–10/12 | 45.0% / 20.0% | ok |
+| `graphql/document` | −0.3% … +1.7% | 4–9/12 | 40.0% / 15.0% | ok |
+| `json/document` | −0.9% … +1.0% | 3–7/12 | 56.7% / 31.7% | ok |
+
+Note `less/stylesheet`: its null landed at 66.7%, so its ceiling was raised to
+41.7% — and the regression still won 0 of 12 pairs in every pass. Calibrating the
+ceiling upward for a case the instrument favours does not cost detection; it is
+the case that would have been BLIND at a flat 25% if the draw had gone further.
 
 `--allow-parse-diff` is required here and only here: `fix(not)` fixed a
 trivia-log rollback **leak**, so the pre-fix side genuinely records a different

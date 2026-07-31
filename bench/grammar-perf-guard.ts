@@ -104,8 +104,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  materialise, calibrate, assertSameParse, interleave, score, verdicts, git, fail, sign,
-  type Case, type Row, type Thresholds,
+  materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign,
+  type Case, type Thresholds,
 } from './ab-harness.ts'
 
 const GATE = 'grammar-perf-guard'
@@ -200,8 +200,14 @@ for (const c of ref.cases) {
 const refCases = toCases(ref)
 const headCases = toCases(head)
 assertSameParse(GATE, refCases, headCases)
+const detail = new Map(refCases.map(c => [c.id, c.detail]))
 
-const reps = calibrate(refCases, M)
+// Calibrated on a THROWAWAY instance set. Calibration parses ~14 times before the
+// pass loop, and it used to do that on the very instances the reference side then
+// raced with — a head start given to exactly one side. The repetition count it
+// produces was already applied to both sides; the WARMING was not, and that is a
+// side-dependent asymmetry in the one direction a gate must not have one.
+const reps = calibrate(toCases(ref), M)
 console.log(
   `  ${(ref.input(ref.cases[0]!, CONFIG.input.rules).length / 1024).toFixed(1)} KB input`
   + `   ${M.passes} passes x ${M.rounds} rounds x ${M.runs} runs, ${M.warmup} warmup + ${M.timed} timed samples,`
@@ -212,30 +218,43 @@ console.log(`  repetitions per sample: ${refCases.map(c => `${c.id.split('/')[1]
 
 const T = CONFIG.thresholds
 const load0 = os.loadavg()[0] ?? 0
-const passRows: Row[][] = []
-for (let p = 0; p < M.passes; p++) {
-  passRows.push(score(refCases, interleave(refCases, headCases, reps, M), T))
-}
+const { passRows, calibration } = measurePasses(() => toCases(ref), () => toCases(head), reps, M, T)
 const load1 = os.loadavg()[0] ?? 0
 const rows = verdicts(passRows)
 
 console.log(
-  `\nper-case result over ${M.passes} independent passes`
+  `\nper-case result over ${M.passes} independent passes, both sides RECOMPILED each pass`
   + `\n  a pass BREACHES on median > ${T.medianPct}% OR min > ${T.minPct}% slower,`
-  + ` AND <= ${Math.round(T.winRateCeiling * 100)}% of interleaved pairs won`
-  + `\n  or on the sign test: <= ${Math.round(T.signTest.winRateCeiling * 100)}% of pairs won AND`
-  + ` > ${T.signTest.medianPct}% on BOTH median and min`
+  + ` AND at most the case's CALIBRATED share of interleaved pairs won`
+  + `\n  or on the sign test: same win-rate rule AND > ${T.signTest.medianPct}% on BOTH median and min`
+  + `\n  the calibrated share is the null win rate a CONTROL pair of two reference instances measured in`
+  + `\n  the same passes, shifted by ${(0.5 - T.winRateCeiling).toFixed(2)} — so a null of 50% is judged at the configured`
+  + ` ${Math.round(T.winRateCeiling * 100)}%`
   + `\n  a case FAILS only when a strict majority of passes breach — one bad pass is a busy machine, not a regression\n`,
 )
 for (const v of rows) {
   const worst = v.passes.reduce((a, b) => (b.dMedian > a.dMedian ? b : a))
   const best = v.passes.reduce((a, b) => (b.dMedian < a.dMedian ? b : a))
   console.log(
-    `  ${v.failed ? 'FAIL' : 'ok  '}  ${v.id.padEnd(17)} ${v.detail.padStart(12)}`
+    `  ${v.failed ? 'FAIL' : 'ok  '}  ${v.id.padEnd(17)} ${(detail.get(v.id) ?? '').padStart(12)}`
     + `   median ${sign(best.dMedian)} … ${sign(worst.dMedian)}`
     + `   min ${sign(Math.min(...v.passes.map(r => r.dMin)))} … ${sign(Math.max(...v.passes.map(r => r.dMin)))}`
     + `   won ${v.passes.map(r => `${r.wins}/${r.pairs}`).join(' ')}`
     + `   breached ${v.breachCount}/${M.passes}`,
+  )
+}
+console.log(
+  `\nmeasured NULL — a control pair of two REFERENCE instances, identical code, same passes and positions.`
+  + `\nEvery number in this block is instrument, not compiler; the ceiling column is what the win rates above`
+  + `\nwere actually judged against.\n`,
+)
+for (const v of rows) {
+  const k = calibration.get(v.id)!
+  console.log(
+    `        ${v.id.padEnd(17)} ${(detail.get(v.id) ?? '').padStart(12)}`
+    + `   null won ${String(k.wins).padStart(3)}/${k.pairs} = ${(k.nullRate * 100).toFixed(1).padStart(5)}%`
+    + `   worst null median ${sign(k.worstNullMedian).padStart(7)}`
+    + `   ceiling ${(k.ceiling * 100).toFixed(1).padStart(5)}%`,
   )
 }
 console.log(`\n  load average ${load0.toFixed(2)} → ${load1.toFixed(2)}`)
@@ -255,6 +274,9 @@ if (SELF) {
     + `\n  worst absolute swing in either direction: ${swing.toFixed(2)}%`
     + `\n  passes that breached: ${all.filter(r => r.breach).length}/${all.length}`
     + `\nmajority-of-${M.passes} verdict: ${falseFails.length === 0 ? 'no case false-failed' : `FALSE FAIL on ${falseFails.join(', ')}`}`
+    + `\nworst NULL win rate: ${(Math.min(...[...calibration.values()].map(k => k.nullRate)) * 100).toFixed(1)}%`
+    + ` … ${(Math.max(...[...calibration.values()].map(k => k.nullRate)) * 100).toFixed(1)}%`
+    + ` — on a self-check the gate pair is null too, so these two columns should agree.`
     + `\nConfigured thresholds ${T.medianPct}% / ${T.minPct}%, sign test ${T.signTest.medianPct}%. The single-pass`
     + `\nfloor is what the threshold has to clear; the majority rule is what absorbs the pass that does not.`
     + `\nIf a self-check ever false-fails, the gate is reading the machine — spend more passes, or say the`
