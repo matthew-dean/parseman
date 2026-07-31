@@ -421,12 +421,19 @@ export function measure(u: Unit, lower: Lowerer): Row {
   // is the more valuable property, so the access is made exclusive instead: take a lock
   // directory, and wait rather than trample. Observed when the CLI test suite began
   // spawning subprocesses alongside the size gate.
+  //
+  // The staleness window is RE-ARMED after a break. Holding it from a single start
+  // instant looks equivalent and is not: once the first 60s elapsed, every later
+  // `EEXIST` would take the break branch and `continue` WITHOUT sleeping, so the
+  // waiter would spin at full tilt deleting the lock of whichever probe had just
+  // legitimately taken it — degenerating into exactly the trampling the lock exists
+  // to prevent, and only ever on a machine slow enough to need the lock.
   const lock = `${dir}.lock`
-  const waited = Date.now()
+  let waited = Date.now()
   for (;;) {
     try { mkdirSync(lock, { recursive: false }); break }
     catch {
-      if (Date.now() - waited > 60_000) { rmSync(lock, { recursive: true, force: true }); continue }
+      if (Date.now() - waited > 60_000) { rmSync(lock, { recursive: true, force: true }); waited = Date.now(); continue }
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
     }
   }
@@ -463,6 +470,25 @@ export function measure(u: Unit, lower: Lowerer): Row {
     const srcBytes = Buffer.byteLength(srcText, 'utf8')
     const genBytes = Buffer.byteLength(code, 'utf8')
     if (srcBytes === 0) die(`unit ${u.id}: source is empty`)
+
+    // AN IMPLAUSIBLY SMALL MEASUREMENT IS A HARNESS FAILURE, NOT A WIN.
+    //
+    // The lock above closes the race that produced this, but the failure MODE is the
+    // one worth a standing check: a fixture measured 430 B instead of 26,273 B, and
+    // nothing downstream disbelieved it — the two-sided ratchet read the collapse as an
+    // un-banked improvement and failed the build with "BANK THE WIN". A wrong number
+    // delivered with a confident message is strictly worse than a crash, so the probe
+    // refuses to REPORT one rather than leaving the guard to interpret it.
+    //
+    // The floor is the file's own thesis: macro lowering EXPANDS its input, so output
+    // smaller than input means the lowering did not see the input. It is deliberately
+    // far below anything real — the smallest ratio in the committed baseline is
+    // example/json at 2.787x, so this has 2.8x of margin and cannot fire on a genuine
+    // measurement. It is a liveness check, not a budget; `bench/size-guard.ts` owns
+    // every opinion about whether a real number is too big.
+    if (genBytes < srcBytes) {
+      die(`unit ${u.id}: lowering produced ${genBytes} B from ${srcBytes} B of source (ratio ${(genBytes / srcBytes).toFixed(3)}x).\n  Macro lowering expands — the smallest ratio in the committed baseline is 2.787x — so a ratio\n  below 1 means the lowering did not see this unit's files, NOT that the output got smaller.\n  The usual cause is another process sharing ${dir}; this probe locks it, so also check for a\n  stale ${dir}.lock left by a killed run.`)
+    }
     if (u.nodes === 0) die(`unit ${u.id}: declares zero node() sites — bytes-per-node would be meaningless`)
 
     const gzipBytes = gzipSync(code).length
