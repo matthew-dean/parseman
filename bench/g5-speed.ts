@@ -26,7 +26,7 @@ import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 import type { Combinator } from '../src/types.ts'
 
-const M: Measurement = { targetSampleMs: 12, warmup: 3, timed: 5, rounds: 6, runs: 2 }
+const M: Measurement = { targetSampleMs: 20, warmup: 4, timed: 7, rounds: 10, runs: 2 }
 
 const INPUTS: Array<[string, string]> = [
   ['json/small', SMALL_JSON],
