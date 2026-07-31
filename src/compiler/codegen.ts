@@ -171,6 +171,7 @@ import {
 import { annotateSpan, normalizeLineIndex, recordLineRange } from './line-index.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { beginCompileDegradationDrain } from './degradation.ts'
+import { buildDispatchTrie, dispatchTableDecls, dispatchWalkerDecl } from './token-dispatch.ts'
 
 /**
  * Emission-time constant folding for gate expressions.
@@ -379,6 +380,10 @@ type Ctx = {
   lineTracking?: boolean | undefined
   /** Regex declarations hoisted to module scope */
   regexDecls: string[]
+  /** True once the shared dispatch trie walker has been hoisted for this artifact. */
+  dispatchWalkerEmitted?: boolean
+  /** Per-artifact counter naming each dispatch site's trie tables. */
+  dispatchTrieCount?: number
   /** Dedup map: "source/flags" → variable name (_re0 etc.) */
   regexMap: Map<string, string>
   /** Frozen constant expected-set arrays hoisted to module scope (_fx0 etc.) */
@@ -2070,6 +2075,10 @@ function emitDispatchCombinator(
   const outV = v(ctx, '_dval')
   const outE = v(ctx, '_dend')
   const keyV = v(ctx, '_dkey')
+  // Token-keyed dispatch: walk the selector's matched span to a small integer
+  // case id ONCE, so each case compares an integer instead of re-deriving the
+  // key from the string a character at a time. See `token-dispatch.ts`.
+  const tokenTrie = emitDispatchTokenTrie(ctx, def, pos, selector.endVar)
   const stmts: string[] = [
     ...(selectorLeafMark ? [
       `${ind(ctx)}const ${selectorLeafMark} = _ctx._cstLeaves?.length ?? 0`,
@@ -2082,6 +2091,7 @@ function emitDispatchCombinator(
     ] : []),
     ...selector.stmts,
     `${ind(ctx)}const ${keyV} = ${selector.valueVar}`,
+    ...(tokenTrie ? [`${ind(ctx)}const ${tokenTrie.idVar} = ${tokenTrie.walkExpr}`] : []),
     `${ind(ctx)}let ${outV}, ${outE} = ${selector.endVar}`,
   ]
 
@@ -2157,8 +2167,10 @@ function emitDispatchCombinator(
   }
 
   let coverageIndex = 0
-  for (const entry of def.cases) {
-    const condition = entry.keys.map(key => emitDispatchKeyCondition(keyV, key, entry.caseInsensitive)).join(' || ')
+  for (const [caseIndex, entry] of def.cases.entries()) {
+    const condition = tokenTrie
+      ? `${tokenTrie.idVar} === ${caseIndex + 1}`
+      : entry.keys.map(key => emitDispatchKeyCondition(keyV, key, entry.caseInsensitive)).join(' || ')
     emitSelectedTail(entry, wroteBranch ? 'else if' : 'if', condition, coverageIds[coverageIndex++])
     wroteBranch = true
   }
@@ -2183,6 +2195,45 @@ function emitDispatchCombinator(
   }
 
   return { stmts, valueVar: outV, endVar: outE }
+}
+
+/**
+ * Hoist this dispatch's key trie and return the per-site walk. Returns null when
+ * the site must keep the character chain: a key set that cannot share one folded
+ * walk, or one small enough that the shared walker costs more than it saves.
+ *
+ * The walker itself is emitted ONCE per artifact however many sites use it —
+ * only the four small tables are per-site, which is what makes this shrink
+ * rather than grow the artifact.
+ */
+function emitDispatchTokenTrie(
+  ctx: Ctx,
+  def: Extract<ParserDef, { tag: 'dispatch' }>,
+  pos: string,
+  endVar: string,
+): { idVar: string; walkExpr: string } | null {
+  // Matchers (`startsWith`/`endsWith`/`matches`) still key off the string; a site
+  // that has them keeps the chain so both halves read one key representation.
+  if (def.matchers !== undefined && def.matchers.length > 0) return null
+  const totalKeys = def.cases.reduce((a, c) => a + c.keys.length, 0)
+  if (totalKeys < 3) return null
+  const tables = buildDispatchTrie(def.cases.map(c => ({ keys: c.keys, caseInsensitive: c.caseInsensitive })))
+  if (tables === null) return null
+
+  const walker = `${nsp(ctx)}_dtWalk`
+  const unpack = `${nsp(ctx)}_dtUnpack`
+  if (!ctx.dispatchWalkerEmitted) {
+    ctx.dispatchWalkerEmitted = true
+    ctx.regexDecls.push(dispatchWalkerDecl(walker, unpack))
+  }
+  const prefix = `${nsp(ctx)}_dt${ctx.dispatchTrieCount ?? 0}`
+  ctx.dispatchTrieCount = (ctx.dispatchTrieCount ?? 0) + 1
+  for (const d of dispatchTableDecls(prefix, unpack, tables)) ctx.regexDecls.push(d)
+
+  return {
+    idVar: v(ctx, '_dtok'),
+    walkExpr: `${walker}(input, ${pos}, ${endVar}, ${prefix}c, ${prefix}s, ${prefix}n, ${prefix}a)`,
+  }
 }
 
 function emitDispatchKeyCondition(valueVar: string, key: string, caseInsensitive: boolean): string {
