@@ -21,7 +21,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import {
-  analyzeGating, analyzeGatingRules, analyzeGrammarGating, choice, compose,
+  analyzeGating, analyzeGatingRules, analyzeGrammarGating, choice, compose, diagnoseGrammar,
   formatGatingWarnings, literal, regex, rules, sequence, withCtx,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
@@ -129,21 +129,20 @@ describe('ENGINE PARITY — the runtime linker and the macro plugin agree', () =
     expect([...recovered!.rules.keys()].sort()).toEqual(['Term', 'Value'])
   })
 
-  it('a runtime compose() emits no gating warning for a grammar it fully analysed', () => {
+  it('a runtime compose() prints nothing, and the deliberate report is clean', () => {
     const warns: string[] = []
-    const prev = process.env.PARSEMAN_GATING
-    process.env.PARSEMAN_GATING = 'warn'
     const spy = vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warns.push(a.join(' ')) })
-    try {
-      compose([baseShape(), rules(_g => ({ Value: regex(/[a-z]+/) }))])
-    } finally {
-      spy.mockRestore()
-      process.env.PARSEMAN_GATING = prev
-    }
-    // Nothing unanalysable, and the bound hole gates — so genuine silence, and the
-    // banner must NOT appear. (Pairs with the tests above: silence is only legitimate
+    let composed: unknown
+    try { composed = compose([baseShape(), rules(_g => ({ Value: regex(/[a-z]+/) }))]) }
+    finally { spy.mockRestore() }
+    // compose() reports nothing at all now — building is not reporting.
+    expect(warns).toEqual([])
+    // …and when ASKED, nothing is unanalysable and the bound hole gates, so the
+    // silence is legitimate. (Pairs with the tests above: silence is only legitimate
     // when the walk actually saw the grammar.)
-    expect(warns.filter(w => w.includes('UNANALYSABLE'))).toEqual([])
+    const d = diagnoseGrammar(composed as Record<string, unknown>)
+    expect(d.summary.unanalysable).toBe(0)
+    expect(d.ok).toBe(true)
   })
 })
 

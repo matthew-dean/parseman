@@ -252,6 +252,6 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
     // The reducer LOOKS arity-6; the author declares 1. The declaration is authoritative,
     // which is what makes it an escape hatch rather than a hint.
     const n = node('T', literal('a'), (c: readonly unknown[], _f, _s, _r, _tl, _st) => c, { buildArity: 1 })
-    expect(compile(parser({}, n), undefined, { gating: 'off' }).source).toContain('_EMPTY_TL')
+    expect(compile(parser({}, n), undefined).source).toContain('_EMPTY_TL')
   })
 })

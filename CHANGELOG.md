@@ -97,6 +97,64 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   every arm. Replaying a ref needs recorded-and-spliced capture state, not variable
   reuse.
 
+- **BREAKING: the gating diagnostic left the compile path. Compiling produces an
+  artifact and says nothing.** Importing one example grammar (`examples/css/parser.ts`)
+  printed **51 `console.warn` lines** — 36 of them gating advice — before a single byte
+  was parsed. The advice was correct, detailed, actionable and read by nobody: it arrived
+  unasked, in the middle of an unrelated build log, on a build that had not gone wrong. A
+  diagnostic that rides along with the thing that produces the artifact is a diagnostic
+  nobody chose to run. This is the principle already settled for codegen ("anything
+  'diagnostic' doesn't end up in codegen") applied one layer up, at build time.
+
+  Removed: the `gating` option on `compile` / `compileRuleMap` / `compileLinkable`, the
+  `CompiledParser.gating` field, the `PARSEMAN_GATING` env var, the exported
+  `GatingOption` and `GatingWarnLevel` types, and the implicit fuse-time run inside
+  `compose()` / `composeLeaf()` and the macro transform. That import now prints **0**
+  lines. Nothing is lost: `analyzeGating`, `analyzeGatingRules`, `analyzeGrammarGating`
+  and `formatGatingWarnings` are unchanged, and the fuse-time question — a shared shape's
+  `g.Foo` hole answered where it is BOUND — is exactly what `analyzeGrammarGating` already
+  does on a `compose()` result.
+
+  **Migration:** delete the `gating` option / `PARSEMAN_GATING` env var and call
+  `diagnoseGrammar(g)` where you want the report — on the same grammar, at a moment you
+  chose. `formatGrammarDiagnosis(d)` renders it; `process.exit(d.ok ? 0 : 1)` gates CI.
+
+- **New: `diagnoseGrammar(grammar, opts?)` / `formatGrammarDiagnosis(d)` — the deliberate
+  entry point.** Getting the full report on purpose is now strictly easier than getting it
+  by accident used to be: **one** call takes a combinator, an array of `[name, combinator]`
+  entries, a `rules()` map **or** a `compose()` result, so there is no prior decision
+  between `analyzeGating` / `analyzeGatingRules` / `analyzeGrammarGating`. It is
+  **machine-readable first** — a plain, JSON-serializable `GrammarDiagnosis` with a
+  versioned `schema` tag, an `ok` boolean, a `summary` of counts, `findings` sorted by
+  (severity, code, id) so two runs are byte-identical and a snapshot is diffable, and an
+  `acceptSnapshot` ready to paste into `{ accept: [...] }`. The human rendering is a
+  separate function over that object, never the primary product.
+
+  It **fails closed**, which is the property a gate needs and a warning channel never had:
+  `unanalysable` stays authoritative and every entry is a BLOCKING finding, an opaque
+  precompiled contributing artifact blocks, and an analysis that THROWS is reported as a
+  blocking finding rather than as an empty, clean-looking report (`diagnoseGrammar` itself
+  never throws). So `process.exit(d.ok ? 0 : 1)` is the whole CI contract, and an empty
+  finding list cannot be produced by a walk that saw nothing.
+
+- **The `[parseman] degraded` channel deliberately did NOT follow it — but it aggregates
+  now.** Gating advice is advice; a degradation is parseman reporting it could not do what
+  you asked, and this release is named for not letting that be silent. Trading
+  silent-degradation for silent-everything is not a fix, so all three drains stay loud: the
+  macro plugin's normal drain (onto the bundler's own warning channel, where `error` fails
+  the build), the macro plugin's ABORTED-transform drain (a `console.warn` from a `finally`
+  — those findings have nowhere else to go and losing them is the exact bug the capture
+  stack exists to prevent), and a runtime `compile()`, which is the developer-watching case
+  and the only place `PARSEMAN_DEGRADATION=error` could ever be honoured.
+
+  What changed is the SHAPE on the runtime path. It printed one full ~500-character line
+  per site as each was found, with no aggregation, while the macro drain had always capped
+  at eight per code and appended a counted summary. `pnpm perf:workloads` emitted **31**
+  such lines for a single code. `compile()` now opens its own drain (a no-op when a macro
+  sink is already open, so it cannot steal that module's findings) and reports one
+  aggregated block: **9** lines, ending `+23 more site(s) not listed (31 total)`. `'error'`
+  still fails, and now lists every finding instead of throwing on the first.
+
 - **BREAKING: `parseman/oracle` keeps the projection and drops the harness.**
   `loadCorpus`, `digestCorpus`, `compareReports` and `formatComparison` are removed,
   along with the `Surface`, `CorpusEntry`, `SurfaceReport`, `IdentityReport`,

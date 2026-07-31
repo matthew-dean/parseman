@@ -10,8 +10,6 @@
  * the resulting node count, and the speculative-probe density measured by
  * counting `not()` entries through an instrumented context.
  */
-process.env.PARSEMAN_GATING = 'off'
-
 const { buildWorkloads } = await import('./index.ts')
 
 type Consumed = { ok?: boolean; span?: { start: number; end: number } }

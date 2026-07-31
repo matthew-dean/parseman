@@ -36,12 +36,27 @@ export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/
 export { token, leaf } from './combinators/token.ts'
 
 export { compile } from './compiler/codegen.ts'
-export type { CompiledParser, LinkablePieces, GatingOption, DuplicationOption, HostMode } from './compiler/codegen.ts'
+export type { CompiledParser, LinkablePieces, DuplicationOption, HostMode } from './compiler/codegen.ts'
+
+// THE diagnostic entry point. `compile()` never reports anything: diagnostics are a
+// deliberate act, not a side effect of producing an artifact. `diagnoseGrammar` accepts
+// any grammar shape, returns a deterministic machine-readable object that fails CLOSED,
+// and `formatGrammarDiagnosis` renders it for a human.
+//
+//   const d = diagnoseGrammar(myGrammar)
+//   if (!d.ok) { console.error(formatGrammarDiagnosis(d).join('\n')); process.exit(1) }
+//
+// The `analyze*` functions below remain the lower-level surface it is built on.
+export { diagnoseGrammar, formatGrammarDiagnosis } from './analysis/diagnose.ts'
+export type {
+  GrammarDiagnosis, DiagnosisFinding, DiagnosisCode, DiagnosisSeverity,
+  DiagnosableGrammar, DiagnoseOptions,
+} from './analysis/diagnose.ts'
 
 export { analyzeGating, analyzeGatingRules, formatGatingWarnings, firstSetToString } from './analysis/gating.ts'
 export type {
   GatingReport, ChoiceGating, AnyArm, Overlap, AntiPattern, Unanalysable,
-  FirstSetCause, GatingWarnLevel, ChoiceStrategyTag, AnalyzeGatingOptions,
+  FirstSetCause, ChoiceStrategyTag, AnalyzeGatingOptions,
 } from './analysis/gating.ts'
 // Analyze a WHOLE grammar, including a `compose()` result — whose fused map holds
 // rule FUNCTIONS, not combinators, and so cannot be walked by `analyzeGatingRules`

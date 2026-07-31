@@ -126,7 +126,7 @@ export function assertEnginesAgree<T>(
   input: string,
   opts: ParityOptions = {},
 ): ReturnType<typeof runtimeParse<T>> {
-  const compiled = compile(c, undefined, { gating: 'off', ...(opts.recovery ? { recovery: true } : {}) })
+  const compiled = compile(c, undefined, { ...(opts.recovery ? { recovery: true } : {}) })
 
   // Run the public entrypoint FIRST: it owns the one-time dead-value analysis
   // (`markUnusedValues`) that decides whether a repeat even materializes its

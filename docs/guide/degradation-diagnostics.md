@@ -33,7 +33,7 @@ actionable and is not worth printing.
 
 ## Levels
 
-Default-on, exactly like [first-char gating](/guide/first-char-gating):
+Default-on:
 
 ```sh
 PARSEMAN_DEGRADATION=off     # silence
@@ -43,13 +43,30 @@ PARSEMAN_DEGRADATION=error   # fail the build
 
 Under the macro plugin the findings arrive as ordinary bundler warnings (Vite/Rollup
 `this.warn`), anchored to the module, and `error` throws once at the end of the module
-with every finding listed. A runtime `compile()` prints them directly at `warn`, and
-throws on the first finding at `error` — it has no batch to defer to.
+with every finding listed. A runtime `compile()` drains at the end of that compile: at
+`warn` it prints one aggregated block, at `error` it throws once with every finding
+listed.
 
 ::: tip Both modes honour `error`
 Before 0.45.0 `error` was inert for a runtime `compile()`: the drain that threw lived
 only in the macro plugin, so library users got `warn` behaviour from a setting documented
 as "fail the build".
+:::
+
+::: warning This channel is NOT like the gating diagnostic
+0.45.0 moved the [first-char gating](/guide/first-char-gating) advice out of the compile
+path entirely — `compile()` produces an artifact and says nothing, and you ask for a
+diagnosis with `diagnoseGrammar()`. This channel deliberately did **not** follow it.
+
+Gating advice is advice: the build did what you asked, and here are some notes. A
+degradation is parseman telling you it **could not do what you asked** — and the whole
+point of this release is that such a thing must not be silent. So it stays default-on, on
+both paths.
+
+What DID change is the shape on the runtime path. It used to print one full line per site
+as each was discovered — 31 near-identical ~500-character lines for a single code in one
+benchmark run, while the macro path had always aggregated. Now both drain the same way,
+so the eight-site cap and the counted summary below apply everywhere.
 :::
 
 ## Asserting zero degradations
@@ -64,6 +81,11 @@ pnpm build 2>&1 | tee build.log
 ```
 
 or, equivalently, set `PARSEMAN_DEGRADATION=error` and let the build fail.
+
+A degradation recorded by an **analysis** rather than a compile — an opaque contributing
+artifact, say — is also returned structurally, on `diagnoseGrammar(g).degradations`, and
+becomes a finding in that report. That is the machine-readable route: `d.ok` covers it,
+no grepping.
 
 ## Aggregation
 

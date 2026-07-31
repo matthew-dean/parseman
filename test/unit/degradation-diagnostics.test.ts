@@ -19,6 +19,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { analyzeMkInlineBuild } from '../../src/compiler/inline-build.ts'
 import { node, sequence, literal, regex, many, choice, parser, compile, parse } from '../../src/index.ts'
+import type { Combinator } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import {
   formatDegradation, formatDegradations, beginDegradationCapture, endDegradationCapture,
@@ -216,7 +217,7 @@ describe('node first-set guard is gated on needsFirstSetGuard alone', () => {
 
   it('emits the guard for a confirmed ZERO-arity reducer', () => {
     const g = parser({ trivia: regex(/ +/) }, node('Root', many(choice(nesting, node('Other', literal('x'), c => c))), c => c))
-    const src = compile(g, undefined, { gating: 'off' }).source
+    const src = compile(g, undefined).source
     // `&` is 38. Before the fix, `capturesChildren === false` deleted this guard and the
     // node was entered — allocating and swapping its CST frame — at every position.
     expect(src).toContain('=== 38')
@@ -224,7 +225,7 @@ describe('node first-set guard is gated on needsFirstSetGuard alone', () => {
 
   it('does not change what the grammar accepts or produces', () => {
     const g = parser({ trivia: regex(/ +/) }, node('Root', many(choice(nesting, node('Other', literal('x'), c => c))), c => c))
-    const compiled = compile(g, undefined, { gating: 'off' })
+    const compiled = compile(g, undefined)
     for (const input of ['', '&ab', 'x', '&ab x', 'x &ab', '&', 'y', '&ab &cd x']) {
       expect(compiled.parse(input)).toEqual(parse(g, input))
     }
@@ -232,7 +233,7 @@ describe('node first-set guard is gated on needsFirstSetGuard alone', () => {
 
   it('still omits the guard when the body has no discrete first set', () => {
     const g = parser({ trivia: regex(/ +/) }, node('Any', regex(/[\s\S]/), () => 1))
-    expect(compile(g, undefined, { gating: 'off' }).source).not.toContain('codePointAt')
+    expect(compile(g, undefined).source).not.toContain('codePointAt')
   })
 })
 
@@ -331,7 +332,7 @@ describe('inline-mk near-misses are reported', () => {
     const mkSrc = "(c: A, f: B, s: C, r: D, tl: E) => mk('T', c, r, s, tl)"
     const n = node('T', literal('a'), () => null)
     ;(n._def as { buildSrc?: string }).buildSrc = mkSrc
-    const src = compile(parser({}, n), undefined, { gating: 'off' }).source
+    const src = compile(parser({}, n), undefined).source
     expect(src).toContain("_tag: 'node', type: \"T\"")
     expect(src).not.toContain('_build[0](')
   })
@@ -509,5 +510,95 @@ describe('a recorded degradation actually reaches a drain', () => {
       try { transformMacro(src.trim(), 'neutral.ts', new Set(['parseman'])) } catch { /* either way */ }
       expect(degradationCaptureDepth()).toBe(depth)
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The runtime `compile()` drain — LOUD, but aggregated
+//
+// 0.45.0 moved the gating advice out of `compile()` entirely, because advice is
+// something you ask for. A DEGRADATION is not advice: it is parseman reporting that it
+// could not do what the caller asked for, and this release exists to stop that being
+// silent. So this channel stays loud on the runtime path, where a developer is
+// watching and where `'error'` is honoured. What changed is only the SHAPE: the
+// sink-less path printed one ~500-character line per site as it went — 31 of them for
+// a single code in one `pnpm perf:workloads` run — while the macro drain had always
+// aggregated. Now both drain the same way, and the COUNT survives.
+// ---------------------------------------------------------------------------
+describe('a runtime compile() drains its degradations as ONE aggregated block', () => {
+  const prev = process.env.PARSEMAN_DEGRADATION
+  beforeEach(() => { resetDegradationMemo() })
+  afterEach(() => {
+    process.env.PARSEMAN_DEGRADATION = prev
+    unwindDegradationCapture(0)
+    resetDegradationMemo()
+  })
+
+  /** N nodes that each look like an inline-`mk` builder and each miss the shape. */
+  const nearMisses = (n: number, tag: string) => {
+    const nodes = Array.from({ length: n }, (_, i) => {
+      const p = node(`${tag}${i}`, literal(String.fromCodePoint(97 + (i % 26))), () => null)
+      ;(p._def as { buildSrc?: string }).buildSrc = `(c, f, s, r, tl) => mk('WRONG${i}', c, r, s, tl)`
+      return p
+    })
+    return parser({}, (nodes as Array<Combinator<unknown>>).reduce((a, b) => sequence(a, b) as Combinator<unknown>))
+  }
+
+  it('caps the detail lines and reports the real total', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    const seen: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((m: unknown) => { seen.push(String(m)) })
+    try { compile(nearMisses(20, 'Agg'), undefined) } finally { spy.mockRestore() }
+    // 8 detail lines (DETAIL_CAP) + 1 counted summary — not 20 walls of text.
+    expect(seen).toHaveLength(9)
+    expect(seen.at(-1)).toContain('+12 more site(s) not listed (20 total)')
+  })
+
+  it('still says everything it used to when there are only a few sites', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    const seen: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((m: unknown) => { seen.push(String(m)) })
+    try { compile(nearMisses(2, 'Few'), undefined) } finally { spy.mockRestore() }
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toContain('[parseman] degraded [mk-inline-missed]')
+  })
+
+  it('`error` still fails the build — and now lists every finding, not just the first', () => {
+    process.env.PARSEMAN_DEGRADATION = 'error'
+    expect(() => compile(nearMisses(3, 'Err'), undefined))
+      .toThrow(/3 degraded compilation path\(s\)/)
+  })
+
+  it('`off` prints nothing and opens no sink', () => {
+    process.env.PARSEMAN_DEGRADATION = 'off'
+    const depth = degradationCaptureDepth()
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try { compile(nearMisses(3, 'Off'), undefined) } finally { spy.mockRestore() }
+    expect(spy).not.toHaveBeenCalled()
+    expect(degradationCaptureDepth()).toBe(depth)
+  })
+
+  it('leaves the capture stack balanced even when the compile itself throws', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    const depth = degradationCaptureDepth()
+    const boom = parser({}, { _def: { tag: 'nonsense' }, _meta: {} } as never)
+    expect(() => compile(boom, undefined)).toThrow()
+    expect(degradationCaptureDepth()).toBe(depth)
+  })
+
+  it('does NOT steal the macro sink — a transform still returns its own findings', () => {
+    process.env.PARSEMAN_DEGRADATION = 'warn'
+    const depth = degradationCaptureDepth()
+    const seen: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((m: unknown) => { seen.push(String(m)) })
+    try {
+      // A sink is open, exactly as inside `transformMacro`. The nested per-compile
+      // drain must be inert, or the module's findings get printed here instead of
+      // being returned on the bundler's warning channel.
+      beginDegradationCapture()
+      compile(nearMisses(3, 'Macro'), undefined)
+      expect(seen).toEqual([])
+      expect(endDegradationCapture()).toHaveLength(3)
+    } finally { spy.mockRestore(); unwindDegradationCapture(depth) }
   })
 })

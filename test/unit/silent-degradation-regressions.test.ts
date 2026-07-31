@@ -41,13 +41,13 @@ describe('cstBuildHost({ collapse }) applies to host-built nodes that carry redu
     cstBuildHost({ collapse: (type: string) => { calls.n++; return type === 'Wrap' } })
 
   it('emits the collapse check into the artifact', () => {
-    const compiled = compile(parser({}, grammar()), undefined, { hostMode: 'cst', gating: 'off' })
+    const compiled = compile(parser({}, grammar()), undefined, { hostMode: 'cst' })
     expect(compiled.source).toContain('_parsemanCstCollapse')
   })
 
   it('compiled: consults the predicate and removes the wrapper', () => {
     const calls = { n: 0 }
-    const compiled = compile(parser({}, grammar()), undefined, { hostMode: 'cst', gating: 'off' })
+    const compiled = compile(parser({}, grammar()), undefined, { hostMode: 'cst' })
     const r = compiled.parseWithContext('ab', { trackLines: false, build: host(calls) } as never, 0)
     expect(calls.n).toBeGreaterThan(0)
     expect(r.ok).toBe(true)
@@ -67,7 +67,7 @@ describe('cstBuildHost({ collapse }) applies to host-built nodes that carry redu
   })
 
   it('collapse:false leaves the wrapper in place (the option still means something)', () => {
-    const compiled = compile(parser({}, grammar()), undefined, { hostMode: 'cst', gating: 'off' })
+    const compiled = compile(parser({}, grammar()), undefined, { hostMode: 'cst' })
     const r = compiled.parseWithContext('ab', { trackLines: false, build: cstBuildHost({}) } as never, 0)
     const doc = (r as unknown as { value: { children: Array<{ type?: string }> } }).value
     expect(doc.children[0]?.type).toBe('Wrap')

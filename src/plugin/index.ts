@@ -24,14 +24,14 @@ import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
+import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
 import {
   beginDegradationCapture, endDegradationCapture, formatDegradation, formatDegradations,
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
 import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
-import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
+import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -1198,38 +1198,6 @@ function transformMacroImpl(
     return out
   }
 
-  /** The carried list's re-lowerable rule maps, in compose order — the input to the
-   * fuse-time gating diagnostic. Opaque baked pieces have no combinator graph and are
-   * skipped: a hole one of them would bind stays unresolved, so its choice stays
-   * DEFERRED (silent) instead of being warned about on a guess. */
-  /** The carried list's re-lowerable rule maps PLUS the opaque pieces skipped along the
-   * way. The macro engine keeps its
-   * own carried-item representation, so it needs its own detailed variant — but it
-   * must report the SAME opaque findings the runtime linker does, or the two engines
-   * disagree about how much of a fuse was actually analysed. `parity` test:
-   * test/unit/gating-composed-grammar.test.ts. */
-  const carriedRuleMapsDetailed = (
-    items: CarriedItem[],
-  ): { maps: Array<Array<[string, Combinator<unknown>]>>; opaque: Array<{ ns: string; ruleNames: string[] }> } => {
-    const maps: Array<Array<[string, Combinator<unknown>]>> = []
-    const opaque: Array<{ ns: string; ruleNames: string[] }> = []
-    const add = (it: CarriedItem): void => {
-      if (isIR(it)) { maps.push(evalRuleMapIR(it.ir)); return }
-      // `ruleFns` is a Map — see the note on the runtime linker's twin. `Object.keys`
-      // on it silently yields [], anonymising every opaque piece.
-      const o = it as { ns?: string; ruleFns?: Map<string, string> }
-      opaque.push({
-        ns: o.ns ?? '<unknown>',
-        ruleNames: o.ruleFns instanceof Map ? [...o.ruleFns.keys()] : [],
-      })
-    }
-    for (const it of items) {
-      if (isSpread(it)) for (const p of importedPieces(it.__spreadLocal) ?? []) add(p as CarriedItem)
-      else add(it)
-    }
-    return { maps, opaque }
-  }
-
   /** Materialize the exact combinator identities that will be lowered for a
    * coverage-enabled terminal composition.  Coverage IDs are WeakMap keyed, so
    * planning from a second IR hydration would silently leave the emitted pieces
@@ -1348,7 +1316,7 @@ function transformMacroImpl(
     }
     // Inline `rules(g => …)` or `rules({ trivia }, g => …)` (options-first). The
     // element's OWN trivia option is ignored for lowering — composing-wins means the
-    // composing grammar's trivia (computed once, in compileComposeCall) governs every
+    // composing grammar's trivia (computed in compileComposeCall) governs every
     // fused rule, this element's included. It only matters as a CANDIDATE for the
     // composing trivia itself, which composingTrivia() reads directly off the AST.
     if (isRulesCall(arg)) {
@@ -1473,15 +1441,6 @@ function transformMacroImpl(
       carried.push(...r.carried)
       importedFactories.push(...(r.importedFactories ?? []))
     }
-    // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
-    // only site that can answer whether the choices it leads actually gate.
-    // ONE hydration shared by both thunks — see `once` in the linker.
-    const detailed = once(() => carriedRuleMapsDetailed(carried))
-    runFusedGatingDiagnostic(
-      () => detailed().maps,
-      undefined,
-      () => detailed().opaque,
-    )
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
     const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
@@ -1557,12 +1516,6 @@ function transformMacroImpl(
       const localNs = nsFor(`composeLeaf${init.start}`)
       // The local leaf map is the LAST (winning) contributor, and is usually the one
       // that binds the imported shapes' holes — so it must be part of the fused view.
-      const detailedLeaf = once(() => carriedRuleMapsDetailed(carried))
-      runFusedGatingDiagnostic(
-        () => [...detailedLeaf().maps, [...localRules] as Array<[string, Combinator<unknown>]>],
-        undefined,
-        () => detailedLeaf().opaque,
-      )
       const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
       if (!plainLocalPiece) {
         warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
@@ -1694,7 +1647,7 @@ function transformMacroImpl(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage, gating: { entryName: varName } })
+            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage })
             if (compiled.inlineExpression === null) {
               warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
               continue
@@ -1860,10 +1813,7 @@ function transformMacroImpl(
 
         // Sources are carried on each transform's def (set by the evaluator), so
         // codegen derives them in traversal order — no positional array needed.
-        // `entryName`: attribute the gating diagnostic to the BINDING's own name.
-        // Without it every top-level combinator const warns as `choice @ <entry>`,
-        // which names nothing and gives the `accept` allowlist no discriminating key.
-        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage, gating: { entryName: varName } })
+        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage })
         if (compiled.inlineExpression === null) {
           warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
           continue

@@ -948,6 +948,48 @@ Alias of `gate(predicate)` (documented just above). Prefer `gate()`.
 
 Run `combinator` with `extra` merged into `ctx.state`, restored on exit.
 
+### `diagnoseGrammar(grammar, opts?)` → `GrammarDiagnosis`
+
+**The** grammar diagnostic. `compile()`, `compileRuleMap()`, `compose()` and the macro
+transform report NOTHING — producing an artifact and reporting on it are separate acts —
+so this is where you ask.
+
+`grammar` may be a combinator, an array of `[name, combinator]` entries, a `rules()` map,
+or a `compose()` result; it works out which it got. `opts.accept` is the snapshot
+allowlist described under `analyzeGating`, and `opts.entryName` names an unnamed entry.
+
+Returns a plain, JSON-serializable object:
+
+| Field | Meaning |
+| --- | --- |
+| `schema` | `'parseman.diagnosis/1'` — versioned so a committed snapshot can be migrated. |
+| `ok` | `false` iff any finding is `blocking`. The whole CI contract. |
+| `summary` | Counts: `totalChoices`, `gated`, `recoverable`, `ungated`, `accepted`, `deferred`, `antiPatterns`, `unanalysable`, `degraded`, `staleAccepts`. |
+| `findings` | Sorted by (severity, code, id) — deterministic across runs, so the JSON is diffable. |
+| `acceptSnapshot` | Every blocking choice id, sorted; paste into `{ accept: [...] }`. |
+| `gating` | The full underlying `GatingReport`. |
+| `degradations` | Degradations recorded while this analysis ran (see [Degradation diagnostics](../guide/degradation-diagnostics)). |
+
+Each finding is `{ id, code, severity, rule, message, details, acceptKey? }`, where `code`
+is one of `ungated-choice`, `anti-pattern`, `unanalysable`, `degraded`, `stale-accept`
+and `severity` is `blocking` or `advisory`.
+
+**It fails closed.** An analysis that could not run is not a pass: `unanalysable` findings
+are blocking, and an analysis that THROWS is reported as a blocking finding rather than as
+an empty, clean-looking report (`diagnoseGrammar` itself never throws). An empty
+`findings` list therefore cannot be produced by a walk that saw nothing.
+
+```ts
+const d = diagnoseGrammar(grammar, { accept: ACCEPTED })
+if (!d.ok) { console.error(formatGrammarDiagnosis(d).join('\n')); process.exit(1) }
+```
+
+### `formatGrammarDiagnosis(diagnosis)` → `string[]`
+
+Human rendering of a `GrammarDiagnosis` — a view over the structured object, never the
+primary product. A PARTIAL walk is announced on the second line, before any finding, so
+"no findings" over a grammar that was never examined cannot read as a clean bill of health.
+
 ### `analyzeGating(entry, opts?)` → `GatingReport`
 
 Static first-char gating diagnostic over a combinator tree. For every reachable `choice`
@@ -957,23 +999,22 @@ and cause for ungated ones, and API anti-patterns (`not(not(...))`, keyword `reg
 move to `report.accepted` (their UNGATED-gating finding is suppressed — anti-pattern lints on
 the same choice still fire), the rest stay in `report.ungated` (warned + gate-failing), and
 `report.acceptedUnused` flags stale entries. This allowlist is the SINGLE per-choice suppression
-mechanism for gating findings (there is no `cold()` marker). `compile()` runs the diagnostic by
-default and warns on genuinely-ungated hot choices; see
-[First-char gating](../guide/first-char-gating). `formatGatingWarnings(report)` renders the
-findings as printable lines.
+mechanism for gating findings (there is no `cold()` marker). This is the lower-level surface
+`diagnoseGrammar` is built on; see [First-char gating](../guide/first-char-gating).
+`formatGatingWarnings(report)` renders the findings as printable lines.
 
 `report.deferred` holds choices whose verdict is not this artifact's to make: every `any`
 arm is an unresolved NAMED cross-artifact hole (`g.Value` in a
-[shared shape](../guide/extending#shared-shapes-one-shape-many-bindings)). They are silent and do not fail the
-`'error'` gate — the question is re-asked, with the hole bound, when the shape is
-`compose()`d. See
+[shared shape](../guide/extending#shared-shapes-one-shape-many-bindings)). They are not
+findings and do not fail `ok` — ask again, with the hole bound, of the `compose()`d
+grammar. See
 [Shared shapes and the fuse](../guide/first-char-gating#shared-shapes-the-verdict-belongs-to-the-fuse).
 
 `report.unanalysable` lists rules the walk could NOT introspect. **A non-empty
 `unanalysable` means the report is PARTIAL**: `ungated` being empty does not then mean
-the grammar is clean. `formatGatingWarnings` always emits a banner for it, and the
-`'error'` gate fails on it. Treating "no findings" as a pass without checking this field
-is the mistake the field exists to prevent.
+the grammar is clean. `formatGatingWarnings` always emits a banner for it, and
+`diagnoseGrammar` turns every entry into a BLOCKING finding. Treating "no findings" as a
+pass without checking this field is the mistake the field exists to prevent.
 
 ### `analyzeGrammarGating(grammar, opts?)` → `GatingReport`
 
@@ -986,8 +1027,8 @@ graph from the composition's carried IR first, then analyzes the override-winner
 with cross-artifact holes bound — so a choice that is `deferred` when you analyze the
 contributing `rules()` map alone resolves here to a real `yes` / `recoverable` / `no`.
 
-Use it when you want a composed grammar's gating verdict programmatically. (`compose()`
-already runs the fuse-time diagnostic and warns; this is the API for asking directly.)
+Use it when you want the raw `GatingReport` for a composed grammar. `diagnoseGrammar`
+routes here for you and wraps the result in a gateable diagnosis.
 
 A contributing piece that is an opaque precompiled artifact — one carrying compiled rule
 functions rather than re-lowerable IR — cannot be introspected. Its rules are reported

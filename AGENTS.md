@@ -59,9 +59,9 @@ but slow, and nothing but the build warning tells you.
 - Left-factor arms that share a leading terminal: make them bare `sequence`s with
   the same first term (parseman auto-detects `sharedPrefix`), or restructure.
 - Accept a deliberately non-gating choice (e.g. one with a `scanTo` recovery
-  fallback) by listing its printed `id` in the gating snapshot allowlist
-  (`compile(g, undefined, { gating: { level, accept: ['<id>'] } })`) — the single
-  suppression mechanism. Prefer fixing the gating over accepting it.
+  fallback) by listing its reported `id` in the gating snapshot allowlist
+  (`diagnoseGrammar(g, { accept: ['<id>'] })`) — the single suppression
+  mechanism. Prefer fixing the gating over accepting it.
 - Use `gate(predicate)` (the ASSERT combinator) only AFTER a concrete leading
   terminal inside a `sequence`, never as a leading arm term.
 
@@ -159,12 +159,14 @@ wrapper → opts first.
 ## How to check your grammar
 
 ```ts
-import { analyzeGating, formatGatingWarnings } from 'parseman'
-console.log(formatGatingWarnings(analyzeGating(myEntryRule)).join('\n'))
-// empty output = every hot choice gates. Non-empty = fix what it names.
+import { diagnoseGrammar, formatGrammarDiagnosis } from 'parseman'
+const d = diagnoseGrammar(myGrammar)   // combinator, rules() map, or compose() result
+if (!d.ok) { console.error(formatGrammarDiagnosis(d).join('\n')); process.exit(1) }
+// d.ok = every hot choice gates AND the whole grammar was actually examined.
 ```
 
-`compile(myGrammar)` prints the same warnings by default. `compile(g, undefined,
-{ gating: { level: 'error', accept: [...] } })` fails the build on any ungated hot
-choice whose `id` is not in the accepted snapshot allowlist — use it in CI once
-you've reviewed and accepted the genuinely-unavoidable ones.
+Compiling reports NOTHING — `compile()` / `compileRuleMap()` / `compose()` produce an
+artifact and stay silent. Diagnosing is a deliberate call. `d.ok` is false for any
+ungated hot choice whose `id` is not in `{ accept: [...] }`, for any anti-pattern, and
+for any part of the grammar that could not be examined — it fails CLOSED, so it is
+usable directly as a CI exit code.

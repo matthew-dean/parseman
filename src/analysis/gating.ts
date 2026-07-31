@@ -10,18 +10,19 @@
  * the compiler already knows: which choices gate, and for those that don't, which
  * arm poisons dispatch and why.
  *
- * `analyzeGating()` is the pure programmatic surface. `compile()` runs it by
- * default and emits `formatGatingWarnings()` output for genuinely-ungated choices
- * (see `src/compiler/codegen.ts`). Accept a deliberately-ungated choice by listing
- * its `id` in the gating snapshot allowlist (`analyzeGating(entry, { accept })` /
- * `compile(g, { gating: { level, accept } })`) — the single suppression mechanism.
+ * `analyzeGating()` is the pure programmatic surface, and `diagnoseGrammar()`
+ * (`src/analysis/diagnose.ts`) is the entry point most callers want. `compile()` does
+ * NOT run either: a diagnostic is a deliberate act, not a side effect of producing an
+ * artifact. Accept a deliberately-ungated choice by listing its `id` in the gating
+ * snapshot allowlist (`analyzeGating(entry, { accept })` / `diagnoseGrammar(g, {
+ * accept })`) — the single suppression mechanism.
  *
  * WHERE the question is asked matters as much as the answer. A SHARED SHAPE — a
  * `rules()` map referencing a rule it doesn't define (`g.Value`) — has no verdict of
  * its own: the hole makes every first-set through it `any`, but that configuration is
  * never executed and its author cannot fix it. Such a choice is `deferred` here, and
- * re-asked with `resolveRef` at the site that BINDS the name (`runFusedGatingDiagnostic`
- * in codegen.ts) — the artifact that really runs, whose author really can fix it.
+ * re-asked with `resolveRef` at the site that BINDS the name — `analyzeGrammarGating`
+ * on the fused artifact, which really runs and whose author really can fix it.
  */
 import type { Combinator, FirstSet, ParserDef } from '../types.ts'
 import { firstSetOf, matchesEmpty, type RefResolver } from '../combinators/first-set.ts'
@@ -107,7 +108,7 @@ export type ChoiceGating = {
    * unresolved NAMED `g.Foo` ref and no two finite arms overlap. The verdict is not
    * this artifact's to make: the shape module can't fix it (the hole has no body
    * here) and the configuration it describes never runs. The answer belongs to the
-   * FUSED artifact, where the name is bound — see `runFusedGatingDiagnostic`.
+   * FUSED artifact, where the name is bound — see `analyzeGrammarGating`.
    *
    * Deferred choices are excluded from `ungated`: they neither warn nor fail the
    * `'error'` gate at this site.
@@ -567,8 +568,6 @@ function analyzeChoice(
 }
 
 // ── warning formatting ──
-
-export type GatingWarnLevel = 'off' | 'warn' | 'error'
 
 /**
  * Format the genuinely-ungated findings + anti-patterns as ready-to-print lines.

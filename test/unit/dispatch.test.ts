@@ -545,7 +545,7 @@ describe('dispatch()', () => {
       Branch: sequence(routed(), literal('!')),
     }))
 
-    const compiled = compileRuleMap(Object.entries(grammar), { gating: 'off' })
+    const compiled = compileRuleMap(Object.entries(grammar))
     expect(compiled).not.toBeNull()
     if (compiled === null) return
     expect(compiled.replacement).toContain('_ctx._routed')

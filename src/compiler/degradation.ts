@@ -22,7 +22,7 @@
  * count instead of one line per rule.
  */
 
-/** Off / print / throw. Mirrors `GatingWarnLevel`. */
+/** Off / print / throw. */
 export type DegradationLevel = 'off' | 'warn' | 'error'
 
 /** Stable, greppable code per degradation class. */
@@ -210,8 +210,59 @@ export function recordDegradation(d: Degradation): void {
 /** Dedup memo for the sink-less (runtime `compile()`) path. */
 const _immediate = new Set<string>()
 
+/**
+ * Open a per-`compile()` drain and return the function that closes it.
+ *
+ * This channel stays LOUD. `compile()` no longer prints gating advice — that is a
+ * deliberate diagnostic now (`diagnoseGrammar`) — but a degradation is not advice: it
+ * is parseman reporting that it could not do the thing the caller asked for, and this
+ * release exists to stop that happening silently. What changes here is only the SHAPE.
+ *
+ * Before, the sink-less path printed one ~500-character line per site as it went, with
+ * no aggregation — 31 of them for a single code in one `pnpm perf:workloads` run, each
+ * repeating the same advice. The macro drain has always aggregated (`formatDegradations`,
+ * `DETAIL_CAP`); the runtime path simply had no drain to aggregate at. It has one now,
+ * so both paths report the same way and a real count survives instead of a wall.
+ *
+ * Nested inside a macro transform this is a NO-OP: that transform's sink owns the whole
+ * module's findings and returns them on the bundler's warning channel. A per-compile
+ * drain underneath it would steal them and print them instead.
+ *
+ * @returns `drain(report)` — always unwinds the sink (so a `compile()` that throws
+ *   cannot leave it open for the rest of the process), and reports only when
+ *   `report` is true, so a failed compile does not mask its own error with a second one.
+ */
+export function beginCompileDegradationDrain(): (report: boolean) => void {
+  if (resolveDegradationLevel() === 'off' || _sinks.length > 0) return () => {}
+  const depth = degradationCaptureDepth()
+  beginDegradationCapture()
+  return (report: boolean) => {
+    const found = unwindDegradationCapture(depth)
+    if (!report || found.length === 0) return
+    // Process-level dedup, preserved from the immediate path: compiling the same grammar
+    // twice must not re-print what the author has already been told once.
+    const fresh = found.filter(d => {
+      const k = degradationKey(d)
+      if (_immediate.has(k)) return false
+      _immediate.add(k)
+      return true
+    })
+    if (fresh.length === 0) return
+    const lines = formatDegradations(fresh)
+    if (resolveDegradationLevel() === 'error') {
+      throw new Error(`parseman: ${fresh.length} degraded compilation path(s)\n${lines.join('\n')}`)
+    }
+    for (const l of lines) console.warn(l)
+  }
+}
+
 /** Test-only: forget the sink-less dedup memo. */
 export function resetDegradationMemo(): void {
   _immediate.clear()
+}
+
+/** Test-only: is a sink open? Guards against a leaked capture between test files. */
+export function hasOpenDegradationSink(): boolean {
+  return _sinks.length > 0
 }
 

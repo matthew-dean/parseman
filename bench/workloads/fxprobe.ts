@@ -12,7 +12,6 @@
  * because it is fast is a result; a workload that reads flat because the code
  * under test is unreachable from it is a hole in the gate.
  */
-process.env.PARSEMAN_GATING = 'off'
 import path from 'node:path'
 
 const dir = path.resolve(process.argv[2]!)

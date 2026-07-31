@@ -68,13 +68,6 @@ import {
 } from './ab-harness.ts'
 import type { Workload } from './workloads/index.ts'
 
-/**
- * The static gating diagnostic prints a screenful per grammar and is compile-time
- * only, so it says nothing about the parse times being measured and would bury
- * the result. Silenced identically on both sides, before either is imported.
- */
-process.env.PARSEMAN_GATING = 'off'
-
 const GATE = 'workload-perf-guard'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')

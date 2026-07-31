@@ -12,7 +12,6 @@ import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { assertHostModeCompatible, type HostMode } from '../cst/host-mode.ts'
-import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel, type Unanalysable } from '../analysis/gating.ts'
 import { analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings, duplicationFindingCount, type DuplicationReport, type DuplicationWarnLevel } from '../analysis/duplication.ts'
 
 /**
@@ -171,6 +170,7 @@ import {
 } from './inline-callback.ts'
 import { annotateSpan, normalizeLineIndex, recordLineRange } from './line-index.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
+import { beginCompileDegradationDrain } from './degradation.ts'
 
 /**
  * Emission-time constant folding for gate expressions.
@@ -4415,14 +4415,6 @@ export type CompiledParser<T> = {
   inlineExpression: string | null
   /** Present only when compiled with `{ coverage: true }`. */
   coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[]
-  /**
-   * Static first-char gating diagnostic for this grammar (per-choice gated/
-   * recoverable/ungated + offending arm + cause + anti-patterns). Computed unless
-   * `{ gating: 'off' }`. Warnings for genuinely-ungated hot choices are emitted at
-   * compile time by default (see the `gating` option); this is the programmatic
-   * view for CI budget snapshots. See `src/analysis/gating.ts`.
-   */
-  gating?: GatingReport
 }
 
 /**
@@ -4807,170 +4799,6 @@ export function ruleDependencies(
  * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
  */
 /**
- * Resolve the gating-diagnostic level: explicit option wins, else the
- * `PARSEMAN_GATING` env var, else default-on `'warn'`. `'off'` skips the analysis
- * entirely; `'warn'` prints via `console.warn`; `'error'` throws when any
- * genuinely-ungated hot choice (or anti-pattern) is found.
- */
-/**
- * The `gating` compile option. A bare level is shorthand for `{ level }`; the
- * object form adds the accepted-snapshot `accept` allowlist (choice ids that are
- * intentionally ungated — silent, and excluded from the `'error'` gate).
- */
-export type GatingOption = GatingWarnLevel | { level?: GatingWarnLevel; accept?: Iterable<string>; entryName?: string }
-
-function resolveGatingLevel(opt: GatingOption | undefined): GatingWarnLevel {
-  const explicit = typeof opt === 'string' ? opt : opt?.level
-  if (explicit !== undefined) return explicit
-  const env = typeof process !== 'undefined' ? (process.env?.PARSEMAN_GATING as GatingWarnLevel | undefined) : undefined
-  if (env === 'off' || env === 'warn' || env === 'error') return env
-  return 'warn'
-}
-
-/**
- * Run the static gating diagnostic and surface it per the resolved level. Never
- * throws from the analysis itself (a diagnostic must not break a correct
- * compile) — only `'error'` deliberately throws on a real finding. The `accept`
- * allowlist (object form) suppresses BOTH the warning and the `'error'` gate for
- * the listed choice ids. Returns the report to attach (undefined when `'off'`).
- */
-function runGatingDiagnostic<T>(combinator: Combinator<T>, opt: GatingOption | undefined): GatingReport | undefined {
-  return reportGating(opt, o => analyzeGating(combinator as Combinator<unknown>, o))
-}
-
-/**
- * The rule-map form of the diagnostic. `compileRuleMap`/`compileLinkable` are the
- * ONLY paths a macro-built `rules()` grammar takes, so without this the whole
- * grammar was silently unanalyzed — every warning the build did print came from
- * the stray single-combinator `compile()` calls, unnamed and anti-pattern-free.
- */
-function runGatingDiagnosticRules(
-  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opt: GatingOption | undefined,
-): GatingReport | undefined {
-  return reportGating(opt, o => analyzeGatingRules(ruleMap, o))
-}
-
-/**
- * The FUSE-time form of the diagnostic — the only site where a shared shape's
- * `g.Foo` hole has an answer.
- *
- * A shape module (`rules(g => ({ Term: choice(sequence(g.Value, …), …) }))`) cannot
- * decide whether `Term` gates: `g.Value` is unbound there, so its first-set reads
- * `any`. `analyzeGatingRules` marks such a choice `deferred` rather than `ungated` —
- * warning about it would describe a configuration that never runs, and its author
- * has nothing to fix. This runs the SAME analysis over the fused winner map, where
- * `Value` is bound, and reports what the binding actually produced.
- *
- * Threading `gating` into the per-piece `compileLinkable` calls would NOT do this:
- * each piece is lowered alone, so the hole is still unbound and the shape's own false
- * positive is simply re-emitted. Resolution needs the MERGED map.
- *
- * Reports ONLY choices their authoring site deferred (the local, resolver-free pass
- * names them). That is what keeps an ordinary hole-free grammar from being warned
- * about twice — once by `compileRuleMap` and again by every `compose()` that fuses
- * it. Anti-patterns are structural and already reported at the authoring site, so
- * they are dropped here for the same reason.
- *
- * The rule maps arrive as a THUNK because producing them costs a re-hydration of the
- * carried IR: `gating: 'off'` must not pay for a diagnostic it will not print.
- */
-export function runFusedGatingDiagnostic(
-  getRuleMaps: () => ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
-  opt?: GatingOption,
-  /** Carried pieces that could NOT be re-lowered to combinators (opaque precompiled
-   *  artifacts). Threaded by BOTH engines — the runtime linker and the macro plugin —
-   *  so neither can report a clean fuse over a grammar it only partly saw. */
-  getOpaque?: () => ReadonlyArray<{ ns: string; ruleNames: string[] }>,
-): GatingReport | undefined {
-  if (resolveGatingLevel(opt) === 'off') return undefined
-  const ruleMaps = getRuleMaps()
-  const opaque = getOpaque?.() ?? []
-  const opaqueFindings: Unanalysable[] = opaque.map(o => ({
-    rule: o.ruleNames.length > 0 ? o.ruleNames.join(', ') : `<artifact ${o.ns}>`,
-    kind: 'opaque-artifact' as const,
-    reason: `precompiled artifact "${o.ns}" carries compiled rule functions, not re-lowerable IR — `
-      + 'its choices were not examined at this fuse.',
-  }))
-  // Only a SHARED SHAPE can have deferred a verdict, and only a deferred verdict is
-  // reportable here — so a fuse of hole-free grammars has nothing to say and is not
-  // walked at all. (This is also the no-double-reporting guarantee's fast path.)
-  // An opaque piece is the exception: there IS something to say, namely that part of
-  // this fuse was never seen. Silence there is the bug this guard used to cause.
-  if (!ruleMaps.some(map => hasExternalRuleRef(map))) {
-    if (opaqueFindings.length === 0) return undefined
-    return reportGating(opt, () => ({
-      totalChoices: 0, gated: 0, recoverable: 0, unanalysable: opaqueFindings,
-      ungated: [], accepted: [], deferred: [], acceptedUnused: [], choices: [], antiPatterns: [],
-    }))
-  }
-  // Override-winner order (later wins), matching the linker. An accessed-but-undefined
-  // `g.X` leaks into a `rules()` cache as an unresolved-lazy entry — that is a
-  // REFERENCE, not a definition, and must never shadow the artifact that defines X.
-  const winners = new Map<string, Combinator<unknown>>()
-  // NOTE: the `continue` below is NOT a silent blind spot, though it reads like one. An
-  // unresolved lazy here is a REFERENCE (`g.X` accessed but not defined in THIS map), and
-  // skipping it is what lets the map that actually DEFINES X win. The rule is still
-  // analysed — under its definition. Reporting it as `unanalysable` was tried and is
-  // wrong: it fires on every correctly-bound hole (5 tests in gating-shared-shape-fuse
-  // and gating-composed-grammar assert exactly that no warning appears).
-  for (const map of ruleMaps) for (const [name, rule] of map) {
-    if (rule._def.tag === 'lazy') { try { rule._def.thunk() } catch { continue } }
-    winners.set(name, rule)
-  }
-  const entries = [...winners]
-  return reportGating(opt, o => {
-    const deferredHere = new Set(analyzeGatingRules(entries, o).deferred.map(c => c.id))
-    const fused = analyzeGatingRules(entries, { ...o, resolveRef: name => winners.get(name) })
-    return {
-      ...fused,
-      ungated: fused.ungated.filter(c => deferredHere.has(c.id)),
-      antiPatterns: [],
-      unanalysable: [...fused.unanalysable, ...opaqueFindings],
-    }
-  })
-}
-
-function reportGating(
-  opt: GatingOption | undefined,
-  analyze: (o: { accept?: Iterable<string>; entryName?: string } | undefined) => GatingReport,
-): GatingReport | undefined {
-  const level = resolveGatingLevel(opt)
-  if (level === 'off') return undefined
-  // `typeof null === 'object'` — guard so `gating: null` can't throw on `.accept`.
-  const obj = opt !== null && typeof opt === 'object' ? opt : undefined
-  const analyzeOpts = obj?.accept !== undefined || obj?.entryName !== undefined
-    ? { ...(obj.accept !== undefined ? { accept: obj.accept } : {}), ...(obj.entryName !== undefined ? { entryName: obj.entryName } : {}) }
-    : undefined
-  let report: GatingReport
-  try { report = analyze(analyzeOpts) }
-  catch (e) {
-    // NEVER `return undefined` here. This catch used to swallow the error, which made
-    // a CRASHED analysis look exactly like a clean grammar — the diagnostic ships
-    // default-on, so every consumer whose grammar it could not walk was told nothing
-    // and reasonably concluded there was nothing to tell. A failed analysis is now
-    // itself a finding: it warns, and it fails the `'error'` gate.
-    const reason = e instanceof Error ? `${e.name}: ${e.message}` : String(e)
-    const failed: GatingReport = {
-      totalChoices: 0, gated: 0, recoverable: 0,
-      unanalysable: [{ rule: '<whole grammar>', kind: 'not-a-combinator', reason: `gating analysis threw — ${reason}` }],
-      ungated: [], accepted: [], deferred: [], acceptedUnused: [], choices: [], antiPatterns: [],
-    }
-    const failLines = formatGatingWarnings(failed)
-    if (level === 'error') throw new Error(`parseman: gating analysis FAILED (no verdict available)\n${failLines.join('\n')}`)
-    for (const l of failLines) console.warn(l)
-    return failed
-  }
-  const lines = formatGatingWarnings(report)
-  if (lines.length > 0) {
-    if (level === 'error') throw new Error(`parseman: ${report.ungated.length} ungated hot choice(s) / ${report.antiPatterns.length} anti-pattern(s) / ${report.unanalysable.length} unanalysable rule(s)\n${lines.join('\n')}`)
-    for (const l of lines) console.warn(l)
-  }
-  return report
-}
-
-
-/**
  * The `duplication` compile option. A bare level is shorthand for `{ level }`; the
  * object form adds the `accept` allowlist (finding ids acknowledged as intentional)
  * and the ranking knobs.
@@ -5049,8 +4877,21 @@ function runDuplicationDiagnosticRules(
   return reportDuplication(opt, o => analyzeDuplicationRules(ruleMap, o))
 }
 
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption; trackLines?: boolean; maxInline?: number }): CompiledParser<T> {
-  const gatingReport = runGatingDiagnostic(combinator, opts?.gating)
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; duplication?: DuplicationOption; trackLines?: boolean; maxInline?: number }): CompiledParser<T> {
+  // Degradations found while compiling THIS grammar are drained as one aggregated block
+  // rather than printed one wall-of-text line at a time as they are discovered. A no-op
+  // inside a macro transform, whose own sink owns the module's findings.
+  const drain = beginCompileDegradationDrain()
+  let completed = false
+  try {
+    const compiled = compileImpl(combinator, mapFnSources, opts)
+    completed = true
+    return compiled
+  }
+  finally { drain(completed) }
+}
+
+function compileImpl<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; duplication?: DuplicationOption; trackLines?: boolean; maxInline?: number }): CompiledParser<T> {
   runDuplicationDiagnostic(combinator, opts?.duplication)
   markUnusedValues(combinator)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
@@ -5217,7 +5058,6 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     source,
     inlineExpression,
     ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
-    ...(gatingReport === undefined ? {} : { gating: gatingReport }),
   }
 
   if (!ctx.lineTracking) {
@@ -5341,9 +5181,8 @@ function publicRuleWrapperSource(
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption; maxInline?: number },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; duplication?: DuplicationOption; maxInline?: number },
 ): { keys: string[]; replacement: string; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
-  runGatingDiagnosticRules(ruleMap, opts?.gating)
   runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Named lazy proxies already carry their stable rule identity and redirect
@@ -5617,17 +5456,10 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption; maxInline?: number },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; duplication?: DuplicationOption; maxInline?: number },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
-  // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
-  // (`compileRuleMap` / `compile`); compileLinkable re-lowers the SAME map for the
-  // carried/linkable form, so running it by default would double every warning.
-  // It is also the WRONG site for a shared shape: one piece at a time, the `g.Foo`
-  // holes are still unbound, so it can only repeat the shape's own non-verdict. The
-  // fused question is asked once over the merged map — `runFusedGatingDiagnostic`.
-  if (opts?.gating !== undefined) runGatingDiagnosticRules(ruleMapArg, opts.gating)
-  // Same opt-IN guard as gating, and for the same reason. Duplication defaults to
+  // Opt-IN only. Duplication defaults to
   // `'off'`, but the level ALSO resolves from `PARSEMAN_DUPLICATION` — so without
   // this guard, setting that env var printed every structural finding twice on the
   // macro path, which lowers the same map through `compileRuleMap`/`compile` and
