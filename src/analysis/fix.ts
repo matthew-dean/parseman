@@ -365,8 +365,14 @@ function locateEdit(
       let i = source.text.indexOf(s)
       while (i !== -1) { hits.push(i); i = source.text.indexOf(s, i + 1) }
     }
-    if (hits.length === 0) return `no occurrence of \`${c.before}\` in ${source.path} — the site is written some other way (a string pattern, a helper, or a shared const)`
-    if (hits.length > 1) return `\`${c.before}\` occurs ${hits.length} times in ${source.path}; an edit cannot be attributed to one of them`
+    if (hits.length === 0) {
+      return `\`${c.before}\` does not appear literally in ${source.path}, so parseman cannot tell `
+        + 'which text to change (it is probably built from a helper or a shared constant)'
+    }
+    if (hits.length > 1) {
+      return `\`${c.before}\` appears ${hits.length} times in ${source.path}, and editing the wrong `
+        + 'one would be worse than editing none'
+    }
     return at(hits[0]!, hits[0]! + c.before.length, c.before, c.after!)
   }
   // double-not: find `not(not(` and balance to the outer close.
@@ -374,8 +380,11 @@ function locateEdit(
   const hits: number[] = []
   let i = source.text.indexOf(needle)
   while (i !== -1) { hits.push(i); i = source.text.indexOf(needle, i + 1) }
-  if (hits.length === 0) return `no occurrence of \`not(not(\` in ${source.path}`
-  if (hits.length > 1) return `\`not(not(\` occurs ${hits.length} times in ${source.path}; an edit cannot be attributed to one of them`
+  if (hits.length === 0) return `\`not(not(\` does not appear literally in ${source.path}`
+  if (hits.length > 1) {
+    return `\`not(not(\` appears ${hits.length} times in ${source.path}, and editing the wrong one `
+      + 'would be worse than editing none'
+  }
   const start = hits[0]!
   const openOuter = start + 3
   let depth = 0
@@ -385,7 +394,7 @@ function locateEdit(
     if (ch === '(') depth++
     else if (ch === ')') { depth--; if (depth === 0) { end = j + 1; break } }
   }
-  if (end === -1) return 'unbalanced parentheses after `not(not(` — the site could not be delimited'
+  if (end === -1) return 'the parentheses after `not(not(` do not balance, so parseman cannot tell where the site ends'
   const whole = source.text.slice(start, end)
   const innerOpen = source.text.indexOf('(', openOuter + 1)
   const body = source.text.slice(innerOpen + 1, end - 2)
@@ -412,7 +421,9 @@ export function proposeFixes(root: Combinator<unknown>, opts: ProposeFixOptions)
     verified: [], located: [], frozen: [],
   })
   if (corpus.length === 0) {
-    return empty('no corpus supplied — a rewrite cannot be verified, and unverified rewrites are not offered')
+    return empty('no files were given to check against. Pass --corpus <dir> pointing at some input '
+      + 'your grammar parses, and parseman will apply each candidate change, rebuild the parser, and '
+      + 'offer only the ones that leave your parse output exactly as it was')
   }
 
   const baseline = outputsOf(root, corpus)
@@ -423,11 +434,14 @@ export function proposeFixes(root: Combinator<unknown>, opts: ProposeFixOptions)
   let identity: ReturnType<typeof rebuildCombinator>
   try { identity = rebuildCombinator(root, new Map()) }
   catch (e) {
-    return empty(`the grammar could not be rebuilt — ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`)
+    return empty('the grammar could not be rebuilt, so no change to it could be checked — '
+      + `${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`)
   }
   if (!sameOutputs(baseline, outputsOf(identity.root, corpus))) {
     return {
-      ...empty('the identity rebuild did not reproduce this grammar\'s output over the corpus, so no rewrite of it can be trusted'),
+      ...empty('parseman rebuilt this grammar without changing anything and got DIFFERENT parse output, '
+        + 'which means its own rebuild of your grammar is not faithful. No change to it can be trusted, '
+        + 'so none is offered. This is a parseman bug, not a problem with your grammar'),
       engines, frozen: identity.frozen,
     }
   }
@@ -448,27 +462,30 @@ export function proposeFixes(root: Combinator<unknown>, opts: ProposeFixOptions)
     try { attempt = rebuildCombinator(root, new Map([[c.target, c.replacement]])) }
     catch (e) {
       located.push({ id: c.id, code: c.code, rule: c.rule, armIndex: c.armIndex, site: c.before,
-        reason: `applying the rewrite threw — ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}` })
+        reason: `applying the rewrite failed outright — ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}` })
       continue
     }
     if (attempt.unapplied.length > 0) {
       const frozenTag = attempt.frozen.map(f => f.tag).join(', ')
       located.push({ id: c.id, code: c.code, rule: c.rule, armIndex: c.armIndex, site: c.before,
-        reason: `the site sits inside a subtree parseman cannot rebuild faithfully (${frozenTag}), so the rewrite cannot be applied or verified` })
+        reason: `it sits inside a ${frozenTag}, which parseman cannot rebuild exactly. It will not `
+          + 'apply a change it cannot then check, so this one is left for you' })
       continue
     }
     const after = outputsOf(attempt.root, corpus)
     if (!sameOutputs(baseline, after)) {
       // Wrong. Not shown — the site is reported, the rewrite is not.
       located.push({ id: c.id, code: c.code, rule: c.rule, armIndex: c.armIndex, site: c.before,
-        reason: 'the mechanical rewrite changed parse output over the corpus and was rejected' })
+        reason: 'parseman tried the obvious rewrite here, and your files parsed DIFFERENTLY afterwards. '
+          + 'The rewrite is therefore wrong and is not shown' })
       continue
     }
     const afterReport = analyzeGating(attempt.root, { ...(opts.accept === undefined ? {} : { accept: opts.accept }), ...(opts.entryName === undefined ? {} : { entryName: opts.entryName }) })
     const afterCounts = gatingCounts(afterReport)
     if (afterCounts.ungated >= beforeCounts.ungated && afterCounts.anti >= beforeCounts.anti) {
       located.push({ id: c.id, code: c.code, rule: c.rule, armIndex: c.armIndex, site: c.before,
-        reason: 'the rewrite is output-neutral but removes no ungated choice and no anti-pattern — nothing measurable improves' })
+        reason: 'a rewrite here is safe but pointless — it changes nothing measurable, so it is not '
+          + 'worth the diff' })
       continue
     }
     const choiceId = beforeChoice.has(c.rule) ? c.rule : [...beforeChoice.keys()].find(k => k.startsWith(`${c.rule}#`)) ?? c.rule
@@ -493,7 +510,7 @@ export function proposeFixes(root: Combinator<unknown>, opts: ProposeFixOptions)
       const e = locateEdit(opts.source, c)
       if (typeof e === 'string') {
         located.push({ id: c.id, code: c.code, rule: c.rule, armIndex: c.armIndex, site: c.before,
-          reason: `the rewrite is PROVEN output-neutral, but ${e} — apply it by hand: ${c.before} → ${c.after}` })
+          reason: `the change itself is proven safe, but ${e}. Make it by hand: ${c.before} → ${c.after}` })
         continue
       }
       fix.edit = e

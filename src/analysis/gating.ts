@@ -252,19 +252,52 @@ const ruleNameOf = (p: Combinator<unknown>): string | undefined =>
  *  trailing boundary lookahead) — the case word()/keywords() should own. */
 const KEYWORD_REGEX_RE = /^\^?[@#.-]?[A-Za-z][\w-]*(\(\?![^)]*\))?\$?$/
 
+/**
+ * What each cause MEANS and what to do about it, in words a grammar author can act on
+ * without having read parseman's source.
+ *
+ * These strings are the diagnostic. An earlier version of them was accurate and
+ * unreadable — "give the arm a concrete leading terminal", "resolves a g.Foo ref
+ * first-set at fuse time" — which is the same as having no diagnostic, because the
+ * reader cannot tell what happened or what to change. Every term of art here is either
+ * replaced or explained where it is used; nothing is deferred to a glossary.
+ */
 const SUGGESTIONS: Record<FirstSetCause, string> = {
   'broad-recognizer':
-    "this arm leads with a recognizer that can start at ANY character, so no first char can skip it. Give the arm a concrete leading terminal, or — if it is a deliberate catch-all fallback — accept the choice in the gating snapshot.",
+    'This arm can begin with any character, so no single-character test can rule it out. '
+    + 'The parser has to enter it — set up, try, and undo — at every position it reaches, '
+    + 'instead of skipping it for free.\n'
+    + 'To fix: make the arm begin with a fixed character, word or keyword. If it is meant '
+    + 'to be a catch-all that matches anything, leave it and add the choice to the accept '
+    + 'list at the end.',
   'leading-not':
-    'let the arm lead with its actual consuming terminal (first-sets gate it automatically); keep not(...) only as a TRAILING boundary. Do not hand-roll not(not(...)) to fake gating — use peek(X), which is zero-width AND carries X first-set.',
+    'This arm begins with a not(...) check, which matches nothing and so says nothing about '
+    + 'which character the arm starts with. The parser then cannot rule the arm out and '
+    + 'enters it everywhere.\n'
+    + 'To fix: put the term that actually consumes text first and keep not(...) after it as '
+    + 'a trailing boundary. If you need to REQUIRE something ahead without consuming it, use '
+    + 'peek(X) — it checks the same thing but still tells parseman that the arm starts with X.',
   'nullable-prefix':
-    'a leading optional/many lets a later, broad term start the arm. Split the empty case into its own arm, or gate on the prefix first char. A plain sepBy(item, sep) is ALSO nullable — pass { min: 1 } for a list that cannot be empty.',
+    'This arm begins with something optional — an optional(...) or a repeat that allows zero '
+    + 'items — so the arm can also start with whatever comes AFTER it, and that is broad '
+    + 'enough that no character rules the arm out.\n'
+    + 'To fix: give the optional part its own arm so each arm has a definite beginning, or '
+    + 'require at least one item. A plain sepBy(item, sep) also matches nothing at all; pass '
+    + '{ min: 1 } when the list must not be empty.',
   'cross-artifact-ref':
-    'parseman >=0.32.0 resolves a g.Foo ref first-set at fuse time; if still ANY the target rule is itself ungated — analyze it and give it a concrete non-nullable lead.',
+    'This arm hands off to another rule, and that rule has the same problem — it can begin '
+    + 'with any character — so the cost is inherited rather than caused here.\n'
+    + 'To fix: run this check on the rule it refers to and fix it there. One rule given a '
+    + 'definite beginning fixes every choice that uses it.',
   'opaque-wrapper':
-    'this wrapper (guard/withCtx/recover) contributes no first char; put a concrete leading terminal before it.',
+    'This arm begins with a wrapper that only inspects parser state (a gate/withCtx/recover) '
+    + 'and consumes no text, so it says nothing about which character the arm starts with.\n'
+    + 'To fix: put a term that actually matches text in front of the wrapper.',
   'ref-cycle':
-    'a recursive ref resolved to ANY; ensure the recursion has a concrete terminal lead on the base case.',
+    'This arm refers back to itself through a cycle of rules, and parseman could not work out '
+    + 'a definite first character for any of them.\n'
+    + 'To fix: make sure the base case of the recursion begins with a fixed character or '
+    + 'keyword, so the cycle has somewhere definite to start.',
 }
 
 /**
@@ -281,12 +314,18 @@ function refineSuggestion(cause: FirstSetCause, arm: Combinator<unknown>): strin
   const lead = peelToLeading(arm)
   const d = lead._def as ParserDef
   if (d.tag === 'regex' && KEYWORD_REGEX_RE.test(d.source)) {
-    return `regex(/${d.source}/) is a KEYWORD written as a regex — use word('…', boundary) / keywords([…]) `
-      + 'for an EXACT, gating first-set. They lower to the same charCodeAt scan, so this costs nothing.'
+    return `This arm matches the fixed word \`${d.source}\` with a regular expression, and parseman `
+      + 'cannot always tell from a regular expression which character it starts with.\n'
+      + "To fix: write it as word('…') or keywords([…]) instead. They match exactly the same text and "
+      + 'compile to the same character scan, but they also tell parseman the first character, which is '
+      + 'what lets the parser skip this arm when it cannot match.'
   }
   if (d.tag === 'scanTo') {
-    return 'a scanTo fallback can start anywhere by definition. This is usually intentional — accept the '
-      + 'choice in the gating snapshot so the gate stays meaningful for the choices that are not.'
+    return 'This arm ends in a scanTo(...) catch-all, which reads forward until it finds something and '
+      + 'so can begin at any character. The parser can never rule it out. That is usually exactly what '
+      + 'you want from a fallback.\n'
+      + 'To fix: usually nothing. Add this choice to the accept list at the end so the check keeps '
+      + 'flagging the choices that are real problems.'
   }
   return SUGGESTIONS[cause]
 }
@@ -412,17 +451,28 @@ function detectAntiPatterns(rule: string, arms: readonly Combinator<unknown>[]):
       const inner = (ld as { parser: Combinator<unknown> }).parser
       if ((inner._def as ParserDef).tag === 'not') {
         out.push({ kind: 'double-not', rule, armIndex: i,
-          message: 'not(not(...)) hand-rolls automatic first-char gating and MISCOMPILES among shared-first-char sibling arms (its first-set is ANY, poisoning dispatch). Prefer letting the arm lead with its consuming terminal; where a real positive lookahead IS needed, use peek(X) — zero-width like not(not(X)) but it CARRIES X\'s first-set, so the arm still dispatches.' })
+          message: 'not(not(X)) is a hand-written way of saying "X must come next, but do not consume it". '
+            + 'parseman does that for you, and the hand-written form is worse than nothing here: because '
+            + 'not(...) reveals no first character, the arm cannot be skipped, and among sibling arms that '
+            + 'share a first character it can select the wrong one.\n'
+            + 'To fix: write peek(X). It checks the same thing without consuming, and it also tells '
+            + 'parseman that the arm starts with whatever X starts with.' })
       } else {
         out.push({ kind: 'leading-not', rule, armIndex: i,
-          message: 'a leading not(...) on a choice arm hand-rolls gating and poisons the choice first-set (not() is ANY). Reorder so a consuming terminal leads; keep not(...) as a TRAILING boundary only.' })
+          message: 'This arm begins with not(...), which matches no text and so reveals no first '
+            + 'character. The parser therefore cannot skip the arm and enters it at every position.\n'
+            + 'To fix: put the term that actually consumes text first, and keep not(...) after it as a '
+            + 'trailing boundary check.' })
       }
     }
     // (b) bare leading regex(/keyword/) — word()/keywords() would give an exact,
     //     resolvable first-set (and lower identically).
     if (ld.tag === 'regex' && KEYWORD_REGEX_RE.test(ld.source)) {
       out.push({ kind: 'keyword-regex', rule, armIndex: i,
-        message: `regex(/${ld.source}/) leads this arm but is a keyword — use word('…', boundary) / keywords([…]) for an EXACT resolvable first-set (they lower to the same charCodeAt scan).` })
+        message: `This arm starts with the fixed word \`${ld.source}\` written as a regular expression. `
+          + "Writing it as word('…') or keywords([…]) matches exactly the same text and compiles to the "
+          + 'same character scan, but also tells parseman the first character, which is what lets the '
+          + 'parser skip the arm when it cannot match.' })
     }
   })
   return out
@@ -585,7 +635,12 @@ function analyzeChoice(
     for (let j = i + 1; j < deep.length; j++)
       if (!isAny(deep[i]!) && !isAny(deep[j]!) && intersects(deep[i]!, deep[j]!))
         overlaps.push({ a: i, b: j, on: intersection(deep[i]!, deep[j]!),
-          suggestion: 'arms share a first char — left-factor. parseman auto-detects the sharedPrefix strategy for bare sequences (choice.ts); make the arms bare sequences with a common leading terminal, or restructure.' })
+          suggestion: 'Two arms of this choice can begin with the same character, so the parser cannot '
+            + 'tell from that character which one to try. It tries them in order and undoes the ones that '
+            + 'do not match.\n'
+            + 'To fix: pull the shared beginning out in front of the choice so it is matched once — '
+            + 'sequence(shared, choice(rest…)) — instead of repeating it inside each arm. parseman '
+            + 'recognises that shape automatically and turns it back into a single test.' })
 
   // Classification. `disjoint` (from construction, shallow) ⇒ O(1) dispatch.
   // Otherwise, if the DEEP (ref-resolved) arms are all-finite and pairwise

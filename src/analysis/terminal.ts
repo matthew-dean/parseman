@@ -76,6 +76,12 @@ export type Span = {
   width?: number
   /** Text that ALREADY contains escapes (a linecraft component's own output). */
   raw?: boolean
+  /**
+   * Absolute path this span points at. In the STYLED path it becomes a clickable
+   * terminal hyperlink; the plain path ignores it entirely, which is what keeps the
+   * diffable output free of escapes and of absolute paths.
+   */
+  link?: string
 }
 
 /** A line is its spans. An empty array is a blank line. */
@@ -96,6 +102,12 @@ export type RenderTarget = {
   color?: boolean
   /** Columns. Default 80, which is also what an off-TTY stream reports as nothing. */
   width?: number
+  /**
+   * Emit OSC-8 terminal hyperlinks on file locations. Only meaningful with `color`,
+   * since both are escape sequences. Default: on when colouring. A terminal without
+   * OSC-8 support prints the URL as visible junk, so this is the escape hatch.
+   */
+  links?: boolean
 }
 
 export const DEFAULT_WIDTH = 80
@@ -162,17 +174,78 @@ function codesFor(style: Tone | undefined): { pre: string; post: string } {
 }
 
 /**
+ * The OSC-8 hyperlink wrapper, also learned FROM linecraft rather than written down.
+ *
+ * linecraft has `fileLink()`, but its package `exports` map publishes only `.` and
+ * `./components`, so it cannot be imported. `CodeDebug` DOES emit one for its file
+ * header, so the sequence is recovered the same way tone codes are: render the component
+ * once with sentinel values and read back what it wrapped them in. If the shape ever
+ * changes — or is not found — links are simply not emitted, which degrades to plain text
+ * rather than to garbage on screen.
+ */
+let LINK_TEMPLATE: { pre: string; mid: string; post: string } | null | undefined
+
+function linkTemplate(): { pre: string; mid: string; post: string } | null {
+  if (LINK_TEMPLATE !== undefined) return LINK_TEMPLATE
+  const URL_SENTINEL = '/PM_LINK_URL'
+  const TEXT_SENTINEL = 'PM_LINK_TEXT'
+  const region = Region({ disableRendering: true, width: 120 })
+  region.set(CodeDebug({
+    startLine: 1, startColumn: 1, errorLine: 'x', message: 'm',
+    filePath: TEXT_SENTINEL, fullPath: URL_SENTINEL, type: 'info',
+  }))
+  let found: { pre: string; mid: string; post: string } | null = null
+  for (let i = 1; i <= region.height && found === null; i++) {
+    const line = region.getLine(i)
+    const u = line.indexOf(URL_SENTINEL)
+    const x = line.indexOf(TEXT_SENTINEL)
+    if (u === -1 || x === -1 || x < u) continue
+    // Everything from the last ESC before the URL, so the whole introducer is captured.
+    const start = line.lastIndexOf(ESC, u)
+    if (start === -1) continue
+    const after = x + TEXT_SENTINEL.length
+    const endEsc = line.indexOf(ESC, after)
+    if (endEsc === -1) continue
+    // The closing OSC-8 runs to the terminator after the empty URL.
+    const close = line.indexOf('\\', line.indexOf(ESC, endEsc + 1))
+    if (close === -1) continue
+    found = {
+      pre: line.slice(start, u),
+      mid: line.slice(u + URL_SENTINEL.length, x),
+      post: line.slice(after, close + 1),
+    }
+  }
+  region.destroy(false)
+  LINK_TEMPLATE = found
+  return found
+}
+
+/** Wrap `text` as a hyperlink to `path`. Zero-width: the visible text is unchanged, so
+ *  every width and alignment calculation upstream stays correct. */
+function linked(text: string, path: string): string {
+  const tpl = linkTemplate()
+  if (tpl === null) return text
+  // Link the VISIBLE text only; column padding stays outside the link so a reader is
+  // not clicking on empty space.
+  const body = text.replace(/ +$/, '')
+  const trail = text.slice(body.length)
+  return `${tpl.pre}${path}${tpl.mid}${body}${tpl.post}${trail}`
+}
+
+/**
  * Lines → a string. Without colour this never constructs a Region at all, so nothing on
  * the diffable path depends on linecraft's environment detection.
  */
 export function render(lines: readonly Line[], target: RenderTarget = {}): string {
   if (target.color !== true) return plain(lines)
+  const wantLinks = target.links !== false
   return lines.map((line) => {
     // A pre-rendered component line (a code frame) already carries its own escapes.
     if (line.length === 1 && line[0]!.raw === true) return line[0]!.text
     return cellsOf(line).map((c) => {
       const { pre, post } = codesFor(c.style)
-      return `${pre}${c.text}${post}`
+      const body = wantLinks && c.link !== undefined ? linked(c.text, c.link) : c.text
+      return `${pre}${body}${post}`
     }).join('')
   }).join('\n')
 }
@@ -224,7 +297,9 @@ export function codeFrame(frame: CodeFrame, target: RenderTarget = {}, indent = 
     message: frame.message,
     ...(frame.shortMessage === undefined ? {} : { shortMessage: frame.shortMessage }),
     filePath: frame.path,
-    fullPath: target.color === true ? frame.fullPath : frame.path,
+    // The component links its own header. Without colour (or with links off) it is
+    // handed the relative path, so no absolute path can reach the diffable output.
+    fullPath: target.color === true && target.links !== false ? frame.fullPath : frame.path,
     type: frame.type ?? 'error',
   }))
   const out: Line[] = []

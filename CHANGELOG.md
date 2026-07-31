@@ -60,6 +60,43 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   renderer reads the arms from the walk that assigned the ids instead of re-walking and
   drifting out of step — which it did, and mislabelled every arm.
 
+- **Written for someone who has never read parseman's source.** The output was accurate
+  and unreadable: `ANY — entered at ALL 81` names three concepts from the model and
+  defines none of them, and `give the arm a concrete leading terminal` is not an
+  instruction to anyone who does not already know what a first-set is. Every line was
+  rewritten against three rules — no bare term of art, every number carries its unit, and
+  every observation is followed by its consequence, since the cost is the point of the
+  tool. `ANY — entered at ALL 81` is now `can start with any character → tried at all 81`
+  above a sentence that says the parser must enter and undo the arm at all 81 of those
+  places instead of skipping it for free. `arm` is the one term that survives, defined
+  once, immediately above the first table that uses it. There is still no glossary: the
+  sentences say what they mean. The wording lives in `gating.ts` where the analysis is,
+  so `--json` and `formatGatingWarnings` improved with it.
+
+- **Fixability is an affordance, not a label.** A finding carries a 🔧 and the literal
+  command to run — `parseman fix <file> --export … --corpus …` — instead of the word
+  `ACTIONABLE`. The wrench appears ONLY where `proposeFixes` has actually proved a
+  rewrite: applied it, rebuilt the parser, re-parsed the corpus, identical output. Run
+  `diagnose` without `--corpus` and nothing is marked, because nothing has been proved.
+  A candidate that was proposed and rejected is never marked. `LOCATED` is now `NEEDS
+  YOU` and says WHY no change can be offered ("parseman tried the obvious rewrite here,
+  and your files parsed differently afterwards"), and `ACTIONABLE` is `SAFE TO APPLY`
+  with the verification stated beside it rather than implied.
+
+- **Clickable file locations (OSC-8).** Every `file:line:col` in the styled output is a
+  terminal hyperlink. The sequence is not written down in parseman either: linecraft's
+  `fileLink()` is not reachable through its `exports` map, so the template is recovered
+  from a `CodeDebug` render with sentinel values, the same trick the tone codes use, and
+  links are silently skipped if that ever stops working. Hyperlinks are zero-width and
+  wrap the visible text only, so column alignment is unaffected, and `--no-links` turns
+  them off for terminals that would show the escape as junk.
+
+- **A one-line summary at the end**, in a linter's shape and for a linter's reason: after
+  a hundred lines the header has scrolled away, and the last line is what a person
+  actually reads. It carries the tally, the number of causes, the exit code IN WORDS —
+  the number is for the gate, the sentence is for the human — and, when any exist, how
+  many findings can be fixed automatically and the command that does it.
+
 - **Grouped by CAUSE, not by site.** The first cut printed thirteen findings, each
   carrying its own copy of the explanation, the `do` line and the `ok as-is?` line: three
   distinct explanations rendered nine times across 146 lines. Density that comes from

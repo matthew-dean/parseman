@@ -122,7 +122,12 @@ describe('analyzeGating — anti-pattern lints', () => {
     const r = analyzeGating(g)
     const ap = r.antiPatterns.find(a => a.kind === 'double-not')
     expect(ap).toBeDefined()
-    expect(formatGatingWarnings(r).join('\n')).toContain('MISCOMPILES')
+    // The message says the same two things it always did — that the arm cannot be
+    // skipped, and that among sibling arms sharing a first character it can select the
+    // wrong one — but in words a grammar author can act on rather than in shouted jargon.
+    const text = formatGatingWarnings(r).join('\n')
+    expect(text).toContain('select the wrong one')
+    expect(text).toContain('peek(X)')
   })
 
   it('flags a leading not(...) on a choice arm', () => {

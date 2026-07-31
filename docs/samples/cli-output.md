@@ -21,111 +21,211 @@ followed by its sites; the first site in each group is expanded with its full ar
 ordering and the corpus frame that illustrates the cause, and the rest are a table.
 Exit code 1 — this is what a CI gate fails on.
 
-**This transcript is the PLAIN form.** On a terminal the same run is coloured — severity,
-the offending arm, and the cause glyph are each visually distinct, and the group rules are
-drawn in blue. Nothing below shows that; run the command to see it.
+**This transcript is the PLAIN form.** On a terminal the same run is coloured, and every
+`file:line:col` is a clickable link. Nothing below shows either; run the command to see it.
 ```console
 $ parseman diagnose examples/css/parser.ts --export cssRules --corpus fixtures/css
-✗ examples/css/parser.ts — 13 blocking over 20 choices
-  4 causes — fix a cause and every site under it goes with it  ·  6 of 20 choices already gate
+✗ examples/css/parser.ts — 13 problems in 20 choices
+  4 underlying causes; fixing one fixes every choice listed under it.
+  6 other choices already pick the right alternative straight from the next
+  character. None of this is a correctness bug — the grammar parses the same
+  either way; it is work the parser does and did not need to.
 
 ────────────────────────────────────────────────────────────────────────────────
- ◆ 7 ungated choices  blocking
-    this arm leads with a recognizer that can start at ANY character, so no
-    first char can skip it. Give the arm a concrete leading terminal, or — if
-    it is a deliberate catch-all fallback — accept the choice in the gating
-    snapshot.
+ ◆ 7 choices the parser cannot narrow down   fails the check
+    This arm can begin with any character, so no single-character test can
+    rule it out. The parser has to enter it — set up, try, and undo — at every
+    position it reaches, instead of skipping it for free.
+    To fix: make the arm begin with a fixed character, word or keyword. If it
+    is meant to be a catch-all that matches anything, leave it and add the
+    choice to the accept list at the end.
 
- ◆ AtRuleBlock#1   81 corpus positions reach it
-     arm 0    → literal('(')  '('            0 pos
-     arm 1    regex(/[^()]+/) ANY            entered at ALL 81
-     ⚠ arm 1 has an ANY first set — entered at all 81 of them
+    Each numbered line below is one alternative of a choice — an "arm" — in the
+    order the parser tries them.
+
+ ◆ AtRuleBlock#1  —  reached at 81 places in your corpus
+     arm 0    → literal('(')  starts with "("              → could match at 0
+     arm 1    regex(/[^()]+/) can start with any character → tried at all 81
+     Because arm 1 can begin with any character, no single-character test can
+     rule it out. At all 81 of those places the parser has to enter it — set
+     up, try, undo — instead of skipping it for nothing.
+     ⚠ one of the 81 places, in your own input
 
        ╭─[fixtures/css/decls.css:1:1]
      1 │ a {
        │ ╿
-       │ ╰── first input this choice can start on
+       │ ╰── the first place in your corpus this choice is reached
        ╰─
 
- ◆ AtRuleBlock#2        arm 1   regex(/[^[\]]+/)    ANY — entered at ALL 81
- ◆ CustomDeclaration#1  arm 1   regex(/[^()]+/)     ANY — entered at ALL 81
- ◆ CustomDeclaration#2  arm 1   regex(/[^[\]]+/)    ANY — entered at ALL 81
- ◆ CustomDeclaration#3  arm 1   regex(/[^{}]+/)     ANY — entered at ALL 81
- ◆ Url                  arm 2   regex(/[^)"'\s]+/)  ANY — entered at ALL 81
- ◆ pseudoArg#1          arm 1   regex(/[^()]+/)     ANY — entered at ALL 81
+ ◆ AtRuleBlock#2        arm 1   regex(/[^[\]]+/)    same — tried at all 81
+ ◆ CustomDeclaration#1  arm 1   regex(/[^()]+/)     same — tried at all 81
+ ◆ CustomDeclaration#2  arm 1   regex(/[^[\]]+/)    same — tried at all 81
+ ◆ CustomDeclaration#3  arm 1   regex(/[^{}]+/)     same — tried at all 81
+ ◆ Url                  arm 2   regex(/[^)"'\s]+/)  same — tried at all 81
+ ◆ pseudoArg#1          arm 1   regex(/[^()]+/)     same — tried at all 81
 
 ────────────────────────────────────────────────────────────────────────────────
- ▲ 2 ungated choices  blocking
-    arms share a first char — left-factor. parseman auto-detects the
-    sharedPrefix strategy for bare sequences (choice.ts); make the arms bare
-    sequences with a common leading terminal, or restructure.
+ ▲ 2 choices the parser cannot narrow down   fails the check
+    Two arms of this choice can begin with the same character, so the parser
+    cannot tell from that character which one to try. It tries them in order
+    and undoes the ones that do not match.
+    To fix: pull the shared beginning out in front of the choice so it is
+    matched once — sequence(shared, choice(rest…)) — instead of repeating it
+    inside each arm. parseman recognises that shape automatically and turns it
+    back into a single test.
 
- ▲ ComplexSelector   0 corpus positions reach it
-     arm 0    literal('||') '|'            0 pos
-     arm 1    literal('>')  '>'            0 pos
-     arm 2    literal('+')  '+'            0 pos
-     arm 3    literal('~')  '~'            0 pos
-     arm 4    literal('|')  '|'            0 pos
-     arm[0] ∩ arm[4] overlap on '|'
+ ▲ ComplexSelector  —  reached at 0 places in your corpus
+     arm 0    literal('||') starts with "|"              → could match at 0
+     arm 1    literal('>')  starts with ">"              → could match at 0
+     arm 2    literal('+')  starts with "+"              → could match at 0
+     arm 3    literal('~')  starts with "~"              → could match at 0
+     arm 4    literal('|')  starts with "|"              → could match at 0
+     arm 0 and arm 4 can both start with '|', so that character cannot tell
+     the parser which to try
 
- ▲ atRuleBody       arm 0   ∩ arm 1  share '@'
+ ▲ atRuleBody       arm 0   and arm 1  can both start with '@'
 
 ────────────────────────────────────────────────────────────────────────────────
- ● 3 ungated choices  blocking
-    a scanTo fallback can start anywhere by definition. This is usually
-    intentional — accept the choice in the gating snapshot so the gate stays
-    meaningful for the choices that are not.
+ ● 3 choices the parser cannot narrow down   fails the check
+    This arm ends in a scanTo(...) catch-all, which reads forward until it
+    finds something and so can begin at any character. The parser can never
+    rule it out. That is usually exactly what you want from a fallback.
+    To fix: usually nothing. Add this choice to the accept list at the end so
+    the check keeps flagging the choices that are real problems.
 
- ● Stylesheet#0   81 corpus positions reach it   (+1 more cause)
-     arm 0    AtRuleBlock     '@'            0 pos
-     arm 1    AtRuleStatement '@'            0 pos
-     arm 2    Ruleset         '#','*','-'-'… 40 pos
-     arm 3    scanTo          ANY            entered at ALL 81
-     arm[0] ∩ arm[1] overlap on '@'
-     ⚠ arm 3 has an ANY first set — entered at all 81 of them
+ ● Stylesheet#0  —  reached at 81 places in your corpus  (+ another cause)
+     arm 0    AtRuleBlock     starts with "@"              → could match at 0
+     arm 1    AtRuleStatement starts with "@"              → could match at 0
+     arm 2    Ruleset         starts with 8 char ranges    → could match at 40
+     arm 3    scanTo          can start with any character → tried at all 81
+     Because arm 3 can begin with any character, no single-character test can
+     rule it out. At all 81 of those places the parser has to enter it — set
+     up, try, undo — instead of skipping it for nothing.
+     arm 0 and arm 1 can both start with '@', so that character cannot tell
+     the parser which to try
+     ⚠ one of the 81 places, in your own input
 
        ╭─[fixtures/css/decls.css:1:1]
      1 │ a {
        │ ╿
-       │ ╰── arm 2 can start here; arm 3 is entered first
+       │ ╰── arm 2 matches here; arm 3 is entered first anyway
        ╰─
 
- ● declarationList#0  arm 4   scanTo  ANY — entered at ALL 81
- ● pseudoArg#0        arm 2   scanTo  ANY — entered at ALL 81
+ ● declarationList#0  arm 4   scanTo  same — tried at all 81
+ ● pseudoArg#0        arm 2   scanTo  same — tried at all 81
 
 ────────────────────────────────────────────────────────────────────────────────
- ■ 1 ungated choice  blocking
-    parseman >=0.32.0 resolves a g.Foo ref first-set at fuse time; if still
-    ANY the target rule is itself ungated — analyze it and give it a concrete
-    non-nullable lead.
+ ■ 1 choice the parser cannot narrow down   fails the check
+    This arm hands off to another rule, and that rule has the same problem —
+    it can begin with any character — so the cost is inherited rather than
+    caused here.
+    To fix: run this check on the rule it refers to and fix it there. One rule
+    given a definite beginning fixes every choice that uses it.
 
- ■ value   81 corpus positions reach it   (+1 more cause)
-     arm 0    Dimension '+','-'-'.','… 0 pos
-     arm 1    Num       '+','-'-'.','… 0 pos
-     arm 2    Color     '#'            0 pos
-     arm 3    Url       'U','u'        1 pos
-     arm 4    Call      '-','A'-'Z','… 34 pos
-     arm 5    Paren     '('            0 pos
-     arm 6    Quoted    '"','''        0 pos
-     arm 7    anyValue  ANY            entered at ALL 81
-     arm[0] ∩ arm[1] overlap on '+','-'-'.','0'-'9'
-     arm[0] ∩ arm[4] overlap on '-'
-     arm[1] ∩ arm[4] overlap on '-'
-     arm[3] ∩ arm[4] overlap on 'U','u'
-     ⚠ arm 7 has an ANY first set — entered at all 81 of them
+ ■ value  —  reached at 81 places in your corpus  (+ another cause)
+     arm 0    Dimension starts with one of + --. 0-9 → could match at 0
+     arm 1    Num       starts with one of + --. 0-9 → could match at 0
+     arm 2    Color     starts with "#"              → could match at 0
+     arm 3    Url       starts with one of U u       → could match at 1
+     arm 4    Call      starts with 5 char ranges    → could match at 34
+     arm 5    Paren     starts with "("              → could match at 0
+     arm 6    Quoted    starts with one of "         → could match at 0
+     arm 7    anyValue  can start with any character → tried at all 81
+     Because arm 7 can begin with any character, no single-character test can
+     rule it out. At all 81 of those places the parser has to enter it — set
+     up, try, undo — instead of skipping it for nothing.
+     arm 0 and arm 1 can both start with '+','-'-'.','0'-'9', so that
+     character cannot tell the parser which to try
+     arm 0 and arm 4 can both start with '-', so that character cannot tell
+     the parser which to try
+     arm 1 and arm 4 can both start with '-', so that character cannot tell
+     the parser which to try
+     arm 3 and arm 4 can both start with 'U','u', so that character cannot
+     tell the parser which to try
+     ⚠ one of the 81 places, in your own input
 
        ╭─[fixtures/css/decls.css:3:12]
      3 │     background: white;
        │            ╿
-       │            ╰── arm 3 can start here; arm 7 is entered first
+       │            ╰── arm 3 matches here; arm 7 is entered first anyway
        ╰─
 
 ────────────────────────────────────────────────────────────────────────────────
- all intentional? paste this and the gate goes green:
+ Meant to be this way? Pass this and they stop being reported:
    { accept: ['AtRuleBlock#1', 'AtRuleBlock#2', 'ComplexSelector',
    'CustomDeclaration#1', 'CustomDeclaration#2', 'CustomDeclaration#3',
    'Stylesheet#0', 'Url', 'atRuleBody', 'declarationList#0', 'pseudoArg#0',
    'pseudoArg#1', 'value'] }
+
+✗ 13 problems, 13 failing the check, 4 causes  ·  exiting 1 (problems found)
+$ echo $?  ->  1
+```
+
+## 2b — the same grammar with a fixable problem
+
+`diagnose` marks a finding with a wrench ONLY when `fix` has actually proved a rewrite for
+it — applied, parser rebuilt, corpus re-parsed, output identical. Without `--corpus` there
+is nothing to prove it against, so nothing is marked.
+```console
+$ parseman diagnose examples/lang/parser.ts --export exprParser --corpus examples/lang/corpus
+✗ examples/lang/parser.ts — 7 problems in 7 choices
+  2 underlying causes; fixing one fixes every choice listed under it.
+  3 other choices already pick the right alternative straight from the next
+  character. None of this is a correctness bug — the grammar parses the same
+  either way; it is work the parser does and did not need to.
+
+────────────────────────────────────────────────────────────────────────────────
+ ◆ 4 choices the parser cannot narrow down   fails the check
+    Two arms of this choice can begin with the same character, so the parser
+    cannot tell from that character which one to try. It tries them in order
+    and undoes the ones that do not match.
+    To fix: pull the shared beginning out in front of the choice so it is
+    matched once — sequence(shared, choice(rest…)) — instead of repeating it
+    inside each arm. parseman recognises that shape automatically and turns it
+    back into a single test.
+
+    Each numbered line below is one alternative of a choice — an "arm" — in the
+    order the parser tries them.
+
+ ◆ expr#0  —  reached at 41 places in your corpus
+     arm 0    regex(/if(?!\w)/) starts with "i"              → could match at 2
+     arm 1    transform         starts with 7 char ranges    → could match at 41
+     arm 0 and arm 1 can both start with 'i', so that character cannot tell
+     the parser which to try
+     ⚠ one of those places in your corpus
+
+       ╭─[examples/lang/corpus/conditional.lang:1:1]
+     1 │ if true then 1 else 2
+       │ ╿
+       │ ╰── the first place in your corpus this choice is reached
+       ╰─
+
+ ◆ expr#1  arm 0   and arm 2  can both start with '-'
+ ◆ expr#2  arm 1   and arm 4  can both start with 't'
+ ◆ expr#5  arm 0   and arm 2  can both start with '<'
+
+────────────────────────────────────────────────────────────────────────────────
+ ▲ 3 arms that hide their first character   fails the check
+    These arms match a fixed word using a regular expression. parseman cannot
+    always tell from a regular expression which character it starts with, so
+    the parser cannot skip the arm when that character rules it out.
+    To fix: write the word with word('…') or keywords([…]). Same match, same
+    compiled character scan, but parseman then knows the first character.
+
+ ▲ expr#arm0  arm 0   of expr  matches `if(?!\w)`  🔧 fixable
+ ▲ expr#arm1  arm 1   of expr  matches `true(?!\w)`  🔧 fixable
+ ▲ expr#arm2  arm 2   of expr  matches `false(?!\w)`  🔧 fixable
+
+────────────────────────────────────────────────────────────────────────────────
+ Meant to be this way? Pass this and they stop being reported:
+   { accept: ['expr#0', 'expr#1', 'expr#2', 'expr#5'] }
+
+✗ 7 problems, 7 failing the check, 2 causes  ·  exiting 1 (problems found)
+ 🔧 3 of them can be fixed automatically. Run:
+    parseman fix examples/lang/parser.ts --export exprParser --corpus
+    examples/lang/corpus
+    Each change is applied, the parser rebuilt and your files parsed again
+    before it is offered, so nothing is suggested that has not been checked.
 $ echo $?  ->  1
 ```
 
@@ -136,45 +236,52 @@ grammar, the grammar recompiled, the corpus re-parsed on both engines, and the o
 compared. A rewrite that moved the output is discarded and never shown.
 ```console
 $ parseman fix examples/lang/parser.ts --export exprParser --corpus examples/lang/corpus
-● examples/lang/parser.ts — 3 verified fixes
-  re-parsed 3 sample(s) / 64 bytes on interpreted + compiled — output identical
-  PREVIEW — nothing was written. Re-run with --apply to write these edits.
+● examples/lang/parser.ts — 3 changes that are safe to make
+  Every change below was applied, the parser rebuilt, and your 3 files (64
+  bytes) parsed again with both engines — the result was identical every time. A
+  change that altered the result was thrown away and is not shown.
+  Nothing has been written. Add --apply to make these edits.
 
 ────────────────────────────────────────────────────────────────────────────────
- ✔ ACTIONABLE  expr#arm0  keyword-regex
-   ℹ anti-patterns 3 → 2
+ 🔧 SAFE TO APPLY  expr#arm0
+   ℹ removes 1 of the 3 arms that hide their first character
 
       ╭─[examples/lang/parser.ts:76:7]
    76 │       regex(/if(?!\w)/), g.expr as Combinator<Expr>,
       │       ┖────────┬───────┚
       │                ╰── → word('if', '\w')
       ╰─
-   cost    compiled artifact +179 B
-   proven  applied, recompiled, 3 sample(s) re-parsed on interpreted + compiled — output identical
+   size    the generated parser grows by 179 bytes
+   checked this exact change was made, the parser rebuilt, and your 3 files
+           parsed again — identical result
 
 ────────────────────────────────────────────────────────────────────────────────
- ✔ ACTIONABLE  expr#arm1  keyword-regex
-   ℹ anti-patterns 3 → 2
+ 🔧 SAFE TO APPLY  expr#arm1
+   ℹ removes 1 of the 3 arms that hide their first character
 
       ╭─[examples/lang/parser.ts:36:3]
    36 │   regex(/true(?!\w)/),
       │   ┖─────────┬────────┚
       │             ╰── → word('true', '\w')
       ╰─
-   cost    compiled artifact +144 B
-   proven  applied, recompiled, 3 sample(s) re-parsed on interpreted + compiled — output identical
+   size    the generated parser grows by 144 bytes
+   checked this exact change was made, the parser rebuilt, and your 3 files
+           parsed again — identical result
 
 ────────────────────────────────────────────────────────────────────────────────
- ✔ ACTIONABLE  expr#arm2  keyword-regex
-   ℹ anti-patterns 3 → 2
+ 🔧 SAFE TO APPLY  expr#arm2
+   ℹ removes 1 of the 3 arms that hide their first character
 
       ╭─[examples/lang/parser.ts:41:3]
    41 │   regex(/false(?!\w)/),
       │   ┖─────────┬─────────┚
       │             ╰── → word('false', '\w')
       ╰─
-   cost    compiled artifact +144 B
-   proven  applied, recompiled, 3 sample(s) re-parsed on interpreted + compiled — output identical
+   size    the generated parser grows by 144 bytes
+   checked this exact change was made, the parser rebuilt, and your 3 files
+           parsed again — identical result
+
+🔧 3 safe to apply  ·  add --apply to make them  ·  exiting 0 (nothing written)
 $ echo $?  ->  0
 ```
 
@@ -185,32 +292,39 @@ Here the grammar source given to `--source` is not the file the sites live in, w
 the ordinary case when a grammar is assembled from helpers in another module.
 ```console
 $ parseman fix examples/lang/parser.ts --export exprParser --corpus examples/lang/corpus --source examples/lang/ast.ts
-● examples/lang/parser.ts — 0 verified fixes, 3 located sites with no rewrite
-  re-parsed 3 sample(s) / 64 bytes on interpreted + compiled — output identical
+● examples/lang/parser.ts — 0 changes that are safe to make, 3 places that need you
+  Every change below was applied, the parser rebuilt, and your 3 files (64
+  bytes) parsed again with both engines — the result was identical every time. A
+  change that altered the result was thrown away and is not shown.
 
 ────────────────────────────────────────────────────────────────────────────────
- ◑ LOCATED     expr#arm0  keyword-regex
-   site    regex(/if(?!\w)/)
-   reason  the rewrite is PROVEN output-neutral, but no occurrence of
-           `regex(/if(?!\w)/)` in examples/lang/ast.ts — the site is written
-           some other way (a string pattern, a helper, or a shared const) —
-           apply it by hand: regex(/if(?!\w)/) → word('if', '\w')
+ ✋ NEEDS YOU      expr#arm0
+   here    regex(/if(?!\w)/)
+   why     No change can be offered here: the change itself is proven safe, but
+           `regex(/if(?!\w)/)` does not appear literally in
+           examples/lang/ast.ts, so parseman cannot tell which text to change
+           (it is probably built from a helper or a shared constant). Make it
+           by hand: regex(/if(?!\w)/) → word('if', '\w')
 
 ────────────────────────────────────────────────────────────────────────────────
- ◑ LOCATED     expr#arm1  keyword-regex
-   site    regex(/true(?!\w)/)
-   reason  the rewrite is PROVEN output-neutral, but no occurrence of
-           `regex(/true(?!\w)/)` in examples/lang/ast.ts — the site is written
-           some other way (a string pattern, a helper, or a shared const) —
-           apply it by hand: regex(/true(?!\w)/) → word('true', '\w')
+ ✋ NEEDS YOU      expr#arm1
+   here    regex(/true(?!\w)/)
+   why     No change can be offered here: the change itself is proven safe, but
+           `regex(/true(?!\w)/)` does not appear literally in
+           examples/lang/ast.ts, so parseman cannot tell which text to change
+           (it is probably built from a helper or a shared constant). Make it
+           by hand: regex(/true(?!\w)/) → word('true', '\w')
 
 ────────────────────────────────────────────────────────────────────────────────
- ◑ LOCATED     expr#arm2  keyword-regex
-   site    regex(/false(?!\w)/)
-   reason  the rewrite is PROVEN output-neutral, but no occurrence of
-           `regex(/false(?!\w)/)` in examples/lang/ast.ts — the site is written
-           some other way (a string pattern, a helper, or a shared const) —
-           apply it by hand: regex(/false(?!\w)/) → word('false', '\w')
+ ✋ NEEDS YOU      expr#arm2
+   here    regex(/false(?!\w)/)
+   why     No change can be offered here: the change itself is proven safe, but
+           `regex(/false(?!\w)/)` does not appear literally in
+           examples/lang/ast.ts, so parseman cannot tell which text to change
+           (it is probably built from a helper or a shared constant). Make it
+           by hand: regex(/false(?!\w)/) → word('false', '\w')
+
+🔧 0 safe to apply, 3 need you  ·  add --apply to make them  ·  exiting 0 (nothing written)
 $ echo $?  ->  0
 ```
 
@@ -220,10 +334,14 @@ No corpus means no evidence, and an unverified rewrite is not offered. Exit code
 "could not measure" is not a pass.
 ```console
 $ parseman fix examples/lang/parser.ts --export exprParser
-✗ examples/lang/parser.ts — no fix can be verified
-  no corpus supplied — a rewrite cannot be verified, and unverified rewrites
-  are not offered
-  Nothing is offered: an unverified rewrite is not a fix.
+✗ examples/lang/parser.ts — nothing can be offered, because nothing could be checked
+  no files were given to check against. Pass --corpus <dir> pointing at some
+  input your grammar parses, and parseman will apply each candidate change,
+  rebuild the parser, and offer only the ones that leave your parse output
+  exactly as it was
+  parseman only offers a change after it has applied it, rebuilt the parser and
+  confirmed your files still parse to exactly the same thing. It could not do that
+  here, so it is offering nothing rather than guessing.
 $ echo $?  ->  2
 ```
 
@@ -264,7 +382,7 @@ $ parseman diagnose examples/css/parser.ts --export cssRules --json 2>/dev/null 
     "rule": "AtRuleBlock",
     "message": "choice is UNGATED [firstMatch] — no first-char dispatch; every position speculatively enters doomed arms",
     "details": [
-      "arm[1] first-set ANY (broad-recognizer): broad recognizer (regex)\nfix: this arm leads with a recognizer that can start at ANY character, so no first char can skip it. Give the arm a concrete leading terminal, or — if it is a deliberate catch-all fallback — accept the choice in the gating snapshot."
+      "arm[1] first-set ANY (broad-recognizer): broad recognizer (regex)\nfix: This arm can begin with any character, so no single-character test can rule it out. The parser has to enter it — set up, try, and undo — at every position it reaches, instead of skipping it for free.\nTo fix: make the arm begin with a fixed character, word or keyword. If it is meant to be a catch-all that matches anything, leave it and add the choice to the accept list at the end."
     ],
     "acceptKey": "AtRuleBlock#1"
   },
@@ -360,6 +478,8 @@ options
                       human rendering goes to stderr.
   --limit <n>         Findings to expand (default 20).
   --width <n>         Render width. Default: the terminal's when colouring, else 80.
+  --no-links          Do not emit clickable file links (OSC-8). Some terminals show
+                      the escape sequence as visible junk instead of a link.
   --color/--no-color  Force colour on/off. Default: on only when stdout is a TTY.
   -h, --help          This.
 

@@ -44,8 +44,8 @@ describe('parseman CLI exit codes', () => {
 
   it('exits NON-ZERO when it reports blocking findings', () => {
     const r = run('diagnose', 'examples/css/parser.ts', '--export', 'cssRules')
-    // The exact failure that was reported: the word "blocking" on stdout and a zero exit.
-    expect(r.out).toMatch(/blocking/)
+    // The exact failure that was reported: problems printed on stdout and a zero exit.
+    expect(r.out).toMatch(/problems in \d+ choices/)
     expect(r.code).not.toBe(0)
     expect(r.code).toBe(1)
   }, T)
@@ -72,15 +72,15 @@ describe('parseman CLI exit codes', () => {
 
   it('exits 2 when `fix` has no corpus — an unverified rewrite is not offered', () => {
     const r = run('fix', 'examples/lang/parser.ts', '--export', 'exprParser')
-    expect(r.out).toContain('no corpus')
+    expect(r.out).toContain('no files were given to check against')
     expect(r.code).toBe(2)
   }, T)
 
   it('exits 0 when `fix` verifies rewrites, and writes nothing without --apply', () => {
     const r = run('fix', 'examples/lang/parser.ts', '--export', 'exprParser',
       '--corpus', 'examples/lang/corpus')
-    expect(r.out).toContain('PREVIEW')
-    expect(r.out).toContain('verified fix')
+    expect(r.out).toContain('Nothing has been written')
+    expect(r.out).toContain('safe to make')
     expect(r.code).toBe(0)
   }, T)
 

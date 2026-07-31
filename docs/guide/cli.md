@@ -135,6 +135,18 @@ the human report moves to stderr, so stdout stays one parseable document.
 Both documents are deterministic: stable ordering, no timings, no dates, no absolute
 paths. A diagnosis can be committed and diffed.
 
+## Reading the output
+
+Findings are grouped by CAUSE. Each cause is explained once, given a glyph, and followed
+by the choices that have it; the first is expanded with its full alternative ordering and
+a frame showing a real place in your corpus. The last line is a one-line summary carrying
+the tally and what the exit code means.
+
+A finding marked 🔧 has a rewrite that parseman has **already proved**: it applied the
+change, rebuilt the parser, re-parsed your corpus and got identical output. The wrench
+never appears otherwise — not for a candidate it rejected, and not at all without
+`--corpus`, because there would be nothing to prove it against.
+
 ## Rendering
 
 Output goes through [linecraft](https://www.npmjs.com/package/linecraft) (pinned
@@ -142,7 +154,11 @@ Output goes through [linecraft](https://www.npmjs.com/package/linecraft) (pinned
 parseman and in jess. Code frames are linecraft's `CodeDebug`, the component jess renders
 compiler errors with.
 
-The renderers emit rows — text plus a semantic style — and never an escape byte
+Every `file:line:col` is a clickable OSC-8 hyperlink on a terminal that supports one;
+`--no-links` turns them off. Links are zero-width and wrap only the visible text, so
+column alignment is identical with and without them.
+
+The renderers emit lines of spans — text plus a semantic style — and never an escape byte
 themselves. Without colour the output is those rows' own text, so the plain form cannot
 drift from the styled one, and there is nothing to strip. Width is pinned to 80 off-TTY,
 which is why a piped run is byte-identical regardless of the terminal it was piped
@@ -161,6 +177,7 @@ from.
 | `--json[=<path>]` | machine-readable report |
 | `--limit <n>` | findings to expand (default 20) |
 | `--color` / `--no-color` | default: colour only when stdout is a TTY and `NO_COLOR` is unset |
+| `--no-links` | do not emit OSC-8 file hyperlinks (for terminals that show them as junk) |
 | `--width <n>` | render width; default the terminal's when colouring, else 80 |
 
 A `.ts` grammar needs `tsx` installed; parseman registers it when it is resolvable and

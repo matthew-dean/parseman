@@ -51,6 +51,15 @@ export type DiagnoseRenderOptions = RenderTarget & {
   armLabels?: ReadonlyMap<string, readonly string[]>
   /** Absolute corpus root, used ONLY for the frame's terminal hyperlink. */
   corpusRoot?: string
+  /**
+   * Finding ids for which `proposeFixes` PROVED a rewrite — applied it, recompiled, and
+   * re-parsed the corpus with identical output. Only these may carry the wrench. A
+   * candidate that was proposed and rejected must never appear here: offering a fix that
+   * does not exist would destroy the one guarantee the feature has.
+   */
+  fixable?: ReadonlySet<string>
+  /** The command that would apply them, printed verbatim so nobody has to guess it. */
+  fixCommand?: string
 }
 
 export { groupDigits }
@@ -65,22 +74,76 @@ export { groupDigits }
 const GLYPHS = ['◆', '▲', '●', '■', '◇', '△', '○', '□'] as const
 
 /** A short label per finding code, used in a group headline. */
-const CODE_LABEL: Record<string, string> = {
-  'ungated-choice': 'ungated choice',
-  'anti-pattern': 'anti-pattern',
-  unanalysable: 'UNANALYSABLE rule',
-  degraded: 'degraded compile',
-  'stale-accept': 'stale accept entry',
+const CODE_LABEL: Record<string, { one: string; many: string }> = {
+  'ungated-choice': {
+    one: 'choice the parser cannot narrow down',
+    many: 'choices the parser cannot narrow down',
+  },
+  'anti-pattern': { one: 'arm that hides its first character', many: 'arms that hide their first character' },
+  unanalysable: { one: 'rule parseman could not examine at all', many: 'rules parseman could not examine at all' },
+  degraded: { one: 'place the compiler took a slower route', many: 'places the compiler took a slower route' },
+  'stale-accept': {
+    one: 'accept-list entry that no longer matches anything',
+    many: 'accept-list entries that no longer match anything',
+  },
+}
+
+/**
+ * The cause an anti-pattern finding belongs to, keyed by KIND.
+ *
+ * The finding's own message names the specific word it found, which is right for the
+ * site line and wrong for the group: keying on the whole message split one cause into
+ * one group per site, which is the duplication this rendering exists to remove. The
+ * group says what the pattern is; the site says where and which word.
+ */
+const ANTI_KIND_BLURB: Record<string, string> = {
+  'keyword-regex':
+    'These arms match a fixed word using a regular expression. parseman cannot always tell '
+    + 'from a regular expression which character it starts with, so the parser cannot skip '
+    + 'the arm when that character rules it out.\n'
+    + "To fix: write the word with word('…') or keywords([…]). Same match, same compiled "
+    + 'character scan, but parseman then knows the first character.',
+  'double-not':
+    'These arms use not(not(X)) — a hand-written way of saying "X must come next, but do not '
+    + 'consume it". It hides the first character, so the arm can never be skipped, and among '
+    + 'arms that share a first character it can pick the wrong one.\n'
+    + 'To fix: write peek(X). Same check, and parseman still knows the first character.',
+  'leading-not':
+    'These arms begin with not(...), which matches no text and so reveals no first character. '
+    + 'The parser cannot skip the arm and enters it at every position.\n'
+    + 'To fix: put the term that actually consumes text first, and keep not(...) after it as a '
+    + 'trailing boundary check.',
+}
+
+/**
+ * A first set, said in words.
+ *
+ * `'#','*','-'-'.'` is how the model writes it and is unreadable to anyone who has not
+ * met the model. What a reader needs is the sentence: this arm can only begin with these
+ * characters, therefore the parser can skip it everywhere else.
+ */
+function startsWithPhrase(fs: string): string {
+  if (fs === 'ANY') return 'can start with any character'
+  if (fs === '(empty)') return 'matches nothing'
+  const parts = fs.split(',')
+  const pretty = parts.map(x => x.replace(/'/g, '')).join(' ')
+  if (parts.length === 1) return `starts with "${pretty}"`
+  if (parts.length > 4) return `starts with ${groupDigits(parts.length)} char ranges`
+  return `starts with one of ${pretty.length > 20 ? `${pretty.slice(0, 19)}…` : pretty}`
 }
 
 /** The fallback explanation for a code whose findings carry no `fix:` of their own. */
 const CODE_BLURB: Record<string, string> = {
-  'ungated-choice': 'no first-char dispatch: every position that reaches this choice enters its arms '
-    + 'in order until one matches.',
-  'anti-pattern': 'the arm is spelled in a way that defeats analysis parseman would otherwise do for free.',
-  unanalysable: 'these rules were never walked, so NO verdict about them exists — clean or otherwise.',
-  degraded: 'the compiler took a correct-but-slower path. Same channel as the `[parseman] degraded` log.',
-  'stale-accept': 'the accept entry matched no ungated choice: the grammar was fixed, the line was not.',
+  'ungated-choice': 'The parser cannot tell from the next character which alternative to try, so it '
+    + 'tries them in order and undoes the ones that do not match.',
+  'anti-pattern': 'The arm is written in a way that hides which character it starts with, so the parser '
+    + 'cannot skip it when it cannot match.',
+  unanalysable: 'parseman could not read these rules at all, so it has NO opinion about them — good or '
+    + 'bad. Anything reported elsewhere is therefore incomplete.',
+  degraded: 'The compiler could not use its fast route here and fell back to a slower one that produces '
+    + 'the same result.',
+  'stale-accept': 'This entry in your accept list no longer matches any finding — the grammar was fixed '
+    + 'and the line was left behind. Delete it.',
 }
 
 type CauseGroup = {
@@ -115,8 +178,20 @@ function groupByCause(findings: readonly DiagnosisFinding[]): CauseGroup[] {
   const groups: CauseGroup[] = []
   const byKey = new Map<string, CauseGroup>()
   for (const f of findings) {
-    const text = suggestionsOf(f)[0] ?? CODE_BLURB[f.code] ?? f.message
-    const key = JSON.stringify([f.code, text])
+    // An anti-pattern's message names the specific word found at THIS site, which is
+    // right for the site line and wrong for the group: keying on it split one pattern
+    // into one group per site — the exact duplication this grouping removes. Key on the
+    // KIND, and let the site line carry the word.
+    const kind = f.code === 'anti-pattern' ? /^\[([^\]]+)\]/.exec(f.message)?.[1] : undefined
+    const text = suggestionsOf(f)[0]
+      ?? (kind === undefined ? undefined : ANTI_KIND_BLURB[kind])
+      ?? (f.code === 'anti-pattern' ? f.message.replace(/^\[[^\]]+\]\s*/, '') : undefined)
+      ?? CODE_BLURB[f.code]
+      ?? f.message
+    // JSON, not a delimiter character: a raw separator inside a template literal made
+    // this file binary to git once already (see 9dab15d), and a printable one can still
+    // collide with the text it separates.
+    const key = JSON.stringify([f.code, kind ?? text])
     let g = byKey.get(key)
     if (g === undefined) {
       g = { glyph: '', text, code: f.code, severity: f.severity, findings: [] }
@@ -158,15 +233,25 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
     t('✗ ', TONE.loud),
     t(name, TONE.strong),
     t(' — ', TONE.quiet),
-    t(`${groupDigits(blocking.length)} blocking`, TONE.loud),
-    t(` over ${groupDigits(s.totalChoices)} choice${s.totalChoices === 1 ? '' : 's'}`, TONE.quiet),
+    // `findings` and `totalChoices` count different things — an anti-pattern is a
+    // finding about an ARM, not a choice — so they must not be phrased as a ratio. They
+    // were, and a two-arm grammar reported "3 of 1 choices".
+    t(`${groupDigits(d.findings.length)} problem${d.findings.length === 1 ? '' : 's'} `
+      + `in ${groupDigits(s.totalChoices)} choice${s.totalChoices === 1 ? '' : 's'}`, TONE.loud),
   ])
   out.push([
     t('  '),
-    t(`${groupDigits(groups.length)} cause${groups.length === 1 ? '' : 's'}`, TONE.strong),
-    t(groups.length < d.findings.length ? ' — fix a cause and every site under it goes with it' : '', TONE.quiet),
-    t(`  ·  ${groupDigits(s.gated)} of ${groupDigits(s.totalChoices)} choices already gate`, TONE.faint),
+    t(`${groupDigits(groups.length)} underlying cause${groups.length === 1 ? '' : 's'}`, TONE.strong),
+    t(groups.length < d.findings.length ? '; fixing one fixes every choice listed under it.' : '.', TONE.quiet),
   ])
+  for (const l of wrap(
+    (s.gated > 0
+      ? `${groupDigits(s.gated)} other choice${s.gated === 1 ? '' : 's'} already pick the right `
+        + 'alternative straight from the next character. '
+      : '')
+    + 'None of this is a correctness bug — the grammar parses the same either way; it is work '
+    + 'the parser does and did not need to.',
+    width - 2, '  ')) out.push([t(l, TONE.faint)])
   // Unanalysable is called out at the top as well as in its group: "no findings" over a
   // grammar that was never walked is precisely the failure being reported.
   if (s.unanalysable > 0) {
@@ -174,17 +259,31 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
       + 'an empty list below does NOT mean the grammar is clean.', TONE.warn)])
   }
 
+  // ONE definition of the only term of art that survives, placed immediately before the
+  // first table that uses it. A reader meets `arm` here and nowhere earlier.
+  let defined = false
+
   let shown = 0
   for (const g of groups) {
     const tone: Tone = g.severity === 'blocking' ? TONE.bad : TONE.warn
     out.push(blank())
     out.push(rule(width, TONE.frame))
+    const fixableHere = g.findings.filter(f => opts.fixable?.has(f.id) === true).length
     out.push([
       t(` ${g.glyph} `, tone),
-      t(`${groupDigits(g.findings.length)} ${CODE_LABEL[g.code] ?? g.code}${g.findings.length === 1 ? '' : 's'}`, TONE.strong),
-      t(g.severity === 'blocking' ? '  blocking' : '  advisory', TONE.faint),
+      t(`${groupDigits(g.findings.length)} `
+        + `${g.findings.length === 1 ? CODE_LABEL[g.code]?.one ?? g.code : CODE_LABEL[g.code]?.many ?? g.code}`,
+      TONE.strong),
+      t(g.severity === 'blocking' ? '   fails the check' : '   worth knowing', TONE.faint),
     ])
     for (const l of wrap(g.text, width - 6, '')) out.push([t('    '), t(l, TONE.quiet)])
+    if (!defined) {
+      defined = true
+      out.push(blank())
+      out.push([t('    Each numbered line below is one alternative of a choice — an "arm" — in the',
+        TONE.faint)])
+      out.push([t('    order the parser tries them.', TONE.faint)])
+    }
     out.push(blank())
 
     // ONE site per cause is expanded — its full arm ordering, and the corpus frame that
@@ -200,7 +299,9 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
     for (const f of g.findings) {
       if (shown >= limit) break
       shown++
-      if (!expanded) {
+      // Expand only when there IS an ordering to show. An anti-pattern finding names one
+      // arm and has no table, so an "expanded" version of it is just a lonelier line.
+      if (!expanded && opts.armFirstSets?.get(f.id) !== undefined) {
         expanded = true
         out.push(...siteLines(f, g, opts, true).lines)
         if (g.findings.length > 1) out.push(blank())
@@ -213,6 +314,9 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
         t(h.arm, TONE.faint, 8),
         t(h.term, TONE.strong, headW),
         t(h.note, h.loud ? TONE.loud : TONE.faint),
+        // LAST, always: the wrench is an emoji and may occupy two terminal columns, so
+        // nothing may be aligned after it.
+        t(opts.fixable?.has(f.id) === true ? '  🔧 fixable' : '', TONE.good),
       ])
     }
     if (shown >= limit) break
@@ -231,8 +335,34 @@ export function diagnosisLines(d: GrammarDiagnosis, opts: DiagnoseRenderOptions 
     out.push(blank())
     out.push(rule(width, TONE.frame))
     const snap = `{ accept: [${d.acceptSnapshot.map(i => `'${i}'`).join(', ')}] }`
-    out.push([t(' all intentional? paste this and the gate goes green:', TONE.quiet)])
+    out.push([t(' Meant to be this way? Pass this and they stop being reported:', TONE.quiet)])
     for (const l of wrap(snap, width - 3, '')) out.push([t('   '), t(l, TONE.faint)])
+  }
+
+  // THE FOOTER, in a linter's shape and for a linter's reason: after a hundred lines the
+  // header has scrolled away, and the last thing on screen is what a person actually
+  // reads. It carries the tally, the exit code IN WORDS (the number is for the gate, the
+  // sentence is for the human) and — only when a rewrite has actually been proved — the
+  // exact command that applies it.
+  out.push(blank())
+  const fixCount = opts.fixable?.size ?? 0
+  const parts = [
+    `${groupDigits(d.findings.length)} problem${d.findings.length === 1 ? '' : 's'}`,
+    `${groupDigits(blocking.length)} failing the check`,
+    `${groupDigits(groups.length)} cause${groups.length === 1 ? '' : 's'}`,
+  ]
+  out.push([
+    t('✗ ', TONE.loud),
+    t(parts.join(', '), TONE.strong),
+    t(`  ·  exiting 1 (problems found)`, TONE.faint),
+  ])
+  if (fixCount > 0 && opts.fixCommand !== undefined) {
+    out.push([t(' 🔧 ', TONE.good),
+      t(`${groupDigits(fixCount)} of them can be fixed automatically. Run:`, TONE.good)])
+    for (const l of wrap(opts.fixCommand, width - 6, '')) out.push([t('    '), t(l, TONE.strong)])
+    for (const l of wrap('Each change is applied, the parser rebuilt and your files parsed again '
+      + 'before it is offered, so nothing is suggested that has not been checked.',
+    width - 6, '')) out.push([t('    '), t(l, TONE.faint)])
   }
   return out
 }
@@ -260,16 +390,26 @@ function headlineOf(f: DiagnosisFinding, opts: DiagnoseRenderOptions): {
     return {
       arm: `arm ${anyIdx}`,
       term: (labels?.[anyIdx] ?? '').slice(0, 34),
-      note: c === undefined ? 'ANY' : `ANY — entered at ALL ${groupDigits(c.positions)}`,
+      note: c === undefined
+        ? 'any character — never skippable'
+        : `same — tried at all ${groupDigits(c.positions)}`,
       loud: true,
     }
   }
   const overlap = f.details.map(d => d.split('\n')[0]!).find(x => x.includes('overlap on'))
   if (overlap !== undefined) {
     const m = /arm\[(\d+)\] ∩ arm\[(\d+)\] overlap on (.*)$/.exec(overlap)
-    if (m !== null) return { arm: `arm ${m[1]}`, term: `∩ arm ${m[2]}`, note: `share ${m[3]}`, loud: false }
+    if (m !== null) {
+      return { arm: `arm ${m[1]}`, term: `and arm ${m[2]}`, note: `can both start with ${m[3]}`, loud: false }
+    }
   }
-  return { arm: '', term: '', note: f.message.split(' — ')[0]!.slice(0, 40), loud: false }
+  const m = /^(.*)#arm(\d+)$/.exec(f.id)
+  if (m !== null) {
+    // The specific thing found at THIS site — the word, from the finding's own message.
+    const word = /`([^`]+)`/.exec(f.message)?.[1]
+    return { arm: `arm ${m[2]}`, term: `of ${m[1]}`, note: word === undefined ? '' : `matches \`${word}\``, loud: false }
+  }
+  return { arm: '', term: '', note: f.message.split('\n')[0]!.slice(0, 40), loud: false }
 }
 
 /** One site under its cause: the arm ordering, and nothing the group already said. */
@@ -288,36 +428,64 @@ function siteLines(
   out.push([
     t(` ${g.glyph} `, f.severity === 'blocking' ? TONE.bad : TONE.warn),
     t(f.id, TONE.ident),
-    t(cost === undefined ? '' : `   ${groupDigits(cost.positions)} corpus positions reach it`, TONE.faint),
-    t(suggestionsOf(f).length > 1 ? '   (+1 more cause)' : '', TONE.warn),
+    t(cost === undefined
+      ? ''
+      : `  —  reached at ${groupDigits(cost.positions)} places in your corpus`,
+    TONE.faint),
+    t(suggestionsOf(f).length > 1 ? '  (+ another cause)' : '', TONE.warn),
+    t(opts.fixable?.has(f.id) === true ? '  🔧 fixable' : '', TONE.good),
   ])
 
   // WORLD 1 — the grammar site: the ordering, one column per meaning. This is the part
   // worth keeping per site; everything that used to surround it was the repetition.
   if (sets !== undefined) {
-    const lw = Math.min(28, Math.max(8, ...(labels ?? ['']).map(l => l.length)))
+    const lw = Math.min(26, Math.max(8, ...(labels ?? ['']).map(l => l.length)))
     sets.forEach((fs, i) => {
       const armCost = cost?.arms[i]
       const any = fs === 'ANY'
-      const key = fs.length > 14 ? `${fs.slice(0, 13)}…` : fs
-      const note = any
-        ? (armCost === undefined ? 'nothing excludes this arm' : `entered at ALL ${groupDigits(armCost.positions)}`)
-        : armCost === undefined ? '' : `${groupDigits(armCost.positions)} pos`
+      // Every column says what it MEANS. `'('` and `ANY` were the model's vocabulary,
+      // not a sentence: a reader had to already know what a first-set was to read them.
+      const starts = startsWithPhrase(fs)
+      const note = armCost === undefined
+        ? ''
+        : any
+          ? `→ tried at all ${groupDigits(cost!.positions)}`
+          : `→ could match at ${groupDigits(armCost.positions)}`
       out.push([
         t('     ', undefined),
         t(`arm ${pad(String(i), 2)}`, any ? TONE.bad : TONE.faint, 8),
         t(' '),
         t((labels?.[i] ?? '').slice(0, lw), any ? TONE.strong : TONE.quiet, lw),
         t(' '),
-        t(key, any ? TONE.loud : TONE.quiet, 15),
+        t(starts, any ? TONE.loud : TONE.quiet, 29),
         t(note, any ? TONE.loud : TONE.faint),
       ])
     })
   }
+  // THE CONSEQUENCE, spelled out. The table above is an observation; this is why the
+  // reader should care, and it is the entire point of the tool.
+  if (sets !== undefined && cost !== undefined) {
+    const anyIdx = sets.findIndex(x => x === 'ANY')
+    if (anyIdx >= 0) {
+      for (const l of wrap(
+        `Because arm ${anyIdx} can begin with any character, no single-character test can rule it `
+        + `out. At all ${groupDigits(cost.positions)} of those places the parser has to enter it — set `
+        + 'up, try, undo — instead of skipping it for nothing.',
+        (opts.width ?? DEFAULT_WIDTH) - 7, '')) out.push([t('     '), t(l, TONE.quiet)])
+    }
+  }
+
   // Overlaps name a PAIR, which the arm table alone does not show.
   for (const detail of f.details) {
     const first = detail.split('\n')[0]!
-    if (first.includes('overlap on')) out.push([t('     '), t(first, TONE.warn)])
+    if (first.includes('overlap on')) {
+      const m = /arm\[(\d+)\] ∩ arm\[(\d+)\] overlap on (.*)$/.exec(first)
+      const text = m === null
+        ? first
+        : `arm ${m[1]} and arm ${m[2]} can both start with ${m[3]}, so that character cannot tell `
+          + 'the parser which to try'
+      for (const l of wrap(text, (opts.width ?? DEFAULT_WIDTH) - 7, '')) out.push([t('     '), t(l, TONE.warn)])
+    }
     else if (sets === undefined && !detail.includes('\nfix: ')) {
       for (const l of wrap(first, (opts.width ?? DEFAULT_WIDTH) - 6, '')) out.push([t('     '), t(l)])
     }
@@ -338,11 +506,11 @@ function siteLines(
         column: site.column,
         lineText: site.lineText.replace(/\t/g, ' '),
         message: broad === undefined
-          ? `${groupDigits(cost.positions)} corpus positions can enter this choice`
-          : `arm ${broad.index} has an ANY first set — entered at all ${groupDigits(cost.positions)} of them`,
+          ? 'one of those places in your corpus'
+          : `one of the ${groupDigits(cost.positions)} places, in your own input`,
         shortMessage: broad !== undefined && concrete !== undefined
-          ? `arm ${concrete.index} can start here; arm ${broad.index} is entered first`
-          : 'first input this choice can start on',
+          ? `arm ${concrete.index} matches here; arm ${broad.index} is entered first anyway`
+          : 'the first place in your corpus this choice is reached',
         type: 'warning',
       }, opts, '     '))
       framed = true

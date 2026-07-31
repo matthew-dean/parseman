@@ -17,7 +17,7 @@ import { rebuildCombinator } from '../../src/analysis/rebuild.ts'
 import { renderFixReport } from '../../src/analysis/fix-render.ts'
 import { renderDiagnosis, diagnosisLines } from '../../src/analysis/diagnose-render.ts'
 import { fixReportLines } from '../../src/analysis/fix-render.ts'
-import { codeFrame, plain, render } from '../../src/analysis/terminal.ts'
+import { codeFrame, plain, render, render as render2 } from '../../src/analysis/terminal.ts'
 import { diagnoseGrammar } from '../../src/analysis/diagnose.ts'
 import { measureChoiceCost, armFirstSets } from '../../src/analysis/corpus.ts'
 import { choiceArms, analyzeGating } from '../../src/analysis/gating.ts'
@@ -108,7 +108,7 @@ describe('proposeFixes', () => {
     const r = proposeFixes(keywordGrammar(), { corpus: [] })
     expect(r.ok).toBe(false)
     expect(r.verified).toEqual([])
-    expect(r.blocked).toContain('no corpus')
+    expect(r.blocked).toContain('no files were given to check against')
   })
 
   it('LOCATES a keyword regex it cannot prove equivalent, with the reason', () => {
@@ -150,7 +150,7 @@ describe('proposeFixes', () => {
       source: { path: 'g.ts', text },
     })
     expect(r.verified).toEqual([])
-    expect(r.located.some(l => l.reason.includes('occurs 2 times'))).toBe(true)
+    expect(r.located.some(l => l.reason.includes('appears 2 times'))).toBe(true)
   })
 })
 
@@ -289,5 +289,102 @@ describe('terminal layer — the rendering contract linecraft is here to hold', 
     for (const l of diagnosisLines(d, { name: 'g.ts', width: 80 })) {
       expect(l.map(x => x.text).join('').length).toBeLessThanOrEqual(120)
     }
+  })
+})
+
+describe('the output is written for someone who has never read parseman', () => {
+  const render = (): string => {
+    const g = keywordGrammar()
+    const d = diagnoseGrammar(g)
+    const sets = new Map<string, readonly string[]>()
+    const labels = new Map<string, readonly string[]>()
+    const cost = new Map()
+    for (const c of d.gating.choices) {
+      const arms = choiceArms(c)!
+      const fs = armFirstSets(arms)
+      sets.set(c.id, fs.map(x => (x.firstSet.kind === 'any' ? 'ANY' : "'x'")))
+      labels.set(c.id, arms.map(a => a._def.tag))
+      cost.set(c.id, measureChoiceCost(c, corpus, fs))
+    }
+    return renderDiagnosis(d, { name: 'g.ts', width: 80, armFirstSets: sets, armLabels: labels, cost })
+  }
+
+  it('never prints the model\'s vocabulary raw', () => {
+    const text = render()
+    // Each of these was in the output and meant nothing to a reader who had not read
+    // the source. They are allowed inside a longer sentence, never as a bare label.
+    expect(text).not.toContain('ANY —')
+    expect(text).not.toContain('entered at ALL')
+    expect(text).not.toContain('first-set')
+    expect(text).not.toMatch(/\bungated\b/)
+    expect(text).not.toContain('dispatch')
+  })
+
+  it('defines "arm" exactly once, before anything uses it', () => {
+    const text = render()
+    const defs = text.split('one alternative of a choice').length - 1
+    expect(defs).toBe(1)
+    expect(text.indexOf('one alternative of a choice')).toBeLessThan(text.indexOf('arm 0'))
+  })
+
+  it('gives every number a unit', () => {
+    const text = render()
+    for (const line of text.split('\n')) {
+      // A bare number at the end of a line is the failure mode: `… ALL 81`.
+      expect(line).not.toMatch(/\b(?:tried at all|entered at all|reached at)\s+[\d,]+\s*$/)
+    }
+    expect(text).toMatch(/places in your corpus/)
+  })
+
+  it('states the consequence, not only the observation', () => {
+    // Whatever the cause, the group text has to say what it COSTS, not just what it is.
+    expect(render()).toMatch(/instead of skipping it|undoes the ones that do not match|cannot skip the arm/)
+  })
+
+  it('ends with a one-line summary carrying the exit code in words', () => {
+    const lines = render().trimEnd().split('\n')
+    expect(lines[lines.length - 1]).toMatch(/problem/)
+    expect(lines[lines.length - 1]).toMatch(/exiting 1/)
+  })
+
+  it('marks a finding fixable ONLY when a rewrite was proven, and names the command', () => {
+    const g = keywordGrammar()
+    const proved = proposeFixes(g, { corpus })
+    const fixable = new Set(proved.verified.map(f => f.id))
+    expect(fixable.size).toBeGreaterThan(0)
+    const d = diagnoseGrammar(g)
+    const withWrench = renderDiagnosis(d, { name: 'g.ts', width: 80, fixable, fixCommand: 'parseman fix g.ts' })
+    expect(withWrench).toContain('🔧')
+    expect(withWrench).toContain('parseman fix g.ts')
+    // …and NEVER when nothing was proven. Offering a fix that does not exist would
+    // destroy the one guarantee the feature has.
+    const without = renderDiagnosis(d, { name: 'g.ts', width: 80 })
+    expect(without).not.toContain('🔧')
+  })
+
+  it('keeps every line inside the requested width', () => {
+    for (const line of render().split('\n')) expect([...line].length).toBeLessThanOrEqual(80)
+  })
+})
+
+describe('terminal hyperlinks', () => {
+  const ESC2 = String.fromCharCode(27)
+
+  it('are emitted only in the styled path, and are zero-width', () => {
+    const lines = [[{ text: 'a/b.ts:1:2  ', style: { color: 'cyan' as const }, link: '/abs/a/b.ts' }]]
+    expect(plain(lines)).toBe('a/b.ts:1:2')
+    expect(plain(lines).includes('/abs/')).toBe(false)
+    const styled = render2(lines, { color: true })
+    expect(styled).toContain('/abs/a/b.ts')
+    // Stripping BOTH escape families must return the plain text: a link adds no content.
+    const bare = styled
+      .replace(new RegExp(`${ESC2}\\]8;;.*?${ESC2}\\\\`, 'g'), '')
+      .replace(new RegExp(`${ESC2}\\[[0-9;]*m`, 'g'), '')
+    expect(bare).toBe(plain(lines))
+  })
+
+  it('can be turned off without changing the visible text', () => {
+    const lines = [[{ text: 'a/b.ts:1:2', link: '/abs/a/b.ts' }]]
+    expect(render2(lines, { color: true, links: false })).toBe(plain(lines))
   })
 })

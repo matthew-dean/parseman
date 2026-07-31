@@ -75,6 +75,8 @@ options
                       human rendering goes to stderr.
   --limit <n>         Findings to expand (default 20).
   --width <n>         Render width. Default: the terminal's when colouring, else 80.
+  --no-links          Do not emit clickable file links (OSC-8). Some terminals show
+                      the escape sequence as visible junk instead of a link.
   --color/--no-color  Force colour on/off. Default: on only when stdout is a TTY.
   -h, --help          This.
 
@@ -220,6 +222,7 @@ async function main(argv: readonly string[]): Promise<number> {
     : (color && typeof process.stdout.columns === 'number' && process.stdout.columns > 0
         ? process.stdout.columns
         : DEFAULT_WIDTH)
+  const links = !args.flags.has('no-links')
   const json = args.flags.get('json')
   // JSON on stdout means stdout is a document; the human rendering moves to stderr so it
   // stays one. Both go through streams this process already owns.
@@ -249,9 +252,26 @@ async function main(argv: readonly string[]): Promise<number> {
       labels.set(c.id, a.map(x => leadLabel(x)))
       if (corpus.length > 0) cost.set(c.id, measureChoiceCost(c, corpus, fs))
     }
+    // The wrench may ONLY appear where a rewrite has actually been PROVED — applied,
+    // recompiled, corpus re-parsed, output identical. Without a corpus there is nothing
+    // to prove it against, so nothing is marked. Claiming fixability parseman has not
+    // demonstrated would destroy the one guarantee `fix` has.
+    const fixable = new Set<string>()
+    const root = asCombinator(grammar)
+    let fixCommand: string | undefined
+    if (root !== null && corpus.length > 0) {
+      const probe = proposeFixes(root, { corpus, ...(accept === undefined ? {} : { accept }) })
+      for (const f of probe.verified) fixable.add(f.id)
+      if (fixable.size > 0) {
+        fixCommand = `parseman fix ${label}${typeof exportName === 'string' ? ` --export ${exportName}` : ''}`
+          + `${typeof corpusFlag === 'string' ? ` --corpus ${corpusFlag}` : ''}`
+      }
+    }
     const limitFlag = args.flags.get('limit')
     human(renderDiagnosis(d, {
-      color, width, name: label, cost, armFirstSets: sets, armLabels: labels,
+      color, width, links, name: label, cost, armFirstSets: sets, armLabels: labels,
+      fixable,
+      ...(fixCommand === undefined ? {} : { fixCommand }),
       // Sample names are already cwd-relative, so the hyperlink root is the cwd —
       // joining the corpus dir again produced `fixtures/css/fixtures/css/decls.css`.
       ...(typeof corpusFlag === 'string' ? { corpusRoot: process.cwd() } : {}),
@@ -289,7 +309,10 @@ async function main(argv: readonly string[]): Promise<number> {
         catch (e) { throw new CliError(`could not write ${sourcePath}: ${e instanceof Error ? e.message : String(e)}`) }
       }
     }
-    human(renderFixReport(report, { color, width, name: label, sourceRoot: resolve(sourcePath), applied: apply && applied > 0 }))
+    human(renderFixReport(report, {
+      color, width, links, name: label, sourceRoot: resolve(sourcePath),
+      applied: apply && applied > 0,
+    }))
     if (apply) human(`  ${applied} edit(s) written to ${source.path}`)
     if (json !== undefined) writeJson(json, report)
     // Fails closed: a loop that could not run is not a pass.
