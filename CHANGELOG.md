@@ -5,6 +5,42 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **Fixed a TDZ throw when a recursive combinator has a SHARED interior.** A
+  combinator lying on a self-reference cycle could be hoisted to a shared `const`,
+  i.e. emitted outside the `ref()/define()` closure that binds the cycle's only lazy
+  edge. The back-edge then re-resolved through the cycle target's own const and the
+  two decls read each other eagerly — `const _s1 = many(choice(_s0, …))` declared
+  before `_s0`, `ReferenceError: Cannot access '_s0' before initialization` at compose
+  time. No declaration order fixes it, so cycle-interior nodes are now inlined; they
+  are re-hoisted by identity on re-lowering. A nested recursive combinator that is
+  itself on the cycle keeps its own closure, with the enclosing ref vars still in
+  scope. `balanced()`'s interior is referenced once and never earned a const, so the
+  IR and macro bytes are unchanged at every existing call site — verified identical on
+  both surfaces across the byte gate, against `bb2e587`.
+- **Fixed `compose()` dropping ambient `scanSkip` inside a `balanced()` interior** —
+  an interpreter-versus-compiled divergence in shipped code. `balanced()` records the
+  obligation as `_balancedAmbient`, an own property held outside `_def` so static
+  analysis keeps seeing the eager interior; structural IR serialization therefore lost
+  it, and the composed parser stopped at the first delimiter hidden inside a string or
+  comment while the interpreter and a direct compile did not. A balanced now
+  round-trips as the constructor call that built it, so `balanced()` re-creates the
+  marker; `raw: true` stays structural. Measured over three surfaces in one process:
+  `(')' e)`, `("a)b" e)` and `(a /* ) */ b)` diverged only under compose, and now
+  agree. IR shrinks (a bare balanced 410 → 98 B) because the derived interior is no
+  longer serialized.
+- **Fixed `routed(fallback)` losing its fallback under the macro.** The macro's
+  generic constructor table entered `routed` as zero-arg, so the fallback was dropped
+  silently and a production written to work both inside and outside a `dispatch()`
+  branch lost its out-of-branch behaviour when compiled — while the interpreter kept
+  it. Bare `routed()` is byte-identical.
+- **Fixed a `makeWhen(...)` alias rejecting matcher keys that `when(...)` accepts.**
+  `makeWhen(opts)` is `(key, parser) => when(key, parser, opts)`, so it accepts every
+  key `when` does, but the macro's factory branch handled only string and string-array
+  keys. An arm keyed by `startsWith`/`endsWith`/`matches` through the alias was a hard
+  macro failure — `rules(...) factory isn't statically evaluable` — for a grammar the
+  interpreter builds, while the identical un-aliased `when(matcher, …)` compiled. Two
+  grammar authors cut working function routing to get around it.
+
 - **A choice arm marks the root trivia log only when the arm can reach it.** Every
   other mark in `emitFirstMatch` asks a question about the arm; this one asked only
   whether the grammar has root trivia at all, so it was emitted at 1,046 css sites

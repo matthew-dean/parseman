@@ -227,7 +227,13 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),
   noTrivia:  (...a) => parseman.noTrivia(a[0] as Combinator<unknown>),
   token:     (...a) => parseman.token(a[0] as Combinator<unknown>),
-  routed:    () => parseman.routed(),
+  // `routed(fallback)` — the fallback must be forwarded. A zero-arg entry here read
+  // as "routed takes no arguments" and SILENTLY built a bare `routed()`, so a
+  // production written to work both inside and outside a dispatch branch lost its
+  // out-of-branch behaviour under the macro while keeping it under the interpreter.
+  // `undefined` reproduces the bare def exactly (see `routed()`), so `routed()` is
+  // byte-identical.
+  routed:    (...a) => parseman.routed(a[0] as Combinator<unknown> | undefined),
   leaf:      (...a) => parseman.leaf(a[0] as Combinator<unknown>, a[1] as (value: unknown, span: { start: number; end: number }) => unknown),
   expect:    (...a) => parseman.expect(a[0] as Combinator<unknown>, a[1] as string | undefined),
 }
@@ -298,6 +304,12 @@ function dispatchArmValue(node: Expression, scope: XScope, code?: string, mfs?: 
     const opts = { caseInsensitive: factory.caseInsensitive }
     if (typeof key === 'string') return parseman.when(key, parserValue, opts)
     if (Array.isArray(key) && key.every(item => typeof item === 'string')) return parseman.when(key, parserValue, opts)
+    // `makeWhen(opts)` returns `(key, parser) => when(key, parser, opts)`, so it accepts
+    // EVERY key `when` accepts — including a startsWith/endsWith/matches matcher. Omitting
+    // that case here made the aliased form a hard macro failure ("factory isn't statically
+    // evaluable") for an arm the interpreter builds, so the alias silently carried a
+    // narrower contract than the constructor it forwards to.
+    if (isDispatchMatcher(key)) return parseman.when(key, parserValue, opts)
     return null
   }
 
