@@ -381,23 +381,6 @@ type Ctx = {
   regexDecls: string[]
   /** Dedup map: "source/flags" → variable name (_re0 etc.) */
   regexMap: Map<string, string>
-  /**
-   * Capture-restore helpers hoisted to module scope (_cr0 etc.). See
-   * {@link captureRestoreBody} — the restore body is emitted at ~600 sites in a
-   * real grammar and is COLD (it runs only when a speculative branch failed), so
-   * it is the largest block worth sharing rather than inlining.
-   */
-  crDecls: string[]
-  /** Dedup map: restore-shape signature → helper name (_cr0 etc.) */
-  crMap: Map<string, string>
-  /**
-   * HOT/COLD THRESHOLD. A restore whose inline body is at least this many bytes
-   * is shared via a hoisted helper; anything smaller stays inlined. Sweeping it
-   * produces the size/speed tradeoff curve (see `bench/size/hotcold-curve.ts`):
-   * `Infinity` reproduces the pre-0.46 all-inline output byte-for-byte, `0`
-   * shares every restore site.
-   */
-  crShareMin: number
   /** Frozen constant expected-set arrays hoisted to module scope (_fx0 etc.) */
   expectedDecls: string[]
   /** Dedup map: array source → hoisted const name */
@@ -1072,139 +1055,19 @@ function planDisjointDispatch(
 // Guarding the stores took that to +4%, and applying the same guard at ALL
 // ~3000 rollback sites made 0.34.0 12% FASTER than 0.33.0 on the same corpus.
 // Keep the guard when adding a rollback site.
-/**
- * HOT/COLD SPLIT THRESHOLD (capture restores).
- * ============================================
- *
- * A capture restore whose INLINE body would be at least this many bytes is
- * emitted as a call to a hoisted, shape-deduped helper instead. Smaller ones
- * stay inline.
- *
- * WHY A SIZE THRESHOLD RATHER THAN A HOTNESS ESTIMATE. The obvious reading of
- * "hot/cold" is per-production execution counts, but parseman has no corpus to
- * derive them from (`fixtures/` is 8 KB) and a call-site-count proxy is not a
- * hotness signal — a rule called from many places may still be entered rarely.
- * Capture restores sidestep the question entirely: every one of them is on the
- * FAILURE path of a speculative branch, so they are cold BY CONSTRUCTION, with
- * no corpus and no estimate. That makes the only remaining question "is this
- * particular body big enough that a call is a win", which is exactly a size
- * threshold and is fully deterministic.
- *
- * SIZE, MEASURED (bench/size/hotcold-curve.ts, all 7 example fixtures):
- *   Infinity   0.00%   share nothing
- *   400        0.00%
- *   300       -2.90%
- *   250       -3.04%
- *   150       -3.04%   <- chosen
- *   100       -3.04%
- *   0         -4.21%   share everything
- *
- * A STEP function, not a smooth curve: real restore bodies cluster at ~250-400 B
- * (3+ buffers) or at ~90-150 B (2 buffers), with nothing in between. 250..100 all
- * convert exactly the same sites. Only threshold 0 reaches the two-buffer
- * sequence-boundary restores, and it is the only setting that helps any fixture
- * other than example/css.
- *
- * SPEED. Sharing puts a CALL on a path that was straight-line code, so the cost
- * scales with how often restores EXECUTE, not with how many sites exist. Counted
- * directly (temporary instrumentation, since reverted): a warm parse of
- * bench/workloads/fixtures/site.css runs **2,799 shared-restore calls in 0.394
- * ms**. At a 2 ns net cost per call that is 1.4% of the parse; at 5 ns, 3.5%.
- * That is an upper bound — V8 should inline a body this small and monomorphic —
- * but it is NOT self-evidently free, which is why the threshold is conservative.
- *
- * Timing on this machine could not resolve it: the null control (two separately
- * compiled but IDENTICAL artifacts) spans 4.22 percentage points at load 62-73.
- * Repeated-trial medians were control +0.11%, threshold 150 +0.60%, threshold 0
- * +1.98% — ordered as the call-count model predicts, but every one of them
- * inside the control's own range. So 150 is chosen as the most aggressive
- * setting whose speed cost is NOT measurable, and 0 is left unselected because
- * it buys 1.2 further points of size for roughly double the call density.
- * Re-measure on a quiet machine before moving this.
- */
-const CR_SHARE_MIN = (() => {
-  // `PM_CR_SHARE_MIN` exists ONLY so bench/size/hotcold-curve.ts can sweep the
-  // threshold in a child process. It is not a supported option and is not read
-  // from any public API: a compile option would have to be threaded through
-  // three Ctx construction sites and would then need its own parity tests, for a
-  // knob whose only consumer is a benchmark.
-  const raw = typeof process !== 'undefined' ? process.env?.PM_CR_SHARE_MIN : undefined
-  if (raw === undefined || raw === '') return 150
-  const n = raw === 'Infinity' ? Infinity : Number(raw)
-  return Number.isNaN(n) ? 150 : n
-})()
-
 /** Body of a capture restore — resets each live buffer to its saved length. */
 function captureRestoreBody(ctx: Ctx, mL: string, mR: string, mTl: string, mLg: string | null, mF: string | null = null, mRootLg: string | null = null): string {
+  const fieldRestore = mF ? `; if (_ctx._fields && _ctx._fields.length !== ${mF}) _ctx._fields.length = ${mF}` : ''
+  const base = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${mL}) _ctx._cstLeaves.length = ${mL}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${mR}) _ctx._cstRawChildren.length = ${mR}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${mTl}) _ctx._cstTriviaLog.length = ${mTl}${fieldRestore}`
   // `_triviaLog` is the standalone diagnostic trivia log. The interpreter only
   // rewinds it on a failed *choice* arm (choice.ts), NOT on a failed sequence
   // term — a sequence returns the failure with earlier trivia still logged. To
   // stay byte-for-byte at parity with the interpreter, only rewind it where the
   // interpreter does (choice arms); sequence-term rollbacks (emitFallible) leave
-  // it intact. Hence `mLg === null` at sequence-term sites.
-  return emitRestore(ctx, [
-    ['_ctx._cstLeaves', mL],
-    ['_ctx._cstRawChildren', mR],
-    ['_ctx._cstTriviaLog', mTl],
-    ...(mF ? [['_ctx._fields', mF] as Pair] : []),
-    ...(mLg ? [['_ctx._triviaLog', mLg] as Pair] : []),
-    ...(hasSelectedRootTrivia(ctx) && mRootLg ? [['_ctx._rootTriviaLog', mRootLg] as Pair] : []),
-  ])
-}
-
-/**
- * One `(buffer name, saved-mark expression)` pair of a capture restore.
- *
- * The mark is `string | null` only because several call sites hold nullable
- * locals that they previously interpolated straight into a template literal.
- * `emitRestore` interpolates identically, so those sites keep their exact prior
- * output rather than acquiring a new "drop the pair when null" behaviour that
- * would be a silent semantic change smuggled in with a size fix.
- */
-type Pair = [string, string | null]
-
-/**
- * THE single place that turns a set of (buffer, mark) pairs into restore code.
- *
- * Before 0.46 this text was hand-rolled at SEVEN sites in this file
- * (`captureRestoreBody` plus six independent template literals in the choice,
- * `many`, `sepBy`, `not` and dispatch emitters), each spelling out the same
- * `if (sink && sink.length !== mark) sink.length = mark` chain. That duplication
- * is why the shared-helper win initially measured 1.3% instead of the predicted
- * 10%: only two of the seven sites went through the function. Routing all of
- * them here is both the size lever and the deduplication.
- *
- * Emits either the inline chain or a call to a hoisted, shape-deduped helper,
- * per {@link CR_SHARE_MIN}. The guarded compare is preserved verbatim in both
- * forms — see the note above `CR_SHARE_MIN` for why the bare length store is not
- * an option.
- */
-function emitRestore(ctx: Ctx, pairs: Pair[]): string {
-  const inline = pairs.map(([b, m]) => `if (${b} && ${b}.length !== ${m}) ${b}.length = ${m}`).join('; ')
-  if (inline.length < ctx.crShareMin) return inline
-
-  // The helper receives the BUFFERS THEMSELVES, not `_ctx`. Two consequences:
-  //
-  //  - one helper serves every restore of the same ARITY, whatever mix of
-  //    buffers it touches, so an artifact emits ~3 helpers rather than one per
-  //    buffer combination;
-  //  - it also covers the sequence-boundary site, whose log is a deliberately
-  //    hoisted LOCAL (`_tlg`) rather than a `_ctx` property — see the note at
-  //    that site about three redundant property loads per boundary. Passing the
-  //    array keeps that hoist intact.
-  //
-  // Reading `_ctx.foo` once at the call instead of twice inside is equivalent:
-  // nothing between the guard and the store can reassign it.
-  const shape = String(pairs.length)
-  let name = ctx.crMap.get(shape)
-  if (name === undefined) {
-    name = `${nsp(ctx)}_cr${ctx.crDecls.length}`
-    const args = pairs.map((_, i) => `a${i}, p${i}`).join(', ')
-    const body = pairs.map((_, i) => `if (a${i} && a${i}.length !== p${i}) a${i}.length = p${i}`).join('; ')
-    ctx.crMap.set(shape, name)
-    ctx.crDecls.push(`const ${name} = (${args}) => { ${body} }`)
-  }
-  return `${name}(${pairs.map(([b, m]) => `${b}, ${m}`).join(', ')})`
+  // it intact.
+  const logRestore = mLg ? `; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${mLg}) _ctx._triviaLog.length = ${mLg}` : ''
+  const rootLogRestore = hasSelectedRootTrivia(ctx) && mRootLg ? `; if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${mRootLg}) _ctx._rootTriviaLog.length = ${mRootLg}` : ''
+  return `${base}${logRestore}${rootLogRestore}`
 }
 
 /**
@@ -1772,15 +1635,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          // The COMPARE stays inline; only the else-body (the term consumed
-          // nothing, so the speculative trivia scan is rolled back) is shared.
-          // The advancing case — the hot one — executes identical code to 0.45.
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { ${emitRestore(ctx, [
-            ['_ctx._cstRawChildren', markV],
-            ['_ctx._cstTriviaLog', markTl],
-            ['_ctx._triviaLog', markLog],
-            ...(markRootLog ? [['_ctx._rootTriviaLog', markRootLog] as Pair] : []),
-          ])} }`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) { ${curV} = ${endAfterV} } else { if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} }`,
         )
         valueVars.push(r.valueVar)
         continue
@@ -1825,13 +1680,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          // As the capturing branch above: the compare stays inline, only the
-          // non-advancing else-body is shared. `logV` is the hoisted local, and
-          // `emitRestore` passes buffers by value, so the hoist survives.
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else { ${emitRestore(ctx, [
-            [logV, markLog],
-            ...(markRootLog ? [['_ctx._rootTriviaLog', markRootLog] as Pair] : []),
-          ])} }`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else { if (${logV} !== undefined && ${logV}.length !== ${markLog}) ${logV}.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} }`,
         )
         valueVars.push(r.valueVar)
         continue
@@ -2215,15 +2064,7 @@ function emitDispatchCombinator(
       stmts.push(
         ...(routedV ? [`${ind(ctx)}const ${routedV} = _ctx._routed; _ctx._routed = { value: ${selector.valueVar}, span: { start: ${pos}, end: ${selector.endVar} } }`] : []),
         ...(selectorLeafMark ? [
-          `${ind(ctx)}${emitRestore(ctx, [
-            ['_ctx._cstLeaves', selectorLeafMark],
-            ['_ctx._cstRawChildren', selectorRawMark],
-            ['_ctx._cstTriviaLog', selectorTriviaMark],
-            ['_ctx._triviaLog', selectorLogMark],
-            ...(selectorRootLogMark ? [['_ctx._rootTriviaLog', selectorRootLogMark] as Pair] : []),
-            ['_ctx._fields', selectorFieldMark],
-            ['_ctx._errors', selectorErrorMark],
-          ])}`,
+          `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${selectorLeafMark}) _ctx._cstLeaves.length = ${selectorLeafMark}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${selectorRawMark}) _ctx._cstRawChildren.length = ${selectorRawMark}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${selectorTriviaMark}) _ctx._cstTriviaLog.length = ${selectorTriviaMark}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${selectorLogMark}) _ctx._triviaLog.length = ${selectorLogMark};${selectorRootLogMark ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${selectorRootLogMark}) _ctx._rootTriviaLog.length = ${selectorRootLogMark};` : ''} if (_ctx._fields && _ctx._fields.length !== ${selectorFieldMark}) _ctx._fields.length = ${selectorFieldMark}; if (_ctx._errors && _ctx._errors.length !== ${selectorErrorMark}) _ctx._errors.length = ${selectorErrorMark}`,
         ] : []),
       )
     }
@@ -3010,15 +2851,7 @@ function emitAttempt(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'att
   const rootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_atrg') : null
   const fields = v(ctx, '_atf')
   const errors = v(ctx, '_ate')
-  const rollback = emitRestore(ctx, [
-    ['_ctx._cstLeaves', leaves],
-    ['_ctx._cstRawChildren', raw],
-    ['_ctx._cstTriviaLog', trivia],
-    ['_ctx._triviaLog', log],
-    ...(rootLog ? [['_ctx._rootTriviaLog', rootLog] as Pair] : []),
-    ['_ctx._fields', fields],
-    ['_ctx._errors', errors],
-  ])
+  const rollback = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${leaves}) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${raw}) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${trivia}) _ctx._cstTriviaLog.length = ${trivia}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${log}) _ctx._triviaLog.length = ${log};${rootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${rootLog}) _ctx._rootTriviaLog.length = ${rootLog};` : ''} if (_ctx._fields && _ctx._fields.length !== ${fields}) _ctx._fields.length = ${fields}; if (_ctx._errors && _ctx._errors.length !== ${errors}) _ctx._errors.length = ${errors}`
   const traceId = ctx.coverage?.plan.attempts.get(p)
   const traceRollback = traceId === undefined ? '' : ` _ctx._grammarTrace?.write({ id: ${JSON.stringify(traceId)}, phase: 'rollback', offset: ${pos} });`
   // First-set fail-fast before the transaction marks. `attempt(inner)` reads six
@@ -3121,14 +2954,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         ...(rlg ? [`${ind(ctx)}const ${rlg} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
         `${ind(ctx)}const ${fl} = _ctx._fields ? _ctx._fields.length : 0`,
       ],
-      rb: `${emitRestore(ctx, [
-        ['_ctx._cstLeaves', lv],
-        ['_ctx._cstRawChildren', rw],
-        ['_ctx._cstTriviaLog', tl],
-        ['_ctx._triviaLog', lg],
-        ...(rlg ? [['_ctx._rootTriviaLog', rlg] as Pair] : []),
-        ['_ctx._fields', fl],
-      ])}; `,
+      rb: `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${lv}) _ctx._cstLeaves.length = ${lv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${rw}) _ctx._cstRawChildren.length = ${rw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${lg}) _ctx._triviaLog.length = ${lg};${rlg ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${rlg}) _ctx._rootTriviaLog.length = ${rlg};` : ''} if (_ctx._fields && _ctx._fields.length !== ${fl}) _ctx._fields.length = ${fl}; `,
     }
   }
 
@@ -3191,14 +3017,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
         ...emitLineTrack(ctx, curV, spV),
       )
       sepAtPos = spV
-      const rollbackToSep = `${emitRestore(ctx, [
-        ['_ctx._cstLeaves', markLv],
-        ['_ctx._cstRawChildren', markV],
-        ['_ctx._cstTriviaLog', markTl],
-        ['_ctx._triviaLog', markLog],
-        ...(markRootLog ? [['_ctx._rootTriviaLog', markRootLog] as Pair] : []),
-        ['_ctx._fields', markFld],
-      ])}; `
+      const rollbackToSep = `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markV}) _ctx._cstRawChildren.length = ${markV}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${markTl}) _ctx._cstTriviaLog.length = ${markTl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} if (_ctx._fields && _ctx._fields.length !== ${markFld}) _ctx._fields.length = ${markFld}; `
       const sep = emitFallible(def.separator, ctx, sepAtPos, true)
       const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
       stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${rollbackToSep}${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
@@ -3264,11 +3083,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     const { stmts: sepStmts, okVar: sepOk, endVar: sepEnd } = sep
     stmts.push(...sepStmts, `${ind(ctx)}if (!${sepOk}) { ${sep.mayCommit ? `if (_ctx._fc) ${committedFailBody(ctx)}; ` : ''}break }`)
     const nextRb = markLv
-      ? `${emitRestore(ctx, [
-        ['_ctx._cstLeaves', markLv],
-        ['_ctx._cstRawChildren', markRw],
-        ['_ctx._fields', markFld],
-      ])}; `
+      ? `if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${markLv}) _ctx._cstLeaves.length = ${markLv}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${markRw}) _ctx._cstRawChildren.length = ${markRw}; if (_ctx._fields && _ctx._fields.length !== ${markFld}) _ctx._fields.length = ${markFld}; `
       : ''
     const post = postSepMarks()
     stmts.push(...post.decl)
@@ -3424,15 +3239,7 @@ function emitNot(def: Extract<ParserDef, { tag: 'not' }>, ctx: Ctx, pos: string)
       ] : []),
       ...stmts,
       ...(sinksLive ? [
-        `${ind(ctx)}${emitRestore(ctx, [
-          ['_ctx._cstLeaves', leaves],
-          ['_ctx._cstRawChildren', raw],
-          ['_ctx._cstTriviaLog', tl],
-          ['_ctx._triviaLog', log],
-          ...(rootLog ? [['_ctx._rootTriviaLog', rootLog] as Pair] : []),
-          ['_ctx._fields', fields],
-          ['_ctx._errors', errors],
-        ])}`,
+        `${ind(ctx)}if (_ctx._cstLeaves && _ctx._cstLeaves.length !== ${leaves}) _ctx._cstLeaves.length = ${leaves}; if (_ctx._cstRawChildren && _ctx._cstRawChildren.length !== ${raw}) _ctx._cstRawChildren.length = ${raw}; if (_ctx._cstTriviaLog && _ctx._cstTriviaLog.length !== ${tl}) _ctx._cstTriviaLog.length = ${tl}; if (_ctx._triviaLog && _ctx._triviaLog.length !== ${log}) _ctx._triviaLog.length = ${log};${rootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${rootLog}) _ctx._rootTriviaLog.length = ${rootLog};` : ''} if (_ctx._fields && _ctx._fields.length !== ${fields}) _ctx._fields.length = ${fields}; if (_ctx._errors && _ctx._errors.length !== ${errors}) _ctx._errors.length = ${errors}`,
       ] : []),
       ...emitIfFail(ctx, okVar, failBody(ctx, label, pos)),
     ],
@@ -5104,9 +4911,6 @@ function compileImpl<T>(combinator: Combinator<T>, mapFnSources?: string[], opts
     inlineMax: _inlineMax,
     inlineLeft: _inlineMax,
     regexDecls: [],
-    crDecls: [],
-    crMap: new Map(),
-    crShareMin: CR_SHARE_MIN,
     regexMap: new Map(),
     expectedDecls: [],
     expectedMap: new Map(),
@@ -5165,7 +4969,6 @@ function compileImpl<T>(combinator: Combinator<T>, mapFnSources?: string[], opts
     ...rawEntryDecls,
     ...lineTrackDecls,
     ...lineSpanDecls,
-    ...ctx.crDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     '',
@@ -5182,7 +4985,6 @@ function compileImpl<T>(combinator: Combinator<T>, mapFnSources?: string[], opts
     ...rawEntryDecls,
     ...lineTrackDecls,
     ...lineSpanDecls,
-    ...ctx.crDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     ...namedPrelude,
@@ -5416,9 +5218,6 @@ export function compileRuleMap(
     inlineMax: _inlineMax,
     inlineLeft: _inlineMax,
     regexDecls: [],
-    crDecls: [],
-    crMap: new Map(),
-    crShareMin: CR_SHARE_MIN,
     regexMap: new Map(),
     expectedDecls: [],
     expectedMap: new Map(),
@@ -5497,7 +5296,6 @@ export function compileRuleMap(
     ctx.needsRawEntry ? `  ${RAW_ENTRY_DECL}` : '',
     ctx.needsLineTrack ? `  ${LINE_TRACK_DECL}` : '',
     ctx.needsLineSpan ? `  ${LINE_SPAN_DECL}` : '',
-    ...ctx.crDecls.map(d => `  ${d}`),
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
     mfDecl,
@@ -5699,7 +5497,7 @@ export function compileLinkable(
   const nodeMeta = new Map(ruleMap.map(([name, rule]) => [name, collectGrammarReflection([[name, rule]], { followLazy: false })]))
   const _inlineMax = resolveInlineMax(opts?.maxInline)
   const ctx: Ctx = {
-    vars: 0, indent: 1, inlineMax: _inlineMax, inlineLeft: _inlineMax, regexDecls: [], regexMap: new Map(), crDecls: [], crMap: new Map(), crShareMin: CR_SHARE_MIN,
+    vars: 0, indent: 1, inlineMax: _inlineMax, inlineLeft: _inlineMax, regexDecls: [], regexMap: new Map(),
     expectedDecls: [], expectedMap: new Map(), recordFail: true,
     mapFns: [], mapFnSrcs: [], buildFns: [], buildSrcs: [], runtimeParsers: [],
     namedParsers: new Map(), triviaCaptureNames: new Map(),
@@ -5856,7 +5654,6 @@ export function compileLinkable(
   const prelude = [
     ctx.needsLineTrack ? LINE_TRACK_DECL : '',
     ctx.needsLineSpan ? LINE_SPAN_DECL : '',
-    ...ctx.crDecls,
     ...ctx.regexDecls,
     ...ctx.expectedDecls,
     mfDecl,
@@ -6037,7 +5834,7 @@ function buildInlineExpression(
   const rawEntryDecl = ctx.needsRawEntry ? `  ${RAW_ENTRY_DECL}` : ''
   const lineTrackDecl = ctx.needsLineTrack ? `  ${LINE_TRACK_DECL}` : ''
   const lineSpanDecl = ctx.needsLineSpan ? `  ${LINE_SPAN_DECL}` : ''
-  const needsWrapper = ctx.crDecls.length > 0 || ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl || !!rawEntryDecl || !!lineTrackDecl || !!lineSpanDecl
+  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl || !!rawEntryDecl || !!lineTrackDecl || !!lineSpanDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
@@ -6047,7 +5844,6 @@ function buildInlineExpression(
     rawEntryDecl,
     lineTrackDecl,
     lineSpanDecl,
-    ...ctx.crDecls.map(d => `  ${d}`),
     ...ctx.regexDecls.map(d => `  ${d}`),
     ...ctx.expectedDecls.map(d => `  ${d}`),
     mfDecl,
