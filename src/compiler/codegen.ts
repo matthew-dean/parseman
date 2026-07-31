@@ -1138,12 +1138,13 @@ function emitRestore(_ctx: Ctx, pairs: readonly RestorePair[]): string {
 }
 
 /** Body of a capture restore — resets each live buffer to its saved length. */
-function captureRestoreBody(ctx: Ctx, mL: string, mR: string, mTl: string, mLg: string | null, mF: string | null = null, mRootLg: string | null = null): string {
-  const pairs: RestorePair[] = [
-    ['_ctx._cstLeaves', mL],
-    ['_ctx._cstRawChildren', mR],
-    ['_ctx._cstTriviaLog', mTl],
-  ]
+function captureRestoreBody(ctx: Ctx, mL: string | null, mR: string | null, mTl: string, mLg: string | null, mF: string | null = null, mRootLg: string | null = null): string {
+  // A null mark means the enclosing node() proved that buffer statically absent, so
+  // both its snapshot and its restore clause were never emitted.
+  const pairs: RestorePair[] = []
+  if (mL) pairs.push(['_ctx._cstLeaves', mL])
+  if (mR) pairs.push(['_ctx._cstRawChildren', mR])
+  pairs.push(['_ctx._cstTriviaLog', mTl])
   if (mF) pairs.push(['_ctx._fields', mF])
   // `_triviaLog` is the standalone diagnostic trivia log. The interpreter only
   // rewinds it on a failed *choice* arm (choice.ts), NOT on a failed sequence
@@ -1210,16 +1211,24 @@ function emitFallible(
   const needsRollback = ctx.capturing && mayLeavePartialCapture(inner, new Set(), ctx.activeTrivia !== undefined)
   const mayCommit = mayCommitFailure(inner)
   const needsFieldRollback = needsRollback && parserHasOwnFields(inner)
-  const mL  = needsRollback ? v(ctx, '_fcl')  : null
-  const mR  = needsRollback ? v(ctx, '_fcr')  : null
+  // The enclosing node() installed these buffers and, for a direct-builder node, chose
+  // them as compile-time literals (see Ctx.leafBufLit). A buffer it proved ABSENT can
+  // hold no partial capture, so both its length snapshot and its restore clause are
+  // dead here — the same decidability that removed the per-terminal push guards, now
+  // applied to the fail path. Only a proven-absent buffer is dropped; unknown keeps the
+  // full pair.
+  const leavesAbsent = ctx.leafBufLit === 'undefined'
+  const rawAbsent = ctx.rawBufLit === 'undefined'
+  const mL  = needsRollback && !leavesAbsent ? v(ctx, '_fcl')  : null
+  const mR  = needsRollback && !rawAbsent ? v(ctx, '_fcr')  : null
   const mTl = needsRollback ? v(ctx, '_fctl') : null
   const mF  = needsFieldRollback ? v(ctx, '_fcf')  : null
   const stmts = [
     `${ind0}let ${okV} = false, ${valV}, ${endV} = ${pos}`,
-    ...(mL ? [
-      `${ind0}const ${mL} = _ctx._cstLeaves?.length ?? 0`,
-      `${ind0}const ${mR} = _ctx._cstRawChildren?.length ?? 0`,
-      `${ind0}const ${mTl} = _ctx._cstTriviaLog?.length ?? 0`,
+    ...(needsRollback ? [
+      ...(mL ? [`${ind0}const ${mL} = _ctx._cstLeaves?.length ?? 0`] : []),
+      ...(mR ? [`${ind0}const ${mR} = _ctx._cstRawChildren?.length ?? 0`] : []),
+      `${ind0}const ${mTl!} = _ctx._cstTriviaLog?.length ?? 0`,
       ...(mF ? [`${ind0}const ${mF} = _ctx._fields?.length ?? 0`] : []),
     ] : []),
     ...(mayCommit ? [`${ind0}_ctx._fc = false`] : []),
@@ -1227,8 +1236,8 @@ function emitFallible(
     ...r.stmts,
     `${ind0}  ${valV} = ${r.valueVar}; ${endV} = ${r.endVar}; ${okV} = true`,
     `${ind0}}`,
-    ...(mL ? [
-      `${ind0}if (!${okV}) { ${captureRestoreBody(ctx, mL, mR!, mTl!, null, mF)} }`,
+    ...(needsRollback ? [
+      `${ind0}if (!${okV}) { ${captureRestoreBody(ctx, mL, mR, mTl!, null, mF)} }`,
     ] : []),
   ]
   return { stmts, okVar: okV, valVar: valV, endVar: endV, mayCommit }

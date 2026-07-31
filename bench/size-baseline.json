@@ -1,6 +1,6 @@
 {
   "updatedAt": "2026-07-31",
-  "gitRev": "4c76b7f",
+  "gitRev": "11c9552",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -56,59 +56,59 @@
       "overCeiling": true
     },
     "probe/node-scale-4": {
-      "genBytes": 20719,
-      "gzipBytes": 3900,
-      "bytesRatio": 28.189,
-      "locMultiplier": 42.556,
+      "genBytes": 20056,
+      "gzipBytes": 3814,
+      "bytesRatio": 27.287,
+      "locMultiplier": 42.111,
       "overCeiling": true
     },
     "probe/node-scale-8": {
-      "genBytes": 38127,
-      "gzipBytes": 6060,
-      "bytesRatio": 32.013,
-      "locMultiplier": 54.077,
+      "genBytes": 36816,
+      "gzipBytes": 6023,
+      "bytesRatio": 30.912,
+      "locMultiplier": 53.462,
       "overCeiling": true
     },
     "probe/node-scale-16": {
-      "genBytes": 73024,
-      "gzipBytes": 10214,
-      "bytesRatio": 34.332,
-      "locMultiplier": 63.952,
+      "genBytes": 70401,
+      "gzipBytes": 10243,
+      "bytesRatio": 33.099,
+      "locMultiplier": 63.19,
       "overCeiling": true
     },
     "probe/node-scale-32": {
-      "genBytes": 142699,
-      "gzipBytes": 18476,
-      "bytesRatio": 35.541,
-      "locMultiplier": 70.73,
+      "genBytes": 137452,
+      "gzipBytes": 18489,
+      "bytesRatio": 34.235,
+      "locMultiplier": 69.865,
       "overCeiling": true
     },
     "probe/compose-depth-1": {
-      "genBytes": 22932,
-      "gzipBytes": 4435,
-      "bytesRatio": 21.312,
-      "locMultiplier": 27.563,
+      "genBytes": 22276,
+      "gzipBytes": 4322,
+      "bytesRatio": 20.703,
+      "locMultiplier": 27.313,
       "overCeiling": true
     },
     "probe/compose-depth-2": {
-      "genBytes": 25677,
-      "gzipBytes": 4533,
-      "bytesRatio": 16.782,
-      "locMultiplier": 21.565,
+      "genBytes": 24862,
+      "gzipBytes": 4416,
+      "bytesRatio": 16.25,
+      "locMultiplier": 21.348,
       "overCeiling": true
     },
     "probe/compose-depth-3": {
-      "genBytes": 28416,
-      "gzipBytes": 4627,
-      "bytesRatio": 14.323,
-      "locMultiplier": 18.367,
+      "genBytes": 27442,
+      "gzipBytes": 4508,
+      "bytesRatio": 13.832,
+      "locMultiplier": 18.167,
       "overCeiling": true
     },
     "probe/compose-leaf": {
-      "genBytes": 15461,
-      "gzipBytes": 3210,
-      "bytesRatio": 19.924,
-      "locMultiplier": 23.143,
+      "genBytes": 15123,
+      "gzipBytes": 3146,
+      "bytesRatio": 19.488,
+      "locMultiplier": 23,
       "overCeiling": true
     },
     "probe/trivia-on": {
@@ -126,10 +126,10 @@
       "overCeiling": true
     },
     "probe/hostmode-ast": {
-      "genBytes": 17288,
-      "gzipBytes": 3707,
-      "bytesRatio": 26.638,
-      "locMultiplier": 37.889,
+      "genBytes": 17124,
+      "gzipBytes": 3662,
+      "bytesRatio": 26.385,
+      "locMultiplier": 37.778,
       "overCeiling": true
     },
     "probe/hostmode-cst": {
@@ -140,31 +140,31 @@
       "overCeiling": true
     },
     "probe/variant": {
-      "genBytes": 20897,
-      "gzipBytes": 4172,
-      "bytesRatio": 20.772,
-      "locMultiplier": 27.467,
+      "genBytes": 20738,
+      "gzipBytes": 4148,
+      "bytesRatio": 20.614,
+      "locMultiplier": 27.4,
       "overCeiling": true
     },
     "probe/variants-1": {
-      "genBytes": 20335,
-      "gzipBytes": 3919,
-      "bytesRatio": 24.208,
-      "locMultiplier": 26.533,
+      "genBytes": 19997,
+      "gzipBytes": 3853,
+      "bytesRatio": 23.806,
+      "locMultiplier": 26.4,
       "overCeiling": true
     },
     "probe/variants-2": {
-      "genBytes": 31323,
-      "gzipBytes": 4507,
-      "bytesRatio": 30.589,
-      "locMultiplier": 32,
+      "genBytes": 30647,
+      "gzipBytes": 4434,
+      "bytesRatio": 29.929,
+      "locMultiplier": 31.778,
       "overCeiling": true
     },
     "probe/variants-4": {
-      "genBytes": 52206,
-      "gzipBytes": 5697,
-      "bytesRatio": 37.078,
-      "locMultiplier": 38.458,
+      "genBytes": 51530,
+      "gzipBytes": 5631,
+      "bytesRatio": 36.598,
+      "locMultiplier": 38.292,
       "overCeiling": true
     }
   }
