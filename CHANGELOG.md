@@ -149,6 +149,40 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   own ctx, so its captures and trivia writes would land during the prescan and again in
   every arm. Replaying a ref needs recorded-and-spliced capture state, not variable
   reuse.
+- **New: choice-cost diagnostics — a shared-prefix inventory and a corpus wasted-work
+  profile.** A PEG `choice` is ordered, so each additional and each earlier alternative
+  costs time that is invisible in the grammar source; grammar shape drifts with nothing
+  going red. Two new analyses make it measurable.
+  `analyzeChoiceInventory(ruleMap)` reports EVERY reachable `choice` with the groups of
+  arms that share a concrete leading term, whether the compiler left-factored the site,
+  and — the part that did not exist before — WHY it declined, naming the blocking arm.
+  `detectSharedPrefix` (src/combinators/choice.ts) already computed this to choose the
+  `sharedPrefix` strategy, but it is all-or-nothing and returns `null` on the first arm
+  that does not qualify, so a partial group had no representation anywhere. That set is
+  the refactor backlog, generated rather than noticed by a human reading grammar source.
+  `profileWastedWork({ rules, entry, corpus })` counts input bytes RE-SCANNED after a
+  failed alternative, attributed per site and per arm, and ranks them; `inversions`
+  ranks separately by ordering defect — an arm that failed every attempt while a later
+  arm matched. `checkWastedWork(reports, baseline, policy)` is the gate policy over
+  either, and `renderChoiceInventory` / `renderWastedWork` are the human layer.
+  Analysis, policy and rendering are three separate layers over one structured report.
+  INTERPRETED MODE ONLY: nothing is emitted into a compiled parser and codegen pays
+  neither bytes nor time. `src/combinators/choice.ts` is untouched — instrumentation is
+  installed by temporarily substituting arm slots and terminal `parse` methods and
+  removed in a `finally`, so there is no profiling branch on the shipping hot path to
+  skip. QUIET BY DEFAULT: nothing here prints, or runs, unless called.
+  The metric is a deterministic COUNT, not a timing: byte-identical across repeated
+  runs and across separate processes (both asserted), so it is immune to machine load
+  and has a noise floor of exactly zero — which is what makes it gateable rather than a
+  benchmark. Calibrated against a case with an exact known answer, and fails closed on
+  every way of measuring nothing: an empty rule map, an empty corpus, an empty corpus
+  file, an unknown entry rule, a grammar with no instrumentable choice, a `compose()`
+  artifact, a missing or malformed or over-ceiling baseline, a changed corpus, and a
+  stale baseline entry each throw or fail rather than reporting a clean zero.
+  Known blind spots are documented in the module header rather than left to be
+  discovered: only `firstMatch`/`sharedPrefix` choices are instrumented, non-choice
+  backtracking is not attributed, an `autoNot` rejection reads as a success, and
+  `unresolvedRoots` reports how much of the grammar the walk could not reach.
 
 - **BREAKING: the gating diagnostic left the compile path. Compiling produces an
   artifact and says nothing.** Importing one example grammar (`examples/css/parser.ts`)

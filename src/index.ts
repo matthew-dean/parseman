@@ -62,6 +62,20 @@ export type {
 // rule FUNCTIONS, not combinators, and so cannot be walked by `analyzeGatingRules`
 // directly. This is the entry point a composed grammar's author wants.
 export { analyzeGrammarGating } from './analysis/grammar.ts'
+
+// Choice-cost diagnostics: the static shared-prefix inventory, the interpreted
+// corpus wasted-work profile, and the gate policy over them. Quiet by default —
+// nothing here runs or prints unless it is called.
+export { analyzeChoiceInventory, profileWastedWork, choiceSiteKey, armLabel } from './analysis/choice-cost.ts'
+export type {
+  ChoiceSite, ChoiceInventoryEntry, ChoiceInventoryReport, PrefixGroup,
+  ArmDeclineReason, SiteDeclineReason, WastedWorkCorpusEntry, ProfileWastedWorkOptions,
+  WastedWorkArm, WastedWorkSite, WastedWorkReport,
+} from './analysis/choice-cost.ts'
+export { renderChoiceInventory, renderWastedWork, leftFactorPreview } from './analysis/choice-cost-render.ts'
+export type { RenderOptions } from './analysis/choice-cost-render.ts'
+export { checkWastedWork, buildWastedWorkBaseline } from './analysis/choice-cost-gate.ts'
+export type { WastedWorkBaseline, WastedWorkPolicy, GateBreach, GateVerdict } from './analysis/choice-cost-gate.ts'
 export type { AnalysableGrammar } from './analysis/grammar.ts'
 
 export {
