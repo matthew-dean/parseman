@@ -150,6 +150,30 @@ describe('the corpus turns claims into measurements', () => {
     finally { rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 }) }
   }, 60_000)
 
+  it('keeps a grammar path that starts with `-` a PATH, not an option', async () => {
+    // `relative()` turns `./--g.ts` into `--g.ts`, and the pasted command would then read
+    // its own grammar path as a flag. Quoting cannot fix that — the shell strips the
+    // quotes and `parseArgs` still sees the leading `-`.
+    // The grammar has to sit beside its own relative imports and INSIDE the cwd, since
+    // `relative()` is what strips the `./`. So: copy it next to `ast.ts`, and run from
+    // there. `./--parser.ts` is also the only spelling that reaches the CLI at all —
+    // `parseArgs` reads a bare `--parser.ts` as a flag, which is the whole point.
+    const dashed = 'examples/lang/--parser.ts'
+    cpSync('examples/lang/parser.ts', dashed)
+    const cwd = process.cwd()
+    try {
+      process.chdir('examples/lang')
+      const r = await runCli(['diagnose', './--parser.ts', '--export', 'exprParser', '--width', '200', '--corpus', 'corpus'])
+      const line = r.stdout.split('\n').find(l => l.includes('parseman fix'))
+      expect(line).toBeDefined()
+      expect(line).toContain('parseman fix ./--parser.ts')
+    }
+    finally {
+      process.chdir(cwd)
+      rmSync(dashed, { force: true })
+    }
+  }, 60_000)
+
   it('reports the measured second world when a corpus is given', async () => {
     const r = await runCli(['diagnose', G, '--corpus', `${F}/corpus`])
     expect(r.stdout).toContain('reached at 13 places in your corpus')

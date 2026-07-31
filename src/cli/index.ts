@@ -328,7 +328,12 @@ async function main(argv: readonly string[]): Promise<number> {
         // decides the root. Values are shell-quoted so a path or an export name holding a
         // space stays one argument when pasted.
         const opt = (name: string, v: unknown): string => typeof v === 'string' ? ` --${name} ${sh(v)}` : ''
-        fixCommand = `parseman fix ${sh(label)}`
+        // A cwd-relative path can begin with `-` (`./--grammar.mjs` relativises to
+        // `--grammar.mjs`), and the pasted command would then read its own grammar path as
+        // an option. Quoting does not help — the shell strips the quotes and `parseArgs`
+        // still sees a leading `-`. `./` makes it a path again.
+        const commandPath = label.startsWith('-') ? `./${label}` : label
+        fixCommand = `parseman fix ${sh(commandPath)}`
           + opt('export', exportName) + opt('corpus', corpusFlag)
           + opt('ext', extFlag) + opt('accept', acceptFlag)
       }
