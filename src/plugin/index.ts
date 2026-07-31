@@ -832,8 +832,18 @@ function transformMacroImpl(
       return null
     }
 
-    const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [])
-    if (!ruleMap) { warn(init.start, `${label}: rules(...) factory isn't statically evaluable`); return null }
+    // A specific reason when the factory BODY is what failed. The generic message
+    // points nowhere near the cause, and the dominant real cause — a forward
+    // reference to a const declared lower down — is one the interpreter reports
+    // precisely. Two lanes lost a round to the generic text.
+    const why: { reason?: string } = {}
+    const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [], why)
+    if (!ruleMap) {
+      warn(init.start, why.reason === undefined
+        ? `${label}: rules(...) factory isn't statically evaluable`
+        : `${label}: rules(...) factory isn't statically evaluable — ${why.reason}`)
+      return null
+    }
 
     const triviaValue = optionValue('trivia')
     const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
@@ -1514,7 +1524,20 @@ function transformMacroImpl(
       localScanSkip = localGrammarScanSkip.get(name)
     }
     if (!localRules) {
-      warn(init.start, 'composeLeaf(): final argument must be a local rules() map')
+      // Distinguish "the argument is the wrong SHAPE" from "the argument is the right
+      // shape and failed to evaluate". Only the first is a composeLeaf problem. When a
+      // `rules()` call is present it has already warned with the specific cause (a
+      // forward reference, a non-static callback); repeating a shape complaint here
+      // buries it and sends the reader looking at the composeLeaf argument list. That
+      // is exactly how this signature got reported twice as a grammar defect.
+      const named = localArg.type === 'Identifier' ? (localArg as unknown as { name: string }).name : null
+      warn(init.start, isRulesCall(localArg)
+        ? 'composeLeaf(): the final rules() map failed to evaluate — see the warning above for the cause'
+        : named !== null
+          ? `composeLeaf(): final argument \`${named}\` did not resolve to a local rules() map.`
+            + ` It must be a \`const ${named} = rules(...)\` in THIS module, declared before this call`
+            + ` — an imported or re-exported grammar cannot be the leaf.`
+          : 'composeLeaf(): final argument must be a local rules() map')
       return null
     }
     const composing = composingTrivia(elements)

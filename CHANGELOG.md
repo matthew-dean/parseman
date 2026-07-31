@@ -5,6 +5,25 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **A factory body that fails to evaluate now names the binding and the cause.** The
+  dominant real cause is a forward reference — `const A = node('A', B, …)` above
+  `const B = …` — and the macro reported it as a generic "rules(...) factory isn't
+  statically evaluable", or, through `composeLeaf`, as a complaint about the ARGUMENT
+  SHAPE (`final argument must be a local rules() map`). That message points at the
+  wrong cause and was twice reported as a grammar defect. It now reads: ``Val``
+  references ``Tok`` before its declaration — a temporal dead zone … move the
+  declaration above ``Val``, or use ``g.Tok``, which is order-free. `composeLeaf` no
+  longer restates a shape error when the argument had the right shape and failed to
+  evaluate; when the leaf is an unresolved identifier it names it.
+
+  Worth stating plainly, because it is NOT the same class as the two entries above:
+  this constraint is **JavaScript's, not parseman's**. The interpreter throws
+  `ReferenceError: Cannot access 'Tok' before initialization` on exactly the sources
+  the macro refuses, so the two agree; `g.X` is order-free only because the proxy mints
+  a ref and defines it in a second phase. A `g.X` → bare-const conversion is therefore
+  safe **iff** the const is declared above every use and is not on a reference cycle —
+  and dropping a const from the returned map is not what breaks such a sweep.
+
 - **A terminal inside a `node()` no longer emits three runtime guards the emitter can
   already decide.** `emitNode` installs both collectors itself
   (`_ctx._cstLeaves = chV; _ctx._cstRawChildren = rawV`), and for a direct-builder node
