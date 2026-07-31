@@ -193,11 +193,14 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   5 s default**, which discarded the child output those tests exist to assert on and read
   as a flake that vanished when the file was run alone.
 - **`docs/design/derived-tokenization.md`** — the design for deriving a scanner from the
-  composed grammar's terminal alphabet (css 75, scss 94, jess 114, less 151 terminals),
-  the first two prototypes' measurements, a corrected css artifact baseline
-  (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B, which was the whole css `lib/`
-  across four build variants), and a register of 19 untried experiments. Nothing is wired
-  into `codegen.ts`.
+  composed grammar's terminal alphabet, the prototype and landed-sweep measurements, a
+  corrected css artifact baseline (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B,
+  which was the whole css `lib/` across four build variants), and a register of 20
+  untried experiments. Records the dispatch sweep: the whole spread across every
+  configuration is **2.4%**, so dispatch keying is not where parse time goes. **Withdraws
+  the 1.83× speedup as noise** — three byte-identical artifacts measured 5.961/6.101/11.952 ms
+  in separate processes — and makes byte-level tree equality against a toggled baseline
+  the gate, after a bug 288 tests missed.
 - **`proposeFixes` docs say "every available engine"** — `engines` is `['interpreted']`
   when the grammar does not compile, so "on both engines" overstated what was checked.
 
