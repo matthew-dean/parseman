@@ -18,8 +18,23 @@ function resolveAt(src: string, expr: string): ReturnType<ReturnType<typeof crea
   const parsed = parseSync('/virtual/g.ts', code)
   expect(parsed.errors).toHaveLength(0)
   const r = createReducerResolver('/virtual/g.ts', parsed.program.body as unknown[], code)
-  return r.resolve(expr, offset)
+  return r.resolve(expr, offset, code)
 }
+
+describe('an offset from another source is refused, not misread', () => {
+  it('declines rather than indexing a foreign offset into the entry scope tree', () => {
+    // An imported `rules()` factory is evaluated with its OWN module text, so its offsets
+    // are meaningless here. Answering anyway names whatever binding sits at the same
+    // absolute offset, and a wrong arity under-captures.
+    const code = 'const fold = (children, fields, span, raw, tl, st) => children'
+    const parsed = parseSync('/virtual/g.ts', code)
+    const r = createReducerResolver('/virtual/g.ts', parsed.program.body as unknown[], code)
+    expect(r.resolve('fold', code.length - 1, code)?.arity).toBe(6)
+    expect(r.resolve('fold', code.length - 1, 'const fold = c => c')).toEqual({
+      arity: null, src: null, reason: 'foreign-source',
+    })
+  })
+})
 
 const arityOf = (src: string, expr: string): number | null => resolveAt(src, expr)?.arity ?? null
 const reasonOf = (src: string, expr: string): string | undefined => resolveAt(src, expr)?.reason

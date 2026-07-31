@@ -11,13 +11,13 @@ Every such path reports on one channel.
 
 ## The format
 
-```
+```text
 [parseman] degraded [<code>] <where>: <subject> — <fell back to>; otherwise <what>
 ```
 
 For example:
 
-```
+```text
 [parseman] degraded [build-arity-unconfirmed] node("Operation"): build reducer
 `foldOperation` — could not confirm its formal parameter list (`foldOperation` did not
 resolve to a module-scope function declaration (imported binding, shadowed name, or a
@@ -92,7 +92,7 @@ no grepping.
 A diagnostic that fires on every rule gets filtered out, and filtered-out is the same as
 silent. Above eight sites per code, the remainder collapses to one counted line:
 
-```
+```text
 [parseman] degraded [build-arity-unconfirmed] +12 more site(s) not listed (20 total).
 Set PARSEMAN_DEGRADATION=error to fail the build on these.
 ```

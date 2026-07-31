@@ -241,6 +241,19 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
     } finally { process.env.PARSEMAN_DEGRADATION = prev }
   })
 
+  it('outranks the RESOLVER too, not just the source reader', () => {
+    // The resolver decides a real arity here (6), so before the guard it overwrote the
+    // author's `{ buildArity: 1 }` — authority 2 quietly demoting authority 1. The
+    // declaration is only an escape hatch if nothing overrides it.
+    write('r22.ts', 'export const fold = (c, f, s, r, tl, st) => c')
+    const code = build('g22.ts', `
+import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
+import { fold } from './r22.ts'
+export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold, { buildArity: 1 }))
+`)
+    expect(allocatesRaw(code)).toBe(false)
+  })
+
   it('rejects an out-of-range declaration rather than silently clamping', async () => {
     const { node, literal } = await import('../../src/index.ts')
     expect(() => node('T', literal('a'), (c: readonly unknown[]) => c, { buildArity: 7 })).toThrow(/buildArity must be an integer 0\.\.6/)

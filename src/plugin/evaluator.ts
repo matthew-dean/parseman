@@ -616,10 +616,14 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         // A NAMED reducer (`foldOperation`, `helpers.fold`, an import): resolve it so the
         // capture-tier analysis reads the REAL parameter list instead of failing open.
         // `null` means the expression was an inline function, which is self-describing.
-        const resolved = _reducers?.resolve(buildSrc, be!.start)
+        const resolved = _reducers?.resolve(buildSrc, be!.start, code)
         if (resolved) {
           if (resolved.src !== null) combi._def.buildSigSrc = resolved.src
-          if (resolved.arity !== null) combi._def.buildArity = resolved.arity
+          // An author-declared `node(..., { buildArity })` is authority 1 in
+          // `confirmedArityForDef`; the resolver is authority 2. Both land in the SAME
+          // field, so writing unconditionally here demoted the declaration to whatever
+          // scope analysis happened to find.
+          if (combi._def.buildArity === undefined && resolved.arity !== null) combi._def.buildArity = resolved.arity
           if (resolved.reason !== undefined) combi._def.buildArityUnresolved = resolved.reason
         }
         const staticError = directBuilderUnsupportedBindings(buildSrc)

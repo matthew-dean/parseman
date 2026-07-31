@@ -243,6 +243,8 @@ const RESOLVER_REASONS: Record<string, string> = {
   'unresolved-import': 'its module could not be resolved or parsed',
   'not-found': 'the name did not resolve to any binding',
   'computed': 'it is a computed expression',
+  'foreign-source': 'it is named inside an imported factory, whose offsets the entry-file '
+    + 'resolver cannot index',
 }
 
 function unconfirmableReason(def: NodeDef, src: string): string {

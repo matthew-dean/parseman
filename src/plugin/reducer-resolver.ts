@@ -46,6 +46,7 @@ export type UnresolvedReason =
   | 'unresolved-import'
   | 'not-found'
   | 'computed'
+  | 'foreign-source'
 
 export type ResolvedReducer = {
   /** Declared positional arity, or `null` when genuinely undecidable. */
@@ -445,8 +446,12 @@ export type ReducerResolver = {
    * Resolve the reducer expression at `offset` (its source text is `exprSrc`).
    * Returns `null` when the expression is not a name at all (an inline function —
    * the caller already has its source and needs nothing from us).
+   *
+   * `src` is the module text `offset` indexes. An offset is only meaningful against the
+   * source it came from, so the caller must say which one it has; see `resolve`'s
+   * implementation for what happens when it is not this resolver's.
    */
-  resolve(exprSrc: string, offset: number): ResolvedReducer | null
+  resolve(exprSrc: string, offset: number, src: string): ResolvedReducer | null
 }
 
 const IDENT_RE = /^[A-Za-z_$][\w$]*$/
@@ -524,11 +529,22 @@ export function createReducerResolver(entryFile: string, body: unknown[], src: s
   }
 
   return {
-    resolve(exprSrc, offset) {
+    resolve(exprSrc, offset, offsetSrc) {
       const text = exprSrc.trim()
       const ident = IDENT_RE.test(text) ? text : null
       const member = ident ? null : MEMBER_RE.exec(text)
       if (!ident && !member) return null // an inline function, or something computed
+
+      // An IMPORTED `rules()` factory is evaluated with `code: mod.src` (plugin/index.ts),
+      // so a `node(..., build)` inside it carries an offset into THAT file. Indexing it
+      // into the entry file's scope tree is not a near miss: it silently names whatever
+      // binding happens to live at the same absolute offset, and a wrong arity UNDER-
+      // captures — the reducer is then called with arguments the compiler elided.
+      //
+      // Answering against the imported module's own scope tree is the real fix and is
+      // filed for 0.46; refusing is the sound answer in the meantime, because refusing
+      // fails open (full capture) and says so on the degradation channel.
+      if (offsetSrc !== src) return { arity: null, src: null, reason: 'foreign-source' }
 
       const name = ident ?? member![1]!
       const memberName = ident ? undefined : member![2]!

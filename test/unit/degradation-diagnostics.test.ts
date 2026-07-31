@@ -126,8 +126,7 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
   })
 
   it('declines a REST parameter — genuinely undecidable — and says so', () => {
-    const prev = process.env.PARSEMAN_DEGRADATION
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     try {
       const result = transformMacro(`
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
@@ -138,12 +137,11 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
       const w = result.warnings.join('\n')
       expect(w).toContain('rest parameter')
       expect(w).toContain('buildArity')
-    } finally { process.env.PARSEMAN_DEGRADATION = prev }
+    } finally { vi.unstubAllEnvs() }
   })
 
   it('reports an import it genuinely cannot resolve', () => {
-    const prev = process.env.PARSEMAN_DEGRADATION
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     try {
       const result = transformMacro(`
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
@@ -155,7 +153,7 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
       expect(w).toContain('[parseman] degraded [build-arity-unconfirmed]')
       expect(w).toContain('node("Fold")')
       expect(w).toContain('could not be resolved')
-    } finally { process.env.PARSEMAN_DEGRADATION = prev }
+    } finally { vi.unstubAllEnvs() }
   })
 
   it('a same-name binding in an UNRELATED scope does not block resolution', () => {
@@ -189,15 +187,14 @@ export const P = rules((fold) => ({
   })
 
   it('PARSEMAN_DEGRADATION=error turns the report into a build failure', () => {
-    const prev = process.env.PARSEMAN_DEGRADATION
-    process.env.PARSEMAN_DEGRADATION = 'error'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'error')
     try {
       expect(() => transformMacro(`
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
-import { foldOperation } from './reducers.ts'
+import { foldOperation } from './does-not-exist-reducers.ts'
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), foldOperation))
 `.trim(), 'P.ts', new Set(['parseman']))).toThrow(/degraded compilation path/)
-    } finally { process.env.PARSEMAN_DEGRADATION = prev }
+    } finally { vi.unstubAllEnvs() }
   })
 
   it('does not change the EMITTED builder reference — only the cost analysis', () => {
@@ -241,9 +238,8 @@ describe('node first-set guard is gated on needsFirstSetGuard alone', () => {
 // The channel itself
 // ---------------------------------------------------------------------------
 describe('degradation channel', () => {
-  const prev = process.env.PARSEMAN_DEGRADATION
   beforeEach(() => { resetDegradationMemo() })
-  afterEach(() => { process.env.PARSEMAN_DEGRADATION = prev; endDegradationCapture() })
+  afterEach(() => { vi.unstubAllEnvs(); endDegradationCapture() })
 
   const sample = (n: number) => ({
     code: 'build-arity-unconfirmed' as const,
@@ -268,7 +264,7 @@ describe('degradation channel', () => {
   })
 
   it('dedupes repeat reports of the same rule+reducer', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     beginDegradationCapture()
     recordDegradation(sample(1))
     recordDegradation(sample(1))
@@ -277,23 +273,23 @@ describe('degradation channel', () => {
   })
 
   it('records nothing when off', () => {
-    process.env.PARSEMAN_DEGRADATION = 'off'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'off')
     beginDegradationCapture()
     recordDegradation(sample(1))
     expect(endDegradationCapture()).toHaveLength(0)
   })
 
   it('defaults to warn — the whole point is that the default was silence', () => {
-    delete process.env.PARSEMAN_DEGRADATION
+    vi.stubEnv('PARSEMAN_DEGRADATION', undefined)
     expect(resolveDegradationLevel()).toBe('warn')
-    process.env.PARSEMAN_DEGRADATION = 'error'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'error')
     expect(resolveDegradationLevel()).toBe('error')
     // An explicit argument wins over the env, as everywhere else in the compiler.
     expect(resolveDegradationLevel('off')).toBe('off')
   })
 
   it('prints (once) when no sink is open — the runtime compile() path', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     const seen: string[] = []
     const spy = vi.spyOn(console, 'warn').mockImplementation(m => { seen.push(String(m)) })
     try {
@@ -309,8 +305,7 @@ describe('degradation channel', () => {
 // Defect 3 — a near-miss on the inline-`mk` shape is a real cost, so it reports
 // ---------------------------------------------------------------------------
 describe('inline-mk near-misses are reported', () => {
-  const prev = process.env.PARSEMAN_DEGRADATION
-  afterEach(() => { process.env.PARSEMAN_DEGRADATION = prev; endDegradationCapture() })
+  afterEach(() => { vi.unstubAllEnvs(); endDegradationCapture() })
 
   const nodeDef = (type: string, buildSrc: string) => {
     const n = node(type, literal('a'), () => null)
@@ -338,7 +333,7 @@ describe('inline-mk near-misses are reported', () => {
   })
 
   it('reports a type mismatch instead of silently declining', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     beginDegradationCapture()
     expect(analyzeMkInlineBuild(nodeDef('T', "(c, f, s, r, tl) => mk('U', c, r, s, tl)"))).toBeNull()
     const found = endDegradationCapture()
@@ -348,14 +343,14 @@ describe('inline-mk near-misses are reported', () => {
   })
 
   it('reports a shape near-miss (wrong argument order)', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     beginDegradationCapture()
     expect(analyzeMkInlineBuild(nodeDef('T', "(c, f, s, r, tl) => mk('T', c, s, r, tl)"))).toBeNull()
     expect(endDegradationCapture()).toHaveLength(1)
   })
 
   it('says nothing about a reducer that was never an mk candidate', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     beginDegradationCapture()
     expect(analyzeMkInlineBuild(nodeDef('T', 'c => ({ c })'))).toBeNull()
     // Per-rule noise on every grammar that does not use the pattern would turn the
@@ -414,10 +409,9 @@ describe('degradation vocabulary integrity', () => {
 })
 
 describe('a recorded degradation actually reaches a drain', () => {
-  const prev = process.env.PARSEMAN_DEGRADATION
   beforeEach(() => { resetDegradationMemo() })
   afterEach(() => {
-    process.env.PARSEMAN_DEGRADATION = prev
+    vi.unstubAllEnvs()
     unwindDegradationCapture(0)
     resetDegradationMemo()
   })
@@ -432,7 +426,7 @@ describe('a recorded degradation actually reaches a drain', () => {
   })
 
   it('macro capture mode: collected, not printed', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     beginDegradationCapture()
     recordDegradation(finding(1))
@@ -443,7 +437,7 @@ describe('a recorded degradation actually reaches a drain', () => {
   })
 
   it('runtime compile() mode, warn: printed immediately', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     recordDegradation(finding(2))
     expect(warn).toHaveBeenCalledTimes(1)
@@ -455,12 +449,12 @@ describe('a recorded degradation actually reaches a drain', () => {
     // "PARSEMAN_DEGRADATION=error # fail the build", unqualified. With
     // `endDegradationCapture()`'s only call site inside the macro plugin, library mode
     // had no drain and `error` silently behaved as `warn`.
-    process.env.PARSEMAN_DEGRADATION = 'error'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'error')
     expect(() => recordDegradation(finding(3))).toThrow(/degraded compilation path/)
   })
 
   it('nested captures do not steal each other\'s sink', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     beginDegradationCapture() // outer module
     recordDegradation(finding(4))
     beginDegradationCapture() // inner module (transformMacro re-enters itself)
@@ -471,7 +465,7 @@ describe('a recorded degradation actually reaches a drain', () => {
   })
 
   it('an aborted capture does not swallow degradations for the rest of the process', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     const depth = degradationCaptureDepth()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
@@ -498,7 +492,7 @@ describe('a recorded degradation actually reaches a drain', () => {
   // plugin/index.ts, so the abort path is exercised by the simulated test above rather
   // than end-to-end through the plugin.
   it('transformMacro is capture-neutral across well-formed and malformed input', () => {
-    process.env.PARSEMAN_DEGRADATION = 'warn'
+    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
     const depth = degradationCaptureDepth()
     const inputs = [
       `import { rules, literal } from 'parseman'\nexport const g = rules({ a: () => literal('a') })\n`,
