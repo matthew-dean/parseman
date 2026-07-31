@@ -375,8 +375,6 @@ describe('parseDoc().edit() — structural list-reuse', () => {
     const fresh = parseDoc<CSTNode>(registry, root, applyEditStr(bigList, { start: from, deleted: to - from, inserted: '' }))
     expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
     const { shared, total } = sharedByIdentity(relTreeOf(base), relTreeOf(inc))
-    // eslint-disable-next-line no-console
-    console.log(`TMPMEASURE delete reuse = ${(100 * shared / total).toFixed(1)}% (${shared}/${total})`)
     expect(shared / total).toBeGreaterThan(0.4)
   })
 })
@@ -423,8 +421,6 @@ describe('parseDoc().edit() — structural reuse is grammar-verified (no footgun
     const inc = base.edit(0, 0, '99,')
     const fresh = parseDoc<CSTNode>(registry, 'List', '99,' + src)
     expect(structurallyEqual(inc.tree, fresh.tree)).toBe(true)
-    // eslint-disable-next-line no-console
-    console.log(`TMPMEASURE sepBy-splice shared = ${JSON.stringify(sharedByIdentity(relTreeOf(base), relTreeOf(inc)))}`)
     expect(sharedByIdentity(relTreeOf(base), relTreeOf(inc)).shared).toBeGreaterThan(0)
   })
 
