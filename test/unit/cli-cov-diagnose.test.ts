@@ -10,7 +10,7 @@
  * rather than throw.
  */
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runCli } from '../helpers/run-cli.ts'
@@ -123,6 +123,31 @@ describe('the corpus turns claims into measurements', () => {
     // No corpus, no proof, no wrench — the guarantee `fix` has depends on this.
     expect(without.stdout).not.toContain('can be fixed automatically')
     expect(without.stdout).not.toContain('parseman fix')
+  }, 60_000)
+
+  it('the suggested command carries EVERY option that changed what was verified', async () => {
+    // `--ext` picks the corpus files and `--accept` picks the candidate set, so a command
+    // that drops them reproduces a different run than the one that earned the wrench.
+    const r = await runCli([
+      'diagnose', ...LANG, '--width', '200', '--corpus', LANG_CORPUS, '--ext', '.lang', '--accept', 'Expr,Term',
+    ])
+    expect(r.stdout).toContain(
+      'parseman fix examples/lang/parser.ts --export exprParser --corpus examples/lang/corpus'
+      + ' --ext .lang --accept Expr,Term',
+    )
+  }, 60_000)
+
+  it('shell-quotes a value holding a space, so the command stays pasteable', async () => {
+    // An unquoted path with a space silently becomes two arguments. Copy the corpus into
+    // a directory whose name has one and check the suggestion survives a paste.
+    const dir = mkdtempSync(join(tmpdir(), 'cli-cov-diag-'))
+    const spaced = join(dir, 'corpus dir')
+    cpSync(LANG_CORPUS, spaced, { recursive: true })
+    try {
+      const r = await runCli(['diagnose', ...LANG, '--width', '200', '--corpus', spaced])
+      expect(r.stdout).toContain(`--corpus '${spaced}'`)
+    }
+    finally { rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 }) }
   }, 60_000)
 
   it('reports the measured second world when a corpus is given', async () => {
