@@ -4269,7 +4269,10 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
   // gets its own ambient rebuild, so it keeps skipping ambient opaque units — matching
   // the interpreter (a blanket flag would emit it eager and diverge).
   if (bal && ctx.activeScanSkip && ctx.activeScanSkip.length > 0 && !ctx.balancedRebuildStack?.has(p)) {
-    const interior = buildBalancedInterior(bal.open, bal.close, [...ctx.activeScanSkip, ...bal.ownSkip])
+    // `bal.strict` must ride along: rebuilding without it would silently downgrade
+    // a strict balanced to the recovering one whenever a grammar declares ambient
+    // scanSkip, which is exactly where the difference is hardest to notice.
+    const interior = buildBalancedInterior(bal.open, bal.close, [...ctx.activeScanSkip, ...bal.ownSkip], bal.strict)
     markUnusedValues(interior)
     // The interior is created HERE, so it is absent from ctx.lazyUsage — which
     // `emitLazy` reads to tell a recursive `self` back-edge (name it) from a

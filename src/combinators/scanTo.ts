@@ -30,6 +30,26 @@ export type ScanToOptions = {
    * everything consumed so far. Default false (fail at EOF).
    */
   orEOF?: boolean
+  /**
+   * `balanced()` only. Make an unmatched close a genuine FAILURE instead of a
+   * recovered one.
+   *
+   * By default `balanced()` wraps its close in `expect()`, which never fails: on
+   * a miss it returns a ParseError, records it on `ctx._errors`, and reports a
+   * zero-width span. So the combinator is UNFAILABLE once its opener is consumed
+   * — the rejection is computed and recorded, but a caller cannot branch on it.
+   * `choice()` cannot fall through to another arm, `not()` cannot negate it, and
+   * a `sequence()` around it proceeds as if the group closed.
+   *
+   * With `strict: true` the close is required, so an unmatched or missing close
+   * fails the whole group and rolls back to the opener — the ordinary combinator
+   * contract. Nested groups inherit strictness (the interior recurses into the
+   * same combinator).
+   *
+   * Opt-in: the default is unchanged, because recovery is what a tolerant
+   * document parse wants, and existing grammars are built on it.
+   */
+  strict?: boolean
 }
 
 /**
@@ -154,7 +174,7 @@ export function scanTo(
 /** Codegen marker: a balanced combinator that must re-resolve ambient scanSkip
  * into its interior at emit time (the compiled mirror of the interpreter wrapper). */
 export type BalancedAmbient = Combinator<string> & {
-  _balancedAmbient?: { open: string; close: string; ownSkip: Combinator<unknown>[] }
+  _balancedAmbient?: { open: string; close: string; ownSkip: Combinator<unknown>[]; strict?: boolean }
 }
 
 /**
@@ -167,6 +187,10 @@ export type BalancedAmbient = Combinator<string> & {
  * `rules({ scanSkip })` consults that ambient opaque-unit set in its INTERIOR too,
  * so a delimiter hidden inside a string/bracket run never closes the balance
  * early — the same footgun closure `scanTo` gets. `raw: true` opts out.
+ *
+ * By DEFAULT an unmatched close is RECOVERED, not failed: the close is wrapped in
+ * `expect()`, so the group always succeeds and records a ParseError instead. Pass
+ * `strict: true` to make it fail and roll back — see `ScanToOptions.strict`.
  */
 export function balanced(
   open: string,
@@ -174,7 +198,8 @@ export function balanced(
   options: ScanToOptions = {},
 ): Combinator<string> {
   const ownSkip = options.skip ?? []
-  const combi = buildBalancedInterior(open, close, ownSkip)
+  const strict = options.strict ?? false
+  const combi = buildBalancedInterior(open, close, ownSkip, strict)
   // `raw` keeps the pre-ambient behavior: the eager interior (per-call skip only).
   if (options.raw) return combi
 
@@ -189,13 +214,13 @@ export function balanced(
   // balanced; the footgun is a delimiter hidden in opaque-unit content.
   const eagerParse = combi.parse.bind(combi)
   const cache = new Map<readonly Combinator<unknown>[], Combinator<string>>()
-  ;(combi as BalancedAmbient)._balancedAmbient = { open, close, ownSkip }
+  ;(combi as BalancedAmbient)._balancedAmbient = { open, close, ownSkip, strict }
   combi.parse = (input: string, pos: number, ctx: ParseContext): ParseResult<string> => {
     const amb = ctx.scanSkip
     if (!amb || amb.length === 0) return eagerParse(input, pos, ctx)
     let interior = cache.get(amb)
     if (!interior) {
-      interior = buildBalancedInterior(open, close, [...amb, ...ownSkip])
+      interior = buildBalancedInterior(open, close, [...amb, ...ownSkip], strict)
       cache.set(amb, interior)
     }
     return interior.parse(input, pos, ctx)
@@ -208,6 +233,7 @@ export function buildBalancedInterior(
   open: string,
   close: string,
   skips: Combinator<unknown>[],
+  strict = false,
 ): Combinator<string> {
   // The interior scan must skip NESTED same-delimiter pairs so depth is counted —
   // otherwise `{{x}}` stops at the first `}`. `self` references this balanced
@@ -236,8 +262,17 @@ export function buildBalancedInterior(
     ? regex(new RegExp(`[^${cls}]+`))
     : regex(new RegExp(`[^${escapeClassChar(open)}${escapeClassChar(close)}]`))
   const inner = many(choice(self, ...skips, content))
+  // The close is the ONLY thing strict mode changes. `expect()` recovers — it
+  // returns a ParseError and lets the group succeed anyway — so the default
+  // balanced can never fail past its opener. A bare `literal(close)` fails the
+  // sequence instead, which rolls the whole group back to the opener and lets an
+  // enclosing choice()/not()/attempt() actually see the rejection. Everything
+  // else (first-set gating, trivia, the skip set, the content run, the interior
+  // recursion through `self`) is shared, so strict and tolerant differ in
+  // failure behaviour only, never in what they accept.
+  const closer = strict ? literal(close) : expect(literal(close))
   const combi = transform(
-    sequence(literal(open), inner, expect(literal(close))),
+    sequence(literal(open), inner, closer),
     // parts: strings (content/self) or arrays (a sequence-shaped skip) or a
     // ParseError (recovered close). `c` is the close string or a ParseError.
     ([o, parts, c]) => o + (parts as unknown[]).map(p => typeof p === 'string' ? p : Array.isArray(p) ? p.join('') : '').join('') + (typeof c === 'string' ? c : ''),
