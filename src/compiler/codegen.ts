@@ -1354,6 +1354,50 @@ function emitKeywordsFast(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx
   // for regex-derived shapes; the keywords path had simply omitted the guard.
   if (def.caseInsensitive && def.words.some(w => w.split('').some(c => c.charCodeAt(0) > 127))) return null
 
+  const mint: Mint = (prefix = '_v') => v(ctx, prefix)
+  const lbl = v(ctx, '_kwLbl')
+  const valV = v(ctx, '_kwv')
+  const endV = v(ctx, '_kwe')
+  const bodyInd = ind(ctx) + '  '
+
+  const tries = keywordTryLines(def, ctx, pos, lbl, valV, endV, bodyInd, mint)
+  if (tries === null) return null
+
+  const stmts = [
+    `${ind(ctx)}let ${valV} = '', ${endV} = ${pos}`,
+    `${ind(ctx)}${lbl}: {`,
+    ...tries,
+    `${ind(ctx)}}`,
+    // Every word has length >= 1 (checked above), so a real match always
+    // advances past `pos` — `endV === pos` only happens when no candidate matched.
+    ...emitIfFail(ctx, `${endV} === ${pos}`, failBody(ctx, '"keyword"', pos)),
+  ]
+  stmts.push(...emitLeafCapture(ctx, valV, pos, endV))
+  return { stmts, valueVar: valV, endVar: endV }
+}
+
+/**
+ * The per-word `break`-on-match lines for ONE `keywords()` def, in the def's own
+ * word order. Returns `null` when any word is outside the fast path's domain
+ * (see `emitKeywordsFast`'s decline list) — the caller then falls back.
+ *
+ * Split out of `emitKeywordsFast` so that a CHOICE of keyword arms can build one
+ * block from several defs (`emitKeywordChoiceMerge`). Word ORDER is the caller's
+ * to decide and is preserved exactly as given, because it is the whole semantics:
+ * `keywords()` sorts longest-first at construction, `choice()` is ordered
+ * first-match, and a merge is only sound if it reproduces the caller's order
+ * rather than re-sorting.
+ */
+function keywordTryLines(
+  def: Extract<ParserDef, { tag: 'keywords' }>,
+  ctx: Ctx,
+  pos: string,
+  lbl: string,
+  valV: string,
+  endV: string,
+  bodyInd: string,
+  mint: Mint,
+): string[] | null {
   let boundary: { ranges: Array<[number, number]>; negated: boolean } | null = null
   if (def.boundary) {
     let body = def.boundary
@@ -1363,12 +1407,6 @@ function emitKeywordsFast(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx
     if (!ranges) return null
     boundary = { ranges, negated }
   }
-
-  const mint: Mint = (prefix = '_v') => v(ctx, prefix)
-  const lbl = v(ctx, '_kwLbl')
-  const valV = v(ctx, '_kwv')
-  const endV = v(ctx, '_kwe')
-  const bodyInd = ind(ctx) + '  '
 
   const tries: string[] = []
   for (const w of def.words) {
@@ -1388,15 +1426,98 @@ function emitKeywordsFast(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx
       `${bodyInd}if (${m.ok}) { ${valV} = input.slice(${pos}, ${m.end}); ${endV} = ${m.end}; break ${lbl} }`,
     )
   }
+  return tries
+}
+
+/** The `emitKeywordsFast` decline list, asked about a def without emitting. */
+function keywordsFastEligible(def: Extract<ParserDef, { tag: 'keywords' }>): boolean {
+  if (def.words.length === 0 || def.words.some(w => w.length === 0)) return false
+  if (def.words.some(w => Array.from(w).length !== w.length)) return false
+  if (def.caseInsensitive && def.boundary) return false
+  if (def.caseInsensitive && def.words.some(w => w.split('').some(c => c.charCodeAt(0) > 127))) return false
+  return true
+}
+
+/**
+ * G20 NORMALISATION — a choice of keyword arms IS a keyword table.
+ *
+ * `word(s)` is defined as `keywords([s], { boundary })`, so `choice(word('a'),
+ * word('b'), …)` and `keywords(['a','b', …], { boundary })` are the same
+ * dispatch table written two ways. They did not compile alike: measured on the
+ * spelling differential (`pnpm spelling:gate`), 30 `word()` arms emitted 65,869 B
+ * against 34,664 B for the equivalent table — 1.90x — while doing the IDENTICAL
+ * matching work (373 `charCodeAt` sites on each side). The gap was per-arm
+ * scaffolding, not recognition.
+ *
+ * WHAT MAKES THE MERGE SOUND, point by point:
+ *
+ *   ORDER. The tries are emitted in ARM order, and within an arm in that arm's
+ *   own word order. That reproduces ordered first-match exactly, so — unlike
+ *   folding the words into one `keywords()` call — it does NOT inherit the
+ *   constructor's longest-first sort and cannot change which word wins. No
+ *   prefix-freeness precondition is needed, because no reordering happens.
+ *
+ *   THE `expected` PAYLOAD. The merged block fails with the CHOICE's own
+ *   `allExpected` array, not with a keyword table's single `"keyword"` label.
+ *   The spelling gate showed these differ (1 label vs N on a boundary
+ *   rejection), so adopting the table's payload would have been a silent
+ *   diagnostic regression that no tree comparison on accepted input would catch.
+ *
+ *   DISPATCH IS NEVER TRADED AWAY. This declines outright on a `disjoint`
+ *   choice. A disjoint choice compiles to O(1) first-char dispatch; collapsing
+ *   it into one ordered scan would buy bytes with runtime, which is the trade
+ *   this codebase refuses. The merge therefore only ever applies where the
+ *   choice was ALREADY going to be an ordered first-match scan, so it removes
+ *   scaffolding and changes nothing about how many characters get compared.
+ *
+ *   GATES, autoNot AND COVERAGE all make an arm individually addressable —
+ *   a runtime gate to test, a trailing check to apply, an instrumentation id to
+ *   report. One merged block has no per-arm identity to hang those on, so any
+ *   of them declines the merge rather than dropping them.
+ */
+function emitKeywordChoiceMerge(
+  parser: Combinator<unknown>,
+  def: Extract<ParserDef, { tag: 'choice' }>,
+  allExpected: string,
+  ctx: Ctx,
+  pos: string,
+): ER | null {
+  // A disjoint choice keeps its O(1) first-char dispatch. See above.
+  if (def.disjoint) return null
+  if (def.parsers.length < 2) return null
+  if (ctx.coverage?.plan.choices.get(parser) !== undefined) return null
+  if (def.gates.some(g => g !== null)) return null
+  if (def.autoNot.some(a => a !== null && a !== undefined && a.length > 0)) return null
+
+  const defs: Array<Extract<ParserDef, { tag: 'keywords' }>> = []
+  for (const p of def.parsers) {
+    const d = p._def
+    if (d.tag !== 'keywords') return null
+    if (!keywordsFastEligible(d)) return null
+    defs.push(d)
+  }
+
+  const mint: Mint = (prefix = '_v') => v(ctx, prefix)
+  const lbl = v(ctx, '_kwLbl')
+  const valV = v(ctx, '_kwv')
+  const endV = v(ctx, '_kwe')
+  const bodyInd = ind(ctx) + '  '
+
+  const tries: string[] = []
+  for (const d of defs) {
+    const lines = keywordTryLines(d, ctx, pos, lbl, valV, endV, bodyInd, mint)
+    if (lines === null) return null
+    tries.push(...lines)
+  }
 
   const stmts = [
     `${ind(ctx)}let ${valV} = '', ${endV} = ${pos}`,
     `${ind(ctx)}${lbl}: {`,
     ...tries,
     `${ind(ctx)}}`,
-    // Every word has length >= 1 (checked above), so a real match always
-    // advances past `pos` — `endV === pos` only happens when no candidate matched.
-    ...emitIfFail(ctx, `${endV} === ${pos}`, failBody(ctx, '"keyword"', pos)),
+    // Every word has length >= 1 (`keywordsFastEligible`), so a real match always
+    // advances past `pos` — `endV === pos` only happens when nothing matched.
+    ...emitIfFail(ctx, `${endV} === ${pos}`, failArrBody(ctx, allExpected, pos)),
   ]
   stmts.push(...emitLeafCapture(ctx, valV, pos, endV))
   return { stmts, valueVar: valV, endVar: endV }
@@ -1817,6 +1938,12 @@ function emitChoice(parser: Combinator<unknown>, def: Extract<ParserDef, { tag: 
   const coverageIds = ctx.coverage?.plan.choices.get(parser)
   const coverageBase = coverageIds?.[0]?.slice(0, -1)
   const allExpected = deriveExpectedArr(def.parsers)
+
+  // ── G20: a choice of keyword arms IS a keyword table ─────────────────────
+  // Only ever fires where the choice was already an ordered scan, so no
+  // dispatch is traded for the bytes. See `emitKeywordChoiceMerge`.
+  const kwMerged = emitKeywordChoiceMerge(parser, def, allExpected, ctx, pos)
+  if (kwMerged) return kwMerged
 
   // ── Disjoint: O(1) first-char dispatch (arms may be gated) ───────────────
   if (def.disjoint) {
