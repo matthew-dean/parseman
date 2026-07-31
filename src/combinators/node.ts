@@ -67,7 +67,33 @@ export type NodeCombinator<T, NodeType extends string = never, NodeTag extends s
     readonly [NODE_TAG]?: NodeTag
   }
 
-export type NodeOptions<Tags extends readonly string[] = readonly never[]> = { unwrap?: boolean; collapse?: boolean; project?: number; captureTrivia?: boolean; trailingTrivia?: boolean; tags?: Tags }
+export type NodeOptions<Tags extends readonly string[] = readonly never[]> = {
+  unwrap?: boolean
+  collapse?: boolean
+  project?: number
+  captureTrivia?: boolean
+  trailingTrivia?: boolean
+  tags?: Tags
+  /**
+   * Declared positional arity of `build` — the ESCAPE HATCH for a reducer parseman
+   * cannot read.
+   *
+   * Arity gates five capture tiers (`>= 1` children, `>= 2` fields, `>= 4` rawChildren,
+   * `>= 5` triviaLog, `>= 6` a clone of `_ctx.state`), and parseman normally derives it
+   * from the reducer's declaration — including across module boundaries. A few shapes
+   * are genuinely undecidable: a rest parameter (`...args`), a body that reads
+   * `arguments`, a reassigned or dynamically constructed reducer. Those fail OPEN, which
+   * is safe but pays for every tier on every match, forever.
+   *
+   * Declaring the arity here turns "undecidable" into "declared". You are asserting the
+   * highest positional argument the reducer reads; parseman then elides everything above
+   * it exactly as if it had read the parameter list.
+   *
+   * DECLARING TOO LOW UNDER-CAPTURES: the reducer will receive an empty `rawChildren` /
+   * `triviaLog` or an absent `state` rather than a wrong value. Count the parameters.
+   */
+  buildArity?: number
+}
 export type NodeProjectOptions<I extends number = number> =
   Omit<NodeOptions, 'project' | 'unwrap' | 'collapse'> & { project: I; unwrap?: never; collapse?: never }
 
@@ -88,6 +114,14 @@ function isCstChild(value: unknown): boolean {
 
 function missingInferredType(): never {
   throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
+}
+
+function normalizeBuildArity(arity: number | undefined): number | undefined {
+  if (arity === undefined) return undefined
+  if (!Number.isInteger(arity) || arity < 0 || arity > 6) {
+    throw new Error('node() buildArity must be an integer 0..6 (children, fields, span, rawChildren, triviaLog, state)')
+  }
+  return arity
 }
 
 function normalizeProject(project: number | undefined): number | undefined {
@@ -138,14 +172,15 @@ export function node<N>(
   const captureTrivia = opts?.captureTrivia === true
   const trailingTrivia = opts?.trailingTrivia === true
   const tags = opts?.tags
+  const buildArity = normalizeBuildArity(opts?.buildArity)
   if (unwrap && collapse) {
     throw new Error('node() options cannot set both unwrap and collapse')
   }
   if (project !== undefined && (unwrap || collapse)) {
     throw new Error('node() options cannot combine project with unwrap or collapse')
   }
-  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || project !== undefined || captureTrivia || trailingTrivia || (tags !== undefined && tags.length > 0)
-    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(project !== undefined ? { project } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}), ...(tags !== undefined && tags.length > 0 ? { tags } : {}) }
+  const def: Extract<ParserDef, { tag: 'node' }> = unwrap || collapse || project !== undefined || captureTrivia || trailingTrivia || buildArity !== undefined || (tags !== undefined && tags.length > 0)
+    ? { ...baseDef, ...(unwrap ? { unwrap: true } : {}), ...(collapse ? { collapse: true } : {}), ...(project !== undefined ? { project } : {}), ...(captureTrivia ? { captureTrivia: true } : {}), ...(trailingTrivia ? { trailingTrivia: true } : {}), ...(buildArity !== undefined ? { buildArity } : {}), ...(tags !== undefined && tags.length > 0 ? { tags } : {}) }
     : baseDef
   // Arity-gated elision — decided once, identically to the compiler (build-arity.ts).
   // When the build never reads the trivia (4th) arg, disable per-node CST-trivia
@@ -236,8 +271,12 @@ export function node<N>(
         ? unwrapChild(children[0])
         : collapse && children.length === 1
           ? children[0]
-        : !build
-          && project === undefined
+        // Collapse applies wherever the node's VALUE comes from the host: a structural
+        // node, or ANY node under a positioned-CST host, where the direct builder is
+        // bypassed and the produced thing is a host-owned CST node either way. Gating on
+        // `!build` alone made `cstBuildHost({ collapse })` a documented no-op for every
+        // grammar whose rules carry reducers — silently, in both engines.
+        : (cstOutput || (!build && project === undefined))
           && ctx.build?._parsemanCstCollapse
           && children.length === 1
           && rawChildren.length === 1

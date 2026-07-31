@@ -64,7 +64,10 @@ describe('Parseman perf — baseline regression guard', () => {
   // committed baseline. Runs on the CSS subset, mirroring `pnpm perf:guard`.
   it('css median speed within tight tolerance vs baseline', () => {
     const baseline = loadBaseline()
-    if (!baseline || !baselineCases(baseline, 'css')) return
+    // A vitest `return` is a PASS. Skipping on a missing baseline made this gate report
+    // success having compared nothing, which is the one state where it matters most.
+    if (!baseline) throw new Error('bench/parseman-baseline.json is missing — run `pnpm bench:baseline` and commit it.')
+    if (!baselineCases(baseline, 'css')) throw new Error('baseline has no "css" context — re-run `pnpm bench:baseline`.')
 
     const rows = captureContextRows('css', { samples: PERF_SAMPLES, passes: GUARD_PASSES })
     const regressions = findRegressions(rows, baseline, {
@@ -85,7 +88,8 @@ describe('Parseman perf — baseline regression guard', () => {
   // sub-µs cases; the authoritative tight gate is `pnpm perf:guard --all`.
   it('no grammar grossly regresses vs committed baseline', () => {
     const baseline = loadBaseline()
-    if (!baseline || !baselineCases(baseline, 'all')) return
+    if (!baseline) throw new Error('bench/parseman-baseline.json is missing — run `pnpm bench:baseline` and commit it.')
+    if (!baselineCases(baseline, 'all')) throw new Error('baseline has no "all" context — re-run `pnpm bench:baseline`.')
 
     // Cheap sweep — few samples, but at least 3 passes. Fewer reads COLD: a css
     // case does 50 warmup iterations, nowhere near enough for V8 to optimize the

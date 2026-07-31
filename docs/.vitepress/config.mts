@@ -75,6 +75,7 @@ export default defineConfig({
             { text: 'Error recovery', link: '/guide/error-recovery' },
             { text: 'Performance', link: '/guide/performance' },
             { text: 'First-char gating', link: '/guide/first-char-gating' },
+            { text: 'Degradation diagnostics', link: '/guide/degradation-diagnostics' },
             { text: 'Under the hood: regex lowering', link: '/guide/regex-lowering' },
           ],
         },

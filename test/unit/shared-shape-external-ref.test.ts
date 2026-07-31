@@ -18,7 +18,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as parseman from '../../src/index.ts'
-import { literal, ref, rules, sequence, node, transform, choice, guard, withCtx } from '../../src/index.ts'
+import { literal, ref, rules, sequence, node, transform, choice, gate, withCtx } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
@@ -171,7 +171,7 @@ describe('recognition-only gate stays sound', () => {
       ['node build', rules(g => ({ R: node('R', sequence(g.Value, literal('/')), (_c, _f, span) => ({ span })) }))],
       ['transform', rules(g => ({ R: transform(sequence(g.Value, literal('/')), v => v) }))],
       ['gated choice', rules(g => ({ R: choice({ gate: () => true, combinator: g.Value }, literal('/')) }))],
-      ['guard', rules(g => ({ R: sequence(guard(() => true), g.Value) }))],
+      ['guard', rules(g => ({ R: sequence(gate(() => true), g.Value) }))],
       ['withCtx', rules(g => ({ R: withCtx({ x: 1 }, g.Value) }))],
     ]
     for (const [label, map] of cases) {

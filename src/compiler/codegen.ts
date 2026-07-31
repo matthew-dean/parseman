@@ -12,7 +12,6 @@ import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { assertHostModeCompatible, type HostMode } from '../cst/host-mode.ts'
-import { analyzeGating, analyzeGatingRules, formatGatingWarnings, type GatingReport, type GatingWarnLevel, type Unanalysable } from '../analysis/gating.ts'
 import { analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings, duplicationFindingCount, type DuplicationReport, type DuplicationWarnLevel } from '../analysis/duplication.ts'
 
 /**
@@ -171,6 +170,47 @@ import {
 } from './inline-callback.ts'
 import { annotateSpan, normalizeLineIndex, recordLineRange } from './line-index.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
+import { beginCompileDegradationDrain } from './degradation.ts'
+
+/**
+ * Emission-time constant folding for gate expressions.
+ *
+ * Several per-node gates are compile-time constants once a capability is not
+ * compiled in (profiling is the motivating case: it is interpreted-mode only, so
+ * every profiling gate is the literal `'false'` here). Building the ternary as a
+ * string would leave `false ? undefined : []` in the artifact — correct, but it
+ * is emitted once per node, and a real grammar has thousands of nodes. Folding
+ * at emission keeps the artifact free of provably-dead branches instead of
+ * relying on a downstream minifier that callers may not run.
+ */
+function tern(cond: string, whenTrue: string, whenFalse: string): string {
+  if (cond === 'false') return whenFalse
+  if (cond === 'true') return whenTrue
+  return `${cond} ? ${whenTrue} : ${whenFalse}`
+}
+
+/** Fold `!(cond)` when `cond` is a literal. */
+function notGate(cond: string): string {
+  if (cond === 'false') return 'true'
+  if (cond === 'true') return 'false'
+  return `!(${cond})`
+}
+
+/** Fold `a || b` when either side is a literal. */
+function orGate(a: string, b: string): string {
+  if (a === 'false') return b
+  if (b === 'false') return a
+  if (a === 'true' || b === 'true') return 'true'
+  return `${a} || ${b}`
+}
+
+/** Fold `a && b` when either side is a literal. */
+function andGate(a: string, b: string): string {
+  if (a === 'false' || b === 'false') return 'false'
+  if (a === 'true') return b
+  if (b === 'true') return a
+  return `${a} && ${b}`
+}
 
 /**
  * Runtime prelude helper for the structural-node capture gate. Answers "does the
@@ -183,6 +223,26 @@ import { collectGrammarReflection, type GrammarReflection } from '../cst/reflect
  */
 export const HOST_READS_DECL =
   'const _hostReads = (b, n) => { if (b === undefined) return false; let s; try { s = Function.prototype.toString.call(b) } catch (e) { return true } if (/\\barguments\\b/.test(s)) return true; const m = /^[^(]*\\(([\\s\\S]*?)\\)/.exec(s); if (m && /\\.\\.\\.|=/.test(m[1])) return true; return b.length > n }'
+
+/**
+ * Raw-children coercion, hoisted out of every node site.
+ *
+ * The `rawChildren` entry for a produced value is either the value itself (when it
+ * is already a tagged CST thing) or a synthesized leaf. Inlined, that test plus the
+ * leaf literal is ~300 bytes emitted PER `node()` site — measured at 2.6% of
+ * `example/css`, 7.1% of `probe/node-scale-32`, 11.2% of `probe/trivia-off`.
+ *
+ * Allocation behaviour is preserved exactly, which is why `span` is the last
+ * parameter and may be absent:
+ *  - line-tracked grammars already hold their span in a local, so they pass it and
+ *    nothing extra is allocated;
+ *  - untracked grammars pass nothing and the `{ start, end }` literal is built
+ *    INSIDE, on the fallback branch only — exactly where the inline form built it.
+ * Passing the literal as an argument instead would have allocated a span on the
+ * fast path, which is the one thing this hoist must not do.
+ */
+export const RAW_ENTRY_DECL =
+  'const _rawEntry = (v, input, s, e, span) => (typeof v === \'object\' && v !== null && (v._tag === \'node\' || v._tag === \'leaf\' || v._tag === \'parseError\')) ? v : { _tag: \'leaf\', value: typeof v === \'string\' ? v : (typeof v === \'object\' && v !== null ? input.slice(s, e) : \'\'), span: span ?? { start: s, end: e } }'
 
 export const LINE_TRACK_DECL =
   'const _trackLines = (_ctx, input, start, end) => { const from = _ctx._lineScannedTo ?? 0; if (end <= from) return; for (let i = from; i < end; i++) if (input.charCodeAt(i) === 10) _ctx._lineStarts.push(i + 1); _ctx._lineScannedTo = end }'
@@ -213,6 +273,59 @@ export function endLoweringCapture(): string[] {
   const misses = _loweringSink ? [..._loweringSink] : []
   _loweringSink = null
   return misses
+}
+
+// ---------------------------------------------------------------------------
+// Inline-cap reporting
+//
+// When the inline-expansion cap binds it changes what gets emitted, which is a fact a
+// grammar author needs. It is deliberately NOT routed through `recordDegradation`: the
+// cap binding is INTENDED behaviour, and `PARSEMAN_DEGRADATION=error` turns any recorded
+// degradation into a thrown build failure — a consumer that asserts zero degradations
+// would start failing the moment a grammar grew past the budget, which is the opposite
+// of what a cap is for. It is also not printed during compile. It is collected here and
+// drained by whoever asks, so a separate diagnostic call can report it.
+// ---------------------------------------------------------------------------
+
+/** One emitted function whose inline budget was spent, and what it cost. */
+export type InlineCapSite = {
+  /** The emitted function that hit the budget. */
+  fn: string
+  /** Approximate combinator nodes in the ref body that became a call instead. */
+  nodes: number
+}
+
+let _inlineCapSink: InlineCapSite[] | null = null
+
+/** Begin collecting inline-cap sites. */
+export function beginInlineCapCapture(): void {
+  _inlineCapSink = []
+}
+
+/** Stop collecting and return the sites, in emission order (deterministic). */
+export function endInlineCapCapture(): InlineCapSite[] {
+  const sites = _inlineCapSink ?? []
+  _inlineCapSink = null
+  return sites
+}
+
+/**
+ * One line per capped function, in the shape the degradation formatter uses so the two
+ * read alike. Says exactly what happened and exactly what to do about it, because a
+ * diagnostic that does neither is noise.
+ */
+export function formatInlineCapSites(sites: readonly InlineCapSite[], max: number): string[] {
+  if (sites.length === 0) return []
+  const byFn = new Map<string, { count: number; nodes: number }>()
+  for (const s of sites) {
+    const cur = byFn.get(s.fn)
+    if (cur) { cur.count += 1; cur.nodes += s.nodes }
+    else byFn.set(s.fn, { count: 1, nodes: s.nodes })
+  }
+  return [...byFn].map(([fn, { count, nodes }]) =>
+    `[parseman] inline-cap ${fn}: inline budget of ${max} node(s) spent — `
+    + `${count} single-use ref(s) totalling ~${nodes} node(s) became called functions instead of inline bodies. `
+    + `Raise it with maxInline (or PARSEMAN_MAX_INLINE) if this rule is hot.`)
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +401,7 @@ type Ctx = {
   needsEmptyTl?: boolean | undefined
   /** Whether any structural node() arity-gates host capture and needs the `_hostReads` helper. */
   needsHostReads?: boolean | undefined
+  needsRawEntry?: boolean | undefined
   /** Whether any emitted terminal needs the dynamic `_trackLines` helper. */
   needsLineTrack?: boolean | undefined
   /** Whether generated code materializes line/column fields into span objects. */
@@ -370,6 +484,18 @@ type Ctx = {
    * `_cstLeaves` push would fire during the probe).
    */
   noHoist?: boolean | undefined
+  /**
+   * Inline-expansion cap. See {@link INLINE_MAX_NODES}. `inlineMax` is the per-emitted-
+   * function budget in approximate combinator nodes; `inlineLeft` is what remains of it
+   * inside the function currently being emitted. Both are plain numbers derived from the
+   * grammar and the configured cap — nothing here reads a clock, a map iteration order,
+   * or the environment at emit time, so two compiles of one grammar make the same
+   * decisions in the same order.
+   */
+  inlineMax: number
+  inlineLeft: number
+  /** Name of the emitted function currently being filled — reported when the cap binds. */
+  currentFnName?: string | undefined
   /** Trivia parser → name of its capturing variant fn (separate from namedParsers). */
   triviaCaptureNames: Map<Combinator<unknown>, string>
   /**
@@ -1524,11 +1650,27 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const markLog = v(ctx, '_mklg')
         const markRootLog = hasSelectedRootTrivia(ctx) ? v(ctx, '_mkrlg') : null
         const scanEndV = v(ctx, '_sne')
+        // The root trivia log, read ONCE. This site used to load `_ctx._triviaLog`
+        // three separate times per sequence-item boundary — to take the mark, to
+        // compute the `_cap` argument, and again to decide the rollback — and root
+        // trivia is OPT-IN, so a grammar that never asks for it (every `run()` without
+        // `rootTrivia`, and every direct `parseWithContext`) paid three property loads
+        // per boundary to re-prove the same field undefined. Token-dense grammars with
+        // little per-token work pay that most: it is the whole of graphql/document's
+        // drift against the pinned v0.35.0 reference in `perf:workloads`.
+        //
+        // Hoisting is sound only because the load and the rollback bracket ONE sequence
+        // item. `_ctx._triviaLog` is reassigned at grammar boundaries (see the
+        // save/clear/restore pair emitted for nested grammars), but that pair restores
+        // the same reference before control returns here, and the rollback is reached
+        // only on the item's success path. A function-wide hoist would NOT be sound.
+        const logV = v(ctx, '_tlg')
         const capArg = ctx.noHoist ? '0' : hasSelectedRootTrivia(ctx)
-          ? '(_ctx._triviaLog !== undefined || _ctx._rootTriviaLog !== undefined) ? 2 : 0'
-          : '_ctx._triviaLog !== undefined ? 2 : 0'
+          ? `(${logV} !== undefined || _ctx._rootTriviaLog !== undefined) ? 2 : 0`
+          : `${logV} !== undefined ? 2 : 0`
         stmts.push(
-          `${ind(ctx)}const ${markLog} = _ctx._triviaLog ? _ctx._triviaLog.length : 0`,
+          `${ind(ctx)}const ${logV} = _ctx._triviaLog`,
+          `${ind(ctx)}const ${markLog} = ${logV} !== undefined ? ${logV}.length : 0`,
           ...(markRootLog ? [`${ind(ctx)}const ${markRootLog} = _ctx._rootTriviaLog ? _ctx._rootTriviaLog.length : 0`] : []),
           `${ind(ctx)}const ${scanEndV} = ${trivFn}(input, ${curV}, _ctx, ${capArg})`,
           ...emitLineTrack(ctx, curV, scanEndV),
@@ -1538,7 +1680,7 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
         const endAfterV = v(ctx, '_sea')
         stmts.push(
           `${ind(ctx)}const ${endAfterV} = ${r.endVar}`,
-          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else { if (_ctx._triviaLog && _ctx._triviaLog.length !== ${markLog}) _ctx._triviaLog.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} }`,
+          `${ind(ctx)}if (${endAfterV} > ${scanEndV}) ${curV} = ${endAfterV}; else { if (${logV} !== undefined && ${logV}.length !== ${markLog}) ${logV}.length = ${markLog};${markRootLog ? ` if (_ctx._rootTriviaLog && _ctx._rootTriviaLog.length !== ${markRootLog}) _ctx._rootTriviaLog.length = ${markRootLog};` : ''} }`,
         )
         valueVars.push(r.valueVar)
         continue
@@ -3129,9 +3271,19 @@ function emitPeek(def: Extract<ParserDef, { tag: 'peek' }>, ctx: Ctx, pos: strin
   }
 }
 
-function emitRouted(ctx: Ctx, pos: string): ER {
+function emitRouted(ctx: Ctx, pos: string, def: Extract<ParserDef, { tag: 'routed' }>): ER {
   const local = ctx.routedLocal
+  const fallback = def.fallback
   if (local !== undefined) {
+    // Same-body dispatch branch. When the routed site sits at the branch's entry
+    // position the guard is textually `X !== X` — the routed token is provably
+    // there, so a fallback is dead code and is not emitted at all.
+    if (fallback !== undefined && local.startVar !== pos) {
+      return emitRoutedWithFallback(ctx, pos, fallback, {
+        test: `${local.startVar} === ${pos}`,
+        valExpr: local.valueVar, startExpr: local.startVar, endExpr: local.endVar,
+      })
+    }
     return {
       stmts: [
         ...emitIfFail(ctx, `${local.startVar} !== ${pos}`, failBody(ctx, '"routed()"', pos)),
@@ -3142,14 +3294,61 @@ function emitRouted(ctx: Ctx, pos: string): ER {
     }
   }
   const item = v(ctx, '_rt')
+  const read = `${ind(ctx)}const ${item} = _ctx._routed`
+  if (fallback !== undefined) {
+    const r = emitRoutedWithFallback(ctx, pos, fallback, {
+      test: `${item} !== undefined && ${item}.span.start === ${pos}`,
+      valExpr: `${item}.value`, startExpr: `${item}.span.start`, endExpr: `${item}.span.end`,
+    })
+    return { ...r, stmts: [read, ...r.stmts] }
+  }
   return {
     stmts: [
-      `${ind(ctx)}const ${item} = _ctx._routed`,
+      read,
       ...emitIfFail(ctx, `${item} === undefined || ${item}.span.start !== ${pos}`, failBody(ctx, '"routed()"', pos)),
       ...emitLeafCapture(ctx, `${item}.value`, `${item}.span.start`, `${item}.span.end`),
     ],
     valueVar: `${item}.value`,
     endVar: `${item}.span.end`,
+  }
+}
+
+/**
+ * `routed(fallback)`: reuse the dispatch-consumed token when it is at `pos`, else
+ * parse `fallback` IN PLACE.
+ *
+ * The fallback goes through the ordinary `emit()` — not `emitFallible` — so its
+ * failure propagates verbatim (same `expected`, same committed-ness, same trivia
+ * state) exactly as if the grammar had spelled the fallback at this position, which
+ * is what the interpreter does (`return fallback.parse(input, pos, ctx)`).
+ */
+function emitRoutedWithFallback(
+  ctx: Ctx,
+  pos: string,
+  fallback: Combinator<unknown>,
+  routed: { test: string; valExpr: string; startExpr: string; endExpr: string },
+): ER {
+  const valV = v(ctx, '_rtv')
+  const endV = v(ctx, '_rte')
+  const i = ind(ctx)
+  ctx.indent++
+  const capture = emitLeafCapture(ctx, routed.valExpr, routed.startExpr, routed.endExpr)
+  const fb = emit(fallback, ctx, pos)
+  const inner = ind(ctx)
+  ctx.indent--
+  return {
+    stmts: [
+      `${i}let ${valV}, ${endV}`,
+      `${i}if (${routed.test}) {`,
+      ...capture,
+      `${inner}${valV} = ${routed.valExpr}; ${endV} = ${routed.endExpr}`,
+      `${i}} else {`,
+      ...fb.stmts,
+      `${inner}${valV} = ${fb.valueVar}; ${endV} = ${fb.endVar}`,
+      `${i}}`,
+    ],
+    valueVar: valV,
+    endVar: endV,
   }
 }
 
@@ -3394,22 +3593,22 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const smk = structural ? v(ctx, '_smk') : null
   if (structural) ctx.needsHostReads = true
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
-  // `run({ profile: true })` reuses the established recognition-only boundary
-  // (`transform(parser, () => undefined)`) for an already-compiled structural
-  // grammar: recognizer suppresses all node output, capture records structure
-  // but skips construction, and host is the unmodified normal path. This is
-  // profiling-only context state, not a public parser mode.
-  // Hoist the profiling-phase reads to ONE `_ctx._pmProfile` read + two boolean
-  // locals per node, instead of re-evaluating `_ctx._pmProfile?.phase === X` ~8×
-  // across the alloc/install lines. On the normal (non-profiling) path `_pm` is
-  // undefined, so both locals fall out of one read + two short-circuiting compares,
-  // and every downstream `${_rec} ? … : …` becomes a cheap boolean-local ternary.
-  // Fixes the per-node overhead the profiling boundary added on tiny inputs (where
-  // it isn't amortized: ~+10–15% on 2–3µs cases, ~0% on bootstrap4).
-  const pmV = v(ctx, '_pm'), recV = v(ctx, '_rec'), capV = v(ctx, '_cap')
-  const profHoist = `${i}const ${pmV} = _ctx._pmProfile, ${recV} = ${pmV}?.phase === 'recognizer', ${capV} = ${pmV}?.phase === 'capture'`
-  const profileRecognizer = recV
-  const profileCapture = capV
+  // Profiling is INTERPRETED-MODE ONLY and is deliberately not compiled in.
+  //
+  // `run({ profile })` drives its recognizer/capture/host phases through
+  // `_ctx._pmProfile`. Emitting those phase gates into the artifact cost a
+  // `_ctx._pmProfile` read plus two locals on EVERY node, and threaded a ternary
+  // through ~15 further per-node expressions — machinery a normal parse never
+  // executes. The commit that hoisted the reads to two locals recorded the cost it
+  // was walking back: "~+10–15% on 2–3µs cases".
+  //
+  // These stay as string GATES rather than being deleted inline so the emission
+  // sites keep one shape; `tern`/`notGate`/`orGate` fold them away, so the literal
+  // `'false'` here means the dead branch never reaches the artifact at all.
+  // A compiled artifact is stamped un-profilable (see `FUSED_NO_PROFILE`) and
+  // `run()` refuses `profile` on it rather than silently reporting zeros.
+  const profileRecognizer = 'false'
+  const profileCapture = 'false'
   // Direct builders normally produce their own AST and never inspect CST
   // children/rawChildren. Keep cstBuildHost and profile({ capture: true })
   // truthful by dynamically restoring those collectors only for those explicit
@@ -3421,9 +3620,13 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // profiling capture pass, which is already a hoisted LOCAL (`_cap`) rather than a
   // property chain on `_ctx.build`. Either way the per-node `_parsemanCstOutput` read
   // that used to sit on every direct node is gone.
-  const cstMode = ctx.hostMode === 'cst'
-  const directCstV = !structural && !cstMode && (!capturesChildren || !capturesRaw) ? v(ctx, '_dcst') : null
-  const directCstGate = directCstV === null ? 'false' : profileCapture
+  // The `_dcst` binding that used to live here is GONE, not folded. Its only gate
+  // was `profileCapture`, which is the literal `'false'` above, so it could never
+  // reach the artifact — but reserving its name still advanced `ctx.vars`, which
+  // renumbered every subsequent `_NN` in the file. That renumbering was the bulk of
+  // the measured ast-vs-cst byte delta and made two otherwise-identical lowerings
+  // diff. Nothing downstream reads it; `dcstAlloc` below is unconditionally
+  // `'undefined'` because that is what it always constant-folded to.
   // A structural node can make its CST-trivia contract grammar-owned. That is
   // stronger than a host preference: `node(..., undefined, { captureTrivia:
   // true })` must keep its log even when the injected host explicitly opts out.
@@ -3441,21 +3644,24 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     ? 'true'
     : `(_ctx._pmReadsCh ??= (_ctx.build === undefined || _ctx.build._parsemanReadsChildren !== false || _ctx.build._parsemanCstCollapse !== undefined))`
   const chAlloc = (def.unwrap || def.collapse)
-    ? `${profileRecognizer} ? undefined : []`
-    : `${profileRecognizer} ? undefined : ((${profileCapture} || ${chNeededExpr}) ? [] : undefined)`
+    ? tern(profileRecognizer, 'undefined', '[]')
+    : tern(profileRecognizer, 'undefined', `${tern(orGate(profileCapture, chNeededExpr), '[]', 'undefined')}`)
+  // An elided collector allocates nothing. (Was a `_dcst ? [] : undefined` whose
+  // gate constant-folded to `false`; see the note at the removed binding.)
+  const dcstAlloc = 'undefined'
   const allocStmt = structural
-    ? `${i}const ${capTLv} = !(${profileRecognizer}) && (${profileCapture} || ${structuralCapturesTrivia ? 'true' : hostTriviaGate}), ${capSTv} = !(${profileRecognizer} || ${profileCapture}) && (_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))${capFv ? `, ${capFv} = !(${profileRecognizer}) && (${profileCapture} || (_ctx.build !== undefined && _hostReads(_ctx.build, 2)))` : ''}\n`
-      + `${i}const ${chV} = ${chAlloc}, ${rawV} = ${profileRecognizer} ? undefined : [], ${tlV} = ${profileRecognizer} ? undefined : ${innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`}`
+    ? `${i}const ${capTLv} = ${andGate(notGate(profileRecognizer), orGate(profileCapture, structuralCapturesTrivia ? 'true' : hostTriviaGate))}, ${capSTv} = ${andGate(notGate(orGate(profileRecognizer, profileCapture)), '(_ctx._pmCapST ??= (_ctx.build === undefined || _hostReads(_ctx.build, 6)))')}${capFv ? `, ${capFv} = ${andGate(notGate(profileRecognizer), orGate(profileCapture, '(_ctx.build !== undefined && _hostReads(_ctx.build, 2))'))}` : ''}\n`
+      + `${i}const ${chV} = ${chAlloc}, ${rawV} = ${tern(profileRecognizer, 'undefined', '[]')}, ${tlV} = ${tern(profileRecognizer, 'undefined', innerEnablesTriviaCapture ? '[]' : `${capTLv} ? [] : _EMPTY_TL`)}`
     : capturesTrivia
-      ? `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${capTLv} = !(${profileRecognizer}), ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}, ${tlV} = ${profileRecognizer} ? undefined : []`
-      : `${directCstV ? `${i}const ${directCstV} = ${directCstGate}\n` : ''}${i}const ${chV} = ${profileRecognizer} ? undefined : ${capturesChildren ? '[]' : `${directCstV} ? [] : undefined`}, ${rawV} = ${profileRecognizer} ? undefined : ${capturesRaw ? '[]' : `${directCstV} ? [] : undefined`}`
+      ? `${i}const ${capTLv} = ${notGate(profileRecognizer)}, ${chV} = ${tern(profileRecognizer, 'undefined', capturesChildren ? '[]' : dcstAlloc)}, ${rawV} = ${tern(profileRecognizer, 'undefined', capturesRaw ? '[]' : dcstAlloc)}, ${tlV} = ${tern(profileRecognizer, 'undefined', '[]')}`
+      : `${i}const ${chV} = ${tern(profileRecognizer, 'undefined', capturesChildren ? '[]' : dcstAlloc)}, ${rawV} = ${tern(profileRecognizer, 'undefined', capturesRaw ? '[]' : dcstAlloc)}`
   // The collector stays installed when a nested grammar can opt in; generated
   // trivia scanners gate their push on `captureTrivia`, so this remains inert
   // until that nested scope activates it.
   const innerTl = structural || capturesTrivia
     ? structural && !innerEnablesTriviaCapture ? `${capTLv} ? ${tlV} : undefined` : tlV
     : 'undefined'
-  const fieldsOn = structural ? (capFv ?? 'false') : `${profileRecognizer} ? false : ${capturesFields ? 'true' : 'false'}`
+  const fieldsOn = structural ? (capFv ?? 'false') : tern(profileRecognizer, 'false', capturesFields ? 'true' : 'false')
   const sf = hasFields ? v(ctx, '_sf') : null
   const fArr = hasFields ? v(ctx, '_fa') : null
   const fObj = hasFields ? v(ctx, '_fields') : 'undefined'
@@ -3488,10 +3694,25 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // nothing has been captured yet to roll back. Records the same static `expected`
   // a body start-fail would (named-rule bodies run with recordFail), so diagnostics
   // are unchanged. Skipped under compiled recovery (a swallowed failure still feeds
-  // the completions probe there) and when the node captures nothing (no frame to
-  // save). Mirrors the choice/`many` first-set guards.
+  // the completions probe there). Mirrors the choice/`many`/`attempt` first-set guards.
+  //
+  // The gate is `needsFirstSetGuard` ALONE. It used to also require
+  // `capturesChildren || structural`, on the theory that a node capturing nothing has
+  // "no frame to save" and so nothing to protect. That was wrong twice over. Factually:
+  // a non-capturing node still allocates `chV`/`rawV` bindings,
+  // and still saves + installs + restores `_cstChildren`/`_cstLeaves`/`_cstRawChildren`
+  // (and the trivia frame) before the body recognizes a byte. Structurally: capture is a
+  // COST question and the guard is a CORRECTNESS-neutral speedup, so using one as a proxy
+  // for the other coupled the largest measured parse lever to an unrelated decision — a
+  // confirmed zero-arity `() =>` reducer sets `capturesChildren = false` and thereby
+  // DELETED that node's first-set gate. CST mode forces the flag true, so the loss showed
+  // up only in 'ast' artifacts, which is why it went unnoticed. Sound to drop: the guard
+  // is emitted strictly before every statement this node contributes, `needsFirstSetGuard`
+  // guarantees a first-set miss cannot match, and the recorded `expected`/`_fe` are the
+  // ones a body start-fail would record — `emitAttempt` already gates on
+  // `needsFirstSetGuard` with no capture precondition, for exactly these reasons.
   const preGuard: string[] = []
-  if (!ctx.recovery && !ctx.coverage && (capturesChildren || structural) && needsFirstSetGuard(def.parser)) {
+  if (!ctx.recovery && !ctx.coverage && needsFirstSetGuard(def.parser)) {
     const gcV = v(ctx, '_ngc')
     const gExp = armStaticExpected(ctx, def.parser)
     const gFail = ctx.failLabel
@@ -3504,7 +3725,6 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   }
   const stmts: string[] = [
     ...preGuard,
-    profHoist,
     allocStmt,
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,
     `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}${installTrivia}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
@@ -3524,14 +3744,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // the recorded deepest failure, not a coarse ["node"] at the node's start.
   stmts.push(...emitIfFail(ctx, `!${okVar}`, propagateFailBody(ctx)))
 
-  stmts.push(
-    `${i}if (_ctx._pmProfile) {`,
-    `${i}  _ctx._pmProfile.nodes++`,
-    `${i}  if (${profileCapture}) {`,
-    `${i}    _ctx._pmProfile.childSlots += ${chV}.length; _ctx._pmProfile.rawSlots += ${rawV}.length; _ctx._pmProfile.triviaSlots += ${tlV}.length${fArr ? `; _ctx._pmProfile.fieldSlots += ${fArr} ? ${fArr}.length : 0` : ''}`,
-    `${i}  }`,
-    `${i}}`,
-  )
+  // (profiling counters intentionally not emitted — interpreted mode only)
 
   let stV = 'undefined'
   if (structural) {
@@ -3539,7 +3752,7 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     stmts.push(`${i}const ${stV} = ${capSTv} && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
   } else if (clonesState) {
     stV = v(ctx, '_nst')
-    stmts.push(`${i}const ${stV} = !(${profileRecognizer} || ${profileCapture}) && _ctx.state !== undefined ? Object.assign({}, _ctx.state) : undefined`)
+    stmts.push(`${i}const ${stV} = ${andGate(notGate(orGate(profileRecognizer, profileCapture)), '_ctx.state !== undefined')} ? Object.assign({}, _ctx.state) : undefined`)
   }
   if (sf && fArr) {
     const fe = v(ctx, '_fe')
@@ -3575,7 +3788,9 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // sole exception, so a direct object never becomes a CST child. Linkability
   // must not change that ownership rule.
   const hostBuildArgs = `${JSON.stringify(def.type)}, ${chV}, ${fObj}, ${nodeSpanV}, ${rawV}, ${tlV}, ${stV}${def.tags !== undefined && def.tags.length > 0 ? `, ${JSON.stringify(def.tags)}` : ''}`
-  const hostBuildExpr = `_ctx._pmProfile?.phase === 'host' && _ctx._pmProfile.hostCalls++, _ctx.build(${hostBuildArgs})`
+  // No profiling comma-expression: `run({ profile })` counts host calls in
+  // interpreted mode, so the compiled host branch is the bare call.
+  const hostBuildExpr = `_ctx.build(${hostBuildArgs})`
   // A direct builder's consumer is fixed at COMPILE time, so this is a constant choice,
   // not a per-node `_ctx.build?._parsemanCstOutput === true` read. `'cst'` builds through
   // the host (so a direct semantic object can never become a CST child); `'ast'` never
@@ -3588,7 +3803,16 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
       : buildExpr
   // unwrap/collapse: a single captured child IS the value; unwrap turns a leaf
   // into its string, collapse returns the child exactly. Mirrors node.ts.
-  const hostCollapseExpr = structural
+  // `cstBuildHost({ collapse })` applies wherever the node's VALUE comes from the host —
+  // that is the only situation in which the produced thing is a CST node the host owns.
+  // It used to be emitted for `structural` alone, which silently made the documented
+  // option a no-op for every `hostMode: 'cst'` grammar whose nodes carry a build reducer
+  // (measured in jess: `predicateCalls === 0` across four dialects, and zero occurrences
+  // of `_parsemanCstCollapse` in the built artifacts). In `'cst'` mode a direct builder is
+  // BYPASSED — `ndExpr` is `hostBuildExpr` — so the node is host-built exactly like a
+  // structural one, and there is no reason for the policy to skip it.
+  const hostCollapses = structural || cstOut
+  const hostCollapseExpr = hostCollapses
     ? `_ctx.build !== undefined && _ctx.build._parsemanCstCollapse !== undefined && ${chV}.length === 1 && ${rawV}.length === 1 && _ctx.build._parsemanCstCollapse(${JSON.stringify(def.type)}, ${chV}[0], ${chV}, ${rawV}) ? ${chV}[0] : (${ndExpr})`
     : ndExpr
   const unwrapExpr = `${chV}.length === 1 ? (${chV}[0] !== null && typeof ${chV}[0] === 'object' && ${chV}[0]._tag === 'leaf' ? ${chV}[0].value : ${chV}[0]) : (${ndExpr})`
@@ -3598,13 +3822,19 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     : def.collapse
       ? collapseExpr
     : hostCollapseExpr
-  stmts.push(
-    `${i}const ${ndV} = (${profileRecognizer} || ${profileCapture}) ? undefined : (${finalExpr})`,
-    `${i}if (!(${profileRecognizer})) {`,
-    `${i}  if (${sc}) ${sc}.push(${ndV})`,
-    `${i}  if (${sr}) ${sr}.push((typeof ${ndV} === 'object' && ${ndV} !== null && (${ndV}._tag === 'node' || ${ndV}._tag === 'leaf' || ${ndV}._tag === 'parseError')) ? ${ndV} : { _tag: 'leaf', value: typeof ${ndV} === 'string' ? ${ndV} : (typeof ${ndV} === 'object' && ${ndV} !== null ? input.slice(${pos}, ${endVar}) : ''), span: ${nodeSpanV} })`,
-    `${i}}`,
-  )
+  const ndGate = orGate(profileRecognizer, profileCapture)
+  const recGate = notGate(profileRecognizer)
+  // With profiling out of the compiled path `recGate` is statically true, so the
+  // two pushes are emitted unwrapped instead of inside a dead `if (true) { … }`.
+  const pushIndent = recGate === 'true' ? i : `${i}  `
+  const pushCh = `${pushIndent}if (${sc}) ${sc}.push(${ndV})`
+  // See RAW_ENTRY_DECL: the span argument is passed ONLY when it is already a local
+  // (line tracking), so the untracked fast path still allocates no span.
+  ctx.needsRawEntry = true
+  const pushRaw = `${pushIndent}if (${sr}) ${sr}.push(_rawEntry(${ndV}, input, ${pos}, ${endVar}${ctx.lineTracking ? `, ${nodeSpanV}` : ''}))`
+  stmts.push(`${i}const ${ndV} = ${tern(ndGate, 'undefined', `(${finalExpr})`)}`)
+  if (recGate === 'true') stmts.push(pushCh, pushRaw)
+  else stmts.push(`${i}if (${recGate}) {`, pushCh, pushRaw, `${i}}`)
 
   return { stmts, valueVar: ndV, endVar }
 }
@@ -3665,7 +3895,18 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     } catch {
       return emitRuntimeFallback(p, ctx, pos)
     }
-    return emit(resolved, ctx, pos)
+    // INLINE EXPANSION CAP (see INLINE_MAX_NODES). Charge this paste against the
+    // enclosing function's budget. When it does not fit, fall through to the named-
+    // function path below: the ref becomes a `_pfN` and is CALLED. Correctness is
+    // unaffected — that path is the established shape for every multi-use ref — so the
+    // only thing the cap trades is one call for the pasted bytes, and it only ever
+    // binds on functions that have already absorbed a full budget's worth of inlining.
+    const cost = usage.sizes.get(resolved) ?? 1
+    if (cost <= ctx.inlineLeft) {
+      ctx.inlineLeft -= cost
+      return emit(resolved, ctx, pos)
+    }
+    _inlineCapSink?.push({ fn: ctx.currentFnName ?? '<root>', nodes: cost })
   }
 
   if (!ctx.namedParsers.has(p)) {
@@ -3684,6 +3925,9 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     const savedIndent    = ctx.indent
     const savedFailLabel = ctx.failLabel
     const savedRecord    = ctx.recordFail
+    // Fresh function body → fresh inline budget (see INLINE_MAX_NODES).
+    const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
+    ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
     const failureRuleId = p === ctx.coverage?.entry
       ? undefined
       : (ctx.coverage?.plan.rules.get(p) ?? ctx.coverage?.plan.rules.get(resolved))
@@ -3707,6 +3951,8 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
     ctx.recordFail = savedRecord
+    ctx.inlineLeft = savedInlineLeft
+    ctx.currentFnName = savedFnName
     ctx.activeCoverageRuleId = savedActiveRule
     ctx.suppressCoverageFailure = savedSuppressFailure
 
@@ -3840,6 +4086,8 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     const savedIndent    = ctx.indent
     const savedFailLabel = ctx.failLabel
     const savedRecord    = ctx.recordFail
+    const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
+    ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
     ctx.indent    = 1
     ctx.failLabel = '_pfail'  // failures break _pfail (labeled block in the fn body)
     ctx.recordFail = true     // shared body always records; each caller decides propagation
@@ -3847,6 +4095,8 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
     ctx.recordFail = savedRecord
+    ctx.inlineLeft = savedInlineLeft
+    ctx.currentFnName = savedFnName
     pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar)
     return instrument(emitNamedFnCall(ctx, fnName, pos))
   }
@@ -4049,7 +4299,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     }
     case 'not':     return emitNot(def, ctx, pos)
     case 'peek':    return emitPeek(def, ctx, pos)
-    case 'routed':  return emitRouted(ctx, pos)
+    case 'routed':  return emitRouted(ctx, pos, def)
     case 'node':    return emitNode(def, ctx, pos)
     case 'scanTo':  return emitScanTo(def, ctx, pos)
     case 'recover': return emitRecover(def, ctx, pos)
@@ -4088,6 +4338,8 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         const savedIndent    = ctx.indent
         const savedFailLabel = ctx.failLabel
         const savedRecord    = ctx.recordFail
+        const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
+        ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
         ctx.indent    = 1
         ctx.failLabel = '_pfail'  // failures break _pfail (same as emitLazy)
         ctx.recordFail = true     // shared body always records (see emitLazy)
@@ -4102,6 +4354,8 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         ctx.indent    = savedIndent
         ctx.failLabel = savedFailLabel
         ctx.recordFail = savedRecord
+        ctx.inlineLeft = savedInlineLeft
+        ctx.currentFnName = savedFnName
         pushNamedFnDecl(ctx, fnName, innerR.stmts, innerR.valueVar, innerR.endVar)
       }
       const fn = ctx.namedParsers.get(innerParser)!
@@ -4161,14 +4415,6 @@ export type CompiledParser<T> = {
   inlineExpression: string | null
   /** Present only when compiled with `{ coverage: true }`. */
   coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[]
-  /**
-   * Static first-char gating diagnostic for this grammar (per-choice gated/
-   * recoverable/ungated + offending arm + cause + anti-patterns). Computed unless
-   * `{ gating: 'off' }`. Warnings for genuinely-ungated hot choices are emitted at
-   * compile time by default (see the `gating` option); this is the programmatic
-   * view for CI budget snapshots. See `src/analysis/gating.ts`.
-   */
-  gating?: GatingReport
 }
 
 /**
@@ -4275,12 +4521,15 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'skip':      return [def.main, def.skipped]
     case 'recover':   return [def.parser, def.sentinel]
     case 'scanTo':    return [def.sentinel, ...def.skip]
+    // A `routed()` fallback IS emitted at this site (emitRouted), so the usage
+    // analysis must see the edge — otherwise a fallback shared by several routed()
+    // sites is miscounted as single-use and inlined at each.
+    case 'routed':    return def.fallback ? [def.fallback] : []
     case 'lazy':
     case 'literal':
     case 'regex':
     case 'keywords':
     case 'guard':
-    case 'routed':
     case 'unknown':   return []
   }
 }
@@ -4305,6 +4554,58 @@ function isHoistableTag(tag: ParserDef['tag']): boolean {
  * Small enough to catch every real explosion (a value `choice` is ~12+), large
  * enough that trivial shared wrappers stay inline and keep the hot path fast. */
 const HOIST_MIN_SUBTREE = 3
+
+/**
+ * INLINE EXPANSION CAP — a bound on how much one emitted function may grow by pasting
+ * single-use ref bodies into it.
+ *
+ * The decision procedure, in one sentence: **each emitted function gets a budget of
+ * `INLINE_MAX_NODES` combinator nodes of inlined single-use refs; once it is spent, the
+ * remaining single-use refs in that function become named functions and are called.**
+ *
+ * What this limits, precisely. `emitLazy` inlines a ref that is used ONCE and is not
+ * recursive, because hoisting a function nobody else calls is pure overhead. That is
+ * correct per ref and unbounded in aggregate: a rule whose body is a chain of
+ * single-use helpers expands transitively, and the expansion has no ceiling that a
+ * grammar author can see or predict. This is NOT the identity-keyed hoisting of a
+ * MULTIPLY-referenced subtree (`HOIST_MIN_SUBTREE` above) — that already works, and a
+ * shared object referenced 1 or 38 times emits flat. Conflating the two is what made
+ * the size problem look like a duplication problem.
+ *
+ * Why a per-function budget rather than a per-ref size limit or a whole-artifact budget:
+ *  - a per-ref limit bounds each paste but not the transitive total, which is the
+ *    quantity that actually grows;
+ *  - a whole-artifact budget needs an eviction order, and any order that depends on
+ *    which function was compiled first is a decision the author cannot predict;
+ *  - a per-function budget needs no eviction order at all. Emission order within one
+ *    function is the grammar's own left-to-right order, so "the refs after the budget
+ *    runs out" is stable and explainable.
+ *
+ * Charge unit is `subtreeSizes` — the same approximate node count `HOIST_MIN_SUBTREE`
+ * uses, so the two policies are denominated in one currency.
+ *
+ * The default is measured, not chosen by taste: see `bench/size/inline-cap.md` for the
+ * size/speed sweep this number came from.
+ */
+export const INLINE_MAX_NODES = 1000
+
+/**
+ * Resolve the cap: explicit option wins, then `PARSEMAN_MAX_INLINE`, then the default.
+ * The escape hatch is deliberately explicit and OFF by default — a grammar that really
+ * wants unbounded inlining sets `Infinity` and says so, rather than discovering that a
+ * silent policy took it away. Read ONCE per compile and stored on the ctx, so a single
+ * compile can never observe two different values.
+ */
+export function resolveInlineMax(explicit?: number): number {
+  if (explicit !== undefined) return explicit
+  const env = typeof process !== 'undefined' ? process.env?.PARSEMAN_MAX_INLINE : undefined
+  if (env !== undefined && env !== '') {
+    if (env === 'off' || env === 'infinity') return Infinity
+    const n = Number(env)
+    if (Number.isFinite(n) && n >= 0) return n
+  }
+  return INLINE_MAX_NODES
+}
 
 /**
  * Static-occurrence analysis for `lazy` (ref()) combinators, ahead of codegen.
@@ -4498,164 +4799,6 @@ export function ruleDependencies(
  * @see https://www.greadme.com/blog/security/what-is-content-security-policy-complete-guide
  */
 /**
- * Resolve the gating-diagnostic level: explicit option wins, else the
- * `PARSEMAN_GATING` env var, else default-on `'warn'`. `'off'` skips the analysis
- * entirely; `'warn'` prints via `console.warn`; `'error'` throws when any
- * genuinely-ungated hot choice (or anti-pattern) is found.
- */
-/**
- * The `gating` compile option. A bare level is shorthand for `{ level }`; the
- * object form adds the accepted-snapshot `accept` allowlist (choice ids that are
- * intentionally ungated — silent, and excluded from the `'error'` gate).
- */
-export type GatingOption = GatingWarnLevel | { level?: GatingWarnLevel; accept?: Iterable<string>; entryName?: string }
-
-function resolveGatingLevel(opt: GatingOption | undefined): GatingWarnLevel {
-  const explicit = typeof opt === 'string' ? opt : opt?.level
-  if (explicit !== undefined) return explicit
-  const env = typeof process !== 'undefined' ? (process.env?.PARSEMAN_GATING as GatingWarnLevel | undefined) : undefined
-  if (env === 'off' || env === 'warn' || env === 'error') return env
-  return 'warn'
-}
-
-/**
- * Run the static gating diagnostic and surface it per the resolved level. Never
- * throws from the analysis itself (a diagnostic must not break a correct
- * compile) — only `'error'` deliberately throws on a real finding. The `accept`
- * allowlist (object form) suppresses BOTH the warning and the `'error'` gate for
- * the listed choice ids. Returns the report to attach (undefined when `'off'`).
- */
-function runGatingDiagnostic<T>(combinator: Combinator<T>, opt: GatingOption | undefined): GatingReport | undefined {
-  return reportGating(opt, o => analyzeGating(combinator as Combinator<unknown>, o))
-}
-
-/**
- * The rule-map form of the diagnostic. `compileRuleMap`/`compileLinkable` are the
- * ONLY paths a macro-built `rules()` grammar takes, so without this the whole
- * grammar was silently unanalyzed — every warning the build did print came from
- * the stray single-combinator `compile()` calls, unnamed and anti-pattern-free.
- */
-function runGatingDiagnosticRules(
-  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opt: GatingOption | undefined,
-): GatingReport | undefined {
-  return reportGating(opt, o => analyzeGatingRules(ruleMap, o))
-}
-
-/**
- * The FUSE-time form of the diagnostic — the only site where a shared shape's
- * `g.Foo` hole has an answer.
- *
- * A shape module (`rules(g => ({ Term: choice(sequence(g.Value, …), …) }))`) cannot
- * decide whether `Term` gates: `g.Value` is unbound there, so its first-set reads
- * `any`. `analyzeGatingRules` marks such a choice `deferred` rather than `ungated` —
- * warning about it would describe a configuration that never runs, and its author
- * has nothing to fix. This runs the SAME analysis over the fused winner map, where
- * `Value` is bound, and reports what the binding actually produced.
- *
- * Threading `gating` into the per-piece `compileLinkable` calls would NOT do this:
- * each piece is lowered alone, so the hole is still unbound and the shape's own false
- * positive is simply re-emitted. Resolution needs the MERGED map.
- *
- * Reports ONLY choices their authoring site deferred (the local, resolver-free pass
- * names them). That is what keeps an ordinary hole-free grammar from being warned
- * about twice — once by `compileRuleMap` and again by every `compose()` that fuses
- * it. Anti-patterns are structural and already reported at the authoring site, so
- * they are dropped here for the same reason.
- *
- * The rule maps arrive as a THUNK because producing them costs a re-hydration of the
- * carried IR: `gating: 'off'` must not pay for a diagnostic it will not print.
- */
-export function runFusedGatingDiagnostic(
-  getRuleMaps: () => ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
-  opt?: GatingOption,
-  /** Carried pieces that could NOT be re-lowered to combinators (opaque precompiled
-   *  artifacts). Threaded by BOTH engines — the runtime linker and the macro plugin —
-   *  so neither can report a clean fuse over a grammar it only partly saw. */
-  getOpaque?: () => ReadonlyArray<{ ns: string; ruleNames: string[] }>,
-): GatingReport | undefined {
-  if (resolveGatingLevel(opt) === 'off') return undefined
-  const ruleMaps = getRuleMaps()
-  const opaque = getOpaque?.() ?? []
-  const opaqueFindings: Unanalysable[] = opaque.map(o => ({
-    rule: o.ruleNames.length > 0 ? o.ruleNames.join(', ') : `<artifact ${o.ns}>`,
-    kind: 'opaque-artifact' as const,
-    reason: `precompiled artifact "${o.ns}" carries compiled rule functions, not re-lowerable IR — `
-      + 'its choices were not examined at this fuse.',
-  }))
-  // Only a SHARED SHAPE can have deferred a verdict, and only a deferred verdict is
-  // reportable here — so a fuse of hole-free grammars has nothing to say and is not
-  // walked at all. (This is also the no-double-reporting guarantee's fast path.)
-  // An opaque piece is the exception: there IS something to say, namely that part of
-  // this fuse was never seen. Silence there is the bug this guard used to cause.
-  if (!ruleMaps.some(map => hasExternalRuleRef(map))) {
-    if (opaqueFindings.length === 0) return undefined
-    return reportGating(opt, () => ({
-      totalChoices: 0, gated: 0, recoverable: 0, unanalysable: opaqueFindings,
-      ungated: [], accepted: [], deferred: [], acceptedUnused: [], choices: [], antiPatterns: [],
-    }))
-  }
-  // Override-winner order (later wins), matching the linker. An accessed-but-undefined
-  // `g.X` leaks into a `rules()` cache as an unresolved-lazy entry — that is a
-  // REFERENCE, not a definition, and must never shadow the artifact that defines X.
-  const winners = new Map<string, Combinator<unknown>>()
-  for (const map of ruleMaps) for (const [name, rule] of map) {
-    if (rule._def.tag === 'lazy') { try { rule._def.thunk() } catch { continue } }
-    winners.set(name, rule)
-  }
-  const entries = [...winners]
-  return reportGating(opt, o => {
-    const deferredHere = new Set(analyzeGatingRules(entries, o).deferred.map(c => c.id))
-    const fused = analyzeGatingRules(entries, { ...o, resolveRef: name => winners.get(name) })
-    return {
-      ...fused,
-      ungated: fused.ungated.filter(c => deferredHere.has(c.id)),
-      antiPatterns: [],
-      unanalysable: [...fused.unanalysable, ...opaqueFindings],
-    }
-  })
-}
-
-function reportGating(
-  opt: GatingOption | undefined,
-  analyze: (o: { accept?: Iterable<string>; entryName?: string } | undefined) => GatingReport,
-): GatingReport | undefined {
-  const level = resolveGatingLevel(opt)
-  if (level === 'off') return undefined
-  // `typeof null === 'object'` — guard so `gating: null` can't throw on `.accept`.
-  const obj = opt !== null && typeof opt === 'object' ? opt : undefined
-  const analyzeOpts = obj?.accept !== undefined || obj?.entryName !== undefined
-    ? { ...(obj.accept !== undefined ? { accept: obj.accept } : {}), ...(obj.entryName !== undefined ? { entryName: obj.entryName } : {}) }
-    : undefined
-  let report: GatingReport
-  try { report = analyze(analyzeOpts) }
-  catch (e) {
-    // NEVER `return undefined` here. This catch used to swallow the error, which made
-    // a CRASHED analysis look exactly like a clean grammar — the diagnostic ships
-    // default-on, so every consumer whose grammar it could not walk was told nothing
-    // and reasonably concluded there was nothing to tell. A failed analysis is now
-    // itself a finding: it warns, and it fails the `'error'` gate.
-    const reason = e instanceof Error ? `${e.name}: ${e.message}` : String(e)
-    const failed: GatingReport = {
-      totalChoices: 0, gated: 0, recoverable: 0,
-      unanalysable: [{ rule: '<whole grammar>', kind: 'not-a-combinator', reason: `gating analysis threw — ${reason}` }],
-      ungated: [], accepted: [], deferred: [], acceptedUnused: [], choices: [], antiPatterns: [],
-    }
-    const failLines = formatGatingWarnings(failed)
-    if (level === 'error') throw new Error(`parseman: gating analysis FAILED (no verdict available)\n${failLines.join('\n')}`)
-    for (const l of failLines) console.warn(l)
-    return failed
-  }
-  const lines = formatGatingWarnings(report)
-  if (lines.length > 0) {
-    if (level === 'error') throw new Error(`parseman: ${report.ungated.length} ungated hot choice(s) / ${report.antiPatterns.length} anti-pattern(s) / ${report.unanalysable.length} unanalysable rule(s)\n${lines.join('\n')}`)
-    for (const l of lines) console.warn(l)
-  }
-  return report
-}
-
-
-/**
  * The `duplication` compile option. A bare level is shorthand for `{ level }`; the
  * object form adds the `accept` allowlist (finding ids acknowledged as intentional)
  * and the ranking knobs.
@@ -4734,8 +4877,21 @@ function runDuplicationDiagnosticRules(
   return reportDuplication(opt, o => analyzeDuplicationRules(ruleMap, o))
 }
 
-export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption; trackLines?: boolean }): CompiledParser<T> {
-  const gatingReport = runGatingDiagnostic(combinator, opts?.gating)
+export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; duplication?: DuplicationOption; trackLines?: boolean; maxInline?: number }): CompiledParser<T> {
+  // Degradations found while compiling THIS grammar are drained as one aggregated block
+  // rather than printed one wall-of-text line at a time as they are discovered. A no-op
+  // inside a macro transform, whose own sink owns the module's findings.
+  const drain = beginCompileDegradationDrain()
+  let completed = false
+  try {
+    const compiled = compileImpl(combinator, mapFnSources, opts)
+    completed = true
+    return compiled
+  }
+  finally { drain(completed) }
+}
+
+function compileImpl<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; duplication?: DuplicationOption; trackLines?: boolean; maxInline?: number }): CompiledParser<T> {
   runDuplicationDiagnostic(combinator, opts?.duplication)
   markUnusedValues(combinator)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
@@ -4748,9 +4904,12 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const grammarScanSkip = (combinator._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip
   const grammarHostMode = (combinator._meta as { grammarHostMode?: HostMode }).grammarHostMode
   const grammarTrackLines = combinator._meta.grammarTrackLines
+  const _inlineMax = resolveInlineMax(opts?.maxInline)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
+    inlineMax: _inlineMax,
+    inlineLeft: _inlineMax,
     regexDecls: [],
     regexMap: new Map(),
     expectedDecls: [],
@@ -4800,12 +4959,14 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const namedPrelude = ctx.namedFnDecls.length > 0 ? [...namedFnPrelude(), ''] : []
   const emptyTlDecls = ctx.needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []
   const hostReadsDecls = ctx.needsHostReads ? [HOST_READS_DECL] : []
+  const rawEntryDecls = ctx.needsRawEntry ? [RAW_ENTRY_DECL] : []
   const lineTrackDecls = ctx.needsLineTrack ? [LINE_TRACK_DECL] : []
   const lineSpanDecls = ctx.needsLineSpan ? [LINE_SPAN_DECL] : []
 
   const source = [
     ...emptyTlDecls,
     ...hostReadsDecls,
+    ...rawEntryDecls,
     ...lineTrackDecls,
     ...lineSpanDecls,
     ...ctx.regexDecls,
@@ -4821,6 +4982,7 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
   const fn = new Function('input', '_pos', '_rp', '_mf', '_build', '_ctx', [
     ...emptyTlDecls,
     ...hostReadsDecls,
+    ...rawEntryDecls,
     ...lineTrackDecls,
     ...lineSpanDecls,
     ...ctx.regexDecls,
@@ -4896,7 +5058,6 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
     source,
     inlineExpression,
     ...(ctx.coverage === undefined ? {} : { coverageDefinitions: ctx.coverage.plan.definitions }),
-    ...(gatingReport === undefined ? {} : { gating: gatingReport }),
   }
 
   if (!ctx.lineTracking) {
@@ -5020,9 +5181,8 @@ function publicRuleWrapperSource(
 
 export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; gating?: GatingOption; duplication?: DuplicationOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; duplication?: DuplicationOption; maxInline?: number },
 ): { keys: string[]; replacement: string; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
-  runGatingDiagnosticRules(ruleMap, opts?.gating)
   runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Named lazy proxies already carry their stable rule identity and redirect
@@ -5051,9 +5211,12 @@ export function compileRuleMap(
     ?? ruleMap.map(([, r]) => (r._meta as { grammarHostMode?: HostMode }).grammarHostMode).find(Boolean)
   const grammarTrackLines = opts?.trackLines === true
     || ruleMap.some(([, r]) => r._meta.grammarTrackLines === true)
+  const _inlineMax = resolveInlineMax(opts?.maxInline)
   const ctx: Ctx = {
     vars: 0,
     indent: 1,
+    inlineMax: _inlineMax,
+    inlineLeft: _inlineMax,
     regexDecls: [],
     regexMap: new Map(),
     expectedDecls: [],
@@ -5130,6 +5293,7 @@ export function compileRuleMap(
   const hoistedDecls = [
     ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : '',
     ctx.needsHostReads ? `  ${HOST_READS_DECL}` : '',
+    ctx.needsRawEntry ? `  ${RAW_ENTRY_DECL}` : '',
     ctx.needsLineTrack ? `  ${LINE_TRACK_DECL}` : '',
     ctx.needsLineSpan ? `  ${LINE_SPAN_DECL}` : '',
     ...ctx.regexDecls.map(d => `  ${d}`),
@@ -5267,6 +5431,7 @@ export type LinkablePieces = {
   deps: Map<string, string[]>
   needsEmptyTl: boolean
   needsHostReads: boolean
+  needsRawEntry: boolean
   /** Compile-time host mode this piece was lowered for ('ast' when absent). */
   hostMode?: HostMode
   /** Set when a direct builder's positioned-CST branch was omitted. */
@@ -5291,17 +5456,10 @@ export type LinkablePieces = {
 export function compileLinkable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
-  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; gating?: GatingOption; duplication?: DuplicationOption },
+  opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; captureTerminals?: boolean; coverage?: GrammarCoveragePlan; duplication?: DuplicationOption; maxInline?: number },
 ): LinkablePieces | null {
   if (!ns) throw new Error('compileLinkable: ns must be a non-empty namespace')
-  // Opt-IN only. The authoring diagnostic belongs to the site that OWNS the rules
-  // (`compileRuleMap` / `compile`); compileLinkable re-lowers the SAME map for the
-  // carried/linkable form, so running it by default would double every warning.
-  // It is also the WRONG site for a shared shape: one piece at a time, the `g.Foo`
-  // holes are still unbound, so it can only repeat the shape's own non-verdict. The
-  // fused question is asked once over the merged map — `runFusedGatingDiagnostic`.
-  if (opts?.gating !== undefined) runGatingDiagnosticRules(ruleMapArg, opts.gating)
-  // Same opt-IN guard as gating, and for the same reason. Duplication defaults to
+  // Opt-IN only. Duplication defaults to
   // `'off'`, but the level ALSO resolves from `PARSEMAN_DUPLICATION` — so without
   // this guard, setting that env var printed every structural finding twice on the
   // macro path, which lowers the same map through `compileRuleMap`/`compile` and
@@ -5337,8 +5495,9 @@ export function compileLinkable(
     try { d.thunk(); return true } catch { return false }
   })
   const nodeMeta = new Map(ruleMap.map(([name, rule]) => [name, collectGrammarReflection([[name, rule]], { followLazy: false })]))
+  const _inlineMax = resolveInlineMax(opts?.maxInline)
   const ctx: Ctx = {
-    vars: 0, indent: 1, regexDecls: [], regexMap: new Map(),
+    vars: 0, indent: 1, inlineMax: _inlineMax, inlineLeft: _inlineMax, regexDecls: [], regexMap: new Map(),
     expectedDecls: [], expectedMap: new Map(), recordFail: true,
     mapFns: [], mapFnSrcs: [], buildFns: [], buildSrcs: [], runtimeParsers: [],
     namedParsers: new Map(), triviaCaptureNames: new Map(),
@@ -5432,6 +5591,8 @@ export function compileLinkable(
         try { resolved = def.thunk() } catch { return null }
       }
       const savedIndent = ctx.indent, savedFail = ctx.failLabel, savedRec = ctx.recordFail
+      const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
+      ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fn
       ctx.indent = 1; ctx.failLabel = '_pfail'; ctx.recordFail = true
       // A trivia rule must never carry the ambient trivia (it would recursively
       // skip trivia within itself). Mirrors compileRuleMap's guard.
@@ -5442,6 +5603,7 @@ export function compileLinkable(
       ctx.activeTrivia = savedTrivia
       ctx.activeScanSkip = savedScanSkip
       ctx.indent = savedIndent; ctx.failLabel = savedFail; ctx.recordFail = savedRec
+      ctx.inlineLeft = savedInlineLeft; ctx.currentFnName = savedFnName
       // Linkable entries run through their named rule body rather than the
       // public compileRuleMap wrapper. Instrument the named boundary itself so
       // a final compose winner remains observable even when its resolved body
@@ -5554,6 +5716,7 @@ export function compileLinkable(
     deps: ruleDependencies(ruleMap),
     needsEmptyTl: !!ctx.needsEmptyTl,
     needsHostReads: !!ctx.needsHostReads,
+    needsRawEntry: !!ctx.needsRawEntry,
     hostMode: ctx.hostMode ?? 'ast',
     hostBranchElided: !!ctx.hostBranchElided,
     hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
@@ -5668,15 +5831,17 @@ function buildInlineExpression(
 
   const emptyTlDecl = ctx.needsEmptyTl ? `  const _EMPTY_TL = Object.freeze([])` : ''
   const hostReadsDecl = ctx.needsHostReads ? `  ${HOST_READS_DECL}` : ''
+  const rawEntryDecl = ctx.needsRawEntry ? `  ${RAW_ENTRY_DECL}` : ''
   const lineTrackDecl = ctx.needsLineTrack ? `  ${LINE_TRACK_DECL}` : ''
   const lineSpanDecl = ctx.needsLineSpan ? `  ${LINE_SPAN_DECL}` : ''
-  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl || !!lineTrackDecl || !!lineSpanDecl
+  const needsWrapper = ctx.regexDecls.length > 0 || ctx.expectedDecls.length > 0 || ctx.namedFnDecls.length > 0 || !!mfDecl || !!buildDecl || !!emptyTlDecl || !!hostReadsDecl || !!rawEntryDecl || !!lineTrackDecl || !!lineSpanDecl
   if (!needsWrapper) return innerFn
 
   const namedPrelude = ctx.namedFnDecls.length > 0 ? namedFnPrelude() : []
   const hoistedDecls = [
     emptyTlDecl,
     hostReadsDecl,
+    rawEntryDecl,
     lineTrackDecl,
     lineSpanDecl,
     ...ctx.regexDecls.map(d => `  ${d}`),

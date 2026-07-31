@@ -15,7 +15,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
 import {
-  analyzeGating, choice, compile, keywords, literal, makeWord, many, not, oneOrMore,
+  analyzeGating, choice, compile, diagnoseGrammar, keywords, literal, makeWord, many, not, oneOrMore,
   oneOrMoreSep, optional, parse, peek, regex, rules, sepBy, sequence, word,
   type Combinator, type ParserDef,
 } from '../../src/index.ts'
@@ -373,10 +373,17 @@ describe('defect 3 — non-empty separated lists', () => {
 })
 
 // ───────────────────────────────────────────────────────────────────────────
-// Defect 4 — the gating diagnostic in the macro (rule-map) build
+// Defect 4 — the gating diagnostic over a rule-map grammar
+//
+// These used to assert that `compileRuleMap`/`compile` PRINTED the findings. They
+// no longer print anything: producing an artifact and reporting on it are separate
+// acts, and `diagnoseGrammar` is the second one. What the defect was really about —
+// that a rule-map grammar is analysed at all, and that findings NAME the owning rule
+// instead of `<entry>` — is unchanged and still asserted, now through that entry
+// point plus a pinned assertion that the compile path stays silent.
 // ───────────────────────────────────────────────────────────────────────────
 
-describe('defect 4 — the macro build reports rule names AND anti-patterns', () => {
+describe('defect 4 — the rule-map diagnostic reports rule names AND anti-patterns', () => {
   /** A rule map with one genuinely-ungated choice and one keyword-regex arm. */
   const grammar = () => rules(g => ({
     Value: choice(literal('a'), regex(/[\s\S]*/)),
@@ -391,18 +398,24 @@ describe('defect 4 — the macro build reports rule names AND anti-patterns', ()
     return seen
   }
 
-  it('compileRuleMap runs the diagnostic at all, and NAMES the owning rule', () => {
-    // Before: compileRuleMap never called the analysis, so a macro-built grammar
-    // produced ZERO warnings however many ungated choices it had.
-    const lines = warningsFrom(() => { compileRuleMap(Object.entries(grammar()), { gating: 'warn' }) })
-    const joined = lines.join('\n')
-    expect(joined).toContain('choice @ Value')
-    expect(joined).not.toContain('choice @ <entry>')
+  it('compileRuleMap prints NOTHING — compiling is not reporting', () => {
+    expect(warningsFrom(() => { compileRuleMap(Object.entries(grammar())) })).toEqual([])
   })
 
-  it('compileRuleMap reports ANTI-PATTERNS, named by rule', () => {
-    const joined = warningsFrom(() => { compileRuleMap(Object.entries(grammar()), { gating: 'warn' }) }).join('\n')
-    expect(joined).toContain('anti-pattern [keyword-regex] @ AtRule')
+  it('diagnoseGrammar analyses a rule-map grammar and NAMES the owning rule', () => {
+    // Before: the analysis was never run over a rule map at all, so a macro-built
+    // grammar produced ZERO findings however many ungated choices it had.
+    const d = diagnoseGrammar(grammar())
+    expect(d.ok).toBe(false)
+    expect(d.findings.map(f => f.id)).toContain('Value')
+    expect(d.findings.map(f => f.id)).not.toContain('<entry>')
+  })
+
+  it('diagnoseGrammar reports ANTI-PATTERNS, named by rule', () => {
+    const d = diagnoseGrammar(grammar())
+    const ap = d.findings.find(f => f.code === 'anti-pattern' && f.rule === 'AtRule')
+    expect(ap).toBeDefined()
+    expect(ap!.message).toContain('keyword-regex')
   })
 
   it('analyzeGatingRules attributes each choice to the rule that owns it', () => {
@@ -416,19 +429,18 @@ describe('defect 4 — the macro build reports rule names AND anti-patterns', ()
     expect(report.antiPatterns.map(a => a.rule)).toContain('Inner')
   })
 
-  it('a single-combinator compile is attributed to its BINDING name, not <entry>', () => {
-    // The macro plugin passes the const's own variable name — without it every
-    // top-level combinator const warns as `<entry>`, which names nothing and gives
-    // the `accept` allowlist no discriminating key.
+  it('a single-combinator diagnosis is attributed to its BINDING name, not <entry>', () => {
+    // `entryName` names the const the finding belongs to — without it every top-level
+    // combinator reports as `<entry>`, which names nothing and gives the `accept`
+    // allowlist no discriminating key.
     const g = choice(literal('a'), regex(/[\s\S]*/))
     expect(analyzeGating(g).choices[0]!.id).toBe('<entry>')
     expect(analyzeGating(g, { entryName: 'directMixinReferenceAhead' }).choices[0]!.id)
       .toBe('directMixinReferenceAhead')
 
-    const lines = warningsFrom(() => {
-      compile(g, undefined, { gating: { level: 'warn', entryName: 'directMixinReferenceAhead' } })
-    })
-    expect(lines.join('\n')).toContain('choice @ directMixinReferenceAhead')
+    expect(warningsFrom(() => { compile(g, undefined) })).toEqual([])
+    expect(diagnoseGrammar(g, { entryName: 'directMixinReferenceAhead' }).findings[0]!.id)
+      .toBe('directMixinReferenceAhead')
   })
 
   it('the named id is a usable accept key (which `<entry>` was not)', () => {
@@ -530,15 +542,15 @@ export const g = rules(g => ({
     expect(bothEngines(List, 'a,b')).toMatchObject({ ok: true, end: 3, value: 3 })
   })
 
-  it('compileLinkable runs the gating diagnostic only when asked', () => {
+  it('compileLinkable never reports — and the same map still diagnoses', () => {
     const map: Array<[string, Combinator<unknown>]> = [['Value', choice(literal('a'), regex(/[\s\S]*/))]]
     const seen: string[] = []
     const spy = vi.spyOn(console, 'warn').mockImplementation((m: unknown) => { seen.push(String(m)) })
     try {
-      compileLinkable(map, 'ns1')                      // opt-in only — silent
-      expect(seen).toHaveLength(0)
-      compileLinkable(map, 'ns2', { gating: 'warn' })
-      expect(seen.join('\n')).toContain('choice @ Value')
+      compileLinkable(map, 'ns1')
+      compileLinkable(map, 'ns2')
+      expect(seen).toEqual([])
     } finally { spy.mockRestore() }
+    expect(diagnoseGrammar(map).findings.map(f => f.id)).toContain('Value')
   })
 })

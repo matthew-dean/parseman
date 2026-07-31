@@ -18,7 +18,7 @@
  * strict CSP; a build-time variant that emits fused source instead is a later
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
-import { compileLinkable, firstSetCond, runFusedGatingDiagnostic, HOST_READS_DECL } from './codegen.ts'
+import { compileLinkable, firstSetCond, HOST_READS_DECL, RAW_ENTRY_DECL } from './codegen.ts'
 import { FUSED_HOST_MODE, FUSED_HOST_ELIDED } from '../cst/host-mode.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import type { LinkablePieces, FirstSetRecipe, HostMode } from './codegen.ts'
@@ -278,6 +278,7 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
   const contributingPieces = [...contributing]
   const needsEmptyTl = contributingPieces.some(p => p.needsEmptyTl)
   const needsHostReads = contributingPieces.some(p => p.needsHostReads)
+  const needsRawEntry = contributingPieces.some(p => p.needsRawEntry)
 
   const lines: string[] = [
     // Shared sentinel protocol (must match NAMED_FN_FAIL / NAMED_FN_END in codegen).
@@ -285,6 +286,7 @@ export function fusedBody(pieces: LinkablePieces[]): { body: string; env: Record
     'let _pfEnd',
     ...(needsEmptyTl ? ['const _EMPTY_TL = Object.freeze([])'] : []),
     ...(needsHostReads ? [HOST_READS_DECL] : []),
+    ...(needsRawEntry ? [RAW_ENTRY_DECL] : []),
     // Each contributing artifact's namespaced private prelude (regexes, _pf, …).
     ...new Set(contributingPieces.flatMap(p => p.prelude)),
     // The winning `_r_<Name>` function for each rule (one per name → no redeclare).
@@ -532,7 +534,7 @@ export function once<T>(fn: () => T): () => T {
 }
 
 /** The re-lowerable carried pieces' rule maps, in compose order — the input to the
- * fuse-time gating diagnostic. An opaque precompiled artifact contributes no
+ * gating analysis (`diagnoseGrammar`). An opaque precompiled artifact contributes no
  * combinator graph, so it is skipped: a hole it would have bound stays unresolved
  * and its choice stays deferred, never falsely warned.
  *
@@ -743,18 +745,6 @@ export function compose(
   // trivia for the now-fuse, but STORE the un-materialized carried list so a later
   // compose can re-lower it under a different trivia (multi-level composing-wins).
   const carried = items.flatMap(item => itemCarried(item, used, trivia, opts?.hostMode))
-  // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
-  // only site that can answer whether the choices it leads actually gate.
-  // ONE hydration, shared by both thunks. Re-lowering carried IR runs `evalRuleMapIR`
-  // and `new Function` per piece, and the diagnostic is default-on, so calling
-  // `carriedRuleMapsDetailed` once per thunk did that work twice on every compose.
-  // Still lazy: nothing is hydrated when the gating level is 'off'.
-  const detailed = once(() => carriedRuleMapsDetailed(carried))
-  runFusedGatingDiagnostic(
-    () => detailed().maps,
-    undefined,
-    () => detailed().opaque,
-  )
   const pieces = carried.map(p => materializePiece(p, trivia, false, opts?.hostMode))
   const map = fuseRules(pieces)
   Object.defineProperty(map, COMPOSED_PIECES, { value: carried, enumerable: false })

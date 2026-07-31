@@ -78,7 +78,7 @@ const leafValues = (t: unknown): string[] => {
  */
 function bothEngines(entry: Combinator<unknown>, input: string): unknown {
   const interpreted = run(entry, input, { build: cstBuildHost, trivia: ws })
-  const compiled = compile(entry, undefined, { gating: 'off' })
+  const compiled = compile(entry, undefined)
   const ctx = { trackLines: false, build: cstBuildHost }
   const emitted = compiled.parseWithContext(input, ctx, 0)
 

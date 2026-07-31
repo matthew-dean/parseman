@@ -66,11 +66,11 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'sepBy':     return [def.parser, def.separator]
     case 'skip':      return [def.main, def.skipped]
     case 'scanTo':    return [def.sentinel, ...def.skip]
+    case 'routed':    return def.fallback ? [def.fallback] : []
     case 'lazy':
     case 'literal':
     case 'regex':
     case 'keywords':
-    case 'routed':
     case 'guard':
     case 'recover':
     case 'unknown':   return []
@@ -160,7 +160,7 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     ;(l._def as { fnSrc?: string }).fnSrc = src
     return l as Comb
   }
-  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[]): Comb => {
+  const _nd = (type: string, child: Comb, src: string, opts?: unknown, staticError?: readonly string[], sigSrc?: string): Comb => {
     if (staticError !== undefined && staticError.length > 0) {
       throw new Error(`IR direct node builder for ${type} must be macro-static and self-contained; unsupported binding(s): ${staticError.join(', ')}`)
     }
@@ -173,6 +173,10 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
     const n = node(type, child as never, (() => { throw new Error('IR node build requires static re-lowering') }) as never, opts as never)
     ;(n._def as { buildSrc?: string; buildStaticError?: readonly string[] }).buildSrc = src
     if (staticError !== undefined) (n._def as { buildStaticError?: readonly string[] }).buildStaticError = staticError
+    // Analysis-only resolved reducer signature (see `buildAnalysisSrc`). Without it a
+    // re-lowered composed artifact silently re-acquires the fail-open capture cost the
+    // authoring module had already resolved away.
+    if (sigSrc !== undefined) (n._def as { buildSigSrc?: string }).buildSigSrc = sigSrc
     return n as Comb
   }
   // `_gch` rebuilds a GATED choice AND restores its `_def.gateSrcs` (parallel to the
@@ -440,7 +444,7 @@ class Serializer {
       case 'sepBy':     return `sepBy(${kid(def.parser)}, ${kid(def.separator)}${repeatOpts(def.min, def.max, def.trailing)})`
       case 'not':       return `not(${kid(def.parser)})`
       case 'peek':     return `peek(${kid(def.parser)})`
-      case 'routed':   return 'routed()'
+      case 'routed':   return def.fallback === undefined ? 'routed()' : `routed(${kid(def.fallback)})`
       case 'trivia':    return `trivia(${kid(def.parser)})`
       case 'token':     return `token(${kid(def.parser)})`
       case 'leaf': {
@@ -470,6 +474,9 @@ class Serializer {
           ...(projectEntry === undefined ? [] : [projectEntry]),
           ...(def.captureTrivia ? ['captureTrivia: true'] : []),
           ...(def.trailingTrivia ? ['trailingTrivia: true'] : []),
+          // Declared or resolved arity. Carried so a re-lowered composed artifact does
+          // not silently re-acquire the fail-open capture cost this module resolved away.
+          ...(def.buildArity === undefined ? [] : [`buildArity: ${def.buildArity}`]),
           ...(tagEntry === undefined ? [] : [tagEntry]),
         ]
         const opts = optEntries.length > 0 ? `, { ${optEntries.join(', ')} }` : ''
@@ -479,10 +486,16 @@ class Serializer {
           return opts ? `node(${kid(def.parser)}, undefined${opts})` : `node(${kid(def.parser)})`
         }
         if (def.buildSrc !== undefined) {
-          const staticError = def.buildStaticError === undefined
-            ? ''
-            : `${opts ? '' : ', undefined'}, ${JSON.stringify(def.buildStaticError)}`
-          return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts}${staticError})`
+          // Trailing optionals, emitted only when present so an artifact that carries
+          // neither is byte-identical to what previous versions produced.
+          const tail: string[] = []
+          if (def.buildStaticError !== undefined || def.buildSigSrc !== undefined) {
+            if (!opts) tail.push('undefined')
+            tail.push(def.buildStaticError === undefined ? 'undefined' : JSON.stringify(def.buildStaticError))
+          }
+          if (def.buildSigSrc !== undefined) tail.push(JSON.stringify(def.buildSigSrc))
+          const trailing = tail.length > 0 ? `, ${tail.join(', ')}` : ''
+          return `_nd(${JSON.stringify(def.type)}, ${kid(def.parser)}, ${JSON.stringify(def.buildSrc)}${opts}${trailing})`
         }
         return opts ? `node(${JSON.stringify(def.type)}, ${kid(def.parser)}, undefined${opts})` : `node(${JSON.stringify(def.type)}, ${kid(def.parser)})`
       }

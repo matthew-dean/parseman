@@ -18,6 +18,7 @@ import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
 import * as parseman from '../index.ts'
 import { directBuilderUnsupportedBindings } from './direct-builder-static.ts'
+import type { ReducerResolver } from './reducer-resolver.ts'
 
 /**
  * Emit an AST subtree's source with TypeScript-only syntax removed. A gate source
@@ -79,6 +80,28 @@ function stripTsFromSource(node: Node, code: string): string {
     cur = e
   }
   return out + code.slice(cur, end)
+}
+
+// ---------------------------------------------------------------------------
+// Reducer resolution
+//
+// `buildSrc` is the source text of the EXPRESSION at the `node(...)` call site, so a
+// reducer passed as a bare identifier — `node('Foo', p, { build: foldOperation })` —
+// arrives as the string `"foldOperation"`. That matches no parameter list, so
+// `confirmedBuildArity` returned `null` and every capture tier stayed on: the runtime
+// cost of a rule depended on how its reducer was SPELLED.
+//
+// `reducer-resolver.ts` does the real work — lexical scope analysis over this module,
+// plus cross-module import following — and this is where its answer is attached. The
+// resolved arity lands on `_def.buildArity` and the resolved source on
+// `_def.buildSigSrc`; both are ANALYSIS-ONLY and never emitted, so the generated builder
+// reference is byte-identical either way.
+// ---------------------------------------------------------------------------
+let _reducers: ReducerResolver | null = null
+
+/** Install (or clear, with `null`) the resolver for the module being transformed. */
+export function setReducerResolver(r: ReducerResolver | null): void {
+  _reducers = r
 }
 
 // ---------------------------------------------------------------------------
@@ -427,9 +450,12 @@ function staticNodeOptionsFromValue(value: unknown): parseman.NodeOptions<readon
     } else if (name === 'tags') {
       if (!Array.isArray(v) || !v.every(item => typeof item === 'string')) return STATIC_NODE_OPTIONS_FAILED
       opts.tags = v
+    } else if (name === 'buildArity') {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 6) return STATIC_NODE_OPTIONS_FAILED
+      opts.buildArity = v
     }
   }
-  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined || opts.buildArity !== undefined ? opts : undefined
 }
 
 function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
@@ -458,9 +484,13 @@ function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
       const tags = staticStringArray(p.value, scope)
       if (tags === undefined) return STATIC_NODE_OPTIONS_FAILED
       opts.tags = tags
+    } else if (name === 'buildArity') {
+      const arity = staticLiteralValue(p.value)
+      if (typeof arity !== 'number' || !Number.isInteger(arity) || arity < 0 || arity > 6) return STATIC_NODE_OPTIONS_FAILED
+      opts.buildArity = arity
     }
   }
-  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined ? opts : undefined
+  return opts.unwrap || opts.collapse || opts.project !== undefined || opts.captureTrivia || opts.trailingTrivia || opts.tags !== undefined || opts.buildArity !== undefined ? opts : undefined
 }
 
 /**
@@ -583,6 +613,26 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
         : parseman.node(inner, hasBuild ? () => null : undefined, opts as parseman.NodeOptions | undefined)
       if (combi._def.tag === 'node' && buildSrc !== undefined) {
         combi._def.buildSrc = buildSrc
+        // The type argument's IDENTIFIER, when it was written as one. A `node(type, …)`
+        // inside a factory resolves `type` to a string here, which loses the fact that
+        // the reducer's `mk(type, …)` names the SAME binding — and losing it is what
+        // made every factory-built node miss the inline-`mk` path.
+        if (explicitType !== undefined && firstArg.type === 'Identifier') {
+          combi._def.typeSrc = (firstArg as unknown as { name: string }).name
+        }
+        // A NAMED reducer (`foldOperation`, `helpers.fold`, an import): resolve it so the
+        // capture-tier analysis reads the REAL parameter list instead of failing open.
+        // `null` means the expression was an inline function, which is self-describing.
+        const resolved = _reducers?.resolve(buildSrc, be!.start, code)
+        if (resolved) {
+          if (resolved.src !== null) combi._def.buildSigSrc = resolved.src
+          // An author-declared `node(..., { buildArity })` is authority 1 in
+          // `confirmedArityForDef`; the resolver is authority 2. Both land in the SAME
+          // field, so writing unconditionally here demoted the declaration to whatever
+          // scope analysis happened to find.
+          if (combi._def.buildArity === undefined && resolved.arity !== null) combi._def.buildArity = resolved.arity
+          if (resolved.reason !== undefined) combi._def.buildArityUnresolved = resolved.reason
+        }
         const staticError = directBuilderUnsupportedBindings(buildSrc)
         if (staticError.length > 0) combi._def.buildStaticError = staticError
       }

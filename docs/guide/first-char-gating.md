@@ -15,23 +15,43 @@ large: on real Parséman grammars, fixing the single arm that breaks a hot choic
 dispatch is worth 25–48% of total parse time. None of that requires profiling to find —
 the compiler can tell statically which choices don't gate, and why.
 
-So Parséman tells you at build time.
+So Parséman will tell you — **when you ask**.
 
-## The default-on build warning
+## Ask for it: `diagnoseGrammar()`
 
-`compile()` runs the [static gating diagnostic](../reference/api#analyzegating-entry-gatingreport)
-by **default** and warns for every genuinely-ungated choice — with the offending arm, the
-cause, and the fix inline:
+```ts
+// [verify]
+import { choice, literal, regex, diagnoseGrammar, formatGrammarDiagnosis } from 'parseman'
+
+const grammar = { value: choice(literal('a'), regex(/[\s\S]*/)) }
+const d = diagnoseGrammar(grammar)
+
+d.ok
+// → false
+d.findings[0].code
+// → 'ungated-choice'
+d.findings[0].id
+// → 'value'
+formatGrammarDiagnosis(d)[0]
+// → 'parseman: grammar NOT OK — 1 blocking finding(s) over 1 examined choice(s).'
+```
+
+`diagnoseGrammar` takes **any** grammar shape — a bare combinator, an array of
+`[name, combinator]` entries, a `rules()` map, or a `compose()` result — and returns a
+plain, JSON-serializable [`GrammarDiagnosis`](../reference/api#diagnosegrammar-grammar-opts-grammardiagnosis).
+`formatGrammarDiagnosis(d)` renders it for a human, with the offending arm, the cause,
+and the fix inline:
 
 ```text
-parseman gating: choice @ value is UNGATED [firstMatch] — no first-char dispatch;
-  every position speculatively enters doomed arms.
-  · arm[7] first-set ANY (cross-artifact-ref): via ref g.anyValue → broad recognizer (regex)
-    fix: parseman >=0.32.0 resolves a g.Foo ref first-set at fuse time; if still ANY the
+parseman: grammar NOT OK — 1 blocking finding(s) over 1 examined choice(s).
+✗ [ungated-choice] value: choice is UNGATED [firstMatch] — no first-char dispatch;
+    every position speculatively enters doomed arms
+    arm[7] first-set ANY (cross-artifact-ref): via ref g.anyValue → broad recognizer (regex)
+    fix: parseman resolves a g.Foo ref first-set at fuse time; if still ANY the
          target rule is itself ungated — analyze it and give it a concrete non-nullable lead.
-  · arm[0] ∩ arm[1] overlap on '+','-'-'.','0'-'9'
+    arm[0] ∩ arm[1] overlap on '+','-'-'.','0'-'9'
     fix: arms share a first char — left-factor. …
-  (intentional? accept it in the gating snapshot: { accept: ['value'] }.)
+    intentional? add to the gating snapshot: { accept: ['value'] }
 ```
 
 It is **precise, not spammy**: it fires only on choices that genuinely can't dispatch —
@@ -39,16 +59,22 @@ never on a `recoverable` choice (one that looks ungated at construction because 
 are `ref()`s, but whose deep/fuse-resolved first-sets are actually disjoint, so the
 compiled code still guards each arm).
 
-Configure it with the `gating` option (or the `PARSEMAN_GATING` env var):
+### Why this is not a compile-time warning
 
-```ts
-compile(grammar)                        // default: 'warn'
-compile(grammar, undefined, { gating: 'off' })    // silence entirely
-compile(grammar, undefined, { gating: 'error' })  // fail the build (CI)
-const report = compile(grammar).gating  // programmatic GatingReport for snapshots
-```
+It used to be. `compile()` ran the analysis by default and printed it through
+`console.warn`, so importing one example grammar emitted **51 lines** of advice before a
+single byte was parsed. The advice was correct and nobody read it: it arrived unasked, in
+the middle of an unrelated build log, on a build that had not gone wrong.
 
-`analyzeGating(entry)` gives you the same `GatingReport` without compiling.
+Since **0.45.0** the two acts are separate. `compile()`, `compileRuleMap()`, `compose()`
+and the macro transform produce an artifact and say **nothing** — there is no `gating`
+compile option, no `PARSEMAN_GATING` env var, and no `CompiledParser.gating` field.
+Diagnosing is `diagnoseGrammar()`, and you run it where a diagnosis belongs: a test, a
+lint script, a CI job.
+
+(This does **not** apply to the `[parseman] degraded` channel, which stays default-on —
+see [Degradation diagnostics](./degradation-diagnostics). A degradation is not advice:
+it is parseman reporting that it could not do what you asked for.)
 
 ## What poisons a first-set
 
@@ -67,10 +93,10 @@ arm's first-set to `any` (or make two arms overlap) and break that proof:
 | **cross-artifact `g.Foo` ref → `any`** | a composed rule's first-set couldn't resolve across the artifact boundary | the ref is resolved at fuse time; if it is still `any`, the target rule is itself ungated — fix it there. In a [shared shape](#shared-shapes-the-verdict-belongs-to-the-fuse) the ref is a HOLE, and the finding is reported against the artifact that binds it |
 | **shared prefix** — two arms starting with the same terminal | first-sets overlap, so no unique dispatch key | left-factor: parseman auto-detects `sharedPrefix` for bare sequences — make the arms bare sequences with the common leading terminal |
 
-## Common mistakes (and what the build warning tells you)
+## Common mistakes (and what the diagnosis tells you)
 
 These are the exact mistakes real authors — humans and LLMs — make. The point of the
-default-on warning is that you don't have to remember them; the build tells you.
+diagnostic is that you don't have to remember them; one call names them.
 
 1. **Using `regex(/keyword/)` for a keyword.**
    ```ts
@@ -104,17 +130,18 @@ default-on warning is that you don't have to remember them; the build tells you.
 Not every choice is hot. A top-level statement dispatcher with a broad error-recovery arm
 *should* fall through arm by arm. Rather than a per-node marker, there is **one**
 suppression mechanism: list the choice's stable `id` in the gating snapshot's `accept`
-allowlist. The `id` is printed in the warning (`choice @ <id>`) — for `statement` here it
-is `statement` (or `statement#0`, `statement#1`, … when a rule holds several choices).
+allowlist. The `id` is the finding's `id` — for `statement` here it is `statement` (or
+`statement#0`, `statement#1`, … when a rule holds several choices), and
+`diagnosis.acceptSnapshot` hands you the whole list ready to paste.
 
 ```ts
 const ACCEPTED = ['statement', 'value#1']   // ideally kept with a reason per entry
-compile(grammar, undefined, { gating: { level: 'error', accept: ACCEPTED } })
+const d = diagnoseGrammar(grammar, { accept: ACCEPTED })
 ```
 
-An accepted choice is silent AND excluded from the `'error'` gate; any ungated choice NOT
-in `accept` still warns and fails. `report.acceptedUnused` lists ids that no longer match
-an ungated choice, so a stale allowlist entry is easy to prune. **Prefer fixing the
+An accepted choice is excluded from `ok`; any ungated choice NOT in `accept` still blocks.
+Stale entries come back as advisory `stale-accept` findings (and in
+`d.gating.acceptedUnused`), so a stale allowlist is easy to prune. **Prefer fixing the
 gating** (a concrete leading terminal, `word()`/`keywords()`, reordering a leading `not`)
 over accepting it; the allowlist is for the genuinely-unavoidable cases (recovery
 fallbacks), not the default.
@@ -136,29 +163,24 @@ Does `Term` gate? **The shape cannot know.** `g.Value` has no body here, so its 
 reads `any` — and whether the arms collide depends entirely on what a consumer binds. The
 shape module is never executed as a parser, and its author has nothing to fix.
 
-So the diagnostic does not warn there. Such a choice is `deferred`: silent, excluded from
-the `'error'` gate, and visible programmatically as `report.deferred`. The question is
-re-asked at each `compose()` / `composeLeaf()`, over the **fused** rule map, where the hole
-is bound:
+So the shape has no finding to give. Such a choice is `deferred`: excluded from `ok`,
+counted in `d.summary.deferred`, and visible programmatically as `d.gating.deferred`. Ask
+the question again of the **fused** grammar, where the hole is bound:
 
 ```ts
-compose([shape, rules(_g => ({ Value: regex(/[0-9]+/) }))])    // ✅ '0'-'9' vs '@' — gates, silent
-compose([shape, rules(_g => ({ Value: regex(/@[0-9]+/) }))])   // ⚠️ choice @ Term is UNGATED
-//                                                                    · arm[0] ∩ arm[1] overlap on '@'
+diagnoseGrammar(compose([shape, rules(_g => ({ Value: regex(/[0-9]+/) }))]))    // ✅ '0'-'9' vs '@' — gates
+diagnoseGrammar(compose([shape, rules(_g => ({ Value: regex(/@[0-9]+/) }))]))   // ✗ Term is UNGATED
+//                                                                      arm[0] ∩ arm[1] overlap on '@'
 ```
 
-The warning lands on the build that can act on it, and names the real cause — a concrete
-overlap on `'@'`, not "unresolved ref `g.Value`". Fix it where you'd expect: bind a
-narrower `Value`, or left-factor the shape's arms.
-
-Only DEFERRED choices are reported at the fuse. An ordinary hole-free grammar is analyzed
-once, where it is authored, however many times it is later composed.
+The finding lands on the artifact that can act on it, and names the real cause — a
+concrete overlap on `'@'`, not "unresolved ref `g.Value`". Fix it where you'd expect: bind
+a narrower `Value`, or left-factor the shape's arms.
 
 ### Asking a composed grammar directly
 
-The fuse-time warning above is a build-time side channel. To ask the same question
-programmatically, use `analyzeGrammarGating()` — it accepts a `rules()` map **or** a
-`compose()` result:
+`diagnoseGrammar` handles a `compose()` result for you. The lower-level
+`analyzeGrammarGating()` does the same and returns the raw `GatingReport`:
 
 ```ts
 import { analyzeGrammarGating } from 'parseman'
@@ -182,25 +204,30 @@ non-empty when part of the grammar could not be examined — for instance a cont
 piece that is an opaque precompiled artifact — and an empty `ungated` then means "nothing
 was looked at", not "nothing is wrong".
 
-## CI: budget the ungated set with the allowlist
+## CI: one call, one exit code
 
-`analyzeGating(entry)` returns a structured `GatingReport`. Keep an `accept` allowlist of
-the choice ids you've reviewed and gate on it, so a refactor that silently ungates a NEW
-hot choice fails the build:
+`d.ok` is the whole contract — it is false when there is any **blocking** finding, and an
+analysis that could not run counts as blocking. Keep an `accept` allowlist of the choice
+ids you've reviewed, so a refactor that ungates a NEW hot choice fails the build:
 
 ```ts
-import { analyzeGating } from 'parseman'
+// scripts/check-gating.ts
+import { diagnoseGrammar, formatGrammarDiagnosis } from 'parseman'
+import { grammar } from '../src/grammar.ts'
+
 const ACCEPTED = ['statement', 'value#1']    // reviewed, intentional (keep a reason each)
-const report = analyzeGating(grammarEntry, { accept: ACCEPTED })
-expect(report.ungated.map(c => c.id)).toEqual([])   // fails when a NEW choice ungates
-expect(report.acceptedUnused).toEqual([])           // fails when an allowlist entry goes stale
+const d = diagnoseGrammar(grammar, { accept: ACCEPTED })
+if (!d.ok) {
+  console.error(formatGrammarDiagnosis(d).join('\n'))
+  process.exit(1)
+}
 ```
 
-(Use `analyzeGating()` for the snapshot — `compile(g, undefined, { gating: 'off' })`
-leaves `CompiledParser.gating` **undefined**, so reading `.gating` there would throw.)
-
-Or compile with `{ gating: { level: 'error', accept: ACCEPTED } }` to fail the build on any
-ungated choice that isn't in the allowlist.
+It **fails closed**: `ok` is false when part of the grammar could not be examined (an
+opaque precompiled contributing artifact, a value that is not a combinator, an analysis
+that threw), so an empty `ungated` can never be mistaken for "nothing is wrong". Write
+`JSON.stringify(d.findings)` to a committed file if you want a diffable snapshot — the
+findings are sorted, so two runs over the same grammar are byte-identical.
 
 ## Why this is implicit in Parséman (the Chevrotain contrast)
 
@@ -212,9 +239,10 @@ dispatch — the cliff is impossible to hit — but you also can't do scannerles
 Parséman is scannerless: dispatch is *implicit in first-sets*, computed from the
 combinators themselves. That's more flexible — no lexer, tokens can overlap, a rule can
 mean different things in different positions — but it hides the cliff, because a choice
-that doesn't dispatch is still correct. The default-on gating diagnostic buys back
-Chevrotain's "you can't forget to dispatch" guarantee **without** the lexer: the compiler
-tells you which choices dispatch and, for the ones that don't, exactly which arm to fix.
+that doesn't dispatch is still correct. `diagnoseGrammar()` buys back Chevrotain's "you
+can't forget to dispatch" guarantee **without** the lexer: the compiler already knows
+which choices dispatch and, for the ones that don't, exactly which arm to fix — wire the
+call into CI and forgetting becomes a failed build rather than a silent tax.
 
 ## See also
 

@@ -1,4 +1,5 @@
 import type { Combinator, ParserDef } from '../types.ts'
+import { recordDegradation } from './degradation.ts'
 
 export type GrammarCoverageDefinition = { id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }
 export type GrammarCoveragePlan = {
@@ -36,7 +37,24 @@ function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>)
     case 'scanTo': return [def.sentinel, ...def.skip]
     case 'lazy': {
       let resolved: Combinator<unknown>
-      try { resolved = def.thunk() } catch { return [] }
+      try { resolved = def.thunk() } catch (e) {
+        // An unresolvable `ref()` / cross-artifact hole truncates the walk, so every
+        // definition beneath it is missing from the plan. That SHRINKS the coverage
+        // denominator, which pushes the reported ratio UP — a blind spot that reads as
+        // better coverage. `analyzeGatingRules` routes the same situation into
+        // `unanalysable`; the coverage walk has no such field, so it reports here.
+        recordDegradation({
+          code: 'coverage-definitions-unavailable',
+          severity: 'warn',
+          where: '<lazy rule reference>',
+          subject: `unresolvable reference (${(e as Error).message})`,
+          fellBackTo: 'the coverage walk stopped at this reference, so every definition below '
+            + 'it is ABSENT from the denominator — which raises the reported ratio rather than '
+            + 'lowering it',
+          otherwise: 'the referenced rule and its whole subtree would contribute definitions',
+        })
+        return []
+      }
       const name = (resolved as Combinator<unknown> & { _ruleName?: string })._ruleName
       return name && winners?.[name] ? [winners[name]!] : [resolved]
     }

@@ -306,7 +306,7 @@ function andList(rule: Combinator<unknown>): Combinator<unknown> {
 }
 
 function compileRule(rule: Combinator<unknown>): CompiledFn {
-  const compiled = compile(rule, undefined, { gating: 'off' })
+  const compiled = compile(rule, undefined)
   return input => compiled.parse(input, 0)
 }
 

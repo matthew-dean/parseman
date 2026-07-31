@@ -1,12 +1,11 @@
 import type { Combinator, FieldMap, ParserDef } from '../types.ts'
-import { confirmedBuildArity } from './build-arity.ts'
+import { confirmedArityForDef } from './build-arity.ts'
 
 type NodeDef = Extract<ParserDef, { tag: 'node' }>
 
 export function buildReadsFields(def: NodeDef): boolean {
   if (!def.build) return true
-  const src = def.buildSrc ?? def.build.toString()
-  const arity = confirmedBuildArity(src)
+  const arity = confirmedArityForDef(def)
   if (arity === null) return true
   return arity >= 2
 }

@@ -222,6 +222,24 @@ first combinator, which is the right shape for tail-only continuations. This
 keeps lexical routing, fallback behavior, and CST/AST ownership in the grammar
 expression.
 
+Pass a fallback — `routed(fallback)` — when the SAME production is reachable both
+through the dispatch and on its own. Inside a selected branch it reuses the routed
+token as above; anywhere else (outside a dispatch, or at a position other than the
+selector's) it parses `fallback` in place. Without it a grammar has to spell the
+shape twice — once with its own lead and once with `routed()` — as two productions
+differing by one element, with the same reducer:
+
+```ts
+// one production, used from a dispatch branch AND standalone
+const AtRuleStatement = node('AtRuleStatement',
+  sequence(routed(atRuleName), prelude, literal(';')),
+  children => ({ type: 'AtRuleStatement', name: children[0].value }),
+)
+```
+
+`routed()` in a dispatch **selector** stays an error with or without a fallback: the
+selector is what produces the routed token, so reading it there is misuse.
+
 Coverage and trace treat each `when(...)`, matcher, and `otherwise(...)` arm as
 its own dispatch arm. Excluded arms are not attempted or backtracked in the
 trace; the selected route emits attempt/selected/success, or attempt/failure if
@@ -791,35 +809,57 @@ also exported for rendering a model or a single `SpecNode`.
 Prove a grammar refactor did not move the output. Imported from the `parseman/oracle`
 subpath; Node-only. See [The identity oracle](../guide/identity-oracle).
 
-### `digestCorpus(surfaces, corpus, options?)`
+### `digestInto(target, value, prefix?, options?)` · `digestValue(value, prefix?, options?)`
 
-Run every surface (`{ name, parse }`) over every corpus entry (`{ id, source }`) and return an
-`IdentityReport`: a per-surface `aggregate` hash, a `threw` count, and a `perEntry` fingerprint
-map. Thrown errors and returned failures are hashed alongside successes. Options: `projectError`
-(shape a thrown value before hashing — use it when messages carry absolute paths or timestamps)
-and `determinismSample` (how many entries to re-parse to prove the grammar is deterministic;
-`0` disables). Throws on a nondeterministic surface, a duplicate surface name, or a duplicate
-corpus id.
+Deterministic serialization of **one** parse result — the part only parseman can supply,
+because it is parseman's node shapes that decide which distinctions are semantically
+meaningful.
 
-### `compareReports(before, after)`
+`digestInto` streams the canonical token projection at a caller-supplied hash. The caller
+brings the algorithm and keeps the result:
 
-Compare two reports. Verdict is `identical` (output-neutral), `moved` (not a refactor), or
-`incomparable` — the last when the reports came from different harness versions, which is
-never reported as a pass. Also returns per-surface `moved` entry ids and any corpus entries
-gained or lost. `formatComparison(comparison, opts?)` renders it for a log.
+```ts
+const sha = createHash('sha256')
+digestInto(sha, tree)
+const digest = sha.digest('hex')
+```
 
-### `loadCorpus(options)`
+Nothing is accumulated, so there is no maximum-string-length ceiling and no tree size at
+which the digest stops being takeable. `digestValue` is the sha256-hex convenience wrapper.
 
-Walk `roots` under `base` collecting files matching `extensions`, returning entries whose ids
-are POSIX paths **relative to `base`**. Throws on a root that does not resolve unless
-`allowMissingRoots` is set, in which case they come back in `missingRoots`. `maxBytes` skips
-oversized files into `skippedLarge`.
+`prefix` is written ahead of the first token with no separator, for callers that need two
+disjoint digest spaces — write `OK:` for a parse that succeeded and `ERR:` for one that
+threw, so a surface returning exactly your projected error shape cannot hash the same as one
+that threw it.
 
-### `canonicalize(value)` · `HARNESS_DIGEST`
+`options.maxVisits` bounds the walk, raising `CanonicalBudgetError` past the limit — see
+`DEFAULT_MAX_VISITS`. A walk that finishes under budget produces byte-identical output, so
+the budget can never move a recorded digest.
 
-`canonicalize` is the key-sorted, cycle-safe token projection the digests are taken over —
-diff two of them to see *what* moved. `HARNESS_DIGEST` is the harness's own behavioural
-fingerprint, stamped into every report.
+### `canonicalize(value, options?)`
+
+The key-sorted, cycle-safe token projection the digests are taken over — diff two of them to
+see *what* moved. It **materialises** the projection, so it is bounded by the maximum JS
+string length; it is a debugging aid, and `digestInto` is what a gate should run on.
+`sha256(prefix + canonicalize(v))` and `digestValue(v, prefix)` are the same number for every
+value the former can survive.
+
+### What is NOT here
+
+Walking a corpus, folding per-entry digests into an aggregate, three-way verdicts and report
+formatting — once `loadCorpus`, `digestCorpus`, `compareReports` and `formatComparison` —
+are a consumer's regression-suite plumbing, not something that helps anyone build or diagnose
+a grammar, so they live with the suite that needs them. jess's is
+`packages/syntax/less/less-parser/test/identity-oracle/` and is a reasonable model to copy.
+Keep the `OK:`/`ERR:` prefixes, and keep "the grammar rejected this input" and "the digest
+could not be computed" on separate channels: the second is a fact about the tool, and
+reporting it as the first is how a gate lies.
+
+> **Sharing is exponential.** The projection writes a shared subtree once per *path* that
+> reaches it, deliberately (see "Sharing is not a cycle"), so a node referenced from two
+> places at each of `d` levels is written `2^d` times. Streaming removes the memory ceiling
+> but not that work. If your trees share structure, dedupe it before digesting — or expect
+> `CanonicalBudgetError` to tell you so by name.
 
 ## Composing grammars
 
@@ -908,6 +948,48 @@ Alias of `gate(predicate)` (documented just above). Prefer `gate()`.
 
 Run `combinator` with `extra` merged into `ctx.state`, restored on exit.
 
+### `diagnoseGrammar(grammar, opts?)` → `GrammarDiagnosis`
+
+**The** grammar diagnostic. `compile()`, `compileRuleMap()`, `compose()` and the macro
+transform report NOTHING — producing an artifact and reporting on it are separate acts —
+so this is where you ask.
+
+`grammar` may be a combinator, an array of `[name, combinator]` entries, a `rules()` map,
+or a `compose()` result; it works out which it got. `opts.accept` is the snapshot
+allowlist described under `analyzeGating`, and `opts.entryName` names an unnamed entry.
+
+Returns a plain, JSON-serializable object:
+
+| Field | Meaning |
+| --- | --- |
+| `schema` | `'parseman.diagnosis/1'` — versioned so a committed snapshot can be migrated. |
+| `ok` | `false` iff any finding is `blocking`. The whole CI contract. |
+| `summary` | Counts: `totalChoices`, `gated`, `recoverable`, `ungated`, `accepted`, `deferred`, `antiPatterns`, `unanalysable`, `degraded`, `staleAccepts`. |
+| `findings` | Sorted by (severity, code, id) — deterministic across runs, so the JSON is diffable. |
+| `acceptSnapshot` | Every blocking choice id, sorted; paste into `{ accept: [...] }`. |
+| `gating` | The full underlying `GatingReport`. |
+| `degradations` | Degradations recorded while this analysis ran (see [Degradation diagnostics](../guide/degradation-diagnostics)). |
+
+Each finding is `{ id, code, severity, rule, message, details, acceptKey? }`, where `code`
+is one of `ungated-choice`, `anti-pattern`, `unanalysable`, `degraded`, `stale-accept`
+and `severity` is `blocking` or `advisory`.
+
+**It fails closed.** An analysis that could not run is not a pass: `unanalysable` findings
+are blocking, and an analysis that THROWS is reported as a blocking finding rather than as
+an empty, clean-looking report (`diagnoseGrammar` itself never throws). An empty
+`findings` list therefore cannot be produced by a walk that saw nothing.
+
+```ts
+const d = diagnoseGrammar(grammar, { accept: ACCEPTED })
+if (!d.ok) { console.error(formatGrammarDiagnosis(d).join('\n')); process.exit(1) }
+```
+
+### `formatGrammarDiagnosis(diagnosis)` → `string[]`
+
+Human rendering of a `GrammarDiagnosis` — a view over the structured object, never the
+primary product. A PARTIAL walk is announced on the second line, before any finding, so
+"no findings" over a grammar that was never examined cannot read as a clean bill of health.
+
 ### `analyzeGating(entry, opts?)` → `GatingReport`
 
 Static first-char gating diagnostic over a combinator tree. For every reachable `choice`
@@ -917,23 +999,22 @@ and cause for ungated ones, and API anti-patterns (`not(not(...))`, keyword `reg
 move to `report.accepted` (their UNGATED-gating finding is suppressed — anti-pattern lints on
 the same choice still fire), the rest stay in `report.ungated` (warned + gate-failing), and
 `report.acceptedUnused` flags stale entries. This allowlist is the SINGLE per-choice suppression
-mechanism for gating findings (there is no `cold()` marker). `compile()` runs the diagnostic by
-default and warns on genuinely-ungated hot choices; see
-[First-char gating](../guide/first-char-gating). `formatGatingWarnings(report)` renders the
-findings as printable lines.
+mechanism for gating findings (there is no `cold()` marker). This is the lower-level surface
+`diagnoseGrammar` is built on; see [First-char gating](../guide/first-char-gating).
+`formatGatingWarnings(report)` renders the findings as printable lines.
 
 `report.deferred` holds choices whose verdict is not this artifact's to make: every `any`
 arm is an unresolved NAMED cross-artifact hole (`g.Value` in a
-[shared shape](../guide/extending#shared-shapes-one-shape-many-bindings)). They are silent and do not fail the
-`'error'` gate — the question is re-asked, with the hole bound, when the shape is
-`compose()`d. See
+[shared shape](../guide/extending#shared-shapes-one-shape-many-bindings)). They are not
+findings and do not fail `ok` — ask again, with the hole bound, of the `compose()`d
+grammar. See
 [Shared shapes and the fuse](../guide/first-char-gating#shared-shapes-the-verdict-belongs-to-the-fuse).
 
 `report.unanalysable` lists rules the walk could NOT introspect. **A non-empty
 `unanalysable` means the report is PARTIAL**: `ungated` being empty does not then mean
-the grammar is clean. `formatGatingWarnings` always emits a banner for it, and the
-`'error'` gate fails on it. Treating "no findings" as a pass without checking this field
-is the mistake the field exists to prevent.
+the grammar is clean. `formatGatingWarnings` always emits a banner for it, and
+`diagnoseGrammar` turns every entry into a BLOCKING finding. Treating "no findings" as a
+pass without checking this field is the mistake the field exists to prevent.
 
 ### `analyzeGrammarGating(grammar, opts?)` → `GatingReport`
 
@@ -946,8 +1027,8 @@ graph from the composition's carried IR first, then analyzes the override-winner
 with cross-artifact holes bound — so a choice that is `deferred` when you analyze the
 contributing `rules()` map alone resolves here to a real `yes` / `recoverable` / `no`.
 
-Use it when you want a composed grammar's gating verdict programmatically. (`compose()`
-already runs the fuse-time diagnostic and warns; this is the API for asking directly.)
+Use it when you want the raw `GatingReport` for a composed grammar. `diagnoseGrammar`
+routes here for you and wraps the result in a gateable diagnosis.
 
 A contributing piece that is an opaque precompiled artifact — one carrying compiled rule
 functions rather than re-lowerable IR — cannot be introspected. Its rules are reported

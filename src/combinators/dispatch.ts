@@ -189,17 +189,41 @@ export function otherwise<T>(parser: Combinator<T>): DispatchOtherwise<T> {
   return { kind: 'otherwise', parser, usesRouted: parserUsesRouted(parser as Combinator<unknown>) }
 }
 
-export function routed<T = string>(): Combinator<T> {
+/**
+ * Reuse the token the enclosing `dispatch()` already consumed to select this branch,
+ * instead of re-recognizing it.
+ *
+ * With no argument this is dispatch-only: outside a dispatch branch (or at a position
+ * other than the selector's) it fails with `expected: ['routed()']`.
+ *
+ * `routed(fallback)` makes the SAME production usable in both contexts: inside a
+ * dispatch branch it reuses the routed token; anywhere else it parses `fallback` in
+ * place. That is what collapses a `Routed<X>` twin production into its original —
+ * `sequence(routed(Name), Prelude, ';')` replaces the pair
+ * `sequence(Name, Prelude, ';')` / `sequence(routed(), Prelude, ';')`, which
+ * otherwise differ by exactly one element and duplicate a whole production (and a
+ * whole compiled emission) for a one-token difference.
+ *
+ * A `routed()` in a dispatch SELECTOR is still an error with or without a fallback:
+ * the selector is what produces the routed token, so reading it there is misuse.
+ */
+export function routed<T = string>(fallback?: Combinator<T>): Combinator<T> {
   return {
     _tag: 'routed',
-    _meta: { firstSet: { kind: 'any' }, canMatchNewline: false, isTrivia: false },
-    _def: { tag: 'routed' },
+    _meta: {
+      // The routed token is whatever the selector matched, so the first set stays
+      // `any` even with a fallback — `any` already subsumes the fallback's.
+      firstSet: { kind: 'any' },
+      canMatchNewline: fallback?._meta.canMatchNewline ?? false,
+      isTrivia: false,
+    },
+    _def: fallback === undefined
+      ? { tag: 'routed' }
+      : { tag: 'routed', fallback: fallback as Combinator<unknown> },
     parse(_input: string, pos: number, ctx: ParseContext): ParseResult<T> {
       const item = ctx._routed
-      if (item === undefined) {
-        return { ok: false, expected: ['routed()'], span: { start: pos, end: pos } }
-      }
-      if (pos !== item.span.start) {
+      if (item === undefined || pos !== item.span.start) {
+        if (fallback !== undefined) return fallback.parse(_input, pos, ctx)
         return { ok: false, expected: ['routed()'], span: { start: pos, end: pos } }
       }
       if (cstCaptureActive(ctx)) {

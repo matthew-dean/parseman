@@ -1,10 +1,17 @@
 /**
- * Static first-char gating diagnostic (src/analysis/gating.ts) + its default-on
- * wiring into compile().
+ * Static first-char gating diagnostic (src/analysis/gating.ts) and its SEPARATION
+ * from compile().
+ *
+ * The wiring assertions below used to say the opposite: that `compile()` runs the
+ * analysis by default and prints it. It did, and that was the bug — importing one
+ * example grammar emitted 51 `console.warn` lines of advice nobody asked for, before
+ * a byte was parsed. Producing an artifact and reporting on it are two different acts;
+ * `diagnoseGrammar()` is the second one. These tests now PIN the silence, so the
+ * advice cannot drift back into the compile path unnoticed.
  */
 import { describe, it, expect, vi } from 'vitest'
 import {
-  analyzeGating, formatGatingWarnings, compile,
+  analyzeGating, formatGatingWarnings, compile, diagnoseGrammar,
   choice, sequence, literal, regex, not, rules, dispatch, when, otherwise,
   startsWith,
 } from '../../src/index.ts'
@@ -149,56 +156,46 @@ describe('analyzeGating — real css example', () => {
   })
 })
 
-describe('compile() gating integration', () => {
+describe('compile() is silent — the diagnostic is a separate, deliberate call', () => {
   const broad = choice(literal('a'), regex(/[\s\S]*/))
 
-  it('{ gating: "off" } attaches no report and never warns', () => {
+  it('compiling a genuinely-ungated grammar warns about NOTHING', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const p = compile(broad, undefined, { gating: 'off' })
-    expect(p.gating).toBeUndefined()
+    compile(broad, undefined)
     expect(warn).not.toHaveBeenCalled()
     warn.mockRestore()
   })
 
-  it('{ gating: "warn" } attaches the report and warns via console.warn', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const p = compile(broad, undefined, { gating: 'warn' })
-    expect(p.gating).toBeDefined()
-    expect(p.gating!.ungated.length).toBeGreaterThanOrEqual(1)
-    expect(warn).toHaveBeenCalled()
-    warn.mockRestore()
+  it('compiling a genuinely-ungated grammar never throws, at any env level', () => {
+    const prev = process.env.PARSEMAN_GATING
+    process.env.PARSEMAN_GATING = 'error'   // the var no longer exists; nothing may read it
+    try { expect(() => compile(broad, undefined)).not.toThrow() }
+    finally { process.env.PARSEMAN_GATING = prev }
   })
 
-  it('{ gating: "error" } throws on a genuinely-ungated choice', () => {
-    expect(() => compile(broad, undefined, { gating: 'error' })).toThrow(/ungated/i)
+  it('the compiled artifact carries no diagnostic payload', () => {
+    expect('gating' in compile(broad, undefined)).toBe(false)
   })
 
-  it('a gated grammar never warns even at error level', () => {
-    const clean = choice(literal('a'), literal('b'))
-    expect(() => compile(clean, undefined, { gating: 'error' })).not.toThrow()
+  it('diagnoseGrammar finds exactly what compile() used to print', () => {
+    const d = diagnoseGrammar(broad)
+    expect(d.ok).toBe(false)
+    expect(d.summary.ungated).toBeGreaterThanOrEqual(1)
+    expect(d.findings.some(f => f.code === 'ungated-choice')).toBe(true)
   })
 
-  it('the accept allowlist suppresses BOTH the warn and the error gate', () => {
+  it('the accept allowlist clears the gate, and reports the snapshot key that would', () => {
     const id = analyzeGating(broad).choices[0]!.id
-    // error level does NOT throw when the ungated choice is accepted
-    expect(() => compile(broad, undefined, { gating: { level: 'error', accept: [id] } })).not.toThrow()
-    // warn level stays silent and the report shows it accepted
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const p = compile(broad, undefined, { gating: { level: 'warn', accept: [id] } })
-    expect(warn).not.toHaveBeenCalled()
-    expect(p.gating!.ungated).toHaveLength(0)
-    expect(p.gating!.accepted).toHaveLength(1)
-    warn.mockRestore()
+    expect(diagnoseGrammar(broad).acceptSnapshot).toContain(id)
+    const accepted = diagnoseGrammar(broad, { accept: [id] })
+    expect(accepted.ok).toBe(true)
+    expect(accepted.summary.ungated).toBe(0)
+    expect(accepted.summary.accepted).toBe(1)
   })
 
-  it('gating: null does not throw (typeof null === "object" defensive guard)', () => {
-    const opts = { gating: null } as unknown as Parameters<typeof compile>[2]
-    expect(() => compile(choice(literal('a'), literal('b')), undefined, opts)).not.toThrow()
-  })
-
-  it('does not change compiled output (byte-identical to gating:off)', () => {
-    const withReport = compile(choice(literal('a'), literal('b')), undefined, { gating: 'warn' })
-    const withoutReport = compile(choice(literal('a'), literal('b')), undefined, { gating: 'off' })
-    expect(withReport.source).toBe(withoutReport.source)
+  it('a gated grammar diagnoses clean', () => {
+    const d = diagnoseGrammar(choice(literal('a'), literal('b')))
+    expect(d.ok).toBe(true)
+    expect(d.findings).toHaveLength(0)
   })
 })

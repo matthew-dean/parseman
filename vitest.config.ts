@@ -3,12 +3,13 @@ import { defineConfig, configDefaults, coverageConfigDefaults } from 'vitest/con
 export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
-    // The static gating diagnostic is DEFAULT-ON for real consumers (compile()
-    // warns on genuinely-ungated hot choices). The repo's own suite compiles
-    // hundreds of grammars — many deliberately ungated for coverage — so silence
-    // the default warning here; tests that exercise the diagnostic opt in
-    // explicitly via `compile(g, undefined, { gating: 'warn' })` / `analyzeGating()`.
-    env: { PARSEMAN_GATING: 'off' },
+    // The gating diagnostic no longer needs silencing: nothing in the compile path
+    // runs it. It is a deliberate call (`diagnoseGrammar`), so a test that wants it
+    // makes that call and a test that does not is unaffected — which is the point.
+    // The degradation diagnostic IS still default-on for real consumers. This suite
+    // compiles hundreds of deliberately-degenerate grammars, so silence it here; the
+    // tests that exercise it set `PARSEMAN_DEGRADATION` explicitly.
+    env: { PARSEMAN_DEGRADATION: 'off' },
     // Heavy benchmark suite (full grammar sweep + 3-pass CSS ratio guard) —
     // slow by design, and already covered on relevant commits by the
     // pre-commit hook (`pnpm perf:guard`). Run explicitly via `pnpm test:perf`.

@@ -23,10 +23,15 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, runFusedGatingDiagnostic, beginLoweringCapture, endLoweringCapture } from '../compiler/codegen.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
+import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
+import { createReducerResolver } from './reducer-resolver.ts'
+import {
+  beginDegradationCapture, endDegradationCapture, formatDegradation, formatDegradations,
+  resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
+} from '../compiler/degradation.ts'
 import type { HostMode, LinkablePieces } from '../compiler/codegen.ts'
-import { emitFusedSource, materializePiece, pickPieces, once } from '../compiler/linker.ts'
+import { emitFusedSource, materializePiece, pickPieces } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -421,6 +426,24 @@ function lowerPrivateSourceModule(
   }
 }
 
+/**
+ * Transform one module, ALWAYS releasing the process-global capture state.
+ *
+ * `beginDegradationCapture()`, `beginLoweringCapture()` and `setReducerResolver()` set
+ * module-level globals that the body's straight-line path released at the end. The body
+ * also THROWS — `composeLeaf() must macro-fuse` at the `compileComposeLeafCall` site is
+ * one of several — and every one of those throws jumped over the release.
+ *
+ * The consequence was process-wide and silent: one failed macro transform left the
+ * degradation sink OPEN forever, so every later `recordDegradation` — including from an
+ * unrelated runtime `compile()` in the same process — was filed into an orphaned Map that
+ * nobody would ever drain, and printed nothing. Measured: 0 `console.warn` calls after an
+ * aborted capture, 1 finding stranded in the orphan.
+ *
+ * So the release lives in a `finally`, and whatever the failed frame had collected is
+ * printed rather than dropped — a degradation that was real before the abort is still
+ * real after it.
+ */
 export function transformMacro(
   code: string,
   id: string,
@@ -428,6 +451,27 @@ export function transformMacro(
   warnUnloweredRegex = false,
   recovery = false,
   grammarCoverage = false,
+): TransformMacroResult | null {
+  const depth = degradationCaptureDepth()
+  try {
+    return transformMacroImpl(code, id, moduleAliases, warnUnloweredRegex, recovery, grammarCoverage)
+  } finally {
+    setReducerResolver(null)
+    // Both are idempotent: on the success path the body already released them and these
+    // are no-ops. On an aborted transform they are what stops the leak.
+    endLoweringCapture()
+    endInlineCapCapture()
+    for (const d of unwindDegradationCapture(depth)) console.warn(formatDegradation(d))
+  }
+}
+
+function transformMacroImpl(
+  code: string,
+  id: string,
+  moduleAliases: Set<string>,
+  warnUnloweredRegex: boolean,
+  recovery: boolean,
+  grammarCoverage: boolean,
 ): TransformMacroResult | null {
   let result: ReturnType<typeof parseSync>
   try {
@@ -549,6 +593,22 @@ export function transformMacro(
     }
   }
 
+  /*
+   * Reducer resolution, for `node(..., build)` where `build` is a NAME rather than an
+   * inline function.
+   *
+   * `buildSrc` is the call site's EXPRESSION text, so a named reducer arrives as just the
+   * name — no parameter list — and the capture-tier analysis used to fail open and charge
+   * the node all five facilities. Sharing reducers across a grammar and importing them
+   * from another module is ordinary grammar authoring, so the resolver does the analysis
+   * (lexical scope tree, cross-module import following) rather than reporting that it
+   * won't. See `reducer-resolver.ts` for what it decides and what genuinely declines.
+   *
+   * Everything it produces — `_def.buildArity`, `_def.buildSigSrc` — is ANALYSIS-ONLY and
+   * never emitted, so the generated builder reference is unchanged either way.
+   */
+  setReducerResolver(createReducerResolver(id, body as unknown[], code))
+
   const topLevelFunction = (moduleBody: AnyNode[], name: string): AnyNode | null => {
     for (const st of moduleBody) {
       const decl = st.type === 'ExportNamedDeclaration'
@@ -653,6 +713,10 @@ export function transformMacro(
   const replacements: Array<{ start: number; end: number; replacement: string }> = []
   const warnings: string[] = []
   beginLoweringCapture()
+  beginInlineCapCapture()
+  // Collect degradations instead of printing them, so they arrive on the SAME channel
+  // as every other macro warning (the bundler's `this.warn`) with a `file:line` anchor.
+  beginDegradationCapture()
   let anyUnresolved = false
   // A declaration whose emitted value still CALLS a macro import, without anything
   // having failed: a shared shape keeps its `rules(…)` source (the interpreter map is
@@ -922,7 +986,7 @@ export function transformMacro(
       // mode, so a future missing field is a MISSING FIELD rather than a silent 'ast'.
       + `hostMode: ${JSON.stringify(p.hostMode ?? 'ast')}, `
       + `hostBranchElided: ${p.hostBranchElided === true}, `
-      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
+      + `needsEmptyTl: ${p.needsEmptyTl}, needsHostReads: ${p.needsHostReads}, needsRawEntry: ${p.needsRawEntry}, hasDirectBuilders: ${p.hasDirectBuilders === true}, isRecognitionOnly: ${p.isRecognitionOnly === true}, mfFns: [], buildFns: [] }`
   }
   /** Serialize a pieces LIST — one entry for a `rules()` grammar, the flattened
    * list for a `compose()` result. */
@@ -999,9 +1063,29 @@ export function transformMacro(
   const withCoverageDefinitions = (grammarExpr: string, definitions: readonly { id: string; kind: string }[]): string =>
     !grammarCoverage ? grammarExpr
       : `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.grammarCoverageDefinitions'), { value: Object.freeze(${JSON.stringify(definitions)}.map(Object.freeze)), enumerable: false })`
-  const emittedCoverageDefinitions = (source: string): Array<{ id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }> => {
+  /**
+   * Recover the coverage DENOMINATOR by scraping the IDs out of the generated hooks.
+   *
+   * This is a fallback: it reads emitted source with a regex, so it silently returns `[]`
+   * if the emitted hook shape ever changes or the hooks are absent. An empty denominator
+   * is NOT zero coverage — it is NO MEASUREMENT — and it used to travel all the way to a
+   * consumer's gate as 100%. `'coverage-definitions-unavailable'` is the declared code for
+   * exactly this and had no record site anywhere; this is it.
+   */
+  const emittedCoverageDefinitions = (source: string, where: string): Array<{ id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }> => {
     const ids = new Set<string>()
     for (const match of source.matchAll(/id:\s*"([^"]+)"/g)) ids.add(match[1]!)
+    if (grammarCoverage && ids.size === 0) {
+      recordDegradation({
+        code: 'coverage-definitions-unavailable',
+        severity: 'warn',
+        where,
+        subject: 'generated coverage hooks',
+        fellBackTo: 'no coverage definitions could be read out of the generated source, so the '
+          + 'grammar carries an EMPTY definition set — which is no measurement, not full coverage',
+        otherwise: 'the emitted hook IDs would form the coverage denominator',
+      })
+    }
     return [...ids].sort().map(id => ({
       id,
       kind: id.startsWith('rule:') ? 'rule' : id.startsWith('label:') ? 'label' : id.startsWith('dispatch:') ? 'dispatch-arm' : 'choice-arm',
@@ -1112,38 +1196,6 @@ export function transformMacro(
       }
     }
     return out
-  }
-
-  /** The carried list's re-lowerable rule maps, in compose order — the input to the
-   * fuse-time gating diagnostic. Opaque baked pieces have no combinator graph and are
-   * skipped: a hole one of them would bind stays unresolved, so its choice stays
-   * DEFERRED (silent) instead of being warned about on a guess. */
-  /** The carried list's re-lowerable rule maps PLUS the opaque pieces skipped along the
-   * way. The macro engine keeps its
-   * own carried-item representation, so it needs its own detailed variant — but it
-   * must report the SAME opaque findings the runtime linker does, or the two engines
-   * disagree about how much of a fuse was actually analysed. `parity` test:
-   * test/unit/gating-composed-grammar.test.ts. */
-  const carriedRuleMapsDetailed = (
-    items: CarriedItem[],
-  ): { maps: Array<Array<[string, Combinator<unknown>]>>; opaque: Array<{ ns: string; ruleNames: string[] }> } => {
-    const maps: Array<Array<[string, Combinator<unknown>]>> = []
-    const opaque: Array<{ ns: string; ruleNames: string[] }> = []
-    const add = (it: CarriedItem): void => {
-      if (isIR(it)) { maps.push(evalRuleMapIR(it.ir)); return }
-      // `ruleFns` is a Map — see the note on the runtime linker's twin. `Object.keys`
-      // on it silently yields [], anonymising every opaque piece.
-      const o = it as { ns?: string; ruleFns?: Map<string, string> }
-      opaque.push({
-        ns: o.ns ?? '<unknown>',
-        ruleNames: o.ruleFns instanceof Map ? [...o.ruleFns.keys()] : [],
-      })
-    }
-    for (const it of items) {
-      if (isSpread(it)) for (const p of importedPieces(it.__spreadLocal) ?? []) add(p as CarriedItem)
-      else add(it)
-    }
-    return { maps, opaque }
   }
 
   /** Materialize the exact combinator identities that will be lowered for a
@@ -1264,7 +1316,7 @@ export function transformMacro(
     }
     // Inline `rules(g => …)` or `rules({ trivia }, g => …)` (options-first). The
     // element's OWN trivia option is ignored for lowering — composing-wins means the
-    // composing grammar's trivia (computed once, in compileComposeCall) governs every
+    // composing grammar's trivia (computed in compileComposeCall) governs every
     // fused rule, this element's included. It only matters as a CANDIDATE for the
     // composing trivia itself, which composingTrivia() reads directly off the AST.
     if (isRulesCall(arg)) {
@@ -1389,15 +1441,6 @@ export function transformMacro(
       carried.push(...r.carried)
       importedFactories.push(...(r.importedFactories ?? []))
     }
-    // Fuse time is where a shared shape's `g.Foo` hole is finally bound, so it is the
-    // only site that can answer whether the choices it leads actually gate.
-    // ONE hydration shared by both thunks — see `once` in the linker.
-    const detailed = once(() => carriedRuleMapsDetailed(carried))
-    runFusedGatingDiagnostic(
-      () => detailed().maps,
-      undefined,
-      () => detailed().opaque,
-    )
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
     const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
@@ -1473,12 +1516,6 @@ export function transformMacro(
       const localNs = nsFor(`composeLeaf${init.start}`)
       // The local leaf map is the LAST (winning) contributor, and is usually the one
       // that binds the imported shapes' holes — so it must be part of the fused view.
-      const detailedLeaf = once(() => carriedRuleMapsDetailed(carried))
-      runFusedGatingDiagnostic(
-        () => [...detailedLeaf().maps, [...localRules] as Array<[string, Combinator<unknown>]>],
-        undefined,
-        () => detailedLeaf().opaque,
-      )
       const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
       if (!plainLocalPiece) {
         warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
@@ -1498,7 +1535,7 @@ export function transformMacro(
       }
       const replacement = withLeafMarker(emitFusedSource(grammarCoverage ? recognitionPieces : [...recognitionPieces, plainLocalPiece]))
       return {
-        replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)),
+        replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} composeLeaf()`)),
         ...(importedFactories.length ? { importedFactories } : {}),
       }
     } catch (e) {
@@ -1610,7 +1647,7 @@ export function transformMacro(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage, gating: { entryName: varName } })
+            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage })
             if (compiled.inlineExpression === null) {
               warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
               continue
@@ -1676,7 +1713,7 @@ export function transformMacro(
           // plain map.
           let replacement = withCoverageDefinitions(
             source,
-            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source),
+            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source, `${id} rules()`),
           )
           // Only a genuinely lowered map is stamped. The SHARED-SHAPE fallback above keeps
           // its `rules(…)` source, and that value is built by the interpreter at runtime —
@@ -1716,7 +1753,7 @@ export function transformMacro(
           const replacement = exportPrefix
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
-          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement)) })
+          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} compose()`)) })
           markUsedImportedFactories(fused.importedFactories)
           continue
         }
@@ -1776,10 +1813,7 @@ export function transformMacro(
 
         // Sources are carried on each transform's def (set by the evaluator), so
         // codegen derives them in traversal order — no positional array needed.
-        // `entryName`: attribute the gating diagnostic to the BINDING's own name.
-        // Without it every top-level combinator const warns as `choice @ <entry>`,
-        // which names nothing and gives the `accept` allowlist no discriminating key.
-        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage, gating: { entryName: varName } })
+        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage })
         if (compiled.inlineExpression === null) {
           warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
           continue
@@ -1967,11 +2001,30 @@ export function transformMacro(
     )
   }
 
+  // The inline-expansion cap CHANGED what was emitted. Surface it as returned data on
+  // the module's warning channel (not a console print during compile), so a build that
+  // wants to know can see it and a build that does not is unaffected.
+  for (const line of formatInlineCapSites(endInlineCapCapture(), resolveInlineMax())) warnings.push(`${id}: ${line}`)
   const unlowered = endLoweringCapture()
   if (warnUnloweredRegex) {
     for (const src of unlowered) {
       warnings.push(`${id}: regex ${src} did not lower to a fast charCodeAt scan (RegExp.exec fallback)`)
     }
+  }
+
+  setReducerResolver(null)
+  // Every place the compiler chose a correct-but-slower path for this module. Reported
+  // on the ordinary warning channel and greppable on `[parseman] degraded`, so a
+  // consumer's build gate can assert zero of them the way jess's `check:macro` already
+  // asserts zero `"falling back to runtime"` lines. `PARSEMAN_DEGRADATION=error` turns
+  // the assertion on here instead of in the consumer.
+  const degradations = endDegradationCapture()
+  if (degradations.length > 0) {
+    const lines = formatDegradations(degradations)
+    if (resolveDegradationLevel() === 'error') {
+      throw new Error(`parseman: ${degradations.length} degraded compilation path(s) in ${id}\n${lines.join('\n')}`)
+    }
+    for (const l of lines) warnings.push(`${id}: ${l}`)
   }
 
   return {

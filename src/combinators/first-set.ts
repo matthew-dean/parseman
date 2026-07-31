@@ -94,7 +94,8 @@ export function matchesEmpty(
   switch (d.tag) {
     case 'literal':   return d.value.length === 0
     case 'keywords':  return false
-    case 'routed':    return false
+    // The routed token itself is the selector's match, never empty; a fallback can be.
+    case 'routed':    return d.fallback === undefined ? false : me(d.fallback)
     case 'regex':
       // Precise: does the pattern admit a zero-length match? (`a*`, `a?`, `a|`, …)
       try { const m = new RegExp(d.source).exec(''); return m != null && m[0] === '' }

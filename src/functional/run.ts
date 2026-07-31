@@ -141,6 +141,70 @@ export type RunResult = {
   profile?: RunProfile
 }
 
+/**
+ * 0.44 dropped three `RunResult` fields — `triviaMap` and `triviaLog`, both
+ * MANDATORY in 0.43, and the optional `triviaKindLabels`. Removing them without
+ * a signal makes each read `undefined`, and `undefined` travels: it surfaces as
+ * a property access on nothing somewhere inside the CONSUMER's code, in a
+ * message naming neither parseman, the field, nor the replacement. That is the
+ * same defect as a diagnostic that reports a number when it means "I could not
+ * run" — the tool's inability wearing the costume of a result.
+ *
+ * `triviaKindLabels` is the worst of the three despite being optional: it fed
+ * `triviaKindMask`, which treats `undefined` as "capture everything", so its
+ * removal silently changes behaviour rather than producing so much as a crash.
+ *
+ * So the names are kept as accessors that throw the migration. They are
+ * NON-ENUMERABLE deliberately: absent from `Object.keys`, spreads,
+ * `JSON.stringify` and identity digests, so restoring them moves no output and
+ * costs nothing on the parse path — they exist only to answer a read.
+ */
+const SELECT_EXAMPLE = "run(entry, input, { rootTrivia: { select: ['blockComment', 'lineComment'] } })"
+
+const REMOVED_RUN_RESULT_FIELDS: ReadonlyArray<readonly [string, string]> = [
+  [
+    'triviaMap',
+    'It was a dense root-trivia index built on every parse; root trivia is now an OPT-IN sparse '
+    + 'capture, because most grammars paid for an index they never read. Migration: name the trivia '
+    + `labels your grammar defines — ${SELECT_EXAMPLE} — and read \`RunResult.rootTrivia\`, whose `
+    + '`.index` carries the labels and gap lookups `triviaMap` exposed.',
+  ],
+  [
+    'triviaLog',
+    'It was the flat `start, end[, kindIndex]` log every other trivia view was derived from, and it '
+    + 'is no longer allocated at all — not empty, absent. Migration: request the labels you need '
+    + `— ${SELECT_EXAMPLE} — and read \`RunResult.rootTrivia.rows\`. Do NOT reuse a stride-2/3 reader: `
+    + 'rows are a different width and a different unit (one row per SELECTED marker, not one per '
+    + 'trivia chunk), so an old loop reads confidently wrong offsets rather than failing.',
+  ],
+  [
+    'triviaKindLabels',
+    'It was already optional, so nothing ever flagged its disappearance — and `triviaKindMask(undefined, '
+    + '…)` means "capture everything", so reading it now silently WIDENS capture instead of erroring. '
+    + `Migration: request labels — ${SELECT_EXAMPLE} — then the set you asked for is `
+    + '`RunResult.rootTrivia.select` and the resolved table is `RunResult.rootTrivia.index.labels`.',
+  ],
+]
+
+/**
+ * `rootTrivia` is ABSENT rather than empty when no requested category was
+ * retained, so branch on it — do not index into it.
+ */
+function guardRemovedFields(result: RunResult): RunResult {
+  for (const [name, detail] of REMOVED_RUN_RESULT_FIELDS) {
+    Object.defineProperty(result, name, {
+      configurable: true,
+      enumerable: false,
+      get(): never {
+        throw new TypeError(
+          `RunResult.${name} was REMOVED in parseman 0.44.0 and has no default replacement. ${detail}`,
+        )
+      },
+    })
+  }
+  return result
+}
+
 const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): ParseResult<unknown> =>
   typeof r === 'function' ? r(input, pos, ctx) : r.parse(input, pos, ctx)
 
@@ -303,45 +367,25 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   }
 }
 
-/** Shallow copy of `options.state` per pass so an in-place mutation by one
- * profiling pass doesn't leak into the next (the parity check only compares
- * `ok`/`unconsumedFrom`, so a diverged structural output would go unnoticed).
- * Only the top level is isolated — deeply-nested mutable state is shared; a
- * profiled grammar should keep per-parse state shallow (see the `profile` docs). */
-function clonePassState(state: unknown): unknown {
-  if (state === null || typeof state !== 'object') return state
-  return Array.isArray(state) ? [...state] : { ...(state as Record<string, unknown>) }
-}
-
-function profilePass(entry: Runnable, input: string, options: RunOptions, phase: ProfilePhase): { result: RunResult; profile: RunProfilePass } {
-  const state: ProfileState = { phase, nodes: 0, childSlots: 0, rawSlots: 0, triviaSlots: 0, fieldSlots: 0, hostCalls: 0 }
-  const passOptions: RunOptions = options.state === undefined ? options : { ...options, state: clonePassState(options.state) }
-  const start = performance.now()
-  const result = runOnce(entry, input, passOptions, phase, state)
-  const { phase: _phase, ...counts } = state
-  return { result, profile: { ms: performance.now() - start, ...counts } }
-}
+/* The three-pass profiling driver (`clonePassState` / `profilePass`) was removed
+ * with the emitted counters it read. `runOnce` still accepts `phase`/`profileState`
+ * and `RunProfile`/`RunProfilePass` are still exported, so the interpreted
+ * reimplementation can restore the driver without reshaping the public result. */
 
 export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
-  if (!options.profile) return runOnce(entry, input, options)
-  if (typeof entry !== 'function') {
-    throw new TypeError('run({ profile: true }) requires a compiled parser entry')
-  }
-
-  const recognizer = profilePass(entry, input, options, 'recognizer')
-  const capture = profilePass(entry, input, options, 'capture')
-  const host = profilePass(entry, input, options, 'host')
-  if (recognizer.result.ok !== host.result.ok || capture.result.ok !== host.result.ok
-    || recognizer.result.unconsumedFrom !== host.result.unconsumedFrom
-    || capture.result.unconsumedFrom !== host.result.unconsumedFrom) {
-    throw new Error('run({ profile: true }) changed recognition; the grammar is not profile-safe')
-  }
-  return {
-    ...host.result,
-    profile: {
-      recognizer: recognizer.profile,
-      structuralCapture: capture.profile,
-      hostConstruction: host.profile,
-    },
-  }
+  if (!options.profile) return guardRemovedFields(runOnce(entry, input, options))
+  // Profiling counters are no longer emitted into compiled artifacts — they cost a
+  // `_ctx._pmProfile` read plus ~15 threaded ternaries on EVERY node, which is the
+  // "diagnostic machinery in codegen" the compiled path must not pay for. The
+  // interpreter has never implemented `_pmProfile` either, so no route can answer
+  // this today. Fail LOUDLY: the passes below would otherwise all report zero, and
+  // an all-zero profile reads as a real measurement rather than as "I could not
+  // run" — the exact defect `guardRemovedFields` exists to prevent for the removed
+  // 0.44 fields. The pass machinery is retained, unmodified, for the interpreted
+  // reimplementation.
+  throw new TypeError(
+    'run({ profile: true }) is unavailable: profiling counters are no longer compiled into '
+    + 'parser artifacts, and the interpreter does not implement them yet. Profiling is moving '
+    + 'to interpreted mode.',
+  )
 }

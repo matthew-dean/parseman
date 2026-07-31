@@ -68,6 +68,24 @@ grammar, so the strong projection has nothing to find.
 
 ## Shape
 
+> **Superseded in 0.45.0, and worth reading anyway.** The line drawn below turned
+> out to be in the wrong place. `loadCorpus`, `digestCorpus`, `compareReports` and
+> `formatComparison` shipped from `parseman/oracle`; they no longer do. The test
+> is *"would a grammar author who has never heard of this consumer want it?"* —
+> and corpus walking, aggregate digests, three-way verdicts and report formatting
+> only mean anything with one consumer's corpus roots and committed baseline in
+> hand. What survives is `digestInto`: deterministic serialization of ONE parse
+> result, which every grammar author needs and no consumer can write correctly,
+> because it is parseman's node shapes that decide which distinctions are
+> semantically meaningful.
+>
+> The reasoning below is kept because the *decisions* it records are the ones a
+> consumer now has to make for itself, and each one is there because something
+> went wrong without it. `docs/guide/identity-oracle.md` restates them as
+> guidance; jess's implementation is
+> `packages/syntax/less/less-parser/test/identity-oracle/`. Read the rest of this
+> section as a specification for the harness you write, not for an API you import.
+
 A parseman consumer's parse entry points are *its own*, so the general utility
 cannot own them. It takes named **surfaces** and a named **corpus** and produces a
 digest:

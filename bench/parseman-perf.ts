@@ -321,23 +321,35 @@ function buildCases(): CaseDef[] {
       interpreted: () => parseExpr(MEDIUM_EXPR), compiled: () => { compiledExpr.parse(MEDIUM_EXPR, 0) } },
   ]
 
-  // CSS — optional bootstrap fixture
+  // CSS — the two REQUIRED fixtures. These are the whole of `PERF_CONTEXTS.css`, the
+  // default context for `perf:guard` and the pre-commit hook, so swallowing a read
+  // failure here dropped both cases, produced ZERO rows, gave `findRegressions` nothing
+  // to compare, and printed "perf-guard: ok". A gate that cannot read its own input has
+  // not measured anything, and must say so rather than pass.
   for (const fixture of ['selector.css', 'decls.css'] as const) {
+    let input: string
     try {
-      const input = readCssFixture(fixture)
-      cases.push({
-        id: `css/${fixture.replace('.css', '')}`,
-        language: 'css',
-        fixture,
-        input,
-        iterations: 500,
-        interpreted: () => parseCss(input),
-        compiled: () => parseCssCompiled(input),
-      })
-    } catch {
-      // fixture missing
+      input = readCssFixture(fixture)
+    } catch (error) {
+      throw new Error(
+        `parseman-perf: required CSS fixture ${fixture} could not be read, so the css context ` +
+        `would measure nothing. This is the default context for \`pnpm perf:guard\` and the ` +
+        `pre-commit hook.\n${String(error).slice(0, 300)}`,
+      )
     }
+    cases.push({
+      id: `css/${fixture.replace('.css', '')}`,
+      language: 'css',
+      fixture,
+      input,
+      iterations: 500,
+      interpreted: () => parseCss(input),
+      compiled: () => parseCssCompiled(input),
+    })
   }
+
+  // bootstrap4 is genuinely optional (`optional: true`, skipped by every guard
+  // context), so a missing one stays a skip.
   try {
     const input = readCssFixture('bootstrap4.css')
     cases.push({
@@ -609,8 +621,26 @@ export function findRegressions(
   const modes = opts?.modes ?? ['interpreted', 'compiled']
   const checkAbsolute = opts?.checkAbsolute ?? true
   const msgs: string[] = []
-  const cases = baselineCases(baseline, opts?.context ?? 'full')
-  if (!cases) return msgs
+  const context = opts?.context ?? 'full'
+  const cases = baselineCases(baseline, context)
+  // An empty regression list means "nothing regressed". A baseline with no such
+  // context cannot support that claim, and returning `msgs` unchanged says it anyway.
+  // `bench/perf-guard.ts` checks this before calling, so today this is unreachable —
+  // which is exactly why it should throw rather than rely on a contract held elsewhere.
+  if (!cases) {
+    throw new Error(
+      `parseman-perf: baseline @ ${baseline.gitRev} has no "${context}" context, so there is ` +
+      'nothing to compare against. Re-capture with `pnpm bench:baseline`. An empty regression ' +
+      'list from a missing baseline is not a clean run.',
+    )
+  }
+  if (rows.length === 0) {
+    throw new Error(
+      `parseman-perf: no rows were measured for the "${context}" context, so "no regressions" ` +
+      'would be a statement about nothing. Check that the fixtures and case filters for this ' +
+      'context still select cases.',
+    )
+  }
 
   const byId = new Map<string, { interp?: ParsemanBenchRow; comp?: ParsemanBenchRow }>()
   for (const r of rows) {
@@ -638,16 +668,31 @@ export function findRegressions(
 
   // ── Primary: absolute speed regression ────────────────────────────────────
   if (checkAbsolute) {
+    // A row with no baseline entry used to be skipped in silence, so renaming a case
+    // id — or adding one and forgetting to re-baseline — dropped it out of the gate
+    // with no output at all. Name them instead: an unguarded case is a hole in the
+    // gate, and re-baselining is the one-line fix.
+    const unguarded: string[] = []
     for (const r of rows) {
       if (!modes.includes(r.mode)) continue
       const key = `${r.id}/${r.mode}`
       const b = cases[key]
-      if (!b) continue
+      if (!b) {
+        unguarded.push(key)
+        continue
+      }
       const pct = pctDelta(r.medianUs, b.medianUs)
       const limit = r.mode === 'compiled' ? tolCompiled : tolInterpreted
       if (pct > limit) {
         msgs.push(`${key}: ${r.medianUs.toFixed(2)}µs vs baseline ${b.medianUs.toFixed(2)}µs (${fmtDelta(pct)} regression, absolute)`)
       }
+    }
+    if (unguarded.length > 0) {
+      msgs.push(
+        `${unguarded.join(', ')}: measured but ABSENT from the "${context}" baseline @ ` +
+        `${baseline.gitRev}, so these case(s) are not guarded at all. Re-capture with ` +
+        '`pnpm bench:baseline` and commit bench/parseman-baseline.json.',
+      )
     }
   }
 

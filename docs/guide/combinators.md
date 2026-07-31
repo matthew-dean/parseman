@@ -852,7 +852,7 @@ tight.parse('ab').ok
 import { compile, parse, choice, literal } from 'parseman'
 
 const g = choice(literal('a'), literal('b'))
-const compiled = compile(g, undefined, { gating: 'off' })
+const compiled = compile(g, undefined)
 
 parse(g, 'b').value
 // → 'b'

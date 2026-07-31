@@ -410,26 +410,26 @@ const fnKey = (src: string | undefined, fn: unknown): string =>
 /** The discriminating payload of a node, excluding its children. */
 function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
   switch (d.tag) {
-    case 'literal':   return `literal ${d.value} ${d.caseInsensitive}`
-    case 'regex':     return `regex ${d.source} ${d.flags}`
-    case 'keywords':  return `keywords ${[...d.words].join('')} ${d.caseInsensitive} ${d.boundary ?? ''}`
+    case 'literal':   return `literal\u0000${d.value}\u0000${d.caseInsensitive}`
+    case 'regex':     return `regex\u0000${d.source}\u0000${d.flags}`
+    case 'keywords':  return `keywords\u0000${[...d.words].join('\u0001')}\u0000${d.caseInsensitive}\u0000${d.boundary ?? ''}`
     case 'lazy': {
       const n = ruleNameOf(p)
-      return n === undefined ? `ref #${anonId(p)}` : `ref ${n}`
+      return n === undefined ? `ref\u0000#${anonId(p)}` : `ref\u0000${n}`
     }
-    case 'label':     return `label ${d.label}`
-    case 'field':     return `field ${d.name}`
-    case 'node':      return `node ${d.type ?? ''} ${d.unwrap === true} ${d.collapse === true} ${fnKey(d.buildSrc, d.build)}`
-    case 'transform': return `transform ${fnKey(d.fnSrc, d.fn)} ${d.recognitionOnly === true}`
-    case 'leaf':      return `leaf ${fnKey(d.fnSrc, d.fn)}`
-    case 'many': case 'oneOrMore': return `${d.tag} ${d.min} ${d.max ?? ''}`
-    case 'sepBy':     return `sepBy ${d.min} ${d.max ?? ''} ${d.trailing ?? ''}`
-    case 'dispatch':  return `dispatch ${d.cases.map(c => JSON.stringify(c.keys)).join('')} ${d.otherwise !== undefined}`
-    case 'expect':    return `expect ${d.label ?? ''} ${d.expected.join('')}`
-    case 'scanTo':    return `scanTo ${d.raw} ${d.orEOF}`
-    case 'guard':     return `guard ${fnKey(d.predSrc, d.predicate)}`
-    case 'withCtx':   return `withCtx ${d.extraSrc ?? safeJson(d.extra)}`
-    case 'grammar':   return `grammar ${d.clearTrivia === true} ${d.captureTrivia === true} ${d.trackLines}`
+    case 'label':     return `label\u0000${d.label}`
+    case 'field':     return `field\u0000${d.name}`
+    case 'node':      return `node\u0000${d.type ?? ''}\u0000${d.unwrap === true}\u0000${d.collapse === true}\u0000${fnKey(d.buildSrc, d.build)}`
+    case 'transform': return `transform\u0000${fnKey(d.fnSrc, d.fn)}\u0000${d.recognitionOnly === true}`
+    case 'leaf':      return `leaf\u0000${fnKey(d.fnSrc, d.fn)}`
+    case 'many': case 'oneOrMore': return `${d.tag}\u0000${d.min}\u0000${d.max ?? ''}`
+    case 'sepBy':     return `sepBy\u0000${d.min}\u0000${d.max ?? ''}\u0000${d.trailing ?? ''}`
+    case 'dispatch':  return `dispatch\u0000${d.cases.map(c => JSON.stringify(c.keys)).join('\u0002')}\u0000${d.otherwise !== undefined}`
+    case 'expect':    return `expect\u0000${d.label ?? ''}\u0000${d.expected.join('\u0001')}`
+    case 'scanTo':    return `scanTo\u0000${d.raw}\u0000${d.orEOF}`
+    case 'guard':     return `guard\u0000${fnKey(d.predSrc, d.predicate)}`
+    case 'withCtx':   return `withCtx\u0000${d.extraSrc ?? safeJson(d.extra)}`
+    case 'grammar':   return `grammar\u0000${d.clearTrivia === true}\u0000${d.captureTrivia === true}\u0000${d.trackLines}`
     default:          return d.tag
   }
 }
@@ -456,7 +456,7 @@ function anonId(p: object): number {
 class Interner {
   private readonly ids = new Map<string, number>()
   readonly hole: number
-  constructor() { this.hole = this.of(' HOLE ') }
+  constructor() { this.hole = this.of('\u0000HOLE\u0000') }
   of(key: string): number {
     let id = this.ids.get(key)
     if (id === undefined) { id = this.ids.size; this.ids.set(key, id) }
@@ -1173,7 +1173,7 @@ function findRegexClasses(visited: Map<Combinator<unknown>, Visited>): RegexClas
     for (const body of new Set(extractCharClasses(v.d.source))) {
       const members = charClassMembers(body)
       if (members.length < CLASS_MIN_MEMBERS) continue
-      const key = [...new Set(members)].sort().join('')
+      const key = [...new Set(members)].sort().join('\u0001')
       let s = spellings.get(key)
       if (s === undefined) { s = { source: body, members, key, nodes: new Set(), sites: [] }; spellings.set(key, s) }
       if (s.nodes.has(v.p)) continue

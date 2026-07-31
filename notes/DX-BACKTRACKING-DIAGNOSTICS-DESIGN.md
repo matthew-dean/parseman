@@ -1,6 +1,14 @@
 # DX pass: first-char gating diagnostics + gate rename
 
-Status: DESIGN + LANDED in this branch. This documents the design and what shipped.
+Status: SUPERSEDED IN PART by 0.45.0 — kept as the design record.
+
+The analysis, the choice `id` scheme and the snapshot allowlist are unchanged and
+still current. The DELIVERY mechanism described below is not: `compile()` no longer
+runs the diagnostic, there is no `gating` option, no `PARSEMAN_GATING` env var and no
+`CompiledParser.gating` field. The open owner question at the end of this note
+("default `'warn'` or default `'off'`?") was answered by removing the question:
+diagnostics do not ride along with the thing that produces the artifact at all.
+`diagnoseGrammar()` is the entry point — see `docs/guide/first-char-gating.md`.
 
 ## The problem, and why the fix is BUILD-TIME FEEDBACK, not docs
 

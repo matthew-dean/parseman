@@ -18,16 +18,75 @@
  * So the check now runs on every PR (see `.github/workflows/ci.yml`, job
  * `release-gate`) and asserts the two things that make `main` shippable at all times.
  *
+ * ── MERGING IS NOT PUBLISHING ───────────────────────────────────────────────────
+ * The gate used to compare the head version against THE BASE BRANCH's: any PR touching
+ * `src/**` had to bump `package.json`. That made a version number the price of MERGING,
+ * and it contradicts how this project actually spends numbers.
+ *
+ * Numbers are spent at PUBLISH. When several PRs merge between two releases, a
+ * bump-per-merge burns one number per PR and only the last one ever ships — every
+ * earlier number collapses into it. That is not hypothetical: 0.37 through 0.41 were
+ * bumped and never published, and all of that work went out as one 0.37.0. The gate was
+ * manufacturing exactly the waste it looks like discipline.
+ *
+ * Worse, the two halves contradicted each other. A had to hold on `main` at all times,
+ * so a PR that could not bump was forced to file its entry under a heading naming an
+ * ALREADY PUBLISHED version — documenting changes into a release that demonstrably does
+ * not contain them. The only way out was the `release-exempt` label, on a PR that is
+ * neither a revert nor chained, which is a lie in a place reviewers read.
+ *
+ * So the invariant is now CHANGELOG-relative rather than branch-relative: `main` always
+ * carries an open section naming the NEXT, unpublished version, and every PR files into
+ * it. The number is spent once per release cycle, by whoever publishes, no matter how
+ * many PRs land into that cycle. `--publish` is where the numbers must all agree, which
+ * is the moment they actually have to.
+ *
  * ── WHAT IT CHECKS ──────────────────────────────────────────────────────────────
  * A. RELEASE INTEGRITY — always, needs no git history:
  *      1. CHANGELOG.md's FIRST `##` heading names a real version, never `Unreleased`.
- *      2. That version equals `package.json`'s.
- *      3. `src/version.ts`'s `PARSEMAN_VERSION` equals it too — the artifact stamp
- *         and the fuse-time version lock read it (`docs/design/artifact-format.md`).
+ *         The version it names is the RELEASE UNDER CONSTRUCTION.
+ *      2. It is >= `package.json`'s version — equal when nothing unreleased is pending,
+ *         greater when a section is open. Never lower: that is history being rewritten.
+ *      3. `src/version.ts`'s `PARSEMAN_VERSION` equals `package.json`'s — the artifact
+ *         stamp and the fuse-time version lock read it
+ *         (`docs/design/artifact-format.md`). These two move together, at publish.
+ *
+ * A'. PUBLISH INTEGRITY — with `--publish`, i.e. `prepublishOnly`:
+ *      4. The heading, `package.json` and `src/version.ts` must be EQUAL. This is the
+ *         moment the number is spent, and the moment they all have to agree.
  *
  * B. BUMP GATE — only with `--base=<ref>`, i.e. in a pull request:
- *      4. If the change touches the PUBLISHED SURFACE (`src/**`, or a package.json
- *         field a consumer receives), the version must go UP relative to the base.
+ *      5. If the change touches the PUBLISHED SURFACE (`src/**`, or a package.json
+ *         field a consumer receives), the release under construction must be a version
+ *         that is NOT yet published — i.e. the top heading is strictly above
+ *         `package.json`. Opening that section is a one-time cost per release cycle,
+ *         not a per-PR one.
+ *
+ * C. BENCH ANCHOR GATE — only with `--base=<ref>`, and only on a RELEASE PR:
+ *      6. Every perf gate's `referenceSha` must name the PREVIOUS RELEASE — the
+ *         first-parent commit on the base branch that set `package.json` to the
+ *         version the base publishes. See `docs/design/perf-gates.md`.
+ *
+ *    Both config files have said "bump this at every release, in the release PR"
+ *    in a JSON comment since they were written, and both were missed for TEN
+ *    releases: `bench/grammar-density/config.json` still pointed at v0.33.0 and
+ *    `bench/workloads/config.json` at v0.35.0 when 0.45.0 was prepped. A gate
+ *    anchored ten releases back still reads `ok` — it just measures against a
+ *    baseline that has already absorbed every regression since, so the accumulated
+ *    headroom becomes the error bar. `rollback/dense` sat at -62% against v0.33.0:
+ *    a fresh change could have made that path 2.6x SLOWER and the gate would have
+ *    said `ok`. The absolute-baseline rule was satisfied in letter while its
+ *    RESOLUTION was destroyed, silently, and nothing in the repo noticed.
+ *
+ *    A policy in a comment that depends on a human remembering it is not a policy.
+ *    This is that policy, executed. It fires only on a release PR, which is the one
+ *    PR where the bump is due, so ordinary PRs never see it.
+ *
+ *    It has NO hatch, including `--exempt`. The correct response to it going red is
+ *    to bump the anchor, and then to report whatever the newly-strict gate surfaces.
+ *    Re-anchoring to a newer baseline makes a gate STRICTER and may expose a
+ *    regression the stale anchor was hiding — that is the gate working. Both configs
+ *    already say it: "Do NOT bump it to silence a red gate."
  *
  *    Everything else — tests, benches, examples, fixtures, scripts, docs, notes,
  *    CI config, lockfile, tsconfig — is exempt, because none of it can change what a
@@ -44,8 +103,9 @@
  * A never has a hatch. `Unreleased` is not a state this repo ships from.
  *
  * Usage:
- *   node scripts/check-changelog.mjs                  # A only (prepublishOnly, local)
- *   node scripts/check-changelog.mjs --base=<ref>     # A + B (pull request)
+ *   node scripts/check-changelog.mjs                  # A only (local preflight)
+ *   node scripts/check-changelog.mjs --publish        # A + A' (prepublishOnly)
+ *   node scripts/check-changelog.mjs --base=<ref>     # A + B + C (pull request)
  *   node scripts/check-changelog.mjs --base=<ref> --exempt
  *   node scripts/check-changelog.mjs --root=<dir>     # point at another checkout
  *
@@ -68,6 +128,7 @@ const rootFlag = flag('root')
 const ROOT = typeof rootFlag === 'string' ? resolve(rootFlag) : resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BASE = typeof flag('base') === 'string' ? flag('base') : undefined
 const EXEMPT = flag('exempt') !== undefined
+const PUBLISH = flag('publish') !== undefined
 
 const PKG_PATH = resolve(ROOT, 'package.json')
 const CHANGELOG_PATH = resolve(ROOT, 'CHANGELOG.md')
@@ -201,11 +262,41 @@ if (!headingVersion) {
   )
 }
 
-if (headingVersion.raw !== version) {
+const headingVsPkg = compareVersions(headingVersion, parseVersion(version) ?? headingVersion)
+
+if (headingVsPkg < 0) {
   fail(
     `CHANGELOG.md's top section is ${headingVersion.raw} but package.json says ${version}.\n` +
-      `  The newest changelog section must BE the version being shipped — a matching\n` +
-      `  heading further down the file only proves the version was released once before.`,
+      `  The top section can be AHEAD of package.json (a release under construction), never\n` +
+      `  behind it — behind means history is being rewritten, or a published version lost\n` +
+      `  its section.`,
+  )
+}
+
+if (PUBLISH && headingVsPkg !== 0) {
+  fail(
+    `cannot publish: CHANGELOG.md's top section is ${headingVersion.raw} but package.json says ${version}.\n` +
+      `  This is the moment the number is spent, so it is the moment they must agree. Bump\n` +
+      `  package.json AND src/version.ts to ${headingVersion.raw} and date the heading.`,
+  )
+}
+
+// A MISSING src/version.ts is a harder failure than a mis-stamped one, and used to be
+// no failure at all: the whole convergence check sat behind `existsSync`, including
+// under `--publish`, where A' says all three sites must be EQUAL. Deleting the file
+// therefore satisfied the rule by removing one of the things it compares. Contrast
+// package.json and CHANGELOG.md above, both of which `fail()` when absent.
+//
+// The one place absence is legitimate is a checkout that has no `src/` at all — the
+// fixture repos in `test/unit/release-gate.test.ts` drive exactly that to cover the
+// stamp rule's edges. So it is required whenever `src/` exists, which is every real
+// checkout of this repo.
+if (!existsSync(VERSION_TS_PATH) && existsSync(resolve(ROOT, 'src'))) {
+  fail(
+    'src/version.ts is missing, but src/ exists. PARSEMAN_VERSION is the ARTIFACT VERSION\n' +
+      '  LOCK (docs/design/artifact-format.md) — every generated artifact is stamped with it and\n' +
+      '  `fusedBody` refuses to link across a mismatch. Absent, there is nothing to converge on,\n' +
+      '  and this gate would have passed by having one less thing to check.',
   )
 }
 
@@ -222,7 +313,12 @@ if (existsSync(VERSION_TS_PATH)) {
   }
 }
 
-console.log(`✓ CHANGELOG.md's top section is ${version}, matching package.json and src/version.ts.`)
+console.log(
+  headingVsPkg === 0
+    ? `✓ CHANGELOG.md's top section is ${version}, matching package.json and src/version.ts.`
+    : `✓ CHANGELOG.md has ${headingVersion.raw} open for construction over published ${version}`
+      + ' (package.json and src/version.ts agree; they move together at publish).',
+)
 
 // ── B. Bump gate ────────────────────────────────────────────────────────────────
 
@@ -256,14 +352,146 @@ if (changed.length === 0) {
 const srcTouched = changed.filter((f) => f.startsWith('src/'))
 const buildTouched = changed.filter((f) => BUILD_INPUTS.includes(f))
 
+// Read unconditionally: the base's `version` is the LAST PUBLISHED marker for check B
+// below, and that is needed whether or not this diff touches package.json at all.
+let basePkg
+try {
+  basePkg = JSON.parse(git('show', `${baseSha}:package.json`))
+} catch {
+  basePkg = {}
+}
+
+const basePublished = typeof basePkg.version === 'string' ? parseVersion(basePkg.version) : null
+
+// ── C. Bench anchor gate ────────────────────────────────────────────────────────
+//
+// Runs BEFORE B, and before B's early exits, so it cannot be skipped by a release PR
+// that somehow reads as touching no published surface. It fires on RELEASE PRs only.
+
+/**
+ * The perf gates whose `referenceSha` must name the previous release. Each entry is
+ * a config path relative to the repo root and the `pnpm` script that reads it. A gate
+ * whose config is absent is skipped — this list is allowed to lead or trail the repo.
+ */
+const ANCHORED_GATES = [
+  { config: 'bench/grammar-density/config.json', script: 'pnpm perf:guard:grammars' },
+  { config: 'bench/workloads/config.json', script: 'pnpm perf:workloads' },
+]
+
+/**
+ * The commit that RELEASED `version` on the base branch: walking first-parent back
+ * from `baseSha`, the OLDEST commit in the contiguous run whose package.json reads
+ * `version` — i.e. the commit that introduced it. First-parent, because the version
+ * lives on the merge commit of the release PR and not on its constituent commits.
+ * Oldest-in-run, because ordinary PRs merge after a release and carry the same number
+ * forward; the release is where the number CHANGED.
+ *
+ * Verified against the two anchors that were set by hand: v0.33.0 resolves to 7f1ddcd
+ * and v0.35.0 to 3562f78, which are exactly the values `bench/grammar-density` and
+ * `bench/workloads` were given in their release PRs. The rule is the practice, written
+ * down.
+ *
+ * Returns `null` only when the boundary is genuinely out of reach: the window filled
+ * without the version ever changing, which means the history is truncated. Reaching
+ * the ROOT still holding `atVersion` is not that — the version was introduced there.
+ * A truncated history is a reason to say so, not to wave the release through.
+ */
+const WALK_LIMIT = 500
+
+const releaseShaFor = (fromSha, atVersion) => {
+  let candidate = null
+  let walked
+  try {
+    walked = git('rev-list', '--first-parent', `--max-count=${WALK_LIMIT}`, fromSha).split('\n').filter(Boolean)
+  } catch {
+    return null
+  }
+  for (const sha of walked) {
+    let v
+    try {
+      v = JSON.parse(git('show', `${sha}:package.json`)).version
+    } catch {
+      return candidate
+    }
+    if (v !== atVersion) return candidate
+    candidate = sha
+  }
+  // Ran off the end still matching. Under the limit that end is the ROOT commit, so
+  // `candidate` is where the version began; at the limit the history is truncated.
+  return walked.length < WALK_LIMIT ? candidate : null
+}
+
+// A RELEASE PR is the shape `--publish` demands: the heading, package.json and
+// src/version.ts all name the same version, and it is above what the base publishes.
+// A mid-cycle PR (heading open ABOVE package.json) is not one, and never sees this.
+const isReleasePr =
+  headingVsPkg === 0 && basePublished !== null && compareVersions(headingVersion, basePublished) > 0
+
+// Only the gates this checkout actually HAS. A checkout carrying none of them — a
+// fixture, a trimmed clone — has nothing to re-anchor and is not asked to.
+const presentGates = ANCHORED_GATES.filter((g) => existsSync(resolve(ROOT, g.config)))
+
+if (isReleasePr && presentGates.length > 0) {
+  const expected = releaseShaFor(baseSha, basePublished.raw)
+
+  if (expected === null) {
+    fail(
+      `cannot locate the commit that released ${basePublished.raw} on the base branch, so the\n` +
+        '  bench perf-gate anchors cannot be checked. This gate needs real history: in CI, check\n' +
+        '  out with `fetch-depth: 0` (see .github/workflows/ci.yml, job `release-gate`).',
+    )
+  }
+
+  const wrong = []
+  for (const gate of ANCHORED_GATES) {
+    const p = resolve(ROOT, gate.config)
+    if (!existsSync(p)) continue
+    let cfg
+    try {
+      cfg = JSON.parse(readFileSync(p, 'utf8'))
+    } catch {
+      fail(`${gate.config} is not valid JSON — cannot read its perf-gate anchor.`)
+    }
+    const got = cfg.referenceSha
+    if (typeof got !== 'string' || got.length < 7) {
+      wrong.push({ ...gate, got: got === undefined ? '(absent)' : String(got) })
+      continue
+    }
+    if (!expected.startsWith(got)) wrong.push({ ...gate, got })
+  }
+
+  if (wrong.length > 0) {
+    const short = expected.slice(0, 7)
+    fail(
+      `this is the RELEASE PR for ${headingVersion.raw}, so every perf gate must be RE-ANCHORED to the\n` +
+        `  previous release — ${basePublished.raw}, released by ${short} — and ${wrong.length} is/are not:\n` +
+        '\n' +
+        wrong.map((w) => `    ${w.config}\n      referenceSha ${w.got} → should be ${short}`).join('\n') +
+        '\n\n' +
+        '  These gates measure THIS build against the referenced one, in one interleaved process.\n' +
+        '  Against a stale anchor they still read `ok` — they just compare against a baseline that\n' +
+        '  already absorbed every regression since, so the accumulated headroom becomes the error\n' +
+        '  bar and the gate loses its resolution without losing its green. Both config files have\n' +
+        '  carried "bump this at every release, in the release PR" in a comment from the start, and\n' +
+        '  both were missed for ten consecutive releases. That is why this is executed and not\n' +
+        '  written down.\n' +
+        '\n' +
+        `  Fix: set referenceSha to ${short} in each file above, update the _referenceNote to name\n` +
+        `  ${basePublished.raw}, then RUN the gates (${ANCHORED_GATES.map((g) => g.script).join(', ')}) and\n` +
+        '  put the numbers in this PR.\n' +
+        '\n' +
+        '  A newer anchor is a STRICTER gate and may go red on a regression the old one was hiding.\n' +
+        '  That is the gate working. Report the regression; do not move the anchor to silence it.\n' +
+        '\n' +
+        '  This check has no hatch — `release-exempt` does not waive it.',
+    )
+  }
+
+  console.log(`✓ perf-gate anchors name ${expected.slice(0, 7)}, the commit that released ${basePublished.raw}.`)
+}
+
 let pkgSurfaceChanged = []
 if (changed.includes('package.json')) {
-  let basePkg
-  try {
-    basePkg = JSON.parse(git('show', `${baseSha}:package.json`))
-  } catch {
-    basePkg = {}
-  }
   pkgSurfaceChanged = PUBLISHED_PKG_FIELDS.filter(
     (k) => JSON.stringify(basePkg[k]) !== JSON.stringify(pkg[k]),
   )
@@ -289,46 +517,90 @@ const why = [
   pkgSurfaceChanged.length > 0 ? `package.json ${pkgSurfaceChanged.join(', ')}` : null,
 ].filter(Boolean).join(' and ')
 
-let basePkgVersion
-try {
-  basePkgVersion = JSON.parse(git('show', `${baseSha}:package.json`)).version
-} catch {
-  basePkgVersion = undefined
-}
+// The release under construction must be a version that has NOT been published yet.
+//
+// This is deliberately CHANGELOG-relative, not branch-relative. A branch-relative rule
+// ("head version > base version") makes the bump the price of MERGING: the second PR to
+// land between two releases has to bump again, and its number collapses into whatever
+// ships. 0.37 through 0.41 all went out as one 0.37.0 that way. Here, the FIRST PR of a
+// cycle opens `## <next> — unreleased` and every later PR files into the same open
+// section for free. One number per release, spent by whoever publishes.
+//
+// The "last published" marker is the BASE's package.json, not HEAD's.
+//
+// It used to be HEAD's, on the reasoning that `--publish` refuses to ship unless
+// package.json equals the heading, so on `main` package.json is exactly the last version
+// that went out. That is true of `main` and false of a RELEASE PR, which is precisely the
+// PR that bumps package.json ahead of npm. Reading HEAD there asks "is the heading above
+// the version this PR is trying to publish?", which is 0 by construction — so a correctly
+// prepped release (heading, package.json and src/version.ts all at the new version, which
+// is exactly what `--publish` demands) failed this check, and failed it with the sentence
+// "0.45.0, which is already published" about a version that was not published at all.
+//
+// Against the BASE, one rule covers both shapes, because both are the same claim — the
+// release under construction is not yet published:
+//
+//   - DEFERRED (a mid-cycle PR): base 0.44.0, heading 0.45.0, package.json still 0.44.0.
+//     The section is open and the number is spent later. No PR is forced to bump, which
+//     is the whole point of the changelog-relative rule — 0.37 through 0.41 collapsed
+//     into one 0.37.0 because a branch-relative rule made a number the price of merging.
+//   - RELEASE PR: base 0.44.0, heading 0.45.0, package.json 0.45.0. The number is spent
+//     HERE, and `--publish` passes on the merge commit, so the release ships on merge.
+//
+// Both are legal. What stays illegal is the thing the gate exists to stop: filing into a
+// heading that names a version already on npm as of the base.
+// If the base's version cannot be read — an unparseable or absent package.json at the
+// base commit — fall back to the HEAD comparison rather than passing. An unreadable base
+// is a reason to judge conservatively, not a reason to wave the change through: the
+// fallback is the stricter of the two rules, so the worst case is a release PR being
+// asked to justify itself, never an already-published heading sliding past.
+const headingVsBase =
+  basePublished === null ? headingVsPkg : compareVersions(headingVersion, basePublished)
 
-const baseVersion = typeof basePkgVersion === 'string' ? parseVersion(basePkgVersion) : null
-const headVersion = parseVersion(version)
-
-if (!headVersion) fail(`package.json version "${version}" is not a semantic version.`)
-
-const bumped = baseVersion === null || compareVersions(headVersion, baseVersion) > 0
-
-if (bumped) {
+if (headingVsBase > 0) {
   console.log(
-    `✓ published surface changed (${why}) and the version went ${basePkgVersion ?? '?'} → ${version}.`,
+    headingVsPkg > 0
+      ? `✓ published surface changed (${why}) and ${headingVersion.raw} is open for construction\n` +
+        `  over published ${version} — the bump lands at publish, not at merge.`
+      : `✓ published surface changed (${why}) and this is a RELEASE of ${headingVersion.raw}\n` +
+        `  over published ${basePublished?.raw ?? 'unknown'} — heading, package.json and src/version.ts\n` +
+        '  all agree, so `--publish` passes on the merge commit.',
   )
   process.exit(0)
 }
 
 if (EXEMPT) {
   console.log(
-    `⚠ RELEASE GATE WAIVED — the published surface changed (${why}) and the version did NOT go up\n` +
-      `  (${basePkgVersion} → ${version}), but the \`release-exempt\` label is set on this PR.\n` +
-      '  Valid only for a revert of a release, or a chained PR whose bump lives underneath it.\n' +
-      '  Whoever merges this owns the next release carrying the bump.',
+    `⚠ RELEASE GATE WAIVED — the published surface changed (${why}) and CHANGELOG.md's top\n` +
+      `  section is the already-published ${version}, but the \`release-exempt\` label is set.\n` +
+      '  Valid only for a revert of a release, or a chained PR whose section lives underneath\n' +
+      '  it. Whoever merges this owns the next release carrying the section.',
   )
   process.exit(0)
 }
 
+const publishedRaw = basePublished?.raw ?? version
+
 fail(
-  `this PR changes the published surface (${why}) but does not bump the version.\n` +
-    `  base ${basePkgVersion ?? '(unknown)'} → head ${version}\n` +
+  `this PR changes the published surface (${why}) but CHANGELOG.md's top section is\n` +
+    `  ${headingVersion.raw}, which was already published as of the base (${publishedRaw}) — so the\n` +
+    '  change would be documented into a release that does not contain it.\n' +
     '\n' +
-    '  Every PR lands releasable. Bump package.json AND src/version.ts together, and open\n' +
-    '  the changelog section that names the new version — pre-1.0, a behaviour change goes\n' +
-    '  in the MINOR (this project has said so since 0.1.0; see CHANGELOG.md\'s preamble).\n' +
+    '  Either shape fixes it:\n' +
     '\n' +
-    '  If the bump genuinely belongs elsewhere — you are reverting a release, or this PR is\n' +
-    '  chained on one that already bumped — add the `release-exempt` label to the PR. That\n' +
+    `    DEFER — add "## <next> — unreleased" above the ${publishedRaw} section and file this\n` +
+    '    change under it, leaving package.json and src/version.ts alone. They move together\n' +
+    '    at PUBLISH, so any number of PRs can land into one cycle without burning a number\n' +
+    '    each.\n' +
+    '\n' +
+    '    RELEASE — if this PR IS the release, name the new version in the heading AND bump\n' +
+    '    package.json and src/version.ts to match it, so `--publish` passes on the merge\n' +
+    '    commit.\n' +
+    '\n' +
+    '  Pre-1.0, a behaviour change goes in the MINOR (this project has said so since 0.1.0;\n' +
+    "  see CHANGELOG.md's preamble).\n" +
+    '\n' +
+    '  If a section genuinely belongs elsewhere — you are reverting a release, or this PR is\n' +
+    '  chained on one that already opened it — add the `release-exempt` label to the PR. That\n' +
     '  is the hatch; it is on the PR where a reviewer can see it.',
 )

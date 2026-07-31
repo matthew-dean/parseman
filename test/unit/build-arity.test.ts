@@ -55,6 +55,15 @@ describe('confirmedBuildArity — TypeScript annotations (the regression)', () =
     ['(c?: any, r?: any) => c', 2], // optional params
     ['(c : any , r : any) => c', 2], // loose whitespace
     ['function (a: number, b: string) { return a }', 2],
+    // Nested parens / commas inside TYPE ANNOTATIONS. `PARAM_LIST_RE`'s `[^)]*` used to
+    // stop at the `)` inside an arrow type and a plain `,`-split tore type arguments
+    // apart, so these ordinary typed reducers were reported 1 (WRONG, silently
+    // under-capturing) and null (merely imprecise) respectively.
+    ['(children: (n: N) => N, fields) => children', 2],
+    ['(c: Map<string, number>, r: any) => c', 2],
+    ['(a: Map<K, V>, b: Array<[string, number]>, c) => a', 3],
+    ['(a: { x: number, y: number }, b) => a', 2],
+    ['(cb: (a: A, b: B) => C, x: Set<D>, y) => x', 3],
   ]
   for (const [src, expected] of cases) {
     it(`${JSON.stringify(src)} → ${expected}`, () => expect(confirmedBuildArity(src)).toBe(expected))
@@ -69,7 +78,10 @@ describe('confirmedBuildArity — conservative null (keep capture)', () => {
     '(a = 1, b) => b',
     '(c: any, r: any = null) => r', // default even with a type → unconfirmed
     '(a, b) => { return arguments.length }',
-    '(c: Map<string, number>, r: any) => c', // comma inside a generic → mis-split → null
+    'function () { return arguments[0] }', // empty formal list + `arguments` → unknown, NOT 0
+    'function () { [native code] }', // bound/native/Proxy: empty list says nothing → unknown
+    '(a: number = 1, b) => b', // default with a type annotation
+    '(a: (x: number) => number = f, b) => b', // function-typed param carrying a default
   ]
   for (const src of nulls) {
     it(`${JSON.stringify(src)} → null`, () => expect(confirmedBuildArity(src)).toBeNull())
@@ -96,13 +108,48 @@ describe('build capture arity gates off buildSrc (typed)', () => {
     expect(buildReadsTrivia(d)).toBe(true)
     expect(buildReadsState(d)).toBe(false)
   })
-  it('generic-with-comma type → conservatively keeps both', () => {
+  it('generic-with-comma type → read as arity 1, not given up on', () => {
+    // Previously `null` (keep every tier) because the `,` inside `Map<…>` split the one
+    // param into two unreadable fragments. A comma in a type argument belongs to the
+    // annotation, so this is arity 1 and the raw/trivia/state tiers are correctly elided.
     const d = def('(c: Map<string, number>) => c')
+    expect(confirmedBuildArity('(c: Map<string, number>) => c')).toBe(1)
     expect(buildReadsChildren(d)).toBe(true)
-    expect(buildReadsRaw(d)).toBe(true)
-    expect(buildReadsTrivia(d)).toBe(true)
-    expect(buildReadsState(d)).toBe(true)
+    expect(buildReadsRaw(d)).toBe(false)
+    expect(buildReadsTrivia(d)).toBe(false)
+    expect(buildReadsState(d)).toBe(false)
   })
+})
+
+/**
+ * The GENERAL property, stated as a property rather than a list of inputs: for a reducer
+ * whose arity cannot be read from source text, `confirmedBuildArity` must answer `null`
+ * (unknown → fail open to full capture → degradation recorded), never a NUMBER.
+ *
+ * A wrong number is the bug this file exists to prevent. `build-arity.ts:62` used to
+ * return a confident `0` for `function () { [native code] }` — the stringification of a
+ * bound function, a Proxy, and every host builtin — and because `0` is a CONFIDENT answer
+ * it never reached `recordDegradation`. Measured before the fix: the same reducer, once
+ * direct and once `.bind(null)`, produced DIFFERENT ASTs (fields present vs absent) from
+ * the same grammar, with ZERO diagnostics.
+ */
+describe('unreadable reducer source is never a confident number', () => {
+  const unreadable = [
+    'function () { [native code] }', // Function.prototype.bind result
+    'function freeze() { [native code] }', // host builtin
+    'function () { return arguments.length }',
+    'function (a) { return arguments[1] }',
+    'async (a, b) => a', // not a shape this parser reads
+    'foldOperation', // bare identifier the resolver could not expand
+    '',
+  ]
+  for (const src of unreadable) {
+    it(`${JSON.stringify(src)} → null, not a number`, () => {
+      const arity = confirmedBuildArity(src)
+      expect(arity).toBeNull()
+      expect(typeof arity).not.toBe('number')
+    })
+  }
 })
 
 // ── Behavioral: the compiled source actually elides for a typed arity-3 build ──
@@ -123,16 +170,19 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
   it('typed arity-3 → raw CST collector is AST-only lazy, not eagerly allocated', () => {
     const src = compile(typed3).source
     // Host mode is a COMPILE-TIME constant, so an 'ast' artifact carries no
-    // `_ctx.build?._parsemanCstOutput` probe at all — the only thing that can still
-    // want the raw collector is the profiling capture pass, which is a hoisted local.
-    expect(src).toMatch(/const _dcst\d+ = _cap\d+$/m)
+    // `_ctx.build?._parsemanCstOutput` probe at all. The profiling capture pass used
+    // to be the last remaining consumer of the raw collector here; profiling is no
+    // longer compiled in, so the `_dcst` gate folds away and the collector is simply
+    // never allocated for this shape.
+    expect(src).not.toContain('_dcst')
     expect(src).not.toContain('_parsemanCstOutput')
-    expect(src).toMatch(/_raw\d+ = _rec\d+ \? undefined : _dcst\d+ \? \[\] : undefined/)
+    expect(src).toMatch(/_raw\d+ = undefined/)
+    expect(src).not.toMatch(/_raw\d+ = \[\]/)
   })
   it('typed arity-5 → allocates a per-node _tl array', () => {
     const src = compile(typed5).source
     // Existing direct five-argument builders own a fresh trivia collector.
-    expect(src).toMatch(/_tl\d*\s*=\s*_rec\d*\s*\?\s*undefined\s*:\s*\[\]/)
+    expect(src).toMatch(/_tl\d*\s*=\s*\[\]/)
   })
   it('elision is output-preserving (typed arity-3 parses identically to a kept-capture run)', () => {
     // both should produce { n: 2 } regardless of capture
@@ -169,7 +219,9 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
 
     expect(source).toContain('_EMPTY_TL')
     // Macro output defaults to host mode 'ast', so it carries no host probe either.
-    expect(source).toMatch(/const _dcst\d+ = _cap\d+$/m)
+    // The `_dcst` binding was gated solely on the profiling capture pass, which is
+    // no longer compiled in, so it folds away entirely.
+    expect(source).not.toContain('_dcst')
     expect(source).not.toContain('_parsemanCstOutput')
     expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start:/)
     expect(source).toMatch(/_EMPTY_TL, undefined\)/)

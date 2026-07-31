@@ -123,7 +123,7 @@ describe('run() — generic grammar-entry driver', () => {
     expect(run(g.Doc as never, 'a b c').ok).toBe(true)
   })
 
-  it('profiles compiled structural parsing as recognizer, capture, and host passes', () => {
+  it('refuses run({ profile: true }) loudly now that counters are not compiled in', () => {
     const profiled = node(
       'Doc',
       parser({ trivia: blockTrivia }, sequence(
@@ -137,23 +137,16 @@ describe('run() — generic grammar-entry driver', () => {
     const entry = (input: string, pos: number, ctx: import('../../src/index.ts').ParseContext) =>
       compiled.parseWithContext(input, ctx, pos)
 
-    const result = run(entry, 'a : b', { build: host, profile: true })
+    // Profiling counters are no longer emitted into compiled artifacts, and the
+    // interpreter never implemented them. The failure mode that MUST NOT happen is
+    // an all-zero profile that reads as a real measurement, so this asserts the throw.
+    expect(() => run(entry, 'a : b', { build: host, profile: true })).toThrow(TypeError)
+    expect(() => run(entry, 'a : b', { build: host, profile: true })).toThrow(/no longer compiled into/)
 
-    expect(result.ok).toBe(true)
-    expect(result.rootTrivia).toBeUndefined()
-    expect(result.profile).toBeDefined()
-    expect(result.profile?.recognizer.hostCalls).toBe(0)
-    expect(result.profile?.recognizer.rawSlots).toBe(0)
-    expect(result.profile?.recognizer.triviaSlots).toBe(0)
-    expect(result.profile?.structuralCapture.hostCalls).toBe(0)
-    expect(result.profile?.structuralCapture.childSlots).toBeGreaterThan(0)
-    expect(result.profile?.structuralCapture.rawSlots).toBeGreaterThan(0)
-    expect(result.profile?.structuralCapture.triviaSlots).toBeGreaterThan(0)
-    expect(result.profile?.structuralCapture.fieldSlots).toBeGreaterThan(0)
-    expect(result.profile?.hostConstruction.hostCalls).toBe(host.mock.calls.length)
-    expect(result.profile?.hostConstruction.hostCalls).toBeGreaterThan(0)
-    expect(result.profile?.hostConstruction.ms).toBeGreaterThanOrEqual(0)
-    expect(() => run(profiled as never, 'a : b', { build: host, profile: true })).toThrow(/compiled parser entry/)
+    // The ordinary (non-profiling) path over the same entry is unaffected.
+    const plain = run(entry, 'a : b', { build: host })
+    expect(plain.ok).toBe(true)
+    expect(plain.profile).toBeUndefined()
   })
 
   it('exposes a lazy selected-root trivia index only on demand', () => {

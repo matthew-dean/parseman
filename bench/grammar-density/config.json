@@ -1,8 +1,8 @@
 {
   "_comment": "Configuration for `pnpm perf:guard:grammars` — see bench/grammar-perf-guard.ts and docs/design/perf-gates.md.",
 
-  "referenceSha": "7f1ddcd",
-  "_referenceNote": "The A/B reference: v0.33.0, the last release measured good on the rollback paths. Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the released sha at every release, in the release PR, with the numbers read in that PR.",
+  "referenceSha": "80d0e62",
+  "_referenceNote": "The A/B reference: v0.44.0, the PREVIOUS RELEASE (merge of PR #97 into main, the first-parent commit that set package.json to 0.44.0). Both sides are built from THIS repo and interleaved in ONE process, so the comparison is self-calibrating and stores no machine-specific timings. Bump this to the released sha at every release, in the release PR, with the numbers read in that PR.",
 
   "input": {
     "rules": 200,

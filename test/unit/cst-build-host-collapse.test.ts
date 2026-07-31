@@ -35,6 +35,31 @@ describe('cstBuildHost options', () => {
     expect(compiled.source).toContain('_parsemanCstCollapse')
   })
 
+  // The collapse branch is gated on `cstOutput || (!build && project === undefined)`, so
+  // under a positioned-CST host it is reached BEFORE the `project` branch. Only
+  // structural/direct-builder nodes were covered, leaving that ordering unasserted in
+  // either engine.
+  it('collapses a one-child `project` node under a CST host, in both engines', () => {
+    const Projected = node('Projected', Inner, { project: 0 })
+    const ProjDoc = node('ProjDoc', sequence(Projected, Keep))
+    const host = () => cstBuildHost({ collapse: ['Projected'] })
+
+    const interpreted = run(ProjDoc, 'ab', { build: host() })
+    expect(interpreted.ok).toBe(true)
+    const idoc = interpreted.value as { children: unknown[] }
+    expect((idoc.children[0] as { type?: string }).type).toBe('Inner')
+
+    const compiled = compile(ProjDoc, undefined, { hostMode: 'cst' })
+    const result = compiled.parseWithContext('ab', { trackLines: false, build: host() }, 0)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const cdoc = result.value as { children: unknown[] }
+    expect((cdoc.children[0] as { type?: string }).type).toBe('Inner')
+    // Not collapsed: the projected node is still host-built and keeps its own identity.
+    const uncollapsed = run(ProjDoc, 'ab', { build: cstBuildHost({ collapse: ['Nothing'] }) })
+    expect(((uncollapsed.value as { children: unknown[] }).children[0] as { type?: string }).type).toBe('Projected')
+  })
+
   it('collapse predicate receives inferred rule names and structural child lists', () => {
     const seen: Array<{ type: string; childType: string | undefined; childCount: number; rawCount: number }> = []
     const g = rules(r => ({
