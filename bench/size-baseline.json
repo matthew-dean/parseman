@@ -1,6 +1,6 @@
 {
   "updatedAt": "2026-07-31",
-  "gitRev": "11c9552",
+  "gitRev": "2b17418",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -23,17 +23,17 @@
       "locMultiplier": 6.29
     },
     "example/css": {
-      "genBytes": 224789,
-      "gzipBytes": 37208,
-      "bytesRatio": 23.145,
-      "locMultiplier": 21.305,
+      "genBytes": 223566,
+      "gzipBytes": 36987,
+      "bytesRatio": 23.02,
+      "locMultiplier": 21.265,
       "overCeiling": true
     },
     "example/lang": {
-      "genBytes": 44785,
-      "gzipBytes": 8230,
-      "bytesRatio": 9.117,
-      "locMultiplier": 8.815
+      "genBytes": 41772,
+      "gzipBytes": 7559,
+      "bytesRatio": 8.504,
+      "locMultiplier": 8.623
     },
     "example/toml-ish": {
       "genBytes": 13223,
@@ -113,7 +113,7 @@
     },
     "probe/trivia-on": {
       "genBytes": 14041,
-      "gzipBytes": 3147,
+      "gzipBytes": 3148,
       "bytesRatio": 25.118,
       "locMultiplier": 29.222,
       "overCeiling": true
@@ -148,7 +148,7 @@
     },
     "probe/variants-1": {
       "genBytes": 19997,
-      "gzipBytes": 3853,
+      "gzipBytes": 3854,
       "bytesRatio": 23.806,
       "locMultiplier": 26.4,
       "overCeiling": true

@@ -3,7 +3,12 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.46.0 — unreleased
+## 0.47.0 — unreleased
+
+Six lanes, assembled onto the 0.46.0 shared prefix. Every lane was verified
+independently on top of the prefix before inclusion — see the pull request body
+for the per-lane verification status and the measured release-over-release
+numbers.
 
 - **A factory body that fails to evaluate now names the binding and the cause.** The
   dominant real cause is a forward reference — `const A = node('A', B, …)` above
@@ -224,6 +229,33 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   equality against a non-eliding build — 4,077 AST/CST/ParseDoc tree comparisons over the
   four dialect corpora, zero differences.
 
+- **Fixed: `node<N>('Type', …)` no longer fails to type-check.** The `type`-first
+  overloads gave `Type` no default, so a call supplying ONE explicit type argument failed
+  their type-argument arity and fell through to the combinator-first overloads, where
+  argument 0 must be a `Combinator`. One call site therefore emitted two unrelated-looking
+  diagnostics: `TS2345 string is not assignable to Combinator`, and `TS7006` implicit-any
+  on the reducer's `children`, because the rejected overload left the reducer contextually
+  untyped. `Type` now defaults to `string` — jess 411 → 5 diagnostics, scss 342 → 4, of
+  which exactly one is real debt. **The literal is not recovered by this spelling**:
+  TypeScript fills a missing type argument from its default and never infers it, so the
+  brand is `string`. Only a curried call form preserves the literal; that changes the
+  public surface and is deliberately not taken. Spell `node<N, 'Type'>('Type', …)` where
+  the brand matters. A type-level test pins the resolved brand for all three spellings.
+  composed grammar's terminal alphabet, the prototype and landed-sweep measurements, a
+  corrected css artifact baseline (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B,
+  which was the whole css `lib/` across four build variants), and a register of 24
+  untried experiments — including an auto-alias cluster for declaring escape, case and
+  prefix equivalences once instead of hand-spelling them per site. Every entry and
+  measured result now carries a **contribution tag** (FOUNDATION / ENABLED-BY /
+  ORTHOGONAL / LEGACY) so it is visible which work survives the token-cursor rewrite. Records the dispatch
+  sweep: the whole spread across every configuration is **2.4%**, so dispatch keying is
+  not where parse time goes. **Withdraws
+  the 1.83× speedup as noise** — three byte-identical artifacts measured 5.961/6.101/11.952 ms
+  in separate processes — and makes byte-level tree equality against a toggled baseline
+  the gate, after a bug 288 tests missed.
+
+## 0.46.0 — 2026-07-31
+
 - **Add a `parseman` CLI — `parseman diagnose` and `parseman fix`.** Exit **0** clean,
   **1** blocking findings, **2** could not analyse. `--json` emits the structured object
   the human rendering is derived from. The bin is its own bundle (`dist/cli/index.js`,
@@ -286,18 +318,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   escapes written as `\u001B` sequences; output is unchanged and `pnpm check:control-bytes`
   is green.
 - **Captured CLI output for review at `docs/samples/cli-output.md`** — verbatim, non-TTY,
-- **Fixed: `node<N>('Type', …)` no longer fails to type-check.** The `type`-first
-  overloads gave `Type` no default, so a call supplying ONE explicit type argument failed
-  their type-argument arity and fell through to the combinator-first overloads, where
-  argument 0 must be a `Combinator`. One call site therefore emitted two unrelated-looking
-  diagnostics: `TS2345 string is not assignable to Combinator`, and `TS7006` implicit-any
-  on the reducer's `children`, because the rejected overload left the reducer contextually
-  untyped. `Type` now defaults to `string` — jess 411 → 5 diagnostics, scss 342 → 4, of
-  which exactly one is real debt. **The literal is not recovered by this spelling**:
-  TypeScript fills a missing type argument from its default and never infers it, so the
-  brand is `string`. Only a curried call form preserves the literal; that changes the
-  public surface and is deliberately not taken. Spell `node<N, 'Type'>('Type', …)` where
-  the brand matters. A type-level test pins the resolved brand for all three spellings.
   with the command that produced each block.
 - **`fuseInterpreted()` — a composed grammar can now be RUN interpreted.** Any interpreted
   run of a composed grammar previously threw `ref<T>() used before .define()`. It takes
@@ -424,18 +444,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   5 s default**, which discarded the child output those tests exist to assert on and read
   as a flake that vanished when the file was run alone.
 - **`docs/design/derived-tokenization.md`** — the design for deriving a scanner from the
-  composed grammar's terminal alphabet, the prototype and landed-sweep measurements, a
-  corrected css artifact baseline (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B,
-  which was the whole css `lib/` across four build variants), and a register of 24
-  untried experiments — including an auto-alias cluster for declaring escape, case and
-  prefix equivalences once instead of hand-spelling them per site. Every entry and
-  measured result now carries a **contribution tag** (FOUNDATION / ENABLED-BY /
-  ORTHOGONAL / LEGACY) so it is visible which work survives the token-cursor rewrite. Records the dispatch
-  sweep: the whole spread across every configuration is **2.4%**, so dispatch keying is
-  not where parse time goes. **Withdraws
-  the 1.83× speedup as noise** — three byte-identical artifacts measured 5.961/6.101/11.952 ms
-  in separate processes — and makes byte-level tree equality against a toggled baseline
-  the gate, after a bug 288 tests missed.
 - **`proposeFixes` docs say "every available engine"** — `engines` is `['interpreted']`
   when the grammar does not compile, so "on both engines" overstated what was checked.
 
