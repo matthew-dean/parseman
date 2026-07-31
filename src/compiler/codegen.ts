@@ -480,6 +480,24 @@ type Ctx = {
    * grammars compile byte-identically to before.
    */
   capturing?: boolean | undefined
+  /**
+   * What this position's enclosing node() installed into `_ctx._cstLeaves` /
+   * `_ctx._cstRawChildren`, when the emitter chose it as a COMPILE-TIME literal —
+   * `'[]'` (always truthy) or `'undefined'` (always falsy). Undefined means "not
+   * known here", which is the pre-existing runtime-gated emission.
+   *
+   * `emitNode` writes these two fields immediately (`_ctx._cstLeaves = chV`), so
+   * inside its body the runtime guards in `emitLeafCapture` are decidable. A
+   * direct-builder node picks both from `capturesChildren`/`capturesRaw`, which are
+   * compile-time booleans, so both are literals; a structural node's children buffer
+   * is a runtime host probe, so it stays unknown and keeps the old emission.
+   *
+   * Maintained with strict save/restore around every construct that reassigns those
+   * two ctx slots — the node frame itself and the `parser()` clear-scope. A named-fn
+   * call needs no handling: the callee restores both slots before returning.
+   */
+  leafBufLit?: string | undefined
+  rawBufLit?: string | undefined
   /** Inside the trivia-capture fn: terminals emit CSTTrivia tokens, not leaves. */
   capAsTrivia?: boolean | undefined
   /**
@@ -795,8 +813,39 @@ function emitLeafCapture(ctx: Ctx, valExpr: string, startExpr: string, endExpr: 
   if (!ctx.capturing) return []
   if (ctx.capAsTrivia) return []
   const i = ind(ctx)
-  const lf = v(ctx, '_lf')
   const spanExpr = emitSpanExpr(ctx, startExpr, endExpr)
+  const leafExpr = `{ _tag: 'leaf', value: ${valExpr}, span: ${spanExpr} }`
+
+  // The enclosing node() installed both collectors, and when it chose them as
+  // compile-time literals the three runtime guards below are decidable HERE. That
+  // matters out of proportion to its looks: this preamble is emitted at every
+  // terminal inside every node(), and measured at 296 B per terminal — 26% of a
+  // node() site's cost at two terminals, and rising with body size. Deciding it
+  // statically is what stops the correct spelling costing an order of magnitude more
+  // than the incorrect one.
+  //
+  // Only LITERAL buffers are specialized, and the emission still reads `_ctx`, not
+  // the node's local binding — so this never depends on that local being in scope at
+  // the terminal's position, and a structural node (whose children buffer is a
+  // runtime host probe) simply keeps the old shape.
+  const lb = ctx.leafBufLit, rb = ctx.rawBufLit
+  if (lb !== undefined && rb !== undefined) {
+    const leavesLive = lb !== 'undefined'
+    const rawLive = rb !== 'undefined'
+    // Neither collector exists: the whole capture is dead here.
+    if (!leavesLive && !rawLive) return []
+    if (leavesLive && !rawLive) return [`${i}_ctx._cstLeaves.push(${leafExpr})`]
+    if (!leavesLive && rawLive) return [`${i}_ctx._cstRawChildren.push(${leafExpr})`]
+    // Both live — one leaf object, shared by both pushes, as before.
+    const lfBoth = v(ctx, '_lf')
+    return [
+      `${i}const ${lfBoth} = ${leafExpr}`,
+      `${i}_ctx._cstLeaves.push(${lfBoth})`,
+      `${i}_ctx._cstRawChildren.push(${lfBoth})`,
+    ]
+  }
+
+  const lf = v(ctx, '_lf')
   // Gate on EITHER collector: a structural node whose host reads only
   // `rawChildren` (see `_parsemanReadsChildren`) elides `_cstLeaves`/`_cstChildren`
   // but still needs its terminals in `_cstRawChildren`. When both are present the
@@ -3487,7 +3536,16 @@ function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: str
   const savedKindLabels = ctx.triviaKindLabels
   ctx.activeTrivia = undefined
   ctx.triviaKindLabels = undefined
+  // This token clears BOTH collectors for the duration of its inner (see the install
+  // below) — the token is one leaf, its interior never contributes children. So the
+  // inner is emitted knowing both are statically absent, which both keeps
+  // `emitLeafCapture` correct here and drops the interior's capture code entirely.
+  const savedLeafLit = ctx.leafBufLit, savedRawLit = ctx.rawBufLit
+  ctx.leafBufLit = 'undefined'
+  ctx.rawBufLit = 'undefined'
   const inner = emitFallible(def.parser, ctx, pos)
+  ctx.leafBufLit = savedLeafLit
+  ctx.rawBufLit = savedRawLit
   ctx.activeTrivia = savedTrivia
   ctx.triviaKindLabels = savedKindLabels
 
@@ -3524,7 +3582,15 @@ function emitToken(def: Extract<ParserDef, { tag: 'token' }>, ctx: Ctx, pos: str
 /** Semantic-leaf wrapper: preserve the inner grammar's trivia policy, hide its
  * captures, and expose one callback-reduced leaf at the enclosing level. */
 function emitLeaf(def: Extract<ParserDef, { tag: 'leaf' }>, ctx: Ctx, pos: string): ER {
+  // Same contract as emitToken: this wrapper hides the inner grammar's captures by
+  // clearing both collectors for the duration of the inner (see the install below),
+  // so the inner is emitted knowing both are statically absent.
+  const savedLeafLit = ctx.leafBufLit, savedRawLit = ctx.rawBufLit
+  ctx.leafBufLit = 'undefined'
+  ctx.rawBufLit = 'undefined'
   const inner = emitFallible(def.parser, ctx, pos)
+  ctx.leafBufLit = savedLeafLit
+  ctx.rawBufLit = savedRawLit
   const i = ind(ctx)
   const sc = v(ctx, '_leafCh')
   const sl = v(ctx, '_leafLv')
@@ -3778,7 +3844,18 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
     `${i}const ${sc} = _ctx._cstChildren, ${sl} = _ctx._cstLeaves, ${sr} = _ctx._cstRawChildren${saveTrivia}${sf ? `, ${sf} = _ctx._fields` : ''}`,
     `${i}_ctx._cstChildren = ${chV}; _ctx._cstLeaves = ${chV}; _ctx._cstRawChildren = ${rawV}${installTrivia}${sf ? `; _ctx._fields = ${fieldsOn} ? [] : undefined` : ''}`,
   ]
+  // The two collector slots this node just installed. `chAlloc` is a runtime host
+  // probe for a structural node, so only a compile-time literal is recorded; anything
+  // else leaves the fields undefined and `emitLeafCapture` keeps its runtime guards.
+  // Saved and restored around the body so the fact is exactly this frame's.
+  const savedLeafLit = ctx.leafBufLit, savedRawLit = ctx.rawBufLit
+  const chLit = structural ? undefined : (capturesChildren ? '[]' : 'undefined')
+  const rawLit = structural ? '[]' : (capturesRaw ? '[]' : 'undefined')
+  ctx.leafBufLit = chLit
+  ctx.rawBufLit = chLit === undefined ? undefined : rawLit
   const { stmts: innerStmts, okVar, endVar: innerEndVar } = emitFallible(def.parser, ctx, pos)
+  ctx.leafBufLit = savedLeafLit
+  ctx.rawBufLit = savedRawLit
   const endVar = def.trailingTrivia === true && ctx.activeTrivia ? v(ctx, '_trailend') : innerEndVar
   stmts.push(...innerStmts)
   if (def.trailingTrivia === true && ctx.activeTrivia) {
@@ -3974,6 +4051,12 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     const savedIndent    = ctx.indent
     const savedFailLabel = ctx.failLabel
     const savedRecord    = ctx.recordFail
+    // A named fn is compiled ONCE and shared across every call site, so it must not
+    // inherit THIS caller's enclosing-node collector fact — a different caller may have
+    // different collectors installed. Unknown here is the runtime-gated emission, which
+    // is correct for every caller.
+    const savedLeafLit = ctx.leafBufLit, savedRawLit = ctx.rawBufLit
+    ctx.leafBufLit = undefined; ctx.rawBufLit = undefined
     // Fresh function body → fresh inline budget (see INLINE_MAX_NODES).
     const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
     ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
@@ -4000,6 +4083,7 @@ function emitLazy(p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'lazy' 
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
     ctx.recordFail = savedRecord
+    ctx.leafBufLit = savedLeafLit; ctx.rawBufLit = savedRawLit
     ctx.inlineLeft = savedInlineLeft
     ctx.currentFnName = savedFnName
     ctx.activeCoverageRuleId = savedActiveRule
@@ -4135,6 +4219,12 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     const savedIndent    = ctx.indent
     const savedFailLabel = ctx.failLabel
     const savedRecord    = ctx.recordFail
+    // A named fn is compiled ONCE and shared across every call site, so it must not
+    // inherit THIS caller's enclosing-node collector fact — a different caller may have
+    // different collectors installed. Unknown here is the runtime-gated emission, which
+    // is correct for every caller.
+    const savedLeafLit = ctx.leafBufLit, savedRawLit = ctx.rawBufLit
+    ctx.leafBufLit = undefined; ctx.rawBufLit = undefined
     const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
     ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
     ctx.indent    = 1
@@ -4144,6 +4234,7 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     ctx.indent    = savedIndent
     ctx.failLabel = savedFailLabel
     ctx.recordFail = savedRecord
+    ctx.leafBufLit = savedLeafLit; ctx.rawBufLit = savedRawLit
     ctx.inlineLeft = savedInlineLeft
     ctx.currentFnName = savedFnName
     pushNamedFnDecl(ctx, fnName, r.stmts, r.valueVar, r.endVar)
@@ -4387,6 +4478,9 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         const savedIndent    = ctx.indent
         const savedFailLabel = ctx.failLabel
         const savedRecord    = ctx.recordFail
+        // Shared named body — must not inherit this caller's collector fact (see emitLazy).
+        const savedLeafLit = ctx.leafBufLit, savedRawLit = ctx.rawBufLit
+        ctx.leafBufLit = undefined; ctx.rawBufLit = undefined
         const savedInlineLeft = ctx.inlineLeft, savedFnName = ctx.currentFnName
         ctx.inlineLeft = ctx.inlineMax; ctx.currentFnName = fnName
         ctx.indent    = 1
@@ -4403,6 +4497,7 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         ctx.indent    = savedIndent
         ctx.failLabel = savedFailLabel
         ctx.recordFail = savedRecord
+        ctx.leafBufLit = savedLeafLit; ctx.rawBufLit = savedRawLit
         ctx.inlineLeft = savedInlineLeft
         ctx.currentFnName = savedFnName
         pushNamedFnDecl(ctx, fnName, innerR.stmts, innerR.valueVar, innerR.endVar)

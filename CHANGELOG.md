@@ -5,6 +5,23 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **A terminal inside a `node()` no longer emits three runtime guards the emitter can
+  already decide.** `emitNode` installs both collectors itself
+  (`_ctx._cstLeaves = chV; _ctx._cstRawChildren = rawV`), and for a direct-builder node
+  both are compile-time literals — a fresh `[]` or `undefined`. The per-terminal
+  capture preamble was nonetheless emitting `if (_cstLeaves || _cstRawChildren)` plus
+  two inner branches at every terminal inside every node. Measured per-terminal cost
+  296.3 B → 109.3 B (−63%); a `node()` site at two terminals 2,283 B → 1,901 B over the
+  same body written bare (−17%). The `node-scale` probes, which vary node density, fall
+  10.04% (4 nodes) → 11.50% (32 nodes); `example/css` −3.00%; 48,965 B reclaimed across
+  the size fixtures. Gated on tree identity: 220 real trees over 110 real CSS files,
+  interpreted and compiled, identical to `bb2e587`. This matters beyond bytes —
+  `node()` is the correct spelling where `transform()` corrupts the tree by spreading
+  its result, so the correct spelling was the expensive one and nothing said so. The
+  remaining per-site cost is 1,683 B of capture-scope frame, labelled block and
+  fail-path truncation; the truncation is decidable by the same fact and is the next
+  lever.
+
 - **Fixed a TDZ throw when a recursive combinator has a SHARED interior.** A
   combinator lying on a self-reference cycle could be hoisted to a shared `const`,
   i.e. emitted outside the `ref()/define()` closure that binds the cycle's only lazy
