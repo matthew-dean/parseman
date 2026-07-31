@@ -309,3 +309,43 @@ Assumptions in that projection, stated so they can be checked:
   the subpath export is not declared in `package.json`.
 - The driver's ~26 KB is unminified TS source, not the shipped runtime cost.
   Measure the bundled delta before quoting a break-even to anyone.
+
+
+---
+
+## A shipped-path defect found on the way (NOT in `src/table/`)
+
+`bench/g5-disjoint-repro.ts`. Two grammars, one language, identical arms and
+identical trees. The only difference is whether the arms are written directly or
+reached through `g.`:
+
+```
+  direct  choice: disjoint = true
+  via g.  choice: disjoint = false   <- SAME ARMS
+
+  CONTROL  direct -> direct    items/64  +0.2%   items/512  -0.0%
+  REPRO    direct -> via g.    items/64 +35.7%   items/512 +40.3%
+```
+
+`choice()` decides `disjoint` at CONSTRUCTION from `p._meta.firstSet`
+(`src/combinators/choice.ts:35`) and builds its ASCII dispatch table only if that
+is true (`:62`, consumed at `:90`). A `rules()` arm is a lazy proxy whose shallow
+first set is `any` until the map closes, so `areDisjoint` reports false and the
+table is never built — for exactly the choices an author gated most carefully.
+
+**The interpreter runs 36-40% slower on a perfectly gated choice because it was
+written recursively.**
+
+SCOPE, verified rather than assumed, because the first framing of this was wider
+than the evidence:
+
+- **Codegen is NOT affected.** The emitted artifact recomputes deep first sets
+  and emits a real `if (_code === 123) … else if (_code === 91) …` chain.
+  Verified in the lowered artifact at `/tmp/pm-disjoint/g.out.js`.
+- **`diagnoseGrammar` is NOT lying.** It reports `gates: "recoverable"` with
+  `ok: true` and no finding — a named third state, not a false alarm.
+- **There is NO mis-parse.** Ordered first-match returns the same arm; it just
+  tries them one at a time.
+
+So this is an interpreter PERFORMANCE defect, worth filing on its own, and it is
+not evidence about the compiled path.
