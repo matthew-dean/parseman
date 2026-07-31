@@ -5,6 +5,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
+- **A choice arm marks the root trivia log only when the arm can reach it.** Every
+  other mark in `emitFirstMatch` asks a question about the arm; this one asked only
+  whether the grammar has root trivia at all, so it was emitted at 1,046 css sites
+  against 186 for the capture marks beside it. 414 of those sites (39.6%) cannot
+  append to `_rootTriviaLog` at all. css `ast.js` 3,311,657 -> 3,273,975 B (-1.14%),
+  less -0.33%, scss -0.57%, jess -0.18%; `_cmlrg` 83,641 -> 50,548 B.
+
 - **`dispatch()` keys off a data trie instead of a per-case character chain.** css
   `ast.js` 3,336,650 → 3,311,657 B (−0.75%, gzip −1,782 B); key-comparison bytes
   40,269 → 8,772 (−78%). Speed is inside noise — the strategy sweep behind

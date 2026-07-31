@@ -162,7 +162,7 @@ import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type Scan
 import { emitScannableTerminal } from './scannable-terminal.ts'
 import { analyzeMkInlineBuild, emitInlineMkNodeExpr } from './inline-build.ts'
 import { buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from './build-arity.ts'
-import { buildReadsFields, parserEnablesTriviaCapture, parserHasOwnFields, parserHasTriviaSite } from './fields.ts'
+import { buildReadsFields, parserEnablesTriviaCapture, parserHasOwnFields, parserHasRootTriviaSite, parserHasTriviaSite } from './fields.ts'
 import {
   isDispatchTailOnlyTransform,
   transformFnSource,
@@ -2376,7 +2376,16 @@ function emitFirstMatch(
     const markRaw    = armNeedsRollback ? v(ctx, '_cmr') : null
     const markTl     = armNeedsRollback ? v(ctx, '_cmtl') : null
     const markLog    = armNeedsRollback ? v(ctx, '_cmlg') : null
-    const markRootLog = ctx.activeTrivia && hasSelectedRootTrivia(ctx) ? v(ctx, '_cmlrg') : null
+    // The root trivia log is the one sink here NOT gated on the arm: every other
+    // mark asks a question about `p`, this one asked only whether the grammar has
+    // root trivia at all, so it was emitted for `literal()` arms that cannot
+    // reach `_rootTriviaLog`. Only code between the mark and the restore can
+    // append to it, and that code is the arm, so the arm decides — but by the
+    // ROOT predicate: the frame-local one stops at a nested `node()`, whose
+    // trivia does still reach the root log.
+    const markRootLog = ctx.activeTrivia && hasSelectedRootTrivia(ctx) && parserHasRootTriviaSite(p)
+      ? v(ctx, '_cmlrg')
+      : null
     const markFields = armNeedsFieldRollback ? v(ctx, '_cmf') : null
     const markErrors = armMayRecordError ? v(ctx, '_cme') : null
     const captureRollback = markLeaves
