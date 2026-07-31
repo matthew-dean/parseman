@@ -119,6 +119,14 @@ export type ChoiceGating = {
   overlaps: Overlap[]
 }
 
+/**
+ * The arms a `ChoiceGating` describes, in arm order — or `undefined` when the report did
+ * not come from a live walk (a deserialized snapshot). Carried non-enumerably, so it
+ * never reaches the JSON a CI snapshot diffs.
+ */
+export const choiceArms = (c: ChoiceGating): readonly Combinator<unknown>[] | undefined =>
+  (c as { arms?: readonly Combinator<unknown>[] }).arms
+
 /** Options for `analyzeGating` — the accepted-snapshot allowlist. */
 export type AnalyzeGatingOptions = {
   /**
@@ -240,9 +248,13 @@ const ruleNameOf = (p: Combinator<unknown>): string | undefined =>
 
 // ── cause attribution: walk the leading structure, stop at the first `any` ──
 
+/** A regex source that is really a keyword (a literal word, optionally with a
+ *  trailing boundary lookahead) — the case word()/keywords() should own. */
+const KEYWORD_REGEX_RE = /^\^?[@#.-]?[A-Za-z][\w-]*(\(\?![^)]*\))?\$?$/
+
 const SUGGESTIONS: Record<FirstSetCause, string> = {
   'broad-recognizer':
-    "if this arm leads with a keyword regex, use word('kw', boundary) / keywords([...]) — they expose an EXACT, gating first-set and lower to the same charCodeAt scan. A genuine scanTo fallback is fine; accept it in the gating snapshot if intentional.",
+    "this arm leads with a recognizer that can start at ANY character, so no first char can skip it. Give the arm a concrete leading terminal, or — if it is a deliberate catch-all fallback — accept the choice in the gating snapshot.",
   'leading-not':
     'let the arm lead with its actual consuming terminal (first-sets gate it automatically); keep not(...) only as a TRAILING boundary. Do not hand-roll not(not(...)) to fake gating — use peek(X), which is zero-width AND carries X first-set.',
   'nullable-prefix':
@@ -253,6 +265,30 @@ const SUGGESTIONS: Record<FirstSetCause, string> = {
     'this wrapper (guard/withCtx/recover) contributes no first char; put a concrete leading terminal before it.',
   'ref-cycle':
     'a recursive ref resolved to ANY; ensure the recursion has a concrete terminal lead on the base case.',
+}
+
+/**
+ * The generic per-cause advice, sharpened by what the arm ACTUALLY leads with.
+ *
+ * One string per cause was quietly wrong in the common case. `broad-recognizer` covers
+ * both `regex(/@media/)` — which `word()` fixes outright — and `regex(/[^()]+/)`, a
+ * genuine catch-all scanner that no primitive can gate and where the keyword advice is
+ * noise the reader has to discard. Telling someone "if this is X, do Y" when the tool
+ * can already see whether it is X is exactly the gap between advice and a diagnostic.
+ */
+function refineSuggestion(cause: FirstSetCause, arm: Combinator<unknown>): string {
+  if (cause !== 'broad-recognizer') return SUGGESTIONS[cause]
+  const lead = peelToLeading(arm)
+  const d = lead._def as ParserDef
+  if (d.tag === 'regex' && KEYWORD_REGEX_RE.test(d.source)) {
+    return `regex(/${d.source}/) is a KEYWORD written as a regex — use word('…', boundary) / keywords([…]) `
+      + 'for an EXACT, gating first-set. They lower to the same charCodeAt scan, so this costs nothing.'
+  }
+  if (d.tag === 'scanTo') {
+    return 'a scanTo fallback can start anywhere by definition. This is usually intentional — accept the '
+      + 'choice in the gating snapshot so the gate stays meaningful for the choices that are not.'
+  }
+  return SUGGESTIONS[cause]
 }
 
 /** The classifier's verdict for one arm: the poison, and whether it is a hole that
@@ -350,7 +386,7 @@ function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmC
 // ── anti-pattern detection ──
 
 /** Peel non-consuming wrappers to the arm's leading term (mirrors leadingTermOfArm). */
-function peelToLeading(arm: Combinator<unknown>): Combinator<unknown> {
+export function peelToLeading(arm: Combinator<unknown>): Combinator<unknown> {
   let d = arm._def as ParserDef
   let cur = arm
   for (;;) {
@@ -364,10 +400,6 @@ function peelToLeading(arm: Combinator<unknown>): Combinator<unknown> {
   if (d.tag === 'sequence' && d.parsers.length >= 1) return d.parsers[0]!
   return cur
 }
-
-/** A regex source that is really a keyword (a literal word, optionally with a
- *  trailing boundary lookahead) — the case word()/keywords() should own. */
-const KEYWORD_REGEX_RE = /^\^?[@#.-]?[A-Za-z][\w-]*(\(\?![^)]*\))?\$?$/
 
 function detectAntiPatterns(rule: string, arms: readonly Combinator<unknown>[]): AntiPattern[] {
   const out: AntiPattern[] = []
@@ -418,7 +450,7 @@ export function analyzeGatingRules(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts?: AnalyzeGatingOptions,
 ): GatingReport {
-  const raw: { g: Omit<ChoiceGating, 'id' | 'accepted'>; rule: string }[] = []
+  const raw: { g: Omit<ChoiceGating, 'id' | 'accepted'>; rule: string; arms: readonly Combinator<unknown>[] }[] = []
   const antiPatterns: AntiPattern[] = []
   const unanalysable: Unanalysable[] = []
   const seenUnanalysable = new Set<string>()
@@ -457,7 +489,7 @@ export function analyzeGatingRules(
     const d = def as ParserDef
     const rule = ruleNameOf(p) ?? enclosingRule
     if (d.tag === 'choice') {
-      raw.push({ g: analyzeChoice(p, d, rule, opts?.resolveRef), rule })
+      raw.push({ g: analyzeChoice(p, d, rule, opts?.resolveRef), rule, arms: d.parsers })
       antiPatterns.push(...detectAntiPatterns(rule, d.parsers))
     }
     // Structural recursion (+ through refs once).
@@ -495,13 +527,21 @@ export function analyzeGatingRules(
   const seenInRule = new Map<string, number>()
   const accept = new Set(opts?.accept ?? [])
   const usedAccept = new Set<string>()
-  const choices: ChoiceGating[] = raw.map(({ g, rule }) => {
+  const choices: ChoiceGating[] = raw.map(({ g, rule, arms }) => {
     const n = seenInRule.get(rule) ?? 0
     seenInRule.set(rule, n + 1)
     const id = (perRule.get(rule) ?? 1) === 1 ? rule : `${rule}#${n}`
     const isAccepted = g.gates === 'no' && accept.has(id)
     if (isAccepted) usedAccept.add(id)
-    return { ...g, id, accepted: isAccepted }
+    const out: ChoiceGating = { ...g, id, accepted: isAccepted }
+    // The arms themselves, carried for a RENDERER that wants to show the ordering with a
+    // dispatch key beside each arm. NON-ENUMERABLE deliberately: `GatingReport` is
+    // JSON-serialized into a committed, byte-identity-tested snapshot, and combinators are
+    // cyclic graphs full of closures. Attaching them here rather than letting a caller
+    // re-walk the grammar is what keeps a second walk from drifting out of step with this
+    // one's `id` assignment — which it did, silently, and mislabelled every arm.
+    Object.defineProperty(out, 'arms', { value: arms, enumerable: false, writable: false })
+    return out
   })
 
   const gated = choices.filter(c => c.gates === 'yes').length
@@ -533,7 +573,11 @@ function analyzeChoice(
     .filter(x => isAny(x.fs))
     .map(({ index }) => {
       const { cause, detail, unresolvedExternal } = classifyBroadArm(arms[index]!, resolve)
-      return { index, cause, detail, shallowAnyOnly: false, unresolvedExternal: unresolvedExternal === true, suggestion: SUGGESTIONS[cause] }
+      return {
+        index, cause, detail, shallowAnyOnly: false,
+        unresolvedExternal: unresolvedExternal === true,
+        suggestion: refineSuggestion(cause, arms[index]!),
+      }
     })
 
   const overlaps: Overlap[] = []

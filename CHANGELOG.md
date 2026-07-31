@@ -5,7 +5,80 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.46.0 — unreleased
 
-- Release prep. Entries land as work merges.
+- **A CLI: `parseman diagnose` and `parseman fix`.** 0.45 collapsed three functions a
+  caller had to choose between into one `diagnoseGrammar()`, which removed the wrong
+  choice but not the real defect — it was still something you had to know existed,
+  import, and write a script around. rustc and clippy are commands. `parseman diagnose
+  src/grammar.ts` is found by typing `parseman --help`. The exit-code contract is the
+  established one plus a third state that matters: **0** clean, **1** blocking findings,
+  **2 could not analyse** — a bad path, an unloadable grammar, an unreadable corpus, a
+  verification loop that could not run. Failing closed is not a nicety here; this repo's
+  own history has `coverage.ts` reporting 100% covered over zero analysable input.
+  `--json` emits the same structured object the human rendering is derived from; with no
+  path it goes to stdout and the human report moves to stderr so stdout stays one
+  document. It writes through the streams the process already owns and never opens a
+  second file description on stdout — the race that made 0.45's size probe exit 1 while
+  printing a correct table. **The bin is its own bundle** (`dist/cli/index.js`, with a
+  library twin at `parseman/diagnostics`) and nothing it needs is reachable from
+  `parseman`: the `--fix` loop recompiles grammars, and no library consumer should carry
+  codegen on that account. Verified — `dist/index.js` contains none of the new modules
+  and every size-guard fixture sits exactly at its committed ceiling.
+
+- **`parseman fix` — machine-applicable rewrites that are PROVEN, not suggested.** rustc
+  can tell you a suggestion is machine-applicable; it cannot tell you the rewrite means
+  the same thing, because there is no cheap oracle for that. A parser generator has one.
+  Each candidate is applied to the combinator graph, the grammar is **recompiled**, the
+  caller's corpus is **re-parsed on both engines**, and the outputs are compared. Output
+  unchanged is the evidence the rewrite is behaviour-preserving; output changed means the
+  rewrite is wrong, and it is discarded and never shown. Two rewrites ship:
+  `regex(/if(?!\w)/)` → `word('if', '\w')` and `not(not(X))` → `peek(X)`. Every site
+  ends in exactly one of two states — ACTIONABLE (the rewrite, its evidence, and a
+  measured benefit) or LOCATED (the exact site and the exact reason no rewrite can be
+  offered). There is no third "consider refactoring" state. A verified rewrite that
+  improves nothing measurable is not offered either. `--fix` previews a diff by default
+  and writes only under `--apply`, and a source edit is offered only where the site's
+  spelling occurs exactly once in the file — an edit applied to the wrong site is worse
+  than no `--fix` at all.
+
+- **The rebuilder checks itself before it is trusted** (`src/analysis/rebuild.ts`). A
+  rewrite is applied by re-running the public factories, not by patching `_def`: a
+  combinator is both a descriptor the compiler reads and a `parse` closure that captured
+  its children, so patching one moves the compiled engine and leaves the interpreted one
+  behind. Before any candidate is considered, the grammar is rebuilt with NO substitution
+  and that identity rebuild must reproduce the corpus output exactly; if any option is
+  threaded wrongly, no fix is offered for that grammar. Node kinds with no faithful
+  public reconstruction (`dispatch`, `recover`, `scanTo`, `guard`, `withCtx`, `routed`,
+  `trivia`, a gated `choice`) are reused verbatim, and a candidate inside one is reported
+  as LOCATED rather than silently dropped.
+
+- **Two-world diagnostics.** A type error has one source to point at; a grammar finding
+  has two — the ordered choice whose arms cost the time, and the input that pays for it.
+  `--corpus` adds the second: per-arm corpus positions beside each arm's dispatch key,
+  and a located input site with a caret. The number is named as exactly what it is (a
+  character count over the corpus, an upper bound on entries) and never as "this choice
+  ran N times". `ChoiceGating` now carries its arms non-enumerably (`choiceArms()`), so a
+  renderer reads the arms from the walk that assigned the ids instead of re-walking and
+  drifting out of step — which it did, and mislabelled every arm.
+
+- **The rendering is the deliverable, and it is short.** A clean grammar renders in two
+  lines. Findings group under one shared explanation instead of repeating a paragraph per
+  site, a long note is printed once at the end and referenced, and a repeated instruction
+  within one finding is printed once. Colour is an explicit option in every renderer and
+  is decided by the CLI (TTY + `NO_COLOR`), never sniffed inside the renderer — a
+  rendering whose bytes depend on where it is piped cannot be diffed. No timings, no
+  dates, no absolute paths.
+
+- **`broad-recognizer` advice is now specific to the arm.** One string per cause was
+  quietly wrong in the common case: it told every author "if this arm leads with a
+  keyword regex, use `word()`" — including the authors of `regex(/[^()]+/)`, a genuine
+  catch-all scanner where that is noise to discard. The suggestion is now chosen from
+  what the arm actually leads with: a keyword regex gets the `word()`/`keywords()`
+  rewrite, a `scanTo` fallback gets "this is usually intentional; accept it", and
+  anything else gets the general form.
+
+- **Captured CLI output** for review at `docs/samples/cli-output.md` — verbatim, non-TTY,
+  with the command that produced each block.
+
 - **`fuseInterpreted()` — a composed grammar can now be RUN interpreted.** `compose()`
   fuses by codegen: every piece is compiled to `_r_<Name>` functions dropped into one
   scope, so a cross-piece reference resolves by NAME and an override reroutes the base

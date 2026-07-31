@@ -4,7 +4,7 @@
  */
 import { build } from 'esbuild'
 import { execSync } from 'child_process'
-import { readFileSync, rmSync } from 'fs'
+import { chmodSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { builtinModules } from 'module'
 
 rmSync('dist', { recursive: true, force: true })
@@ -17,10 +17,18 @@ const external = [
   // doesn't try to bundle them into the browser-agnostic library entry.
   ...builtinModules,
   ...builtinModules.map(m => `node:${m}`),
+  // The CLI resolves the TS loader at RUNTIME, from the user's project, and reports a
+  // sentence when it is absent. Bundling it would both fail here (it is a devDependency)
+  // and defeat the point — the loader has to be the consumer's.
+  'tsx/esm/api',
 ]
 
 const shared = {
-  entryPoints: ['src/index.ts', 'src/run/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts', 'src/language-service/index.ts', 'src/oracle/index.ts'],
+  // `src/cli/index.ts` is the diagnostics bin and `src/analysis/diagnostics.ts` its
+  // library twin. Both reach the COMPILER (the `--fix` loop recompiles to verify), and
+  // both are deliberately their own entry points: nothing a library consumer imports may
+  // pull the compiler in on their account. Keep them out of `src/index.ts`.
+  entryPoints: ['src/index.ts', 'src/run/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts', 'src/language-service/index.ts', 'src/oracle/index.ts', 'src/analysis/diagnostics.ts', 'src/cli/index.ts'],
   bundle: true,
   external,
   sourcemap: true,
@@ -28,9 +36,17 @@ const shared = {
 }
 
 await Promise.all([
-  build({ ...shared, format: 'esm', outdir: 'dist', outExtension: { '.js': '.js' } }),
+  build({ ...shared, format: 'esm', outdir: 'dist', outExtension: { '.js': '.js' }, banner: { js: '' } }),
   build({ ...shared, format: 'cjs', outdir: 'dist', outExtension: { '.js': '.cjs' } }),
 ])
+
+// The bin needs its shebang back: esbuild drops it when it bundles.
+{
+  const binPath = 'dist/cli/index.js'
+  const src = readFileSync(binPath, 'utf8')
+  if (!src.startsWith('#!')) writeFileSync(binPath, `#!/usr/bin/env node\n${src}`)
+  chmodSync(binPath, 0o755)
+}
 
 console.log('JS bundles built.')
 
