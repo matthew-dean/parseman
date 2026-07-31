@@ -23,6 +23,23 @@
  * is no automatic refresh, because a gate that rebaselines itself is a gate that
  * records regressions rather than catching them.
  *
+ * AND IT IS TWO-SIDED — A WIN MUST BE BANKED
+ * ------------------------------------------
+ * Growth past the committed number fails, and so does an unbanked IMPROVEMENT. This is
+ * the half usually left to a comment asking a human politely, and it is the half that
+ * rots: `bench/grammar-density/config.json` and `bench/workloads/config.json` each
+ * carried exactly such a comment and sat unbumped for TEN releases. If a reorder takes
+ * a site from 7,846 wasted bytes to 2,000 and the baseline does not move with it, 5,846
+ * bytes of fresh headroom silently become budget for the next regression — and the gate
+ * that was supposed to catch that regression reads green through the whole of it.
+ *
+ * So the committed number is a BAND, not a floor: leaving it in either direction fails,
+ * and only the remedy differs. Raising a number needs owner sign-off; lowering one is
+ * mandatory. Both are the same one-line rebaseline and the same reviewable diff.
+ *
+ * `bench/size-guard.ts` is the shape this follows — it earned the tightness in 0.45 by
+ * catching +0.14% moves a 1% tolerance would have waved through.
+ *
  * A BASELINE CANNOT LAUNDER A CEILING
  * -----------------------------------
  * If a ceiling is configured, a baseline that records a number ABOVE it is rejected as
@@ -62,9 +79,18 @@ export type WastedWorkPolicy = {
    * Omit for drift-only gating; a project should set it once it knows its own number.
    */
   ceilingRatio?: number
-  /** Percentage a total may exceed its baseline before failing. Default 1.
-   *  This is HEADROOM, not noise: the metric is a deterministic count, so its noise
-   *  floor is exactly zero. */
+  /**
+   * Half-width of the band around each committed number, as a percentage. Default 1.
+   *
+   * SYMMETRIC: a measurement more than this ABOVE its baseline is a regression, and a
+   * measurement more than this BELOW it is an unbanked win. Both fail.
+   *
+   * This is not a noise allowance — the metric is a deterministic count of input bytes,
+   * so its noise floor is exactly zero and any non-zero value here is pure headroom.
+   * It exists only so incidental one-byte churn does not thrash the baseline in both
+   * directions. Set it as near zero as the corpus permits; `bench/choice-cost-guard.ts`
+   * runs at 0.1, matching `bench/size-guard.ts`'s ratchet slack.
+   */
   driftTolerancePct?: number
   /**
    * Fail on an ordering inversion — an arm that failed every one of its attempts while
@@ -77,7 +103,9 @@ export type WastedWorkPolicy = {
 }
 
 export type GateBreach = {
-  kind: 'ceiling' | 'drift' | 'unbaselined' | 'stale' | 'inversion' | 'unmeasurable' | 'invalid-baseline'
+  /** `drift` is growth past the band; `shrank` is an improvement that was not banked.
+   *  Both are failures, and the `detail` says which remedy applies. */
+  kind: 'ceiling' | 'drift' | 'shrank' | 'unbaselined' | 'stale' | 'inversion' | 'unmeasurable' | 'invalid-baseline'
   key: string
   /** One line. Says what happened and what number to look at — never advice. */
   detail: string
@@ -93,7 +121,7 @@ export type GateVerdict = {
 }
 
 const KIND_ORDER: GateBreach['kind'][] = [
-  'invalid-baseline', 'unmeasurable', 'ceiling', 'drift', 'inversion', 'unbaselined', 'stale',
+  'invalid-baseline', 'unmeasurable', 'ceiling', 'drift', 'shrank', 'inversion', 'unbaselined', 'stale',
 ]
 
 const pct = (actual: number, base: number): number => base === 0 ? (actual === 0 ? 0 : Infinity) : (actual / base - 1) * 100
@@ -199,9 +227,13 @@ export function checkWastedWork(
       continue
     }
 
+    // Two-sided. Growth is a regression; an unbanked win is next quarter's regression
+    // budget. Same band, same rebaseline, different sentence.
     const d = pct(r.totalWastedBytes, base.totalWastedBytes)
     if (d > tolerance) {
-      add('drift', id, `total wasted ${base.totalWastedBytes} -> ${r.totalWastedBytes} bytes (${d >= 0 ? '+' : ''}${d.toFixed(2)}%, tolerance ${tolerance}%)`)
+      add('drift', id, `total wasted ${base.totalWastedBytes} -> ${r.totalWastedBytes} bytes (${d >= 0 ? '+' : ''}${d.toFixed(2)}%, band ±${tolerance}%)`)
+    } else if (d < -tolerance) {
+      add('shrank', id, `total wasted ${base.totalWastedBytes} -> ${r.totalWastedBytes} bytes (${d.toFixed(2)}%, band ±${tolerance}%) — BANK THE WIN: rebaseline so the ${base.totalWastedBytes - r.totalWastedBytes} bytes you just saved cannot become headroom for the next regression`)
     }
 
     for (const s of r.sites) {
@@ -213,7 +245,8 @@ export function checkWastedWork(
       }
       checkedSites++
       const sd = pct(s.wastedBytes, bs)
-      if (sd > tolerance) add('drift', key, `${bs} -> ${s.wastedBytes} bytes (${sd >= 0 ? '+' : ''}${sd.toFixed(2)}%, tolerance ${tolerance}%)`)
+      if (sd > tolerance) add('drift', key, `${bs} -> ${s.wastedBytes} bytes (${sd >= 0 ? '+' : ''}${sd.toFixed(2)}%, band ±${tolerance}%)`)
+      else if (sd < -tolerance) add('shrank', key, `${bs} -> ${s.wastedBytes} bytes (${sd.toFixed(2)}%, band ±${tolerance}%) — BANK THE WIN: rebaseline, or this site's ${bs - s.wastedBytes} recovered bytes become budget`)
     }
 
     if (policy.failOnInversions === true) {
