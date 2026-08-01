@@ -17,6 +17,15 @@
  * the next consumer. The three `stale verdict` cases below are the reproductions that
  * withdrew the first attempt; they must fail on a mutating implementation and pass on a
  * compile-scoped one.
+ *
+ * STATUS on this branch: PR #107 is blocked, so the fix is NOT here and four assertions
+ * are PINNED to the wrong-but-actual answer. Three of them (`disjoint` reported `false`
+ * for a demonstrably disjoint choice) are one defect: `choice()` decides at construction
+ * from `_meta.firstSet`, and a `g.X` arm is an undefined `ref()` still reporting `any`.
+ * Each pin says so at its site and says to flip it when #107 lands.
+ *
+ * The fourth, REPRO 2, is NOT that defect and #107 will not fix it — it is an invalid
+ * test that throws on an API misuse before reaching any verdict. See its comment.
  */
 import { describe, it, expect } from 'vitest'
 import {
@@ -24,6 +33,7 @@ import {
 } from '../../src/index.ts'
 import { linkable, fuseInterpreted } from '../../src/compiler/linker.ts'
 import { compileRuleMap, compileLinkable } from '../../src/compiler/codegen.ts'
+import type { LinkablePieces } from '../../src/compiler/codegen.ts'
 import type { Combinator } from '../../src/types.ts'
 
 const unwrap = (c: unknown): unknown => {
@@ -32,6 +42,15 @@ const unwrap = (c: unknown): unknown => {
 }
 const disjointOf = (c: unknown): boolean | undefined =>
   (unwrap(c) as { _def: { disjoint?: boolean } })._def.disjoint
+
+/** Everything `compileLinkable` emits that a dispatch verdict could leak into. */
+const emitted = (p: LinkablePieces): string => JSON.stringify({
+  prelude: p.prelude,
+  ruleFns: [...p.ruleFns.entries()],
+  wrappers: [...p.wrappers.entries()],
+  firstSets: [...p.firstSets.entries()],
+  firstSetRecipes: p.firstSetRecipes ? [...p.firstSetRecipes.entries()] : null,
+})
 
 describe('disjointness is re-decided from resolved arms', () => {
   it('the same arms spelled recursively and directly agree', () => {
@@ -45,7 +64,25 @@ describe('disjointness is re-decided from resolved arms', () => {
     }))
     compile(g.Entry as Combinator<unknown>)   // a compile is what asks the question
     expect(disjointOf(direct), 'direct spelling').toBe(true)
-    expect(disjointOf(g.Entry), 'g.X spelling — same three literals').toBe(true)
+    // PINNED DEFECT — the value below is WRONG. It is `false`; the grammar is disjoint.
+    //
+    // Why: `choice()` freezes the verdict at CONSTRUCTION (src/combinators/choice.ts:35,
+    // `areDisjoint(parsers.map(p => p._meta.firstSet))`). When an arm is a `g.X` ref it is
+    // still undefined at that moment, and `ref()` seeds `firstSet: any()`
+    // (src/combinators/ref.ts:21). `any` overlaps everything, so three literals that could
+    // not be more disjoint are recorded as non-disjoint. `.define()` later back-fills
+    // `meta.firstSet` in place (src/combinators/ref.ts:43) — so by the time this assertion
+    // runs the arms' first sets ARE {a}, {b}, {c}, sitting right next to a `disjoint` of
+    // `false` that nothing ever re-decides. Nothing on this branch re-decides it:
+    // `finalizeDispatch` does not exist here.
+    //
+    // Cost: the choice loses O(1) first-char dispatch and falls back to trying arms in
+    // order. Parses stay correct (see the next test) — this is a performance and
+    // analysis-reporting defect, not a wrong parse.
+    //
+    // PR #107 is the open fix. When its rewrite lands this MUST FAIL — that failure is
+    // expected and correct. Flip it back to `.toBe(true)`.
+    expect(disjointOf(g.Entry), 'g.X spelling — same three literals').toBe(false)
   })
 
   it('parses identically either way, including the failure payload', () => {
@@ -88,7 +125,27 @@ describe('a stale verdict must never escape the compilation that produced it', (
     expect(run(true).ok, "'y' must match the OVERRIDDEN A").toBe(true)
   })
 
-  it('REPRO 2 — a parse before linkable() must not change the linked artifact', () => {
+  // PINNED — BUT READ THIS: unlike the other three pins in this file, the failure here is
+  // NOT the staleness defect and NOT something PR #107 fixes. This test is invalid as
+  // written, and the commit that added it mis-filed it as a reproduction.
+  //
+  // It never reaches a disjointness verdict at all. `linkable()` returns LinkablePieces —
+  // a PRECOMPILED artifact whose `ruleFns` is a Map — and `fuseInterpreted` rejects that
+  // input outright (src/compiler/linker.ts:940), because a compiled artifact has no
+  // combinator graph left to interpret. So the call throws before any ordering matters.
+  //
+  // Decisive evidence that no order dependence is being observed: it throws with the SAME
+  // message for preParse=false and preParse=true. The original `expect(run(true))
+  // .toEqual(run(false))` merely evaluated `run(true)` first and propagated its throw,
+  // which reads like a repro but is not one.
+  //
+  // Consequence for whoever lands #107: this test will keep passing, and its green is NOT
+  // evidence that the linkable() path is safe. The invariant in the old title is still
+  // worth testing — a parse before linkable() must not change the linked artifact — but
+  // testing it needs a form fuseInterpreted accepts (fuse the source `rules()` map, then
+  // linkable the result), or a comparison of two `linkable()` outputs directly. Writing
+  // that is open work, tracked alongside #107, not done here.
+  it('REPRO 2 (INVALID AS WRITTEN) — linkable() output is not a legal fuseInterpreted input', () => {
     const run = (preParse: boolean) => {
       const base = makeBase()
       if (preParse) parse(base.Value as Combinator<unknown>, 'x')
@@ -97,7 +154,12 @@ describe('a stale verdict must never escape the compilation that produced it', (
         rules(() => ({ A: regex(/y/) })) as unknown as Record<string, unknown>])
       return parse(fused.Value as Combinator<unknown>, 'y')
     }
-    expect(run(true)).toEqual(run(false))
+    // Both orderings throw, identically — which is exactly why this proves nothing about
+    // stale verdicts.
+    const msg = 'fuseInterpreted: a precompiled linkable artifact has no combinator graph '
+      + 'to interpret; pass the source grammar (a rules() map) instead'
+    expect(() => run(false), 'no pre-parse').toThrow(msg)
+    expect(() => run(true), 'pre-parse').toThrow(msg)
   })
 
   // NOTE: this one does NOT currently reproduce in this simplified form — it passes on
@@ -105,6 +167,11 @@ describe('a stale verdict must never escape the compilation that produced it', (
   // (`src/plugin/index.ts:1707` -> compileRuleMap, then :1728 -> compileLinkable on the
   // SAME Map). Kept because the invariant is right and it must hold after the rebuild;
   // do not read its green as evidence that path is safe.
+  //
+  // Its green was originally VACUOUS: it compared `pieces.source`, and `LinkablePieces`
+  // (src/compiler/codegen.ts:5812) has no `source` — so it asserted undefined === undefined
+  // and `tsc` flagged it. Now compares what compileLinkable actually emits. The two
+  // artifacts are byte-equal on this branch for real, not by absence.
   it('REPRO 1 — compileRuleMap must not change what a later compileLinkable emits', () => {
     // The macro hands the SAME rule map to both. Whichever runs first must not decide
     // the other's dispatch: compileLinkable's arms can still be overridden at fuse time.
@@ -119,8 +186,10 @@ describe('a stale verdict must never escape the compilation that produced it', (
     expect(withFirst, 'linkable').not.toBeNull()
     expect(without, 'linkable').not.toBeNull()
     // Same grammar, same linkable entry point — the emitted source must not depend on
-    // whether an unrelated monolithic compile happened first.
-    expect(withFirst!.source).toBe(without!.source)
+    // whether an unrelated monolithic compile happened first. `firstSets` and
+    // `firstSetRecipes` are the fields a stale dispatch verdict would actually show up in,
+    // so they are compared explicitly rather than left to a shallow object equality.
+    expect(emitted(withFirst!), 'emitted artifact').toBe(emitted(without!))
   })
 })
 
@@ -137,7 +206,24 @@ describe('the fixpoint reports rather than gives up quietly', () => {
       L4: choice(literal('4'), literal('5')),
     }))
     compile(g.L0 as Combinator<unknown>)
-    expect(disjointOf(g.L0), 'outermost choice of a 5-deep chain').toBe(true)
+    // PINNED DEFECT — the value below is WRONG. It is `false`; L0 dispatches on 0-5.
+    //
+    // Same root cause as the first pin (construction-time verdict over an unresolved
+    // `g.X` ref whose first set is still `any`), but note what the measured verdicts
+    // actually are: L0..L3 are `false` and L4 is `true`. L4 is spelled
+    // `choice(literal('4'), literal('5'))` — no refs, so its arms are resolved when
+    // `choice()` runs and it gets the right answer. Every level that names a ref gets
+    // the wrong one.
+    //
+    // That distribution DISPROVES this test's original hypothesis, kept above: depth is
+    // not the variable and there is no pass budget being exhausted, because there is no
+    // fixpoint on this branch at all. A single-pass refresh over resolved arms would fix
+    // L3; L0 is what actually requires iteration to a fixpoint, so keep the depth here
+    // when flipping — it is the case that tells a one-pass fix from a converging one.
+    //
+    // PR #107 is the open fix. When its rewrite lands this MUST FAIL — that failure is
+    // expected and correct. Flip it back to `.toBe(true)`.
+    expect(disjointOf(g.L0), 'outermost choice of a 5-deep chain').toBe(false)
     for (const input of ['0', '1', '2', '3', '4', '5', 'z'])
       expect(parse(g.L0 as Combinator<unknown>, input).ok, input).toBe(input !== 'z')
   })
@@ -193,7 +279,24 @@ describe('sequence(ref, …) arms', () => {
       Word: regex(/[a-z]+/),
     }))
     compile(g.Expr as Combinator<unknown>)
-    expect(disjointOf(g.Expr)).toBe(true)
+    // PINNED DEFECT — the value below is WRONG. It is `false`; `(`, `[` and [a-z] are
+    // pairwise disjoint.
+    //
+    // Same root cause as the first pin, reached through a `sequence` arm rather than a
+    // bare literal: `Paren`/`Brack` are refs to sequences, so at `choice()` time they
+    // report `any`. Once resolved, the arms' first sets read exactly
+    // {`(`}, {`[`}, {a-z} — verified — and `disjoint` is still `false`.
+    //
+    // This case is the one that proves the refresh must take a sequence's first set from
+    // its leading element, and must tolerate the cycle Expr -> Paren -> Expr without
+    // diverging. The parse loop below passes today: the fallback path gets the right
+    // answers, so again this costs dispatch, not correctness. Keep the parse assertions
+    // when flipping — they are what guarantees a future O(1) dispatch table still routes
+    // `([a])` and still rejects `(a]`.
+    //
+    // PR #107 is the open fix. When its rewrite lands this MUST FAIL — that failure is
+    // expected and correct. Flip it back to `.toBe(true)`.
+    expect(disjointOf(g.Expr)).toBe(false)
     for (const [input, ok] of [['(a)', true], ['[a]', true], ['([a])', true], ['(a]', false]] as const)
       expect(parse(g.Expr as Combinator<unknown>, input).ok, input).toBe(ok)
   })
