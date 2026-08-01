@@ -1,0 +1,366 @@
+import { describe, expect, it } from 'vitest'
+import { encodeTable, UnsupportedConstruct } from '../../src/table/encode.ts'
+import { emitTableModule } from '../../src/table/emit.ts'
+import { tableRules } from '../../src/table/exec.ts'
+import { run } from '../../src/functional/run.ts'
+import { compose } from '../../src/compiler/linker.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, selectNodes } from '../../bench/table-grammars.ts'
+import {
+  balanced, choice, keywords, literal, many, node, optional, parser, peek, regex, rules,
+  sepBy, sequence, token, transform, trivia, withCtx, type Combinator,
+} from '../../src/index.ts'
+
+/**
+ * FAIL-CLOSED, one construct at a time.
+ *
+ * Every refusal in `encode.ts` exists because lowering the construct WRONG
+ * produces a table that parses fine and moves only the tree — the failure class
+ * no ordinary assertion catches. A refusal that stops firing is therefore
+ * indistinguishable from a correct lowering unless something asserts the throw,
+ * and until this file nothing did: the `UnsupportedConstruct` class and most of
+ * its throw sites were uncovered lines.
+ *
+ * Each case pairs the refusal with a POSITIVE CONTROL — the same shape without
+ * the refused option — so a blanket "encodeTable throws on everything"
+ * regression cannot pass this file.
+ */
+
+const wrap = (inner: Combinator<unknown>): Record<string, Combinator<unknown>> => ({ Doc: inner })
+
+const throws = (g: Record<string, Combinator<unknown>>, re: RegExp): void => {
+  expect(() => encodeTable(g)).toThrow(UnsupportedConstruct)
+  expect(() => encodeTable(g)).toThrow(re)
+}
+
+describe('encodeTable refuses what it cannot lower faithfully', () => {
+  it('transform(recognitionOnly) — a suppressed value is not an inert transform', () => {
+    // Set on the def by `scanTo.ts`, which has no public constructor for it.
+    // A recognition-only transform SUPPRESSES its value; lowering it as an
+    // ordinary transform would produce a value the other two engines do not.
+    const suppressed = transform(literal('a'), v => v)
+    ;(suppressed._def as { recognitionOnly?: boolean }).recognitionOnly = true
+    throws(wrap(suppressed as Combinator<unknown>), /transform\(recognitionOnly\)/)
+    expect(() => encodeTable(wrap(transform(literal('a'), v => v) as Combinator<unknown>))).not.toThrow()
+  })
+
+  it('choice(greedyClassify) — one arm runs and ANOTHER arm is credited', () => {
+    // Auto-detected: one regex arm that subsumes every literal arm. It runs the
+    // regex and then re-attributes the match by string equality, re-applying a
+    // different arm's transforms. Ordered choice is a different execution, not a
+    // different order, so it is refused rather than approximated.
+    const g = wrap(choice(regex(/[a-z]+/), literal('if')) as Combinator<unknown>)
+    expect((g.Doc!._def as { strategy?: { tag: string } }).strategy?.tag).toBe('greedyClassify')
+    throws(g, /greedyClassify/)
+    // Control: the same arms with no subsumption lower fine.
+    expect(() => encodeTable(wrap(choice(regex(/[0-9]+/), literal('if')) as Combinator<unknown>))).not.toThrow()
+  })
+
+  it('choice(gate:) — a per-arm state predicate is a condition with no row', () => {
+    const gated = choice({ gate: () => true, combinator: literal('a') } as never, literal('b')) as Combinator<unknown>
+    throws(wrap(gated), /choice\(gate:\)/)
+    expect(() => encodeTable(wrap(choice(literal('a'), literal('b')) as Combinator<unknown>))).not.toThrow()
+  })
+
+  it('node(captureTrivia) — the request cannot be expressed as a reducer arity', () => {
+    // The capture flags come from the reducer's ARITY. A 3-argument reducer that
+    // ALSO asks for capture is a request the arity analysis answers "no" to, so
+    // honouring the arity would parse perfectly and drop the trivia.
+    throws(wrap(node('N', literal('a'), c => c, { captureTrivia: true })), /node\(captureTrivia\)/)
+    expect(() => encodeTable(wrap(node('N', literal('a'), c => c)))).not.toThrow()
+  })
+
+  it('parser({ captureTrivia }) — refused at the scope, as at the node', () => {
+    const ws = trivia(regex(/[ \t]*/))
+    const scope = parser({ trivia: ws, captureTrivia: true }, sequence(literal('a'), literal('b'))) as unknown as Combinator<unknown>
+    throws(wrap(scope), /parser\(captureTrivia\)/)
+    const plain = parser({ trivia: ws }, sequence(literal('a'), literal('b'))) as unknown as Combinator<unknown>
+    expect(() => encodeTable(wrap(plain))).not.toThrow()
+  })
+
+  it('parser({ trackLines: true }) is RECONCILED with the settings, not blanket-refused', () => {
+    // The interesting half is that it is ACCEPTED when the table agrees: a scope
+    // asking for tracking inside a tracking table is not a disagreement. Refusing
+    // it outright broke every `*PositionsGrammar` in the repo.
+    const g = rules<Record<string, Combinator<unknown>>>({ trackLines: true }, () => ({
+      Doc: node('Doc', literal('a'), (c, _f, span) => ({ c, span })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    throws(g, /trackLines: true.*trackLines: false/s)
+    const ok = encodeTable(g, { trackLines: true })
+    expect(ok.lines).toBe(1)
+    // …and it really tracks: the span carries line fields, not just `{start,end}`.
+    const span = (run(tableRules(ok).Doc! as never, 'a').value as { span: Record<string, number> }).span
+    expect(span.startLine).toBe(1)
+    expect(span.endColumn).toBe(2)
+  })
+
+  it('an unknown combinator tag names ITSELF in the refusal', () => {
+    // `withCtx` has no opcode. The message must carry the tag, or a build failure
+    // says only that something, somewhere, is unsupported.
+    throws(wrap(withCtx({ x: 1 }, literal('a'))), /no opcode for 'withCtx'/)
+  })
+
+  it('an empty rule map still produces a runnable table', () => {
+    // `finish()` emits one OP_EMPTY when nothing was encoded, so `resolveTable`
+    // never sees a zero-length code array.
+    const prog = encodeTable({})
+    expect(prog.code.length).toBeGreaterThan(0)
+    expect(prog.rules).toEqual({})
+    expect(Object.keys(tableRules(prog))).toEqual([])
+  })
+})
+
+/**
+ * The constructs that are NOT recoverable from `_def` and are therefore run as
+ * real combinators through OP_CALL. `balanced()` is the sharp one: it overrides
+ * `.parse` and leaves `_def` as the eager interior, so a structural encoding
+ * builds a different parser and reports nothing.
+ */
+describe('OP_CALL escapes — encoded by reference, and emit-blocked as a result', () => {
+  const balancedGrammar = rules<Record<string, Combinator<unknown>>>(() => ({
+    Doc: node('Doc', balanced('(', ')'), c => ({ t: 'Doc', c })),
+  })) as unknown as Record<string, Combinator<unknown>>
+
+  const tokenGrammar = rules<Record<string, Combinator<unknown>>>(() => ({
+    Doc: node('Doc', token(sequence(literal('a'), many(literal('b')))), c => ({ t: 'Doc', c })),
+  })) as unknown as Record<string, Combinator<unknown>>
+
+  it('balanced() and token() parse identically to the interpreter through the table', () => {
+    for (const [name, g] of [['balanced', balancedGrammar], ['token', tokenGrammar]] as const) {
+      const table = tableRules(encodeTable(g)).Doc!
+      for (const input of ['(a(b)c)', '(a', 'abb', 'a', '', 'zz']) {
+        expect(JSON.stringify(run(table as never, input)), `${name} ${JSON.stringify(input)}`)
+          .toBe(JSON.stringify(run(g.Doc! as never, input)))
+      }
+    }
+    // Not vacuous: the balanced scan really consumed the nesting, and `token`
+    // really flattened its sequence to one string.
+    const b = run(tableRules(encodeTable(balancedGrammar)).Doc! as never, '(a(b)c)').value as { c: Array<{ value: string }> }
+    expect(b.c[0]!.value).toBe('(a(b)c)')
+    const t = run(tableRules(encodeTable(tokenGrammar)).Doc! as never, 'abb').value as { c: Array<{ value: string }> }
+    expect(t.c[0]!.value).toBe('abb')
+  })
+
+  it('MOVED: a scanning grammar is still unemittable, but now says which construct', () => {
+    // The limit is unchanged — `balanced()` parks a live combinator, so the
+    // grammar runs in memory and cannot ship as a module. What changed is the
+    // REPORT: it used to surface as "[object Array]"/"[object Object]" from
+    // inside the printer, naming neither the grammar nor the construct. The
+    // program now carries `runtimeOnly` and the refusal names `balanced()`.
+    const prog = encodeTable(balancedGrammar)
+    expect(prog.runtimeOnly).toEqual(['balanced()'])
+    expect(() => emitTableModule(prog)).toThrow(/RUNTIME-ONLY/)
+    expect(() => emitTableModule(prog)).toThrow(/balanced\(\)/)
+    // `token()` used to be in the same bucket and no longer is — the two are not
+    // one construct, so the narrower claim is asserted rather than assumed.
+    expect(encodeTable(tokenGrammar).runtimeOnly).toBeUndefined()
+    expect(() => emitTableModule(encodeTable(tokenGrammar))).not.toThrow()
+  })
+})
+
+describe('trivia scopes are table rows, not lowering decisions', () => {
+  const outerWs = trivia(regex(/[ \t]*/))
+  const dots = trivia(regex(/\.*/))
+  const opts = { trivia: outerWs as never }
+
+  const g = rules<Record<string, Combinator<unknown>>>({ trivia: outerWs }, () => ({
+    Loose: node('Loose', sequence(literal('a'), literal('b')), c => ({ t: 'Loose', c })),
+    // `trivia: null` clears it for the subtree; a different trivia REPLACES it.
+    Tight: node('Tight', parser({ trivia: null }, sequence(literal('a'), literal('b'))) as unknown as Combinator<unknown>, c => ({ t: 'Tight', c })),
+    Dotted: node('Dotted', parser({ trivia: dots }, sequence(literal('a'), literal('b'))) as unknown as Combinator<unknown>, c => ({ t: 'Dotted', c })),
+  })) as unknown as Record<string, Combinator<unknown>>
+
+  it('a cleared scope stops skipping, and a replaced scope skips the OTHER thing', () => {
+    const t = tableRules(encodeTable(g))
+    // One input, three scopes — the difference IS the scope row.
+    expect(run(t.Loose! as never, 'a b', opts).ok).toBe(true)
+    expect(run(t.Tight! as never, 'a b', opts).ok).toBe(false)
+    expect(run(t.Tight! as never, 'ab', opts).ok).toBe(true)
+    expect(run(t.Dotted! as never, 'a..b', opts).ok).toBe(true)
+    expect(run(t.Dotted! as never, 'a b', opts).ok).toBe(false)
+    // …and every one of those matches the interpreter.
+    for (const [rule, input] of [['Loose', 'a b'], ['Tight', 'a b'], ['Tight', 'ab'], ['Dotted', 'a..b'], ['Dotted', 'a b']] as const) {
+      expect(run(t[rule]! as never, input, opts).ok, `${rule} ${JSON.stringify(input)}`)
+        .toBe(run(g[rule]! as never, input, opts).ok)
+    }
+  })
+})
+
+describe('terminals the table REBUILDS rather than references', () => {
+  it('keywords() becomes ONE regex that keeps the boundary and the folding', () => {
+    // The encoder rebuilds the alternation instead of reusing the combinator's.
+    // A rebuild that dropped the boundary would match the prefix of a longer word
+    // and still look like a successful parse.
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      Kw: node('Kw', keywords(['if', 'ifdef'], { boundary: 'a-z' }), c => ({ t: 'Kw', c })),
+      Ci: node('Ci', keywords(['red', 'blue'], { caseInsensitive: true }), c => ({ t: 'Ci', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const t = tableRules(encodeTable(g))
+    const value = (rule: string, input: string): string =>
+      (run(t[rule]! as never, input).value as { c: Array<{ value: string }> }).c[0]!.value
+    // Longest-first, and the boundary refusing a longer word.
+    expect(value('Kw', 'ifdef')).toBe('ifdef')
+    expect(value('Kw', 'if')).toBe('if')
+    expect(run(t.Kw! as never, 'iffy').ok).toBe(false)
+    expect(run(t.Kw! as never, 'ifx').ok).toBe(false)
+    // Case-insensitive keeps the INPUT's casing, not the keyword's.
+    expect(value('Ci', 'RED')).toBe('RED')
+    expect(run(t.Ci! as never, 'green').ok).toBe(false)
+    // Accept/reject and value agree with the interpreter on every case.
+    for (const [rule, input] of [['Kw', 'if'], ['Kw', 'ifdef'], ['Kw', 'iffy'], ['Ci', 'RED'], ['Ci', 'Blue'], ['Ci', 'green']] as const) {
+      const a = run(t[rule]! as never, input)
+      const b = run(g[rule]! as never, input)
+      expect(a.ok, `${rule} ${input}`).toBe(b.ok)
+      expect(JSON.stringify(a.value), `${rule} ${input}`).toBe(JSON.stringify(b.value))
+    }
+  })
+
+  it('a case-insensitive literal yields the INPUT casing, tracked or not', () => {
+    // OP_LIT_CI returns `input.slice(...)`, not the literal — normalising here
+    // would silently rewrite the author's source text into the tree.
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      Doc: node('Doc', literal('abc', { caseInsensitive: true }), c => ({ t: 'Doc', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const first = (rule: unknown, input: string): string =>
+      (run(rule as never, input).value as { c: Array<{ value: string }> }).c[0]!.value
+    const plain = tableRules(encodeTable(g)).Doc!
+    const tracked = tableRules(encodeTable(g, { trackLines: true })).Doc!
+    expect(first(plain, 'AbC')).toBe('AbC')
+    expect(first(tracked, 'AbC')).toBe('AbC')
+    expect(run(plain as never, 'abd').ok).toBe(false)
+    expect(JSON.stringify(run(plain as never, 'ABC').value)).toBe(JSON.stringify(run(g.Doc! as never, 'ABC').value))
+  })
+
+  it('a first-set gate over NON-ASCII code points admits and rejects correctly', () => {
+    // `classHas` has a separate branch for code points ≥ 128 and `lead` has a
+    // surrogate-pair read. An ASCII-only corpus enters neither, and an astral
+    // character would be gated out of a rule that plainly matches it.
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      Emoji: node('Emoji', regex(/[\u{1F600}-\u{1F64F}]+/u), c => ({ t: 'Emoji', c })),
+      Accent: node('Accent', regex(/[à-ÿ]+/), c => ({ t: 'Accent', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const t = tableRules(encodeTable(g))
+    expect(run(t.Emoji! as never, '\u{1F600}\u{1F601}').ok).toBe(true)
+    expect(run(t.Emoji! as never, 'a').ok).toBe(false)
+    expect(run(t.Accent! as never, 'é').ok).toBe(true)
+    expect(run(t.Accent! as never, 'e').ok).toBe(false)
+    for (const [rule, input] of [['Emoji', '\u{1F600}'], ['Emoji', 'x'], ['Accent', 'é'], ['Accent', 'e']] as const) {
+      expect(JSON.stringify(run(t[rule]! as never, input)), `${rule} ${input}`)
+        .toBe(JSON.stringify(run(g[rule]! as never, input)))
+    }
+  })
+
+  it('optional() yields NULL on a miss, through the table as in the interpreter', () => {
+    // It yielded `undefined` here once. Both serialise away, so the bug survived
+    // a digest comparison and was found only by reading the value back.
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      Doc: transform(sequence(literal('a'), optional(literal('b'))), v => (v as unknown[])[1]) as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    const t = tableRules(encodeTable(g)).Doc!
+    expect(run(t as never, 'a').value).toBeNull()
+    expect(run(t as never, 'a').value).not.toBeUndefined()
+    expect(run(t as never, 'ab').value).toBe('b')
+  })
+})
+
+/**
+ * FAILURE REPORTING — the half the three-way identity gate cannot see.
+ *
+ * `bench/table-lowering-identity.ts` digests `{ ok, value, unconsumedFrom }`. The `expected`
+ * set is not in the digest, so a table that accepts and rejects exactly the right
+ * inputs while reporting a different error passes the whole sweep. These compare
+ * the reported sets directly, against BOTH shipped engines.
+ */
+describe('table failure reporting matches the interpreter and the compiled path', () => {
+  const suites = [
+    ['base', baseNodes, 'List', ['(a,b', '(', '(,)', 'zz']],
+    ['field', fieldNodes, 'Entry', ['[ab=1', '[', 'zz', '[ab=zz]']],
+    ['select', selectNodes, 'Proj', ['ax', '', '###']],
+    ['dispatch', dispatchNodes, 'Doc', ['nope', '']],
+    ['dispatch-no-fallback', dispatchNoFallback, 'Doc', ['@nope', 'x']],
+  ] as const
+
+  it('every failing input reports the same expected set on all three paths', () => {
+    for (const [name, g, rule, inputs] of suites) {
+      const table = tableRules(encodeTable(g as never))[rule]!
+      const compiled = (compose([g as never]) as unknown as Record<string, unknown>)[rule]!
+      for (const input of inputs) {
+        const t = run(table as never, input)
+        const i = run((g as Record<string, unknown>)[rule] as never, input)
+        const c = run(compiled as never, input)
+        expect(t.ok, `${name} ${JSON.stringify(input)}`).toBe(false)
+        expect(t.expected, `${name} ${JSON.stringify(input)} vs interpreter`).toEqual(i.expected)
+        expect(t.expected, `${name} ${JSON.stringify(input)} vs compiled`).toEqual(c.expected)
+        expect(t.span, `${name} ${JSON.stringify(input)} span`).toEqual(i.span)
+        expect(t.expected.length).toBeGreaterThan(0)
+      }
+    }
+  })
+
+  it('DEFECT: four shapes report a DIFFERENT expected set from a table', () => {
+    // All four accept and reject exactly the right inputs, so the identity sweep
+    // is blind to every one of them; only the error message moves. Collected here
+    // so the size of the divergence is one number rather than a rumour.
+    //
+    // Characterised, not endorsed: each `toEqual` on the TABLE row is the current
+    // behaviour, and each `interp`/`compiled` row is what it should be.
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      // 1. keywords(): the encoder rebuilds the terminal and derives the set from
+      //    the rebuilt regex's parts instead of the combinator's own label.
+      Kw: node('Kw', keywords(['if', 'ifdef'], { boundary: 'a-z' }), c => ({ t: 'Kw', c })),
+      // 2. peek(): the lookahead's INNER expectation escapes.
+      Peek: transform(sequence(peek(literal('ab')), literal('a')), v => (v as unknown[])[1]) as Combinator<unknown>,
+      // 3. a first-char-dispatched choice that matches NO arm returns without
+      //    setting the expected set at all, so a stale one from the last attempt
+      //    is reported — here, one arm out of three.
+      Ch: choice(
+        transform(regex(/[à-ÿ]+/), v => v),
+        transform(regex(/[\u{1F600}-\u{1F64F}]+/u), v => v),
+        transform(regex(/[0-9]+/), v => v),
+      ) as Combinator<unknown>,
+      // 4. a sepBy that fails its `min` reports the SEPARATOR rather than the item.
+      Min: sepBy(regex(/[a-z]/), literal(','), { min: 2 }) as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    const t = tableRules(encodeTable(g))
+    const c = compose([g as never]) as unknown as Record<string, unknown>
+    const cases = [
+      ['Kw', 'ifx', ['"ifdef"', '"if"'], ['keyword']],
+      ['Peek', 'ax', ['"ab"'], ['peek(literal)']],
+      ['Min', 'a', ['","'], ['/[a-z]/']],
+    ] as const
+    for (const [rule, input, fromTable, fromEngines] of cases) {
+      expect(run(t[rule]! as never, input).ok, `${rule} ${input}`).toBe(false)
+      expect(run(t[rule]! as never, input).expected, `${rule} table`).toEqual(fromTable)
+      expect(run(g[rule]! as never, input).expected, `${rule} interpreter`).toEqual(fromEngines)
+      expect(run(c[rule] as never, input).expected, `${rule} compiled`).toEqual(fromEngines)
+    }
+    // AND THE FAILURE POSITION MOVES TOO, on the flagship grammar: for '[1,2,]'
+    // the table stops at offset 4 naming one token; both shipped engines report
+    // offset 0 and every arm of the value choice. The identity digest carries
+    // `{ ok, value, unconsumedFrom }` — not the span — so a whole failure report
+    // can diverge with the sweep entirely green.
+    const jt = tableRules(encodeTable(jsonRules as never)).Value!
+    const jc = (compose([jsonRules as never]) as unknown as Record<string, unknown>).Value!
+    const bad = '[1,2,]'
+    expect(run(jt as never, bad).span).toEqual({ start: 4, end: 4 })
+    expect(run(jsonRules.Value! as never, bad).span).toEqual({ start: 0, end: 0 })
+    expect(run(jc as never, bad).span).toEqual({ start: 0, end: 0 })
+    expect(run(jt as never, bad).expected).toHaveLength(1)
+    expect(run(jsonRules.Value! as never, bad).expected).toEqual(run(jc as never, bad).expected)
+    expect(run(jsonRules.Value! as never, bad).expected.length).toBeGreaterThan(1)
+    // All three still REJECT it — only the report differs.
+    for (const r of [run(jt as never, bad), run(jsonRules.Value! as never, bad), run(jc as never, bad)]) {
+      expect(r.ok).toBe(false)
+    }
+
+    // The dispatched choice reports ONE arm of three — a set left over from the
+    // last attempt rather than the arms it could have taken. Stated as the
+    // relationship, because the literal regex sources are unreadable here.
+    const chTable = run(t.Ch! as never, 'a').expected
+    const chInterp = run(g.Ch! as never, 'a').expected
+    expect(run(c.Ch as never, 'a').expected).toEqual(chInterp)
+    expect(chInterp).toHaveLength(3)
+    expect(chTable).toHaveLength(1)
+    expect(chInterp).toEqual(expect.arrayContaining(chTable))
+  })
+
+})
