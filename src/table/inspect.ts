@@ -53,7 +53,7 @@ export function reachableOps(prog: TableProgram): Map<number, number> {
         stack.push(code[ip + 1]!)
         if (code[ip + 4]! >= 0) stack.push(code[ip + 4]!)
         break
-      case OP_XFORM: case OP_LEAF: case OP_SCOPE:
+      case OP_XFORM: case OP_LEAF: case OP_SCOPE: case OP_FIELD:
         stack.push(code[ip + 2]!)
         break
       case OP_NODE: case OP_NODE_TRACK:

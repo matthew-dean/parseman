@@ -4,6 +4,7 @@ import { baseNodes, fieldNodes, jsonRules, jsonWs } from '../../bench/g5-grammar
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
+import { opHistogram } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { many, node, regex, rules } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
@@ -186,5 +187,14 @@ describe('table lowering — three-way identity across every encodable grammar',
     // An absent optional field is OMITTED, not recorded as undefined.
     expect(Object.keys(fieldsOf('[ab=1]'))).not.toContain('note')
     expect(Object.keys(fieldsOf('[ab=1;zz]'))).toContain('note')
+  })
+
+  it('the inspector walks a field-bearing program', () => {
+    // `reachableOps` decodes each row's declared width. An opcode missing from
+    // that switch throws on any grammar that uses it — so the walk IS the check
+    // that every new row was taught to every reader, not just the driver.
+    const hist = opHistogram(encodeTable(fieldNodes))
+    expect(hist.FIELD).toBeGreaterThan(0)
+    expect(hist.NODE).toBeGreaterThan(0)
   })
 })
