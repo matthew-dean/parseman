@@ -49,6 +49,8 @@ const REPO = resolve(__dir, '..')
 const CHILD = resolve(__dir, 'measure-bar.ts')
 const require_ = createRequire(import.meta.url)
 const BAR_TIMEOUT_MS = 10 * 60_000
+/** Repo metadata calls are metadata, not work: they must never be the thing that hangs a run. */
+const GIT_TIMEOUT_MS = 30_000
 
 /** The bar every other bar is compared against — Parséman's compiled output. */
 const SUBJECT = 'parseman-macro'
@@ -169,7 +171,19 @@ function repoInfo(): Resolved {
   // Ask git for the SHA. Do NOT read .git/HEAD as a path: inside a git worktree
   // .git is a FILE, not a directory, so that read is a silent per-worktree
   // failure that happens to pass on a primary checkout.
-  const g = (args: string[]) => execFileSync('git', args, { cwd: REPO, encoding: 'utf8' }).trim()
+  // Bounded like every other subprocess here: a hung `git` (lock contention, a
+  // credential prompt, a slow filesystem) would otherwise block the whole run
+  // with no recovery and no indication of which call stalled.
+  const g = (args: string[]) => {
+    try {
+      return execFileSync('git', args, { cwd: REPO, encoding: 'utf8', timeout: GIT_TIMEOUT_MS }).trim()
+    } catch (e) {
+      if (isTimeoutError(e)) {
+        throw new Error(`svg-margin: git ${args.join(' ')} timed out after ${GIT_TIMEOUT_MS / 1000}s in ${REPO}`)
+      }
+      throw e
+    }
+  }
   const dirty = g(['status', '--porcelain']).length > 0
   repoInfoCache = {
     label: `${pkg.name} (source, run via tsx)`,
@@ -279,6 +293,14 @@ const OUT = argOf('out', '')
  * that uses it says so in the banner, in DROPPED, and in the verdict, so an
  * overridden run can never be mistaken for the gate itself.
  */
+// `argOf` cannot distinguish "flag absent" from "flag present with no value", and
+// for this flag those mean opposite things: absent is the real gate, present is a
+// verification override. Silently treating a valueless `--assert-floor` as the real
+// gate would report a PASS for a run the operator believed was a known-answer check.
+const floorIdx = process.argv.indexOf('--assert-floor')
+if (floorIdx >= 0 && !process.argv[floorIdx + 1]) {
+  throw new Error('svg-margin: --assert-floor requires a value (e.g. --assert-floor 1000)')
+}
 const floorArg = argOf('assert-floor', '')
 const FLOOR = floorArg === '' ? MIN_MARGIN : Number(floorArg)
 

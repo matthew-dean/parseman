@@ -6,7 +6,7 @@ as the default** in `codegen.ts` (§9.1, commits `6feb883` / `879f486`, selectab
 standalone prototype (§10). Sections are marked **settled** (owner decision, build to
 it), **measured**, or **hypothesis** (plausible, unmeasured).
 
-> ### Read these first — two results that invert earlier expectations
+> ## Read these first — two results that invert earlier expectations
 >
 > 1. **The entire parse-time spread across every dispatch configuration is 2.4%**
 >    (§9.1.1). Dispatch keying is **not** where css parse time goes. The technique
@@ -253,8 +253,9 @@ Read the §9 numbers through that lens and the apparent trade-off dissolves:
   index, the arm selection becomes **data**, and that bulk goes away.
 
 > **MEASURED SINCE (§9.1): this is what landed.** trie-walk-to-id with if-chain arm
-> selection is now the shipped default, and it did win both axes — fastest *and*
-> smallest, raw and gzipped. The caveat is the size of the prize: the whole spread
+> selection is now the shipped default. It won on SIZE, raw and gzipped. It did NOT
+> win on speed: §9.1 measures `trie:switch` at 5.945 ms against `trie:ifchain` at
+> 5.967 ms, so the shipped configuration is the smallest and the second fastest. The caveat is the size of the prize: the whole spread
 > across every configuration is **2.4%** (§9.1.1).
 
 ### 6.2 Hard requirement: the discriminator must be searched for, not assumed
@@ -624,7 +625,7 @@ that share a case-folded walk.** Measured artifact deltas:
 | css | **-0.75%** | -24,993 B |
 | scss | -0.09% | |
 | jess | 0.00% | |
-| **less** | **+0.02%** | **+902 B — a REGRE§ION** |
+| **less** | **+0.02%** | **+902 B — a REGRESSION** |
 
 **less regresses** because it has dispatch sites whose key sets make the emitted trie
 tables cost *more* than the character chain they replace. The unconditional rule
@@ -1269,7 +1270,7 @@ In rough order of likelihood:
 | Perfect hashing: search works, loses on table bytes | **measured — `works, loses on bytes`, NOT rejected as infeasible** |
 | `firstchar` / `lenswitch` fall back to chain on css at-keywords | **measured — `not applicable to this key set`, NOT rejected** |
 | trie:switch's larger raw size is the downstream formatter, not the emitter | **measured — gzip is the deciding metric for switch-shaped emission** |
-| Per-dialect delta: css -0.75%, scss -0.09%, jess 0.00%, **less +0.02%** | **measured — less REGRE§ES; untried #20 is the fix** |
+| Per-dialect delta: css -0.75%, scss -0.09%, jess 0.00%, **less +0.02%** | **measured — less REGRESSES; untried #20 is the fix** |
 
 ### Measured — everything else
 
@@ -1311,7 +1312,7 @@ In rough order of likelihood:
 | --- | --- |
 | Token-index rewind removes most of the 723,605 B save/rollback | **hypothesis — unmeasured; the largest unverified term in §11.** §8.1.1 narrows it: under half of css mark/restore is the binding case |
 | Per-site table/chain cost check (#20) fixes the less regression | **untried — and a measured regression is waiting for it** |
-| Every item in §14 (20 experiments) | **untried — no measurement attempted** |
+| Every item in §14 (20 experiments) | **untried — no IMPLEMENTATION attempted.** Two carry supporting measurements: #13 has a measured size estimate, and #20 has the measured less regression that motivates it |
 | Rule-level inline cap; cross-artifact sharing; source-level shape sharing; arity-only shared restore helper | **rejected — evidence in §15** |
 | **Mechanically removable total: 793,374 B, 23.8%, to ~2,543,000 B (22× source)** | **arithmetic over measured categories — NOT an end-to-end result, and the one converted category delivered 62% of its estimate** |
 | That this technique reaches 250 KB, or 10×, or 4× | **NO — see §11; it does not, and nothing measured suggests it does** |
