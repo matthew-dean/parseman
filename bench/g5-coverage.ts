@@ -33,10 +33,19 @@ function tags(p: Combinator<unknown>, seen = new Set<Combinator<unknown>>(), out
   return out
 }
 
+// Must mirror the `case` arms of `encodeDef` in src/table/encode.ts, plus the
+// escape-hatch tags it routes to OP_CALL (scanTo, token, balanced). Drift here
+// reports a construct as UNSUPPORTED that the encoder handles fine -- which is
+// how `expect` and `keywords` came to be missing after they were implemented.
 const SUPPORTED = new Set([
-  'literal', 'regex', 'sequence', 'choice', 'many', 'oneOrMore', 'optional',
-  'sepBy', 'transform', 'leaf', 'node', 'lazy', 'not', 'peek', 'token',
-  'attempt', 'label', 'trivia', 'grammar',
+  // encodeDef case arms
+  'literal', 'regex', 'sequence', 'choice', 'many', 'optional',
+  'transform', 'leaf', 'node', 'lazy', 'not', 'peek',
+  'attempt', 'label', 'trivia', 'grammar', 'expect', 'keywords',
+  // routed to OP_CALL rather than lowered structurally
+  'scanTo', 'token',
+  // desugared before encodeDef sees them
+  'oneOrMore', 'sepBy',
 ])
 
 async function main(): Promise<void> {

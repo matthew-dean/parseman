@@ -12,10 +12,27 @@ function jsString(s: string): string {
   return JSON.stringify(s)
 }
 
+/**
+ * Serialise one const-pool entry, or REFUSE it.
+ *
+ * The fallthrough was `JSON.stringify(v)`, which returns the VALUE `undefined`
+ * — not a string — for a function, a symbol, or `undefined` itself. Template
+ * interpolation then wrote the text `undefined` into the module, producing an
+ * artifact that loads and misbehaves rather than one that fails to build. A
+ * combinator object reaching here would emit `{}` for the same reason.
+ *
+ * Fail closed: the pool must only ever hold what the driver can read back.
+ */
 function emitConst(v: unknown): string {
   if (v instanceof RegExp) return `/${v.source}/${v.flags}`
   if (typeof v === 'string') return jsString(v)
-  return JSON.stringify(v)
+  if (v === null || typeof v === 'number' || typeof v === 'boolean') return JSON.stringify(v)
+  const shown = typeof v === 'object' ? Object.prototype.toString.call(v) : typeof v
+  throw new TypeError(
+    `emitConst: cannot serialise a const-pool entry of type ${shown}. ` +
+      'Only strings, numbers, booleans, null and RegExp round-trip through the emitted module; ' +
+      'anything else must be carried in prog.fns or refused at encode time.',
+  )
 }
 
 export type EmitOptions = {

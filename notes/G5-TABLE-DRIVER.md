@@ -326,7 +326,9 @@ Assumptions in that projection, stated so they can be checked:
    is proportional to its combinator count, so a large rule costs more — but it
    costs its OPERANDS, not a fresh copy of the machinery, which is the whole
    claim. json at 9 productions came out at 119 B/rule and the Less grammar at
-   1,190 words for 29 rules is ~41 words/rule.
+   1,277 words for 29 rules is 44.0 words/rule. (An earlier draft said 1,190 /
+   ~41 here while the table above said 1,277; 1,277 is the measured figure —
+   `encodeTable(lessRules, {}).code.length` — and the two now agree.)
 4. **The speed number is JSON's.** A grammar with heavier backtracking or deeper
    `node()` nesting will have a different ratio; css and less are unmeasured for
    speed under the table.

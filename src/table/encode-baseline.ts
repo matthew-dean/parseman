@@ -145,6 +145,18 @@ class Encoder {
 
   private encodeDef(p: Combinator<unknown>): number {
     const d = p._def as ParserDef
+    // REFUSE what this frozen copy cannot lower, rather than lowering it wrong.
+    //
+    // `scanTo` and `token` have no `case` below, so they reach `default:` and throw
+    // — a refusal, which is safe. `balanced()` does NOT: it overrides `.parse` and
+    // leaves `_def` as the EAGER INTERIOR with no distinguishing tag, so the switch
+    // would encode the interior, report nothing, and produce a table that parses and
+    // yields a different tree. An ablation measurement taken on a grammar using
+    // `balanced()` would then be comparing against a parser that is not the one
+    // under test. Refused explicitly, since this copy has no OP_CALL to fall back on.
+    if ((p as { _balancedAmbient?: unknown })._balancedAmbient !== undefined) {
+      throw new UnsupportedConstructBaseline('balanced() — the frozen ablation encoder cannot lower it')
+    }
     switch (d.tag) {
       case 'literal': {
         if (d.caseInsensitive) throw new UnsupportedConstructBaseline('literal(caseInsensitive)')
