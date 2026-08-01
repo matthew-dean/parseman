@@ -297,9 +297,12 @@ const OUT = argOf('out', '')
 // for this flag those mean opposite things: absent is the real gate, present is a
 // verification override. Silently treating a valueless `--assert-floor` as the real
 // gate would report a PASS for a run the operator believed was a known-answer check.
-const floorIdx = process.argv.indexOf('--assert-floor')
-if (floorIdx >= 0 && !process.argv[floorIdx + 1]) {
-  throw new Error('svg-margin: --assert-floor requires a value (e.g. --assert-floor 1000)')
+// EVERY occurrence, not the first: `--assert-floor 2 --assert-floor` would pass an
+// indexOf check and silently use the first value.
+for (let i = 0; i < process.argv.length; i++) {
+  if (process.argv[i] === '--assert-floor' && !process.argv[i + 1]) {
+    throw new Error('svg-margin: --assert-floor requires a value (e.g. --assert-floor 1000)')
+  }
 }
 const floorArg = argOf('assert-floor', '')
 const FLOOR = floorArg === '' ? MIN_MARGIN : Number(floorArg)
