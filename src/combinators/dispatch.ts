@@ -51,7 +51,7 @@ type UnionArms<T extends readonly DispatchArm<unknown>[]> = {
   [K in keyof T]: ArmValue<T[K]>
 }[number]
 
-function parserUsesRouted(parser: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function parserUsesRouted(parser: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
   if (seen.has(parser)) return false
   seen.add(parser)
   const def = parser._def
@@ -96,11 +96,11 @@ function parserUsesRouted(parser: Combinator<unknown>, seen: Set<Combinator<unkn
   }
 }
 
-function branchUsesRouted(branch: { parser: Combinator<unknown>; usesRouted?: boolean | undefined }): boolean {
+export function branchUsesRouted(branch: { parser: Combinator<unknown>; usesRouted?: boolean | undefined }): boolean {
   return branch.usesRouted === true || parserUsesRouted(branch.parser)
 }
 
-function asciiFoldKey(key: string): string {
+export function asciiFoldKey(key: string): string {
   let out = ''
   for (let i = 0; i < key.length; i++) {
     const c = key.charCodeAt(i)
@@ -109,7 +109,7 @@ function asciiFoldKey(key: string): string {
   return out
 }
 
-function matchesDispatchMatcher(value: string, matcher: DispatchMatcherCase): boolean {
+export function matchesDispatchMatcher(value: string, matcher: DispatchMatcherCase): boolean {
   const candidate = matcher.caseInsensitive ? asciiFoldKey(value) : value
   const expected = matcher.caseInsensitive ? asciiFoldKey(matcher.value) : matcher.value
   switch (matcher.kind) {

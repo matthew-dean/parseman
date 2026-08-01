@@ -317,7 +317,7 @@ class Encoder {
     if (this.code.length === 0) this.emit(OP_EMPTY)
     return {
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
-      fx: this.fx, disp: this.disp, rules: this.rules,
+      fx: this.fx, disp: this.disp, dsp: [], rules: this.rules,
       lines: this.track ? 1 : 0,
     }
   }

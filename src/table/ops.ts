@@ -124,6 +124,24 @@ export const OP_CALL = 23
  * has it — a field outside any field-reading node costs nothing.
  */
 export const OP_FIELD = 24
+/**
+ * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
+ *
+ * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
+ * `other` is the `otherwise()` offset (or −1), `otherRouted` is 1 when the
+ * fallback consumes the routed token, and `a1…an` are the arm offsets. Arm
+ * `usesRouted` bits live in the `dsp` entry beside the key maps.
+ *
+ * The selector runs ONCE; the key it returns picks the arm. That is the whole
+ * point of `dispatch()` over a `choice()` of arms that each re-parse the opener.
+ */
+export const OP_DISPATCH = 25
+/**
+ * `ROUTED fallback` — `routed()`. Yields the token the enclosing `dispatch()`
+ * already consumed, so the selected branch can own it. `fallback` is an offset
+ * or −1; it runs when there is no routed token at this position.
+ */
+export const OP_ROUTED = 26
 
 export const OP_NAMES: Record<number, string> = {
   [OP_LIT]: 'LIT', [OP_RX]: 'RX', [OP_SEQ]: 'SEQ', [OP_SEQV]: 'SEQV',
@@ -132,5 +150,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_CALL]: 'CALL',
-  [OP_FIELD]: 'FIELD',
+  [OP_FIELD]: 'FIELD', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
 }

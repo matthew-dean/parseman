@@ -5,7 +5,7 @@
  * grammar in the repo, and one of the grammars in the external comparison
  * benchmark, so a speed number here is directly comparable to the chart.
  */
-import { rules, literal, regex, sequence, choice, optional, sepBy, transform, trivia, node, many, field, type Combinator } from '../src/index.ts'
+import { rules, literal, regex, sequence, choice, optional, sepBy, transform, trivia, node, many, field, dispatch, when, otherwise, routed, startsWith, type Combinator } from '../src/index.ts'
 
 // ---------------------------------------------------------------------------
 // JSON, rebuilt as a full rules() map so every production is an addressable
@@ -147,3 +147,40 @@ export const fieldNodes = rules<Record<string, Combinator<unknown>>>(g => ({
   ),
   Doc: node('Doc', many(choice(g.Entry!, g.Pair!)), c => ({ t: 'Doc', c })),
 })) as unknown as Record<string, Combinator<unknown>>
+
+/**
+ * A grammar exercising EVERY dispatch arm shape.
+ *
+ * Each arm returns a DISTINCT marker, because tree identity alone cannot tell
+ * you an arm was chosen for the right reason — only that the tree matched. Two
+ * arms that produce the same tree for an input make identity blind to which one
+ * ran, so the arms are made distinguishable on purpose and read back directly.
+ *
+ *   key hit                `@media`      -> 'K:media'
+ *   case-insensitive key   `@IMPORT`     -> 'CI:import'   (ASCII-folded key map)
+ *   matcher arm            `@-webkit-x`  -> 'M:...'       (startsWith)
+ *   otherwise + routed     `@whatever`   -> 'O:@whatever' (fallback OWNS the token)
+ */
+export const dispatchNodes = rules<Record<string, Combinator<unknown>>>(() => {
+  const at = regex(/@[a-zA-Z-]+/)
+  return {
+    Doc: dispatch(
+      at,
+      when('@media', transform(literal(''), () => 'K:media')),
+      when('@import', transform(literal(''), () => 'CI:import'), { caseInsensitive: true }),
+      when(startsWith('@-'), transform(literal(''), () => 'M:vendor')),
+      otherwise(transform(routed(), v => `O:${String(v)}`)),
+    ) as unknown as Combinator<unknown>,
+  }
+}) as unknown as Record<string, Combinator<unknown>>
+
+/** The same, with NO `otherwise()` — an unmatched key must FAIL. */
+export const dispatchNoFallback = rules<Record<string, Combinator<unknown>>>(() => {
+  const at = regex(/@[a-zA-Z-]+/)
+  return {
+    Doc: dispatch(
+      at,
+      when('@media', transform(literal(''), () => 'K:media')),
+    ) as unknown as Combinator<unknown>,
+  }
+}) as unknown as Record<string, Combinator<unknown>>

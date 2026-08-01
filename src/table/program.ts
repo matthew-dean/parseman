@@ -27,6 +27,13 @@ export type TableProgram = {
   readonly fx: readonly (readonly string[])[]
   /** Dispatch tables: per choice, the arms' char-class indices (−1 = no gate). */
   readonly disp: readonly (readonly number[])[]
+  /**
+   * `dispatch()` tables. Deliberately plain arrays of strings and numbers rather
+   * than prepared `Map`s: the emitted module has to be able to PRINT this, and a
+   * Map in the const pool would fail `emitConst` closed. The Maps are built once
+   * at `resolveTable`, exactly like the char-class ASCII lookups.
+   */
+  readonly dsp: readonly DispatchSpec[]
   /** Rule name → entry offset in `code`. */
   readonly rules: Readonly<Record<string, number>>
   /**
@@ -51,11 +58,36 @@ export type CompactProgram = {
   readonly r: Readonly<Record<string, number>>
   readonly f: readonly unknown[]
   readonly l?: 0 | 1
+  readonly p?: readonly DispatchSpec[]
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   if ('code' in p) return p
-  return { code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f, lines: p.l ?? 0 }
+  return { code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f, lines: p.l ?? 0, dsp: p.p ?? [] }
+}
+
+/** One `dispatch()`'s routing tables, in serialisable form. */
+export type DispatchSpec = {
+  /** Exact keys, parallel to `keyArm`. */
+  readonly key: readonly string[]
+  readonly keyArm: readonly number[]
+  /** ASCII-folded keys for case-insensitive cases, parallel to `foldArm`. */
+  readonly fold: readonly string[]
+  readonly foldArm: readonly number[]
+  /** `[kind, value, flags, arm]` per matcher; `kind` is 0/1/2 for startsWith/endsWith/matches. */
+  readonly match: readonly (readonly [number, string, string, number])[]
+  /** 1 when that arm consumes the routed token. */
+  readonly routed: readonly number[]
+  /** Expected set when nothing matches — every case key, JSON-quoted. */
+  readonly expected: readonly string[]
+}
+
+export type ResolvedDispatchSpec = {
+  readonly byKey: ReadonlyMap<string, number>
+  readonly byFold: ReadonlyMap<string, number>
+  readonly match: readonly (readonly [number, string, string, number])[]
+  readonly routed: readonly number[]
+  readonly expected: readonly string[]
 }
 
 /** A char class expanded for execution: O(1) for ASCII, ranges above it. */
@@ -88,6 +120,7 @@ export type ResolvedTable = {
   readonly cc: readonly ResolvedClass[]
   readonly fx: readonly (readonly string[])[]
   readonly disp: readonly ResolvedDispatch[]
+  readonly dsp: readonly ResolvedDispatchSpec[]
   readonly rules: Readonly<Record<string, number>>
 }
 
@@ -147,6 +180,13 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
     cc,
     fx: prog.fx,
     disp: prog.disp.map(d => resolveDispatch(d, cc)),
+    dsp: prog.dsp.map(d => ({
+      byKey: new Map(d.key.map((x, i) => [x, d.keyArm[i]!])),
+      byFold: new Map(d.fold.map((x, i) => [x, d.foldArm[i]!])),
+      match: d.match,
+      routed: d.routed,
+      expected: d.expected,
+    })),
     rules: prog.rules,
   }
   _tableCache.set(prog, built)

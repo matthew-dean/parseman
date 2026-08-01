@@ -3,13 +3,14 @@ import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
+import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators/dispatch.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
-  OP_FIELD,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED,
 } from './ops.ts'
-import type { TableProgram } from './program.ts'
+import type { DispatchSpec, TableProgram } from './program.ts'
 
 /** Raised when a construct has no opcode yet. Prototype scope is explicit. */
 export class UnsupportedConstruct extends Error {
@@ -51,6 +52,7 @@ class Encoder {
   cc: string[] = []
   fx: (readonly string[])[] = []
   disp: (readonly number[])[] = []
+  dsp: DispatchSpec[] = []
   rules: Record<string, number> = {}
 
   private kIndex = new Map<unknown, number>()
@@ -323,6 +325,52 @@ class Encoder {
         if (cls < 0) return body
         return this.emit(OP_GATE, cls, body, this.expected(deriveExpected(p)))
       }
+      case 'routed':
+        return this.emit(OP_ROUTED, d.fallback === undefined ? -1 : this.node(d.fallback).ip)
+      case 'dispatch': {
+        // A `routed()` in the SELECTOR is a hard error in the interpreter
+        // (dispatch.ts:318) — it would ask for a token that has not been read yet.
+        if (parserUsesRouted(d.selector as Combinator<unknown>)) {
+          throw new UnsupportedConstruct('dispatch(routed() in selector)')
+        }
+        const sel = this.node(d.selector as Combinator<unknown>).ip
+        const arms: number[] = []
+        const routed: number[] = []
+        const key: string[] = [], keyArm: number[] = []
+        const fold: string[] = [], foldArm: number[] = []
+        const match: Array<readonly [number, string, string, number]> = []
+        const expected: string[] = []
+        // ARM ORDER IS RESOLUTION ORDER: exact key, then ASCII-folded key, then
+        // matchers in declaration order, then otherwise. Mirrors dispatch.ts:325.
+        for (const c of d.cases) {
+          const arm = arms.length
+          arms.push(this.node(c.parser).ip)
+          routed.push(branchUsesRouted(c) ? 1 : 0)
+          for (const kk of c.keys) {
+            expected.push(JSON.stringify(kk))
+            if (c.caseInsensitive) { fold.push(asciiFoldKey(kk)); foldArm.push(arm) }
+            else { key.push(kk); keyArm.push(arm) }
+          }
+        }
+        const KIND = { startsWith: 0, endsWith: 1, matches: 2 } as const
+        for (const m of d.matchers ?? []) {
+          const arm = arms.length
+          arms.push(this.node(m.parser).ip)
+          routed.push(branchUsesRouted(m) ? 1 : 0)
+          match.push([KIND[m.kind], m.value, m.flags ?? '', arm])
+        }
+        const other = d.otherwise === undefined ? -1 : this.node(d.otherwise).ip
+        const dspIdx = this.dsp.length
+        this.dsp.push({ key, keyArm, fold, foldArm, match, routed, expected })
+        const head = this.emitHead(OP_DISPATCH, 5 + arms.length)
+        this.code[head + 1] = sel
+        this.code[head + 2] = dspIdx
+        this.code[head + 3] = other
+        this.code[head + 4] = d.otherwiseUsesRouted === true ? 1 : 0
+        this.code[head + 5] = arms.length
+        for (let i = 0; i < arms.length; i++) this.code[head + 6 + i] = arms[i]!
+        return head
+      }
       case 'field':
         return this.emit(OP_FIELD, this.constant(d.name), this.node(d.parser).ip)
       case 'lazy':
@@ -405,7 +453,7 @@ class Encoder {
     this.collapseIndirection()
     return {
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
-      fx: this.fx, disp: this.disp, rules: this.rules,
+      fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
       lines: this.track ? 1 : 0,
     }
   }

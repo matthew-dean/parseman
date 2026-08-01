@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { checkIdentity } from '../../bench/g5-identity.ts'
-import { baseNodes, fieldNodes, jsonRules, jsonWs } from '../../bench/g5-grammars.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, jsonWs } from '../../bench/g5-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
@@ -196,5 +196,46 @@ describe('table lowering — three-way identity across every encodable grammar',
     const hist = opHistogram(encodeTable(fieldNodes))
     expect(hist.FIELD).toBeGreaterThan(0)
     expect(hist.NODE).toBeGreaterThan(0)
+  })
+
+  it('dispatch: every arm shape agrees across the three paths', () => {
+    const r = checkIdentity(dispatchNodes, 'Doc', [
+      { name: 'key-hit', input: '@media' },
+      { name: 'key-insensitive', input: '@IMPORT' },
+      { name: 'matcher-arm', input: '@-webkit-x' },
+      { name: 'otherwise-routed', input: '@whatever' },
+      { name: 'selector-fails', input: 'nope' },
+      { name: 'empty', input: '' },
+    ])
+    expect(r.mismatches).toEqual([])
+    const nofb = checkIdentity(dispatchNoFallback, 'Doc', [
+      { name: 'key-hit', input: '@media' },
+      { name: 'miss-no-otherwise', input: '@nope' },
+    ])
+    expect(nofb.mismatches).toEqual([])
+  })
+
+  it('dispatch selects the RIGHT arm, which identity alone cannot show', () => {
+    // If two arms produced the same tree for an input, identity would pass while
+    // the wrong arm ran. Each arm returns a distinct marker, read back here.
+    const table = tableRules(encodeTable(dispatchNodes)).Doc!
+    const armFor = (input: string): unknown => {
+      const r = run(table as never, input)
+      // dispatch yields [selectorValue, armValue]
+      return (r.value as [string, unknown])[1]
+    }
+    expect(armFor('@media')).toBe('K:media')          // exact key
+    expect(armFor('@IMPORT')).toBe('CI:import')       // ASCII-folded key map
+    expect(armFor('@-webkit-x')).toBe('M:vendor')     // startsWith matcher
+    expect(armFor('@whatever')).toBe('O:@whatever')   // otherwise, owning the routed token
+
+    // routed() means the fallback CONSUMES the selector's token: the parse ends
+    // at the token's end, not before it.
+    expect(run(table as never, '@whatever').unconsumedFrom).toBe(null)
+
+    // A miss with no otherwise() is a FAILURE, not a silent empty match.
+    const noFb = tableRules(encodeTable(dispatchNoFallback)).Doc!
+    expect(run(noFb as never, '@media').ok).toBe(true)
+    expect(run(noFb as never, '@nope').ok).toBe(false)
   })
 })

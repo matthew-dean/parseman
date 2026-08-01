@@ -1,5 +1,7 @@
 import type { FieldMap, ParseContext, ParseResult } from '../types.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
+import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
+import type { DispatchMatcherKind } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, demoteCapturedToRaw,
@@ -10,11 +12,12 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
-  OP_FIELD,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
-  type CompactProgram, type ResolvedClass, type ResolvedDispatch, type TableProgram, type TableRule,
+  type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
+  type TableProgram, type TableRule,
 } from './program.ts'
 
 /**
@@ -37,6 +40,10 @@ const FAIL: unique symbol = Symbol('pm.fail')
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
 const EMPTY_FX: string[] = []
+const ROUTED_FX: string[] = ['routed()']
+/** `matchesDispatchMatcher` only reads `kind`/`value`/`flags`; this fills the
+ *  shape's remaining required fields without constructing a real arm. */
+const DUMMY = { _tag: 'never', _meta: { firstSet: { kind: 'any' as const }, canMatchNewline: false, isTrivia: false }, _def: { tag: 'unknown' as const }, parse: () => { throw new Error('unreachable') } }
 
 type Leaf = { _tag: 'leaf'; value: string; span: { start: number; end: number } }
 
@@ -95,6 +102,7 @@ function makeDriver(
   cc: readonly ResolvedClass[],
   fx: readonly (readonly string[])[],
   disp: readonly ResolvedDispatch[],
+  dsp: readonly ResolvedDispatchSpec[],
 ): Driver {
   /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
   let END = 0
@@ -235,6 +243,83 @@ function makeDriver(
         ctx._errors?.push(err)
         END = pos
         return err
+      }
+
+      case OP_ROUTED: {
+        // Mirrors src/combinators/dispatch.ts `routed()`.
+        const item = ctx._routed
+        if (item === undefined || pos !== item.span.start) {
+          const fb = code[ip + 1]!
+          if (fb >= 0) return exec(fb, input, pos, ctx)
+          ctx._fe = pos; ctx._fx = ROUTED_FX
+          return FAIL
+        }
+        if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: item.value, span: item.span })
+        END = item.span.end
+        return item.value
+      }
+
+      case OP_DISPATCH: {
+        // The selector runs ONCE; its value picks the arm. Resolution order is
+        // exact key -> ASCII-folded key -> matchers in declaration order ->
+        // otherwise, mirroring src/combinators/dispatch.ts:325.
+        const spec = dsp[code[ip + 2]!]!
+        const armBase = ip + 6
+        const selectorMark = saveTriviaMark(ctx)
+        const selVal = exec(code[ip + 1]!, input, pos, ctx)
+        if (selVal === FAIL) return FAIL
+        const selEnd = END
+        const key = selVal as string
+
+        let arm = spec.byKey.get(key)
+        if (arm === undefined && spec.byFold.size > 0) arm = spec.byFold.get(asciiFoldKey(key))
+        if (arm === undefined) {
+          for (let i = 0; i < spec.match.length; i++) {
+            const m = spec.match[i]!
+            const kind: DispatchMatcherKind = m[0] === 0 ? 'startsWith' : m[0] === 1 ? 'endsWith' : 'matches'
+            if (matchesDispatchMatcher(key, { kind, value: m[1], flags: m[2] === '' ? undefined : m[2], parser: DUMMY, caseInsensitive: false })) {
+              arm = m[3]
+              break
+            }
+          }
+        }
+
+        let target: number
+        let usesRouted: boolean
+        if (arm === undefined) {
+          const other = code[ip + 3]!
+          if (other < 0) {
+            // No branch and no fallback: fail AT THE SELECTOR'S END, not at pos.
+            ctx._fe = selEnd
+            ctx._fx = spec.expected as string[]
+            return FAIL
+          }
+          target = other
+          usesRouted = code[ip + 4]! === 1
+        } else {
+          target = code[armBase + arm]!
+          usesRouted = spec.routed[arm] === 1
+        }
+
+        const savedRouted = ctx._routed
+        let mark = saveTriviaMark(ctx)
+        if (usesRouted) {
+          rollbackTrivia(ctx, selectorMark)
+          mark = saveTriviaMark(ctx)
+          ctx._routed = { value: key, span: { start: pos, end: selEnd } }
+        }
+        const v = exec(target, input, usesRouted ? pos : selEnd, ctx)
+        if (usesRouted) ctx._routed = savedRouted
+        if (v === FAIL) {
+          rollbackTrivia(ctx, mark)
+          // The interpreter marks a failed dispatch branch COMMITTED: the
+          // selector already matched, so an enclosing choice must not treat this
+          // as "try the next arm".
+          ctx._fc = true
+          return FAIL
+        }
+        END = END
+        return [key, v]
       }
 
       case OP_FIELD: {
@@ -559,7 +644,7 @@ function makeDriver(
 export function tableRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp)
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp)
   const out: Record<string, TableRule> = {}
   // Chosen ONCE, from table data, at rule-map construction. Not a per-parse
   // branch on an option: a plain table never has this wrapper at all.
