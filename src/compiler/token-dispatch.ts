@@ -86,8 +86,8 @@ function flatten(cases: ReadonlyArray<DispatchKeySet>): FlatKey[] | null {
  * key from ever matching, and maps '_'(95) to DEL(127), which would accept a
  * character the key does not contain.
  */
-const foldExpr = (c: string): string => `(${c} >= 65 && ${c} <= 90 ? ${c} + 32 : ${c})`
-function foldCode(c: number): number { return c >= 65 && c <= 90 ? c + 32 : c }
+export const foldExpr = (c: string): string => `(${c} >= 65 && ${c} <= 90 ? ${c} + 32 : ${c})`
+export function foldCode(c: number): number { return c >= 65 && c <= 90 ? c + 32 : c }
 function foldText(t: string): string {
   let out = ''
   for (let i = 0; i < t.length; i++) out += String.fromCharCode(foldCode(t.charCodeAt(i)))

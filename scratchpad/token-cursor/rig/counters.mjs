@@ -71,6 +71,18 @@ function reIdOf(re) {
 }
 
 export function __EX(re, input) {
+  // `lastIndex` is only meaningful for a regex carrying `g` or `y`. Without
+  // either, `exec` neither reads nor advances it, so it stays 0 and this rig
+  // would record start 0 for EVERY call -- silently corrupting touched[],
+  // distinctPositionsTouched, redundancyFactor, and the replay-ex starts that
+  // absorb.mjs consumes. A measurement rig that reports a confident wrong number
+  // is worse than one that stops, so this refuses rather than guesses.
+  if (!re.sticky && !re.global) {
+    throw new Error(
+      `__EX: ${re} carries neither the y nor the g flag, so re.lastIndex is always 0 ` +
+        'and every recorded exec start would be wrong. Terminal regexes in this rig must be sticky.',
+    )
+  }
   const start = re.lastIndex
   C.ex++
   if (traceOn) exTrace.push(reIdOf(re), start)

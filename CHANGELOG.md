@@ -282,10 +282,16 @@ numbers.
   combinator). Ambient `scanSkip` rebuilds — interpreter and codegen — carry
   `strict` through, so a grammar declaring `scanSkip` does not silently get the
   recovering interior back.
-- **Strict mode does not change the accepted language, only failure behaviour.**
-  `balanced()` tracks ONE pair; a delimiter from any other pair is content, by
-  design. `([c}])` stays well-formed to it, so `var(--x, ([c}]))` keeps parsing —
-  pinned as a test on both modes.
+- **Strict mode DOES change acceptance for unterminated input — that is the
+  point — and it does NOT change the delimiter-pairing rule.** Being precise,
+  since an earlier draft of this entry claimed it changed nothing:
+  - An unterminated group now FAILS where it previously returned ok. Consequently
+    an enclosing `choice()` can fall through to another arm and `not()` can
+    negate it. Both are behaviour changes, and both are the reason for the flag.
+  - What is unchanged is the PAIRING rule: `balanced()` tracks ONE pair, and a
+    delimiter from any other pair is content, by design. `([c}])` stays
+    well-formed to it in both modes, so `var(--x, ([c}]))` keeps parsing —
+    pinned as a test on both.
 - **Opt-in; the default is untouched.** Recovery is what a tolerant document
   parse wants and existing grammars are built on it.
 - Verified byte-identical: 25 compiled artifacts across 11 `balanced()` call

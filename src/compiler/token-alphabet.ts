@@ -146,12 +146,22 @@ export function leadTerminal(
   switch (d.tag) {
     case 'sequence': {
       for (const c of d.parsers) {
-        const t = leadTerminal(c, alphabet, resolve, depth + 1)
-        if (t !== undefined) return t
-        // A zero-width or nullable leader lets the NEXT term lead.
+        // CLASSIFY FIRST. The old order asked for the inner terminal and returned
+        // it before checking whether the term could consume anything, so:
+        //
+        //   sequence(optional(X), Y)  yielded X's terminal as THE lead -- but the
+        //                             input may legally start with Y's instead
+        //   sequence(not(X), Y)       yielded X's terminal -- from a NEGATIVE
+        //                             lookahead, which never consumes
+        //
+        // A single lead terminal cannot express "X's first set OR Y's", so a
+        // nullable prefix has no direct lead and the site must be REJECTED --
+        // scannerless gating handles it correctly. Zero-width prefixes are
+        // different: they consume nothing, so the next term genuinely leads.
         const cd = c._def.tag
-        if (cd === 'not' || cd === 'peek' || cd === 'guard' || cd === 'optional' || cd === 'many') continue
-        return undefined
+        if (cd === 'not' || cd === 'peek' || cd === 'guard') continue
+        if (cd === 'optional' || cd === 'many') return undefined
+        return leadTerminal(c, alphabet, resolve, depth + 1)
       }
       return undefined
     }

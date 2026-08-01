@@ -100,14 +100,26 @@ function main(): void {
     }))
   }
 
+  // Reps are calibrated per SIDE SPEED, not once per file. `oldA` is the slow
+  // baseline driver; `compiled` is generated code and runs far faster. Reusing
+  // the baseline-derived map for the GATE contest made those samples finish well
+  // under M.targetSampleMs, which raises relative timing noise on exactly the
+  // contest that validates the performance claim -- the one measurement here that
+  // has to be trustworthy.
   const reps = calibrateReps(cases(oldA))
+  const gateReps = calibrateReps(cases(compiled))
   const denseReps = calibrateReps(denseCases(compiled))
-  const contests: Contest[] = [
+  const baselineContests: Contest[] = [
     { label: 'CONTROL  baseline -> baseline', a: cases(oldA), b: cases(oldB) },
     { label: 'ABLATION baseline -> fuse+collapse', a: cases(oldA), b: cases(neu) },
+  ]
+  const gateContests: Contest[] = [
     { label: 'GATE     compiled -> fuse+collapse', a: cases(compiled), b: cases(neu) },
   ]
-  const out = interleave(contests, reps, M)
+  const out = [
+    ...interleave(baselineContests, reps, M),
+    ...interleave(gateContests, gateReps, M),
+  ]
   const denseContests: Contest[] = [
     { label: 'CONTROL  compiled -> compiled  (no trivia)', a: denseCases(compiled), b: denseCases(compiled) },
     { label: 'GATE     compiled -> table     (no trivia)', a: denseCases(compiled), b: denseCases(neu) },

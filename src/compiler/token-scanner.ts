@@ -36,6 +36,7 @@ import type { Alphabet } from './token-alphabet.ts'
 import { TOK_EOF, TOK_UNKNOWN, TOK_WS } from './token-alphabet.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
 import { packInts } from './token-dispatch.ts'
+import { foldCode, foldExpr } from './token-dispatch.ts'
 
 /**
  * First CHARS a regex terminal can start with, or null when it is unbounded.
@@ -68,7 +69,7 @@ function firstSetOfRegexSource(source: string, flags: string): Set<number> | nul
 type TrieNode = { edges: Map<number, number>; accept: number }
 
 /**
- * Build the literal/keyword trie. Case-insensitive terminals fold with `| 32`,
+ * Build the literal/keyword trie. Case-insensitive terminals fold ASCII LETTERS
  * which is exact for ASCII letters and identity for everything else, so one
  * folded walk serves both. A case-SENSITIVE terminal whose text contains an
  * ASCII letter cannot share the folded walk and is left to the regex path.
@@ -82,7 +83,12 @@ function buildTrie(alphabet: Alphabet): { nodes: TrieNode[]; covered: Set<number
     if (text.length === 0) return false
     let n = 0
     for (let i = 0; i < text.length; i++) {
-      const c = text.charCodeAt(i) | 32
+      // LETTERS ONLY. `| 32` also folds non-letter ASCII pairs -- [ / {, ] / },
+      // ^ / ~, @ / ` -- so a case-insensitive scanner would collide on those,
+      // skip later terminals, and fire the EARLIER terminal's accept id for the
+      // later terminal's text. Same defect `e8612eb` fixed in dispatch; the one
+      // implementation is imported rather than written a third time.
+      const c = foldCode(text.charCodeAt(i))
       let t = nodes[n]!.edges.get(c)
       if (t === undefined) {
         t = nodes.length
@@ -249,7 +255,9 @@ export function emitScanner(alphabet: Alphabet, ns: string): ScannerEmission {
     `  {`,
     `    let node = 0, i = q`,
     `    while (i < n) {`,
-    `      const c = input.charCodeAt(i) | 32`,
+    // The emitted walker must fold exactly as the trie above did, or a lookup
+    // misses the node it built.
+    `      const c = ${foldExpr(`input.charCodeAt(i)`)}`,
     `      let nx = -1`,
     `      for (let e = ${p('_tkStart')}[node], z = ${p('_tkStart')}[node + 1]; e < z; e++) if (${p('_tkChar')}.charCodeAt(e) === c) { nx = ${p('_tkNext_')}[e]; break }`,
     `      if (nx < 0) break`,
