@@ -8,7 +8,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK,
 } from './ops.ts'
 import type { DispatchSpec, TableProgram } from './program.ts'
 
@@ -179,8 +179,7 @@ class Encoder {
     switch (d.tag) {
       case 'literal': {
         if (d.caseInsensitive) {
-          if (this.track) throw new UnsupportedConstruct('literal(caseInsensitive) + trackLines')
-          return this.emit(OP_LIT_CI, this.constant(d.value), this.expected(deriveExpected(p)))
+          return this.emit(this.track ? OP_LIT_CI_TRACK : OP_LIT_CI, this.constant(d.value), this.expected(deriveExpected(p)))
         }
         return this.emit(this.track ? OP_LIT_TRACK : OP_LIT, this.constant(d.value), this.expected(deriveExpected(p)))
       }
@@ -439,9 +438,19 @@ class Encoder {
         // this scope's trivia is opaque to root capture, which `run()` consumes.
         // Nothing in the parse changes, so there is nothing for the table to
         // lower — accepting it is not a gap, it is the correct lowering.
-        if (d.trackLines !== this.track) {
+        // ONLY `true` IS MEANINGFUL HERE. `grammar.ts:94` stores
+        // `opts.trackLines ?? false`, so an UNSET scope and an explicitly-false
+        // one are the same value on the def — the distinction is lost. At parse
+        // time `:103` reads `opts.trackLines ?? _ctx?.trackLines ?? false`, i.e.
+        // unset INHERITS. So stored-false cannot be read as "force off", and
+        // comparing it against the setting refused every inner scope of a
+        // trackLines:true grammar — all four `*PositionsGrammar`s.
+        //
+        // A scope that asks to force tracking ON inside a table built without it
+        // is still a real disagreement, and still refuses.
+        if (d.trackLines === true && !this.track) {
           throw new UnsupportedConstruct(
-            `parser(trackLines: ${String(d.trackLines)}) disagrees with TableSettings.trackLines: ${String(this.track)}`,
+            `parser(trackLines: true) inside a table built with TableSettings.trackLines: ${String(this.track)}`,
           )
         }
         // A trivia scope is a ROW, not a lowering decision: the scope's trivia

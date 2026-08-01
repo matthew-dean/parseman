@@ -16,7 +16,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
@@ -223,7 +223,8 @@ function makeDriver(
         ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
         return FAIL
       }
-      case OP_LIT_CI: {
+      case OP_LIT_CI:
+      case OP_LIT_CI_TRACK: {
         const s = k[code[ip + 1]!] as string
         const e = pos + s.length
         // Yields the INPUT's casing (literal.ts:86), not the literal's — a node
@@ -232,6 +233,7 @@ function makeDriver(
         const matched = input.slice(pos, e)
         if (asciiFoldEq(matched, s)) {
           if (cstCaptureActive(ctx)) pushLeaf(ctx, matched, pos, e)
+          if (code[ip] === OP_LIT_CI_TRACK) trackLines(ctx, input, e)
           END = e
           return matched
         }

@@ -145,6 +145,8 @@ export const OP_FIELD = 24
  * carries the source text. Returning the literal would silently normalise case.
  */
 export const OP_LIT_CI = 27
+/** `LIT_CI_TRACK k fx` — the line-tracking twin of `LIT_CI`. */
+export const OP_LIT_CI_TRACK = 28
 /**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
@@ -171,5 +173,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_CALL]: 'CALL',
-  [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
+  [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
 }
