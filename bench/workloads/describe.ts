@@ -10,6 +10,11 @@
  * the resulting node count, and the speculative-probe density measured by
  * counting `not()` entries through an instrumented context.
  */
+
+// Marks the file a module. Its only import is dynamic, so without this it has no
+// static import or export and top-level `await` is not legal in it.
+export {}
+
 const { buildWorkloads } = await import('./index.ts')
 
 type Consumed = { ok?: boolean; span?: { start: number; end: number } }

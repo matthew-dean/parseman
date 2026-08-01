@@ -12,10 +12,19 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*", "test/**/*"],
-  // `bench/` is benchmark glue over loosely-typed third-party parsers (Parsimmon,
-  // generated Peggy/Jison) and is intentionally outside the typecheck. The bench
-  // parity test imports bench/*, so exclude it here to keep bench out of tsc's
-  // graph — it still runs under vitest (esbuild), which is what guards it.
-  "exclude": ["node_modules", "dist", "test/parity/bench-parsers.test.ts"]
+  // `bench/` is IN, and so is the bench parity test that imports it. `bench/` holds
+  // the performance evidence this project publishes — the SVG charts, the size and
+  // choice-cost baselines, the identity sweeps — and it was outside the compiler's
+  // view until 0.47, which is how a bench shipped with a bare `ReferenceError` in
+  // it. It is checked under the SAME settings as `src/`: no separate bench config,
+  // no relaxed flags. Third-party bench glue is typed at its boundary instead —
+  // `bench/types/nearley.d.ts`, `bench/*-parser.d.ts` for the generated Peggy
+  // parsers, and `createLanguage<Spec>` in `bench/parsimmon-*.ts`.
+  "include": ["src/**/*", "test/**/*", "bench/**/*"],
+  // TODO(bench-typecheck): `bench/table-alloc-ablation.ts` is the one file still
+  // out. It has a live `ReferenceError` (`contests` is not defined) plus an
+  // `emitConst` failure, both being fixed on the `src/table/` lane, so it is
+  // excluded rather than fixed twice. Delete this entry — never add to it — once
+  // that lands. See `docs/future/bench-typecheck-followups.md`.
+  "exclude": ["node_modules", "dist", "bench/table-alloc-ablation.ts"]
 }

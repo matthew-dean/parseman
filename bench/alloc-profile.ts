@@ -9,7 +9,7 @@
  * full-output batch.
  */
 import { run } from '../src/index.ts'
-import { PerformanceObserver } from 'node:perf_hooks'
+import { PerformanceObserver, type PerformanceEntry } from 'node:perf_hooks'
 import { entry, host, compiled, buildInput } from './alloc-model.ts'
 
 const decls = Number(process.argv[2] ?? 1500)
@@ -53,11 +53,10 @@ console.log(`  + hostConstruction  ${mHos.toFixed(3)}   (AST+span cost   = ${(mH
 
 // ---- GC + heap over a full-output batch (uses compiled.parse w/ default host? no: use entry+host via run) ----
 let scavenges = 0, gcPauseMs = 0
-const tally = (entries: PerformanceEntryList) => {
+const tally = (entries: readonly PerformanceEntry[]) => {
   for (const e of entries) {
     // kind 1 = scavenge (young gen), 2 = mark-sweep-compact, 8 = incremental, 16 = weakcb
-    // @ts-expect-error node perf entry detail
-    const kind = e.detail?.kind
+    const kind = (e as { detail?: { kind?: number } | null }).detail?.kind
     if (kind === 1) scavenges++
     gcPauseMs += e.duration
   }

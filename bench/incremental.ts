@@ -19,7 +19,7 @@
 import {
   rules, node, regex, literal, choice, optional, sepBy, sequence,
   parseDoc,
-  type CSTNode, type CSTLeaf, type CSTError,
+  type CSTNode,
   type ParseContext, type ParseResult,
 } from '../src/index.ts'
 import { parser as lezerJsonParser } from '@lezer/json'
@@ -35,7 +35,7 @@ import { LARGE_JSON } from './fixtures.ts'
 type JNode = CSTNode
 type RuleFn = (input: string, pos: number, ctx: ParseContext) => ParseResult<JNode>
 
-function mk(type: string, ch: ReadonlyArray<CSTNode | CSTLeaf | CSTError>, span: { start: number; end: number }): JNode {
+function mk(type: string, ch: JNode['children'], span: { start: number; end: number }): JNode {
   return { _tag: 'node', type, span, state: null, children: ch }
 }
 

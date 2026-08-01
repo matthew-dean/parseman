@@ -27,7 +27,10 @@ if (only || scale !== 1) {
   console.log('        the gate is `pnpm perf:guard`, which compares within its own context.')
 }
 const rows = runParsemanSuite({
-  only,
+  // Spread rather than `only,`: `ParsemanSuiteOpts.only` is optional, and under
+  // `exactOptionalPropertyTypes` an unfiltered run must OMIT the key, not pass
+  // `undefined` — the two are different requests to the suite.
+  ...(only ? { only } : {}),
   scale,
   measure: { samples },
   onProgress: (id, mode) => process.stdout.write(`  measuring ${id} (${mode})...\r`),

@@ -394,7 +394,10 @@ async function main(): Promise<void> {
   const n = (v: number): string => v.toLocaleString('en-US')
   const RULE = '─'.repeat(76)
 
-  type Breach = { f: Fixture; base?: BaselineEntry; deltaPct?: number }
+  // `base` is explicitly `| undefined`: a fixture that crosses the ceiling with NO
+  // baseline row is a real, reportable case (`newOver`), so the absent baseline is
+  // stored rather than omitted. `exactOptionalPropertyTypes` distinguishes the two.
+  type Breach = { f: Fixture; base?: BaselineEntry | undefined; deltaPct?: number }
   const knownOver: Breach[] = []   // above the 10x target, already recorded — standing debt
   const newOver: Breach[] = []     // crossed the 10x target in THIS change
   const grew: Breach[] = []        // BLOCKING: past its committed ceiling

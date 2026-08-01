@@ -87,6 +87,18 @@ function guards(n: number): Array<Combinator<unknown>> {
 }
 
 /**
+ * `sequence` infers a NON-EMPTY tuple from its rest parameter, which a spread of
+ * a dynamically built `Combinator[]` cannot satisfy. Both density grammars build
+ * their term list at runtime, so split the head off explicitly — the emptiness
+ * check is what makes the tuple provable, so no assertion is needed.
+ */
+function seqOf(...terms: Combinator<unknown>[]): Combinator<unknown> {
+  const [first, ...rest] = terms
+  if (first === undefined) throw new RangeError('seqOf requires at least one term')
+  return sequence(first, ...rest)
+}
+
+/**
  * One grammar, parameterised by how many negative lookaheads guard each value
  * term. `attempt` around the declaration adds the other rollback shape (a
  * six-sink transactional restore) so the gate is not a `not()`-only probe: the
@@ -129,7 +141,7 @@ export function densityGrammar(guardsPerValue: number): Combinator<unknown> {
 
     // The guards sit in front of every value term, so density scales with the
     // value count of the input rather than with the rule count.
-    const Value = parser({ trivia: rw }, sequence(...g, choice(r.Dimension, hex, str, ident)))
+    const Value = parser({ trivia: rw }, seqOf(...g, choice(r.Dimension, hex, str, ident)))
 
     const Dimension = node('Dimension',
       sequence(num, optional(unit)),
@@ -238,7 +250,7 @@ export function expectedWidthGrammar(prefixDepth: number): Combinator<unknown> {
       (c, _f, s, raw, tl) => mk('Declaration', c, raw, s, tl))
 
     // Each arm: the nullable prefix, then that arm's own terminal.
-    const arm = (tail: Combinator<unknown>): Combinator<unknown> => sequence(...prefix, tail)
+    const arm = (tail: Combinator<unknown>): Combinator<unknown> => seqOf(...prefix, tail)
     const Value = parser({ trivia: rw }, choice(
       arm(r.Dimension), arm(hex), arm(str), arm(ident),
     ))

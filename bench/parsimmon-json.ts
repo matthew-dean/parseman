@@ -4,7 +4,23 @@
  */
 import P from 'parsimmon'
 
-const JsonParser = P.createLanguage({
+/** Result type of each rule, so `createLanguage` resolves to Parsimmon's
+ * `TypedLanguage` (concrete keys) rather than `Language` (an index signature,
+ * which `noUncheckedIndexedAccess` widens to `Parser<any> | undefined`). */
+type JsonSpec = {
+  value: unknown
+  ws: string
+  object: Record<string, unknown>
+  pair: [string, unknown]
+  array: unknown[]
+  string: string
+  number: number
+  true: boolean
+  false: boolean
+  null: null
+}
+
+const JsonParser = P.createLanguage<JsonSpec>({
   value: r => P.alt(
     r.object,
     r.array,

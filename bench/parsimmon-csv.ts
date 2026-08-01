@@ -3,7 +3,20 @@
  */
 import P from 'parsimmon'
 
-const CsvParser = P.createLanguage({
+/** Result type of each rule, so `createLanguage` resolves to Parsimmon's
+ * `TypedLanguage` (concrete keys) rather than `Language` (an index signature,
+ * which `noUncheckedIndexedAccess` widens to `Parser<any> | undefined`). */
+type CsvSpec = {
+  csv: string[][]
+  completeLine: string[]
+  row: string[]
+  field: string
+  quotedField: string
+  unquotedField: string
+  newline: string
+}
+
+const CsvParser = P.createLanguage<CsvSpec>({
   csv: r => P.seqMap(
     r.completeLine.many(),
     r.row,

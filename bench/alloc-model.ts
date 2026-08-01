@@ -2,14 +2,19 @@
  * Allocation model that reproduces jess's parse-time node/CST allocation
  * pattern: many small nodes (Dimension/Color/Keyword/Function/Str), source
  * spans, nested children, comma/space value lists, and a STRUCTURAL build host
- * (the shape the Chevrotain-compat layer injects). Trivia is captured, like the
- * real jess parsers.
+ * (the shape the Chevrotain-compat layer injects).
+ *
+ * Trivia capture is NOT set here: `captureTrivia` is a `parser()`/`node()`
+ * option, not a `rules()` one, so the `rules({ captureTrivia: true })` this file
+ * used to carry was silently dropped. Each consumer sets `captureTrivia: true`
+ * on the ParseContext it passes to `parseWithContext`, which is what actually
+ * takes effect. See `docs/future/bench-typecheck-followups.md`.
  *
  * Exports a compiled entry + host so bench/run scripts can profile the three
  * phases (recognizer / structuralCapture / hostConstruction) and A/B wall-clock.
  */
 import {
-  rules, node, regex, literal, choice, many, sequence, trivia, parser, compile,
+  rules, node, regex, literal, choice, many, sequence, trivia, compile,
   type ParseContext, type BuildHost,
 } from '../src/index.ts'
 
@@ -22,7 +27,7 @@ const strRe = regex(/"(?:[^"\\]|\\.)*"/)
 
 // Structural value grammar: mirrors jess value/selector reducers — many small
 // leaf nodes, a Function node with nested arg list, comma + space lists.
-const { Doc } = rules({ trivia: ws, captureTrivia: true }, g => {
+const { Doc } = rules({ trivia: ws }, g => {
   const Dimension = node('Dimension', numRe)
   const Color = node('Color', hexRe)
   const Str = node('Str', strRe)
