@@ -1,12 +1,17 @@
 # First-char gating — making the compiler dispatch your choices
 
 The single biggest hot-path lever in a Parséman grammar is whether each `choice`
-**first-char-gates**: when every arm starts with a disjoint character, the compiler
-turns the whole `choice` into an O(1) character dispatch (a `switch`/jump table), so a
-non-matching position is rejected with one comparison. When it doesn't, the `choice`
-falls back to ordered first-match: **every** position speculatively ENTERS each arm in
-turn (context save/restore, a child array, the recognizer, then rollback) until one
-matches or all fail.
+**first-char-gates**: when every arm starts with a disjoint character, the `choice`
+becomes an O(1) character dispatch, so a non-matching position is rejected with one
+comparison. When it doesn't, the `choice` falls back to ordered first-match: **every**
+position speculatively ENTERS each arm in turn (context save/restore, a child array, the
+recognizer, then rollback) until one matches or all fail.
+
+Gating is decided by the shared first-set analysis, so **both** run paths benefit: the
+interpreter dispatches through a prebuilt ASCII lookup table
+(`src/combinators/choice.ts`), and the **JS-codegen lowering** used by `compile()` and the
+macro build emits a `switch`/jump table inline. The diagnostics below report the gating
+decision itself, which is a property of the grammar, not of how you run it.
 
 Here's the trap: **PEG grammars are correct regardless of whether a choice gates.** An
 ungated hot choice passes every test and produces the right tree — it just does a lot

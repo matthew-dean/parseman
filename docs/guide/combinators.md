@@ -274,8 +274,10 @@ shadowing above needs `regex()` arms precisely because that rewrite no longer
 applies. Don't rely on it: add one non-literal arm and ordering matters again.
 :::
 
-When the arms start with disjoint characters the compiler turns the whole `choice`
-into a single O(1) character dispatch.
+When the arms start with disjoint characters the whole `choice` becomes a single O(1)
+character dispatch — a lookup table in the interpreter, an inline `switch` in the JS
+that `compile()` and the macro build emit. See
+[First-char gating](./first-char-gating).
 
 When alternatives begin by recognizing the same lexical family and then diverge
 by the value already read, prefer [`dispatch`](#dispatch). A shape like

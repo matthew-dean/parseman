@@ -4,6 +4,13 @@ Parséman is fast by default — the [macro build](./macro-mode) beats hand-tune
 on the benchmarks — but grammar authoring still has one dominant lever. This page covers
 the technique that matters most, plus how to measure.
 
+::: info What "the compiler" means on this page
+Except where a claim names a different path, "the compiler" here means the **JS-codegen
+lowering** — the flat generated JavaScript that `compile()` and the [macro
+build](./macro-mode) produce, and the only compiled form Parséman ships. Timings on this
+page were measured against that lowering and the interpreter.
+:::
+
 ## The one rule: fewer combinator boundaries
 
 The single biggest grammar-level perf lever is **the number of combinator boundaries on
@@ -24,11 +31,19 @@ content three ways:
 
 Two takeaways:
 
-- **Shared combinator ref vs. inline `regex(…)` literal makes no difference.** Both
-  produce the identical runtime structure (one `regex` combinator either way), and the
-  compiler inlines a `regex` test at every use site regardless of sharing — there's no
-  function-call indirection to eliminate (that only exists for `ref()` / `rules()`
-  entries). Factor out shared terminals for readability; it costs nothing.
+- **For a bare terminal, shared combinator ref vs. inline `regex(…)` literal makes no
+  difference to parse speed.** Both produce the identical runtime structure (one `regex`
+  combinator either way), and **the JS-codegen lowering** — what `compile()` and the macro
+  build emit today — inlines a `regex` test at every use site whether or not the
+  combinator object is shared. Factor out shared terminals for readability; on the
+  compiled path it costs no parse time.
+
+  This is a statement about *terminals*, not about sharing in general. Codegen does hoist
+  a **multiply-referenced** subtree into a named function once it is bigger than a small
+  threshold (`HOIST_MIN_SUBTREE` in `src/compiler/codegen.ts`), so for larger shapes a
+  shared `const` and a copy-pasted literal do not emit the same code. Sharing also affects
+  *emitted size* independently of parse speed — see
+  [macro code size](./macro-mode#code-size-what-to-expect).
 - **Collapsing a fixed multi-token shape into a single `regex` is 4–5× faster** in both
   the interpreter and compiled output, because it erases the per-step call + allocation
   overhead. `compile()` is a real but smaller win (~1.7×) and **stacks** with collapsing.
