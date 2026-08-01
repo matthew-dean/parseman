@@ -619,8 +619,33 @@ numbers.
   fixes (an unstamped host mode that returned AST from a table encoded for CST, an
   ambient-trivia bake that made three engines agree by all failing the same way, a
   root-trivia capture that recorded nothing because the labels never reached the
-  entry) are internal to code no consumer can reach and are deliberately not given
-  entries of their own.
+  entry) are internal to the prototype and are deliberately not given entries of
+  their own.
+
+  **Known limitations, since `./table` is a real export and anything behind it
+  ships.** None is reachable from the macro, `compile()` or `compose()`; all are
+  reachable by calling `parseman/table` directly.
+
+  - **Failure REPORTING diverges from both shipped engines in four shapes.**
+    `keywords()` names each keyword where the engines name `keyword`; `peek()`
+    lets the lookahead's inner expectation escape; a `sepBy` that fails its `min`
+    names the separator rather than the item; and both engines report at the
+    furthest position an enclosing sequence could also have closed at, so they
+    name a closer (`"]"`) where the table names one of the choice's own openers.
+    Acceptance, rejection, trees and consumed spans agree — only the `expected`
+    set differs. Pinned in `test/unit/table-encode-refusals.test.ts`.
+  - **A STRUCTURAL node — no builder, no `project`, no `collapse` — is refused
+    even under `hostMode: 'cst'`**, where a host is by definition present and
+    would supply the value. The refusal is correct for `'ast'` and is a gap for
+    `'cst'`. It fails closed with a named `UnsupportedConstruct`.
+  - **`scanTo()` and `balanced()` are RUNTIME-ONLY.** They run correctly but park
+    a live combinator in the const pool, so `emitTableModule` refuses a grammar
+    using either, naming the construct. Every grammar in this repo except json,
+    csv and lang uses at least one.
+
+  No timing or per-dialect byte figure is published for the prototype in this
+  release, and the two figures quoted during its development (113 B/rule, ~2.65x)
+  were measured on a synthetic ladder and on json — never on a shipping grammar.
 
 - **Three documentation claims corrected against the code.** The gating diagnostic
   left the compile path in 0.45.0, but `README.md` and `docs/guide/combinators.md`

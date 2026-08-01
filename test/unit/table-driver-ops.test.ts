@@ -296,13 +296,12 @@ describe('table driver — rows the grammar corpus never reached', () => {
     }
   })
 
-  it('DEFECT: sepBy({ trailing: \'allow\' }) leaves the trailing separator unconsumed', () => {
-    // The encoder writes the option into bit 0 of the repetition's flags word
-    // (`encode.ts`, the sepBy case) and the driver reads only bit 1
-    // (`keepSeparators`). Nothing in `exec.ts` tests bit 0, so the opt-in is
-    // encoded and ignored: the list still parses, with the same items, and stops
-    // one character early — which in a larger grammar is a parse failure
-    // somewhere else entirely.
+  it('sepBy({ trailing: \'allow\' }) consumes the trailing separator', () => {
+    // WAS a defect: the encoder wrote the option into bit 0 of the repetition's
+    // flags word and the driver read only bit 1 (`keepSeparators`), so the
+    // opt-in was encoded and ignored — the list parsed with the same items and
+    // stopped one character early, which in a larger grammar is a parse failure
+    // somewhere else entirely. Bit 0 is now read.
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Trail: sepBy(regex(/[a-z]/), literal(','), { trailing: 'allow' }) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>

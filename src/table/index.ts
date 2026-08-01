@@ -12,7 +12,16 @@
  */
 export { tableRules } from './exec.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
-export { emitTableModule, emitTableOnly } from './emit.ts'
+export { emitTableModule } from './emit.ts'
+/*
+ * `emitTableOnly` is NOT re-exported here. It is a SIZE PROBE: it emits the
+ * table with an EMPTY reducer pool so the machinery's byte count is comparable
+ * to codegen's per-rule cost. The module it produces is not loadable — the code
+ * stream still references `fns[i]`, so the first parse throws
+ * `build is not a function`. That is fine for a measurement and wrong for a
+ * public entry, where it reads like "emit just the table" and fails open.
+ * `test/unit/table-emit-roundtrip.test.ts` imports it from `./emit.ts` directly.
+ */
 export { opHistogram, reachableOps } from './inspect.ts'
 export { resolveTable } from './program.ts'
 export type { CompactProgram, TableProgram, TableRule } from './program.ts'

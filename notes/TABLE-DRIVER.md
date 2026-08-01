@@ -420,3 +420,48 @@ arity rules, and the trivia/adjacency model.
 
 This is gated on C and D. Do not start it early — a rewrite against a lowering
 that has not proven tree identity on the jess grammars would have to be redone.
+
+---
+
+## Follow-up queue (owner-parked at 0.47.0)
+
+Owner's direction at the 0.47.0 finish line was *"grammar optimization and
+railroad diagrams can be a follow-up, you need to get 0.47 past the finish
+line"*. The table ships as an exported-but-unwired prototype. These are the
+parked items, in the order they unblock each other:
+
+1. **`balanced()`** — `token`-shaped over its eager interior, and `token` is
+   already lowered. `_balancedAmbient` and the interior `self` back-edge sit on
+   the INNER combinator (`balanced()` returns `token(combi)`), so the detection
+   must look at the child, not the outer node. The read-back must distinguish
+   **acceptance from recovery**: `balanced()` does detect crossed closures —
+   `([a)]` reports `errors=1` via `expect()` — and a probe that measures only
+   consumption cannot tell that from acceptance. It also has a documented
+   history of contributing 7 children rather than 1; if a lowering moves that
+   number in either direction, that is a tree-shape change and must be said.
+2. **`scanTo()`** — the one with real structure. Its `scanSkip` set is ambient
+   but static per scope, so it should encode as offsets installed by `OP_SCOPE`.
+   PROVE that rather than assume it: a skip set that resolves at the outer scope
+   and silently empties in an inner one is the same silent shape as the ambient
+   trivia bug, and a corpus parse would not obviously show it.
+3. **The emit round-trip for SHIPPING grammars.** Round-trips exist for small
+   fixtures (dispatch, labelled trivia). No shipping grammar can be emitted at
+   all until 1 and 2 land, because both park live combinators in the const pool.
+4. **Per-dialect bytes and timings.** Blocked on 3 for bytes. Timings were
+   deferred throughout development on a box that sat above load 15; run them
+   quiet, print the load average at start and end, and name the instrument.
+5. **Furthest-failure merging.** Both shipped engines report the expected set at
+   the furthest position an enclosing sequence could also have closed at; the
+   table reports the failing choice's own union at its own position. Position
+   and count now agree — the residue is one element, pinned as an exact set
+   difference in `test/unit/table-encode-refusals.test.ts`.
+
+Also open, and smaller: the structural-node refusal under `hostMode: 'cst'`
+(correct for `'ast'`, a gap for `'cst'`, fails closed), and the three remaining
+expected-set shapes (`keywords()`, `peek()`, `sepBy`-min).
+
+**On figures.** `113 B/rule` and `~2.65x` were measured on a synthetic ladder and
+on json, never on a shipping grammar. Do not quote them as per-dialect results.
+When quoting any number here, name the instrument that produced it — the gated
+tests under `test/unit/table-*.test.ts` and the ungated
+`bench/table-lowering-sweep.ts` are not the same evidence.
