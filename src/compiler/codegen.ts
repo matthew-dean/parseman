@@ -579,6 +579,16 @@ type Ctx = {
    */
   replayUsed?: Set<Combinator<unknown>> | undefined
   /**
+   * The choice whose shared prefix `replayUsed` is tracking. Only that choice's
+   * arm loop may reset it.
+   *
+   * `emitFirstMatch` runs for EVERY choice, so an unconditional per-arm reset let a
+   * NESTED choice inside an arm clear the outer choice's tracking mid-arm — and a
+   * later occurrence of the prefix object in that same outer arm would then replay
+   * again. That is the original defect returning one level in.
+   */
+  replayOwner?: unknown
+  /**
    * Active dispatch selector for an inlined `routed()` site. Branches that cross
    * generated function boundaries still use `_ctx._routed`; inlined branches can
    * read these locals directly and avoid the object write/read/restore round trip.
@@ -2619,8 +2629,10 @@ function emitFirstMatch(
   if (preStmts) stmts.push(...preStmts)
 
   for (let i = 0; i < def.parsers.length; i++) {
-    // New arm: its own leading term may replay the shared prefix again.
-    if (ctx.replayPrefix !== undefined) ctx.replayUsed = new Set()
+    // New arm: its own leading term may replay the shared prefix again. ONLY the
+    // choice that registered the replay resets — a nested choice's arm loop must not
+    // clear the outer choice's tracking.
+    if (ctx.replayPrefix !== undefined && ctx.replayOwner === def) ctx.replayUsed = new Set()
     const p = def.parsers[i]!
     const gate    = def.gates[i]
     const autoNot = def.autoNot[i]
@@ -2889,8 +2901,11 @@ function emitSharedPrefix(
   }
 
   const savedUsed = ctx.replayUsed
+  const savedOwner = ctx.replayOwner
   ctx.replayUsed = new Set()
+  ctx.replayOwner = def
   const r = emitFirstMatch(def, ctx, pos, undefined, pfx.stmts, pfx.okVar)
+  ctx.replayOwner = savedOwner
   ctx.replayUsed = savedUsed
 
   for (const k of keys) map.delete(k)

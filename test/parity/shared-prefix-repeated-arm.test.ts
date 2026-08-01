@@ -47,3 +47,36 @@ describe('shared prefix: the same combinator object reused later in the arm', ()
     assertEnginesAgreeAll(expr, ['1-2-3', '1+2+3', '10-20-30'])
   })
 })
+
+/**
+ * The nested case, found in review. `emitFirstMatch` runs for EVERY choice, so an
+ * unconditional per-arm reset of `replayUsed` let a NESTED choice inside an arm
+ * clear the OUTER choice's tracking mid-arm — after which a later occurrence of
+ * the prefix object in that same outer arm replayed again. The original defect,
+ * one level in, and invisible to the flat fixtures above.
+ */
+describe('shared prefix: a nested choice inside an arm', () => {
+  const num = regex(/[0-9]+/)
+  const word = regex(/[a-z]+/)
+
+  it('does not let an inner choice reset the outer arm tracking', () => {
+    // Outer arms share `num`. Each arm then contains its OWN choice, whose arm
+    // loop must not clear the outer's replay bookkeeping, and finally mentions
+    // `num` a second time.
+    const inner = choice(sequence(word, literal(':')), sequence(word, literal(';')))
+    const expr = choice(
+      sequence(num, literal('-'), inner, num),
+      sequence(num, literal('+'), inner, num),
+    )
+    assertEnginesAgreeAll(expr, ['1-a:2', '1+a;2', '12-bc:34', '7+d;7'])
+  })
+
+  it('holds when the inner choice ALSO shares a prefix with itself', () => {
+    const inner = choice(sequence(word, literal(':'), word), sequence(word, literal(';'), word))
+    const expr = choice(
+      sequence(num, literal('-'), inner, num),
+      sequence(num, literal('+'), inner, num),
+    )
+    assertEnginesAgreeAll(expr, ['1-a:b2', '1+c;d2', '10-xy:zw20'])
+  })
+})
