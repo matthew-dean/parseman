@@ -938,6 +938,16 @@ That is **23.8%** of the css artifact, taking it from 3,336,650 B to **~2,543,00
 > hard ceiling.** Derived tokenization does not get parseman to its size target. It
 > removes about a quarter of the artifact.
 
+> **Family scope of that conclusion (§16.1 applied to this document).** The arithmetic
+> above is taken over **codegen's per-rule emitted mass** — the categories in §8 are
+> measured on the compiled artifact, and every row is a count of bytes *in emitted
+> JavaScript*. So the bound is: **derived tokenization does not reach the size target
+> _within the current emitted form_.** It is not a bound on artifact size in general,
+> and it says nothing about a lowering that changes what is being counted — which is
+> exactly the caveat §16.1 exists to enforce, quoted twice in its own session before it
+> was written down. The next paragraph but one already points at the emission-form
+> family (§14.2) for that reason; #7 there is no longer hypothetical (see its entry).
+
 And the 793,374 B figure is **optimistic**. It assumes token-index rewind removes
 *all* 723,605 B of save/rollback — **91% of the total** rests on that one unverified
 assumption (§17, "rewind unit"). The interaction with the existing `sink`/`mark`
@@ -1189,7 +1199,7 @@ parse time.
 
 | # | Experiment | Tag | Status |
 | --- | --- | --- | --- |
-| 7 | **Table-driven emission (hot/cold split)** | **ENABLED-BY** | `untried` — **strongest supporting evidence of any item here** |
+| 7 | **Table-driven emission (hot/cold split)** | **ENABLED-BY** | **no longer `untried` — a prototype exists and is measured** (see below); the hot/cold *split* is still untried |
 
 *Tag — ENABLED-BY:* its strongest evidence (§10.2, 30:1 gzip) is the **scanner's** emitted form, so it applies to the post-rewrite emitter and not only this one.
 
@@ -1206,6 +1216,21 @@ exactly the population an interpreter serves cheaply. *How to measure:* pick the
 cutoff from the measured size distribution, interpret below it, compare artifact
 bytes and parse time on the hot benchmarks (which should be unaffected by
 construction — verify that).
+
+*Status correction (this entry described work that has since started).* A table
+lowering was prototyped and measured — `src/table/` on `pm-g5-driver`, written up in
+`notes/G5-TABLE-DRIVER.md`. It is **additive and not wired into the macro, `compile()`
+or `compose()`**, and **codegen remains the shipping lowering**, so nothing below
+should be read as a description of what parseman emits today. What it measured, on its
+own benches: **113 B/rule marginal against codegen's 4,932 B (43.7×, `bench/g5-size.ts`)**
+and **~2.65× codegen's parse time** in steady state (`bench/g5-scaling.ts`, after the
+SEQX fuse + `OP_RULE` collapse). It also folds `trackLines` × `hostMode` into one
+driver: **8,418 B for four variants, zero option reads in `exec.ts`**.
+
+The **hot/cold split this entry actually proposes is still untried** — the prototype
+interprets *every* rule rather than only the cold tail, so the "hot benchmarks
+unaffected by construction" property has not been bought and remains the open question.
+The 30:1-gzip evidence above is untouched by any of this.
 
 | # | Experiment | Tag | Status |
 | --- | --- | --- | --- |
@@ -1787,8 +1812,8 @@ In rough order of likelihood:
 | Deferred leaf materialisation (#25) | **ENABLED-BY, untried — may be DISSOLVED if lookahead makes those choices deterministic** |
 | **Auto-alias for token detection** (#21–#24, §14.5) — expand / normalize / lazy-fold / macro-time trie | **untried — owner design direction, to be measured not decided.** #24 recommended first: composes with the trie already shipped |
 | Whether alias resolution belongs at scan time or a separate pass | **open — decided by escapes changing token length vs. source-position spans** |
-| Every item in §14 (28 entries) | **untried except #20 (done, LEGACY) — see each entry's tag** |
+| Every item in §14 (28 entries) | **untried except #20 (done, LEGACY) and #7 (prototyped and measured, not shipping; its hot/cold split is still untried) — see each entry's tag** |
 | Rule-level inline cap; cross-artifact sharing; source-level shape sharing; arity-only shared restore helper | **rejected — evidence in §15** |
-| **Mechanically removable total: 793,374 B, 23.8%, to ~2,543,000 B (22× source)** | **arithmetic over measured categories — NOT an end-to-end result, and the one converted category delivered 62% of its estimate** |
-| That this technique reaches 250 KB, or 10×, or 4× | **NO — see §11; it does not, and nothing measured suggests it does** |
+| **Mechanically removable total: 793,374 B, 23.8%, to ~2,543,000 B (22× source)** | **arithmetic over measured categories — NOT an end-to-end result, and the one converted category delivered 62% of its estimate.** Derived **within the current emitted form**: every category is a count of bytes in emitted JavaScript (§11, §16.1) |
+| That this technique reaches 250 KB, or 10×, or 4× | **NO — see §11; it does not, and nothing measured suggests it does.** Scope: *this technique, within codegen's emitted form.* Not a bound on artifact size in general, and not a statement about a lowering that changes what is being counted (§16.1) |
 | That dispatch keying is a large speed win | **NO — measured at 2.4% total spread (§9.1.1). Redirect to the save/restore mass** |

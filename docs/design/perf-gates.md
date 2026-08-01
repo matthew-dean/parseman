@@ -382,6 +382,29 @@ exactly the band it exists to watch.**
   constant against it. `perf:guard`'s deterministic `composeLeaf` dispatch
   assertion still carries first-set-dispatch coverage.
 
+  **That assertion inspects EMITTED SOURCE, and it fails GREEN if there is none.**
+  `dispatchEmitted` is a regex over the string `fusedBody([...]).body` returns
+  (`bench/composeleaf-firstset.ts`) — it asks whether the fused *text* contains a
+  first-char comparison. That is exactly why it is trustworthy today (no timing
+  noise), and exactly what makes it fragile: it is a property of one lowering's
+  output, not of the parser's behaviour. Against any lowering that does not emit a
+  JavaScript body for the fuse to match — a table read by a shared driver, say —
+  the regex finds nothing. The failure mode is the dangerous direction: a lowering
+  with no emitted source and a lowering that genuinely lost dispatch are
+  **indistinguishable** to this check, and the first one is not a regression. Note
+  which way the current code lands before trusting either verdict.
+
+  `grammar-refactor-gates.md` is the standing rule here — four of that oracle's six
+  paranoid properties fail **green**, and "a gate that fails green is worse than no
+  gate, because it is used as evidence." This assertion is quoted as *the* reliable
+  signal that makes the nightly workflow worth running
+  (`docs/design/perf-nightly.workflow.yml`), which is precisely the status that
+  makes a vacuous green expensive. **Recorded as a hazard, not a fix:** nothing about
+  the assertion's behaviour is changed here, and it is correct as written for the
+  lowering it was built against. If a second lowering ever reaches this path, the
+  check needs a liveness precondition — assert that a body was produced *at all*
+  before asserting what is in it — rather than a widened regex.
+
   The history here is the argument for reading this bullet literally rather than
   as boilerplate: the gate shipped with one axis and a regression rode the other
   through it in the very next PR. A third axis is an entry in `DENSITY_CASES`;

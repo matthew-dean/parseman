@@ -56,6 +56,14 @@ The one idea that makes it free: **sibling calls are emitted as bare names**
 **locals → direct calls (0%)**. (A *runtime* merge would make them object
 *properties* → a ~5% dispatch; measured in §9. We do not do that — we fuse.)
 
+> **Scope of that rejection (added later — read with §9).** Everything above is a
+> statement about **codegen**, the shipping lowering, and nothing in it has been
+> falsified. It is cited from source comments as `RULE_ABI_PLAN §2`/`§3`, so it is
+> worth saying plainly what it does and does not forbid: it rejects paying an
+> indirection cost **to buy runtime composition**, a requirement §9 records as not
+> current. A second, **non-shipping** lowering now exists that pays a far larger
+> indirection cost to buy something else entirely. See §9.1.
+
 ## 3. What each package ships (the linkable form)
 
 Not TS source, not a sealed IIFE — a **compiled linkable artifact**:
@@ -201,6 +209,46 @@ siblings via `ctx.R.name` costs **~5–10%** (property lookup per call). Build-t
 fusion avoids it entirely by making names **locals**. The only reason to keep a
 runtime-merge path would be composition decided at **runtime** (dynamically loaded
 rules) — not a current requirement, so it's out of scope.
+
+### 9.1 A second lowering accepts a much larger version of this cost — on different grounds
+
+Added later, because this section is cited by number from source comments and now
+reads as forbidding work that is in fact underway. **§9's measurement stands and is
+not softened here.** The ~5–10% property-lookup cost is real, it was measured on the
+benches named above, and for **codegen — the shipping lowering — the conclusion is
+unchanged: we fuse.**
+
+What has changed is that codegen is no longer the only lowering being built. A
+**table lowering** (`src/table/`, prototype on `pm-g5-driver`, `notes/G5-TABLE-DRIVER.md`)
+compiles a grammar to a flat instruction table read by one shared driver. It is
+**not wired into the macro, `compile()` or `compose()`, and nothing existing imports
+it.** It measures **~2.65× codegen's parse time** in steady state
+(`bench/g5-scaling.ts`, n=1024, after the SEQX fuse + `OP_RULE` collapse pass) — i.e.
+it accepts **~165%** where this section rejected **~5%**.
+
+That is not a reversal, because it is not the same trade. §9 rejected an indirection
+cost whose only purchase was **runtime-decided composition**, which was not wanted.
+The table accepts a much larger one to buy two things §9 was not weighing:
+
+- **Artifact size.** Codegen inlines each rule's recognizer bespoke into its own
+  function, so an artifact pays the recognition machinery once *per rule*: a measured
+  **4,932 B** per additional distinct `node()` rule against **113 B** for the table —
+  **43.7× smaller** marginal (`bench/g5-size.ts`, fit over n=1..32).
+- **Variant folding.** `trackLines` × `hostMode` is four artifacts under codegen and
+  four *tables* over one driver here: **8,418 B for all four**, with **zero** option
+  reads in `src/table/exec.ts`, against **82,273 B** for the 16-rule ladder under
+  codegen for **one** variant (`bench/g5-variants.ts`).
+
+Whether that trade is worth making is an owner decision and is not recorded here.
+
+**One mechanism this section could not have anticipated.** The table encoder memoises
+rows on **combinator object identity** (`memo: Map<Combinator, number>` in
+`src/table/encode.ts`), so a shared `const` encodes **once** while an inline literal
+repeated at N sites encodes **N times**; reference cycles terminate through a reserved
+`OP_RULE` **trampoline row** patched when the real body lands, not by inlining. Sharing
+therefore has a size meaning under the table that it does not have under codegen. Its
+size impact on the four shipping grammars **is being measured and is not yet known**,
+so nothing here is authoring guidance.
 
 ## 10. What retires
 

@@ -5,6 +5,22 @@ does**, and the rules to preserve (and extend) when touching `src/compiler/codeg
 It is prescriptive: new codegen should follow these, and new combinators should be
 checked against the **"early exit before setup"** rule below.
 
+> **Scope.** Two halves, and they generalise differently.
+>
+> - **The principle — reject on the cheapest available signal before allocating or
+>   mutating anything — is about how parsing costs work, not about how parseman
+>   emits code.** Speculative calls that fail immediately dominate any lowering, so
+>   this applies to **any** lowering: a recognizer that sets up a frame before
+>   testing the first byte has paid for a match it did not get, whether that setup is
+>   emitted JavaScript or an interpreted instruction row.
+> - **Everything concrete below is about codegen** — the emitted-construct table, the
+>   `break <failLabel>` / `return fail` shapes, `emitMany` / `emitNode` / `emitAttempt`,
+>   the named gating helpers. Those are statements about
+>   `src/compiler/codegen.ts`'s output and should not be read as constraints on
+>   another lowering, which allocates and dispatches on entirely different terms.
+>
+> Codegen is the shipping lowering; this file is written against it and stays that way.
+
 ## The one rule that matters most: pre-compute the early exit BEFORE any setup
 
 **A combinator must reject on the cheapest available signal (usually a single
