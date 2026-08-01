@@ -318,7 +318,8 @@ function makeDriver(
           ctx._fc = true
           return FAIL
         }
-        END = END
+        // END already holds the branch's end — dispatch's span runs from `pos`
+        // to there, which is what the caller reads.
         return [key, v]
       }
 
