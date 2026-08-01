@@ -4,24 +4,35 @@
 typechecked. Bringing it in surfaced **82 errors**. All but the items below are
 fixed; this file tracks what is knowingly left, so none of it is a silent drop.
 
-## 1. `bench/table-alloc-ablation.ts` — excluded, owned by the `src/table/` lane
+## 1. `bench/table-alloc-ablation.ts` — RESOLVED, fixed and no longer excluded
 
 Two errors, both real:
 
-```
+```text
 bench/table-alloc-ablation.ts(131,19): TS2304: Cannot find name 'contests'.
 bench/table-alloc-ablation.ts(132,19): TS2339: Property 'get' does not exist on type '[string, Samples][]'.
 ```
 
-The first is the `ReferenceError` that prompted this work: the bench dies at
-runtime the moment line 131 executes. It is being fixed on the lane that owns
-`src/table/`, together with an `emitConst` failure in the same bench, so it is
-excluded here rather than fixed twice and conflicted.
+The first is the `ReferenceError` that prompted this work: the bench died at
+runtime the moment line 131 executed. Both had the same cause — `interleave`
+returns `Map<string, Samples>` and the results of two calls were SPREAD into an
+array, so `out` had no `.get`, and the loop over it reached for a `contests`
+binding that this scope never defined (it has `baselineContests` and
+`gateContests`).
 
-**Action:** delete the `bench/table-alloc-ablation.ts` entry from `exclude` in
-`tsconfig.json` once that lane lands. Never add another entry to that list — the
-whole point of 0.47's change is that `bench/` is checked under the same settings
-as `src/`.
+**Resolution.** `out` is built as one `Map<string, Samples>` from the same two
+`interleave` calls, and the reporting loop iterates
+`[...baselineContests, ...gateContests]` — the list the map was populated from,
+so the two cannot drift. The bench now runs to completion (exit 0) and reports
+all five contests.
+
+The "`emitConst` failure in the same bench" this entry also mentioned is not
+present: the bench encodes and RUNS tables (`encodeTable` + `tableRules`) and
+never calls `emitTableModule`, so nothing in it reaches `emitConst`.
+
+**`exclude` is now empty of bench entries** and must stay that way — the whole
+point of 0.47's change is that `bench/` is checked under the same settings as
+`src/`.
 
 ## 2. `bench/alloc-profile.ts` + `RunOptions.profile` — RESOLVED, both removed
 

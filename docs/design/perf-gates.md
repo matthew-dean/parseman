@@ -899,7 +899,7 @@ fails.
 So "land it with the number visible" is now a thing you can actually do. A PR
 declares, on one line in the CHANGELOG's **open section**:
 
-```
+```text
 PERF-PEAK-WAIVER bench/workloads/config.json median -164.9% min -158.2% — table lowering: 2.65x parse time buys a 40x smaller artifact
 ```
 

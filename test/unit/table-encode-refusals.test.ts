@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { encodeTable, UnsupportedConstruct } from '../../src/table/encode.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
@@ -384,4 +386,49 @@ describe('table failure reporting matches the interpreter and the compiled path'
     expect([...chTable].sort()).toEqual([...chInterp].sort())
   })
 
+})
+
+/**
+ * `scanSkip` IS CARRIED BUT NEVER EMITTED — and that is only sound by coupling.
+ *
+ * `encode.ts:185` bakes `_meta.grammarScanSkip` onto the program as LIVE
+ * combinators (a table entry is a function, so `run()` will not install it), but
+ * `emitTableModule` writes no `scanSkip` field and `runtimeOnly` does not name
+ * it. A module emitted from such a program would parse with an EMPTY skip list —
+ * silently changing what `scanTo`/`balanced` scan over, which is this lowering's
+ * worst failure shape.
+ *
+ * It is unreachable today because the only two things that READ `ctx.scanSkip`
+ * are themselves refused for emission. These tests pin both halves of that
+ * coupling, so it cannot be broken by a change to either one alone.
+ */
+describe('grammar-level scanSkip cannot silently reach an emitted module', () => {
+  const skipStr = token(sequence(literal('"'), regex(/[^"]*/), literal('"')))
+
+  it('a scanSkip grammar that USES it is refused by name', () => {
+    const g = rules<Record<string, Combinator<unknown>>>({ scanSkip: [skipStr as Combinator<unknown>] }, () => ({
+      Doc: balanced('(', ')') as unknown as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    const prog = encodeTable(g)
+    expect(prog.scanSkip, 'the live units are carried so the PROGRAM still parses').toBeDefined()
+    expect(() => emitTableModule(prog)).toThrow(/balanced\(\)/)
+  })
+
+  it('the only readers of ctx.scanSkip are the constructs encode refuses', () => {
+    // The load-bearing fact. If a third reader appears, `scanSkip` must join
+    // `runtimeOnly` in `encode.ts` — see the field's comment in program.ts.
+    const root = path.join(import.meta.dirname, '../../src')
+    const walk = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap(e =>
+        e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith('.ts') ? [path.join(dir, e.name)] : [])
+    // CODE lines only — the field is discussed in several comments, including
+    // the one this test is named in, and a comment cannot read anything.
+    const isCode = (l: string): boolean => !/^\s*(\/\/|\/?\*)/.test(l)
+    const readers = walk(root)
+      .filter(f => readFileSync(f, 'utf8').split('\n').some(l => isCode(l) && l.includes('ctx.scanSkip')))
+      .map(f => path.relative(root, f)).sort()
+    // `table/exec.ts` WRITES it (the entry installs the ambient set); `scanTo.ts`
+    // is the only reader. Both are listed so a new file cannot slip in either way.
+    expect(readers).toEqual(['combinators/scanTo.ts', 'table/exec.ts'])
+  })
 })

@@ -843,6 +843,13 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
       }
       ctx._fe = -1
       ctx._fx = EMPTY_FX
+      // `_fc` is a SPECULATION-LOCAL bit: every reader writes `false` immediately
+      // before the `exec` it guards, so a stale `true` cannot currently be read.
+      // It is cleared here anyway because the invariant belongs at the boundary,
+      // not in the discipline of six call sites — a seventh reader added without
+      // its paired write would otherwise inherit a committed failure from a
+      // PREVIOUS parse on the same reused `ctx`, and read as "the cut fired".
+      ctx._fc = false
       if (lines && ctx._lineStarts === undefined) { ctx._lineStarts = [0]; ctx._lineScannedTo = 0 }
       const v = d.exec(entry, input, pos, ctx)
       if (v === FAIL) {

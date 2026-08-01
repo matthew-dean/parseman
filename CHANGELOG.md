@@ -596,8 +596,11 @@ numbers.
   `alloc-model` set `captureTrivia` as a key on `rules()`, which has no such option,
   so grammar-wide trivia capture was never enabled in a rig written to measure it
   enabled. Any number you took from those two before this release was measuring
-  something other than what it claimed. Two files are deferred rather than fixed and
-  are named in `docs/future/bench-typecheck-followups.md`.
+  something other than what it claimed. Nothing is deferred and nothing under
+  `bench/` is excluded: `docs/future/bench-typecheck-followups.md` records how each
+  of the three held-back items was resolved, including the `ReferenceError` bench
+  itself, whose report loop now iterates the contest list it built its results map
+  from.
 
 - **New and NOT on the shipping path: `parseman/table`, a second, prototype
   lowering.** `src/table/` encodes a rule map into a flat instruction table read by

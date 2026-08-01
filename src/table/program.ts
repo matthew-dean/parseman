@@ -61,8 +61,19 @@ export type TableProgram = {
    * entry, so a table entry never got it and `ctx.scanSkip` stayed empty —
    * silently changing what `scanTo`/`balanced` skip over.
    *
-   * Carried as live combinators, so a program with this set is runtime-only
-   * until they lower. `emitConst` refuses it, which is the correct failure.
+   * Carried as live combinators, so it CANNOT be emitted — and, unlike ambient
+   * trivia, it is not listed in `runtimeOnly` either: `emitTableModule` simply
+   * does not write it, so a module would parse with an empty skip list.
+   *
+   * That is sound only because of a COUPLING, and the coupling is the thing to
+   * check before touching either side: the sole readers of `ctx.scanSkip` are
+   * `scanTo()` and non-`raw` `balanced()` (`src/combinators/scanTo.ts:77,220`),
+   * and `encode.ts:232-235` marks BOTH runtime-only unconditionally. So every
+   * program in which a missing `scanSkip` could change a parse already fails
+   * `emitTableModule` by naming `scanTo()` / `balanced()`. A new reader of
+   * `ctx.scanSkip` that is not itself runtime-only breaks that and must add
+   * `scanSkip` to `runtimeOnly` — `test/unit/table-encode-refusals.test.ts`
+   * fails when one appears.
    */
   readonly scanSkip?: readonly unknown[]
   /**

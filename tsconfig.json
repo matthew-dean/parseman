@@ -21,10 +21,10 @@
   // `bench/types/nearley.d.ts`, `bench/*-parser.d.ts` for the generated Peggy
   // parsers, and `createLanguage<Spec>` in `bench/parsimmon-*.ts`.
   "include": ["src/**/*", "test/**/*", "bench/**/*"],
-  // TODO(bench-typecheck): `bench/table-alloc-ablation.ts` is the one file still
-  // out. It has a live `ReferenceError` (`contests` is not defined) plus an
-  // `emitConst` failure, both being fixed on the `src/table/` lane, so it is
-  // excluded rather than fixed twice. Delete this entry — never add to it — once
-  // that lands. See `docs/future/bench-typecheck-followups.md`.
-  "exclude": ["node_modules", "dist", "bench/table-alloc-ablation.ts"]
+  // NOTHING under `bench/` is excluded, and nothing may be added here. The last
+  // exclusion — `bench/table-alloc-ablation.ts`, which held the `ReferenceError`
+  // that prompted this whole change — is gone: the bench builds one `Map` and
+  // iterates the contest list it populated it from. See
+  // `docs/future/bench-typecheck-followups.md` §1.
+  "exclude": ["node_modules", "dist"]
 }

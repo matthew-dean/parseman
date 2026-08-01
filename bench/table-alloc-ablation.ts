@@ -12,7 +12,7 @@
  * sides is the allocation.
  */
 import os from 'node:os'
-import { interleave, median, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
+import { interleave, median, type Case, type Contest, type Measurement, type Samples, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { tableRules } from '../src/table/exec.ts'
@@ -116,10 +116,14 @@ function main(): void {
   const gateContests: Contest[] = [
     { label: 'GATE     compiled -> fuse+collapse', a: cases(compiled), b: cases(neu) },
   ]
-  const out = [
+  // ONE map, not a spread into an array. `interleave` returns `Map<string,
+  // Samples>`; spreading two of them yields `Array<[string, Samples]>`, which has
+  // no `.get` — the reporting loop below died on the first line it reached.
+  const contests: Contest[] = [...baselineContests, ...gateContests]
+  const out = new Map<string, Samples>([
     ...interleave(baselineContests, reps, M),
     ...interleave(gateContests, gateReps, M),
-  ]
+  ])
   const denseContests: Contest[] = [
     { label: 'CONTROL  compiled -> compiled  (no trivia)', a: denseCases(compiled), b: denseCases(compiled) },
     { label: 'GATE     compiled -> table     (no trivia)', a: denseCases(compiled), b: denseCases(neu) },

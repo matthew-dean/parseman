@@ -62,10 +62,20 @@ describe('the 12-bit decoder has exactly one spelling in src/', () => {
     readdirSync(dir, { withFileTypes: true }).flatMap(e =>
       e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith('.ts') ? [path.join(dir, e.name)] : [])
 
-  it('is spelled in one file, not once per consumer', () => {
+  /** OCCURRENCES, not files. A `.filter(f => text.includes(NEEDLE))` counts the
+   * files that contain the decoder and says nothing about how many times each
+   * one spells it — so a second copy added BESIDE the first, in the same file,
+   * passes it. That is the likeliest place for the next copy to appear, since
+   * the two consumers that had the duplicate were one import apart. */
+  const occurrences = (text: string): number => text.split(NEEDLE).length - 1
+
+  it('is spelled once in the whole of src/, not once per consumer', () => {
     const root = path.join(import.meta.dirname, '../../src')
-    const hits = walk(root).filter(f => readFileSync(f, 'utf8').includes(NEEDLE))
-      .map(f => path.relative(root, f)).sort()
-    expect(hits, 'the decoder must live only beside the encoder it inverts').toEqual(['compiler/token-dispatch.ts'])
+    const hits = walk(root)
+      .map(f => [path.relative(root, f), occurrences(readFileSync(f, 'utf8'))] as const)
+      .filter(([, n]) => n > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+    expect(hits, 'the decoder must live only beside the encoder it inverts').toEqual([['compiler/token-dispatch.ts', 1]])
+    expect(hits.reduce((n, [, c]) => n + c, 0), 'exactly one spelling, anywhere in src/').toBe(1)
   })
 })

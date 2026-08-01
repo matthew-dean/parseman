@@ -47,6 +47,27 @@ const viaRefs = rules<Record<string, Combinator<unknown>>>(g => ({
   Item: choice(g.A!, g.B!, g.C!, g.D!, g.E!, g.F!),
 })) as unknown as Record<string, Combinator<unknown>>
 
+/**
+ * THE CONFOUND CONTROL, and why the `direct -> via g.` number alone cannot carry
+ * the claim.
+ *
+ * That contest changes TWO things at once: the choice loses its dispatch table,
+ * AND every arm is now reached through a lazy proxy's `thunk()` rather than
+ * directly. Some of the delta is the second thing, and nothing in the pairing
+ * separates them.
+ *
+ * This grammar is `viaRefs` with the arms REORDERED so the one the input hits
+ * (`F`, the `[a-z]+` arm) is tried FIRST. It pays the identical lazy-reference
+ * overhead per arm and has the identical non-disjoint flag; the only difference
+ * is how many arms are attempted before the match. `viaFirst -> viaRefs` is
+ * therefore the ordered-first-match cost ALONE, with lazy deref held constant —
+ * and the residue between it and `direct -> via g.` is the lazy overhead.
+ */
+const viaRefsTargetFirst = rules<Record<string, Combinator<unknown>>>(g => ({
+  A, B, C, D, E, F,
+  Item: choice(g.F!, g.A!, g.B!, g.C!, g.D!, g.E!),
+})) as unknown as Record<string, Combinator<unknown>>
+
 function unwrap(c: Combinator<unknown>): Combinator<unknown> {
   let x = c
   while (x._def.tag === 'lazy') x = (x._def as { thunk: () => Combinator<unknown> }).thunk()
@@ -108,11 +129,13 @@ function main(): void {
 
   const dEntry = many(direct)
   const rEntry = many(viaRefs.Item!)
+  const fEntry = many(viaRefsTargetFirst.Item!)
   for (const [, text] of INPUTS) {
     for (const w of text.split(' ')) {
       const a = JSON.stringify(run(dEntry, w).value)
       const b = JSON.stringify(run(rEntry, w).value)
-      if (a !== b) { console.error('ABORT: the two grammars parse differently'); process.exit(1) }
+      const c = JSON.stringify(run(fEntry, w).value)
+      if (a !== b || a !== c) { console.error('ABORT: the grammars parse differently'); process.exit(1) }
     }
   }
   console.log('  same-parse precondition: OK — identical trees, so this is speed only')
@@ -121,6 +144,8 @@ function main(): void {
   const contests: Contest[] = [
     { label: 'CONTROL  direct -> direct', a: cases(dEntry, INPUTS), b: cases(many(choice(A, B, C, D, E, F)), INPUTS) },
     { label: 'REPRO    direct -> via g.', a: cases(dEntry, INPUTS), b: cases(rEntry, INPUTS) },
+    // Lazy on BOTH sides: isolates the arms-tried cost from the lazy-deref cost.
+    { label: 'ISOLATE  via g. first -> via g. last', a: cases(fEntry, INPUTS), b: cases(rEntry, INPUTS) },
   ]
   const out = interleave(contests, reps, M)
   console.log('')
@@ -131,10 +156,12 @@ function main(): void {
       const a = s.get(`ref|${id}`)!, b = s.get(`head|${id}`)!
       parts.push(`${id.padEnd(10)} min ${sign((Math.min(...b) / Math.min(...a) - 1) * 100).padStart(8)}`)
     }
-    console.log(`  ${k.label.padEnd(28)} ${parts.join('  ')}`)
+    console.log(`  ${k.label.padEnd(36)} ${parts.join('  ')}`)
   }
   console.log('')
   console.log('  positive = the `g.`-referenced form is SLOWER for the same parse.')
+  console.log('  REPRO carries dispatch loss AND lazy-deref cost; ISOLATE holds lazy constant,')
+  console.log('  so ISOLATE is the arms-tried cost alone and REPRO - ISOLATE is the deref residue.')
 }
 
 main()

@@ -403,3 +403,56 @@ describe('table driver — dispatch fallback ownership', () => {
     expect(JSON.stringify(run(t as never, '@y!'))).toBe(JSON.stringify(run(g.Doc! as never, '@y!')))
   })
 })
+
+/**
+ * OPCODE NAMES ARE A SECOND COPY OF THE OPCODE LIST.
+ *
+ * `OP_NAMES` is written by hand beside 30 `OP_*` constants, and `opHistogram`
+ * is the only thing that reads it — so a missing entry surfaces as `undefined`
+ * in a diagnostic (`bench/table-opcode-gaps.ts:74`) or as `op29` from
+ * `inspect.ts:81`, never as a failure. `OP_TOKEN` was missing exactly that way.
+ *
+ * Asserted over the MODULE's exports rather than a written-out list, so a new
+ * opcode cannot be added without its name.
+ */
+describe('OP_NAMES covers every declared opcode', () => {
+  it('has an entry for each OP_* constant, and no stray ones', async () => {
+    const ops = await import('../../src/table/ops.ts')
+    const names: Record<number, string> = ops.OP_NAMES
+    const declared: Array<[string, number]> = Object.entries(ops as Record<string, unknown>)
+      .filter(([n, v]) => n.startsWith('OP_') && n !== 'OP_NAMES' && typeof v === 'number')
+      .map(([n, v]) => [n, v as number])
+    expect(declared.length).toBeGreaterThan(25)
+    const missing = declared.filter(([, code]) => names[code] === undefined).map(([n]) => n)
+    expect(missing, 'every opcode must report a readable name, not undefined').toEqual([])
+    // Names are unique: two opcodes sharing a name makes a histogram silently
+    // merge two rows into one number.
+    const spelled = declared.map(([, code]) => names[code]!)
+    expect(new Set(spelled).size).toBe(spelled.length)
+  })
+})
+
+/**
+ * `_fc` IS RESET AT THE PARSE BOUNDARY, LIKE `_fe` AND `_fx`.
+ *
+ * The entry wrapper resets the failure position and expected set on every call
+ * because a `ParseContext` is reused across parses. `_fc` — the committed-failure
+ * bit `OP_DISPATCH` sets and the cut reads — was left as the caller found it.
+ * Today no reader can observe the stale value (each writes `false` immediately
+ * before the `exec` it guards), so this pins the boundary invariant itself: a
+ * parse must not END carrying a commitment it did not make.
+ */
+describe('table driver — the committed bit does not survive a parse', () => {
+  it('clears a stale _fc on entry, on a grammar that never writes it', () => {
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      // A bare literal: no choice, no optional, no repetition — so nothing in
+      // this parse assigns `_fc` and only the entry reset can clear it.
+      Doc: literal('a') as unknown as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    const t = tableRules(encodeTable(g)).Doc!
+    const ctx = { _fc: true } as unknown as Parameters<typeof t>[2]
+    const r = t('a', 0, ctx)
+    expect(r.ok).toBe(true)
+    expect((ctx as unknown as { _fc?: boolean })._fc, 'a committed failure must not leak across parses').toBe(false)
+  })
+})
