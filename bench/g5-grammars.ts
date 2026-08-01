@@ -218,3 +218,9 @@ export const trailingTriviaNodes = rules<Record<string, Combinator<unknown>>>({ 
   Word: node('Word', regex(/[a-z]+/), (c, _f, s, _r, tl) => ({ t: 'Word', c, tl: tl.length })),
   Root: node('Root', many(g.Word!), (c, _f, s, _r, tl) => ({ t: 'Root', c, tl: tl.length, end: s.end }), { trailingTrivia: true }),
 })) as unknown as Record<string, Combinator<unknown>>
+
+/** A node with BOTH a reducer and `tags`, for the `ctx.build` host path. */
+export const hostNodes = rules<Record<string, Combinator<unknown>>>(g => ({
+  Marked: node('Marked', regex(/[a-z]+/), c => ({ t: 'Marked', c }), { tags: ['decl'] }),
+  Doc: node('Doc', many(g.Marked!), c => ({ t: 'Doc', c })),
+})) as unknown as Record<string, Combinator<unknown>>

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { checkIdentity } from '../../bench/g5-identity.ts'
-import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, jsonWs, selectNodes, trailingTriviaNodes } from '../../bench/g5-grammars.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, selectNodes, trailingTriviaNodes } from '../../bench/g5-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
+import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { many, node, regex, rules } from '../../src/index.ts'
 import type { Combinator } from '../../src/types.ts'
 
@@ -305,15 +306,71 @@ describe('table lowering — three-way identity across every encodable grammar',
   })
 
   it('the driver FAILS CLOSED on runtime options it has no path for', () => {
-    // Neither is detectable at encode time — they arrive with the parse — and
-    // both are silent divergences rather than errors if unguarded: a ctx.build
-    // host is supposed to REPLACE the node's builder, and this driver always
-    // calls the builder.
+    // `rootTrivia` is not detectable at encode time — it arrives with the parse —
+    // and is a silent divergence rather than an error if unguarded: no
+    // `_rootTriviaLog` is ever written, so comments would vanish from the AST.
     const table = tableRules(encodeTable(baseNodes)).Doc!
-    expect(() => run(table as never, 'abc', { build: (() => null) as never }))
-      .toThrow(/ctx\.build host is not supported/)
     // `run()` itself rejects this one earlier (it needs labeled grammar trivia),
     // so the guard is belt-and-braces rather than the only thing standing there.
     expect(() => run(table as never, 'abc', { rootTrivia: { select: ['comment'] } })).toThrow()
+  })
+
+  /**
+   * THE HOST PATH.
+   *
+   * `cstBuildHost` here is parseman's OWN shipped host — the same one jess's
+   * `cssCstBuildHost` is built from (`parsemanCstBuildHost({ tags: true })`,
+   * css-parser/src/cst-host.ts:408-411). Writing a host to match the call would
+   * only prove the two halves I wrote agree with each other.
+   *
+   * WOULD ANY EXISTING TEST HAVE CAUGHT THE BUG THIS FIXES? No. Before this,
+   * `hostMode: 'cst'` tables set capture flags and never reached a host, and the
+   * variants test only asserted that table CONTENTS differ and that line spans
+   * appear. No test ever ran a table WITH a host, so a CST parse would have
+   * returned AST nodes and looked entirely plausible. That is why these assert
+   * the host's output shape and not merely that a parse succeeded.
+   */
+  it('a ctx.build host REPLACES the node builder, and receives type and tags', () => {
+    const host = cstBuildHost({ tags: true })
+    const table = tableRules(encodeTable(hostNodes)).Doc!
+    const out = run(table as never, 'abc', { build: host as never })
+    expect(out.ok).toBe(true)
+
+    // The node's OWN reducer returns { t: 'Doc' }. Under a CST host it must be
+    // bypassed entirely — seeing `t` here means the builder ran and the host did
+    // not, which is the silent failure this path exists to prevent.
+    const root = out.value as Record<string, unknown>
+    expect(root.t).toBeUndefined()
+    expect(root._tag).toBe('node')
+    expect(root.type).toBe('Doc')
+
+    // tags reach the host as the 8th argument; jess puts them on every CST node.
+    const kid = (root.children as Array<Record<string, unknown>>)[0]!
+    expect(kid.type).toBe('Marked')
+    expect(kid.tags).toEqual(['decl'])
+  })
+
+  it('host collapse applies to a node WITH a reducer, not just builder-less ones', () => {
+    // Gating collapse on `!build` made `cstBuildHost({ collapse })` a silent
+    // no-op for every grammar whose rules carry reducers. jess turns this on for
+    // `NamedColor`, which HAS a reducer, so the reducer-bearing case is the one
+    // that matters and the one asserted here.
+    const collapsing = cstBuildHost({ tags: true, collapse: (t: string) => t === 'Marked' })
+    const table = tableRules(encodeTable(hostNodes)).Doc!
+    const out = run(table as never, 'abc', { build: collapsing as never })
+    const kid = ((out.value as Record<string, unknown>).children as Array<Record<string, unknown>>)[0]!
+    // Collapsed: the node IS its single child, so the leaf surfaces directly.
+    expect(kid._tag).toBe('leaf')
+    expect(kid.value).toBe('abc')
+  })
+
+  it('a host parse and a builder parse of the same table differ', () => {
+    // The table is IDENTICAL in both runs — only the runtime host differs. If
+    // these agreed, the host would not be reaching the node at all.
+    const table = tableRules(encodeTable(hostNodes)).Doc!
+    const withHost = JSON.stringify(run(table as never, 'abc', { build: cstBuildHost({ tags: true }) as never }).value)
+    const withBuilder = JSON.stringify(run(table as never, 'abc').value)
+    expect(withHost).not.toBe(withBuilder)
+    expect(withBuilder).toContain('"t":"Doc"')
   })
 })

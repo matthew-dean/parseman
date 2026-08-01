@@ -2,6 +2,7 @@ import type { FieldMap, ParseContext, ParseResult } from '../types.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
 import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
+import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import type { DispatchMatcherKind } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
@@ -575,16 +576,19 @@ function makeDriver(
       case OP_NODE:
       case OP_NODE_TRACK: {
         const flags = code[ip + 3]!
+        // `cstOutput` is a RUNTIME fact, not an encode-time one: it depends on
+        // the host handed to this parse. Under a CST host the direct builder is
+        // BYPASSED, so capture must widen regardless of what the reducer's arity
+        // said — the encode-time flags under-approximate here by construction.
+        const host = ctx.build
+        const hostCst = host !== undefined && cstOutputHost(host)
         const saved = beginCstNodeCapture(ctx)
         const savedFields = ctx._fields
-        ctx._fields = (flags & 16) !== 0 ? [] : undefined
-        if ((flags & 4) === 0) ctx.captureTrivia = false
+        ctx._fields = (flags & 16) !== 0 || hostCst ? [] : undefined
+        if ((flags & 4) === 0 && !hostCst) ctx.captureTrivia = false
         const v = exec(code[ip + 2]!, input, pos, ctx)
-        // `trailingTrivia` runs INSIDE the capture scope, before the node's log is
-        // closed, so the run lands in THIS node rather than the parent's. That is
-        // the order src/combinators/node.ts uses and it is observable.
         if (v !== FAIL && (flags & 128) !== 0 && ctx.trivia !== undefined) END = consumeTrivia(input, END, ctx)
-        const fieldMap: FieldMap | undefined = (flags & 16) !== 0 ? buildFieldMap(ctx._fields) : undefined
+        const fieldMap: FieldMap | undefined = (flags & 16) !== 0 || hostCst ? buildFieldMap(ctx._fields) : undefined
         ctx._fields = savedFields
         const cap = endCstNodeCapture(ctx, saved)
         if (v === FAIL) return FAIL
@@ -593,34 +597,58 @@ function makeDriver(
         const st = (flags & 8) !== 0 && ctx.state !== undefined
           ? Object.assign({}, ctx.state as Record<string, unknown>)
           : undefined
+        const type = k[code[ip + 5]!] as string
+        const tagIdx = code[ip + 6]!
+        const tags = tagIdx < 0 ? undefined : k[tagIdx] as readonly string[]
 
-        // RESULT SELECTION, in the interpreter's order (node.ts): unwrap, then
-        // collapse, then project, then the builder. `unwrap`/`collapse` apply
-        // ONLY at exactly one captured child — zero or two-plus fall through to
-        // the builder, which is why the arity test is here and not at encode time.
         const kids = cap.children
         const proj = code[ip + 4]!
+        const buildIdx = code[ip + 1]!
+        // A direct builder that never declared `state` still owes the host its
+        // snapshot — node.ts builds it here, on a branch the eval path never takes.
+        const hostState = (flags & 8) !== 0
+          ? st
+          : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
+
         let nd: unknown
         if ((flags & 64) !== 0 && kids.length === 1) {
           nd = unwrapChild(kids[0])
         } else if ((flags & 32) !== 0 && kids.length === 1) {
           nd = kids[0]
+        } else if (
+          // HOST COLLAPSE. Applies wherever the node's VALUE comes from the host,
+          // which is any node under a CST host — NOT only builder-less ones.
+          // Gating on `!build` alone made `cstBuildHost({ collapse })` a silent
+          // no-op for every grammar whose rules carry reducers (node.ts says so
+          // in as many words). jess turns this on for `NamedColor`.
+          (hostCst || (buildIdx < 0 && proj < 0))
+          && host?._parsemanCstCollapse !== undefined
+          && kids.length === 1
+          && cap.rawChildren.length === 1
+          && host._parsemanCstCollapse(type, kids[0], kids, cap.rawChildren)
+        ) {
+          nd = kids[0]
         } else if (proj >= 0) {
-          nd = projectChild(kids, proj, k[code[ip + 5]!] as string)
-        } else if (code[ip + 1]! >= 0) {
-          const build = fns[code[ip + 1]!] as (
-            children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
-            rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
-          ) => unknown
-          nd = build(kids, fieldMap, span, cap.rawChildren, (flags & 4) !== 0 ? cap.triviaLog : EMPTY_TL, st)
+          nd = hostCst && host !== undefined
+            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, hostState, tags)
+            : projectChild(kids, proj, type)
+        } else if (buildIdx >= 0) {
+          if (hostCst && host !== undefined) {
+            // A direct builder is bypassed under a CST host: the host must never
+            // receive an arbitrary AST object as a child of a CST node.
+            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, hostState, tags)
+          } else {
+            const build = fns[buildIdx] as (
+              children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
+              rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
+            ) => unknown
+            nd = build(kids, fieldMap, span, cap.rawChildren, (flags & 4) !== 0 || hostCst ? cap.triviaLog : EMPTY_TL, st)
+          }
+        } else if (host !== undefined) {
+          // Structural node: the host owns the value.
+          nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, st, tags)
         } else {
-          // A `collapse`/`unwrap` node that captured zero or two-plus children
-          // has no selection to make and no builder to call. The interpreter
-          // falls through to the DEFAULT CST node here (node.ts, the `ctx.build`
-          // host being absent), and so does this. Getting it wrong would only
-          // show on the arity the collapse does not cover, which is exactly the
-          // input a hand-picked test case misses.
-          nd = { _tag: 'node', type: k[code[ip + 5]!] as string, span, state: st ?? null, children: kids }
+          nd = { _tag: 'node', type, span, state: st ?? null, children: kids }
         }
         pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
         END = end
@@ -676,9 +704,6 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
       // means in the compiled engine), and this driver always calls the builder;
       // root-trivia capture needs a `_rootTriviaLog` this driver never writes.
       // Neither is detectable at encode time — they arrive with the parse.
-      if (ctx.build !== undefined) {
-        throw new Error('parseman/table: a ctx.build host is not supported by the table driver yet — the node builder would run instead of the host, silently. Use the compiled path for host-mode parses.')
-      }
       if (ctx._rootTriviaLog !== undefined) {
         throw new Error('parseman/table: run({ rootTrivia }) is not supported by the table driver yet — no root trivia would be captured, silently.')
       }

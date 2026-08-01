@@ -317,9 +317,6 @@ class Encoder {
         // yields a table that parses and drops trivia, which is the exact
         // silent-failure class this lowering exists to avoid.
         if (d.captureTrivia !== undefined) throw new UnsupportedConstruct('node(captureTrivia)')
-        // `tags` is grammar-level CST reflection consumed by a ctx.build host,
-        // and this driver has no host path — see the guard in exec.ts.
-        if (d.tags !== undefined) throw new UnsupportedConstruct('node(tags)')
         const child = this.node(d.parser).ip
         // Capture flags, resolved HERE from the reducer's declared arity using the
         // same analysis codegen runs (`src/compiler/build-arity.ts`). `hostMode:
@@ -346,6 +343,10 @@ class Encoder {
           child, flags,
           d.project ?? -1,
           this.constant(d.type),
+          // `tags` reaches a `ctx.build` host as its 8th argument. jess's
+          // `cssCstBuildHost` is built with `{ tags: true }` and puts them on
+          // every CST node, so this is load-bearing, not reflection trivia.
+          d.tags === undefined ? -1 : this.constant(d.tags),
         )
         // The rule's own first-set gate — the emitted code's `_ngc` test, as data.
         // A NULLABLE rule has no gate: it succeeds on input its first set does
