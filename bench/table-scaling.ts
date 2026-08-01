@@ -1,5 +1,5 @@
 /**
- * G5 — WHY the gap widens with input size.
+ * WHY the table driver's gap widens with input size.
  *
  * Two rival explanations, and they predict different curves:
  *
@@ -20,7 +20,7 @@ import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { tableRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
-import { jsonRules } from './g5-grammars.ts'
+import { jsonRules } from './table-grammars.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 import type { Combinator } from '../src/types.ts'
 

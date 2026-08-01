@@ -1,4 +1,4 @@
-# G5 — grammar as a table, read by one shared driver
+# Grammar as a table, read by one shared driver
 
 Status: **working prototype, landed on `pm-g5-driver`.** Not wired into the
 macro, `compile()` or `compose()`; `src/table/` is additive and nothing existing
@@ -16,7 +16,7 @@ The ruling (design ledger G5, owner verbatim):
 Every rule's recognizer is **inlined bespoke into its own emitted function**, so
 an artifact pays the whole recognition machinery once PER RULE. Measured here
 with the size probe's own ruler (`transformMacro` over a macro-tagged module,
-`bench/g5-size.ts`):
+`bench/table-size.ts`):
 
 | | marginal cost |
 |---|---:|
@@ -53,7 +53,7 @@ implementation of it would be exactly the duplication this is about removing.
 
 ## Size — measured
 
-`bench/g5-size.ts`. Artifacts written to `/tmp/pm-g5-size/<unit>/`.
+`bench/table-size.ts`. Artifacts written to `/tmp/pm-table-size/<unit>/`.
 
 ```
     n  codegen B   gzip     table B   gzip   words   ratio
@@ -62,7 +62,7 @@ implementation of it would be exactly the duplication this is about removing.
 
   MARGINAL BYTES PER ADDITIONAL RULE (fit over n=1..32)
     codegen (shipped)  4932 B/rule
-    table   (G5)        113 B/rule     43.7x smaller
+    table               113 B/rule     43.7x smaller
 ```
 
 json, 9 productions: **1,072 B** table vs **16,203 B** codegen (`example/json`
@@ -76,7 +76,7 @@ The driver is a fixed cost paid once for a whole bundle: ~26 KB of TS source
 ### The gap does not widen. It asymptotes.
 
 The three-point reading (+82% small, +228% medium, +275% large) invited the
-conclusion that something in the driver is per-item. `bench/g5-scaling.ts`
+conclusion that something in the driver is per-item. `bench/table-scaling.ts`
 takes eight points on one grammar with linearly-scaling work, control within
 ±3.3%:
 
@@ -100,7 +100,7 @@ defect to hunt: the cost IS the interpretation.
 
 ### Two mechanisms proposed, both refuted
 
-`bench/g5-ablate.ts` keeps the previous driver alive in the same process
+`bench/table-alloc-ablation.ts` keeps the previous driver alive in the same process
 (`src/table/exec-baseline.ts`) so one change is measured against a same-path
 control, because cross-run comparison is not available on this machine.
 
@@ -137,7 +137,7 @@ wall clock.
 
 ## Speed — measured, with a control
 
-`bench/g5-speed.ts` and `bench/g5-field.ts`, both over `bench/ab-harness.ts`'s
+`bench/table-speed-ab.ts` and `bench/table-vs-field.ts`, both over `bench/ab-harness.ts`'s
 `interleave` — one process, sides measured in adjacent order-alternated pairs.
 A CONTROL contest (the compiled path against a second instance of ITSELF) runs
 alongside and states the run's noise floor. The machine was at loadavg 90-120
@@ -157,7 +157,7 @@ Best run (loadavg 91, 20 pairs per case):
 before the fusion pass below), and 1.6-2.9x faster than the interpreter.
 
 That cost is real and it is the price of the size result. Goal 1 asks whether it
-costs the FIELD, which is a different question. `bench/g5-field.ts`, loadavg
+costs the FIELD, which is a different question. `bench/table-vs-field.ts`, loadavg
 43.7, control −1.4 / +0.2 / −1.7%:
 
 Three runs, at loadavg 43.7, 6.1 and 6.6. The first two are the same driver
@@ -182,7 +182,7 @@ loss that was a clear 10% before the fusion pass and is now at the noise floor.
 
 ## Variants — the point of the exercise
 
-`bench/g5-variants.ts`. Four settings pairs, one driver:
+`bench/table-variants.ts`. Four settings pairs, one driver:
 
 ```
   hostMode=ast trackLines=false   2078 B   [LIT:32 RX:16 NODE:17   *_TRACK:0]
@@ -206,7 +206,7 @@ variant.
 
 ## Correctness
 
-`bench/g5-run.ts` digests `interpreted | compiled | table` with
+`bench/table-lowering-sweep.ts` digests `interpreted | compiled | table` with
 `parseman/oracle`'s `digestValue` — the repo's byte-identity primitive — over
 the whole outcome (`ok`, value, `unconsumedFrom`). `interpreted ≡ compiled` is
 already gated by `test/parity/*`, so agreement with both pins the new path.
@@ -235,7 +235,7 @@ tree — none would have been visible in a pass/fail test:
 
 ## Projection to the remaining grammars
 
-`bench/g5-coverage.ts` walks every real grammar in the repo through
+`bench/table-opcode-gaps.ts` walks every real grammar in the repo through
 `encodeTable`. This is measured, not extrapolated:
 
 | grammar | result |
@@ -349,7 +349,7 @@ Assumptions in that projection, stated so they can be checked:
 
 ## A shipped-path defect found on the way (NOT in `src/table/`)
 
-`bench/g5-disjoint-repro.ts`. Two grammars, one language, identical arms and
+`bench/choice-disjoint-lazy-arms-repro.ts`. Two grammars, one language, identical arms and
 identical trees. The only difference is whether the arms are written directly or
 reached through `g.`:
 

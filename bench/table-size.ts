@@ -1,5 +1,5 @@
 /**
- * G5 size measurement.
+ * Table-lowering size measurement.
  *
  * Ruler for the SHIPPED lowering is the one `bench/size/probe.ts` uses:
  * `transformMacro` over a macro-tagged module, weighing the emitted module.
@@ -15,12 +15,12 @@ import path from 'node:path'
 import { transformMacro } from '../src/plugin/index.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { emitTableModule } from '../src/table/emit.ts'
-import { nodeLadder, jsonRules, JSON_FN_SOURCES } from './g5-grammars.ts'
+import { nodeLadder, jsonRules, JSON_FN_SOURCES } from './table-grammars.ts'
 import type { Combinator } from '../src/types.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 
 const MACRO = `import { rules, literal, regex, sequence, choice, many, oneOrMore, optional, sepBy, node, transform, trivia, compose, composeLeaf, parser } from 'parseman' with { type: 'macro' }`
-const OUT = '/tmp/pm-g5-size'
+const OUT = '/tmp/pm-table-size'
 
 function ladderSource(n: number): string {
   const defs: string[] = []
@@ -99,7 +99,7 @@ function main(): void {
   const mt = (tb.at(-1)! - tb[0]!) / (ns.at(-1)! - ns[0]!)
   console.log(`  MARGINAL BYTES PER ADDITIONAL RULE (fit over n=${ns[0]}..${ns.at(-1)}):`)
   console.log(`    codegen (shipped)  ${mc.toFixed(0)} B/rule`)
-  console.log(`    table   (G5)       ${mt.toFixed(0)} B/rule    ${(mc / mt).toFixed(1)}x smaller`)
+  console.log(`    table              ${mt.toFixed(0)} B/rule    ${(mc / mt).toFixed(1)}x smaller`)
   console.log('')
 
   console.log('=== json (9 rules) — SHIPPED codegen vs TABLE')

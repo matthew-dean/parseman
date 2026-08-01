@@ -1,5 +1,5 @@
 /**
- * G5 deliverable 5 — what the prototype's opcode set does NOT yet cover.
+ * What the table lowering's opcode set does NOT yet cover.
  *
  * The projection to the other grammars is only worth anything if it is grounded
  * in which constructs are actually missing, so this walks every real grammar in

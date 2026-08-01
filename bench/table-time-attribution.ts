@@ -1,5 +1,5 @@
 /**
- * G5 — WHERE the table driver's time goes.
+ * WHERE the table driver's time goes.
  *
  * Two independent instruments, because a plausible mechanism has been wrong
  * three times in this lane and a measurement has been right three times:
@@ -19,7 +19,7 @@ import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { tableRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
-import { jsonRules, jsonWs } from './g5-grammars.ts'
+import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON } from './fixtures.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 import type { Combinator } from '../src/types.ts'
@@ -73,8 +73,8 @@ async function main(): Promise<void> {
   const triviaOpt = { trivia: jsonWs as Entry }
 
   console.log('=== CPU profile, LARGE json, attributed to function')
-  await profile('table   ', () => { run(table, text, triviaOpt) }, 300, '/tmp/pm-g5-table.cpuprofile')
-  await profile('compiled', () => { run(compiled, text, triviaOpt) }, 300, '/tmp/pm-g5-compiled.cpuprofile')
+  await profile('table   ', () => { run(table, text, triviaOpt) }, 300, '/tmp/pm-table-table.cpuprofile')
+  await profile('compiled', () => { run(compiled, text, triviaOpt) }, 300, '/tmp/pm-table-compiled.cpuprofile')
 }
 
 void main()

@@ -1,5 +1,5 @@
 /**
- * G5 ablation: does removing the per-item mark ALLOCATION account for the
+ * Table-driver ablation: does removing the per-item mark ALLOCATION account for the
  * widening gap?
  *
  * `src/table/exec-baseline.ts` is the driver as committed at `c11cc60` —
@@ -19,7 +19,7 @@ import { tableRules } from '../src/table/exec.ts'
 import { tableRulesBaseline } from '../src/table/exec-baseline.ts'
 import { encodeTableBaseline } from '../src/table/encode-baseline.ts'
 import { run } from '../src/functional/run.ts'
-import { jsonRules, jsonWs } from './g5-grammars.ts'
+import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 import type { Combinator } from '../src/types.ts'
@@ -83,7 +83,7 @@ function main(): void {
   // the two snapshots differ for that reason and not for the change under test.
   // json has no node(), so no capture is ever active, the demote is a no-op on
   // it, and the two sides are doing identical work — which is why json is the
-  // workload timed here. The capturing case is gated by bench/g5-run.ts instead.
+  // workload timed here. The capturing case is gated by bench/table-lowering-sweep.ts instead.
   console.log('  same-parse precondition: OK (json x3; see the scope note above)')
 
   // SECOND ABLATION — trivia. The driver reaches trivia through the runtime's

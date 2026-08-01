@@ -1,5 +1,5 @@
 /**
- * G5 goal-1 check: with the table driver, is parseman still the fastest parser
+ * With the table driver, is parseman still the fastest parser
  * in the JSON comparison?
  *
  * A relative slowdown against parseman's own codegen only matters if it costs
@@ -14,7 +14,7 @@ import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { tableRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
-import { jsonRules, jsonWs } from './g5-grammars.ts'
+import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
 import { chevrotainJSON, parsimmonJSON, peggyJSON, nearleyJSON, jisonJSON } from './parsers.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'

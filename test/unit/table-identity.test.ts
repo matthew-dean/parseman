@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { checkIdentity } from '../../bench/g5-identity.ts'
-import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes, trailingTriviaNodes } from '../../bench/g5-grammars.ts'
+import { checkIdentity } from '../../bench/table-lowering-identity.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes, trailingTriviaNodes } from '../../bench/table-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
@@ -13,7 +13,7 @@ import type { Combinator } from '../../src/types.ts'
 /**
  * CI gate for the table lowering (`src/table/`, design ledger G5).
  *
- * The lane's own gate is `bench/g5-run.ts`, which is run by hand over seven
+ * The lane's own gate is `bench/table-lowering-sweep.ts`, which is run by hand over seven
  * grammars. This is the subset that has to stay true on every commit, because a
  * table lowering that silently disagrees with the compiled path is exactly the
  * failure the three-way digest exists to catch — every defect it caught this far
@@ -66,7 +66,7 @@ describe('table lowering — tree identity', () => {
     expect(plain.lines).toBe(0)
     expect(tracked.code).not.toEqual(plain.code)
     // And the driver never reads a setting: comments stripped, no option survives.
-    // (The full check lives in bench/g5-variants.ts; this pins the table half.)
+    // (The full check lives in bench/table-variants.ts; this pins the table half.)
   })
 
   it('line tracking is observable in the parse output', () => {
@@ -99,7 +99,7 @@ describe('table lowering — tree identity', () => {
 })
 
 /**
- * The full sweep, promoted from `bench/g5-run.ts` into CI.
+ * The full sweep, promoted from `bench/table-lowering-sweep.ts` into CI.
  *
  * That file ran seven grammars by hand. A hand-run gate is one forgotten command
  * from being no gate, and every defect this lowering has produced PARSED FINE and
@@ -114,7 +114,7 @@ describe('table lowering — tree identity', () => {
  */
 describe('table lowering — three-way identity across every encodable grammar', () => {
   it('json: interpreted, compiled and table agree on every case', async () => {
-    const { checkIdentity: ci } = await import('../../bench/g5-identity.ts')
+    const { checkIdentity: ci } = await import('../../bench/table-lowering-identity.ts')
     const { JSON_CASES } = await import('./table-identity-cases.ts')
     const r = ci(jsonRules as unknown as Record<string, Combinator<unknown>>, 'Value', JSON_CASES, { trivia: jsonWs })
     expect(r.mismatches, JSON.stringify(r.mismatches.slice(0, 3))).toEqual([])
@@ -124,8 +124,8 @@ describe('table lowering — three-way identity across every encodable grammar',
   })
 
   it('node ladder at 4, 8, 16 and 32 rules', async () => {
-    const { checkIdentity: ci } = await import('../../bench/g5-identity.ts')
-    const { nodeLadder } = await import('../../bench/g5-grammars.ts')
+    const { checkIdentity: ci } = await import('../../bench/table-lowering-identity.ts')
+    const { nodeLadder } = await import('../../bench/table-grammars.ts')
     const { ladderCases } = await import('./table-identity-cases.ts')
     for (const n of [4, 8, 16, 32]) {
       const r = ci(nodeLadder(n), 'Root', ladderCases(n))
@@ -134,14 +134,14 @@ describe('table lowering — three-way identity across every encodable grammar',
   })
 
   it('the node-building base grammar', async () => {
-    const { checkIdentity: ci } = await import('../../bench/g5-identity.ts')
+    const { checkIdentity: ci } = await import('../../bench/table-lowering-identity.ts')
     const { BASE_CASES } = await import('./table-identity-cases.ts')
     const r = ci(baseNodes, 'Doc', BASE_CASES)
     expect(r.mismatches, JSON.stringify(r.mismatches.slice(0, 3))).toEqual([])
   })
 
   it('the 29-rule Less workload grammar on real stylesheet input', async () => {
-    const { checkIdentity: ci } = await import('../../bench/g5-identity.ts')
+    const { checkIdentity: ci } = await import('../../bench/table-lowering-identity.ts')
     const { lessRules } = await import('../../bench/workloads/less.ts')
     const { LESS_CASES } = await import('./table-identity-cases.ts')
     const r = ci(lessRules as unknown as Record<string, Combinator<unknown>>, 'Stylesheet', LESS_CASES)

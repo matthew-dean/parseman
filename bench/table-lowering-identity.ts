@@ -1,5 +1,5 @@
 /**
- * G5 correctness gate: the table lowering must produce the SAME tree as the
+ * Correctness gate: the table lowering must produce the SAME tree as the
  * shipped lowerings for a grammar's whole corpus.
  *
  * Oracle is `parseman/oracle`'s `digestValue` — the repo's byte-identity

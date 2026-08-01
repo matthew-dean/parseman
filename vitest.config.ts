@@ -30,7 +30,7 @@ export default defineConfig({
         'src/types.ts',
         'src/index.ts',
         'src/cst/types.ts',
-        // Frozen ABLATION copies. bench/g5-ablate.ts keeps the PREVIOUS driver and
+        // Frozen ABLATION copies. bench/table-alloc-ablation.ts keeps the PREVIOUS driver and
         // encoder alive in-process to measure one change against a same-path control
         // -- isolating a driver change needs the encoder frozen too, since the change
         // spans both. They are benchmark fixtures that must not drift, not shipped
@@ -48,7 +48,7 @@ export default defineConfig({
         // imported by shipped code -- at that point coverage is a real requirement.
         'src/compiler/token-scanner.ts',
         'src/compiler/token-alphabet.ts',
-        // Reachability walker used only by bench/g5-coverage.ts to report which
+        // Reachability walker used only by bench/table-opcode-gaps.ts to report which
         // constructs a grammar reaches. Not a runtime path.
         'src/table/inspect.ts',
       ],

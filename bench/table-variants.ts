@@ -1,9 +1,10 @@
 /**
- * G5 deliverable 4 — the variant story.
+ * The variant story: one driver, four tables.
  *
  * `trackLines` × `hostMode` is the axis jess's css parser instantiates four
  * times over one set of shared recognition pieces. Under the shipped lowering
- * each of those four is a separate emitted copy of every rule. Under G5 they
+ * each of those four is a separate emitted copy of every rule. Under the table
+ * lowering they
  * are four TABLES over ONE driver.
  *
  * This prints, for each settings pair:
@@ -19,7 +20,7 @@ import { emitTableModule } from '../src/table/emit.ts'
 import { tableRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
 import { opHistogram } from '../src/table/inspect.ts'
-import { nodeLadder } from './g5-grammars.ts'
+import { nodeLadder } from './table-grammars.ts'
 import { rules, node, regex, many, type Combinator } from '../src/index.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 
@@ -69,7 +70,7 @@ function main(): void {
   console.log('')
   console.log(`  FOUR variants total ${total} B of table.`)
   console.log(`  The 16-rule ladder under the SHIPPED lowering is 82,273 B for ONE variant`)
-  console.log(`  (bench/g5-size.ts, /tmp/pm-g5-size/ladder-16/g.codegen.js) — four of them is 4x that,`)
+  console.log(`  (bench/table-size.ts, /tmp/pm-table-size/ladder-16/g.codegen.js) — four of them is 4x that,`)
   console.log(`  which is exactly the defect notes/size-reduction.md records for jess's css parser.`)
   console.log('')
 

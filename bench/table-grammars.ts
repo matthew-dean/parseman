@@ -1,5 +1,5 @@
 /**
- * G5 lane driver: correctness first, then the numbers.
+ * Shared grammars for the table-lowering benches and the identity gate.
  *
  * Grammar under test: `examples/json` — the smallest real recursive `rules()`
  * grammar in the repo, and one of the grammars in the external comparison

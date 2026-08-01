@@ -1,5 +1,5 @@
 /**
- * G5 parse-speed A/B — the obvious risk, measured rather than assumed.
+ * Table-vs-compiled parse-speed A/B — the obvious risk, measured rather than assumed.
  *
  * A shared driver can trade emitted bytes for interpretive overhead, so this
  * compares the TABLE path against the SHIPPED compiled path on the same
@@ -21,7 +21,7 @@ import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { tableRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
-import { jsonRules, jsonWs } from './g5-grammars.ts'
+import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 import type { Combinator } from '../src/types.ts'

@@ -1,10 +1,10 @@
 /**
- * G5 lane driver: correctness gate, then the numbers.
+ * Table-lowering identity sweep: every grammar in the repo, then the table shape.
  */
-import { checkIdentity } from './g5-identity.ts'
+import { checkIdentity } from './table-lowering-identity.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON, SMALL_GQL, MEDIUM_GQL, LARGE_GQL, SMALL_EXPR, MEDIUM_EXPR } from './fixtures.ts'
-import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, jsonWs, nodeLadder, selectNodes, trailingTriviaNodes } from './g5-grammars.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, jsonWs, nodeLadder, selectNodes, trailingTriviaNodes } from './table-grammars.ts'
 import type { Combinator } from '../src/types.ts'
 import { readFileSync } from 'node:fs'
 import { lessRules } from './workloads/less.ts'
@@ -36,7 +36,7 @@ function ladderCases(n: number): Array<{ name: string; input: string }> {
 }
 
 async function main(): Promise<void> {
-  console.log('=== G5 table lowering — correctness gate (oracle: parseman/oracle digestValue)')
+  console.log('=== table lowering — correctness gate (oracle: parseman/oracle digestValue)')
   const jr = checkIdentity(jsonRules as unknown as Record<string, Combinator<unknown>>, 'Value', JSON_CASES, { trivia: jsonWs })
   console.log(`  json    ${jr.matched}/${jr.total} cases identical across interpreted | compiled | table`)
   for (const m of jr.mismatches.slice(0, 6)) console.log(`    MISMATCH ${m.case} [${m.path}] ${m.a.slice(0, 16)} != ${m.b.slice(0, 16)}`)
