@@ -2,7 +2,34 @@
 
 Read this before quoting any number from this branch.
 
-## Status
+## Status: BLOCKED BY REVIEW. Do not merge.
+
+An adversarial review of the `deferFirstSetRefs` exclusion reproduced three cases of
+the exact staleness the exclusion exists to prevent. The mechanism is wrong, not the
+diagnosis. See PR #107's review comment for the reproductions; summary:
+
+  - `finalizeDispatch` MUTATES shared combinator objects, so "we do not call it in
+    `compileLinkable`" does not stop `compileLinkable` from being handed an object an
+    earlier compile or parse already refreshed. The boundary is stated as an
+    object-graph property and enforced as a call-site convention; object identity
+    defeats it.
+  - `src/plugin/index.ts:1707` -> `compileRuleMap` (which refreshes) hands the SAME Map
+    to `compileLinkable` at :1728, on every exported grammar. Green only because the
+    full-pieces fallback that would ship it has never fired.
+  - `fuseInterpreted` (publicly exported) reuses live base combinators: one `.parse()`
+    before the fuse produces a wrong REJECT, and the one-shot `refreshed` memo means it
+    never self-corrects.
+  - `emitChoice`'s disjoint branch has no `deferFirstSetRefs` handling at all, so there
+    is no second line of defence now that `def.disjoint` is reachable under
+    `compileLinkable`.
+  - `finalize-dispatch.ts` ships 108 lines with zero tests; `MAX_PASSES` exhaustion is
+    silent; analysis reads are now order-dependent.
+
+A landable version needs the refresh to be NON-MUTATING — a compile-scoped map of
+verdicts — or `compileLinkable` to assert/reset. Everything below still describes what
+the change does and does not measure, and remains accurate.
+
+## Original status
 
 Two commits — `5906aed` (interpreter) and `520b27c` (codegen). They deliver
 **correctness**: both engines now decide dispatch from the same resolved arms, so they
