@@ -558,7 +558,26 @@ type Ctx = {
    * so it is only active for the arms of a single shared-prefix choice. Undefined on
    * every other path → no interception, byte-identical output.
    */
+  /**
+   * A shared prefix recognised once, to be REPLAYED by each arm's own leading term.
+   * `atPos` is load-bearing: the map is keyed on the combinator OBJECT, and a grammar
+   * may legitimately use ONE object at both the leading position and later in the same
+   * sequence — `sequence(num, literal('-'), num)` with a single `num`. Without the
+   * position check the trailing occurrence replays the leading one's value and end,
+   * silently producing a wrong tree and a truncated span from a parse that SUCCEEDS.
+   */
   replayPrefix?: Map<Combinator<unknown>, { valVar: string; endVar: string }> | undefined
+  /**
+   * Replay entries already consumed by the arm currently being emitted, cleared at
+   * every arm boundary. Load-bearing: `replayPrefix` is keyed on the combinator
+   * OBJECT, and a grammar may legitimately use ONE object at both the leading
+   * position and later in the same sequence — `sequence(num, literal('-'), num)`
+   * built from a single `num`. Only the FIRST emission within an arm is that arm's
+   * leading term; a later one is a different emit site and must scan for real.
+   * Without this, `1-2` compiled to ['1','-','1'] with a span of 0-1 against the
+   * interpreter's ['1','-','2'] over 0-5 — a parse that SUCCEEDS with a wrong tree.
+   */
+  replayUsed?: Set<Combinator<unknown>> | undefined
   /**
    * Active dispatch selector for an inlined `routed()` site. Branches that cross
    * generated function boundaries still use `_ctx._routed`; inlined branches can
@@ -2600,6 +2619,8 @@ function emitFirstMatch(
   if (preStmts) stmts.push(...preStmts)
 
   for (let i = 0; i < def.parsers.length; i++) {
+    // New arm: its own leading term may replay the shared prefix again.
+    if (ctx.replayPrefix !== undefined) ctx.replayUsed = new Set()
     const p = def.parsers[i]!
     const gate    = def.gates[i]
     const autoNot = def.autoNot[i]
@@ -2853,9 +2874,9 @@ function emitSharedPrefix(
   const pfx = emitFallible(prefix, ctx, pos, false)
   ctx.capturing = savedCapturing
 
-  // Register the replay for EACH arm's own leading-terminal instance (all members'
-  // leading terms are structurally identical to `prefix`; each is a distinct object
-  // reached during that arm's emission).
+  // Register the replay for EACH arm's own leading-terminal instance. NOTE: these are
+  // NOT necessarily distinct objects, and an arm may reach the SAME object again later
+  // in its sequence — so the replay is gated on the emit POSITION as well as identity.
   const map = (ctx.replayPrefix ??= new Map())
   const keys: Combinator<unknown>[] = []
   for (const i of members) {
@@ -2867,7 +2888,10 @@ function emitSharedPrefix(
     keys.push(term0)
   }
 
+  const savedUsed = ctx.replayUsed
+  ctx.replayUsed = new Set()
   const r = emitFirstMatch(def, ctx, pos, undefined, pfx.stmts, pfx.okVar)
+  ctx.replayUsed = savedUsed
 
   for (const k of keys) map.delete(k)
   return r
@@ -4427,7 +4451,13 @@ function emit(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
   // instead of re-scanning (see emitSharedPrefix). Checked before coverage/hoisting
   // — the replay is a plain leaf emission with no rule/label identity of its own.
   const replay = ctx.replayPrefix?.get(p)
-  if (replay !== undefined) return emitReplayPrefixLeaf(ctx, pos, replay)
+  // Once per ARM, not once per object. A second emission of the same object inside
+  // one arm is a different emit site and must scan for real; replaying there is the
+  // shared-prefix miscompile. Falling through costs a scan and is always correct.
+  if (replay !== undefined && !ctx.replayUsed?.has(p)) {
+    ctx.replayUsed?.add(p)
+    return emitReplayPrefixLeaf(ctx, pos, replay)
+  }
   const dispatch = (emissionPos = pos): ER => {
     const savedRule = ctx.activeCoverageRuleId
     const rule = ctx.coverage?.plan.rules.get(p)
