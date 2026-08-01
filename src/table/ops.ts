@@ -28,7 +28,10 @@ export const OP_SEQ = 3
 export const OP_SEQV = 4
 /** `CHOICE d n c1 … cn` — `d` indexes a dispatch table (or −1 for ordered try). */
 export const OP_CHOICE = 5
-/** `REP c min max sep trailing` — `sep` is a child offset or −1; `max` −1 = ∞. */
+/**
+ * `REP c min max sep flags` — `sep` is a child offset or −1; `max` −1 = ∞.
+ * `flags` bit 0 = trailing separator allowed, bit 1 = `keepSeparators`.
+ */
 export const OP_REP = 6
 /** `REPV …` — `REP` with `valueUnused`. */
 export const OP_REPV = 7
@@ -73,6 +76,15 @@ export const OP_SCOPE = 20
  * zero-width `ParseError` value carrying the expected set at `e`.
  */
 export const OP_EXPECT = 21
+/**
+ * `SEQX f n c1 … cn` — a `transform()` whose child is a `sequence()`.
+ *
+ * That pair is the dominant shape in every grammar here (json is nine of them),
+ * and running it as two rows costs two switch dispatches and two JS call frames
+ * per rule invocation where the emitted code pays neither. Fusing them into one
+ * row halves that for the shape that occurs most.
+ */
+export const OP_SEQX = 22
 
 export const OP_NAMES: Record<number, string> = {
   [OP_LIT]: 'LIT', [OP_RX]: 'RX', [OP_SEQ]: 'SEQ', [OP_SEQV]: 'SEQV',
@@ -80,5 +92,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_XFORM]: 'XFORM', [OP_NODE]: 'NODE', [OP_RULE]: 'RULE', [OP_GATE]: 'GATE',
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
-  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT',
+  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX',
 }

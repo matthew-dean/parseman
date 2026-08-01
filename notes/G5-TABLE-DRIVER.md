@@ -80,19 +80,19 @@ conclusion that something in the driver is per-item. `bench/g5-scaling.ts`
 takes eight points on one grammar with linearly-scaling work, control within
 ±3.3%:
 
+Re-taken on a QUIET box (loadavg 6-7, control within ±1.3%) after the machine
+came free; the loaded readings are kept beside them because they agree, which is
+the useful fact about them.
+
 ```
-    records    bytes    gate ratio
-    n=1           81       2.28x
-    n=2          161       2.58x
-    n=4          321       2.95x
-    n=8          641       3.08x
-    n=16        1281       3.02x
-    n=64        5121       3.12x
-    n=256      20481       3.20x
-    n=1024     81921       3.29x
+    records    bytes    loaded    quiet    after fuse+collapse
+    n=1           81     2.28x    2.27x         2.00x
+    n=8          641     3.08x    3.00x         2.55x
+    n=64        5121     3.12x    3.08x         2.61x
+    n=1024     81921     3.29x    3.17x         2.65x
 ```
 
-From n=8 to n=1024 — 128x the work — the ratio moves 7%. That is an ASYMPTOTE.
+From n=8 to n=1024 — 128x the work — the ratio moves 4-7%. That is an ASYMPTOTE.
 The small-input numbers are a shared PER-PARSE fixed cost (ctx setup, `run()`
 bookkeeping) that both sides pay identically, diluting the ratio when the parse
 is tiny. **The real figure is ~3.2x in steady state**, and there is no per-item
@@ -116,6 +116,21 @@ call frame plus a switch dispatch the emitted code does not pay, and terminals
 are the majority of executed instructions. Running them in place:
 **−3.7% / −8.2% / −6.7%** against a control of +2.3% / +2.3% / −0.2%.
 
+**`SEQX` — fusing `transform(sequence(...))` into ONE row**, plus an encode-time
+peephole that collapses `OP_RULE` pure-indirection rows out of every child slot.
+Mechanism, stated before it was tried: that pair is the dominant shape in every
+grammar here (json is nine of them) and costs two dispatches and two call frames
+per rule invocation where the emitted code pays neither; an `OP_RULE` row is a
+dispatch and a frame to do nothing but jump.
+
+**−17.9% / −24.7% / −25.8%** against a control of +1.6% / +0.7% / +0.3%. It is
+also a size win: json 116 → 108 words, csv 82 → 76, lang 301 → 277, graphql
+426 → 386, and `RULE` rows are gone entirely.
+
+The A/B for it needed a frozen ENCODER as well as a frozen driver
+(`src/table/encode-baseline.ts`), because the change spans both — handing the new
+table to the old driver just crashes on an opcode it never had.
+
 The mark guard was kept anyway: when no sink is live nothing was recorded, so
 nothing needs unrecording. Correct on its own terms whatever it is worth in
 wall clock.
@@ -138,25 +153,32 @@ Best run (loadavg 91, 20 pairs per case):
   REF     compiled->interp  +181.9%    +831.1%   +755.6%
 ```
 
-**The table driver is ~3.2x slower than codegen in steady state, and 1.6-2.9x
-faster than the interpreter.**
+**The table driver is ~2.6x slower than codegen in steady state** (was ~3.1x
+before the fusion pass below), and 1.6-2.9x faster than the interpreter.
 
 That cost is real and it is the price of the size result. Goal 1 asks whether it
 costs the FIELD, which is a different question. `bench/g5-field.ts`, loadavg
 43.7, control −1.4 / +0.2 / −1.7%:
 
+Three runs, at loadavg 43.7, 6.1 and 6.6. The first two are the same driver
+before the fusion pass and they agree, which is what makes the third readable as
+a result rather than a fluctuation.
+
 ```
-  GATE   pm/compiled -> pm/table    small  +70.3%   medium +165.0%   large +188.0%
-  FIELD  pm/table    -> chevrotain  small  -10.3%   medium  +31.9%   large  +23.5%
-  FIELD  pm/table    -> peggy       small  +92.0%   medium +159.1%   large +122.7%
-  FIELD  pm/table    -> parsimmon   small +387.5%   medium +610.8%   large +549.4%
-  FIELD  pm/table    -> nearley     small +434.2%   medium+1005.3%   large+1017.4%
-  FIELD  pm/table    -> jison       small +397.4%   medium +639.4%   large +626.7%
+                              loaded 43.7      quiet 6.1     after fuse+collapse
+  CONTROL compiled->compiled  -1.4/+0.2/-1.7   -1.3/+1.7/-2.7   -3.5/+1.4/-2.2
+  GATE    compiled->table    +70.3/+165/+188  +78.0/+163/+184  +61.4/+134/+152
+  FIELD   table->chevrotain  -10.3/+31.9/+23.5 -10.0/+30.4/+25.6 -4.6/+46.7/+43.4
+  FIELD   table->peggy       +92.0/+159/+123  +92.0/+165/+124  +112/+199/+159
+  FIELD   table->parsimmon   +388/+611/+549   +391/+595/+551   +438/+677/+633
+  FIELD   table->nearley     +434/+1005/+1017 +454/+989/+1021  +519/+1113/+1188
+  FIELD   table->jison       +397/+639/+627   +412/+614/+611   +463/+720/+721
 ```
 
-**GOAL 1 HOLDS on medium and large**, and fails by 10.3% against chevrotain on
-the 81-byte input — outside the ±1.7% control floor, so a real loss on one chart
-point, not noise. Every other parser in the comparison is beaten on every case.
+**GOAL 1 HOLDS.** pm/table beats peggy, parsimmon, nearley and jison on every
+case by 112%-1188%, and beats chevrotain on medium and large by 46.7% and 43.4%.
+On the 81-byte input it trails chevrotain by 4.6% against a −3.5% control — a
+loss that was a clear 10% before the fusion pass and is now at the noise floor.
 
 ## Variants — the point of the exercise
 

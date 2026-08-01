@@ -1,13 +1,14 @@
 import type { ParseContext, ParseResult } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
 import {
-  beginCstNodeCapture, cstCaptureActive, endCstNodeCapture, pushCstChild,
-  pushCstLeaf, rollbackCstCapture, saveCstMark, type CstRollbackMark,
+  beginCstNodeCapture, cstCaptureActive, cstLeavesLen, demoteCapturedToRaw,
+  endCstNodeCapture, pushCstChild, pushCstLeaf, rollbackCstCapture, saveCstMark,
+  type CstRollbackMark,
 } from '../cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
@@ -244,12 +245,15 @@ function makeDriver(
       }
 
       case OP_SEQ:
-      case OP_SEQV: {
-        const n = code[ip + 1]!
-        const values: unknown[] | undefined = code[ip] === OP_SEQ ? [] : undefined
+      case OP_SEQV:
+      case OP_SEQX: {
+        const fused = code[ip] === OP_SEQX
+        const base = fused ? ip + 3 : ip + 2
+        const n = code[fused ? ip + 2 : ip + 1]!
+        const values: unknown[] | undefined = code[ip] === OP_SEQV ? undefined : []
         let cur = pos
         for (let i = 0; i < n; i++) {
-          const child = code[ip + 2 + i]!
+          const child = code[base + i]!
           if (i > 0 && ctx.trivia !== undefined) {
             const mark = rollbackNeeded(ctx) ? saveTriviaMark(ctx) : null
             let scanEnd: number
@@ -306,6 +310,10 @@ function makeDriver(
           cur = END
         }
         END = cur
+        if (fused) {
+          const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+          return fn(values, { start: pos, end: cur })
+        }
         return values
       }
 
@@ -372,6 +380,9 @@ function makeDriver(
         const min = code[ip + 2]!
         const max = code[ip + 3]!
         const sep = code[ip + 4]!
+        // bit 1 of the flags word: the author opted into keeping separators in
+        // `children`. Absent, a list contributes its ITEMS and nothing else.
+        const keepSeparators = (code[ip + 5]! & 2) !== 0
         const out: unknown[] | undefined = code[ip] === OP_REP ? [] : undefined
         const hasTrivia = ctx.trivia !== undefined
         const needMark = rollbackNeeded(ctx)
@@ -386,6 +397,7 @@ function makeDriver(
           let itemStart = cur
           if (sep >= 0 && count > 0) {
             // separator, with trivia on BOTH sides — mirrors repeat.ts's sepBy loop
+            const leavesBefore = cstLeavesLen(ctx)
             let sp = cur
             if (hasTrivia) sp = skipTrivia(input, sp, ctx)
             const sv = exec(sep, input, sp, ctx)
@@ -394,6 +406,9 @@ function makeDriver(
               if (cmark !== null) rollbackCstCapture(ctx, cmark)
               break
             }
+            // Demote the separator out of `children`, exactly where the
+            // interpreter does it (src/combinators/repeat.ts, sepBy loop).
+            if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
             itemStart = hasTrivia ? skipTrivia(input, END, ctx) : END
           } else if (hasTrivia) {
             // Trivia precedes EVERY item, the first included: `repItem` in

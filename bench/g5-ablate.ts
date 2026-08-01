@@ -17,8 +17,9 @@ import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { tableRules } from '../src/table/exec.ts'
 import { tableRulesBaseline } from '../src/table/exec-baseline.ts'
+import { encodeTableBaseline } from '../src/table/encode-baseline.ts'
 import { run } from '../src/functional/run.ts'
-import { jsonRules, jsonWs, baseNodes } from './g5-grammars.ts'
+import { jsonRules, jsonWs } from './g5-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
 import { PARSEMAN_VERSION } from '../src/version.ts'
 import type { Combinator } from '../src/types.ts'
@@ -62,10 +63,14 @@ function main(): void {
   console.log(`parseman ${PARSEMAN_VERSION}   ${process.cwd()}   node ${process.version}`)
   console.log(`  loadavg ${os.loadavg().map(n => n.toFixed(1)).join(' ')}`)
 
-  const prog = encodeTable(map)
-  const oldA = tableRulesBaseline(prog).Value! as unknown as Entry
-  const oldB = tableRulesBaseline(prog).Value! as unknown as Entry
-  const neu = tableRules(prog).Value! as unknown as Entry
+  // The change spans the ENCODER and the DRIVER, so the baseline side needs
+  // both: the old encoder's table read by the old driver. Handing the new
+  // table to the old driver would just crash on an opcode it never had.
+  const oldProg = encodeTableBaseline(map)
+  const newProg = encodeTable(map)
+  const oldA = tableRulesBaseline(oldProg).Value! as unknown as Entry
+  const oldB = tableRulesBaseline(oldProg).Value! as unknown as Entry
+  const neu = tableRules(newProg).Value! as unknown as Entry
   const compiled = (compose([map as never]) as unknown as Record<string, Entry>).Value!
 
   for (const [id, text] of INPUTS) {
@@ -73,15 +78,13 @@ function main(): void {
     const b = JSON.stringify(run(neu, text, { trivia: jsonWs as Entry }).value)
     if (a !== b) { console.error(`ABORT ${id}: the two drivers parse differently`); process.exit(1) }
   }
-  // The ablation must not have changed the tree for a CAPTURING grammar either,
-  // which is the case the guard deliberately leaves alone.
-  {
-    const bp = encodeTable(baseNodes)
-    const a = JSON.stringify(run(tableRulesBaseline(bp).Doc! as never, '(a,1)zz(b)7').value)
-    const b = JSON.stringify(run(tableRules(bp).Doc! as never, '(a,1)zz(b)7').value)
-    if (a !== b) { console.error('ABORT: node()-capturing grammar diverges between drivers'); process.exit(1) }
-  }
-  console.log('  same-parse precondition: OK (json x3 + a node()-capturing grammar)')
+  // NOTE on scope. The baseline snapshot predates the separator-demote fix
+  // (release/0.47.0 `7cb528e feat(lists)!`), so on a node()-CAPTURING grammar
+  // the two snapshots differ for that reason and not for the change under test.
+  // json has no node(), so no capture is ever active, the demote is a no-op on
+  // it, and the two sides are doing identical work — which is why json is the
+  // workload timed here. The capturing case is gated by bench/g5-run.ts instead.
+  console.log('  same-parse precondition: OK (json x3; see the scope note above)')
 
   // SECOND ABLATION — trivia. The driver reaches trivia through the runtime's
   // `advanceTrivia` (a WeakMap scanner lookup plus several ctx branches, per
@@ -101,8 +104,8 @@ function main(): void {
   const denseReps = calibrateReps(denseCases(compiled))
   const contests: Contest[] = [
     { label: 'CONTROL  baseline -> baseline', a: cases(oldA), b: cases(oldB) },
-    { label: 'ABLATION baseline -> inline-term', a: cases(oldA), b: cases(neu) },
-    { label: 'GATE     compiled -> inline-term', a: cases(compiled), b: cases(neu) },
+    { label: 'ABLATION baseline -> fuse+collapse', a: cases(oldA), b: cases(neu) },
+    { label: 'GATE     compiled -> fuse+collapse', a: cases(compiled), b: cases(neu) },
   ]
   const out = interleave(contests, reps, M)
   const denseContests: Contest[] = [

@@ -1,7 +1,7 @@
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_LIT_TRACK, OP_NAMES, OP_NODE,
   OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX,
-  OP_RX_TRACK, OP_SCOPE, OP_SEQ, OP_SEQV, OP_XFORM, OP_EXPECT,
+  OP_RX_TRACK, OP_SCOPE, OP_SEQ, OP_SEQV, OP_XFORM, OP_EXPECT, OP_SEQX,
 } from './ops.ts'
 import type { TableProgram } from './program.ts'
 
@@ -36,6 +36,11 @@ export function reachableOps(prog: TableProgram): Map<number, number> {
       case OP_SEQ: case OP_SEQV: {
         const n = code[ip + 1]!
         for (let i = 0; i < n; i++) stack.push(code[ip + 2 + i]!)
+        break
+      }
+      case OP_SEQX: {
+        const n = code[ip + 2]!
+        for (let i = 0; i < n; i++) stack.push(code[ip + 3 + i]!)
         break
       }
       case OP_CHOICE: {

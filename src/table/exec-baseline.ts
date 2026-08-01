@@ -1,21 +1,3 @@
-/*
- * FROZEN A/B COUNTERPART — not part of the product, not imported by it.
- *
- * `bench/g5-ablate.ts` needs the PREVIOUS driver alive in the same process to
- * measure one change in isolation against a same-path control. Cross-run
- * comparison is not available here: this machine sat at loadavg 40-210 all
- * session, and a mark-allocation change read -20.7% in one run and +1.6% in the
- * next with a clean control both times.
- *
- * To use: copy `exec.ts` over this file and rename the export, BEFORE making the
- * change you want to measure.
- *
- *   cp src/table/exec.ts src/table/exec-baseline.ts
- *   sed -i '' 's/export function tableRules(/export function tableRulesBaseline(/' src/table/exec-baseline.ts
- *
- * Current content: the driver as of the terminal-inlining change, minus that
- * change.
- */
 import type { ParseContext, ParseResult } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
 import {
@@ -25,7 +7,7 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
@@ -240,6 +222,18 @@ function makeDriver(
       case OP_RULE:
         return exec(code[ip + 1]!, input, pos, ctx)
 
+      case OP_EXPECT: {
+        const v = exec(code[ip + 1]!, input, pos, ctx)
+        if (v !== FAIL) return v
+        // Mirrors src/combinators/expect.ts:135-150 — succeed at zero width with
+        // a ParseError value, and record it in the flat sink when present.
+        const span = { start: pos, end: pos }
+        const err = { _tag: 'parseError' as const, span, expected: fx[code[ip + 2]!] as string[] }
+        ctx._errors?.push(err)
+        END = pos
+        return err
+      }
+
       case OP_SCOPE: {
         const ki = code[ip + 1]!
         const saved = ctx.trivia
@@ -271,6 +265,39 @@ function makeDriver(
             if (END > scanEnd) cur = END
             else if (mark !== null) rollbackTrivia(ctx, mark)
             if (values !== undefined) values.push(v)
+            continue
+          }
+          // TERMINAL FAST PATH. Terminals are the majority of executed
+          // instructions, and reaching one through `exec` costs a JS call frame
+          // plus a switch dispatch that the emitted code does not pay. Running
+          // LIT/RX in place removes both. The duplication is in the DRIVER,
+          // which ships once for every grammar — the cost this design trades on.
+          const cop = code[child]
+          if (cop === OP_LIT) {
+            const lit = k[code[child + 1]!] as string
+            if (!input.startsWith(lit, cur)) {
+              ctx._fe = cur; ctx._fx = fx[code[child + 2]!] as string[]
+              return FAIL
+            }
+            const e = cur + lit.length
+            if (cstCaptureActive(ctx)) pushLeaf(ctx, lit, cur, e)
+            if (values !== undefined) values.push(lit)
+            cur = e
+            continue
+          }
+          if (cop === OP_RX) {
+            const re = k[code[child + 1]!] as RegExp
+            re.lastIndex = cur
+            const m = re.exec(input)
+            if (m === null) {
+              ctx._fe = cur; ctx._fx = fx[code[child + 2]!] as string[]
+              return FAIL
+            }
+            const mv = m[0]
+            const e = cur + mv.length
+            if (cstCaptureActive(ctx)) pushLeaf(ctx, mv, cur, e)
+            if (values !== undefined) values.push(mv)
+            cur = e
             continue
           }
           const v = exec(child, input, cur, ctx)
