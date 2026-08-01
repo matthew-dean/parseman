@@ -1,7 +1,5 @@
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
-import { classifiedTrivia, label, trivia as triviaOf } from '../combinators/map.ts'
-import { oneOrMore } from '../combinators/repeat.ts'
-import { choice } from '../combinators/choice.ts'
+import { classifiedTrivia, trivia as triviaOf } from '../combinators/map.ts'
 import { regex } from '../combinators/regex.ts'
 
 /**
