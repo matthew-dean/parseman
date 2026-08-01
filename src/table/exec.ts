@@ -87,6 +87,17 @@ function spanLines(ctx: ParseContext, start: number, end: number): { start: numb
   return { start, end, startLine: s[0], startColumn: s[1], endLine: e[0], endColumn: e[1] }
 }
 
+/**
+ * Did something inside CUT?
+ *
+ * Read through a call so TypeScript does not narrow `_fc` to `false` from the
+ * assignment that precedes each speculative attempt — `exec` mutates it and the
+ * checker cannot see that.
+ */
+function committed(c: ParseContext): boolean {
+  return c._fc === true
+}
+
 function classHas(cls: ResolvedClass, code: number): boolean {
   if (code < 0) return false
   if (code < 128) return cls.ascii[code] === 1
@@ -505,7 +516,16 @@ function makeDriver(
 
       case OP_CHOICE: {
         const d = code[ip + 1]!
-        const base = ip + 3
+        const base = ip + 4
+        const choiceFx = fx[code[ip + 3]!] as string[]
+        // Report the union, at the choice's own position, on every exit that
+        // fails — matching both engines and, more importantly, never handing a
+        // user an empty expected set.
+        const failChoice = (): typeof FAIL => {
+          ctx._fe = pos
+          ctx._fx = choiceFx
+          return FAIL
+        }
         if (d >= 0) {
           const table = disp[d]!
           const c = lead(input, pos)
@@ -520,34 +540,49 @@ function makeDriver(
             }
           }
           if (arm >= 0) {
+            ctx._fc = false
             const v = exec(code[base + arm]!, input, pos, ctx)
             if (v !== FAIL) return v
+            // THE CUT. `dispatch()` is the library's one true cut: once its
+            // selector matched, a failing branch must fail the whole choice
+            // rather than let a later arm re-recognise the same text. The flag
+            // was being SET by OP_DISPATCH and read by nobody, so the table
+            // accepted input both shipped engines reject.
+            if (committed(ctx)) return FAIL
           }
           const open = table.open
-          if (open.length === 0) return FAIL
+          if (open.length === 0) return failChoice()
           const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
           if (mark !== null) rollbackCstCapture(ctx, mark)
           for (let i = 0; i < open.length; i++) {
+            ctx._fc = false
             const v = exec(code[base + open[i]!]!, input, pos, ctx)
             if (v !== FAIL) return v
+            if (committed(ctx)) return FAIL
             if (mark !== null) rollbackCstCapture(ctx, mark)
           }
-          return FAIL
+          return failChoice()
         }
         const n = code[ip + 2]!
         const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
         for (let i = 0; i < n; i++) {
+          ctx._fc = false
           const v = exec(code[base + i]!, input, pos, ctx)
           if (v !== FAIL) return v
+          if (committed(ctx)) return FAIL
           if (mark !== null) rollbackCstCapture(ctx, mark)
         }
-        return FAIL
+        return failChoice()
       }
 
       case OP_OPT: {
         const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        ctx._fc = false
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v === FAIL) {
+          // repeat.ts:277 — `optional()` propagates a committed failure rather
+          // than reporting "absent".
+          if (committed(ctx)) return FAIL
           if (mark !== null) rollbackCstCapture(ctx, mark)
           END = pos
           // NULL, not undefined. `optional()` yields `null` on no-match
@@ -569,6 +604,10 @@ function makeDriver(
         // bit 1 of the flags word: the author opted into keeping separators in
         // `children`. Absent, a list contributes its ITEMS and nothing else.
         const keepSeparators = (code[ip + 5]! & 2) !== 0
+        // BIT 0 WAS WRITTEN AND NEVER READ. `sepBy({ trailing: 'allow' })` keeps
+        // a separator that is not followed by an item, so `a,b,` consumes to 4;
+        // ignoring the bit stopped at 3 while both shipped engines went to 4.
+        const trailingAllowed = (code[ip + 5]! & 1) !== 0
         const out: unknown[] | undefined = code[ip] === OP_REP ? [] : undefined
         const hasTrivia = ctx.trivia !== undefined
         const needMark = rollbackNeeded(ctx)
@@ -581,20 +620,24 @@ function makeDriver(
           const cmark = needMark ? saveCstMark(ctx) : null
           const tmark = needMark ? saveTriviaMark(ctx) : null
           let itemStart = cur
+          let sepEnd = -1
           if (sep >= 0 && count > 0) {
             // separator, with trivia on BOTH sides — mirrors repeat.ts's sepBy loop
             const leavesBefore = cstLeavesLen(ctx)
             let sp = cur
             if (hasTrivia) sp = skipTrivia(input, sp, ctx)
+            ctx._fc = false
             const sv = exec(sep, input, sp, ctx)
             if (sv === FAIL) {
               if (tmark !== null) rollbackTrivia(ctx, tmark)
               if (cmark !== null) rollbackCstCapture(ctx, cmark)
+              if (committed(ctx)) return FAIL
               break
             }
             // Demote the separator out of `children`, exactly where the
             // interpreter does it (src/combinators/repeat.ts, sepBy loop).
             if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
+            sepEnd = END
             itemStart = hasTrivia ? skipTrivia(input, END, ctx) : END
           } else if (hasTrivia) {
             // Trivia precedes EVERY item, the first included: `repItem` in
@@ -607,12 +650,24 @@ function makeDriver(
           if (itemStart >= input.length) {
             if (tmark !== null) rollbackTrivia(ctx, tmark)
             if (cmark !== null) rollbackCstCapture(ctx, cmark)
+            // A trailing separator at EOF is the COMMON case for
+            // `trailing: 'allow'` (`a,b,`), and this early-out ran before the
+            // item was ever attempted — so handling it only on the item-failure
+            // path left the separator unconsumed.
+            if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
           }
+          ctx._fc = false
           const v = exec(child, input, itemStart, ctx)
           if (v === FAIL) {
             if (tmark !== null) rollbackTrivia(ctx, tmark)
             if (cmark !== null) rollbackCstCapture(ctx, cmark)
+            // repeat.ts:141/215/233 — a committed item failure fails the WHOLE
+            // repetition. Breaking here is what let `many(dispatch(...))` return
+            // ok:true with a silently truncated document.
+            if (committed(ctx)) return FAIL
+            // `trailing: 'allow'` keeps a separator that no item followed.
+            if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
           }
           if (END === itemStart) {

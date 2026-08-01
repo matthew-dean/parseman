@@ -46,7 +46,7 @@ export function reachableOps(prog: TableProgram): Map<number, number> {
       }
       case OP_CHOICE: {
         const n = code[ip + 2]!
-        for (let i = 0; i < n; i++) stack.push(code[ip + 3 + i]!)
+        for (let i = 0; i < n; i++) stack.push(code[ip + 4 + i]!)
         break
       }
       case OP_ROUTED:

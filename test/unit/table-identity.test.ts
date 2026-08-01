@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { checkIdentity } from '../../bench/table-lowering-identity.ts'
-import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes, trailingTriviaNodes } from '../../bench/table-grammars.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, cutUnderChoice, cutUnderMany, forbidSep, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes, trailingSep, trailingTriviaNodes } from '../../bench/table-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
@@ -38,8 +38,19 @@ describe('table lowering — tree identity', () => {
       ],
       { trivia: jsonWs },
     )
-    expect(r.mismatches).toEqual([])
-    expect(r.matched).toBe(r.total)
+    // TWO CASES ARE KNOWN-DIVERGENT and named rather than excluded, so this fails
+    // if a THIRD appears or if these are fixed without the list being updated.
+    //
+    // Both are failure-REPORTING divergences, newly visible because the identity
+    // digest now covers `expected` — it compared only success before, which made
+    // every difference in HOW a parse fails invisible to every sweep. The
+    // remaining gap is furthest-failure merging: both engines report the set at
+    // the furthest position reached (so `[1,2,]` includes the enclosing `"]"`),
+    // while the table reports the failing choice's own union at its own
+    // position. The trees and consumption agree; only the expected set differs.
+    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-trailing-comma', 'bad-unclosed']
+    expect([...new Set(r.mismatches.map(m => m.case))].sort())
+      .toEqual(KNOWN_EXPECTED_SET_DIVERGENCE)
   })
 
   it('a node()-building grammar agrees, including sepBy separator demotion', () => {
@@ -117,9 +128,16 @@ describe('table lowering — three-way identity across every encodable grammar',
     const { checkIdentity: ci } = await import('../../bench/table-lowering-identity.ts')
     const { JSON_CASES } = await import('./table-identity-cases.ts')
     const r = ci(jsonRules as unknown as Record<string, Combinator<unknown>>, 'Value', JSON_CASES, { trivia: jsonWs })
-    expect(r.mismatches, JSON.stringify(r.mismatches.slice(0, 3))).toEqual([])
-    // total counts (case x path) pairs; matched must equal it, not merely be non-zero.
-    expect(r.matched).toBe(r.total)
+    // Two KNOWN failure-reporting divergences, named rather than excluded, so a
+    // third one fails this and so does fixing these without updating the list.
+    // Newly visible: the identity digest now covers `expected`, where before it
+    // compared only success. The residual gap is furthest-failure merging —
+    // both engines report the set at the furthest position reached (so `[1,2,]`
+    // includes the enclosing `"]"`) while the table reports the failing choice's
+    // own union at its own position. Trees and consumption agree.
+    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-trailing-comma', 'bad-unclosed']
+    expect([...new Set(r.mismatches.map(m => m.case))].sort(), JSON.stringify(r.mismatches.slice(0, 3)))
+      .toEqual(KNOWN_EXPECTED_SET_DIVERGENCE)
     expect(r.total).toBeGreaterThan(0)
   })
 
@@ -583,5 +601,46 @@ describe('table lowering — three-way identity across every encodable grammar',
     // And an 'ast' table is unaffected.
     const ast = tableRules(encodeTable(hostNodes))
     expect(run(ast.Doc! as never, 'abc').ok).toBe(true)
+  })
+
+  /**
+   * THE CUT. `dispatch()` is the library's one true cut and `attempt()`
+   * deliberately does not undo it. The driver SET `ctx._fc` and read it nowhere,
+   * so the cut existed in name only: the table accepted input both shipped
+   * engines reject, and `many(dispatch(...))` — the real `many(AtRule)` shape —
+   * returned `ok: true` with a SILENTLY TRUNCATED document.
+   *
+   * Compared against BOTH engines rather than asserted from expectation.
+   */
+  it('a failed dispatch branch cuts, under choice and under repetition', () => {
+    for (const [name, g, input] of [
+      ['choice', cutUnderChoice, '@x'],
+      ['many', cutUnderMany, '@x!@x'],
+    ] as const) {
+      const table = tableRules(encodeTable(g)).Doc!
+      const fromTable = run(table as never, input)
+      const fromInterp = run(g.Doc! as never, input)
+      expect(fromTable.ok, `${name}: must not accept what the interpreter rejects`).toBe(fromInterp.ok)
+      expect(fromTable.ok).toBe(false)
+      expect(fromTable.unconsumedFrom).toBe(fromInterp.unconsumedFrom)
+    }
+  })
+
+  it('sepBy trailing:allow keeps the trailing separator; forbid does not', () => {
+    // Bit 0 of the repetition flags was WRITTEN by the encoder and read by
+    // nobody, so 'a,b,' stopped at 3 while both engines consumed to 4. The
+    // contrast against `forbid` is what makes this test about the BIT rather
+    // than about the parse happening to succeed.
+    const allow = tableRules(encodeTable(trailingSep)).Doc!
+    const forbid = tableRules(encodeTable(forbidSep)).Doc!
+
+    const a = run(allow as never, 'a,b,')
+    expect(a.ok).toBe(true)
+    expect(a.unconsumedFrom).toBe(run(trailingSep.Doc! as never, 'a,b,').unconsumedFrom)
+    expect(a.unconsumedFrom).toBe(null)
+
+    const f = run(forbid as never, 'a,b,')
+    expect(f.unconsumedFrom).toBe(run(forbidSep.Doc! as never, 'a,b,').unconsumedFrom)
+    expect(f.unconsumedFrom).toBe(3)
   })
 })

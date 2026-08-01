@@ -26,7 +26,15 @@ export const OP_RX = 2
 export const OP_SEQ = 3
 /** `SEQV n c1 … cn` — `SEQ` with `valueUnused`: terms run, no tuple is built. */
 export const OP_SEQV = 4
-/** `CHOICE d n c1 … cn` — `d` indexes a dispatch table (or −1 for ordered try). */
+/**
+ * `CHOICE d n fx c1 … cn` — `d` indexes a dispatch table (or −1 for ordered
+ * try); `fx` indexes the choice's OWN expected set.
+ *
+ * Both shipped engines report the UNION of the arms' expectations when a choice
+ * fails. The driver reported whatever the last attempted arm left behind — or,
+ * on a dispatch miss with no arm claiming the lead character, NOTHING, so a user
+ * got an error naming nothing at all.
+ */
 export const OP_CHOICE = 5
 /**
  * `REP c min max sep flags` — `sep` is a child offset or −1; `max` −1 = ∞.

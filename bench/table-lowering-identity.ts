@@ -48,7 +48,17 @@ function digestRun(entry: RunnableLike, input: string, trivia?: RunnableLike): s
   const r = run(entry, input, trivia === undefined ? {} : { trivia })
   // Digest the OUTCOME, not just the value: ok, value, and where the parse
   // stopped. A path that silently consumed less would otherwise pass.
-  return digestValue({ ok: r.ok, value: r.value, unconsumedFrom: r.unconsumedFrom })
+  // FAILURE IS PART OF THE OUTPUT. Digesting only { ok, value, unconsumedFrom }
+  // made every divergence in HOW a parse fails invisible to every sweep — a
+  // table could report the wrong expected set, or none at all, and agree.
+  // `expected` is sorted because neither engine promises an order and an
+  // ordering difference is not a semantic one.
+  return digestValue({
+    ok: r.ok,
+    value: r.value,
+    unconsumedFrom: r.unconsumedFrom,
+    expected: r.ok ? undefined : [...(r.expected ?? [])].sort(),
+  })
 }
 
 export function checkIdentity(

@@ -247,3 +247,31 @@ export const rootTriviaNodes = rules<Record<string, Combinator<unknown>>>({ triv
   Word: node('Word', regex(/[a-z]+/), c => ({ t: 'Word', c })),
   Doc: node('Doc', many(g.Word!), c => ({ t: 'Doc', c })),
 })) as unknown as Record<string, Combinator<unknown>>
+
+/**
+ * `dispatch()` under a CHOICE and under a REPETITION — the cut.
+ *
+ * `dispatch()` is the library's one true cut: once the selector matches, a
+ * failing branch must fail the enclosing construct rather than let a later arm
+ * re-recognise the same text. Both shapes below reject their input in the
+ * interpreter and the compiled engine.
+ */
+const cutAt = dispatch(regex(/@[a-z]+/), when('@x', transform(literal('!'), () => '!')))
+
+export const cutUnderChoice = rules<Record<string, Combinator<unknown>>>(() => ({
+  Doc: choice(cutAt as unknown as Combinator<unknown>, regex(/@[a-z]+/)) as Combinator<unknown>,
+})) as unknown as Record<string, Combinator<unknown>>
+
+export const cutUnderMany = rules<Record<string, Combinator<unknown>>>(() => ({
+  Doc: many(cutAt as unknown as Combinator<unknown>) as Combinator<unknown>,
+})) as unknown as Record<string, Combinator<unknown>>
+
+/** `sepBy({ trailing: 'allow' })` — the separator with no item after it is kept. */
+export const trailingSep = rules<Record<string, Combinator<unknown>>>(() => ({
+  Doc: sepBy(regex(/[ab]/), literal(','), { trailing: 'allow' }) as Combinator<unknown>,
+})) as unknown as Record<string, Combinator<unknown>>
+
+/** The same list with the default `trailing: 'forbid'`, so the bit is contrasted. */
+export const forbidSep = rules<Record<string, Combinator<unknown>>>(() => ({
+  Doc: sepBy(regex(/[ab]/), literal(',')) as Combinator<unknown>,
+})) as unknown as Record<string, Combinator<unknown>>

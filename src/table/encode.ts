@@ -317,10 +317,12 @@ class Encoder {
             }
           }
         }
-        const head = this.emitHead(OP_CHOICE, 2 + kids.length)
+        const head = this.emitHead(OP_CHOICE, 3 + kids.length)
         this.code[head + 1] = dispIdx
         this.code[head + 2] = kids.length
-        for (let i = 0; i < kids.length; i++) this.code[head + 3 + i] = kids[i]!
+        // The choice's OWN expected set — the union both engines report.
+        this.code[head + 3] = this.expected(deriveExpected(p))
+        for (let i = 0; i < kids.length; i++) this.code[head + 4 + i] = kids[i]!
         return head
       }
       case 'many':
