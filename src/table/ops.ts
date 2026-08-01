@@ -137,6 +137,15 @@ export const OP_CALL = 23
  */
 export const OP_FIELD = 24
 /**
+ * `LIT_CI k fx` — a case-insensitive `literal()`.
+ *
+ * Its own row rather than a flag on `LIT`, so the hot exact-match path keeps a
+ * bare `startsWith`. NOTE it yields the INPUT's casing, not the literal's —
+ * `literal.ts:86` returns `input.slice(pos, end)` — so a node built from it
+ * carries the source text. Returning the literal would silently normalise case.
+ */
+export const OP_LIT_CI = 27
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -162,5 +171,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_CALL]: 'CALL',
-  [OP_FIELD]: 'FIELD', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
+  [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
 }

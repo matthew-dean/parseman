@@ -28,7 +28,7 @@ const shared = {
   // library twin. Both reach the COMPILER (the `--fix` loop recompiles to verify), and
   // both are deliberately their own entry points: nothing a library consumer imports may
   // pull the compiler in on their account. Keep them out of `src/index.ts`.
-  entryPoints: ['src/index.ts', 'src/run/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts', 'src/language-service/index.ts', 'src/oracle/index.ts', 'src/analysis/diagnostics.ts', 'src/cli/index.ts'],
+  entryPoints: ['src/index.ts', 'src/run/index.ts', 'src/plugin/index.ts', 'src/spec/index.ts', 'src/language-service/index.ts', 'src/oracle/index.ts', 'src/table/index.ts', 'src/analysis/diagnostics.ts', 'src/cli/index.ts'],
   bundle: true,
   external,
   sourcemap: true,

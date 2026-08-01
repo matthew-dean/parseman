@@ -2,6 +2,7 @@ import type { FieldMap, ParseContext, ParseResult } from '../types.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
 import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
+import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import type { DispatchMatcherKind } from '../types.ts'
@@ -15,7 +16,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
@@ -218,6 +219,21 @@ function makeDriver(
           trackLines(ctx, input, e)
           END = e
           return v
+        }
+        ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
+        return FAIL
+      }
+      case OP_LIT_CI: {
+        const s = k[code[ip + 1]!] as string
+        const e = pos + s.length
+        // Yields the INPUT's casing (literal.ts:86), not the literal's — a node
+        // built from this carries the source text, and normalising it here would
+        // silently rewrite the user's CSS.
+        const matched = input.slice(pos, e)
+        if (asciiFoldEq(matched, s)) {
+          if (cstCaptureActive(ctx)) pushLeaf(ctx, matched, pos, e)
+          END = e
+          return matched
         }
         ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
         return FAIL

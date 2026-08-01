@@ -11,7 +11,7 @@ import { recordLineRangeFromContext } from '../line-index.ts'
  * Unicode accent-folding is the wrong semantic for a parser). Keeps interpreter /
  * compiled / macro output identical for case-insensitive `literal()`.
  */
-function asciiFoldEq(a: string, b: string): boolean {
+export function asciiFoldEq(a: string, b: string): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) {
     let ca = a.charCodeAt(i)
