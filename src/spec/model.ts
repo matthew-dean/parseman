@@ -127,6 +127,148 @@ function defaultRegexDisplay(source: string): string {
   return `/${source}/`
 }
 
+// ---------------------------------------------------------------------------
+// Authored terminals behind a regex
+// ---------------------------------------------------------------------------
+//
+// A spec reader's vocabulary is the LANGUAGE's: MDN and the CSS specs draw
+// `@import`, not `/@import(?![-_a-zA-Z0-9\u0080-\uFFFF])/`. The trailing
+// lookahead is a word-boundary assertion — an implementation detail of how a
+// keyword is recognised, not part of the language — and printing it drowns the
+// grammar in emitter noise. It also broke the diagrams as a complexity metric:
+// a rule made of keywords scored worse than a genuinely tangled one.
+//
+// So when a `regex()` terminal IS a fixed string (optionally guarded by a word
+// boundary, optionally a set of fixed strings), render the string(s). This is
+// not simplification — nothing is collapsed, hidden, or elided; the terminal is
+// shown as the text it matches, which is strictly MORE information than its
+// compiled pattern. Anything with real regex structure still prints raw.
+
+/**
+ * Start index of the top-level group that closes at the very end of `src`, or
+ * `-1`. Character classes and escapes are skipped so `[)]` and `\)` don't lie.
+ */
+function trailingGroupStart(src: string): number {
+  let depth = 0
+  let open = -1
+  let lastStart = -1
+  let lastEnd = -1
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]!
+    if (ch === '\\') { i++; continue }
+    if (ch === '[') {
+      // Skip the class body.
+      for (i++; i < src.length; i++) {
+        if (src[i] === '\\') i++
+        else if (src[i] === ']') break
+      }
+      continue
+    }
+    if (ch === '(') { if (depth === 0) open = i; depth++ }
+    else if (ch === ')') { depth--; if (depth === 0) { lastStart = open; lastEnd = i } }
+  }
+  return lastEnd === src.length - 1 ? lastStart : -1
+}
+
+/** `(?![…])` — a negative lookahead over a single character class. */
+const BOUNDARY_GUARD = /^\(\?!\[(?:[^\\\]]|\\[\s\S])*\]\)$/
+
+/** Split on top-level `|`, skipping escapes, classes and groups. */
+function topLevelAlternatives(src: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]!
+    if (ch === '\\') { i++; continue }
+    if (ch === '[') {
+      for (i++; i < src.length; i++) {
+        if (src[i] === '\\') i++
+        else if (src[i] === ']') break
+      }
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    else if (ch === '|' && depth === 0) { parts.push(src.slice(start, i)); start = i + 1 }
+  }
+  parts.push(src.slice(start))
+  return parts
+}
+
+/** Regex metacharacters an escape may legitimately spell as a literal. */
+const ESCAPABLE = '\\^$.|?*+()[]{}/-'
+
+/**
+ * Decode one alternative to the exact string it matches, or `undefined` when it
+ * is not a fixed string. Deliberately strict: any quantifier, class, group,
+ * anchor, class shorthand or control escape disqualifies it, because rendering
+ * those as text would state something the grammar does not say.
+ */
+function fixedString(alt: string): string | undefined {
+  if (alt.length === 0) return undefined
+  let out = ''
+  for (let i = 0; i < alt.length; i++) {
+    const ch = alt[i]!
+    if (ch === '\\') {
+      const next = alt[i + 1]
+      if (next === undefined) return undefined
+      if (next === 'u' || next === 'x') {
+        const hex = next === 'u'
+          ? (alt[i + 2] === '{' ? /^\\u\{([0-9a-fA-F]+)\}/.exec(alt.slice(i)) : /^\\u([0-9a-fA-F]{4})/.exec(alt.slice(i)))
+          : /^\\x([0-9a-fA-F]{2})/.exec(alt.slice(i))
+        if (hex === null) return undefined
+        const cp = parseInt(hex[1]!, 16)
+        // Control and non-printable code points have no honest text form.
+        if (cp < 0x20 || cp === 0x7f) return undefined
+        out += String.fromCodePoint(cp)
+        i += hex[0]!.length - 1
+        continue
+      }
+      if (!ESCAPABLE.includes(next)) return undefined
+      out += next
+      i++
+      continue
+    }
+    // Unescaped metacharacter → real structure, not a fixed string.
+    if ('^$.|?*+()[]{}'.includes(ch)) return undefined
+    // Literal control characters likewise have no honest text form.
+    if (ch.codePointAt(0)! < 0x20) return undefined
+    out += ch
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/**
+ * The fixed string(s) a regex matches — the terminal its author actually wrote —
+ * or `undefined` when the pattern has real structure. Handles the three shapes
+ * that spell a keyword: a bare literal, a literal guarded by a trailing word
+ * boundary (`word()` / `keywords()` and every hand-written copy of them), and a
+ * `\b…\b`-anchored word.
+ */
+export function fixedStringsOfRegex(source: string): string[] | undefined {
+  let src = source
+  // `\b` anchors assert a boundary, exactly like the `(?![…])` guard.
+  if (src.startsWith('\\b')) src = src.slice(2)
+  if (src.endsWith('\\b') && !src.endsWith('\\\\b')) src = src.slice(0, -2)
+
+  const g = trailingGroupStart(src)
+  if (g >= 0 && BOUNDARY_GUARD.test(src.slice(g))) src = src.slice(0, g)
+
+  // `keywords()` compiles to `(?:a|b|c)` plus the guard; unwrap that hull.
+  const outer = trailingGroupStart(src)
+  if (outer === 0 && src.startsWith('(?:')) src = src.slice(3, -1)
+
+  const alts = topLevelAlternatives(src)
+  const out: string[] = []
+  for (const alt of alts) {
+    const fixed = fixedString(alt)
+    if (fixed === undefined) return undefined
+    out.push(fixed)
+  }
+  return out.length > 0 ? out : undefined
+}
+
 class Builder {
   private seen = new Set<string>()
   private pending: Array<{ name: string; comb: Combinator<unknown> }> = []
@@ -216,17 +358,17 @@ class Builder {
         return { kind: 'terminal', text: def.value, literal: true }
 
       case 'regex': {
-        const shown =
-          this.opts.regexDisplay?.(def.source, def.flags) ??
-          defaultRegexDisplay(def.source)
-        return { kind: 'terminal', text: shown, literal: false }
+        // A caller-supplied display name always wins — it is the most specific
+        // statement of intent available.
+        const shown = this.opts.regexDisplay?.(def.source, def.flags)
+        if (shown !== undefined) return { kind: 'terminal', text: shown, literal: false }
+        const fixed = fixedStringsOfRegex(def.source)
+        if (fixed !== undefined) return literalTerminals(fixed)
+        return { kind: 'terminal', text: defaultRegexDisplay(def.source), literal: false }
       }
 
       case 'keywords':
-        return {
-          kind: 'choice',
-          items: def.words.map(w => ({ kind: 'terminal', text: w, literal: true }) as SpecNode),
-        }
+        return literalTerminals(def.words)
 
       case 'sequence': {
         const items = def.parsers.map(p => this.walk(p)).filter(nonEmpty)
@@ -323,6 +465,18 @@ class Builder {
         return { kind: 'annotation', text: '?' }
     }
   }
+}
+
+/**
+ * One or more fixed strings as terminal node(s). A ONE-word set is a terminal,
+ * not a one-arm alternation: `word('@import')` used to render `("@import")`,
+ * and drew a branch box in the diagram, purely because a keyword set is
+ * internally a set. That paren and that box are emitter artifacts — there is no
+ * alternative to choose between.
+ */
+function literalTerminals(words: readonly string[]): SpecNode {
+  const items = words.map(w => ({ kind: 'terminal', text: w, literal: true }) as SpecNode)
+  return flattenChoice(items)
 }
 
 function nonEmpty(n: SpecNode): boolean {
