@@ -383,3 +383,40 @@ than the evidence:
 
 So this is an interpreter PERFORMANCE defect, worth filing on its own, and it is
 not evidence about the compiled path.
+
+## Owed once this is proven: a top-to-bottom docs audit
+
+Owner, on accepting the parse cost: *"if / when this all gets proven out, and our
+perf numbers hold up, then we would need a top-to-bottom audit and rewrite of docs
+since the way we lower (and expected codegen output) would have changed."*
+
+The part that makes this larger than a rewrite of output descriptions: **the
+authoring guidance inverts.** Most of what jess's grammar docs tell an author is
+arithmetic about how codegen EMITS, not about the grammar.
+
+Invalidated or needing re-derivation under a table lowering:
+
+- **`docs/state/GRAMMAR-SIZE-FACTS.md` — most of §2.** ~950 B per call site;
+  `node()` 3,425 B against `transform()`'s 46 B; `keywords()` vs `word()` arms at
+  18.6x; `g.X` vs by-const at 13.69x; the depth x reference-path-count rule; "name
+  the deep spine, inline shallow leaves". Each is a property of codegen emission.
+  A table rule costs ~113 B regardless of which of these an author picks, so
+  several stop being true and at least one inverts.
+- **The nine contamination filters** were derived by measuring codegen artifacts.
+  The measurement DISCIPLINE survives; the specific rows need re-derivation.
+- **H1 / H2 inlining defects** are a codegen concept. A table does not inline, so
+  the whole refshape analysis has no referent.
+- **The promotion sweep** (css 28.47x -> 17.71x, less 16.22x -> 10.08x) is a
+  codegen result. It says nothing about a table artifact.
+- **`docs/architecture/parser/GRAMMAR-REVIEW-STANDARD.md`** — the items that
+  reference emitted output, including the byte-identity oracle's subject.
+- **`docs/design/GRAMMAR-REBUILD-SPEC.md`** — goal-2 arithmetic throughout.
+- **The codegen-referencing G-rows** in `docs/architecture/core/DESIGN-DECISIONS.md`,
+  notably G6 (`g.X` resolves at macro time), G9, G20.
+
+Surviving unchanged, because they are combinator semantics rather than emission:
+the cheat sheet's spread/contributes-one-child contracts for all 95 exports, the
+arity rules, and the trivia/adjacency model.
+
+This is gated on C and D. Do not start it early — a rewrite against a lowering
+that has not proven tree identity on the jess grammars would have to be redone.
