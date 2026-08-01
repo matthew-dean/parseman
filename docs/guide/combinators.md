@@ -907,7 +907,10 @@ compiled.parse('b').value
 // → 'b'
 ```
 
-`compile()` also runs the [gating diagnostic](./first-char-gating) by default.
+`compile()` produces an artifact and reports **nothing**. Since 0.45.0 the
+[gating diagnostic](./first-char-gating#why-this-is-not-a-compile-time-warning) is not on
+the compile path — ask for it explicitly with
+[`diagnoseGrammar()`](../reference/api#diagnosegrammar-grammar-opts-grammardiagnosis).
 
 ## Context and assertions
 

@@ -138,8 +138,9 @@ See **[The three modes](https://matthew-dean.github.io/parseman/guide/modes)**.
   coverage ("which rules and choice arms ran?") and trace ("what did it try, select, and
   backtrack through?").
 - 🚦 **[First-char gating diagnostics](https://matthew-dean.github.io/parseman/guide/first-char-gating)** —
-  the build tells you which `choice` lost its O(1) dispatch, names the overlapping arms,
-  and says how to fix it.
+  `diagnoseGrammar()` tells you which `choice` lost its O(1) dispatch, names the
+  overlapping arms, and says how to fix it. Run it in a test or a CI job — compiling
+  reports nothing.
 - 📈 **[Performance guide](https://matthew-dean.github.io/parseman/guide/performance)** —
   the levers that actually move a grammar, and [how regexes lower](https://matthew-dean.github.io/parseman/guide/regex-lowering).
 
