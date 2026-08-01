@@ -350,9 +350,18 @@ function makeDriver(
       case OP_SCOPE: {
         const ki = code[ip + 1]!
         const saved = ctx.trivia
-        ctx.trivia = ki < 0 ? undefined : (k[ki] as ParseContext['trivia'])
+        const savedLabels = ctx.triviaKindLabels
+        const scopeTrivia = ki < 0 ? undefined : (k[ki] as ParseContext['trivia'])
+        ctx.trivia = scopeTrivia
+        // A scope installs its trivia's KIND LABELS too. Root-trivia rows are
+        // only ever written on the labelled scan path (trivia-skip.ts:212) — the
+        // unlabelled fast scanner returns before any root logging and does not
+        // even test `_rootTriviaLog` — so a scope that sets trivia without its
+        // labels captures NOTHING at the root, silently.
+        ctx.triviaKindLabels = scopeTrivia?._meta.triviaKindLabels
         const v = exec(code[ip + 2]!, input, pos, ctx)
         ctx.trivia = saved
+        ctx.triviaKindLabels = savedLabels
         return v
       }
 
@@ -692,21 +701,28 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
   const t = resolveTable(prog)
   const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp)
   const out: Record<string, TableRule> = {}
+  // `run()` reads trivia metadata off the ENTRY and takes its
+  // `typeof r === 'function'` branch for compiled entries, which codegen stamps
+  // with `_meta`. A table entry is a function too, so it must be stamped or
+  // `run({ rootTrivia })` rejects a grammar that plainly has labelled trivia.
+  const meta = prog.labels === undefined && prog.classified !== 1
+    ? undefined
+    : {
+        ...(prog.labels === undefined ? {} : { triviaKindLabels: prog.labels }),
+        ...(prog.classified === 1 ? { rootTriviaClassified: true as const } : {}),
+      }
   // Chosen ONCE, from table data, at rule-map construction. Not a per-parse
   // branch on an option: a plain table never has this wrapper at all.
   const lines = prog.lines === 1
   for (const name of Object.keys(prog.rules)) {
     const entry = prog.rules[name]!
-    out[name] = (input: string, pos: number, ctx: ParseContext): ParseResult<unknown> => {
+    const entryFn = (input: string, pos: number, ctx: ParseContext): ParseResult<unknown> => {
       // FAIL CLOSED on the two runtime options this driver has no path for.
       // Both are silent divergences otherwise, not errors: a `ctx.build` host is
       // supposed to REPLACE the node's own builder (that is what `hostMode:'cst'`
       // means in the compiled engine), and this driver always calls the builder;
       // root-trivia capture needs a `_rootTriviaLog` this driver never writes.
       // Neither is detectable at encode time — they arrive with the parse.
-      if (ctx._rootTriviaLog !== undefined) {
-        throw new Error('parseman/table: run({ rootTrivia }) is not supported by the table driver yet — no root trivia would be captured, silently.')
-      }
       ctx._fe = -1
       ctx._fx = EMPTY_FX
       if (lines && ctx._lineStarts === undefined) { ctx._lineStarts = [0]; ctx._lineScannedTo = 0 }
@@ -718,6 +734,7 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
       }
       return { ok: true, value: v, span: { start: pos, end: d.end() } }
     }
+    out[name] = meta === undefined ? entryFn : Object.assign(entryFn, { _meta: meta })
   }
   return out
 }

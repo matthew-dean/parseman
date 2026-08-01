@@ -5,7 +5,7 @@
  * grammar in the repo, and one of the grammars in the external comparison
  * benchmark, so a speed number here is directly comparable to the chart.
  */
-import { rules, literal, regex, sequence, choice, optional, sepBy, transform, trivia, node, many, field, dispatch, when, otherwise, routed, startsWith, type Combinator } from '../src/index.ts'
+import { rules, literal, regex, sequence, choice, optional, sepBy, transform, trivia, classifiedTrivia, node, many, field, dispatch, when, otherwise, routed, startsWith, type Combinator } from '../src/index.ts'
 
 // ---------------------------------------------------------------------------
 // JSON, rebuilt as a full rules() map so every production is an addressable
@@ -223,4 +223,22 @@ export const trailingTriviaNodes = rules<Record<string, Combinator<unknown>>>({ 
 export const hostNodes = rules<Record<string, Combinator<unknown>>>(g => ({
   Marked: node('Marked', regex(/[a-z]+/), c => ({ t: 'Marked', c }), { tags: ['decl'] }),
   Doc: node('Doc', many(g.Marked!), c => ({ t: 'Doc', c })),
+})) as unknown as Record<string, Combinator<unknown>>
+
+/**
+ * A grammar with LABELLED trivia, for `run({ rootTrivia })`.
+ *
+ * Root-trivia rows are written ONLY on the labelled scan path
+ * (trivia-skip.ts:212). The unlabelled fast scanner returns before any root
+ * logging and does not even test `_rootTriviaLog`, so trivia without labels
+ * captures nothing at the root — silently, with every path agreeing.
+ */
+export const commentTrivia = classifiedTrivia({
+  space: regex(/[ \t\n\r]+/),
+  comment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+})
+
+export const rootTriviaNodes = rules<Record<string, Combinator<unknown>>>({ trivia: commentTrivia }, g => ({
+  Word: node('Word', regex(/[a-z]+/), c => ({ t: 'Word', c })),
+  Doc: node('Doc', many(g.Word!), c => ({ t: 'Doc', c })),
 })) as unknown as Record<string, Combinator<unknown>>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { checkIdentity } from '../../bench/g5-identity.ts'
-import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, selectNodes, trailingTriviaNodes } from '../../bench/g5-grammars.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes, trailingTriviaNodes } from '../../bench/g5-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
@@ -372,5 +372,87 @@ describe('table lowering — three-way identity across every encodable grammar',
     const withBuilder = JSON.stringify(run(table as never, 'abc').value)
     expect(withHost).not.toBe(withBuilder)
     expect(withBuilder).toContain('"t":"Doc"')
+  })
+
+  it('a parse allocates ZERO regex objects — same identity across parses', () => {
+    // notes/derived-tokenization.md §10.4.3 records that a codegen parse
+    // allocates no regex per parse, because emitted literals sit in a per-rule
+    // IIFE closure evaluated once at module load. A TABLE HAS NO PER-RULE
+    // IIFEs, so the property has to be re-established rather than inherited.
+    //
+    // It holds by a different mechanism: regexes are built once at ENCODE time
+    // into the const pool (`encode.ts` `this.constant(new RegExp(...))`) and the
+    // driver only READS `k[i]`. Identity across parses is the observable form of
+    // "not reallocated" — a fresh RegExp each parse would compare unequal.
+    const prog = encodeTable(baseNodes)
+    const pooled = prog.k.filter((x): x is RegExp => x instanceof RegExp)
+    expect(pooled.length).toBeGreaterThan(0)
+
+    const table = tableRules(prog).Doc!
+    const snapshot = (): RegExp[] => prog.k.filter((x): x is RegExp => x instanceof RegExp)
+    const before = snapshot()
+    run(table as never, '(a,1)zz(b)7')
+    run(table as never, 'abc 123')
+    const after = snapshot()
+    expect(after.length).toBe(before.length)
+    for (let i = 0; i < before.length; i++) expect(after[i]).toBe(before[i])
+  })
+
+  /**
+   * ROOT TRIVIA — asserted as a SPECIFIC comment at a SPECIFIC place.
+   *
+   * "a log exists" or "length > 0" would pass while the wrong span, the wrong
+   * kind, or somebody else's comment was recorded. Comments silently vanishing
+   * from an AST is the same failure shape as ambient trivia silently absent:
+   * every path agrees and nothing is proven.
+   *
+   * THE SEMANTIC THAT IS WRONG BY INFERENCE: root rows are written ONLY on the
+   * labelled scan path (trivia-skip.ts:212). The unlabelled fast scanner returns
+   * before any root logging and does not even TEST `_rootTriviaLog`, so trivia
+   * without kind labels captures nothing at the root. `run()` reads those labels
+   * off the ENTRY's `_meta` and takes a `typeof r === 'function'` branch for
+   * compiled entries — and a table entry is a function too.
+   */
+  it('rootTrivia records the exact comment span, and matches the interpreter', () => {
+    const input = 'aa /* keep me */ bb'
+    const opts = { rootTrivia: { select: ['comment'] } } as never
+    const table = tableRules(encodeTable(rootTriviaNodes)).Doc!
+
+    const fromTable = run(table as never, input, opts)
+    const fromInterp = run(rootTriviaNodes.Doc! as never, input, opts)
+    expect(fromTable.ok).toBe(true)
+
+    // [gapStart, gapEnd, markerStart, markerEnd, selectedKindIndex]
+    // The comment is at 3..16; the surrounding gap (space before, space after)
+    // is 2..17. A row that recorded the GAP as the marker would still be
+    // "nonzero length" and would still be wrong.
+    expect([...fromTable.rootTrivia!.rows]).toEqual([2, 17, 3, 16, 0])
+    expect(input.slice(3, 16)).toBe('/* keep me */')
+    expect(fromTable.rootTrivia!.select).toEqual(['comment'])
+    expect([...fromTable.rootTrivia!.rows]).toEqual([...fromInterp.rootTrivia!.rows])
+  })
+
+  it('an UNSELECTED trivia kind records no root row', () => {
+    // Whitespace is labelled but not selected, so it must produce nothing —
+    // a driver that logged every trivia run would still pass a length check.
+    const opts = { rootTrivia: { select: ['comment'] } } as never
+    const table = tableRules(encodeTable(rootTriviaNodes)).Doc!
+    const fromTable = run(table as never, 'aa    bb', opts)
+    const fromInterp = run(rootTriviaNodes.Doc! as never, 'aa    bb', opts)
+    expect(fromTable.ok).toBe(true)
+    // Nothing selected matched, so no capture is produced at all — the shape is
+    // `undefined`, not an empty rows array. Pinned against the interpreter so
+    // the assertion states the engine's behaviour rather than my expectation of
+    // it; guessing `[]` here was wrong and the driver was right.
+    expect(fromTable.rootTrivia?.rows ?? null).toEqual(fromInterp.rootTrivia?.rows ?? null)
+    expect(fromTable.rootTrivia).toBeUndefined()
+  })
+
+  it('the table entry carries the trivia metadata run() reads off it', () => {
+    // Without this stamp `run({ rootTrivia })` rejects a grammar that plainly
+    // HAS labelled trivia, because it inspects the entry rather than the table.
+    const entry = tableRules(encodeTable(rootTriviaNodes)).Doc!
+    expect((entry as { _meta?: { triviaKindLabels?: readonly string[] } })._meta?.triviaKindLabels)
+      .toEqual(['space', 'comment'])
   })
 })

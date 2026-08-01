@@ -42,6 +42,17 @@ export type TableProgram = {
    * rather than branched on per parse.
    */
   readonly lines?: 0 | 1
+  /**
+   * The grammar trivia's kind labels, and whether it is root-classified.
+   *
+   * `run()` reads these off the ENTRY (`triviaKindLabelsFromRunnable`,
+   * run.ts:220) and takes the `typeof r === 'function'` branch for a compiled
+   * entry, which codegen stamps with `_meta`. A table entry is also a function,
+   * so without carrying and stamping these, `run({ rootTrivia })` throws
+   * "requires labeled grammar trivia" for a grammar that plainly has them.
+   */
+  readonly labels?: readonly string[]
+  readonly classified?: 0 | 1
 }
 
 /**
@@ -59,11 +70,18 @@ export type CompactProgram = {
   readonly f: readonly unknown[]
   readonly l?: 0 | 1
   readonly p?: readonly DispatchSpec[]
+  readonly lb?: readonly string[]
+  readonly rc?: 0 | 1
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
   if ('code' in p) return p
-  return { code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f, lines: p.l ?? 0, dsp: p.p ?? [] }
+  return {
+    code: p.c, k: p.k, cc: p.x, fx: p.e, disp: p.d, rules: p.r, fns: p.f,
+    lines: p.l ?? 0, dsp: p.p ?? [],
+    ...(p.lb === undefined ? {} : { labels: p.lb }),
+    ...(p.rc === undefined ? {} : { classified: p.rc }),
+  }
 }
 
 /** One `dispatch()`'s routing tables, in serialisable form. */

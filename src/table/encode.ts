@@ -53,6 +53,8 @@ class Encoder {
   fx: (readonly string[])[] = []
   disp: (readonly number[])[] = []
   dsp: DispatchSpec[] = []
+  labels: readonly string[] | undefined = undefined
+  classified = false
   rules: Record<string, number> = {}
 
   private kIndex = new Map<unknown, number>()
@@ -135,6 +137,11 @@ class Encoder {
     // path — which makes a three-way identity check AGREE while proving nothing.
     // Bake it, exactly as the compiled path does.
     const amb = p._meta.grammarTrivia
+    if (amb !== undefined) {
+      // Carried so `tableRules` can stamp the entry — see TableProgram.labels.
+      this.labels ??= amb._meta.triviaKindLabels
+      if (amb._meta.rootTriviaClassified === true) this.classified = true
+    }
     this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.constant(amb), body)
   }
 
@@ -486,6 +493,8 @@ class Encoder {
     return {
       code: this.code, k: this.k, fns: this.fns, cc: this.cc,
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
+      ...(this.labels === undefined ? {} : { labels: this.labels }),
+      ...(this.classified ? { classified: 1 as const } : {}),
       lines: this.track ? 1 : 0,
     }
   }
