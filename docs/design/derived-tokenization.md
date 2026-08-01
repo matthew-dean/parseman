@@ -6,7 +6,7 @@ as the default** in `codegen.ts` (§9.1, commits `caa3d14` / `e8612eb`, selectab
 standalone prototype (§10). Sections are marked **settled** (owner decision, build to
 it), **measured**, or **hypothesis** (plausible, unmeasured).
 
-> ### Read these first — two results that invert earlier expectations
+> ## Read these first — two results that invert earlier expectations
 >
 > 1. **The entire parse-time spread across every dispatch configuration is 2.4%**
 >    (§9.1.1). Dispatch keying is **not** where css parse time goes. The technique
@@ -291,8 +291,9 @@ Read the §9 numbers through that lens and the apparent trade-off dissolves:
   index, the arm selection becomes **data**, and that bulk goes away.
 
 > **MEASURED SINCE (§9.1): this is what landed.** trie-walk-to-id with if-chain arm
-> selection is now the shipped default, and it did win both axes — fastest *and*
-> smallest, raw and gzipped. The caveat is the size of the prize: the whole spread
+> selection is now the shipped default. It won on SIZE, raw and gzipped. It did NOT
+> win on speed: §9.1 measures `trie:switch` at 5.945 ms against `trie:ifchain` at
+> 5.967 ms, so the shipped configuration is the smallest and the second fastest. The caveat is the size of the prize: the whole spread
 > across every configuration is **2.4%** (§9.1.1).
 
 ### 6.2 Hard requirement: the discriminator must be searched for, not assumed

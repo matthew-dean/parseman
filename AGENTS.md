@@ -17,6 +17,20 @@ code PR:
 pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 ```
 
+If your change touches `src/codegen.ts`, dispatch, or anything else on the parse
+hot path, also check it against the comparison-chart bar — **"still the fastest
+compiled JS parser in the SVG tests"** — before claiming a trade-off is
+acceptable:
+
+```sh
+pnpm bench:margin -- --charts graphql     # or the chart your change moves
+```
+
+It exits non-zero if any competitor overtakes Parséman, and prints an in-run A/A
+control so you can tell a real shift from this box's noise. Getting *slower than
+a previous Parséman is fine* if the margin holds — read `bench/MARGIN.md` for
+what the numbers mean and how much headroom each bar actually has.
+
 `coverage:guard` is a blocking ratchet, not an optional report. If it fails,
 add tests for the changed behavior; do not regenerate the baseline merely to
 make a PR green. Do not claim CI is green until the pushed head SHA has its own
