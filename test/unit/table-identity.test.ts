@@ -512,27 +512,59 @@ describe('table lowering — three-way identity across every encodable grammar',
     }
   })
 
-  it('the emitter WRITES every field expandCompact reads', () => {
-    // The write side, pinned field-by-field against the read side. A full parse
-    // round-trip for `lb`/`rc` is not yet possible: labelled trivia means a
-    // grammar-level trivia COMBINATOR in the const pool, and `emitConst`
-    // refuses it — the same blocker as scanTo/token/balanced. Upgrade this to a
-    // parse round-trip when trivia lowers.
+  it('a TRIVIA-BEARING grammar round-trips through the emitted module', () => {
+    // The test that could not exist before trivia lowered. This grammar has
+    // LABELLED ambient trivia, which used to park a live combinator in the const
+    // pool so emit refused outright — and that refusal covered every
+    // `rules({ trivia }, …)` grammar, which is all four shipping dialects.
+    //
+    // `classifiedTrivia()` is `trivia(oneOrMore(choice(label(name, arm)…)))`
+    // with regex arms (src/combinators/map.ts), so it lowers to
+    // `[label, source, flags]` triples and is rebuilt at load with the SHARED
+    // constructor — one trivia implementation, not a second one over the table.
     const prog = encodeTable(rootTriviaNodes)
     expect(prog.labels).toEqual(['space', 'comment'])
-    // Names the CONSTRUCT, not a type from inside the printer.
-    expect(() => emitTableModule(prog, { name: 'g', fnSources: [] }))
-      .toThrow(/RUNTIME-ONLY.*rules\(\{ trivia \}\)/s)
+    expect(prog.triviaSpecs?.[0]?.arms.map(a => a[0])).toEqual(['space', 'comment'])
+    expect(prog.runtimeOnly).toBeUndefined()
 
-    // Every compact key `expandCompact` reads, and where it comes from.
-    const READ_BY_EXPAND = ['c', 'k', 'x', 'e', 'd', 'r', 'f', 'l', 'p', 'lb', 'rc', 'h']
+    // The emitted module needs the grammar's REAL reducers, in pool order —
+    // placeholders would make the trees differ for a reason that has nothing to
+    // do with the lowering under test.
+    expect(prog.fns.length).toBe(2)
+    const emitted = roundTrip(prog, [`c => ({ t: 'Word', c })`, `c => ({ t: 'Doc', c })`])
+    const inMemory = tableRules(prog)
+    const input = 'aa /* keep me */ bb'
+    const opts = { rootTrivia: { select: ['comment'] } } as never
+
+    // The emitted entry carries the metadata `run()` reads off it...
+    expect((emitted.Doc as { _meta?: { triviaKindLabels?: readonly string[] } })._meta?.triviaKindLabels)
+      .toEqual(['space', 'comment'])
+    // ...produces the same tree...
+    const a = run(inMemory.Doc! as never, input, opts)
+    const b = run(emitted.Doc as never, input, opts)
+    expect(JSON.stringify(b.value)).toBe(JSON.stringify(a.value))
+    // ...and the same root-trivia rows, with the comment's own marker span.
+    expect([...b.rootTrivia!.rows]).toEqual([...a.rootTrivia!.rows])
+    expect([...b.rootTrivia!.rows]).toEqual([2, 17, 3, 16, 0])
+    expect(input.slice(3, 16)).toBe('/* keep me */')
+  })
+
+  it('the emitter WRITES every field expandCompact reads', () => {
+    // Field-by-field, write side against read side. A missing field is invisible
+    // to a string assertion and fatal to a parse, which is why the round-trips
+    // above exist — this one only guards the enumeration.
+    const READ_BY_EXPAND = ['c', 'k', 'x', 'e', 'd', 'r', 'f', 'l', 'p', 'lb', 'rc', 'h', 'tv']
     const dispatchSrc = emitTableModule(encodeTable(dispatchNodes), { name: 'g', fnSources: ['() => 0', '() => 0', '() => 0', '() => 0'] })
     for (const key of ['c', 'k', 'x', 'e', 'd', 'r', 'f', 'p']) {
       expect(dispatchSrc, `emitter must write "${key}:"`).toContain(`${key}:`)
     }
+    const triviaSrc = emitTableModule(encodeTable(rootTriviaNodes), { name: 'g', fnSources: encodeTable(rootTriviaNodes).fns.map(() => '() => 0') })
+    for (const key of ['lb', 'rc', 'tv']) {
+      expect(triviaSrc, `emitter must write "${key}:"`).toContain(`${key}:`)
+    }
     const cstSrc = emitTableModule(encodeTable(hostNodes, { hostMode: 'cst' }), { name: 'g', fnSources: ['() => 0', '() => 0'] })
     expect(cstSrc).toContain('h:"cst"')
-    expect(READ_BY_EXPAND.length).toBe(12)
+    expect(READ_BY_EXPAND.length).toBe(13)
   })
 
   it('a hostMode:cst table run WITHOUT a host throws, as the compiled engine does', () => {

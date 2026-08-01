@@ -1,4 +1,8 @@
-import type { ParseContext, ParseResult } from '../types.ts'
+import type { Combinator, ParseContext, ParseResult } from '../types.ts'
+import { classifiedTrivia, label, trivia as triviaOf } from '../combinators/map.ts'
+import { oneOrMore } from '../combinators/repeat.ts'
+import { choice } from '../combinators/choice.ts'
+import { regex } from '../combinators/regex.ts'
 
 /**
  * The emitted form of a grammar under the table lowering.
@@ -79,6 +83,32 @@ export type TableProgram = {
    * "cannot serialise [object Object]" from deep inside the printer.
    */
   readonly runtimeOnly?: readonly string[]
+  /**
+   * Trivia specs, referenced by index from `OP_SCOPE` and from the rule entries.
+   *
+   * `classifiedTrivia()` is `trivia(oneOrMore(choice(label(name, arm)…)))` with
+   * regex arms — entirely structural, so it lowers to DATA and is rebuilt at
+   * load with the shared `classifiedTrivia`/`trivia`/`regex`. That keeps the one
+   * trivia implementation (labels, root log, cst log, masks, the fast scanner)
+   * instead of growing a second one over the table, while making the program
+   * printable. Pooling the live combinator was what broke emit for every
+   * `rules({ trivia }, …)` grammar.
+   */
+  readonly triviaSpecs?: readonly TriviaSpec[]
+}
+
+/** A trivia combinator as data. `arms` empty means a plain `trivia(regex)`. */
+export type TriviaSpec = {
+  /** `[label, regexSource, regexFlags]` per classified arm. */
+  readonly arms: readonly (readonly [string, string, string])[]
+  /** Set for a plain `trivia(regex)`: `[source, flags]`. */
+  readonly plain?: readonly [string, string]
+  /**
+   * A trivia combinator whose shape this encoder cannot express as data, kept
+   * live so the program still RUNS. Its presence is recorded in `runtimeOnly`,
+   * so emit refuses and names it rather than failing inside the printer.
+   */
+  readonly live?: unknown
 }
 
 /**
@@ -99,6 +129,7 @@ export type CompactProgram = {
   readonly lb?: readonly string[]
   readonly rc?: 0 | 1
   readonly h?: 'ast' | 'cst'
+  readonly tv?: readonly TriviaSpec[]
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
@@ -109,6 +140,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.lb === undefined ? {} : { labels: p.lb }),
     ...(p.rc === undefined ? {} : { classified: p.rc }),
     ...(p.h === undefined ? {} : { hostMode: p.h }),
+    ...(p.tv === undefined ? {} : { triviaSpecs: p.tv }),
   }
 }
 
@@ -167,6 +199,8 @@ export type ResolvedTable = {
   readonly fx: readonly (readonly string[])[]
   readonly disp: readonly ResolvedDispatch[]
   readonly dsp: readonly ResolvedDispatchSpec[]
+  /** Trivia combinators rebuilt from `triviaSpecs`, once per table. */
+  readonly trivia: readonly Combinator<unknown>[]
   readonly rules: Readonly<Record<string, number>>
 }
 
@@ -212,6 +246,15 @@ function resolveDispatch(arms: readonly number[], cc: readonly ResolvedClass[]):
  * is the `(grammar, settings)` pair: the emitter produces one program per pair,
  * so two variants are two cache entries and the run path never sees an option.
  */
+/** Rebuild a trivia combinator from its spec using the SHARED constructors. */
+function buildTrivia(spec: TriviaSpec): Combinator<unknown> {
+  if (spec.live !== undefined) return spec.live as Combinator<unknown>
+  if (spec.plain !== undefined) return triviaOf(regex(new RegExp(spec.plain[0], spec.plain[1])))
+  const arms: Record<string, Combinator<unknown>> = {}
+  for (const [name, source, flags] of spec.arms) arms[name] = regex(new RegExp(source, flags))
+  return classifiedTrivia(arms)
+}
+
 const _tableCache = new WeakMap<TableProgram, ResolvedTable>()
 
 export function resolveTable(prog: TableProgram): ResolvedTable {
@@ -226,6 +269,7 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
     cc,
     fx: prog.fx,
     disp: prog.disp.map(d => resolveDispatch(d, cc)),
+    trivia: (prog.triviaSpecs ?? []).map(buildTrivia),
     dsp: prog.dsp.map(d => ({
       byKey: new Map(d.key.map((x, i) => [x, d.keyArm[i]!])),
       byFold: new Map(d.fold.map((x, i) => [x, d.foldArm[i]!])),

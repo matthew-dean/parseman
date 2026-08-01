@@ -108,6 +108,7 @@ function makeDriver(
   fx: readonly (readonly string[])[],
   disp: readonly ResolvedDispatch[],
   dsp: readonly ResolvedDispatchSpec[],
+  trivia: readonly unknown[],
 ): Driver {
   /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
   let END = 0
@@ -415,7 +416,7 @@ function makeDriver(
         const ki = code[ip + 1]!
         const saved = ctx.trivia
         const savedLabels = ctx.triviaKindLabels
-        const scopeTrivia = ki < 0 ? undefined : (k[ki] as ParseContext['trivia'])
+        const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
         ctx.trivia = scopeTrivia
         // A scope installs its trivia's KIND LABELS too. Root-trivia rows are
         // only ever written on the labelled scan path (trivia-skip.ts:212) — the
@@ -763,7 +764,7 @@ function makeDriver(
 export function tableRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp)
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia)
   const out: Record<string, TableRule> = {}
   // `run()` reads trivia metadata off the ENTRY and takes its
   // `typeof r === 'function'` branch for compiled entries, which codegen stamps

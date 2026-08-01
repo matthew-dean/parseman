@@ -10,7 +10,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
-import type { DispatchSpec, TableProgram } from './program.ts'
+import type { DispatchSpec, TableProgram, TriviaSpec } from './program.ts'
 
 /** Raised when a construct has no opcode yet. Prototype scope is explicit. */
 export class UnsupportedConstruct extends Error {
@@ -58,6 +58,49 @@ class Encoder {
   scanSkip: readonly unknown[] | undefined = undefined
   /** Reasons this program can RUN but not be EMITTED. */
   runtimeOnly = new Set<string>()
+  triviaSpecs: TriviaSpec[] = []
+  private triviaIndex = new Map<Combinator<unknown>, number>()
+
+  /**
+   * A trivia combinator as DATA where its shape allows.
+   *
+   * `classifiedTrivia()` builds exactly `trivia(oneOrMore(choice(label(name,
+   * arm)…)))` (src/combinators/map.ts) and the four shipping grammars give it
+   * regex arms, so the whole thing round-trips through `[label, source, flags]`
+   * triples. Anything else is kept LIVE and recorded, so the program runs and
+   * emit refuses by name.
+   */
+  private triviaSlot(t: Combinator<unknown>): number {
+    const hit = this.triviaIndex.get(t)
+    if (hit !== undefined) return hit
+    const idx = this.triviaSpecs.length
+    this.triviaIndex.set(t, idx)
+    this.triviaSpecs.push(this.triviaSpecOf(t))
+    return idx
+  }
+
+  private triviaSpecOf(t: Combinator<unknown>): TriviaSpec {
+    const unlowered = (why: string): TriviaSpec => {
+      this.runtimeOnly.add(`rules({ trivia }) — ${why}`)
+      return { arms: [], live: t }
+    }
+    const d = t._def
+    if (d.tag !== 'trivia') return unlowered(`expected a trivia() wrapper, got '${d.tag}'`)
+    const inner = d.parser._def
+    if (inner.tag === 'regex') return { arms: [], plain: [inner.source, inner.flags] }
+    // classifiedTrivia's exact shape.
+    const rep = inner.tag === 'oneOrMore' || (inner.tag === 'many' && inner.min >= 1) ? inner.parser._def : null
+    if (rep === null || rep.tag !== 'choice') return unlowered(`unrecognised trivia body '${inner.tag}'`)
+    const arms: Array<readonly [string, string, string]> = []
+    for (const arm of rep.parsers) {
+      const a = arm._def
+      if (a.tag !== 'label') return unlowered(`trivia arm is '${a.tag}', not a labelled arm`)
+      const body = a.parser._def
+      if (body.tag !== 'regex') return unlowered(`trivia arm ${JSON.stringify(a.label)} is '${body.tag}', not a regex`)
+      arms.push([a.label, body.source, body.flags])
+    }
+    return { arms }
+  }
   rules: Record<string, number> = {}
 
   private kIndex = new Map<unknown, number>()
@@ -151,12 +194,12 @@ class Encoder {
       //
       // It belongs on the same list as scanTo/token/balanced: expressible as data
       // (an encoded trivia subtree plus a scan opcode), not yet expressed.
-      this.runtimeOnly.add('rules({ trivia }) — the ambient trivia combinator is pooled')
+
       // Carried so `tableRules` can stamp the entry — see TableProgram.labels.
       this.labels ??= amb._meta.triviaKindLabels
       if (amb._meta.rootTriviaClassified === true) this.classified = true
     }
-    this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.constant(amb), body)
+    this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.triviaSlot(amb), body)
   }
 
   node(p: Combinator<unknown>): Emitted {
@@ -474,7 +517,7 @@ class Encoder {
         // combinator goes in the const pool and the driver installs it.
         if (d.clearTrivia === true) return this.emit(OP_SCOPE, -1, this.node(d.parser).ip)
         if (d.triviaParser === undefined) return this.node(d.parser).ip
-        return this.emit(OP_SCOPE, this.constant(d.triviaParser), this.node(d.parser).ip)
+        return this.emit(OP_SCOPE, this.triviaSlot(d.triviaParser), this.node(d.parser).ip)
       }
       default:
         throw new UnsupportedConstruct(d.tag)
@@ -531,6 +574,7 @@ class Encoder {
       ...(this.scanSkip === undefined ? {} : { scanSkip: this.scanSkip }),
       ...(this.settings.hostMode === undefined ? {} : { hostMode: this.settings.hostMode }),
       ...(this.runtimeOnly.size === 0 ? {} : { runtimeOnly: [...this.runtimeOnly].sort() }),
+      ...(this.triviaSpecs.length === 0 ? {} : { triviaSpecs: this.triviaSpecs }),
       lines: this.track ? 1 : 0,
     }
   }

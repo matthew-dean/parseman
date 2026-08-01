@@ -43,6 +43,11 @@ function emitConst(v: unknown): string {
   )
 }
 
+function emitTriviaSpec(t: import('./program.ts').TriviaSpec): string {
+  if (t.plain !== undefined) return `{arms:[],plain:[${jsString(t.plain[0])},${jsString(t.plain[1])}]}`
+  return `{arms:[${t.arms.map(a => `[${jsString(a[0])},${jsString(a[1])},${jsString(a[2])}]`).join(',')}]}`
+}
+
 function emitDispatchSpec(d: import('./program.ts').DispatchSpec): string {
   return '{'
     + `key:[${d.key.map(jsString).join(',')}],`
@@ -102,6 +107,7 @@ export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): str
     ...(prog.labels === undefined ? [] : [`lb:[${prog.labels.map(jsString).join(',')}],`]),
     ...(prog.classified === 1 ? ['rc:1,'] : []),
     ...(prog.hostMode === undefined ? [] : [`h:${jsString(prog.hostMode)},`]),
+    ...(prog.triviaSpecs === undefined ? [] : [`tv:[${prog.triviaSpecs.map(emitTriviaSpec).join(',')}],`]),
     `f:[${fns.join(',')}]`,
     `})`,
   ]
