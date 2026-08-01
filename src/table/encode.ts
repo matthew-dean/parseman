@@ -261,6 +261,10 @@ class Encoder {
       case 'optional':
         return this.emit(OP_OPT, this.node(d.parser).ip)
       case 'transform': {
+        // Declared on the def and not lowered here. Refuse rather than assume it is
+        // inert: a recognition-only transform suppresses its value, and a table that
+        // produced one anyway would differ from both other engines.
+        if (d.recognitionOnly === true) throw new UnsupportedConstruct('transform(recognitionOnly)')
         // FUSE `transform(sequence(...))` — the dominant shape — into one row.
         // Emitted separately it costs two dispatches and two call frames per
         // rule invocation. The inner sequence must not be shared with anything
@@ -284,6 +288,15 @@ class Encoder {
       case 'node': {
         if (d.unwrap || d.collapse || d.project !== undefined) throw new UnsupportedConstruct('node(unwrap|collapse|project)')
         if (d.build === undefined) throw new UnsupportedConstruct('node(no build)')
+        // FAIL CLOSED on fields this encoder does not lower. The capture flags below
+        // are derived from the reducer's ARITY, which cannot express an explicit
+        // `captureTrivia: true` on a 3-argument reducer — the author asked for
+        // capture and the arity analysis would say no. Silently ignoring the request
+        // yields a table that parses and drops trivia, which is the exact
+        // silent-failure class this lowering exists to avoid.
+        if (d.captureTrivia !== undefined) throw new UnsupportedConstruct('node(captureTrivia)')
+        if (d.trailingTrivia !== undefined) throw new UnsupportedConstruct('node(trailingTrivia)')
+        if (d.tags !== undefined) throw new UnsupportedConstruct('node(tags)')
         const child = this.node(d.parser).ip
         // Capture flags, resolved HERE from the reducer's declared arity using the
         // same analysis codegen runs (`src/compiler/build-arity.ts`). `hostMode:
@@ -315,6 +328,17 @@ class Encoder {
       case 'trivia':
         return this.node(d.parser).ip
       case 'grammar': {
+        // Fail closed on the scope switches this encoder does not carry. `trackLines`
+        // is the one field here that is RECONCILED rather than refused: the driver
+        // takes it from TableSettings, so a scope asking for something different is a
+        // silent disagreement between the grammar and the artifact.
+        if (d.captureTrivia !== undefined) throw new UnsupportedConstruct('parser(captureTrivia)')
+        if (d.rootCapture !== undefined) throw new UnsupportedConstruct('parser(rootCapture)')
+        if (d.trackLines !== this.track) {
+          throw new UnsupportedConstruct(
+            `parser(trackLines: ${String(d.trackLines)}) disagrees with TableSettings.trackLines: ${String(this.track)}`,
+          )
+        }
         // A trivia scope is a ROW, not a lowering decision: the scope's trivia
         // combinator goes in the const pool and the driver installs it.
         if (d.clearTrivia === true) return this.emit(OP_SCOPE, -1, this.node(d.parser).ip)
