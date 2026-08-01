@@ -72,7 +72,10 @@ export function nodeLadder(n: number): Record<string, Combinator<unknown>> {
     for (let i = 0; i < n; i++) {
       out[`N${i}`] = node(`N${i}`, sequence(regex(/[a-z]+/), literal(String.fromCharCode(97 + (i % 26))), optional(literal(';'))), c => ({ t: `N${i}`, c }))
     }
-    out.Root = node('Root', many(choice(...Array.from({ length: n }, (_, i) => g[`N${i}`]!))), c => ({ t: 'Root', c }))
+    // `choice` declares a non-empty tuple, so a bare spread does not satisfy it;
+    // name the head explicitly rather than widening the signature.
+    const arms = Array.from({ length: n }, (_, i) => g[`N${i}`]!)
+    out.Root = node('Root', many(choice(arms[0]!, ...arms.slice(1))), c => ({ t: 'Root', c }))
     return out
   })
   return map as Record<string, Combinator<unknown>>
