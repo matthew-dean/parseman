@@ -1,0 +1,40 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { report } from '../../bench/spelling-equivalence.ts'
+
+/**
+ * The identity control compiles two BYTE-IDENTICAL spellings and expects 1.000x.
+ * It was measured, printed, and then ignored — the run exited 0 regardless — so a
+ * non-deterministic harness would have reported every other ratio as evidence.
+ *
+ * That is the same defect the goal-1 margin gate had, in a second harness, on the
+ * same day. Both are now fatal, and this pins it: a breached control certifies
+ * NOTHING, and the exit code has to say so.
+ */
+const fake = (rawRatio: number): Parameters<typeof report>[0] => ([
+  { id: 'control-identity', rawRatio, gzipRatio: 1, equivalent: true, proven: true, breaches: false,
+    a: { rawBytes: 100, gzipBytes: 50 }, b: { rawBytes: 100, gzipBytes: 50 } },
+] as unknown as Parameters<typeof report>[0])
+
+describe('spelling gate — a breached identity control is fatal', () => {
+  afterEach(() => { process.exitCode = undefined; vi.restoreAllMocks() })
+
+  it('exits non-zero when two identical spellings do not measure 1.000x', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    report(fake(1.04))
+    expect(process.exitCode, 'a non-deterministic harness must not report a pass').toBe(2)
+  })
+
+  it('says the run certifies nothing, not merely that the control moved', () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { lines.push(a.join(' ')) })
+    report(fake(0.92))
+    expect(lines.join('\n')).toMatch(/HARNESS BROKEN/)
+    expect(lines.join('\n')).toMatch(/certifies nothing/)
+  })
+
+  it('leaves the exit code alone when the control is honest', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    report(fake(1))
+    expect(process.exitCode).toBeUndefined()
+  })
+})

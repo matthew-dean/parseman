@@ -894,7 +894,7 @@ export async function measurePair(pair: Pair, lower: Lowerer): Promise<PairResul
 function pad(s: string, n: number): string { return s.length >= n ? s : s + ' '.repeat(n - s.length) }
 function lpad(s: string, n: number): string { return s.length >= n ? s : ' '.repeat(n - s.length) + s }
 
-function report(results: PairResult[]): void {
+export function report(results: PairResult[]): void {
   console.log('')
   console.log('SPELLING DIFFERENTIAL — G20 (equivalent grammars must emit equivalent artifacts)')
   console.log(`band ${BAND.toFixed(2)}x  |  ratio = max/min raw bytes of the macro-lowered artifact  |  AST host mode`)
