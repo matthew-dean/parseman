@@ -296,22 +296,28 @@ describe('table failure reporting matches the interpreter and the compiled path'
     }
   })
 
-  it('DEFECT: four shapes report a DIFFERENT expected set from a table', () => {
+  it('THREE shapes still report a different expected set; the dispatch miss no longer does', () => {
     // All four accept and reject exactly the right inputs, so the identity sweep
     // is blind to every one of them; only the error message moves. Collected here
     // so the size of the divergence is one number rather than a rumour.
     //
     // Characterised, not endorsed: each `toEqual` on the TABLE row is the current
     // behaviour, and each `interp`/`compiled` row is what it should be.
+    //
+    // WAS FOUR. The dispatched-choice miss is FIXED — a choice now carries its
+    // own expected set and reports the union on every failing exit, so it is no
+    // longer in `cases` below and has its own positive test in
+    // table-driver-ops.test.ts. The remaining three are untouched by that change
+    // and are re-pinned here at their real width rather than left in a
+    // four-shape claim that is no longer true.
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       // 1. keywords(): the encoder rebuilds the terminal and derives the set from
       //    the rebuilt regex's parts instead of the combinator's own label.
       Kw: node('Kw', keywords(['if', 'ifdef'], { boundary: 'a-z' }), c => ({ t: 'Kw', c })),
       // 2. peek(): the lookahead's INNER expectation escapes.
       Peek: transform(sequence(peek(literal('ab')), literal('a')), v => (v as unknown[])[1]) as Combinator<unknown>,
-      // 3. a first-char-dispatched choice that matches NO arm returns without
-      //    setting the expected set at all, so a stale one from the last attempt
-      //    is reported — here, one arm out of three.
+      // 3. FIXED — a dispatched choice that matches no arm now reports the union.
+      //    Kept in the grammar so the shape is still encoded and exercised.
       Ch: choice(
         transform(regex(/[à-ÿ]+/), v => v),
         transform(regex(/[\u{1F600}-\u{1F64F}]+/u), v => v),
@@ -333,34 +339,49 @@ describe('table failure reporting matches the interpreter and the compiled path'
       expect(run(g[rule]! as never, input).expected, `${rule} interpreter`).toEqual(fromEngines)
       expect(run(c[rule] as never, input).expected, `${rule} compiled`).toEqual(fromEngines)
     }
-    // AND THE FAILURE POSITION MOVES TOO, on the flagship grammar: for '[1,2,]'
-    // the table stops at offset 4 naming one token; both shipped engines report
-    // offset 0 and every arm of the value choice. The identity digest carries
-    // `{ ok, value, unconsumedFrom }` — not the span — so a whole failure report
-    // can diverge with the sweep entirely green.
+    // THE FAILURE POSITION NO LONGER MOVES. It did: for '[1,2,]' the table
+    // stopped at offset 4 naming one token while both engines reported offset 0
+    // and seven. The choice fix corrected the position AND the count; what is
+    // left is a single ELEMENT of the seven.
+    //
+    // Both engines report at the furthest position the enclosing sequence could
+    // also have closed at, so they name the CLOSER (`"]"` / `"}"`) in place of
+    // one of the value choice's own openers. That is furthest-failure merging,
+    // and it is the whole of the residue — pinned at exactly that width so a
+    // wider regression cannot hide inside a vague "expected sets differ".
     const jt = tableRules(encodeTable(jsonRules as never)).Value!
     const jc = (compose([jsonRules as never]) as unknown as Record<string, unknown>).Value!
-    const bad = '[1,2,]'
-    expect(run(jt as never, bad).span).toEqual({ start: 4, end: 4 })
-    expect(run(jsonRules.Value! as never, bad).span).toEqual({ start: 0, end: 0 })
-    expect(run(jc as never, bad).span).toEqual({ start: 0, end: 0 })
-    expect(run(jt as never, bad).expected).toHaveLength(1)
-    expect(run(jsonRules.Value! as never, bad).expected).toEqual(run(jc as never, bad).expected)
-    expect(run(jsonRules.Value! as never, bad).expected.length).toBeGreaterThan(1)
-    // All three still REJECT it — only the report differs.
-    for (const r of [run(jt as never, bad), run(jsonRules.Value! as never, bad), run(jc as never, bad)]) {
-      expect(r.ok).toBe(false)
+    for (const [bad, engineOnly, tableOnly] of [['[1,2,]', '"]"', '"["'], ['{"a":', '"}"', '"{"']] as const) {
+      const fromTable = run(jt as never, bad)
+      const fromInterp = run(jsonRules.Value! as never, bad)
+      const fromCompiled = run(jc as never, bad)
+      // Position and count agree across all three.
+      expect(fromTable.span, bad).toEqual({ start: 0, end: 0 })
+      expect(fromInterp.span, bad).toEqual({ start: 0, end: 0 })
+      expect(fromCompiled.span, bad).toEqual({ start: 0, end: 0 })
+      expect(fromTable.expected, bad).toHaveLength(fromInterp.expected.length)
+      // The residue is one element, and it is exactly the closer-for-opener swap.
+      const tSet = new Set(fromTable.expected)
+      const iSet = new Set(fromInterp.expected)
+      expect([...iSet].filter(x => !tSet.has(x)), `${bad}: engines-only`).toEqual([engineOnly])
+      expect([...tSet].filter(x => !iSet.has(x)), `${bad}: table-only`).toEqual([tableOnly])
+    }
+    // All three still REJECT — only one element of the report differs.
+    for (const bad of ['[1,2,]', '{"a":']) {
+      for (const r of [run(jt as never, bad), run(jsonRules.Value! as never, bad), run(jc as never, bad)]) {
+        expect(r.ok, bad).toBe(false)
+      }
     }
 
-    // The dispatched choice reports ONE arm of three — a set left over from the
-    // last attempt rather than the arms it could have taken. Stated as the
-    // relationship, because the literal regex sources are unreadable here.
+    // FIXED — the dispatched choice used to report ONE arm of three, a set left
+    // over from the last attempt rather than the arms it could have taken. It
+    // now reports all three, matching both engines. Flipped to a positive
+    // three-way assertion rather than deleted, so the shape keeps its coverage.
     const chTable = run(t.Ch! as never, 'a').expected
     const chInterp = run(g.Ch! as never, 'a').expected
     expect(run(c.Ch as never, 'a').expected).toEqual(chInterp)
     expect(chInterp).toHaveLength(3)
-    expect(chTable).toHaveLength(1)
-    expect(chInterp).toEqual(expect.arrayContaining(chTable))
+    expect([...chTable].sort()).toEqual([...chInterp].sort())
   })
 
 })

@@ -133,7 +133,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     expect(JSON.stringify(run(fb as never, 'y'))).toBe(JSON.stringify(run(withFallback.Doc! as never, 'y')))
   })
 
-  it('DEFECT: a failed dispatch branch does NOT commit inside a table', () => {
+  it('a failed dispatch branch COMMITS inside a table', () => {
     // The selector already matched, so the interpreter and the compiled path
     // both treat a failed dispatch BRANCH as a hard failure: an enclosing choice
     // must not treat it as "try the next arm", and an enclosing repetition must
@@ -142,8 +142,11 @@ describe('table driver — rows the grammar corpus never reached', () => {
     // anywhere in exec.ts, while codegen tests it at every choice, sequence and
     // repetition boundary.
     //
-    // The result is not a diagnostic difference. The table ACCEPTS input the two
-    // shipped engines REJECT, and returns a different tree:
+    // FIXED. The driver now clears `_fc` before each speculative attempt and
+    // propagates on a committed failure at every boundary the shipped engines
+    // use (repeat.ts:58/141/215/233/277, choice.ts:109/157). Asserted against
+    // BOTH engines rather than against an expected literal, so this stays a
+    // three-way agreement rather than a restatement of the current behaviour.
     const inChoice = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: choice(
         dispatch(regex(/@[a-z]+/), when('@x', literal('!'))) as unknown as Combinator<unknown>,
@@ -151,26 +154,30 @@ describe('table driver — rows the grammar corpus never reached', () => {
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
     const t = tableRules(encodeTable(inChoice)).Doc!
-    expect(one(t, '@x!')).toEqual(['@x', '!'])          // the arm, when it works
-    expect(run(t as never, '@x').ok).toBe(true)         // table: the choice retried
-    expect(one(t, '@x')).toBe('@x')                     // …and matched the OTHER arm
-    expect(run(inChoice.Doc! as never, '@x').ok).toBe(false)   // interpreter: committed
     const compiledChoice = (compose([inChoice as never]) as unknown as Record<string, unknown>).Doc!
-    expect(run(compiledChoice as never, '@x').ok).toBe(false)  // compiled: committed
+    expect(one(t, '@x!')).toEqual(['@x', '!'])          // the arm, when it works
+    // The cut: the second arm must NOT re-recognise `@x`.
+    expect(run(t as never, '@x').ok).toBe(false)
+    expect(run(inChoice.Doc! as never, '@x').ok).toBe(false)   // interpreter
+    expect(run(compiledChoice as never, '@x').ok).toBe(false)  // compiled
+    expect(run(t as never, '@x').unconsumedFrom).toBe(run(inChoice.Doc! as never, '@x').unconsumedFrom)
 
-    // The shape that matters for a real grammar — `many(AtRule)`. The table
-    // silently TRUNCATES the document at the bad at-rule and reports success.
+    // The shape that matters for a real grammar — `many(AtRule)`. This is where
+    // the defect was worst: the table used to report SUCCESS with a silently
+    // truncated document. All three engines must now reject.
     const inMany = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: many(dispatch(regex(/@[a-z]+/), when('@x', transform(literal('!'), () => 'hit'))) as unknown as Combinator<unknown>) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
     const tm = tableRules(encodeTable(inMany)).Doc!
-    const truncated = run(tm as never, '@x!@x')
-    expect(truncated.ok).toBe(true)
-    expect(truncated.value).toEqual([['@x', 'hit']])
-    expect(truncated.unconsumedFrom).toBe(3)
-    expect(run(inMany.Doc! as never, '@x!@x').ok).toBe(false)
     const compiledMany = (compose([inMany as never]) as unknown as Record<string, unknown>).Doc!
+    const fromTable = run(tm as never, '@x!@x')
+    expect(fromTable.ok).toBe(false)
+    expect(run(inMany.Doc! as never, '@x!@x').ok).toBe(false)
     expect(run(compiledMany as never, '@x!@x').ok).toBe(false)
+    // No truncated document: a partial list must not be reported as the value.
+    expect(fromTable.value).toBeUndefined()
+    // And the well-formed input still parses, so the cut did not become a wall.
+    expect(run(tm as never, '@x!@x!').ok).toBe(true)
   })
 
   it('choice dispatch over NON-ASCII first chars picks the right arm', () => {
@@ -218,13 +225,31 @@ describe('table driver — rows the grammar corpus never reached', () => {
     expect(run(compiled as never, '\u{1F600}').ok).toBe(false)
     expect(one(g.Doc, '\u{1F600}')).toBe('grin')
 
-    // DEFECT, and this one IS the table's: when no arm claims the first
-    // character the driver returns without recording a position or an expected
-    // set, so the failure carries no diagnosis at all. Both shipped engines name
-    // the three arms.
-    expect(run(t as never, 'e').expected).toEqual([])
-    expect(run(g.Doc! as never, 'e').expected).toHaveLength(3)
-    expect(run(compiled as never, 'e').expected).toHaveLength(3)
+    // NOTE ON THIS TEST'S TITLE. It carried a SECOND, independent claim: that a
+    // dispatch miss reports an empty expected set. That half is now fixed and
+    // has moved to its own test below — the astral divergence above is
+    // unaffected by it and remains pinned here on its own.
+  })
+
+  it('a dispatch miss names every arm, as both shipped engines do', () => {
+    // Was pinned as a defect: when no arm claimed the first character the driver
+    // returned without recording a position or an expected set, so the failure
+    // carried no diagnosis at all — a user got an error naming nothing. The
+    // choice now carries its own expected set and reports it on every failing
+    // exit. Compared to both engines by LENGTH and CONTENT, not by a literal.
+    const g = rules<Record<string, Combinator<unknown>>>(() => ({
+      Doc: choice(
+        transform(literal('é'), () => 'e-acute'),
+        transform(literal('ü'), () => 'u-uml'),
+        transform(literal('\u{1F600}'), () => 'grin'),
+      ) as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    const t = tableRules(encodeTable(g)).Doc!
+    const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Doc!
+    const fromTable = run(t as never, 'e').expected
+    expect(fromTable).toHaveLength(3)
+    expect([...fromTable].sort()).toEqual([...run(g.Doc! as never, 'e').expected].sort())
+    expect([...fromTable].sort()).toEqual([...run(compiled as never, 'e').expected].sort())
   })
 
   it('a failing OP_CALL reports the combinator\'s OWN position and expectations', () => {
@@ -283,13 +308,23 @@ describe('table driver — rows the grammar corpus never reached', () => {
     })) as unknown as Record<string, Combinator<unknown>>
     const t = tableRules(encodeTable(g)).Trail!
     const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Trail!
+    // FIXED — bit 0 is read. The trailing separator is consumed, matching both
+    // shipped engines, and the ITEMS are unchanged (a list contributes its items
+    // and nothing else, so the separator must not appear in the value).
     const fromTable = run(t as never, 'a,b,')
     expect(fromTable.value).toEqual(['a', 'b'])
-    expect(fromTable.span.end).toBe(3)
-    expect(fromTable.unconsumedFrom).toBe(3)
-    // Both shipped engines consume the trailing separator.
+    expect(fromTable.span.end).toBe(4)
+    expect(fromTable.unconsumedFrom).toBe(null)
     expect(run(g.Trail! as never, 'a,b,').span.end).toBe(4)
     expect(run(compiled as never, 'a,b,').span.end).toBe(4)
+    // The CONTRAST that makes this about the bit rather than the parse: the
+    // default `forbid` list must still stop before the separator.
+    const forbid = rules<Record<string, Combinator<unknown>>>(() => ({
+      Trail: sepBy(regex(/[a-z]/), literal(',')) as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    const tf = tableRules(encodeTable(forbid)).Trail!
+    expect(run(tf as never, 'a,b,').span.end).toBe(3)
+    expect(run(forbid.Trail! as never, 'a,b,').span.end).toBe(3)
   })
 })
 
