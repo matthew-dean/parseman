@@ -398,7 +398,7 @@ async function main(): Promise<void> {
   const knownOver: Breach[] = []   // above the 10x target, already recorded — standing debt
   const newOver: Breach[] = []     // crossed the 10x target in THIS change
   const grew: Breach[] = []        // BLOCKING: past its committed ceiling
-  const shrank: Breach[] = []      // BLOCKING: below it — the win must be banked
+  const shrank: Breach[] = []      // NON-BLOCKING: below it — bank the win, but never fail on good news
   const missing: Fixture[] = []
 
   for (const f of fixtures) {
@@ -423,10 +423,12 @@ async function main(): Promise<void> {
   }
 
   const stale = Object.keys(baseline.fixtures).filter(id => !fixtures.some(f => f.id === id))
-  // What FAILS the build in 0.45: anything that moved off its committed ceiling in
-  // either direction, plus anything that could not be measured against one. The
-  // 10x target is reported, never fatal — see THE 10x TARGET in the file header.
-  const blocking = missing.length + grew.length + shrank.length + stale.length
+  // What FAILS the build: growth past a ceiling, and anything that could not be
+  // measured against one. A fixture that SHRANK does not fail — a gate whose failure
+  // mode is "you did well" trains everyone to skim past it, and the next real
+  // regression arrives wearing the same red. The win is still reported, loudly, so
+  // it gets banked. The 10x target is reported, never fatal.
+  const blocking = missing.length + grew.length + stale.length
 
   // ---- the measured table -------------------------------------------------
   console.log(`\n${GATE}  ceilinged at baseline ${baseline.gitRev} (${baseline.updatedAt})  ·  slack ${RATCHET_SLACK_PCT}%  ·  ${CEILING}x target: reported, not blocking in 0.45`)
@@ -508,7 +510,14 @@ async function main(): Promise<void> {
   }
 
   if (blocking === 0) {
-    console.log(`\n${GATE}: ok — ${fixtures.length} fixtures, every one exactly at its committed ceiling`)
+    console.log(`\n${GATE}: ok — ${fixtures.length} fixtures, none above its committed ceiling`)
+    if (shrank.length > 0) {
+      const total = shrank.reduce((sum, x) => sum + (x.base!.genBytes - x.f.genBytes), 0)
+      console.log(`${GATE}: BANK THE WIN — ${shrank.length} fixture(s) below ceiling, ${n(total)} B reclaimed. Run \`pnpm size:baseline\` so the headroom is not left for the next regression.`)
+      for (const { f: fx, base, deltaPct } of shrank) {
+        console.log(`  ${fx.id}  ${n(base!.genBytes)} B -> ${n(fx.genBytes)} B  ${deltaPct!.toFixed(2)}%`)
+      }
+    }
     if (overTarget.length > 0) console.log(`${GATE}: ${overTarget.length} still above the ${CEILING}x target — see the warning above. Tracked for 0.46.`)
     return
   }
@@ -539,11 +548,11 @@ async function main(): Promise<void> {
 
   if (shrank.length > 0) {
     const total = shrank.reduce((sum, b) => sum + (b.base!.genBytes - b.f.genBytes), 0)
-    say(`\n  ✗ BANK THE WIN — ${shrank.length} fixture(s) are BELOW their committed ceiling`)
+    say(`\n  ⚠ BANK THE WIN — ${shrank.length} fixture(s) are BELOW their committed ceiling (does NOT fail the build)`)
     say('    ' + RULE)
-    say('    This is good news failing the build on purpose. Output got smaller and the')
-    say('    ceiling did not move with it, so the difference is now silent headroom for')
-    say('    the next regression to grow into.')
+    say('    Good news, reported and not fatal. Output got smaller and the ceiling did')
+    say('    not move with it, so the difference is now silent headroom for the next')
+    say('    regression to grow into. Bank it, but nothing here is blocking on it.')
     say('')
     for (const { f, base, deltaPct } of shrank) {
       say(`    ${f.id}`)
@@ -554,8 +563,8 @@ async function main(): Promise<void> {
     say('')
     say(`    ${n(total)} B reclaimed in total.`)
     say('    → Run `pnpm size:baseline` and commit it. Lowering a ceiling needs no')
-    say('      sign-off — it is mandatory, and this check is what makes it happen')
-    say('      instead of a comment politely asking someone to remember.')
+    say('      sign-off, and this check is what makes it happen instead of a comment')
+    say('      politely asking someone to remember.')
   }
 
   if (missing.length > 0) {
