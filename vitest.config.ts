@@ -30,14 +30,6 @@ export default defineConfig({
         'src/types.ts',
         'src/index.ts',
         'src/cst/types.ts',
-        // Frozen ABLATION copies. bench/g5-ablate.ts keeps the PREVIOUS driver and
-        // encoder alive in-process to measure one change against a same-path control
-        // -- isolating a driver change needs the encoder frozen too, since the change
-        // spans both. They are benchmark fixtures that must not drift, not shipped
-        // code: nothing imports them outside bench/, and covering them would mean
-        // testing a snapshot of code that already has its own tests at HEAD.
-        'src/table/exec-baseline.ts',
-        'src/table/encode-baseline.ts',
         // DELIBERATELY UNREFERENCED, and that is the point -- nothing in src/
         // imports them, so they execute on no code path a test could reach without
         // first wiring them in. They are the build-out of the settled predictive
@@ -48,9 +40,6 @@ export default defineConfig({
         // imported by shipped code -- at that point coverage is a real requirement.
         'src/compiler/token-scanner.ts',
         'src/compiler/token-alphabet.ts',
-        // Reachability walker used only by bench/g5-coverage.ts to report which
-        // constructs a grammar reaches. Not a runtime path.
-        'src/table/inspect.ts',
       ],
     },
   },
