@@ -117,6 +117,13 @@ export type Combinator<T> = {
   readonly _meta: ParserMeta
   readonly _def: ParserDef
   parse(input: string, pos: number, ctx: ParseContext): ParseResult<T>
+  /**
+   * Re-decide anything that could only be decided pessimistically at construction,
+   * now that every `ref()` is defined. Implemented by `choice()`, whose disjointness
+   * depends on arm first-sets that are `any` while a `g.X` arm is unresolved. Called
+   * by `rules()` to a fixpoint; returns whether anything changed.
+   */
+  _refreshDispatch?(): boolean
 }
 
 export type DispatchCase = {

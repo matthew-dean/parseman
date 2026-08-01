@@ -5,11 +5,20 @@ import type {
 import { union, intersects, matchesEmpty } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { rollbackTrivia, saveTriviaMark } from './trivia-skip.ts'
+import { finalizeDispatch } from './finalize-dispatch.ts'
 
 type ArmParser<T> = T extends GatedArm<infer U> ? Combinator<U> : T extends Combinator<infer U> ? Combinator<U> : never
 type UnionArms<T extends (Combinator<unknown> | GatedArm<unknown>)[]> = {
   [K in keyof T]: ArmParser<T[K]>
 }[number] extends Combinator<infer U> ? U : never
+
+/** Disjointness from the arms' CURRENT first-sets. Re-asked after refs resolve. */
+function computeDisjoint(parsers: readonly Combinator<unknown>[]): boolean {
+  return areDisjoint(parsers.map(p => p._meta.firstSet)) && parsers.every(p => !matchesEmpty(p))
+}
+
+/** A choice that can re-decide its dispatch once its arms are resolved. */
+export type RefreshableChoice = Combinator<unknown> & { _refreshDispatch?: () => boolean }
 
 export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(Combinator<unknown> | GatedArm<unknown>)[]]>(
   ...args: T
@@ -32,8 +41,14 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
   // (Requiring non-nullability universally also tightens the ungated path, which
   // was already unsound for a nullable-but-first-set-disjoint arm; in practice no
   // ungated disjoint choice has a nullable arm, so codegen output is unchanged.)
-  const disjoint = areDisjoint(parsers.map(p => p._meta.firstSet))
-    && parsers.every(p => !matchesEmpty(p))
+  // MUTABLE, because it can only be decided correctly LATER. Inside a `rules()`
+  // factory a `g.X` arm is an unresolved ref reporting `firstSet: any`, and `any`
+  // overlaps everything — so a disjointness verdict taken here is a claim about the
+  // SPELLING, not about the grammar. Every recursive grammar came out non-disjoint and
+  // silently lost its O(1) first-char dispatch, on BOTH engines (the interpreter gates
+  // on it below; codegen reads `_def.disjoint`). `rules()` calls `refreshChoiceDispatch`
+  // once every ref is defined; see `finalizeDispatch`.
+  let disjoint = computeDisjoint(parsers)
 
   let combined: FirstSet = { kind: 'empty' }
   for (const p of parsers) combined = union(combined, p._meta.firstSet)
@@ -59,7 +74,8 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
   // Runtime state for each strategy (built once, reused on every parse call):
   let greedyLitMap: Map<string, number> | null = null
   let sortedParsers: Combinator<unknown>[] | null = null
-  const asciiDispatch = disjoint ? buildAsciiDispatch(parsers) : null
+  let asciiDispatch = disjoint ? buildAsciiDispatch(parsers) : null
+  let refreshed = false
 
   if (strategy?.tag === 'greedyClassify') {
     greedyLitMap = new Map()
@@ -72,19 +88,58 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
     sortedParsers = strategy.sortedIndices.map(i => parsers[i]!)
   }
 
-  return {
+  // Named so `_refreshDispatch` can update the flag codegen reads.
+  const defObj = {
+    tag: 'choice' as const,
+    parsers,
+    gates,
+    disjoint,
+    strategy: strategy ?? ({ tag: 'firstMatch' } as ChoiceStrategy),
+    autoNot,
+  }
+
+  const self: Combinator<UnionArms<T>> = {
     _tag: 'choice',
     _meta: meta,
-    _def: {
-      tag: 'choice',
-      parsers,
-      gates,
-      disjoint,
-      strategy: strategy ?? { tag: 'firstMatch' },
-      autoNot,
+    _def: defObj,
+    /**
+     * Re-decide dispatch from the arms' now-resolved first-sets. Called by `rules()`
+     * after every ref is defined, to a fixpoint (a choice's own first-set feeds an
+     * enclosing choice, so one pass is not enough). Returns whether anything changed.
+     *
+     * Only ever moves non-disjoint -> disjoint: an unresolved ref reports `any`, which
+     * overlaps everything, so the construction-time answer is the pessimistic one. The
+     * union first-set is refreshed for the same reason — a choice built over unresolved
+     * arms recorded `any` and propagated it to everything wrapping it.
+     */
+    _refreshDispatch(): boolean {
+      const nextDisjoint = computeDisjoint(parsers)
+      let nextCombined: FirstSet = { kind: 'empty' }
+      for (const p of parsers) nextCombined = union(nextCombined, p._meta.firstSet)
+      const changed = nextDisjoint !== disjoint
+        || JSON.stringify(nextCombined) !== JSON.stringify(meta.firstSet)
+      if (!changed) return false
+      disjoint = nextDisjoint
+      asciiDispatch = nextDisjoint ? buildAsciiDispatch(parsers) : null
+      meta.firstSet = nextCombined
+      meta.disjoint = nextDisjoint
+      ;(defObj as { disjoint: boolean }).disjoint = nextDisjoint
+      return true
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<UnionArms<T>> {
       const expected: string[] = []
+
+      // Decide dispatch on FIRST PARSE, not at construction and not when `rules()`
+      // finishes. Construction is too early (a `g.X` arm is an unresolved ref reporting
+      // `any`); `rules()` completion is ALSO too early, because `compose()` can add or
+      // OVERRIDE a rule afterwards, and a verdict taken before that is stale in the
+      // optimistic direction — a dispatch table built over the pre-compose arms simply
+      // fails to route the composed input. First parse is the earliest point at which
+      // the arm set is final.
+      if (!refreshed) {
+        refreshed = true
+        finalizeDispatch([self])
+      }
 
       // ── Disjoint: O(1) first-char dispatch (arms may be gated) ────────────
       if (disjoint && pos < input.length) {
@@ -167,6 +222,7 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       return { ok: false, expected, span: { start: pos, end: pos } }
     },
   }
+  return self
 }
 
 // ---------------------------------------------------------------------------
