@@ -466,6 +466,155 @@ numbers.
   message now names the route, so a red gate teaches it instead of leaving the next
   contributor to invent `allowancePct: 300`.
 
+- **Fixed a shared-prefix miscompile that produced a WRONG TREE with no error.**
+  Left-factoring recognises a choice's common leading terminal once and replays that
+  result into each arm's own leading term. The replay was keyed on the combinator
+  OBJECT, on the stated assumption that each arm's leading term is a distinct object
+  reached during that arm's emission. That is false, and a grammar breaks it without
+  doing anything unusual:
+
+  ```ts
+  const num = regex(/[0-9]+/)          // ONE instance, deliberately reused
+  choice(sequence(num, literal('-'), num),
+         sequence(num, literal('+'), num))
+  ```
+
+  Every emission of `num` inside any arm hit the map, so the TRAILING occurrence
+  replayed the LEADING one's value and end. On `"1-2"` the interpreter yields
+  `["1","-","2"]` over span 0-5 and the compiled parser yielded `["1","-","1"]` over
+  span 0-1 — a parse that SUCCEEDS, with no error and no warning. Under ambient
+  trivia it could also silently REJECT valid input. And on `"7-7"` the values are
+  identical and only the SPAN diverges, so a harness comparing values alone reported
+  agreement.
+
+  **How to tell whether you are affected.** You compile (rather than interpret) a
+  left-factored `choice` whose arms name the same rule more than once — binary
+  operators (`A op A`), delimited pairs, `A sep A`. `g.X` returns the identical ref
+  object on every reference, so a grammar written through the `g.` proxy is the
+  common case here, not the exotic one. The interpreter was always correct; this was
+  compiled output only.
+
+  The replay is now consumed once per ARM, and the arm-boundary reset is scoped to
+  the choice that REGISTERED the replay. That second half matters on its own: an
+  unscoped reset let a NESTED choice inside an arm clear the OUTER choice's tracking
+  mid-arm, re-opening the same hole one level in. Falling through to a real scan is
+  always correct, so the failure direction is safe, and the optimisation is intact —
+  the grouped arms still measure exactly one scan.
+
+  The 286-test parity suite passed this defect with the bug present.
+  `assertEnginesAgree` is sound — whole-object comparison on result and sinks —
+  there was simply no fixture of this shape.
+  `test/parity/shared-prefix-repeated-arm.test.ts` is that absence, with a
+  distinct-but-equal control that passes both ways, which pins the defect to the
+  replay KEY rather than to the factored shape.
+
+- **Fixed `dispatch()`'s packed key tables wrapping silently above 4095.** The
+  encoder behind an emitted dispatch table packs two characters at six bits each —
+  twelve bits, range 0..4095 — and the mask made anything larger wrap without a
+  word. `unpack` then decoded a wrong index and the table routed to the WRONG ARM at
+  parse time, in shipped compiled output, with a successful parse over it. It now
+  throws a `RangeError` naming the offending value at build time, which is the last
+  point this is cheap to catch. It is TABLE SIZE rather than key count that
+  approaches the ceiling: the packed vectors carry key offsets, key lengths, case
+  indices and trie slots.
+
+  The bound was missing because the encoder existed TWICE, as identical hand-spelled
+  twins, neither of them bounded — which is how one defect became two. There is now
+  one implementation, and the matching 12-bit DECODER is emitted from the same
+  shared helper instead of being re-spelled beside a copy, so half an encoding can
+  no longer live in a second file and agree with the other half only by luck. A test
+  asserts the decoder appears only beside the encoder it inverts.
+
+- **A third copy of the ASCII case fold, spelled `| 32`, is gone.** `| 32` is not a
+  letter fold. It also folds `[`/`{`, `]`/`}`, `^`/`~` and `` @ ``/`` ` ``, so a
+  case-insensitive matcher built on it collides on those characters, skips later
+  terminals, and fires the EARLIER terminal's accept id for the later terminal's
+  text. This is the same defect `e8612eb` fixed in `dispatch()` earlier in this
+  release, written a second time by a second author.
+
+  **Scope, stated because it is narrower than the two entries above.** The wrong
+  copy was in `src/compiler/token-scanner.ts`, which nothing on the shipping path
+  reaches — codegen imports `token-dispatch.ts` and nothing else from that group —
+  so no emitted artifact carried it. `foldCode` and `foldExpr` are now exported from
+  `token-dispatch.ts` and imported here, so the trie build and the emitted walker
+  share one implementation; they must fold identically or a lookup misses the node
+  the trie built. Two more defects in the same unreached module are fixed and
+  recorded here for the class rather than the blast radius: its memo was keyed on
+  `(pos, mode, set)` with no INPUT IDENTITY, so a second parse of a different string
+  could take the first string's cached token at the same position; and
+  `leadTerminal` asked a term for its inner terminal before checking whether the
+  term can consume, so `sequence(optional(X), Y)` yielded X's terminal as THE lead
+  when the input may legally start with Y's, and `sequence(not(X), Y)` yielded a
+  terminal from a negative lookahead that never consumes at all. A single lead
+  terminal cannot express "X's first set OR Y's", so a nullable prefix now REJECTS
+  the site and scannerless gating handles it; a genuinely zero-width prefix still
+  continues, because the next term does genuinely lead.
+
+- **Fixed a zero-width trivia probe that recorded line data it is documented never
+  to record.** `probeTriviaEnd` finds the end of a trivia run "WITHOUT recording any
+  of it", and it was read-only for capture buffers and read-WRITE for line data:
+  both paths call `recordLineRangeFromContext` whenever `ctx.trackLines` and the
+  trivia can match a newline. A zero-width assertion — including one that REJECTS —
+  therefore advanced `_lineScannedTo` over a gap the parse then re-scanned. You are
+  affected if you parse with `trackLines` and use an assertion that probes trivia,
+  which as of this release includes `adjacent()` and `notAdjacent()`. The probe now
+  runs through a context with `trackLines: false`, which makes the recording
+  unreachable in both scanners rather than undone afterwards; everything the
+  scanners need to find the end is carried through unchanged.
+
+- **`bench/` is now typechecked, under the same settings as `src/`.**
+  `tsconfig.json` included `src/**` and `test/**` only, so the directory holding the
+  performance evidence this project PUBLISHES had never been typechecked — which is
+  how a committed bench came to die on a bare `ReferenceError: contests is not
+  defined`. A bench that silently fails reads exactly like one that passes. It is in
+  the main tsconfig now: no `tsconfig.bench.json`, no relaxed flags, no
+  suppressions, so `pnpm typecheck` — which CI and the pre-commit hook already run —
+  covers it.
+
+  82 errors surfaced, and two of them were real defects in measurement rather than
+  type noise. `choice-cost-guard` passed a SECOND argument to
+  `analyzeChoiceInventory`, which takes one, so it was silently discarded; and
+  `alloc-model` set `captureTrivia` as a key on `rules()`, which has no such option,
+  so grammar-wide trivia capture was never enabled in a rig written to measure it
+  enabled. Any number you took from those two before this release was measuring
+  something other than what it claimed. Two files are deferred rather than fixed and
+  are named in `docs/future/bench-typecheck-followups.md`.
+
+- **New and NOT on the shipping path: `parseman/table`, a second, prototype
+  lowering.** `src/table/` encodes a rule map into a flat instruction table read by
+  ONE shared driver, rather than codegen's recognizer emitted bespoke per rule. It
+  gains a real `./table` export and a build entry in this release for one reason: an
+  emitted table module has to be able to import its driver at all, and there was no
+  runtime JS in `dist` for it to import.
+
+  **Nothing routes to it.** The macro, `compile()` and `compose()` do not reach it,
+  no grammar in this repo ships through it, and it is slower than codegen on every
+  workload measured so far. No per-dialect artifact-size figure is claimed here,
+  because none has been measured on a shipping grammar. Read it and run it; do not
+  plan a 0.47.0 parser around it.
+
+  It is carried in the release rather than held back because its identity gate —
+  interpreted, compiled and table digested against each other through
+  `parseman/oracle` — is what found several of the defects recorded elsewhere in
+  this section, including ones in shipping code. The prototype's own silent-failure
+  fixes (an unstamped host mode that returned AST from a table encoded for CST, an
+  ambient-trivia bake that made three engines agree by all failing the same way, a
+  root-trivia capture that recorded nothing because the labels never reached the
+  entry) are internal to code no consumer can reach and are deliberately not given
+  entries of their own.
+
+- **Three documentation claims corrected against the code.** The gating diagnostic
+  left the compile path in 0.45.0, but `README.md` and `docs/guide/combinators.md`
+  still said the build reports it — `compile()` reports nothing. `ChoiceStrategy` was
+  documented in `docs/reference/types.md` as a three-member string union; the real
+  exported type is a four-member tagged union including `sharedPrefix`, so code
+  written against the documented shape would not typecheck against the real one. And
+  `docs/guide/macro-mode.md` still described pre-0.46 variant duplication —
+  1.98x/3.92x, "full copy", "nothing is shared"; the 0.46 module-level hoist makes
+  it 1.53x/2.57x. Size and benchmark figures across the guides are re-sourced to the
+  committed `bench/size-baseline.json` and the committed chart assets, and claims
+  that were stated universally but measured on ONE lowering now name that lowering.
+
 ## 0.46.0 — 2026-07-31
 
 - **Add a `parseman` CLI — `parseman diagnose` and `parseman fix`.** Exit **0** clean,
