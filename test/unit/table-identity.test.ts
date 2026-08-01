@@ -95,3 +95,54 @@ describe('table lowering — tree identity', () => {
     expect(src).not.toMatch(/charCodeAt|startsWith|lastIndex/)
   })
 })
+
+/**
+ * The full sweep, promoted from `bench/g5-run.ts` into CI.
+ *
+ * That file ran seven grammars by hand. A hand-run gate is one forgotten command
+ * from being no gate, and every defect this lowering has produced PARSED FINE and
+ * moved only the tree — `optional()` yielding `undefined` instead of `null`,
+ * `token()` treated as transparent, `balanced()` encoded from a `_def` its own
+ * `.parse` overrides, separators still captured after the items-only change. None
+ * of those would fail an ordinary assertion, and four of them were found only
+ * because a digest disagreed.
+ *
+ * Running the same sweep here also means `src/table/` is exercised by tests rather
+ * than by a benchmark, which is why its coverage was a cliff.
+ */
+describe('table lowering — three-way identity across every encodable grammar', () => {
+  it('json: interpreted, compiled and table agree on every case', async () => {
+    const { checkIdentity: ci } = await import('../../bench/g5-identity.ts')
+    const { JSON_CASES } = await import('./table-identity-cases.ts')
+    const r = ci(jsonRules as unknown as Record<string, Combinator<unknown>>, 'Value', JSON_CASES, { trivia: jsonWs })
+    expect(r.mismatches, JSON.stringify(r.mismatches.slice(0, 3))).toEqual([])
+    // total counts (case x path) pairs; matched must equal it, not merely be non-zero.
+    expect(r.matched).toBe(r.total)
+    expect(r.total).toBeGreaterThan(0)
+  })
+
+  it('node ladder at 4, 8, 16 and 32 rules', async () => {
+    const { checkIdentity: ci } = await import('../../bench/g5-identity.ts')
+    const { nodeLadder } = await import('../../bench/g5-grammars.ts')
+    const { ladderCases } = await import('./table-identity-cases.ts')
+    for (const n of [4, 8, 16, 32]) {
+      const r = ci(nodeLadder(n), 'Root', ladderCases(n))
+      expect(r.mismatches, `ladder ${n}: ${JSON.stringify(r.mismatches.slice(0, 2))}`).toEqual([])
+    }
+  })
+
+  it('the node-building base grammar', async () => {
+    const { checkIdentity: ci } = await import('../../bench/g5-identity.ts')
+    const { BASE_CASES } = await import('./table-identity-cases.ts')
+    const r = ci(baseNodes, 'Doc', BASE_CASES)
+    expect(r.mismatches, JSON.stringify(r.mismatches.slice(0, 3))).toEqual([])
+  })
+
+  it('the 29-rule Less workload grammar on real stylesheet input', async () => {
+    const { checkIdentity: ci } = await import('../../bench/g5-identity.ts')
+    const { lessRules } = await import('../../bench/workloads/less.ts')
+    const { LESS_CASES } = await import('./table-identity-cases.ts')
+    const r = ci(lessRules as unknown as Record<string, Combinator<unknown>>, 'Stylesheet', LESS_CASES)
+    expect(r.mismatches, JSON.stringify(r.mismatches.slice(0, 3))).toEqual([])
+  })
+})
