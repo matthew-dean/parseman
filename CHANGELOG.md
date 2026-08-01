@@ -447,6 +447,25 @@ numbers.
   in separate processes — and makes byte-level tree equality against a toggled baseline
   the gate, after a bug 288 tests missed.
 
+- **The peak clause gains a sanctioned way through: `PERF-PEAK-WAIVER`.**
+  `docs/design/perf-gates.md` has always ended "do not widen the threshold to make a
+  build pass — either fix the regression, or land it with the number visible", and only
+  the first half was executable. A deliberate, *bought* slowdown had exactly one route
+  past a red `pnpm perf:workloads:peak`: move `peak` or widen `allowancePct` — the edit
+  §D calls **LAUNDERING RISK** by name, which makes the slower build the reference and
+  destroys the record permanently to get one PR out. A PR may now declare, on one line
+  in the CHANGELOG's open section, `PERF-PEAK-WAIVER <config> median <n>% min <n>% —
+  <why>`, and the guard prints its **full drawdown report** and exits 0.
+  **The peak record does not move**: the same bar, the same red, for the next PR. Every
+  property is friction on purpose — it cannot be written without the measurement, the
+  numbers must themselves breach the allowance, it cannot understate what was just
+  measured, it must give a reason, it must be **absent from the base's CHANGELOG**
+  (per-PR, non-sticky — and unverifiable without `--base`, so unwaivable without it), it
+  cannot be combined with a `peak` edit, and a malformed one fails loudly rather than
+  being ignored. It is **not** `release-exempt` and does not extend it. §D's failure
+  message now names the route, so a red gate teaches it instead of leaving the next
+  contributor to invent `allowancePct: 300`.
+
 ## 0.46.0 — 2026-07-31
 
 - **Add a `parseman` CLI — `parseman diagnose` and `parseman fix`.** Exit **0** clean,

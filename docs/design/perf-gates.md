@@ -739,6 +739,8 @@ pnpm perf:workloads --quick                 # 1 pass x 2 rounds — TRIAGE ONLY,
 pnpm perf:workloads --only=less             # substring filter on workload id
 pnpm perf:workloads:describe                # what each workload parses, and whether it reaches EOF
 pnpm perf:guard:grammars --quick            # 2 rounds x 1 run — TRIAGE ONLY, does not gate
+pnpm perf:workloads:peak --base=origin/main # the peak clause, as CI runs it — a
+                                            # PERF-PEAK-WAIVER is honoured only with --base
 
 # Validate the gate itself. A gate nobody has watched fail is not known to work.
 pnpm perf:guard:grammars --ref=7f1ddcd --head-ref=c7780e4   # 0.34.0 without the fix — expect RED
@@ -881,9 +883,73 @@ and the moment it matters is the moment it moves. Like §C it has **no hatch** �
 already paid for: both `referenceSha` fields carried "bump this at every release"
 in a *comment* and were missed for ten consecutive releases.
 
+### Landing under the bar without moving it — `PERF-PEAK-WAIVER`
+
+Everything above governs **moving** the peak. This governs **landing under it**.
+
+The two options in the section below — fix it, or land it with the number visible
+— were never both executable. A deliberate, *bought* slowdown had exactly one
+route past a red `pnpm perf:workloads:peak`: edit `peak`, or widen
+`allowancePct`. Both make the **slower build the reference**. That is the edit
+§D calls `LAUNDERING RISK` by name, and it destroys the record permanently to get
+one PR through. A change that trades ~2.65x parse time for a ~40x smaller
+artifact is a real trade and should be landable — but not by deleting the bar it
+fails.
+
+So "land it with the number visible" is now a thing you can actually do. A PR
+declares, on one line in the CHANGELOG's **open section**:
+
+```
+PERF-PEAK-WAIVER bench/workloads/config.json median -164.9% min -158.2% — table lowering: 2.65x parse time buys a 40x smaller artifact
+```
+
+`bench/workload-perf-guard.ts --peak --base=<ref>` then prints its **full drawdown
+report** and exits 0 instead of 1. `scripts/check-changelog.mjs` §D' validates the
+line on every PR.
+
+**When it is legitimate.** When the drawdown is real, understood, measured, and
+bought something nameable — and when the peak should *stay where it is* because
+the slower path is a trade this release makes, not the new normal. If the
+slowdown genuinely is the new normal, **move the peak** (§D above) and say so;
+that is not this.
+
+**It does not move the baseline.** This is the whole point. The peak record is
+untouched, `0.45.0` stays the bar, and the next PR is measured against the same
+number, goes red in exactly the same way, and must state its own measurement. A
+waived breach is still a breach on the record.
+
+Every property of it is friction on purpose — `docs/design/release-gates.md`: *"A
+gate that fires spuriously gets bypassed, and then the gates that matter get
+bypassed with it."* The inverse holds just as hard, so the waiver:
+
+- **cannot be written without the measurement**, and the numbers must themselves
+  breach `allowancePct`. You cannot waive a gate without saying how badly you
+  failed it. Either spelling of the sign is accepted — the harness prints a
+  slowdown `+164.9%`, prose writes it `-164.9%` — because this is not a gate about
+  punctuation;
+- **cannot understate**. The guard refuses a waiver quoting a figure milder than
+  the mildest breaching pass it just measured;
+- **requires a reason**, not just a number;
+- **is per-PR and non-sticky**: the line must be **absent from the base's
+  CHANGELOG**. The next PR inherits the text, so the identical line waives nothing
+  and that PR must re-measure. Without `--base` the guard cannot check freshness
+  and therefore **refuses the waiver entirely** — which is why CI passes
+  `--base`, and why a push to `main` cannot be waived at all;
+- **cannot be combined with a `peak` edit**. Waiving and re-anchoring are mutually
+  exclusive; a PR doing both is refused;
+- **fails loudly when malformed** rather than being ignored. A waiver that does
+  not parse is a contributor who believes they have waived the gate;
+- **is not `release-exempt`** and deliberately does not extend it. That label's
+  documented scope is §B, and widening a hatch is the bypassed-gate failure
+  itself.
+
+It waives the peak clause's **verdict** only — never §C, never §D's requirement to
+document a peak edit, never §A or §B.
+
 ## When it fires
 
 Do not widen the threshold to make a build pass. Either fix the regression, or
 land it with the number visible and an explanation of why it is the price of
-something. An honest "3% is the cost of correctness, 22% was avoidable" is a
-result. "Should be faster now" is not.
+something — which is what `PERF-PEAK-WAIVER` above is for. An honest "3% is the
+cost of correctness, 22% was avoidable" is a result. "Should be faster now" is
+not.
