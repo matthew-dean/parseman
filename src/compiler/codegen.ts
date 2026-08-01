@@ -10,6 +10,7 @@ import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseE
 import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
+import { finalizeDispatch } from '../combinators/finalize-dispatch.ts'
 import { mayCommitFailure, mayLeavePartialCapture, capturesLeaf, hasNodeDef, alwaysConsumes } from '../analysis/commitment.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { assertHostModeCompatible, type HostMode } from '../cst/host-mode.ts'
@@ -1589,6 +1590,13 @@ function emitKeywordChoiceMerge(
   pos: string,
 ): ER | null {
   // A disjoint choice keeps its O(1) first-char dispatch. See above.
+  //
+  // This read is only as good as the flag. `choice()` sets it at CONSTRUCTION, where a
+  // `g.X` arm is an unresolved ref reporting `any`, so every recursive grammar arrived
+  // here claiming non-disjoint and this function duly traded away a dispatch the choice
+  // actually had — the exact opposite of the promise in the header above. The flag is
+  // now refreshed from the resolved arms before emission (see `finalizeDispatch` at the
+  // monolithic compile entries), so the promise holds.
   if (def.disjoint) return null
   if (def.parsers.length < 2) return null
   if (ctx.coverage?.plan.choices.get(parser) !== undefined) return null
@@ -5294,6 +5302,11 @@ export function compile<T>(combinator: Combinator<T>, mapFnSources?: string[], o
 }
 
 function compileImpl<T>(combinator: Combinator<T>, mapFnSources?: string[], opts?: { recovery?: boolean; hostMode?: HostMode; coverage?: boolean; duplication?: DuplicationOption; trackLines?: boolean; maxInline?: number }): CompiledParser<T> {
+  // Same reason as `compileRuleMap` — a monolithic compile sees a FINAL graph, so the
+  // construction-time disjointness verdict can and must be re-asked from the resolved
+  // arms. See the note there for why the compose path must not do this.
+  finalizeDispatch([combinator as Combinator<unknown>])
+
   runDuplicationDiagnostic(combinator, opts?.duplication)
   markUnusedValues(combinator)
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): seed it
@@ -5585,6 +5598,22 @@ export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts?: { trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; recovery?: boolean; hostMode?: HostMode; trackLines?: boolean; coverage?: boolean; duplication?: DuplicationOption; maxInline?: number },
 ): { keys: string[]; replacement: string; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[] } | null {
+  // Refresh every reachable choice's dispatch from its RESOLVED arms before emitting.
+  //
+  // `choice()` decides disjointness when it is CONSTRUCTED, and inside a `rules()`
+  // factory a `g.X` arm is still an unresolved ref whose first-set is `any`. `any`
+  // overlaps everything, so every choice over rule references was recorded
+  // non-disjoint — a fact about the SPELLING, not the grammar — and the O(1)
+  // first-char dispatch below was never emitted for a recursive grammar. All four
+  // shipping grammars are recursive and `g.X`-referenced throughout.
+  //
+  // Sound HERE and only here: these entries compile a FINAL rule map, so refs cannot
+  // change afterwards. `compileLinkable` deliberately does NOT do this — on the compose
+  // path a named rule can be overridden at fuse time (`deferFirstSetRefs`), and baking a
+  // dispatch table over today's arms would fail to route composed input: the same
+  // staleness as the construction-time flag, one layer down.
+  finalizeDispatch(ruleMap.map(([, rule]) => rule))
+
   runDuplicationDiagnosticRules(ruleMap, opts?.duplication)
   for (const [, rule] of ruleMap) markUnusedValues(rule)
   // Named lazy proxies already carry their stable rule identity and redirect
