@@ -66,7 +66,7 @@ import {
   materialise, calibrate, assertSameParse, measurePasses, verdicts, git, fail, sign, peakThresholds,
   type Case, type Thresholds, type Peak, type Verdict,
 } from './ab-harness.ts'
-import { parsePeakWaivers, openSection, isBreach, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
+import { openSection, decideWaiver, WAIVER_TAG } from '../scripts/peak-waiver.mjs'
 import type { Workload } from './workloads/index.ts'
 
 const GATE = 'workload-perf-guard'
@@ -294,79 +294,23 @@ function peakWaiver(failed: readonly Verdict[]): { applied: boolean, message: st
   } catch {
     return { applied: false, message: '' }
   }
-
-  const mine = parsePeakWaivers(section).filter(w => w.config === CONFIG_REL)
-  if (mine.length === 0) return { applied: false, message: '' }
-  const w = mine[0]!
-
-  const decline = (why: string): { applied: false, message: string } => ({
-    applied: false,
-    message: `\n${GATE}: a ${WAIVER_TAG} for ${CONFIG_REL} is in the CHANGELOG but is NOT honoured —\n  ${why}`,
-  })
-
-  if (w.problems.length > 0) {
-    return decline(
-      `it does not parse: ${w.problems.join('; ')}.`
-      + '\n  Run `pnpm check:changelog --base=<ref>` — it reports the exact form.',
-    )
-  }
-  if (!isBreach(w, CONFIG.peak.allowancePct)) {
-    return decline(
-      `it quotes median ${w.medianPct}% / min ${w.minPct}%, which is inside the`
-      + ` ${CONFIG.peak.allowancePct}% allowance and therefore waives nothing.`,
-    )
-  }
-
-  // You may not waive a breach by understating it. The bar is the MILDEST breaching
-  // pass rather than the worst, so an honest quote of any breaching row is accepted and
-  // the check does not turn into a flake about which pass the author copied.
-  const breaching = failed.flatMap(f => f.passes.filter(r => r.breach))
-  const mildestMedian = Math.min(...breaching.map(r => Math.abs(r.dMedian)))
-  const mildestMin = Math.min(...breaching.map(r => Math.abs(r.dMin)))
-  if (Math.abs(w.medianPct!) < mildestMedian || Math.abs(w.minPct!) < mildestMin) {
-    return decline(
-      `it UNDERSTATES the breach. It declares median ${w.medianPct}% / min ${w.minPct}%; the mildest`
-      + ` breaching pass measured HERE is median ${sign(mildestMedian)} / min ${sign(mildestMin)}.`
-      + '\n  A waiver is the number made visible — quote what the gate printed, not a softer figure.',
-    )
-  }
-
-  if (PEAK_BASE === null) {
-    return decline(
-      'freshness cannot be verified without `--base=<ref>`, so it is refused here by default.'
-      + '\n  A waiver is PER-PR: it counts only while the line is ABSENT from the base\'s CHANGELOG.'
-      + '\n  Unchecked, the PR after the waiving one inherits the text and the peak clause is silently'
-      + '\n  off for the rest of the release cycle. CI passes --base; pass it locally to reproduce.',
-    )
-  }
-
   let baseChangelog = ''
-  try {
-    baseChangelog = git(['show', `${PEAK_BASE}:CHANGELOG.md`], ROOT)
-  } catch {
-    baseChangelog = ''
+  if (PEAK_BASE !== null) {
+    try {
+      baseChangelog = git(['show', `${PEAK_BASE}:CHANGELOG.md`], ROOT)
+    } catch {
+      baseChangelog = ''
+    }
   }
-  if (baseChangelog.includes(w.line)) {
-    return decline(
-      `this exact line is ALREADY on the base (${PEAK_BASE}), so it is not this PR's waiver.`
-      + '\n  A waiver is spent on the diff that declares it. Re-run this gate and state THIS diff\'s'
-      + '\n  numbers, or fix the drawdown.',
-    )
-  }
-
-  const over = (n: number): string => `${(Math.abs(n) / CONFIG.peak.allowancePct).toFixed(1)}x`
-  return {
-    applied: true,
-    message:
-      `\n${GATE}: PEAK CLAUSE WAIVED — the drawdown above is REAL and is NOT forgiven, it is DECLARED.`
-      + `\n  declared: median ${w.medianPct}% / min ${w.minPct}%`
-      + ` (${over(w.medianPct!)} and ${over(w.minPct!)} the ${CONFIG.peak.allowancePct}% allowance)`
-      + `\n  reason:   ${w.reason}`
-      + `\n\n  The peak record is UNCHANGED: ${CONFIG.peak.version} (${CONFIG.peak.sha}) is still the bar, and`
-      + '\n  this waiver did NOT raise it. The next PR is measured against the same peak, will go red in'
-      + '\n  exactly the same way, and must state its own measurement — this line will not carry.'
-      + '\n  A waived breach is still a breach on the record.',
-  }
+  const d = decideWaiver({
+    section,
+    config: CONFIG_REL,
+    peak: CONFIG.peak,
+    breaching: failed.flatMap(f => f.passes.filter(r => r.breach)),
+    base: PEAK_BASE,
+    baseChangelog,
+  })
+  return { applied: d.applied, message: d.message === '' ? '' : `\n${GATE}:${d.message}` }
 }
 
 const failures = rows.filter(v => v.failed)

@@ -143,3 +143,89 @@ export function isBreach(w, allowancePct) {
   return w.medianPct !== null && w.minPct !== null
     && Math.abs(w.medianPct) > allowancePct && Math.abs(w.minPct) > allowancePct
 }
+
+/**
+ * Whether a measured, red peak run is WAIVED — the decision `workload-perf-guard.ts`
+ * makes after printing its drawdown report.
+ *
+ * It lives here rather than inline in the guard so it is reachable by a test. The
+ * guard's own failure branch needs a real measured breach to enter, which costs two
+ * materialised worktrees and several minutes; the interesting logic — understatement
+ * and staleness — would then be covered by nothing, which is how a hatch quietly stops
+ * being checked.
+ *
+ * @param {object} o
+ * @param {string} o.section        the CHANGELOG's open section
+ * @param {string} o.config         this gate's config path, repo-relative
+ * @param {{ version: string, sha: string, allowancePct: number }} o.peak
+ * @param {{ dMedian: number, dMin: number }[]} o.breaching  the passes that breached
+ * @param {string|null} o.base      the PR base ref, or null if not given
+ * @param {string} o.baseChangelog  CHANGELOG.md at `base` ('' when unavailable)
+ * @returns {{ applied: boolean, message: string }}
+ */
+export function decideWaiver({ section, config, peak, breaching, base, baseChangelog }) {
+  const mine = parsePeakWaivers(section).filter((w) => w.config === config)
+  if (mine.length === 0) return { applied: false, message: '' }
+  const w = mine[0]
+
+  const decline = (why) => ({
+    applied: false,
+    message: `\na ${WAIVER_TAG} for ${config} is in the CHANGELOG but is NOT honoured —\n  ${why}`,
+  })
+
+  if (w.problems.length > 0) {
+    return decline(
+      `it does not parse: ${w.problems.join('; ')}.`
+        + '\n  Run `pnpm check:changelog --base=<ref>` — it reports the exact form.',
+    )
+  }
+  if (!isBreach(w, peak.allowancePct)) {
+    return decline(
+      `it quotes median ${w.medianPct}% / min ${w.minPct}%, which is inside the`
+        + ` ${peak.allowancePct}% allowance and therefore waives nothing.`,
+    )
+  }
+
+  // You may not waive a breach by understating it. The bar is the MILDEST breaching
+  // pass rather than the worst, so an honest quote of any breaching row is accepted and
+  // this does not become a flake about which pass the author happened to copy.
+  const mildestMedian = Math.min(...breaching.map((r) => Math.abs(r.dMedian)))
+  const mildestMin = Math.min(...breaching.map((r) => Math.abs(r.dMin)))
+  if (Math.abs(w.medianPct) < mildestMedian || Math.abs(w.minPct) < mildestMin) {
+    return decline(
+      `it UNDERSTATES the breach. It declares median ${w.medianPct}% / min ${w.minPct}%; the mildest`
+        + ` breaching pass measured HERE is median ${mildestMedian.toFixed(1)}% / min ${mildestMin.toFixed(1)}%.`
+        + '\n  A waiver is the number made visible — quote what the gate printed, not a softer figure.',
+    )
+  }
+
+  if (base === null) {
+    return decline(
+      'freshness cannot be verified without `--base=<ref>`, so it is refused here by default.'
+        + "\n  A waiver is PER-PR: it counts only while the line is ABSENT from the base's CHANGELOG."
+        + '\n  Unchecked, the PR after the waiving one inherits the text and the peak clause is silently'
+        + '\n  off for the rest of the release cycle. CI passes --base; pass it locally to reproduce.',
+    )
+  }
+  if (baseChangelog.includes(w.line)) {
+    return decline(
+      `this exact line is ALREADY on the base (${base}), so it is not this PR's waiver.`
+        + "\n  A waiver is spent on the diff that declares it. Re-run this gate and state THIS diff's"
+        + '\n  numbers, or fix the drawdown.',
+    )
+  }
+
+  const over = (n) => `${(Math.abs(n) / peak.allowancePct).toFixed(1)}x`
+  return {
+    applied: true,
+    message:
+      '\nPEAK CLAUSE WAIVED — the drawdown above is REAL and is NOT forgiven, it is DECLARED.'
+      + `\n  declared: median ${w.medianPct}% / min ${w.minPct}%`
+      + ` (${over(w.medianPct)} and ${over(w.minPct)} the ${peak.allowancePct}% allowance)`
+      + `\n  reason:   ${w.reason}`
+      + `\n\n  The peak record is UNCHANGED: ${peak.version} (${peak.sha}) is still the bar, and this`
+      + '\n  waiver did NOT raise it. The next PR is measured against the same peak, will go red in'
+      + '\n  exactly the same way, and must state its own measurement — this line will not carry.'
+      + '\n  A waived breach is still a breach on the record.',
+  }
+}
