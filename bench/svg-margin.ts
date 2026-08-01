@@ -410,6 +410,23 @@ let tightest: Tightest | undefined
  */
 let worstControl = 1
 let worstControlAt = ''
+/**
+ * Per-GROUP control, and the tightest rival margin within that same group.
+ *
+ * The global `worstControl` alone is the wrong comparator, and three consecutive
+ * INDETERMINATE runs on a quiet box are what showed it. A 52-byte parse takes a
+ * few microseconds, so its process-to-process spread is irreducible — 5.6% at
+ * --rounds 5 on an idle machine, WORSE than 5.1% at --rounds 3. More rounds do
+ * not fix it because it is not sampling error. Applying that number globally let
+ * a tiny bar's noise veto an 11.38x margin measured on an 11.9 kB bar whose own
+ * control read 0.2%.
+ *
+ * A margin is judged against the control measured BESIDE it, in the same group,
+ * in the same sweep. A group whose own control is too wide certifies nothing —
+ * it is reported as uncovered, which is a DROPPED row, not a licence to ignore it.
+ */
+type GroupVerdict = { chart: string; group: string; control: number; tightest?: Tightest }
+const groupVerdicts: GroupVerdict[] = []
 /** Rows where a rival won at least one paired round. */
 const splitRounds: string[] = []
 
@@ -424,6 +441,8 @@ const splitRounds: string[] = []
 function reportChart(chart: ChartKey, groups: GroupResult[]): void {
   console.log(`\n═══ ${chart.toUpperCase()} ═══`)
   for (const g of groups) {
+    const gv: GroupVerdict = { chart, group: g.group, control: 1 }
+    groupVerdicts.push(gv)
     console.log(`\n  ${g.group}`)
     console.log(`  Parséman (macro build)         ${g.subjectMin.toFixed(3)} µs  (min of ${ROUNDS})`)
     console.log(`  ${'competitor'.padEnd(30)} ${'min µs'.padStart(9)} ${'×'.padStart(8)}  win-rate`)
@@ -432,6 +451,7 @@ function reportChart(chart: ChartKey, groups: GroupResult[]): void {
       if (row.slot === CONTROL) {
         // Two measurements of one bar. Deviation in EITHER direction is noise.
         const spread = Math.max(row.ratio, 1 / row.ratio)
+        if (spread > gv.control) gv.control = spread
         if (spread > worstControl) {
           worstControl = spread
           worstControlAt = `${chart} / ${g.group}`
@@ -443,9 +463,9 @@ function reportChart(chart: ChartKey, groups: GroupResult[]): void {
         if (row.ratio < 1) flag = '  ← SLOWER THAN COMPETITOR'
         else if (row.ratio < FLOOR) flag = '  ← BELOW FLOOR'
         else flag = ''
-        if (!tightest || row.ratio < tightest.ratio) {
-          tightest = { chart, group: g.group, rival: row.slot, ratio: row.ratio, wins: row.wins }
-        }
+        const here = { chart, group: g.group, rival: row.slot, ratio: row.ratio, wins: row.wins }
+        if (!tightest || row.ratio < tightest.ratio) tightest = here
+        if (!gv.tightest || row.ratio < gv.tightest.ratio) gv.tightest = here
         if (row.wins < row.rounds) {
           splitRounds.push(`${chart} / ${g.group} / ${row.slot}: won only ${row.wins}/${row.rounds} paired rounds`)
           flag += `  ← SPLIT ROUNDS`
@@ -570,33 +590,53 @@ console.log('═'.repeat(76))
  * said "a margin smaller than the control's spread is not a margin" and nothing
  * enforced it. It is enforced here.
  */
+const certified = groupVerdicts.filter(g => g.tightest !== undefined && g.control < FLOOR && g.control < g.tightest.ratio)
+const uncertified = groupVerdicts.filter(g => g.tightest !== undefined && !(g.control < FLOOR && g.control < g.tightest.ratio))
+
+console.log('  Per-group calibration — each margin judged against the control measured BESIDE it:')
+for (const g of groupVerdicts) {
+  if (g.tightest === undefined) continue
+  const ok = certified.includes(g)
+  console.log(`    ${ok ? 'CERTIFIED  ' : 'UNCOVERED  '}${g.chart} / ${g.group}` +
+    `   control ${((g.control - 1) * 100).toFixed(1)}%   tightest ${g.tightest.ratio.toFixed(2)}× (${g.tightest.rival})`)
+}
+if (uncertified.length > 0) {
+  console.log()
+  console.log(`  ${uncertified.length} group(s) certify NOTHING this run — their own control is not tight enough to`)
+  console.log('  tell their narrowest row from noise. They are uncovered, not passed.')
+}
+console.log()
+
+const worstCertified = certified.reduce<Tightest | undefined>(
+  (acc, g) => (acc === undefined || g.tightest!.ratio < acc.ratio ? g.tightest : acc), undefined)
+
 if (!tightest) {
   console.log('VERDICT: INDETERMINATE — no competitor bars were measured.')
   process.exitCode = 2
-} else if (worstControl >= tightest.ratio) {
+} else if (certified.length === 0) {
   console.log('VERDICT: INDETERMINATE')
   console.log()
-  console.log(`  Control spread ${((worstControl - 1) * 100).toFixed(1)}% is not smaller than the tightest claimed`)
-  console.log(`  margin ${((tightest.ratio - 1) * 100).toFixed(1)}% (${tightest.chart}/${tightest.rival}).`)
-  console.log('  One bar measured against itself moved that far in this run, so the narrowest')
-  console.log('  row here cannot be told from noise. Reporting that instead of a win.')
-  console.log('  Re-run on a quiet box, or raise --rounds.')
+  console.log('  NO group had a control tight enough to certify its own narrowest row.')
+  console.log(`  Worst control ${((worstControl - 1) * 100).toFixed(1)}% at ${worstControlAt}.`)
+  console.log('  This run could not have FAILED a borderline case anywhere, so a pass from it')
+  console.log('  would be unearned. Re-run on a quiet box.')
   process.exitCode = 2
-} else if (worstControl >= FLOOR) {
-  console.log('VERDICT: INDETERMINATE')
-  console.log()
-  console.log(`  Control spread ${((worstControl - 1) * 100).toFixed(1)}% meets or exceeds the ${((FLOOR - 1) * 100).toFixed(1)}% floor.`)
-  console.log('  This run could not have FAILED a borderline case, so a pass from it would be')
-  console.log('  unearned no matter how wide today\'s margin happens to be.')
-  process.exitCode = 2
-} else if (tightest.ratio < FLOOR) {
+} else if (worstCertified !== undefined && worstCertified.ratio < FLOOR) {
   console.log('VERDICT: BAR BROKEN — FAIL')
   console.log()
-  console.log(`  Tightest row: ${tightest.rival} on ${tightest.chart} / ${tightest.group}`)
-  console.log(`  ${tightest.ratio.toFixed(3)}× is below the ${FLOOR.toFixed(2)}× floor` +
-    (tightest.ratio < 1 ? ' — the competitor is FASTER.' : '.'))
-  console.log(`  Control spread was ${((worstControl - 1) * 100).toFixed(1)}%, well inside the margin, so this is real.`)
+  console.log(`  Tightest CERTIFIED row: ${worstCertified.rival} on ${worstCertified.chart} / ${worstCertified.group}`)
+  console.log(`  ${worstCertified.ratio.toFixed(3)}× is below the ${FLOOR.toFixed(2)}× floor` +
+    (worstCertified.ratio < 1 ? ' — the competitor is FASTER.' : '.'))
+  console.log('  Its own group control was inside the margin, so this is real.')
   process.exitCode = 1
+} else if (uncertified.length > 0) {
+  console.log('VERDICT: HELD ON CERTIFIED GROUPS — PARTIAL')
+  console.log()
+  console.log(`  ${certified.length} of ${certified.length + uncertified.length} groups certified; every certified row is at or above the floor.`)
+  console.log(`  Tightest certified margin ${worstCertified!.ratio.toFixed(2)}× (${worstCertified!.chart}/${worstCertified!.rival}).`)
+  console.log('  The uncovered groups above are NOT a pass — the bar is held only where it was')
+  console.log('  measurable. Exit 0 because nothing certified is below the floor; re-run for full coverage.')
+  process.exitCode = 0
 } else {
   console.log('VERDICT: BAR HELD — PASS')
   console.log()
