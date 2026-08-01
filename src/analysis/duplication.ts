@@ -390,7 +390,7 @@ function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
     // rule's shape include the whole reachable grammar. Treated as a leaf, keyed
     // by the rule name it refers to — which is also the right semantics, since two
     // productions referencing `g.Ident` really do fill that slot the same way.
-    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'unknown':
+    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'adjacency': case 'unknown':
       return []
     default: {
       const rec = d as unknown as { parser?: Combinator<unknown> }
@@ -428,6 +428,7 @@ function payloadKey(p: Combinator<unknown>, d: ParserDef): string {
     case 'expect':    return `expect\u0000${d.label ?? ''}\u0000${d.expected.join('\u0001')}`
     case 'scanTo':    return `scanTo\u0000${d.raw}\u0000${d.orEOF}`
     case 'guard':     return `guard\u0000${fnKey(d.predSrc, d.predicate)}`
+    case 'adjacency': return `adjacency\u0000${d.polarity}\u0000${d.kinds ? d.kinds.join(',') : ''}`
     case 'withCtx':   return `withCtx\u0000${d.extraSrc ?? safeJson(d.extra)}`
     case 'grammar':   return `grammar\u0000${d.clearTrivia === true}\u0000${d.captureTrivia === true}\u0000${d.trackLines}`
     default:          return d.tag
@@ -478,6 +479,7 @@ function render(p: Combinator<unknown>, depth = 3): string {
     case 'keywords': return `keywords([${[...d.words].slice(0, 4).map(w => `'${w}'`).join(', ')}${d.words.length > 4 ? ', …' : ''}])`
     case 'lazy': return `g.${name ?? '?'}`
     case 'guard': return 'gate(…)'
+    case 'adjacency': return `${d.polarity}(…)`
     default: break
   }
   if (depth <= 0) return `${d.tag}(…)`

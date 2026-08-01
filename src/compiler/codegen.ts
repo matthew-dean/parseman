@@ -148,7 +148,9 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
 import { markUnusedValues } from './value-usage.ts'
 import { buildBalancedInterior, type BalancedAmbient } from '../combinators/scanTo.ts'
 import { buildGrammarPlan, type GrammarCoveragePlan } from './grammar-coverage-ids.ts'
-import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
+import { analyzeLabeledTrivia, resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
+import type { LabeledTriviaSpec } from '../cst/trivia-kinds.ts'
+import { adjacencyExpected, adjacencyOf, type AdjacencyDef } from '../combinators/adjacency.ts'
 import {
   analyzeLabeledScannableRun,
   analyzeTriviaFastPath,
@@ -156,6 +158,7 @@ import {
   buildLabeledRegexTriviaFnDecl,
   buildLabeledRuntimeTriviaFnDecl,
   buildLabeledScannableTriviaFnDecl,
+  buildAdjacencyKindProbeDecl,
   labeledTriviaRegexArms,
 } from './trivia-fast-path.ts'
 import { scanShapeFromRegex, parseClassRanges, emitShapeMatch, foldEq, type ScanShape, type Mint } from './scannable-run.ts'
@@ -528,6 +531,9 @@ type Ctx = {
    * eliminating two object allocations per trivia skip.
    */
   triviaFnNames: Map<Combinator<unknown>, string>
+  /** Trivia parser -> name of its emitted adjacency KIND PROBE (`_akN`). Created
+   * lazily: only a grammar carrying `notAdjacent({kinds})` ever gets one. */
+  adjKindFnNames?: Map<Combinator<unknown>, string>
   /** node() build functions captured at compile time (parallel to buildSrcs). */
   buildFns: Array<(children: ReadonlyArray<unknown>, fields: FieldMap | undefined, span: { start: number; end: number }, raw: ReadonlyArray<unknown>, triviaLog: readonly number[], state: unknown) => unknown>
   /** Source text of each build fn (set from def.buildSrc; null when unavailable). */
@@ -924,6 +930,87 @@ function ensurePlainRegexDecl(ctx: Ctx, source: string, flags: string): string {
  * One emitted function serves every skip/capture call site — no duplicate trivia
  * parser tree, no _tc wrapper call.
  */
+/**
+ * Name of the emitted adjacency KIND PROBE for the active trivia table, creating
+ * it on first use. Only reached from a `notAdjacent({ kinds })` site.
+ */
+function ensureAdjacencyKindFn(ctx: Ctx, spec: LabeledTriviaSpec): string {
+  const trivia = ctx.activeTrivia!
+  const cache = (ctx.adjKindFnNames ??= new Map<Combinator<unknown>, string>())
+  const existing = cache.get(trivia)
+  if (existing) return existing
+  const fnName = `${nsp(ctx)}_ak${cache.size}`
+  cache.set(trivia, fnName)
+
+  const reNames: string[] = []
+  for (const arm of spec.arms) {
+    const def = arm.parser._def
+    if (def.tag !== 'regex') break
+    reNames.push(ensureRegexDecl(ctx, def.source, def.flags))
+  }
+  if (reNames.length === spec.arms.length) {
+    ctx.namedFnDecls.push(buildAdjacencyKindProbeDecl(fnName, spec, reNames, 0))
+    return fnName
+  }
+
+  const rpStart = ctx.runtimeParsers.length
+  for (const arm of spec.arms) ctx.runtimeParsers.push(arm.parser)
+  ctx.namedFnDecls.push(buildAdjacencyKindProbeDecl(fnName, spec, null, rpStart))
+  return fnName
+}
+
+/**
+ * Lower ONE adjacency assertion at a sequence boundary (see combinators/adjacency.ts).
+ *
+ * The whole lowering is a test of the gap the boundary already knows about, so it
+ * emits a NON-CAPTURING trivia scan (`_cap = 0`) at `curV` and compares. `curV` does
+ * not move: the following term re-scans the same gap and keeps its own commit/rewind
+ * decision, so the emitted tree, spans and trivia log stay identical to the same
+ * sequence written without the assertion. This is also why the assertion is lowered
+ * here instead of being emitted as a term — a zero-width term at index `i` would
+ * trip `sequence`'s "term matched empty, roll the trivia back out" branch.
+ */
+function emitAdjacency(ctx: Ctx, def: AdjacencyDef, curV: string): { stmts: string[]; valueVar: string } {
+  const vv = v(ctx)
+  const expected = JSON.stringify(adjacencyExpected(def))
+  const stmts: string[] = []
+
+  if (!ctx.activeTrivia) {
+    // No ambient trivia in this scope: the gap is empty everywhere, so `adjacent()`
+    // is vacuously true and `notAdjacent()` can never hold. Fold it at compile time.
+    if (def.polarity === 'notAdjacent') stmts.push(...emitIfFail(ctx, 'true', failBody(ctx, expected, curV)))
+    stmts.push(`${ind(ctx)}const ${vv} = null`)
+    return { stmts, valueVar: vv }
+  }
+
+  const trivFn = ensureTriviaFn(ctx)
+  const endV = v(ctx, '_adj')
+  stmts.push(`${ind(ctx)}const ${endV} = ${trivFn}(input, ${curV}, _ctx, 0)`)
+
+  if (def.polarity === 'adjacent') {
+    stmts.push(...emitIfFail(ctx, `${endV} !== ${curV}`, failBody(ctx, expected, curV)))
+    stmts.push(`${ind(ctx)}const ${vv} = null`)
+    return { stmts, valueVar: vv }
+  }
+
+  if (def.kinds === undefined) {
+    stmts.push(...emitIfFail(ctx, `${endV} === ${curV}`, failBody(ctx, expected, curV)))
+    stmts.push(`${ind(ctx)}const ${vv} = null`)
+    return { stmts, valueVar: vv }
+  }
+
+  // Kind-filtered: resolving the mask HERE is what makes an unlabeled trivia table
+  // or an unknown category name a compile-time error rather than a silent no-op.
+  const want = resolveAdjacencyKindMask(ctx.activeTrivia, def.kinds)
+  const spec = analyzeLabeledTrivia(ctx.activeTrivia)!
+  const probeFn = ensureAdjacencyKindFn(ctx, spec)
+  stmts.push(
+    ...emitIfFail(ctx, `${endV} === ${curV} || (${probeFn}(input, ${curV}, _ctx) & ${want}) === 0`, failBody(ctx, expected, curV)),
+    `${ind(ctx)}const ${vv} = null`,
+  )
+  return { stmts, valueVar: vv }
+}
+
 function ensureTriviaFn(ctx: Ctx): string {
   const trivia = ctx.activeTrivia!
   const existing = ctx.triviaFnNames.get(trivia)
@@ -1645,6 +1732,15 @@ function emitSeqValues(def: Extract<ParserDef, { tag: 'sequence' }>, ctx: Ctx, p
   for (let i = 0; i < def.parsers.length; i++) {
     const syncPub = publishSync(i)
     if (syncPub) stmts.push(syncPub)
+    // Adjacency assertions are lowered at the boundary, never emitted as a term.
+    // `sequence()` has already rejected index 0, so `curV` is a real boundary here.
+    const adj = adjacencyOf(def.parsers[i]!)
+    if (adj) {
+      const a = emitAdjacency(ctx, adj, curV)
+      stmts.push(...a.stmts)
+      valueVars.push(a.valueVar)
+      continue
+    }
     if (i > 0 && ctx.activeTrivia) {
       if (ctx.capturing) {
         const capFn = ensureTriviaCaptureFn(ctx)
@@ -1794,6 +1890,8 @@ function failsAtStart(p: Combinator<unknown>): boolean {
   const d = p._def
   switch (d.tag) {
     case 'literal': case 'regex': case 'keywords': case 'guard': case 'not': case 'peek':
+    // Zero-width: its failure span is always {pos,pos} with a fixed label.
+    case 'adjacency':
       return true
     case 'transform': case 'label': case 'field':
       return failsAtStart(d.parser)
@@ -4605,6 +4703,11 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
     case 'scanTo':  return emitScanTo(def, ctx, pos)
     case 'recover': return emitRecover(def, ctx, pos)
     case 'expect':  return emitExpect(def, ctx, pos)
+    case 'adjacency':
+      // Only reachable OUTSIDE a sequence boundary — emitSeqValues intercepts every
+      // legitimate site. Mirrors the interpreter's TypeError rather than emitting a
+      // test with no gap to test.
+      throw new TypeError(`${def.polarity}(): adjacency assertions are boundary tests: use them as a NON-FIRST term of a sequence().`)
     case 'guard': {
       const fnIdx = ctx.mapFns.length
       ctx.mapFns.push(def.predicate as (v: unknown, span: unknown) => unknown)
@@ -4798,6 +4901,7 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     case 'regex':
     case 'keywords':
     case 'guard':
+    case 'adjacency':
     case 'unknown':   return []
   }
 }

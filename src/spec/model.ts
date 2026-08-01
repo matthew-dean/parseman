@@ -308,6 +308,11 @@ class Builder {
       case 'guard':
         return { kind: 'empty' }
 
+      // Zero-width, but — unlike a state guard — it is a statement ABOUT THE SOURCE
+      // TEXT, so a grammar spec that elided it would document a different language.
+      case 'adjacency':
+        return { kind: 'annotation', text: def.polarity === 'adjacent' ? '(adjacent)' : def.kinds ? `(separated: ${def.kinds.join('|')})` : '(separated)' }
+
       case 'lazy': {
         const inner = resolveLazy(self)
         return inner ? this.walk(inner) : { kind: 'annotation', text: '?' }

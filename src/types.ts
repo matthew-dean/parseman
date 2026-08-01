@@ -96,6 +96,11 @@ export type ParserDef =
   // rather than pushing a `null` source. Absent under runtime compile() (the real
   // closures/values live in `predicate`/`extra`).
   | { tag: 'guard';    predicate: (state: unknown) => boolean; predSrc?: string }
+  // ADJACENCY assertion — zero-width, zero-children. `polarity: 'adjacent'` asserts
+  // that NOTHING sat between the previous term and this position; `'notAdjacent'`
+  // asserts that something did. `kinds` (notAdjacent only) narrows the assertion to
+  // trivia CATEGORIES from `classifiedTrivia({...})`. See combinators/adjacency.ts.
+  | { tag: 'adjacency'; polarity: 'adjacent' | 'notAdjacent'; kinds?: readonly string[] }
   | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown>; extraSrc?: string }
   | { tag: 'recover';  parser: Combinator<unknown>; sentinel: Combinator<unknown> }
   | { tag: 'expect';   parser: Combinator<unknown>; label: string | undefined; expected: string[] }

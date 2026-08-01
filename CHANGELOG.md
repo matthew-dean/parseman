@@ -137,6 +137,46 @@ independently on top of the prefix before inclusion — see the pull request bod
 for the per-lane verification status and the measured release-over-release
 numbers.
 
+- **New: `adjacent()` and `notAdjacent()` — zero-width ADJACENCY assertions.** They
+  ask about the GAP behind the cursor, never about what a separator looks like:
+  `adjacent()` succeeds when nothing separated the previous term from here,
+  `notAdjacent()` when something did. This is the authoring surface for
+  `docs/design/derived-tokenization.md` §4 ("Adjacency is a bit set at scan time"),
+  whose positive half `noTrivia` has spelled all along and whose negative half had no
+  spelling at all. Without it, a production that needs "these two are SEPARATED" had to
+  disable trivia and re-spell whitespace as a regex —
+  `noTrivia(sequence(regex(/(?:[ \t\n\r\f]|\/\*…\*\/)+/), op, …))` — which is a second,
+  private definition of the dialect's trivia table inside one expression production, and
+  it drifts: two productions in one file end up disagreeing about what separates two
+  operands, with nothing to report it.
+
+  `notAdjacent({ kinds: [...] })` narrows the assertion to trivia CATEGORIES from
+  `classifiedTrivia({...})`. `notAdjacent({ kinds: ['whitespace'] })` accepts `a + b` and
+  REJECTS `a/*x*/+b`, which is exactly css-values-4 §10.1 for `calc()`: `+`/`-` need real
+  whitespace, because a comment vanishes at tokenisation. A `kinds` name the active
+  trivia table does not declare, or a `kinds` filter over unclassified trivia, is a hard
+  `TypeError` — at compile time for compiled output, on first reach for the interpreter —
+  deliberately NOT the lenient "unknown name is a no-op" policy `triviaKindMask` uses for
+  capture preferences, because a silently-dropped name turns the assertion back into a
+  bare `notAdjacent()` and makes `calc()` quietly accept the comment form.
+
+  Both are lowered as MARKER TAGS that `sequence` recognises at term `i` and tests at that
+  boundary against the trivia scan the boundary already performs — zero context fields, no
+  extra branch in the ordinary boundary, and nothing at all emitted for a grammar that
+  writes neither. That lowering also sidesteps the trivia REWIND: a self-contained
+  zero-width combinator at index `i` matches zero-width by construction, so `sequence`'s
+  "term matched empty, roll the trivia back out" branch would undo the gap it had just
+  asserted. The assertion moves no cursor, so the tree, the spans and the trivia log are
+  identical to the same sequence written without it. The compiled kind filter is an
+  independently emitted per-arm probe (`_akN`) rather than a new out-channel on the shared
+  `_tfN` trivia scanner, so the sites that never ask pay nothing. Interpreter/compiled
+  parity is pinned per case in `test/parity/adjacency.test.ts`.
+
+  Placement is checked: an adjacency assertion tests the gap after the PRECEDING term, so
+  `sequence(notAdjacent(), …)` throws at construction, and reaching one outside a sequence
+  boundary throws rather than silently answering "no gap here". Both are zero-width and are
+  dropped from a sequence's first-set (`isZeroWidthAssertion`), so neither widens a choice
+  arm's dispatch.
 - **Fixed: the token alphabet's key delimiters were written as raw control BYTES, which
   made the source file binary and corrupted the emitted artifact.** `keyOf` in
   `src/compiler/token-alphabet.ts` embedded U+0000 and U+0001 literally rather than as

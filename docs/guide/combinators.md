@@ -942,6 +942,86 @@ terminal inside a `sequence` — never as a leading arm term. To pick a branch b
 state, use the gated-arm **field** instead:
 [gated arm vs `gate()`](#selecting-vs-asserting-on-context-gated-arm-vs-gate).
 
+### `adjacent` and `notAdjacent`
+
+Two zero-width assertions about the **gap** between the previous term and here.
+`adjacent()` succeeds when nothing separated them; `notAdjacent()` succeeds when
+something did. Neither consumes input, and neither contributes a child.
+
+They ask *"was there anything between these two"* — never *"what does a separator
+look like"* — so a production states its own requirement without ever naming
+whitespace, and cannot drift from the grammar's trivia table.
+
+```ts
+// [verify]
+import { adjacent, notAdjacent, sequence, regex, literal, parser, trivia, parse } from 'parseman'
+
+const ws = trivia(regex(/[ \t\n]+/))
+const number = () => regex(/[0-9]+/)
+
+// `1 - 2` is a subtraction: the operator is separated from both operands.
+const subtraction = parser({ trivia: ws },
+  sequence(number(), notAdjacent(), literal('-'), notAdjacent(), number()))
+
+parse(subtraction, '1 - 2').ok
+// → true
+
+// `1 -2` is not — the `-` is glued to the `2`, so it is a sign, not an operator.
+parse(subtraction, '1 -2').ok
+// → false
+
+// `adjacent()` is the dual, and the first-class spelling of a glued join.
+const dimension = parser({ trivia: ws },
+  sequence(number(), adjacent(), regex(/[a-z]+/)))
+
+parse(dimension, '10px').ok
+// → true
+
+parse(dimension, '10 px').ok
+// → false
+```
+
+`notAdjacent({ kinds: [...] })` narrows the assertion to trivia **categories**
+declared by [`classifiedTrivia`](./trivia#classified-trivia), for the case where
+some kinds of separation do not count:
+
+```ts
+// [verify]
+import { notAdjacent, sequence, regex, literal, parser, classifiedTrivia, parse } from 'parseman'
+
+const rw = classifiedTrivia({
+  whitespace: regex(/[ \t\n]+/),
+  comment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+})
+
+// css-values-4 §10.1: `+` and `-` inside calc() need REAL whitespace, because a
+// comment disappears at tokenisation and cannot separate two tokens.
+const sep = () => notAdjacent({ kinds: ['whitespace'] })
+const calcSum = parser({ trivia: rw },
+  sequence(regex(/[0-9a-z%]+/), sep(), literal('+'), sep(), regex(/[0-9a-z%]+/)))
+
+parse(calcSum, '1px + 2em').ok
+// → true
+
+parse(calcSum, '1px/**/+/**/2em').ok
+// → false
+```
+
+A `kinds` name that the active trivia table does not declare, or a `kinds` filter
+over **unclassified** trivia, is a hard `TypeError` — at compile time for compiled
+output, and on first reach for the interpreter. It is never a silently empty
+filter, because that would turn the `calcSum` above back into a plain
+`notAdjacent()` with nothing to report it.
+
+**Placement:** an adjacency assertion tests the gap after the *preceding* term, so
+it must be a non-first term of a `sequence()`. `sequence(notAdjacent(), …)` throws
+at construction. Both are zero-width and are dropped from the sequence's first-set,
+so they never widen a choice arm's dispatch.
+
+**Never** disable trivia and re-spell it to express separation
+(`noTrivia(sequence(regex(/\s+/), op, …))`). That re-implements the dialect's
+trivia table inside one production, and it drifts. Assert adjacency instead.
+
 ### `expect` and `isParseError`
 
 `expect(c, label?)` makes a token required: on failure it records a `ParseError` in

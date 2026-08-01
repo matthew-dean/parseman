@@ -74,6 +74,8 @@ export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> =
     case 'leaf':      return mayFail(d.parser, seen)
     case 'skip':      return mayFail(d.main, seen)
     case 'lazy':      { try { return mayFail(d.thunk(), seen) } catch { return true } }
+    // An adjacency assertion is a TEST — failing is its whole job.
+    case 'adjacency': return true
     default:          return true
   }
 }
@@ -158,6 +160,10 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
     case 'leaf':      return alwaysConsumes(d.parser, seen)
     case 'skip':      return alwaysConsumes(d.main, seen)
     case 'lazy':      { try { return alwaysConsumes(d.thunk(), seen) } catch { return false } }
+    // Zero-width by definition — it asserts over the gap and moves nothing. This
+    // `false` is load-bearing: it is what keeps the TRIVIA REWIND in place for the
+    // term that follows, so the assertion changes no span it does not mean to.
+    case 'adjacency': return false
     // `expect`/`recover` synthesise a zero-width success; `optional`/`many`/
     // `not`/`peek`/`trivia` are zero-width by definition; `dispatch`/`scanTo`/
     // `guard`/`attempt`/`unknown` are unproven.
@@ -190,6 +196,8 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
     case 'regex':
     case 'keywords':
     case 'guard':
+    // Adjacency probes with `_cap = 0` / no `commit()`: it cannot push anything.
+    case 'adjacency':
     case 'not':
     // peek(): emitted under a non-capturing probe ctx and zero-width on both
     // outcomes, so it can never leave a partial capture behind.
@@ -297,6 +305,7 @@ export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'not':
     case 'peek':
     case 'guard':
+    case 'adjacency':
     case 'trivia':
     case 'unknown':
       return false

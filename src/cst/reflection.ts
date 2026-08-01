@@ -67,6 +67,7 @@ function childrenOf(def: ParserDef): readonly Combinator<unknown>[] {
     case 'regex':
     case 'keywords':
     case 'guard':
+    case 'adjacency':
     case 'lazy':
     case 'unknown':
       return []

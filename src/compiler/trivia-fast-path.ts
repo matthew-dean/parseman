@@ -192,6 +192,59 @@ export function buildLabeledRegexTriviaFnDecl(
   ].join('\n')
 }
 
+/**
+ * Emit an ADJACENCY KIND PROBE `_akN(input, _pos)` — the compiled twin of
+ * `triviaKindMaskAt` (cst/trivia-kinds.ts). It returns the bitmask of trivia
+ * CATEGORIES occurring in the run at `_pos` (`0` when the run is empty), and it
+ * captures NOTHING: `notAdjacent({kinds})` is a recognition test, so it must not
+ * touch a log, a mark or the cursor.
+ *
+ * A separate function rather than a new out-channel on `_tfN`: `_tfN` is called at
+ * EVERY sequence boundary in the grammar, and widening its contract to carry kind
+ * information would put the cost on all of them to serve the handful of sites that
+ * ask. This one is emitted only when a kind-filtered assertion exists.
+ *
+ * `reNames` supplies a sticky regex per arm when every arm is a regex; otherwise
+ * `rpStartIndex` indexes per-arm runtime parsers in `_rp`, mirroring the tiering
+ * `ensureTriviaFn` already uses.
+ */
+export function buildAdjacencyKindProbeDecl(
+  fnName: string,
+  spec: LabeledTriviaSpec,
+  reNames: string[] | null,
+  rpStartIndex: number,
+): string {
+  const tryArms = spec.arms.map((arm, i) => {
+    const k = arm.kindIndex
+    const match = reNames
+      ? [
+          `    ${reNames[i]!}.lastIndex = _e`,
+          `    const _m${i} = ${reNames[i]!}.exec(input)`,
+          `    const _ce${i} = _m${i} && _m${i}.index === _e ? _e + _m${i}[0].length : _e`,
+        ]
+      : [
+          `    const _r${i} = _rp[${rpStartIndex + i}].parse(input, _e, _ctx)`,
+          `    const _ce${i} = _r${i}.ok ? _r${i}.span.end : _e`,
+        ]
+    return [
+      ...match,
+      `    if (_ce${i} > _e) { _mask |= ${1 << k}; _e = _ce${i}; continue }`,
+    ].join('\n')
+  }).join('\n')
+
+  return [
+    `function ${fnName}(input, _pos, _ctx) {`,
+    `  let _e = _pos`,
+    `  let _mask = 0`,
+    `  while (_e < input.length) {`,
+    tryArms,
+    `    break`,
+    `  }`,
+    `  return _mask`,
+    `}`,
+  ].join('\n')
+}
+
 export function labeledTriviaRegexArms(trivia: Combinator<unknown>): LabeledTriviaSpec | null {
   const spec = analyzeLabeledTrivia(trivia)
   if (!spec) return null

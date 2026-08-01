@@ -38,6 +38,7 @@ import { classifiedTrivia, transform, skip, trivia, label, field } from '../comb
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { expect as expectC } from '../combinators/expect.ts'
 import { withCtx } from '../combinators/withCtx.ts'
+import { adjacent, notAdjacent } from '../combinators/adjacency.ts'
 
 type Comb = Combinator<unknown>
 
@@ -72,6 +73,7 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'regex':
     case 'keywords':
     case 'guard':
+    case 'adjacency':
     case 'recover':
     case 'unknown':   return []
   }
@@ -250,13 +252,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'startsWith', 'endsWith', 'matches', 'otherwise', 'routed', 'attempt',
     'many', 'oneOrMore', 'optional', 'sepBy', 'keepSeparator', 'not', 'peek', 'node', 'parser',
-    'scanTo', 'balanced', 'token', 'leaf', 'transform', 'skip', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', '_tf', '_lf', '_nd', '_gch', '_wc',
+    'scanTo', 'balanced', 'token', 'leaf', 'transform', 'skip', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', 'adjacent', 'notAdjacent', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
     many, oneOrMore, optional, sepBy, keepSeparator, not, peek, node, parser,
-    scanTo, balanced, token, leaf, transform, skip, trivia, classifiedTrivia, label, field, expectC, _tf, _lf, _nd, _gch, _wc,
+    scanTo, balanced, token, leaf, transform, skip, trivia, classifiedTrivia, label, field, expectC, adjacent, notAdjacent, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -600,6 +602,12 @@ class Serializer {
         if (def.extraSrc === undefined) throw new Unserializable('withCtx without extraSrc')
         return `_wc(${JSON.stringify(def.extraSrc)}, ${kid(def.parser)})`
       }
+      case 'adjacency':
+        return def.polarity === 'adjacent'
+          ? 'adjacent()'
+          : def.kinds === undefined
+            ? 'notAdjacent()'
+            : `notAdjacent({ kinds: ${JSON.stringify(def.kinds)} })`
       case 'guard':
       case 'recover':
       case 'unknown':
