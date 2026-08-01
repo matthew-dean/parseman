@@ -3,6 +3,7 @@ import { buildFieldMap } from '../compiler/fields.ts'
 import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
+import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import type { DispatchMatcherKind } from '../types.ts'
@@ -16,7 +17,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
@@ -351,6 +352,51 @@ function makeDriver(
         // a `field()` outside any field-reading node costs nothing.
         ctx._fields?.push({ name: k[code[ip + 1]!] as string, value: v, span: { start: pos, end: END } })
         return v
+      }
+
+      case OP_TOKEN: {
+        // Mirrors src/combinators/token.ts:21-65 exactly, including that
+        // `_triviaLog`/`_rootTriviaLog` are DELETED rather than set undefined
+        // and restored by presence, and that the leaf is pushed only when the
+        // caller was capturing BEFORE the sinks were cleared.
+        const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
+        const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
+        const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
+        const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
+        const wasCapturing = cstCaptureActive(ctx)
+
+        ctx.trivia = undefined
+        ctx.triviaKindLabels = undefined
+        ctx._cstBuf = undefined
+        ctx._cstChildren = undefined
+        ctx._cstLeaves = undefined
+        ctx._cstRawChildren = undefined
+        ctx._cstTriviaLog = undefined
+        delete ctx._triviaLog
+        delete ctx._rootTriviaLog
+
+        let v: unknown
+        try {
+          v = exec(code[ip + 1]!, input, pos, ctx)
+        } finally {
+          ctx.trivia = sTrivia
+          ctx.triviaKindLabels = sKinds
+          ctx._cstBuf = sBuf
+          ctx._cstChildren = sChildren
+          ctx._cstLeaves = sLeaves
+          ctx._cstRawChildren = sRaw
+          ctx._cstTriviaLog = sTl
+          if (sOuterTl === undefined) delete ctx._triviaLog
+          else ctx._triviaLog = sOuterTl
+          if (sRootTl === undefined) delete ctx._rootTriviaLog
+          else ctx._rootTriviaLog = sRootTl
+        }
+        if (v === FAIL) return FAIL
+        const end = END
+        const value = input.slice(pos, end)
+        if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
+        END = end
+        return value
       }
 
       case OP_CALL: {
@@ -735,12 +781,10 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
   for (const name of Object.keys(prog.rules)) {
     const entry = prog.rules[name]!
     const entryFn = (input: string, pos: number, ctx: ParseContext): ParseResult<unknown> => {
-      // FAIL CLOSED on the two runtime options this driver has no path for.
-      // Both are silent divergences otherwise, not errors: a `ctx.build` host is
-      // supposed to REPLACE the node's own builder (that is what `hostMode:'cst'`
-      // means in the compiled engine), and this driver always calls the builder;
-      // root-trivia capture needs a `_rootTriviaLog` this driver never writes.
-      // Neither is detectable at encode time — they arrive with the parse.
+      // Ambient scanSkip, which `run()` cannot install for a function entry.
+      if (prog.scanSkip !== undefined && ctx.scanSkip === undefined) {
+        ctx.scanSkip = prog.scanSkip as ParseContext['scanSkip']
+      }
       ctx._fe = -1
       ctx._fx = EMPTY_FX
       if (lines && ctx._lineStarts === undefined) { ctx._lineStarts = [0]; ctx._lineScannedTo = 0 }
@@ -754,5 +798,19 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
     }
     out[name] = meta === undefined ? entryFn : Object.assign(entryFn, { _meta: meta })
   }
+  // STAMP THE HOST MODE. `run()` reads it off the entry through
+  // `FUSED_HOST_MODE` and `assertHostModeCompatible` throws when a 'cst'
+  // artifact runs without a CST host. Encoding with `hostMode: 'cst'` set the
+  // capture flags but nothing stamped the mode, so such a table returned the
+  // grammar's own AST objects with `ok: true` while paying full CST capture —
+  // the compiled engine throws on that input. This is the guard half.
+  const mode = prog.hostMode ?? 'ast'
+  const elided = mode === 'ast'
+  for (const name of Object.keys(out)) {
+    Object.defineProperty(out[name]!, FUSED_HOST_MODE, { value: mode, enumerable: false })
+    Object.defineProperty(out[name]!, FUSED_HOST_ELIDED, { value: elided, enumerable: false })
+  }
+  Object.defineProperty(out, FUSED_HOST_MODE, { value: mode, enumerable: false })
+  Object.defineProperty(out, FUSED_HOST_ELIDED, { value: elided, enumerable: false })
   return out
 }

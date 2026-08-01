@@ -53,6 +53,32 @@ export type TableProgram = {
    */
   readonly labels?: readonly string[]
   readonly classified?: 0 | 1
+  /**
+   * Grammar-level ambient `scanSkip`. Same entry-metadata trap as `labels`:
+   * `run.ts:270` reads `entry._meta.grammarScanSkip` only for a NON-function
+   * entry, so a table entry never got it and `ctx.scanSkip` stayed empty —
+   * silently changing what `scanTo`/`balanced` skip over.
+   *
+   * Carried as live combinators, so a program with this set is runtime-only
+   * until they lower. `emitConst` refuses it, which is the correct failure.
+   */
+  readonly scanSkip?: readonly unknown[]
+  /**
+   * The host mode this table was BUILT for.
+   *
+   * `run()` reads it off the entry via `FUSED_HOST_MODE` and
+   * `assertHostModeCompatible` throws when a `'cst'` artifact is run without a
+   * CST host. Without the stamp a `hostMode: 'cst'` table returned the
+   * grammar's own AST objects with `ok: true` while paying full CST capture —
+   * the compiled engine throws on the same input.
+   */
+  readonly hostMode?: 'ast' | 'cst'
+  /**
+   * Why this program cannot be EMITTED, if it cannot. Populated at encode time
+   * so the failure names the construct instead of surfacing as a generic
+   * "cannot serialise [object Object]" from deep inside the printer.
+   */
+  readonly runtimeOnly?: readonly string[]
 }
 
 /**
@@ -72,6 +98,7 @@ export type CompactProgram = {
   readonly p?: readonly DispatchSpec[]
   readonly lb?: readonly string[]
   readonly rc?: 0 | 1
+  readonly h?: 'ast' | 'cst'
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
@@ -81,6 +108,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     lines: p.l ?? 0, dsp: p.p ?? [],
     ...(p.lb === undefined ? {} : { labels: p.lb }),
     ...(p.rc === undefined ? {} : { classified: p.rc }),
+    ...(p.h === undefined ? {} : { hostMode: p.h }),
   }
 }
 

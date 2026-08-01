@@ -8,7 +8,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
 import type { DispatchSpec, TableProgram } from './program.ts'
 
@@ -55,6 +55,9 @@ class Encoder {
   dsp: DispatchSpec[] = []
   labels: readonly string[] | undefined = undefined
   classified = false
+  scanSkip: readonly unknown[] | undefined = undefined
+  /** Reasons this program can RUN but not be EMITTED. */
+  runtimeOnly = new Set<string>()
   rules: Record<string, number> = {}
 
   private kIndex = new Map<unknown, number>()
@@ -136,8 +139,19 @@ class Encoder {
     // whitespace-bearing input silently fails to match the same way in every
     // path — which makes a three-way identity check AGREE while proving nothing.
     // Bake it, exactly as the compiled path does.
+    this.scanSkip ??= p._meta.grammarScanSkip
     const amb = p._meta.grammarTrivia
     if (amb !== undefined) {
+      // AMBIENT TRIVIA IS RUNTIME-ONLY. Pooling the combinator here is what makes
+      // the program correct at run time (`run()` cannot install grammar trivia for
+      // a function entry) and simultaneously UNEMITTABLE — `emitConst` refuses a
+      // live object, correctly. Before this baking existed, a trivia-bearing
+      // grammar emitted fine and parsed WRONG; now it parses right and cannot be
+      // printed. Both are true and the second is a regression I introduced.
+      //
+      // It belongs on the same list as scanTo/token/balanced: expressible as data
+      // (an encoded trivia subtree plus a scan opcode), not yet expressed.
+      this.runtimeOnly.add('rules({ trivia }) — the ambient trivia combinator is pooled')
       // Carried so `tableRules` can stamp the entry — see TableProgram.labels.
       this.labels ??= amb._meta.triviaKindLabels
       if (amb._meta.rootTriviaClassified === true) this.classified = true
@@ -172,8 +186,9 @@ class Encoder {
     // `balanced()` is the sharp one: it overrides `.parse` and leaves `_def` as
     // the eager interior, so encoding structurally builds the wrong parser and
     // reports nothing.
-    if (d.tag === 'scanTo' || d.tag === 'token'
+    if (d.tag === 'scanTo'
       || (p as { _balancedAmbient?: unknown })._balancedAmbient !== undefined) {
+      this.runtimeOnly.add(d.tag === 'scanTo' ? 'scanTo()' : 'balanced()')
       return this.emit(OP_CALL, this.constant(p))
     }
     switch (d.tag) {
@@ -366,6 +381,8 @@ class Encoder {
         if (cls < 0) return body
         return this.emit(OP_GATE, cls, body, this.expected(deriveExpected(p)))
       }
+      case 'token':
+        return this.emit(OP_TOKEN, this.node(d.parser).ip)
       case 'routed':
         return this.emit(OP_ROUTED, d.fallback === undefined ? -1 : this.node(d.fallback).ip)
       case 'dispatch': {
@@ -511,6 +528,9 @@ class Encoder {
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
       ...(this.labels === undefined ? {} : { labels: this.labels }),
       ...(this.classified ? { classified: 1 as const } : {}),
+      ...(this.scanSkip === undefined ? {} : { scanSkip: this.scanSkip }),
+      ...(this.settings.hostMode === undefined ? {} : { hostMode: this.settings.hostMode }),
+      ...(this.runtimeOnly.size === 0 ? {} : { runtimeOnly: [...this.runtimeOnly].sort() }),
       lines: this.track ? 1 : 0,
     }
   }

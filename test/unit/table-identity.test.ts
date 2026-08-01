@@ -255,10 +255,13 @@ describe('table lowering — three-way identity across every encodable grammar',
    */
   it('collapse / unwrap / project select the RIGHT child', () => {
     const r = checkIdentity(selectNodes, 'Doc', [
-      { name: 'collapse', input: 'abc' },
+      // 'abc' is eaten by Proj, which sits AHEAD of Coll — so none of the
+      // original cases ever reached the collapse branch at all. 'zzz' does.
+      { name: 'collapse', input: 'zzz' },
       { name: 'unwrap', input: '123' },
       { name: 'project-seq', input: 'abc' },
-      { name: 'mixed', input: 'abc123' },
+      { name: 'collapse-multi', input: 'zz!zz' },
+      { name: 'mixed', input: 'abc123zzz' },
       { name: 'empty', input: '' },
       { name: 'garbage', input: '###' },
     ])
@@ -271,20 +274,31 @@ describe('table lowering — three-way identity across every encodable grammar',
     // project picks child 1 of ('a','b','c') — an off-by-one yields 'a' or 'c'.
     expect(kids('abc')[0]).toBe('b')
 
+    // COLLAPSE: the node IS its single captured child, so what surfaces is the
+    // CHILD's node type, never 'Coll'. Deleting the collapse branch yields a
+    // 'Coll' node here instead, which this now catches.
+    const collapsed = kids('zzz')[0] as Record<string, unknown>
+    expect(collapsed.t).toBe('Marker')
+
     // unwrap turns the single captured LEAF into its string value, so the result
     // is a bare string and NOT a leaf object. Collapse would have left the leaf.
     expect(kids('123')[0]).toBe('123')
     expect(typeof kids('123')[0]).toBe('string')
   })
 
-  it('collapse with a non-single child arity falls through to the default node', () => {
-    // `collapse` applies ONLY at exactly one captured child. Zero or two-plus has
-    // no selection to make and (for a builder-less node) no builder to call — the
-    // interpreter emits the default CST node there. That arity is precisely the
-    // input a hand-picked case misses, so it is pinned.
+  it('collapse at a NON-single arity falls through to the default node', () => {
+    // `collapse` applies ONLY at exactly one captured child. `CollMulti` captures
+    // two, so there is no selection and no builder — the default CST node is the
+    // only branch left. The previous version of this test used a grammar whose
+    // collapse body was always single-child, so the arity it named could not
+    // occur, and `expect(length).toBeGreaterThan(0)` passed for any non-empty
+    // array regardless.
     const table = tableRules(encodeTable(selectNodes)).Doc!
-    const collapsed = (run(table as never, 'abc123').value as { c: unknown[] }).c
-    expect(collapsed.length).toBeGreaterThan(0)
+    const kids = (run(table as never, 'zz!zz').value as { c: unknown[] }).c
+    const node0 = kids[0] as Record<string, unknown>
+    expect(node0._tag).toBe('node')
+    expect(node0.type).toBe('CollMulti')
+    expect((node0.children as unknown[]).length).toBe(3)
   })
 
   it('trailingTrivia consumes into THIS node, not the parent', () => {
@@ -305,34 +319,28 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(withTail.end).toBe(8)
   })
 
-  it('the driver FAILS CLOSED on runtime options it has no path for', () => {
-    // `rootTrivia` is not detectable at encode time — it arrives with the parse —
-    // and is a silent divergence rather than an error if unguarded: no
-    // `_rootTriviaLog` is ever written, so comments would vanish from the AST.
-    const table = tableRules(encodeTable(baseNodes)).Doc!
-    // `run()` itself rejects this one earlier (it needs labeled grammar trivia),
-    // so the guard is belt-and-braces rather than the only thing standing there.
-    expect(() => run(table as never, 'abc', { rootTrivia: { select: ['comment'] } })).toThrow()
-  })
-
-  /**
-   * THE HOST PATH.
+  /*
+   * DELETED: 'the driver FAILS CLOSED on runtime options it has no path for'.
    *
-   * `cstBuildHost` here is parseman's OWN shipped host — the same one jess's
-   * `cssCstBuildHost` is built from (`parsemanCstBuildHost({ tags: true })`,
-   * css-parser/src/cst-host.ts:408-411). Writing a host to match the call would
-   * only prove the two halves I wrote agree with each other.
+   * It asserted a bare `toThrow()` on `run({ rootTrivia })` for a grammar with
+   * unlabelled trivia — which is `run.ts:273`'s OWN precondition, thrown before
+   * the driver is reached, and thrown identically by the interpreted entry. The
+   * driver contributed nothing to it. It had already outlived the guards it was
+   * written for: both were removed when the host and root-trivia paths landed,
+   * and the test stayed green because it was never testing them.
    *
-   * WOULD ANY EXISTING TEST HAVE CAUGHT THE BUG THIS FIXES? No. Before this,
-   * `hostMode: 'cst'` tables set capture flags and never reached a host, and the
-   * variants test only asserted that table CONTENTS differ and that line spans
-   * appear. No test ever ran a table WITH a host, so a CST parse would have
-   * returned AST nodes and looked entirely plausible. That is why these assert
-   * the host's output shape and not merely that a parse succeeded.
+   * A test that passes with the feature deleted is not covering the feature.
+   * The root-trivia behaviour that IS the driver's is covered by the two tests
+   * above, which assert a specific comment's marker span and that an unselected
+   * kind records nothing.
    */
   it('a ctx.build host REPLACES the node builder, and receives type and tags', () => {
+    // ENCODE FOR THE MODE YOU DRIVE. An 'ast' artifact given a CST host is
+    // rejected by `assertHostModeCompatible` — the compiled engine forbids that
+    // pairing, and these tests only passed before because the table carried no
+    // stamped mode at all.
     const host = cstBuildHost({ tags: true })
-    const table = tableRules(encodeTable(hostNodes)).Doc!
+    const table = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
     const out = run(table as never, 'abc', { build: host as never })
     expect(out.ok).toBe(true)
 
@@ -356,7 +364,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // `NamedColor`, which HAS a reducer, so the reducer-bearing case is the one
     // that matters and the one asserted here.
     const collapsing = cstBuildHost({ tags: true, collapse: (t: string) => t === 'Marked' })
-    const table = tableRules(encodeTable(hostNodes)).Doc!
+    const table = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
     const out = run(table as never, 'abc', { build: collapsing as never })
     const kid = ((out.value as Record<string, unknown>).children as Array<Record<string, unknown>>)[0]!
     // Collapsed: the node IS its single child, so the leaf surfaces directly.
@@ -367,9 +375,13 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('a host parse and a builder parse of the same table differ', () => {
     // The table is IDENTICAL in both runs — only the runtime host differs. If
     // these agreed, the host would not be reaching the node at all.
-    const table = tableRules(encodeTable(hostNodes)).Doc!
-    const withHost = JSON.stringify(run(table as never, 'abc', { build: cstBuildHost({ tags: true }) as never }).value)
-    const withBuilder = JSON.stringify(run(table as never, 'abc').value)
+    // Two TABLES from one grammar — the 'cst' one is driven with a host, the
+    // 'ast' one with its own builders. That is the shape the engine allows, and
+    // the two must differ or the host is not reaching the node.
+    const cstTable = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const astTable = tableRules(encodeTable(hostNodes)).Doc!
+    const withHost = JSON.stringify(run(cstTable as never, 'abc', { build: cstBuildHost({ tags: true }) as never }).value)
+    const withBuilder = JSON.stringify(run(astTable as never, 'abc').value)
     expect(withHost).not.toBe(withBuilder)
     expect(withBuilder).toContain('"t":"Doc"')
   })
@@ -384,18 +396,25 @@ describe('table lowering — three-way identity across every encodable grammar',
     // into the const pool (`encode.ts` `this.constant(new RegExp(...))`) and the
     // driver only READS `k[i]`. Identity across parses is the observable form of
     // "not reallocated" — a fresh RegExp each parse would compare unequal.
+    // COMPARING THE POOL TO ITSELF PROVES NOTHING — both snapshots read the same
+    // array the driver only ever reads, so rebuilding the RegExp on every match
+    // leaves this green. The observable that distinguishes them is `lastIndex`:
+    // the driver sets it on the POOLED object before `exec`. If it rebuilt per
+    // match, the pooled object would never be touched and stay at 0.
     const prog = encodeTable(baseNodes)
     const pooled = prog.k.filter((x): x is RegExp => x instanceof RegExp)
     expect(pooled.length).toBeGreaterThan(0)
+    for (const re of pooled) re.lastIndex = 0
 
     const table = tableRules(prog).Doc!
-    const snapshot = (): RegExp[] => prog.k.filter((x): x is RegExp => x instanceof RegExp)
-    const before = snapshot()
     run(table as never, '(a,1)zz(b)7')
-    run(table as never, 'abc 123')
-    const after = snapshot()
-    expect(after.length).toBe(before.length)
-    for (let i = 0; i < before.length; i++) expect(after[i]).toBe(before[i])
+
+    // At least one pooled regex must show it was USED by the parse.
+    expect(pooled.some(re => re.lastIndex !== 0)).toBe(true)
+    // And the pool is still the same objects — no entry was replaced.
+    const after = prog.k.filter((x): x is RegExp => x instanceof RegExp)
+    expect(after.length).toBe(pooled.length)
+    for (let i = 0; i < pooled.length; i++) expect(after[i]).toBe(pooled[i])
   })
 
   /**
@@ -454,5 +473,83 @@ describe('table lowering — three-way identity across every encodable grammar',
     const entry = tableRules(encodeTable(rootTriviaNodes)).Doc!
     expect((entry as { _meta?: { triviaKindLabels?: readonly string[] } })._meta?.triviaKindLabels)
       .toEqual(['space', 'comment'])
+  })
+
+  /**
+   * ROUND-TRIP: emit -> load -> parse, compared against the in-memory table.
+   *
+   * Emitting IS the point of this lowering, and it had NO behavioural coverage —
+   * the only emit test asserted the output STRING contained `tableRules(` and no
+   * `function`. Nothing ever fed an emitted module back through `tableRules` and
+   * parsed with it, so every field the driver reads but the emitter forgot to
+   * write was invisible. Two such fields shipped: `p` (dispatch specs) threw
+   * "Cannot read properties of undefined (reading 'byKey')" on every input, and
+   * `lb`/`rc` silently dropped the trivia metadata `run({ rootTrivia })` needs.
+   *
+   * A string assertion cannot catch a missing field. Only a parse can.
+   */
+  function roundTrip(prog: ReturnType<typeof encodeTable>, fnSources: string[]): Record<string, unknown> {
+    const src = emitTableModule(prog, { name: 'g', fnSources })
+    // Strip the import and evaluate the literal, so the test exercises the
+    // EMITTED SHAPE rather than a module loader.
+    const body = src.replace(/^import .*$/m, '').replace(/^export const g = /m, 'return ')
+    // eslint-disable-next-line no-new-func
+    return (new Function('tableRules', `${body}`) as (t: typeof tableRules) => Record<string, unknown>)(tableRules)
+  }
+
+  it('an emitted DISPATCH grammar round-trips and parses', () => {
+    const prog = encodeTable(dispatchNodes)
+    expect(prog.dsp.length).toBeGreaterThan(0)
+    const emitted = roundTrip(prog, [
+      `() => 'K:media'`, `() => 'CI:import'`, `() => 'M:vendor'`, `v => 'O:' + String(v)`,
+    ])
+    const inMemory = tableRules(prog)
+    for (const input of ['@media', '@IMPORT', '@-webkit-x', '@whatever', 'nope']) {
+      const a = run(inMemory.Doc! as never, input)
+      const b = run(emitted.Doc as never, input)
+      expect(b.ok).toBe(a.ok)
+      expect(JSON.stringify(b.value)).toBe(JSON.stringify(a.value))
+    }
+  })
+
+  it('the emitter WRITES every field expandCompact reads', () => {
+    // The write side, pinned field-by-field against the read side. A full parse
+    // round-trip for `lb`/`rc` is not yet possible: labelled trivia means a
+    // grammar-level trivia COMBINATOR in the const pool, and `emitConst`
+    // refuses it — the same blocker as scanTo/token/balanced. Upgrade this to a
+    // parse round-trip when trivia lowers.
+    const prog = encodeTable(rootTriviaNodes)
+    expect(prog.labels).toEqual(['space', 'comment'])
+    // Names the CONSTRUCT, not a type from inside the printer.
+    expect(() => emitTableModule(prog, { name: 'g', fnSources: [] }))
+      .toThrow(/RUNTIME-ONLY.*rules\(\{ trivia \}\)/s)
+
+    // Every compact key `expandCompact` reads, and where it comes from.
+    const READ_BY_EXPAND = ['c', 'k', 'x', 'e', 'd', 'r', 'f', 'l', 'p', 'lb', 'rc', 'h']
+    const dispatchSrc = emitTableModule(encodeTable(dispatchNodes), { name: 'g', fnSources: ['() => 0', '() => 0', '() => 0', '() => 0'] })
+    for (const key of ['c', 'k', 'x', 'e', 'd', 'r', 'f', 'p']) {
+      expect(dispatchSrc, `emitter must write "${key}:"`).toContain(`${key}:`)
+    }
+    const cstSrc = emitTableModule(encodeTable(hostNodes, { hostMode: 'cst' }), { name: 'g', fnSources: ['() => 0', '() => 0'] })
+    expect(cstSrc).toContain('h:"cst"')
+    expect(READ_BY_EXPAND.length).toBe(12)
+  })
+
+  it('a hostMode:cst table run WITHOUT a host throws, as the compiled engine does', () => {
+    // Encoding with hostMode:'cst' forces the capture flags on, but nothing
+    // stamped the mode onto the entry — so `run()` read it as 'ast' and the
+    // table returned the grammar's own AST objects with ok:true while paying
+    // full CST capture. `encodeTable` with `hostMode` had ZERO coverage.
+    const cst = tableRules(encodeTable(hostNodes, { hostMode: 'cst' }))
+    expect(() => run(cst.Doc! as never, 'abc')).toThrow()
+
+    // With a CST host it is fine, and the host — not the reducer — builds.
+    const withHost = run(cst.Doc! as never, 'abc', { build: cstBuildHost({ tags: true }) as never })
+    expect(withHost.ok).toBe(true)
+    expect((withHost.value as Record<string, unknown>).t).toBeUndefined()
+
+    // And an 'ast' table is unaffected.
+    const ast = tableRules(encodeTable(hostNodes))
+    expect(run(ast.Doc! as never, 'abc').ok).toBe(true)
   })
 })

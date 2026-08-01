@@ -148,6 +148,16 @@ export const OP_LIT_CI = 27
 /** `LIT_CI_TRACK k fx` — the line-tracking twin of `LIT_CI`. */
 export const OP_LIT_CI_TRACK = 28
 /**
+ * `TOKEN c` — `token()`. Clears trivia AND every capture sink for the child,
+ * then contributes ONE leaf spanning the whole match.
+ *
+ * Was `OP_CALL` (a live combinator in the const pool), which ran correctly but
+ * made the table unprintable — `emitConst` refuses non-serialisable entries, so
+ * no grammar using `token()` could be emitted as a module. Nothing about it
+ * needs a live object: it is save / clear / run / restore / one leaf.
+ */
+export const OP_TOKEN = 29
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,

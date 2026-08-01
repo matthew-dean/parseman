@@ -210,7 +210,12 @@ export const selectNodes = rules<Record<string, Combinator<unknown>>>(g => ({
   Unwr: node('Unwr', regex(/[0-9]+/), { unwrap: true }),
   // project: child index 1 of three, so an off-by-one picks a different letter.
   Proj: node('Proj', sequence(literal('a'), literal('b'), literal('c')), { project: 1 }),
-  Doc: node('Doc', many(choice(g.Proj!, g.Unwr!, g.Coll!)), c => ({ t: 'Doc', c })),
+  // collapse at a NON-single arity: two captured children, so there is no
+  // selection to make and no builder to call, and the default CST node is the
+  // only remaining branch. `Coll` alone can never reach it — its body is one
+  // node — so the fallthrough was unreachable and therefore untested.
+  CollMulti: node('CollMulti', sequence(g.Marker!, literal('!'), g.Marker!), { collapse: true }),
+  Doc: node('Doc', many(choice(g.Proj!, g.Unwr!, g.CollMulti!, g.Coll!)), c => ({ t: 'Doc', c })),
 })) as unknown as Record<string, Combinator<unknown>>
 
 /** `trailingTrivia`: after a successful body, consume trivia ONCE into this node. */
