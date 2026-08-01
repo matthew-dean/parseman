@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { checkIdentity } from '../../bench/g5-identity.ts'
-import { baseNodes, jsonRules, jsonWs } from '../../bench/g5-grammars.ts'
+import { baseNodes, fieldNodes, jsonRules, jsonWs } from '../../bench/g5-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
@@ -144,5 +144,47 @@ describe('table lowering — three-way identity across every encodable grammar',
     const { LESS_CASES } = await import('./table-identity-cases.ts')
     const r = ci(lessRules as unknown as Record<string, Combinator<unknown>>, 'Stylesheet', LESS_CASES)
     expect(r.mismatches, JSON.stringify(r.mismatches.slice(0, 3))).toEqual([])
+  })
+
+  it('field() reaches the reducer as a built FieldMap', () => {
+    const cases = [
+      { name: 'pair', input: 'ab=12' },
+      { name: 'entry-one-tag', input: '[ab=1]' },
+      { name: 'entry-repeated-tag', input: '[ab=1,cd=2,ef=3]' },
+      { name: 'entry-with-note', input: '[ab=1;zz]' },
+      { name: 'mixed-doc', input: '[ab=1,cd=2]ef=3[gh=4;ii]' },
+      // Rejected input matters as much: a table that agrees on what it accepts
+      // and diverges on what it rejects is still a divergence.
+      { name: 'empty', input: '' },
+      { name: 'unclosed', input: '[ab=1' },
+      { name: 'bad-value', input: 'ab=zz' },
+      { name: 'garbage', input: '###' },
+    ]
+    const r = checkIdentity(fieldNodes, 'Doc', cases)
+    expect(r.mismatches).toEqual([])
+    expect(r.matched).toBe(r.total)
+  })
+
+  it('the field map is POPULATED, not vacuously undefined on all three paths', () => {
+    // Three paths agreeing that the map is `undefined` would pass the identity
+    // check above while the capability did nothing. Assert the contents.
+    const table = tableRules(encodeTable(fieldNodes)).Doc!
+    const fieldsOf = (input: string): Record<string, unknown> => {
+      const v = run(table as never, input).value
+      return (v as { c: Array<{ f: Record<string, unknown> }> }).c[0]!.f
+    }
+
+    const pair = fieldsOf('ab=12')
+    expect(Object.keys(pair).sort()).toEqual(['key', 'val'])
+    expect((pair.key as { span: unknown }).span).toEqual({ start: 0, end: 2 })
+
+    // A repeated name becomes an ARRAY; buildFieldMap's branch for it.
+    const repeated = fieldsOf('[ab=1,cd=2,ef=3]')
+    expect(Array.isArray(repeated.tag)).toBe(true)
+    expect((repeated.tag as unknown[]).length).toBe(3)
+
+    // An absent optional field is OMITTED, not recorded as undefined.
+    expect(Object.keys(fieldsOf('[ab=1]'))).not.toContain('note')
+    expect(Object.keys(fieldsOf('[ab=1;zz]'))).toContain('note')
   })
 })

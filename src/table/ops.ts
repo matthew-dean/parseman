@@ -115,6 +115,15 @@ export const OP_SEQX = 22
  * These constructs are rare and already heavy, and correct beats fast here.
  */
 export const OP_CALL = 23
+/**
+ * `FIELD k c` — `field(name, parser)`. `k` indexes the NAME in the const pool.
+ *
+ * Runs the child and, on success, records `{ name, value, span }` into
+ * `ctx._fields` for the nearest enclosing `node()` to assemble. The recording is
+ * conditional on `ctx._fields` being live, exactly as `src/combinators/map.ts`
+ * has it — a field outside any field-reading node costs nothing.
+ */
+export const OP_FIELD = 24
 
 export const OP_NAMES: Record<number, string> = {
   [OP_LIT]: 'LIT', [OP_RX]: 'RX', [OP_SEQ]: 'SEQ', [OP_SEQV]: 'SEQV',
@@ -123,4 +132,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_CALL]: 'CALL',
+  [OP_FIELD]: 'FIELD',
 }

@@ -2,10 +2,12 @@ import type { Combinator, FirstSet, ParserDef } from '../types.ts'
 import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
+import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
+  OP_FIELD,
 } from './ops.ts'
 import type { TableProgram } from './program.ts'
 
@@ -303,7 +305,14 @@ class Encoder {
         // 'cst'` forces them on, exactly as the emitted `cstOut` path does. The
         // driver reads a bit; it re-derives nothing and sees no setting.
         const cstOut = this.settings.hostMode === 'cst'
-        const flags = (cstOut || buildReadsTrivia(d) ? 4 : 0) | (cstOut || buildReadsState(d) ? 8 : 0)
+        // Field capture mirrors the interpreter's `effFields`
+        // (src/combinators/node.ts): the body must actually contain `field()`
+        // captures AND the reducer must read them. A node that reads fields but
+        // has none, or has them and never reads them, allocates nothing.
+        const wantsFields = parserHasOwnFields(d.parser) && (cstOut || buildReadsFields(d))
+        const flags = (cstOut || buildReadsTrivia(d) ? 4 : 0)
+          | (cstOut || buildReadsState(d) ? 8 : 0)
+          | (wantsFields ? 16 : 0)
         const body = this.emit(this.track ? OP_NODE_TRACK : OP_NODE, this.fn(d.build), child, flags)
         // The rule's own first-set gate — the emitted code's `_ngc` test, as data.
         // A NULLABLE rule has no gate: it succeeds on input its first set does
@@ -314,6 +323,8 @@ class Encoder {
         if (cls < 0) return body
         return this.emit(OP_GATE, cls, body, this.expected(deriveExpected(p)))
       }
+      case 'field':
+        return this.emit(OP_FIELD, this.constant(d.name), this.node(d.parser).ip)
       case 'lazy':
         // A named reference is not a hop: it resolves to the target's row.
         // Emitting a trampoline here cost one dispatch per reference for nothing.

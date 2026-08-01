@@ -2,6 +2,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_LIT_TRACK, OP_NAMES, OP_NODE,
   OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCOPE, OP_SEQ, OP_SEQV, OP_XFORM, OP_EXPECT, OP_SEQX, OP_CALL,
+  OP_FIELD,
 } from './ops.ts'
 import type { TableProgram } from './program.ts'
 

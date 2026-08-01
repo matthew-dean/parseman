@@ -1,4 +1,5 @@
-import type { ParseContext, ParseResult } from '../types.ts'
+import type { FieldMap, ParseContext, ParseResult } from '../types.ts'
+import { buildFieldMap } from '../compiler/fields.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, demoteCapturedToRaw,
@@ -9,6 +10,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
+  OP_FIELD,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
@@ -233,6 +235,15 @@ function makeDriver(
         ctx._errors?.push(err)
         END = pos
         return err
+      }
+
+      case OP_FIELD: {
+        const v = exec(code[ip + 2]!, input, pos, ctx)
+        if (v === FAIL) return FAIL
+        // Conditional on a live sink, exactly as src/combinators/map.ts has it:
+        // a `field()` outside any field-reading node costs nothing.
+        ctx._fields?.push({ name: k[code[ip + 1]!] as string, value: v, span: { start: pos, end: END } })
+        return v
       }
 
       case OP_CALL: {
@@ -481,20 +492,30 @@ function makeDriver(
         // rather than re-deriving anything.
         const flags = code[ip + 3]!
         const saved = beginCstNodeCapture(ctx)
+        // Bit 4: this node's body has `field()` captures its reducer reads. The
+        // sink is scoped to the node and restored after, like every other
+        // capture channel — `saveCstMark`/`rollbackCstCapture` already truncate
+        // `_fields` in lockstep, so a failed arm leaves none behind.
+        const savedFields = ctx._fields
+        ctx._fields = (flags & 16) !== 0 ? [] : undefined
         if ((flags & 4) === 0) ctx.captureTrivia = false
         const v = exec(code[ip + 2]!, input, pos, ctx)
+        // `buildFieldMap` is the COMPILED path's builder (src/compiler/fields.ts).
+        // A second implementation of it is the duplication this design removes.
+        const fieldMap: FieldMap | undefined = (flags & 16) !== 0 ? buildFieldMap(ctx._fields) : undefined
+        ctx._fields = savedFields
         const cap = endCstNodeCapture(ctx, saved)
         if (v === FAIL) return FAIL
         const end = END
         const build = fns[code[ip + 1]!] as (
-          children: readonly unknown[], fields: undefined, span: { start: number; end: number },
+          children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
           rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
         ) => unknown
         const st = (flags & 8) !== 0 && ctx.state !== undefined
           ? Object.assign({}, ctx.state as Record<string, unknown>)
           : undefined
         const nd = build(
-          cap.children, undefined,
+          cap.children, fieldMap,
           code[ip] === OP_NODE_TRACK ? spanLines(ctx, pos, end) : { start: pos, end },
           cap.rawChildren, (flags & 4) !== 0 ? cap.triviaLog : EMPTY_TL, st,
         )

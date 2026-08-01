@@ -5,7 +5,7 @@
  * grammar in the repo, and one of the grammars in the external comparison
  * benchmark, so a speed number here is directly comparable to the chart.
  */
-import { rules, literal, regex, sequence, choice, optional, sepBy, transform, trivia, node, many, type Combinator } from '../src/index.ts'
+import { rules, literal, regex, sequence, choice, optional, sepBy, transform, trivia, node, many, field, type Combinator } from '../src/index.ts'
 
 // ---------------------------------------------------------------------------
 // JSON, rebuilt as a full rules() map so every production is an addressable
@@ -112,3 +112,38 @@ export const JSON_FN_SOURCES: string[] = [
   `v => objectFromPairs(v[1] ?? [])`,
 ]
 
+
+/**
+ * A grammar whose reducers READ THE FIELD MAP.
+ *
+ * `field()` had no opcode until the map was threaded through `OP_NODE`, and the
+ * encoder refused it rather than lower it wrong — a `field` recorded into a sink
+ * the node then dropped would parse perfectly and lose the fields silently,
+ * which is the failure mode this whole subsystem exists to prevent.
+ *
+ * Deliberately exercises the shapes `buildFieldMap` distinguishes: a single
+ * capture, a REPEATED name (which becomes an array), an absent optional field,
+ * and a field nested under a repetition so rollback of a failed arm is covered.
+ */
+export const fieldNodes = rules<Record<string, Combinator<unknown>>>(g => ({
+  Key: node('Key', regex(/[a-z]+/), c => ({ t: 'Key', c })),
+  Val: node('Val', regex(/[0-9]+/), c => ({ t: 'Val', c })),
+  Pair: node(
+    'Pair',
+    sequence(field('key', g.Key!), literal('='), field('val', g.Val!)),
+    (c, f) => ({ t: 'Pair', c, f }),
+  ),
+  // `tag` repeats, so the map must turn it into an array; `note` is optional and
+  // usually absent, so the map must omit it rather than record `undefined`.
+  Entry: node(
+    'Entry',
+    sequence(
+      literal('['),
+      sepBy(field('tag', g.Pair!), literal(',')),
+      optional(sequence(literal(';'), field('note', g.Key!))),
+      literal(']'),
+    ),
+    (c, f) => ({ t: 'Entry', c, f }),
+  ),
+  Doc: node('Doc', many(choice(g.Entry!, g.Pair!)), c => ({ t: 'Doc', c })),
+})) as unknown as Record<string, Combinator<unknown>>

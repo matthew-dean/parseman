@@ -4,7 +4,7 @@
 import { checkIdentity } from './g5-identity.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON, SMALL_GQL, MEDIUM_GQL, LARGE_GQL, SMALL_EXPR, MEDIUM_EXPR } from './fixtures.ts'
-import { baseNodes, jsonRules, jsonWs, nodeLadder } from './g5-grammars.ts'
+import { baseNodes, fieldNodes, jsonRules, jsonWs, nodeLadder } from './g5-grammars.ts'
 import type { Combinator } from '../src/types.ts'
 import { readFileSync } from 'node:fs'
 import { lessRules } from './workloads/less.ts'
@@ -79,6 +79,21 @@ async function main(): Promise<void> {
   } catch (e) {
     console.log(`  less    could not run: ${(e as Error).message.split('\n')[0]}`)
   }
+
+  const fieldCases = [
+    { name: 'pair', input: 'ab=12' },
+    { name: 'entry-one-tag', input: '[ab=1]' },
+    { name: 'entry-repeated-tag', input: '[ab=1,cd=2,ef=3]' },
+    { name: 'entry-with-note', input: '[ab=1;zz]' },
+    { name: 'mixed-doc', input: '[ab=1,cd=2]ef=3[gh=4;ii]' },
+    { name: 'empty', input: '' },
+    { name: 'unclosed', input: '[ab=1' },
+    { name: 'bad-value', input: 'ab=zz' },
+    { name: 'garbage', input: '###' },
+  ]
+  const fr = checkIdentity(fieldNodes, 'Doc', fieldCases)
+  console.log(`  fields  ${fr.matched}/${fr.total} cases identical (field() -> buildFieldMap through OP_NODE)`)
+  for (const m of fr.mismatches.slice(0, 6)) console.log(`    MISMATCH ${m.case} [${m.path}]`)
 
   // css — the last grammar to encode, and the one that exercises OP_CALL
   // (scanTo x5). Encoding it proves nothing; this proves the trees match.
