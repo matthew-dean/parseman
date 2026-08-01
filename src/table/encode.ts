@@ -124,7 +124,18 @@ class Encoder {
   }
 
   encodeRule(name: string, p: Combinator<unknown>): void {
-    this.rules[name] = this.node(p).ip
+    const body = this.node(p).ip
+    // GRAMMAR-LEVEL AMBIENT TRIVIA (`rules({ trivia }, …)`).
+    //
+    // `run()` installs this from `entry._meta.grammarTrivia`, but ONLY for a
+    // combinator entry — a compiled entry is a FUNCTION and is expected to have
+    // baked it in (src/functional/run.ts:269). A table entry is also a function,
+    // so without this the whole grammar parses with NO ambient trivia and every
+    // whitespace-bearing input silently fails to match the same way in every
+    // path — which makes a three-way identity check AGREE while proving nothing.
+    // Bake it, exactly as the compiled path does.
+    const amb = p._meta.grammarTrivia
+    this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.constant(amb), body)
   }
 
   node(p: Combinator<unknown>): Emitted {
@@ -290,8 +301,15 @@ class Encoder {
         return this.emit(OP_LEAF, this.fn(d.fn), child)
       }
       case 'node': {
-        if (d.unwrap || d.collapse || d.project !== undefined) throw new UnsupportedConstruct('node(unwrap|collapse|project)')
-        if (d.build === undefined) throw new UnsupportedConstruct('node(no build)')
+        // A node legally has NO builder when its value comes from a selection:
+        // `project` replaces the builder outright, and `collapse`/`unwrap` make
+        // the single captured child the value. A node with none of those and no
+        // builder is STRUCTURAL — its value comes from a `ctx.build` host, which
+        // this driver does not have (see the guard in exec.ts).
+        if (d.build === undefined && d.project === undefined && d.collapse !== true && d.unwrap !== true) {
+          throw new UnsupportedConstruct('node(structural — needs a ctx.build host)')
+        }
+        if (d.type === undefined) throw new UnsupportedConstruct('node(inferred type)')
         // FAIL CLOSED on fields this encoder does not lower. The capture flags below
         // are derived from the reducer's ARITY, which cannot express an explicit
         // `captureTrivia: true` on a 3-argument reducer — the author asked for
@@ -299,7 +317,8 @@ class Encoder {
         // yields a table that parses and drops trivia, which is the exact
         // silent-failure class this lowering exists to avoid.
         if (d.captureTrivia !== undefined) throw new UnsupportedConstruct('node(captureTrivia)')
-        if (d.trailingTrivia !== undefined) throw new UnsupportedConstruct('node(trailingTrivia)')
+        // `tags` is grammar-level CST reflection consumed by a ctx.build host,
+        // and this driver has no host path — see the guard in exec.ts.
         if (d.tags !== undefined) throw new UnsupportedConstruct('node(tags)')
         const child = this.node(d.parser).ip
         // Capture flags, resolved HERE from the reducer's declared arity using the
@@ -312,10 +331,22 @@ class Encoder {
         // captures AND the reducer must read them. A node that reads fields but
         // has none, or has them and never reads them, allocates nothing.
         const wantsFields = parserHasOwnFields(d.parser) && (cstOut || buildReadsFields(d))
+        // `trailingTrivia` consumes trivia INSIDE the node's capture scope, so it
+        // lands in THIS node's log — the interpreter does it before
+        // `endCstNodeCapture`, and doing it after would put the run in the parent.
         const flags = (cstOut || buildReadsTrivia(d) ? 4 : 0)
           | (cstOut || buildReadsState(d) ? 8 : 0)
           | (wantsFields ? 16 : 0)
-        const body = this.emit(this.track ? OP_NODE_TRACK : OP_NODE, this.fn(d.build), child, flags)
+          | (d.collapse === true ? 32 : 0)
+          | (d.unwrap === true ? 64 : 0)
+          | (d.trailingTrivia === true ? 128 : 0)
+        const body = this.emit(
+          this.track ? OP_NODE_TRACK : OP_NODE,
+          d.build === undefined ? -1 : this.fn(d.build),
+          child, flags,
+          d.project ?? -1,
+          this.constant(d.type),
+        )
         // The rule's own first-set gate — the emitted code's `_ngc` test, as data.
         // A NULLABLE rule has no gate: it succeeds on input its first set does
         // not contain (including EOF), so gating it would reject a legal empty

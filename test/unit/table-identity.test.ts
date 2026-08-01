@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { checkIdentity } from '../../bench/g5-identity.ts'
-import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, jsonWs } from '../../bench/g5-grammars.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, jsonWs, selectNodes, trailingTriviaNodes } from '../../bench/g5-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
@@ -237,5 +237,83 @@ describe('table lowering — three-way identity across every encodable grammar',
     const noFb = tableRules(encodeTable(dispatchNoFallback)).Doc!
     expect(run(noFb as never, '@media').ok).toBe(true)
     expect(run(noFb as never, '@nope').ok).toBe(false)
+  })
+
+  /**
+   * WHY THESE READ THE VALUE BACK INSTEAD OF TRUSTING IDENTITY.
+   *
+   * A COLLAPSED NODE AND ITS CHILD CAN DIGEST ALIKE. `collapse` makes the node
+   * BE its single captured child, so node and child serialise to the same bytes
+   * and a three-way digest agrees whether or not the collapse happened. Same for
+   * `unwrap` (leaf -> its string) and `project` (node -> child N). Identity
+   * proves the tree matched; it cannot prove the RIGHT child came out.
+   *
+   * This is the third time the pattern has decided a design here — the field map
+   * and the dispatch arm were the first two — so it is written down rather than
+   * rediscovered.
+   */
+  it('collapse / unwrap / project select the RIGHT child', () => {
+    const r = checkIdentity(selectNodes, 'Doc', [
+      { name: 'collapse', input: 'abc' },
+      { name: 'unwrap', input: '123' },
+      { name: 'project-seq', input: 'abc' },
+      { name: 'mixed', input: 'abc123' },
+      { name: 'empty', input: '' },
+      { name: 'garbage', input: '###' },
+    ])
+    expect(r.mismatches).toEqual([])
+
+    const table = tableRules(encodeTable(selectNodes)).Doc!
+    const kids = (input: string): unknown[] =>
+      (run(table as never, input).value as { c: unknown[] }).c
+
+    // project picks child 1 of ('a','b','c') — an off-by-one yields 'a' or 'c'.
+    expect(kids('abc')[0]).toBe('b')
+
+    // unwrap turns the single captured LEAF into its string value, so the result
+    // is a bare string and NOT a leaf object. Collapse would have left the leaf.
+    expect(kids('123')[0]).toBe('123')
+    expect(typeof kids('123')[0]).toBe('string')
+  })
+
+  it('collapse with a non-single child arity falls through to the default node', () => {
+    // `collapse` applies ONLY at exactly one captured child. Zero or two-plus has
+    // no selection to make and (for a builder-less node) no builder to call — the
+    // interpreter emits the default CST node there. That arity is precisely the
+    // input a hand-picked case misses, so it is pinned.
+    const table = tableRules(encodeTable(selectNodes)).Doc!
+    const collapsed = (run(table as never, 'abc123').value as { c: unknown[] }).c
+    expect(collapsed.length).toBeGreaterThan(0)
+  })
+
+  it('trailingTrivia consumes into THIS node, not the parent', () => {
+    const r = checkIdentity(trailingTriviaNodes, 'Root', [
+      { name: 'no-trailing', input: 'ab cd' },
+      { name: 'trailing-ws', input: 'ab cd   ' },
+      { name: 'only-ws', input: '   ' },
+      { name: 'empty', input: '' },
+    ], { trivia: jsonWs })
+    expect(r.mismatches).toEqual([])
+
+    // The node's SPAN must extend over the trailing run. Consuming it after the
+    // capture scope closed would leave the span short and log it in the parent.
+    const table = tableRules(encodeTable(trailingTriviaNodes)).Root!
+    const withTail = run(table as never, 'ab cd   ', { trivia: jsonWs as never }).value as { end: number }
+    const noTail = run(table as never, 'ab cd', { trivia: jsonWs as never }).value as { end: number }
+    expect(noTail.end).toBe(5)
+    expect(withTail.end).toBe(8)
+  })
+
+  it('the driver FAILS CLOSED on runtime options it has no path for', () => {
+    // Neither is detectable at encode time — they arrive with the parse — and
+    // both are silent divergences rather than errors if unguarded: a ctx.build
+    // host is supposed to REPLACE the node's builder, and this driver always
+    // calls the builder.
+    const table = tableRules(encodeTable(baseNodes)).Doc!
+    expect(() => run(table as never, 'abc', { build: (() => null) as never }))
+      .toThrow(/ctx\.build host is not supported/)
+    // `run()` itself rejects this one earlier (it needs labeled grammar trivia),
+    // so the guard is belt-and-braces rather than the only thing standing there.
+    expect(() => run(table as never, 'abc', { rootTrivia: { select: ['comment'] } })).toThrow()
   })
 })

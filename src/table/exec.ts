@@ -1,6 +1,8 @@
 import type { FieldMap, ParseContext, ParseResult } from '../types.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
 import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
+import { projectChild, unwrapChild } from '../combinators/node.ts'
+import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import type { DispatchMatcherKind } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
 import {
@@ -572,39 +574,54 @@ function makeDriver(
 
       case OP_NODE:
       case OP_NODE_TRACK: {
-        // `flags` bit 2 = the builder reads `triviaLog`. Decided by
-        // `src/table/encode.ts` from the reducer's arity — the SAME analysis
-        // codegen runs — and baked into the row, so the driver reads a bit
-        // rather than re-deriving anything.
         const flags = code[ip + 3]!
         const saved = beginCstNodeCapture(ctx)
-        // Bit 4: this node's body has `field()` captures its reducer reads. The
-        // sink is scoped to the node and restored after, like every other
-        // capture channel — `saveCstMark`/`rollbackCstCapture` already truncate
-        // `_fields` in lockstep, so a failed arm leaves none behind.
         const savedFields = ctx._fields
         ctx._fields = (flags & 16) !== 0 ? [] : undefined
         if ((flags & 4) === 0) ctx.captureTrivia = false
         const v = exec(code[ip + 2]!, input, pos, ctx)
-        // `buildFieldMap` is the COMPILED path's builder (src/compiler/fields.ts).
-        // A second implementation of it is the duplication this design removes.
+        // `trailingTrivia` runs INSIDE the capture scope, before the node's log is
+        // closed, so the run lands in THIS node rather than the parent's. That is
+        // the order src/combinators/node.ts uses and it is observable.
+        if (v !== FAIL && (flags & 128) !== 0 && ctx.trivia !== undefined) END = consumeTrivia(input, END, ctx)
         const fieldMap: FieldMap | undefined = (flags & 16) !== 0 ? buildFieldMap(ctx._fields) : undefined
         ctx._fields = savedFields
         const cap = endCstNodeCapture(ctx, saved)
         if (v === FAIL) return FAIL
         const end = END
-        const build = fns[code[ip + 1]!] as (
-          children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
-          rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
-        ) => unknown
+        const span = code[ip] === OP_NODE_TRACK ? spanLines(ctx, pos, end) : { start: pos, end }
         const st = (flags & 8) !== 0 && ctx.state !== undefined
           ? Object.assign({}, ctx.state as Record<string, unknown>)
           : undefined
-        const nd = build(
-          cap.children, fieldMap,
-          code[ip] === OP_NODE_TRACK ? spanLines(ctx, pos, end) : { start: pos, end },
-          cap.rawChildren, (flags & 4) !== 0 ? cap.triviaLog : EMPTY_TL, st,
-        )
+
+        // RESULT SELECTION, in the interpreter's order (node.ts): unwrap, then
+        // collapse, then project, then the builder. `unwrap`/`collapse` apply
+        // ONLY at exactly one captured child — zero or two-plus fall through to
+        // the builder, which is why the arity test is here and not at encode time.
+        const kids = cap.children
+        const proj = code[ip + 4]!
+        let nd: unknown
+        if ((flags & 64) !== 0 && kids.length === 1) {
+          nd = unwrapChild(kids[0])
+        } else if ((flags & 32) !== 0 && kids.length === 1) {
+          nd = kids[0]
+        } else if (proj >= 0) {
+          nd = projectChild(kids, proj, k[code[ip + 5]!] as string)
+        } else if (code[ip + 1]! >= 0) {
+          const build = fns[code[ip + 1]!] as (
+            children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
+            rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
+          ) => unknown
+          nd = build(kids, fieldMap, span, cap.rawChildren, (flags & 4) !== 0 ? cap.triviaLog : EMPTY_TL, st)
+        } else {
+          // A `collapse`/`unwrap` node that captured zero or two-plus children
+          // has no selection to make and no builder to call. The interpreter
+          // falls through to the DEFAULT CST node here (node.ts, the `ctx.build`
+          // host being absent), and so does this. Getting it wrong would only
+          // show on the arity the collapse does not cover, which is exactly the
+          // input a hand-picked test case misses.
+          nd = { _tag: 'node', type: k[code[ip + 5]!] as string, span, state: st ?? null, children: kids }
+        }
         pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
         END = end
         return nd
@@ -653,6 +670,18 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
   for (const name of Object.keys(prog.rules)) {
     const entry = prog.rules[name]!
     out[name] = (input: string, pos: number, ctx: ParseContext): ParseResult<unknown> => {
+      // FAIL CLOSED on the two runtime options this driver has no path for.
+      // Both are silent divergences otherwise, not errors: a `ctx.build` host is
+      // supposed to REPLACE the node's own builder (that is what `hostMode:'cst'`
+      // means in the compiled engine), and this driver always calls the builder;
+      // root-trivia capture needs a `_rootTriviaLog` this driver never writes.
+      // Neither is detectable at encode time — they arrive with the parse.
+      if (ctx.build !== undefined) {
+        throw new Error('parseman/table: a ctx.build host is not supported by the table driver yet — the node builder would run instead of the host, silently. Use the compiled path for host-mode parses.')
+      }
+      if (ctx._rootTriviaLog !== undefined) {
+        throw new Error('parseman/table: run({ rootTrivia }) is not supported by the table driver yet — no root trivia would be captured, silently.')
+      }
       ctx._fe = -1
       ctx._fx = EMPTY_FX
       if (lines && ctx._lineStarts === undefined) { ctx._lineStarts = [0]; ctx._lineScannedTo = 0 }

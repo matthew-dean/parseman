@@ -98,7 +98,7 @@ export type NodeProjectOptions<I extends number = number> =
   Omit<NodeOptions, 'project' | 'unwrap' | 'collapse'> & { project: I; unwrap?: never; collapse?: never }
 
 /** A captured child's value form: a leaf unwraps to its string value, else as-is. */
-function unwrapChild(child: unknown): unknown {
+export function unwrapChild(child: unknown): unknown {
   return child !== null && typeof child === 'object' && (child as { _tag?: string })._tag === 'leaf'
     ? (child as { value: unknown }).value
     : child
@@ -132,7 +132,7 @@ function normalizeProject(project: number | undefined): number | undefined {
   return project
 }
 
-function projectChild(children: ReadonlyArray<unknown>, project: number, type: string): unknown {
+export function projectChild(children: ReadonlyArray<unknown>, project: number, type: string): unknown {
   if (!(project in children)) {
     throw new Error(`node(${JSON.stringify(type)}) project child ${project} was not captured`)
   }

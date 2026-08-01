@@ -38,7 +38,7 @@ export const jsonRules = rules<{
   Arr: Combinator<unknown[]>
   Obj: Combinator<Record<string, unknown>>
   Pair: Combinator<[string, unknown]>
-}>(g => ({
+}>({ trivia: jsonWs }, g => ({
   Str: transform(
     sequence(literal('"'), regex(/(?:[^"\\]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*/), literal('"')),
     v => unescapeJsonString((v as [string, string, string])[1]),
@@ -184,3 +184,37 @@ export const dispatchNoFallback = rules<Record<string, Combinator<unknown>>>(() 
     ) as unknown as Combinator<unknown>,
   }
 }) as unknown as Record<string, Combinator<unknown>>
+
+/**
+ * `collapse` / `unwrap` / `project` / `trailingTrivia`.
+ *
+ * WHY THE TEST READS THE VALUE BACK INSTEAD OF TRUSTING IDENTITY — the third
+ * time this pattern has decided a design in this lane, so it is written down:
+ *
+ *   A COLLAPSED NODE AND ITS CHILD CAN DIGEST ALIKE. `collapse` makes the node
+ *   BE its single captured child, so the node and the child serialise to the
+ *   same bytes and a three-way digest agrees whether or not the collapse
+ *   happened. Same for `unwrap` (leaf -> its string) and `project` (the node ->
+ *   child N). Identity proves the tree matched; it cannot prove the right child
+ *   came out. The proof has to name the child.
+ *
+ * Each rule is built so the WRONG selection is distinguishable: `Coll` wraps a
+ * marker child, `Proj` captures three children so an off-by-one is visible, and
+ * `Unwr` wraps a leaf so unwrap-vs-collapse differ (string vs leaf object).
+ */
+export const selectNodes = rules<Record<string, Combinator<unknown>>>(g => ({
+  Marker: node('Marker', regex(/[a-z]+/), c => ({ t: 'Marker', c })),
+  // collapse: the single captured child, EXACTLY as captured (stays a node).
+  Coll: node('Coll', g.Marker!, { collapse: true }),
+  // unwrap: a single captured LEAF becomes its string value.
+  Unwr: node('Unwr', regex(/[0-9]+/), { unwrap: true }),
+  // project: child index 1 of three, so an off-by-one picks a different letter.
+  Proj: node('Proj', sequence(literal('a'), literal('b'), literal('c')), { project: 1 }),
+  Doc: node('Doc', many(choice(g.Proj!, g.Unwr!, g.Coll!)), c => ({ t: 'Doc', c })),
+})) as unknown as Record<string, Combinator<unknown>>
+
+/** `trailingTrivia`: after a successful body, consume trivia ONCE into this node. */
+export const trailingTriviaNodes = rules<Record<string, Combinator<unknown>>>({ trivia: jsonWs }, g => ({
+  Word: node('Word', regex(/[a-z]+/), (c, _f, s, _r, tl) => ({ t: 'Word', c, tl: tl.length })),
+  Root: node('Root', many(g.Word!), (c, _f, s, _r, tl) => ({ t: 'Root', c, tl: tl.length, end: s.end }), { trailingTrivia: true }),
+})) as unknown as Record<string, Combinator<unknown>>

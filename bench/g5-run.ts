@@ -4,7 +4,7 @@
 import { checkIdentity } from './g5-identity.ts'
 import { encodeTable } from '../src/table/encode.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON, SMALL_GQL, MEDIUM_GQL, LARGE_GQL, SMALL_EXPR, MEDIUM_EXPR } from './fixtures.ts'
-import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, jsonWs, nodeLadder } from './g5-grammars.ts'
+import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, jsonWs, nodeLadder, selectNodes, trailingTriviaNodes } from './g5-grammars.ts'
 import type { Combinator } from '../src/types.ts'
 import { readFileSync } from 'node:fs'
 import { lessRules } from './workloads/less.ts'
@@ -112,6 +112,27 @@ async function main(): Promise<void> {
   ])
   console.log(`  dispatch-nofb ${dn.matched}/${dn.total} cases identical (miss with NO otherwise must fail)`)
   for (const m of dn.mismatches.slice(0, 4)) console.log(`    MISMATCH ${m.case} [${m.path}]`)
+
+  const sr = checkIdentity(selectNodes, 'Doc', [
+    { name: 'collapse', input: 'abc' },
+    { name: 'unwrap', input: '123' },
+    { name: 'project', input: 'abc-is-not-this' },
+    { name: 'project-seq', input: 'abc' },
+    { name: 'mixed', input: 'abc123' },
+    { name: 'empty', input: '' },
+    { name: 'garbage', input: '###' },
+  ])
+  console.log(`  select  ${sr.matched}/${sr.total} cases identical (collapse | unwrap | project)`)
+  for (const m of sr.mismatches.slice(0, 6)) console.log(`    MISMATCH ${m.case} [${m.path}]`)
+
+  const tr = checkIdentity(trailingTriviaNodes, 'Root', [
+    { name: 'no-trailing', input: 'ab cd' },
+    { name: 'trailing-ws', input: 'ab cd   ' },
+    { name: 'only-ws', input: '   ' },
+    { name: 'empty', input: '' },
+  ], { trivia: jsonWs })
+  console.log(`  trailtriv ${tr.matched}/${tr.total} cases identical (node(trailingTrivia))`)
+  for (const m of tr.mismatches.slice(0, 4)) console.log(`    MISMATCH ${m.case} [${m.path}]`)
 
   // css — the last grammar to encode, and the one that exercises OP_CALL
   // (scanTo x5). Encoding it proves nothing; this proves the trees match.
