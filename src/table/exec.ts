@@ -8,7 +8,7 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
@@ -233,6 +233,18 @@ function makeDriver(
         ctx._errors?.push(err)
         END = pos
         return err
+      }
+
+      case OP_CALL: {
+        const c = k[code[ip + 1]!] as { parse: (i: string, p: number, x: ParseContext) => { ok: boolean; value?: unknown; span: { start: number; end: number }; expected?: readonly string[] } }
+        const r = c.parse(input, pos, ctx)
+        if (!r.ok) {
+          ctx._fe = r.span.start
+          ctx._fx = (r.expected ?? EMPTY_FX) as string[]
+          return FAIL
+        }
+        END = r.span.end
+        return r.value
       }
 
       case OP_SCOPE: {

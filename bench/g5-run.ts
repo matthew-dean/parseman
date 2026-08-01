@@ -80,6 +80,24 @@ async function main(): Promise<void> {
     console.log(`  less    could not run: ${(e as Error).message.split('\n')[0]}`)
   }
 
+  // css — the last grammar to encode, and the one that exercises OP_CALL
+  // (scanTo x5). Encoding it proves nothing; this proves the trees match.
+  try {
+    const { cssRules } = await import('../examples/css/parser.ts')
+    const cssCases = [
+      { name: 'decls', input: readFileSync('fixtures/css/decls.css', 'utf8') },
+      { name: 'selector', input: readFileSync('fixtures/css/selector.css', 'utf8') },
+      { name: 'site.css', input: readFileSync('bench/workloads/fixtures/site.css', 'utf8') },
+      { name: 'at-rules', input: '@media (min-width: 100px) { a { color: red } }\n@import "x.css";\n' },
+      { name: 'garbage', input: '@@@' },
+    ]
+    const cr = checkIdentity(cssRules as unknown as Record<string, Combinator<unknown>>, 'Stylesheet', cssCases)
+    console.log(`  css     ${cr.matched}/${cr.total} cases identical (OP_CALL: scanTo/token/balanced run as real combinators)`)
+    for (const m of cr.mismatches.slice(0, 6)) console.log(`    MISMATCH ${m.case} [${m.path}]`)
+  } catch (e) {
+    console.log(`  css     could not run: ${(e as Error).message.split('\n')[0]}`)
+  }
+
   // The grammars the newly added opcodes unlocked. Encoding them proves nothing;
   // these prove the trees match.
   const single = (name: string, comb: unknown): Record<string, Combinator<unknown>> => ({ [name]: comb as Combinator<unknown> })

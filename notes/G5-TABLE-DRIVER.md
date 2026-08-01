@@ -245,10 +245,20 @@ tree — none would have been visible in a pass/fail test:
 | `examples/lang` | encodes — 301 words |
 | `examples/graphql` | encodes — 426 words |
 | `bench/workloads/less` (29 rules) | encodes — 1,277 words |
-| `examples/css` | **blocked on `scanTo`** |
+| `examples/css` | encodes — 606 words (5 `CALL` rows) |
 
-**Every real grammar in the repo except css now encodes, and every one of them is
-tree-identical on its fixtures** (37/37 cases). What closed the gaps:
+**EVERY real grammar in the repo now encodes, and every one is tree-identical on
+its fixtures** (42/42 cases across eight grammars).
+
+`scanTo` closed via `OP_CALL`, which runs a pooled COMBINATOR through its own
+`.parse` rather than re-implementing it. Reaching for that also caught a latent
+defect in this encoder: **`token()` was being treated as a transparent wrapper
+and is not.** It clears trivia AND every capture sink, then emits one leaf, so
+transparency leaks the inner captures to the parent and lets trivia be skipped
+inside a glued token. `balanced()` is sharper still — it OVERRIDES `.parse` to
+re-resolve ambient `scanSkip` while leaving `_def` as the eager interior, so
+encoding it structurally builds the wrong parser and reports nothing. All three
+now run as the real combinator. What closed the gaps:
 
 - `keywords` needed NO new opcode — `keywords()` compiles to one sticky regex
   plus a leaf push, which is exactly what `RX` does, so the encoder rebuilds the

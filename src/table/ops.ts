@@ -85,6 +85,27 @@ export const OP_EXPECT = 21
  * row halves that for the shape that occurs most.
  */
 export const OP_SEQX = 22
+/**
+ * `CALL k` — run the pooled COMBINATOR at `k` through its own `.parse`.
+ *
+ * The escape hatch for constructs whose behaviour is not recoverable from
+ * `_def`, and re-implementing them in the driver would be a second copy that
+ * silently drifts:
+ *
+ *   `token()`    clears trivia AND every capture sink, then emits ONE leaf.
+ *                Treating it as transparent (which this encoder did until a read
+ *                of token.ts caught it) leaks the inner captures to the parent
+ *                and lets trivia be skipped inside a glued token.
+ *   `balanced()` OVERRIDES `.parse` to re-resolve ambient `scanSkip`, while
+ *                leaving `_def` as the eager interior. Encoding from `_def`
+ *                therefore builds the wrong parser and reports no error.
+ *   `scanTo()`   probes its sentinel and skippers with a collector-free ctx and
+ *                represents the whole scanned span as one leaf.
+ *
+ * It costs a ParseResult allocation per call — the combinator's own protocol.
+ * These constructs are rare and already heavy, and correct beats fast here.
+ */
+export const OP_CALL = 23
 
 export const OP_NAMES: Record<number, string> = {
   [OP_LIT]: 'LIT', [OP_RX]: 'RX', [OP_SEQ]: 'SEQ', [OP_SEQV]: 'SEQV',
@@ -92,5 +113,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_XFORM]: 'XFORM', [OP_NODE]: 'NODE', [OP_RULE]: 'RULE', [OP_GATE]: 'GATE',
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
-  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX',
+  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_CALL]: 'CALL',
 }
