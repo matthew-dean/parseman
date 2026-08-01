@@ -35,6 +35,7 @@
 import type { Alphabet } from './token-alphabet.ts'
 import { TOK_EOF, TOK_UNKNOWN, TOK_WS } from './token-alphabet.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
+import { packInts } from './token-dispatch.ts'
 
 /**
  * First CHARS a regex terminal can start with, or null when it is unbounded.
@@ -62,13 +63,6 @@ function firstSetOfRegexSource(source: string, flags: string): Set<number> | nul
     }
   }
   return out
-}
-
-/** Pack a non-negative int array into a two-chars-per-value string literal. */
-function packInts(values: readonly number[]): string {
-  let s = ''
-  for (const v of values) s += String.fromCharCode(35 + (v & 63), 35 + ((v >> 6) & 63))
-  return JSON.stringify(s)
 }
 
 type TrieNode = { edges: Map<number, number>; accept: number }
@@ -222,10 +216,15 @@ export function emitScanner(alphabet: Alphabet, ns: string): ScannerEmission {
   const nextFn = p('_tkScan')
   decls.push([
     `let ${p('_tkId')} = ${TOK_EOF}, ${p('_tkStartPos')} = 0, ${p('_tkEnd')} = 0, ${p('_tkTight')} = 0`,
-    `let ${p('_tkMemoPos')} = -1, ${p('_tkMemoMode')} = -1, ${p('_tkMemoSet')} = -1`,
+    // The memo is module state, so INPUT IDENTITY is part of the key. Without it a
+    // second parse of a different string hits the first string's cached token at the
+    // same (pos, mode, set) and returns it — a wrong token from a warm cache, with no
+    // error. The reference check is O(1) on the common path: the same parse passes the
+    // same string object every call.
+    `let ${p('_tkMemoInput')} = null, ${p('_tkMemoPos')} = -1, ${p('_tkMemoMode')} = -1, ${p('_tkMemoSet')} = -1`,
     `function ${nextFn}(input, pos, mode, set) {`,
-    `  if (pos === ${p('_tkMemoPos')} && mode === ${p('_tkMemoMode')} && set === ${p('_tkMemoSet')}) return ${p('_tkId')}`,
-    `  ${p('_tkMemoPos')} = pos; ${p('_tkMemoMode')} = mode; ${p('_tkMemoSet')} = set`,
+    `  if (input === ${p('_tkMemoInput')} && pos === ${p('_tkMemoPos')} && mode === ${p('_tkMemoMode')} && set === ${p('_tkMemoSet')}) return ${p('_tkId')}`,
+    `  ${p('_tkMemoInput')} = input; ${p('_tkMemoPos')} = pos; ${p('_tkMemoMode')} = mode; ${p('_tkMemoSet')} = set`,
     `  const n = input.length`,
     `  let q = pos`,
     // Comments skip in both modes; whitespace only outside selector mode.

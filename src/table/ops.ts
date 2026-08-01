@@ -35,11 +35,20 @@ export const OP_CHOICE = 5
 export const OP_REP = 6
 /** `REPV …` — `REP` with `valueUnused`. */
 export const OP_REPV = 7
-/** `OPT c` — child, or `undefined` at the same position. */
+/** `OPT c` — child, or `null` at the same position. NOT `undefined`: `optional()`
+ * yields `null` on no-match (src/combinators/repeat.ts:269,277) and grammars TEST for
+ * it — examples/lang's `call` reducer is `if (args === null) return callee`, so
+ * `undefined` there turned a bare identifier into a call node with `args: undefined`.
+ * The parse succeeded and only the tree moved. */
 export const OP_OPT = 8
 /** `XFORM f c` — `f` indexes the reducer; called `(value, span)`. */
 export const OP_XFORM = 9
-/** `NODE b c raw` — `b` indexes the build reducer; `raw` 1 = capture rawChildren. */
+/** `NODE b c flags` — `b` indexes the build reducer, `c` is the child.
+ *
+ * `flags` is a BIT FIELD, not a boolean: bit 2 (`&4`) = the builder reads
+ * `triviaLog`, bit 3 (`&8`) = it reads `ctx.state`. Both are resolved at ENCODE
+ * time from the reducer's declared arity by the same analysis codegen runs, and
+ * forced on under `hostMode: 'cst'`. The driver reads the bits and re-derives nothing. */
 export const OP_NODE = 10
 /** `RULE r` — `r` indexes `prog.rules`. */
 export const OP_RULE = 11

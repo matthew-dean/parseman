@@ -925,8 +925,17 @@ function report(results: PairResult[]): void {
   const broken = results.filter(r => !r.equivalent && !r.proven)
   const identity = results.find(r => r.id === 'control-identity')
 
+  // A breached identity control is FATAL, not a log line. Two byte-identical
+  // spellings measuring anything but 1.000x means the harness is non-deterministic,
+  // and every ratio it printed above is noise wearing a number. Reporting that and
+  // then exiting 0 is the exact failure this gate exists to catch in others:
+  // measured, printed, ignored.
   if (identity && identity.rawRatio !== 1) {
-    console.log(`HARNESS: identity control measured ${identity.rawRatio}x, not 1.000x. The harness is non-deterministic; nothing above is evidence.`)
+    console.log(`HARNESS BROKEN: identity control measured ${identity.rawRatio}x, not 1.000x.`)
+    console.log("  Two byte-identical spellings must compile to the same bytes. They did not,")
+    console.log("  so nothing above is evidence and this run certifies nothing.")
+    process.exitCode = 2
+    return
   }
 
   for (const r of disqual) {

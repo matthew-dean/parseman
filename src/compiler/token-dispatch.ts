@@ -95,9 +95,27 @@ function foldText(t: string): string {
 }
 
 /** Pack a non-negative int array two chars per value. */
+/**
+ * Pack a non-negative int array into a two-chars-per-value string literal.
+ *
+ * Two chars at six bits each is TWELVE BITS: the representable range is 0..4095.
+ * The mask made anything larger wrap SILENTLY, and `unpack` then decoded a wrong
+ * index — a table that looks fine and routes to the wrong arm. Bounded here, and
+ * this is the ONLY implementation: a second copy in token-scanner.ts had the same
+ * encoding and the same missing check, which is how one defect became two.
+ */
+export const PACK_MAX = 4095
 export function packInts(values: readonly number[]): string {
   let s = ''
-  for (const v of values) s += String.fromCharCode(35 + (v & 63), 35 + ((v >> 6) & 63))
+  for (const v of values) {
+    if (!Number.isInteger(v) || v < 0 || v > PACK_MAX) {
+      throw new RangeError(
+        `packInts: ${v} is outside the 12-bit range 0..${PACK_MAX} this encoding can represent. ` +
+          'Widen the encoding rather than letting the value wrap.',
+      )
+    }
+    s += String.fromCharCode(35 + (v & 63), 35 + ((v >> 6) & 63))
+  }
   return JSON.stringify(s)
 }
 
