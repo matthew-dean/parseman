@@ -37,4 +37,21 @@ describe('spelling gate — a breached identity control is fatal', () => {
     report(fake(1))
     expect(process.exitCode).toBeUndefined()
   })
+
+  /**
+   * `process.exitCode` is read once, when the process ends. Between `report()`
+   * and that moment `main()` writes `--json` and, under `--update`, BANKS THE
+   * BASELINE — so a non-deterministic run could still commit its own noise as
+   * the ratchet every later run is compared against, and exit 2 having done it.
+   * The verdict has to be a value `main()` can stop on, not a side effect.
+   */
+  it('RETURNS the verdict so main() can stop before writing anything', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(report(fake(1.04)), 'a breached control must be reportable as a value').toBe(true)
+  })
+
+  it('returns false on an honest control, so a good run proceeds', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(report(fake(1))).toBe(false)
+  })
 })

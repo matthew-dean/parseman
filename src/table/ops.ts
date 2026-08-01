@@ -43,12 +43,24 @@ export const OP_REPV = 7
 export const OP_OPT = 8
 /** `XFORM f c` — `f` indexes the reducer; called `(value, span)`. */
 export const OP_XFORM = 9
-/** `NODE b c flags` — `b` indexes the build reducer, `c` is the child.
+/**
+ * `NODE b c flags proj type tags` — SEVEN words. `b` indexes the build reducer
+ * (−1 = none), `c` is the child offset, `proj` the projected child index (−1 =
+ * none), `type` and `tags` index the const pool (`tags` −1 = none).
  *
  * `flags` is a BIT FIELD, not a boolean: bit 2 (`&4`) = the builder reads
- * `triviaLog`, bit 3 (`&8`) = it reads `ctx.state`. Both are resolved at ENCODE
- * time from the reducer's declared arity by the same analysis codegen runs, and
- * forced on under `hostMode: 'cst'`. The driver reads the bits and re-derives nothing. */
+ * `triviaLog`, bit 3 (`&8`) = it reads `ctx.state`, bit 4 (`&16`) = the node has
+ * read fields, bit 5 (`&32`) = `collapse`, bit 6 (`&64`) = `unwrap`, bit 7
+ * (`&128`) = `trailingTrivia`. Bits 2 and 3 are resolved at ENCODE time from the
+ * reducer's declared arity by the same analysis codegen runs, and forced on under
+ * `hostMode: 'cst'`. The driver reads the bits and re-derives nothing.
+ *
+ * TWO ENCODERS SHARE THIS OPCODE and they do NOT agree on its length. The layout
+ * above is `encode.ts` / `exec.ts`. `encode-baseline.ts` / `exec-baseline.ts` emit
+ * the FOUR-word form `NODE b c flags` with bits 2 and 3 only, and refuse
+ * `collapse` / `unwrap` / `project` outright. Neither driver walks the stream by
+ * instruction length, so the divergence is contained — but read the pair you are
+ * in, not this comment alone. */
 export const OP_NODE = 10
 /** `RULE r` — `r` indexes `prog.rules`. */
 export const OP_RULE = 11

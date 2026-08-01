@@ -894,7 +894,16 @@ export async function measurePair(pair: Pair, lower: Lowerer): Promise<PairResul
 function pad(s: string, n: number): string { return s.length >= n ? s : s + ' '.repeat(n - s.length) }
 function lpad(s: string, n: number): string { return s.length >= n ? s : ' '.repeat(n - s.length) + s }
 
-export function report(results: PairResult[]): void {
+/**
+ * Prints the table and returns the HARNESS VERDICT: `true` when the identity
+ * control is breached, i.e. the run certifies nothing.
+ *
+ * The verdict is returned, not merely stapled to `process.exitCode`, because the
+ * exit code is read once at the very end and everything in between — writing
+ * `--json`, BANKING THE BASELINE under `--update` — happens first. A broken
+ * harness must not get to commit its own numbers as the ratchet.
+ */
+export function report(results: PairResult[]): boolean {
   console.log('')
   console.log('SPELLING DIFFERENTIAL — G20 (equivalent grammars must emit equivalent artifacts)')
   console.log(`band ${BAND.toFixed(2)}x  |  ratio = max/min raw bytes of the macro-lowered artifact  |  AST host mode`)
@@ -935,7 +944,7 @@ export function report(results: PairResult[]): void {
     console.log("  Two byte-identical spellings must compile to the same bytes. They did not,")
     console.log("  so nothing above is evidence and this run certifies nothing.")
     process.exitCode = 2
-    return
+    return true
   }
 
   for (const r of disqual) {
@@ -980,6 +989,7 @@ export function report(results: PairResult[]): void {
     }
   }
   console.log('')
+  return false
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,7 +1099,11 @@ async function main(): Promise<void> {
   const results: PairResult[] = []
   for (const p of pairs) results.push(await measurePair(p, lower))
 
-  report(results)
+  // A breached identity control stops the run HERE. Everything below this line
+  // either publishes the numbers (`--json`) or commits them as the ratchet
+  // (`--update`), and a harness that just said "nothing above is evidence" must
+  // do neither.
+  if (report(results)) return
 
   const json = argValue('--json')
   if (json !== undefined) {

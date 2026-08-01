@@ -35,7 +35,7 @@
 import type { Alphabet } from './token-alphabet.ts'
 import { TOK_EOF, TOK_UNKNOWN, TOK_WS } from './token-alphabet.ts'
 import { firstSetFromRegex } from '../regex/first-set.ts'
-import { packInts } from './token-dispatch.ts'
+import { packInts, sharedHelperDecl } from './token-dispatch.ts'
 import { foldCode, foldExpr } from './token-dispatch.ts'
 
 /**
@@ -184,7 +184,13 @@ export function emitScanner(alphabet: Alphabet, ns: string): ScannerEmission {
   const decls: string[] = []
 
   decls.push(`const ${p('_tkChar')} = ${JSON.stringify(CHAR.map(c => String.fromCharCode(c)).join(''))}`)
-  decls.push(`const ${p('_tkUnpack')} = s => { const o = new Int32Array(s.length >> 1); for (let i = 0; i < o.length; i++) o[i] = (s.charCodeAt(i * 2) - 35) | ((s.charCodeAt(i * 2 + 1) - 35) << 6); return o }`)
+  // The DECODER for `packInts`, taken from the one shared helper rather than
+  // re-spelled here. `packInts` itself was deduplicated after a second copy shipped
+  // without the 12-bit bound check; the matching decoder was left copied, so the
+  // two halves of one encoding still lived in two files. They agree today — the
+  // point is that widening the encoding (which the `RangeError` tells you to do)
+  // must not be able to change one half and miss the other.
+  decls.push(sharedHelperDecl('unpack', () => p('_tkUnpack')))
   decls.push(`const ${p('_tkNext_')} = ${p('_tkUnpack')}(${packInts(NEXT)})`)
   decls.push(`const ${p('_tkStart')} = ${p('_tkUnpack')}(${packInts(START)})`)
   decls.push(`const ${p('_tkAccept')} = ${p('_tkUnpack')}(${packInts(ACCEPT)})`)

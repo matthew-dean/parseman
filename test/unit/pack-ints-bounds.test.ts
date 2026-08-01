@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { PACK_MAX, packInts } from '../../src/compiler/token-dispatch.ts'
 
@@ -40,5 +42,30 @@ describe('packInts — the 12-bit range is enforced, not assumed', () => {
     // the other is refused.
     expect(packInts([0])).toBe(packInts([0]))
     expect(() => packInts([4096])).toThrow()
+  })
+})
+
+/**
+ * The ENCODER was deduplicated when the second copy shipped without the bound
+ * check. The matching DECODER stayed copied — `sharedHelperDecl('unpack')` in
+ * token-dispatch.ts and a hand-spelled twin in token-scanner.ts — so half of one
+ * encoding still lived in two files. The two agreed, which is exactly why nothing
+ * caught it: the failure arrives on the day someone widens the encoding, as the
+ * `RangeError` above instructs, and edits one half.
+ *
+ * Counted over source, because that is where the duplication is: an emitted-string
+ * comparison would have passed while the copies existed.
+ */
+describe('the 12-bit decoder has exactly one spelling in src/', () => {
+  const NEEDLE = 'charCodeAt(i * 2)'
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap(e =>
+      e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith('.ts') ? [path.join(dir, e.name)] : [])
+
+  it('is spelled in one file, not once per consumer', () => {
+    const root = path.join(import.meta.dirname, '../../src')
+    const hits = walk(root).filter(f => readFileSync(f, 'utf8').includes(NEEDLE))
+      .map(f => path.relative(root, f)).sort()
+    expect(hits, 'the decoder must live only beside the encoder it inverts').toEqual(['compiler/token-dispatch.ts'])
   })
 })

@@ -94,7 +94,6 @@ function foldText(t: string): string {
   return out
 }
 
-/** Pack a non-negative int array two chars per value. */
 /**
  * Pack a non-negative int array into a two-chars-per-value string literal.
  *
