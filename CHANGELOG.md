@@ -132,6 +132,25 @@ it.** If you compute an insert index from a trivia entry, index it against
 - Emitted code grows ~101 B per `sepBy` call site (one guarded truncation), around
   +0.2-0.9% raw and +0.05-0.33% gzip per size-guard fixture.
 
+### BREAKING — `run({ profile })` and the `RunProfile` types are removed
+
+`RunOptions.profile`, `RunResult.profile`, and the exported `RunProfile` /
+`RunProfilePass` types are gone. The three-pass profiling boundary (recognizer /
+structuralCapture / hostConstruction) has had no working implementation since the
+counters stopped being emitted into compiled artifacts, and `run({ profile: true })`
+threw unconditionally — while still typechecking, because the option remained in the
+public type. An option that advertises a capability, passes every gate, and fails
+only for whoever calls it is worse than no option at all.
+
+**Migration:** none is possible for the phase numbers, and none is needed for anything
+else — omitting `profile` was already the only way to get a result. `run()` output is
+otherwise unchanged. For allocation pressure, `bench/alloc-count.ts` measures GC
+scavenges, major GCs, and pause time over a fixed parse batch.
+
+`bench/alloc-profile.ts`, the only consumer, is deleted; its GC/heap half duplicated
+`bench/alloc-count.ts`. `docs/future/bench-typecheck-followups.md` §2 records what the
+option measured and what a restoration would take.
+
 Six lanes, assembled onto the 0.46.0 shared prefix. Every lane was verified
 independently on top of the prefix before inclusion — see the pull request body
 for the per-lane verification status and the measured release-over-release

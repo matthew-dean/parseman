@@ -184,7 +184,6 @@ type RunOptions = {
     select: readonly string[]
   }
   tolerant?: boolean              // enable list recovery diagnostics
-  profile?: boolean               // compiled-only profiling passes
 }
 
 type RunResult = {

@@ -76,15 +76,6 @@ export type RunOptions = {
    * fails, so none of the machinery runs.
    */
   tolerant?: boolean
-  /**
-   * Run three compiled-parser-only profiling passes: recognizer (no global
-   * sinks), structural capture without the host, then the normal host path. This
-   * is a measurement boundary, not a parser mode; ordinary `run()` output is
-   * unchanged when omitted. The input is parsed THREE times — each pass gets its
-   * own shallow copy of `options.state`, so keep per-parse state shallow (only
-   * the top level is isolated between passes).
-   */
-  profile?: boolean
 }
 
 export type RootTriviaCapture = {
@@ -94,26 +85,6 @@ export type RootTriviaCapture = {
   readonly select: readonly string[]
   /** Lazy lookup over `rows`; no tokens or strings are materialized. */
   readonly index: RootTriviaIndex
-}
-
-export type RunProfilePass = {
-  ms: number
-  nodes: number
-  childSlots: number
-  rawSlots: number
-  triviaSlots: number
-  fieldSlots: number
-  hostCalls: number
-}
-
-export type RunProfile = {
-  /** Existing `voidOf(transform(..., () => undefined))` semantics, generalized
-   * to compiled structural nodes: no `ch`/`raw`/`tl` capture or raw entries. */
-  recognizer: RunProfilePass
-  /** Captures children/raw/trivia/fields but suppresses node construction. */
-  structuralCapture: RunProfilePass
-  /** The ordinary parser path, including its injected build host. */
-  hostConstruction: RunProfilePass
 }
 
 export type RunResult = {
@@ -137,8 +108,6 @@ export type RunResult = {
    * there's junk here". Only meaningful on success — a failed parse reports its own
    * `span`/`expected`. */
   unconsumedFrom: number | null
-  /** Present only when `RunOptions.profile` is true. */
-  profile?: RunProfile
 }
 
 /**
@@ -208,8 +177,6 @@ function guardRemovedFields(result: RunResult): RunResult {
 const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): ParseResult<unknown> =>
   typeof r === 'function' ? r(input, pos, ctx) : r.parse(input, pos, ctx)
 
-type ProfilePhase = NonNullable<ParseContext['_pmProfile']>['phase']
-type ProfileState = NonNullable<ParseContext['_pmProfile']>
 type RunnableMeta = {
   readonly _meta?: {
     readonly triviaKindLabels?: readonly string[]
@@ -242,7 +209,7 @@ function makeSelectedRootLabelIndex(labels: readonly string[]): Readonly<Record<
 }
 
 /** Keep the run-entry closure independent from grammar-construction helpers. */
-function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: ProfilePhase, profileState?: ProfileState): RunResult {
+function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult {
   if (typeof entry !== 'function' && typeof (entry as Combinator<unknown> | undefined)?.parse !== 'function') {
     throw new TypeError(
       `run(): start production is ${entry === null ? 'null' : typeof entry}, not a rule — the requested grammar rule does not exist (check the rule name).`,
@@ -255,13 +222,6 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
     ? makeSelectedRootLabelIndex(rootTriviaSelection)
     : undefined
   const errors: ParseError[] = []
-  const profile = profileState ?? (phase === undefined
-    ? undefined
-    : { phase, nodes: 0, childSlots: 0, rawSlots: 0, triviaSlots: 0, fieldSlots: 0, hostCalls: 0 })
-  // NOT "no output" — the `capture` phase still allocates per-node children/raw/
-  // trivia buffers and records slot counts. This flag only omits the two GLOBAL
-  // sinks (`_triviaLog`, `_errors`) from the context; hence `skipGlobalSinks`.
-  const skipGlobalSinks = phase === 'recognizer' || phase === 'capture'
   // Grammar-level ambient trivia declared via rules({ trivia }, factory): install
   // it as ctx.trivia so it's ambient for the whole parse (the interpreter path;
   // a compiled entry has it baked in and carries no _meta). parser/noTrivia still
@@ -312,19 +272,14 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   )
   const ctx: ParseContext = {
     trackLines: false,
-    ...(skipGlobalSinks
-      ? { _pmProfile: profile! }
-      : {
-        ...(captureRootTrivia
-          ? {
-              _rootTriviaLog: selectedRootLog!,
-              _rootTriviaKindIndex: selectedRootLabelIndex!,
-              _rootTriviaStrictScopes: true,
-            }
-          : {}),
-        _errors: errors,
-        ...(profile === undefined ? {} : { _pmProfile: profile }),
-      }),
+    ...(captureRootTrivia
+      ? {
+          _rootTriviaLog: selectedRootLog!,
+          _rootTriviaKindIndex: selectedRootLabelIndex!,
+          _rootTriviaStrictScopes: true,
+        }
+      : {}),
+    _errors: errors,
     build: options.build,
     state: options.state,
     ...(grammarTrivia !== undefined
@@ -367,25 +322,17 @@ function runOnce(entry: Runnable, input: string, options: RunOptions, phase?: Pr
   }
 }
 
-/* The three-pass profiling driver (`clonePassState` / `profilePass`) was removed
- * with the emitted counters it read. `runOnce` still accepts `phase`/`profileState`
- * and `RunProfile`/`RunProfilePass` are still exported, so the interpreted
- * reimplementation can restore the driver without reshaping the public result. */
+/* `RunOptions.profile` — the three-pass profiling boundary (recognizer /
+ * structuralCapture / hostConstruction) — is GONE, along with `RunResult.profile`,
+ * `RunProfile`, `RunProfilePass`, the `ProfilePhase`/`ProfileState` plumbing and
+ * `ParseContext._pmProfile`. The counters it read stopped being emitted into
+ * compiled artifacts in 9751cce (profiling is interpreted-mode only: the gates cost
+ * a `_ctx._pmProfile` read plus ~15 threaded ternaries on EVERY node), the
+ * interpreter never implemented them, and so the option only ever threw. A
+ * well-typed call into an unconditional throw is worse than no option at all.
+ * What a restoration would take is recorded in
+ * `docs/future/bench-typecheck-followups.md`. */
 
 export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
-  if (!options.profile) return guardRemovedFields(runOnce(entry, input, options))
-  // Profiling counters are no longer emitted into compiled artifacts — they cost a
-  // `_ctx._pmProfile` read plus ~15 threaded ternaries on EVERY node, which is the
-  // "diagnostic machinery in codegen" the compiled path must not pay for. The
-  // interpreter has never implemented `_pmProfile` either, so no route can answer
-  // this today. Fail LOUDLY: the passes below would otherwise all report zero, and
-  // an all-zero profile reads as a real measurement rather than as "I could not
-  // run" — the exact defect `guardRemovedFields` exists to prevent for the removed
-  // 0.44 fields. The pass machinery is retained, unmodified, for the interpreted
-  // reimplementation.
-  throw new TypeError(
-    'run({ profile: true }) is unavailable: profiling counters are no longer compiled into '
-    + 'parser artifacts, and the interpreter does not implement them yet. Profiling is moving '
-    + 'to interpreted mode.',
-  )
+  return guardRemovedFields(runOnce(entry, input, options))
 }

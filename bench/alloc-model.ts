@@ -10,12 +10,12 @@
  * on the ParseContext it passes to `parseWithContext`, which is what actually
  * takes effect. See `docs/future/bench-typecheck-followups.md`.
  *
- * Exports a compiled entry + host so bench/run scripts can profile the three
- * phases (recognizer / structuralCapture / hostConstruction) and A/B wall-clock.
+ * Exports the compiled grammar + two hosts so the alloc benches can A/B
+ * wall-clock and GC pressure (`alloc-ab.ts`, `alloc-count.ts`, `alloc-one.ts`).
  */
 import {
   rules, node, regex, literal, choice, many, sequence, trivia, compile,
-  type ParseContext, type BuildHost,
+  type BuildHost,
 } from '../src/index.ts'
 
 const ws = trivia(regex(/(?:[ \t\n\r]+|\/\*(?:[^*]|\*(?!\/))*\*\/)+/))
@@ -71,8 +71,9 @@ function makeHost(optOutChildren: boolean): BuildHost {
 export const host = makeHost(false)
 export const hostOptOut = makeHost(true)
 
-export const entry = (input: string, pos: number, ctx: ParseContext) =>
-  compiled.parseWithContext(input, ctx, pos)
+/* The `entry` export (a `run()`-shaped rule function) went with
+ * `bench/alloc-profile.ts`: it existed only for the three-phase profiling run,
+ * and every remaining consumer drives `compiled.parseWithContext` directly. */
 
 /** Build a large jess-like value-heavy input. */
 export function buildInput(decls = 1500): string {

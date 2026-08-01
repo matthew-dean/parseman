@@ -374,20 +374,6 @@ export type ParseContext = {
   /** Framework-internal: value/span already consumed by an enclosing dispatch(). */
   _routed?: { value: unknown; span: Span } | undefined
   /**
-   * Framework-internal: opt-in `run({ profile: true })` pass state. This is
-   * deliberately not a parser mode: codegen reads it only while the profiling
-   * driver is comparing its recognizer, capture-only, and normal-host passes.
-   */
-  _pmProfile?: {
-    phase: 'recognizer' | 'capture' | 'host'
-    nodes: number
-    childSlots: number
-    rawSlots: number
-    triviaSlots: number
-    fieldSlots: number
-    hostCalls: number
-  } | undefined
-  /**
    * Framework-internal optional line-start collector. Compiled parsers emitted
    * with line tracking append newline-derived line starts here while matching
    * terminals; the driver normalizes/dedupes once before annotating spans.

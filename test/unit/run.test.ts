@@ -5,8 +5,8 @@
  * compiled map (bare functions), and reports leftover after skipping the
  * grammar's own trivia.
  */
-import { describe, it, expect, vi } from 'vitest'
-import { rules, regex, many, choice, parser, trivia, classifiedTrivia, node, field, sequence, literal, compile, run, label, oneOrMore } from '../../src/index.ts'
+import { describe, it, expect } from 'vitest'
+import { rules, regex, many, choice, parser, trivia, classifiedTrivia, node, sequence, literal, compile, run, label, oneOrMore } from '../../src/index.ts'
 
 const blockTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))
 const lineTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//), regex(/\/\/[^\n]*/))))
@@ -123,31 +123,10 @@ describe('run() — generic grammar-entry driver', () => {
     expect(run(g.Doc as never, 'a b c').ok).toBe(true)
   })
 
-  it('refuses run({ profile: true }) loudly now that counters are not compiled in', () => {
-    const profiled = node(
-      'Doc',
-      parser({ trivia: blockTrivia }, sequence(
-        field('left', node('Word', regex(/[a-z]+/))),
-        literal(':'),
-        field('right', node('Word', regex(/[a-z]+/))),
-      )),
-    )
-    const compiled = compile(profiled)
-    const host = vi.fn((type: string, children: ReadonlyArray<unknown> | undefined) => ({ _tag: 'node', type, children }))
-    const entry = (input: string, pos: number, ctx: import('../../src/index.ts').ParseContext) =>
-      compiled.parseWithContext(input, ctx, pos)
-
-    // Profiling counters are no longer emitted into compiled artifacts, and the
-    // interpreter never implemented them. The failure mode that MUST NOT happen is
-    // an all-zero profile that reads as a real measurement, so this asserts the throw.
-    expect(() => run(entry, 'a : b', { build: host, profile: true })).toThrow(TypeError)
-    expect(() => run(entry, 'a : b', { build: host, profile: true })).toThrow(/no longer compiled into/)
-
-    // The ordinary (non-profiling) path over the same entry is unaffected.
-    const plain = run(entry, 'a : b', { build: host })
-    expect(plain.ok).toBe(true)
-    expect(plain.profile).toBeUndefined()
-  })
+  /* The `run({ profile: true })` pin is gone with the option. It asserted that the
+   * three-pass profiling boundary threw rather than reporting an all-zero profile;
+   * the option itself is now removed from `RunOptions`, so there is nothing left to
+   * call. See docs/future/bench-typecheck-followups.md for what restoring it takes. */
 
   it('exposes a lazy selected-root trivia index only on demand', () => {
     const rw = classifiedTrivia({

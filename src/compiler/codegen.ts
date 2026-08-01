@@ -4005,22 +4005,25 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   const hostTriviaGate = `_ctx.build !== undefined && (_ctx.build._parsemanCaptureTrivia !== undefined ? _ctx.build._parsemanCaptureTrivia(${JSON.stringify(def.type)}) : (_ctx._pmCapTL ??= _hostReads(_ctx.build, 5)))`
   // Profiling is INTERPRETED-MODE ONLY and is deliberately not compiled in.
   //
-  // `run({ profile })` drives its recognizer/capture/host phases through
-  // `_ctx._pmProfile`. Emitting those phase gates into the artifact cost a
-  // `_ctx._pmProfile` read plus two locals on EVERY node, and threaded a ternary
-  // through ~15 further per-node expressions — machinery a normal parse never
-  // executes. The commit that hoisted the reads to two locals recorded the cost it
-  // was walking back: "~+10–15% on 2–3µs cases".
+  // Profiling drove its recognizer/capture/host phases through `_ctx._pmProfile`.
+  // Emitting those phase gates into the artifact cost a `_ctx._pmProfile` read plus
+  // two locals on EVERY node, and threaded a ternary through ~15 further per-node
+  // expressions — machinery a normal parse never executes. The commit that hoisted
+  // the reads to two locals recorded the cost it was walking back: "~+10–15% on
+  // 2–3µs cases".
+  //
+  // With the counters gone there was no route left to answer a profile request, so
+  // `RunOptions.profile` (and `RunResult.profile`, `RunProfile`, `_pmProfile`) were
+  // removed too rather than left as an option that only threw.
   //
   // These stay as string GATES rather than being deleted inline so the emission
   // sites keep one shape; `tern`/`notGate`/`orGate` fold them away, so the literal
-  // `'false'` here means the dead branch never reaches the artifact at all.
-  // A compiled artifact is stamped un-profilable (see `FUSED_NO_PROFILE`) and
-  // `run()` refuses `profile` on it rather than silently reporting zeros.
+  // `'false'` here means the dead branch never reaches the artifact at all — and a
+  // driver-side reinstatement re-enters here without reshaping every emission site.
   const profileRecognizer = 'false'
   const profileCapture = 'false'
   // Direct builders normally produce their own AST and never inspect CST
-  // children/rawChildren. Keep cstBuildHost and profile({ capture: true })
+  // children/rawChildren. Keep cstBuildHost and the `profileCapture` phase
   // truthful by dynamically restoring those collectors only for those explicit
   // modes. The normal AST route pays a boolean/property read instead of a fresh
   // array for every elided collector.
@@ -4209,8 +4212,8 @@ function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: strin
   // sole exception, so a direct object never becomes a CST child. Linkability
   // must not change that ownership rule.
   const hostBuildArgs = `${JSON.stringify(def.type)}, ${chV}, ${fObj}, ${nodeSpanV}, ${rawV}, ${tlV}, ${stV}${def.tags !== undefined && def.tags.length > 0 ? `, ${JSON.stringify(def.tags)}` : ''}`
-  // No profiling comma-expression: `run({ profile })` counts host calls in
-  // interpreted mode, so the compiled host branch is the bare call.
+  // No profiling comma-expression: host-call counting belongs to interpreted mode,
+  // so the compiled host branch is the bare call.
   const hostBuildExpr = `_ctx.build(${hostBuildArgs})`
   // A direct builder's consumer is fixed at COMPILE time, so this is a constant choice,
   // not a per-node `_ctx.build?._parsemanCstOutput === true` read. `'cst'` builds through

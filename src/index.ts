@@ -119,7 +119,7 @@ export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, Node
 export { parseDoc } from './functional/doc.ts'
 export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts'
 export { run } from './functional/run.ts'
-export type { RootTriviaCapture, RunResult, RunOptions, RunProfile, RunProfilePass, Runnable } from './functional/run.ts'
+export type { RootTriviaCapture, RunResult, RunOptions, Runnable } from './functional/run.ts'
 export { GRAMMAR_COVERAGE_DEFINITIONS, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, grammarCoverageDefinitions, composedGrammarCoverageDefinitions, runWithGrammarCoverage } from './coverage.ts'
 export type { GrammarCoverageCollector, GrammarCoverageDefinition, GrammarCoverageSnapshot, GrammarInstrumentationContext, GrammarTraceEvent, GrammarTracePhase, GrammarTraceSink, GrammarTraceSnapshot } from './coverage.ts'
 export { buildTriviaIndex } from './cst/trivia-index.ts'
