@@ -3,7 +3,666 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.46.0 — unreleased
+## 0.47.0 — unreleased
+
+### BREAKING — a list now contributes its ITEMS and nothing else
+
+Read this section before upgrading. Both changes below alter the shape of the tree
+your reducers receive. **Your parse will still succeed and nothing will throw** —
+that is precisely why it is called out at the top rather than buried in a bullet.
+
+#### 1. `sepBy` / `oneOrMoreSep` no longer put separators in `children`
+
+`sepBy(item, literal(','))` over `a,b,c` used to contribute **five** children to
+the enclosing `node()` — `['a', ',', 'b', ',', 'c']`, items at even indices and
+separators at odd. It now contributes **three** — `['a', 'b', 'c']`.
+
+The separator is still matched and still consumed. It is simply not an item, and a
+list contributes the items of the list. `many` and `oneOrMore` already behaved this
+way; `sepBy` and `oneOrMoreSep` were the outliers.
+
+**Why this is worth a break.** parseman's own analyzer described a `sepBy` result as
+"a flat item list", which describes the VALUE and not the children — and that is the
+sentence an author reads before writing `children[1]` and getting a comma. It fails
+silently: the parse succeeds, the tree is quietly wrong, nothing errors. In a single
+day it cost six lanes a debugging round each, with full context and the source open.
+
+**How to tell whether you are affected.** You are affected if any reducer for a
+`node()` containing a `sepBy` or `oneOrMoreSep`:
+
+- indexes `children` positionally (`children[1]`, `children[i * 2]`, array
+  destructuring `([a, b, c]) => …`), or
+- correlates a `children` index with a `triviaLog` insert index (those refer to
+  **`rawChildren`**, which still contains the separators — so the two arrays no
+  longer advance in step), or
+- reads `children.length` to count anything, or
+- filters `children` for the separator's own token.
+
+You are NOT affected if your reducer only filters `children` by node type, or
+captures the separator with `field()` — field capture is a separate channel and is
+untouched.
+
+**The mechanical fix**, in order of preference:
+
+1. **Delete the arithmetic.** A reducer that did `children.filter((_, i) => i % 2 === 0)`
+   or `children[i * 2]` should now just use `children`. This is the common case and
+   it makes the reducer shorter.
+2. **Read the separator from `rawChildren`.** Separators remain there, in source
+   order, so nothing is lost. `rawChildren` is the same channel trivia already uses:
+   consumed, absent from `children`, still reachable. Declare the 4th positional
+   parameter of your `build` callback to receive it.
+3. **Opt back in with `keepSeparator()`** — see below.
+
+#### 2. New: `keepSeparator(sep)`
+
+Wrap the SEPARATOR argument to keep separators interleaved in `children`:
+
+```ts
+sepBy(g.Value, literal(','))                    // items only — the default
+sepBy(g.Track, keepSeparator(SLASH_OR_COMMA))   // items AND separators, interleaved
+```
+
+Reach for it when the separator could have matched **more than one thing** — a
+`choice`, a regex with alternation or a quantifier, a rule reference — and a
+consumer depends on which one matched. In CSS the separator carries meaning:
+`grid-area: 1 / 2` and `font: 12px/1.5` do not mean what `1, 2` means.
+
+The underlying rule: **a combinator may collapse only what its construction makes
+recoverable.** `sepBy(x, literal(','))` has a separator fixed at construction, so
+dropping it destroys nothing. `sepBy(x, choice(literal(','), literal('/')))` does
+not, so the author has to say so.
+
+It is deliberately a wrapper on the separator rather than an option in the options
+bag. The call site then STATES its own children arity, which is the exact failure
+being fixed — a name that lies is what created this. `keepSeparator` in the source
+is the only documentation that reaches an author who never reads docs.
+
+#### 3. BREAKING — `balanced()` contributes exactly one leaf
+
+`balanced('(', ')')` over `"(a(b)c)"` contributed **seven** children; it now
+contributes **one**, equal to the whole matched source slice, with the same span —
+matching `scanTo`, its sibling in the same file, which always did this.
+
+`balanced` is declared `Combinator<string>` and its implementation ends in a
+callback that reassembles the interior into exactly that one string. But it is
+spelled `transform(sequence(literal(open), many(…), expect(literal(close))))`, and
+`transform` is transparent to CST capture, so the reassembled string never reached
+the parent. The declared type and the emitted arity disagreed and nothing checked.
+Unterminated input recovered via `expect()` behaves the same way — one leaf over
+what was consumed.
+
+You are affected if a reducer counted or indexed children across a `balanced()`.
+The fix is to stop compensating: a `token(balanced(…))` wrapper added to work
+around the old behaviour is now redundant double-wrapping and should be removed.
+
+**This closes the upstream half of P19.** The defect was upstream all along, so the
+downstream `token(...)` wrappers that jess added to compensate are now removable —
+they are the workaround, not the fix, and they can come out once jess moves to this
+release. `_balancedAmbient` and the interior self back-edge stay on the inner
+combinator, so the ambient-`scanSkip` rebuild and nested recursion are unaffected.
+
+#### A latent defect this EXPOSED rather than created
+
+Downstream consumers that walk `children` to compute a **trivia insert index** were
+already wrong, and this release is what makes it visible.
+
+`pushCstTriviaEntry` computes `const insertIdx = cstRawLen(ctx)`
+(`src/cst/capture-buffer.ts`). **Trivia insert indices have always addressed
+`rawChildren`, never `children`.** Two Less reducers in jess walked `children` and
+used that index as an insert index into it. That only ever worked by coincidence: a
+plain `sepBy` made the two arrays the same length, so the wrong array had the right
+length and the bug was invisible.
+
+Once a list stops contributing separators the two lengths diverge by exactly the
+separator count, and the index silently drops comments and line breaks that sat
+around separators from the emitted value layout. No error, no throw — the same
+silent-wrongness this release exists to remove.
+
+**The list change did not introduce this. It removed the coincidence that was hiding
+it.** If you compute an insert index from a trivia entry, index it against
+`rawChildren`.
+
+#### Notes
+
+- Incremental structural list-reuse now derives a list's separator from the
+  GRAMMAR (`sepBy`'s own `separator` def) instead of sniffing it out of `children`.
+  A list whose separator is not a `literal` — i.e. not recoverable from
+  construction — no longer qualifies for a structural splice and falls back to a
+  full, correct reparse.
+- Emitted code grows ~101 B per `sepBy` call site (one guarded truncation), around
+  +0.2-0.9% raw and +0.05-0.33% gzip per size-guard fixture.
+
+### BREAKING — `run({ profile })` and the `RunProfile` types are removed
+
+`RunOptions.profile`, `RunResult.profile`, and the exported `RunProfile` /
+`RunProfilePass` types are gone. The three-pass profiling boundary (recognizer /
+structuralCapture / hostConstruction) has had no working implementation since the
+counters stopped being emitted into compiled artifacts, and `run({ profile: true })`
+threw unconditionally — while still typechecking, because the option remained in the
+public type. An option that advertises a capability, passes every gate, and fails
+only for whoever calls it is worse than no option at all.
+
+**Migration:** none is possible for the phase numbers, and none is needed for anything
+else — omitting `profile` was already the only way to get a result. `run()` output is
+otherwise unchanged. For allocation pressure, `bench/alloc-count.ts` measures GC
+scavenges, major GCs, and pause time over a fixed parse batch.
+
+`bench/alloc-profile.ts`, the only consumer, is deleted; its GC/heap half duplicated
+`bench/alloc-count.ts`. `docs/future/bench-typecheck-followups.md` §2 records what the
+option measured and what a restoration would take.
+
+Six lanes, assembled onto the 0.46.0 shared prefix. Every lane was verified
+independently on top of the prefix before inclusion — see the pull request body
+for the per-lane verification status and the measured release-over-release
+numbers.
+
+- **New: `adjacent()` and `notAdjacent()` — zero-width ADJACENCY assertions.** They
+  ask about the GAP behind the cursor, never about what a separator looks like:
+  `adjacent()` succeeds when nothing separated the previous term from here,
+  `notAdjacent()` when something did. This is the authoring surface for
+  `docs/design/derived-tokenization.md` §4 ("Adjacency is a bit set at scan time"),
+  whose positive half `noTrivia` has spelled all along and whose negative half had no
+  spelling at all. Without it, a production that needs "these two are SEPARATED" had to
+  disable trivia and re-spell whitespace as a regex —
+  `noTrivia(sequence(regex(/(?:[ \t\n\r\f]|\/\*…\*\/)+/), op, …))` — which is a second,
+  private definition of the dialect's trivia table inside one expression production, and
+  it drifts: two productions in one file end up disagreeing about what separates two
+  operands, with nothing to report it.
+
+  `notAdjacent({ kinds: [...] })` narrows the assertion to trivia CATEGORIES from
+  `classifiedTrivia({...})`. `notAdjacent({ kinds: ['whitespace'] })` accepts `a + b` and
+  REJECTS `a/*x*/+b`, which is exactly css-values-4 §10.1 for `calc()`: `+`/`-` need real
+  whitespace, because a comment vanishes at tokenisation. A `kinds` name the active
+  trivia table does not declare, or a `kinds` filter over unclassified trivia, is a hard
+  `TypeError` — at compile time for compiled output, on first reach for the interpreter —
+  deliberately NOT the lenient "unknown name is a no-op" policy `triviaKindMask` uses for
+  capture preferences, because a silently-dropped name turns the assertion back into a
+  bare `notAdjacent()` and makes `calc()` quietly accept the comment form.
+
+  Both are lowered as MARKER TAGS that `sequence` recognises at term `i` and tests at that
+  boundary against the trivia scan the boundary already performs — zero context fields, no
+  extra branch in the ordinary boundary, and nothing at all emitted for a grammar that
+  writes neither. That lowering also sidesteps the trivia REWIND: a self-contained
+  zero-width combinator at index `i` matches zero-width by construction, so `sequence`'s
+  "term matched empty, roll the trivia back out" branch would undo the gap it had just
+  asserted. The assertion moves no cursor, so the tree, the spans and the trivia log are
+  identical to the same sequence written without it. The compiled kind filter is an
+  independently emitted per-arm probe (`_akN`) rather than a new out-channel on the shared
+  `_tfN` trivia scanner, so the sites that never ask pay nothing. Interpreter/compiled
+  parity is pinned per case in `test/parity/adjacency.test.ts`.
+
+  Placement is checked: an adjacency assertion tests the gap after the PRECEDING term, so
+  `sequence(notAdjacent(), …)` throws at construction, and reaching one outside a sequence
+  boundary throws rather than silently answering "no gap here". Both are zero-width and are
+  dropped from a sequence's first-set (`isZeroWidthAssertion`), so neither widens a choice
+  arm's dispatch.
+- **Fixed: the token alphabet's key delimiters were written as raw control BYTES, which
+  made the source file binary and corrupted the emitted artifact.** `keyOf` in
+  `src/compiler/token-alphabet.ts` embedded U+0000 and U+0001 literally rather than as
+  escape sequences. The repair is one line and changes nothing observable — the escapes
+  produce byte-identical strings — but the DETECTION is the part worth recording, because
+  this class of defect has now cost this project roughly sixteen instruments.
+
+  A raw control byte makes a file **binary** to the whole toolchain at once: `git diff`
+  shows `- -` instead of a diff, GitHub declines to render it, and — the one that actually
+  did the damage — **`grep -rn` skips it silently and exits 0**. At a shell, a search that
+  found nothing and a search that *refused to look* are indistinguishable. That is how a
+  305-line module (`src/compiler/token-scanner.ts`, reached only from this file) stayed
+  invisible to every search anyone ran against it.
+
+  The guard is to treat an empty search result as a question rather than an answer: check
+  for the `binary file matches` condition explicitly, or run the tree through
+  `pnpm check:control-bytes`, which is what caught this one. The same defect had already
+  been copy-pasted into the token-cursor measurement rigs and was fixed there too; the
+  measured counts are unchanged.
+
+- **A factory body that fails to evaluate now names the binding and the cause.** The
+  dominant real cause is a forward reference — `const A = node('A', B, …)` above
+  `const B = …` — and the macro reported it as a generic "rules(...) factory isn't
+  statically evaluable", or, through `composeLeaf`, as a complaint about the ARGUMENT
+  SHAPE (`final argument must be a local rules() map`). That message points at the
+  wrong cause and was twice reported as a grammar defect. It now reads: ``Val``
+  references ``Tok`` before its declaration — a temporal dead zone … move the
+  declaration above ``Val``, or use ``g.Tok``, which is order-free. `composeLeaf` no
+  longer restates a shape error when the argument had the right shape and failed to
+  evaluate; when the leaf is an unresolved identifier it names it.
+
+  Worth stating plainly, because it is NOT the same class as the two entries above:
+  this constraint is **JavaScript's, not parseman's**. The interpreter throws
+  `ReferenceError: Cannot access 'Tok' before initialization` on exactly the sources
+  the macro refuses, so the two agree; `g.X` is order-free only because the proxy mints
+  a ref and defines it in a second phase. A `g.X` → bare-const conversion is therefore
+  safe **iff** the const is declared above every use and is not on a reference cycle —
+  and dropping a const from the returned map is not what breaks such a sweep.
+
+- **A terminal inside a `node()` no longer emits three runtime guards the emitter can
+  already decide.** `emitNode` installs both collectors itself
+  (`_ctx._cstLeaves = chV; _ctx._cstRawChildren = rawV`), and for a direct-builder node
+  both are compile-time literals — a fresh `[]` or `undefined`. The per-terminal
+  capture preamble was nonetheless emitting `if (_cstLeaves || _cstRawChildren)` plus
+  two inner branches at every terminal inside every node. Measured per-terminal cost
+  296.3 B → 109.3 B (−63%); a `node()` site at two terminals 2,283 B → 1,901 B over the
+  same body written bare (−17%). The `node-scale` probes, which vary node density, fall
+  10.04% (4 nodes) → 11.50% (32 nodes); `example/css` −3.00%; 48,965 B reclaimed across
+  the size fixtures. Gated on tree identity: 220 real trees over 110 real CSS files,
+  interpreted and compiled, identical to `bb2e587`. This matters beyond bytes —
+  `node()` is the correct spelling where `transform()` corrupts the tree by spreading
+  its result, so the correct spelling was the expensive one and nothing said so. The
+  remaining per-site cost is 1,683 B of capture-scope frame, labelled block and
+  fail-path truncation; the truncation is decidable by the same fact and is the next
+  lever.
+
+- **Fixed a TDZ throw when a recursive combinator has a SHARED interior.** A
+  combinator lying on a self-reference cycle could be hoisted to a shared `const`,
+  i.e. emitted outside the `ref()/define()` closure that binds the cycle's only lazy
+  edge. The back-edge then re-resolved through the cycle target's own const and the
+  two decls read each other eagerly — `const _s1 = many(choice(_s0, …))` declared
+  before `_s0`, `ReferenceError: Cannot access '_s0' before initialization` at compose
+  time. No declaration order fixes it, so cycle-interior nodes are now inlined; they
+  are re-hoisted by identity on re-lowering. A nested recursive combinator that is
+  itself on the cycle keeps its own closure, with the enclosing ref vars still in
+  scope. `balanced()`'s interior is referenced once and never earned a const, so the
+  IR and macro bytes are unchanged at every existing call site — verified identical on
+  both surfaces across the byte gate, against `bb2e587`.
+- **Fixed `compose()` dropping ambient `scanSkip` inside a `balanced()` interior** —
+  an interpreter-versus-compiled divergence in shipped code. `balanced()` records the
+  obligation as `_balancedAmbient`, an own property held outside `_def` so static
+  analysis keeps seeing the eager interior; structural IR serialization therefore lost
+  it, and the composed parser stopped at the first delimiter hidden inside a string or
+  comment while the interpreter and a direct compile did not. A balanced now
+  round-trips as the constructor call that built it, so `balanced()` re-creates the
+  marker; `raw: true` stays structural. Measured over three surfaces in one process:
+  `(')' e)`, `("a)b" e)` and `(a /* ) */ b)` diverged only under compose, and now
+  agree. IR shrinks (a bare balanced 410 → 98 B) because the derived interior is no
+  longer serialized.
+- **Fixed `routed(fallback)` losing its fallback under the macro.** The macro's
+  generic constructor table entered `routed` as zero-arg, so the fallback was dropped
+  silently and a production written to work both inside and outside a `dispatch()`
+  branch lost its out-of-branch behaviour when compiled — while the interpreter kept
+  it. Bare `routed()` is byte-identical.
+- **Fixed a `makeWhen(...)` alias rejecting matcher keys that `when(...)` accepts.**
+  `makeWhen(opts)` is `(key, parser) => when(key, parser, opts)`, so it accepts every
+  key `when` does, but the macro's factory branch handled only string and string-array
+  keys. An arm keyed by `startsWith`/`endsWith`/`matches` through the alias was a hard
+  macro failure — `rules(...) factory isn't statically evaluable` — for a grammar the
+  interpreter builds, while the identical un-aliased `when(matcher, …)` compiled. Two
+  grammar authors cut working function routing to get around it.
+- **`balanced()` gains `strict: true`, making an unmatched close a real failure.**
+  The close is wrapped in `expect()`, which never fails — on a miss it returns a
+  ParseError, pushes it to `ctx._errors`, and reports a zero-width span. So
+  `balanced()` was **unfailable once its opener was consumed**: the rejection was
+  already computed and recorded, but nothing could branch on it.
+- **What that blocked:** `choice()` could not fall through to another arm,
+  `not()` could not negate an unclosed group, and an enclosing `sequence()`
+  proceeded as though the group had closed. `balanced('(', ')')` returns ok on
+  `(a`.
+- **`strict: true` requires the close**, so the group fails and rolls back to the
+  opener. Nested groups inherit it (the interior recurses through the same
+  combinator). Ambient `scanSkip` rebuilds — interpreter and codegen — carry
+  `strict` through, so a grammar declaring `scanSkip` does not silently get the
+  recovering interior back.
+- **Strict mode DOES change acceptance for unterminated input — that is the
+  point — and it does NOT change the delimiter-pairing rule.** Being precise,
+  since an earlier draft of this entry claimed it changed nothing:
+  - An unterminated group now FAILS where it previously returned ok. Consequently
+    an enclosing `choice()` can fall through to another arm and `not()` can
+    negate it. Both are behaviour changes, and both are the reason for the flag.
+  - What is unchanged is the PAIRING rule: `balanced()` tracks ONE pair, and a
+    delimiter from any other pair is content, by design. `([c}])` stays
+    well-formed to it in both modes, so `var(--x, ([c}]))` keeps parsing —
+    pinned as a test on both.
+- **Opt-in; the default is untouched.** Recovery is what a tolerant document
+  parse wants and existing grammars are built on it.
+- Verified byte-identical: 25 compiled artifacts across 11 `balanced()` call
+  shapes, the ambient-`scanSkip` rebuild path, and the four example grammars,
+  baseline vs HEAD. The comparison was shown to be sensitive — flipping the
+  default moves 16 of the 25.
+- Tree-identity gate: 111 css files, 111 real trees, 0 mismatched
+  (`bench/tree-identity.ts`).
+- 31 new tests in `test/unit/balanced-strict.test.ts`; full suite 181 files /
+  3,438 passing.
+
+- **New `pnpm spelling:gate` — a spelling differential for G20 ("equivalent grammars
+  must emit equivalent artifacts").** Takes a construct, rewrites it into a provably
+  equivalent form, lowers both through the real macro pipeline, and compares the bytes
+  of the shipped artifacts. Equivalence is **established, not assumed**: both artifacts
+  are imported and run over the pair's own corpus (accepting *and* rejecting inputs, so
+  a boundary-policy difference cannot hide) and their trees compared with the
+  tree-identity oracle's serializer; only a pair that passes that proof earns a ratio.
+  `node()` vs `transform()` is carried permanently as a declared **non-pair** — the gate
+  asserts its trees *differ*, which is the standing proof that the gate distinguishes
+  "does more work" from "spelled differently". Reports raw and gzip per pair with a
+  stated mechanism; the tolerance band is one named constant so it is a visible decision.
+- **The gate is a ratchet, not a report.** Per-pair ratios are committed to
+  `bench/spelling-baseline.json` and `pnpm spelling:gate` fails on any move away from
+  them — two-sided, like `size-guard`: a widening gap is a REGRESSION naming the fat
+  spelling and its mechanism, an un-banked improvement says BANK THE WIN, and a pair
+  that is new or has silently stopped being measured also fails. Known breaches are
+  baselined at their measured value rather than waived, so they stay visible in every
+  run while being pinned against getting worse. Verified by disabling the normalisation
+  and confirming the gate goes red.
+- **First full run: two real missing normalisations, and one retraction.**
+  (1) `keywords([N])` vs N `word()` arms under one boundary policy — 1.39x at N=5 rising
+  to 1.90x at N=30 (65,869 vs 34,664 B) for **identical matching work** (373 `charCodeAt`
+  sites on each side); the gap was per-arm scaffolding, not recognition.
+  (2) by-const vs `g.X` is a **depth** effect, not the fanout effect it was reported as:
+  flat fanout F=2/4/8 shows a constant ~2.6 kB offset that *shrinks* as a ratio, while
+  nesting each level twice gives by-name exactly linear growth (+1,586 B/level) against
+  superlinear by-const — 1.11x at depth 1 to 1.97x at depth 6. Mechanism located: the
+  hoisted `_pf` helpers are re-emitted once per enclosing scope (`_pf0` declared **5
+  times** at depth 6; 22 function declarations against 9 for the named-rule form).
+  (3) RETRACTED — a 1.57x "left-factoring" finding from the gate's first revision. Once
+  the corpus was strengthened to propagate failures it disqualified itself: on input `"@"`
+  the unfactored choice re-anchors its failure span at the choice position and the
+  hand-factored sequence has already consumed the `@`. Hand-factoring is span-observable
+  and was never an equivalent spelling. It is now carried as a declared non-pair.
+- **Two divergence CLASSES, because collapsing them turns the gate all-red for reasons
+  that have nothing to do with bytes.** A LANGUAGE divergence disqualifies a pair; a
+  DIAGNOSTIC divergence — both sides reject at the same span with different `expected`
+  labels — keeps its ratio and is reported separately. Four pairs are diagnostic-only,
+  including `keywords()` reporting 1 label where the equivalent arm list reports N.
+- **`choice` of keyword arms now compiles to ONE keyword table (closes violation 1).**
+  30 `word()` arms: **65,869 → 36,588 B (−44.4%)**, ratio against the equivalent
+  `keywords()` table **1.90x → 1.06x**, gzip **1.73x → 1.01x**. Soundness, point by point:
+  tries are emitted in ARM order so ordered first-match is reproduced exactly and no
+  prefix-freeness precondition is needed; the block fails with the CHOICE's own
+  `expected` array, not a keyword table's single `"keyword"` label, so the diagnostic
+  divergence the gate found is preserved rather than silently adopted; and it **declines
+  outright on a `disjoint` choice**, so O(1) first-char dispatch is never traded for
+  bytes — it only fires where the choice was already an ordered scan. Gates, `autoNot`
+  and coverage ids each decline the merge rather than being dropped. The repo's own
+  example grammars are byte-identical (`size:guard` unchanged at all 24 fixtures).
+- **The token cursor's absorbable share is measured, and it is not the scan cost.**
+  `derived-tokenization.md` §10.3 stood as UNKNOWN — whether a token cursor moves
+  substantially more character-level work into the scanner than a css-syntax-3
+  tokenizer does. It does: the shipping grammars read each input byte **5.67×**
+  (css) and **12.28×** (less) at 100% coverage, against a cursor's one. By time,
+  on the AST path, that work is **18.6% of css parse time and 7.1% of less**,
+  against a scanner cost of **7.9% / 1.4%** — a net ceiling of **~10.7 / ~5.7
+  points**. Two things fall out that were not being asked for: the redundancy
+  **inverts** against the time share, so scanner headroom is a css result while
+  less's mass is elsewhere; and **42–57% of every regex terminal execution fails**,
+  which is §3's arms-tried cost model measured. New in §10.4; instruments in
+  `scratchpad/token-cursor/`.
+
+- **A choice arm marks the root trivia log only when the arm can reach it.** Every
+- **`PARSEMAN_SCANTO=indexof` emits scan-to-terminator as `String.prototype.indexOf`,
+  whose V8 implementation is SIMD.** Covers the `until` shape (`<lit>[^X]*`, single
+  stop char) and the `delimited` shape (`<open>…<close>`, fixed close literal) in
+  `scannable-run.ts`. Defaults OFF and is a proven no-op when off — artifacts built
+  with the flag unset are byte-identical to the unmodified compiler on all four
+  workload grammars. Trees are equal to the toggled baseline on all five workloads.
+  Artifact bytes: css 231,731 → 230,441 raw (−1,290, −0.56%) and 36,067 → 36,034
+  gzip (−33); less 393,474 → 393,356 raw (−118) but gzip 52,616 → 52,626 (**+10** —
+  the `indexOf` line is shorter yet breaks the ubiquitous
+  `while (_j < input.length && !(…)) _j++` run that gzip matches everywhere else).
+  Population is 11 sites on css and 2 on less; graphql and json have none.
+- **Parse-time effect of the above is at or below the instrument's noise floor and is
+  NOT claimed as a win.** Interleaved, batched, one process, 51 rounds: less/stylesheet
+  rel 0.9922 at 36/51 wins, css/stylesheet 0.9814 at 25/51, less/mixins 1.0010 at
+  23/51. The two grammars with zero converted sites are carried in the run as a live
+  calibration and read rel 1.0096 and 0.9999 at 24/51 and 26/51 — so ~1% magnitude
+  with a coin-flip win rate IS this instrument's floor. Only less/stylesheet's win
+  rate is consistently non-random, and its magnitude is inside the floor.
+- **A 4.3× microbenchmark result produced a null in situ, which is the §9.1.1 pattern
+  repeating.** `indexOf` beats the emitted char loop 0.232 rel at 61/61 on a 0.97 MiB
+  corpus for a single stop char, and sticky `/[^{};]*/y` beats it 0.725 at 61/61 for a
+  three-member stop set. Neither survives contact with a whole parse, for the reason
+  the design doc already records: the converted category is a small share of parse time.
+  other mark in `emitFirstMatch` asks a question about the arm; this one asked only
+  whether the grammar has root trivia at all, so it was emitted at 1,046 css sites
+  against 186 for the capture marks beside it. 414 of those sites (39.6%) cannot
+  append to `_rootTriviaLog` at all. Measured on top of the save/restore elision
+  above, with which it is additive: css `ast.js` 3,140,585 -> 3,102,915 B (-1.20%,
+  gzip -4,259), less -0.34%, scss -0.61%, jess -0.19%; `_cmlrg` 83,641 -> 50,548 B
+  and 1,046 -> 632 sites. css expansion 27.45x -> 27.11x its 114,446 B source.
+
+- **`dispatch()` keys off a data trie instead of a per-case character chain.** css
+  `ast.js` 3,336,650 → 3,311,657 B (−0.75%, gzip −1,782 B); key-comparison bytes
+  40,269 → 8,772 (−78%). Speed is inside noise — the strategy sweep behind
+  `PARSEMAN_DISPATCH` is in `docs/design/derived-tokenization.md`.
+- **A `dispatch()` site takes the trie only when the trie's own emission measures
+  smaller than the chain it replaces.** A key-count rule of thumb had grown less
+  `ast.js` by 902 B at its one qualifying site; that site now keeps the chain and
+  less is back to 3,937,767 B, with css and scss unchanged.
+- **Fixed `'@' | 32` folding every `@`-led dispatch key to a non-match**, so
+  `@font-face` silently took the opaque at-rule arm. The 288-test css suite passed
+  with the bug present; a full-tree diff against the pre-trie build caught it. Both
+  sides now fold ASCII letters only.
+- **Static rollback elision — the emitter no longer writes save/restore machinery it can
+  prove will never run.** A new shared `analysis/commitment.ts` answers, over the rule
+  graph, whether a construct can fail after consuming (`mayFail`) and whether it always
+  consumes on success (`alwaysConsumes`); codegen drops the capture save/restore at
+  fallible boundaries whose remainder is total, and the trivia mark/rewind at sequence
+  boundaries whose next term cannot match zero-width. Compiled CSS `ast.js` **3,311,657 →
+  3,140,585 B (−5.17%, against `fd1c5c7`)**, less −4.06%, scss −6.68%, jess −5.73%; parse speed unchanged on
+  corpus (benchmark.css min +1.05%, benchmark.less min −0.20%) and faster on the guard's
+  micro-parses (`css/decls` compiled −48%, `css/selector` −41%). Gated on byte-level parse-tree
+  equality against a non-eliding build — 4,077 AST/CST/ParseDoc tree comparisons over the
+  four dialect corpora, zero differences.
+
+- **Fixed: `node<N>('Type', …)` no longer fails to type-check.** The `type`-first
+  overloads gave `Type` no default, so a call supplying ONE explicit type argument failed
+  their type-argument arity and fell through to the combinator-first overloads, where
+  argument 0 must be a `Combinator`. One call site therefore emitted two unrelated-looking
+  diagnostics: `TS2345 string is not assignable to Combinator`, and `TS7006` implicit-any
+  on the reducer's `children`, because the rejected overload left the reducer contextually
+  untyped. `Type` now defaults to `string` — jess 411 → 5 diagnostics, scss 342 → 4, of
+  which exactly one is real debt. **The literal is not recovered by this spelling**:
+  TypeScript fills a missing type argument from its default and never infers it, so the
+  brand is `string`. Only a curried call form preserves the literal; that changes the
+  public surface and is deliberately not taken. Spell `node<N, 'Type'>('Type', …)` where
+  the brand matters. A type-level test pins the resolved brand for all three spellings.
+  composed grammar's terminal alphabet, the prototype and landed-sweep measurements, a
+  corrected css artifact baseline (`lib/grammar/ast.js` at 3,336,650 B, not 4,954,294 B,
+  which was the whole css `lib/` across four build variants), and a register of 24
+  untried experiments — including an auto-alias cluster for declaring escape, case and
+  prefix equivalences once instead of hand-spelling them per site. Every entry and
+  measured result now carries a **contribution tag** (FOUNDATION / ENABLED-BY /
+  ORTHOGONAL / LEGACY) so it is visible which work survives the token-cursor rewrite. Records the dispatch
+  sweep: the whole spread across every configuration is **2.4%**, so dispatch keying is
+  not where parse time goes. **Withdraws
+  the 1.83× speedup as noise** — three byte-identical artifacts measured 5.961/6.101/11.952 ms
+  in separate processes — and makes byte-level tree equality against a toggled baseline
+  the gate, after a bug 288 tests missed.
+
+- **The peak clause gains a sanctioned way through: `PERF-PEAK-WAIVER`.**
+  `docs/design/perf-gates.md` has always ended "do not widen the threshold to make a
+  build pass — either fix the regression, or land it with the number visible", and only
+  the first half was executable. A deliberate, *bought* slowdown had exactly one route
+  past a red `pnpm perf:workloads:peak`: move `peak` or widen `allowancePct` — the edit
+  §D calls **LAUNDERING RISK** by name, which makes the slower build the reference and
+  destroys the record permanently to get one PR out. A PR may now declare, on one line
+  in the CHANGELOG's open section, `PERF-PEAK-WAIVER <config> median <n>% min <n>% —
+  <why>`, and the guard prints its **full drawdown report** and exits 0.
+  **The peak record does not move**: the same bar, the same red, for the next PR. Every
+  property is friction on purpose — it cannot be written without the measurement, the
+  numbers must themselves breach the allowance, it cannot understate what was just
+  measured, it must give a reason, it must be **absent from the base's CHANGELOG**
+  (per-PR, non-sticky — and unverifiable without `--base`, so unwaivable without it), it
+  cannot be combined with a `peak` edit, and a malformed one fails loudly rather than
+  being ignored. It is **not** `release-exempt` and does not extend it. §D's failure
+  message now names the route, so a red gate teaches it instead of leaving the next
+  contributor to invent `allowancePct: 300`.
+
+- **Fixed a shared-prefix miscompile that produced a WRONG TREE with no error.**
+  Left-factoring recognises a choice's common leading terminal once and replays that
+  result into each arm's own leading term. The replay was keyed on the combinator
+  OBJECT, on the stated assumption that each arm's leading term is a distinct object
+  reached during that arm's emission. That is false, and a grammar breaks it without
+  doing anything unusual:
+
+  ```ts
+  const num = regex(/[0-9]+/)          // ONE instance, deliberately reused
+  choice(sequence(num, literal('-'), num),
+         sequence(num, literal('+'), num))
+  ```
+
+  Every emission of `num` inside any arm hit the map, so the TRAILING occurrence
+  replayed the LEADING one's value and end. On `"1-2"` the interpreter yields
+  `["1","-","2"]` over span 0-5 and the compiled parser yielded `["1","-","1"]` over
+  span 0-1 — a parse that SUCCEEDS, with no error and no warning. Under ambient
+  trivia it could also silently REJECT valid input. And on `"7-7"` the values are
+  identical and only the SPAN diverges, so a harness comparing values alone reported
+  agreement.
+
+  **How to tell whether you are affected.** You compile (rather than interpret) a
+  left-factored `choice` whose arms name the same rule more than once — binary
+  operators (`A op A`), delimited pairs, `A sep A`. `g.X` returns the identical ref
+  object on every reference, so a grammar written through the `g.` proxy is the
+  common case here, not the exotic one. The interpreter was always correct; this was
+  compiled output only.
+
+  The replay is now consumed once per ARM, and the arm-boundary reset is scoped to
+  the choice that REGISTERED the replay. That second half matters on its own: an
+  unscoped reset let a NESTED choice inside an arm clear the OUTER choice's tracking
+  mid-arm, re-opening the same hole one level in. Falling through to a real scan is
+  always correct, so the failure direction is safe, and the optimisation is intact —
+  the grouped arms still measure exactly one scan.
+
+  The 286-test parity suite passed this defect with the bug present.
+  `assertEnginesAgree` is sound — whole-object comparison on result and sinks —
+  there was simply no fixture of this shape.
+  `test/parity/shared-prefix-repeated-arm.test.ts` is that absence, with a
+  distinct-but-equal control that passes both ways, which pins the defect to the
+  replay KEY rather than to the factored shape.
+
+- **Fixed `dispatch()`'s packed key tables wrapping silently above 4095.** The
+  encoder behind an emitted dispatch table packs two characters at six bits each —
+  twelve bits, range 0..4095 — and the mask made anything larger wrap without a
+  word. `unpack` then decoded a wrong index and the table routed to the WRONG ARM at
+  parse time, in shipped compiled output, with a successful parse over it. It now
+  throws a `RangeError` naming the offending value at build time, which is the last
+  point this is cheap to catch. It is TABLE SIZE rather than key count that
+  approaches the ceiling: the packed vectors carry key offsets, key lengths, case
+  indices and trie slots.
+
+  The bound was missing because the encoder existed TWICE, as identical hand-spelled
+  twins, neither of them bounded — which is how one defect became two. There is now
+  one implementation, and the matching 12-bit DECODER is emitted from the same
+  shared helper instead of being re-spelled beside a copy, so half an encoding can
+  no longer live in a second file and agree with the other half only by luck. A test
+  asserts the decoder appears only beside the encoder it inverts.
+
+- **A third copy of the ASCII case fold, spelled `| 32`, is gone.** `| 32` is not a
+  letter fold. It also folds `[`/`{`, `]`/`}`, `^`/`~` and `` @ ``/`` ` ``, so a
+  case-insensitive matcher built on it collides on those characters, skips later
+  terminals, and fires the EARLIER terminal's accept id for the later terminal's
+  text. This is the same defect `e8612eb` fixed in `dispatch()` earlier in this
+  release, written a second time by a second author.
+
+  **Scope, stated because it is narrower than the two entries above.** The wrong
+  copy was in `src/compiler/token-scanner.ts`, which nothing on the shipping path
+  reaches — codegen imports `token-dispatch.ts` and nothing else from that group —
+  so no emitted artifact carried it. `foldCode` and `foldExpr` are now exported from
+  `token-dispatch.ts` and imported here, so the trie build and the emitted walker
+  share one implementation; they must fold identically or a lookup misses the node
+  the trie built. Two more defects in the same unreached module are fixed and
+  recorded here for the class rather than the blast radius: its memo was keyed on
+  `(pos, mode, set)` with no INPUT IDENTITY, so a second parse of a different string
+  could take the first string's cached token at the same position; and
+  `leadTerminal` asked a term for its inner terminal before checking whether the
+  term can consume, so `sequence(optional(X), Y)` yielded X's terminal as THE lead
+  when the input may legally start with Y's, and `sequence(not(X), Y)` yielded a
+  terminal from a negative lookahead that never consumes at all. A single lead
+  terminal cannot express "X's first set OR Y's", so a nullable prefix now REJECTS
+  the site and scannerless gating handles it; a genuinely zero-width prefix still
+  continues, because the next term does genuinely lead.
+
+- **Fixed a zero-width trivia probe that recorded line data it is documented never
+  to record.** `probeTriviaEnd` finds the end of a trivia run "WITHOUT recording any
+  of it", and it was read-only for capture buffers and read-WRITE for line data:
+  both paths call `recordLineRangeFromContext` whenever `ctx.trackLines` and the
+  trivia can match a newline. A zero-width assertion — including one that REJECTS —
+  therefore advanced `_lineScannedTo` over a gap the parse then re-scanned. You are
+  affected if you parse with `trackLines` and use an assertion that probes trivia,
+  which as of this release includes `adjacent()` and `notAdjacent()`. The probe now
+  runs through a context with `trackLines: false`, which makes the recording
+  unreachable in both scanners rather than undone afterwards; everything the
+  scanners need to find the end is carried through unchanged.
+
+- **`bench/` is now typechecked, under the same settings as `src/`.**
+  `tsconfig.json` included `src/**` and `test/**` only, so the directory holding the
+  performance evidence this project PUBLISHES had never been typechecked — which is
+  how a committed bench came to die on a bare `ReferenceError: contests is not
+  defined`. A bench that silently fails reads exactly like one that passes. It is in
+  the main tsconfig now: no `tsconfig.bench.json`, no relaxed flags, no
+  suppressions, so `pnpm typecheck` — which CI and the pre-commit hook already run —
+  covers it.
+
+  82 errors surfaced, and two of them were real defects in measurement rather than
+  type noise. `choice-cost-guard` passed a SECOND argument to
+  `analyzeChoiceInventory`, which takes one, so it was silently discarded; and
+  `alloc-model` set `captureTrivia` as a key on `rules()`, which has no such option,
+  so grammar-wide trivia capture was never enabled in a rig written to measure it
+  enabled. Any number you took from those two before this release was measuring
+  something other than what it claimed. Nothing is deferred and nothing under
+  `bench/` is excluded: `docs/future/bench-typecheck-followups.md` records how each
+  of the three held-back items was resolved, including the `ReferenceError` bench
+  itself, whose report loop now iterates the contest list it built its results map
+  from.
+
+- **New and NOT on the shipping path: `parseman/table`, a second, prototype
+  lowering.** `src/table/` encodes a rule map into a flat instruction table read by
+  ONE shared driver, rather than codegen's recognizer emitted bespoke per rule. It
+  gains a real `./table` export and a build entry in this release for one reason: an
+  emitted table module has to be able to import its driver at all, and there was no
+  runtime JS in `dist` for it to import.
+
+  **Nothing routes to it.** The macro, `compile()` and `compose()` do not reach it,
+  no grammar in this repo ships through it, and it is slower than codegen on every
+  workload measured so far. No per-dialect artifact-size figure is claimed here,
+  because none has been measured on a shipping grammar. Read it and run it; do not
+  plan a 0.47.0 parser around it.
+
+  It is carried in the release rather than held back because its identity gate —
+  interpreted, compiled and table digested against each other through
+  `parseman/oracle` — is what found several of the defects recorded elsewhere in
+  this section, including ones in shipping code. The prototype's own silent-failure
+  fixes (an unstamped host mode that returned AST from a table encoded for CST, an
+  ambient-trivia bake that made three engines agree by all failing the same way, a
+  root-trivia capture that recorded nothing because the labels never reached the
+  entry) are internal to the prototype and are deliberately not given entries of
+  their own.
+
+  **Known limitations, since `./table` is a real export and anything behind it
+  ships.** None is reachable from the macro, `compile()` or `compose()`; all are
+  reachable by calling `parseman/table` directly.
+
+  - **Failure REPORTING diverges from both shipped engines in four shapes.**
+    `keywords()` names each keyword where the engines name `keyword`; `peek()`
+    lets the lookahead's inner expectation escape; a `sepBy` that fails its `min`
+    names the separator rather than the item; and both engines report at the
+    furthest position an enclosing sequence could also have closed at, so they
+    name a closer (`"]"`) where the table names one of the choice's own openers.
+    Acceptance, rejection, trees and consumed spans agree — only the `expected`
+    set differs. Pinned in `test/unit/table-encode-refusals.test.ts`.
+  - **A STRUCTURAL node — no builder, no `project`, no `collapse` — is refused
+    even under `hostMode: 'cst'`**, where a host is by definition present and
+    would supply the value. The refusal is correct for `'ast'` and is a gap for
+    `'cst'`. It fails closed with a named `UnsupportedConstruct`.
+  - **`scanTo()` and `balanced()` are RUNTIME-ONLY.** They run correctly but park
+    a live combinator in the const pool, so `emitTableModule` refuses a grammar
+    using either, naming the construct. Every grammar in this repo except json,
+    csv and lang uses at least one.
+
+  No timing or per-dialect byte figure is published for the prototype in this
+  release, and the two figures quoted during its development (113 B/rule, ~2.65x)
+  were measured on a synthetic ladder and on json — never on a shipping grammar.
+
+- **Three documentation claims corrected against the code.** The gating diagnostic
+  left the compile path in 0.45.0, but `README.md` and `docs/guide/combinators.md`
+  still said the build reports it — `compile()` reports nothing. `ChoiceStrategy` was
+  documented in `docs/reference/types.md` as a three-member string union; the real
+  exported type is a four-member tagged union including `sharedPrefix`, so code
+  written against the documented shape would not typecheck against the real one. And
+  `docs/guide/macro-mode.md` still described pre-0.46 variant duplication —
+  1.98x/3.92x, "full copy", "nothing is shared"; the 0.46 module-level hoist makes
+  it 1.53x/2.57x. Size and benchmark figures across the guides are re-sourced to the
+  committed `bench/size-baseline.json` and the committed chart assets, and claims
+  that were stated universally but measured on ONE lowering now name that lowering.
+
+## 0.46.0 — 2026-07-31
 
 - **Add a `parseman` CLI — `parseman diagnose` and `parseman fix`.** Exit **0** clean,
   **1** blocking findings, **2** could not analyse. `--json` emits the structured object

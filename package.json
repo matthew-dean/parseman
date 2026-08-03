@@ -1,11 +1,11 @@
 {
   "name": "parseman",
-  "version": "0.46.0",
+  "version": "0.47.0",
   "packageManager": "pnpm@10.15.1",
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
-  "description": "Parser combinators that compile to optimized JavaScript — use as a library or as a build-time macro",
+  "description": "Parser combinators that compile to optimized JavaScript \u2014 use as a library or as a build-time macro",
   "type": "module",
   "author": "Matthew Dean <matthew-dean@users.noreply.github.com>",
   "repository": {
@@ -37,6 +37,11 @@
       "types": "./dist/run/index.d.ts",
       "import": "./dist/run/index.js",
       "require": "./dist/run/index.cjs"
+    },
+    "./table": {
+      "types": "./dist/table/index.d.ts",
+      "import": "./dist/table/index.js",
+      "require": "./dist/table/index.cjs"
     },
     "./spec": {
       "types": "./dist/spec/index.d.ts",
@@ -79,6 +84,7 @@
     "bench:literal": "node --import tsx/esm bench/literal-match.ts",
     "bench:dispatch": "node --import tsx/esm bench/dispatch-vs-choice.ts",
     "bench:codegen": "node --import tsx/esm bench/codegen-ab.ts",
+    "bench:treeidentity": "node --import tsx/esm bench/tree-identity.ts",
     "bench:sharedprefix": "node --import tsx/esm bench/shared-prefix-ab.ts",
     "bench:baseline": "node --import tsx/esm bench/update-parseman-baseline.ts",
     "perf:guard": "node --import tsx/esm bench/perf-guard.ts",
@@ -108,6 +114,8 @@
     "choicecost:guard": "node --import tsx/esm bench/choice-cost-guard.ts",
     "choicecost:baseline": "node --import tsx/esm bench/choice-cost-guard.ts --update",
     "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report",
+    "spelling:gate": "node --import tsx/esm bench/spelling-equivalence.ts",
+    "spelling:baseline": "node --import tsx/esm bench/spelling-equivalence.ts --update",
     "bench:margin": "node --import tsx/esm bench/svg-margin.ts"
   },
   "keywords": [

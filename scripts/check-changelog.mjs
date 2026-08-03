@@ -94,11 +94,30 @@
  *    a gate that fires on a typo fix in a comment gets bypassed, and then the gates
  *    that matter get bypassed with it.
  *
- * ── THE ESCAPE HATCH ────────────────────────────────────────────────────────────
+ * D. PEAK-RECORD GATE — only with `--base=<ref>`, on EVERY PR:
+ *      7. Every `peak` block is structurally valid, and any EDIT to one is named in
+ *         the CHANGELOG's open section — backward moves and widened allowances called
+ *         out by name. This governs MOVING the bar. See `docs/design/perf-gates.md`.
+ *
+ * D'. PEAK-CLAUSE WAIVER — only with `--base=<ref>`, on EVERY PR:
+ *      8. A `PERF-PEAK-WAIVER` line in the CHANGELOG's open section lets a DELIBERATE,
+ *         BOUGHT drawdown past `pnpm perf:workloads:peak` WITHOUT moving the bar. This
+ *         governs LANDING UNDER it. It must name a gate config that has a peak, quote
+ *         the measured median AND min, quote numbers that are actually a breach, give a
+ *         reason, be ABSENT from the base's CHANGELOG (per-PR, non-sticky), and not be
+ *         combined with an edit to the same config's `peak`.
+ *
+ * ── THE ESCAPE HATCHES ──────────────────────────────────────────────────────────
  * `--exempt` waives B only, and is wired to the `release-exempt` PR label so the
  * waiver is visible on the PR itself rather than buried in a `--no-verify`. It exists
  * for the two cases where "version must go up" is genuinely wrong: a REVERT of a
  * release, and a CHAINED PR whose bump lives in the PR underneath it.
+ *
+ * `PERF-PEAK-WAIVER` waives the PEAK CLAUSE's verdict only (D'), never C, never D's
+ * requirement to document a peak edit, and never A or B. It is deliberately NOT
+ * `release-exempt` and does not extend it: that label's documented scope is B, and
+ * widening a hatch is exactly the "bypassed gate" failure `release-gates.md` names.
+ * See `scripts/peak-waiver.mjs` for why every property of it is friction on purpose.
  *
  * A never has a hatch. `Unreleased` is not a state this repo ships from.
  *
@@ -115,6 +134,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { parsePeakWaivers, openSection, isBreach, WAIVER_TAG } from './peak-waiver.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -579,11 +599,11 @@ for (const gate of peakGateConfigs) {
   })
 }
 
+// The heading section only — history must not be able to satisfy a check about a
+// change being made now. Shared by the peak-edit rule below and the waiver rule (§D').
+const currentSection = openSection(changelog)
+
 if (peakEdits.length > 0) {
-  // The heading section only — history must not be able to satisfy a check about a
-  // change being made now.
-  const afterHeading = changelog.slice(firstHeading.index + firstHeading[0].length)
-  const currentSection = afterHeading.split(/^##\s+/m)[0] ?? ''
   const mentionsPeak = /\bpeak\b/i.test(currentSection)
 
   if (!mentionsPeak) {
@@ -608,6 +628,15 @@ if (peakEdits.length > 0) {
         `  Fix: add a line to the ${headingVersion.raw} section naming the peak change and the measurement\n` +
         '  behind it (run `pnpm perf:workloads --peak` and quote it, load average included).\n' +
         '\n' +
+        '  If you are NOT trying to re-baseline — the drawdown is deliberate and bought something,\n' +
+        '  and you want the peak to STAY where it is — do not move it at all. Revert the change to\n' +
+        `  the \`peak\` block and declare a per-PR waiver in the ${headingVersion.raw} section instead:\n` +
+        '\n' +
+        `    ${WAIVER_TAG} bench/workloads/config.json median -164.9% min -158.2% — <why this cost buys something>\n` +
+        '\n' +
+        '  That lands the breach WITH THE NUMBER VISIBLE and leaves the record intact, which is what\n' +
+        '  docs/design/perf-gates.md asks for. It is spent on this PR only. See §D of that document.\n' +
+        '\n' +
         '  This check has no hatch — `release-exempt` does not waive it.',
     )
   }
@@ -616,6 +645,125 @@ if (peakEdits.length > 0) {
 }
 else if (peakGateConfigs.some((g) => readPeak(readFileSync(resolve(ROOT, g.config), 'utf8'), g.config) !== null)) {
   console.log('✓ perf-gate peak records unchanged.')
+}
+
+// ── D'. Peak-clause WAIVER ──────────────────────────────────────────────────────
+//
+// §D above governs MOVING the bar. This governs LANDING UNDER IT without moving it.
+//
+// `docs/design/perf-gates.md` closes with the disposition: "Do not widen the threshold
+// to make a build pass. Either fix the regression, or land it with the number visible."
+// Only the first two of those were ever executable — a deliberate, bought slowdown had
+// exactly one route past a red `pnpm perf:workloads:peak`, and that route was to edit
+// `peak` or widen `allowancePct`, i.e. to make the slower build the reference. §D calls
+// that "LAUNDERING RISK" by name. It permanently destroys the record to get one PR out.
+//
+// So: the third option, executed. A PR may declare, in the CHANGELOG's open section,
+//
+//   PERF-PEAK-WAIVER bench/workloads/config.json median -164.9% min -158.2% — <why>
+//
+// and `bench/workload-perf-guard.ts --peak --base=<ref>` will print its full drawdown
+// report and then exit 0 instead of 1. Everything about it is deliberately loud:
+//
+//   - It is IMPOSSIBLE to write without stating the measured numbers, and the numbers
+//     must themselves be a breach of `allowancePct`. You cannot waive a gate without
+//     saying how badly you failed it. That is the sentence in perf-gates.md, enforced.
+//   - It is PER-PR and NON-STICKY. The line must be ABSENT from the base's CHANGELOG.
+//     The next PR inherits the text, so the identical line waives nothing and that PR
+//     must re-measure. A waiver is spent on the diff that declares it.
+//   - It DOES NOT MOVE THE BASELINE. Waiving and re-anchoring are mutually exclusive —
+//     a PR that does both is refused. The breach stays on the record, against the same
+//     peak, for everyone after.
+//   - A malformed attempt FAILS rather than being ignored. A waiver that does not parse
+//     is a contributor who believes they have waived the gate.
+//
+// It is NOT `release-exempt` and deliberately does not extend it: that label's scope is
+// §B only, and widening it is precisely the bypassed-gate failure release-gates.md warns
+// about.
+
+const waivers = parsePeakWaivers(currentSection)
+
+if (waivers.length > 0) {
+  const peakOf = new Map()
+  for (const gate of peakGateConfigs) {
+    const p = readPeak(readFileSync(resolve(ROOT, gate.config), 'utf8'), gate.config)
+    if (p !== null) peakOf.set(gate.config, p)
+  }
+
+  let baseChangelog = ''
+  try {
+    baseChangelog = git('show', `${baseSha}:CHANGELOG.md`)
+  } catch {
+    // No CHANGELOG at the base — every waiver here is new by construction.
+  }
+
+  for (const w of waivers) {
+    const problems = [...w.problems]
+
+    const peak = w.config === null ? null : peakOf.get(w.config) ?? null
+    if (w.config !== null && peak === null) {
+      problems.push(
+        `names ${w.config}, which carries no \`peak\` block in this checkout — there is no peak clause to waive`,
+      )
+    }
+
+    if (peak !== null && !isBreach(w, peak.allowancePct)) {
+      problems.push(
+        `quotes median ${w.medianPct}% / min ${w.minPct}%, which is INSIDE ${w.config}'s`
+          + ` ${peak.allowancePct}% allowance — the peak clause breaches on median AND min BOTH beyond it,`
+          + ' so this waives nothing. Quote the numbers the gate actually printed.',
+      )
+    }
+
+    if (baseChangelog.includes(w.line)) {
+      problems.push(
+        'is ALREADY PRESENT on the base branch, so it is not this PR\'s. A waiver is per-PR and does'
+          + ' not carry: re-run `pnpm perf:workloads:peak` and state THIS diff\'s measurement.',
+      )
+    }
+
+    const alsoEdited = peakEdits.find((e) => e.config === w.config)
+    if (alsoEdited !== undefined) {
+      problems.push(
+        `also EDITS ${w.config}'s peak block in the same PR (${alsoEdited.detail}). Waiving and`
+          + ' re-anchoring are mutually exclusive — a waiver exists precisely so the bar does NOT move.'
+          + ' Pick one: move the peak (§D) or land under it with the number visible (this).',
+      )
+    }
+
+    if (problems.length > 0) {
+      fail(
+        `this PR declares a ${WAIVER_TAG} that is not usable:\n` +
+          `\n    ${w.line}\n\n` +
+          problems.map((p) => `  - it ${p}`).join('\n') +
+          '\n\n' +
+          '  The form is:\n' +
+          '\n' +
+          `    ${WAIVER_TAG} <gate config> median <n>% min <n>% — <why this cost buys something>\n` +
+          '\n' +
+          '  This hatch is deliberately hard to use. It is the executable form of the closing rule in\n' +
+          '  docs/design/perf-gates.md — "either fix the regression, or land it with the number\n' +
+          '  visible" — and it is worth having only while it cannot be reached for quietly. A waiver\n' +
+          '  that parses loosely is a gate that has been switched off.\n' +
+          '\n' +
+          '  If you meant to re-baseline instead, move `peak` and name the move in the CHANGELOG (§D).',
+      )
+    }
+  }
+
+  for (const w of waivers) {
+    const peak = peakOf.get(w.config)
+    const over = (n) => `${(Math.abs(n) / peak.allowancePct).toFixed(1)}x`
+    console.log(
+      `⚠ PEAK CLAUSE WAIVED for ${w.config} — declared drawdown median ${w.medianPct}% / min ${w.minPct}%,`
+        + ` against peak ${peak.version} (${String(peak.sha).slice(0, 7)}) allowance ${peak.allowancePct}%`
+        + ` — ${over(w.medianPct)} and ${over(w.minPct)} the allowance.\n`
+        + `    reason: ${w.reason}\n`
+        + `    The peak record is UNCHANGED and is NOT raised by this: ${peak.version} stays the bar and the\n`
+        + '    next PR is measured against it. This waiver is spent on this diff — the identical line on\n'
+        + '    the base waives nothing. A waived breach is still a breach on the record.',
+    )
+  }
 }
 
 let pkgSurfaceChanged = []

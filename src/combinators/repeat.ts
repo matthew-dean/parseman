@@ -3,6 +3,7 @@ import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMar
 import { matchesEmpty, startsFirstSet } from './first-set.ts'
 import { deriveExpected } from './expect.ts'
 import { matchesAt, orSentinel, recoverScan, captureError } from '../recovery/scan.ts'
+import { demoteCapturedToRaw } from '../cst/capture-buffer.ts'
 
 /**
  * Parse one repetition item at `cur`, first skipping (and, in capture mode,
@@ -292,7 +293,7 @@ export function optional<T>(combinator: Combinator<T>): Combinator<T | null> {
  * rule. This form is non-nullable and keeps the item's first-set, so an arm led by
  * it still gates.
  */
-export function oneOrMoreSep<T, S>(combinator: Combinator<T>, separator: Combinator<S>, opts: SepByOptions = {}): Combinator<T[]> {
+export function oneOrMoreSep<T, S>(combinator: Combinator<T>, separator: Combinator<S> | KeptSeparator<S>, opts: SepByOptions = {}): Combinator<T[]> {
   return sepBy(combinator, separator, { ...opts, min: opts.min ?? 1 })
 }
 
@@ -312,6 +313,42 @@ export type SepByOptions = RepeatOptions & {
   trailing?: TrailingSeparator
 }
 
+/** A separator the author asked to keep in `children`. Produced by `keepSeparator`. */
+export type KeptSeparator<S> = { readonly _keepSeparator: Combinator<S> }
+
+/**
+ * Keep this list's separators in `children`, interleaved with the items.
+ *
+ * A list contributes its ITEMS and nothing else — that is the default and it is
+ * not negotiable, because a `children` array whose arity depends on a detail of
+ * the separator is the thing that made this defect invisible. But a combinator
+ * may collapse only what its CONSTRUCTION makes recoverable, and that is exactly
+ * the line this helper draws:
+ *
+ *   sepBy(g.Value, literal(','))                  // ',' is fixed here — recoverable, drop it
+ *   sepBy(g.Track, keepSeparator(SLASH_OR_COMMA)) // could be '/' OR ',' — NOT recoverable, keep it
+ *
+ * Wrap the separator when it could have matched more than one thing: a `choice`,
+ * a regex with alternation or a quantifier, a rule reference. In CSS the
+ * separator carries meaning — `grid-area: 1 / 2` and `font: 12px/1.5` do not mean
+ * what `1, 2` means — and dropping it destroys information that exists nowhere
+ * else in the tree.
+ *
+ * The wrap is read at CONSTRUCTION, not per parse, and it is deliberately applied
+ * to the separator rather than passed as an option: the call site then STATES its
+ * own children arity, which is the failure being fixed. `keepSeparator` in the
+ * source is the only documentation that reaches an author who never reads docs.
+ */
+export function keepSeparator<S>(separator: Combinator<S>): KeptSeparator<S> {
+  return { _keepSeparator: separator }
+}
+
+function unwrapSeparator<S>(separator: Combinator<S> | KeptSeparator<S>): { sep: Combinator<S>; keep: boolean } {
+  return '_keepSeparator' in separator
+    ? { sep: separator._keepSeparator, keep: true }
+    : { sep: separator, keep: false }
+}
+
 /**
  * Separated list: `(item (sep item)*)?` by default — note that it MATCHES THE
  * EMPTY STRING, which makes it nullable and therefore un-gateable as a choice arm.
@@ -323,7 +360,12 @@ export type SepByOptions = RepeatOptions & {
  *
  * `min`/`max` count ITEMS, not separators.
  */
-export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>, opts: SepByOptions = {}): Combinator<T[]> {
+export function sepBy<T, S>(
+  combinator: Combinator<T>,
+  separatorArg: Combinator<S> | KeptSeparator<S>,
+  opts: SepByOptions = {},
+): Combinator<T[]> {
+  const { sep: separator, keep: keepSeparators } = unwrapSeparator(separatorArg)
   const { min, max } = resolveBounds('sepBy()', opts)
   const trailing = opts.trailing ?? 'forbid'
   const meta: ParserMeta = {
@@ -361,6 +403,10 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
       tag: 'sepBy', parser: combinator as Combinator<unknown>, separator: separator as Combinator<unknown>, min,
       ...(max === Infinity ? {} : { max }),
       ...(trailing === 'forbid' ? {} : { trailing }),
+      // Carried into the IR so the COMPILED engine demotes exactly where the
+      // interpreter does. The two engines have drifted three separate ways across
+      // this option surface already; parity is held by test/parity, not by hope.
+      ...(keepSeparators ? { keepSeparators: true } : {}),
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T[]> {
       const first = combinator.parse(input, pos, ctx)
@@ -413,6 +459,12 @@ export function sepBy<T, S>(combinator: Combinator<T>, separator: Combinator<S>,
           if (sep.committed) return sep
           break
         }
+        // A LIST CONTRIBUTES ITS ITEMS AND NOTHING ELSE. The separator matched, so
+        // it is consumed and it is recorded in `rawChildren` — but it is not an
+        // item, so it does not belong in the structural `children` array. Demote it
+        // using the mark this iteration already took; no extra allocation, one
+        // guarded truncation, and only when CST capture is live at all.
+        if (!keepSeparators) demoteCapturedToRaw(ctx, loopMark.leaves)
         // Mark taken AFTER the separator: `trailing` keeps the separator but must
         // still unwind the trivia + leaves captured past it.
         const sepMark = trailing === 'forbid' ? undefined : saveTriviaMark(ctx)

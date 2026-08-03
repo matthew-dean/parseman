@@ -39,7 +39,8 @@ The emitter maps each combinator to an EBNF construct:
 | `sepBy(x, sep)` | `x (sep x)*` |
 | a reference to another rule (`g.name`) | non-terminal `name` |
 | `literal("(")` | quoted terminal `"("` |
-| `regex(/…/)` / `keywords([…])` | terminal (see [readable terminals](#readable-terminals)) |
+| `word("@import")` / `keywords([…])` | the keyword(s), quoted — `"@import"` |
+| `regex(/…/)` | terminal (see [readable terminals](#readable-terminals)) |
 | `not(x)` | negation annotation `!x` |
 | `node("T", …)`, `transform`, `token`, `field`, `label`, `withCtx`, `expect` | transparent — the inner syntax |
 | `trivia(…)`, `gate(…)` | elided by default |
@@ -72,7 +73,37 @@ list ::= "[" expr ("," expr)* "]"
 
 ## Readable terminals
 
-A raw `/[-\w]+/` isn't spec-grade. Two options make terminals readable:
+A spec reader's vocabulary is the language's own. MDN and the CSS specs draw `@import`,
+`<url>`, `<media-query-list>` — never the pattern that recognises them — and a generated
+spec is held to the same bar.
+
+**Keywords render as keywords, automatically.** `word('@import')` and `keywords([…])` are
+keyword *sets*, so they emit the words themselves; a one-word set is a plain terminal, not a
+one-arm alternation. The word-boundary guard `word()` compiles in is an implementation
+detail of recognition, not part of the language, so it is not drawn.
+
+The same holds for a `regex()` that *is* a fixed string — including the hand-written
+boundary-guarded spelling of a keyword, which is common in ported grammars:
+
+```ts
+regex(/@import(?![-_a-zA-Z0-9\u0080-\uFFFF])/i)  // → "@import"
+regex(/\bin\b/)                                  // → "in"
+regex(/>=|<=|>|<|=/)                             // → ">=" | "<=" | ">" | "<" | "="
+```
+
+This is *more* faithful, not a simplification: nothing is collapsed, hidden or elided, and
+the terminal is shown as the text it matches. Real regex structure — a character class, a
+quantifier, an interior group, or a **positive** lookahead, which constrains what follows
+rather than merely ending a word — still prints raw, because a diagram exists to make
+grammar complexity visible:
+
+```ts
+regex(/[-+]/)                       // → /[-+]/
+regex(/,[ \t\n\r\f]*/)              // → /,[ \t\n\r\f]*/
+regex(/nth-(?:last-)?child(?=\()/)  // → /nth-(?:last-)?child(?=\()/
+```
+
+For a genuine pattern with no fixed form, two options make it readable:
 
 **Per-regex prose** — `regexDisplay(source, flags)` returns a display string (or `undefined`
 to fall back to `/source/`):

@@ -83,6 +83,9 @@ function derive(c: Combinator<unknown>, seen: Set<Combinator<unknown>>): string[
     // fallback, THAT is the branch that can fail, so its expectations are the useful
     // ones — the routed path either succeeds or is not taken.
     case 'routed':   return def.fallback === undefined ? ['routed()'] : deriveExpected(def.fallback)
+    // A bare adjacency assertion names the JOIN it requires. Inside a sequence it is
+    // skipped entirely (isZeroWidthAssertion, above), which is the normal path.
+    case 'adjacency': return [def.polarity]
     case 'lazy': {
       // An EXTERNAL ref (a rule from a composed base grammar) has no local
       // definition yet — its `thunk()` throws until fusion supplies it. Fall back

@@ -283,6 +283,23 @@ function canConsumeNewline(n: Node): boolean {
  * to `{ any, canMatchNewline: true }` — the same conservative value the prior
  * `regexp-tree` seam returned on a parse failure.
  */
+/**
+ * Can `source` match ZERO characters?
+ *
+ * Structural, over the same AST `firstSetFromRegex` uses — which already models
+ * every zero-width construct as `EMPTY`: anchors (`^`/`$`), lookaround
+ * (`(?=…)`/`(?!…)`/`(?<=…)`/`(?<!…)`) and word boundaries. That is what makes
+ * this usable as a proof of consumption: a pattern is zero-width exactly when
+ * the AST says it is nullable, so a lookaround BURIED inside an otherwise
+ * mandatory pattern no longer taints the whole answer.
+ *
+ * Errs toward `true` (nullable) — an unparseable pattern is assumed able to
+ * match empty, so callers that delete code on a `false` keep their proof.
+ */
+export function regexCanMatchEmpty(source: string): boolean {
+  try { return nullable(parseRegex(source)) } catch { return true }
+}
+
 export function firstSetFromRegex(source: string): { firstSet: FirstSet; canMatchNewline: boolean } {
   let ast: Node
   try {

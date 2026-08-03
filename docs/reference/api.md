@@ -305,6 +305,13 @@ combinations — `oneOrMore(x)` **is** `many(x, { min: 1 })`, and `oneOrMoreSep(
 | plain | `many` | `oneOrMore` |
 | separated | `sepBy` | `oneOrMoreSep` |
 
+- **`children` gets the ITEMS and nothing else.** Under a `node()`, a separated list
+  contributes one child per item — `sepBy(x, ',')` over `a,b,c` gives three children,
+  not five. The separator is still consumed and still present in `rawChildren` in
+  source order. Wrap the separator in `keepSeparator(sep)` to keep it interleaved in
+  `children`; reach for that when the separator could have matched more than one
+  thing (a `choice`, a regex with alternation) and a consumer depends on which.
+  Changed in 0.47.0 — before that, separators sat at the odd indices.
 - `min` / `max` count **items**, not separators. Defaults: `min: 0`, `max` unbounded.
 - `trailing: 'forbid' | 'allow'` (separated forms only, default `'forbid'`) decides
   what happens to a separator with no item after it: leave it for the enclosing rule,
@@ -723,6 +730,31 @@ Wrap a root combinator with document-level options — `trivia`, `trackLines`,
 Shorthand for `parser({ trivia: null }, root)` — run `root` with active trivia cleared, so
 its terms must be contiguous.
 
+### `adjacent()`
+
+Zero-width assertion that **nothing** separated the previous term from this position —
+the first-class spelling of a glued join, without clearing the trivia table around it.
+Contributes no child; carries `null` in the sequence tuple.
+
+### `notAdjacent(options?)`
+
+Zero-width assertion that **something** separated the previous term from this position.
+`options.kinds` narrows it to trivia CATEGORIES from
+[`classifiedTrivia`](#classifiedtrivia-arms), e.g.
+`notAdjacent({ kinds: ['whitespace'] })` for the css-values-4 §10.1 rule that `calc()`'s
+`+`/`-` need real whitespace and a comment will not do.
+
+An unknown kind name, or a `kinds` filter over unclassified trivia, is a hard `TypeError`
+(at compile time for compiled output, on first reach for the interpreter) — never a
+silently empty filter.
+
+Both must be a NON-FIRST term of a `sequence()`: an adjacency assertion tests the gap
+after the preceding term, so `sequence(notAdjacent(), …)` throws at construction. Both
+are dropped from the sequence's first-set, so they never widen a choice arm's dispatch.
+Prefer these to `noTrivia(...)` plus a hand-spelled whitespace regex, which
+re-implements the grammar's trivia table inside one production.
+See [Adjacency](/guide/trivia#adjacency).
+
 ## Running a parse
 
 ### `parse(combinator, input, opts?)`
@@ -947,6 +979,13 @@ Match one balanced delimited region — **string** delimiters — including the 
 counting nested same-type pairs. Skips the grammar's ambient `scanSkip` opaque units in
 its interior, so a delimiter hidden inside a string doesn't close the balance early.
 `opts.skip` declares EXTRA regions (extends the ambient set); `opts.raw` opts out.
+
+Under a `node()` it contributes **one** CST leaf — the whole matched source slice —
+exactly like `scanTo`. Changed in 0.47.0: it previously contributed its shredded
+interior (seven children for `"(a(b)c)"`) because the interior is spelled with a
+transparent `transform`, so the reassembled string its `Combinator<string>` type
+promised never reached the parent. A `token(balanced(…))` wrapper added to work
+around that is now redundant and should be removed.
 
 Declare the ambient set once with `rules({ scanSkip: [...] }, factory)` (see
 [Whitespace & trivia](/guide/trivia#grammar-level-scanskip-opaque-units-for-scans)).

@@ -241,7 +241,10 @@ async function measure(spec: GrammarSpec): Promise<{ report: WastedWorkReport; b
     )
   }
 
-  const inv = analyzeChoiceInventory(ruleEntries, spec.entry)
+  // One argument: `analyzeChoiceInventory` walks every rule in the map and has
+  // no entry parameter. The `spec.entry` that used to be passed here was
+  // silently discarded by the call, so dropping it is a no-op at runtime.
+  const inv = analyzeChoiceInventory(ruleEntries)
   return { report, backlogArms: inv.backlogArms }
 }
 

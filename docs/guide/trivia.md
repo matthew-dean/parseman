@@ -320,3 +320,62 @@ Two rules of thumb:
   after it (`arr[ i ]`).
 
 `noTrivia(child)` is exactly `parser({ trivia: null }, child)`.
+
+## Asserting adjacency, not re-spelling trivia {#adjacency}
+
+`noTrivia` says "these must touch". The opposite statement — "these must **not**
+touch" — is [`notAdjacent()`](./combinators#adjacent-and-notadjacent), with
+`adjacent()` as its dual. Both are zero-width assertions on the gap the trivia skip
+already scanned; neither consumes anything or contributes a child.
+
+**The rule: a production must never disable trivia and re-spell it.** Writing
+
+```ts
+// DON'T — this re-implements the grammar's trivia table inside one production.
+noTrivia(sequence(regex(/(?:[ \t\n\r\f]|\/\*(?:[^*]|\*(?!\/))*\*\/)+/), op, ...))
+```
+
+buys a mandatory separator at the price of a second, private definition of what
+trivia is. It drifts: two productions in one file end up disagreeing about what
+separates two operands, and nothing reports it. Assert the gap instead — the
+assertion consults `ctx.trivia`, so there is only ever one definition.
+
+That is what the `calc()` case above needs. Per css-values-4 §10.1 the `+` and `-`
+operators require **actual whitespace** on both sides, because a comment vanishes at
+tokenisation and so cannot separate two tokens:
+
+```ts
+// [verify]
+import { notAdjacent, sequence, regex, literal, parser, classifiedTrivia, parse } from 'parseman'
+
+// One trivia table, with its categories named — the same table the parser skips with.
+const cssTrivia = classifiedTrivia({
+  whitespace: regex(/[ \t\n\r\f]+/),
+  comment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+})
+
+const operand = () => regex(/[0-9]+(?:px|em|%)?/)
+const spaceRequired = () => notAdjacent({ kinds: ['whitespace'] })
+
+const calcSum = parser({ trivia: cssTrivia }, sequence(
+  operand(), spaceRequired(), literal('+'), spaceRequired(), operand(),
+))
+
+parse(calcSum, '10px + 2em').ok
+// → true
+
+// A comment is trivia, and it does separate — but it is not whitespace, so per
+// spec it does not make this a valid calc() sum.
+parse(calcSum, '10px/*c*/+/*c*/2em').ok
+// → false
+
+// Nor does no gap at all.
+parse(calcSum, '10px+2em').ok
+// → false
+```
+
+`kinds` names come from the `classifiedTrivia({...})` keys of the **active** table.
+An unknown name, or a `kinds` filter over unclassified trivia, throws a `TypeError`
+rather than quietly matching nothing — a silently-empty filter here would make the
+grammar above accept the comment form, which is the exact defect the filter exists
+to prevent.

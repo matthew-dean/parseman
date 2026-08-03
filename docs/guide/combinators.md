@@ -36,6 +36,7 @@ Three words that sound alike but play different roles:
 | `optional(c)` | Zero or one; returns `null` on no match. |
 | `sepBy(c, sep, opts?)` | Separated list; `{ min, max, trailing }`. **Nullable by default.** |
 | `oneOrMoreSep(c, sep, opts?)` | Non-empty separated list — sugar for `sepBy(c, sep, { min: 1 })`. |
+| `keepSeparator(sep)` | Wrap a separator to KEEP it in `children`. Default is items only. |
 | `transform(c, fn)` | Map the result: `fn(value, span) → newValue`. |
 | `skip(main, skipped)` | Match `main` then `skipped`; return `main`'s value. |
 | `token(c)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
@@ -273,8 +274,10 @@ shadowing above needs `regex()` arms precisely because that rewrite no longer
 applies. Don't rely on it: add one non-literal arm and ordering matters again.
 :::
 
-When the arms start with disjoint characters the compiler turns the whole `choice`
-into a single O(1) character dispatch.
+When the arms start with disjoint characters the whole `choice` becomes a single O(1)
+character dispatch — a lookup table in the interpreter, an inline `switch` in the JS
+that `compile()` and the macro build emit. See
+[First-char gating](./first-char-gating).
 
 When alternatives begin by recognizing the same lexical family and then diverge
 by the value already read, prefer [`dispatch`](#dispatch). A shape like
@@ -562,6 +565,52 @@ parse(sepBy(ident, comma, { trailing: 'allow' }), 'a,b,').span
 **Gating:** the single most consequential nullability in the library. An argument
 list, parameter list, selector list, or CSV row that requires at least one item
 should use `oneOrMoreSep`. Plain `sepBy` is for the genuinely-optional list.
+
+**Children: items only.** A list contributes the ITEMS of the list and nothing
+else. Under a `node()`, `sepBy(ident, comma)` over `a,b,c` contributes three
+children — not five with commas at the odd indices. `many` and `oneOrMore` always
+behaved this way; `sepBy` was the outlier until 0.47.0, and the mismatch between
+"a flat item list" and what `children[1]` actually held is the single most
+expensive documentation defect this library has shipped.
+
+The separator is still consumed, and it is still in `rawChildren` in source order
+— the same channel trivia uses. Nothing is lost.
+
+```ts
+// [verify]
+import { sepBy, keepSeparator, choice, regex, literal, node, parse } from 'parseman'
+
+const ident = regex(/[a-z]+/)
+const kids = (t: string) => (children: readonly unknown[]) => children.length
+
+// Items only — three children, not five.
+parse(node('L', sepBy(ident, literal(',')), kids('L')), 'a,b,c').value
+// → 3
+
+// Opt back in where the separator could have been more than one thing.
+const slashOrComma = choice(literal(','), literal('/'))
+parse(node('G', sepBy(ident, keepSeparator(slashOrComma)), kids('G')), 'a/b,c').value
+// → 5
+```
+
+### `keepSeparator`
+
+Keeps a list's separators in `children`, interleaved with the items.
+
+Reach for it when the separator could have matched **more than one thing** — a
+`choice`, a regex with alternation or a quantifier, a rule reference — and a
+consumer depends on which one matched. In CSS the separator carries meaning:
+`grid-area: 1 / 2` and `font: 12px/1.5` do not mean what `1, 2` means.
+
+The rule behind it: **a combinator may collapse only what its construction makes
+recoverable.** `sepBy(x, literal(','))` has its separator fixed at construction, so
+dropping it destroys nothing — the same reason `balanced('(', ')')` may legitimately
+collapse to one string. `sepBy(x, choice(literal(','), literal('/')))` does not, so
+the author has to say so.
+
+It wraps the separator rather than riding in the options bag on purpose: the call
+site then states its own children arity, which is the exact failure being fixed. A
+name that lies is what created this.
 
 ### `optional`
 
@@ -860,7 +909,10 @@ compiled.parse('b').value
 // → 'b'
 ```
 
-`compile()` also runs the [gating diagnostic](./first-char-gating) by default.
+`compile()` produces an artifact and reports **nothing**. Since 0.45.0 the
+[gating diagnostic](./first-char-gating#why-this-is-not-a-compile-time-warning) is not on
+the compile path — ask for it explicitly with
+[`diagnoseGrammar()`](../reference/api#diagnosegrammar-grammar-opts-grammardiagnosis).
 
 ## Context and assertions
 
@@ -894,6 +946,86 @@ parse(withCtx({ inFunction: false }, returnStmt), 'return 1').ok
 terminal inside a `sequence` — never as a leading arm term. To pick a branch by
 state, use the gated-arm **field** instead:
 [gated arm vs `gate()`](#selecting-vs-asserting-on-context-gated-arm-vs-gate).
+
+### `adjacent` and `notAdjacent`
+
+Two zero-width assertions about the **gap** between the previous term and here.
+`adjacent()` succeeds when nothing separated them; `notAdjacent()` succeeds when
+something did. Neither consumes input, and neither contributes a child.
+
+They ask *"was there anything between these two"* — never *"what does a separator
+look like"* — so a production states its own requirement without ever naming
+whitespace, and cannot drift from the grammar's trivia table.
+
+```ts
+// [verify]
+import { adjacent, notAdjacent, sequence, regex, literal, parser, trivia, parse } from 'parseman'
+
+const ws = trivia(regex(/[ \t\n]+/))
+const number = () => regex(/[0-9]+/)
+
+// `1 - 2` is a subtraction: the operator is separated from both operands.
+const subtraction = parser({ trivia: ws },
+  sequence(number(), notAdjacent(), literal('-'), notAdjacent(), number()))
+
+parse(subtraction, '1 - 2').ok
+// → true
+
+// `1 -2` is not — the `-` is glued to the `2`, so it is a sign, not an operator.
+parse(subtraction, '1 -2').ok
+// → false
+
+// `adjacent()` is the dual, and the first-class spelling of a glued join.
+const dimension = parser({ trivia: ws },
+  sequence(number(), adjacent(), regex(/[a-z]+/)))
+
+parse(dimension, '10px').ok
+// → true
+
+parse(dimension, '10 px').ok
+// → false
+```
+
+`notAdjacent({ kinds: [...] })` narrows the assertion to trivia **categories**
+declared by [`classifiedTrivia`](./trivia#classified-trivia), for the case where
+some kinds of separation do not count:
+
+```ts
+// [verify]
+import { notAdjacent, sequence, regex, literal, parser, classifiedTrivia, parse } from 'parseman'
+
+const rw = classifiedTrivia({
+  whitespace: regex(/[ \t\n]+/),
+  comment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+})
+
+// css-values-4 §10.1: `+` and `-` inside calc() need REAL whitespace, because a
+// comment disappears at tokenisation and cannot separate two tokens.
+const sep = () => notAdjacent({ kinds: ['whitespace'] })
+const calcSum = parser({ trivia: rw },
+  sequence(regex(/[0-9a-z%]+/), sep(), literal('+'), sep(), regex(/[0-9a-z%]+/)))
+
+parse(calcSum, '1px + 2em').ok
+// → true
+
+parse(calcSum, '1px/**/+/**/2em').ok
+// → false
+```
+
+A `kinds` name that the active trivia table does not declare, or a `kinds` filter
+over **unclassified** trivia, is a hard `TypeError` — at compile time for compiled
+output, and on first reach for the interpreter. It is never a silently empty
+filter, because that would turn the `calcSum` above back into a plain
+`notAdjacent()` with nothing to report it.
+
+**Placement:** an adjacency assertion tests the gap after the *preceding* term, so
+it must be a non-first term of a `sequence()`. `sequence(notAdjacent(), …)` throws
+at construction. Both are zero-width and are dropped from the sequence's first-set,
+so they never widen a choice arm's dispatch.
+
+**Never** disable trivia and re-spell it to express separation
+(`noTrivia(sequence(regex(/\s+/), op, …))`). That re-implements the dialect's
+trivia table inside one production, and it drifts. Assert adjacency instead.
 
 ### `expect` and `isParseError`
 

@@ -14,7 +14,39 @@ function kw(word: string) {
   return P.regexp(new RegExp(word + '(?![_0-9A-Za-z])')).trim(_)
 }
 
-const GQL: P.Language = P.createLanguage({
+/** Result type of each rule, so `createLanguage` resolves to Parsimmon's
+ * `TypedLanguage` (concrete keys) rather than `Language` (an index signature,
+ * which `noUncheckedIndexedAccess` widens to `Parser<any> | undefined`). The
+ * bench only times the parse, so the AST-shaped rules stay `unknown` rather
+ * than restating the GraphQL AST here. */
+type GqlSpec = {
+  Document: unknown[]
+  Definition: unknown
+  OperationDefinition: unknown
+  OperationType: string
+  VariableDefinitions: unknown[]
+  VariableDefinition: unknown
+  Variable: unknown
+  DefaultValue: unknown
+  SelectionSet: unknown[]
+  Selection: unknown
+  Field: unknown
+  Arguments: unknown[]
+  Argument: unknown
+  FragmentSpread: unknown
+  InlineFragment: unknown
+  FragmentDefinition: unknown
+  FragmentName: string
+  TypeCondition: string
+  Directives: unknown[]
+  Directive: unknown
+  Type: unknown
+  Value: unknown
+  StringValue: string
+  Name: string
+}
+
+const GQL = P.createLanguage<GqlSpec>({
   Document: r => r.Definition.trim(_).atLeast(1),
 
   Definition: r => P.alt(r.OperationDefinition, r.FragmentDefinition),

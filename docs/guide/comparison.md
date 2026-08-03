@@ -67,7 +67,11 @@ Two questions sort most of the field:
 - **Debuggable grammar** — you can step the parse in your language's ordinary debugger
   (breakpoints, real stack traces) and read the parser *as code*, rather than debugging a
   generated state table or a parser in another language. Runtime combinator/DSL libraries
-  qualify; generators mostly don't — Peggy emits JS you *can* trace, hence ⚠️.
+  qualify; generators mostly don't — Peggy emits JS you *can* trace, hence ⚠️. Parséman's
+  ✅ covers the interpreter (your combinator source, run directly) and the **JS-codegen
+  lowering** used by `compile()` and the macro build, whose output is readable JavaScript
+  you can breakpoint. It is a claim about those paths, not about any lowering that
+  produces a data table rather than code.
 - **Grammar coverage / trace** — Parséman can record successful named rules,
   choice arms, and labels plus a bounded semantic lifecycle trace. This row is
   intentionally not a claim that the other tools lack test-runner coverage,
@@ -323,11 +327,13 @@ rich CST and context sensitivity.
 
 ## Which to reach for
 
-- **Parséman** — you want the **fastest** JS value parser *and* an editor-grade CST with
+- **Parséman** — you want the **fastest** JS value parser in this comparison (the macro
+  build; see [Benchmarks](./benchmarks)) *and* an editor-grade CST with
   spans and trivia, with **context-sensitive rules**, incremental re-parse, and a full
   **editor backend** (recovery + completions + diagnostics on the compiled parser, via an
   external grammar-pure language service) — authored and **debugged in TypeScript** (no
-  separate grammar file, no generated artifact to step through), with no build step
+  separate grammar file to maintain, and the macro build's generated JS maps back to your
+  combinator source rather than being the thing you step through), with no build step
   required and generator-class speed when you want it.
 - **[Peggy](https://peggyjs.org/)** — a quick, readable PEG DSL for a config language or
   small DSL where a text grammar file is the deliverable.

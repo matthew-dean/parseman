@@ -6,7 +6,7 @@
  *   node --import tsx/esm --expose-gc bench/alloc-count.ts [decls] [batch]
  */
 import { compiled, host, hostOptOut, buildInput } from './alloc-model.ts'
-import { PerformanceObserver } from 'node:perf_hooks'
+import { PerformanceObserver, type PerformanceEntry } from 'node:perf_hooks'
 import type { ParseContext } from '../src/index.ts'
 
 const decls = Number(process.argv[2] ?? 1500)
@@ -22,10 +22,9 @@ const input = buildInput(decls)
 function run(optOut: boolean): { scavenges: number; major: number; gcMs: number; wallMs: number } {
   const h = optOut ? hostOptOut : host
   let scavenges = 0, major = 0, gcMs = 0
-  const tally = (entries: PerformanceEntryList) => {
+  const tally = (entries: readonly PerformanceEntry[]) => {
     for (const e of entries) {
-      // @ts-expect-error node gc detail
-      const kind = e.detail?.kind
+      const kind = (e as { detail?: { kind?: number } | null }).detail?.kind
       if (kind === 1) scavenges++
       else major++
       gcMs += e.duration

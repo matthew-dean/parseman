@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   rules, choice, sequence, literal, regex, optional, sepBy, many, oneOrMore,
-  not, peek, keywords, trivia, transform, node, dispatch, endsWith, startsWith, when, otherwise, routed, token, type Combinator,
+  not, peek, keywords, word, makeWord, trivia, transform, node, dispatch, endsWith, startsWith, when, otherwise, routed, token, type Combinator,
 } from '../../src/index.ts'
 import { toEBNF, toRailroadHtml, toRailroadSvg, RAILROAD_CSS, buildSpecModel } from '../../src/spec/index.ts'
 
@@ -118,6 +118,70 @@ describe('spec — combinator → EBNF mapping', () => {
 
   it('optional → ? postfix', () => {
     expect(lines.opt).toBe('"-"? /[a-zA-Z_][a-zA-Z0-9_]*/')
+  })
+})
+
+/**
+ * A spec reader's vocabulary is the language's own — MDN and the CSS specs draw
+ * `@import`, not the pattern that recognises it. A keyword must therefore render
+ * as the keyword, whether it was authored as `word()`, `keywords()` or a
+ * hand-written boundary-guarded `regex()`. Anything with real regex structure
+ * still prints raw: the diagrams exist to make grammar complexity visible.
+ */
+describe('spec — authored terminals', () => {
+  const BOUNDARY = '-_a-zA-Z0-9\\u0080-\\uFFFF'
+  const line = (c: Combinator<unknown>): string => ebnfLines(toEBNF(rules(() => ({ r: c })))).r!
+
+  it('word() renders as the keyword, not a one-arm alternation', () => {
+    expect(line(word('@import', BOUNDARY, { caseInsensitive: true }))).toBe('"@import"')
+    expect(line(makeWord(BOUNDARY)('@media'))).toBe('"@media"')
+  })
+
+  it('a one-word keywords() set is a terminal, not a choice', () => {
+    expect(line(keywords(['@import']))).toBe('"@import"')
+    expect(line(not(word('@import')))).toBe('!"@import"')
+  })
+
+  it('a multi-word keywords() set stays an alternation', () => {
+    expect(line(keywords(['if', 'else'])).split(' | ').sort()).toEqual(['"else"', '"if"'])
+  })
+
+  it('a boundary-guarded regex renders as its keyword', () => {
+    expect(line(regex(/@import(?![-_a-zA-Z0-9\u0080-\uFFFF])/i))).toBe('"@import"')
+    expect(line(regex(/\bin\b/))).toBe('"in"')
+    expect(line(regex(/url\(/))).toBe('"url("')
+  })
+
+  it('an alternation of fixed strings renders as those strings', () => {
+    expect(line(regex(/>=|<=|>|<|=/))).toBe('">=" | "<=" | ">" | "<" | "="')
+    expect(line(regex(/(?:and|or)(?![-_a-zA-Z0-9])/))).toBe('"and" | "or"')
+  })
+
+  it('a regex with real structure still prints raw', () => {
+    for (const re of [
+      /[-+]/, // character class
+      /,[ \t\n\r\f]*/, // quantifier
+      /\+(?=[ \t\n\r\f]*[$(])/, // POSITIVE lookahead — a real constraint, not a boundary
+      /@import(?!x)/, // lookahead over something other than a class
+      /nth-(?:last-)?child(?=\()/, // interior group
+      /[a-zA-Z_][-\w]*/,
+    ]) {
+      expect(line(regex(re)), re.source).toBe(`/${re.source}/`)
+    }
+  })
+
+  it('regexDisplay still wins over the derived form', () => {
+    const ebnf = toEBNF(rules(() => ({ r: regex(/@import(?![-a-z])/) })), {
+      regexDisplay: src => (src.startsWith('@import') ? 'AT-IMPORT' : undefined),
+    })
+    expect(ebnfLines(ebnf).r).toBe('AT-IMPORT')
+  })
+
+  it('the keyword reaches the rendered diagram as one Terminal box', () => {
+    const g = rules(() => ({ ImportRule: sequence(word('@import', BOUNDARY), literal(';')) }))
+    const html = toRailroadHtml(g)
+    expect(html).toContain('Sequence(Terminal("@import"), Terminal(";"))')
+    expect(html).not.toContain('(?!')
   })
 })
 

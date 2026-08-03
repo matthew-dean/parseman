@@ -205,7 +205,11 @@ answer is to report the number, not to move the anchor.
 
 A checkout carrying neither config is not asked to re-anchor anything.
 
-## The escape hatch
+## The escape hatches
+
+There are two, and they are disjoint on purpose.
+
+### `release-exempt` — waives B only
 
 Add the **`release-exempt` label** to the PR. It waives **B only**.
 
@@ -221,6 +225,19 @@ reaching for `--no-verify` to get past this, and if they are, that is a bug in t
 document.
 
 Whoever merges an exempt PR owns the next release carrying the bump.
+
+### `PERF-PEAK-WAIVER` — waives the peak clause's verdict only
+
+A `PERF-PEAK-WAIVER` line in the CHANGELOG's open section lets a **deliberate,
+measured, explained** drawdown past `pnpm perf:workloads:peak` **without moving the
+peak record**. Section D' of `check-changelog.mjs` validates it on every PR; the full
+rules, and when it is legitimate, are in `docs/design/perf-gates.md` §D.
+
+It waives that verdict and nothing else — not C, not D's requirement to document a
+peak edit, not A or B. It is deliberately **not** an extension of `release-exempt`:
+that label's scope is B, and widening one hatch to cover an unrelated gate is exactly
+how a gate stops being one. It is also per-PR — it does not carry to the next PR, and
+it does not raise the baseline.
 
 ## Running it yourself
 

@@ -565,12 +565,14 @@ describe('parseDoc — absolute positions from the relative tree', () => {
   const { registry, root } = makeSeqGrammar()
   it('spanAt(path) projects absolute offsets; absolutizeCST reconstructs them', () => {
     const doc = parseDoc<CSTNode>(registry, root, 'foo,12,bar')
-    // Root Seq children: Term Id 'foo' @0..3, ',' , Term '12' @4..6, ',' , Term 'bar' @7..10
+    // Root Seq children are the sepBy's ITEMS only — the ',' separators are
+    // consumed and live in rawChildren, not here:
+    //   Term 'foo' @0..3, Term '12' @4..6, Term 'bar' @7..10
     expect(doc.spanAt([])).toEqual({ start: 0, end: 10 })
-    expect(doc.spanAt([2])).toEqual({ start: 4, end: 6 })     // the '12' Term
+    expect(doc.spanAt([1])).toEqual({ start: 4, end: 6 })     // the '12' Term
     const absTree = absolutizeCST(doc.tree!)
     expect(absTree.span).toEqual({ start: 0, end: 10 })
-    expect((absTree.children[2] as CSTNode).span).toEqual({ start: 4, end: 6 })
+    expect((absTree.children[1] as CSTNode).span).toEqual({ start: 4, end: 6 })
   })
   it('spanAt throws on a failed parse', () => {
     const obj = makeObjGrammar()

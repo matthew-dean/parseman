@@ -11,7 +11,8 @@ usually mean grammar files, generated code, and extra tooling. Parséman is a co
 library with an optional compiler, and it gives you both.
 
 **Parsing to JS values, the macro build is the fastest general-purpose JS parser in the
-suite** — ahead of every other library measured, at every grammar and every input size.
+suite** — ahead of every other library measured, at every grammar and every input size in
+that suite.
 Every parser in the suite builds real output: objects, row arrays, AST nodes. On a 7.7 kB
 GraphQL document Parséman takes **131 µs**; Peggy takes 328 µs. Only a purpose-built native
 edges it out, `JSON.parse` on JSON.
@@ -138,8 +139,9 @@ See **[The three modes](https://matthew-dean.github.io/parseman/guide/modes)**.
   coverage ("which rules and choice arms ran?") and trace ("what did it try, select, and
   backtrack through?").
 - 🚦 **[First-char gating diagnostics](https://matthew-dean.github.io/parseman/guide/first-char-gating)** —
-  the build tells you which `choice` lost its O(1) dispatch, names the overlapping arms,
-  and says how to fix it.
+  `diagnoseGrammar()` tells you which `choice` lost its O(1) dispatch, names the
+  overlapping arms, and says how to fix it. Run it in a test or a CI job — compiling
+  reports nothing.
 - 📈 **[Performance guide](https://matthew-dean.github.io/parseman/guide/performance)** —
   the levers that actually move a grammar, and [how regexes lower](https://matthew-dean.github.io/parseman/guide/regex-lowering).
 
@@ -160,6 +162,9 @@ Largest fixture of each, macro build against the fastest other library on that c
 GraphQL **131 µs** vs Peggy's 328 µs, JSON **133 µs** vs Chevrotain's 241 µs, CSV
 **75.3 µs** vs Peggy's 420 µs. Native `JSON.parse` does JSON large in 51.6 µs. On the CST
 chart, macro build runs 174 µs against Lezer's 594 µs parse-only.
+
+Those are the committed charts, regenerated at 0.29.0 (2026-07-22) on an M4 Pro, measuring
+the JS-codegen lowering that `compile()` and the macro build emit.
 
 ![JSON parsing benchmarks](https://raw.githubusercontent.com/matthew-dean/parseman/main/assets/bench-json.svg)
 

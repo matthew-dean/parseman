@@ -536,10 +536,15 @@ export const g = rules(g => ({
     // a leaked capture would show up as an extra child.
     const List = node('List', sepBy(regex(/[a-z]+/), literal(','), { trailing: 'allow' }),
       children => children.length)
-    // 4 children: a , b , — the consumed trailing separator is one of them, and
-    // nothing extra leaked from the failed item attempt after it.
-    expect(bothEngines(List, 'a,b,')).toMatchObject({ ok: true, end: 4, value: 4 })
-    expect(bothEngines(List, 'a,b')).toMatchObject({ ok: true, end: 3, value: 3 })
+    // 2 children — `a` and `b`. A list contributes its items and nothing else, so
+    // NO separator is a child, not even the trailing one that `trailing: 'allow'`
+    // consumes. The two inputs are distinguished by `end`, not by child count:
+    // 'a,b,' consumes 4 chars (the trailing comma IS eaten) while 'a,b' consumes 3.
+    // That pair is the check that the demote runs BEFORE the post-separator marks
+    // are sampled — sample first and the 'allow' unwind restores the separator
+    // into `children` on exactly this path.
+    expect(bothEngines(List, 'a,b,')).toMatchObject({ ok: true, end: 4, value: 2 })
+    expect(bothEngines(List, 'a,b')).toMatchObject({ ok: true, end: 3, value: 2 })
   })
 
   it('compileLinkable never reports — and the same map still diagnoses', () => {

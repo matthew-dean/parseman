@@ -61,6 +61,6 @@ describe('removed RunResult.triviaMap', () => {
 
   /* The profiled return path — the one that spread the host pass's result and so
    * had to reinstall the non-enumerable accessor — was removed along with the
-   * emitted profiling counters. `run({ profile: true })` now throws, so there is no
-   * spread to guard. Restore this pin with the interpreted profiling driver. */
+   * emitted profiling counters, and `RunOptions.profile` has now gone too, so there
+   * is no spread to guard. Restore this pin with the interpreted profiling driver. */
 })

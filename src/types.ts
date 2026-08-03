@@ -70,7 +70,7 @@ export type ParserDef =
   // `trailing` governs a separator with no item after it: 'forbid' (default) leaves
   // it unconsumed, 'allow' consumes it. There is no "one after every item" mode —
   // that is a terminated list, spelled `many(sequence(item, term))`.
-  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: number; max?: number; trailing?: 'allow' }
+  | { tag: 'sepBy';     parser: Combinator<unknown>; separator: Combinator<unknown>; min: number; max?: number; trailing?: 'allow'; /** Author opted in via `keepSeparator()`: separators stay in `children`. Absent = items only. */ keepSeparators?: true }
   | { tag: 'transform'; parser: Combinator<unknown>; fn: (v: unknown, span: { start: number; end: number }) => unknown; fnSrc?: string; recognitionOnly?: boolean }
   | { tag: 'skip';      main: Combinator<unknown>; skipped: Combinator<unknown> }
   | { tag: 'trivia';    parser: Combinator<unknown> }
@@ -96,6 +96,11 @@ export type ParserDef =
   // rather than pushing a `null` source. Absent under runtime compile() (the real
   // closures/values live in `predicate`/`extra`).
   | { tag: 'guard';    predicate: (state: unknown) => boolean; predSrc?: string }
+  // ADJACENCY assertion — zero-width, zero-children. `polarity: 'adjacent'` asserts
+  // that NOTHING sat between the previous term and this position; `'notAdjacent'`
+  // asserts that something did. `kinds` (notAdjacent only) narrows the assertion to
+  // trivia CATEGORIES from `classifiedTrivia({...})`. See combinators/adjacency.ts.
+  | { tag: 'adjacency'; polarity: 'adjacent' | 'notAdjacent'; kinds?: readonly string[] }
   | { tag: 'withCtx';  extra: unknown; parser: Combinator<unknown>; extraSrc?: string }
   | { tag: 'recover';  parser: Combinator<unknown>; sentinel: Combinator<unknown> }
   | { tag: 'expect';   parser: Combinator<unknown>; label: string | undefined; expected: string[] }
@@ -368,20 +373,6 @@ export type ParseContext = {
   _cstBuf?: CstCaptureBuf | undefined
   /** Framework-internal: value/span already consumed by an enclosing dispatch(). */
   _routed?: { value: unknown; span: Span } | undefined
-  /**
-   * Framework-internal: opt-in `run({ profile: true })` pass state. This is
-   * deliberately not a parser mode: codegen reads it only while the profiling
-   * driver is comparing its recognizer, capture-only, and normal-host passes.
-   */
-  _pmProfile?: {
-    phase: 'recognizer' | 'capture' | 'host'
-    nodes: number
-    childSlots: number
-    rawSlots: number
-    triviaSlots: number
-    fieldSlots: number
-    hostCalls: number
-  } | undefined
   /**
    * Framework-internal optional line-start collector. Compiled parsers emitted
    * with line tracking append newline-derived line starts here while matching

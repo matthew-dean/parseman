@@ -93,20 +93,25 @@ const escapedBody = regex(/`(?:[^`\\]|\\.)*`/)
  * stylesheet grammars execute `not()` hundreds of times per KB while this repo's
  * microbenchmarks execute it about twenty times.
  */
-const valueStop = (): Array<Combinator<unknown>> => [
+// Returns a TUPLE, not an array: `sequence(...valueStop(), x)` spreads it, and a
+// spread argument must be a tuple or reach a rest parameter. `Array<...>` typechecks
+// only while nothing pulls this module into the checked graph -- a test importing it
+// surfaced the break that was always there.
+const valueStop = () => [
   not(literal(';')),
   not(literal('}')),
   not(literal('{')),
   not(literal(')')),
   not(literal('!')),
-]
+] as const
 
 /** The same idea one level down: a comma-separated argument stops earlier. */
-const argStop = (): Array<Combinator<unknown>> => [
+// Tuple, for the same reason as valueStop above.
+const argStop = () => [
   not(literal(')')),
   not(literal(';')),
   not(literal(',')),
-]
+] as const
 
 /** The whole rule map — see the note on `cssRules` in examples/css/parser.ts.
  *  Analysis names choice sites by rule, so it needs the map, not the entry rule. */

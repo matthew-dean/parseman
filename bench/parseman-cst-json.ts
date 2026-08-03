@@ -11,14 +11,14 @@
  */
 import {
   rules, node, regex, literal, choice, many, sequence, trivia, parser, compile,
-  type CSTNode, type CSTLeaf, type CSTError,
+  type CSTNode,
 } from '../src/index.ts'
 
 const ws = trivia(regex(/[ \t\n\r,]*/))
 
 function mkNode(
   type: string,
-  children: ReadonlyArray<CSTNode | CSTLeaf | CSTError>,
+  children: CSTNode['children'],
   span: { start: number; end: number },
 ): CSTNode {
   return { _tag: 'node', type, span, state: null, children }

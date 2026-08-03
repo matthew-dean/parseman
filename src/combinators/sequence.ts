@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParserMeta, ParseFail } fro
 import { sequenceFirstSet, firstSetOf, union } from './first-set.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from './trivia-skip.ts'
 import { firstSetSentinel } from '../recovery/scan.ts'
+import { adjacencyFail, adjacencyOf, holdsAdjacency, type AdjacencyDef } from './adjacency.ts'
 
 type UnwrapParsers<T extends Combinator<unknown>[]> = {
   [K in keyof T]: T[K] extends Combinator<infer U> ? U : never
@@ -10,6 +11,28 @@ type UnwrapParsers<T extends Combinator<unknown>[]> = {
 export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[]]>(
   ...parsers: T
 ): Combinator<UnwrapParsers<T>> {
+  // Adjacency markers (`adjacent()` / `notAdjacent()`) are BOUNDARY tests, lowered
+  // here rather than parsed as terms. At index 0 there is no preceding term in this
+  // sequence, and the gap before `pos` belongs to whoever called us — locally
+  // undecidable, so reject it at construction instead of answering it wrongly.
+  // Stays `null` for the overwhelming majority of sequences, which is the point:
+  // every grammar builds thousands of these, and a per-sequence array to say "no
+  // assertions here" would be a permanent retained allocation for a fact that is
+  // almost always no.
+  let adjacency: (AdjacencyDef | null)[] | null = null
+  for (let i = 0; i < parsers.length; i++) {
+    const a = adjacencyOf(parsers[i]!)
+    if (a === null) continue
+    if (i === 0) {
+      throw new TypeError(
+        `sequence(): ${a.polarity}() cannot be the FIRST term — an adjacency assertion tests the `
+        + 'gap after the PRECEDING term. Put a concrete term first.',
+      )
+    }
+    ;(adjacency ??= Array.from({ length: parsers.length }, () => null))[i] = a
+  }
+  const hasAdjacency = adjacency !== null
+
   const meta: ParserMeta = {
     // Union through the nullable prefix — a leading optional()/many() lets a later
     // term's first char start the sequence. Just `parsers[0]` under-approximates.
@@ -50,6 +73,12 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
         // Publish this term's follow set (or keep the inherited sync when the local
         // follow isn't usable, e.g. the last term or an `any` first set).
         ctx._sync = followSentinels[i] ?? inheritedSync
+        const adj = adjacency === null ? null : adjacency[i]
+        if (adj) {
+          if (!holdsAdjacency(input, cur, ctx, adj)) return adjacencyFail(cur, adj)
+          if (values !== undefined) values.push(null)
+          continue
+        }
         if (ctx.trivia && i > 0) {
           const mark = saveTriviaMark(ctx)
           let scanEnd: number
@@ -83,6 +112,54 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
     }
   }
 
+  // Strict twin of the loop below, for the (rare) sequence that carries an adjacency
+  // assertion. FORKED rather than branched inline so the ordinary strict loop — the
+  // hot path of every grammar — keeps exactly the instructions it had before.
+  function parseAdjacent(input: string, pos: number, ctx: ParseContext): ParseResult<UnwrapParsers<T>> {
+    const values: unknown[] | undefined = def.valueUnused ? undefined : []
+    let cur = pos
+
+    for (let i = 0; i < parsers.length; i++) {
+      const adj = adjacency![i]
+      if (adj) {
+        // Assert over the gap at `cur` and move nothing. The NEXT term re-scans the
+        // same gap and owns the commit/rewind decision, so the tree, the spans and
+        // the trivia log are byte-identical to the same sequence without the marker.
+        if (!holdsAdjacency(input, cur, ctx, adj)) return adjacencyFail(cur, adj)
+        if (values !== undefined) values.push(null)
+        continue
+      }
+      if (ctx.trivia && i > 0) {
+        let scanEnd: number
+        const mark = saveTriviaMark(ctx)
+        if (needsDeferredTriviaCommit(ctx)) {
+          const scan = scanTrivia(input, cur, ctx)
+          scan.commit()
+          scanEnd = scan.end
+        } else {
+          scanEnd = advanceTrivia(input, cur, ctx)
+        }
+        const result = parsers[i]!.parse(input, scanEnd, ctx)
+        if (!result.ok) return result as ParseFail
+        if (result.span.end > scanEnd) cur = result.span.end
+        else rollbackTrivia(ctx, mark)
+        if (values !== undefined) values.push(result.value)
+        continue
+      }
+      const result = parsers[i]!.parse(input, cur, ctx)
+      if (!result.ok) return result as ParseFail
+      if (values !== undefined) values.push(result.value)
+      cur = result.span.end
+    }
+
+    return {
+      ok: true,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      value: (values ?? undefined) as UnwrapParsers<T>,
+      span: { start: pos, end: cur },
+    }
+  }
+
   return {
     _tag: 'sequence',
     _meta: meta,
@@ -93,6 +170,7 @@ export function sequence<T extends [Combinator<unknown>, ...Combinator<unknown>[
       // refs carries this across rule boundaries automatically). The strict loop
       // below is byte-identical to a parser with no recovery.
       if (ctx._tolerant) return parseTolerant(input, pos, ctx)
+      if (hasAdjacency) return parseAdjacent(input, pos, ctx)
 
       // Skip the tuple when it's never observed (markUnusedValues): terms still
       // parse (and self-capture) — only the array of their values is elided.

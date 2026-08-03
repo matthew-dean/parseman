@@ -335,8 +335,17 @@ jobs:
       #
       # Same job, so it reuses the checkout, the install and the warm .cache
       # worktrees rather than paying for a second runner.
+      #
+      # `--base` is what makes a PERF-PEAK-WAIVER usable, and it is passed here rather
+      # than baked into the script on purpose. A waiver is PER-PR: the guard honours one
+      # only while the line is ABSENT from the base's CHANGELOG, and without a base it
+      # cannot tell this PR's declaration from the one the previous PR left behind — so
+      # it refuses. On a push (no PR) there is no base, and the clause is unwaivable,
+      # which is the correct default for the branch everything is measured against.
       - name: Peak clause — no drawdown from the fastest release on record
-        run: pnpm perf:workloads:peak
+        run: pnpm perf:workloads:peak ${BASE_SHA:+--base=$BASE_SHA}
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
 
   # Code-size gate. On the same footing as the two perf gates, because until it
   # existed size had NO gate at all: `bench:size` lived in package.json and in

@@ -152,7 +152,11 @@ export function matchesEmpty(
  * (see `isPositiveLookahead` and `sequenceFirstSet`).
  */
 export function isZeroWidthAssertion(p: Combinator<unknown>): boolean {
-  return (p._def as ParserDef).tag === 'not'
+  const tag = (p._def as ParserDef).tag
+  // `adjacency` joins `not` for the same reason: `adjacent()`/`notAdjacent()` are
+  // zero-width tests of the gap BEHIND the cursor, so they constrain nothing about
+  // the first char ahead and must not contribute their `any` to the sequence.
+  return tag === 'not' || tag === 'adjacency'
 }
 
 /**

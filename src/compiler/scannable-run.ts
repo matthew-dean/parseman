@@ -1151,6 +1151,15 @@ function caseFoldLiteralOrAlt(source: string): ScanShape | null {
   return { kind: 'alt', arms: litArms, disjoint: false, firsts: litArms.map(() => null) }
 }
 
+/**
+ * `PARSEMAN_SCANTO=indexof` swaps the single-stop-char `until` scan loop for
+ * `String.prototype.indexOf`. Defaults OFF so a baseline build is provably
+ * byte-identical to the unmodified compiler, which is what makes the A/B a
+ * toggle rather than two different compilers (docs/design/derived-tokenization.md
+ * §16.3: the gate is a byte-identical parse tree against a toggled baseline).
+ */
+const scanToIndexOfEnabled = (): boolean => process.env.PARSEMAN_SCANTO === 'indexof'
+
 export const classCond = (cVar: string, ranges: Array<[number, number]>): string =>
   ranges
     .map(([lo, hi]) => (lo === hi ? `${cVar} === ${lo}` : `(${cVar} >= ${lo} && ${cVar} <= ${hi})`))
@@ -1472,12 +1481,30 @@ export function emitShapeMatch(
     const openChk = openLen === 1
       ? `${codeAt(start, firstChar)} === ${shape.open[0]}`
       : litCond(start, shape.open, firstChar)
+    // A SINGLE stop code point makes this scan a `memchr`, and V8 implements
+    // `String.prototype.indexOf` with a SIMD one. Measured 4.3x over the char
+    // loop on a 0.97 MiB corpus, 61 of 61 interleaved rounds
+    // (scratchpad/native-primitive-bakeoff/micro-scanto.mjs, regime (a)).
+    // Semantics are identical: the loop stops at the first stop char or at
+    // `input.length`, which is exactly `indexOf`'s hit / not-found pair.
+    // Multi-member stop sets stay on the loop — 3x indexOf + min measured at
+    // parity (0.992), because the min-reduce rescans the tail and discards it.
+    const stopCp =
+      shape.stop.length === 1 && shape.stop[0]![0] === shape.stop[0]![1] ? shape.stop[0]![0] : null
+    const scanLine =
+      stopCp !== null && stopCp <= 0xffff && scanToIndexOfEnabled()
+        ? // No temp is minted: a temp would renumber every later variable in the
+          // function and show up as an artifact-size delta that is counter
+          // renumbering rather than this change (the §9.1.4 / §9.2 effect).
+          `${ind}  ${j} = input.indexOf(${JSON.stringify(String.fromCharCode(stopCp))}, ${j})` +
+          `; if (${j} < 0) ${j} = input.length`
+        : `${ind}  while (${j} < input.length && !(${classCond(`input.charCodeAt(${j})`, shape.stop)})) ${j}++`
     return {
       setup: [
         `${ind}let ${j} = ${start}`,
         `${ind}if (${start} + ${openLen} <= input.length && (${openChk})) {`,
         `${ind}  ${j} = ${start} + ${openLen}`,
-        `${ind}  while (${j} < input.length && !(${classCond(`input.charCodeAt(${j})`, shape.stop)})) ${j}++`,
+        scanLine,
         `${ind}}`,
       ],
       // An open-until-terminator always completes (stop char or EOF), so a matched
@@ -1536,14 +1563,30 @@ export function emitShapeMatch(
     ? `${codeAt(start, firstChar)} === ${shape.open[0]}`
     : litCond(start, shape.open, firstChar)
   const closeChk = litCond(j, shape.close)
+  // Scanning to a fixed close literal IS `indexOf`, and V8's is SIMD. The
+  // rewrite is exact: the loop stops at the first close literal at or after `j`,
+  // or runs out of room and leaves the token unterminated (no match). `indexOf`
+  // returns that same first index, or -1 for "never occurs" — mapped to
+  // `input.length`, which makes the `j + closeLen <= input.length` guard fail
+  // exactly where the loop's room check did. When it IS found the close literal
+  // matches by construction, so the guard's re-comparison is dropped.
+  const closeStr = String.fromCharCode(...shape.close)
+  const scanLines = scanToIndexOfEnabled()
+    ? [
+        `${ind}  ${j} = input.indexOf(${JSON.stringify(closeStr)}, ${j}); if (${j} < 0) ${j} = input.length`,
+        `${ind}  if (${j} + ${closeLen} <= input.length) ${endV} = ${j} + ${closeLen}`,
+      ]
+    : [
+        `${ind}  while (${j} + ${closeLen - 1} < input.length && !(${closeChk})) ${j}++`,
+        `${ind}  if (${j} + ${closeLen} <= input.length && (${closeChk})) ${endV} = ${j} + ${closeLen}`,
+      ]
   return {
     setup: [
       `${ind}let ${j} = ${start}`,
       `${ind}let ${endV} = ${start}`,
       `${ind}if (${start} + ${openLen} <= input.length && (${openChk})) {`,
       `${ind}  ${j} = ${start} + ${openLen}`,
-      `${ind}  while (${j} + ${closeLen - 1} < input.length && !(${closeChk})) ${j}++`,
-      `${ind}  if (${j} + ${closeLen} <= input.length && (${closeChk})) ${endV} = ${j} + ${closeLen}`,
+      ...scanLines,
       `${ind}}`,
     ],
     ok: `${endV} > ${start}`,

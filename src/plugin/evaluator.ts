@@ -227,9 +227,20 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   field:     (...a) => parseman.field(a[0] as string, a[1] as Combinator<unknown>),
   noTrivia:  (...a) => parseman.noTrivia(a[0] as Combinator<unknown>),
   token:     (...a) => parseman.token(a[0] as Combinator<unknown>),
-  routed:    () => parseman.routed(),
+  // `routed(fallback)` — the fallback must be forwarded. A zero-arg entry here read
+  // as "routed takes no arguments" and SILENTLY built a bare `routed()`, so a
+  // production written to work both inside and outside a dispatch branch lost its
+  // out-of-branch behaviour under the macro while keeping it under the interpreter.
+  // `undefined` reproduces the bare def exactly (see `routed()`), so `routed()` is
+  // byte-identical.
+  routed:    (...a) => parseman.routed(a[0] as Combinator<unknown> | undefined),
   leaf:      (...a) => parseman.leaf(a[0] as Combinator<unknown>, a[1] as (value: unknown, span: { start: number; end: number }) => unknown),
   expect:    (...a) => parseman.expect(a[0] as Combinator<unknown>, a[1] as string | undefined),
+  // Adjacency assertions carry only plain data (a polarity and an optional list of
+  // category names), so the macro reproduces them exactly — no source capture, no
+  // interpreter fallback.
+  adjacent:  () => parseman.adjacent(),
+  notAdjacent: (...a) => parseman.notAdjacent(a[0] as { kinds?: readonly string[] } | undefined),
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +309,12 @@ function dispatchArmValue(node: Expression, scope: XScope, code?: string, mfs?: 
     const opts = { caseInsensitive: factory.caseInsensitive }
     if (typeof key === 'string') return parseman.when(key, parserValue, opts)
     if (Array.isArray(key) && key.every(item => typeof item === 'string')) return parseman.when(key, parserValue, opts)
+    // `makeWhen(opts)` returns `(key, parser) => when(key, parser, opts)`, so it accepts
+    // EVERY key `when` accepts — including a startsWith/endsWith/matches matcher. Omitting
+    // that case here made the aliased form a hard macro failure ("factory isn't statically
+    // evaluable") for an arm the interpreter builds, so the alias silently carried a
+    // narrower contract than the constructor it forwards to.
+    if (isDispatchMatcher(key)) return parseman.when(key, parserValue, opts)
     return null
   }
 
@@ -1126,19 +1143,79 @@ function flattenRuleEntries(retObj: ObjectExpression, scope: XScope, code: strin
   return out
 }
 
-/** Evaluate a factory body's `const` declarations into `scope`. Returns false on failure. */
-function evalBodyStatements(statements: VariableDeclaration[], scope: XScope, code: string): boolean {
+/** Every `Identifier` name appearing anywhere under an expression node. */
+function identifierNamesIn(node: unknown, out: Set<string> = new Set()): Set<string> {
+  if (!node || typeof node !== 'object') return out
+  if (Array.isArray(node)) { for (const n of node) identifierNamesIn(n, out); return out }
+  const rec = node as Record<string, unknown>
+  if (rec.type === 'Identifier' && typeof rec.name === 'string') out.add(rec.name)
+  for (const k of Object.keys(rec)) {
+    if (k === 'type' || k === 'start' || k === 'end') continue
+    identifierNamesIn(rec[k], out)
+  }
+  return out
+}
+
+/**
+ * Evaluate a factory body's `const` declarations into `scope`. Returns false on failure,
+ * and writes a specific reason into `out.reason`.
+ *
+ * The reason matters more than it looks. A body binding that fails takes the whole
+ * factory down, and the caller's generic "isn't statically evaluable" — or, through
+ * `composeLeaf`, a message about the ARGUMENT SHAPE — points nowhere near the cause.
+ * The dominant real cause is a forward reference: `const A = node('A', B, …)` above
+ * `const B = …`. That is a JavaScript temporal dead zone, not a macro limitation — the
+ * interpreter throws `ReferenceError: Cannot access 'B' before initialization` on the
+ * very same source — so the macro should say so as plainly as the interpreter does.
+ * `g.B` is order-free (the proxy mints a ref and defines it in phase 2), which is why
+ * converting a `g.` reference to a bare const can only move DOWN the file.
+ */
+function evalBodyStatements(
+  statements: VariableDeclaration[],
+  scope: XScope,
+  code: string,
+  out?: { reason?: string },
+): boolean {
   const bodyMfs: string[] = []
+  // Names bound later in this body, for forward-reference attribution.
+  const laterNames: Array<Set<string>> = []
+  {
+    const all: string[][] = statements.map(stmt =>
+      stmt.declarations.map(d => ((d as unknown as VariableDeclarator).id as unknown as { name?: string }).name ?? '')
+    )
+    const flat = all.flat()
+    let seen = 0
+    for (const names of all) {
+      laterNames.push(new Set(flat.slice(seen + names.length)))
+      seen += names.length
+    }
+  }
+  let si = -1
   for (const stmt of statements) {
+    si++
     for (const d of stmt.declarations) {
       const decl = d as unknown as VariableDeclarator
-      if (!decl.init) return false
       const id = decl.id as unknown as { type: string; name?: string }
-      if (id.type !== 'Identifier' && id.type !== 'BindingIdentifier') return false
-      const name = id.name!
+      const name = id.name ?? '<destructured>'
+      if (!decl.init) { if (out) out.reason = `\`${name}\` has no initializer`; return false }
+      if (id.type !== 'Identifier' && id.type !== 'BindingIdentifier') {
+        if (out) out.reason = 'a destructuring binding in the factory body'
+        return false
+      }
       const before = bodyMfs.length
       const val = anyValue(decl.init as unknown as Expression, scope, code, bodyMfs)
-      if (val === null) return false
+      if (val === null) {
+        if (out) {
+          const used = identifierNamesIn(decl.init)
+          const forward = [...(laterNames[si] ?? [])].filter(n => n !== '' && used.has(n))
+          out.reason = forward.length > 0
+            ? `\`${name}\` references ${forward.map(n => `\`${n}\``).join(', ')} before ${forward.length > 1 ? 'their declarations' : 'its declaration'}`
+              + ` — a temporal dead zone (the interpreter throws "Cannot access '${forward[0]}' before initialization" on this source too);`
+              + ` move the declaration above \`${name}\`, or use \`g.${forward[0]}\`, which is order-free`
+            : `\`${name}\` isn't a statically-evaluable combinator`
+        }
+        return false
+      }
       const thisDeclMfSrcs = bodyMfs.slice(before)
       if (isCombinator(val)) scope.set(name, { combi: val, mfSrcs: thisDeclMfSrcs } satisfies ScopeEntry)
       else if (isDispatchArm(val)) scope.set(name, { value: val, mfSrcs: thisDeclMfSrcs } satisfies StaticValueEntry)
@@ -1168,6 +1245,7 @@ export function evaluateParserFactory(
   scope: Scope,
   code: string,
   mapFnSources: string[],  // receives ONLY the return-expression mfSrcs
+  out?: { reason?: string },  // receives a SPECIFIC failure reason (see evalBodyStatements)
 ): Map<string, Combinator<unknown>> | null {
   if (factoryNode.type !== 'ArrowFunctionExpression' && factoryNode.type !== 'FunctionDeclaration' && factoryNode.type !== 'FunctionExpression') return null
 
@@ -1258,7 +1336,7 @@ export function evaluateParserFactory(
   localScope.set(proxyName, gProxy)
 
   // ── Phase 1: evaluate the factory's own body statements ───────────────────
-  if (!evalBodyStatements(statements, localScope, code)) return null
+  if (!evalBodyStatements(statements, localScope, code, out)) return null
 
   // ── Phase 2: flatten the return object → dedup last-wins → eval + define ──
   // flattenRuleEntries returns the ordered (key, valueExpr, scope). A later property

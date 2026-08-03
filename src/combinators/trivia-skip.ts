@@ -283,6 +283,31 @@ export function consumeTrivia(input: string, cur: number, ctx: ParseContext): nu
   return scan.end
 }
 
+/**
+ * End of the trivia run at `cur`, WITHOUT recording any of it.
+ *
+ * The read-only twin of `consumeTrivia`, for a zero-width ASSERTION that wants the
+ * adjacency fact and must leave no trace: the deferred path returns a scan whose
+ * `commit()` is simply never called, so nothing lands in any buffer and there is
+ * nothing to roll back. The following term re-scans the same gap and owns the
+ * commit/rewind decision exactly as if the assertion were not there.
+ */
+export function probeTriviaEnd(input: string, cur: number, ctx: ParseContext): number {
+  if (!ctx.trivia) return cur
+  // "WITHOUT recording any of it" has to include LINE ranges, and it did not.
+  // Both paths call `recordLineRangeFromContext` whenever
+  // `ctx.trackLines && trivia.canMatchNewline`, so a rejected `notAdjacent()`
+  // left a line record behind for a gap the parse then re-scanned — the probe was
+  // read-only for buffers and read-write for line data. Probing through a context
+  // with `trackLines` off makes `trackTriviaLines` false in both scanners, so
+  // there is nothing to record and nothing to undo. Everything the scanners
+  // actually need to find the end (`trivia`, `state`, the deferred-commit sinks)
+  // is carried through unchanged.
+  const probeCtx: ParseContext = { ...ctx, trackLines: false }
+  if (needsDeferredTriviaCommit(probeCtx)) return scanTrivia(input, cur, probeCtx).end
+  return advanceTrivia(input, cur, probeCtx)
+}
+
 function fastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner | null {
   const cached = fastTriviaCache.get(trivia)
   if (cached !== undefined) return cached

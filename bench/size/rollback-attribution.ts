@@ -22,10 +22,23 @@ import { Stylesheet as CssStylesheet } from '../../examples/css/parser.ts'
 import { Stylesheet as LessStylesheet } from '../workloads/less.ts'
 import { graphqlDoc } from '../../examples/graphql/parser.ts'
 
-/** Which emitter owns each mark-variable prefix (see codegen.ts `v(ctx, …)`). */
+/**
+ * Which emitter owns each mark-variable prefix (see codegen.ts `v(ctx, …)`).
+ *
+ * This table is only sound while each prefix has exactly ONE emitter, and it was
+ * not: `emitMany`/`manySep` used `_mk`/`_mktl`/`_mklg`/`_mkrlg` too, so every
+ * many-loop mark was billed to the sequence boundary — 86,574 B of the 375,527 B
+ * this reported as boundary cost on css. The many family is now `_ml*`, which
+ * makes the stated invariant true rather than assumed.
+ */
 const SEQ_BOUNDARY_PREFIXES = new Set([
   '_mk', '_mktl', '_mklg', '_mkrlg', // emitSeqValues capturing-trivia marks
   '_sne', '_sea', '_tlg',            // emitSeqValues scan-end / end-after / trivia-log hoist
+])
+
+/** `emitMany`/`manySep`: the per-iteration mark-item-rollback shape. */
+const MANY_LOOP_PREFIXES = new Set([
+  '_ml', '_mltl', '_mllg', '_mlrlg', '_mllv', '_mlf', '_mlrw',
 ])
 
 type Bucket = { restoreBytes: number, saveBytes: number, sites: number }
@@ -46,7 +59,7 @@ const RESTORE_RE = /if \((_ctx\.\w+|_\w+) (?:&&|!== undefined &&) \1\.length !==
 /** A mark save: `const M = <sink>?.length ?? 0` or `<sink> ? <sink>.length : 0`. */
 const SAVE_RE = /const (\w+) = (?:_ctx\.\w+|_\w+)(?:\?\.length \?\? 0|(?: !== undefined)? \? (?:_ctx\.\w+|_\w+)\.length : 0)/g
 
-function attribute(source: string): { total: Bucket, seq: Bucket, other: Bucket, byPrefix: Map<string, Bucket> } {
+function attribute(source: string): { total: Bucket, seq: Bucket, many: Bucket, other: Bucket, byPrefix: Map<string, Bucket> } {
   const byPrefix = new Map<string, Bucket>()
   const bump = (p: string, key: 'restoreBytes' | 'saveBytes', n: number): void => {
     let b = byPrefix.get(p)
@@ -57,12 +70,12 @@ function attribute(source: string): { total: Bucket, seq: Bucket, other: Bucket,
   for (const m of source.matchAll(RESTORE_RE)) bump(prefixOf(m[2]!), 'restoreBytes', m[0]!.length)
   for (const m of source.matchAll(SAVE_RE)) bump(prefixOf(m[1]!), 'saveBytes', m[0]!.length)
 
-  const total = empty(), seq = empty(), other = empty()
+  const total = empty(), seq = empty(), many = empty(), other = empty()
   for (const [p, b] of byPrefix) {
-    const t = SEQ_BOUNDARY_PREFIXES.has(p) ? seq : other
+    const t = SEQ_BOUNDARY_PREFIXES.has(p) ? seq : MANY_LOOP_PREFIXES.has(p) ? many : other
     for (const k of ['restoreBytes', 'saveBytes', 'sites'] as const) { t[k] += b[k]; total[k] += b[k] }
   }
-  return { total, seq, other, byPrefix }
+  return { total, seq, many, other, byPrefix }
 }
 
 const pct = (n: number, d: number): string => `${((n / d) * 100).toFixed(1)}%`
@@ -83,15 +96,16 @@ if (fileArgs.length > 0) {
   const { readFileSync } = await import('node:fs')
   for (const f of fileArgs) {
     const raw = readFileSync(f, 'utf8')
-    const { total, seq, other, byPrefix } = attribute(normalize(raw))
+    const { total, seq, many, other, byPrefix } = attribute(normalize(raw))
     const artifact = Buffer.byteLength(raw)
     const totalBytes = total.restoreBytes + total.saveBytes
     console.log(`\n=== ${f} — artifact ${artifact.toLocaleString()} B ===`)
     console.log(`save+restore total : ${totalBytes.toLocaleString()} B (${pct(totalBytes, artifact)} of artifact), ${total.sites} sites`)
     console.log(`  sequence boundary: ${(seq.restoreBytes + seq.saveBytes).toLocaleString()} B (${pct(seq.restoreBytes + seq.saveBytes, totalBytes)} of save+restore, ${pct(seq.restoreBytes + seq.saveBytes, artifact)} of artifact), ${seq.sites} sites`)
+    console.log(`  many/repeat loop : ${(many.restoreBytes + many.saveBytes).toLocaleString()} B (${pct(many.restoreBytes + many.saveBytes, totalBytes)} of save+restore, ${pct(many.restoreBytes + many.saveBytes, artifact)} of artifact), ${many.sites} sites`)
     console.log(`  other (fallible) : ${(other.restoreBytes + other.saveBytes).toLocaleString()} B (${pct(other.restoreBytes + other.saveBytes, totalBytes)} of save+restore, ${pct(other.restoreBytes + other.saveBytes, artifact)} of artifact), ${other.sites} sites`)
     for (const [p, b] of [...byPrefix].sort((a, b) => (b[1].restoreBytes + b[1].saveBytes) - (a[1].restoreBytes + a[1].saveBytes))) {
-      console.log(`    ${p.padEnd(8)} ${String(b.restoreBytes + b.saveBytes).padStart(8)} B  ${String(b.sites).padStart(5)} sites  ${SEQ_BOUNDARY_PREFIXES.has(p) ? 'SEQ' : 'other'}`)
+      console.log(`    ${p.padEnd(8)} ${String(b.restoreBytes + b.saveBytes).padStart(8)} B  ${String(b.sites).padStart(5)} sites  ${SEQ_BOUNDARY_PREFIXES.has(p) ? 'SEQ' : MANY_LOOP_PREFIXES.has(p) ? 'MANY' : 'other'}`)
     }
   }
   process.exit(0)
@@ -103,17 +117,18 @@ for (const [name, g] of [
   ['graphql/document', graphqlDoc],
 ] as const) {
   const src = compile(g as never).source
-  const { total, seq, other, byPrefix } = attribute(src)
+  const { total, seq, many, other, byPrefix } = attribute(src)
   const artifact = Buffer.byteLength(src)
   const totalBytes = total.restoreBytes + total.saveBytes
   console.log(`\n=== ${name} — artifact ${artifact.toLocaleString()} B ===`)
   console.log(`save+restore total : ${totalBytes.toLocaleString()} B (${pct(totalBytes, artifact)} of artifact), ${total.sites} sites`)
   console.log(`  sequence boundary: ${(seq.restoreBytes + seq.saveBytes).toLocaleString()} B (${pct(seq.restoreBytes + seq.saveBytes, totalBytes)} of save+restore, ${pct(seq.restoreBytes + seq.saveBytes, artifact)} of artifact), ${seq.sites} sites`)
+  console.log(`  many/repeat loop : ${(many.restoreBytes + many.saveBytes).toLocaleString()} B (${pct(many.restoreBytes + many.saveBytes, totalBytes)} of save+restore, ${pct(many.restoreBytes + many.saveBytes, artifact)} of artifact), ${many.sites} sites`)
   console.log(`  other (fallible) : ${(other.restoreBytes + other.saveBytes).toLocaleString()} B (${pct(other.restoreBytes + other.saveBytes, totalBytes)} of save+restore, ${pct(other.restoreBytes + other.saveBytes, artifact)} of artifact), ${other.sites} sites`)
   const rows = [...byPrefix].sort((a, b) => (b[1].restoreBytes + b[1].saveBytes) - (a[1].restoreBytes + a[1].saveBytes))
   console.log('  by prefix:')
   for (const [p, b] of rows) {
     const bytes = b.restoreBytes + b.saveBytes
-    console.log(`    ${p.padEnd(8)} ${String(bytes).padStart(8)} B  ${String(b.sites).padStart(5)} sites  ${SEQ_BOUNDARY_PREFIXES.has(p) ? 'SEQ' : 'other'}`)
+    console.log(`    ${p.padEnd(8)} ${String(bytes).padStart(8)} B  ${String(b.sites).padStart(5)} sites  ${SEQ_BOUNDARY_PREFIXES.has(p) ? 'SEQ' : MANY_LOOP_PREFIXES.has(p) ? 'MANY' : 'other'}`)
   }
 }

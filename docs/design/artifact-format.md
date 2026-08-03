@@ -33,11 +33,45 @@ from its carried IR under the consumer's parseman, or is rejected).
   "recompile — parseman does not fuse across versions" message rather than silently
   mis-reading a stale shape.
 
+## Override invariant: a named rule is never inlined
+
+> **A rule that has a NAME is emitted once, as its own `_r_<Name>` function, and every
+> reference to it is a CALL to that name — never a copy of its body at the call site.**
+> Anonymous, source-private `const` helpers still inline freely; the invariant is about
+> *named* rules only.
+
+This is what makes `compose()` work. Composition resolves references **by name** in one
+shared scope, and a later piece overriding rule `X` **repoints the slot every call site
+already holds** — which is how an override reaches a base piece's *own* internal calls
+(open recursion). `src/compiler/linker.ts` states it directly: "a reference resolves by
+NAME and an override reroutes the base piece's own calls". Inlining a named rule bakes
+its body into its callers, so an override of it would silently fail to reach them: the
+composed grammar would still parse, and only the arms nobody re-pointed would be wrong.
+
+So **single use is not a licence to inline.** A rule referenced exactly once still gets
+its own function, because "referenced once *in this artifact*" says nothing about what a
+downstream `compose()` will override. Where duplicate bodies are worth collapsing, the
+collapse must keep the named functions as **entry points** over a shared body — a
+token-keyed shared body, not an inlining (`derived-tokenization.md` §8.5).
+
+The trade was made deliberately and is recorded in `notes/RULE_ABI_PLAN.md` §3:
+"calling sibling rules by canonical name …, never inlining them (inlining a rule would
+bake it and defeat override; private `const` helpers still inline)."
+
 ## The shim that always looks necessary
 
 Changing the recipe shape makes a `Legacy*` type and a second read branch in `fusedBody`
 feel like ordinary diligence — the new code "should still handle the old shape". It should
 not. No older-format artifact is ever fed to a newer parseman, so that branch is
 unreachable by construction: dead defensive code that permanently doubles the format's
-surface. The ordered-chain `{alts}` first-set recipe is the *sole* format. When a shape
-changes, change it outright and let the version stamp reject anything stale.
+surface. When a shape changes, change it outright and let the version stamp reject
+anything stale.
+
+The rule is about **time, not variety**: at any one version there is exactly **one live
+shape per artifact kind**, and no *older* shape is readable beside it. The ordered-chain
+`{alts}` first-set recipe is that one live shape for the codegen first-set recipe today.
+Read as "parseman will only ever have one artifact format," it would be saying something
+this document never established and does not need — what makes the second read branch
+dead is the version stamp, not a count of formats. A genuinely different artifact **kind**
+(a different lowering's output, say) is not a compatibility shim and is not what the
+STOP above is aimed at; it carries its own stamp and obeys the same no-older-shape rule.

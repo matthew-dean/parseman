@@ -361,6 +361,9 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         case 'withCtx': return withCtx(def.extra, build(def.parser))
         case 'expect': return expect(build(def.parser), def.label)
         case 'scanTo': return scanTo(build(def.sentinel), { skip: def.skip.map(build), orEOF: def.orEOF })
+        // Zero-width assertion with no coverage-bearing child; reuse it verbatim so
+        // the rebuilt sequence still recognises the boundary marker.
+        case 'adjacency': return parser
         case 'literal': case 'regex': case 'keywords': return parser
         case 'recover': case 'unknown': throw new TypeError(`runWithGrammarCoverage does not yet support ${def.tag}`)
         default: return parser

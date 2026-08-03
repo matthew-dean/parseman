@@ -81,7 +81,12 @@ List recovery is the `tolerant` run flag plus the **inferred** sync on
 guard for the emitted error nodes. `expect` (required-token, in-place) and
 `scanTo`/`balanced` remain distinct primitives — they are not list recovery.
 
-Tolerant recovery + the completions probe run on **both** paths. The interpreter path
+Tolerant recovery + the completions probe run on **both of the two lowerings that
+execute grammars today** — the interpreter and codegen. ("Both" enumerates those two;
+it is not a claim that every lowering parseman may grow implements recovery. The
+additive table prototype in `src/table/` implements none of it — no `_tolerant`, no
+`_rec`, no `_probe` — which is a statement of its current scope, not a defect.) The
+interpreter path
 is always available. The compiled (`compile()`) path emits them under an opt-in gate —
 `compile(g, { recovery: true })` (or the `parseman({ recovery: true })` macro option) —
 so the published compiled artifact recovers and answers completions on the fast path,

@@ -184,7 +184,6 @@ type RunOptions = {
     select: readonly string[]
   }
   tolerant?: boolean              // enable list recovery diagnostics
-  profile?: boolean               // compiled-only profiling passes
 }
 
 type RunResult = {
@@ -443,7 +442,10 @@ type ParserMeta    = { firstSet: FirstSet; canMatchNewline: boolean; isTrivia: b
 type FirstSet      = { kind: 'any' } | { kind: 'ranges'; ranges: CharRange[] } | { kind: 'empty' }
 type CharRange     = { lo: number; hi: number }
 type ParserDef     = /* tagged union of every combinator's definition */
-type ChoiceStrategy = 'greedyClassify' | 'literalsLongestFirst' | 'firstMatch'
+type ChoiceStrategy = { tag: 'greedyClassify';       superIndex: number }
+                    | { tag: 'literalsLongestFirst'; sortedIndices: number[] }
+                    | { tag: 'firstMatch' }
+                    | { tag: 'sharedPrefix';         prefix: Combinator<unknown>; members: number[] }
 type AutoNotCheck  = { kind: 'firstSet'; set: FirstSet } | { kind: 'startsWith'; value: string }
 type GatedArm<T>   = { gate: (state: unknown) => boolean; combinator: Combinator<T> }
 ```

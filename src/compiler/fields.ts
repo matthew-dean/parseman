@@ -60,8 +60,32 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
  * shape returns `true` (keep the frame) — we only elide when provably safe.
  */
 export function parserHasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  return hasTriviaSite(p, seen, false)
+}
+
+/**
+ * The same question asked of the ROOT trivia log (`_ctx._rootTriviaLog`) instead
+ * of the current node's frame.
+ *
+ * The two differ in exactly one case, and it is the case that matters: a nested
+ * `node()` manages its own FRAME, so nothing inside it reaches the enclosing
+ * frame's log — but the root log is not a frame, and every trivia run inside that
+ * node still lands in it. Reusing `parserHasTriviaSite` for the root sink
+ * therefore under-reports: it dropped the mark on `node()` arms whose trivia does
+ * accumulate, and a parse-tree diff caught it as trivia entries that were no
+ * longer rewound on a failed choice arm (`length: 3` becoming `length: 6`).
+ */
+export function parserHasRootTriviaSite(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  return hasTriviaSite(p, seen, true)
+}
+
+function hasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator<unknown>>, throughNode: boolean): boolean {
   if (seen.has(p)) return true // cycle → conservative (keep the frame)
   seen.add(p)
+  const parserHasTriviaSite = (
+    x: Combinator<unknown>,
+    s: Set<Combinator<unknown>> = new Set(),
+  ): boolean => hasTriviaSite(x, s, throughNode)
   const d = p._def
   switch (d.tag) {
     // Trivia is skipped between/around elements or iterations → a site.
@@ -73,13 +97,16 @@ export function parserHasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator
     case 'recover':
     case 'skip':
       return true
-    // Nested node manages its own trivia frame; none logs here.
-    case 'node': return false
+    // Nested node manages its own trivia frame; none logs into THIS frame. The
+    // root log has no frames, so it must look inside.
+    case 'node': return throughNode ? parserHasTriviaSite(d.parser, seen) : false
     // Pure terminals + trivia-suppressing token: no site.
     case 'regex':
     case 'literal':
     case 'keywords':
     case 'guard':
+    // The adjacency probe scans with capture OFF, so it logs nothing.
+    case 'adjacency':
     case 'token':
     case 'leaf':
       return false
