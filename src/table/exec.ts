@@ -58,7 +58,24 @@ export const tableCounters: {
   byOp: Int32Array
   /** Distinct reducer/host functions actually reaching each shared call site. */
   sites: Map<string, Set<unknown>>
-} = { rows: 0, byOp: new Int32Array(64), sites: new Map() }
+  /**
+   * SPECULATION AT UNGATED CHOICES. `encode.ts:368-376` gives a choice its
+   * first-char dispatch only when NO arm is nullable, ALL arms are pairwise
+   * disjoint and ALL map to a char class; any one failure ungates every arm of
+   * the site, which then runs the linear loop below. Codegen has no such
+   * all-or-nothing rule — `emitFirstMatch` guards each arm on its OWN first set
+   * — so these counts are work the table does and the compiled engine does not.
+   *
+   * `ungatedEntries` is arms entered there; `ungatedFails` is those that then
+   * failed, which is pure waste by construction: a failing arm consumed nothing
+   * the winning arm will not scan again.
+   */
+  ungatedEntries: number
+  ungatedFails: number
+  /** Rows executed INSIDE failed ungated arms — the subtree each wasted entry drags. */
+  ungatedFailRows: number
+  gatedEntries: number
+} = { rows: 0, byOp: new Int32Array(64), sites: new Map(), ungatedEntries: 0, ungatedFails: 0, ungatedFailRows: 0, gatedEntries: 0 }
 
 const COUNT = process.env.PM_TABLE_COUNT === '1'
 
@@ -72,6 +89,10 @@ export function resetTableCounters(): void {
   tableCounters.rows = 0
   tableCounters.byOp = new Int32Array(64)
   tableCounters.sites = new Map()
+  tableCounters.ungatedEntries = 0
+  tableCounters.ungatedFails = 0
+  tableCounters.ungatedFailRows = 0
+  tableCounters.gatedEntries = 0
 }
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
@@ -646,6 +667,7 @@ function makeDriver(
           }
           if (arm >= 0) {
             ctx._fc = false
+            if (COUNT) tableCounters.gatedEntries++
             const v = exec(code[base + arm]!, input, pos, ctx)
             if (v !== FAIL) return v
             // THE CUT. `dispatch()` is the library's one true cut: once its
@@ -685,8 +707,11 @@ function makeDriver(
         const mEr = need ? ctx._errors?.length ?? 0 : 0
         for (let i = 0; i < n; i++) {
           ctx._fc = false
+          if (COUNT) tableCounters.ungatedEntries++
+          const rows0 = COUNT ? tableCounters.rows : 0
           const v = exec(code[base + i]!, input, pos, ctx)
           if (v !== FAIL) return v
+          if (COUNT) { tableCounters.ungatedFails++; tableCounters.ungatedFailRows += tableCounters.rows - rows0 }
           if (committed(ctx)) return FAIL
           if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
         }
