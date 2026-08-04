@@ -119,7 +119,9 @@
     "bench:margin": "node --import tsx/esm bench/svg-margin.ts",
     "divergence:jess": "node --import ./bench/jess/register.mjs bench/jess/divergence.ts",
     "size:jess": "node --import ./bench/jess/register.mjs bench/jess/size.ts",
-    "speed:jess": "node --import ./bench/jess/register.mjs bench/jess/speed.ts"
+    "speed:jess": "node --import ./bench/jess/register.mjs bench/jess/speed.ts",
+    "load:jess": "node --import ./bench/jess/register.mjs bench/jess/load.ts",
+    "fixture:jess": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts"
   },
   "keywords": [
     "parser",

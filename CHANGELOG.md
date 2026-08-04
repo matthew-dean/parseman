@@ -36,6 +36,65 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     grammars; they differ by 0.2%-0.4%. Variant folding remains a build/DX
     result and is reported in its own section, never as a per-dialect figure.
 
+- **The other half of the ledger: load / JS-interpretation cost, where the table
+  wins by 7-10x.** A lowered codegen grammar is 7.5-11.8 MB of JavaScript that V8
+  must parse and compile; a table is a numeric literal it must not.
+  `pnpm load:jess`, fresh process per measurement — node's module cache and V8's
+  compilation cache each make a second measurement of the same thing meaningless
+  (the identical compile read 0.79 ms then 0.010 ms before that was handled).
+
+  - **Cold import to parser-callable**: codegen 65.4 / 83.4 / 49.4 / 54.1 ms
+    (css/less/scss/jess) against the table's **7.4 / 8.0 / 7.1 / 7.1 ms** —
+    the table saves 42-75 ms per process, **6.9x-10.4x**.
+  - **V8 compile alone** (`vm.Script`, unique source per rep): codegen 41-65 ms
+    lazy, table 0.60-1.40 ms — **46x-85x**. Under `--no-lazy` codegen is 78-132
+    ms, so **43-68 ms of it is DEFERRED, not avoided**; it lands on first call,
+    and a parser calls every rule function it has.
+  - **The driver is counted, and codegen's advantage is stated.** The table side
+    includes loading the real built `dist/table/index.js` (155,503 B). The
+    codegen artifact imports **no parseman runtime at all** — the macro inlines
+    the recognition pieces — so its only runtime dependency is
+    `@jesscss/core/ast`, which both sides load. That is a real point in
+    codegen's favour and it is inside these numbers.
+  - **Crossover — the shape the answer actually takes.** Solving
+    `load + bytes * rate` for equality: **css 0.36 MB, less 0.17 MB, scss
+    0.17 MB, jess 1.18 MB**. Below that a process is faster overall on the
+    table; above it, on codegen. So the table wins one-shot and small-input
+    work outright and loses sustained large-input work. jess's figure is the
+    least trustworthy — its largest fixture is 11 KB and the rate difference
+    there is small enough to be noise-dominated.
+
+- **Absolute parse times on the canonical fixtures**, since ratios do not let
+  anyone compare against a number they already know (`pnpm fixture:jess`). One
+  parse, median of 16 interleaved samples, AST path, codegen / table /
+  interpreter:
+
+  | fixture | bytes | codegen | table | interpreter |
+  | --- | --- | --- | --- | --- |
+  | `benchmark.less` | 106,802 | 17.41 ms | 46.86 ms | 99.68 ms |
+  | `gen-workload.less` | 275,211 | 51.73 | 212.45 | 450.19 |
+  | `benchmark.css` | 123,029 | 5.34 | 30.34 | 59.01 |
+  | `gen-workload.scss` | 287,543 | 33.67 | 144.58 | 271.01 |
+  | `chunk.jess` | 11,047 | 0.37 | 1.11 | 2.36 |
+
+  `benchmark.less` is a **compiled-outlier**: the table and the interpreter
+  agree and the shipped codegen engine is the odd one out, on the `value` and
+  `span` facets. It is timed anyway and labelled, because it is the fixture that
+  gets asked about by name — but its three parses are not identical, so those
+  milliseconds are indicative of cost rather than a like-for-like contest.
+
+  **This corrects an earlier claim of mine.** I wrote that the table's parse
+  penalty was smallest on the largest inputs. It is not: `gen-workload.less`
+  (275 KB) is 4.11x while `benchmark.less` (107 KB) is 2.69x, same dialect. The
+  penalty tracks which constructs a file exercises, not its size.
+
+  NOT MEASURED: jess's own `benchmark:*` harnesses compare whole-pipeline
+  compile against stylis, dart-sass and postcss, and import `@jesscss/css-parser`
+  from jess's BUILT lib, which is pinned to a published parseman. They cannot be
+  aimed at this worktree's table engine without rebuilding jess against it, so
+  the standing `jess-ast at 1.35x PostCSS` bar is not reproducible from
+  parseman's side. Approximating it would be inventing a number.
+
 - **Every corpus cap is gone, and the three-way sweep still clears the table on
   all of them.** `bench/jess/grammars.ts` hardcoded `SCSS_LIMIT = 400` against a
   sass-spec cache of 2,408, silently dropping 83% of the corpus while the output
