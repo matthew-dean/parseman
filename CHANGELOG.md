@@ -670,10 +670,45 @@ numbers.
     even under `hostMode: 'cst'`**, where a host is by definition present and
     would supply the value. The refusal is correct for `'ast'` and is a gap for
     `'cst'`. It fails closed with a named `UnsupportedConstruct`.
-  - **`scanTo()` and `balanced()` are RUNTIME-ONLY.** They run correctly but park
-    a live combinator in the const pool, so `emitTableModule` refuses a grammar
-    using either, naming the construct. Every grammar in this repo except json,
-    csv and lang uses at least one.
+  - ~~**`scanTo()` and `balanced()` are RUNTIME-ONLY.**~~ **FIXED — every
+    combinator now emits.** They parked a live combinator in the const pool, so
+    `emitTableModule` refused a grammar using either. Since every shipping grammar
+    uses at least one, NO shipping grammar could be emitted at all, which is what
+    made the lowering's size claim unmeasurable rather than merely unmeasured.
+
+    Both are now carried as their CONSTRUCTOR ARGUMENTS in `prog.scans`
+    (`OP_SCAN`), with sentinel and skippers encoded as ordinary table subtrees and
+    referenced by offset. `resolveTable` rebuilds each spec through the SHARED
+    `scanTo()` / `balanced()` — the same pattern `triviaSpecs` already used — so
+    there is one implementation of each scan and the table carries only its
+    arguments. `balanced()`'s ambient re-resolution, its `expect()`-based
+    recovery, its `strict` failure and its one-leaf `token()` wrapper are
+    therefore unchanged, because they are still its own code doing the work.
+
+    Grammar-level ambient `scanSkip` follows, as subtree references
+    (`prog.scanSkip`), and is now installed PER RULE (`prog.scanSkipOf`) rather
+    than program-wide — `run()` installs the ENTRY rule's own set, and in a
+    `composeLeaf` grammar the pieces do not agree (67 of jess's 195 css rules
+    carry none).
+
+    Measured on jess's four dialect grammars, loaded from source: all four encode
+    with no `runtimeOnly`, emit as modules, and the emitted module is
+    parse-identical to the in-memory table on 626 corpus files — 87 css, 136 less,
+    400 scss, 3 jess — with zero divergences.
+  - **Fixed: a `dispatch()` fallback that reaches `routed()` through a RULE
+    REFERENCE lost its routed token.** `otherwise()` computes `usesRouted` when it
+    is constructed, and a `g.X` inside the arm is an unresolved ref whose thunk
+    throws, so the stored flag reads `false`. The interpreter never trusts it
+    alone — it ORs the flag with a live walk at parse time — and the encoder read
+    only the flag. `@charset "UTF-8";`, one line of plain CSS, failed under the
+    table with `expected: ["routed()"]`. Every case arm was already walked; the
+    fallback was the one branch that was not.
+  - **Fixed: the encode peephole read `OP_CHOICE`'s operands off by one.** Arms
+    start at `ip+4`; `ip+3` is the choice's own expected-set index. The collapse
+    pass treated that index as a code offset — replacing it whenever the row at
+    that offset happened to be an `OP_RULE`, then walking the bogus "target" and
+    rewriting ITS operands — and never collapsed the last arm. No test in the
+    suite noticed; the new one asserts the structure rather than a parse outcome.
 
   No timing or per-dialect byte figure is published for the prototype in this
   release, and the two figures quoted during its development (113 B/rule, ~2.65x)
