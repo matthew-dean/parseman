@@ -124,15 +124,31 @@ export async function assertParseman(): Promise<{ root: string; version: string;
 
 const CORPUS: Record<Dialect, { roots: string[]; ext: string }> = {
   css: { roots: ['packages/syntax/css/css-parser/test/css'], ext: '.css' },
-  less: { roots: ['node_modules/@less/test-data/tests-unit'], ext: '.less' },
+  // The WHOLE of `@less/test-data`, not just `tests-unit`. `tests-unit` is 136
+  // of the 314 `.less` files there; the rest are under `tests-error`, `plugin`,
+  // `data`, `tests-config` and `tests-warnings`. Those are error fixtures,
+  // plugin harnesses and import targets rather than a curated parse corpus —
+  // which is a reason they are less INTERESTING, not a reason to leave them
+  // unmeasured. Every one of them is a parseable input, and a three-way identity
+  // comparison is exactly as valid on a file all three engines reject.
+  //
+  // NOTE this root is an UNPINNED sibling checkout: `@less/test-data` is a
+  // `link:` to a live `~/git/oss/less.js`, so the denominator can move on its
+  // own. That is why it is printed rather than assumed.
+  less: { roots: ['node_modules/@less/test-data'], ext: '.less' },
   scss: { roots: ['packages/syntax/scss/scss-parser/.cache/sass-spec/inputs'], ext: '.scss' },
-  // Three files is not a denominator. Every `.jess` the repo actually holds is
-  // 24 across eight directories; these seven roots are all of them except
-  // `jess-parser/test/errors`, which exists to FAIL to parse and so measures
-  // error recovery rather than parsing. 22 files — still small, and said so.
+  // Three files is not a denominator — it is an ABSENCE of coverage, and no
+  // statement about the jess dialect can rest on it. These roots are every
+  // `.jess` the repo holds: 24 files. Error fixtures are in, on the same
+  // reasoning as less's `tests-error` and css's `test/css/errors` — a file all
+  // three engines reject is exactly as good an identity test as one they accept.
+  //
+  // 24 is still far too few to conclude anything about jess. That is a fact
+  // about the repo, not about this harness, and the printed denominator is
+  // there so it cannot be mistaken for coverage.
   jess: {
     roots: [
-      'packages/syntax/jess/jess-parser/test/data',
+      'packages/syntax/jess/jess-parser/test',
       'packages/jess/test/files',
       'packages/jess/benchmark',
       'packages/fns/test/files',

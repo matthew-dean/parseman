@@ -20,14 +20,15 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     should. The shared driver is 68,738 B of source, added to a bundle once,
     and is netted off nothing.
   - **Speed, table vs codegen on the same corpus**: css **+229%**, less
-    **+126%**, scss **+115%**, jess **+203%** — the table is 2.2x-3.3x SLOWER
-    than the shipped codegen. Against the interpreter it is 2.2x-2.6x faster
-    (codegen -> interpreter is +340%..+522% on the same runs). Control contests
-    (table vs an independently built table) read -0.5%..+1.3% with 4-12 of 16
+    **+134%**, scss **+115%**, jess **+213%** — the table is 2.2x-3.3x SLOWER
+    than the shipped codegen. Against the interpreter it is 1.9x-2.3x faster
+    (codegen -> interpreter is +372%..+536% on the same runs). Control contests
+    (table vs an independently built table) read -1.5%..+1.3% with 4-15 of 16
     wins, so the gate deltas are far outside the noise floor and the direction
-    is not in question. The penalty is smallest on the largest corpus (less,
-    132 KB) and largest on the smallest (css, 7 KB), which is where to look
-    next.
+    is not in question. Absolute throughput, compiled -> table: css 11.6 -> 3.5
+    MB/s, less 4.1 -> 1.7, scss 4.7 -> 2.2, jess 19.7 -> 6.3. The penalty is
+    smallest on the corpora with the largest files and largest on the ones with
+    the smallest, which is where to look next.
   - **The four `trackLines` x `hostMode` variants are four DISTINCT tables, not
     two.** Proven by sha256 of the emitted machinery rather than by equal byte
     counts. An earlier claim that AST and CST emit byte-identical tables holds
@@ -35,19 +36,32 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     grammars; they differ by 0.2%-0.4%. Variant folding remains a build/DX
     result and is reported in its own section, never as a per-dialect figure.
 
-- **The scss corpus cap is gone, and the three-way sweep still clears the
-  table.** `bench/jess/grammars.ts` hardcoded `SCSS_LIMIT = 400` against a
+- **Every corpus cap is gone, and the three-way sweep still clears the table on
+  all of them.** `bench/jess/grammars.ts` hardcoded `SCSS_LIMIT = 400` against a
   sass-spec cache of 2,408, silently dropping 83% of the corpus while the output
   read as a corpus result; the stated justification — that the first 400 in
   sorted order are reproducible — was not a reason, since all 2,408 in sorted
-  order are equally reproducible. Over the **full 2,408**: `table-outlier=0`,
-  identical=1,908, interp-outlier=491, compiled-outlier=1, three-way=8. No
-  defect was hiding in the 2,008 files the cap had never looked at. The jess
-  corpus went from **3 files to 22** — every `.jess` in the repo except
-  `jess-parser/test/errors`, which exists to fail to parse; 22 is still far too
-  few to say anything about the jess dialect and the harness now prints the
-  denominator so that cannot be read as coverage. `divergence.ts` reports
-  `files=N of TOTAL` and flags any run that bounded its own coverage.
+  order are equally reproducible. less was reading only `tests-unit`, 136 of the
+  314 `.less` files in `@less/test-data`. jess was reading **three files**, which
+  is not a thin denominator but an absence of one.
+
+  Corpora now, and the three-way outcome on each — `table-outlier` is **0**
+  everywhere, so no defect was hiding in the 2,414 files that had never been
+  looked at:
+
+  | dialect | files | identical | table-outlier | interp-outlier | compiled-outlier | three-way |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | css | 87 (was 87) | 58 | **0** | 2 | 18 | 9 |
+  | less | 314 (was 136) | 296 | **0** | 4 | 10 | 4 |
+  | scss | 2,408 (was 400) | 1,908 | **0** | 491 | 1 | 8 |
+  | jess | 24 (was 3) | 22 | **0** | 0 | 2 | 0 |
+
+  **24 files is still far too few to say anything about the jess dialect.** It
+  is every `.jess` in the repo; the shortfall is the repo's, not the harness's.
+  `divergence.ts` and `speed.ts` now print `files=N of TOTAL` and flag any run
+  that bounded its own coverage, so a count can no longer read as coverage. The
+  less root is an UNPINNED sibling checkout (`link:` to a live `~/git/oss/less.js`),
+  so its denominator can move on its own — another reason to print it.
 
 - **Two table-driver defects that only the Less dialect exposed.** Measured over
   jess's four shipping grammars on their real corpora
