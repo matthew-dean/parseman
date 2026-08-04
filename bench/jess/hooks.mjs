@@ -17,6 +17,16 @@
  *   - a `./x.js` relative specifier falls back to `./x.ts` when only the TS exists
  *   - `.ts` sources are transpiled by esbuild with import ATTRIBUTES stripped
  *
+ * With `PM_MACRO=1` the macro-tagged modules are instead run through
+ * `transformMacro` — the SAME lowering a build splices — so the module exports
+ * the CODEGEN artifact rather than a combinator graph. That is the honest "old
+ * compiled" leg. It is a whole-process mode because the macro replaces the
+ * module: one process cannot hold both the combinator graph and its lowering.
+ * Do NOT substitute `compose([ruleMap])` for it — `composeLeaf()` documents that
+ * a leaf grammar never falls back to runtime codegen composition, so that path
+ * builds a DIFFERENT parser and was observed to disagree with both other engines
+ * on trees, spans and reducer throws.
+ *
  * `@jesscss/core/ast` is deliberately NOT redirected: the AST builders are a
  * plain runtime dependency of the reducers, `lib/` is current for them, and
  * building core from source here would drag in the whole package graph.
@@ -55,11 +65,29 @@ export function resolve(specifier, context, nextResolve) {
   return nextResolve(specifier, context)
 }
 
-export function load(url, context, nextLoad) {
+const MACRO_MODE = process.env.PM_MACRO === '1'
+/** Loaded lazily: importing the plugin pulls in oxc, which the default mode
+ * never needs, and it must come through THESE hooks to see the worktree `src/`. */
+let transformMacro
+
+export async function load(url, context, nextLoad) {
   if (url.startsWith('file:') && (url.endsWith('.ts') || url.endsWith('.mts'))) {
     const path = fileURLToPath(url)
-    const src = readFileSync(path, 'utf8').replace(IMPORT_ATTRIBUTE, '')
-    const out = transformSync(src, { loader: 'ts', format: 'esm', target: 'es2022', sourcefile: path })
+    const raw = readFileSync(path, 'utf8')
+    // A macro module under PM_MACRO: lower it exactly as a build would. The
+    // emitted module keeps every non-macro import, so `@jesscss/core/ast` and
+    // the grammar's own `./parse-error.js` still resolve through the rules above.
+    if (MACRO_MODE && IMPORT_ATTRIBUTE.test(raw) && !path.startsWith(PM_SRC)) {
+      IMPORT_ATTRIBUTE.lastIndex = 0
+      transformMacro ??= (await import(pathToFileURL(resolvePath(PM_SRC, 'plugin/index.ts')).href)).transformMacro
+      const lowered = transformMacro(raw, path, new Set(['parseman']))
+      const code = typeof lowered === 'string' ? lowered : lowered?.code
+      if (!code) throw new Error(`macro lowering produced nothing for ${path}`)
+      const js = transformSync(code, { loader: 'ts', format: 'esm', target: 'es2022', sourcefile: path })
+      return { format: 'module', source: js.code, shortCircuit: true }
+    }
+    IMPORT_ATTRIBUTE.lastIndex = 0
+    const out = transformSync(raw.replace(IMPORT_ATTRIBUTE, ''), { loader: 'ts', format: 'esm', target: 'es2022', sourcefile: path })
     return { format: 'module', source: out.code, shortCircuit: true }
   }
   return nextLoad(url, context)

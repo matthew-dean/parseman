@@ -35,9 +35,13 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     (`color: red blue`, `margin: 1px 2px`) stopped after its first piece and the
     whole ruleset vanished from an otherwise-successful `Stylesheet`.
 
-  Less is now 136/136 identical; css, scss and jess are unmoved. The residual
-  css (11) and scss (85) files are `both reject, report differs` — the parked
-  furthest-failure-merging item, not a tree defect.
+  Less is now 136/136 identical to the interpreter, and under the THREE-WAY
+  sweep (`pnpm divergence:jess`) `table-outlier` is **0 in every dialect** —
+  there is no file in 626 where interpreted and compiled agree and the table
+  alone differs. What a two-way sweep reported as "the table's residual css 11 +
+  scss 85" is drift between the two SHIPPED engines on `expected` only, with the
+  table siding with what ships compiled. Two reporting defects with
+  reproductions, neither landed, are recorded in `notes/TABLE-DRIVER.md`.
 
 - **`buildSpecModel` no longer hangs the process on a `balanced()`.** Every rule
   reaching a `balanced()` sent `parseman/spec` — and so `toEBNF`, `toRailroadHtml`
