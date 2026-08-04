@@ -527,7 +527,25 @@ class Encoder {
         this.code[head + 1] = sel
         this.code[head + 2] = dspIdx
         this.code[head + 3] = other
-        this.code[head + 4] = d.otherwiseUsesRouted === true ? 1 : 0
+        // THE FALLBACK'S ROUTED BIT IS WALKED, NOT READ OFF THE DEF.
+        //
+        // `d.otherwiseUsesRouted` is computed when `otherwise()` is CONSTRUCTED
+        // (dispatch.ts:189), and at that moment a `g.X` inside the arm is an
+        // unresolved ref whose thunk throws — `parserUsesRouted` catches and
+        // answers `false`. The interpreter never reads the stored flag alone: it
+        // calls `branchUsesRouted` at PARSE time (dispatch.ts:335), which ORs the
+        // flag with a live walk of the now-resolved graph.
+        //
+        // Reading only the flag here is why `@charset "UTF-8";` — one line of
+        // plain CSS — failed under the table with `expected: ["routed()"]`: the
+        // fallback ran at the selector's END with no routed token, so the
+        // `routed()` inside it had nothing to yield. Every case arm was already
+        // walked (`branchUsesRouted(c)` above); the fallback was the one branch
+        // that was not.
+        const otherRouted = d.otherwise === undefined
+          ? false
+          : branchUsesRouted({ parser: d.otherwise as Combinator<unknown>, usesRouted: d.otherwiseUsesRouted === true })
+        this.code[head + 4] = otherRouted ? 1 : 0
         this.code[head + 5] = arms.length
         for (let i = 0; i < arms.length; i++) this.code[head + 6 + i] = arms[i]!
         return head

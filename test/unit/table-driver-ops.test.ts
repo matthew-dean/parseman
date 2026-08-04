@@ -499,3 +499,44 @@ describe('table encode — the collapse peephole reads OP_CHOICE operands correc
     expect(run(tableRules(prog).A! as never, '(x)').ok).toBe(true)
   })
 })
+
+/**
+ * THE FALLBACK'S ROUTED BIT, WALKED RATHER THAN READ.
+ *
+ * `otherwise()` computes `usesRouted` when it is CONSTRUCTED, and a `g.X`
+ * reference inside the arm is unresolved at that moment — its thunk throws and
+ * `parserUsesRouted` answers `false`. The interpreter never trusts the stored
+ * flag alone; it ORs it with a live walk at parse time. The encoder read only the
+ * flag, so the fallback ran at the selector's END with no routed token and the
+ * `routed()` inside it had nothing to yield.
+ *
+ * Measured on jess's css grammar, this failed `@charset "UTF-8";` — one line of
+ * plain CSS — with `expected: ["routed()"]`, and 2 of 3 jess-dialect corpus files.
+ */
+describe('table encode — a dispatch fallback that reaches routed() through a REF', () => {
+  it('routes the token to the otherwise arm, as the interpreter does', () => {
+    const g = rules<Record<string, Combinator<unknown>>>(gr => ({
+      // The `routed()` is behind `gr.Tail`, so `otherwise()`'s construction-time
+      // analysis cannot see it. Nothing else about the arm changes.
+      Tail: node('Tail', sequence(routed(), literal('!')), c => ({ t: 'Tail', c })),
+      Doc: dispatch(
+        regex(/@[a-z]+/),
+        when('@known', literal('!')),
+        otherwise(gr.Tail!),
+      ) as unknown as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    // The flag really is unset — otherwise this test would pass either way.
+    const cases = (g.Doc!._def as { otherwiseUsesRouted?: boolean }).otherwiseUsesRouted
+    expect(cases, 'the stored flag misses the ref').not.toBe(true)
+    const t = tableRules(encodeTable(g)).Doc!
+    for (const input of ['@other!', '@known!', '@other']) {
+      expect(JSON.stringify(run(t as never, input)), input)
+        .toBe(JSON.stringify(run(g.Doc! as never, input)))
+    }
+    // Not vacuous: the fallback really consumed the routed token and built a node.
+    // `dispatch` yields `[key, armValue]`, so the arm's tree is the second slot.
+    const v = (run(t as never, '@other!').value as [string, { t: string; c: Array<{ value?: string }> }])[1]
+    expect(v.t).toBe('Tail')
+    expect(v.c[0]!.value, 'the routed token reached the arm').toBe('@other')
+  })
+})
