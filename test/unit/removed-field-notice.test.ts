@@ -10,7 +10,22 @@
  *
  * These tests pin the two halves of the fix: the read throws with the
  * migration in it, and the accessor is invisible to everything that enumerates
- * the result — so re-adding the name moves no digest and costs no parse time.
+ * the result — so re-adding the name moves no digest.
+ *
+ * ## And a third half, added in 0.47: it must cost NOTHING per parse
+ *
+ * "Costs no parse time" was written here as an assertion and was FALSE. The
+ * notices were installed by a `guardRemovedFields(result)` that ran three
+ * `Object.defineProperty` calls on the result of EVERY `run()`. Measured
+ * through `bench/ab-harness.ts`, deleting it outright made `run()` -42% on a
+ * 7-byte input and -18% on `SMALL_JSON`, at 12/12 interleaved pairs in every
+ * pass — a FIXED per-run cost, so the smallest parses paid the largest share
+ * and no size-scaled benchmark ever saw it.
+ *
+ * The migration text is unchanged and every behaviour below is unchanged; the
+ * accessors moved to a SHARED PROTOTYPE built once at module load. So the last
+ * test here pins the placement, not just the effect: an own-property
+ * descriptor on a result means the per-parse install is back.
  */
 import { describe, it, expect } from 'vitest'
 import { rules, regex, many, node, parser, trivia, choice, run, compile, sequence, field, literal, type ParseContext } from '../../src/index.ts'
@@ -57,6 +72,20 @@ describe('removed RunResult.triviaMap', () => {
     // The spread must not re-trigger the getters, and must not carry them forward.
     expect(() => ({ ...r })).not.toThrow()
     for (const field of REMOVED) expect(Object.keys({ ...r })).not.toContain(field)
+  })
+
+  it('installs NOTHING per parse — the notices live on a shared prototype', () => {
+    const a = run(g.Doc as never, 'a b c')
+    const b = run(g.Doc as never, 'a b c')
+    // The placement IS the perf contract. An own descriptor here means a
+    // per-parse `defineProperty` came back; a per-result prototype means a
+    // per-parse `setPrototypeOf` did.
+    for (const field of REMOVED) {
+      expect(Object.getOwnPropertyDescriptor(a, field)).toBeUndefined()
+      expect(typeof Object.getOwnPropertyDescriptor(Object.getPrototypeOf(a) as object, field)?.get).toBe('function')
+    }
+    expect(Object.getPrototypeOf(a)).toBe(Object.getPrototypeOf(b))
+    expect(Object.getPrototypeOf(a)).not.toBe(Object.prototype)
   })
 
   /* The profiled return path — the one that spread the host pass's result and so

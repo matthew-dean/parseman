@@ -5,6 +5,65 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **`run()` no longer installs three accessors on every result — small parses
+  get up to 43% of their time back.** Since 0.44 every `run()` call passed its
+  result through a `guardRemovedFields()` that ran three
+  `Object.defineProperty` calls, installing throwing getters for `triviaMap`,
+  `triviaLog` and `triviaKindLabels` so a stale 0.43 consumer reading them got
+  the migration instead of `undefined`. The notices are worth keeping; charging
+  them to every parse was not. The code claimed the guard "costs nothing on the
+  parse path"; it was never measured, and it was wrong.
+
+  Measured through `bench/ab-harness.ts` — both sides in one process, paired
+  and order-alternated, sides rebuilt per pass, with a control pair of two
+  reference instances measuring the null in the same passes. `run()` against an
+  interpreted JSON grammar, 5 passes:
+
+  - **7-byte input: -42%** (two independent runs, median -41.0%…-43.6%, min
+    -41.4%…-43.2%, 12/12 interleaved pairs won in all ten passes, null 32-43%)
+  - **52-byte `SMALL_JSON`: -17%** (median -15.4%…-19.0%, 12/12 in all ten
+    passes, null 40-48%)
+  - `MEDIUM_JSON` and `LARGE_JSON` read between -1% and +5% depending on the
+    run, so **no change is claimed at those sizes** — which is the point. The
+    cost was FIXED per run, so it is invisible in any benchmark large enough to
+    be respectable and it is most of the bill on the parses a language service
+    actually makes.
+  - Deleting the notices outright, measured the same way, reads -42.0%…-42.8%
+    and -17.0%…-18.1% — i.e. the shared prototype recovers **all** of the tax
+    and keeps the error. That upper bound is why the recovery is stated as
+    complete rather than merely large.
+
+  The realised-map count was *not* the mechanism, contrary to first guess:
+  `%HaveSameMap` over 2000 parses read **2** maps, not 2000 — V8 shares the
+  accessor transition even though each result got fresh closures. The cost was
+  per-parse work, and it is now 1 map.
+
+  **Consumer-visible:** the migration `TypeError`, its exact text, and the
+  fields' invisibility to `Object.keys`, spread and `JSON.stringify` are all
+  unchanged — the accessors moved to a shared prototype built once at module
+  load. Two differences, both narrow:
+  `Object.getOwnPropertyDescriptor(result, 'triviaLog')` is now `undefined`
+  and the descriptor lives on the prototype (reading the field still throws;
+  only *describing* it moved), and a `RunResult` is no longer a plain object —
+  `Object.getPrototypeOf(result)` is not `Object.prototype`. Nothing about
+  `ok` / `value` / `span` / `expected` / `errors` / `rootTrivia` /
+  `unconsumedFrom`, their order, or their enumerability changes.
+
+  `RunResult` is also now built from two constructors rather than one literal
+  with a `...(cond ? { rootTrivia } : {})` spread. `rootTrivia` is still ABSENT
+  rather than empty when nothing was retained — the observable contract is
+  unchanged — but the conditional spread was producing exactly those two shapes
+  implicitly, and a conditional spread is the hidden-class hazard this repo has
+  an incident over. It now produces them explicitly.
+
+  The form matters and was measured, not assumed: at 200k allocations of this
+  shape, against a plain literal at 7.28 ms, three per-object `defineProperty`
+  calls cost 105.27 ms, a `{ __proto__: PROTO, … }` literal 25.58 ms, and `new`
+  on a constructor whose `.prototype` carries the accessors 8.72 ms. The
+  `__proto__` literal was tried first and recovered only about two thirds of
+  the tax end-to-end, which is what sent the measurement back to the allocation
+  form.
+
 - **The table lowering measured against codegen: much smaller, materially
   slower.** Both sides driven from this worktree over jess's four shipping
   grammars, same grammar, same variant, same reducers, in one process

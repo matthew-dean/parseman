@@ -125,8 +125,40 @@ export type RunResult = {
  *
  * So the names are kept as accessors that throw the migration. They are
  * NON-ENUMERABLE deliberately: absent from `Object.keys`, spreads,
- * `JSON.stringify` and identity digests, so restoring them moves no output and
- * costs nothing on the parse path — they exist only to answer a read.
+ * `JSON.stringify` and identity digests, so restoring them moves no output —
+ * they exist only to answer a read.
+ *
+ * ## They live on a SHARED PROTOTYPE, and that is the whole point
+ *
+ * "Costs nothing on the parse path" was ASSERTED here and was FALSE. Until
+ * 0.47 every `run()` called a `guardRemovedFields(result)` that ran three
+ * `Object.defineProperty` calls — three fresh getter closures, three
+ * AccessorPairs, three runtime calls — on the result of EVERY parse. Measured
+ * through `bench/ab-harness.ts` (both sides in one process, paired and
+ * order-alternated, sides rebuilt per pass, control pair measuring the null):
+ * removing it made `run()` **-42% on a 7-byte input and -18% on the 52-byte
+ * `SMALL_JSON`**, at 12/12 interleaved pairs in every pass against a null of
+ * 48-55%. It is a FIXED cost per run, so it vanishes into the noise by
+ * `MEDIUM_JSON` — which is exactly why no size-scaled benchmark ever saw it,
+ * and exactly why the smallest parses paid the most.
+ *
+ * The realised-map count was NOT the mechanism, and saying so matters because
+ * that was the first guess: `%HaveSameMap` over 2000 parses read **2** maps,
+ * not 2000 — V8 shares the accessor transition even though each result got its
+ * own closures. The cost was pure per-parse WORK.
+ *
+ * A prototype pays it once, at module load, and keeps the notice
+ * byte-for-byte. Every property the tests pin is preserved: a read still
+ * throws the migration `TypeError`, and non-enumerable prototype accessors are
+ * invisible to `Object.keys`, spread and `JSON.stringify` for the same reason
+ * non-enumerable own ones were. The one difference is that
+ * `Object.getOwnPropertyDescriptor(result, 'triviaLog')` is now `undefined`
+ * and the descriptor lives on the prototype — nothing reads these names except
+ * a stale consumer, and a stale consumer reads them, it does not describe them.
+ *
+ * The prototype is attached at CREATION — see `RunResultRecord` below for the
+ * measured cost of each way of doing that, and for why "attach a prototype" is
+ * not one decision but two.
  */
 const SELECT_EXAMPLE = "run(entry, input, { rootTrivia: { select: ['blockComment', 'lineComment'] } })"
 
@@ -156,12 +188,88 @@ const REMOVED_RUN_RESULT_FIELDS: ReadonlyArray<readonly [string, string]> = [
 ]
 
 /**
- * `rootTrivia` is ABSENT rather than empty when no requested category was
- * retained, so branch on it — do not index into it.
+ * The two shapes a `RunResult` comes in, as constructors.
+ *
+ * TWO, because `rootTrivia` is ABSENT rather than empty when no requested
+ * category was retained and that is the contract — `RunResultWithRootTrivia`
+ * is not a wider `RunResultRecord`, it is the other case. Assignment order
+ * fixes `Object.keys` order, and plain assignment keeps every field an
+ * enumerable own property, so both are indistinguishable from the object
+ * literals they replace.
+ *
+ * CONSTRUCTORS rather than literals carrying `__proto__`, and the difference is
+ * not stylistic. Measured at 200k allocations of this exact shape, against a
+ * plain literal at 7.28 ms: three per-object `Object.defineProperty` calls
+ * (what 0.44-0.46 did) cost **105.27 ms**, a `{ __proto__: PROTO, … }` literal
+ * **25.58 ms**, and `new` on a constructor whose `.prototype` carries the
+ * accessors **8.72 ms**. `__proto__` in a literal is a runtime prototype set,
+ * about 91 ns per result; a constructor bakes the prototype into the initial
+ * map and costs about 7 ns. Both readings were confirmed end-to-end through
+ * `bench/ab-harness.ts` on `run()` itself.
  */
-function guardRemovedFields(result: RunResult): RunResult {
+class RunResultRecord {
+  declare ok: RunResult['ok']
+  declare value: RunResult['value']
+  declare span: RunResult['span']
+  declare expected: RunResult['expected']
+  declare errors: RunResult['errors']
+  declare unconsumedFrom: RunResult['unconsumedFrom']
+
+  constructor(
+    ok: RunResult['ok'],
+    value: RunResult['value'],
+    span: RunResult['span'],
+    expected: RunResult['expected'],
+    errors: RunResult['errors'],
+    unconsumedFrom: RunResult['unconsumedFrom'],
+  ) {
+    this.ok = ok
+    this.value = value
+    this.span = span
+    this.expected = expected
+    this.errors = errors
+    this.unconsumedFrom = unconsumedFrom
+  }
+}
+
+class RunResultWithRootTrivia {
+  declare ok: RunResult['ok']
+  declare value: RunResult['value']
+  declare span: RunResult['span']
+  declare expected: RunResult['expected']
+  declare errors: RunResult['errors']
+  declare rootTrivia: RootTriviaCapture
+  declare unconsumedFrom: RunResult['unconsumedFrom']
+
+  constructor(
+    ok: RunResult['ok'],
+    value: RunResult['value'],
+    span: RunResult['span'],
+    expected: RunResult['expected'],
+    errors: RunResult['errors'],
+    rootTrivia: RootTriviaCapture,
+    unconsumedFrom: RunResult['unconsumedFrom'],
+  ) {
+    this.ok = ok
+    this.value = value
+    this.span = span
+    this.expected = expected
+    this.errors = errors
+    this.rootTrivia = rootTrivia
+    this.unconsumedFrom = unconsumedFrom
+  }
+}
+
+/**
+ * Install the removed-field notices ONCE, at module load, on both prototypes.
+ *
+ * Non-enumerable, as they were as own properties, and for the same reason:
+ * invisible to `Object.keys`, spread, `JSON.stringify` and identity digests, so
+ * restoring the names moves no output. A read still throws the migration.
+ */
+for (const proto of [RunResultRecord.prototype, RunResultWithRootTrivia.prototype]) {
   for (const [name, detail] of REMOVED_RUN_RESULT_FIELDS) {
-    Object.defineProperty(result, name, {
+    Object.defineProperty(proto, name, {
       configurable: true,
       enumerable: false,
       get(): never {
@@ -171,7 +279,6 @@ function guardRemovedFields(result: RunResult): RunResult {
       },
     })
   }
-  return result
 }
 
 const invoke = (r: Runnable, input: string, pos: number, ctx: ParseContext): ParseResult<unknown> =>
@@ -303,23 +410,32 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
     unconsumedFrom = pos < input.length ? pos : null
   }
 
-  return {
-    ok: r.ok,
-    value: r.ok ? (r as { value: unknown }).value : undefined,
-    span: r.span ?? { start: 0, end: 0 },
-    expected: r.ok ? [] : ((r as { expected?: string[] }).expected ?? []),
-    errors,
-    ...(selectedRootLog !== undefined && selectedRootLog.length > 0
-      ? {
-          rootTrivia: {
-            rows: selectedRootLog!,
-            select: rootTriviaSelection!,
-            index: buildRootTriviaIndex(selectedRootLog!, rootTriviaSelection!),
-          },
-        }
-      : {}),
-    unconsumedFrom,
-  }
+  const value = r.ok ? (r as { value: unknown }).value : undefined
+  const span = r.span ?? { start: 0, end: 0 }
+  const expected = r.ok ? [] : ((r as { expected?: string[] }).expected ?? [])
+
+  // `rootTrivia` is ABSENT rather than empty when no requested category was
+  // retained, so branch on it — do not index into it. The branch is spelled as
+  // two constructors rather than one literal with a
+  // `...(cond ? { rootTrivia } : {})` spread: the two arms produce exactly the
+  // two shapes the contract calls for, which is what the spread was silently
+  // doing anyway, and a conditional spread is the shape hazard this repo has
+  // an incident over.
+  return selectedRootLog !== undefined && selectedRootLog.length > 0
+    ? new RunResultWithRootTrivia(
+        r.ok,
+        value,
+        span,
+        expected,
+        errors,
+        {
+          rows: selectedRootLog,
+          select: rootTriviaSelection!,
+          index: buildRootTriviaIndex(selectedRootLog, rootTriviaSelection!),
+        },
+        unconsumedFrom,
+      )
+    : new RunResultRecord(r.ok, value, span, expected, errors, unconsumedFrom)
 }
 
 /* `RunOptions.profile` — the three-pass profiling boundary (recognizer /
@@ -334,5 +450,5 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
  * `docs/future/bench-typecheck-followups.md`. */
 
 export function run(entry: Runnable, input: string, options: RunOptions = {}): RunResult {
-  return guardRemovedFields(runOnce(entry, input, options))
+  return runOnce(entry, input, options)
 }
