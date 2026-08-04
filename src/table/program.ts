@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { classifiedTrivia, trivia as triviaOf } from '../combinators/map.ts'
+import { fastTriviaScanner, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import { regex } from '../combinators/regex.ts'
 
 /**
@@ -256,6 +257,16 @@ export type ResolvedTable = {
   readonly dsp: readonly ResolvedDispatchSpec[]
   /** Trivia combinators rebuilt from `triviaSpecs`, once per table. */
   readonly trivia: readonly Combinator<unknown>[]
+  /**
+   * THE TRIVIA LEAF SWAP (G5: "some swaps on rules or sub-rules (leafs)").
+   *
+   * Each trivia entry's SPECIALISED scanner, resolved here rather than looked up
+   * per sequence term, and `null` where the shape has no lowering. Parallel to
+   * `trivia`, so a scope installs both by the same index.
+   */
+  readonly triviaScan: readonly (FastTriviaScanner | null)[]
+  /** Per trivia entry: does it carry kind labels? Decided here, never per parse. */
+  readonly triviaLabelled: readonly boolean[]
   readonly rules: Readonly<Record<string, number>>
 }
 
@@ -316,6 +327,7 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
   const hit = _tableCache.get(prog)
   if (hit !== undefined) return hit
   const cc = prog.cc.map(resolveClass)
+  const triviaBuilt = (prog.triviaSpecs ?? []).map(buildTrivia)
   const built: ResolvedTable = {
     prog,
     code: Int32Array.from(prog.code),
@@ -324,7 +336,9 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
     cc,
     fx: prog.fx,
     disp: prog.disp.map(d => resolveDispatch(d, cc)),
-    trivia: (prog.triviaSpecs ?? []).map(buildTrivia),
+    trivia: triviaBuilt,
+    triviaScan: triviaBuilt.map(fastTriviaScanner),
+    triviaLabelled: triviaBuilt.map(t => t._meta.triviaKindLabels !== undefined),
     dsp: prog.dsp.map(d => ({
       byKey: new Map(d.key.map((x, i) => [x, d.keyArm[i]!])),
       byFold: new Map(d.fold.map((x, i) => [x, d.foldArm[i]!])),

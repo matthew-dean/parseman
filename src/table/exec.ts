@@ -8,11 +8,11 @@ import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import type { DispatchMatcherKind } from '../types.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
+import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt, saveTriviaMark, scanTrivia, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import {
-  beginCstNodeCapture, cstCaptureActive, cstLeavesLen, demoteCapturedToRaw,
-  endCstNodeCapture, pushCstChild, pushCstLeaf, rollbackCstCapture, saveCstMark,
-  type CstRollbackMark,
+  beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
+  demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
+  rollbackCstCaptureAt,
 } from '../cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
@@ -43,6 +43,36 @@ import {
 
 /** Failure sentinel — identity-compared, never inspected. */
 const FAIL: unique symbol = Symbol('pm.fail')
+
+/**
+ * DIAGNOSTIC ROW COUNTER — off unless `PM_TABLE_COUNT=1` at process start.
+ *
+ * Read ONCE, at module load, into a module const, so this is not the per-parse
+ * option branch G5 forbids: with the variable false the whole thing folds away
+ * after tier-up. It exists because "too many rows" and "each row too slow" are
+ * different defects with the same symptom, and only a count separates them.
+ * No timing run in this repo may set it — see `bench/jess/table-rows.ts`.
+ */
+export const tableCounters: {
+  rows: number
+  byOp: Int32Array
+  /** Distinct reducer/host functions actually reaching each shared call site. */
+  sites: Map<string, Set<unknown>>
+} = { rows: 0, byOp: new Int32Array(64), sites: new Map() }
+
+const COUNT = process.env.PM_TABLE_COUNT === '1'
+
+function siteFn(site: string, fn: unknown): void {
+  let s = tableCounters.sites.get(site)
+  if (s === undefined) { s = new Set(); tableCounters.sites.set(site, s) }
+  s.add(fn)
+}
+
+export function resetTableCounters(): void {
+  tableCounters.rows = 0
+  tableCounters.byOp = new Int32Array(64)
+  tableCounters.sites = new Map()
+}
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
 const EMPTY_FX: string[] = []
@@ -110,6 +140,8 @@ function classHas(cls: ResolvedClass, code: number): boolean {
 type Driver = {
   exec: (ip: number, input: string, pos: number, ctx: ParseContext) => unknown
   end: () => number
+  /** Per-parse reset of the trivia leaf swap. See `begin` in `makeDriver`. */
+  begin: (ctx: ParseContext) => void
   /** Ambient `scanSkip` sets, rebuilt from `prog.scanSkip`, indexed as encoded. */
   scanSkip: readonly (readonly Combinator<unknown>[])[]
 }
@@ -123,10 +155,37 @@ function makeDriver(
   disp: readonly ResolvedDispatch[],
   dsp: readonly ResolvedDispatchSpec[],
   trivia: readonly unknown[],
+  triviaScan: readonly (FastTriviaScanner | null)[],
+  triviaLabelled: readonly boolean[],
   prog: TableProgram,
 ): Driver {
   /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
   let END = 0
+
+  /**
+   * THE INSTALLED TRIVIA LEAF — G5's *"some swaps on rules or sub-rules
+   * (leafs)"*, which is the half of that sentence the driver had not honoured.
+   *
+   * `SCAN` is the SPECIALISED scanner for the trivia currently in scope, chosen
+   * once at `OP_SCOPE` from `triviaScan` and null when no swap is legal. The
+   * generic path it replaces called `advanceTrivia` per sequence term, and that
+   * function re-derived the scanner through a WeakMap and re-tested the same
+   * options on every call — for json that was 22.0% of the table's time against
+   * codegen's 6.1% for the identical work.
+   *
+   * `FAST` is the one condition that is a property of the PARSE rather than of
+   * the scope (`ctx.trackLines`, fixed by `run()` at entry), so it is read once
+   * per parse in the entry wrapper and folded into `SCAN` at each scope. Nothing
+   * on the term path consults the table or an option.
+   */
+  let SCAN: FastTriviaScanner | null = null
+  let FAST = false
+  /**
+   * Is this parse's host a CST-output host? `ctx.build` is fixed by `run()` before
+   * the entry is called, so this is a PER-PARSE constant that `OP_NODE` was
+   * re-deriving on every node. Decided once in `begin`.
+   */
+  let HOSTCST = false
 
   /**
    * Capture goes through the runtime's own buffer (`src/cst/capture-buffer.ts`),
@@ -170,7 +229,31 @@ function makeDriver(
    * `charCodeAt` is the hot read; only a high surrogate needs the code-point
    * decode, so that branch is paid on astral input and nowhere else.
    */
+  /**
+   * Skip trivia at `cur`, through the INSTALLED leaf when one is installed.
+   *
+   * The guard is the exact condition under which the generic functions take
+   * their own fast branch, restated over context fields so it costs loads rather
+   * than a call:
+   *
+   *   - `advanceTrivia` (no deferred commit) runs `fast(input, cur)` whenever a
+   *     scanner exists and `trackLines` is off — folded into `SCAN` already.
+   *   - `scanTrivia` (deferred commit) runs it and returns a NO-OP commit when
+   *     `_triviaLog` is unset and nothing is capturing trivia into a CST buffer.
+   *     `_rootTriviaLog` is deliberately absent from this test: root rows are
+   *     only ever written on the LABELLED scan path (see `OP_SCOPE`), and a
+   *     labelled trivia never gets a `SCAN` installed.
+   *
+   * Anything outside that falls through to the shared implementations unchanged,
+   * so recording, labels and line tracking keep exactly one implementation.
+   */
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
+    const s = SCAN
+    if (s !== null
+      && ctx._triviaLog === undefined
+      && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
+      return s(input, cur)
+    }
     if (needsDeferredTriviaCommit(ctx)) {
       const scan = scanTrivia(input, cur, ctx)
       scan.commit()
@@ -187,6 +270,7 @@ function makeDriver(
   }
 
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
+    if (COUNT) { tableCounters.rows++; tableCounters.byOp[code[ip]!]!++ }
     switch (code[ip]) {
       case OP_LIT: {
         const s = k[code[ip + 1]!] as string
@@ -381,6 +465,8 @@ function makeDriver(
         const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
         const wasCapturing = cstCaptureActive(ctx)
 
+        const sScan = SCAN
+        SCAN = null
         ctx.trivia = undefined
         ctx.triviaKindLabels = undefined
         ctx._cstBuf = undefined
@@ -395,6 +481,7 @@ function makeDriver(
         try {
           v = exec(code[ip + 1]!, input, pos, ctx)
         } finally {
+          SCAN = sScan
           ctx.trivia = sTrivia
           ctx.triviaKindLabels = sKinds
           ctx._cstBuf = sBuf
@@ -432,6 +519,12 @@ function makeDriver(
         const saved = ctx.trivia
         const savedLabels = ctx.triviaKindLabels
         const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
+        const savedScan = SCAN
+        // THE SWAP. Chosen from table data at scope entry, never per term. A
+        // labelled trivia is excluded here rather than tested later: `scanTrivia`
+        // suppresses its own fast path when labels are present, so a swap there
+        // would drop the labelled records silently.
+        SCAN = FAST && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
         ctx.trivia = scopeTrivia
         // A scope installs its trivia's KIND LABELS too. Root-trivia rows are
         // only ever written on the labelled scan path (trivia-skip.ts:212) — the
@@ -442,6 +535,7 @@ function makeDriver(
         const v = exec(code[ip + 2]!, input, pos, ctx)
         ctx.trivia = saved
         ctx.triviaKindLabels = savedLabels
+        SCAN = savedScan
         return v
       }
 
@@ -456,19 +550,21 @@ function makeDriver(
         for (let i = 0; i < n; i++) {
           const child = code[base + i]!
           if (i > 0 && ctx.trivia !== undefined) {
-            const mark = rollbackNeeded(ctx) ? saveTriviaMark(ctx) : null
-            let scanEnd: number
-            if (needsDeferredTriviaCommit(ctx)) {
-              const scan = scanTrivia(input, cur, ctx)
-              scan.commit()
-              scanEnd = scan.end
-            } else {
-              scanEnd = advanceTrivia(input, cur, ctx)
-            }
+            // SCALAR MARKS — `saveTriviaMark` allocated TWICE per term (its own
+            // seven-field object plus the five-field CST mark it delegates to).
+            const need = rollbackNeeded(ctx)
+            const mRaw = need ? cstRawLen(ctx) : 0
+            const mTl = need ? cstTlLen(ctx) : 0
+            const mLv = need ? cstLeavesLen(ctx) : 0
+            const mFl = need ? ctx._fields?.length ?? 0 : 0
+            const mEr = need ? ctx._errors?.length ?? 0 : 0
+            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            const scanEnd = skipTrivia(input, cur, ctx)
             const v = exec(child, input, scanEnd, ctx)
             if (v === FAIL) return FAIL
             if (END > scanEnd) cur = END
-            else if (mark !== null) rollbackTrivia(ctx, mark)
+            else if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             if (values !== undefined) values.push(v)
             continue
           }
@@ -478,6 +574,10 @@ function makeDriver(
           // LIT/RX in place removes both. The duplication is in the DRIVER,
           // which ships once for every grammar — the cost this design trades on.
           const cop = code[child]
+          // The two inline terminals below execute a ROW without going through
+          // `exec`, so the counter has to see them or the row count understates
+          // exactly where the driver already won.
+          if (COUNT && (cop === OP_LIT || cop === OP_RX)) { tableCounters.rows++; tableCounters.byOp[cop]!++ }
           if (cop === OP_LIT) {
             const lit = k[code[child + 1]!] as string
             if (!input.startsWith(lit, cur)) {
@@ -513,6 +613,7 @@ function makeDriver(
         END = cur
         if (fused) {
           const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+          if (COUNT) siteFn('SEQX fn()', fn)
           return fn(values, { start: pos, end: cur })
         }
         return values
@@ -556,38 +657,56 @@ function makeDriver(
           }
           const open = table.open
           if (open.length === 0) return failChoice()
-          const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
-          if (mark !== null) rollbackCstCapture(ctx, mark)
+          // SCALAR MARKS. `saveCstMark` allocated a five-field object per choice
+          // attempt; the compiled engine keeps the same five numbers in locals and
+          // allocates nothing. Same values, same rollback, no garbage.
+          const need = rollbackNeeded(ctx)
+          const mRaw = need ? cstRawLen(ctx) : 0
+          const mTl = need ? cstTlLen(ctx) : 0
+          const mLv = need ? cstLeavesLen(ctx) : 0
+          const mFl = need ? ctx._fields?.length ?? 0 : 0
+          const mEr = need ? ctx._errors?.length ?? 0 : 0
+          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
           for (let i = 0; i < open.length; i++) {
             ctx._fc = false
             const v = exec(code[base + open[i]!]!, input, pos, ctx)
             if (v !== FAIL) return v
             if (committed(ctx)) return FAIL
-            if (mark !== null) rollbackCstCapture(ctx, mark)
+            if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
           }
           return failChoice()
         }
         const n = code[ip + 2]!
-        const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
         for (let i = 0; i < n; i++) {
           ctx._fc = false
           const v = exec(code[base + i]!, input, pos, ctx)
           if (v !== FAIL) return v
           if (committed(ctx)) return FAIL
-          if (mark !== null) rollbackCstCapture(ctx, mark)
+          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
         }
         return failChoice()
       }
 
       case OP_OPT: {
-        const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
         ctx._fc = false
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v === FAIL) {
           // repeat.ts:277 — `optional()` propagates a committed failure rather
           // than reporting "absent".
           if (committed(ctx)) return FAIL
-          if (mark !== null) rollbackCstCapture(ctx, mark)
+          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
           END = pos
           // NULL, not undefined. `optional()` yields `null` on no-match
           // (src/combinators/repeat.ts:269,277) and grammars TEST for it:
@@ -629,8 +748,18 @@ function makeDriver(
           if (max >= 0 && count >= max) break
           // One mark pair for the whole loop when a rollback is even possible,
           // refreshed per iteration rather than reallocated.
-          const cmark = needMark ? saveCstMark(ctx) : null
-          const tmark = needMark ? saveTriviaMark(ctx) : null
+          // SCALAR MARKS. This loop took TWO allocations per item (a CST mark and
+          // a trivia mark, the latter allocating a second one internally) — the
+          // per-item allocation an earlier lane hunted on json and could not
+          // replicate, because json builds almost no nodes and so never sets
+          // `_cstBuf`, which is what makes `needMark` true for a whole parse.
+          const mRaw = needMark ? cstRawLen(ctx) : 0
+          const mTl = needMark ? cstTlLen(ctx) : 0
+          const mLv = needMark ? cstLeavesLen(ctx) : 0
+          const mFl = needMark ? ctx._fields?.length ?? 0 : 0
+          const mEr = needMark ? ctx._errors?.length ?? 0 : 0
+          const mLog = needMark ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
           let itemStart = cur
           let sepEnd = -1
           if (sep >= 0 && count > 0) {
@@ -641,8 +770,7 @@ function makeDriver(
             ctx._fc = false
             const sv = exec(sep, input, sp, ctx)
             if (sv === FAIL) {
-              if (tmark !== null) rollbackTrivia(ctx, tmark)
-              if (cmark !== null) rollbackCstCapture(ctx, cmark)
+              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (committed(ctx)) return FAIL
               break
             }
@@ -664,8 +792,7 @@ function makeDriver(
           // runs — never to a mandatory first item, which both other engines
           // attempt at `pos` whatever is there.
           if (itemStart >= input.length && (count > 0 || skipBeforeFirst)) {
-            if (tmark !== null) rollbackTrivia(ctx, tmark)
-            if (cmark !== null) rollbackCstCapture(ctx, cmark)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             // A trailing separator at EOF is the COMMON case for
             // `trailing: 'allow'` (`a,b,`), and this early-out ran before the
             // item was ever attempted — so handling it only on the item-failure
@@ -676,8 +803,7 @@ function makeDriver(
           ctx._fc = false
           const v = exec(child, input, itemStart, ctx)
           if (v === FAIL) {
-            if (tmark !== null) rollbackTrivia(ctx, tmark)
-            if (cmark !== null) rollbackCstCapture(ctx, cmark)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             // repeat.ts:141/215/233 — a committed item failure fails the WHOLE
             // repetition. Breaking here is what let `many(dispatch(...))` return
             // ok:true with a silently truncated document.
@@ -688,8 +814,7 @@ function makeDriver(
           }
           if (END === itemStart) {
             // Zero-width item: it cannot make progress, so stop without taking it.
-            if (tmark !== null) rollbackTrivia(ctx, tmark)
-            if (cmark !== null) rollbackCstCapture(ctx, cmark)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             break
           }
           if (out !== undefined) out.push(v)
@@ -705,6 +830,7 @@ function makeDriver(
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if (v === FAIL) return FAIL
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+        if (COUNT) siteFn('XFORM fn()', fn)
         return fn(v, { start: pos, end: END })
       }
 
@@ -746,6 +872,7 @@ function makeDriver(
         if (v === FAIL) return FAIL
         const end = END
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+        if (COUNT) siteFn('LEAF fn()', fn)
         const out = fn(v, { start: pos, end })
         if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
         END = end
@@ -760,7 +887,7 @@ function makeDriver(
         // BYPASSED, so capture must widen regardless of what the reducer's arity
         // said — the encode-time flags under-approximate here by construction.
         const host = ctx.build
-        const hostCst = host !== undefined && cstOutputHost(host)
+        const hostCst = HOSTCST
         const saved = beginCstNodeCapture(ctx)
         const savedFields = ctx._fields
         ctx._fields = (flags & 16) !== 0 || hostCst ? [] : undefined
@@ -783,12 +910,15 @@ function makeDriver(
         const kids = cap.children
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
-        // A direct builder that never declared `state` still owes the host its
+        // A direct builder that never declared `state` still owes the HOST its
         // snapshot — node.ts builds it here, on a branch the eval path never takes.
-        const hostState = (flags & 8) !== 0
-          ? st
-          : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
-
+        //
+        // It is built INLINE AT THE HOST CALL, not before the branch and not
+        // through a helper closure — either would be an allocation per node.
+        // Computed eagerly it was an `Object.assign` clone per node, on every AST
+        // parse of a grammar that uses `ctx.state` at all, thrown away unread: the
+        // two host branches below are the only readers and neither runs on the AST
+        // path with a direct builder.
         let nd: unknown
         if ((flags & 64) !== 0 && kids.length === 1) {
           nd = unwrapChild(kids[0])
@@ -809,18 +939,19 @@ function makeDriver(
           nd = kids[0]
         } else if (proj >= 0) {
           nd = hostCst && host !== undefined
-            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, hostState, tags)
+            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, (flags & 8) !== 0 ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
             : projectChild(kids, proj, type)
         } else if (buildIdx >= 0) {
           if (hostCst && host !== undefined) {
             // A direct builder is bypassed under a CST host: the host must never
             // receive an arbitrary AST object as a child of a CST node.
-            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, hostState, tags)
+            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, (flags & 8) !== 0 ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
           } else {
             const build = fns[buildIdx] as (
               children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
               rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
             ) => unknown
+            if (COUNT) siteFn('NODE build()', build)
             nd = build(kids, fieldMap, span, cap.rawChildren, (flags & 4) !== 0 || hostCst ? cap.triviaLog : EMPTY_TL, st)
           }
         } else if (host !== undefined) {
@@ -835,18 +966,28 @@ function makeDriver(
       }
 
       case OP_NOT: {
-        const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
-        if (mark !== null) rollbackCstCapture(ctx, mark)
+        if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
         if (v === FAIL) { END = pos; return null }
         ctx._fe = pos
         return FAIL
       }
 
       case OP_PEEK: {
-        const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
-        if (mark !== null) rollbackCstCapture(ctx, mark)
+        if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
         if (v === FAIL) return FAIL
         END = pos
         return null
@@ -928,7 +1069,22 @@ function makeDriver(
   const scanSkip: readonly (readonly Combinator<unknown>[])[] =
     (prog.scanSkip ?? []).map(set => set.map(r => subtreeComb(r)))
 
-  return { exec, end: () => END, scanSkip }
+  /**
+   * ONCE PER PARSE. `trackLines` is fixed by `run()` before the entry is called,
+   * and it is the only leg of the swap's legality that is a property of the
+   * PARSE rather than of the scope — so it is decided here and never re-asked on
+   * the term path. `SCAN` starts null: a rule reached before any scope has no
+   * installed trivia, and a stale one from a previous parse on a reused `ctx`
+   * would skip trivia this grammar never declared.
+   */
+  function begin(ctx: ParseContext): void {
+    FAST = ctx.trackLines !== true
+    SCAN = null
+    const host = ctx.build
+    HOSTCST = host !== undefined && cstOutputHost(host)
+  }
+
+  return { exec, end: () => END, begin, scanSkip }
 }
 
 /**
@@ -937,10 +1093,23 @@ function makeDriver(
  * The entries have the SAME signature as codegen rule functions, so `run()`,
  * the linker's public wrappers and every consumer are unchanged.
  */
-export function tableRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
+export function tableRules(
+  source: TableProgram | CompactProgram,
+  /**
+   * MEASUREMENT CONTROL, not a feature. `leafSwap: false` hands the driver a
+   * `triviaScan` of all nulls, so `SCAN` is never installed and every skip takes
+   * the shared generic functions — the exact pre-swap behaviour, from the SAME
+   * driver code, differing only in TABLE DATA. That is what makes an in-process
+   * A/B of the swap possible on a machine where cross-run comparison is not, and
+   * it is G5-legal for the same reason `lines` is: it is read once, at rule-map
+   * construction, and the parse path never sees an option.
+   */
+  opts: { leafSwap?: boolean } = {},
+): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, prog)
+  const scan = opts.leafSwap === false ? t.triviaScan.map(() => null) : t.triviaScan
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog)
   const out: Record<string, TableRule> = {}
   // `run()` reads trivia metadata off the ENTRY and takes its
   // `typeof r === 'function'` branch for compiled entries, which codegen stamps
@@ -979,6 +1148,7 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
       // its paired write would otherwise inherit a committed failure from a
       // PREVIOUS parse on the same reused `ctx`, and read as "the cut fired".
       ctx._fc = false
+      d.begin(ctx)
       if (lines && ctx._lineStarts === undefined) { ctx._lineStarts = [0]; ctx._lineScannedTo = 0 }
       const v = d.exec(entry, input, pos, ctx)
       if (v === FAIL) {

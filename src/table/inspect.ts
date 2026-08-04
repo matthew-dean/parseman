@@ -16,6 +16,19 @@ import type { TableProgram } from './program.ts'
  */
 export function reachableOps(prog: TableProgram): Map<number, number> {
   const counts = new Map<number, number>()
+  const code = prog.code
+  for (const ip of reachableIps(prog)) {
+    const op = code[ip]!
+    counts.set(op, (counts.get(op) ?? 0) + 1)
+  }
+  return counts
+}
+
+/**
+ * The reachable INSTRUCTION OFFSETS, which is what any per-row question needs —
+ * an opcode histogram cannot answer "which functions sit behind this row".
+ */
+export function reachableIps(prog: TableProgram): Set<number> {
   const seen = new Set<number>()
   const stack = Object.values(prog.rules)
   const code = prog.code
@@ -24,7 +37,6 @@ export function reachableOps(prog: TableProgram): Map<number, number> {
     if (seen.has(ip)) continue
     seen.add(ip)
     const op = code[ip]!
-    counts.set(op, (counts.get(op) ?? 0) + 1)
     switch (op) {
       case OP_LIT: case OP_RX: case OP_LIT_TRACK: case OP_RX_TRACK: case OP_EMPTY: case OP_SCAN: case OP_LIT_CI: case OP_LIT_CI_TRACK:
         break
@@ -73,7 +85,7 @@ export function reachableOps(prog: TableProgram): Map<number, number> {
         throw new Error(`inspect: unknown opcode ${String(op)} at ${ip}`)
     }
   }
-  return counts
+  return seen
 }
 
 export function opHistogram(prog: TableProgram): Record<string, number> {
