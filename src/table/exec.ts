@@ -44,6 +44,36 @@ import {
 /** Failure sentinel — identity-compared, never inspected. */
 const FAIL: unique symbol = Symbol('pm.fail')
 
+/**
+ * DIAGNOSTIC ROW COUNTER — off unless `PM_TABLE_COUNT=1` at process start.
+ *
+ * Read ONCE, at module load, into a module const, so this is not the per-parse
+ * option branch G5 forbids: with the variable false the whole thing folds away
+ * after tier-up. It exists because "too many rows" and "each row too slow" are
+ * different defects with the same symptom, and only a count separates them.
+ * No timing run in this repo may set it — see `bench/jess/table-rows.ts`.
+ */
+export const tableCounters: {
+  rows: number
+  byOp: Int32Array
+  /** Distinct reducer/host functions actually reaching each shared call site. */
+  sites: Map<string, Set<unknown>>
+} = { rows: 0, byOp: new Int32Array(64), sites: new Map() }
+
+const COUNT = process.env.PM_TABLE_COUNT === '1'
+
+function siteFn(site: string, fn: unknown): void {
+  let s = tableCounters.sites.get(site)
+  if (s === undefined) { s = new Set(); tableCounters.sites.set(site, s) }
+  s.add(fn)
+}
+
+export function resetTableCounters(): void {
+  tableCounters.rows = 0
+  tableCounters.byOp = new Int32Array(64)
+  tableCounters.sites = new Map()
+}
+
 const EMPTY_TL: readonly number[] = Object.freeze([])
 const EMPTY_FX: string[] = []
 const ROUTED_FX: string[] = ['routed()']
@@ -187,6 +217,7 @@ function makeDriver(
   }
 
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
+    if (COUNT) { tableCounters.rows++; tableCounters.byOp[code[ip]!]!++ }
     switch (code[ip]) {
       case OP_LIT: {
         const s = k[code[ip + 1]!] as string
@@ -478,6 +509,10 @@ function makeDriver(
           // LIT/RX in place removes both. The duplication is in the DRIVER,
           // which ships once for every grammar — the cost this design trades on.
           const cop = code[child]
+          // The two inline terminals below execute a ROW without going through
+          // `exec`, so the counter has to see them or the row count understates
+          // exactly where the driver already won.
+          if (COUNT && (cop === OP_LIT || cop === OP_RX)) { tableCounters.rows++; tableCounters.byOp[cop]!++ }
           if (cop === OP_LIT) {
             const lit = k[code[child + 1]!] as string
             if (!input.startsWith(lit, cur)) {
@@ -513,6 +548,7 @@ function makeDriver(
         END = cur
         if (fused) {
           const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+          if (COUNT) siteFn('SEQX fn()', fn)
           return fn(values, { start: pos, end: cur })
         }
         return values
@@ -705,6 +741,7 @@ function makeDriver(
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if (v === FAIL) return FAIL
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+        if (COUNT) siteFn('XFORM fn()', fn)
         return fn(v, { start: pos, end: END })
       }
 
@@ -746,6 +783,7 @@ function makeDriver(
         if (v === FAIL) return FAIL
         const end = END
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
+        if (COUNT) siteFn('LEAF fn()', fn)
         const out = fn(v, { start: pos, end })
         if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
         END = end
@@ -821,6 +859,7 @@ function makeDriver(
               children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
               rawChildren: readonly unknown[], triviaLog: readonly number[], state: unknown,
             ) => unknown
+            if (COUNT) siteFn('NODE build()', build)
             nd = build(kids, fieldMap, span, cap.rawChildren, (flags & 4) !== 0 || hostCst ? cap.triviaLog : EMPTY_TL, st)
           }
         } else if (host !== undefined) {
