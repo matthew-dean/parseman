@@ -465,3 +465,59 @@ on json, never on a shipping grammar. Do not quote them as per-dialect results.
 When quoting any number here, name the instrument that produced it — the gated
 tests under `test/unit/table-*.test.ts` and the ungated
 `bench/table-lowering-sweep.ts` are not the same evidence.
+
+---
+
+## The jess-corpus divergence harness (COMMITTED — do not rebuild it a fourth time)
+
+`bench/jess/` runs the table lowering against the INTERPRETER over jess's four
+shipping grammars and their real corpora. Three previous lanes built this and
+lost it with their worktrees.
+
+```sh
+pnpm divergence:jess less --list      # one dialect per process, see below
+```
+
+- `register.mjs` / `hooks.mjs` — ESM hooks. The grammars are macro modules
+  (`with { type: 'macro' }`, which node refuses) and they are `.ts`. The hooks
+  strip import attributes, transpile with esbuild, resolve `parseman` and
+  `parseman/<sub>` into THIS worktree's `src/`, and resolve
+  `@jesscss/parser-shared/*` to that package's `src/`. Loading jess's built
+  `lib/` instead measures a grammar this worktree never saw — less and scss do
+  not even fuse against it ("references missing rule").
+- `grammars.ts` — the four `composeLeaf()` maps plus their corpora. **One
+  dialect per process**: the interpreted fuse binds the shared recognition
+  pieces IN PLACE.
+- `divergence.ts` — per-file outcome classes, digested with `parseman/oracle`.
+  A grammar reducer that THROWS is the interpreter's own way of rejecting, so
+  the table matches it only by throwing the same thing; that counts as identity.
+
+`JESS_ROOT` overrides the checkout path (default `~/git/oss/jess`). The scss
+corpus is the first 400 sass-spec inputs in sorted order.
+
+### What it found
+
+Two driver defects, both invisible to `pnpm test` — the suite was green with
+both live — and both reachable only through Less, which is the only dialect
+that calls `leaf()` and the only one that runs `peek(classifiedTrivia)` at a
+repeat's first item:
+
+1. **`OP_LEAF` was not a capture boundary.** `leaf()` suppresses its interior's
+   CST captures and contributes ONE leaf (`src/combinators/token.ts:89-127`).
+   The driver ran the interior with the parent's sinks live, so interior
+   terminals leaked into the parent's `children` and moved the enclosing
+   reducer's arity.
+2. **`OP_REP` skipped leading trivia before the MANDATORY first item.** Only
+   `many()` — min 0, no separator — runs its first item through `repItem`
+   (`src/combinators/repeat.ts:130-137`); `oneOrMore`/`atLeast` (`:203`) and
+   `sepBy` (`:412`) parse it at `pos`.
+
+| dialect | files | identical (before → after) | wrong tree | table throw |
+|---|---:|---|---:|---:|
+| css | 87 | 76 → 76 | 0 | 0 |
+| scss | 400 | 315 → 315 | 0 | 0 |
+| jess | 3 | 3 → 3 | 0 | 0 |
+| less | 136 | **81 → 136** | 30 → **0** | 18 → **0** |
+
+The residual css (11) and scss (85) files are `both-reject, report differs` —
+the parked furthest-failure-merging item, not a tree defect.

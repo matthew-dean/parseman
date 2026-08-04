@@ -615,6 +615,14 @@ function makeDriver(
         const out: unknown[] | undefined = code[ip] === OP_REP ? [] : undefined
         const hasTrivia = ctx.trivia !== undefined
         const needMark = rollbackNeeded(ctx)
+        // WHO OWNS THE TRIVIA IN FRONT OF THE FIRST ITEM. Only `many()` — the
+        // min-0, separator-less repeat — runs its first item through `repItem`
+        // and therefore skips leading trivia (src/combinators/repeat.ts:130-137).
+        // `oneOrMore`/`atLeast` (:203) and `sepBy` (:412) both parse the first
+        // item AT `pos`, because leading trivia there is the ENCLOSING context's
+        // responsibility. `many` is the only OP_REP with no separator and min 0,
+        // so the shape identifies itself and no extra flag is needed.
+        const skipBeforeFirst = sep < 0 && min === 0
         let cur = pos
         let count = 0
         for (;;) {
@@ -643,15 +651,19 @@ function makeDriver(
             if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
             sepEnd = END
             itemStart = hasTrivia ? skipTrivia(input, END, ctx) : END
-          } else if (hasTrivia) {
-            // Trivia precedes EVERY item, the first included: `repItem` in
-            // repeat.ts does this, and skipping it only for later items dropped
-            // exactly one trivia-log entry per repetition — invisible in the
-            // parse, visible in a node's `triviaLog`.
+          } else if (hasTrivia && (count > 0 || skipBeforeFirst)) {
+            // Trivia precedes every item a `repItem` loop parses, the first of a
+            // `many()` included — skipping it only for later items dropped
+            // exactly one trivia-log entry per repetition, invisible in the
+            // parse and visible in a node's `triviaLog`. It does NOT precede the
+            // mandatory first item of `oneOrMore`/`sepBy`; see `skipBeforeFirst`.
             itemStart = skipTrivia(input, itemStart, ctx)
           }
           // Nothing but trivia left: don't speculatively parse an item at EOF.
-          if (itemStart >= input.length) {
+          // This is `repItem`'s early-out, so it applies only where `repItem`
+          // runs — never to a mandatory first item, which both other engines
+          // attempt at `pos` whatever is there.
+          if (itemStart >= input.length && (count > 0 || skipBeforeFirst)) {
             if (tmark !== null) rollbackTrivia(ctx, tmark)
             if (cmark !== null) rollbackCstCapture(ctx, cmark)
             // A trailing separator at EOF is the COMMON case for
@@ -697,11 +709,45 @@ function makeDriver(
       }
 
       case OP_LEAF: {
-        const v = exec(code[ip + 2]!, input, pos, ctx)
+        // Mirrors src/combinators/token.ts:89-127. `leaf()` is a CAPTURE
+        // BOUNDARY: it suppresses the interior's own CST captures and exposes
+        // exactly ONE leaf carrying the reducer's value. Running the interior
+        // with the parent's sinks still live leaked every interior terminal
+        // into the parent's `children`, which moved arity in the enclosing
+        // reducer with no error of its own.
+        //
+        // It differs from `token()` deliberately: trivia POLICY is untouched
+        // (`ctx.trivia`, `ctx.triviaKindLabels`), and `_rootTriviaLog` stays
+        // live so root-source trivia inside the leaf remains visible.
+        const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
+        const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
+        const sOuterTl = ctx._triviaLog
+        const wasCapturing = cstCaptureActive(ctx)
+
+        ctx._cstBuf = undefined
+        ctx._cstChildren = undefined
+        ctx._cstLeaves = undefined
+        ctx._cstRawChildren = undefined
+        ctx._cstTriviaLog = undefined
+        delete ctx._triviaLog
+
+        let v: unknown
+        try {
+          v = exec(code[ip + 2]!, input, pos, ctx)
+        } finally {
+          ctx._cstBuf = sBuf
+          ctx._cstChildren = sChildren
+          ctx._cstLeaves = sLeaves
+          ctx._cstRawChildren = sRaw
+          ctx._cstTriviaLog = sTl
+          if (sOuterTl === undefined) delete ctx._triviaLog
+          else ctx._triviaLog = sOuterTl
+        }
         if (v === FAIL) return FAIL
         const end = END
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         const out = fn(v, { start: pos, end })
+        if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
         END = end
         return out
       }

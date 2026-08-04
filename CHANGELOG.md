@@ -5,6 +5,40 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **Two table-driver defects that only the Less dialect exposed.** Measured over
+  jess's four shipping grammars on their real corpora
+  (`pnpm divergence:jess <dialect>`, harness committed at `bench/jess/`), the
+  table lowering was tree-identical to the interpreter on css (87 files), scss
+  (400) and jess (3) and diverged on **55 of the 136 Less fixtures** — 30 SILENT
+  WRONG TREES, 18 table-only throws, 7 other. Two causes, and `pnpm test` was
+  green with both live:
+
+  - **`OP_LEAF` was not a capture boundary.** `leaf()` suppresses its interior's
+    own CST captures and contributes exactly ONE leaf carrying the reducer's
+    value (`src/combinators/token.ts:89-127`); the driver ran the interior with
+    the parent's sinks still live. Every interior terminal leaked into the
+    PARENT's `children`, moving the enclosing reducer's arity. Less is the only
+    dialect that calls `leaf()`, and it uses it for the padded arithmetic
+    operators — `1 + 1` leaked its whitespace and keyword terminals, which
+    surfaced as "Less arithmetic grammar lost an operator operand" on 16
+    fixtures and as a wrong tree on the rest. It differs from `OP_TOKEN`
+    deliberately: trivia POLICY is untouched and `_rootTriviaLog` stays live.
+  - **`OP_REP` skipped leading trivia before the MANDATORY first item.** Only
+    `many()` — min 0, no separator — runs its first item through `repItem` and
+    therefore owns the trivia in front of it (`src/combinators/repeat.ts:130-137`).
+    `oneOrMore`/`atLeast` (`:203`) and `sepBy` (`:412`) both parse the first item
+    AT `pos`, because leading trivia there is the ENCLOSING context's. The
+    driver skipped for every shape, so a `oneOrMore` whose body starts by
+    MATCHING trivia had that trivia eaten out from under it. In Less that body is
+    `classifiedTrivia` itself, reached through `peek(whitespace)` in the
+    value-continuation boundary — so **every space-separated declaration value**
+    (`color: red blue`, `margin: 1px 2px`) stopped after its first piece and the
+    whole ruleset vanished from an otherwise-successful `Stylesheet`.
+
+  Less is now 136/136 identical; css, scss and jess are unmoved. The residual
+  css (11) and scss (85) files are `both reject, report differs` — the parked
+  furthest-failure-merging item, not a tree defect.
+
 - **`buildSpecModel` no longer hangs the process on a `balanced()`.** Every rule
   reaching a `balanced()` sent `parseman/spec` — and so `toEBNF`, `toRailroadHtml`
   and `toRailroadSvg` — into unbounded recursion: `RangeError: Maximum call stack

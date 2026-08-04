@@ -116,7 +116,8 @@
     "choicecost:report": "node --import tsx/esm bench/choice-cost-guard.ts --report",
     "spelling:gate": "node --import tsx/esm bench/spelling-equivalence.ts",
     "spelling:baseline": "node --import tsx/esm bench/spelling-equivalence.ts --update",
-    "bench:margin": "node --import tsx/esm bench/svg-margin.ts"
+    "bench:margin": "node --import tsx/esm bench/svg-margin.ts",
+    "divergence:jess": "node --import ./bench/jess/register.mjs bench/jess/divergence.ts"
   },
   "keywords": [
     "parser",
