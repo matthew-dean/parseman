@@ -36,7 +36,6 @@
 import os from 'node:os'
 import { readFileSync, statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
-import type { Combinator } from '../../src/types.ts'
 import { compose } from '../../src/compiler/linker.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
