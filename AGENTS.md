@@ -17,10 +17,13 @@ code PR:
 pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 ```
 
-`check:invariants` decides four source-level rules that no type or test can
+`check:invariants` decides five source-level rules that no type or test can
 see: no accessor installed onto an already-built object, no field in a public
 `*Options` type that nothing reads, no module unreachable from a published
-entry point, no declaration body duplicated across modules. It is a required CI
+entry point, no declaration body duplicated across modules, and no `delete` on
+an object the enclosing function did not construct (a `delete` on a long-lived
+object flips `%HasFastProperties` to false permanently — a `delete` on a scratch
+local is fine and deliberately not flagged). It is a required CI
 step and a pre-commit guard. Its allowlist (`scripts/check-invariants.mjs`) MAY
 ONLY GET SHORTER — adding an entry to unblock new code is the failure it
 exists to stop, and a stale entry fails the gate. See

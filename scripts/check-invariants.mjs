@@ -101,6 +101,36 @@ const ALLOW = new Map([
   // helpers with no reason to be duplicated; the fix is one import each.
   ['INV-4:src/analysis/choice-cost.ts:childrenOf|src/analysis/duplication.ts:childrenOf', 'DEDUPE — identical helper in two analysis modules'],
   ['INV-4:src/analysis/duplication.ts:intersects|src/analysis/gating.ts:intersects', 'DEDUPE — identical helper in two analysis modules'],
+
+  // INV-5 x4 on `ctx` — 12 delete SITES, on the object every combinator reads on
+  // every step, running PER TOKEN and PER LEAF. This is the sharpest instance in
+  // the catalogue: one delete flips %HasFastProperties to false and re-adding the
+  // property does not restore it, so the first `token()` in a parse can leave
+  // `ctx` in dictionary mode for the whole parse. The table-driver copies are
+  // there because the driver is deliberately MIRRORED from the combinator for
+  // behavioural fidelity — three-way identity rewards exactly that, which is how
+  // one shape defect became two.
+  //
+  // Restoration here is by PRESENCE (readers test whether the property exists),
+  // so `= undefined` is not a drop-in and this is correct code with a
+  // catastrophic shape consequence. A separate lane is measuring what it costs
+  // end to end and may remove the deletes outright; when it lands these entries
+  // go stale and the gate will REQUIRE their deletion, which is the intended
+  // interaction and not a conflict.
+  ['INV-5:src/combinators/token.ts:parse:ctx._triviaLog', 'per-token delete on the long-lived ctx — measurement lane owns the fix'],
+  ['INV-5:src/combinators/token.ts:parse:ctx._rootTriviaLog', 'per-token delete on the long-lived ctx — measurement lane owns the fix'],
+  ['INV-5:src/table/exec.ts:exec:ctx._triviaLog', 'mirrored into the table driver for behavioural fidelity — same lane'],
+  ['INV-5:src/table/exec.ts:exec:ctx._rootTriviaLog', 'mirrored into the table driver for behavioural fidelity — same lane'],
+
+  // INV-5 x3 on `_meta` — `const meta = slot._meta` / `value._meta` is an ALIAS
+  // of a combinator's long-lived meta object, and `_meta` is read during
+  // interpreted parses. Cold sites (fuse time), so the cost is the shape the
+  // object carries afterwards rather than the delete itself. Fix is to assign a
+  // fixed absent value, which is available here: these readers test `!== undefined`,
+  // not presence.
+  ['INV-5:src/compiler/linker.ts:repointRef:meta.triviaKindLabels', 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx'],
+  ['INV-5:src/compiler/linker.ts:repointRef:meta.disjoint', 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx'],
+  ['INV-5:src/compiler/linker.ts:fusePieces:meta.grammarHostMode', 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx'],
 ])
 
 /* ------------------------------------------------------------------ */
@@ -306,6 +336,102 @@ for (const [file, { ast, lineAt }] of parsed) {
 }
 
 /* ================================================================== *
+ * INV-5 — no `delete` on an object the enclosing function did not construct.
+ *
+ * DECIDES: a `delete X.p` / `delete X[e]` whose ROOT identifier is not bound,
+ * anywhere inside the enclosing function, by a declaration whose initializer
+ * is a fresh object (`{…}`, `[…]`, `new …`, `Object.create(…)`). Parameters,
+ * closure variables, and aliases of somebody else's object (`const m = x._meta`)
+ * all fail that test; a scratch object built and discarded in the same call
+ * passes it.
+ *
+ * WHY THIS EXACT SHAPE: one `delete` flips `%HasFastProperties` to false on an
+ * object of this shape, and RE-ADDING THE PROPERTY DOES NOT RESTORE IT. That is
+ * survivable on a scratch object that dies at the end of the call. It is a
+ * catastrophe on a long-lived one: `delete ctx._triviaLog` runs per token and
+ * per leaf on `ctx`, the single object every combinator reads on every step, so
+ * the FIRST `token()` in a parse can put it in dictionary mode for the
+ * remainder. Same class as INV-1, and the reason this rule is separate from a
+ * blanket "no delete" is that a blanket ban would fire on the scratch case,
+ * which is fine and common — and a rule that fires on fine code gets switched
+ * off, taking the rules that matter with it.
+ *
+ * NOT A CLAIM THAT THE CODE IS WRONG. The `ctx` deletes are not gratuitous:
+ * restoration there is by PRESENCE — readers test whether the property exists —
+ * so `delete` is the semantically correct expression of "restore to absent" and
+ * `= undefined` is not a drop-in. This is correct code with a catastrophic
+ * shape consequence, which is precisely the kind a test suite cannot see.
+ *
+ * FALSE-POSITIVE FLOOR: the "constructed here" test is deliberately generous —
+ * it searches the WHOLE enclosing function subtree, nested functions included,
+ * so a locally-built object exempts the delete even when the binding is not in
+ * the immediately enclosing block. That under-reports, which is the right
+ * direction. Every one of the 17 findings on this tree is a genuinely
+ * long-lived object; none is a scratch local.
+ * ================================================================== */
+for (const [file, { ast, lineAt }] of parsed) {
+  /** The nearest enclosing function node, so "did THIS call build it?" is answerable. */
+  const fnStack = []
+  const isFn = (n) => n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression'
+    || n.type === 'ArrowFunctionExpression'
+
+  /** Names bound in `node`'s subtree to a FRESHLY CONSTRUCTED value. */
+  const constructedIn = (fn) => {
+    const names = new Set()
+    walk(fn, (n) => {
+      if (n.type !== 'VariableDeclarator' || n.id?.type !== 'Identifier') return
+      const init = unwrap(n.init)
+      if (!init) return
+      if (init.type === 'ObjectExpression' || init.type === 'ArrayExpression'
+        || init.type === 'NewExpression'
+        || (init.type === 'CallExpression' && init.callee?.property?.name === 'create')) names.add(n.id.name)
+    })
+    return names
+  }
+  const cache = new Map()
+
+  const visit = (node, scope) => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) { for (const n of node) visit(n, scope); return }
+    if (typeof node.type === 'string') {
+      if (isFn(node)) fnStack.push(node)
+      if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression') scope = node.id?.name ?? scope
+      else if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier'
+        && (node.init?.type === 'ArrowFunctionExpression' || node.init?.type === 'FunctionExpression')) scope = node.id.name
+      else if (node.type === 'Property' && (node.value?.type === 'FunctionExpression' || node.value?.type === 'ArrowFunctionExpression')) scope = keyName(node) ?? scope
+      else if (node.type === 'MethodDefinition' || node.type === 'PropertyDefinition') scope = keyName(node) ?? scope
+
+      if (node.type === 'UnaryExpression' && node.operator === 'delete') {
+        let base = unwrap(node.argument)
+        let prop = null
+        while (base && base.type.endsWith('MemberExpression')) {
+          if (prop === null) prop = base.computed ? '<computed>' : base.property?.name ?? '<computed>'
+          base = unwrap(base.object)
+        }
+        if (base && base.type === 'Identifier') {
+          let built = false
+          for (const fn of fnStack) {
+            if (!cache.has(fn)) cache.set(fn, constructedIn(fn))
+            if (cache.get(fn).has(base.name)) { built = true; break }
+          }
+          if (!built) {
+            report('INV-5', file, lineAt(node.start),
+              `\`delete ${base.name}.${prop}\` in \`${scope}\` — \`${base.name}\` is not constructed by this function, so the delete lands on a LONG-LIVED object. One delete flips %HasFastProperties to false and re-adding the property does not restore it; every later read of that object goes through the dictionary`,
+              `INV-5:${file}:${scope}:${base.name}.${prop}`)
+          }
+        }
+      }
+    }
+    for (const key in node) {
+      if (key === 'type' || key === 'start' || key === 'end' || key === 'range' || key === 'loc') continue
+      visit(node[key], scope)
+    }
+    if (typeof node.type === 'string' && isFn(node)) fnStack.pop()
+  }
+  visit(ast, '<module>')
+}
+
+/* ================================================================== *
  * INV-3 — every module under src/ is reachable from a published entry point.
  *
  * DECIDES: import-graph reachability from the targets of package.json
@@ -438,7 +564,15 @@ if (asJson) {
   console.log(JSON.stringify({ live, allowed: allowed.map((f) => f.key), staleAllow }, null, 2))
 } else {
   for (const f of live) console.log(`${f.rule}  ${f.file}:${f.line}\n    ${f.message}\n`)
-  if (allowed.length) console.log(`(${allowed.length} allowlisted pre-existing finding${allowed.length === 1 ? '' : 's'}: ${allowed.map((f) => f.key).join(', ')})`)
+  if (allowed.length) {
+    // One line per allowlist ENTRY, with the site count it covers — several
+    // sites can share one entry (six `delete ctx._triviaLog` calls in one
+    // function are one exemption, not six).
+    const byKey = new Map()
+    for (const f of allowed) byKey.set(f.key, (byKey.get(f.key) ?? 0) + 1)
+    console.log(`${byKey.size} allowlisted pre-existing entr${byKey.size === 1 ? 'y' : 'ies'} covering ${allowed.length} site${allowed.length === 1 ? '' : 's'}:`)
+    for (const [k, n] of byKey) console.log(`  ${k}${n > 1 ? `  (x${n})` : ''}`)
+  }
   console.log(`invariant gate: ${files.length} modules examined, ${live.length} finding${live.length === 1 ? '' : 's'}`)
 }
 

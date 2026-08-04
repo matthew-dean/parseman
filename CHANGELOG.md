@@ -15,8 +15,12 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `dispatch()` flag that was set and never read, so the cut did not fire and the
   parser returned a silently truncated document. INV-3: no module under `src/`
   unreachable from a published entry point. INV-4: no declaration body
-  duplicated across modules. Twelve pre-existing findings are allowlisted by
-  name with a reason each; the list may only get shorter, and a stale entry
+  duplicated across modules. INV-5: no `delete` on an object the enclosing
+  function did not construct — one `delete` flips `%HasFastProperties` to false
+  and re-adding the property does not restore it, and `delete ctx._triviaLog`
+  runs per token and per leaf on the object every combinator reads on every
+  step. Nineteen allowlist entries covering 27 pre-existing sites are recorded
+  by name with a reason each; the list may only get shorter, and a stale entry
   fails the gate. A fifth candidate — conditional spread into an object literal
   — was implemented, measured at 177 pre-existing hits in overwhelmingly cold
   code, and REJECTED rather than shipped noisy. See

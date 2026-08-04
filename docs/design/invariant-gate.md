@@ -19,6 +19,7 @@ whose own documentation forbids it, with every existing gate green:
 | Three copies of one ASCII fold | one of them wrong | silent wrong lowering |
 | Two copies of `packInts` | one unbounded | — |
 | 87 KB of lowering analysis | never imported by the code that needed it | reasoning the shipped code does not do |
+| `delete ctx._triviaLog` per token and per leaf | the correct expression of "restore to absent" | one delete flips `%HasFastProperties` to false on the object every combinator reads on every step, and re-adding does not restore it |
 
 The sharpest case is not a missing tool but an unwired one. In jess,
 `pnpm lint:absolute` already detects the `as any` / `@ts-ignore` ban, has found
@@ -40,7 +41,7 @@ bypassed with it. So:
   under-report. A finding you can argue with is worth less than a finding
   nobody can.
 
-## The four rules
+## The five rules
 
 ### INV-1 — no accessor descriptor installed with `Object.defineProperty`
 
@@ -111,6 +112,41 @@ False-positive risk: **low**. Byte-identity after comment/whitespace removal
 leaves no similarity threshold to argue about. The length floor exists only so
 that one-line idioms (`return x.length`) do not collide by coincidence.
 
+### INV-5 — no `delete` on an object the enclosing function did not construct
+
+Decides: a `delete X.p` / `delete X[e]` whose root identifier is not bound,
+anywhere inside the enclosing function, by a declaration whose initializer is a
+fresh object (`{…}`, `[…]`, `new …`, `Object.create(…)`). Parameters, closure
+variables, and aliases of someone else's object (`const m = slot._meta`) all
+fail that test; a scratch object built and discarded in the same call passes it.
+
+One `delete` flips `%HasFastProperties` to false on an object of this shape,
+and **re-adding the property does not restore it**. On a scratch object that
+dies at the end of the call, that is survivable. On a long-lived one it is a
+catastrophe: `delete ctx._triviaLog` runs **per token and per leaf** on `ctx`,
+the single object every combinator reads on every step, so the first `token()`
+in a parse can leave it in dictionary mode for the remainder.
+
+This is deliberately *not* a blanket "no `delete`". A blanket ban would fire on
+the scratch case, which is fine and common — the same mistake that got the
+conditional-spread rule rejected below.
+
+It is also not a claim that the code is wrong. Restoration at the `ctx` sites is
+by **presence** — readers test whether the property exists — so `delete` is the
+semantically correct expression of "restore to absent" and `= undefined` is not
+a drop-in. It is correct code with a catastrophic shape consequence, which is
+exactly the kind no test suite can see.
+
+False-positive risk: **low**, and zero on this tree. All 15 findings are
+genuinely long-lived objects; not one is a scratch local. The `clean` fixture
+carries the scratch case specifically to pin that it stays silent.
+
+Known under-report, stated rather than hidden: the "constructed here" test
+searches the whole enclosing function subtree, so an object built in an outer
+function and **escaping** it is exempt — `src/combinators/ref.ts:47,49` deletes
+from a `meta` built in `ref()` that outlives the call. Catching that needs
+escape analysis. The rule under-reports rather than over-reports, on purpose.
+
 ## The allowlist
 
 `ALLOW` in `scripts/check-invariants.mjs`. **It may only get shorter.** Adding
@@ -127,8 +163,8 @@ Two mechanical properties keep that honest rather than aspirational:
 
 There is deliberately no wildcard syntax and no per-rule blanket.
 
-**12 pre-existing findings** are allowlisted at the commit that added the gate,
-in two groups.
+**19 allowlist entries covering 27 finding sites** are recorded at the commit
+that added the gate, in three groups.
 
 Six are the **frozen ablation controls** — `src/table/exec-baseline.ts` and
 `src/table/encode-baseline.ts`, deliberate frozen copies kept in process so
@@ -155,6 +191,24 @@ fixes:
 - `INV-4 childrenOf` (`analysis/choice-cost.ts` ↔ `analysis/duplication.ts`),
   `INV-4 intersects` (`analysis/duplication.ts` ↔ `analysis/gating.ts`) — two
   genuine copy-pastes. One import each.
+
+Seven entries cover the **`delete`-on-long-lived-object findings**, 15 sites:
+
+- `INV-5 ctx._triviaLog` / `ctx._rootTriviaLog` in `combinators/token.ts` (6
+  sites) and `table/exec.ts` (6 sites) — **the sharpest instance in the
+  catalogue**, running per token and per leaf on the object every combinator
+  reads on every step. The driver copies exist because the table driver is
+  deliberately *mirrored* from the combinator for behavioural fidelity, which is
+  what three-way identity rewards: one shape defect became two. A separate lane
+  is measuring what these cost end to end and may remove them; when it lands,
+  these entries go stale and the gate will REQUIRE their deletion. That is the
+  intended interaction, not a conflict.
+- `INV-5 meta.triviaKindLabels`, `meta.disjoint`, `meta.grammarHostMode` in
+  `compiler/linker.ts` (3 sites) — `const meta = slot._meta` is an alias of a
+  combinator's long-lived meta, which is read during interpreted parses. Cold
+  sites, so the cost is the shape the object carries afterwards. Unlike `ctx`,
+  these readers test `!== undefined` rather than presence, so `= undefined` IS a
+  drop-in here.
 
 ## Candidate checks that were REJECTED
 

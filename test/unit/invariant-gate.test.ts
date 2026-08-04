@@ -39,6 +39,9 @@ describe('invariant gate', () => {
     expect(code).toBe(0)
   })
 
+  // The `clean` fixture is not merely empty — it carries the shapes each rule
+  // must NOT fire on: a literal getter (INV-1), an options field that IS read
+  // (INV-2), and a `delete` on a scratch object built in the same call (INV-5).
   it('stays silent on a tree that violates nothing', () => {
     const { code, out } = runGate([`--root=${fixture('clean')}`])
     expect(out).toContain('0 findings')
@@ -52,6 +55,7 @@ describe('invariant gate', () => {
     ['inv2', 'INV-2', 'never read anywhere in src/'],
     ['inv3', 'INV-3', 'not reachable by import'],
     ['inv4', 'INV-4', 'duplicated across modules'],
+    ['inv5', 'INV-5', 'is not constructed by this function'],
   ]
   for (const [dir, rule, phrase] of planted) {
     it(`${rule} fires on its planted violation and exits non-zero`, () => {
