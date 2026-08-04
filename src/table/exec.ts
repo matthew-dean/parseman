@@ -8,7 +8,7 @@ import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import type { DispatchMatcherKind } from '../types.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../combinators/trivia-skip.ts'
+import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, demoteCapturedToRaw,
   endCstNodeCapture, pushCstChild, pushCstLeaf, rollbackCstCapture, saveCstMark,
@@ -140,6 +140,8 @@ function classHas(cls: ResolvedClass, code: number): boolean {
 type Driver = {
   exec: (ip: number, input: string, pos: number, ctx: ParseContext) => unknown
   end: () => number
+  /** Per-parse reset of the trivia leaf swap. See `begin` in `makeDriver`. */
+  begin: (ctx: ParseContext) => void
   /** Ambient `scanSkip` sets, rebuilt from `prog.scanSkip`, indexed as encoded. */
   scanSkip: readonly (readonly Combinator<unknown>[])[]
 }
@@ -153,10 +155,31 @@ function makeDriver(
   disp: readonly ResolvedDispatch[],
   dsp: readonly ResolvedDispatchSpec[],
   trivia: readonly unknown[],
+  triviaScan: readonly (FastTriviaScanner | null)[],
+  triviaLabelled: readonly boolean[],
   prog: TableProgram,
 ): Driver {
   /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
   let END = 0
+
+  /**
+   * THE INSTALLED TRIVIA LEAF — G5's *"some swaps on rules or sub-rules
+   * (leafs)"*, which is the half of that sentence the driver had not honoured.
+   *
+   * `SCAN` is the SPECIALISED scanner for the trivia currently in scope, chosen
+   * once at `OP_SCOPE` from `triviaScan` and null when no swap is legal. The
+   * generic path it replaces called `advanceTrivia` per sequence term, and that
+   * function re-derived the scanner through a WeakMap and re-tested the same
+   * options on every call — for json that was 22.0% of the table's time against
+   * codegen's 6.1% for the identical work.
+   *
+   * `FAST` is the one condition that is a property of the PARSE rather than of
+   * the scope (`ctx.trackLines`, fixed by `run()` at entry), so it is read once
+   * per parse in the entry wrapper and folded into `SCAN` at each scope. Nothing
+   * on the term path consults the table or an option.
+   */
+  let SCAN: FastTriviaScanner | null = null
+  let FAST = false
 
   /**
    * Capture goes through the runtime's own buffer (`src/cst/capture-buffer.ts`),
@@ -200,7 +223,31 @@ function makeDriver(
    * `charCodeAt` is the hot read; only a high surrogate needs the code-point
    * decode, so that branch is paid on astral input and nowhere else.
    */
+  /**
+   * Skip trivia at `cur`, through the INSTALLED leaf when one is installed.
+   *
+   * The guard is the exact condition under which the generic functions take
+   * their own fast branch, restated over context fields so it costs loads rather
+   * than a call:
+   *
+   *   - `advanceTrivia` (no deferred commit) runs `fast(input, cur)` whenever a
+   *     scanner exists and `trackLines` is off — folded into `SCAN` already.
+   *   - `scanTrivia` (deferred commit) runs it and returns a NO-OP commit when
+   *     `_triviaLog` is unset and nothing is capturing trivia into a CST buffer.
+   *     `_rootTriviaLog` is deliberately absent from this test: root rows are
+   *     only ever written on the LABELLED scan path (see `OP_SCOPE`), and a
+   *     labelled trivia never gets a `SCAN` installed.
+   *
+   * Anything outside that falls through to the shared implementations unchanged,
+   * so recording, labels and line tracking keep exactly one implementation.
+   */
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
+    const s = SCAN
+    if (s !== null
+      && ctx._triviaLog === undefined
+      && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
+      return s(input, cur)
+    }
     if (needsDeferredTriviaCommit(ctx)) {
       const scan = scanTrivia(input, cur, ctx)
       scan.commit()
@@ -412,6 +459,8 @@ function makeDriver(
         const sOuterTl = ctx._triviaLog, sRootTl = ctx._rootTriviaLog
         const wasCapturing = cstCaptureActive(ctx)
 
+        const sScan = SCAN
+        SCAN = null
         ctx.trivia = undefined
         ctx.triviaKindLabels = undefined
         ctx._cstBuf = undefined
@@ -426,6 +475,7 @@ function makeDriver(
         try {
           v = exec(code[ip + 1]!, input, pos, ctx)
         } finally {
+          SCAN = sScan
           ctx.trivia = sTrivia
           ctx.triviaKindLabels = sKinds
           ctx._cstBuf = sBuf
@@ -463,6 +513,12 @@ function makeDriver(
         const saved = ctx.trivia
         const savedLabels = ctx.triviaKindLabels
         const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
+        const savedScan = SCAN
+        // THE SWAP. Chosen from table data at scope entry, never per term. A
+        // labelled trivia is excluded here rather than tested later: `scanTrivia`
+        // suppresses its own fast path when labels are present, so a swap there
+        // would drop the labelled records silently.
+        SCAN = FAST && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
         ctx.trivia = scopeTrivia
         // A scope installs its trivia's KIND LABELS too. Root-trivia rows are
         // only ever written on the labelled scan path (trivia-skip.ts:212) — the
@@ -473,6 +529,7 @@ function makeDriver(
         const v = exec(code[ip + 2]!, input, pos, ctx)
         ctx.trivia = saved
         ctx.triviaKindLabels = savedLabels
+        SCAN = savedScan
         return v
       }
 
@@ -488,14 +545,7 @@ function makeDriver(
           const child = code[base + i]!
           if (i > 0 && ctx.trivia !== undefined) {
             const mark = rollbackNeeded(ctx) ? saveTriviaMark(ctx) : null
-            let scanEnd: number
-            if (needsDeferredTriviaCommit(ctx)) {
-              const scan = scanTrivia(input, cur, ctx)
-              scan.commit()
-              scanEnd = scan.end
-            } else {
-              scanEnd = advanceTrivia(input, cur, ctx)
-            }
+            const scanEnd = skipTrivia(input, cur, ctx)
             const v = exec(child, input, scanEnd, ctx)
             if (v === FAIL) return FAIL
             if (END > scanEnd) cur = END
@@ -967,7 +1017,20 @@ function makeDriver(
   const scanSkip: readonly (readonly Combinator<unknown>[])[] =
     (prog.scanSkip ?? []).map(set => set.map(r => subtreeComb(r)))
 
-  return { exec, end: () => END, scanSkip }
+  /**
+   * ONCE PER PARSE. `trackLines` is fixed by `run()` before the entry is called,
+   * and it is the only leg of the swap's legality that is a property of the
+   * PARSE rather than of the scope — so it is decided here and never re-asked on
+   * the term path. `SCAN` starts null: a rule reached before any scope has no
+   * installed trivia, and a stale one from a previous parse on a reused `ctx`
+   * would skip trivia this grammar never declared.
+   */
+  function begin(ctx: ParseContext): void {
+    FAST = ctx.trackLines !== true
+    SCAN = null
+  }
+
+  return { exec, end: () => END, begin, scanSkip }
 }
 
 /**
@@ -976,10 +1039,23 @@ function makeDriver(
  * The entries have the SAME signature as codegen rule functions, so `run()`,
  * the linker's public wrappers and every consumer are unchanged.
  */
-export function tableRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
+export function tableRules(
+  source: TableProgram | CompactProgram,
+  /**
+   * MEASUREMENT CONTROL, not a feature. `leafSwap: false` hands the driver a
+   * `triviaScan` of all nulls, so `SCAN` is never installed and every skip takes
+   * the shared generic functions — the exact pre-swap behaviour, from the SAME
+   * driver code, differing only in TABLE DATA. That is what makes an in-process
+   * A/B of the swap possible on a machine where cross-run comparison is not, and
+   * it is G5-legal for the same reason `lines` is: it is read once, at rule-map
+   * construction, and the parse path never sees an option.
+   */
+  opts: { leafSwap?: boolean } = {},
+): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, prog)
+  const scan = opts.leafSwap === false ? t.triviaScan.map(() => null) : t.triviaScan
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog)
   const out: Record<string, TableRule> = {}
   // `run()` reads trivia metadata off the ENTRY and takes its
   // `typeof r === 'function'` branch for compiled entries, which codegen stamps
@@ -1018,6 +1094,7 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
       // its paired write would otherwise inherit a committed failure from a
       // PREVIOUS parse on the same reused `ctx`, and read as "the cut fired".
       ctx._fc = false
+      d.begin(ctx)
       if (lines && ctx._lineStarts === undefined) { ctx._lineStarts = [0]; ctx._lineScannedTo = 0 }
       const v = d.exec(entry, input, pos, ctx)
       if (v === FAIL) {

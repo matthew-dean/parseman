@@ -28,7 +28,7 @@ export type TriviaScan = { end: number; commit: () => void }
 export type TriviaRollbackMark = { raw: number; tlog: number; leaves: number; fields: number; errors: number; log: number; rootLog: number }
 
 const NOOP_COMMIT = () => {}
-type FastTriviaScanner = (input: string, cur: number) => number
+export type FastTriviaScanner = (input: string, cur: number) => number
 const fastTriviaCache = new WeakMap<Combinator<unknown>, FastTriviaScanner | null>()
 
 /** True when trivia recording must be deferred until the following term commits. */
@@ -308,7 +308,16 @@ export function probeTriviaEnd(input: string, cur: number, ctx: ParseContext): n
   return advanceTrivia(input, cur, probeCtx)
 }
 
-function fastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner | null {
+/**
+ * The specialised scanner for a trivia combinator, or null when its shape has no
+ * lowering. Memoized on the combinator.
+ *
+ * EXPORTED because G5's leaf swap needs it at TABLE-BUILD time: the table driver
+ * resolves the scanner once, per trivia entry, and installs the closure at scope
+ * entry — where the generic path called this (a WeakMap lookup) plus a chain of
+ * option branches on EVERY sequence term.
+ */
+export function fastTriviaScanner(trivia: Combinator<unknown>): FastTriviaScanner | null {
   const cached = fastTriviaCache.get(trivia)
   if (cached !== undefined) return cached
   const scanner = buildFastTriviaScanner(trivia)
