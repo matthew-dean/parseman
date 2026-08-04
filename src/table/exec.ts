@@ -8,11 +8,11 @@ import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import type { DispatchMatcherKind } from '../types.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
+import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt, saveTriviaMark, scanTrivia, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import {
-  beginCstNodeCapture, cstCaptureActive, cstLeavesLen, demoteCapturedToRaw,
-  endCstNodeCapture, pushCstChild, pushCstLeaf, rollbackCstCapture, saveCstMark,
-  type CstRollbackMark,
+  beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
+  demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
+  rollbackCstCaptureAt,
 } from '../cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
@@ -544,12 +544,21 @@ function makeDriver(
         for (let i = 0; i < n; i++) {
           const child = code[base + i]!
           if (i > 0 && ctx.trivia !== undefined) {
-            const mark = rollbackNeeded(ctx) ? saveTriviaMark(ctx) : null
+            // SCALAR MARKS — `saveTriviaMark` allocated TWICE per term (its own
+            // seven-field object plus the five-field CST mark it delegates to).
+            const need = rollbackNeeded(ctx)
+            const mRaw = need ? cstRawLen(ctx) : 0
+            const mTl = need ? cstTlLen(ctx) : 0
+            const mLv = need ? cstLeavesLen(ctx) : 0
+            const mFl = need ? ctx._fields?.length ?? 0 : 0
+            const mEr = need ? ctx._errors?.length ?? 0 : 0
+            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             const scanEnd = skipTrivia(input, cur, ctx)
             const v = exec(child, input, scanEnd, ctx)
             if (v === FAIL) return FAIL
             if (END > scanEnd) cur = END
-            else if (mark !== null) rollbackTrivia(ctx, mark)
+            else if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             if (values !== undefined) values.push(v)
             continue
           }
@@ -642,38 +651,56 @@ function makeDriver(
           }
           const open = table.open
           if (open.length === 0) return failChoice()
-          const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
-          if (mark !== null) rollbackCstCapture(ctx, mark)
+          // SCALAR MARKS. `saveCstMark` allocated a five-field object per choice
+          // attempt; the compiled engine keeps the same five numbers in locals and
+          // allocates nothing. Same values, same rollback, no garbage.
+          const need = rollbackNeeded(ctx)
+          const mRaw = need ? cstRawLen(ctx) : 0
+          const mTl = need ? cstTlLen(ctx) : 0
+          const mLv = need ? cstLeavesLen(ctx) : 0
+          const mFl = need ? ctx._fields?.length ?? 0 : 0
+          const mEr = need ? ctx._errors?.length ?? 0 : 0
+          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
           for (let i = 0; i < open.length; i++) {
             ctx._fc = false
             const v = exec(code[base + open[i]!]!, input, pos, ctx)
             if (v !== FAIL) return v
             if (committed(ctx)) return FAIL
-            if (mark !== null) rollbackCstCapture(ctx, mark)
+            if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
           }
           return failChoice()
         }
         const n = code[ip + 2]!
-        const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
         for (let i = 0; i < n; i++) {
           ctx._fc = false
           const v = exec(code[base + i]!, input, pos, ctx)
           if (v !== FAIL) return v
           if (committed(ctx)) return FAIL
-          if (mark !== null) rollbackCstCapture(ctx, mark)
+          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
         }
         return failChoice()
       }
 
       case OP_OPT: {
-        const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
         ctx._fc = false
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v === FAIL) {
           // repeat.ts:277 — `optional()` propagates a committed failure rather
           // than reporting "absent".
           if (committed(ctx)) return FAIL
-          if (mark !== null) rollbackCstCapture(ctx, mark)
+          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
           END = pos
           // NULL, not undefined. `optional()` yields `null` on no-match
           // (src/combinators/repeat.ts:269,277) and grammars TEST for it:
@@ -715,8 +742,18 @@ function makeDriver(
           if (max >= 0 && count >= max) break
           // One mark pair for the whole loop when a rollback is even possible,
           // refreshed per iteration rather than reallocated.
-          const cmark = needMark ? saveCstMark(ctx) : null
-          const tmark = needMark ? saveTriviaMark(ctx) : null
+          // SCALAR MARKS. This loop took TWO allocations per item (a CST mark and
+          // a trivia mark, the latter allocating a second one internally) — the
+          // per-item allocation an earlier lane hunted on json and could not
+          // replicate, because json builds almost no nodes and so never sets
+          // `_cstBuf`, which is what makes `needMark` true for a whole parse.
+          const mRaw = needMark ? cstRawLen(ctx) : 0
+          const mTl = needMark ? cstTlLen(ctx) : 0
+          const mLv = needMark ? cstLeavesLen(ctx) : 0
+          const mFl = needMark ? ctx._fields?.length ?? 0 : 0
+          const mEr = needMark ? ctx._errors?.length ?? 0 : 0
+          const mLog = needMark ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
           let itemStart = cur
           let sepEnd = -1
           if (sep >= 0 && count > 0) {
@@ -727,8 +764,7 @@ function makeDriver(
             ctx._fc = false
             const sv = exec(sep, input, sp, ctx)
             if (sv === FAIL) {
-              if (tmark !== null) rollbackTrivia(ctx, tmark)
-              if (cmark !== null) rollbackCstCapture(ctx, cmark)
+              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               if (committed(ctx)) return FAIL
               break
             }
@@ -750,8 +786,7 @@ function makeDriver(
           // runs — never to a mandatory first item, which both other engines
           // attempt at `pos` whatever is there.
           if (itemStart >= input.length && (count > 0 || skipBeforeFirst)) {
-            if (tmark !== null) rollbackTrivia(ctx, tmark)
-            if (cmark !== null) rollbackCstCapture(ctx, cmark)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             // A trailing separator at EOF is the COMMON case for
             // `trailing: 'allow'` (`a,b,`), and this early-out ran before the
             // item was ever attempted — so handling it only on the item-failure
@@ -762,8 +797,7 @@ function makeDriver(
           ctx._fc = false
           const v = exec(child, input, itemStart, ctx)
           if (v === FAIL) {
-            if (tmark !== null) rollbackTrivia(ctx, tmark)
-            if (cmark !== null) rollbackCstCapture(ctx, cmark)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             // repeat.ts:141/215/233 — a committed item failure fails the WHOLE
             // repetition. Breaking here is what let `many(dispatch(...))` return
             // ok:true with a silently truncated document.
@@ -774,8 +808,7 @@ function makeDriver(
           }
           if (END === itemStart) {
             // Zero-width item: it cannot make progress, so stop without taking it.
-            if (tmark !== null) rollbackTrivia(ctx, tmark)
-            if (cmark !== null) rollbackCstCapture(ctx, cmark)
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             break
           }
           if (out !== undefined) out.push(v)
@@ -924,18 +957,28 @@ function makeDriver(
       }
 
       case OP_NOT: {
-        const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
-        if (mark !== null) rollbackCstCapture(ctx, mark)
+        if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
         if (v === FAIL) { END = pos; return null }
         ctx._fe = pos
         return FAIL
       }
 
       case OP_PEEK: {
-        const mark: CstRollbackMark | null = rollbackNeeded(ctx) ? saveCstMark(ctx) : null
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
-        if (mark !== null) rollbackCstCapture(ctx, mark)
+        if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
         if (v === FAIL) return FAIL
         END = pos
         return null

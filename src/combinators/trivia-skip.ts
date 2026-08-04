@@ -11,6 +11,7 @@ import {
   pushCstTriviaEntry,
   pushTriviaLogEntry,
   rollbackCstCapture,
+  rollbackCstCaptureAt,
   saveCstMark,
 } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
@@ -47,6 +48,27 @@ export function saveTriviaMark(ctx: ParseContext): TriviaRollbackMark {
     log: ctx._triviaLog ? ctx._triviaLog.length : 0,
     rootLog: ctx._rootTriviaLog ? ctx._rootTriviaLog.length : 0,
   }
+}
+
+/**
+ * Trivia rollback from SCALAR marks — the allocation-free twin of
+ * `rollbackTrivia`. See `rollbackCstCaptureAt`; `saveTriviaMark` allocates twice
+ * (this wrapper plus the CST mark it delegates to) and the table driver took one
+ * per sequence term and per repetition item.
+ */
+export function rollbackTriviaAt(
+  ctx: ParseContext,
+  raw: number,
+  tlog: number,
+  leaves: number,
+  fields: number,
+  errors: number,
+  log: number,
+  rootLog: number,
+): void {
+  rollbackCstCaptureAt(ctx, raw, tlog, leaves, fields, errors)
+  if (ctx._triviaLog && ctx._triviaLog.length !== log) ctx._triviaLog.length = log
+  if (ctx._rootTriviaLog && ctx._rootTriviaLog.length !== rootLog) ctx._rootTriviaLog.length = rootLog
 }
 
 export function rollbackTrivia(ctx: ParseContext, mark: TriviaRollbackMark): void {
