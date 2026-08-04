@@ -29,7 +29,7 @@
 import { execFileSync } from 'node:child_process'
 import { dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DIALECTS, type Dialect } from './grammars.ts'
+import { corpusTotal, DIALECTS, type Dialect } from './grammars.ts'
 import { COLUMNS, ENGINES, FACETS, type Engine, type Facet } from './digest.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -103,7 +103,12 @@ async function main(): Promise<void> {
   const legs = Object.fromEntries(ENGINES.map(e => [e, legOf(dialect, e)])) as Record<Engine, Map<string, Row>>
   const results = compare(legs)
   const counts = Object.fromEntries(ORDER.map(o => [o, results.filter(r => r.outcome === o).length]))
-  console.log(`${dialect}  files=${results.length}`)
+  // Print the DENOMINATOR, not just the count. `files=` is what was compared;
+  // `of N` is what exists. When they differ the run bounded its own coverage and
+  // has to say so — a count on its own reads as "covered everything".
+  const total = corpusTotal(dialect)
+  const bounded = results.length === total ? '' : `  (BOUNDED: ${total - results.length} of ${total} NOT compared)`
+  console.log(`${dialect}  files=${results.length} of ${total}${bounded}`)
   console.log('  ' + ORDER.map(o => `${o}=${counts[o]}`).join('  '))
   console.log('  facets: ' + FACETS.map(f => `${f}=${results.filter(r => r.facets.includes(f)).length}`).join(' '))
   if (process.argv.includes('--list')) {

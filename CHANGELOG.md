@@ -5,6 +5,50 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **The table lowering measured against codegen: much smaller, materially
+  slower.** Both sides driven from this worktree over jess's four shipping
+  grammars, same grammar, same variant, same reducers, in one process
+  (`pnpm size:jess`, `pnpm speed:jess`). Every figure is the AST path
+  (`hostMode: 'ast'`, `trackLines: false`), the canonical performance measure.
+
+  - **Size, per variant, whole artifact** (recognizer + the author's reducers,
+    excluding the shared driver): css 2,276 KB codegen -> 74 KB table (30.7x
+    raw, 20.8x gzip); less 2,863 -> 209 (13.7x / 12.2x); scss 1,883 -> 108
+    (17.4x / 13.2x); jess 2,016 -> 119 (16.9x / 12.4x). Machinery alone, with
+    the reducers taken out of both sides, is 41.4x / 19.7x / 26.7x / 27.1x raw.
+    Gzip moves the same direction but less far, as a dense numeric stream
+    should. The shared driver is 68,738 B of source, added to a bundle once,
+    and is netted off nothing.
+  - **Speed, table vs codegen on the same corpus**: css **+229%**, less
+    **+126%**, scss **+115%**, jess **+203%** — the table is 2.2x-3.3x SLOWER
+    than the shipped codegen. Against the interpreter it is 2.2x-2.6x faster
+    (codegen -> interpreter is +340%..+522% on the same runs). Control contests
+    (table vs an independently built table) read -0.5%..+1.3% with 4-12 of 16
+    wins, so the gate deltas are far outside the noise floor and the direction
+    is not in question. The penalty is smallest on the largest corpus (less,
+    132 KB) and largest on the smallest (css, 7 KB), which is where to look
+    next.
+  - **The four `trackLines` x `hostMode` variants are four DISTINCT tables, not
+    two.** Proven by sha256 of the emitted machinery rather than by equal byte
+    counts. An earlier claim that AST and CST emit byte-identical tables holds
+    on the 16-rule synthetic ladder and does NOT hold on any of the four real
+    grammars; they differ by 0.2%-0.4%. Variant folding remains a build/DX
+    result and is reported in its own section, never as a per-dialect figure.
+
+- **The scss corpus cap is gone, and the three-way sweep still clears the
+  table.** `bench/jess/grammars.ts` hardcoded `SCSS_LIMIT = 400` against a
+  sass-spec cache of 2,408, silently dropping 83% of the corpus while the output
+  read as a corpus result; the stated justification — that the first 400 in
+  sorted order are reproducible — was not a reason, since all 2,408 in sorted
+  order are equally reproducible. Over the **full 2,408**: `table-outlier=0`,
+  identical=1,908, interp-outlier=491, compiled-outlier=1, three-way=8. No
+  defect was hiding in the 2,008 files the cap had never looked at. The jess
+  corpus went from **3 files to 22** — every `.jess` in the repo except
+  `jess-parser/test/errors`, which exists to fail to parse; 22 is still far too
+  few to say anything about the jess dialect and the harness now prints the
+  denominator so that cannot be read as coverage. `divergence.ts` reports
+  `files=N of TOTAL` and flags any run that bounded its own coverage.
+
 - **Two table-driver defects that only the Less dialect exposed.** Measured over
   jess's four shipping grammars on their real corpora
   (`pnpm divergence:jess <dialect>`, harness committed at `bench/jess/`), the

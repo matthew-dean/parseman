@@ -46,7 +46,29 @@ const SHARED_SRC = resolvePath(JESS_ROOT, 'packages/parser-shared/src')
 /** `import attributes` are erased, not honoured: a macro tag is a BUILD directive. */
 const IMPORT_ATTRIBUTE = /\s+(?:with|assert)\s*\{\s*type\s*:\s*['"][a-z]+['"]\s*,?\s*\}/g
 
+/**
+ * `pm-macro:<absolute path>` — the macro lowering of ONE module, as its own
+ * module instance, WITHOUT putting the whole process into macro mode.
+ *
+ * `PM_MACRO=1` is a process-wide switch, so a timing run could hold the compiled
+ * engine or the interpreted and table engines, never all three — and an A/B
+ * across processes is not an A/B. This gives the lowered grammar a distinct URL
+ * (the same file plus `?pm-macro=1`), so node keeps it as a SEPARATE module
+ * instance alongside the plain one.
+ *
+ * Its relative imports resolve against the path, not the query, so the two
+ * instances share `@jesscss/parser-shared` and `parseman` — which is what makes
+ * the comparison fair (one runtime, one set of recognition pieces) and also what
+ * makes cross-contamination possible. `speed.ts` therefore proves all three
+ * engines still produce identical parses before it times anything.
+ */
+const MACRO_QUERY = '?pm-macro=1'
+
 export function resolve(specifier, context, nextResolve) {
+  if (specifier.startsWith('pm-macro:')) {
+    const p = specifier.slice('pm-macro:'.length)
+    return { url: pathToFileURL(p).href + MACRO_QUERY, format: 'module', shortCircuit: true }
+  }
   if (specifier === 'parseman') {
     return { url: pathToFileURL(resolvePath(PM_SRC, 'index.ts')).href, format: 'module', shortCircuit: true }
   }
@@ -71,13 +93,15 @@ const MACRO_MODE = process.env.PM_MACRO === '1'
 let transformMacro
 
 export async function load(url, context, nextLoad) {
-  if (url.startsWith('file:') && (url.endsWith('.ts') || url.endsWith('.mts'))) {
-    const path = fileURLToPath(url)
+  const perModuleMacro = url.endsWith(MACRO_QUERY)
+  const bare = perModuleMacro ? url.slice(0, -MACRO_QUERY.length) : url
+  if (bare.startsWith('file:') && (bare.endsWith('.ts') || bare.endsWith('.mts'))) {
+    const path = fileURLToPath(bare)
     const raw = readFileSync(path, 'utf8')
     // A macro module under PM_MACRO: lower it exactly as a build would. The
     // emitted module keeps every non-macro import, so `@jesscss/core/ast` and
     // the grammar's own `./parse-error.js` still resolve through the rules above.
-    if (MACRO_MODE && IMPORT_ATTRIBUTE.test(raw) && !path.startsWith(PM_SRC)) {
+    if ((MACRO_MODE || perModuleMacro) && IMPORT_ATTRIBUTE.test(raw) && !path.startsWith(PM_SRC)) {
       IMPORT_ATTRIBUTE.lastIndex = 0
       transformMacro ??= (await import(pathToFileURL(resolvePath(PM_SRC, 'plugin/index.ts')).href)).transformMacro
       const lowered = transformMacro(raw, path, new Set(['parseman']))

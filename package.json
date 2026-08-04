@@ -117,7 +117,9 @@
     "spelling:gate": "node --import tsx/esm bench/spelling-equivalence.ts",
     "spelling:baseline": "node --import tsx/esm bench/spelling-equivalence.ts --update",
     "bench:margin": "node --import tsx/esm bench/svg-margin.ts",
-    "divergence:jess": "node --import ./bench/jess/register.mjs bench/jess/divergence.ts"
+    "divergence:jess": "node --import ./bench/jess/register.mjs bench/jess/divergence.ts",
+    "size:jess": "node --import ./bench/jess/register.mjs bench/jess/size.ts",
+    "speed:jess": "node --import ./bench/jess/register.mjs bench/jess/speed.ts"
   },
   "keywords": [
     "parser",
