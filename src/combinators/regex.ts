@@ -4,31 +4,30 @@ import { failAt } from './probe.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
 import { shorthandRanges, parseClassRanges } from '../regex/classes.ts'
+import { firstSetFromRegex } from '../regex/first-set.ts'
 
 /**
- * Computes a regex terminal's first-set (for choice-dispatch fast paths). The
- * implementation — `firstSetFromRegex` in `../regex/first-set.ts` — is a small,
- * dependency-free hand-rolled regex parser, registered by the interpreter/library
- * entry (`index.ts`) via `registerRegexAnalyzer`. It is injected rather than
- * imported so that consumers who import `regex` directly from this subpath (no
- * library entry) never pull the analyzer into their bundle at all. When no
- * analyzer is registered, `regex()` uses the permissive fallback below — this
- * only disables the dispatch fast paths, never changing matches.
+ * A regex terminal's first-set (for choice-dispatch fast paths) is derived by
+ * `firstSetFromRegex` in `../regex/first-set.ts` — a small, dependency-free
+ * hand-rolled regex parser, imported DIRECTLY and unconditionally.
+ *
+ * ── WHY NOT INJECTED ────────────────────────────────────────────────────────────
+ * It used to be registered at run time by the library entry (`index.ts`) via a
+ * `registerRegexAnalyzer` seam, so that a bundle holding `regex()` without the
+ * library entry never pulled the analyzer in. That saved ~3 KB and cost a shipped
+ * export: `parseman/table` is its OWN module graph, so its private copy of this
+ * module never saw the registration, `regex()` there returned the permissive
+ * `any()` first-set, and `classifiedTrivia()` — which REQUIRES a concrete finite
+ * first set per arm — rejected every arm of every table-lowered grammar
+ * (`buildTrivia` in `../table/program.ts`). The failure was invisible from source,
+ * where `src/index.ts` is always in the graph.
+ *
+ * A mutable module-global that a *different* entry has to remember to write makes
+ * `regex()`'s result depend on which bundle it landed in. Deriving the first set
+ * intrinsically makes every module graph agree by construction. The analyzer adds
+ * no new leaf modules — it imports only `./first-set.ts` and `../regex/classes.ts`,
+ * both already reachable from here — so the cost is the analyzer's own bytes.
  */
-export type RegexFirstSetAnalyzer = (pattern: string) => { firstSet: FirstSet; canMatchNewline: boolean }
-
-let firstSetAnalyzer: RegexFirstSetAnalyzer | null = null
-
-export function registerRegexAnalyzer(analyzer: RegexFirstSetAnalyzer): void {
-  firstSetAnalyzer = analyzer
-}
-
-/** Fallback when no analyzer is registered: "could start with any char / could
- * match a newline" — the same conservative value `firstSetFromRegex` returns on
- * an unparseable pattern, so a missing analyzer degrades to "no fast path", not
- * a wrong one. */
-const permissiveFirstSet: RegexFirstSetAnalyzer = () => ({ firstSet: any(), canMatchNewline: true })
-
 const SCAN_BAIL_AT = 64
 type ShortScanner = (input: string, pos: number) => number | null | undefined
 
@@ -119,7 +118,7 @@ export function regex(pattern: string | RegExp, flags = ''): Combinator<string> 
   const anchored = new RegExp(source, 'y' + resolvedFlags.replace(/[gy]/g, ''))
   const scan = shortScanner(source, resolvedFlags)
 
-  const raw = (firstSetAnalyzer ?? permissiveFirstSet)(source)
+  const raw = firstSetFromRegex(source)
   // The first-set analyzer is flag-agnostic, so for a CASE-INSENSITIVE pattern it
   // returns only the literal-case leading chars — e.g. `/red|blue/i` → `{r,b}`, NOT
   // `{r,R,b,B}`. Using that narrow set for first-char DISPATCH would false-EXCLUDE the

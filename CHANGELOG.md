@@ -650,6 +650,41 @@ numbers.
   release, and the two figures quoted during its development (113 B/rule, ~2.65x)
   were measured on a synthetic ladder and on json — never on a shipping grammar.
 
+- **Fixed: `parseman/table` could not run ANY grammar with `classifiedTrivia`, because
+  `regex()`'s first-set analyzer was registered by side effect from one module.** The
+  analyzer (`src/regex/first-set.ts`) was wired into `regex()` at run time by the library
+  entry, via a `registerRegexAnalyzer` seam, so that a bundle holding `regex()` without
+  the library entry never pulled it in. A published subpath is its OWN module graph:
+  `dist/table/index.js` never executes `src/index.ts`, so its private `regex()` fell back
+  to the permissive `any()` first-set. `buildTrivia` (`src/table/program.ts`) rebuilds
+  classified trivia through that `regex()`, and `classifiedTrivia()` requires a concrete
+  finite first set per arm — so it threw on the FIRST arm of every table-lowered grammar
+  with labelled trivia, which is every grammar that exposes trivia categories at all.
+  Plain `trivia(regex(...))` survived because it asserts nothing.
+
+  The analyzer is now imported DIRECTLY by `src/combinators/regex.ts` and the
+  registration seam is deleted. Registering it a second time from the table entry would
+  have fixed this instance and left the fragility for the next entry point; a mutable
+  module-global that a *different* module has to remember to write makes `regex()`'s
+  result depend on which bundle it landed in. It adds no new leaf modules — the analyzer
+  imports only `combinators/first-set.ts` and `regex/classes.ts`, both already reachable
+  from `regex()` — so the cost is the analyzer's own bytes: `dist/table/index.js` grows
+  from 121,433 to 128,211 (+6.8 KB unminified), `dist/run/index.js` is unchanged at
+  17,501, and `dist/index.js` shrinks slightly. `RegexFirstSetAnalyzer` and
+  `registerRegexAnalyzer` were never in the `exports` map, so nothing public is removed.
+
+  **`./table` is where it threw; it was never the only entry affected.** `./diagnostics`,
+  `./spec`, `./language-service` and the CLI `bin` also build grammars without
+  `src/index.ts` in their graph, so `regex()` returned a permissive first-set there too —
+  no error, just choice dispatch silently disabled. Those are now correct as well.
+
+  Both halves are pinned by `test/unit/table-entry-dist.test.ts`, which is deliberately
+  the first test in the suite to import `dist/` — through package self-reference, so it
+  resolves as a consumer's would. A source-only test could not have caught this and
+  could not catch a regression: every test file has `src/index.ts` somewhere in its
+  graph. Its second case bundles each `exports` entry in isolation and fails any entry
+  that holds `regex()` without the analyzer.
+
 - **Three documentation claims corrected against the code.** The gating diagnostic
   left the compile path in 0.45.0, but `README.md` and `docs/guide/combinators.md`
   still said the build reports it — `compile()` reports nothing. `ChoiceStrategy` was

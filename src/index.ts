@@ -3,16 +3,14 @@ export type { Combinator, ParseResult, ParseOk, ParseFail, ParseContext, ParseEr
 export { literal } from './combinators/literal.ts'
 export type { LiteralOptions } from './combinators/literal.ts'
 
+// `regex()` derives its own first-set: the analyzer (`./regex/first-set.ts`) is
+// imported directly by `./combinators/regex.ts`, NOT registered here. It used to
+// be wired in from this entry, which made `regex()`'s first-set depend on whether
+// the library entry was in the bundle's module graph — and `parseman/table` is a
+// separate graph, so its `regex()` fell back to the permissive `any()` set and
+// `classifiedTrivia()` rejected every table-lowered grammar. See the comment on
+// the import in `./combinators/regex.ts`.
 export { regex } from './combinators/regex.ts'
-// Wire the hand-rolled first-set analyzer into `regex()`. Importing the library
-// entry opts you into precise choice-dispatch fast paths; a deep-path
-// `import { regex }` (no library entry) gets a permissive fallback, so the
-// analyzer tree-shakes out entirely. The analyzer is a small dependency-free
-// regex parser (`./regex/first-set.ts`) — no `regexp-tree`, no codegen — so
-// interpreter-only bundles stay lean.
-import { registerRegexAnalyzer } from './combinators/regex.ts'
-import { firstSetFromRegex } from './regex/first-set.ts'
-registerRegexAnalyzer(firstSetFromRegex)
 export { keywords, word, makeWord } from './combinators/keywords.ts'
 export type { KeywordsOptions, WordOptions } from './combinators/keywords.ts'
 
