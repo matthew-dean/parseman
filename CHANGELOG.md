@@ -3,7 +3,7 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
-## 0.47.1 — unreleased
+## 0.47.0 — unreleased
 
 - **`buildSpecModel` no longer hangs the process on a `balanced()`.** Every rule
   reaching a `balanced()` sent `parseman/spec` — and so `toEBNF`, `toRailroadHtml`
@@ -33,8 +33,6 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     would print the content-run regex and the `self` back-edge, which are emitter
     machinery rather than language. `scanTo()` was checked and does **not** share
     the defect — its `_def` is a leaf the walk never descends.
-
-## 0.47.0 — unreleased
 
 ### BREAKING — a list now contributes its ITEMS and nothing else
 
