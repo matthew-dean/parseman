@@ -179,6 +179,26 @@ export type BalancedAmbient = Combinator<string> & {
 }
 
 /**
+ * Marker: this combinator IS a balanced interior — its delimiters, and the fact
+ * that everything between them is a scan rather than authored structure.
+ *
+ * Set by `buildBalancedInterior`, so EVERY balanced carries it: the ambient one,
+ * the `raw` one, and each interior the ambient cache rebuilds. `_balancedAmbient`
+ * cannot serve this purpose — it is absent on `raw`, and it means "re-resolve
+ * ambient scanSkip", which is a different claim.
+ *
+ * Read by the spec/railroad emitter, which renders a balanced as its delimiters
+ * around an opaque interior. That is not a simplification: the delimiters are
+ * FIXED at construction and the interior genuinely is a delimiter scan, so the
+ * rendering states exactly what the construct is. Expanding the lowered shape
+ * instead would print the content-run regex and the `self` back-edge, which are
+ * emitter machinery, not language.
+ */
+export type BalancedMarked = Combinator<string> & {
+  _balanced?: { open: string; close: string }
+}
+
+/**
  * Match a balanced open/close pair, skipping over any holes inside.
  * Returns the full matched text including delimiters.
  *
@@ -313,6 +333,10 @@ export function buildBalancedInterior(
     // composeLeaf artifacts while user-authored transform() remains excluded.
     combi._def.recognitionOnly = true
   }
+  // Record what this interior IS, before the self-ref closes the cycle. Any walker
+  // that would otherwise descend through `self` forever can stop here and render
+  // the construct instead of its lowering.
+  ;(combi as BalancedMarked)._balanced = { open, close }
   self.define(combi as Combinator<string>)
   return combi
 }

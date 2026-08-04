@@ -3,6 +3,37 @@
 All notable changes to **Parseman** are documented here, grouped by minor version
 (newest first). This project is pre-1.0, so minor bumps may carry breaking changes.
 
+## 0.47.1 — unreleased
+
+- **`buildSpecModel` no longer hangs the process on a `balanced()`.** Every rule
+  reaching a `balanced()` sent `parseman/spec` — and so `toEBNF`, `toRailroadHtml`
+  and `toRailroadSvg` — into unbounded recursion: `RangeError: Maximum call stack
+  size exceeded` at the default stack, and **SIGSEGV** at `--stack-size=40000`. The
+  raised-stack crash is the diagnosis: this was a true cycle, not a deep-but-finite
+  walk, so no depth limit would have been a fix.
+
+  `balanced()` builds its interior with a self-referencing `ref()` so a nested open
+  is consumed recursively. That back-edge is anonymous, and the spec walker cut
+  cycles **only at named rules** — an assumption that every cycle passes through a
+  `_ruleName`. It does not, for `balanced()` or for any cycle a caller builds with
+  the public `ref()`.
+
+  Two changes, answering two different questions:
+
+  - **The cycle is now cut on OBJECT IDENTITY**, via a path set added on entry and
+    removed on exit — not a global visited set, so a combinator shared by two
+    sibling positions is still drawn at both (sharing is structure; only a
+    combinator containing *itself* is a cycle). This fixes the whole class. An
+    anonymous back-edge renders as `/* (recursive) */` in place.
+  - **A `balanced()` renders as its delimiters around an opaque interior** —
+    `"(" /* balanced … */ ")"` — recognised through a `_balanced` marker set by
+    `buildBalancedInterior`, so it covers the ambient, `raw` and `strict` forms
+    alike. This is not a simplification: the delimiters are fixed at construction
+    and the interior genuinely *is* a delimiter scan. Expanding its lowered shape
+    would print the content-run regex and the `self` back-edge, which are emitter
+    machinery rather than language. `scanTo()` was checked and does **not** share
+    the defect — its `_def` is a leaf the walk never descends.
+
 ## 0.47.0 — unreleased
 
 ### BREAKING — a list now contributes its ITEMS and nothing else
