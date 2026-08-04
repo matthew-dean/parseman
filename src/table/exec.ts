@@ -180,6 +180,12 @@ function makeDriver(
    */
   let SCAN: FastTriviaScanner | null = null
   let FAST = false
+  /**
+   * Is this parse's host a CST-output host? `ctx.build` is fixed by `run()` before
+   * the entry is called, so this is a PER-PARSE constant that `OP_NODE` was
+   * re-deriving on every node. Decided once in `begin`.
+   */
+  let HOSTCST = false
 
   /**
    * Capture goes through the runtime's own buffer (`src/cst/capture-buffer.ts`),
@@ -881,7 +887,7 @@ function makeDriver(
         // BYPASSED, so capture must widen regardless of what the reducer's arity
         // said — the encode-time flags under-approximate here by construction.
         const host = ctx.build
-        const hostCst = host !== undefined && cstOutputHost(host)
+        const hostCst = HOSTCST
         const saved = beginCstNodeCapture(ctx)
         const savedFields = ctx._fields
         ctx._fields = (flags & 16) !== 0 || hostCst ? [] : undefined
@@ -904,12 +910,15 @@ function makeDriver(
         const kids = cap.children
         const proj = code[ip + 4]!
         const buildIdx = code[ip + 1]!
-        // A direct builder that never declared `state` still owes the host its
+        // A direct builder that never declared `state` still owes the HOST its
         // snapshot — node.ts builds it here, on a branch the eval path never takes.
-        const hostState = (flags & 8) !== 0
-          ? st
-          : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined
-
+        //
+        // It is built INLINE AT THE HOST CALL, not before the branch and not
+        // through a helper closure — either would be an allocation per node.
+        // Computed eagerly it was an `Object.assign` clone per node, on every AST
+        // parse of a grammar that uses `ctx.state` at all, thrown away unread: the
+        // two host branches below are the only readers and neither runs on the AST
+        // path with a direct builder.
         let nd: unknown
         if ((flags & 64) !== 0 && kids.length === 1) {
           nd = unwrapChild(kids[0])
@@ -930,13 +939,13 @@ function makeDriver(
           nd = kids[0]
         } else if (proj >= 0) {
           nd = hostCst && host !== undefined
-            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, hostState, tags)
+            ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, (flags & 8) !== 0 ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
             : projectChild(kids, proj, type)
         } else if (buildIdx >= 0) {
           if (hostCst && host !== undefined) {
             // A direct builder is bypassed under a CST host: the host must never
             // receive an arbitrary AST object as a child of a CST node.
-            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, hostState, tags)
+            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, (flags & 8) !== 0 ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
           } else {
             const build = fns[buildIdx] as (
               children: readonly unknown[], fields: FieldMap | undefined, span: { start: number; end: number },
@@ -1071,6 +1080,8 @@ function makeDriver(
   function begin(ctx: ParseContext): void {
     FAST = ctx.trackLines !== true
     SCAN = null
+    const host = ctx.build
+    HOSTCST = host !== undefined && cstOutputHost(host)
   }
 
   return { exec, end: () => END, begin, scanSkip }
