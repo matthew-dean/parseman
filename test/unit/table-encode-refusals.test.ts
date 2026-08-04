@@ -112,12 +112,13 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
 })
 
 /**
- * The constructs that are NOT recoverable from `_def` and are therefore run as
- * real combinators through OP_CALL. `balanced()` is the sharp one: it overrides
- * `.parse` and leaves `_def` as the eager interior, so a structural encoding
- * builds a different parser and reports nothing.
+ * The constructs that are not recoverable from `_def` and are therefore carried
+ * as their CONSTRUCTOR ARGUMENTS (`OP_SCAN` + `prog.scans`). `balanced()` is the
+ * sharp one: it overrides `.parse` and leaves `_def` as the eager interior, so a
+ * structural encoding builds a different parser and reports nothing — the spec
+ * hands the arguments back to `balanced()` and lets it rebuild itself.
  */
-describe('OP_CALL escapes — encoded by reference, and emit-blocked as a result', () => {
+describe('the scanning constructs — carried as specs, and emittable', () => {
   const balancedGrammar = rules<Record<string, Combinator<unknown>>>(() => ({
     Doc: node('Doc', balanced('(', ')'), c => ({ t: 'Doc', c })),
   })) as unknown as Record<string, Combinator<unknown>>
@@ -142,18 +143,21 @@ describe('OP_CALL escapes — encoded by reference, and emit-blocked as a result
     expect(t.c[0]!.value).toBe('abb')
   })
 
-  it('MOVED: a scanning grammar is still unemittable, but now says which construct', () => {
-    // The limit is unchanged — `balanced()` parks a live combinator, so the
-    // grammar runs in memory and cannot ship as a module. What changed is the
-    // REPORT: it used to surface as "[object Array]"/"[object Object]" from
-    // inside the printer, naming neither the grammar nor the construct. The
-    // program now carries `runtimeOnly` and the refusal names `balanced()`.
+  it('FIXED: a scanning grammar emits, and its const pool holds no live object', () => {
+    // WAS the documented limit: `balanced()` parked a live combinator, the
+    // grammar ran in memory and could not ship as a module — which made the
+    // lowering's own size claim unmeasurable, since every shipping grammar uses
+    // one of these. It is now a `ScanSpec`, and the emitted module round-trips
+    // (test/unit/table-emit-roundtrip.test.ts).
     const prog = encodeTable(balancedGrammar)
-    expect(prog.runtimeOnly).toEqual(['balanced()'])
-    expect(() => emitTableModule(prog)).toThrow(/RUNTIME-ONLY/)
-    expect(() => emitTableModule(prog)).toThrow(/balanced\(\)/)
-    // `token()` used to be in the same bucket and no longer is — the two are not
-    // one construct, so the narrower claim is asserted rather than assumed.
+    expect(prog.runtimeOnly).toBeUndefined()
+    expect(emitTableModule(prog)).toContain('sc:[')
+    // The const pool is the thing that used to hold the combinator. Nothing in it
+    // may be an object other than a RegExp or an array of primitives — that is
+    // what `emitConst` enforces, asserted here on a program that once failed it.
+    for (const v of prog.k) {
+      expect(typeof v === 'object' && v !== null && !(v instanceof RegExp) && !Array.isArray(v), String(v)).toBe(false)
+    }
     expect(encodeTable(tokenGrammar).runtimeOnly).toBeUndefined()
     expect(() => emitTableModule(encodeTable(tokenGrammar))).not.toThrow()
   })
@@ -389,34 +393,44 @@ describe('table failure reporting matches the interpreter and the compiled path'
 })
 
 /**
- * `scanSkip` IS CARRIED BUT NEVER EMITTED — and that is only sound by coupling.
+ * `scanSkip` REACHES THE EMITTED MODULE, as data.
  *
- * `encode.ts:185` bakes `_meta.grammarScanSkip` onto the program as LIVE
- * combinators (a table entry is a function, so `run()` will not install it), but
- * `emitTableModule` writes no `scanSkip` field and `runtimeOnly` does not name
- * it. A module emitted from such a program would parse with an EMPTY skip list —
- * silently changing what `scanTo`/`balanced` scan over, which is this lowering's
- * worst failure shape.
- *
- * It is unreachable today because the only two things that READ `ctx.scanSkip`
- * are themselves refused for emission. These tests pin both halves of that
- * coupling, so it cannot be broken by a change to either one alone.
+ * It used to be baked onto the program as LIVE combinators — a table entry is a
+ * function, so `run()` will not install it — while `emitTableModule` wrote no
+ * `scanSkip` field at all and `runtimeOnly` did not name it. A module emitted
+ * from such a program would have parsed with an EMPTY skip list, silently
+ * changing what `scanTo`/`balanced` scan over. That was sound only because both
+ * readers were themselves emit-blocked; they no longer are, so the set is
+ * encoded as subtree references and emitted per rule.
  */
-describe('grammar-level scanSkip cannot silently reach an emitted module', () => {
+describe('grammar-level scanSkip reaches an emitted module as data', () => {
   const skipStr = token(sequence(literal('"'), regex(/[^"]*/), literal('"')))
 
-  it('a scanSkip grammar that USES it is refused by name', () => {
+  it('a scanSkip grammar emits its set as SUBTREE REFERENCES, per rule', () => {
     const g = rules<Record<string, Combinator<unknown>>>({ scanSkip: [skipStr as Combinator<unknown>] }, () => ({
       Doc: balanced('(', ')') as unknown as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
     const prog = encodeTable(g)
-    expect(prog.scanSkip, 'the live units are carried so the PROGRAM still parses').toBeDefined()
-    expect(() => emitTableModule(prog)).toThrow(/balanced\(\)/)
+    expect(prog.scanSkip, 'one pooled set').toHaveLength(1)
+    expect(prog.scanSkip![0]).toHaveLength(1)
+    expect(prog.scanSkipOf, 'the one rule installs set 0').toEqual([0])
+    const src = emitTableModule(prog)
+    expect(src).toContain('ss:[')
+    expect(src).toContain('so:[0]')
+    // The reference points at a REAL row, and carries the unit's first set —
+    // `balanced()` reads it to decide whether its content run can be bounded.
+    const [ip, cls] = prog.scanSkip![0]![0]!
+    expect(ip).toBeGreaterThanOrEqual(0)
+    expect(ip).toBeLessThan(prog.code.length)
+    expect(cls, 'a quoted-string unit starts with exactly one character').toBeGreaterThanOrEqual(0)
+    expect(prog.cc[cls]).toBe('""')
   })
 
   it('the only readers of ctx.scanSkip are the constructs encode refuses', () => {
-    // The load-bearing fact. If a third reader appears, `scanSkip` must join
-    // `runtimeOnly` in `encode.ts` — see the field's comment in program.ts.
+    // Still load-bearing, for a different reason: `ctx.scanSkip` now holds
+    // subtree-backed combinators built by the driver, so a new reader outside
+    // `scanTo.ts` would be reading table-internal objects. See the field's
+    // comment in program.ts.
     const root = path.join(import.meta.dirname, '../../src')
     const walk = (dir: string): string[] =>
       readdirSync(dir, { withFileTypes: true }).flatMap(e =>

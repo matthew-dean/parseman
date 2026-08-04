@@ -7,10 +7,11 @@ import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
-import type { DispatchSpec, TableProgram, TriviaSpec } from './program.ts'
+import type { BalancedSpec } from '../combinators/scanTo.ts'
+import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 
 /** Raised when a construct has no opcode yet. Prototype scope is explicit. */
 export class UnsupportedConstruct extends Error {
@@ -55,7 +56,12 @@ class Encoder {
   dsp: DispatchSpec[] = []
   labels: readonly string[] | undefined = undefined
   classified = false
-  scanSkip: readonly unknown[] | undefined = undefined
+  scans: ScanSpec[] = []
+  /** Ambient `scanSkip` sets, pooled by the ARRAY's identity (stable per grammar). */
+  scanSkipSets: (readonly SubtreeRef[])[] = []
+  private scanSkipIndex = new Map<readonly Combinator<unknown>[], number>()
+  /** Per rule, in `rules` order: which pooled set its entry installs, or −1. */
+  scanSkipOf: number[] = []
   /** Reasons this program can RUN but not be EMITTED. */
   runtimeOnly = new Set<string>()
   triviaSpecs: TriviaSpec[] = []
@@ -171,6 +177,39 @@ class Encoder {
     return ip
   }
 
+  /**
+   * A combinator carried as a table SUBTREE plus its first set.
+   *
+   * The first set is not decoration: `buildBalancedInterior` reads each skipper's
+   * to decide whether the interior content run can be one bounded regex
+   * (scanTo.ts:280). A reference that reported `any` would rebuild a different —
+   * one-character-at-a-time — interior than the grammar's own.
+   */
+  private subtree(c: Combinator<unknown>): SubtreeRef {
+    const ip = this.node(c).ip
+    const fs = firstSetOf(c)
+    return [ip, fs.kind === 'empty' ? -2 : this.charClass(fs)]
+  }
+
+  /** Pool one scan spec. One per combinator: `node()` memoizes by identity. */
+  private scanSlot(spec: ScanSpec): number {
+    const i = this.scans.length
+    this.scans.push(spec)
+    return i
+  }
+
+  private scanSkipSlot(set: readonly Combinator<unknown>[]): number {
+    const hit = this.scanSkipIndex.get(set)
+    if (hit !== undefined) return hit
+    const i = this.scanSkipSets.length
+    // Reserve the slot BEFORE encoding: an ambient skipper can be a `balanced()`
+    // whose own encoding reaches back here through the same array.
+    this.scanSkipIndex.set(set, i)
+    this.scanSkipSets.push([])
+    this.scanSkipSets[i] = set.map(c => this.subtree(c))
+    return i
+  }
+
   encodeRule(name: string, p: Combinator<unknown>): void {
     const body = this.node(p).ip
     // GRAMMAR-LEVEL AMBIENT TRIVIA (`rules({ trivia }, …)`).
@@ -182,19 +221,18 @@ class Encoder {
     // whitespace-bearing input silently fails to match the same way in every
     // path — which makes a three-way identity check AGREE while proving nothing.
     // Bake it, exactly as the compiled path does.
-    this.scanSkip ??= p._meta.grammarScanSkip
+    // AMBIENT `scanSkip`, PER RULE — the granularity `run()` uses, because it
+    // reads the ENTRY rule's own `_meta.grammarScanSkip` (grammar.ts:203). It is
+    // stamped by `rules({ scanSkip }, …)` on that map's rules only
+    // (parser.ts:210); a `parser()` scope has no `scanSkip` at all, so a rule is
+    // the finest scope that can carry one. In a `composeLeaf` grammar the pieces
+    // disagree — 67 of jess's 195 css rules carry no set — and taking the first
+    // one for the whole program handed those entries a skip list the interpreter
+    // does not give them.
+    const gss = p._meta.grammarScanSkip
+    this.scanSkipOf.push(gss === undefined ? -1 : this.scanSkipSlot(gss))
     const amb = p._meta.grammarTrivia
     if (amb !== undefined) {
-      // AMBIENT TRIVIA IS RUNTIME-ONLY. Pooling the combinator here is what makes
-      // the program correct at run time (`run()` cannot install grammar trivia for
-      // a function entry) and simultaneously UNEMITTABLE — `emitConst` refuses a
-      // live object, correctly. Before this baking existed, a trivia-bearing
-      // grammar emitted fine and parsed WRONG; now it parses right and cannot be
-      // printed. Both are true and the second is a regression I introduced.
-      //
-      // It belongs on the same list as scanTo/token/balanced: expressible as data
-      // (an encoded trivia subtree plus a scan opcode), not yet expressed.
-
       // Carried so `tableRules` can stamp the entry — see TableProgram.labels.
       this.labels ??= amb._meta.triviaKindLabels
       if (amb._meta.rootTriviaClassified === true) this.classified = true
@@ -224,15 +262,35 @@ class Encoder {
 
   private encodeDef(p: Combinator<unknown>): number {
     const d = p._def as ParserDef
-    // Constructs whose behaviour is NOT recoverable from `_def`. Run the real
-    // combinator rather than build a second implementation that drifts.
-    // `balanced()` is the sharp one: it overrides `.parse` and leaves `_def` as
-    // the eager interior, so encoding structurally builds the wrong parser and
-    // reports nothing.
-    if (d.tag === 'scanTo'
-      || (p as { _balancedAmbient?: unknown })._balancedAmbient !== undefined) {
-      this.runtimeOnly.add(d.tag === 'scanTo' ? 'scanTo()' : 'balanced()')
-      return this.emit(OP_CALL, this.constant(p))
+    // THE SCANNING CONSTRUCTS, as their constructor arguments.
+    //
+    // Neither is recoverable from `_def` alone — `balanced()` overrides `.parse`
+    // and leaves `_def` as its EAGER interior, so a structural encoding builds a
+    // parser that skips the wrong things and reports nothing. Both are fully
+    // described by what they were CONSTRUCTED with, which is what `ScanSpec`
+    // carries; `resolveTable` hands that back to `scanTo()`/`balanced()`.
+    //
+    // The `balanced()` test reads `_balancedSpec` on the object `balanced()`
+    // RETURNS. That object is a `token()` and the ambient marker lives on the
+    // combinator INSIDE it, so testing `_balancedAmbient` here would either miss
+    // the construct or reach past the `token()` that gives it its one leaf.
+    const bal = (p as BalancedSpec)._balancedSpec
+    if (bal !== undefined) return this.emit(OP_SCAN, this.scanSlot({
+      kind: 1,
+      flags: (bal.raw ? 1 : 0) | (bal.strict ? 4 : 0),
+      skip: bal.ownSkip.map(c => this.subtree(c)),
+      open: bal.open,
+      close: bal.close,
+    }))
+    if (d.tag === 'scanTo') {
+      const sentDef = d.sentinel._def
+      return this.emit(OP_SCAN, this.scanSlot({
+        kind: 0,
+        flags: (d.raw ? 1 : 0) | (d.orEOF ? 2 : 0),
+        skip: d.skip.map(c => this.subtree(c)),
+        sentinel: this.subtree(d.sentinel),
+        sent: sentDef.tag === 'literal' ? sentDef.value : null,
+      }))
     }
     switch (d.tag) {
       case 'literal': {
@@ -545,13 +603,30 @@ class Encoder {
         case OP_SCOPE: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
-        case OP_CHOICE: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
+        // ARMS START AT ip+4. `ip+3` is the choice's own EXPECTED-SET index, and
+        // rewriting it here treated an `fx` index as a code offset: when the row
+        // at that offset happened to be `OP_RULE` the index was replaced by that
+        // row's target, so a failing choice reported a different expected set —
+        // and the bogus "target" was then pushed onto the walk and its operands
+        // rewritten as if they were child slots. It also left the LAST arm
+        // uncollapsed, which is the only part of this that was merely slow.
+        case OP_CHOICE: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 4 + i)
         case OP_REP: case OP_REPV: return this.code[ip + 4]! >= 0 ? [ip + 1, ip + 4] : [ip + 1]
         default: return []
       }
     }
     const seen = new Set<number>()
-    const stack = Object.values(this.rules)
+    // Scan subtrees are ROOTS too: a sentinel or skipper is reached through
+    // `prog.scans`, not through any code slot, so leaving them out left their
+    // interiors uncollapsed and — worse — left the spec's own offset pointing at
+    // a trampoline whose target had been rewritten around it.
+    const refs: SubtreeRef[] = []
+    for (const s of this.scans) {
+      if (s.sentinel !== undefined) refs.push(s.sentinel)
+      refs.push(...s.skip)
+    }
+    for (const set of this.scanSkipSets) refs.push(...set)
+    const stack = [...Object.values(this.rules), ...refs.map(r => r[0])]
     while (stack.length > 0) {
       const ip = stack.pop()!
       if (seen.has(ip)) continue
@@ -563,6 +638,13 @@ class Encoder {
       }
     }
     for (const name of Object.keys(this.rules)) this.rules[name] = resolve(this.rules[name]!)
+    const res = (r: SubtreeRef): SubtreeRef => [resolve(r[0]), r[1]]
+    this.scans = this.scans.map(s => ({
+      ...s,
+      skip: s.skip.map(res),
+      ...(s.sentinel === undefined ? {} : { sentinel: res(s.sentinel) }),
+    }))
+    this.scanSkipSets = this.scanSkipSets.map(set => set.map(res))
   }
 
   finish(): TableProgram {
@@ -573,7 +655,10 @@ class Encoder {
       fx: this.fx, disp: this.disp, dsp: this.dsp, rules: this.rules,
       ...(this.labels === undefined ? {} : { labels: this.labels }),
       ...(this.classified ? { classified: 1 as const } : {}),
-      ...(this.scanSkip === undefined ? {} : { scanSkip: this.scanSkip }),
+      ...(this.scanSkipSets.length === 0
+        ? {}
+        : { scanSkip: this.scanSkipSets, scanSkipOf: this.scanSkipOf }),
+      ...(this.scans.length === 0 ? {} : { scans: this.scans }),
       ...(this.settings.hostMode === undefined ? {} : { hostMode: this.settings.hostMode }),
       ...(this.runtimeOnly.size === 0 ? {} : { runtimeOnly: [...this.runtimeOnly].sort() }),
       ...(this.triviaSpecs.length === 0 ? {} : { triviaSpecs: this.triviaSpecs }),

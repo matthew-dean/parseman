@@ -48,6 +48,19 @@ function emitTriviaSpec(t: import('./program.ts').TriviaSpec): string {
   return `{arms:[${t.arms.map(a => `[${jsString(a[0])},${jsString(a[1])},${jsString(a[2])}]`).join(',')}]}`
 }
 
+function emitRef(r: import('./program.ts').SubtreeRef): string {
+  return `[${r[0]},${r[1]}]`
+}
+
+function emitScanSpec(s: import('./program.ts').ScanSpec): string {
+  const parts = [`kind:${s.kind}`, `flags:${s.flags}`, `skip:[${s.skip.map(emitRef).join(',')}]`]
+  if (s.sentinel !== undefined) parts.push(`sentinel:${emitRef(s.sentinel)}`)
+  if (s.sent !== undefined) parts.push(`sent:${s.sent === null ? 'null' : jsString(s.sent)}`)
+  if (s.open !== undefined) parts.push(`open:${jsString(s.open)}`)
+  if (s.close !== undefined) parts.push(`close:${jsString(s.close)}`)
+  return `{${parts.join(',')}}`
+}
+
 function emitDispatchSpec(d: import('./program.ts').DispatchSpec): string {
   return '{'
     + `key:[${d.key.map(jsString).join(',')}],`
@@ -108,6 +121,15 @@ export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): str
     ...(prog.classified === 1 ? ['rc:1,'] : []),
     ...(prog.hostMode === undefined ? [] : [`h:${jsString(prog.hostMode)},`]),
     ...(prog.triviaSpecs === undefined ? [] : [`tv:[${prog.triviaSpecs.map(emitTriviaSpec).join(',')}],`]),
+    ...(prog.scans === undefined ? [] : [`sc:[${prog.scans.map(emitScanSpec).join(',')}],`]),
+    // Both halves or neither: `scanSkipOf` without `scanSkip` installs nothing,
+    // and `scanSkip` without `scanSkipOf` installs it nowhere. Either way the
+    // module parses and silently skips a different set than the table it came
+    // from — the failure shape this lowering exists to remove.
+    ...(prog.scanSkip === undefined ? [] : [
+      `ss:[${prog.scanSkip.map(set => `[${set.map(emitRef).join(',')}]`).join(',')}],`,
+      `so:[${(prog.scanSkipOf ?? []).join(',')}],`,
+    ]),
     `f:[${fns.join(',')}]`,
     `})`,
   ]

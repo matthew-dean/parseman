@@ -1,4 +1,5 @@
-import type { FieldMap, ParseContext, ParseResult } from '../types.ts'
+import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
+import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
 import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
@@ -16,13 +17,13 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_CALL,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
 import {
   expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
-  type TableProgram, type TableRule,
+  type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 
 /**
@@ -109,6 +110,8 @@ function classHas(cls: ResolvedClass, code: number): boolean {
 type Driver = {
   exec: (ip: number, input: string, pos: number, ctx: ParseContext) => unknown
   end: () => number
+  /** Ambient `scanSkip` sets, rebuilt from `prog.scanSkip`, indexed as encoded. */
+  scanSkip: readonly (readonly Combinator<unknown>[])[]
 }
 
 function makeDriver(
@@ -120,6 +123,7 @@ function makeDriver(
   disp: readonly ResolvedDispatch[],
   dsp: readonly ResolvedDispatchSpec[],
   trivia: readonly unknown[],
+  prog: TableProgram,
 ): Driver {
   /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
   let END = 0
@@ -411,8 +415,8 @@ function makeDriver(
         return value
       }
 
-      case OP_CALL: {
-        const c = k[code[ip + 1]!] as { parse: (i: string, p: number, x: ParseContext) => { ok: boolean; value?: unknown; span: { start: number; end: number }; expected?: readonly string[] } }
+      case OP_SCAN: {
+        const c = scans[code[ip + 1]!]!
         const r = c.parse(input, pos, ctx)
         if (!r.ok) {
           ctx._fe = r.span.start
@@ -807,7 +811,78 @@ function makeDriver(
     }
   }
 
-  return { exec, end: () => END }
+  /**
+   * A table SUBTREE, presented as a combinator.
+   *
+   * `scanTo()` and `balanced()` are rebuilt from their specs with the SHARED
+   * constructors rather than re-implemented here, and those constructors take
+   * COMBINATORS — a sentinel, a skipper list. This is the adapter: it runs the
+   * subtree through this same driver and returns the combinator protocol's
+   * `ParseResult`. Nothing else in the table crosses that boundary, and the cost
+   * is one result object per scan probe, which the interpreter pays too.
+   *
+   * `_def` is deliberately opaque (`unknown`), so `matchesEmpty` answers `true`
+   * and `firstSetOf` returns the carried set — the SAFE directions: a nullable
+   * answer only costs a `many`/`choice` optimization, it never changes what is
+   * accepted. The sentinel is the one exception: a `literal()` sentinel keeps its
+   * def, because `scanTo` derives its expected set from exactly that
+   * (`src/combinators/scanTo.ts:168`) and reporting `"sentinel"` where the
+   * interpreter reports `"{"` is a real divergence.
+   */
+  function subtreeComb(r: SubtreeRef, def?: ParserDef): Combinator<unknown> {
+    const ip = r[0]
+    return {
+      _tag: 'tableSubtree',
+      _meta: { firstSet: refFirstSet(r[1]), canMatchNewline: true, isTrivia: false },
+      _def: def ?? { tag: 'unknown' } as unknown as ParserDef,
+      parse(input: string, pos: number, ctx: ParseContext): ParseResult<unknown> {
+        const v = exec(ip, input, pos, ctx)
+        if (v === FAIL) {
+          const fe = ctx._fe
+          const at = fe === undefined || fe < 0 ? pos : fe
+          return { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: { start: at, end: at } }
+        }
+        return { ok: true, value: v, span: { start: pos, end: END } }
+      },
+    }
+  }
+
+  /** The first set a `SubtreeRef` carries: −1 is `any`, −2 is `empty`. */
+  function refFirstSet(cls: number): FirstSet {
+    if (cls === -2) return { kind: 'empty' }
+    if (cls < 0) return { kind: 'any' }
+    const spec = prog.cc[cls] ?? ''
+    const ranges: Array<{ lo: number; hi: number }> = []
+    for (let i = 0; i < spec.length; i += 2) ranges.push({ lo: spec.charCodeAt(i), hi: spec.charCodeAt(i + 1) })
+    return { kind: 'ranges', ranges }
+  }
+
+  /**
+   * The scan pool: one real `scanTo()` / `balanced()` per spec.
+   *
+   * Built ONCE per resolved table, like the trivia pool, so a scan costs no
+   * construction per parse. Rebuilding through the constructors is what keeps
+   * `balanced`'s ambient re-resolution, its `expect()`-based recovery, its
+   * `strict` failure and its one-leaf `token()` wrapper — none of which is
+   * reconstructible from a driver-side re-implementation without a second copy to
+   * drift.
+   */
+  const scans: readonly Combinator<unknown>[] = (prog.scans ?? []).map(s => {
+    const skip = s.skip.map(r => subtreeComb(r))
+    const raw = (s.flags & 1) !== 0
+    if (s.kind === 1) {
+      return balanced(s.open!, s.close!, { skip, raw, strict: (s.flags & 4) !== 0 }) as Combinator<unknown>
+    }
+    const sentDef: ParserDef | undefined = typeof s.sent === 'string'
+      ? { tag: 'literal', value: s.sent, caseInsensitive: false } as unknown as ParserDef
+      : undefined
+    return scanTo(subtreeComb(s.sentinel!, sentDef), { skip, raw, orEOF: (s.flags & 2) !== 0 }) as Combinator<unknown>
+  })
+
+  const scanSkip: readonly (readonly Combinator<unknown>[])[] =
+    (prog.scanSkip ?? []).map(set => set.map(r => subtreeComb(r)))
+
+  return { exec, end: () => END, scanSkip }
 }
 
 /**
@@ -819,7 +894,7 @@ function makeDriver(
 export function tableRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia)
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, prog)
   const out: Record<string, TableRule> = {}
   // `run()` reads trivia metadata off the ENTRY and takes its
   // `typeof r === 'function'` branch for compiled entries, which codegen stamps
@@ -834,12 +909,20 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
   // Chosen ONCE, from table data, at rule-map construction. Not a per-parse
   // branch on an option: a plain table never has this wrapper at all.
   const lines = prog.lines === 1
-  for (const name of Object.keys(prog.rules)) {
+  const names = Object.keys(prog.rules)
+  for (let ri = 0; ri < names.length; ri++) {
+    const name = names[ri]!
     const entry = prog.rules[name]!
+    // Ambient scanSkip, which `run()` cannot install for a function entry. Chosen
+    // PER RULE, from `scanSkipOf`, because that is what `run()` does — it reads
+    // the ENTRY rule's own `_meta.grammarScanSkip` (grammar.ts:203). Installing
+    // one program-wide set instead gave a `composeLeaf` piece's rules a skip list
+    // the interpreter never gives them, and the divergence is invisible: the parse
+    // succeeds, having skipped over a delimiter it should have stopped at.
+    const ownSkip = d.scanSkip[prog.scanSkipOf?.[ri] ?? -1]
     const entryFn = (input: string, pos: number, ctx: ParseContext): ParseResult<unknown> => {
-      // Ambient scanSkip, which `run()` cannot install for a function entry.
-      if (prog.scanSkip !== undefined && ctx.scanSkip === undefined) {
-        ctx.scanSkip = prog.scanSkip as ParseContext['scanSkip']
+      if (ownSkip !== undefined && ctx.scanSkip === undefined) {
+        ctx.scanSkip = ownSkip as ParseContext['scanSkip']
       }
       ctx._fe = -1
       ctx._fx = EMPTY_FX

@@ -115,26 +115,33 @@ export const OP_EXPECT = 21
  */
 export const OP_SEQX = 22
 /**
- * `CALL k` — run the pooled COMBINATOR at `k` through its own `.parse`.
+ * `SCAN s` — the scanning constructs. `s` indexes a `ScanSpec` in `prog.scans`.
  *
- * The escape hatch for constructs whose behaviour is not recoverable from
- * `_def`, and re-implementing them in the driver would be a second copy that
- * silently drifts:
+ * WAS `OP_CALL k`, which parked the LIVE combinator in the const pool. That ran
+ * correctly and made the program unprintable — `emitConst` refuses a live object
+ * — so no shipping grammar could be emitted at all: all four jess dialects use
+ * `scanTo()`, three of them also `balanced()`. The number is reused because
+ * `OP_CALL` has no other user and nothing in the const pool may be a live object
+ * any more; that is now an invariant rather than a convention.
  *
- *   `token()`    clears trivia AND every capture sink, then emits ONE leaf.
- *                Treating it as transparent (which this encoder did until a read
- *                of token.ts caught it) leaks the inner captures to the parent
- *                and lets trivia be skipped inside a glued token.
- *   `balanced()` OVERRIDES `.parse` to re-resolve ambient `scanSkip`, while
- *                leaving `_def` as the eager interior. Encoding from `_def`
- *                therefore builds the wrong parser and reports no error.
- *   `scanTo()`   probes its sentinel and skippers with a collector-free ctx and
- *                represents the whole scanned span as one leaf.
+ * Neither construct needs a live object. Both are DESCRIBED by data:
  *
- * It costs a ParseResult allocation per call — the combinator's own protocol.
- * These constructs are rare and already heavy, and correct beats fast here.
+ *   `scanTo()`   is a sentinel, an ordered skipper list, and two flags. Sentinel
+ *                and skippers are ordinary grammar-graph combinators, so they are
+ *                encoded as ordinary table SUBTREES and referenced by offset.
+ *   `balanced()` is an open string, a close string, an own-skip list and two
+ *                flags. Its `_def` is its EAGER interior (per-call skip only) and
+ *                its ambient re-resolution lives on `.parse`, so encoding it from
+ *                `_def` builds the wrong parser — the spec carries the
+ *                CONSTRUCTOR ARGUMENTS instead, and `balanced()` itself rebuilds.
+ *
+ * The driver does not re-implement either scan. `resolveTable`'s pool rebuilds
+ * each spec with the SHARED constructor (`scanTo`/`balanced`), handing it
+ * subtree-backed combinators, exactly as `triviaSpecs` rebuilds trivia with the
+ * shared `classifiedTrivia`. So there is one implementation of each, and the
+ * table carries only its arguments.
  */
-export const OP_CALL = 23
+export const OP_SCAN = 23
 /**
  * `FIELD k c` — `field(name, parser)`. `k` indexes the NAME in the const pool.
  *
@@ -190,7 +197,7 @@ export const OP_NAMES: Record<number, string> = {
   [OP_XFORM]: 'XFORM', [OP_NODE]: 'NODE', [OP_RULE]: 'RULE', [OP_GATE]: 'GATE',
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
-  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_CALL]: 'CALL',
+  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_SCAN]: 'SCAN',
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
   [OP_TOKEN]: 'TOKEN',
 }

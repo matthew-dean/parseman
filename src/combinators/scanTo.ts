@@ -199,6 +199,38 @@ export type BalancedMarked = Combinator<string> & {
 }
 
 /**
+ * The table lowering's marker, on the object `balanced()` RETURNS.
+ *
+ * Deliberately not `_balancedAmbient`, and deliberately on the OUTER combinator.
+ * `_balancedAmbient` means "rebuild my interior with the ambient scanSkip", which
+ * is false for `raw`, and it sits on the INNER combinator because that is the one
+ * codegen's dedup and the interior `self` back-edge address. Reading `_def` (or
+ * the ambient marker) off the outer object gets the wrong thing — a structural
+ * encoder made exactly that mistake and lowered the wrong parser, silently.
+ *
+ * This marker instead records the CONSTRUCTOR ARGUMENTS, so an encoder can carry
+ * a `balanced()` as data and let `balanced()` itself rebuild it. It is present on
+ * every `balanced()`, `raw` included.
+ */
+export type BalancedSpec = Combinator<string> & {
+  _balancedSpec?: {
+    open: string
+    close: string
+    ownSkip: Combinator<unknown>[]
+    strict: boolean
+    raw: boolean
+  }
+}
+
+function markSpec(
+  outer: Combinator<string>,
+  open: string, close: string, ownSkip: Combinator<unknown>[], strict: boolean, raw: boolean,
+): Combinator<string> {
+  ;(outer as BalancedSpec)._balancedSpec = { open, close, ownSkip, strict, raw }
+  return outer
+}
+
+/**
  * Match a balanced open/close pair, skipping over any holes inside.
  * Returns the full matched text including delimiters.
  *
@@ -222,7 +254,7 @@ export function balanced(
   const strict = options.strict ?? false
   const combi = buildBalancedInterior(open, close, ownSkip, strict)
   // `raw` keeps the pre-ambient behavior: the eager interior (per-call skip only).
-  if (options.raw) return token(combi)
+  if (options.raw) return markSpec(token(combi), open, close, ownSkip, strict, true)
 
   // Ambient-aware in place — the returned combinator KEEPS its identity (its own
   // interior `self` ref points back to it, and ir-serialize / codegen dedup rely
@@ -272,7 +304,7 @@ export function balanced(
    * delimiters are FIXED at construction, so collapsing to one string is
    * legitimate here — which is exactly why it must actually collapse.
    */
-  return token(combi)
+  return markSpec(token(combi), open, close, ownSkip, strict, false)
 }
 
 /** Build a balanced open/close interior for a FIXED skip set (no ambient). */

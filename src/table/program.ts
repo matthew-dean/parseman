@@ -56,26 +56,36 @@ export type TableProgram = {
   readonly labels?: readonly string[]
   readonly classified?: 0 | 1
   /**
-   * Grammar-level ambient `scanSkip`. Same entry-metadata trap as `labels`:
-   * `run.ts:270` reads `entry._meta.grammarScanSkip` only for a NON-function
-   * entry, so a table entry never got it and `ctx.scanSkip` stayed empty —
-   * silently changing what `scanTo`/`balanced` skip over.
+   * Grammar-level ambient `scanSkip` sets, as SUBTREE REFERENCES. Same
+   * entry-metadata trap as `labels`: `run.ts:270` reads
+   * `entry._meta.grammarScanSkip` only for a NON-function entry, so a table entry
+   * never got it and `ctx.scanSkip` stayed empty — silently changing what
+   * `scanTo`/`balanced` skip over.
    *
-   * Carried as live combinators, so it CANNOT be emitted — and, unlike ambient
-   * trivia, it is not listed in `runtimeOnly` either: `emitTableModule` simply
-   * does not write it, so a module would parse with an empty skip list.
+   * WAS a list of live combinators: unemittable, and not even listed in
+   * `runtimeOnly`, so a module would have parsed with an empty skip list. It was
+   * sound only because `scanTo()`/`balanced()` — the sole readers of
+   * `ctx.scanSkip` — were themselves emit-blocked. They no longer are, so this is
+   * data.
    *
-   * That is sound only because of a COUPLING, and the coupling is the thing to
-   * check before touching either side: the sole readers of `ctx.scanSkip` are
-   * `scanTo()` and non-`raw` `balanced()` (`src/combinators/scanTo.ts:77,220`),
-   * and `encode.ts:232-235` marks BOTH runtime-only unconditionally. So every
-   * program in which a missing `scanSkip` could change a parse already fails
-   * `emitTableModule` by naming `scanTo()` / `balanced()`. A new reader of
-   * `ctx.scanSkip` that is not itself runtime-only breaks that and must add
-   * `scanSkip` to `runtimeOnly` — `test/unit/table-encode-refusals.test.ts`
-   * fails when one appears.
+   * A POOL, not one set, and `scanSkipOf` says which rules carry which. The set is
+   * a property of the RULE, not of the program: `rules({ scanSkip }, …)` stamps
+   * `_meta.grammarScanSkip` on each of ITS rules
+   * (`src/combinators/parser.ts:210`), a `parser()` scope has no `scanSkip` field
+   * at all, and `run()` installs the set belonging to the ENTRY rule
+   * (`src/combinators/grammar.ts:203`). In a `composeLeaf` grammar the pieces do
+   * not agree — 67 of jess's 195 css rules carry no ambient set — so installing
+   * one program-wide set gave those entries a skip list the interpreter does not
+   * give them.
    */
-  readonly scanSkip?: readonly unknown[]
+  readonly scanSkip?: readonly (readonly SubtreeRef[])[]
+  /**
+   * Per rule, the index into `scanSkip` its entry installs, or −1. Parallel to
+   * `Object.keys(rules)`.
+   */
+  readonly scanSkipOf?: readonly number[]
+  /** Scan specs, referenced by index from `OP_SCAN`. */
+  readonly scans?: readonly ScanSpec[]
   /**
    * The host mode this table was BUILT for.
    *
@@ -104,6 +114,36 @@ export type TableProgram = {
    * `rules({ trivia }, …)` grammar.
    */
   readonly triviaSpecs?: readonly TriviaSpec[]
+}
+
+/**
+ * A reference to a table SUBTREE, standing in for a combinator.
+ *
+ * `[ip, cls]`: `ip` is the subtree's offset in `code`; `cls` indexes its first set
+ * in `cc`, −1 for `any` and −2 for `empty`. The first set is carried because
+ * `buildBalancedInterior` reads each skipper's own first set to decide whether its
+ * content run can be a bounded regex (`src/combinators/scanTo.ts:280`) — a
+ * reference that reported `any` would silently rebuild a DIFFERENT, slower
+ * interior than the grammar's own.
+ */
+export type SubtreeRef = readonly [ip: number, cls: number]
+
+/**
+ * A scanning construct as its CONSTRUCTOR ARGUMENTS.
+ *
+ * `kind` 0 is `scanTo`, 1 is `balanced`. `flags` bit 0 = `raw`, bit 1 = `orEOF`
+ * (scanTo), bit 2 = `strict` (balanced). `sent` is the sentinel's literal text
+ * when it is a `literal()`, so the rebuilt scan reports the same expected set as
+ * the interpreter, and `null` otherwise (which reports `"sentinel"`).
+ */
+export type ScanSpec = {
+  readonly kind: 0 | 1
+  readonly flags: number
+  readonly skip: readonly SubtreeRef[]
+  readonly sentinel?: SubtreeRef
+  readonly sent?: string | null
+  readonly open?: string
+  readonly close?: string
 }
 
 /** A trivia combinator as data. `arms` empty means a plain `trivia(regex)`. */
@@ -139,6 +179,9 @@ export type CompactProgram = {
   readonly rc?: 0 | 1
   readonly h?: 'ast' | 'cst'
   readonly tv?: readonly TriviaSpec[]
+  readonly sc?: readonly ScanSpec[]
+  readonly ss?: readonly (readonly SubtreeRef[])[]
+  readonly so?: readonly number[]
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
@@ -150,6 +193,9 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.rc === undefined ? {} : { classified: p.rc }),
     ...(p.h === undefined ? {} : { hostMode: p.h }),
     ...(p.tv === undefined ? {} : { triviaSpecs: p.tv }),
+    ...(p.sc === undefined ? {} : { scans: p.sc }),
+    ...(p.ss === undefined ? {} : { scanSkip: p.ss }),
+    ...(p.so === undefined ? {} : { scanSkipOf: p.so }),
   }
 }
 
