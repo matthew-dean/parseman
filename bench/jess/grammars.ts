@@ -8,7 +8,9 @@
  * recognition pieces in place, so only ONE variant of one dialect may be
  * realised per process; `loadGrammar` takes the dialect and nothing else.
  */
+import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import os from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Combinator } from '../../src/types.ts'
@@ -118,6 +120,64 @@ export async function assertParseman(): Promise<{ root: string; version: string;
     installed = (JSON.parse(readFileSync(p, 'utf8')) as { version: string }).version
   } catch { /* not installed; the assertion above is the one that matters */ }
   return { root, version: mod.PARSEMAN_VERSION, installed }
+}
+
+/* ── The load gate ───────────────────────────────────────────────────────── */
+
+/**
+ * The one load ceiling every `bench/jess/` harness is judged against.
+ *
+ * It lived as a private `const` in `speed.ts` and NOWHERE ELSE, and that asymmetry
+ * is the whole reason the same fixture has two remembered numbers. `speed.ts`
+ * refused to run above it; `fixture.ts` — the harness that produces the ABSOLUTE
+ * millisecond figures anyone quotes — printed the load average and measured
+ * anyway. A lane whose box sat at loadavg 7.0 got a number, and that number went
+ * into a report next to one taken at ~1, 27% apart, with nothing in either output
+ * saying which was which.
+ *
+ * A ceiling that only guards the harness nobody quotes is not a ceiling. This is
+ * shared, and it is the SAME number for every harness here, so two results
+ * printing "loadavg gate: 6" are comparable by construction.
+ *
+ * `PM_FORCE=1` overrides. It exists for the case where a busy box is all there
+ * is, and the output says FORCED on every line that follows so a forced number
+ * can never be pasted as a quiet-box one.
+ */
+export const LOAD_CEILING = 6
+
+/** 1/5/15-minute load averages, formatted. */
+export const loads = (): string => os.loadavg().map(n => n.toFixed(2)).join(' ')
+
+/**
+ * Refuse to measure on a busy box. Returns whether the run was FORCED past the
+ * ceiling, so the caller can carry that into every figure it prints.
+ *
+ * Exit code 2 — distinct from a failure — because "the box was busy" is not a
+ * result and is not a defect either.
+ */
+export function assertQuiet(): { forced: boolean; startLoad: number } {
+  const startLoad = os.loadavg()[0]!
+  if (startLoad <= LOAD_CEILING) return { forced: false, startLoad }
+  if (process.env.PM_FORCE === '1') {
+    console.error(`\nFORCED: 1-minute load average is ${startLoad.toFixed(2)}, over the ${LOAD_CEILING} ceiling, and PM_FORCE=1.`)
+    console.error('Every figure below is marked FORCED. Do not quote it as a canonical number.\n')
+    return { forced: true, startLoad }
+  }
+  console.error(`\nDEFERRED: 1-minute load average is ${startLoad.toFixed(2)}, over the ${LOAD_CEILING} ceiling.`)
+  console.error('Nothing measured on a box this busy is a result — this is the measured cause of the')
+  console.error('27% spread between two lanes\' figures for the same fixture. Re-run when it settles,')
+  console.error('or PM_FORCE=1 to take a number that prints FORCED and cannot be quoted as canonical.')
+  process.exit(2)
+}
+
+/** The commit a figure was taken at — provenance a pasted number carries with it. */
+export function headSha(): string {
+  try {
+    const root = resolvePath(dirname(fileURLToPath(import.meta.url)), '../..')
+    const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+    const dirty = execFileSync('git', ['status', '--porcelain', '--', 'src'], { cwd: root, encoding: 'utf8' }).trim() !== ''
+    return dirty ? `${sha}+dirty(src)` : sha
+  } catch { return 'unknown' }
 }
 
 /* ── Corpora ─────────────────────────────────────────────────────────────── */

@@ -34,7 +34,10 @@ import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
-import { ENTRY, JESS_ROOT, VARIANT_SETTINGS, assertParseman, exportName, loadGrammar, type Dialect } from './grammars.ts'
+import {
+  ENTRY, JESS_ROOT, LOAD_CEILING, VARIANT_SETTINGS,
+  assertParseman, assertQuiet, exportName, headSha, loadGrammar, loads, type Dialect,
+} from './grammars.ts'
 import { COLUMNS, FACETS, digestRow } from './digest.ts'
 
 const MODULE: Record<Dialect, string> = {
@@ -58,6 +61,99 @@ const M: Measurement = { targetSampleMs: 0, warmup: 3, timed: 5, rounds: 8, runs
 
 type Entry = Parameters<typeof run>[0]
 
+/**
+ * THE PROTOCOL, printed with the numbers.
+ *
+ * A millisecond figure that travels without its protocol is how the same fixture
+ * ended up with two remembered baselines 27% apart. Every line here is a thing
+ * that, changed, moves the number — so a pasted result carries the reason it is
+ * what it is, and two results that disagree can be told apart by reading them.
+ */
+function protocol(m: Measurement): string[] {
+  return [
+    `  fixture     a named file under jess's packages/jess/benchmark, read verbatim, byte size printed`,
+    `  path        hostMode='ast', trackLines=false — THE AST PATH, canonical by owner ruling`,
+    `  engines     codegen (pm-macro: lowering of the SHIPPING grammar module), table`,
+    `              (encodeTable + tableRules over the SAME rules), interpreter (the combinator`,
+    `              graph itself). All three proved to be the engine they claim: codegen must be a`,
+    `              FUNCTION, interpreter must NOT be.`,
+    `  entry       every engine is invoked through run() — the public entry, identically on all`,
+    `              three sides, so run()'s own per-parse cost cannot favour one of them`,
+    `  process     ONE process, all engines interleaved in adjacent order-alternated pairs`,
+    `              (bench/ab-harness.ts interleave). Separate process launches on this hardware`,
+    `              read 9.4 ms and 26 ms for the same case; nothing survives that.`,
+    `  composition PINNED at exactly three legs plus the control, in this order. This is a`,
+    `              LOAD-BEARING part of the protocol, not a detail: the legs share one heap, so`,
+    `              adding or removing one MOVES the others. Dropping the interpreter leg and`,
+    `              changing nothing else moved the table 18% on benchmark.less. A harness with a`,
+    `              different set of legs produces different absolute milliseconds from identical`,
+    `              code — which is exactly how this fixture acquired two baselines 27% apart.`,
+    `  warmup      ${m.warmup} parses per side before any sample is kept`,
+    `  sampling    ${m.rounds} rounds x ${m.runs} runs = ${m.rounds * m.runs} samples per side. ONE parse per repetition —`,
+    `              these fixtures are 100 KB+, so a single parse is already a sample of useful`,
+    `              size and the reported millisecond IS one parse. Each sample is itself the`,
+    `              median of ${m.timed} timed repetitions.`,
+    `  statistic   MEDIAN of the ${m.rounds * m.runs} samples (each a median of ${m.timed}). Not the min, not the mean.`,
+    `  control     an in-run table-vs-table contest — two independently built instances of the`,
+    `              SAME engine. Its delta is this run's noise floor. A figure read without it is`,
+    `              not a measurement.`,
+    `  load gate   REFUSED above a 1-minute load average of ${LOAD_CEILING}. PM_FORCE=1 overrides and`,
+    `              marks every figure FORCED.`,
+  ]
+}
+
+/** Nodes and serialized size of one engine's tree — the scale a divergence is read against. */
+function treeStats(v: unknown): { nodes: number; bytes: number } {
+  let nodes = 0
+  const walk = (x: unknown): void => {
+    if (x === null || typeof x !== 'object') return
+    nodes++
+    if (Array.isArray(x)) { for (const e of x) walk(e); return }
+    for (const k of Object.keys(x)) walk((x as Record<string, unknown>)[k])
+  }
+  walk(v)
+  let bytes = -1
+  try { bytes = JSON.stringify(v)?.length ?? -1 } catch { /* not serializable; nodes still answer */ }
+  return { nodes, bytes }
+}
+
+/**
+ * The count of MINIMAL differing subtrees between two engines' trees.
+ *
+ * Descent stops at the first difference, so a whole differing subtree counts
+ * ONCE. That is the number the "is the tree difference doing the work?" question
+ * needs: it says how much of the tree the two engines built differently, against
+ * a node count that says how much they built at all.
+ */
+function divergentSubtrees(a: unknown, b: unknown): number {
+  if (a === b) return 0
+  const ao = a !== null && typeof a === 'object'
+  const bo = b !== null && typeof b === 'object'
+  if (!ao || !bo) return 1
+  if (Array.isArray(a) !== Array.isArray(b)) return 1
+  if (Array.isArray(a) && Array.isArray(b)) {
+    // A length mismatch used to return 1 and stop, which reported the whole
+    // `benchmark.less` divergence as a single subtree — technically true and
+    // useless. Descend over the common prefix and charge the tail, so the number
+    // has the same units everywhere it appears.
+    const min = Math.min(a.length, b.length)
+    let n = Math.abs(a.length - b.length)
+    for (let i = 0; i < min; i++) n += divergentSubtrees(a[i], b[i])
+    return n
+  }
+  const ka = Object.keys(a as object).sort()
+  const kb = Object.keys(b as object).sort()
+  if (ka.length !== kb.length || ka.some((k, i) => k !== kb[i])) return 1
+  let n = 0
+  for (const k of ka) n += divergentSubtrees((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])
+  return n
+}
+
+/** One engine's tree, or undefined if the parse threw. */
+function treeOf(entry: Entry, input: string): unknown {
+  try { return run(entry, input).value } catch { return undefined }
+}
+
 function digest(entry: Entry, input: string): string {
   try { return digestValue(run(entry, input)) }
   catch (e) { return `threw:${(e as Error).message.split('\n')[0] ?? ''}` }
@@ -72,9 +168,15 @@ function rowOf(entry: Entry, input: string): string[] {
 async function main(): Promise<void> {
   const pm = await assertParseman()
   const dialect = (process.argv[2] ?? 'less') as Dialect
-  console.log(`parseman ${pm.version}   ${pm.root}   node ${process.version}`)
-  console.log(`cpus ${os.cpus().length}   loadavg at START ${os.loadavg().map(n => n.toFixed(2)).join(' ')}`)
-  console.log(`variant  hostMode=ast trackLines=false — THE AST PATH`)
+  console.log(`parseman ${pm.version} @ ${headSha()}   ${pm.root}`)
+  console.log(`node ${process.version}   ${os.platform()}/${os.arch()}   cpus ${os.cpus().length}`)
+  console.log(`jess ${JESS_ROOT}   installs parseman ${pm.installed} — NOT what is measured here`)
+  console.log(`loadavg at START ${loads()}   gate ${LOAD_CEILING}`)
+  const { forced } = assertQuiet()
+  console.log('')
+  console.log('CANONICAL FIXTURE PROTOCOL — docs/design/canonical-fixture-benchmark.md')
+  for (const line of protocol(M)) console.log(line)
+  if (forced) console.log('  *** FORCED PAST THE LOAD CEILING — these figures are NOT canonical ***')
   console.log('')
 
   const { rules } = await loadGrammar(dialect, 'ast')
@@ -115,6 +217,19 @@ async function main(): Promise<void> {
       // milliseconds as indicative of cost, not as a like-for-like contest.
       console.log('    TIMED ANYWAY, CAVEATED: the three parses are not identical, so these')
       console.log('    milliseconds are indicative of cost and are NOT a like-for-like contest.')
+      // HOW BIG is "not identical"? A caveat with no magnitude is unanswerable —
+      // it licenses reading the whole gap as an artefact of the divergence, or
+      // none of it. These three numbers bound it: if the engines build the same
+      // number of nodes and differ on a handful of subtrees, the divergence is
+      // not what a 2-3x gap is made of.
+      const [ti, tc, tt] = [treeOf(interpreted, input), treeOf(compiled, input), treeOf(table, input)]
+      const [si, sc, st] = [treeStats(ti), treeStats(tc), treeStats(tt)]
+      console.log(`    tree scale: interp ${si.nodes} nodes / ${si.bytes} B   codegen ${sc.nodes} / ${sc.bytes}   table ${st.nodes} / ${st.bytes}`)
+      console.log(`    minimal differing subtrees: codegen vs table ${divergentSubtrees(tc, tt)}`
+        + `   table vs interp ${divergentSubtrees(tt, ti)}`)
+      console.log(`    node-count delta codegen vs table: ${sc.nodes - st.nodes} (${st.nodes === 0 ? 'n/a' : ((sc.nodes / st.nodes - 1) * 100).toFixed(2)}%)`)
+      console.log('    Read the millisecond gap against THAT: an engine that built the same number')
+      console.log('    of nodes did the same amount of allocation, whatever it labelled them.')
     } else {
       console.log('    three-way agreement: YES')
       console.log(`    parse ok: ${String(!di.startsWith('threw:'))}`)
@@ -146,9 +261,48 @@ async function main(): Promise<void> {
     console.log(`      interpreter        ${ms(i.get(`head|${rel}`)!).padStart(10)}   ${(bytes / im / 1000).toFixed(2)} MB/s   ${(im / cm).toFixed(2)}x codegen`)
     const ctlA = median(c.get(`ref|${rel}`)!), ctlB = median(c.get(`head|${rel}`)!)
     console.log(`      CONTROL table/table ${sign((ctlB / ctlA - 1) * 100)} — this run's noise floor`)
+    if (forced) console.log('      *** FORCED: taken over the load ceiling, NOT a canonical number ***')
+
+    // THE COMPOSITION TAX, measured rather than left to be rediscovered.
+    //
+    // Every leg above shares ONE heap, and the interpreter allocates ~6x what
+    // the table does per parse. Its garbage lands on its neighbours' samples.
+    // Measured on `benchmark.less`: dropping the interpreter leg and changing
+    // NOTHING else moved the table from 45.92 to 38.80 ms — 18% — while codegen
+    // did not move at all.
+    //
+    // That is why the canonical composition is PINNED, not why it is wrong: the
+    // 3-leg shape is the one the standing reference figures were taken in, and
+    // silently changing it would invalidate every number anyone remembers. So
+    // the tax is REPORTED instead: the pinned figure stays comparable, and the
+    // second line says how much of it is the harness.
+    //
+    // A lane optimising the table should watch BOTH. They move together; if they
+    // ever stop, the change did something to allocation rather than to work.
+    const soloOut = interleave([
+      { label: 'compiled -> table', a: mk(compiled, 'compiled'), b: mk(table, 'table') },
+      { label: 'CONTROL table -> table', a: mk(table, 'table'), b: mk(tableB, 'table') },
+    ], reps, M)
+    const sg = soloOut.get('compiled -> table')!
+    const sc = soloOut.get('CONTROL table -> table')!
+    const scm = median(sg.get(`ref|${rel}`)!)
+    const stm = median(sg.get(`head|${rel}`)!)
+    console.log('')
+    console.log(`    SAME RUN, interpreter leg DROPPED — the composition tax:`)
+    console.log(`      codegen            ${scm.toFixed(2).padStart(7)} ms   ${sign((scm / cm - 1) * 100)} vs pinned`)
+    console.log(`      table              ${stm.toFixed(2).padStart(7)} ms   ${sign((stm / tm - 1) * 100)} vs pinned   ${(stm / scm).toFixed(2)}x codegen`)
+    console.log(`      CONTROL table/table ${sign((median(sc.get(`head|${rel}`)!) / median(sc.get(`ref|${rel}`)!) - 1) * 100)}`)
+    console.log(`      The interpreter allocates ~6x the table per parse and they share one heap.`)
+    console.log(`      Quote the PINNED figure — it is the one the reference was taken in — and read`)
+    console.log(`      this one to know how much of it is the neighbour rather than the engine.`)
     console.log('')
   }
-  console.log(`loadavg at END ${os.loadavg().map(n => n.toFixed(2)).join(' ')}`)
+  console.log(`loadavg at END ${loads()}`)
+  console.log('')
+  console.log('  A figure from this harness is quotable only WITH the block above it: the sha, the')
+  console.log('  loadavg at both ends, and the CONTROL row. A gap smaller than the control is not a')
+  console.log('  result in either direction, and a run whose END load is far off its START load')
+  console.log('  measured a moving box, ceiling or no ceiling.')
 }
 
 await main()

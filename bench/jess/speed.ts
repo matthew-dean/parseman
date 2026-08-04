@@ -40,8 +40,8 @@ import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import {
-  DIALECTS, ENTRY, JESS_ROOT, VARIANT_SETTINGS,
-  assertParseman, corpus, corpusTotal, exportName, loadGrammar,
+  DIALECTS, ENTRY, JESS_ROOT, LOAD_CEILING, VARIANT_SETTINGS,
+  assertParseman, assertQuiet, corpus, corpusTotal, exportName, loadGrammar, loads,
   type CorpusFile, type Dialect,
 } from './grammars.ts'
 
@@ -134,13 +134,6 @@ function makeCase(entry: Entry, files: readonly CorpusFile[], id: string, tag: s
   }
 }
 
-function loads(): string {
-  return os.loadavg().map(n => n.toFixed(2)).join(' ')
-}
-
-/** Above this the box is busy enough that nothing measured on it is a result. */
-const LOAD_CEILING = 6
-
 async function main(): Promise<void> {
   const pm = await assertParseman()
   const picked = process.argv.slice(2).filter(a => (DIALECTS as readonly string[]).includes(a)) as Dialect[]
@@ -149,12 +142,8 @@ async function main(): Promise<void> {
   console.log(`parseman ${pm.version}   ${pm.root}   node ${process.version}`)
   console.log(`jess     ${JESS_ROOT}   installs parseman ${pm.installed} — NOT what is measured here`)
   console.log(`cpus ${os.cpus().length}   loadavg at START ${loads()}`)
-  const startLoad = os.loadavg()[0]!
-  if (startLoad > LOAD_CEILING && process.env.PM_FORCE !== '1') {
-    console.error(`\nDEFERRED: 1-minute load average is ${startLoad.toFixed(2)}, over the ${LOAD_CEILING} ceiling.`)
-    console.error('Nothing measured on a box this busy is a result. Re-run when it settles, or PM_FORCE=1.')
-    process.exit(2)
-  }
+  const { forced } = assertQuiet()
+  console.log(`loadavg gate ${LOAD_CEILING}${forced ? '   *** FORCED PAST THE CEILING — NOT a canonical number ***' : ''}`)
   console.log(`variant  hostMode=ast trackLines=false — THE AST PATH, the canonical measure`)
   console.log('')
 

@@ -26,6 +26,16 @@ reads a real +49.6% Less regression as +2%…+9%, because a realistic parse spen
 most of its time on work the regression does not touch — which is exactly why the
 amplifying sweep is worth keeping.
 
+These three are GATES: they answer "did it move", differentially, against a
+pinned commit. None of them reports an absolute millisecond count, deliberately,
+because a stored millisecond measures the runner.
+
+When a target is stated in absolute milliseconds against a named fixture — as the
+table lowering's is — the instrument is
+[canonical-fixture-benchmark.md](./canonical-fixture-benchmark.md) (`pnpm
+bench:less`), which is a MEASUREMENT rather than a gate and carries a load
+ceiling and a printed protocol for that reason.
+
 ## The sweep gate — `pnpm perf:guard:grammars`
 
 ### Why it exists
