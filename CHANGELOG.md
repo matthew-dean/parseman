@@ -64,6 +64,53 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
     least trustworthy — its largest fixture is 11 KB and the rate difference
     there is small enough to be noise-dominated.
 
+- **One canonical fixture measurement — `pnpm bench:less` — and the reason two
+  lanes disagreed by 27% on the same file.** `benchmark.less` had two remembered
+  baselines: codegen 17.41 / table 46.86 / interpreter 99.68 ms, and codegen
+  22.17 / 49.72 / 111.33. The ratios agreed; the absolutes did not, and the
+  target is stated in absolutes.
+
+  **The cause is run COMPOSITION, and it is not a detail.** The two figures came
+  from two harnesses — `bench/jess/fixture.ts` (three legs: `pm-macro:` codegen,
+  table, interpreter) and `bench/jess/table-less-ms.ts` on
+  `diag/table-penalty-attribution` (four legs, a `compose()` codegen, ~3 parses
+  batched per sample). Every leg shares ONE heap by design, because `interleave`
+  puts them there so they share GC and cache state. The consequence nobody had
+  priced is that a leg which allocates heavily **taxes its neighbours' samples**.
+  Measured back-to-back in one process, control ±0.5%:
+
+  | run shape | codegen | table | ratio |
+  | --- | --- | --- | --- |
+  | codegen + table + control | 17.11 ms | 38.80 ms | 2.27x |
+  | … + interpreter (the pinned shape) | 16.38 ms | 45.92 ms | 2.80x |
+
+  One extra leg moved the table **18%** and left codegen alone — the interpreter
+  allocates ~6x what the table does per parse, and the table absorbs the garbage.
+  Two smaller terms point the same way: reps=3 reads **+6.7%** slower per parse
+  than reps=1, and `compose()` codegen is **10% FASTER** than `pm-macro:` (15.94
+  vs 17.69 ms), so the leg swap works *against* the higher number rather than
+  explaining it.
+
+  Load is real but is not the driver: `85d4594` records codegen at 22.17 -> 22.22
+  ms across two runs at loadavg 6.5, stable to 0.2%. That lane had already
+  written "ABSOLUTES ARE HARNESS-RELATIVE"; nothing made it impossible to ignore.
+
+  So composition is **pinned and printed**, the interpreter-free figure is
+  reported alongside every pinned one so the tax is visible rather than baked in,
+  and the load ceiling — previously a private `const` in `speed.ts`, guarding the
+  one harness nobody quotes while `fixture.ts` printed the load average and
+  measured anyway — is now shared `assertQuiet()` in `bench/jess/grammars.ts`.
+  The protocol prints with the numbers, so a pasted result carries its own
+  provenance: parseman version, HEAD sha, node, platform, and loadavg at both
+  ends. `docs/design/canonical-fixture-benchmark.md` is the written protocol, and
+  says why there must not be a second harness in the terms the measurement above
+  supplies.
+
+  The compiled-outlier caveat now carries a **magnitude**: the harness prints each
+  engine's node count, serialized size, and the count of minimal differing
+  subtrees, so the caveat cannot be read as either "the whole gap is an artefact"
+  or "none of it is".
+
 - **Absolute parse times on the canonical fixtures**, since ratios do not let
   anyone compare against a number they already know (`pnpm fixture:jess`). One
   parse, median of 16 interleaved samples, AST path, codegen / table /
