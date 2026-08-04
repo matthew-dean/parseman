@@ -554,25 +554,59 @@ SEPARATE pre-existing class the table is not party to — on less it moves `valu
 and `span`, i.e. the compiled engine builds a different tree on 6 fixtures where
 the interpreter and the table agree. Neither is gated by anything today.
 
-### Open, with reproductions
+### Fixed: `keywords()` reported the category, not its words
 
-- **`keywords()` reports the category, not its words.** `src/combinators/keywords.ts:137`
-  and `src/compiler/codegen.ts:1489,1669` emit the bare string `'keyword'`, while
-  the same combinator's own `deriveExpected` (`src/combinators/expect.ts:44`) and
-  codegen's merged-choice path both emit the N words — and `codegen.ts:1577`
-  argues in favour of the words. `expected` is public API and the basis of
-  `completionsAt`, so a category name gives an editor nothing.
-  Repro: `sequence(choice(keywords(['if','ifdef']), literal('@')), literal(';'))`
-  on `"zzz"`. Fixing all three to emit the words was tried and works, but it grows
-  `example/graphql` by 149 B (+0.21%), which crosses its committed size ceiling
-  (slack 0.1%) — an owner sign-off, not an agent decision — and it contradicts
-  `test/unit/table-encode-refusals.test.ts:337`, which pins `['keyword']` as the
-  intended answer. NOT LANDED; the owner owns this call.
+`src/combinators/keywords.ts` and two sites in `src/compiler/codegen.ts` emitted
+the bare string `'keyword'` as the expected token. `expected` is PUBLIC API — it
+is documented on the parse result, consumers read it to build diagnostics, and
+`completionsAt` derives from it — so all three engines were handing an editor a
+category name a user cannot type, where the words are completions.
+
+This was not a new opinion. The same combinator's own `deriveExpected`
+(`src/combinators/expect.ts:44`) already returned the words, codegen's
+merged-choice path already returned them, and the comment there argues the point:
+adopting the single label would be *"a silent diagnostic regression that no tree
+comparison on accepted input would catch"*. Three implementations now agree with
+the fourth that was already right.
+
+Repro: `sequence(choice(keywords(['if','ifdef']), literal('@')), literal(';'))`
+on `"zzz"` — was interpreted `["\"@\"","keyword"]` against compiled/table
+`["\"@\"","\"if\"","\"ifdef\""]`; now all three report the words.
+
+Measured on the real corpora: **51 files and 834 expectation entries** carried the
+bare label (css 11 files / 74 entries, scss 40 / 760). Now zero.
+
+TWO COMMITTED DIFFS WERE REQUIRED, and both are the point of their gate rather
+than an obstacle to it:
+
+- **`bench/size-baseline.json` — `example/graphql` raised 69,936 → 70,085 B
+  (+149 B, +0.21%; gzip 12,792 → 12,820).** N quoted words cost more than one
+  label. The size gate exists to make a size change a DECISION rather than an
+  accident; 149 B on one example grammar does not outrank a correct diagnostic in
+  a public API. No other fixture moved.
+- **`test/unit/table-encode-refusals.test.ts` — the `keywords()` row now encodes
+  INTENT rather than observation.** It pinned `['keyword']` as what the engines
+  "should" report, on the strength of nothing but their reporting it; its own
+  comment said "Characterised, not endorsed". It now asserts all three engines
+  report the words.
+
+### Open — an owner decision, not a patch
+
+Two shapes remain, and they are the same question: **which failure survives, and
+how do two failures at one position merge.** `ctx._fe`/`_fx` are
+LAST-WRITE-WINS in both `src/table/exec.ts` and codegen, so the answer currently
+depends on evaluation order rather than on depth. Do not invent a protocol here.
+
+- **The interpreter reports the UNION where both compiled engines report the
+  failing term.** This is the whole `interp-outlier` column — css 2, scss 83 —
+  and it did NOT move when `keywords()` was fixed, because it is about BREADTH,
+  not spelling. Repro: `.cache/sass-spec/inputs/006f0f83e509773b.scss` — all
+  three fail at offset 28; compiled and table report `[")"]`, the interpreter
+  reports 52 entries. The set also carries DUPLICATES (`"$"`, `"@document"`,
+  `"@container"` each twice), so it is accumulated without the dedup
+  `deriveExpected` applies.
 - **`routed()` escapes as a top-level expectation under the table.** Repro:
-  `a{@x}` under the css grammar — interpreted reports 26 tokens, compiled reports
-  `[";", "{"]`, the table reports `["routed()"]`, which is a combinator name and
-  not a token anyone can type. Same defect class as the one above, on the table
-  side. `ctx._fe`/`_fx` are LAST-WRITE-WINS in both `src/table/exec.ts` and
-  codegen, so which failure survives depends on evaluation order rather than on
-  depth; a standalone `routed()` attempted after the real arm failed overwrites
+  `a{@x}` under the css grammar — interpreted 26 tokens, compiled `[";", "{"]`,
+  table `["routed()"]`, which is a combinator name and not a token anyone can
+  type. A standalone `routed()` attempted after the real arm failed overwrites
   the better record.

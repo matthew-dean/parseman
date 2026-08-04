@@ -40,8 +40,30 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   there is no file in 626 where interpreted and compiled agree and the table
   alone differs. What a two-way sweep reported as "the table's residual css 11 +
   scss 85" is drift between the two SHIPPED engines on `expected` only, with the
-  table siding with what ships compiled. Two reporting defects with
-  reproductions, neither landed, are recorded in `notes/TABLE-DRIVER.md`.
+  table siding with what ships compiled. One reporting defect found by that
+  sweep is fixed below; two more, which turn on a furthest-failure protocol
+  decision, are recorded with reproductions in `notes/TABLE-DRIVER.md`.
+
+- **`keywords()` reported the category `'keyword'`, not its words.**
+  `src/combinators/keywords.ts` and two sites in `src/compiler/codegen.ts`
+  emitted the bare label as the expected token. `expected` is public API —
+  documented on the parse result, read by consumers to build diagnostics, and
+  the basis of `completionsAt` — so all three engines handed editors a category
+  name a user cannot type where the words are completions. The same
+  combinator's own `deriveExpected` and codegen's merged-choice path already
+  returned the words, and the latter's comment calls the single label "a silent
+  diagnostic regression that no tree comparison on accepted input would catch";
+  three implementations now agree with the fourth. On jess's real corpora **51
+  files and 834 expectation entries** carried the bare label (css 11/74, scss
+  40/760); now zero.
+
+  Two committed diffs went with it, deliberately. `bench/size-baseline.json`
+  raises `example/graphql` 69,936 → 70,085 B (+149 B, +0.21%) — N quoted words
+  cost more than one label, no other fixture moved, and 149 B on one example
+  grammar does not outrank a correct public-API diagnostic. And
+  `test/unit/table-encode-refusals.test.ts` pinned `['keyword']` as intended on
+  the strength of nothing but the engines reporting it ("Characterised, not
+  endorsed"); that row now asserts all three engines report the words.
 
 - **`buildSpecModel` no longer hangs the process on a `balanced()`.** Every rule
   reaching a `balanced()` sent `parseman/spec` — and so `toEBNF`, `toRailroadHtml`

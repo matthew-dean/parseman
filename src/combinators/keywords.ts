@@ -126,6 +126,24 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
 
   const meta: ParserMeta = { firstSet, canMatchNewline: false, isTrivia: false }
 
+  // WHAT THIS ARM EXPECTED IS ITS WORDS, not the category it belongs to.
+  //
+  // This reported the bare string `'keyword'`, which is a category name a user
+  // cannot type. `expected` is PUBLIC API — it is documented on the parse
+  // result, consumers read it to build diagnostics, and `completionsAt` derives
+  // from it — so the label handed an editor a word that is not a completion.
+  //
+  // Three implementations now agree with a fourth that was already right:
+  // this combinator's own `deriveExpected` (src/combinators/expect.ts:44)
+  // returns the words, and codegen's merged-choice path returns them too, with
+  // `src/compiler/codegen.ts` arguing the point explicitly — it calls adopting
+  // the single label "a silent diagnostic regression that no tree comparison on
+  // accepted input would catch". That is exactly how this one survived.
+  //
+  // Built ONCE here, not per failure: the failure path is hot and this is a
+  // closure constant.
+  const expectedWords = sorted.map(w => JSON.stringify(w))
+
   return {
     _tag: 'keywords',
     _meta: meta,
@@ -134,7 +152,7 @@ export function keywords(words: readonly string[], opts: KeywordsOptions = {}): 
       re.lastIndex = pos
       const m = re.exec(input)
       if (m === null || m.index !== pos) {
-        return failAt(ctx, ['keyword'], pos)
+        return failAt(ctx, expectedWords, pos)
       }
       const value = m[0]!
       const span = { start: pos, end: pos + value.length }

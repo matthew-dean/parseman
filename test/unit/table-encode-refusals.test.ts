@@ -302,23 +302,32 @@ describe('table failure reporting matches the interpreter and the compiled path'
     }
   })
 
-  it('THREE shapes still report a different expected set; the dispatch miss no longer does', () => {
-    // All four accept and reject exactly the right inputs, so the identity sweep
-    // is blind to every one of them; only the error message moves. Collected here
+  it('TWO shapes still report a different expected set; keywords() and the dispatch miss no longer do', () => {
+    // These accept and reject exactly the right inputs, so the identity sweep is
+    // blind to every one of them; only the error message moves. Collected here
     // so the size of the divergence is one number rather than a rumour.
     //
-    // Characterised, not endorsed: each `toEqual` on the TABLE row is the current
-    // behaviour, and each `interp`/`compiled` row is what it should be.
+    // THE `keywords()` ROW NOW ENCODES INTENT, NOT OBSERVATION. It used to pin
+    // `['keyword']` as what the engines "should" report, on the strength of
+    // nothing but their reporting it. That was wrong and it is fixed: an
+    // `expected` entry is a token a user could type, and `keyword` is the name
+    // of a category. All three engines now report the WORDS, which is what this
+    // combinator's own `deriveExpected` (src/combinators/expect.ts:44) and
+    // codegen's merged-choice path already reported.
     //
-    // WAS FOUR. The dispatched-choice miss is FIXED — a choice now carries its
-    // own expected set and reports the union on every failing exit, so it is no
-    // longer in `cases` below and has its own positive test in
-    // table-driver-ops.test.ts. The remaining three are untouched by that change
-    // and are re-pinned here at their real width rather than left in a
-    // four-shape claim that is no longer true.
+    // The two rows BELOW are still characterised, not endorsed: each `toEqual`
+    // on the TABLE row is the current behaviour, and each `interp`/`compiled`
+    // row is what it should be.
+    //
+    // WAS FOUR, THEN THREE. The dispatched-choice miss was fixed first — a
+    // choice now carries its own expected set and reports the union on every
+    // failing exit, with its own positive test in table-driver-ops.test.ts.
+    // `keywords()` is the second to leave. The remaining two are untouched by
+    // either change and are re-pinned here at their real width.
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
-      // 1. keywords(): the encoder rebuilds the terminal and derives the set from
-      //    the rebuilt regex's parts instead of the combinator's own label.
+      // 1. FIXED — all three engines report the WORDS. Kept in the grammar, and
+      //    asserted three-way below, so a regression to the category label is a
+      //    failure rather than a silently narrower diagnostic.
       Kw: node('Kw', keywords(['if', 'ifdef'], { boundary: 'a-z' }), c => ({ t: 'Kw', c })),
       // 2. peek(): the lookahead's INNER expectation escapes.
       Peek: transform(sequence(peek(literal('ab')), literal('a')), v => (v as unknown[])[1]) as Combinator<unknown>,
@@ -334,8 +343,13 @@ describe('table failure reporting matches the interpreter and the compiled path'
     })) as unknown as Record<string, Combinator<unknown>>
     const t = tableRules(encodeTable(g))
     const c = compose([g as never]) as unknown as Record<string, unknown>
+    // ALL THREE AGREE. `['"ifdef"', '"if"']` is longest-first, the order
+    // `keywords()` sorts its words into, and every engine reports that order.
+    for (const engine of [t, g, c] as const) {
+      expect(run(engine.Kw as never, 'ifx').ok, 'Kw ifx').toBe(false)
+      expect(run(engine.Kw as never, 'ifx').expected, 'Kw — the WORDS, never the category').toEqual(['"ifdef"', '"if"'])
+    }
     const cases = [
-      ['Kw', 'ifx', ['"ifdef"', '"if"'], ['keyword']],
       ['Peek', 'ax', ['"ab"'], ['peek(literal)']],
       ['Min', 'a', ['","'], ['/[a-z]/']],
     ] as const

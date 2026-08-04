@@ -1486,7 +1486,7 @@ function emitKeywordsFast(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx
     `${ind(ctx)}}`,
     // Every word has length >= 1 (checked above), so a real match always
     // advances past `pos` — `endV === pos` only happens when no candidate matched.
-    ...emitIfFail(ctx, `${endV} === ${pos}`, failBody(ctx, '"keyword"', pos)),
+    ...emitIfFail(ctx, `${endV} === ${pos}`, failArrBody(ctx, keywordExpectedArr(def), pos)),
   ]
   stmts.push(...emitLeafCapture(ctx, valV, pos, endV))
   return { stmts, valueVar: valV, endVar: endV }
@@ -1639,6 +1639,25 @@ function emitKeywordChoiceMerge(
   return { stmts, valueVar: valV, endVar: endV }
 }
 
+/**
+ * What a `keywords()` failure EXPECTED: its words, as a hoistable array source.
+ *
+ * Both emit sites below reported the bare label `"keyword"` — a category name a
+ * user cannot type — while this same file's merged-choice path reports the N
+ * words and argues for them (see `emitKeywordsMerged`: adopting "a keyword
+ * table's single `"keyword"` label" would be "a silent diagnostic regression
+ * that no tree comparison on accepted input would catch"). `deriveExpected`
+ * (src/combinators/expect.ts:44) already agreed. These two sites were the
+ * holdouts, and `expected` is public API — consumers build diagnostics from it
+ * and `completionsAt` derives from it.
+ *
+ * Costs bytes: N quoted words instead of one label, +149 B on example/graphql.
+ * That ceiling was raised deliberately rather than the diagnostic left wrong.
+ */
+function keywordExpectedArr(def: Extract<ParserDef, { tag: 'keywords' }>): string {
+  return `[${def.words.map(w => JSON.stringify(JSON.stringify(w))).join(', ')}]`
+}
+
 function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, pos: string): ER {
   const fast = emitKeywordsFast(def, ctx, pos)
   if (fast) return fast
@@ -1666,7 +1685,7 @@ function emitKeywords(def: Extract<ParserDef, { tag: 'keywords' }>, ctx: Ctx, po
   const stmts = [
     `${ind(ctx)}${rName}.lastIndex = ${pos}`,
     `${ind(ctx)}const ${mv} = ${rName}.exec(input)`,
-    ...emitIfFail(ctx, `${mv} === null`, failBody(ctx, '"keyword"', pos)),
+    ...emitIfFail(ctx, `${mv} === null`, failArrBody(ctx, keywordExpectedArr(def), pos)),
     `${ind(ctx)}const ${vv} = ${mv}[0]`,
   ]
   const endVar = `${pos} + ${vv}.length`
