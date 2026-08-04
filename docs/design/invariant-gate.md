@@ -1,0 +1,205 @@
+# The invariant gate
+
+`scripts/check-invariants.mjs`, wired as a required CI step (`test-matrix` →
+the `test` aggregate), as a `pre-commit` guard, and asserted by
+`test/unit/invariant-gate.test.ts` so it runs under `pnpm test` too.
+
+## Why it exists
+
+This project has written invariants — numbered, argued, paid for in past
+incidents — and until now nothing checked them. They were rules, not gates, and
+a rule cannot stop a commit. Every defect in the list below landed in a repo
+whose own documentation forbids it, with every existing gate green:
+
+| Defect | Landed as | Cost |
+|---|---|---|
+| Throwing accessors installed on every `run()` result | a 0.44.0 migration aid | **36.9%** on small parses |
+| A first-set analyzer registered by side effect from one module | five of eight export subpaths lost choice dispatch | four of them silent |
+| A flag set and never read | `dispatch()` did not cut | parser accepted input both other engines rejected, returning a truncated document |
+| Three copies of one ASCII fold | one of them wrong | silent wrong lowering |
+| Two copies of `packInts` | one unbounded | — |
+| 87 KB of lowering analysis | never imported by the code that needed it | reasoning the shipped code does not do |
+
+The sharpest case is not a missing tool but an unwired one. In jess,
+`pnpm lint:absolute` already detects the `as any` / `@ts-ignore` ban, has found
+~500 violations across 52 files, and has never been gated. Somebody built the
+detector and nothing runs it. **A gate nobody runs is the failure being fixed**,
+so placement is part of the design here, not an afterthought.
+
+## Precision policy
+
+`docs/design/release-gates.md` makes the argument this file inherits: a gate
+that fires on a comment typo gets bypassed, and then the gates that matter get
+bypassed with it. So:
+
+- Every rule is **source-decidable** — parsed with oxc, decided on the AST. No
+  timings, no sampling, no similarity thresholds, no "probably hot".
+- Where a rule could only be stated with a heuristic, it was **left out** and
+  recorded below rather than shipped noisy.
+- The read/reachability sets are deliberately **over-broad**, so the rules
+  under-report. A finding you can argue with is worth less than a finding
+  nobody can.
+
+## The four rules
+
+### INV-1 — no accessor descriptor installed with `Object.defineProperty`
+
+Decides: a `get`/`set` key in an `Object.defineProperty` / `defineProperties`
+descriptor anywhere in `src/**`.
+
+Installing an accessor onto an object that already exists transitions its
+hidden class and routes every later read through a call instead of an inline
+cache slot. This is the exact shape of the 36.9% regression, and jess has the
+same class recorded at 46% of CSS parse time.
+
+**Not** banned: `get x() {}` in an object *literal*. That is part of the
+object's shape from birth, it transitions nothing, and this repo uses it
+deliberately for lazy materialization (`src/functional/doc.ts`,
+`src/cst/trivia-entries.ts`). Banning it would be the false positive that gets
+the gate turned off.
+
+False-positive risk: **very low**. The distinction — imperative install versus
+shape-at-construction — is syntactic, and every non-accessor
+`Object.defineProperty` in the tree (there are ~25, all `value:` on
+compile-time objects) is untouched.
+
+### INV-2 — no field in a public `*Options` type that nothing reads
+
+Decides: a property declared in an exported type/interface whose name ends in
+`Options`, where that name occurs **nowhere** in `src/**` as a member access, a
+destructuring key, a string literal, or an identifier inside a template.
+
+This is the `dispatch()` bug in its general form, and it is exactly what a type
+system cannot catch: the type is satisfied by *writing* the field.
+
+False-positive risk: **very low by construction**. The read set is global and
+over-broad — any `.name` on any object counts, as does the bare name in any
+string. The rule fires only when the name appears nowhere in the
+implementation at all, which is not a judgement call. It under-reports (a field
+read only via a same-named property of something unrelated escapes); that is
+the correct direction.
+
+Scope note: `Pick<…>`/mapped-type aliases declare no members of their own and
+contribute nothing — their fields are checked where they are declared.
+
+### INV-3 — every module under `src/` is reachable from a published entry point
+
+Decides: import-graph reachability from the targets of `package.json` `exports`
+and `bin`, mapped `dist/*.js` → `src/*.ts`. Static imports, re-exports,
+`export *`, and `import()` with a literal specifier are all edges; a type-only
+import counts.
+
+An unreachable module is not just dead weight in the artifact — it is a piece
+of reasoning the shipped code is **not doing**, while looking from the outside
+as though it does. That is the 87 KB case.
+
+False-positive risk: **zero heuristics**. A genuinely bench-only module goes in
+the allowlist with a reason (two are there today).
+
+### INV-4 — no declaration body duplicated across modules
+
+Decides: two top-level declarations in *different* files whose initializer or
+function body is byte-identical once comments and whitespace are removed, and
+whose normalized form is at least 160 characters.
+
+A copy that drifts is worse than no copy, and the drift is invisible to every
+behavioural test because each copy has its own callers — three copies of one
+ASCII fold, one wrong; two copies of `packInts`, one unbounded; a decoder left
+duplicated after its encoder was deduplicated.
+
+False-positive risk: **low**. Byte-identity after comment/whitespace removal
+leaves no similarity threshold to argue about. The length floor exists only so
+that one-line idioms (`return x.length`) do not collide by coincidence.
+
+## The allowlist
+
+`ALLOW` in `scripts/check-invariants.mjs`. **It may only get shorter.** Adding
+an entry to unblock new code is the failure this whole file exists to stop.
+
+Two mechanical properties keep that honest rather than aspirational:
+
+1. A **stale entry fails the gate**. If the violation an entry names is gone,
+   the entry is now a standing licence to reintroduce it, so the gate goes red
+   until it is deleted. (`test/unit/invariant-gate.test.ts` proves this fires.)
+2. Keys are **name-based, not line-based** (`file:enclosingFunction`,
+   `file:declName`). A line-numbered key would go stale on any edit above it and
+   turn the allowlist into a source of unrelated red.
+
+There is deliberately no wildcard syntax and no per-rule blanket.
+
+**12 pre-existing findings** are allowlisted at the commit that added the gate,
+in two groups.
+
+Six are the **frozen ablation controls** — `src/table/exec-baseline.ts` and
+`src/table/encode-baseline.ts`, deliberate frozen copies kept in process so
+`bench/table-alloc-ablation.ts` can measure a change against a same-path
+control. Being unimported (INV-3) and byte-identical to the live helpers
+(INV-4) *is* the control. `vitest.config.ts` excludes them from coverage for
+the same reason. They leave when the ablation does.
+
+Six are **real debt**, left standing so the gate lands separately from the
+fixes:
+
+- `INV-1 src/functional/run.ts:guardRemovedFields` — **the 36.9% defect, still
+  live on this branch.** Two throwing accessors installed on every `run()`
+  result to explain fields removed in 0.44.0. Deleting the function is the fix.
+- `INV-1 src/compiler/linker.ts:composeLeaf` — one accessor per rule, once per
+  `composeLeaf()`, so the grammar you actually use is fused on first access and
+  a second conflicting one fails loudly. This one is **argued, not debt**; it is
+  listed rather than carved out of the rule so that if the site changes the
+  entry goes stale and someone has to look again.
+- `INV-3 src/compiler/token-alphabet.ts`, `INV-3 src/compiler/token-scanner.ts`
+  — the derived-tokenization lane landed its alphabet and scanner before the
+  consumer that reads them. Precisely the "analysis nothing imports" shape,
+  caught this time.
+- `INV-4 childrenOf` (`analysis/choice-cost.ts` ↔ `analysis/duplication.ts`),
+  `INV-4 intersects` (`analysis/duplication.ts` ↔ `analysis/gating.ts`) — two
+  genuine copy-pastes. One import each.
+
+## Candidate checks that were REJECTED
+
+Knowing which invariants are *not* mechanisable is worth as much as automating
+the rest. These were implemented or specified and then dropped:
+
+**Conditional spread into an object literal** (`{ ...(c ? {a} : {}) }`) — the
+hidden-class-split rule, and jess's 46% incident. Decidable, implemented,
+measured: **177 pre-existing hits across `src/`**, concentrated in
+`plugin/index.ts` (28), `compiler/codegen.ts` (19), `combinators/grammar.ts`
+(18) — overwhelmingly cold code that assembles strings or descriptors once per
+compile, where a second hidden class costs nothing. Source carries no notion of
+call frequency, so the rule cannot separate the hot case from the idiom, and
+177 findings is the definition of crying wolf. *Recommended follow-up:* a
+two-sided count ratchet against a committed baseline over a declared hot-module
+set, in the shape of `choicecost:guard` — growing fails, and an unbanked win
+also fails, so it shrinks.
+
+**Conditional property assignment** (`if (c) o.p = v`) — the general form of
+the same invariant. Not decidable at all: on a builder-local object that has
+not escaped, it is fine and idiomatic. Judgement.
+
+**Side-effect registration reachability** — the analyzer registered from one
+module, so five of eight export subpaths silently lost dispatch. The general
+rule ("a module whose import has an observable side effect must be imported by
+every entry point") needs a notion of *which* side effects are load-bearing,
+which source does not carry. The narrow instance is dead on this branch. INV-3
+catches its neighbour (a module nothing imports) but not this (a module
+something imports, from only one place). **Not mechanisable; reviewer
+obligation.**
+
+**Allocation and complexity-class invariants** (jess V8-ARCHITECTURE 3, 4, 5,
+11: no full-tree walk in a hot path, complexity class preserved across
+rewrites, no per-iteration allocation, no restart-at-zero scan) — none is
+source-decidable. These belong to counting instruments, not lints: operation
+counters and allocation counts against a committed named baseline, which is
+what `choicecost:guard` already is for one axis. jess reaches the same
+conclusion: "counts, not timings."
+
+**Monomorphic node shapes** (invariant 1) — decidable only at runtime, by
+recording each node type's field-key signature at construction over a corpus.
+jess implements it that way (`pnpm verify:shape-stability`) and notes the
+limit honestly: a green run is evidence about the corpus, not a proof about the
+factories.
+
+**"Every hot `choice` first-char-gates"** (AGENTS.md's headline rule) — already
+mechanised and *not* duplicated here. `diagnoseGrammar()` decides it, fails
+closed, and is usable directly as a CI exit code.

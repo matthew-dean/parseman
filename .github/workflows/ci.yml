@@ -221,6 +221,22 @@ jobs:
         # remembered. See scripts/check-control-bytes.mjs.
         run: pnpm check:control-bytes
 
+      - name: Invariant gate
+        # Source-decidable checks for the defect classes this repo has already
+        # paid for: an accessor installed onto an existing object (the 0.44.0
+        # migration aid measured at 36.9% on small parses), an option declared
+        # in a public type that nothing reads (the `dispatch()` flag that was
+        # set and never read, so the cut did not fire), a module no entry point
+        # imports (analysis the shipped code does not run), and a declaration
+        # body duplicated across modules (three copies of one ASCII fold, one
+        # of them wrong). Every one of those landed while every gate was green,
+        # because a rule cannot stop a commit and a gate can.
+        #
+        # ~0.3s, no timing, no sampling — see docs/design/invariant-gate.md for
+        # what each rule decides and for the candidate checks that were
+        # REJECTED for firing on innocent code.
+        run: pnpm check:invariants
+
       - name: Test with coverage
         # Uses vitest.coverage.config.ts, which excludes all of test/perf/ —
         # those are timing-based benchmarks, not unit tests, and running them

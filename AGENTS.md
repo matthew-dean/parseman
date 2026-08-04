@@ -14,8 +14,17 @@ Run the local CI preflight and report its result before creating or pushing a
 code PR:
 
 ```sh
-pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
+pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 ```
+
+`check:invariants` decides four source-level rules that no type or test can
+see: no accessor installed onto an already-built object, no field in a public
+`*Options` type that nothing reads, no module unreachable from a published
+entry point, no declaration body duplicated across modules. It is a required CI
+step and a pre-commit guard. Its allowlist (`scripts/check-invariants.mjs`) MAY
+ONLY GET SHORTER — adding an entry to unblock new code is the failure it
+exists to stop, and a stale entry fails the gate. See
+`docs/design/invariant-gate.md`.
 
 If your change touches `src/codegen.ts`, dispatch, or anything else on the parse
 hot path, also check it against the comparison-chart bar — **"still the fastest

@@ -21,6 +21,13 @@ fi
 if [ "$SKIP_LINT" != "1" ]; then
   echo "[pre-commit] running oxlint…"
   pnpm lint
+  # Source-decidable invariant checks (scripts/check-invariants.mjs). ~0.3s, so
+  # it sits with lint rather than behind the perf-guard path filter: the point
+  # of this one is to be red BEFORE the commit exists, not after CI reports it.
+  # It is ALSO a required CI step, because a hook is bypassable with --no-verify
+  # and an unbypassable gate is the only kind that counts.
+  echo "[pre-commit] running invariant gate…"
+  pnpm check:invariants
 fi
 
 if [ "$SKIP_PERF_GUARD" = "1" ]; then

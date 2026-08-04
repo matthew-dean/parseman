@@ -5,6 +5,24 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **An invariant gate, wired.** `pnpm check:invariants` decides four
+  source-level rules the type system and the test suite structurally cannot
+  see, and it is a required CI step, a pre-commit guard, and asserted by
+  `test/unit/invariant-gate.test.ts`. INV-1: no accessor descriptor installed
+  with `Object.defineProperty` — the 0.44.0 migration aid that put throwing
+  accessors on every `run()` result measured 36.9% on small parses. INV-2: no
+  field in a public `*Options` type that nothing reads — the general form of the
+  `dispatch()` flag that was set and never read, so the cut did not fire and the
+  parser returned a silently truncated document. INV-3: no module under `src/`
+  unreachable from a published entry point. INV-4: no declaration body
+  duplicated across modules. Twelve pre-existing findings are allowlisted by
+  name with a reason each; the list may only get shorter, and a stale entry
+  fails the gate. A fifth candidate — conditional spread into an object literal
+  — was implemented, measured at 177 pre-existing hits in overwhelmingly cold
+  code, and REJECTED rather than shipped noisy. See
+  `docs/design/invariant-gate.md`, which also records what could not be
+  mechanised and why.
+
 - **The table lowering measured against codegen: much smaller, materially
   slower.** Both sides driven from this worktree over jess's four shipping
   grammars, same grammar, same variant, same reducers, in one process
