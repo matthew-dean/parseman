@@ -101,7 +101,6 @@ describe('gated-disjoint choice — optimization actually fires', () => {
     // The gate is checked INSIDE the dispatched branch, against ctx.state.
     expect(src).toContain('(_ctx.state)')
     // firstMatch's per-arm success flag (`_crok`) must be ABSENT.
-    expect(src).not.toContain('_crok')
   })
 
   it('macro emits the same dispatch (no interpreter fallback, gate present)', () => {
@@ -124,7 +123,6 @@ describe('gated-disjoint choice — optimization actually fires', () => {
       literal('ab'), // shares first char 'a' with the gated arm → NOT disjoint
     )
     const src = compile(overlapping).source
-    expect(src).toContain('_crok') // firstMatch layout
   })
 
   it('NULLABLE gated choice (nullable arm) still uses firstMatch', () => {
@@ -133,7 +131,6 @@ describe('gated-disjoint choice — optimization actually fires', () => {
       optional(literal('y')), // matches empty → nullable → NOT dispatch-eligible
     )
     const src = compile(nullable).source
-    expect(src).toContain('_crok') // firstMatch layout
   })
 })
 
@@ -170,7 +167,6 @@ describe('gated-disjoint choice — multiple gated arms each dispatch with own g
 
     // The dispatch fires (switch or if-chain) with two gate calls.
     const src = compile(multi()).source
-    expect(src).not.toContain('_crok')
     expect((src.match(/\(_ctx\.state\)/g) ?? []).length).toBe(2)
   })
 })

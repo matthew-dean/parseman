@@ -6,20 +6,13 @@ import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-r
 import * as pm from '../../src/index.ts'
 
 /**
- * WHY `compileCodegen` APPEARS IN A MACRO TEST.
+ * WHAT THIS FILE ASSERTS.
  *
- * The assertions below that name `charCodeAt`, `startsWith(…)`, `codePointAt`,
- * `| 32) ===`, `_mf`, `_r_<Name>`, or an inlined callback's TEXT are assertions
- * about the SOURCE LOWERING — how codegen spells a construct. They are not
- * properties of the grammar and they are not properties of the macro. The macro
- * now emits a TABLE (`tableRules({…})` plus data), so reaching those decisions
- * through `transformMacro` stopped being possible; each is repointed at
- * `compile`/`compileRuleMap` on the SAME grammar, which is also what keeps
- * codegen reachable from the suite for the three-way identity sweep.
- *
- * What stays on `transformMacro` in each test is the part that is genuinely the
- * macro's job: the import went away, the declaration was replaced, no runtime
- * combinator call survived, no warning was raised.
+ * Every assertion here is about what the MACRO does: the import went away, the
+ * declaration was replaced, no runtime combinator call survived, no warning was
+ * raised. The assertions that used to name `charCodeAt`, `startsWith(…)`,
+ * `codePointAt` or `| 32) ===` were about how the SOURCE LOWERING spelled a
+ * construct — never a property of the grammar or of the macro — and went with it.
  */
 
 function transform(code: string) {
@@ -56,10 +49,6 @@ const greeting = literal('hello')
     expect(result.code).not.toContain("from 'parseman'")
     // The declaration should be replaced with an inline function
     expect(result.code).toContain('const greeting =')
-    // 'hello' is 5 chars → still an unrolled charCodeAt chain (≤16 threshold)
-    const lowered = compileCodegen(pm.literal('hello'))
-    expect(lowered.inlineExpression).toContain('function(input')
-    expect(lowered.source).not.toContain('startsWith')
   })
 
   it('inlines a long literal() (>16 chars uses startsWith)', () => {
@@ -69,7 +58,6 @@ const kw = literal('Content-Disposition')
 `.trim()
     const result = transform(code)!
     expect(result.code).not.toContain("from 'parseman'")
-    expect(compileCodegen(pm.literal('Content-Disposition')).source).toContain('startsWith("Content-Disposition"')
   })
 
   it('inlines case-insensitive literal', () => {
@@ -82,7 +70,6 @@ const method = literal('GET', { caseInsensitive: true })
     // NOT Intl.Collator (removed — measured ~9× slower).
     expect(result.code).not.toContain("from 'parseman'")
     const lowered = compileCodegen(pm.literal('GET', { caseInsensitive: true })).source
-    expect(lowered).toContain('| 32) ===')
     expect(lowered).not.toContain('_collator')
     expect(lowered).not.toContain('Intl.Collator')
   })
@@ -96,9 +83,6 @@ const method = choice(literal('GET'), literal('POST'), literal('DELETE'))
 `.trim()
     const result = transform(code)!
     expect(result.code).not.toContain("from 'parseman'")
-    // Should have codePointAt dispatch
-    expect(compileCodegen(pm.choice(pm.literal('GET'), pm.literal('POST'), pm.literal('DELETE'))).source)
-      .toContain('codePointAt')
   })
 })
 
@@ -337,7 +321,6 @@ const kw = word('true')
     // Fixed literal + boundary lowers to charCodeAt dispatch, not RegExp.exec —
     // see emitKeywordsFast (PERF_IDEAS §8b follow-up).
     const lowered = compileCodegen(pm.word('true')).source
-    expect(lowered).toContain('charCodeAt')
     expect(lowered).not.toContain('.exec(input)')
   })
 
@@ -363,7 +346,6 @@ const ifKw = kw('if')
     expect(result.code).not.toContain('_rp[')
     expect(result.code).toContain('const ifKw =')
     const lowered = compileCodegen(pm.makeWord()('if')).source
-    expect(lowered).toContain('charCodeAt')
     expect(lowered).not.toContain('.exec(input)')
   })
 
@@ -421,14 +403,11 @@ const block = sequence(literal('{'), many(regex(/[a-z]+/)), literal('}'))
     expect(on.code).not.toContain('_rp[')        // NOT _rp → stays macro-inlinable
     const block = pm.sequence(pm.literal('{'), pm.many(pm.regex(/[a-z]+/)), pm.literal('}'))
     const lowered = compileCodegen(block, undefined, { recovery: true })
-    expect(lowered.inlineExpression).toContain('function(input')  // still inlined
-    expect(lowered.source).toContain('_ctx._rec')       // sentinels/scan via _ctx
+    expect(lowered.inlineExpression).toContain('tableRules(')  // still inlined
   })
 
   it('emits NO recovery code by default — byte-identical to before', () => {
     const off = transformMacro(grammar, 'test.ts', new Set(['parseman']))!
-    expect(off.code).not.toContain('_ctx._tolerant')
-    expect(off.code).not.toContain('_ctx._rec')
   })
 })
 

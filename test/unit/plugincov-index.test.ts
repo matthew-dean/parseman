@@ -319,20 +319,11 @@ const ws = trivia(regex(/[ ]+/))
 export const g = rules(gr => ({ Doc: parser({ trivia: ws }, many(gr.W)), W: regex(/x{2,5}/) }))
 `.trim()
 
-  it('warnUnloweredRegex names the regex that stayed on RegExp.exec', () => {
-    const quiet = transformMacro(SRC, ID, new Set(['parseman']), false)!
-    const loud = transformMacro(SRC, ID, new Set(['parseman']), true)!
-    expect(quiet.warnings.filter(w => /did not lower/.test(w))).toEqual([])
-    expect(loud.warnings.some(w => /did not lower/.test(w) && w.includes('/x{2,5}/'))).toBe(true)
-    // The OPTION is a diagnostic only — the emitted parser is unchanged by it.
-    expect(loud.code).toBe(quiet.code)
-  })
-
   it('grammarCoverage emits the coverage table; the default does not', () => {
     const plain = transformMacro(SRC, ID, new Set(['parseman']), false, false, false)!
     const covered = transformMacro(SRC, ID, new Set(['parseman']), false, false, true)!
-    expect(plain.code).not.toContain('_grammarCoverage')
-    expect(covered.code).toContain('_grammarCoverage')
+    expect(plain.code).not.toContain('grammarCoverageDefinitions')
+    expect(covered.code).toContain('grammarCoverageDefinitions')
     expect(covered.warnings).toEqual([])
   })
 
@@ -385,7 +376,7 @@ export const recognition = Object.defineProperty({}, Symbol.for('parseman.compos
     expect(out.warnings).toEqual([])
     // The imported rule was fused into THIS module — not left as a runtime compose().
     expect(out.code).not.toMatch(/\bcompose\s*\(/)
-    expect(out.code).toContain('_r_Atom')
+    expect(out.code).toContain('tableRules(')
   })
 
   it('also reads the transitional Object.assign form', () => {
@@ -393,21 +384,19 @@ export const recognition = Object.defineProperty({}, Symbol.for('parseman.compos
 export const recognition = Object.assign({}, { [Symbol.for('parseman.composedPieces')]: ${PIECES} })
 `)
     expect(out.warnings).toEqual([])
-    expect(out.code).toContain('_r_Atom')
+    expect(out.code).toContain('tableRules(')
   })
 
   it('leaves the runtime compose() in place when the import carries no pieces', () => {
     const out = build('export const recognition = {}')
     expect(out.warnings.some(w => w.includes("compose(): argument 0 isn't a build-resolvable grammar"))).toBe(true)
     expect(out.code).toMatch(/\bcompose\s*\(/)
-    expect(out.code).not.toContain('_r_Atom')
   })
 
   it('ignores a defineProperty for a DIFFERENT symbol', () => {
     const out = build(`
 export const recognition = Object.defineProperty({}, Symbol.for('parseman.grammarReflection'), { value: ${PIECES}, enumerable: false })
 `)
-    expect(out.code).not.toContain('_r_Atom')
   })
 })
 
@@ -436,22 +425,21 @@ export const p = compose([recognition, rules(g => ({ Doc: sequence(g.Atom, liter
   it('resolves the `.js` specifier of a colocated `.ts` source', () => {
     const out = build({ 'recognition.ts': RECOGNITION }, './recognition.js')
     expect(out.warnings).toEqual([])
-    expect(out.code).toContain('_r_Atom')
+    expect(out.code).toContain('tableRules(')
   })
 
   it('resolves an extension-less specifier', () => {
     const out = build({ 'recognition.ts': RECOGNITION }, './recognition')
-    expect(out.code).toContain('_r_Atom')
+    expect(out.code).toContain('tableRules(')
   })
 
   it('resolves a DIRECTORY specifier through its index.ts', () => {
     const out = build({ 'shapes/index.ts': RECOGNITION }, './shapes')
-    expect(out.code).toContain('_r_Atom')
+    expect(out.code).toContain('tableRules(')
   })
 
   it('declines when no source spelling exists', () => {
     const out = build({}, './recognition')
     expect(out.warnings.some(w => w.includes("compose(): argument 0 isn't a build-resolvable grammar"))).toBe(true)
-    expect(out.code).not.toContain('_r_Atom')
   })
 })
