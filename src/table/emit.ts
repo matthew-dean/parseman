@@ -1,4 +1,4 @@
-import type { TableProgram } from './program.ts'
+import type { FoldedProgram, TableProgram } from './program.ts'
 
 /**
  * Print a program as the module a build emits.
@@ -86,23 +86,27 @@ export type EmitOptions = {
   readonly runtime?: string
 }
 
-export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): string {
+/** Refuse a program the printer cannot express, naming the CONSTRUCT. */
+function assertPrintable(prog: TableProgram, who: string): void {
   // Fail with the CONSTRUCT, not with a type name from inside the printer.
   // Every one of these is expressible as data and simply not expressed yet, so
   // the message says which one to go and lower.
   if (prog.runtimeOnly !== undefined && prog.runtimeOnly.length > 0) {
     throw new TypeError(
-      `emitTableModule: this grammar is RUNTIME-ONLY — it parses correctly but cannot be `
+      `${who}: this grammar is RUNTIME-ONLY — it parses correctly but cannot be `
       + `printed as a module. Unlowered constructs: ${prog.runtimeOnly.join(', ')}. `
       + `Each parks a live combinator in the const pool; each is expressible as table rows.`,
     )
   }
-  const name = opts.name ?? 'grammar'
-  const runtime = opts.runtime ?? 'parseman/table'
-  const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
-  const lines = [
-    `import { tableRules } from ${jsString(runtime)}`,
-    `export const ${name} = /* @__PURE__ */ tableRules({`,
+}
+
+/**
+ * The program's fields as `key:value,` lines — the body of the object literal
+ * `tableRules` reads. Shared with the folded emitter, which prints exactly these
+ * for its ONE base table.
+ */
+function programFields(prog: TableProgram, fns: readonly string[]): string[] {
+  return [
     `c:[${prog.code.join(',')}],`,
     `k:[${prog.k.map(emitConst).join(',')}],`,
     `x:[${prog.cc.map(jsString).join(',')}],`,
@@ -131,9 +135,70 @@ export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): str
       `so:[${(prog.scanSkipOf ?? []).join(',')}],`,
     ]),
     `f:[${fns.join(',')}]`,
-    `})`,
   ]
-  return lines.join('\n')
+}
+
+export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): string {
+  assertPrintable(prog, 'emitTableModule')
+  const name = opts.name ?? 'grammar'
+  const runtime = opts.runtime ?? 'parseman/table'
+  const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
+  return [
+    `import { tableRules } from ${jsString(runtime)}`,
+    `export const ${name} = /* @__PURE__ */ tableRules({`,
+    ...programFields(prog, fns),
+    `})`,
+  ].join('\n')
+}
+
+export type FoldedEmitOptions = EmitOptions & {
+  /**
+   * Exported binding per variant name. A variant with no entry is still carried
+   * in the table and simply not given a name of its own.
+   */
+  readonly names?: Readonly<Record<string, string>>
+}
+
+/**
+ * Print a FOLDED program: one base table, plus the row edits per variant.
+ *
+ * This is G4's deliverable. The four `trackLines` x `hostMode` artifacts a
+ * dialect ships stop being four near-copies of one table and become one table
+ * and three short lists of `(offset, word)` pairs — which is what the measured
+ * difference between them actually is. The reducer pool, the const pool, the
+ * char classes, the expected sets, the dispatch tables and the rule index are
+ * printed ONCE, because they are byte-identical in every variant.
+ *
+ * The base's own `l`/`h` scalars are NOT printed: every variant, base included,
+ * carries its own on its delta, so no variant inherits the base's line-tracking
+ * or host mode by accident.
+ */
+export function emitFoldedModule(folded: FoldedProgram, opts: FoldedEmitOptions = {}): string {
+  assertPrintable(folded.base, 'emitFoldedModule')
+  const runtime = opts.runtime ?? 'parseman/table'
+  const fns = opts.fnSources ?? folded.base.fns.map(() => '() => {}')
+  const base = programFields(folded.base, fns).filter(l => !l.startsWith('l:') && !l.startsWith('h:'))
+  const variants = Object.keys(folded.variants).map(n => {
+    const d = folded.variants[n]!
+    const parts = [
+      ...(d.at.length === 0 ? [] : [`a:[${d.at.join(',')}]`, `t:[${d.to.join(',')}]`]),
+      ...(d.lines === undefined ? [] : [`l:${d.lines}`]),
+      ...(d.hostMode === undefined ? [] : [`h:${jsString(d.hostMode)}`]),
+    ]
+    return `${jsString(n)}:{${parts.join(',')}}`
+  })
+  const names = opts.names ?? {}
+  return [
+    `import { tableVariants } from ${jsString(runtime)}`,
+    `const _t = {`,
+    `b:{`,
+    ...base,
+    `},`,
+    `v:{${variants.join(',')}}`,
+    `}`,
+    ...Object.keys(names).map(n =>
+      `export const ${names[n]!} = /* @__PURE__ */ tableVariants(_t, ${jsString(n)})`),
+  ].join('\n')
 }
 
 /**

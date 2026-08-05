@@ -12,7 +12,15 @@
  */
 export { tableRules } from './exec.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
-export { emitTableModule } from './emit.ts'
+export { emitTableModule, emitFoldedModule } from './emit.ts'
+/**
+ * THE VARIANT FOLD (G4). One base table plus per-variant row edits, selected at
+ * load. Additive: `tableRules` and every existing entry are untouched, and the
+ * driver still reads no option on the parse path.
+ */
+export { tableVariants, variantNames } from './fold.ts'
+export { foldPrograms, unfoldVariant, expandCompactFolded } from './program.ts'
+export type { FoldedProgram, CompactFolded, TableDelta } from './program.ts'
 /*
  * `emitTableOnly` is NOT re-exported here. It is a SIZE PROBE: it emits the
  * table with an EMPTY reducer pool so the machinery's byte count is comparable
