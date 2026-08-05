@@ -85,7 +85,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
 } from './ops.ts'
 import {
   classHas, expandCompact, resolveTable,
@@ -486,6 +486,16 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (_input, pos) => { END = pos; return '' }
 
       /* ── transparent / structural ────────────────────────────────────────── */
+
+      case OP_GUARD: {
+        const pred = fns[code[ip + 1]!] as (s: unknown) => boolean
+        const xf = fx[code[ip + 2]!] as string[]
+        return (_input, pos, ctx) => {
+          if (pred(ctx.state)) { END = pos; return null }
+          ctx._fe = pos; ctx._fx = xf
+          return FAIL
+        }
+      }
 
       case OP_GATE: {
         const cls = cc[code[ip + 1]!]!

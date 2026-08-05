@@ -200,6 +200,20 @@ export const OP_SCOPE_CAP = 30
  */
 export const OP_WITHCTX = 31
 /**
+ * `GUARD f e` — `gate(predicate)`. Zero-width: runs `fns[f]` against
+ * `ctx.state` and yields `null` at `pos`, or fails with the expected set at `e`.
+ *
+ * NOT `OP_GATE`, which is the first-CHAR gate — different question, different
+ * operand (a char class, not a predicate). The names are close because the
+ * combinator was renamed to `gate()` at the API surface while its def tag stayed
+ * `guard`; the opcode follows the TAG, since that is what the encoder switches on.
+ *
+ * Its first set is `any` (a state predicate cannot narrow the input), so a
+ * `gate()` leading a choice arm poisons that arm's first-char dispatch. That is
+ * a grammar-authoring caveat, not a lowering one.
+ */
+export const OP_GUARD = 32
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -226,5 +240,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_SCAN]: 'SCAN',
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
-  [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX',
+  [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX', [OP_GUARD]: 'GUARD',
 }

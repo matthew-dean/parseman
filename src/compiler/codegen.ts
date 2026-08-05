@@ -4847,16 +4847,23 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       }
       const fn = ctx.namedParsers.get(innerParser)!
 
-      const rv = v(ctx, '_wcr')
+      const sv = v(ctx, '_wcs')
       const vv = v(ctx, '_wcv')
       const ev = v(ctx, '_wce')
       return {
         stmts: [
-          `${ind(ctx)}const ${rv} = { ..._ctx, state: ${mfRef(ctx)}[${evIdx}]() }`,
-          `${ind(ctx)}const ${vv} = ${fn}(input, ${pos}, ${rv})`,
-          // withCtx runs on a spread child ctx — copy its recorded failure back
-          // and propagate the inner failure verbatim (interpreter parity).
-          ...emitIfFail(ctx, `${vv} === ${NAMED_FN_FAIL}`, propagateFailBody(ctx, rv)),
+          // SAVE / RESTORE, matching `withCtx.ts`. This used to run the child on
+          // a SPREAD child ctx and then copy `_fe`/`_fx`/`_fc` back by hand —
+          // a workaround for the clone swallowing them. The interpreter had no
+          // such workaround and simply lost them, so the two engines disagreed.
+          // Swapping one field needs neither the copy-back nor the allocation.
+          `${ind(ctx)}const ${sv} = _ctx.state`,
+          `${ind(ctx)}_ctx.state = ${mfRef(ctx)}[${evIdx}]()`,
+          `${ind(ctx)}const ${vv} = ${fn}(input, ${pos}, _ctx)`,
+          `${ind(ctx)}_ctx.state = ${sv}`,
+          // The child wrote its failure straight onto `_ctx`, so propagation is
+          // the ordinary same-ctx break.
+          ...emitIfFail(ctx, `${vv} === ${NAMED_FN_FAIL}`, propagateFailBody(ctx)),
           `${ind(ctx)}const ${ev} = ${NAMED_FN_END}`,
         ],
         valueVar: vv,

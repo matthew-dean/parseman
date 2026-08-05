@@ -8,7 +8,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
 } from './ops.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
@@ -578,6 +578,11 @@ class Encoder {
         return this.node(d.thunk()).ip
       case 'not':
         return this.emit(OP_NOT, this.node(d.parser).ip)
+      case 'guard':
+        // The 'guard' expected label is load-bearing: it is what the compiled
+        // path and the pre-rename API both emit (gate.ts), so the identity sweep
+        // compares it.
+        return this.emit(OP_GUARD, this.fn(d.predicate), this.expected(['guard']))
       case 'withCtx':
         return this.emit(OP_WITHCTX, this.constant(d.extra), this.node(d.parser).ip)
       case 'peek':

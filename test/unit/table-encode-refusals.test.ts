@@ -9,7 +9,7 @@ import { compose } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, selectNodes } from '../../bench/table-grammars.ts'
 import {
   balanced, choice, keywords, literal, many, node, optional, parser, peek, regex, rules,
-  sepBy, sequence, token, transform, trivia, withCtx, type Combinator,
+  gate, sepBy, sequence, token, transform, trivia, withCtx, type Combinator,
 } from '../../src/index.ts'
 
 /**
@@ -154,6 +154,37 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     const bogus = literal('a')
     const shaped = { ...bogus, _def: { ...bogus._def, tag: 'notACombinator' } } as unknown as Combinator<unknown>
     throws(wrap(shaped), /no opcode for 'notACombinator'/)
+  })
+
+  it('gate() + withCtx() lower, and agree with the interpreter on the EXPECTED set', () => {
+    // `gate()` carries the def tag `guard` (the rename was API-surface only), so
+    // it fell through to the unknown-tag refusal. `withCtx` supplies the state it
+    // reads, so the pair is tested together: a lowering that dropped the state
+    // would make every gate fail, and one that dropped the predicate would make
+    // every gate pass.
+    //
+    // The expected set is compared, not just the value. `gate()` fails with the
+    // literal label 'guard' for parity with the compiled path, and that label is
+    // what the identity sweep sees.
+    const body = transform(sequence(gate((s: unknown) => (s as { inFn?: boolean })?.inFn === true), literal('r')), () => 'SAW')
+    const cases: Record<string, Combinator<unknown>> = {
+      inFn: withCtx({ inFn: true }, body) as Combinator<unknown>,
+      notInFn: withCtx({ inFn: false }, body) as Combinator<unknown>,
+      bare: body as Combinator<unknown>,
+    }
+    const r = tableRules(encodeTable(cases))
+    for (const key of Object.keys(cases)) {
+      for (const src of ['r', 'x']) {
+        const t = run(r[key]! as never, src)
+        const i = run(cases[key]! as never, src)
+        expect(t.ok, `${key} ${src}`).toBe(i.ok)
+        expect(t.value, `${key} ${src}`).toEqual(i.value)
+        expect(t.expected, `${key} ${src} expected`).toEqual(i.expected)
+      }
+    }
+    // The predicate really gates: same input, opposite state, opposite outcome.
+    expect(run(r.inFn! as never, 'r').ok).toBe(true)
+    expect(run(r.notInFn! as never, 'r').ok).toBe(false)
   })
 
   it('an empty rule map still produces a runnable table', () => {

@@ -17,7 +17,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
 } from './ops.ts'
 import { stampRuleMap } from './stamp.ts'
 import {
@@ -368,6 +368,15 @@ function makeDriver(
       case OP_EMPTY:
         END = pos
         return ''
+
+      case OP_GUARD: {
+        if ((fns[code[ip + 1]!] as (s: unknown) => boolean)(ctx.state)) {
+          END = pos
+          return null
+        }
+        ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
+        return FAIL
+      }
 
       case OP_GATE: {
         if (!classHas(cc[code[ip + 1]!]!, lead(input, pos))) {
