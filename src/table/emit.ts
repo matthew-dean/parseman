@@ -35,6 +35,25 @@ function emitConst(v: unknown): string {
   if (Array.isArray(v) && v.every(x => x === null || typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean')) {
     return `[${v.map(x => (typeof x === 'string' ? jsString(x) : JSON.stringify(x))).join(',')}]`
   }
+  // A PLAIN OBJECT whose values are those primitives (or arrays of them)
+  // round-trips exactly too, by the same criterion that admitted arrays above.
+  // `withCtx(extra, …)` parks one here — `{ inFn: true }` and the like — and
+  // refusing it made every withCtx-bearing grammar unemittable for no reason the
+  // guard supports. Only a null-prototype-safe plain object qualifies: anything
+  // with a class, a function value, or nesting beyond one array level refuses.
+  if (
+    typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof RegExp)
+    && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null)
+    && Object.values(v).every(x =>
+      x === null || typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean'
+      || (Array.isArray(x) && x.every(y => y === null || typeof y === 'string' || typeof y === 'number' || typeof y === 'boolean')))
+  ) {
+    const entries = Object.entries(v).map(([key, val]) => `${jsString(key)}:${
+      typeof val === 'string' ? jsString(val)
+      : Array.isArray(val) ? `[${val.map(y => (typeof y === 'string' ? jsString(y) : JSON.stringify(y))).join(',')}]`
+      : JSON.stringify(val)}`)
+    return `{${entries.join(',')}}`
+  }
   const shown = typeof v === 'object' ? Object.prototype.toString.call(v) : typeof v
   throw new TypeError(
     `emitConst: cannot serialise a const-pool entry of type ${shown}. ` +

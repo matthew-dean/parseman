@@ -383,6 +383,26 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     }
   })
 
+  it('withCtx(extra) EMITS when the state is plain data, and is NAMED when it is not', () => {
+    // `extra` is arbitrary user data parked in the const pool. `emitConst` takes
+    // scalars, arrays of scalars, and plain objects of those — a plain object
+    // round-trips exactly, by the same criterion that admitted arrays.
+    //
+    // Anything richer RUNS fine but cannot be printed. That must surface as a
+    // NAMED runtime-only reason, not a bare TypeError out of the printer: the
+    // grammar is not broken, it just cannot be shipped as a module, and the
+    // author needs to be told which construct did it.
+    const plain = encodeTable({ D: withCtx({ inFn: true, depth: 2, tags: ['a', 'b'] }, literal('a')) as Combinator<unknown> })
+    const mod = emitTableModule(plain, { name: 'G' })
+    expect(mod).toContain('inFn')
+    expect(run(tableRules(plain).D! as never, 'a').ok).toBe(true)
+
+    const rich = encodeTable({ D: withCtx({ fn: () => 1 }, literal('a')) as Combinator<unknown> })
+    expect([...rich.runtimeOnly ?? []].join(' ')).toMatch(/withCtx\(extra\)/)
+    // …and it still RUNS. Unemittable is not unusable.
+    expect(run(tableRules(rich).D! as never, 'a').ok).toBe(true)
+  })
+
   it('an empty rule map still produces a runnable table', () => {
     // `finish()` emits one OP_EMPTY when nothing was encoded, so `resolveTable`
     // never sees a zero-length code array.

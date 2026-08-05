@@ -505,18 +505,26 @@ function objectFromPairs(pairs) {
     expect(outcome(emitted.Raw, tricky)).toBe(outcome(g.Raw, tricky))
   })
 
-  it('emitConst accepts arrays of primitives and still refuses everything else', () => {
-    // The array refusal was the part of this pin that was never really the
-    // defect: an array of primitives round-trips through JSON.stringify exactly
-    // as a string does, so it belonged on the accept side by the guard's own
-    // criterion. The refusal itself is unchanged and still asserted — writing the
-    // TEXT `undefined` into a module is the failure it exists to prevent.
+  it('emitConst accepts arrays and plain objects of primitives, and still refuses everything else', () => {
+    // The array refusal was never really the defect: an array of primitives
+    // round-trips through JSON.stringify exactly as a string does, so it belonged
+    // on the accept side by the guard's own criterion. A PLAIN OBJECT of the same
+    // primitives round-trips identically, and `withCtx(extra, …)` parks one in
+    // the pool — refusing it made every withCtx-bearing grammar unemittable for
+    // no reason the criterion supports.
+    //
+    // The refusal itself is unchanged and still asserted — writing the TEXT
+    // `undefined` into a module is the failure it exists to prevent — and it
+    // still catches what a JSON round-trip would silently mangle: a class
+    // instance loses its prototype, a function value vanishes.
     const withPool = (k: readonly unknown[]): TableProgram =>
       ({ code: [], k, fns: [], cc: [], fx: [], disp: [], dsp: [], rules: {} })
-    for (const bad of [() => 0, undefined, {}, Symbol('x'), 1n, [[1]], [{}], [undefined]]) {
+    class Rich { x = 1 }
+    for (const bad of [() => 0, undefined, Symbol('x'), 1n, [[1]], [{}], [undefined],
+      new Rich(), { fn: () => 0 }, { nested: { a: 1 } }, new Map()]) {
       expect(() => emitTableModule(withPool([bad])), String(bad?.toString?.() ?? bad)).toThrow(TypeError)
     }
-    const ok = emitTableModule(withPool(['s\n"', 1, true, null, /a[b]c/giy, ['decl', 'x'], [], [1, true, null]]))
-    expect(ok).toContain('k:["s\\n\\"",1,true,null,/a[b]c/giy,["decl","x"],[],[1,true,null]]')
+    const ok = emitTableModule(withPool(['s\n"', 1, true, null, /a[b]c/giy, ['decl', 'x'], [], [1, true, null], {}, { inFn: true, tags: ['a'] }]))
+    expect(ok).toContain('k:["s\\n\\"",1,true,null,/a[b]c/giy,["decl","x"],[],[1,true,null],{},{"inFn":true,"tags":["a"]}]')
   })
 })

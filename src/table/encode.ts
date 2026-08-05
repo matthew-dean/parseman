@@ -16,6 +16,25 @@ import { adjacencyExpected } from '../combinators/adjacency.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 
+/**
+ * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
+ * of scalars, and plain objects of those. Kept as a predicate here so the
+ * encoder can record a NAMED runtime-only reason instead of letting the printer
+ * throw a bare TypeError at emit time.
+ */
+function emittableConst(v: unknown): boolean {
+  const scalar = (x: unknown): boolean =>
+    x === null || typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean'
+  if (scalar(v) || v instanceof RegExp) return true
+  if (Array.isArray(v)) return v.every(scalar)
+  if (typeof v === 'object' && v !== null) {
+    const proto = Object.getPrototypeOf(v)
+    if (proto !== Object.prototype && proto !== null) return false
+    return Object.values(v).every(x => scalar(x) || (Array.isArray(x) && x.every(scalar)))
+  }
+  return false
+}
+
 /** Raised when a construct has no opcode yet. Prototype scope is explicit. */
 export class UnsupportedConstruct extends Error {
   readonly tag: string
@@ -656,8 +675,17 @@ class Encoder {
           d.kinds === undefined ? -1 : this.kindsSlot(d.kinds),
           this.expected([adjacencyExpected(d)]),
         )
-      case 'withCtx':
+      case 'withCtx': {
+        // `extra` is arbitrary user data in the const pool. `emitConst` takes
+        // scalars, arrays of scalars, and plain objects of those — anything
+        // richer (a class instance, a function value) RUNS fine but cannot be
+        // printed into a module. Record it as a runtime-only reason so emit
+        // refuses BY NAME rather than throwing a raw TypeError from the printer.
+        if (!emittableConst(d.extra)) {
+          this.runtimeOnly.add('withCtx(extra) — the state object is not serialisable')
+        }
         return this.emit(OP_WITHCTX, this.constant(d.extra), this.node(d.parser).ip)
+      }
       case 'peek':
         return this.emit(OP_PEEK, this.node(d.parser).ip)
       // Transparent wrappers: no row of their own, no dispatch at run time.
