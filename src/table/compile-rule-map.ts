@@ -5,6 +5,7 @@ import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableExpression } from './emit.ts'
 import { assembledRules } from './assemble.ts'
 import type { TableProgram, TableRule } from './program.ts'
+import type { GrammarCoverageDefinition } from '../compiler/grammar-coverage-ids.ts'
 
 /**
  * `compileRuleMap()` FOR THE TABLE LOWERING — the counterpart that did not exist.
@@ -89,6 +90,12 @@ export type CompiledRuleMapTable = {
   rules: Record<string, TableRule>
   /** The encoded program, for a caller that wants to fold or inspect it. */
   prog: TableProgram
+  /**
+   * The coverage DENOMINATOR — every id this map can hit — present only under
+   * `{ coverage: true }`. Same field and same meaning as `compileRuleMap`'s, so
+   * the plugin's stamp site needs no branch on which lowering produced it.
+   */
+  coverageDefinitions?: readonly GrammarCoverageDefinition[]
 }
 
 /**
