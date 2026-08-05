@@ -4,6 +4,28 @@ import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 
+/**
+ * THESE ARE CODEGEN TESTS, and they are pinned to codegen ON PURPOSE.
+ *
+ * `compile` is imported from `src/compiler/codegen.ts` rather than the package
+ * index because these assert the SOURCE LOWERING's coverage and trace emission —
+ * exact `function _parse(…)` baselines, `.source` containing `_grammarCoverage`,
+ * and `_grammarTrace` phase SEQUENCES (`attempt` / `selected` / `success` /
+ * `failure` / `backtrack` / `rollback`). None of that is a property of the
+ * grammar; all of it is a property of the engine that emitted it.
+ *
+ * THE TABLE LOWERING HAS NO TRACE PARITY. Codegen emits those six phases at
+ * roughly 40 fine-grained sites; matching that is a project, and the owner ruled
+ * it out of scope for 0.47 — coverage COUNTERS were deemed sufficient to ship.
+ * See `notes/RELEASE-0.48-TARGET.md` §1.
+ *
+ * SO: when codegen is deleted, this file goes with it unless the table has
+ * gained trace parity by then. That is the decision point, and it is recorded
+ * here rather than left to be discovered by whoever does the deletion. Do not
+ * "port" these to the table by loosening the assertions — a trace test that no
+ * longer checks phase order is not a trace test.
+ */
+
 describe('macro grammar coverage emission', () => {
   it('keeps choices nested by a semantic leaf observable with their stable IDs', () => {
     const parser = leaf(choice(literal('*'), literal('/')), value => value)
