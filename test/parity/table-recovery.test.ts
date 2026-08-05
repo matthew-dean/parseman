@@ -15,7 +15,7 @@
  * does not implement makes the reference useless exactly when it is needed.
  */
 import { describe, expect, it } from 'vitest'
-import { literal, regex, sequence, many, oneOrMore, sepBy, node, rules, trivia, parser, label, classifiedTrivia } from '../../src/index.ts'
+import { literal, regex, sequence, many, oneOrMore, sepBy, node, rules, trivia, parser, label, classifiedTrivia, dispatch, when } from '../../src/index.ts'
 import { run as runInterpreter } from '../../src/functional/run.ts'
 import { run as runTabled } from '../../src/functional/run-tabled.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -192,5 +192,37 @@ describe('table drivers — local trivia scope root-capture policy', () => {
       expect(r.ok, which).toBe(true)
       expect(rows, which).toEqual([])
     }
+  })
+})
+
+describe('a COMMITTED failure is never recovered — all three engines', () => {
+  it('codegen no longer swallows a cut inside a many() item', () => {
+    // `dispatch()` commits: the selector picks an arm, so a failure INSIDE that
+    // arm is definitive — the author ruled the input out. Resyncing past it
+    // invents a parse.
+    //
+    // `emitMany`'s STRICT branch has always checked `_fc`; its RECOVERY branch
+    // did not. So under `{recovery: true}` the compiled engine swallowed the cut
+    // into a resync, the loop exited clean, and the parse SUCCEEDED on input the
+    // interpreter rejects — measured before the fix:
+    //
+    //   interpreter  ok=false end=1
+    //   codegen      ok=TRUE  end=0     <- a different language, not a different error
+    //
+    // The interpreter checks `committed` FIRST (`repeat.ts:158,252`) and the
+    // table matches the interpreter, so codegen was the lone outlier. It mattered
+    // beyond codegen: the identity sweep compares the TABLE against this engine,
+    // so a recovery-plus-cut case in the corpus would have reported the table as
+    // wrong.
+    const item = dispatch(regex(/[@a-z]/), when('@', sequence(literal('@'), literal('ok'))))
+    const g = rules(() => ({ Doc: many(item) })) as Record<string, Combinator<unknown>>
+    const input = '@bad'
+
+    const viaInterp = runInterpreter(g.Doc! as never, input, { tolerant: true })
+    const viaCodegen = compile(g.Doc! as never, undefined, { recovery: true }).parseWithErrors(input)
+
+    expect(viaInterp.ok, 'interpreter rejects a committed failure').toBe(false)
+    expect(viaCodegen.ok, 'codegen must reject it too').toBe(false)
+    expect(viaCodegen.span?.end, 'and stop where the interpreter stops').toBe(viaInterp.span.end)
   })
 })

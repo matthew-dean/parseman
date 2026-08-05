@@ -3151,6 +3151,16 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     const exp = hoistExpected(ctx, deriveExpectedArr([def.parser]))
     stmts.push(
       `${ind(ctx)}if (!${iterOk}) {`,
+      // A COMMITTED failure is not recoverable — a cut inside the item says the
+      // input is definitively wrong here, so resyncing past it invents a parse the
+      // author ruled out. The strict branch below has always checked `_fc`; this
+      // one did not, so on the compiled path a committed failure inside a `many`
+      // item was swallowed into a resync. The interpreter checks `committed`
+      // FIRST (`repeat.ts:158,252`) and propagates, and the table matches the
+      // interpreter — this makes the third engine agree rather than leaving a
+      // divergence the identity sweep would report against the TABLE, since the
+      // sweep compares the table to this engine.
+      ...(iter.mayCommit ? [`${ind(ctx)}  if (_ctx._fc) { ${rollback}${committedFailBody(ctx)} }`] : []),
       `${ind(ctx)}  ${rollback}if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPos}, _ctx)) {`,
       `${ind(ctx)}    const ${rrV} = _ctx._rec.scan(input, ${itemPos}, _ctx, ${mySyncV}, ${exp})`,
       ...(wantValue ? [`${ind(ctx)}    ${arrV}.push(${rrV}.error)`] : maxV !== null ? [`${ind(ctx)}    ${maxV}++`] : []),
