@@ -304,7 +304,11 @@ export const EXAMPLE_SPECS: ExampleSpec[] = [
  * Degrades to an empty list rather than throwing: not knowing WHY must never
  * turn into not reporting THAT.
  */
-async function printRefusalReasons(grammar: unknown): Promise<readonly string[]> {
+async function printRefusalReasons(grammar: unknown, compiled: { runtimeOnly?: readonly string[] }): Promise<readonly string[]> {
+  // The compiler now HANDS BACK its reasons, so prefer them: re-encoding is a
+  // re-derivation, and for a `precompiled` fixture there is no combinator left to
+  // re-encode at all — `grammar` is the artifact.
+  if (compiled.runtimeOnly !== undefined && compiled.runtimeOnly.length > 0) return compiled.runtimeOnly
   try {
     const { encodeTable } = (await import(join(ROOT, 'src', 'table', 'encode.ts'))) as {
       encodeTable: (rules: Record<string, unknown>, settings: Record<string, unknown>) => { runtimeOnly?: readonly string[] }
@@ -316,7 +320,7 @@ async function printRefusalReasons(grammar: unknown): Promise<readonly string[]>
 }
 
 async function measureExamples(): Promise<Fixture[]> {
-  type Compiled = { source: string; inlineExpression: string | null }
+  type Compiled = { source: string; inlineExpression: string | null; runtimeOnly?: readonly string[] }
   let compile: (c: unknown) => Compiled
   try {
     ;({ compile } = (await import(join(ROOT, 'src', 'index.ts'))) as { compile: (c: unknown) => Compiled })
@@ -353,8 +357,16 @@ async function measureExamples(): Promise<Fixture[]> {
 
     let compiled: Compiled
     try {
+      // A `precompiled` fixture exports the ARTIFACT, so read its printability off
+      // the artifact instead of asserting it. Hard-coding `inlineExpression: ''`
+      // asserted "this printed" for a fixture that may have refused, which turns a
+      // named refusal into a bogus "compile() produced EMPTY output" gate failure.
       compiled = spec.precompiled
-        ? { source: (grammar as { source: string }).source, inlineExpression: '' }
+        ? {
+            source: (grammar as Compiled).source,
+            inlineExpression: (grammar as Compiled).inlineExpression,
+            ...((grammar as Compiled).runtimeOnly === undefined ? {} : { runtimeOnly: (grammar as Compiled).runtimeOnly }),
+          }
         : compile(grammar)
     } catch (e) {
       fail(`fixture ${spec.id}: compile() THREW — ${(e as Error).message.split('\n')[0]}`)
@@ -369,7 +381,7 @@ async function measureExamples(): Promise<Fixture[]> {
     // a broken compile and still a hard failure.
     const printable = !(gen === '' && compiled.inlineExpression === null)
     if (printable && (typeof gen !== 'string' || gen.trim().length === 0)) fail(`fixture ${spec.id}: compile() produced EMPTY output`)
-    const reasons = printable ? [] : await printRefusalReasons(grammar)
+    const reasons = printable ? [] : await printRefusalReasons(grammar, compiled)
 
     const srcText = readFileSync(sourcePath, 'utf8')
     const srcBytes = Buffer.byteLength(srcText, 'utf8')

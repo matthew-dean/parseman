@@ -280,7 +280,8 @@ const p = transform(literal('hi'), s => s.toUpperCase())`,
     // The parseman IMPORT is removed (the version-lock banner comment may still name it).
     expect(result!.code).not.toMatch(/from ['"]parseman['"]/)
     expect(result!.code).toContain('s => s.toUpperCase()')
-    expect(result!.code).toContain('const _mf =')
+    // The reducer POOL, artifact-neutral: codegen names it `_mf`, the table `f:[…]`.
+    expect(result!.code).toMatch(/\bconst _mf =|\bf:\[/)
   })
 
   it('compiles recursive rules() factories with sepBy — import removed, canonical _r_expr fn emitted', () => {

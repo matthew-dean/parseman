@@ -4896,6 +4896,17 @@ export type CompiledParser<T> = {
    * closures that can't be serialized).
    */
   inlineExpression: string | null
+  /**
+   * WHY `inlineExpression` IS NULL — one named reason per cause, present only
+   * when the artifact could not be PRINTED. A null with no reason is the failure
+   * this field exists to make impossible: the caller's fallback is "leave the
+   * grammar interpreted", which is a ~5x silent perf regression, so the reason
+   * has to reach a warning rather than being inferred from a null.
+   *
+   * Empty/absent means printable. Set by the table lowering; codegen's own
+   * unprintable cases predate this channel and still return a bare null.
+   */
+  runtimeOnly?: readonly string[]
   /** Present only when compiled with `{ coverage: true }`. */
   coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[]
 }
@@ -4925,7 +4936,7 @@ function parserUsesRouted(p: Combinator<unknown>, seen: Set<Combinator<unknown>>
 }
 
 /** Whether a grammar tree owns a direct semantic node reduction. */
-function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
   if (seen.has(p)) return false
   seen.add(p)
   const d = p._def

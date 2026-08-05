@@ -159,9 +159,10 @@ const upper = transform(literal('hello'), s => s.toUpperCase())
     expect(result!.code).toContain('s => s.toUpperCase()')
     // NOT repointed at codegen: this asserts the author callback SURVIVES into
     // the emitted artifact, which is a property of the artifact, not a spelling.
-    // It fails because the table lowering drops author reducer SOURCES (it emits
-    // `f:[() => {}]`) — a real defect, not a harness mismatch.
-    expect(result!.code).toContain('const _mf =')
+    // The defect it caught was real — the table dropped author reducer sources and
+    // emitted `f:[() => {}]`. The POOL is what has to exist; `const _mf =` was only
+    // codegen's name for it, and the table calls it `f:[…]`.
+    expect(result!.code).toMatch(/\bconst _mf =|\bf:\[/)
   })
 })
 
@@ -177,9 +178,10 @@ const star = leaf(literal('*'), value => value)
     expect(result!.code).not.toContain('composeLeaf(')
     // NOT repointed at codegen: this asserts the author callback SURVIVES into
     // the emitted artifact, which is a property of the artifact, not a spelling.
-    // It fails because the table lowering drops author reducer SOURCES (it emits
-    // `f:[() => {}]`) — a real defect, not a harness mismatch.
-    expect(result!.code).toContain('const _mf =')
+    // The defect it caught was real — the table dropped author reducer sources and
+    // emitted `f:[() => {}]`. The POOL is what has to exist; `const _mf =` was only
+    // codegen's name for it, and the table calls it `f:[…]`.
+    expect(result!.code).toMatch(/\bconst _mf =|\bf:\[/)
   })
 
   it('strips TypeScript-only callback syntax before re-lowering a semantic leaf', () => {

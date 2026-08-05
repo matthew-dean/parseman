@@ -12,6 +12,8 @@
  */
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
+import { reachableIps } from './inspect.ts'
+import { OP_NODE, OP_NODE_TRACK } from './ops.ts'
 import type { TableProgram, TableRule } from './program.ts'
 
 const EMPTY_FX: string[] = []
@@ -147,7 +149,15 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
   // stamped the mode, so such a table returned the grammar's own AST objects with
   // `ok: true` while paying full CST capture.
   const mode = prog.hostMode ?? 'ast'
-  const elided = mode === 'ast'
+  // WHAT `FUSED_HOST_ELIDED` MEANS is "a DIRECT BUILDER's positioned-CST branch was
+  // dropped" — it is what makes `'ast' artifact + CST host` an error rather than a
+  // preference. `mode === 'ast'` alone over-reports it: an all-STRUCTURAL grammar has
+  // no direct builder, so no branch was dropped and it stays usable with either host
+  // (the `node(parser)` contract). A node row carries `-1` in its build slot when it
+  // has no direct builder, so the program answers this itself — and it MUST agree with
+  // the macro's emitted stamp, or re-stamping the same map throws
+  // "Cannot redefine property".
+  const elided = mode === 'ast' && hasDirectBuilder(prog)
   for (const name of Object.keys(out)) {
     Object.defineProperty(out[name]!, FUSED_HOST_MODE, { value: mode, enumerable: false })
     Object.defineProperty(out[name]!, FUSED_HOST_ELIDED, { value: elided, enumerable: false })
@@ -155,4 +165,21 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
   Object.defineProperty(out, FUSED_HOST_MODE, { value: mode, enumerable: false })
   Object.defineProperty(out, FUSED_HOST_ELIDED, { value: elided, enumerable: false })
   return out
+}
+
+/**
+ * Does any REACHABLE node row own a direct builder?
+ *
+ * Reachability, not a scan for the opcode's numeric value: operands are ordinary
+ * integers and collide with opcodes, so counting words reports confident nonsense
+ * (`inspect.ts` states the same thing about `opHistogram`). One linear pass at load,
+ * beside the assembly pass that already visits every row.
+ */
+function hasDirectBuilder(prog: TableProgram): boolean {
+  const code = prog.code
+  for (const ip of reachableIps(prog)) {
+    const op = code[ip]
+    if ((op === OP_NODE || op === OP_NODE_TRACK) && code[ip + 1] !== -1) return true
+  }
+  return false
 }

@@ -21,6 +21,8 @@
  * `test/unit/macro-grammar-coverage.test.ts` for that ruling written out.
  */
 import { tableRules } from '../../src/table/index.ts'
+import { reachableIps } from '../../src/table/inspect.ts'
+import type { TableProgram } from '../../src/table/program.ts'
 
 /** Strip the module framing `new Function` cannot parse, leaving a function body. */
 function toFunctionBody(code: string): string {
@@ -97,4 +99,46 @@ export function assertMacroCompiled(code: string): string {
 export function isCompiledRule(code: string, rule: string): boolean {
   return new RegExp(`function _r_${rule}\\(`).test(code)
     || (/\btableRules\(/.test(code) && new RegExp(`"${rule}"\\s*:`).test(code))
+}
+
+/**
+ * Does a TABLE artifact keep the trivia / state capture tiers?
+ *
+ * The capture-tier contract used to be read off codegen spellings — `_raw12 = []`,
+ * `_EMPTY_TL`, a literal `undefined` in the builder call. Those are properties of
+ * the SOURCE lowering, so once the macro emitted a table every such regex answered
+ * "no capture" for every artifact and the whole cost contract stopped being checked
+ * without a single test going red.
+ *
+ * The table states the same decision as bits on the node row —
+ * `[OP_NODE, fnIdx, child, flags, project, type, tags]`, flags bit 4 = trivia,
+ * bit 8 = state. A confirmed low-arity reducer clears them; an undecidable one
+ * (rest parameter, unresolvable import, reassigned binding) must fail OPEN and
+ * keep them. That is the property, in the artifact's own vocabulary.
+ *
+ * Requires exactly one `node()` in the grammar, which every harness using this has,
+ * and THROWS rather than guessing otherwise — a probe that silently picks a row is
+ * how the codegen version went dead.
+ */
+const OP_NODE = 10
+const OP_NODE_TRACK = 19
+const TAIL_CAPTURE_BITS = 4 | 8
+
+export function tableKeepsTailCapture(code: string): boolean {
+  const cm = /\bc:\[([-\d,]+)\]/.exec(code)
+  const rm = /\br:(\{[^}]*\})/.exec(code)
+  if (!cm || !rm) throw new Error('no table program in the emitted artifact — did the grammar fail to lower?')
+  const prog = {
+    code: cm[1]!.split(',').map(Number),
+    rules: JSON.parse(rm[1]!) as Record<string, number>,
+    k: [], fns: [], cc: [], fx: [], disp: [], dsp: [], trivia: [],
+  } as unknown as TableProgram
+  // REACHABILITY, not a scan for the opcode's numeric value. Operands are ordinary
+  // integers and collide with opcodes — a raw `indexOf(10)` finds child pointers and
+  // flag words as readily as node rows, which is exactly the "confident nonsense"
+  // `inspect.ts` was written to avoid. This decodes instruction widths from the rule
+  // entries, so a row is a row.
+  const rows = [...reachableIps(prog)].filter(ip => prog.code[ip] === OP_NODE || prog.code[ip] === OP_NODE_TRACK)
+  if (rows.length !== 1) throw new Error(`expected exactly one node row, found ${rows.length}`)
+  return (prog.code[rows[0]! + 3]! & TAIL_CAPTURE_BITS) !== 0
 }

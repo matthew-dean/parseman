@@ -185,8 +185,15 @@ class Encoder {
       return { arms: [], live: t }
     }
     const d = t._def
-    if (d.tag !== 'trivia') return unlowered(`expected a trivia() wrapper, got '${d.tag}'`)
-    let inner = d.parser._def
+    // THE `trivia()` WRAPPER IS A MARKER, NOT THE SHAPE. It sets `_meta.isTrivia`
+    // and delegates; `parser({ trivia })` / `rules({ trivia })` store whatever they
+    // are handed verbatim (`combinators/grammar.ts:71`), and the only consumers —
+    // `advanceTrivia` / `scanTrivia` — read `span.end` off it without ever looking
+    // at the tag. So demanding the wrapper refused grammars every other engine runs:
+    // `parser({ trivia: regex(/ +/) })` is ordinary authoring and it fell all the way
+    // back to the interpreter, silently, with the parseman import still in place.
+    // Unwrap it WHEN PRESENT and classify the body either way.
+    let inner = d.tag === 'trivia' ? d.parser._def : d
     // A `transform()` over a trivia body is a VALUE map, and a trivia VALUE is
     // never observed by anything: `advanceTrivia` and `scanTrivia`
     // (combinators/trivia-skip.ts:189, :219) are the only consumers of `ctx.trivia`
@@ -1036,8 +1043,13 @@ class Encoder {
         }
         return this.node(resolved).ip
       }
+      // `not.ts:50` fails with EXACTLY `not(<child tag>)`, at the assertion's own
+      // position — the same shape `OP_PEEK` below carries. The table emitted no
+      // expected operand at all, so a `not()` failure reported `[]` where every
+      // other engine reported `['not(literal)']`. It hid because `expected` is a
+      // TOP-LEVEL field on `RunResult` and is NOT part of the identity digest.
       case 'not':
-        return this.emit(OP_NOT, this.node(d.parser).ip)
+        return this.emit(OP_NOT, this.node(d.parser).ip, this.expected([`not(${d.parser._tag})`]))
       case 'guard':
         // `'gate'`, the public name — see gate.ts. The def tag stays `'guard'`.
         return this.emit(OP_GUARD, this.fn(d.predicate, d.predSrc ?? null), this.expected(['gate']))

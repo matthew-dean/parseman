@@ -82,6 +82,18 @@ function stripTsFromSource(node: Node, code: string): string {
   return out + code.slice(cur, end)
 }
 
+/**
+ * The stand-in for a `withCtx(extra, …)` argument the macro could not evaluate.
+ *
+ * It is a CLASS INSTANCE on purpose. `{}` would be indistinguishable from an
+ * author's own empty state object, so the table encoder would intern it, print
+ * it, and ship a grammar whose every state gate is silently false. A non-plain
+ * prototype fails `emittableConst`, which is what turns "we don't know the state"
+ * into a named `runtimeOnly` refusal instead of a wrong artifact.
+ */
+class UnevaluatedExtra {}
+const UNEVALUATED_EXTRA: unknown = new UnevaluatedExtra()
+
 // ---------------------------------------------------------------------------
 // Reducer resolution
 //
@@ -845,7 +857,19 @@ function exprToCombi(node: Expression, scope: XScope, code?: string, mfs?: strin
     const inner = anyValue(innerArg as Expression, scope, code, mfs)
     if (!isCombinator(inner)) return null
     try {
-      const combi = parseman.withCtx({}, inner)
+      // THE VALUE, not just its source text. Codegen only ever needed `extraSrc`
+      // — it prints `() => (extra)` into `_mf` — so `{}` was an adequate stand-in
+      // for the def's own `extra`. The TABLE ENCODER reads `d.extra` and interns
+      // it in the const pool, so the placeholder became the artifact: the pool
+      // held a bare `{}` and every `withCtx` gate predicate (`s => !!(s && s.inner)`)
+      // was present and permanently false. Evaluate the argument; the placeholder
+      // survives only when it cannot be evaluated, and then it is `emittableConst`
+      // that decides — a plain `{}` extras object is indistinguishable from an
+      // author's `{}`, so an unevaluable one must NOT masquerade as empty state.
+      const evaluated = anyValue(extraArg as Expression, scope, code, [])
+      const usable = typeof evaluated === 'object' && evaluated !== null && !Array.isArray(evaluated)
+        && Object.getPrototypeOf(evaluated) === Object.prototype
+      const combi = parseman.withCtx(usable ? evaluated : UNEVALUATED_EXTRA, inner)
       if (combi._def.tag !== 'withCtx') return null
       combi._def.extraSrc = extraSrc
       return combi

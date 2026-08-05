@@ -89,6 +89,20 @@ export type ParsecraftPluginOptions = {
 
 const PARSEMAN_MODULE = 'parseman'
 
+/**
+ * The REASON a lowering refused, appended to the warning that reports it.
+ *
+ * A grammar that fails to lower falls back to the interpreter with the parseman
+ * import surviving — it still parses, so no test notices, and the only symptom is
+ * ~79 ms against ~14 ms on `benchmark.less`. "Couldn't be inlined" alone does not
+ * tell an author which construct to change; the compiler knows, so it says.
+ */
+function reasonSuffix(runtimeOnly: readonly string[] | undefined): string {
+  return runtimeOnly === undefined || runtimeOnly.length === 0
+    ? ''
+    : ` — ${runtimeOnly.join('; ')}`
+}
+
 function unwrapStaticExpression(expr: Expression): Expression {
   let cur = expr as unknown as { type?: string; expression?: Expression }
   while (cur.type === 'TSAsExpression'
@@ -935,16 +949,20 @@ function transformMacroImpl(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
+  ): { replacement: string | null; refusals?: readonly string[]; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
-    const compiled = compileRuleMapTable([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage })
+    // The reasons, out of the encoder and into the warning. A bare "couldn't be
+    // inlined" leaves the author with a ~5x silent perf regression and no lead.
+    const refusals: string[] = []
+    const compiled = compileRuleMapTable([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage, refusals })
     // A table replacement names `tableRules`, which nothing in the consumer's
     // module binds. That reference is the whole reason the artifact is small (the
     // driver is SHARED, not inlined per grammar), so the import is owned here.
     if (compiled !== null) usedTableRuntime = true
     return {
       replacement: compiled?.replacement ?? null,
+      ...(compiled === null ? { refusals } : {}),
       ruleMap: evaluated.ruleMap,
       hostMode: compiled?.hostMode ?? 'ast',
       hostBranchElided: compiled?.hostBranchElided ?? false,
@@ -1718,9 +1736,14 @@ function transformMacroImpl(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compileTable(refCombi, undefined, { recovery, coverage: grammarCoverage })
+            // `mfSrcs` is the POSITIONAL fallback the evaluator collected while it
+            // built this combinator. The encoder's def-carried sources win; this only
+            // fills holes. Passing `undefined` here is what made a ref()'s reducers
+            // print as `() => {}`.
+            const compiled = compileTable(refCombi, refEntry?.mfSrcs, { recovery, coverage: grammarCoverage })
             if (compiled.inlineExpression === null) {
-              warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
+              warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`
+                + reasonSuffix(compiled.runtimeOnly))
               continue
             }
             usedTableRuntime = true
@@ -1774,7 +1797,7 @@ function transformMacroImpl(
           // merely happens to also reference an external rule.
           if (compiledRules.replacement === null) {
             if (!pieces || !hasExternalRuleRef([...compiledRules.ruleMap])) {
-              warn(init.start, `${varName}: rule map couldn't be inlined`)
+              warn(init.start, `${varName}: rule map couldn't be inlined` + reasonSuffix(compiledRules.refusals))
               continue
             }
             keepMacroImport = true
@@ -1894,11 +1917,15 @@ function transformMacroImpl(
           continue
         }
 
-        // Sources are carried on each transform's def (set by the evaluator), so
-        // codegen derives them in traversal order — no positional array needed.
-        const compiled = compileTable(parser, undefined, { recovery, coverage: grammarCoverage })
+        // Sources are carried on each transform's def (set by the evaluator) AND
+        // collected positionally into `mapFnSources`. Codegen only needed the former;
+        // the TABLE ENCODER needs whichever is present, so hand it both — the def
+        // sources win and the positional list fills holes. Passing `undefined` here
+        // is what made every macro-lowered reducer print as `() => {}`.
+        const compiled = compileTable(parser, mapFnSources, { recovery, coverage: grammarCoverage })
         if (compiled.inlineExpression === null) {
-          warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
+          warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`
+            + reasonSuffix(compiled.runtimeOnly))
           continue
         }
 
@@ -1925,7 +1952,7 @@ function transformMacroImpl(
         if (!compiledRules) continue
         // A destructured binding names INDIVIDUAL rules, so it has to inline —
         // there is no shared-shape path here (a hole has no standalone value).
-        if (compiledRules.replacement === null) { warn(init.start, `{ … }: rule map couldn't be inlined`); continue }
+        if (compiledRules.replacement === null) { warn(init.start, `{ … }: rule map couldn't be inlined` + reasonSuffix(compiledRules.refusals)); continue }
 
         // Walk the ObjectPattern properties, validating each destructured key
         // exists on the compiled rule map — collect bindings before emitting

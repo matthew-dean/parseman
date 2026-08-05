@@ -52,7 +52,15 @@ describe('compileRuleMapTable() matches compileRuleMap()\'s contract', () => {
     // `keys` is the entry list the caller validates against the source's own.
     expect(c.keys).toEqual(jsonEntries.map(([k]) => k))
     expect(c.hostMode).toBe('ast')
-    expect(c.hostBranchElided).toBe(true)
+    // FALSE, and that is the corrected reading rather than a loosened one.
+    // `hostBranchElided` means "a DIRECT BUILDER's positioned-CST branch was
+    // dropped" — it is what makes `'ast' artifact + CST host` an error. This
+    // grammar is all `transform()`; it owns no `node()` builder, so there was no
+    // branch to drop and it stays usable with either host. The old `mode === 'ast'`
+    // rule reported `true` for every ast artifact, which contradicted
+    // `macro-host-mode.test.ts`'s "leaves an all-STRUCTURAL grammar usable with
+    // either host" and made the two stamps disagree.
+    expect(c.hostBranchElided).toBe(false)
     // ONE expression, evaluating ONCE to the whole map — not one expression per
     // key. That is what `compileRuleMap` returns and what the plugin splices
     // over the entire `rules(factory)` call.

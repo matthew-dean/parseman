@@ -3,7 +3,7 @@ import { compileTable } from '../../src/table/compile.ts'
 import { run } from '../../src/functional/run.ts'
 import { csvParser } from '../../examples/csv/parser.ts'
 import { jsonDoc } from '../../examples/json/parser.ts'
-import { classifiedTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { classifiedTrivia, leaf, literal, node, parser, regex, rules, sequence, transform, trivia } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assembledRules } from '../../src/table/assemble.ts'
 import type { Combinator } from '../../src/types.ts'
@@ -171,5 +171,64 @@ describe('a table entry carries the trivia metadata run() reads', () => {
   it('leaves an unlabelled grammar with no metadata to report', () => {
     const doc = parser({ trivia: trivia(regex(/\s+/)) }, regex(/a/))
     expect(metaOf(assembledRules(encodeTable({ Doc: doc }))['Doc'])).toBeUndefined()
+  })
+})
+
+/**
+ * A PRINTED MODULE CAN NEVER CONTAIN AN EMPTY REDUCER.
+ *
+ * This is the invariant, not the incident. `compileTable` used to call
+ * `encodeTable`, which drops the encoder's `fnSrcs` side-channel, so every author
+ * callback reached `emitTable*` with no source and the emitters substituted
+ * `prog.fns.map(() => '() => {}')`. The result was the worst shape a compiler can
+ * produce: a module that loads, parses, reports `ok`, and returns `undefined`
+ * where both other engines return a tree. Nothing failed. Nothing warned.
+ *
+ * The repo has now found this class three times — `parseWithErrors` with an empty
+ * `errors` array, a coverage flag that measured nothing, and this. So the fix is
+ * pinned as a PROPERTY over the printed text rather than as a case: for any
+ * grammar that has reducers at all, no printed artifact may contain an empty
+ * arrow in its fn pool. A lowering that cannot source a reducer must REFUSE, by
+ * name, through `runtimeOnly`.
+ */
+describe('a printed table never ships an empty reducer', () => {
+  const EMPTY_ARROW = /(?:\(\s*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{\s*\}/
+
+  const withReducers: ReadonlyArray<readonly [string, Combinator<unknown>]> = [
+    ['json', jsonDoc as Combinator<unknown>],
+    ['csv', csvParser as Combinator<unknown>],
+    // A root built HERE, at runtime, with no macro anywhere near it — the case
+    // that has no captured sources and therefore the one the placeholder hit.
+    ['runtime node', node('N', sequence(literal('a'), literal('b')), children => children.length) as Combinator<unknown>],
+    ['runtime transform', transform(sequence(literal('a'), literal('b')), parts => parts.join('')) as Combinator<unknown>],
+    ['runtime leaf', leaf(regex(/[0-9]+/), text => Number(text)) as Combinator<unknown>],
+  ]
+
+  for (const [name, root] of withReducers) {
+    it(`${name}: prints real reducer text, or refuses BY NAME`, () => {
+      const compiled = compileTable(root)
+      const reasons = compiled.runtimeOnly ?? []
+      if (compiled.inlineExpression === null) {
+        // Refusal is a legal outcome. A SILENT one is not.
+        expect(reasons.length, `${name} refused without saying why`).toBeGreaterThan(0)
+        expect(compiled.source, `${name} refused, so there is nothing to print`).toBe('')
+        return
+      }
+      expect(reasons, name).toEqual([])
+      expect(compiled.source, `${name} module`).not.toMatch(EMPTY_ARROW)
+      expect(compiled.inlineExpression, `${name} expression`).not.toMatch(EMPTY_ARROW)
+    })
+  }
+
+  it('the runtime node actually RETURNS ITS VALUE — the symptom, pinned', () => {
+    // `{ ok: true }` with no `value` was the whole defect. It is asserted against
+    // the interpreter rather than against `2`, so the case cannot drift into
+    // agreeing with a rewritten expectation.
+    const root = node('N', sequence(literal('a'), literal('b')), children => children.length)
+    const t = compileTable(root as Combinator<unknown>).parse('ab')
+    const i = run(root as never, 'ab')
+    expect(t.ok).toBe(true)
+    expect(i.ok).toBe(true)
+    if (t.ok && i.ok) expect(t.value).toEqual(i.value)
   })
 })

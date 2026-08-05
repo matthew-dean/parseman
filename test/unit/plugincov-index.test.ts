@@ -336,11 +336,25 @@ export const g = rules(gr => ({ Doc: parser({ trivia: ws }, many(gr.W)), W: rege
     expect(covered.warnings).toEqual([])
   })
 
-  it('recovery changes the emitted parser rather than only the options record', () => {
+  /*
+   * STALE ASSERTION, not a defect — and it is worth saying which.
+   *
+   * This used to require `recovery: true` to produce a DIFFERENT artifact, which was
+   * the right test while recovery was an emission-time choice. It is not one any more:
+   * recovery is ALWAYS lowered (owner ruling — `TableSettings.recovery` is documented
+   * "ACCEPTED AND IGNORED", `prog.rec` is "now always 1", and `assemble.ts` selects
+   * between a tolerant and a strict assembly from `RunCfg.tolerant` at run time).
+   * `test/parity/table-recovery-always.test.ts` pins that behaviour directly.
+   *
+   * So byte-identity is the CONTRACT here, and the old assertion would have gone red
+   * for the flag being honoured correctly. What still has to hold is that asking for
+   * recovery is not an error and does not quietly degrade the grammar.
+   */
+  it('recovery is always lowered, so the flag does not change the emitted parser', () => {
     const plain = transformMacro(SRC, ID, new Set(['parseman']), false, false)!
     const recovering = transformMacro(SRC, ID, new Set(['parseman']), false, true)!
     expect(recovering.warnings).toEqual([])
-    expect(recovering.code).not.toBe(plain.code)
+    expect(recovering.code).toBe(plain.code)
   })
 })
 

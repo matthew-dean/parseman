@@ -1408,7 +1408,9 @@ function makeDriver(
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         if (v === FAIL) { END = pos; return null }
+        // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
         ctx._fe = pos
+        ctx._fx = fx[code[ip + 2]!] as string[]
         return FAIL
       }
 

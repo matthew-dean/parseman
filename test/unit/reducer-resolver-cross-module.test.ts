@@ -17,6 +17,7 @@ import * as path from 'node:path'
 import { parseSync } from 'oxc-parser'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { createReducerResolver } from '../../src/plugin/reducer-resolver.ts'
+import { evalMacroModule, isCompiledRule, tableKeepsTailCapture } from '../helpers/eval-macro-module.ts'
 
 let dir: string
 beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-reducers-')) })
@@ -37,8 +38,16 @@ const build = (name: string, src: string): string => {
   return result.code
 }
 
-/** Did the node allocate the raw-children collector it only needs at arity >= 4? */
-const allocatesRaw = (code: string): boolean => (code.match(/_raw\d+ = \[\]/g) ?? []).length > 0
+/**
+ * Did the node keep the capture tiers a low-arity reducer does not need?
+ *
+ * The old form matched `_raw\d+ = []`, which is a CODEGEN SPELLING — the source
+ * lowering's local for the raw-children collector. The macro emits a TABLE, so that
+ * regex silently answered `false` for every artifact and the cost contract stopped
+ * being checked. `tableKeepsTailCapture` asks the same question of the table's own
+ * node row. Behaviour is covered separately by the six-arity parity sweep below.
+ */
+const allocatesRaw = tableKeepsTailCapture
 
 const GRAMMAR = (importLine: string, ref: string) => `
 import { literal, node, parser, regex, sequence } from 'parseman' with { type: 'macro' }
@@ -191,13 +200,12 @@ describe('a reducer named inside an IMPORTED factory resolves against that facto
   beforeAll(() => { write('fpkg/package.json', '{ "name": "fpkg", "version": "1.0.0" }') })
 
   /*
-   * `allocatesRaw` is NOT the probe here: a `rules()` artifact allocates `_raw` at every
-   * arity, so it reads `false` throughout and would pass vacuously. The elision an arity
-   * actually buys under this emission shape is the trivia log and the state snapshot —
-   * `_EMPTY_TL` and a literal `undefined` in the builder call, in place of the live
-   * `_tl`/`_nst` bindings.
+   * The tiers an arity actually buys are the trivia log and the state snapshot. Codegen
+   * spelled that as `_EMPTY_TL` and a literal `undefined` in the builder call; the table
+   * spells it as the same two bits on the node row, which is what `allocatesRaw` reads.
+   * The probe is the artifact's, not codegen's, so it keeps answering across the flip.
    */
-  const elidesTailTiers = (code: string): boolean => /_build\[0\]\([^;]*_EMPTY_TL/.test(code)
+  const elidesTailTiers = (code: string): boolean => !allocatesRaw(code)
 
   /** Build an entry module that consumes a factory imported from `./<name>-factory.ts`. */
   const buildViaFactory = (name: string, factorySrc: string): string => {
@@ -208,7 +216,9 @@ import { factory } from './${name}-factory.ts'
 export const G = rules({ trivia: regex(/ +/) }, factory)
 `)
     // The whole test is void if the factory did not lower — assert it compiled.
-    expect(code).toContain('_r_Fold')
+    // `_r_Fold` was codegen's rule-function spelling; `isCompiledRule` asks the
+    // artifact-neutral version, so it survives the table flip.
+    expect(isCompiledRule(code, 'Fold')).toBe(true)
     return code
   }
 
@@ -336,13 +346,17 @@ import { fold } from './p${n}.ts'
 export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('a'), literal('b')), fold))
 `)
       const result = transformMacro(fs.readFileSync(file, 'utf8'), file, new Set(['parseman']))!
-      const body = result.code
-        .replace(/\bexport\s+/g, '')
-        .replace(/\bconst\b/g, 'var')
-        .replace(/import\s*\{[^}]*\}\s*from\s*'[^']*'\s*;?/g, '')
-        + '\nreturn P'
-      const compiled = (new Function(`var fold = (${params}) => ({ got: ${probe} });\n${body}`)()) as
-        (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown }
+      // Through the SHARED helper. The local strip-and-`new Function` recipe here
+      // only matched single-quoted specifiers, so it left the table artifact's
+      // `import { tableRules } from "parseman/table"` in place and every case died
+      // on "Cannot use import statement outside a module" — a harness gap, not a
+      // lowering one, and it hid the fact that these grammars now lower at all.
+      const compiled = evalMacroModule<(input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown }>(
+        result.code,
+        'P',
+        // eslint-disable-next-line no-new-func
+        { fold: new Function(`return (${params}) => ({ got: ${probe} })`)() },
+      )
 
       const { node: n2, literal, parser: parser2, regex: regex2, sequence: seq, run } = await import('../../src/index.ts')
       // eslint-disable-next-line no-new-func

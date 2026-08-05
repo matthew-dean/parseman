@@ -1,4 +1,5 @@
 import type { Combinator } from '../types.ts'
+import { hasDirectBuildDef } from '../compiler/codegen.ts'
 import type { HostMode } from '../compiler/codegen.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
@@ -71,6 +72,19 @@ export type TableRuleMapOptions = {
    * ones, it fills in for a pool that has none.
    */
   readonly fnSources?: readonly string[]
+  /**
+   * WHY THIS REFUSED, filled in on the `null` return.
+   *
+   * `null` means "leave this grammar interpreted", which is ~79 ms against ~14 ms
+   * on `benchmark.less` — a ~5x regression that produces no test failure and no
+   * warning content beyond "couldn't be inlined". The reasons exist inside the
+   * encoder (`prog.runtimeOnly`) and simply had no way out; this is that way out,
+   * so the plugin's warning can name the construct instead of the outcome.
+   *
+   * An out-parameter rather than a changed return type: every existing caller
+   * checks for `null` and that contract is unchanged.
+   */
+  readonly refusals?: string[]
 }
 
 export type CompiledRuleMapTable = {
@@ -81,12 +95,6 @@ export type CompiledRuleMapTable = {
   hostMode: HostMode
   hostBranchElided: boolean
   reflection: GrammarReflection
-  /**
-   * The coverage DENOMINATOR, present only under `{ coverage: true }` — the same
-   * field name and the same contents `compileRuleMap` returns, because the plugin
-   * reads one property off whichever lowering it called.
-   */
-  coverageDefinitions?: readonly GrammarCoverageDefinition[]
   /**
    * The RUNNABLE map, which the source lowering has no counterpart for — it
    * hands back text and nothing else, because its artifact only exists once the
@@ -189,7 +197,8 @@ export function compileRuleMapTable(
   let encoded: { prog: TableProgram; fnSrcs: (string | null)[] }
   try {
     encoded = encodeTableProgram(Object.fromEntries(ruleMap), settings)
-  } catch {
+  } catch (e) {
+    opts.refusals?.push(e instanceof Error ? e.message : String(e))
     return null
   }
   const { prog, fnSrcs } = encoded
@@ -198,7 +207,10 @@ export function compileRuleMapTable(
   // combinator parked in the pool, say). `compileRuleMap` returns null for its
   // own unprintable cases rather than emitting something that loads and
   // misbehaves; this is the same answer to the same question.
-  if (prog.runtimeOnly !== undefined && prog.runtimeOnly.length > 0) return null
+  if (prog.runtimeOnly !== undefined && prog.runtimeOnly.length > 0) {
+    opts.refusals?.push(...prog.runtimeOnly)
+    return null
+  }
   // The `mfCovered && buildCovered` gate, for the table's reducer pool: without
   // a source per author callback the emitters print `() => {}`, which produces a
   // module that loads and returns the wrong tree. An out-of-band list fills in
@@ -206,7 +218,13 @@ export function compileRuleMapTable(
   // partial list would leave the placeholders it was passed to remove.
   const supplied = opts.fnSources
   const sources = fnSrcs.map((s, i) => s ?? supplied?.[i] ?? null)
-  if (sources.some(s => s === null)) return null
+  if (sources.some(s => s === null)) {
+    const missing = sources.flatMap((s, i) => (s === null ? [i] : []))
+    opts.refusals?.push(
+      `author reducer source missing for prog.fns[${missing.join(', ')}] — printing would emit \`() => {}\` and the parse would return no value`,
+    )
+    return null
+  }
   if (supplied !== undefined && supplied.length > fnSrcs.length) {
     throw new Error(
       `compileRuleMapTable: got ${supplied.length} fnSources for a pool of ${fnSrcs.length}. `
@@ -225,11 +243,14 @@ export function compileRuleMapTable(
     keys: ruleMap.map(([key]) => key),
     replacement,
     hostMode,
-    // The table's OWN answer, not a re-derivation: `stampRuleMap` sets
-    // `FUSED_HOST_ELIDED` to `mode === 'ast'` on every entry it builds, because
-    // an 'ast' encode really did drop the positioned-CST branch. Reporting
-    // anything else here would put the macro's stamp at odds with the artifact's.
-    hostBranchElided: hostMode === 'ast',
+    // WHAT THE FLAG MEANS is "a DIRECT BUILDER's positioned-CST branch was
+    // dropped", which is what the driver's `'ast' artifact + CST host` check keys
+    // off. `mode === 'ast'` alone over-reports it: an all-STRUCTURAL grammar has no
+    // direct builder, so there was no branch to drop and it stays usable with either
+    // host — the long-standing `node(parser)` contract. Same predicate codegen uses
+    // for its own `hasDirectBuilders` (`codegen.ts:6180`), so the two lowerings stamp
+    // the same artifact rather than disagreeing about it.
+    hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
     rules: assembledRules(prog),

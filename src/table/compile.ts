@@ -1,7 +1,7 @@
 import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
 import type { CompiledParser, HostMode } from '../compiler/codegen.ts'
 import { createParseContext } from '../parse-context.ts'
-import { encodeTable, type TableSettings } from './encode.ts'
+import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableModule, emitTableExpression } from './emit.ts'
 import { assembledRules } from './assemble.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
@@ -15,6 +15,42 @@ import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
  * a drop-in for the source-lowering `compile()` rather than a second API.
  */
 const ENTRY = 'Entry'
+
+/**
+ * THE LAST RESORT FOR A REDUCER'S SOURCE — the function's own text.
+ *
+ * Third in precedence, behind the encoder's captured `fnSrc`/`buildSrc`/`predSrc`
+ * and behind a positional list. It exists because `compileTable` is the library
+ * `compile()` (`src/index.ts`), and a grammar BUILT AT RUNTIME has no captured
+ * sources at all — every `examples/*` fixture is one. Refusing them outright would
+ * make `.source` and `.inlineExpression` empty for every library caller, which
+ * `test/unit/table-compile.test.ts` pins against directly.
+ *
+ * WHAT IT IS NOT is a licence to print a placeholder. `() => {}` is only ever
+ * produced here if the author literally wrote it, so a reducer that silently
+ * returns nothing is not reachable through this path. A closure over its module's
+ * privates prints text that throws a ReferenceError when the module loads — LOUD,
+ * at load, naming the binding — which is the failure mode this project prefers
+ * over an artifact that parses and returns the wrong tree.
+ *
+ * Native and bound functions have no recoverable body (`[native code]`), so they
+ * return null and the caller refuses BY NAME.
+ */
+function ownSource(fn: unknown): string | null {
+  if (typeof fn !== 'function') return null
+  const text = Function.prototype.toString.call(fn)
+  if (!text.includes('[native code]')) return text
+  // A BUILT-IN GLOBAL USED AS A REDUCER — `leaf(regex(…), parseFloat)` is exactly
+  // that, and `examples/graphql/parser.ts` writes it. It has no body to print, but
+  // its NAME is a global binding that denotes the identical function in any module,
+  // so the name IS the faithful source. Verified by identity against `globalThis`,
+  // never by name alone: `Number.parseFloat` and a shadowed local both fail that.
+  const name = (fn as { name?: unknown }).name
+  return typeof name === 'string' && name.length > 0
+    && (globalThis as unknown as Record<string, unknown>)[name] === fn
+    ? name
+    : null
+}
 
 /**
  * THE CONTRACT DIVERGENCE, stated rather than hidden.
@@ -84,16 +120,49 @@ export function compileTable<T>(
     ...(opts.trackLines === undefined ? {} : { trackLines: opts.trackLines }),
     ...(plan === undefined ? {} : { coverage: plan }),
   }
-  const prog = encodeTable({ [ENTRY]: combinator as Combinator<unknown> }, settings)
+  // `encodeTableProgram`, NOT `encodeTable`. The plain `encodeTable` drops the
+  // `fnSrcs` side-channel on the floor, and dropping it is what made a printed
+  // module return NO VALUE: `emitTable*` falls back to `prog.fns.map(() => '() => {}')`
+  // (emit.ts:178/219/252), so every author reducer — `node` build fns, `transform`,
+  // `leaf` — became an empty arrow. The grammar still parsed, still returned `ok`,
+  // and returned `undefined` where the interpreter and codegen both returned a tree.
+  // `compileRuleMapTable` has guarded this since it was written (compile-rule-map.ts);
+  // this is the same guard on the single-root entry point.
+  const { prog, fnSrcs } = encodeTableProgram({ [ENTRY]: combinator as Combinator<unknown> }, settings)
   const entry = assembledRules(prog)[ENTRY]!
+
+  // Captured-first, supplied-as-fill-in. The encoder records a source per author
+  // callback from the def (`fnSrc` / `buildSrc` / `predSrc` / `gateSrcs`), which the
+  // macro evaluator sets; the out-of-band list is the escape for a combinator built
+  // at runtime, and it only fills HOLES.
+  //
+  // The list is POSITIONAL, in `prog.fns` order, so it is only usable when it indexes
+  // THIS pool — a different length means it came from a different walk (the evaluator
+  // collects one entry per callback it SEES; the encoder pools one per callback it
+  // EMITS, and those need not coincide) and applying it would misassign reducers
+  // silently. A mismatched list is therefore not consulted at all; if that leaves a
+  // hole, the refusal below fires and says so, which is the safe direction.
+  const offered = opts.fnSources ?? mapFnSources
+  const supplied = offered !== undefined && offered.length === fnSrcs.length ? offered : undefined
+  const sources = fnSrcs.map((s, i) => s ?? supplied?.[i] ?? ownSource(prog.fns[i]))
 
   // `runtimeOnly` reasons mean the program RUNS but cannot be printed. The parse
   // functions below are unaffected; only `source` / `inlineExpression` are, and
   // they degrade to null rather than throwing out of the printer at a call site
   // that only wanted to parse.
-  const printable = (prog.runtimeOnly === undefined || prog.runtimeOnly.length === 0)
-  const sources = opts.fnSources ?? mapFnSources
-  const emitOpts = sources === undefined ? {} : { fnSources: [...sources] }
+  //
+  // AN UNSOURCED REDUCER IS ONE OF THOSE REASONS. It is not a licence to print a
+  // placeholder: a module that loads, parses, and returns the wrong tree is worse
+  // than one that refuses, because nothing reports it. REFUSE, with a name.
+  const unsourced = sources.reduce<number[]>((acc, s, i) => (s === null ? [...acc, i] : acc), [])
+  const runtimeOnly = [
+    ...(prog.runtimeOnly ?? []),
+    ...(unsourced.length === 0
+      ? []
+      : [`author reducer source missing for prog.fns[${unsourced.join(', ')}] — printing would emit \`() => {}\` and the parse would return no value`]),
+  ]
+  const printable = runtimeOnly.length === 0
+  const emitOpts = { fnSources: sources as string[] }
   const source = printable ? emitTableModule(prog, { name: 'grammar', ...emitOpts }) : ''
   const inlineExpression = printable
     ? emitTableExpression(prog, { entry: ENTRY, runtimeRef: opts.runtimeRef ?? 'tableRules', ...emitOpts })
@@ -105,6 +174,7 @@ export function compileTable<T>(
   return {
     source,
     inlineExpression,
+    ...(printable ? {} : { runtimeOnly }),
     // The DENOMINATOR, handed back rather than scraped out of the emitted text.
     // `plugin/index.ts` prefers a compiler-supplied `coverageDefinitions` and only
     // falls back to regex-scanning generated hooks; a table has no hooks to scan,

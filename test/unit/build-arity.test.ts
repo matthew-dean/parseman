@@ -19,7 +19,7 @@ import type { ParserDef } from '../../src/index.ts'
 import { compile } from '../../src/compiler/codegen.ts'
 import { confirmedBuildArity, buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { assertMacroCompiled, evalMacroModule } from '../helpers/eval-macro-module.ts'
+import { assertMacroCompiled, evalMacroModule, tableKeepsTailCapture } from '../helpers/eval-macro-module.ts'
 
 type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
 
@@ -218,14 +218,12 @@ export const P = node('P', sequence(literal('a'), literal('b')), (children, fiel
 }))
 `, 'P')
 
-    expect(source).toContain('_EMPTY_TL')
-    // Macro output defaults to host mode 'ast', so it carries no host probe either.
-    // The `_dcst` binding was gated solely on the profiling capture pass, which is
-    // no longer compiled in, so it folds away entirely.
-    expect(source).not.toContain('_dcst')
-    expect(source).not.toContain('_parsemanCstOutput')
-    expect(source).toMatch(/_build\[0\]\(_ch\d+, undefined, \{ start:/)
-    expect(source).toMatch(/_EMPTY_TL, undefined\)/)
+    // Arity 3 is below trivia (5) and state (6), so the macro artifact must shed both.
+    // This used to read codegen's spellings for that — `_EMPTY_TL`, a literal
+    // `undefined` in the `_build[0](…)` call, the absent `_dcst` probe. Those describe
+    // the SOURCE lowering, and the macro emits a table, so every one of them silently
+    // stopped answering. The table states the same decision as bits on the node row.
+    expect(tableKeepsTailCapture(source)).toBe(false)
     expect(fn('ab', 0, {}).value).toEqual({
       childCount: 2,
       fieldsIsUndefined: true,

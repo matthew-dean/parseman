@@ -1080,6 +1080,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_NOT: {
         const child = link(code[ip + 1]!)
+        const xf = fx[code[ip + 2]!] as string[]
         return (input, pos, ctx) => {
           const need = markCst(ctx)
           const mRaw = MRAW
@@ -1092,7 +1093,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           if (v === FAIL) { END = pos; return null }
+          // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
           ctx._fe = pos
+          ctx._fx = xf
           return FAIL
         }
       }
