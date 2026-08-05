@@ -172,6 +172,67 @@ function applyAmbient(
   }
 }
 
+/**
+ * ENCODE FOR RUNNING, with no printability requirement.
+ *
+ * `compileRuleMapTable` refuses a map whose author callbacks have no captured SOURCE,
+ * because PRINTING one would emit `() => {}` and the parse would return the wrong tree.
+ * That gate is right for the macro, which prints, and wrong for every caller that only
+ * ever RUNS the result: a grammar built at runtime has live callbacks and no sources by
+ * construction, and `encodeTableProgram` parks the live function in the pool where the
+ * driver calls it perfectly well.
+ *
+ * Conflating the two is the single defect this project has now hit three times — a
+ * runtime `compose()`, `linkable()`, and the fuse — each presenting as "this grammar
+ * cannot be compiled" for a grammar that runs. The split lives here, once, so the next
+ * caller inherits the right answer instead of rediscovering it.
+ */
+export function compileRuleMapRunnable(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opts: TableRuleMapOptions = {},
+): Omit<CompiledRuleMapTable, 'replacement'> | null {
+  const encoded = encodeForRun(ruleMap, opts)
+  if (encoded === null) return null
+  const { prog, hostMode, plan } = encoded
+  return {
+    keys: ruleMap.map(([key]) => key),
+    hostMode,
+    hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    reflection: collectGrammarReflection(ruleMap),
+    ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
+    rules: assembledRules(prog),
+    prog,
+  }
+}
+
+function encodeForRun(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opts: TableRuleMapOptions,
+): { prog: TableProgram; fnSrcs: (string | null)[]; hostMode: HostMode; plan: ReturnType<typeof buildGrammarPlan> | undefined } | null {
+  runDuplicationDiagnosticRules(ruleMap, opts.duplication)
+  const plan = opts.coverage === true
+    ? buildGrammarPlan(
+        ruleMap.map(([, rule]) => rule),
+        Object.fromEntries(ruleMap.filter(([, rule]) => rule._def.tag !== 'lazy')),
+      )
+    : undefined
+  applyAmbient(ruleMap, opts)
+  const hostMode = resolveHostMode(ruleMap, opts.hostMode)
+  const settings: TableSettings = {
+    hostMode,
+    ...(resolveTrackLines(ruleMap, opts.trackLines) ? { trackLines: true } : {}),
+    ...(opts.recovery === true ? { recovery: true } : {}),
+    ...(plan === undefined ? {} : { coverage: plan }),
+  }
+  try {
+    const { prog, fnSrcs } = encodeTableProgram(Object.fromEntries(ruleMap), settings)
+    return { prog, fnSrcs, hostMode, plan }
+  } catch (e) {
+    opts.refusals?.push(e instanceof Error ? e.message : String(e))
+    return null
+  }
+}
+
 export function compileRuleMapTable(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts: TableRuleMapOptions = {},

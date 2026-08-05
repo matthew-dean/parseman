@@ -20,7 +20,7 @@ import { ruleDependencies } from '../analysis/gating.ts'
 import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
-import { compileRuleMapTable } from '../table/compile-rule-map.ts'
+import { compileRuleMapRunnable } from '../table/compile-rule-map.ts'
 import { tableRules } from '../table/exec.ts'
 import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -318,11 +318,18 @@ function fuseCarried(
       ;(rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = trivia
     }
   }
-  const compiled = compileRuleMapTable(merged, {
+  // RUNNABLE, not printable. `compose()` returns a parser; it never emits source, so
+  // requiring a captured source per author callback would refuse every grammar built at
+  // runtime — which have live callbacks by construction.
+  const refusals: string[] = []
+  const compiled = compileRuleMapRunnable(merged, {
     ...(trivia ? { trivia } : {}),
     ...(hostMode ? { hostMode } : {}),
+    refusals,
   })
-  if (compiled === null) throw new Error('compose: the merged grammar could not be encoded to a table')
+  if (compiled === null) {
+    throw new Error(`compose: the merged grammar could not be encoded to a table${refusals.length ? ` — ${refusals.join('; ')}` : ''}`)
+  }
   const map = tableRules(compiled.prog) as unknown as Record<string, FusedRule>
   // The host-mode stamp went on the fused closure before; a table carries nothing until
   // it is stamped, and an UNSTAMPED map reads as `{ ast, false }` so every driver
