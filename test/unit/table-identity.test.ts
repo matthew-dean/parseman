@@ -721,6 +721,61 @@ describe('table lowering — three-way identity across every encodable grammar',
   })
 
   /**
+   * `sepBy` with `min >= 2` — the SEPARATED twin of the `min >= 2` shape 1c5b2e8
+   * settled for `many`, and the case where a list can still owe a required item
+   * at EOF.
+   *
+   * Same contract: `min` counts ITEMS, `oneOrMoreSep(i, s)` IS
+   * `sepBy(i, s, { min: 1 })` (repeat.ts:285), and a `{ min: n }` prefix is finite
+   * by construction, so it takes the n-item derivation rather than stopping. The
+   * loop's `cur < input.length` head is a TERMINATION device for the greedy tail,
+   * exactly as `repItem`'s two stops are, and it must not end a mandatory prefix.
+   *
+   * The SEPARATOR is what decides whether that derivation exists at all, and it is
+   * the axis the three-way disagreement turned on — so both halves are pinned:
+   * with a nullable separator the empty string HAS an n-item derivation and the
+   * list must take it; with a real separator n items need n-1 separators, there is
+   * no derivation, and the list must fail. Note `matchesEmpty` (first-set.ts:112)
+   * consults only `d.parser` and reports `true` for BOTH, so it cannot be the
+   * authority here — it over-approximates, in its documented-safe direction.
+   */
+  it('sepBy {min: n} pads to n when the separator is nullable, and fails when it is not', () => {
+    const NullItem = regex(/[^,]*/)
+    const NullSep = regex(/,*/)
+    const shapes = {
+      Pad2: sepBy(NullItem, NullSep, { min: 2 }),
+      Pad3: sepBy(NullItem, NullSep, { min: 3 }),
+      NoPad: sepBy(NullItem, literal(','), { min: 2 }),
+      HardItem: sepBy(regex(/[a-z]+/), NullSep, { min: 2 }),
+    } as unknown as Record<string, Combinator<unknown>>
+    const cases = [
+      { name: 'empty', input: '' },
+      { name: 'one-item', input: 'a' },
+      { name: 'two-items', input: 'a,b' },
+    ]
+    for (const rule of Object.keys(shapes)) {
+      const r = checkIdentity(shapes, rule, cases)
+      expect(r.mismatches, rule).toEqual([])
+    }
+
+    const tbl = tableRules(encodeTable(shapes))
+    const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
+    // A nullable separator: the derivation exists, so `min` pads with zero-width
+    // items rather than failing. Consumes nothing on the empty string.
+    expect(val('Pad2', '')).toEqual(['', ''])
+    expect(val('Pad3', '')).toEqual(['', '', ''])
+    expect(val('Pad2', 'a')).toEqual(['a', ''])
+    expect(val('Pad3', 'a,b')).toEqual(['a', 'b', ''])
+    // A real separator: no derivation, so the list FAILS rather than padding…
+    expect(run(tbl.NoPad! as never, 'a').ok).toBe(false)
+    expect(run(tbl.HardItem! as never, 'a').ok).toBe(false)
+    // …reporting the ITEM it is stuck wanting, not the separator it last tried.
+    expect(run(tbl.NoPad! as never, 'a').expected).toEqual(['/[^,]*/'])
+    expect(run(tbl.NoPad! as never, 'a').expected)
+      .toEqual(run(shapes.NoPad! as never, 'a').expected)
+  })
+
+  /**
    * `min >= 2` — the bound the three engines each got HALF right, and the only
    * shape where all three shipped a different answer.
    *

@@ -390,8 +390,18 @@ class Encoder {
         // A list contributes its ITEMS and nothing else (release/0.47.0
         // `7cb528e feat(lists)!`). The separator is demoted out of `children`
         // after it matches unless the author opted in with `keepSeparator()`.
-        const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0)
-        return this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
+        // Bit 2: an ITEM-expected fx index follows at `ip + 6`. A list that ends
+        // under `min` reports what would have let it CONTINUE — the ITEM, which
+        // is what `failAt` (repeat.ts) and `deriveExpectedArr([def.parser])`
+        // (codegen emitSepBy) both use; the driver otherwise reports whatever
+        // sub-parse failed last, which is the SEPARATOR. Only `min >= 2` can
+        // reach that end under `min` with items already taken — at `min === 1`
+        // it means the FIRST item failed, and that failure already set the
+        // item's own set. So no committed grammar grows by a word.
+        const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 2 ? 4 : 0)
+        return d.min >= 2
+          ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags, this.expected(deriveExpected(d.parser)))
+          : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
       }
       case 'optional':
         return this.emit(OP_OPT, this.node(d.parser).ip)

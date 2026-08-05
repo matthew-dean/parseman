@@ -43,6 +43,50 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   concentrated in the rows that REMAIN, not in speculation. Ungated speculation
   was worth ~17% of the table's time, not the whole 2x.
 
+- **`sepBy(x, s, { min: n })` with `n >= 2` now takes the same n-item derivation
+  `many` does — the separated twin of the fix below.** A list over a nullable
+  item AND a nullable separator failed in both shipped engines and succeeded
+  table-side; a derivation genuinely exists there, so the shipped engines were
+  the wrong ones and the table was right. The table's answer is unchanged.
+
+  The interpreter's and codegen's `sepBy` loop head is `cur < input.length`.
+  That is a TERMINATION device for the GREEDY tail — the same role
+  `repItem`'s two stops play, and the same argument that settled `many` — and a
+  prefix of exactly `min` items is finite by construction: each iteration that
+  succeeds pushes one, so the mandatory disjunct can hold at most `min` times.
+  Stopping on it made a REQUIRED item unreachable at EOF, so
+  `sepBy(nullable, nullableSep, { min: 2 })` over `""` failed instead of
+  yielding `["", ""]`.
+
+  **The separator decides whether the derivation exists**, and that is the axis
+  the disagreement turned on. With a nullable separator the empty string has an
+  n-item derivation and the list takes it. With a real separator, n items need
+  n-1 separators, there is no derivation, and the list still FAILS rather than
+  padding — unchanged in all three engines. Note that `matchesEmpty`
+  (`first-set.ts`) consults only the ITEM and reports `true` for both, so it
+  cannot be the authority for `sepBy` the way it is for `many`; it
+  over-approximates, in its documented-safe direction. **Reported, not fixed:**
+  that imprecision puts a nullable claim on a `min >= 2` list with a
+  non-nullable separator, which can never match empty — the exact complaint the
+  authored note there makes about the `min === 1` reading it replaced. The
+  precise form is `min >= 2 ? me(item) && me(separator) : min >= 1 ? me(item) :
+  true`, but it NARROWS nullability, which is the gating-unsafe direction, so it
+  needs its own A/B rather than a ride-along.
+
+  Also fixed, same family: **a table-lowered list that ends under `min` now
+  reports the ITEM in `expected`**, not the separator it happened to try last.
+  `failAt` (`repeat.ts`) and codegen's `deriveExpectedArr([def.parser])` both
+  already reported the item — a list stuck under `min` is stuck wanting another
+  ITEM. The encoder carries the item's expected set only when `min >= 2` (flags
+  bit 2), since at `min === 1` being under `min` means the FIRST item failed and
+  set that same set already; no committed grammar grows by a word, and the
+  emitted table is byte-identical.
+
+  **Consumer-visible, and only for `min >= 2` separated lists**; the three-way
+  sweep is byte-identical to the previous commit on every corpus. Codegen's
+  output is byte-identical for every `min <= 1` list, which is all of them
+  today.
+
 - **`many(x, { min: n })` with `n >= 2` now means the same thing in all three
   engines. It previously meant three different things.** Over the input `"a,b"`
   with a nullable item, `many(Field, { min: 2 })` returned `["a", ""]` compiled,

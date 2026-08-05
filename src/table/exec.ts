@@ -892,7 +892,18 @@ function makeDriver(
           cur = END
           count++
         }
-        if (count < min) return FAIL
+        if (count < min) {
+          // A list that ends under `min` is stuck at `cur` wanting another ITEM,
+          // and reports what would have let it CONTINUE there — `failAt` in
+          // repeat.ts and `deriveExpectedArr([def.parser])` in codegen's
+          // emitSepBy both say the ITEM. Left alone, `_fx` still holds whatever
+          // sub-parse failed last, which for a separated list is the SEPARATOR.
+          // The index is present only when the encoder could not rule that out
+          // (flags bit 2, `min >= 2`); at `min === 1` being under `min` means the
+          // FIRST item failed and set the item's own set already.
+          if ((code[ip + 5]! & 4) !== 0) { ctx._fe = cur; ctx._fx = fx[code[ip + 6]!] as string[] }
+          return FAIL
+        }
         END = cur
         return out
       }

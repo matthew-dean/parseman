@@ -3350,6 +3350,16 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     }
   }
 
+  // A prefix of exactly `min` items is finite by construction, so the loop's EOF
+  // stop — a termination device for the GREEDY tail — must not end it early: see
+  // the matching comment in `sepBy()` (repeat.ts). Emitted only for `min >= 2`,
+  // where a required item can still be outstanding at EOF; `min <= 1` is already
+  // satisfied by the first element, so every existing grammar's output is
+  // byte-identical.
+  const loopHead = def.min >= 2
+    ? `while (${curV} < input.length || ${arrV}.length < ${def.min}) {`
+    : `while (${curV} < input.length) {`
+
   // First element + loop entry. Strict keeps the exact `if (firstOk) { … while }`
   // shape (byte-identical). Tolerant recovers a junk first element (unless sitting
   // on the enclosing sync) and still enters the loop via a `did` flag.
@@ -3367,7 +3377,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       `${ind(ctx)}if (${didV}) {`,
     )
     ctx.indent++
-    stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
+    stmts.push(`${ind(ctx)}${loopHead}`)
     ctx.indent++
   } else {
     if (first.mayCommit) stmts.push(`${ind(ctx)}if (!${firstOk} && _ctx._fc) ${committedFailBody(ctx)}`)
@@ -3376,7 +3386,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     stmts.push(
       `${ind(ctx)}${arrV}.push(${firstVal})`,
       `${ind(ctx)}${curV} = ${firstEnd}`,
-      `${ind(ctx)}while (${curV} < input.length) {`,
+      `${ind(ctx)}${loopHead}`,
     )
     ctx.indent++
   }

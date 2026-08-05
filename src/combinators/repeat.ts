@@ -456,7 +456,20 @@ export function sepBy<T, S>(
         captureError(ctx, rec.error)
         cur = rec.end
       }
-      while (cur < input.length) {
+      // `|| values.length < min` — the separated twin of `repItem`'s `mandatory`
+      // (1c5b2e8). `cur < input.length` is a TERMINATION device for the greedy
+      // tail, and that pressure does not exist for a prefix of exactly `min`
+      // items, which is finite by construction: each iteration that succeeds
+      // pushes one, so the disjunct can hold at most `min` times. Stopping on it
+      // made a REQUIRED item unreachable at EOF, so `sepBy(x, s, { min: n })` over
+      // a nullable `x` AND a nullable `s` — where the n-item derivation of the
+      // empty string genuinely exists — failed instead of taking it.
+      //
+      // A non-nullable separator still fails the list here rather than padding it:
+      // n items need n-1 separators, so there is no derivation to take, and the
+      // iteration below breaks on the separator exactly as it always did.
+      // Vacuous for `min <= 1`, which the first element already satisfies.
+      while (cur < input.length || values.length < min) {
         if (values.length >= max) break
         // One mark for the whole iteration (separator + following item): if the
         // item fails, the trailing separator must be rolled back with it, or its

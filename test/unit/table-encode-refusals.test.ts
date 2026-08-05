@@ -302,7 +302,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
     }
   })
 
-  it('THREE shapes still report a different expected set; the dispatch miss no longer does', () => {
+  it('TWO shapes still report a different expected set; the dispatch miss and the sepBy min do not', () => {
     // All four accept and reject exactly the right inputs, so the identity sweep
     // is blind to every one of them; only the error message moves. Collected here
     // so the size of the divergence is one number rather than a rumour.
@@ -310,12 +310,13 @@ describe('table failure reporting matches the interpreter and the compiled path'
     // Characterised, not endorsed: each `toEqual` on the TABLE row is the current
     // behaviour, and each `interp`/`compiled` row is what it should be.
     //
-    // WAS FOUR. The dispatched-choice miss is FIXED — a choice now carries its
-    // own expected set and reports the union on every failing exit, so it is no
-    // longer in `cases` below and has its own positive test in
-    // table-driver-ops.test.ts. The remaining three are untouched by that change
-    // and are re-pinned here at their real width rather than left in a
-    // four-shape claim that is no longer true.
+    // WAS FOUR, THEN THREE. The dispatched-choice miss went first — a choice now
+    // carries its own expected set and reports the union on every failing exit.
+    // `Min` is the second to go: a list ending under `min` now reports the ITEM,
+    // which is what `failAt` (repeat.ts) and codegen's `deriveExpectedArr([item])`
+    // both already reported. Both are kept in the grammar so the shapes are still
+    // encoded and exercised, and `Min` is asserted POSITIVELY below rather than
+    // deleted, so a regression cannot quietly restore the separator.
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       // 1. keywords(): the encoder rebuilds the terminal and derives the set from
       //    the rebuilt regex's parts instead of the combinator's own label.
@@ -329,7 +330,8 @@ describe('table failure reporting matches the interpreter and the compiled path'
         transform(regex(/[\u{1F600}-\u{1F64F}]+/u), v => v),
         transform(regex(/[0-9]+/), v => v),
       ) as Combinator<unknown>,
-      // 4. a sepBy that fails its `min` reports the SEPARATOR rather than the item.
+      // 4. FIXED — a sepBy that fails its `min` now reports the ITEM, not the
+      //    separator. Kept in the grammar so the shape is still encoded.
       Min: sepBy(regex(/[a-z]/), literal(','), { min: 2 }) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
     const t = tableRules(encodeTable(g))
@@ -337,13 +339,18 @@ describe('table failure reporting matches the interpreter and the compiled path'
     const cases = [
       ['Kw', 'ifx', ['"ifdef"', '"if"'], ['keyword']],
       ['Peek', 'ax', ['"ab"'], ['peek(literal)']],
-      ['Min', 'a', ['","'], ['/[a-z]/']],
     ] as const
     for (const [rule, input, fromTable, fromEngines] of cases) {
       expect(run(t[rule]! as never, input).ok, `${rule} ${input}`).toBe(false)
       expect(run(t[rule]! as never, input).expected, `${rule} table`).toEqual(fromTable)
       expect(run(g[rule]! as never, input).expected, `${rule} interpreter`).toEqual(fromEngines)
       expect(run(c[rule] as never, input).expected, `${rule} compiled`).toEqual(fromEngines)
+    }
+    // `Min`, positively: all THREE now name the item. A list stuck under `min` is
+    // stuck wanting another ITEM, and says so wherever it runs.
+    for (const engine of [t.Min!, g.Min!, c.Min]) {
+      expect(run(engine as never, 'a').ok).toBe(false)
+      expect(run(engine as never, 'a').expected).toEqual(['/[a-z]/'])
     }
     // THE FAILURE POSITION NO LONGER MOVES. It did: for '[1,2,]' the table
     // stopped at offset 4 naming one token while both engines reported offset 0
