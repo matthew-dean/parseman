@@ -8,8 +8,9 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ADJ,
 } from './ops.ts'
+import { adjacencyExpected } from '../combinators/adjacency.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 
@@ -113,6 +114,24 @@ class Encoder {
     const i = this.k.length
     this.k.push(v)
     this.kIndex.set(key, i)
+    return i
+  }
+
+  /**
+   * A `notAdjacent({ kinds })` filter, pooled by its CONTENTS.
+   *
+   * `constant()` keys an array by identity, and every `notAdjacent()` call
+   * builds a fresh one — so `calc()`'s four `{ kinds: ['whitespace'] }` sites
+   * would each park an identical array in the pool.
+   */
+  private kindsIndex = new Map<string, number>()
+  private kindsSlot(kinds: readonly string[]): number {
+    const key = JSON.stringify(kinds)
+    const hit = this.kindsIndex.get(key)
+    if (hit !== undefined) return hit
+    const i = this.k.length
+    this.k.push([...kinds])
+    this.kindsIndex.set(key, i)
     return i
   }
 
@@ -583,6 +602,17 @@ class Encoder {
         // path and the pre-rename API both emit (gate.ts), so the identity sweep
         // compares it.
         return this.emit(OP_GUARD, this.fn(d.predicate), this.expected(['guard']))
+      case 'adjacency':
+        // The expected label is `adjacencyExpected`'s, not `deriveExpected`'s:
+        // the interpreter fails with exactly `adjacent` / `notAdjacent` /
+        // `notAdjacent(a|b)` (adjacency.ts `adjacencyFail`) and codegen emits the
+        // same string, so this is the one the identity sweep compares.
+        return this.emit(
+          OP_ADJ,
+          d.polarity === 'notAdjacent' ? 1 : 0,
+          d.kinds === undefined ? -1 : this.kindsSlot(d.kinds),
+          this.expected([adjacencyExpected(d)]),
+        )
       case 'withCtx':
         return this.emit(OP_WITHCTX, this.constant(d.extra), this.node(d.parser).ip)
       case 'peek':

@@ -214,6 +214,34 @@ export const OP_WITHCTX = 31
  */
 export const OP_GUARD = 32
 /**
+ * `ADJ neg kinds fx` — `adjacent()` / `notAdjacent()`. `neg` is 1 for
+ * `notAdjacent`, `kinds` indexes the category filter (a `readonly string[]`) in
+ * the const pool or is −1, and `fx` is the expected set.
+ *
+ * A BOUNDARY TEST, NOT A TERM, and that is the whole reason it is its own
+ * opcode rather than a zero-width leaf like `OP_GUARD`. It asks whether trivia
+ * sat between the PREVIOUS term and here, so it must be evaluated at the
+ * sequence cursor — BEFORE the ambient trivia scan that precedes an ordinary
+ * non-first term. A piece handed the post-scan position would find the gap
+ * already consumed and answer "adjacent" every time, silently: `adjacent()`
+ * would become a no-op and `notAdjacent()` a guaranteed failure. So the SEQ
+ * pieces read this row at assembly and run the test themselves, exactly as
+ * `sequence()` forks `parseAdjacent` (combinators/sequence.ts:118) and as
+ * codegen lowers it at the boundary (codegen.ts:1765).
+ *
+ * Reached as a row in its own right only where there IS no boundary — a bare
+ * choice arm, a `node()` body, a repeat item. The interpreter throws there
+ * (adjacency.ts) rather than answering a question that was never asked, and so
+ * does the driver: same sentence, from `adjacencyMisuse`.
+ *
+ * The kind filter is resolved against the ACTIVE trivia table at parse time,
+ * matching the interpreter — a scope can swap the table, so it is not an
+ * assembly-time fact. (Codegen resolves it at COMPILE time and therefore
+ * reports an unlabelled table or an unknown category earlier; both engines
+ * raise the same `TypeError`, only the moment differs.)
+ */
+export const OP_ADJ = 33
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -241,4 +269,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_SCAN]: 'SCAN',
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
   [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX', [OP_GUARD]: 'GUARD',
+  [OP_ADJ]: 'ADJ',
 }

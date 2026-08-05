@@ -17,8 +17,9 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ADJ,
 } from './ops.ts'
+import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { stampRuleMap } from './stamp.ts'
 import {
   expandCompact, resolveTable,
@@ -378,6 +379,13 @@ function makeDriver(
         return FAIL
       }
 
+      // Reached only where there is NO boundary to test — a bare choice arm, a
+      // `node()`'s whole body, a repeat item. The SEQ cases above intercept the
+      // row wherever it CAN be answered, so arriving here means the same misuse
+      // the interpreter refuses (adjacency.ts), and it refuses identically.
+      case OP_ADJ:
+        throw adjacencyMisuse(code[ip + 1] === 1 ? 'notAdjacent' : 'adjacent')
+
       case OP_GATE: {
         if (!classHas(cc[code[ip + 1]!]!, lead(input, pos))) {
           ctx._fe = pos; ctx._fx = fx[code[ip + 3]!] as string[]
@@ -595,6 +603,22 @@ function makeDriver(
         let cur = pos
         for (let i = 0; i < n; i++) {
           const child = code[base + i]!
+          // ADJACENCY IS TESTED AT `cur`, BEFORE THE BOUNDARY'S TRIVIA SCAN, and
+          // moves nothing — the next term re-scans the same gap and keeps its own
+          // commit/rewind decision, so spans, tree and trivia log are identical to
+          // the same sequence without the marker (combinators/sequence.ts:124).
+          // Running it through `exec` at the POST-scan position would find the gap
+          // already consumed and answer "adjacent" unconditionally.
+          if (code[child] === OP_ADJ) {
+            if (COUNT) { tableCounters.rows++; tableCounters.byOp[OP_ADJ]!++ }
+            const ki = code[child + 2]!
+            if (!adjacencyHolds(input, cur, ctx, code[child + 1] === 1, ki < 0 ? undefined : k[ki] as readonly string[])) {
+              ctx._fe = cur; ctx._fx = fx[code[child + 3]!] as string[]
+              return FAIL
+            }
+            if (values !== undefined) values.push(null)
+            continue
+          }
           if (i > 0 && ctx.trivia !== undefined) {
             // SCALAR MARKS — `saveTriviaMark` allocated TWICE per term (its own
             // seven-field object plus the five-field CST mark it delegates to).

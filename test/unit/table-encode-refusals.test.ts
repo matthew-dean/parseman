@@ -7,8 +7,11 @@ import { tableRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, selectNodes } from '../../bench/table-grammars.ts'
+import { assembledRules } from '../../src/table/assemble.ts'
+import { opHistogram } from '../../src/table/inspect.ts'
 import {
-  balanced, choice, keywords, literal, many, node, optional, parser, peek, regex, rules,
+  adjacent, balanced, choice, classifiedTrivia, keywords, literal, many, node, notAdjacent,
+  optional, parser, peek, regex, rules,
   gate, sepBy, sequence, token, transform, trivia, withCtx, type Combinator,
 } from '../../src/index.ts'
 
@@ -185,6 +188,80 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     // The predicate really gates: same input, opposite state, opposite outcome.
     expect(run(r.inFn! as never, 'r').ok).toBe(true)
     expect(run(r.notInFn! as never, 'r').ok).toBe(false)
+  })
+
+  it('adjacent() / notAdjacent() lower as OP_ADJ and decide the GAP like the interpreter', () => {
+    // The assertion is about what sits BETWEEN two terms, so the inputs cover
+    // both answers for both polarities and both sides of the kind filter: glued,
+    // separated by whitespace, separated by a comment, separated by both. A
+    // lowering that ran the test at the POST-trivia-scan position — which is
+    // where an ordinary non-first term starts — would report "adjacent"
+    // everywhere, making `adjacent()` a no-op and `notAdjacent()` a guaranteed
+    // failure. Neither is visible from one polarity alone.
+    const classified = (): Combinator<unknown> => classifiedTrivia({
+      whitespace: regex(/[ \t\n\r\f]+/),
+      comment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+    }) as Combinator<unknown>
+    const glued = (mid: Combinator<null>): Combinator<unknown> =>
+      parser({ trivia: classified() }, sequence(literal('a'), mid, literal('b'))) as Combinator<unknown>
+    const cases: Record<string, Combinator<unknown>> = {
+      Adj: glued(adjacent()),
+      NotAdj: glued(notAdjacent()),
+      // css-values-4 10.1's constraint: a comment in place of the space does not
+      // count, because it vanishes at tokenisation.
+      NotAdjWs: glued(notAdjacent({ kinds: ['whitespace'] })),
+      NotAdjComment: glued(notAdjacent({ kinds: ['comment'] })),
+      // No ambient trivia at all: the gap is empty everywhere, so `adjacent()`
+      // is vacuously true and `notAdjacent()` can never hold.
+      AdjNoTrivia: sequence(literal('a'), adjacent(), literal('b')) as Combinator<unknown>,
+      NotAdjNoTrivia: sequence(literal('a'), notAdjacent(), literal('b')) as Combinator<unknown>,
+    }
+    const inputs = ['ab', 'a b', 'a   b', 'a/*x*/b', 'a /*x*/b', 'a/*x*/ b', 'a', 'ax', 'b']
+    const prog = encodeTable(cases)
+    expect(opHistogram(prog).ADJ).toBe(6)
+    // BOTH drivers: `exec.ts` is the reference and `assemble.ts` is what ships.
+    for (const [driver, r] of [['exec', tableRules(prog)], ['assembled', assembledRules(prog)]] as const) {
+      for (const key of Object.keys(cases)) {
+        for (const src of inputs) {
+          const t = run(r[key]! as never, src)
+          const i = run(cases[key]! as never, src)
+          const at = `${driver} ${key} ${JSON.stringify(src)}`
+          expect(t.ok, at).toBe(i.ok)
+          expect(t.value, at).toEqual(i.value)
+          expect(t.expected, `${at} expected`).toEqual(i.expected)
+        }
+      }
+    }
+    // The assertions really decide, in both directions — a differential against
+    // an interpreter that had the same bug would agree on everything.
+    const r = assembledRules(prog)
+    const ok = (key: string, src: string): boolean => run(r[key]! as never, src).ok
+    expect([ok('Adj', 'ab'), ok('Adj', 'a b')]).toEqual([true, false])
+    expect([ok('NotAdj', 'ab'), ok('NotAdj', 'a b'), ok('NotAdj', 'a/*x*/b')]).toEqual([false, true, true])
+    expect([ok('NotAdjWs', 'a b'), ok('NotAdjWs', 'a/*x*/b')]).toEqual([true, false])
+    expect([ok('NotAdjComment', 'a b'), ok('NotAdjComment', 'a/*x*/b')]).toEqual([false, true])
+    expect([ok('AdjNoTrivia', 'ab'), ok('NotAdjNoTrivia', 'ab')]).toEqual([true, false])
+    // The failure label is the interpreter's, verbatim — the kind filter is
+    // named in it, so two differently-filtered sites do not report the same set.
+    expect(run(r.NotAdjWs! as never, 'ab').expected).toEqual(['notAdjacent(whitespace)'])
+    expect(run(r.Adj! as never, 'a b').expected).toEqual(['adjacent'])
+  })
+
+  it('an adjacency marker with NO boundary refuses in every engine, with one sentence', () => {
+    // A bare rule body, a repeat item: nowhere for the assertion to look. The
+    // interpreter throws rather than answering a question that was never asked
+    // (silently answering "no trivia here" makes `adjacent()` invisible), and
+    // both drivers reach the same `adjacencyMisuse`.
+    const cases: Record<string, Combinator<unknown>> = {
+      Bare: adjacent() as Combinator<unknown>,
+      Repeated: many(notAdjacent()) as Combinator<unknown>,
+    }
+    const prog = encodeTable(cases)
+    for (const [key, re] of [['Bare', /^adjacent\(\): adjacency assertions are boundary tests/], ['Repeated', /^notAdjacent\(\): adjacency assertions are boundary tests/]] as const) {
+      expect(() => run(cases[key]! as never, 'a')).toThrow(re)
+      expect(() => run(tableRules(prog)[key]! as never, 'a')).toThrow(re)
+      expect(() => run(assembledRules(prog)[key]! as never, 'a')).toThrow(re)
+    }
   })
 
   it('an empty rule map still produces a runnable table', () => {

@@ -85,8 +85,9 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ADJ,
 } from './ops.ts'
+import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import {
   classHas, expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
@@ -125,6 +126,14 @@ type Leaf = { _tag: 'leaf'; value: string; span: { start: number; end: number } 
  * `{ value, end }` pair would be an allocation per row.
  */
 type Piece = (input: string, pos: number, ctx: ParseContext) => unknown
+
+/**
+ * ONE NON-FIRST SEQUENCE TERM, in a sequence that carries an adjacency
+ * assertion. Returns the new cursor or −1, with the value in `TERMV` —
+ * `nextTerm`'s protocol, so a bound term and a bound assertion are
+ * interchangeable in the loop and the loop tests neither.
+ */
+type TermRunner = (input: string, cur: number, ctx: ParseContext) => number
 
 /**
  * The option set an assembly is specialised for.
@@ -497,6 +506,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
+      case OP_ADJ: {
+        // A row reached in its own right has NO boundary to test — the SEQ
+        // pieces intercept the assertion wherever the question is answerable.
+        // So this is the misuse the interpreter refuses (a bare choice arm, a
+        // `node()` body, a repeat item), refused with the same sentence. Built
+        // The POLARITY is bound here; the error itself is built where it is
+        // thrown, so its stack points at the parse and not at assembly.
+        const polarity = code[ip + 1] === 1 ? 'notAdjacent' : 'adjacent'
+        return () => { throw adjacencyMisuse(polarity) }
+      }
+
       case OP_GATE: {
         const cls = cc[code[ip + 1]!]!
         const xf = fx[code[ip + 3]!] as string[]
@@ -831,6 +851,97 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (values !== undefined) values.push(TERMV)
           }
           return cur
+        }
+
+        /**
+         * SEQUENCES CARRYING AN ADJACENCY ASSERTION — the assembly-time twin of
+         * `sequence()`'s `parseAdjacent` fork (combinators/sequence.ts:118).
+         *
+         * `adjacent()` / `notAdjacent()` are BOUNDARY tests, not terms: each asks
+         * whether trivia sat between the previous term and here, so it has to be
+         * answered at the cursor, BEFORE the ambient scan `nextTerm` performs.
+         * Handed the post-scan position it would find the gap already consumed
+         * and answer "adjacent" every time — `adjacent()` a no-op,
+         * `notAdjacent()` a guaranteed failure, both behind a parse that still
+         * succeeds. Which term holds an assertion is TABLE DATA, so the decision
+         * is made here and the parse path holds a bound runner per term rather
+         * than an opcode test per term.
+         *
+         * A runner returns the new cursor or −1, with the value in `TERMV` —
+         * `nextTerm`'s protocol, so the two kinds are interchangeable in the
+         * loop. The assertion's runner returns `cur` UNMOVED: the following term
+         * re-scans the same gap and keeps its own commit/rewind decision, which
+         * is what makes the tree, the spans and the trivia log identical to the
+         * same sequence written without the marker.
+         *
+         * Index 0 is never an assertion — `sequence()` rejects it at
+         * construction, since the gap before the first term belongs to the
+         * caller — so the first child is still called directly.
+         */
+        let hasAdj = false
+        for (let i = 1; i < n; i++) if (code[code[base + i]!] === OP_ADJ) { hasAdj = true; break }
+        if (hasAdj) {
+          const runners: TermRunner[] = new Array<TermRunner>(n)
+          for (let i = 1; i < n; i++) {
+            const kidIp = code[base + i]!
+            if (code[kidIp] !== OP_ADJ) {
+              const kid = kids[i]!
+              runners[i] = (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
+              continue
+            }
+            const negated = code[kidIp + 1] === 1
+            const ki = code[kidIp + 2]!
+            // The FILTER is bound; the MASK is not. A scope can swap the trivia
+            // table, so which bit a category name means is a parse-time fact —
+            // `adjacencyHolds` resolves it against the active table, exactly as
+            // the interpreter does.
+            const kinds = ki < 0 ? undefined : k[ki] as readonly string[]
+            const xf = fx[code[kidIp + 3]!] as string[]
+            runners[i] = (input, cur, ctx) => {
+              if (!adjacencyHolds(input, cur, ctx, negated, kinds)) {
+                ctx._fe = cur; ctx._fx = xf
+                return -1
+              }
+              TERMV = null
+              return cur
+            }
+          }
+          const runAdjTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
+            const v0 = kids[0]!(input, pos, ctx)
+            if (v0 === FAIL) return -1
+            if (values !== undefined) values.push(v0)
+            let cur = END
+            for (let i = 1; i < n; i++) {
+              cur = runners[i]!(input, cur, ctx)
+              if (cur < 0) return -1
+              if (values !== undefined) values.push(TERMV)
+            }
+            return cur
+          }
+          if (fused) {
+            return (input, pos, ctx) => {
+              const values: unknown[] = []
+              const cur = runAdjTerms(input, pos, ctx, values)
+              if (cur < 0) return FAIL
+              END = cur
+              return fn!(values, { start: pos, end: cur })
+            }
+          }
+          if (wantValues) {
+            return (input, pos, ctx) => {
+              const values: unknown[] = []
+              const cur = runAdjTerms(input, pos, ctx, values)
+              if (cur < 0) return FAIL
+              END = cur
+              return values
+            }
+          }
+          return (input, pos, ctx) => {
+            const cur = runAdjTerms(input, pos, ctx, undefined)
+            if (cur < 0) return FAIL
+            END = cur
+            return undefined
+          }
         }
 
         /**
