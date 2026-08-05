@@ -189,6 +189,17 @@ export const OP_TOKEN = 29
  */
 export const OP_SCOPE_CAP = 30
 /**
+ * `WITHCTX k c` — `withCtx(extra, c)`. `k` is `extra` in the const pool.
+ *
+ * SAVE / RESTORE, matching `withCtx.ts`. Both used to CLONE the context, which
+ * scoped far more than the state: every scalar the child wrote on `ctx` landed
+ * on the clone and died with it, `_fe` / `_fx` included, so a failing `withCtx`
+ * subtree contributed nothing to the parent's expected set. That isolation was
+ * an implementation detail nobody asked for, not the combinator's contract, so
+ * it was fixed at the source rather than mirrored here.
+ */
+export const OP_WITHCTX = 31
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -215,5 +226,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_SCAN]: 'SCAN',
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
-  [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP',
+  [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX',
 }

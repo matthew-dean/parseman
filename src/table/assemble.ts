@@ -85,7 +85,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX,
 } from './ops.ts'
 import {
   classHas, expandCompact, resolveTable,
@@ -558,6 +558,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           END = r.span.end
           return r.value
+        }
+      }
+
+      case OP_WITHCTX: {
+        // `extra` and the child are both bound HERE; the piece only swaps a field.
+        const extra = k[code[ip + 1]!]
+        const child = link(code[ip + 2]!)
+        return (input, pos, ctx) => {
+          const saved = ctx.state
+          ctx.state = extra
+          try { return child(input, pos, ctx) }
+          finally { ctx.state = saved }
         }
       }
 

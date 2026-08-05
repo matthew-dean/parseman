@@ -8,7 +8,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX,
 } from './ops.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
@@ -578,6 +578,8 @@ class Encoder {
         return this.node(d.thunk()).ip
       case 'not':
         return this.emit(OP_NOT, this.node(d.parser).ip)
+      case 'withCtx':
+        return this.emit(OP_WITHCTX, this.constant(d.extra), this.node(d.parser).ip)
       case 'peek':
         return this.emit(OP_PEEK, this.node(d.parser).ip)
       // Transparent wrappers: no row of their own, no dispatch at run time.
@@ -647,7 +649,7 @@ class Encoder {
       switch (this.code[ip]) {
         case OP_GATE: return [ip + 2]
         case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: return [ip + 1]
-        case OP_SCOPE: case OP_SCOPE_CAP: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
+        case OP_SCOPE: case OP_SCOPE_CAP: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
         // ARMS START AT ip+4. `ip+3` is the choice's own EXPECTED-SET index, and

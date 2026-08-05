@@ -143,9 +143,17 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
   })
 
   it('an unknown combinator tag names ITSELF in the refusal', () => {
-    // `withCtx` has no opcode. The message must carry the tag, or a build failure
-    // says only that something, somewhere, is unsupported.
-    throws(wrap(withCtx({ x: 1 }, literal('a'))), /no opcode for 'withCtx'/)
+    // The message must carry the tag, or a build failure says only that
+    // something, somewhere, is unsupported.
+    //
+    // The tag is SYNTHETIC on purpose. This used to point at `withCtx`, which
+    // meant the test broke the moment `withCtx` was lowered — it was asserting
+    // "this construct is unsupported" when the thing worth asserting is "the
+    // message names whatever the construct was". A real combinator here is a
+    // countdown to a false failure.
+    const bogus = literal('a')
+    const shaped = { ...bogus, _def: { ...bogus._def, tag: 'notACombinator' } } as unknown as Combinator<unknown>
+    throws(wrap(shaped), /no opcode for 'notACombinator'/)
   })
 
   it('an empty rule map still produces a runnable table', () => {

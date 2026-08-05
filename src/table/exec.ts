@@ -17,7 +17,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX,
 } from './ops.ts'
 import { stampRuleMap } from './stamp.ts'
 import {
@@ -534,6 +534,13 @@ function makeDriver(
         }
         END = r.span.end
         return r.value
+      }
+
+      case OP_WITHCTX: {
+        const saved = ctx.state
+        ctx.state = k[code[ip + 1]!]
+        try { return exec(code[ip + 2]!, input, pos, ctx) }
+        finally { ctx.state = saved }
       }
 
       case OP_SCOPE:
