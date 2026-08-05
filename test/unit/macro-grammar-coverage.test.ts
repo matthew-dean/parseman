@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { tableRules } from '../../src/table/index.ts'
 import { choice, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, leaf, label, literal, many, otherwise, regex, rules, run, runWithGrammarCoverage, sequence, startsWith, when, type GatedArm } from '../../src/index.ts'
 import { compileTable as compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
@@ -377,7 +378,7 @@ const grammar = rules(g => ({
     expect(ordinary.replacement).not.toContain('_grammarTrace')
     expect(covered.replacement).toContain('_grammarCoverage')
 
-    const compiledRules = new Function(`return ${covered.replacement}`)() as {
+    const compiledRules = new Function('tableRules', `return ${covered.replacement}`)(tableRules) as {
       Entry(input: string, pos: number, ctx: unknown): unknown
     }
     const successEvents: Array<{ id: string; phase: string; offset: number }> = []

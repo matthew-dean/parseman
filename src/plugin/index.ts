@@ -1337,7 +1337,7 @@ function transformMacroImpl(
     return null
   }
 
-  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[]; importedFactories?: string[] } | null => {
+  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[]; importedFactories?: string[]; frozenTrivia?: Combinator<unknown> } | null => {
     // `pick(grammar, ['A', 'B'])` — à-la-carte selection. Resolve the inner grammar's
     // carried items, materialize them under the INNER grammar's OWN trivia (pick freezes
     // its grammar's trivia — it runs standalone, BEFORE any compose, so the outer
@@ -1379,6 +1379,11 @@ function transformMacroImpl(
         }
         return {
           carried,
+          // `pick` FREEZES its grammar's trivia (it runs standalone, before any compose).
+          // The IR does not carry `_meta`, so the trivia has to be reported out of band
+          // or the picked rules stop skipping whitespace — the runtime `pick` states the
+          // same thing on its COMPOSED_TRIVIA stamp.
+          ...(ownTrivia(inner) ? { frozenTrivia: ownTrivia(inner)! } : {}),
           ...(innerArg.importedFactories ? { importedFactories: innerArg.importedFactories } : {}),
         }
       } catch (e) { warn(arg.start, `pick(): ${(e as Error).message}`); return null }
@@ -1501,15 +1506,21 @@ function transformMacroImpl(
     }
     // Composing-wins (B): ONE composing trivia, from the last plain grammar in the
     // list that declares one, governs EVERY fused rule — including inherited ones.
-    const composing = composingTrivia(elements)
+    let composing = composingTrivia(elements)
     const carried: CarriedItem[] = []       // re-lowerable; also SERIALIZED onto the value
     const importedFactories: string[] = []
+    let frozenTrivia: Combinator<unknown> | undefined
     for (let i = 0; i < elements.length; i++) {
       const r = argPieces(elements[i]!, `compose${init.start}_${i}`, composing)
       if (!r) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
       carried.push(...r.carried)
       importedFactories.push(...(r.importedFactories ?? []))
+      if (r.frozenTrivia) frozenTrivia ??= r.frozenTrivia
     }
+    // No element DECLARED a composing trivia, but a picked element carries one it froze.
+    // Composing-wins still holds — a declared trivia would have won above — this only
+    // stops `compose([pick(g, …)])` from losing the trivia `g` declared.
+    composing ??= frozenTrivia
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
     // TABLE FIRST. The merged map IS the composed grammar (see `mergedCarriedRules`),

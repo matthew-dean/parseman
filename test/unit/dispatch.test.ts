@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { tableRules } from '../../src/table/index.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   attempt,
@@ -549,7 +550,7 @@ describe('dispatch()', () => {
     expect(compiled).not.toBeNull()
     if (compiled === null) return
     expect(compiled.replacement).toContain('_ctx._routed')
-    const compiledRules = new Function(`return ${compiled!.replacement}`)() as Record<string, ParseFn>
+    const compiledRules = new Function('tableRules', `return ${compiled!.replacement}`)(tableRules) as Record<string, ParseFn>
     expect(compiledRules.Value?.('a!', 0, { trackLines: false })).toEqual({
       ok: true,
       value: ['a', ['a', '!']],

@@ -183,8 +183,16 @@ export function pick(
   // separate Map that had to stay in sync); the table has one representation — the
   // combinator map — so the filter is applied once, to that, and the result is carried
   // as IR like any other piece.
-  const trivia = (grammar as Record<symbol, unknown>)[COMPOSED_TRIVIA] as Combinator<unknown> | undefined
   const carried = (grammar as Record<symbol, unknown>)[COMPOSED_PIECES]
+  // `pick` FREEZES its grammar's trivia — it runs standalone, before any compose — so
+  // the ambient trivia has to travel with the result. A composed grammar states it on
+  // COMPOSED_TRIVIA; a plain `rules({ trivia }, …)` states it only on its rules' `_meta`,
+  // and the IR does not carry `_meta` (trivia is seeded at fuse). Read it off the rules
+  // and re-state it on the result, or the picked rules stop skipping whitespace.
+  const trivia = ((grammar as Record<symbol, unknown>)[COMPOSED_TRIVIA] as Combinator<unknown> | undefined)
+    ?? (Array.isArray(carried)
+      ? undefined
+      : Object.values(grammar).map(v => (v as Combinator<unknown> | undefined)?._meta?.grammarTrivia).find(Boolean))
   // A COMPOSED grammar has no single rule map — its rules live across carried pieces,
   // and the selection must keep each rule in the piece that WINS it.
   const sources: Array<{ ns: string; rules: Array<[string, Combinator<unknown>]> }> = Array.isArray(carried)
@@ -609,7 +617,14 @@ function itemCarried(
 function composingTriviaOf(items: Array<LinkableTable | Record<string, unknown>>): Combinator<unknown> | undefined {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i] as Record<string, unknown> | undefined
-    if (!item || isLinkableTable(item) || (item as Record<symbol, unknown>)[COMPOSED_PIECES]) continue
+    if (!item || isLinkableTable(item)) continue
+    // A COMPOSED or PICKED item states its trivia on the stamp rather than on its
+    // values (its rules live in carried IR, which does not carry `_meta`). Skipping
+    // such an item entirely — as this did — loses the trivia of every grammar that
+    // reached compose through a prior compose or a pick.
+    const stamped = (item as Record<symbol, unknown>)[COMPOSED_TRIVIA] as Combinator<unknown> | undefined
+    if (stamped) return stamped
+    if ((item as Record<symbol, unknown>)[COMPOSED_PIECES]) continue
     for (const v of Object.values(item)) {
       const t = (v as Combinator<unknown> | undefined)?._meta?.grammarTrivia
       if (t) return t

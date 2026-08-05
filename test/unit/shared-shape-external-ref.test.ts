@@ -14,6 +14,7 @@
  * still has to prove it.
  */
 import { describe, expect, it } from 'vitest'
+import { tableRules } from '../../src/table/index.ts'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -43,8 +44,8 @@ export const parser = composeLeaf([ratioShape, rules(g => ({
  * call (a shared shape's standalone value) still evaluates. */
 const makeParser = (code: string): Record<string, Parse> =>
   // eslint-disable-next-line no-new-func
-  new Function(...Object.keys(parseman), code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')(
-    ...Object.values(parseman),
+  new Function('tableRules', ...Object.keys(parseman), code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')(
+    tableRules, ...Object.values(parseman),
   ) as Record<string, Parse>
 
 /** Emit `sources` into a throwaway package (keys are file names) and run `body`. */
@@ -134,8 +135,8 @@ export const parser = compose([ratioShape, rules(g => ({ Value: regex(/[0-9]+/) 
   it('a consumer WITHOUT the macro composes the carried shape at runtime', () => {
     withPackage({ shape: RATIO_SHAPE }, (_dir, emitted) => {
       // eslint-disable-next-line no-new-func
-      const shape = new Function(...Object.keys(parseman), `${emitted.shape!.code.replace(/^import[^\n]*\n/gm, '').replace('export const', 'const')}\nreturn ratioShape`)(
-        ...Object.values(parseman),
+      const shape = new Function('tableRules', ...Object.keys(parseman), `${emitted.shape!.code.replace(/^import[^\n]*\n/gm, '').replace('export const', 'const')}\nreturn ratioShape`)(
+        tableRules, ...Object.values(parseman),
       ) as never
       const composed = parseman.compose([shape, parseman.rules(() => ({ Value: parseman.regex(/[0-9]+/) })) as never]) as unknown as Record<string, Parse>
       const r = composed.Ratio!('16/9', 0, {})
