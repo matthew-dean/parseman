@@ -205,12 +205,19 @@ describe('size gate enforces the budget against the real tree', { timeout: ONE_S
     const r = gate(ROOT)
     // Actionable: which grammar, how far over, by what multiple, to what number.
     //
-    // Pinned to a probe row, not example/css. The probe lowers through
-    // `transformMacro`, which still emits SOURCE — so these are the rows that are
-    // genuinely over the 10x target now. example/css goes through the library
-    // `compile()`, which is the table, and it emits nothing at all (see the
-    // NO ARTIFACT suite); a fixture with no artifact has no ratio to name.
-    expect(r.out).toMatch(/probe\/node-scale-32\s+[\d.]+x\s+[\d,]+ B\s+[\d.]+x\s+\(to [\d,]+ B\)/)
+    // Pinned to a probe row, not an example row. Every `example/*` fixture goes
+    // through the library `compile()` — the table — and all eight now sit well
+    // under 1.7x, so none of them can exercise this block at all.
+    //
+    // WHICH probe row is not arbitrary and has MOVED once already. It was
+    // `node-scale-32` while the whole macro half emitted source at ~34x; the
+    // macro build now lowers that unit through `compileTable` and it measures
+    // 2.9x, so pinning it here asserted nothing. `variants-4` is the worst row
+    // on the branch (36.0x) and is one of the units the table lowering does NOT
+    // shrink — variant duplication is the cost, not per-node preamble — so it is
+    // the row this block exists to name. If it ever falls under 10x, repoint
+    // this at whatever `Worst:` reports rather than deleting the assertion.
+    expect(r.out).toMatch(/probe\/variants-4\s+[\d.]+x\s+[\d,]+ B\s+[\d.]+x\s+\(to [\d,]+ B\)/)
     expect(r.out).toMatch(/Worst: \S+ at [\d.]+x/)
     expect(r.out).toMatch(/pnpm size:probe/)
   })
@@ -408,6 +415,71 @@ describe('printability ratchets in both directions', { timeout: ONE_SPAWN_MS }, 
   })
 })
 
+/**
+ * A HOLLOW ARTIFACT MUST NEVER BECOME A CEILING.
+ *
+ * This is the failure that already happened, and every mechanism above worked
+ * perfectly throughout it. `compileTable` dropped the encoder's reducer sources,
+ * `emitTable*` substituted `() => {}` for each one, and the modules that reached
+ * this gate were 8-34% SMALLER than the correct ones. They printed, so the
+ * printability ratchet was satisfied. They shrank, so the bytes ratchet reported
+ * BANK THE WIN. The ceilings were then re-cut against them — and the artifacts
+ * returned `undefined` instead of a tree the entire time.
+ *
+ * A bytes-only gate cannot tell "got smaller" from "got emptier", because smaller
+ * is the only evidence it has. So the size half now depends on the same property
+ * `test/unit/table-compile.test.ts` pins for the correctness half, through the one
+ * definition in `bench/empty-reducer.ts`.
+ *
+ * Constructed, not waited for. The tree is correct now, so — exactly as with the
+ * unprintable ratchet above — there is nothing in-tree left to observe this with,
+ * and a guard nobody can see fail is not known to work. `src` is COPIED rather
+ * than symlinked (the only case here that needs to be) so the defect can be put
+ * back into it.
+ */
+describe('the size gate refuses to record bytes for a HOLLOW artifact', { timeout: ONE_SPAWN_MS }, () => {
+  it('FAILS, naming the empty reducers, when a lowering drops its reducer sources', () => {
+    const d = scratch()
+    // REALPATH the scratch dir. On macOS `os.tmpdir()` is `/var/folders/…`, a
+    // symlink into `/private`; the gate runs `main()` only when
+    // `resolve(process.argv[1]) === resolve(import.meta.url)`, and Node realpaths
+    // the entry module. Handing it the un-realpathed spelling makes that compare
+    // false and the gate exits 0 having measured NOTHING — which would make this
+    // test pass for the worst possible reason.
+    const root = fs.realpathSync(d)
+    for (const entry of ['node_modules', 'package.json', 'tsconfig.json', 'examples']) {
+      fs.symlinkSync(path.join(ROOT, entry), path.join(root, entry))
+    }
+    fs.cpSync(path.join(ROOT, 'src'), path.join(root, 'src'), { recursive: true })
+    fs.cpSync(path.join(ROOT, 'bench'), path.join(root, 'bench'), { recursive: true })
+
+    // THE DEFECT, restored verbatim: the sources are computed and then never
+    // handed to the emitter, so `emitTableModule` takes its
+    // `opts.fnSources ?? prog.fns.map(() => '() => {}')` fallback. Note that
+    // `compile.ts`'s own `unsourced` refusal does NOT fire here — it sees a full
+    // `sources` array — which is exactly why it is not sufficient on its own and
+    // why this gate is the backstop.
+    const compilePath = path.join(root, 'src/table/compile.ts')
+    const compileSrc = fs.readFileSync(compilePath, 'utf8')
+    const line = '  const emitOpts = { fnSources: sources as string[] }'
+    // Fail LOUDLY if the line moved: a silent no-op patch would leave the tree
+    // correct and this test would assert nothing.
+    expect(compileSrc, 'the emit-options line this test patches has moved').toContain(line)
+    fs.writeFileSync(compilePath, compileSrc.replace(line, '  const emitOpts = {}'))
+
+    fs.copyFileSync(path.join(ROOT, 'bench/size-baseline.json'), path.join(root, 'bench/size-baseline.json'))
+
+    const r = gate(root)
+    expect(r.ok, 'a hollow artifact must not pass the size gate').toBe(false)
+    expect(r.out).toMatch(/EMPTY REDUCER/)
+    expect(r.out).toMatch(/example\/json/)
+    // The COUNT, so the reader knows how much of the grammar went missing.
+    expect(r.out).toMatch(/contains \d+ EMPTY REDUCER\(S\)/)
+    // And it must never be described as a size win — that is the whole defect.
+    expect(r.out).not.toMatch(/BANK THE WIN/)
+  })
+})
+
 describe('standing debt never reads as a fresh regression', { timeout: ONE_SPAWN_MS }, () => {
   it('renders known over-target fixtures as tracked, not as something this change did', () => {
     const r = gate(ROOT)
@@ -419,15 +491,21 @@ describe('standing debt never reads as a fresh regression', { timeout: ONE_SPAWN
   })
 
   it('marks a fixture that crosses the target in THIS change as fresh', () => {
-    // Same tree, but a baseline claiming probe/node-scale-32 was comfortably under
+    // Same tree, but a baseline claiming probe/variants-4 was comfortably under
     // target. The doctored genBytes must be the REAL measured value, or the fixture
-    // trips the bytes ratchet first and this stops testing what it names.
+    // trips the bytes ratchet first and this stops testing what it names. Dropping
+    // `overCeiling` is the point: that flag is what separates standing debt from
+    // news, so an entry without it on a row measuring 36x is the `newOver` case.
+    //
+    // Was `node-scale-32`, for the same reason the case above was: the macro build
+    // now lowers it through the table at 2.9x, so it never enters the over-target
+    // set and the doctored baseline had nothing to mark fresh.
     const d = scratch()
     const real = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/size-baseline.json'), 'utf8')) as {
       fixtures: Record<string, { genBytes: number; gzipBytes: number; bytesRatio: number; locMultiplier: number }>
     }
-    const was = real.fixtures['probe/node-scale-32']!
-    real.fixtures['probe/node-scale-32'] = { genBytes: was.genBytes, gzipBytes: was.gzipBytes, bytesRatio: 5, locMultiplier: 69.9 }
+    const was = real.fixtures['probe/variants-4']!
+    real.fixtures['probe/variants-4'] = { genBytes: was.genBytes, gzipBytes: was.gzipBytes, bytesRatio: 5, locMultiplier: 37.5 }
     writeBaseline(d, real)
     const r = gate(ROOT, `--baseline=${path.join(d, 'bench', 'size-baseline.json')}`)
     expect(r.out).toMatch(/crossed in THIS change/)

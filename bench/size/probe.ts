@@ -75,6 +75,7 @@ import { writeFileSync, rmSync, mkdirSync, statSync } from 'node:fs'
 import { gzipSync } from 'node:zlib'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
+import { emptyReducersIn, emptyReducerReport } from '../empty-reducer.ts'
 
 /**
  * FLOOR_NOTE — the oldest parseman version this probe is known to compile against.
@@ -502,6 +503,17 @@ export function measure(u: Unit, lower: Lowerer): Row {
       die(`unit ${u.id}: lowering produced ${genBytes} B from ${srcBytes} B of source (ratio ${(genBytes / srcBytes).toFixed(3)}x).\n  Macro lowering expands — the smallest ratio in the committed baseline is 2.787x — so a ratio\n  below 1 means the lowering did not see this unit's files, NOT that the output got smaller.\n  The usual cause is another process sharing ${dir}; this probe locks it, so also check for a\n  stale ${dir}.lock left by a killed run.`)
     }
     if (u.nodes === 0) die(`unit ${u.id}: declares zero node() sites — bytes-per-node would be meaningless`)
+
+    // A HOLLOW MEASUREMENT IS A HARNESS FAILURE FOR THE SAME REASON AN IMPLAUSIBLY
+    // SMALL ONE IS, and this half is no longer exempt: `transformMacro` now lowers
+    // 10 of these 16 units through `compileTable` (they emit `tableRules`), so the
+    // dropped-reducer defect reaches the probe exactly as it reached `compile()`.
+    // Every unit here declares `node()` sites, so every one of them HAS reducers —
+    // an empty arrow in this output is a dropped callback, never a grammar that
+    // had none. Refuse to report the number rather than leaving the guard to bank
+    // a stub pool as an improvement.
+    const stubs = emptyReducersIn(code)
+    if (stubs.length > 0) die(emptyReducerReport(`probe/${u.id}`, stubs))
 
     const gzipBytes = gzipSync(code).length
     if (gzipBytes === 0) die(`unit ${u.id}: gzip produced zero bytes`)

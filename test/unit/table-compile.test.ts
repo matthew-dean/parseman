@@ -6,6 +6,7 @@ import { jsonDoc } from '../../examples/json/parser.ts'
 import { classifiedTrivia, leaf, literal, node, parser, regex, rules, sequence, transform, trivia } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assembledRules } from '../../src/table/assemble.ts'
+import { EMPTY_ARROW } from '../../bench/empty-reducer.ts'
 import type { Combinator } from '../../src/types.ts'
 
 /**
@@ -190,9 +191,16 @@ describe('a table entry carries the trivia metadata run() reads', () => {
  * grammar that has reducers at all, no printed artifact may contain an empty
  * arrow in its fn pool. A lowering that cannot source a reducer must REFUSE, by
  * name, through `runtimeOnly`.
+ *
+ * `EMPTY_ARROW` is imported from `bench/empty-reducer.ts` rather than declared
+ * here, because the SIZE gate has to apply the identical property: the stub pool
+ * is smaller than real reducer text, so a bytes-only gate reads this defect as an
+ * improvement and re-cuts its ceilings against the hollow artifact — which is
+ * precisely what happened. Two copies of the pattern would let the correctness
+ * half and the size half drift apart, and the size half is the one that failed
+ * silently.
  */
 describe('a printed table never ships an empty reducer', () => {
-  const EMPTY_ARROW = /(?:\(\s*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{\s*\}/
 
   const withReducers: ReadonlyArray<readonly [string, Combinator<unknown>]> = [
     ['json', jsonDoc as Combinator<unknown>],
