@@ -1,6 +1,7 @@
 import type { Combinator, ParseContext } from '../types.ts'
 import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
+import { createDetachedParseContext } from '../parse-context.ts'
 
 export type TriviaChunk = { start: number; end: number; kindIndex: number }
 
@@ -90,7 +91,7 @@ function matchArmAt(
   // meaning to a label nor recognizes a particular comment form; it avoids
   // entering arms whose own grammar proves they cannot start at this offset.
   if (!startsFirstSet(arm, input, pos)) return null
-  const r = arm.parse(input, pos, { trackLines: false, state })
+  const r = arm.parse(input, pos, createDetachedParseContext(false, state))
   if (!r.ok || r.span.end <= pos) return null
   return { end: r.span.end }
 }

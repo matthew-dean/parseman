@@ -498,8 +498,8 @@ function makeDriver(
         ctx._cstLeaves = undefined
         ctx._cstRawChildren = undefined
         ctx._cstTriviaLog = undefined
-        delete ctx._triviaLog
-        delete ctx._rootTriviaLog
+        ctx._triviaLog = undefined
+        ctx._rootTriviaLog = undefined
 
         let v: unknown
         try {
@@ -513,10 +513,8 @@ function makeDriver(
           ctx._cstLeaves = sLeaves
           ctx._cstRawChildren = sRaw
           ctx._cstTriviaLog = sTl
-          if (sOuterTl === undefined) delete ctx._triviaLog
-          else ctx._triviaLog = sOuterTl
-          if (sRootTl === undefined) delete ctx._rootTriviaLog
-          else ctx._rootTriviaLog = sRootTl
+          ctx._triviaLog = sOuterTl
+          ctx._rootTriviaLog = sRootTl
         }
         if (v === FAIL) return FAIL
         const end = END
@@ -937,7 +935,7 @@ function makeDriver(
         ctx._cstLeaves = undefined
         ctx._cstRawChildren = undefined
         ctx._cstTriviaLog = undefined
-        delete ctx._triviaLog
+        ctx._triviaLog = undefined
 
         let v: unknown
         try {
@@ -948,8 +946,7 @@ function makeDriver(
           ctx._cstLeaves = sLeaves
           ctx._cstRawChildren = sRaw
           ctx._cstTriviaLog = sTl
-          if (sOuterTl === undefined) delete ctx._triviaLog
-          else ctx._triviaLog = sOuterTl
+          ctx._triviaLog = sOuterTl
         }
         if (v === FAIL) return FAIL
         const end = END

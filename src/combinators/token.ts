@@ -37,8 +37,8 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       ctx._cstLeaves = undefined
       ctx._cstRawChildren = undefined
       ctx._cstTriviaLog = undefined
-      delete ctx._triviaLog
-      delete ctx._rootTriviaLog
+      ctx._triviaLog = undefined
+      ctx._rootTriviaLog = undefined
 
       let result: ParseResult<unknown>
       try {
@@ -51,10 +51,8 @@ export function token(root: Combinator<unknown>): Combinator<string> {
         ctx._cstLeaves = savedLeaves
         ctx._cstRawChildren = savedRaw
         ctx._cstTriviaLog = savedTriviaLog
-        if (savedOuterTriviaLog === undefined) delete ctx._triviaLog
-        else ctx._triviaLog = savedOuterTriviaLog
-        if (savedRootTriviaLog === undefined) delete ctx._rootTriviaLog
-        else ctx._rootTriviaLog = savedRootTriviaLog
+        ctx._triviaLog = savedOuterTriviaLog
+        ctx._rootTriviaLog = savedRootTriviaLog
       }
 
       if (!result.ok) return result
@@ -102,7 +100,7 @@ export function leaf<T, U>(
       ctx._cstLeaves = undefined
       ctx._cstRawChildren = undefined
       ctx._cstTriviaLog = undefined
-      delete ctx._triviaLog
+      ctx._triviaLog = undefined
       let result: ParseResult<T>
       try { result = root.parse(input, pos, ctx) }
       finally {
@@ -111,8 +109,7 @@ export function leaf<T, U>(
         ctx._cstLeaves = savedLeaves
         ctx._cstRawChildren = savedRaw
         ctx._cstTriviaLog = savedTriviaLog
-        if (savedOuterTriviaLog === undefined) delete ctx._triviaLog
-        else ctx._triviaLog = savedOuterTriviaLog
+        ctx._triviaLog = savedOuterTriviaLog
       }
       if (!result.ok) return result
       const value = fn(result.value, result.span)

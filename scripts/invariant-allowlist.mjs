@@ -60,7 +60,7 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * deduplicated — `childrenOf` and `intersects` now live once, in
  * `src/analysis/gating.ts`, imported by the modules that had copies.
  */
-export const ALLOW_COUNT = 16
+export const ALLOW_COUNT = 12
 
 /**
  * finding key -> { category, why, ref? }
@@ -113,30 +113,6 @@ export const ALLOW = new Map([
   ['INV-3:src/compiler/token-scanner.ts',
     { category: 'DEBT', why: 'derived-tokenization lane — wire into the compiler or delete', ref: 'docs/design/derived-tokenization.md' }],
 
-  // INV-5 x4 on `ctx` — 12 delete SITES, on the object every combinator reads
-  // on every step, running PER TOKEN and PER LEAF. The sharpest instance in the
-  // catalogue: one delete flips %HasFastProperties to false and re-adding the
-  // property does not restore it, so the first `token()` in a parse can leave
-  // `ctx` in dictionary mode for the whole parse. The table-driver copies are
-  // there because the driver is deliberately MIRRORED from the combinator for
-  // behavioural fidelity — three-way identity rewards exactly that, which is
-  // how one shape defect became two.
-  //
-  // Restoration here is by PRESENCE (readers test whether the property exists),
-  // so `= undefined` is not a drop-in and this is correct code with a
-  // catastrophic shape consequence. A separate lane is measuring what it costs
-  // end to end and may remove the deletes outright; when it lands these entries
-  // go stale and the gate will REQUIRE their deletion, which is the intended
-  // interaction and not a conflict. DEBT, not by-design: the comment argues a
-  // fix is coming, not that the shape cost is acceptable.
-  ['INV-5:src/combinators/token.ts:parse:ctx._triviaLog',
-    { category: 'DEBT', why: 'per-token delete on the long-lived ctx — measurement lane owns the fix', ref: 'lane/ctx-shape' }],
-  ['INV-5:src/combinators/token.ts:parse:ctx._rootTriviaLog',
-    { category: 'DEBT', why: 'per-token delete on the long-lived ctx — measurement lane owns the fix', ref: 'lane/ctx-shape' }],
-  ['INV-5:src/table/exec.ts:exec:ctx._triviaLog',
-    { category: 'DEBT', why: 'mirrored into the table driver for behavioural fidelity — same lane', ref: 'lane/ctx-shape' }],
-  ['INV-5:src/table/exec.ts:exec:ctx._rootTriviaLog',
-    { category: 'DEBT', why: 'mirrored into the table driver for behavioural fidelity — same lane', ref: 'lane/ctx-shape' }],
 
   // INV-5 x3 on `_meta` — `const meta = slot._meta` / `value._meta` is an ALIAS
   // of a combinator's long-lived meta object, and `_meta` is read during

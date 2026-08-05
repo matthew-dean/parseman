@@ -6,6 +6,7 @@ import { choice } from './choice.ts'
 import { many } from './repeat.ts'
 import { transform } from './map.ts'
 import { expect } from './expect.ts'
+import { createDetachedParseContext } from '../parse-context.ts'
 import { any } from './first-set.ts'
 import { ref } from './ref.ts'
 import { pushCstLeaf, cstCaptureActive } from '../cst/capture-buffer.ts'
@@ -119,11 +120,8 @@ export function scanTo(
       // collector-free context so their internal literal()/regex() don't push.
       // The error channel IS forwarded, so a committed skipper (e.g. balanced()
       // whose open delimiter was consumed) can still report an unmatched close.
-      const probeCtx: ParseContext = {
-        trackLines: false,
-        state: ctx.state,
-        ...(ctx._errors !== undefined ? { _errors: ctx._errors } : {}),
-      }
+      const probeCtx = createDetachedParseContext(false, ctx.state)
+      probeCtx._errors = ctx._errors
 
       // Record the scanned text as a CSTLeaf so buildNode-driven grammars can
       // see it in children/rawChildren (it would otherwise be lost — only the

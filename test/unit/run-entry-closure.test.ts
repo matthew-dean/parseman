@@ -58,6 +58,14 @@ describe('parseman/run — the minimal execution entry', () => {
       // tracking ctx. Keep this helper outside compiler/ so the run entry can
       // annotate parse errors without dragging codegen into compiled-parser users.
       'src/line-index.ts',
+      // The canonical `ParseContext` literal. `run()` used to build `ctx` inline
+      // with six conditional spreads, which gave the object every combinator
+      // reads up to 2^6 hidden classes across configurations. One shared literal
+      // is the only way to guarantee one map — two literals with the same keys in
+      // a different order are two maps — so this has to be a module, not a copy
+      // per entry. It is import-free apart from the types, so the closure grows
+      // by one leaf and the entry still builds no grammars.
+      'src/parse-context.ts',
       'src/recovery/scan.ts',
       'src/run/index.ts',
     ])

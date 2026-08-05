@@ -301,10 +301,10 @@ export type ParseContext = {
    * failure diagnostics at parity with the interpreter. Overwritten on each leaf
    * failure; only meaningful immediately after a sub-parse reports failure.
    */
-  _fe?: number
-  _fx?: string[]
+  _fe?: number | undefined
+  _fx?: string[] | undefined
   /** Framework-internal compiled-output committed-failure flag. */
-  _fc?: boolean
+  _fc?: boolean | undefined
   /**
    * When set by completionsAt(), tracks the highest-position ParseFail seen
    * during parsing up to _probe.offset. Used to return completions at the cursor
@@ -383,6 +383,22 @@ export type ParseContext = {
   _lineIndex?: { lineStarts: number[] } | undefined
   /** Framework-internal high-water mark for optional line tracking range scans. */
   _lineScannedTo?: number | undefined
+  /**
+   * Framework-internal coverage hook. Previously reached `ctx` only via a
+   * conditional spread of `RunOptions.instrumentation`, so an instrumented parse
+   * gave `ctx` a DIFFERENT hidden class from an ordinary one. Declared here so
+   * every `ctx` has one shape; `undefined` when not instrumented.
+   */
+  _grammarCoverage?: ((id: string) => void) | undefined
+  /** Framework-internal trace sink — same shape rationale as `_grammarCoverage`. */
+  _grammarTrace?: {
+    write(event: {
+      id: string
+      phase: 'enter' | 'attempt' | 'selected' | 'success' | 'failure' | 'backtrack' | 'rollback'
+      offset: number
+      end?: number
+    }): void
+  } | undefined
 }
 
 /**

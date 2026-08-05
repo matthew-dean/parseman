@@ -448,8 +448,19 @@ describe('grammar-level scanSkip reaches an emitted module as data', () => {
     const readers = walk(root)
       .filter(f => readFileSync(f, 'utf8').split('\n').some(l => isCode(l) && l.includes('ctx.scanSkip')))
       .map(f => path.relative(root, f)).sort()
-    // `table/exec.ts` WRITES it (the entry installs the ambient set); `scanTo.ts`
-    // is the only reader. Both are listed so a new file cannot slip in either way.
-    expect(readers).toEqual(['combinators/scanTo.ts', 'table/exec.ts'])
+    // `scanTo.ts` is the only READER. Everything else here WRITES it — the three
+    // parse entries install the grammar's ambient set. `run.ts` and `grammar.ts`
+    // joined the list without gaining a read: they used to install it with a
+    // conditional spread (`...(scanSkip !== undefined ? { scanSkip } : {})`),
+    // which this census could not see because the key was a literal rather than
+    // `ctx.scanSkip`. They now assign it as a plain store on the canonical
+    // context shape, so the write is finally visible to this test. All four are
+    // listed so a new file cannot slip in either way.
+    expect(readers).toEqual([
+      'combinators/grammar.ts',
+      'combinators/scanTo.ts',
+      'functional/run.ts',
+      'table/exec.ts',
+    ])
   })
 })

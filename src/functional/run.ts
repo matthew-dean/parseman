@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
 import { REC } from '../recovery/scan.ts'
+import { createParseContext } from '../parse-context.ts'
 import { buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
 /* `cst/host-mode.ts` and `cst/trivia-entries.ts` are import-free by design, so
  * this keeps the `parseman/run` closure minimal — see
@@ -377,25 +378,30 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
     options.build,
     typeof entry === 'function' && stamped[FUSED_HOST_ELIDED] === true,
   )
-  const ctx: ParseContext = {
-    trackLines: false,
-    ...(captureRootTrivia
-      ? {
-          _rootTriviaLog: selectedRootLog!,
-          _rootTriviaKindIndex: selectedRootLabelIndex!,
-          _rootTriviaStrictScopes: true,
-        }
-      : {}),
-    _errors: errors,
-    build: options.build,
-    state: options.state,
-    ...(grammarTrivia !== undefined
-      ? { trivia: grammarTrivia, ...(triviaKindLabels ? { triviaKindLabels } : {}) }
-      : triviaKindLabels ? { triviaKindLabels } : {}),
-    ...(grammarScanSkip !== undefined ? { scanSkip: grammarScanSkip } : {}),
-    ...(options.triviaCaptureMask !== undefined ? { _triviaCaptureMask: options.triviaCaptureMask } : {}),
-    ...(options.tolerant ? { _tolerant: true, _rec: REC } : {}),
-    ...(options.instrumentation === undefined ? {} : options.instrumentation),
+  // ONE shape, every configuration. These were six conditional spreads; see
+  // `createParseContext` for why that is a hidden-class hazard on the object
+  // every combinator reads. Assignments below are in-object stores to slots that
+  // already exist, so none of them transitions the map.
+  const ctx = createParseContext()
+  if (captureRootTrivia) {
+    ctx._rootTriviaLog = selectedRootLog!
+    ctx._rootTriviaKindIndex = selectedRootLabelIndex!
+    ctx._rootTriviaStrictScopes = true
+  }
+  ctx._errors = errors
+  ctx.build = options.build
+  ctx.state = options.state
+  if (grammarTrivia !== undefined) ctx.trivia = grammarTrivia
+  if (triviaKindLabels) ctx.triviaKindLabels = triviaKindLabels
+  if (grammarScanSkip !== undefined) ctx.scanSkip = grammarScanSkip
+  if (options.triviaCaptureMask !== undefined) ctx._triviaCaptureMask = options.triviaCaptureMask
+  if (options.tolerant) {
+    ctx._tolerant = true
+    ctx._rec = REC
+  }
+  if (options.instrumentation !== undefined) {
+    ctx._grammarCoverage = options.instrumentation._grammarCoverage
+    ctx._grammarTrace = options.instrumentation._grammarTrace
   }
   const r = invoke(entry, input, 0, ctx)
 
@@ -404,7 +410,7 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
     let pos = r.span?.end ?? 0
     if (options.trivia && pos < input.length) {
       // Throwaway ctx: trailing trivia must NOT pollute the parse's trivia log.
-      const t = invoke(options.trivia, input, pos, { trackLines: false })
+      const t = invoke(options.trivia, input, pos, createParseContext())
       if (t.ok && t.span.end > pos) pos = t.span.end
     }
     unconsumedFrom = pos < input.length ? pos : null
