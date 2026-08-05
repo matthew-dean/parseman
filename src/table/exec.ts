@@ -18,7 +18,7 @@ import {
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { stampRuleMap } from './stamp.ts'
@@ -727,25 +727,22 @@ function makeDriver(
             // accepted input both shipped engines reject.
             if (committed(ctx)) return FAIL
           }
-          const open = table.open
-          if (open.length === 0) return failChoice()
-          // SCALAR MARKS. `saveCstMark` allocated a five-field object per choice
-          // attempt; the compiled engine keeps the same five numbers in locals and
-          // allocates nothing. Same values, same rollback, no garbage.
-          const need = rollbackNeeded(ctx)
-          const mRaw = need ? cstRawLen(ctx) : 0
-          const mTl = need ? cstTlLen(ctx) : 0
-          const mLv = need ? cstLeavesLen(ctx) : 0
-          const mFl = need ? ctx._fields?.length ?? 0 : 0
-          const mEr = need ? ctx._errors?.length ?? 0 : 0
-          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
-          for (let i = 0; i < open.length; i++) {
-            ctx._fc = false
-            const v = exec(code[base + open[i]!]!, input, pos, ctx)
-            if (v !== FAIL) return v
-            if (committed(ctx)) return FAIL
-            if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
-          }
+          // THERE ARE NO OPEN ARMS TO FALL BACK TO. An open arm is one whose class
+          // is −1, and `resolveDispatch` clears `exclusive` for exactly those arms
+          // (program.ts), so `table.open` is empty whenever `exclusive` holds — the
+          // fallback loop this branch used to carry was unreachable code.
+          //
+          // THE UNION IS REPORTED EVEN THOUGH ONE ARM WAS SELECTED, and that is
+          // deliberate. Both other engines answer with the DISPATCHED arm's set —
+          // on `ax` against `choice(literal('ab'), literal('cd'))` they say
+          // `["ab"]` and the table says `["ab","cd"]` — but they reach it by
+          // FURTHEST-FAILURE merging, which this driver does not have: `_fe`/`_fx`
+          // are last-write-wins, so preserving the arm's `_fx` here reports
+          // whatever failed LAST rather than what failed furthest. Measured: it
+          // collapses JSON `[1,2,]` from the engines' seven expected tokens to the
+          // single `"]"` the innermost literal happened to write. The union at the
+          // choice's own position is the closer answer until the driver merges by
+          // position, and that is a change to the failure model, not to a choice.
           return failChoice()
         }
         // THE PER-ARM GATE. Arms in source order, each skipped when its own
@@ -804,6 +801,18 @@ function makeDriver(
         }
         END = end
         return sup
+      }
+
+      case OP_ARMGATE: {
+        if (!(fns[code[ip + 1]!] as (s: unknown) => boolean)(ctx.state)) {
+          // choice.ts:150 is a `continue`, not a failure — the arm is treated as
+          // never entered, so a cut it might have raised must not cut the choice.
+          ctx._fc = false
+          ctx._fe = pos
+          ctx._fx = fx[code[ip + 3]!] as string[]
+          return FAIL
+        }
+        return exec(code[ip + 2]!, input, pos, ctx)
       }
 
       case OP_REJECT: {

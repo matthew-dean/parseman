@@ -10,6 +10,8 @@ import { checkIdentity } from '../../bench/table-lowering-identity.ts'
 import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, selectNodes } from '../../bench/table-grammars.ts'
 import { assembledRules } from '../../src/table/assemble.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
+import { resolveTable } from '../../src/table/program.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import {
   adjacent, balanced, choice, classifiedTrivia, keywords, literal, many, node, notAdjacent,
   optional, parser, peek, regex, rules,
@@ -179,10 +181,117 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     expect(run(tf as never, 'if').value).toBe('IF')
   })
 
-  it('choice(gate:) — a per-arm state predicate is a condition with no row', () => {
-    const gated = choice({ gate: () => true, combinator: literal('a') } as never, literal('b')) as Combinator<unknown>
-    throws(wrap(gated), /choice\(gate:\)/)
-    expect(() => encodeTable(wrap(choice(literal('a'), literal('b')) as Combinator<unknown>))).not.toThrow()
+  it('choice(gate:) lowers to OP_ARMGATE — and the gated arm KEEPS its dispatch slot', () => {
+    // This refused. The refusal read the option as "a condition with no row",
+    // which is true of the predicate and false of the construct: the per-arm gate
+    // exists precisely to gate an arm WITHOUT touching its first set, and that is
+    // the whole reason it is not `sequence(gate(p), arm)`. `gate()`'s first set is
+    // `any` (combinators/gate.ts:26), so leading an arm with one REPLACES that
+    // arm's first set and collapses the choice from O(1) first-char dispatch to
+    // the ordered loop — `docs/guide/first-char-gating.md` lists that as a known
+    // gating defect and names this field as the fix.
+    //
+    // So a lowering that gates correctly and drops the arm out of dispatch is a
+    // silent perf regression that no value assertion can see. `OP_ARMGATE` WRAPS
+    // the arm rather than sitting inside it, so `encode.ts` still reads the arm's
+    // own first set into `disp` — asserted below on the resolved table, not
+    // inferred from the values.
+    type S = { on?: boolean }
+    const on = (s: unknown): boolean => (s as S | undefined)?.on === true
+    const disjointGated = (): Combinator<unknown> => choice(
+      { gate: on, combinator: literal('&') } as never,
+      literal('x'),
+      regex(/[0-9]+/),
+    ) as Combinator<unknown>
+
+    // ── DISPATCH SURVIVES ────────────────────────────────────────────────────
+    const prog = encodeTable(wrap(disjointGated()))
+    expect(Object.keys(opHistogram(prog))).toContain('ARMGATE')
+    // `exclusive` IS the O(1) path: `resolveDispatch` sets it only when every
+    // arm's class is present and the classes are pairwise disjoint, and both
+    // drivers branch on it (exec.ts / assemble.ts `table.exclusive`).
+    expect(resolveTable(prog).disp.map(d => d.exclusive)).toEqual([true])
+    // The CONTROL that makes that assertion mean something: the same predicate
+    // spliced in as a leading `gate()` term instead. Its first set is `any`, so
+    // arm 0's class is gone and the site loses dispatch.
+    const asLeadingGate = encodeTable(wrap(choice(
+      sequence(gate(on), literal('&')),
+      literal('x'),
+      regex(/[0-9]+/),
+    ) as Combinator<unknown>))
+    expect(resolveTable(asLeadingGate).disp.map(d => d.exclusive)).toEqual([false])
+
+    // ── FOUR-WAY DIFFERENTIAL: interpreter, codegen, exec.ts, assemble.ts ────
+    const four = (g: Combinator<unknown>, src: string): [string, string, string, string] => {
+      const p = encodeTable(wrap(g))
+      const c = compile(g).parse(src)
+      const norm = (o: { ok: boolean; value?: unknown; expected?: readonly string[] }): string =>
+        JSON.stringify([o.ok, o.value ?? null, o.expected ?? []])
+      return [
+        norm(run(g as never, src)),
+        norm(c as never),
+        norm(run(tableRules(p).Doc! as never, src)),
+        norm(run(assembledRules(p).Doc! as never, src)),
+      ]
+    }
+    const allAgree = (g: Combinator<unknown>, src: string): void => {
+      const [i, c, t, a] = four(g, src)
+      expect(c, `${src}: codegen vs interpreter`).toBe(i)
+      expect(t, `${src}: exec.ts vs interpreter`).toBe(i)
+      expect(a, `${src}: assemble.ts vs interpreter`).toBe(i)
+    }
+
+    // gate TRUE — the gated arm is reachable and wins its own first char.
+    for (const src of ['&', 'x', '5', 'z']) {
+      allAgree(withCtx({ on: true }, disjointGated()) as Combinator<unknown>, src)
+    }
+    // gate FALSE, and NO STATE AT ALL — `'&'` is rejected, the others untouched.
+    for (const src of ['x', '5', 'z']) {
+      allAgree(withCtx({ on: false }, disjointGated()) as Combinator<unknown>, src)
+      allAgree(disjointGated(), src)
+    }
+    for (const g of [withCtx({ on: false }, disjointGated()) as Combinator<unknown>, disjointGated()]) {
+      for (const engine of four(g, '&')) expect(JSON.parse(engine)[0]).toBe(false)
+    }
+
+    // ── THE GATE SKIPS, IT DOES NOT FAIL ─────────────────────────────────────
+    // `choice.ts:150` is `continue`, not a failure: with arm 0 gated off, arm 1
+    // must be tried at the SAME position and win. The arms are made to disagree
+    // on their value on purpose — a lowering that failed the choice, and one that
+    // ran arm 0 anyway, are both visible here and neither is visible if the arms
+    // agree. Expected sets are compared too: all four report `[]` on a win.
+    const skip = (): Combinator<unknown> => choice(
+      { gate: on, combinator: transform(literal('aa'), () => 'GATED') } as never,
+      transform(regex(/a[a-z]/), () => 'OPEN'),
+    ) as Combinator<unknown>
+    for (const engine of four(skip(), 'aa')) expect(JSON.parse(engine)).toEqual([true, 'OPEN', []])
+    allAgree(skip(), 'aa')
+    allAgree(skip(), 'ab')
+    for (const engine of four(withCtx({ on: true }, skip()) as Combinator<unknown>, 'aa')) {
+      expect(JSON.parse(engine)).toEqual([true, 'GATED', []])
+    }
+
+    // ── THE ONE PLACE THE FOUR DISAGREE, AND WHY IT IS NOT THE GATE ──────────
+    // On a choice that FAILS, the table reports the choice's own expected union
+    // where both other engines report the DISPATCHED arm's set. That predates
+    // this lowering and has nothing to do with gates — the ungated control below
+    // shows the identical split — because the other two reach their answer by
+    // FURTHEST-FAILURE merging and this driver's `_fe`/`_fx` are last-write-wins.
+    // Making the exclusive path preserve the arm's `_fx` was tried and is WORSE:
+    // it collapses JSON `[1,2,]` from the engines' seven expected tokens to the
+    // one `"]"` the innermost literal happened to write last.
+    const ungatedControl = choice(literal('ab'), literal('cd')) as Combinator<unknown>
+    const [ci, cc2, ct, ca] = four(ungatedControl, 'ax')
+    expect(JSON.parse(ci)[2], 'ungated: interpreter names the dispatched arm').toEqual(['"ab"'])
+    expect(cc2, 'ungated: codegen matches the interpreter').toBe(ci)
+    expect(JSON.parse(ct)[2], 'ungated: the table names the union').toEqual(['"ab"', '"cd"'])
+    expect(ca, 'ungated: both drivers agree with each other').toBe(ct)
+    // The gate-false path lands in exactly that pre-existing class, no wider.
+    const [gi, gc, gt, ga] = four(disjointGated(), '&')
+    expect(JSON.parse(gi)[2]).toEqual(['"&"'])
+    expect(gc).toBe(gi)
+    expect(JSON.parse(gt)[2]).toEqual(['"&"', '"x"', '/[0-9]+/'])
+    expect(ga).toBe(gt)
   })
 
   it('node(captureTrivia) — an explicit request the arity cannot express, now HONOURED', () => {

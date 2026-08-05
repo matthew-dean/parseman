@@ -10,7 +10,7 @@ import {
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
@@ -375,7 +375,6 @@ class Encoder {
         return head
       }
       case 'choice': {
-        if (d.gates.some(g => g !== null)) throw new UnsupportedConstruct('choice(gate:)')
         // `greedyClassify` is NOT a choice at all — one arm runs and another arm
         // is credited — so it gets its own row rather than an arm ordering.
         if (d.strategy.tag === 'greedyClassify') {
@@ -413,12 +412,24 @@ class Encoder {
         // have consumed more, so a matched arm loses. It wraps the arm's row and
         // does not touch the arm's identity in `memo`: the same combinator used
         // at a site with no `autoNot` still reaches the bare row.
+        //
+        // A GATED arm (`choice({ gate, combinator })`) is wrapped OUTSIDE its
+        // `autoNot` wrapper, mirroring the interpreter's order: the gate is
+        // consulted before the arm runs (choice.ts:150) and `autoNot` only after
+        // it has already matched (choice.ts:160-164). Wrapping — rather than
+        // splicing the predicate into the arm — is what preserves the arm's own
+        // first set for `classes` below, and with it the site's O(1) dispatch.
         const kids = arms.map((c, k) => {
-          const checks = d.autoNot[order[k]!]
-          const ip = this.node(c).ip
-          return checks === null || checks === undefined || checks.length === 0
+          const src = order[k]!
+          const checks = d.autoNot[src]
+          const inner = this.node(c).ip
+          const ip = checks === null || checks === undefined || checks.length === 0
+            ? inner
+            : this.reject(inner, checks)
+          const gate = d.gates[src]
+          return gate === null || gate === undefined
             ? ip
-            : this.reject(ip, checks)
+            : this.emit(OP_ARMGATE, this.fn(gate), ip, this.expected(deriveExpected(c)))
         })
         // O(1) first-char dispatch is only SOUND when the arms are disjoint.
         // With overlapping first sets, "the first arm whose class contains this

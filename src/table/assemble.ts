@@ -86,7 +86,7 @@ import {
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import {
@@ -1098,8 +1098,11 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         if (table.exclusive) {
           const ascii = table.ascii
           const hi = table.hi
-          const open = table.open
-          const openArms: Piece[] = open.map(i => arms[i]!)
+          // THERE ARE NO OPEN ARMS HERE, and the piece is written to say so. An
+          // ungated arm is one whose class is −1, and `resolveDispatch` clears
+          // `exclusive` for exactly those arms (program.ts) — so `table.open` is
+          // empty whenever `exclusive` holds, and the open-arm fallback loop this
+          // piece used to carry was unreachable code plus a per-parse length test.
           return (input, pos, ctx) => {
             const c = lead(input, pos)
             let arm = -1
@@ -1118,21 +1121,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               // THE CUT — a committed failure fails the whole choice.
               if (committed(ctx)) return FAIL
             }
-            if (openArms.length === 0) { ctx._fe = pos; ctx._fx = choiceFx; return FAIL }
-            const need = rollbackNeeded(ctx)
-            const mRaw = need ? cstRawLen(ctx) : 0
-            const mTl = need ? cstTlLen(ctx) : 0
-            const mLv = need ? cstLeavesLen(ctx) : 0
-            const mFl = need ? ctx._fields?.length ?? 0 : 0
-            const mEr = need ? ctx._errors?.length ?? 0 : 0
-            if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
-            for (let i = 0; i < openArms.length; i++) {
-              ctx._fc = false
-              const v = openArms[i]!(input, pos, ctx)
-              if (v !== FAIL) return v
-              if (committed(ctx)) return FAIL
-              if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
-            }
+            // THE UNION IS REPORTED EVEN THOUGH ONE ARM WAS SELECTED, deliberately.
+            // Both other engines answer with the DISPATCHED arm's set — on `ax`
+            // against `choice(literal('ab'), literal('cd'))` they say `["ab"]` and
+            // the table says `["ab","cd"]` — but they reach it by FURTHEST-FAILURE
+            // merging, which this driver does not have: `_fe`/`_fx` are
+            // last-write-wins, so preserving the arm's `_fx` here reports whatever
+            // failed LAST, not furthest. Measured: it collapses JSON `[1,2,]` from
+            // the engines' seven expected tokens to the single `"]"` the innermost
+            // literal happened to write.
             ctx._fe = pos; ctx._fx = choiceFx
             return FAIL
           }
@@ -1270,6 +1267,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // one. Re-running the arm cannot fail: the word IS its literal.
           if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
           return lit(input, pos, ctx)
+        }
+      }
+
+      case OP_ARMGATE: {
+        // Predicate, arm and expected set all bound HERE — the body reads no
+        // opcode, decodes no operand and tests no setting.
+        const pred = fns[code[ip + 1]!] as (s: unknown) => boolean
+        const child = link(code[ip + 2]!)
+        const xf = fx[code[ip + 3]!] as string[]
+        return (input, pos, ctx) => {
+          if (!pred(ctx.state)) {
+            // A `continue` in the interpreter (choice.ts:150), not a failure —
+            // so no cut survives to the enclosing choice.
+            ctx._fc = false
+            ctx._fe = pos
+            ctx._fx = xf
+            return FAIL
+          }
+          return child(input, pos, ctx)
         }
       }
 
