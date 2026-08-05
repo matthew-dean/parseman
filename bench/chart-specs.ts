@@ -31,23 +31,43 @@ function fmtBytes(n: number): string {
   return `${(n / 1024).toFixed(1)} kB`
 }
 
+// ── The `small` rows are COMMENTED OUT, not deleted ─────────────────────────────
+//
+// They are 27–54 byte inputs measured at ~1 µs. At that scale the bar is dominated
+// by fixed per-call overhead rather than parsing, and the A/A control spread
+// (0.5%–2.0% in the last sweep) is a large fraction of the measurement — in the
+// json case, larger than the margin between us and the nearest competitor. A bar
+// whose noise floor exceeds its own margin cannot rank anything.
+//
+// THE REMOVAL IS NOT RESULTS-DRIVEN, and it must stay that way. Of the four rows
+// commented out, THREE ARE BARS WE WIN — csv 2.81× over Peggy, graphql 1.63× over
+// Chevrotain, cst 2.27× over Lezer — and one is a 0.1% deficit to Chevrotain on
+// json. If a future edit un-comments the three wins and leaves json out, that is
+// cherry-picking; the rule is the input size, applied to every grammar alike.
+//
+// Precedent in-tree: `bench/perf-guard.ts` already lists `json/small/compiled` in
+// `ignoredRegressionKeys` — "Sub-microsecond fixture: useful to print, too noisy
+// to block commits." Same fixture, same reasoning, already an accepted call.
+//
+// Kept as comments rather than deleted because these come back in 0.48, when the
+// per-invocation overhead work lands and the bars become meaningful again.
 export const CHART_GROUPS: Record<ChartKey, GroupSpec[]> = {
   json: [
-    { title: `warm parse — small  (${fmtBytes(SMALL_JSON.length)})`, input: SMALL_JSON, iters: 50_000 },
+    // { title: `warm parse — small  (${fmtBytes(SMALL_JSON.length)})`, input: SMALL_JSON, iters: 50_000 },
     { title: `warm parse — medium  (${fmtBytes(MEDIUM_JSON.length)})`, input: MEDIUM_JSON, iters: 10_000 },
     { title: `warm parse — large  (${fmtBytes(LARGE_JSON.length)})`, input: LARGE_JSON, iters: 2_000 },
   ],
   csv: [
-    { title: `warm parse — small  (${SMALL_CSV.length} bytes, 4 rows)`, input: SMALL_CSV, iters: 50_000 },
+    // { title: `warm parse — small  (${SMALL_CSV.length} bytes, 4 rows)`, input: SMALL_CSV, iters: 50_000 },
     { title: `warm parse — large  (${fmtBytes(LARGE_CSV.length)}, 500 rows)`, input: LARGE_CSV, iters: 5_000 },
   ],
   graphql: [
-    { title: `warm parse — small  (${SMALL_GQL.length} bytes)`, input: SMALL_GQL, iters: 50_000 },
+    // { title: `warm parse — small  (${SMALL_GQL.length} bytes)`, input: SMALL_GQL, iters: 50_000 },
     { title: `warm parse — medium  (${MEDIUM_GQL.length} bytes)`, input: MEDIUM_GQL, iters: 10_000 },
     { title: `warm parse — large  (${fmtBytes(LARGE_GQL.length)})`, input: LARGE_GQL, iters: 2_000 },
   ],
   cst: [
-    { title: `warm parse — small  (${fmtBytes(SMALL_JSON.length)})`, input: SMALL_JSON, iters: 50_000 },
+    // { title: `warm parse — small  (${fmtBytes(SMALL_JSON.length)})`, input: SMALL_JSON, iters: 50_000 },
     { title: `warm parse — medium  (${fmtBytes(MEDIUM_JSON.length)})`, input: MEDIUM_JSON, iters: 10_000 },
     { title: `warm parse — large  (${fmtBytes(LARGE_JSON.length)})`, input: LARGE_JSON, iters: 2_000 },
   ],
