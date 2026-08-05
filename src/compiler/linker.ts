@@ -536,12 +536,16 @@ export function carriedRuleMapsDetailed(
   const maps: Array<Array<[string, Combinator<unknown>]>> = []
   const opaque: Array<{ ns: string; ruleNames: string[] }> = []
   for (const p of carried) {
-    if (isIRPiece(p)) { maps.push(evalRuleMapIR(p.ir)); continue }
-    // `ruleFns` is a Map, not a plain object — `Object.keys` on it silently yields []
-    // and every opaque piece would degrade to an anonymous `<artifact _lkN_>`, which is
-    // exactly the "reported, but uselessly" failure this whole change is against.
-    const ruleFns = (p as { ruleFns?: Map<string, string> }).ruleFns
-    opaque.push({ ns: p.ns, ruleNames: ruleFns instanceof Map ? [...ruleFns.keys()] : [] })
+    // A table artifact is recoverable far more often than a source one was: it carries
+    // IR, and failing that the live combinators. Ask for the map before declaring the
+    // piece opaque, or a perfectly analysable grammar is reported as unseen.
+    const rules = ruleMapOfCarried(p)
+    if (rules !== undefined) { maps.push(rules); continue }
+    // NAMED, not anonymous. `keys` is the artifact's rule-name list; the field this
+    // used to read (`ruleFns`) belonged to the source lowering, and reading a missing
+    // one degrades every opaque piece to `<artifact _lkN_>` — "reported, but uselessly",
+    // which is the exact failure this reporting exists to prevent.
+    opaque.push({ ns: p.ns, ruleNames: isIRPiece(p) ? [] : [...p.keys] })
   }
   return { maps, opaque }
 }

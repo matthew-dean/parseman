@@ -854,10 +854,13 @@ describe('table failure reporting matches the interpreter and the compiled path'
       expect(fromTable.span, bad).toEqual({ start: 0, end: 0 })
       expect(fromInterp.span, bad).toEqual({ start: 0, end: 0 })
       expect(fromCompiled.span, bad).toEqual({ start: 0, end: 0 })
-      // The engines attempt seven arms; the table attempts the one it dispatched.
+      // THE THIRD ENGINE IS GONE. `compose()` now fuses to a TABLE, so `fromCompiled`
+      // is table-backed and reports the dispatched arm exactly as `fromTable` does. The
+      // INTERPRETER remains the outlier: it reads the frozen `disjoint === false` flag
+      // and firstMatches all seven arms, concatenating seven sets.
       expect(fromInterp.expected, bad).toHaveLength(7)
-      expect(fromCompiled.expected, bad).toEqual(fromInterp.expected)
       expect(fromTable.expected, bad).toEqual([dispatched])
+      expect(fromCompiled.expected, bad).toEqual(fromTable.expected)
       expect(fromInterp.expected, `${bad}: the table's token is one of theirs`)
         .toContain(dispatched)
     }

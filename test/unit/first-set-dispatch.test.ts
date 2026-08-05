@@ -149,10 +149,8 @@ describe('macro-compiled dispatch — nullable-prefix arm', () => {
   const evalMacro = (src: string): Record<string, (i: string, p: number, c: Record<string, unknown>) => { ok: boolean; span: { end: number } }> => {
     const out = transformMacro(src, '/pkg/fs.ts', new Set(['parseman']))!
     expect(out.warnings).toEqual([])
-    // eslint-disable-next-line no-new-func
-    return new Function(
-      out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar',
-    )() as ReturnType<typeof evalMacro>
+    // `tableRules` is the emitted module's ONE external reference; inject it.
+    return evalMacroModule(out.code, 'grammar') as ReturnType<typeof evalMacro>
   }
 
   it('macro-compiled compose reaches the `@`-led ref arm (fuse substitution + fix)', () => {

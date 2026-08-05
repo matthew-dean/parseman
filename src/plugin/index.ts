@@ -1931,6 +1931,16 @@ function transformMacroImpl(
             // say so, where a frozen one did not.
             const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
             if (ir) replacement = withCarriedPieces(replacement, [{ ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) }])
+            // NOT SILENT. An export with no carried IR cannot be composed downstream at
+            // all — the consumer's `compose()` will fall back to runtime and say so, but
+            // by then the cause is a module away. The source lowering carried fully
+            // lowered pieces here instead; the table has no such form, because merging
+            // two ALREADY-ENCODED programs means relocating code offsets and merging
+            // every pool, which is the one route `compile-linkable-table.ts` documents
+            // as deferred. Naming it at the origin is the least this can do.
+            else warn(init.start, `${varName}: exported grammar could not be serialized to IR, so it carries no `
+              + 'composable pieces — a downstream compose() of this grammar will fall back to runtime. '
+              + 'Re-run with PARSEMAN_IR_DEBUG=1 to print the combinator that blocked serialization.')
           }
           replacements.push({ start: init.start, end: init.end, replacement })
           if (compiledRules.replacement !== null) {

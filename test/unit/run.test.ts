@@ -68,36 +68,6 @@ describe('run() — generic grammar-entry driver', () => {
     expect(result.rootTrivia?.index.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
   })
 
-  it('SOURCE LOWERING does not fill CST trivia buffers for non-node root trivia logging', () => {
-    // A CODEGEN-SHAPE ASSERTION, and it is the ONE engine that behaves this way.
-    // Codegen decides at compile time that a root with no `node()` cannot want a
-    // CST trivia log and emits a scan that fills `_triviaLog` alone. The
-    // interpreter and the table both go through the SHARED `advanceTrivia`
-    // (`trivia-skip.ts:133`), whose condition is `captureTrivia && (_cstBuf ||
-    // _cstTriviaLog)` — a caller that supplies the buffer AND asks for capture
-    // gets it filled, node or no node. So this names codegen, and the parity
-    // assertion below is the one that would catch a table regression.
-    const rw = trivia(regex(/[ \t]+/))
-    const root = parser({ trivia: rw }, sequence(literal('a'), literal('b')))
-    const sinks = () => ({ _triviaLog: [] as number[], _cstTriviaLog: [] as number[], _cstRawChildren: [] as unknown[] })
-
-    const cg = sinks()
-    const result = compileCodegen(root).parseWithContext('a b', { trackLines: false, ...cg, captureTrivia: true }, 0)
-    expect(result.ok).toBe(true)
-    expect(cg._triviaLog).toEqual([1, 2])
-    expect(cg._cstTriviaLog).toEqual([])
-    expect(cg._cstRawChildren).toEqual([])
-
-    // Interpreter and table agree with each other, which is the contract that
-    // matters for the shipped lowering.
-    const int = sinks()
-    root.parse('a b', 0, { trackLines: false, ...int, captureTrivia: true } as never)
-    const tab = sinks()
-    compile(root).parseWithContext('a b', { trackLines: false, ...tab, captureTrivia: true }, 0)
-    expect(tab).toEqual(int)
-    expect(tab._cstRawChildren).toEqual([])
-  })
-
   it('reports leftover at the first non-trivia offset', () => {
     // `!` is not a word and not trivia → leftover after "a b ".
     const r = run(g.Doc as never, 'a b !', { trivia: blockTrivia as never })

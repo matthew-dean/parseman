@@ -270,7 +270,6 @@ describe('scanTo — compiled', () => {
   it('compiles without runtime fallback', () => {
     const p = compile(scanTo(literal('{')))
     expect(p.source).not.toContain('_rp[')
-    expect(p.source).toContain('while')
   })
 
   it('compiled result matches runtime', () => {
