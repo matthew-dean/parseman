@@ -1,5 +1,6 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
+import { childrenOf } from '../analysis/gating.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
@@ -9,6 +10,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
@@ -712,7 +714,25 @@ class Encoder {
           const arm = arms.length
           arms.push(this.node(m.parser).ip)
           routed.push(branchUsesRouted(m) ? 1 : 0)
-          match.push([KIND[m.kind], m.value, m.flags ?? '', arm])
+          // `{ caseInsensitive: true }` ON A MATCHER ARM IS FOLDED INTO THE
+          // OPERANDS HERE, not tested per parse in the driver. It was dropped
+          // entirely — both drivers built the matcher shape with a hardcoded
+          // `caseInsensitive: false` — so `when(startsWith('pre'), …, { caseInsensitive: true })`
+          // never claimed `PRElude` and the parse fell through to `otherwise()`.
+          // A wrong ARM is a wrong parse, and no key-path test covered it because
+          // the folded-KEY path (`fold`/`foldArm` above) is a different mechanism.
+          //
+          // `matches` folds into the regex's own `i` flag, which is what
+          // `matchesDispatchMatcher` does (it tests the RAW value with `i`
+          // appended). `startsWith`/`endsWith` fold BOTH sides, so the stored
+          // value is pre-folded and kinds 3/4 tell the driver to fold the key.
+          if (!m.caseInsensitive) { match.push([KIND[m.kind], m.value, m.flags ?? '', arm]); continue }
+          if (m.kind === 'matches') {
+            const f = m.flags ?? ''
+            match.push([2, m.value, f.includes('i') ? f : `${f}i`, arm])
+            continue
+          }
+          match.push([m.kind === 'startsWith' ? 3 : 4, asciiFoldKey(m.value), '', arm])
         }
         const other = d.otherwise === undefined ? -1 : this.node(d.otherwise).ip
         const dspIdx = this.dsp.length
@@ -746,10 +766,26 @@ class Encoder {
       }
       case 'field':
         return this.emit(OP_FIELD, this.constant(d.name), this.node(d.parser).ip)
-      case 'lazy':
+      case 'lazy': {
         // A named reference is not a hop: it resolves to the target's row.
         // Emitting a trampoline here cost one dispatch per reference for nothing.
-        return this.node(d.thunk()).ip
+        //
+        // AN UNDEFINED `ref()` IS TOLERATED, not refused. `ref<T>()` throws from
+        // its thunk until `.define()` runs, and codegen catches exactly this and
+        // falls back to running the ref live (`emitLazy`'s two `catch` arms ->
+        // `emitRuntimeFallback`), so a grammar assembled before every slot is
+        // filled still COMPILES and throws only if that slot is actually parsed
+        // through. The encoder threw at build time instead, which made the table
+        // lowering refuse a grammar the source lowering accepts. Deferring to the
+        // ref's own `.parse` reproduces codegen's timing and its message.
+        let resolved: Combinator<unknown>
+        try { resolved = d.thunk() }
+        catch {
+          this.runtimeOnly.add('ref() used before .define() — the slot is run live')
+          return this.emit(OP_LIVE, this.fn(p))
+        }
+        return this.node(resolved).ip
+      }
       case 'not':
         return this.emit(OP_NOT, this.node(d.parser).ip)
       case 'guard':
@@ -802,13 +838,13 @@ class Encoder {
         // comparing it against the setting refused every inner scope of a
         // trackLines:true grammar — all four `*PositionsGrammar`s.
         //
-        // A scope that asks to force tracking ON inside a table built without it
-        // is still a real disagreement, and still refuses.
-        if (d.trackLines === true && !this.track) {
-          throw new UnsupportedConstruct(
-            `parser(trackLines: true) inside a table built with TableSettings.trackLines: ${String(this.track)}`,
-          )
-        }
+        // A SCOPE THAT ASKS FOR TRACKING NO LONGER REFUSES. `encodeTable` folds
+        // every such scope into the table's own `track` before encoding begins
+        // (see `hasScopedTrackLines`), exactly as codegen folds them into one
+        // `ctx.lineTracking` for the whole compile. The refusal here was reachable
+        // only because the table read the SETTING alone, and it made the table
+        // lowering reject `parser({ trackLines: true }, …)` — a grammar
+        // `compile()` accepts and annotates.
         // A trivia scope is a ROW, not a lowering decision: the scope's trivia
         // combinator goes in the const pool and the driver installs it.
         // `captureTrivia: true` picks the SCOPE_CAP piece. It is an OR with the
@@ -842,7 +878,24 @@ class Encoder {
         }
         return this.emit(op, this.triviaSlot(d.triviaParser), this.node(d.parser).ip, flags)
       }
+      /**
+       * A HAND-WRITTEN COMBINATOR. `_def: { tag: 'unknown' }` is the designated
+       * escape for a parser built outside the library, so there is no structure
+       * to lower — the behaviour is a closure. Codegen accepts one and delegates
+       * to `.parse` at run time (`emitRuntimeFallback`); refusing it here made
+       * the table lowering reject a grammar the source lowering compiles.
+       *
+       * Runtime-only BY NAME, because a live combinator cannot be printed —
+       * codegen degrades the same way (`runtimeParsers` non-empty ⇒ no
+       * `inlineExpression`).
+       */
+      case 'unknown':
+        this.runtimeOnly.add(`${p._tag} — a hand-written combinator, run live through its own .parse`)
+        return this.emit(OP_LIVE, this.fn(p))
       default:
+        // NOT widened to `OP_LIVE`. A LIBRARY tag reaching here is a missing
+        // lowering, and silently running it live would trade a build error for a
+        // permanent slow path nobody would ever find.
         throw new UnsupportedConstruct(d.tag)
     }
   }
@@ -944,11 +997,54 @@ class Encoder {
  * tables; the driver that reads them is the same function in both cases and
  * never sees `settings`.
  */
+/**
+ * Does this grammar ask for line tracking anywhere in its own structure?
+ *
+ * TRACKING IS A WHOLE-TABLE DECISION, as it is a whole-compile decision for the
+ * source lowering: `ctx.lineTracking` is `opts.trackLines || grammarTrackLines ||
+ * hasLineTrackingDef(combinator)` (`compiler/codegen.ts`). The table read the
+ * SETTING alone and refused any `parser({ trackLines: true }, …)` scope it found
+ * underneath, so a grammar that carries its own tracking compiled through
+ * codegen and was rejected by the encoder. Same question, same answer.
+ *
+ * A `lazy` is followed, because a rule reference is how a grammar reaches most of
+ * itself; an undefined one answers `false` rather than throwing, as codegen's does.
+ */
+function hasScopedTrackLines(p: Combinator<unknown>, seen: Set<Combinator<unknown>>): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  if (p._meta.grammarTrackLines === true) return true
+  const d = p._def
+  switch (d.tag) {
+    case 'grammar':
+      if (d.trackLines === true) return true
+      break
+    case 'lazy':
+      try { return hasScopedTrackLines(d.thunk(), seen) }
+      catch { return false }
+    // Neither is covered by the shared `childrenOf`: it drops `dispatch` matcher
+    // arms and treats `routed()` as a leaf.
+    case 'dispatch':
+      for (const m of d.matchers ?? []) if (hasScopedTrackLines(m.parser, seen)) return true
+      break
+    case 'routed':
+      return d.fallback === undefined ? false : hasScopedTrackLines(d.fallback, seen)
+    default:
+      break
+  }
+  for (const c of childrenOf(d)) if (hasScopedTrackLines(c, seen)) return true
+  return false
+}
+
 export function encodeTable(
   ruleMap: Record<string, Combinator<unknown>>,
   settings: TableSettings = {},
 ): TableProgram {
-  const enc = new Encoder(settings)
-  for (const name of Object.keys(ruleMap)) enc.encodeRule(name, ruleMap[name]!)
+  const names = Object.keys(ruleMap)
+  const seen = new Set<Combinator<unknown>>()
+  const track = settings.trackLines === true
+    || names.some(n => hasScopedTrackLines(ruleMap[n]!, seen))
+  const enc = new Encoder(track === (settings.trackLines === true) ? settings : { ...settings, trackLines: true })
+  for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   return enc.finish()
 }

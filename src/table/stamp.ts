@@ -17,6 +17,49 @@ import type { TableProgram, TableRule } from './program.ts'
 const EMPTY_FX: string[] = []
 
 /**
+ * Did something inside CUT?
+ *
+ * Read through a call so TypeScript does not narrow `_fc` to `false` from the
+ * assignment that precedes each speculative attempt — the driver mutates it and
+ * the checker cannot see that. Lives here rather than in a driver because the
+ * ENVELOPE reads it too, and a third copy would be a third place to drift.
+ */
+export function committed(c: ParseContext): boolean {
+  return c._fc === true
+}
+
+/**
+ * The ENTRY result's span, line-annotated when the table tracks lines.
+ *
+ * Codegen annotates the root result the moment `ctx.lineTracking` is on — both
+ * the success span and the failure span (`_spanLines(_ctx, …)`), and so does the
+ * interpreter's `parser({ trackLines: true })` scope. The table's envelope built
+ * a bare `{ start, end }` regardless, so a tracked table parse handed back a
+ * result with no `startLine`/`endColumn` at all while paying for the tracking.
+ *
+ * The binary search over `_lineStarts` is the same one both drivers hold
+ * privately for `node()` spans; only the ENTRY needs it here, so it is not worth
+ * exporting one of theirs and giving the hot node piece a cross-module call.
+ */
+function lineCol(ctx: ParseContext, offset: number): [number, number] {
+  const starts = ctx._lineStarts ?? [0]
+  let lo = 0, hi = starts.length - 1
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1
+    if (starts[mid]! <= offset) lo = mid
+    else hi = mid - 1
+  }
+  return [lo + 1, offset - starts[lo]! + 1]
+}
+
+export function spanLines(ctx: ParseContext, start: number, end: number): {
+  start: number; end: number; startLine: number; startColumn: number; endLine: number; endColumn: number
+} {
+  const s = lineCol(ctx, start), e = lineCol(ctx, end)
+  return { start, end, startLine: s[0], startColumn: s[1], endLine: e[0], endColumn: e[1] }
+}
+
+/**
  * What a driver must provide per parse, in the order the entry needs it.
  *
  * `run` returns the driver's own FAIL sentinel for a failed parse. The sentinel
@@ -83,9 +126,18 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
       if (end < 0) {
         const fe = ctx._fe
         const at = fe === undefined || fe < 0 ? pos : fe
-        return { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: { start: at, end: at } }
+        const fspan = lines ? spanLines(ctx, at, at) : { start: at, end: at }
+        // `committed` IS PART OF THE FAILURE ENVELOPE, not a diagnostic extra.
+        // The interpreter carries it on the result (`{ ok: false, …, committed: true }`)
+        // and codegen re-derives it from the same bit this driver uses
+        // (`codegen.ts`: `...(_ctx._fc ? { committed: true } : {})`). The table
+        // dropped it, so a table entry embedded as a CHILD of another parser — the
+        // one place the field is read rather than merely reported — lost the cut.
+        return committed(ctx)
+          ? { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: fspan, committed: true }
+          : { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: fspan }
       }
-      return { ok: true, value: d.lastValue(), span: { start: pos, end } }
+      return { ok: true, value: d.lastValue(), span: lines ? spanLines(ctx, pos, end) : { start: pos, end } }
     }
     out[name] = meta === undefined ? entryFn : Object.assign(entryFn, { _meta: meta })
   }

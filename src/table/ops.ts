@@ -322,6 +322,34 @@ export const OP_REJECT = 35
  */
 export const OP_ARMGATE = 36
 /**
+ * `LIVE f` — RUN A HAND-WRITTEN COMBINATOR through its own `.parse`. `f` indexes
+ * the combinator in `prog.fns`.
+ *
+ * NOT the old `OP_CALL` (numbers 23 and 29 both record having been it): that row
+ * parked live combinators for `scanTo`/`balanced`/`token` in the CONST pool, and
+ * the fix was to describe those constructs AS DATA, which they are. This is the
+ * opposite case and the only one left: `Combinator` is a PUBLIC interface, so a
+ * caller can hand `compile()` a parser whose `_def.tag` no encoder will ever
+ * know. There is nothing to describe — the behaviour lives in a closure the
+ * library never sees.
+ *
+ * It exists because codegen accepts exactly this and delegates at run time
+ * (`compiler/codegen.ts`, `emitRuntimeFallback`'s `_rp[i].parse(...)` row). The
+ * encoder used to throw `UnsupportedConstruct`, so the table lowering REJECTED
+ * grammars the source lowering compiles, and the two lowerings must accept the
+ * same language.
+ *
+ * The cost is stated, not hidden: a live combinator is not data, so a program
+ * holding one is `runtimeOnly` — it runs, and `emitTableModule` refuses to print
+ * it BY NAME. Codegen degrades identically (a non-empty `runtimeParsers` makes
+ * `inlineExpression` null). It never appears for a construct the library itself
+ * builds; reaching it means the encoder met a foreign `_def`.
+ *
+ * The child result is the real interpreter's, so `expected`/`span` propagate
+ * verbatim and its `committed` flag is copied into `_fc`, as codegen's does.
+ */
+export const OP_LIVE = 37
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -351,4 +379,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX', [OP_GUARD]: 'GUARD',
   [OP_ADJ]: 'ADJ',
   [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
+  [OP_LIVE]: 'LIVE',
 }

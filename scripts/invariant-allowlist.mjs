@@ -83,7 +83,7 @@ export const ALLOW = new Map([
     { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
   ['INV-4:src/table/exec-baseline.ts:trackLines|src/table/exec.ts:trackLines',
     { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
-  ['INV-4:src/table/exec-baseline.ts:lineCol|src/table/exec.ts:lineCol',
+  ['INV-4:src/table/exec-baseline.ts:lineCol|src/table/stamp.ts:lineCol',
     { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
 
   // INV-1. RULE BUG, not a violation — INV-1 fires on the CORRECT pattern here.

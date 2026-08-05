@@ -3,7 +3,7 @@ import {
   OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCOPE, OP_SEQ, OP_SEQV, OP_XFORM, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
-  OP_SCOPE_CAP, OP_WITHCTX, OP_GUARD, OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_SCOPE_CAP, OP_WITHCTX, OP_GUARD, OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_LIVE,
 } from './ops.ts'
 import type { TableProgram } from './program.ts'
 
@@ -41,8 +41,10 @@ export function reachableIps(prog: TableProgram): Set<number> {
     switch (op) {
       // ZERO-WIDTH / TERMINAL ROWS — no successor. `OP_GUARD` and `OP_ADJ` are
       // both childless tests; the walk ends at them.
+      // `OP_LIVE` holds a hand-written combinator in `prog.fns`; its structure is
+      // a closure, so there is no successor row to reach.
       case OP_LIT: case OP_RX: case OP_LIT_TRACK: case OP_RX_TRACK: case OP_EMPTY: case OP_SCAN: case OP_LIT_CI: case OP_LIT_CI_TRACK:
-      case OP_GUARD: case OP_ADJ:
+      case OP_GUARD: case OP_ADJ: case OP_LIVE:
         break
       case OP_GATE:
         stack.push(code[ip + 2]!)

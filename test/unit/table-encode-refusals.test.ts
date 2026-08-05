@@ -378,20 +378,27 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     expect(() => encodeTable(wrap(plain))).not.toThrow()
   })
 
-  it('parser({ trackLines: true }) is RECONCILED with the settings, not blanket-refused', () => {
-    // The interesting half is that it is ACCEPTED when the table agrees: a scope
-    // asking for tracking inside a tracking table is not a disagreement. Refusing
-    // it outright broke every `*PositionsGrammar` in the repo.
+  it('parser({ trackLines: true }) TURNS THE TABLE ON, with or without the setting', () => {
+    // NO LONGER A REFUSAL. This asserted that a tracking scope inside a table
+    // built without `TableSettings.trackLines` threw — which made the table
+    // lowering reject a grammar `compile()` accepts and annotates: codegen makes
+    // the same decision ONCE for the whole artifact,
+    // `opts.trackLines || grammarTrackLines || hasLineTrackingDef(combinator)`.
+    // Tracking is a property of the GRAMMAR as much as of the build, so the
+    // encoder reads both and the setting only ever adds.
     const g = rules<Record<string, Combinator<unknown>>>({ trackLines: true }, () => ({
       Doc: node('Doc', literal('a'), (c, _f, span) => ({ c, span })),
     })) as unknown as Record<string, Combinator<unknown>>
-    throws(g, /trackLines: true.*trackLines: false/s)
-    const ok = encodeTable(g, { trackLines: true })
-    expect(ok.lines).toBe(1)
-    // …and it really tracks: the span carries line fields, not just `{start,end}`.
-    const span = (run(tableRules(ok).Doc! as never, 'a').value as { span: Record<string, number> }).span
-    expect(span.startLine).toBe(1)
-    expect(span.endColumn).toBe(2)
+    for (const prog of [encodeTable(g), encodeTable(g, { trackLines: true })]) {
+      expect(prog.lines).toBe(1)
+      // …and it really tracks: the span carries line fields, not just `{start,end}`.
+      const span = (run(tableRules(prog).Doc! as never, 'a').value as { span: Record<string, number> }).span
+      expect(span.startLine).toBe(1)
+      expect(span.endColumn).toBe(2)
+    }
+    // A grammar that asks for nothing still gets nothing.
+    const plain = { Doc: node('Doc', literal('a'), (c, _f, span) => ({ c, span })) } as unknown as Record<string, Combinator<unknown>>
+    expect(encodeTable(plain).lines).toBe(0)
   })
 
   it('an unknown combinator tag names ITSELF in the refusal', () => {

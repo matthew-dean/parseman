@@ -66,12 +66,11 @@
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
-import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
+import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
-import type { DispatchMatcherKind } from '../types.ts'
 import {
   advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt,
   saveTriviaMark, scanTrivia, type FastTriviaScanner,
@@ -85,6 +84,7 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
@@ -107,12 +107,29 @@ const EMPTY_CH: unknown[] = []
 const EMPTY_TLOG: number[] = []
 const EMPTY_FX: string[] = []
 const ROUTED_FX: string[] = ['routed()']
-/** `matchesDispatchMatcher` only reads `kind`/`value`/`flags`. Mirrors `exec.ts`. */
-const DUMMY = {
-  _tag: 'never',
-  _meta: { firstSet: { kind: 'any' as const }, canMatchNewline: false, isTrivia: false },
-  _def: { tag: 'unknown' as const },
-  parse: () => { throw new Error('unreachable') },
+/**
+ * One encoded matcher arm, LINKED into a predicate at assembly.
+ *
+ * The previous form rebuilt a `DispatchMatcherCase` per arm PER PARSE and handed
+ * it to `matchesDispatchMatcher` — an operand decode and an allocation in a piece
+ * body, and it passed a hardcoded `caseInsensitive: false`, which silently
+ * dropped `{ caseInsensitive: true }` on matcher arms and selected the wrong arm.
+ * The encoder now folds the case-insensitivity into the operands (kinds 3/4 are
+ * pre-folded startsWith/endsWith; a case-insensitive `matches` carries `i` in its
+ * flags), so the whole decision is a `const` closure chosen once.
+ */
+function linkMatcher(m: readonly [number, string, string, number]): (key: string) => boolean {
+  const value = m[1]
+  switch (m[0]) {
+    case 0: return key => key.startsWith(value)
+    case 1: return key => key.endsWith(value)
+    case 3: return key => asciiFoldKey(key).startsWith(value)
+    case 4: return key => asciiFoldKey(key).endsWith(value)
+    // A fresh RegExp per test, as `matchesDispatchMatcher` builds — a cached one
+    // would carry `lastIndex` across parses whenever the author's pattern was
+    // sticky or global.
+    default: { const flags = m[2]; return key => new RegExp(value, flags).test(key) }
+  }
 }
 
 type Leaf = { _tag: 'leaf'; value: string; span: { start: number; end: number } }
@@ -679,6 +696,25 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // is the only place a back-edge can occur, and `link` handles it.
         return link(code[ip + 1]!)
 
+      case OP_LIVE: {
+        // A HAND-WRITTEN COMBINATOR, run through its own `.parse` — mirrors
+        // codegen's `emitRuntimeFallback`. Its result IS the interpreter's, so
+        // `expected`/`span` propagate verbatim and `committed` is copied onto the
+        // ctx bit both drivers use for the cut.
+        const c = fns[code[ip + 1]!] as Combinator<unknown>
+        return (input, pos, ctx) => {
+          const r = c.parse(input, pos, ctx)
+          if (!r.ok) {
+            ctx._fe = r.span.start
+            ctx._fx = r.expected
+            ctx._fc = r.committed === true
+            return FAIL
+          }
+          END = r.span.end
+          return r.value
+        }
+      }
+
       case OP_EXPECT: {
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
@@ -704,6 +740,15 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const err = { _tag: 'parseError' as const, span, expected: xf }
             ctx._errors?.push(err)
             if (ctx._tolerant === true) captureError(ctx, err)
+            // A RECOVERED FAILURE IS NO LONGER A FAILURE, so the commit bit the
+            // child raised must not survive it. `_fc` is ctx-global for both table
+            // drivers; the interpreter carries commitment on the RESULT object, so
+            // returning a success drops it structurally and it has no bit to clear.
+            // Leaving it set let a committed `dispatch`-tail failure that expect()
+            // had already recovered CUT an enclosing choice, so the table rejected
+            // input the interpreter accepts. Codegen has always cleared it
+            // (`emitExpect`, `_ctx._fc = false`).
+            ctx._fc = false
             END = pos
             return err
           }
@@ -714,6 +759,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const span = { start: pos, end: pos }
           const err = { _tag: 'parseError' as const, span, expected: xf }
           ctx._errors?.push(err)
+          ctx._fc = false
           END = pos
           return err
         }
@@ -1828,6 +1874,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const byFold = spec.byFold
         const hasFold = spec.byFold.size > 0
         const match = spec.match
+        const matchN = match.length
+        const matchFn: Array<(key: string) => boolean> = new Array<(key: string) => boolean>(matchN)
+        const matchArm: number[] = new Array<number>(matchN)
+        for (let i = 0; i < matchN; i++) { matchFn[i] = linkMatcher(match[i]!); matchArm[i] = match[i]![3] }
         const routed = spec.routed
         const expected = spec.expected as string[]
 
@@ -1841,11 +1891,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           let arm = byKey.get(key)
           if (arm === undefined && hasFold) arm = byFold.get(asciiFoldKey(key))
           if (arm === undefined) {
-            for (let i = 0; i < match.length; i++) {
-              const m = match[i]!
-              const kind: DispatchMatcherKind = m[0] === 0 ? 'startsWith' : m[0] === 1 ? 'endsWith' : 'matches'
-              if (matchesDispatchMatcher(key, { kind, value: m[1], flags: m[2] === '' ? undefined : m[2], parser: DUMMY, caseInsensitive: false })) {
-                arm = m[3]
+            for (let i = 0; i < matchN; i++) {
+              if (matchFn[i]!(key)) {
+                arm = matchArm[i]!
                 break
               }
             }

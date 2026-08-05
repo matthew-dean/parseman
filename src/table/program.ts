@@ -220,7 +220,14 @@ export type DispatchSpec = {
   /** ASCII-folded keys for case-insensitive cases, parallel to `foldArm`. */
   readonly fold: readonly string[]
   readonly foldArm: readonly number[]
-  /** `[kind, value, flags, arm]` per matcher; `kind` is 0/1/2 for startsWith/endsWith/matches. */
+  /**
+   * `[kind, value, flags, arm]` per matcher. `kind` is 0/1/2 for
+   * startsWith/endsWith/matches, and 3/4 for the ASCII-FOLDED startsWith/endsWith
+   * a `{ caseInsensitive: true }` matcher arm encodes to — `value` is pre-folded
+   * for those and the driver folds the selector key before comparing. A
+   * case-insensitive `matches` needs no kind of its own: it folds into the
+   * regex's own `i` flag.
+   */
   readonly match: readonly (readonly [number, string, string, number])[]
   /** 1 when that arm consumes the routed token. */
   readonly routed: readonly number[]

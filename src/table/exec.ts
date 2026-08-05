@@ -1,12 +1,11 @@
 import type { Combinator, FieldMap, FirstSet, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
-import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
+import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
-import type { DispatchMatcherKind } from '../types.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt, saveTriviaMark, scanTrivia, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
@@ -16,11 +15,12 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
-import { stampRuleMap } from './stamp.ts'
+import { committed, spanLines, stampRuleMap } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
@@ -104,9 +104,29 @@ export function resetTableCounters(): void {
 const EMPTY_TL: readonly number[] = Object.freeze([])
 const EMPTY_FX: string[] = []
 const ROUTED_FX: string[] = ['routed()']
-/** `matchesDispatchMatcher` only reads `kind`/`value`/`flags`; this fills the
- *  shape's remaining required fields without constructing a real arm. */
-const DUMMY = { _tag: 'never', _meta: { firstSet: { kind: 'any' as const }, canMatchNewline: false, isTrivia: false }, _def: { tag: 'unknown' as const }, parse: () => { throw new Error('unreachable') } }
+/**
+ * Does an encoded matcher arm claim this selector key?
+ *
+ * Reads the ENCODED operands directly rather than rebuilding a
+ * `DispatchMatcherCase` and calling `matchesDispatchMatcher`. That detour
+ * allocated a matcher shape per arm per parse AND hardcoded
+ * `caseInsensitive: false`, silently discarding `{ caseInsensitive: true }` on
+ * matcher arms. Case-insensitivity is folded into the operands by the encoder:
+ * kinds 3/4 are pre-folded startsWith/endsWith, and a case-insensitive
+ * `matches` already carries `i` in its flags.
+ */
+function matcherClaims(m: readonly [number, string, string, number], key: string): boolean {
+  switch (m[0]) {
+    case 0: return key.startsWith(m[1])
+    case 1: return key.endsWith(m[1])
+    case 3: return asciiFoldKey(key).startsWith(m[1])
+    case 4: return asciiFoldKey(key).endsWith(m[1])
+    // A fresh RegExp per test, as `matchesDispatchMatcher` builds — a cached one
+    // would carry `lastIndex` across parses whenever the author's pattern was
+    // sticky or global.
+    default: return new RegExp(m[1], m[2]).test(key)
+  }
+}
 
 type Leaf = { _tag: 'leaf'; value: string; span: { start: number; end: number } }
 
@@ -126,34 +146,6 @@ function trackLines(ctx: ParseContext, input: string, end: number): void {
   if (starts === undefined) return
   for (let i = from; i < end; i++) if (input.charCodeAt(i) === 10) starts.push(i + 1)
   ctx._lineScannedTo = end
-}
-
-/** Same semantics as codegen's `LINE_SPAN_DECL` (`src/compiler/codegen.ts:251`). */
-function lineCol(ctx: ParseContext, offset: number): [number, number] {
-  const starts = ctx._lineStarts ?? [0]
-  let lo = 0, hi = starts.length - 1
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1
-    if (starts[mid]! <= offset) lo = mid
-    else hi = mid - 1
-  }
-  return [lo + 1, offset - starts[lo]! + 1]
-}
-
-function spanLines(ctx: ParseContext, start: number, end: number): { start: number; end: number; startLine: number; startColumn: number; endLine: number; endColumn: number } {
-  const s = lineCol(ctx, start), e = lineCol(ctx, end)
-  return { start, end, startLine: s[0], startColumn: s[1], endLine: e[0], endColumn: e[1] }
-}
-
-/**
- * Did something inside CUT?
- *
- * Read through a call so TypeScript does not narrow `_fc` to `false` from the
- * assignment that precedes each speculative attempt — `exec` mutates it and the
- * checker cannot see that.
- */
-function committed(c: ParseContext): boolean {
-  return c._fc === true
 }
 
 function classHas(cls: ResolvedClass, code: number): boolean {
@@ -424,6 +416,23 @@ function makeDriver(
       case OP_RULE:
         return exec(code[ip + 1]!, input, pos, ctx)
 
+      case OP_LIVE: {
+        // A HAND-WRITTEN COMBINATOR, run through its own `.parse` — mirrors
+        // codegen's `emitRuntimeFallback`. Its result IS the interpreter's, so
+        // `expected`/`span` propagate verbatim and `committed` is copied onto the
+        // ctx bit both drivers use for the cut.
+        const c = fns[code[ip + 1]!] as Combinator<unknown>
+        const r = c.parse(input, pos, ctx)
+        if (!r.ok) {
+          ctx._fe = r.span.start
+          ctx._fx = r.expected
+          ctx._fc = r.committed === true
+          return FAIL
+        }
+        END = r.span.end
+        return r.value
+      }
+
       case OP_EXPECT: {
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v !== FAIL) return v
@@ -444,6 +453,9 @@ function makeDriver(
         // codegen.ts:4470), so a tree walk finds every diagnostic and it survives
         // incremental subtree reuse — the flat sink alone is not the contract.
         if (REC && ctx._tolerant === true) captureError(ctx, err)
+        // See assemble.ts OP_EXPECT: the recovered failure is a SUCCESS, so the
+        // child's commit bit must not survive to cut an enclosing choice.
+        ctx._fc = false
         END = pos
         return err
       }
@@ -479,8 +491,7 @@ function makeDriver(
         if (arm === undefined) {
           for (let i = 0; i < spec.match.length; i++) {
             const m = spec.match[i]!
-            const kind: DispatchMatcherKind = m[0] === 0 ? 'startsWith' : m[0] === 1 ? 'endsWith' : 'matches'
-            if (matchesDispatchMatcher(key, { kind, value: m[1], flags: m[2] === '' ? undefined : m[2], parser: DUMMY, caseInsensitive: false })) {
+            if (matcherClaims(m, key)) {
               arm = m[3]
               break
             }
