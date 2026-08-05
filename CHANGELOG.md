@@ -5,6 +5,621 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **Tolerant recovery in the table lowering, in both drivers.** `src/table/` had
+  no recovery at all: no sync publication, no resync scan, no error-node
+  emission, and the encoder recorded no inferred sync sentinel. A tolerant parse
+  routed through the table returned `ok: true` with an empty `errors` array on
+  input the interpreter and the source lowering both report on — and the
+  three-way identity sweep could not see it, because its digest is
+  `{ ok, value, unconsumedFrom }` and `errors`/`expected` are not in it.
+
+  `encodeTable(rules, { recovery: true })` now lays down the inferred sync data —
+  a follow-set class per sequence term, and per repetition the item's expected
+  set plus the separator's sentinel class — and both `exec.ts` and `assemble.ts`
+  select the pieces that read it. The recovery path calls the SAME functions the
+  other two engines call (`src/recovery/scan.ts`), so a recovered error's span,
+  its expected set and its CST embedding cannot drift between engines.
+  `test/parity/table-recovery.test.ts` compares all four on `errors` and
+  `expected` directly.
+
+  Recovery is a BUILD setting for the reason `hostMode` is: the sync point is
+  derived from grammar structure, so it must be known before the table exists.
+  It is still DORMANT until a parse sets `ctx._tolerant`, so a strict table is
+  word-for-word the table it was and a strict parse of a recovery table takes the
+  identical path.
+- **`compileTable().parseWithErrors()` refuses instead of reporting a clean
+  file.** It set `_tolerant` on a driver that ignored it, so it collected nothing
+  whatever the input — a flag that measures nothing. It now needs
+  `compileTable(g, …, { recovery: true })`, which is also newly honoured rather
+  than accepted and dropped, and throws by name otherwise.
+- **A local trivia scope's root-capture policy reaches the table.**
+  `parser({ rootCapture: 'opaque' })` was lowered as inert, so a table parse
+  handed back selected root markers from a region the grammar declared opaque;
+  and the unclassified-scope refusal `parser()` raises under selected root
+  capture (`combinators/grammar.ts`) was absent from the table entirely, so a
+  table parse accepted a grammar the other two engines reject. Both are now two
+  bits on the scope row, and the refusal itself lives in one place
+  (`src/cst/root-trivia-scope.ts`) that all three engines call.
+- **Backtracking in the table drivers rolls back the trivia logs.** `choice`,
+  `not`, `peek`, `optional`, `greedyClassify` and `armGate` unwound the CST
+  buffers but not `_triviaLog` or `_rootTriviaLog`, so a rejected arm left its
+  rows behind: root capture reported `[1,8,2,7,0, 1,8,2,7,0]` where the
+  interpreter reports `[1,8,2,7,0]`. They now take the same eight-slot mark the
+  repetition and sequence paths already took.
+- **`node()` with no `rules()` key reports the authoring error, not a table
+  gap.** The encoder answered `table lowering: no opcode for 'node(inferred
+  type)'`, which names neither the mistake nor the fix. All three engines now
+  raise `node(): inferred node type requires a rules() key…` from one place.
+
+- **BREAKING: `skip(main, skipped)` is removed.** It parsed `main`, then
+  OPTIONALLY consumed `skipped` immediately after it, and returned `main`'s
+  value with the span extended across both — `sequence` plus take-first, and a
+  distinct def tag carried through the encoder, the code generator, the IR
+  serializer, six analysis passes, the plugin evaluator and the spec renderer to
+  pay for it. No language needs it, and no grammar in this repo used it: every
+  call site was a test or a doc example.
+
+  Migration — note that `skipped` was **optional**, so the `optional()` is not
+  decoration:
+
+  ```ts
+  skip(a, b)   →   transform(sequence(a, optional(b)), ([x]) => x)
+  ```
+
+  Verified equivalent for value, span and expected set: when `b` matches, the
+  span extends across it; when `b` fails, `optional` succeeds zero-width, the
+  sequence rolls back and the span is `a`'s, exactly as `skip` returned `main`'s
+  result unchanged. `deriveExpected` agrees because it derives through
+  `transform` into the sequence and stops at the first non-nullable term.
+
+  Two edges where the replacement is deliberately not byte-for-byte:
+  - **Ambient trivia.** `sequence` skips the grammar's trivia between terms;
+    `skip` ran `skipped` at exactly `main`'s end. Under a grammar with ambient
+    trivia, `sequence(a, optional(b))` accepts `a <ws> b` where `skip(a, b)`
+    stopped at `a`. The adjacency-restricted form is not expressible (an
+    `adjacent()` assertion cannot lead the inner `optional`), which is the one
+    thing lost — and nothing in this repo, or in any grammar built on it, relied
+    on it.
+  - **Nullable `main`.** `skip` derived its expected set from `main` alone; the
+    sequence unions the trailer's in as well, because a nullable term 0 really
+    can let term 1 fail first. The sequence answer is the correct one.
+- **A ratchet on the invariant-gate allowlist, and a category on every entry.**
+  The allowlist header said "THIS LIST MAY ONLY GET SHORTER" and called each
+  entry "a numbered lane, not an acceptance", and nothing enforced either
+  sentence. The cost was concrete: `INV-3` correctly caught
+  `src/compiler/token-alphabet.ts` and `src/compiler/token-scanner.ts` as
+  built-but-never-wired analysis — the sixth instance of that shape in this
+  project — and the allowlist entry silently converted the live finding into a
+  permanent accepted state, where it stayed. An entry with no owner and no
+  expiry is a decision to never do the work.
+
+  The entries move to `scripts/invariant-allowlist.mjs`, which also carries
+  `ALLOW_COUNT`, the committed entry count; the gate fails unless the list
+  matches it exactly. Adding an entry now costs a deliberate edit to a single
+  numbered line that a reviewer sees as its own hunk, rather than one more line
+  among sixteen. Every entry declares a machine-checked category — `RULE-BUG`
+  (the rule is wrong, the code is right), `BY-DESIGN` (permanent and argued), or
+  `DEBT` (must be fixed, and must name a `ref` that owns it) — and outstanding
+  `DEBT` is printed on every run, green ones included, because debt that is
+  never restated is never paid. `BY-DESIGN` versus `DEBT` is the distinction
+  that failed here — the token-scanner entry stated a real obligation and
+  decayed into a de facto exemption because nothing enforced or restated it, and
+  debt decays that direction only — so the header says so where the next person
+  adding an entry will read it.
+
+  Both new checks are proven to FIRE in `test/unit/invariant-gate.test.ts`,
+  against fixture trees carrying their own allowlist, on the same standard the
+  file already applied to the five rules. A fourth fixture proves the ratchet
+  can be RAISED: an architectural change that retires modules from the export
+  graph adds `BY-DESIGN` entries and bumps `ALLOW_COUNT` in the same commit, and
+  the gate goes green. A ratchet that cannot be raised is a hard block, and a
+  hard block gets bypassed.
+
+  The ratchet's first act: the two `INV-4` entries were "one import each" by
+  their own comment, so `childrenOf` and `intersects` now live once in
+  `src/analysis/gating.ts` — the module every analysis pass already imports —
+  and the entries are gone. **18 entries covering 26 sites -> 16 covering 24**,
+  categorized 7 `BY-DESIGN` / 1 `RULE-BUG` / 9 `DEBT`.
+- **The table is LINKED into closures at run start instead of interpreted row by
+  row, and `benchmark.less` drops 20%.** `src/table/exec.ts` builds the
+  reference table and then walks it with one `switch (code[ip])` over 29
+  opcodes, executed once per ROW — 497,360 rows for one parse of
+  `benchmark.less` — each re-reading its opcode, re-decoding its operands from
+  the `Int32Array`, and re-testing the same per-parse options. That is the
+  per-node branching design ledger row G5 exists to remove: *build the grammar
+  reference at run start, making the swaps on rules and leaves at that point,
+  then run with no logic branching for that option input.*
+
+  `src/table/assemble.ts` does that. It walks the reachable table ONCE and
+  lowers each site to a PIECE — a closure with its operands captured as `const`s
+  and its children bound as direct references to their own pieces. At parse time
+  there is no opcode read, no operand decode and no switch.
+
+  The ratio is what makes it obviously right: **2,241 distinct reachable sites
+  against 497,360 row executions** on the less grammar. Pieces are grammar-sized;
+  rows are input-sized. Assembly allocates ~2.2k closures once and removes a
+  dispatch plus an operand decode from ~497k executions.
+
+  The mechanism is structural, not marginal. A 29-case switch on a typed-array
+  load is a jump table whose successor V8 cannot know, so the interpreter loop
+  is one basic block with 29 merge edges and TurboFan can specialise no arm
+  against its caller. Measured on this branch: `exec` reaches TURBOFAN and is
+  deoptimised back to MAGLEV repeatedly — 100 deopt events in a 20-parse run. The
+  design was not paying dispatch overhead, it was opting its hot path out of the
+  optimising compiler.
+
+  All legs in ONE process, interleaved and order-alternated per
+  `bench/ab-harness.ts`, both controls printed:
+
+  | fixture | bytecode driver | assembled | delta | wins | controls |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | `benchmark.less` (106,802 B) | 31.05 ms | **24.74 ms** | **-20.3%** | 16/16 | -0.9% / -1.1% |
+  | `mixins-guards.less` (9,757 B) | 4.33 ms | **3.51 ms** | **-18.9%** | 16/16 | -0.7% / -0.6% |
+
+  Absolute milliseconds are comparable only WITHIN a run — this machine has
+  produced 9.4 ms and 26 ms for the same case in consecutive launches.
+
+  Identity is not traded for it: the assembler answers exactly what `exec.ts`
+  answers on all **2,833** corpus files across the four dialects (less 314, css
+  87, scss 2,408, jess 24), on every facet the three-way sweep compares.
+  `exec.ts` is kept as the reference it is gated against.
+
+  The artifact does not grow. The pieces ship ONCE in the runtime, shared by
+  every grammar and every variant; what a bundle carries is still the table, as
+  data.
+
+  Two consequences worth their own note:
+
+  - Options are consumed by SELECTION. The piece set is a superset and assembly
+    instantiates only what the option set reaches, so a piece an option excludes
+    is never allocated — not a cheap branch, zero. `trackLines` and the host mode
+    now pick a piece instead of being tested inside one.
+  - **INV-6** in `scripts/check-invariants.mjs` makes that mechanical: no
+    assembled piece body may read a per-parse config field off `ctx`. It caught a
+    real one on its first run — the node piece opened with `const host =
+    ctx.build`, a config read on the hottest non-terminal in the grammar, now
+    hoisted to once per parse.
+
+- **The table gates each choice arm on its own class now, and `benchmark.less`
+  drops 17%.** The table granted a choice its first-char dispatch only when
+  EVERY arm was non-nullable, pairwise disjoint and class-mappable; one failure
+  left the site with no gate at all, so every arm was entered at every position
+  the site was reached. Codegen never had that rule — `emitFirstMatch` guards
+  each arm on its own first set, which is sound whatever the other arms do.
+  Global disjointness is a far stronger precondition, and real grammars violate
+  it constantly: 75.3% of reachable choice sites in the less table were ungated,
+  carrying 83.1% of its arms.
+
+  Before the change, on the less grammar, 98.6% of arm entries on
+  `benchmark.less` were at ungated sites and 88.8% of them failed. Codegen's
+  per-arm gate removes 74% of arm entries on the same grammar; the table removed
+  1.4%. That asymmetry was the penalty.
+
+  A/B in ONE directory, git-toggled, same harness, load 3.5-4.0 at both ends,
+  three-leg pinned composition, median of 16 samples:
+
+  | fixture | table before | table after | delta | control |
+  | --- | ---: | ---: | ---: | ---: |
+  | `benchmark.less` (106,802 B) | 43.52 ms (2.58x) | **36.11 ms (2.17x)** | **-17.0%** | ±0.2% |
+  | `gen-workload.less` (275,211 B) | 198.88 ms (3.81x) | **159.26 ms (3.17x)** | **-19.9%** | ±0.7% |
+
+  Counts behind it (`PM_TABLE_COUNT=1`): ungated arm entries 268,834 -> 67,027 on
+  `benchmark.less`, of which 177,823 (72.6%) are declined by the gate; failed
+  entries 238,828 -> 37,021 (-84.5%); rows executed 727,987 -> 497,360 (-31.7%).
+  On `gen-workload.less`, 75.2% declined and failures -85.7%. The 72.6%/75.2%
+  against codegen's measured 74% is the corroboration that this is codegen's
+  mechanism rather than a different one that happens to help.
+
+  Artifact cost: **214,297 -> 216,019 B (+1,722, +0.80%)** raw, 33,984 -> 34,679
+  gzipped (+2.05%), with `words` unchanged at 9,443 — no instruction growth, only
+  the per-arm class indices in the `disp` pool.
+
+  Rows fell 31.7% while time fell 17.0%, so the remaining table cost is
+  concentrated in the rows that REMAIN, not in speculation. Ungated speculation
+  was worth ~17% of the table's time, not the whole 2x.
+
+- **`sepBy(x, s, { min: n })` with `n >= 2` now takes the same n-item derivation
+  `many` does — the separated twin of the fix below.** A list over a nullable
+  item AND a nullable separator failed in both shipped engines and succeeded
+  table-side; a derivation genuinely exists there, so the shipped engines were
+  the wrong ones and the table was right. The table's answer is unchanged.
+
+  The interpreter's and codegen's `sepBy` loop head is `cur < input.length`.
+  That is a TERMINATION device for the GREEDY tail — the same role
+  `repItem`'s two stops play, and the same argument that settled `many` — and a
+  prefix of exactly `min` items is finite by construction: each iteration that
+  succeeds pushes one, so the mandatory disjunct can hold at most `min` times.
+  Stopping on it made a REQUIRED item unreachable at EOF, so
+  `sepBy(nullable, nullableSep, { min: 2 })` over `""` failed instead of
+  yielding `["", ""]`.
+
+  **The separator decides whether the derivation exists**, and that is the axis
+  the disagreement turned on. With a nullable separator the empty string has an
+  n-item derivation and the list takes it. With a real separator, n items need
+  n-1 separators, there is no derivation, and the list still FAILS rather than
+  padding — unchanged in all three engines. Note that `matchesEmpty`
+  (`first-set.ts`) consults only the ITEM and reports `true` for both, so it
+  cannot be the authority for `sepBy` the way it is for `many`; it
+  over-approximates, in its documented-safe direction. **Reported, not fixed:**
+  that imprecision puts a nullable claim on a `min >= 2` list with a
+  non-nullable separator, which can never match empty — the exact complaint the
+  authored note there makes about the `min === 1` reading it replaced. The
+  precise form is `min >= 2 ? me(item) && me(separator) : min >= 1 ? me(item) :
+  true`, but it NARROWS nullability, which is the gating-unsafe direction, so it
+  needs its own A/B rather than a ride-along.
+
+  Also fixed, same family: **a table-lowered list that ends under `min` now
+  reports the ITEM in `expected`**, not the separator it happened to try last.
+  `failAt` (`repeat.ts`) and codegen's `deriveExpectedArr([def.parser])` both
+  already reported the item — a list stuck under `min` is stuck wanting another
+  ITEM. The encoder carries the item's expected set only when `min >= 2` (flags
+  bit 2), since at `min === 1` being under `min` means the FIRST item failed and
+  set that same set already; no committed grammar grows by a word, and the
+  emitted table is byte-identical.
+
+  **Consumer-visible, and only for `min >= 2` separated lists**; the three-way
+  sweep is byte-identical to the previous commit on every corpus. Codegen's
+  output is byte-identical for every `min <= 1` list, which is all of them
+  today.
+
+- **`many(x, { min: n })` with `n >= 2` now means the same thing in all three
+  engines. It previously meant three different things.** Over the input `"a,b"`
+  with a nullable item, `many(Field, { min: 2 })` returned `["a", ""]` compiled,
+  and FAILED interpreted and table-lowered. Over `"a a"` with an ordinary
+  NON-nullable item and a trivia rule, it returned `["a", "a"]` interpreted and
+  table-lowered, and FAILED compiled. No engine was right about both.
+
+  Two independent defects, and each engine had exactly one of them:
+
+  - **`repItem`'s zero-width stop and EOF early-out were applied to `atLeast`'s
+    mandatory items** (interpreter `repeat.ts`, and the table driver via
+    `viaRepItem`). Both are TERMINATION devices for an unbounded loop whose only
+    source of progress is the item — the point `00b9f79` settled for `sepBy` —
+    and a prefix of exactly `min` items is finite by construction and cannot
+    spin. Applying them made `min >= 2` over a nullable item *unsatisfiable at
+    all*.
+  - **The compiled engine inlined mandatory items 2..min flush against each
+    other, with no inter-item trivia skip** (`codegen.ts` `emitMany`). A repeat
+    owns the trivia BETWEEN its items; only the trivia before the first belongs
+    to the enclosing context.
+
+  The rule now shared by all three: **a mandatory item is an ordinary repetition
+  item preceded by inter-item trivia, exempt only from the two loop-termination
+  stops.** `min` counts ITEMS (`RepeatOptions`), `oneOrMore(x)` IS
+  `many(x, { min: 1 })`, and `matchesEmpty` reports a `min`-bearing repeat as
+  nullable exactly when its item is, for any `min` — so a `{ min: n }` repeat
+  over a nullable item matches the empty string with `n` items, which is a
+  derivation `x*` genuinely has. `many(x, { min: 5 })` over `""` is five empty
+  items. The unbounded `many(x)` still stops at zero width and still returns
+  `[]`: it takes the FEWEST-item derivation because it must halt, which is a
+  termination property and not a claim that zero-width items do not count.
+
+  **Consumer-visible.** Only repetitions with `min >= 2` move; `many`,
+  `oneOrMore` and `many(x, { min: 1 })` are untouched, and the three-way
+  identity sweep is byte-identical to the previous commit on every corpus,
+  because no committed grammar uses `min >= 2`. If you have a `min >= 2` repeat
+  you will notice it as: a list over a NULLABLE item that used to fail now
+  succeeds, padded to `min` with zero-width items (interpreted and table); a
+  list over any item separated by trivia that used to fail now succeeds
+  (compiled); and a `{ min: 2 }` list over a nullable item that used to return
+  `["a", ""]` still does, but now everywhere. If you were relying on `min >= 2`
+  over a nullable item as a way to FAIL, it no longer is — make the item
+  non-nullable, which is what the bound was always documented to require of you
+  (`min >= 1` is what makes a repeat non-nullable *given a non-nullable item*).
+
+- **`run()` no longer installs three accessors on every result — small parses
+  get up to 43% of their time back.** Since 0.44 every `run()` call passed its
+  result through a `guardRemovedFields()` that ran three
+  `Object.defineProperty` calls, installing throwing getters for `triviaMap`,
+  `triviaLog` and `triviaKindLabels` so a stale 0.43 consumer reading them got
+  the migration instead of `undefined`. The notices are worth keeping; charging
+  them to every parse was not. The code claimed the guard "costs nothing on the
+  parse path"; it was never measured, and it was wrong.
+
+  Measured through `bench/ab-harness.ts` — both sides in one process, paired
+  and order-alternated, sides rebuilt per pass, with a control pair of two
+  reference instances measuring the null in the same passes. `run()` against an
+  interpreted JSON grammar, 5 passes:
+
+  - **7-byte input: -42%** (two independent runs, median -41.0%…-43.6%, min
+    -41.4%…-43.2%, 12/12 interleaved pairs won in all ten passes, null 32-43%)
+  - **52-byte `SMALL_JSON`: -17%** (median -15.4%…-19.0%, 12/12 in all ten
+    passes, null 40-48%)
+  - `MEDIUM_JSON` and `LARGE_JSON` read between -1% and +5% depending on the
+    run, so **no change is claimed at those sizes** — which is the point. The
+    cost was FIXED per run, so it is invisible in any benchmark large enough to
+    be respectable and it is most of the bill on the parses a language service
+    actually makes.
+  - Deleting the notices outright, measured the same way, reads -42.0%…-42.8%
+    and -17.0%…-18.1% — i.e. the shared prototype recovers **all** of the tax
+    and keeps the error. That upper bound is why the recovery is stated as
+    complete rather than merely large.
+
+  The realised-map count was *not* the mechanism, contrary to first guess:
+  `%HaveSameMap` over 2000 parses read **2** maps, not 2000 — V8 shares the
+  accessor transition even though each result got fresh closures. The cost was
+  per-parse work, and it is now 1 map.
+
+  **Consumer-visible:** the migration `TypeError`, its exact text, and the
+  fields' invisibility to `Object.keys`, spread and `JSON.stringify` are all
+  unchanged — the accessors moved to a shared prototype built once at module
+  load. Two differences, both narrow:
+  `Object.getOwnPropertyDescriptor(result, 'triviaLog')` is now `undefined`
+  and the descriptor lives on the prototype (reading the field still throws;
+  only *describing* it moved), and a `RunResult` is no longer a plain object —
+  `Object.getPrototypeOf(result)` is not `Object.prototype`. Nothing about
+  `ok` / `value` / `span` / `expected` / `errors` / `rootTrivia` /
+  `unconsumedFrom`, their order, or their enumerability changes.
+
+  `RunResult` is also now built from two constructors rather than one literal
+  with a `...(cond ? { rootTrivia } : {})` spread. `rootTrivia` is still ABSENT
+  rather than empty when nothing was retained — the observable contract is
+  unchanged — but the conditional spread was producing exactly those two shapes
+  implicitly, and a conditional spread is the hidden-class hazard this repo has
+  an incident over. It now produces them explicitly.
+
+  The form matters and was measured, not assumed: at 200k allocations of this
+  shape, against a plain literal at 7.28 ms, three per-object `defineProperty`
+  calls cost 105.27 ms, a `{ __proto__: PROTO, … }` literal 25.58 ms, and `new`
+  on a constructor whose `.prototype` carries the accessors 8.72 ms. The
+  `__proto__` literal was tried first and recovered only about two thirds of
+  the tax end-to-end, which is what sent the measurement back to the allocation
+  form.
+
+- **An invariant gate, wired.** `pnpm check:invariants` decides four
+  source-level rules the type system and the test suite structurally cannot
+  see, and it is a required CI step, a pre-commit guard, and asserted by
+  `test/unit/invariant-gate.test.ts`. INV-1: no accessor descriptor installed
+  with `Object.defineProperty` — the 0.44.0 migration aid that put throwing
+  accessors on every `run()` result measured 36.9% on small parses. INV-2: no
+  field in a public `*Options` type that nothing reads — the general form of the
+  `dispatch()` flag that was set and never read, so the cut did not fire and the
+  parser returned a silently truncated document. INV-3: no module under `src/`
+  unreachable from a published entry point. INV-4: no declaration body
+  duplicated across modules. INV-5: no `delete` on an object the enclosing
+  function did not construct — one `delete` flips `%HasFastProperties` to false
+  and re-adding the property does not restore it, and `delete ctx._triviaLog`
+  runs per token and per leaf on the object every combinator reads on every
+  step. Eighteen allowlist entries covering 26 pre-existing sites are recorded
+  by name with a reason each; the list may only get shorter, and a stale entry
+  fails the gate. (Made mechanical, and trimmed to 16/24, by the ratchet entry
+  above.) A fifth candidate — conditional spread into an object literal
+  — was implemented, measured at 177 pre-existing hits in overwhelmingly cold
+  code, and REJECTED rather than shipped noisy. See
+  `docs/design/invariant-gate.md`, which also records what could not be
+  mechanised and why.
+
+- **The table lowering measured against codegen: much smaller, materially
+  slower.** Both sides driven from this worktree over jess's four shipping
+  grammars, same grammar, same variant, same reducers, in one process
+  (`pnpm size:jess`, `pnpm speed:jess`). Every figure is the AST path
+  (`hostMode: 'ast'`, `trackLines: false`), the canonical performance measure.
+
+  - **Size, per variant, whole artifact** (recognizer + the author's reducers,
+    excluding the shared driver): css 2,276 KB codegen -> 74 KB table (30.7x
+    raw, 20.8x gzip); less 2,863 -> 209 (13.7x / 12.2x); scss 1,883 -> 108
+    (17.4x / 13.2x); jess 2,016 -> 119 (16.9x / 12.4x). Machinery alone, with
+    the reducers taken out of both sides, is 41.4x / 19.7x / 26.7x / 27.1x raw.
+    Gzip moves the same direction but less far, as a dense numeric stream
+    should. The shared driver is 68,738 B of source, added to a bundle once,
+    and is netted off nothing.
+  - **Speed, table vs codegen on the same corpus**: css **+229%**, less
+    **+134%**, scss **+115%**, jess **+213%** — the table is 2.2x-3.3x SLOWER
+    than the shipped codegen. Against the interpreter it is 1.9x-2.3x faster
+    (codegen -> interpreter is +372%..+536% on the same runs). Control contests
+    (table vs an independently built table) read -1.5%..+1.3% with 4-15 of 16
+    wins, so the gate deltas are far outside the noise floor and the direction
+    is not in question. Absolute throughput, compiled -> table: css 11.6 -> 3.5
+    MB/s, less 4.1 -> 1.7, scss 4.7 -> 2.2, jess 19.7 -> 6.3. The penalty is
+    smallest on the corpora with the largest files and largest on the ones with
+    the smallest, which is where to look next.
+  - **The four `trackLines` x `hostMode` variants are four DISTINCT tables, not
+    two.** Proven by sha256 of the emitted machinery rather than by equal byte
+    counts. An earlier claim that AST and CST emit byte-identical tables holds
+    on the 16-rule synthetic ladder and does NOT hold on any of the four real
+    grammars; they differ by 0.2%-0.4%. Variant folding remains a build/DX
+    result and is reported in its own section, never as a per-dialect figure.
+
+- **The other half of the ledger: load / JS-interpretation cost, where the table
+  wins by 7-10x.** A lowered codegen grammar is 7.5-11.8 MB of JavaScript that V8
+  must parse and compile; a table is a numeric literal it must not.
+  `pnpm load:jess`, fresh process per measurement — node's module cache and V8's
+  compilation cache each make a second measurement of the same thing meaningless
+  (the identical compile read 0.79 ms then 0.010 ms before that was handled).
+
+  - **Cold import to parser-callable**: codegen 65.4 / 83.4 / 49.4 / 54.1 ms
+    (css/less/scss/jess) against the table's **7.4 / 8.0 / 7.1 / 7.1 ms** —
+    the table saves 42-75 ms per process, **6.9x-10.4x**.
+  - **V8 compile alone** (`vm.Script`, unique source per rep): codegen 41-65 ms
+    lazy, table 0.60-1.40 ms — **46x-85x**. Under `--no-lazy` codegen is 78-132
+    ms, so **43-68 ms of it is DEFERRED, not avoided**; it lands on first call,
+    and a parser calls every rule function it has.
+  - **The driver is counted, and codegen's advantage is stated.** The table side
+    includes loading the real built `dist/table/index.js` (155,503 B). The
+    codegen artifact imports **no parseman runtime at all** — the macro inlines
+    the recognition pieces — so its only runtime dependency is
+    `@jesscss/core/ast`, which both sides load. That is a real point in
+    codegen's favour and it is inside these numbers.
+  - **Crossover — the shape the answer actually takes.** Solving
+    `load + bytes * rate` for equality: **css 0.36 MB, less 0.17 MB, scss
+    0.17 MB, jess 1.18 MB**. Below that a process is faster overall on the
+    table; above it, on codegen. So the table wins one-shot and small-input
+    work outright and loses sustained large-input work. jess's figure is the
+    least trustworthy — its largest fixture is 11 KB and the rate difference
+    there is small enough to be noise-dominated.
+
+- **One canonical fixture measurement — `pnpm bench:less` — and the reason two
+  lanes disagreed by 27% on the same file.** `benchmark.less` had two remembered
+  baselines: codegen 17.41 / table 46.86 / interpreter 99.68 ms, and codegen
+  22.17 / 49.72 / 111.33. The ratios agreed; the absolutes did not, and the
+  target is stated in absolutes.
+
+  **The cause is run COMPOSITION, and it is not a detail.** The two figures came
+  from two harnesses — `bench/jess/fixture.ts` (three legs: `pm-macro:` codegen,
+  table, interpreter) and `bench/jess/table-less-ms.ts` on
+  `diag/table-penalty-attribution` (four legs, a `compose()` codegen, ~3 parses
+  batched per sample). Every leg shares ONE heap by design, because `interleave`
+  puts them there so they share GC and cache state. The consequence nobody had
+  priced is that a leg which allocates heavily **taxes its neighbours' samples**.
+  Measured back-to-back in one process, control ±0.5%:
+
+  | run shape | codegen | table | ratio |
+  | --- | --- | --- | --- |
+  | codegen + table + control | 17.11 ms | 38.80 ms | 2.27x |
+  | … + interpreter (the pinned shape) | 16.38 ms | 45.92 ms | 2.80x |
+
+  One extra leg moved the table **18%** and left codegen alone — the interpreter
+  allocates ~6x what the table does per parse, and the table absorbs the garbage.
+  Two smaller terms point the same way: reps=3 reads **+6.7%** slower per parse
+  than reps=1, and `compose()` codegen is **10% FASTER** than `pm-macro:` (15.94
+  vs 17.69 ms), so the leg swap works *against* the higher number rather than
+  explaining it.
+
+  Load is real but is not the driver: `85d4594` records codegen at 22.17 -> 22.22
+  ms across two runs at loadavg 6.5, stable to 0.2%. That lane had already
+  written "ABSOLUTES ARE HARNESS-RELATIVE"; nothing made it impossible to ignore.
+
+  So composition is **pinned and printed**, the interpreter-free figure is
+  reported alongside every pinned one so the tax is visible rather than baked in,
+  and the load ceiling — previously a private `const` in `speed.ts`, guarding the
+  one harness nobody quotes while `fixture.ts` printed the load average and
+  measured anyway — is now shared `assertQuiet()` in `bench/jess/grammars.ts`.
+  The protocol prints with the numbers, so a pasted result carries its own
+  provenance: parseman version, HEAD sha, node, platform, and loadavg at both
+  ends. `docs/design/canonical-fixture-benchmark.md` is the written protocol, and
+  says why there must not be a second harness in the terms the measurement above
+  supplies.
+
+  The compiled-outlier caveat now carries a **magnitude**: the harness prints each
+  engine's node count, serialized size, and the count of minimal differing
+  subtrees, so the caveat cannot be read as either "the whole gap is an artefact"
+  or "none of it is".
+
+- **Absolute parse times on the canonical fixtures**, since ratios do not let
+  anyone compare against a number they already know (`pnpm fixture:jess`). One
+  parse, median of 16 interleaved samples, AST path, codegen / table /
+  interpreter:
+
+  | fixture | bytes | codegen | table | interpreter |
+  | --- | --- | --- | --- | --- |
+  | `benchmark.less` | 106,802 | 17.41 ms | 46.86 ms | 99.68 ms |
+  | `gen-workload.less` | 275,211 | 51.73 | 212.45 | 450.19 |
+  | `benchmark.css` | 123,029 | 5.34 | 30.34 | 59.01 |
+  | `gen-workload.scss` | 287,543 | 33.67 | 144.58 | 271.01 |
+  | `chunk.jess` | 11,047 | 0.37 | 1.11 | 2.36 |
+
+  `benchmark.less` is a **compiled-outlier**: the table and the interpreter
+  agree and the shipped codegen engine is the odd one out, on the `value` and
+  `span` facets. It is timed anyway and labelled, because it is the fixture that
+  gets asked about by name — but its three parses are not identical, so those
+  milliseconds are indicative of cost rather than a like-for-like contest.
+
+  **This corrects an earlier claim of mine.** I wrote that the table's parse
+  penalty was smallest on the largest inputs. It is not: `gen-workload.less`
+  (275 KB) is 4.11x while `benchmark.less` (107 KB) is 2.69x, same dialect. The
+  penalty tracks which constructs a file exercises, not its size.
+
+  NOT MEASURED: jess's own `benchmark:*` harnesses compare whole-pipeline
+  compile against stylis, dart-sass and postcss, and import `@jesscss/css-parser`
+  from jess's BUILT lib, which is pinned to a published parseman. They cannot be
+  aimed at this worktree's table engine without rebuilding jess against it, so
+  the standing `jess-ast at 1.35x PostCSS` bar is not reproducible from
+  parseman's side. Approximating it would be inventing a number.
+
+- **Every corpus cap is gone, and the three-way sweep still clears the table on
+  all of them.** `bench/jess/grammars.ts` hardcoded `SCSS_LIMIT = 400` against a
+  sass-spec cache of 2,408, silently dropping 83% of the corpus while the output
+  read as a corpus result; the stated justification — that the first 400 in
+  sorted order are reproducible — was not a reason, since all 2,408 in sorted
+  order are equally reproducible. less was reading only `tests-unit`, 136 of the
+  314 `.less` files in `@less/test-data`. jess was reading **three files**, which
+  is not a thin denominator but an absence of one.
+
+  Corpora now, and the three-way outcome on each — `table-outlier` is **0**
+  everywhere, so no defect was hiding in the 2,414 files that had never been
+  looked at:
+
+  | dialect | files | identical | table-outlier | interp-outlier | compiled-outlier | three-way |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | css | 87 (was 87) | 58 | **0** | 2 | 18 | 9 |
+  | less | 314 (was 136) | 296 | **0** | 4 | 10 | 4 |
+  | scss | 2,408 (was 400) | 1,908 | **0** | 491 | 1 | 8 |
+  | jess | 24 (was 3) | 22 | **0** | 0 | 2 | 0 |
+
+  **24 files is still far too few to say anything about the jess dialect.** It
+  is every `.jess` in the repo; the shortfall is the repo's, not the harness's.
+  `divergence.ts` and `speed.ts` now print `files=N of TOTAL` and flag any run
+  that bounded its own coverage, so a count can no longer read as coverage. The
+  less root is an UNPINNED sibling checkout (`link:` to a live `~/git/oss/less.js`),
+  so its denominator can move on its own — another reason to print it.
+
+- **Two table-driver defects that only the Less dialect exposed.** Measured over
+  jess's four shipping grammars on their real corpora
+  (`pnpm divergence:jess <dialect>`, harness committed at `bench/jess/`), the
+  table lowering was tree-identical to the interpreter on css (87 files), scss
+  (400) and jess (3) and diverged on **55 of the 136 Less fixtures** — 30 SILENT
+  WRONG TREES, 18 table-only throws, 7 other. Two causes, and `pnpm test` was
+  green with both live:
+
+  - **`OP_LEAF` was not a capture boundary.** `leaf()` suppresses its interior's
+    own CST captures and contributes exactly ONE leaf carrying the reducer's
+    value (`src/combinators/token.ts:89-127`); the driver ran the interior with
+    the parent's sinks still live. Every interior terminal leaked into the
+    PARENT's `children`, moving the enclosing reducer's arity. Less is the only
+    dialect that calls `leaf()`, and it uses it for the padded arithmetic
+    operators — `1 + 1` leaked its whitespace and keyword terminals, which
+    surfaced as "Less arithmetic grammar lost an operator operand" on 16
+    fixtures and as a wrong tree on the rest. It differs from `OP_TOKEN`
+    deliberately: trivia POLICY is untouched and `_rootTriviaLog` stays live.
+  - **`OP_REP` skipped leading trivia before the MANDATORY first item.** Only
+    `many()` — min 0, no separator — runs its first item through `repItem` and
+    therefore owns the trivia in front of it (`src/combinators/repeat.ts:130-137`).
+    `oneOrMore`/`atLeast` (`:203`) and `sepBy` (`:412`) both parse the first item
+    AT `pos`, because leading trivia there is the ENCLOSING context's. The
+    driver skipped for every shape, so a `oneOrMore` whose body starts by
+    MATCHING trivia had that trivia eaten out from under it. In Less that body is
+    `classifiedTrivia` itself, reached through `peek(whitespace)` in the
+    value-continuation boundary — so **every space-separated declaration value**
+    (`color: red blue`, `margin: 1px 2px`) stopped after its first piece and the
+    whole ruleset vanished from an otherwise-successful `Stylesheet`.
+
+  Less is now 136/136 identical to the interpreter, and under the THREE-WAY
+  sweep (`pnpm divergence:jess`) `table-outlier` is **0 in every dialect** —
+  there is no file in 626 where interpreted and compiled agree and the table
+  alone differs. What a two-way sweep reported as "the table's residual css 11 +
+  scss 85" is drift between the two SHIPPED engines on `expected` only, with the
+  table siding with what ships compiled. Two reporting defects with
+  reproductions, neither landed, are recorded in `notes/TABLE-DRIVER.md`.
+
+- **`buildSpecModel` no longer hangs the process on a `balanced()`.** Every rule
+  reaching a `balanced()` sent `parseman/spec` — and so `toEBNF`, `toRailroadHtml`
+  and `toRailroadSvg` — into unbounded recursion: `RangeError: Maximum call stack
+  size exceeded` at the default stack, and **SIGSEGV** at `--stack-size=40000`. The
+  raised-stack crash is the diagnosis: this was a true cycle, not a deep-but-finite
+  walk, so no depth limit would have been a fix.
+
+  `balanced()` builds its interior with a self-referencing `ref()` so a nested open
+  is consumed recursively. That back-edge is anonymous, and the spec walker cut
+  cycles **only at named rules** — an assumption that every cycle passes through a
+  `_ruleName`. It does not, for `balanced()` or for any cycle a caller builds with
+  the public `ref()`.
+
+  Two changes, answering two different questions:
+
+  - **The cycle is now cut on OBJECT IDENTITY**, via a path set added on entry and
+    removed on exit — not a global visited set, so a combinator shared by two
+    sibling positions is still drawn at both (sharing is structure; only a
+    combinator containing *itself* is a cycle). This fixes the whole class. An
+    anonymous back-edge renders as `/* (recursive) */` in place.
+  - **A `balanced()` renders as its delimiters around an opaque interior** —
+    `"(" /* balanced … */ ")"` — recognised through a `_balanced` marker set by
+    `buildBalancedInterior`, so it covers the ambient, `raw` and `strict` forms
+    alike. This is not a simplification: the delimiters are fixed at construction
+    and the interior genuinely *is* a delimiter scan. Expanding its lowered shape
+    would print the content-run regex and the `self` back-edge, which are emitter
+    machinery rather than language. `scanTo()` was checked and does **not** share
+    the defect — its `_def` is a leaf the walk never descends.
+
 ### BREAKING — a list now contributes its ITEMS and nothing else
 
 Read this section before upgrading. Both changes below alter the shape of the tree
@@ -641,14 +1256,84 @@ numbers.
     even under `hostMode: 'cst'`**, where a host is by definition present and
     would supply the value. The refusal is correct for `'ast'` and is a gap for
     `'cst'`. It fails closed with a named `UnsupportedConstruct`.
-  - **`scanTo()` and `balanced()` are RUNTIME-ONLY.** They run correctly but park
-    a live combinator in the const pool, so `emitTableModule` refuses a grammar
-    using either, naming the construct. Every grammar in this repo except json,
-    csv and lang uses at least one.
+  - ~~**`scanTo()` and `balanced()` are RUNTIME-ONLY.**~~ **FIXED — every
+    combinator now emits.** They parked a live combinator in the const pool, so
+    `emitTableModule` refused a grammar using either. Since every shipping grammar
+    uses at least one, NO shipping grammar could be emitted at all, which is what
+    made the lowering's size claim unmeasurable rather than merely unmeasured.
+
+    Both are now carried as their CONSTRUCTOR ARGUMENTS in `prog.scans`
+    (`OP_SCAN`), with sentinel and skippers encoded as ordinary table subtrees and
+    referenced by offset. `resolveTable` rebuilds each spec through the SHARED
+    `scanTo()` / `balanced()` — the same pattern `triviaSpecs` already used — so
+    there is one implementation of each scan and the table carries only its
+    arguments. `balanced()`'s ambient re-resolution, its `expect()`-based
+    recovery, its `strict` failure and its one-leaf `token()` wrapper are
+    therefore unchanged, because they are still its own code doing the work.
+
+    Grammar-level ambient `scanSkip` follows, as subtree references
+    (`prog.scanSkip`), and is now installed PER RULE (`prog.scanSkipOf`) rather
+    than program-wide — `run()` installs the ENTRY rule's own set, and in a
+    `composeLeaf` grammar the pieces do not agree (67 of jess's 195 css rules
+    carry none).
+
+    Measured on jess's four dialect grammars, loaded from source: all four encode
+    with no `runtimeOnly`, emit as modules, and the emitted module is
+    parse-identical to the in-memory table on 626 corpus files — 87 css, 136 less,
+    400 scss, 3 jess — with zero divergences.
+  - **Fixed: a `dispatch()` fallback that reaches `routed()` through a RULE
+    REFERENCE lost its routed token.** `otherwise()` computes `usesRouted` when it
+    is constructed, and a `g.X` inside the arm is an unresolved ref whose thunk
+    throws, so the stored flag reads `false`. The interpreter never trusts it
+    alone — it ORs the flag with a live walk at parse time — and the encoder read
+    only the flag. `@charset "UTF-8";`, one line of plain CSS, failed under the
+    table with `expected: ["routed()"]`. Every case arm was already walked; the
+    fallback was the one branch that was not.
+  - **Fixed: the encode peephole read `OP_CHOICE`'s operands off by one.** Arms
+    start at `ip+4`; `ip+3` is the choice's own expected-set index. The collapse
+    pass treated that index as a code offset — replacing it whenever the row at
+    that offset happened to be an `OP_RULE`, then walking the bogus "target" and
+    rewriting ITS operands — and never collapsed the last arm. No test in the
+    suite noticed; the new one asserts the structure rather than a parse outcome.
 
   No timing or per-dialect byte figure is published for the prototype in this
   release, and the two figures quoted during its development (113 B/rule, ~2.65x)
   were measured on a synthetic ladder and on json — never on a shipping grammar.
+
+- **Fixed: `parseman/table` could not run ANY grammar with `classifiedTrivia`, because
+  `regex()`'s first-set analyzer was registered by side effect from one module.** The
+  analyzer (`src/regex/first-set.ts`) was wired into `regex()` at run time by the library
+  entry, via a `registerRegexAnalyzer` seam, so that a bundle holding `regex()` without
+  the library entry never pulled it in. A published subpath is its OWN module graph:
+  `dist/table/index.js` never executes `src/index.ts`, so its private `regex()` fell back
+  to the permissive `any()` first-set. `buildTrivia` (`src/table/program.ts`) rebuilds
+  classified trivia through that `regex()`, and `classifiedTrivia()` requires a concrete
+  finite first set per arm — so it threw on the FIRST arm of every table-lowered grammar
+  with labelled trivia, which is every grammar that exposes trivia categories at all.
+  Plain `trivia(regex(...))` survived because it asserts nothing.
+
+  The analyzer is now imported DIRECTLY by `src/combinators/regex.ts` and the
+  registration seam is deleted. Registering it a second time from the table entry would
+  have fixed this instance and left the fragility for the next entry point; a mutable
+  module-global that a *different* module has to remember to write makes `regex()`'s
+  result depend on which bundle it landed in. It adds no new leaf modules — the analyzer
+  imports only `combinators/first-set.ts` and `regex/classes.ts`, both already reachable
+  from `regex()` — so the cost is the analyzer's own bytes: `dist/table/index.js` grows
+  from 121,433 to 128,211 (+6.8 KB unminified), `dist/run/index.js` is unchanged at
+  17,501, and `dist/index.js` shrinks slightly. `RegexFirstSetAnalyzer` and
+  `registerRegexAnalyzer` were never in the `exports` map, so nothing public is removed.
+
+  **`./table` is where it threw; it was never the only entry affected.** `./diagnostics`,
+  `./spec`, `./language-service` and the CLI `bin` also build grammars without
+  `src/index.ts` in their graph, so `regex()` returned a permissive first-set there too —
+  no error, just choice dispatch silently disabled. Those are now correct as well.
+
+  Both halves are pinned by `test/unit/table-entry-dist.test.ts`, which is deliberately
+  the first test in the suite to import `dist/` — through package self-reference, so it
+  resolves as a consumer's would. A source-only test could not have caught this and
+  could not catch a regression: every test file has `src/index.ts` somewhere in its
+  graph. Its second case bundles each `exports` entry in isolation and fails any entry
+  that holds `regex()` without the analyzer.
 
 - **Three documentation claims corrected against the code.** The gating diagnostic
   left the compile path in 0.45.0, but `README.md` and `docs/guide/combinators.md`

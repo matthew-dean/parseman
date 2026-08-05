@@ -87,10 +87,21 @@ export function choice<T extends [Combinator<unknown> | GatedArm<unknown>, ...(C
       const expected: string[] = []
 
       // ── Disjoint: O(1) first-char dispatch (arms may be gated) ────────────
-      if (disjoint && pos < input.length) {
-        const code = input.codePointAt(pos)!
-        let idx = code < 128 ? asciiDispatch![code]! : -1
-        if (idx < 0) {
+      //
+      // EOF IS A DISPATCH MISS, not a reason to leave the disjoint path. Every arm
+      // of a disjoint choice is non-nullable (that is a precondition of `disjoint`
+      // above), so at EOF no arm can match and the answer is the same "nothing
+      // could have started here" the in-bounds miss below gives. Falling through to
+      // firstMatch instead made this position the ONE place a gated-off arm was
+      // dropped from the report — firstMatch `continue`s past it and contributes
+      // nothing — while the in-bounds miss runs `parsers.flatMap` ignoring gates and
+      // DOES name it. Same gate state, same "no arm can match", two different
+      // answers; codegen and both table drivers only ever gave the union. Accept and
+      // reject are untouched: every arm fails at EOF on either path.
+      if (disjoint) {
+        const code = pos < input.length ? input.codePointAt(pos)! : -1
+        let idx = code >= 0 && code < 128 ? asciiDispatch![code]! : -1
+        if (idx < 0 && code >= 0) {
           for (let i = 0; i < parsers.length; i++) {
             if (inFirstSet(code, parsers[i]!._meta.firstSet)) { idx = i; break }
           }

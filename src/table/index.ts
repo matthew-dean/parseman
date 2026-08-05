@@ -10,9 +10,38 @@
  * SHIPS a table parser should not drag the combinator set, `compile()` and the
  * first-set analysis along with it.
  */
-export { tableRules } from './exec.ts'
+/**
+ * THE DRIVER (G5) — `tableRules` IS the assembler. The program is LINKED into
+ * closures at run start, so the parse path holds no opcode read, no operand
+ * decode and no option test.
+ *
+ * It replaced the bytecode interpreter here rather than shipping beside it. Two
+ * live drivers is two places for behaviour to drift, and that already happened
+ * once: the ambient `scanSkip` write had to move into the shared `stamp.ts`
+ * envelope because each driver was installing it separately. The gate for the
+ * swap was `exec === assembled` on the identity sweep, which it clears.
+ *
+ * `exec.ts` stays REFERENCE — the sweep still gates the assembler against it,
+ * and it is what a divergence gets bisected against. It is not on the product
+ * path and nothing emitted imports it.
+ */
+export { assembledRules as tableRules, assembledRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
-export { emitTableModule } from './emit.ts'
+/**
+ * `compile()` for the table lowering — same `CompiledParser` contract, a table
+ * artifact instead of generated source. A root combinator is a one-rule map, so
+ * this is a drop-in for the source-lowering `compile()` rather than a second API.
+ */
+export { compileTable, type TableCompileOptions } from './compile.ts'
+export { emitTableModule, emitTableExpression, emitFoldedModule } from './emit.ts'
+/**
+ * THE VARIANT FOLD (G4). One base table plus per-variant row edits, selected at
+ * load. Additive: `tableRules` and every existing entry are untouched, and the
+ * driver still reads no option on the parse path.
+ */
+export { tableVariants, variantNames } from './fold.ts'
+export { foldPrograms, unfoldVariant, expandCompactFolded } from './program.ts'
+export type { FoldedProgram, CompactFolded, TableDelta } from './program.ts'
 /*
  * `emitTableOnly` is NOT re-exported here. It is a SIZE PROBE: it emits the
  * table with an EMPTY reducer pool so the machinery's byte count is comparable

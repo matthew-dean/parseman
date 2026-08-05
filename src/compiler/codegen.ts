@@ -7,8 +7,10 @@
  * object allocation per node.
  */
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
+import { createParseContext } from '../parse-context.ts'
 import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
+import { missingInferredType } from '../combinators/node.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { mayCommitFailure, mayLeavePartialCapture, capturesLeaf, hasNodeDef, alwaysConsumes } from '../analysis/commitment.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -138,7 +140,6 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
     case 'field': case 'trivia': case 'token': case 'leaf': case 'node': case 'grammar': case 'expect':
       return rec(d.parser)
     case 'sepBy': return rec(d.parser)
-    case 'skip': return rec(d.main)
     // not / scanTo / guard / withCtx / recover / unknown → shallow set (safe).
     default: return { alts: [[seg(p._meta.firstSet, matchesEmpty(p))]] }
   }
@@ -2176,8 +2177,6 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
     case 'withCtx':
     case 'optional':
       return mayRecordRecoveryError(d.parser, recovery, seen)
-    case 'skip':
-      return mayRecordRecoveryError(d.main, recovery, seen) || mayRecordRecoveryError(d.skipped, recovery, seen)
     case 'scanTo':
       if (mayRecordRecoveryError(d.sentinel, recovery, seen)) return true
       for (const item of d.skip) {
@@ -3036,7 +3035,27 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   // `min` MANDATORY matches, inlined with early-return on failure. min 0/1 is the
   // whole world today, so the loop runs 0 or 1 times and the output is unchanged;
   // `many(x, { min: n })` simply inlines n of them.
+  //
+  // Items 2..min are preceded by INTER-ITEM TRIVIA, exactly as the loop's are —
+  // the repeat owns the trivia BETWEEN its items, and only the trivia before the
+  // FIRST one belongs to the enclosing context (repeat.ts:201-203, :211-213, where
+  // items 2..min go through `repItem` and skip it). Inlining them flush against
+  // each other made `many(x, { min: 2 })` reject `"a a"` — input `many(x)` parses
+  // as two items, so a `{ min: 2 }` list refusing it contradicts `min` counting
+  // ITEMS. No rollback is emitted: a mandatory item's failure fails the WHOLE
+  // repeat, so there is no path that hands this trivia back.
   for (let i = 0; i < def.min; i++) {
+    if (i > 0 && ctx.activeTrivia) {
+      const npV = v(ctx, '_mnp')
+      if (ctx.capturing) {
+        stmts.push(`${ind(ctx)}const ${npV} = ${ensureTriviaCaptureFn(ctx)}(input, ${curV}, _ctx, 1)`)
+      } else {
+        stmts.push(
+          `${ind(ctx)}const ${npV} = ${ensureTriviaFn(ctx)}(input, ${curV}, _ctx, ${hasSelectedRootTrivia(ctx) ? '_ctx._rootTriviaLog !== undefined ? 2 : 0' : '0'})`,
+        )
+      }
+      stmts.push(...emitLineTrack(ctx, curV, npV), `${ind(ctx)}${curV} = ${npV}`)
+    }
     const firstR = emit(def.parser, ctx, curV)
     stmts.push(...firstR.stmts)
     if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${firstR.valueVar})`)
@@ -3132,6 +3151,16 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
     const exp = hoistExpected(ctx, deriveExpectedArr([def.parser]))
     stmts.push(
       `${ind(ctx)}if (!${iterOk}) {`,
+      // A COMMITTED failure is not recoverable — a cut inside the item says the
+      // input is definitively wrong here, so resyncing past it invents a parse the
+      // author ruled out. The strict branch below has always checked `_fc`; this
+      // one did not, so on the compiled path a committed failure inside a `many`
+      // item was swallowed into a resync. The interpreter checks `committed`
+      // FIRST (`repeat.ts:158,252`) and propagates, and the table matches the
+      // interpreter — this makes the third engine agree rather than leaving a
+      // divergence the identity sweep would report against the TABLE, since the
+      // sweep compares the table to this engine.
+      ...(iter.mayCommit ? [`${ind(ctx)}  if (_ctx._fc) { ${rollback}${committedFailBody(ctx)} }`] : []),
       `${ind(ctx)}  ${rollback}if (_ctx._tolerant && ${mySyncV} !== undefined && !_ctx._rec.at(${mySyncV}, input, ${itemPos}, _ctx)) {`,
       `${ind(ctx)}    const ${rrV} = _ctx._rec.scan(input, ${itemPos}, _ctx, ${mySyncV}, ${exp})`,
       ...(wantValue ? [`${ind(ctx)}    ${arrV}.push(${rrV}.error)`] : maxV !== null ? [`${ind(ctx)}    ${maxV}++`] : []),
@@ -3330,6 +3359,16 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     }
   }
 
+  // A prefix of exactly `min` items is finite by construction, so the loop's EOF
+  // stop — a termination device for the GREEDY tail — must not end it early: see
+  // the matching comment in `sepBy()` (repeat.ts). Emitted only for `min >= 2`,
+  // where a required item can still be outstanding at EOF; `min <= 1` is already
+  // satisfied by the first element, so every existing grammar's output is
+  // byte-identical.
+  const loopHead = def.min >= 2
+    ? `while (${curV} < input.length || ${arrV}.length < ${def.min}) {`
+    : `while (${curV} < input.length) {`
+
   // First element + loop entry. Strict keeps the exact `if (firstOk) { … while }`
   // shape (byte-identical). Tolerant recovers a junk first element (unless sitting
   // on the enclosing sync) and still enters the loop via a `did` flag.
@@ -3347,7 +3386,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
       `${ind(ctx)}if (${didV}) {`,
     )
     ctx.indent++
-    stmts.push(`${ind(ctx)}while (${curV} < input.length) {`)
+    stmts.push(`${ind(ctx)}${loopHead}`)
     ctx.indent++
   } else {
     if (first.mayCommit) stmts.push(`${ind(ctx)}if (!${firstOk} && _ctx._fc) ${committedFailBody(ctx)}`)
@@ -3356,7 +3395,7 @@ function emitSepBy(_p: Combinator<unknown>, def: Extract<ParserDef, { tag: 'sepB
     stmts.push(
       `${ind(ctx)}${arrV}.push(${firstVal})`,
       `${ind(ctx)}${curV} = ${firstEnd}`,
-      `${ind(ctx)}while (${curV} < input.length) {`,
+      `${ind(ctx)}${loopHead}`,
     )
     ctx.indent++
   }
@@ -3929,7 +3968,7 @@ function emitNodeProjectExpr(type: string, project: NonNullable<Extract<ParserDe
  */
 function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: string): ER {
   if (def.type === undefined) {
-    throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
+    missingInferredType()
   }
   // A STRUCTURAL node has no own build — it builds via the `ctx.build` host at
   // parse time, else a default positioned CST. No build fn is captured.
@@ -4641,25 +4680,6 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         endVar: inner.endVar,
       }
     }
-    case 'skip': {
-      const mainR = emit(def.main, ctx, pos)
-      const skipR = emit(def.skipped, ctx, mainR.endVar)
-      // skipped is optional — if it fails we just keep main's end
-      const endV = v(ctx, '_skipe')
-      return {
-        stmts: [
-          ...mainR.stmts,
-          // try skipped; if fails, keep main end
-          `${ind(ctx)}let ${endV} = ${mainR.endVar}`,
-          `${ind(ctx)}try {`,
-          ...reindentStmts(skipR.stmts, ctx.indent + 1),
-          `${ind(ctx)}  ${endV} = ${skipR.endVar}`,
-          `${ind(ctx)}} catch {}`,
-        ],
-        valueVar: mainR.valueVar,
-        endVar: endV,
-      }
-    }
     case 'lazy':     return emitLazy(p, def, ctx, pos)
     case 'trivia':   return emit(def.parser, ctx, pos)
     case 'token':    return emitToken(def, ctx, pos)
@@ -4816,16 +4836,23 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
       }
       const fn = ctx.namedParsers.get(innerParser)!
 
-      const rv = v(ctx, '_wcr')
+      const sv = v(ctx, '_wcs')
       const vv = v(ctx, '_wcv')
       const ev = v(ctx, '_wce')
       return {
         stmts: [
-          `${ind(ctx)}const ${rv} = { ..._ctx, state: ${mfRef(ctx)}[${evIdx}]() }`,
-          `${ind(ctx)}const ${vv} = ${fn}(input, ${pos}, ${rv})`,
-          // withCtx runs on a spread child ctx — copy its recorded failure back
-          // and propagate the inner failure verbatim (interpreter parity).
-          ...emitIfFail(ctx, `${vv} === ${NAMED_FN_FAIL}`, propagateFailBody(ctx, rv)),
+          // SAVE / RESTORE, matching `withCtx.ts`. This used to run the child on
+          // a SPREAD child ctx and then copy `_fe`/`_fx`/`_fc` back by hand —
+          // a workaround for the clone swallowing them. The interpreter had no
+          // such workaround and simply lost them, so the two engines disagreed.
+          // Swapping one field needs neither the copy-back nor the allocation.
+          `${ind(ctx)}const ${sv} = _ctx.state`,
+          `${ind(ctx)}_ctx.state = ${mfRef(ctx)}[${evIdx}]()`,
+          `${ind(ctx)}const ${vv} = ${fn}(input, ${pos}, _ctx)`,
+          `${ind(ctx)}_ctx.state = ${sv}`,
+          // The child wrote its failure straight onto `_ctx`, so propagation is
+          // the ordinary same-ctx break.
+          ...emitIfFail(ctx, `${vv} === ${NAMED_FN_FAIL}`, propagateFailBody(ctx)),
           `${ind(ctx)}const ${ev} = ${NAMED_FN_END}`,
         ],
         valueVar: vv,
@@ -4937,7 +4964,6 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     // referenced from several positions within this one compiled function.
     case 'oneOrMore': return Array.from({ length: def.min + 1 }, () => def.parser)
     case 'sepBy':     return [def.parser, def.parser, def.separator]
-    case 'skip':      return [def.main, def.skipped]
     case 'recover':   return [def.parser, def.sentinel]
     case 'scanTo':    return [def.sentinel, ...def.skip]
     // A `routed()` fallback IS emitted at this site (emitRouted), so the usage
@@ -5429,10 +5455,11 @@ function compileImpl<T>(combinator: Combinator<T>, mapFnSources?: string[], opts
     ctx: ParseContext,
   ) => ParseResult<T>
 
-  const defaultCtx: ParseContext = {
-    trackLines: false,
-    ...(ctx.triviaKindLabels ? { triviaKindLabels: ctx.triviaKindLabels } : {}),
-  }
+  // The ctx a compiled parser runs with when the caller supplied none. One
+  // shared shape — see `parse-context.ts`; a conditional spread here gave the
+  // no-ctx entry its own hidden class.
+  const defaultCtx = createParseContext()
+  if (ctx.triviaKindLabels) defaultCtx.triviaKindLabels = ctx.triviaKindLabels
 
   const annotateWithTrackedLines = <R extends ParseResult<T>>(result: R, lineStarts: number[]): R => {
     const index = normalizeLineIndex({ lineStarts })

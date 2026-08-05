@@ -91,16 +91,15 @@ const pair = sequence(literal('foo'), literal('bar'))
   })
 })
 
-describe('transformMacro — skip() declarations', () => {
-  it('macro-compiles a main parser with grammar-native trailing trivia', () => {
+describe('transformMacro — optional-trailer declarations', () => {
+  it('macro-compiles a main parser with an optional trailing terminal', () => {
     const code = `
-import { literal, skip } from 'parseman' with { type: 'macro' }
-const token = skip(literal('word'), literal(';'))
+import { literal, optional, sequence, transform } from 'parseman' with { type: 'macro' }
+const token = transform(sequence(literal('word'), optional(literal(';'))), ([x]) => x)
 `.trim()
     const result = transform(code)!
     expect(result.warnings).toEqual([])
     expect(result.code).not.toContain("from 'parseman'")
-    expect(/\bskip\s*\(/.test(result.code)).toBe(false)
     const token = new Function(`${result.code}\nreturn token`)() as (input: string, pos: number, ctx: object) => { ok: boolean; span: { end: number } }
     expect(token('word;', 0, {}).span.end).toBe(5)
     expect(token('word', 0, {}).span.end).toBe(4)

@@ -465,3 +465,114 @@ on json, never on a shipping grammar. Do not quote them as per-dialect results.
 When quoting any number here, name the instrument that produced it — the gated
 tests under `test/unit/table-*.test.ts` and the ungated
 `bench/table-lowering-sweep.ts` are not the same evidence.
+
+---
+
+## The jess-corpus identity harness (COMMITTED — do not rebuild it a fourth time)
+
+`bench/jess/` runs a THREE-WAY identity sweep — interpreted | compiled | table —
+over jess's four shipping grammars and their real corpora. Three previous lanes
+built a version of this and lost it with their worktrees.
+
+```sh
+pnpm divergence:jess less --list      # one dialect per invocation
+```
+
+- `register.mjs` / `hooks.mjs` — ESM hooks. The grammars are macro modules
+  (`with { type: 'macro' }`, which node refuses) and they are `.ts`. The hooks
+  strip import attributes, transpile with esbuild, resolve `parseman` and
+  `parseman/<sub>` into THIS worktree's `src/`, and resolve
+  `@jesscss/parser-shared/*` to that package's `src/`. Loading jess's built
+  `lib/` instead measures a grammar this worktree never saw — less and scss do
+  not even fuse against it ("references missing rule").
+- With `PM_MACRO=1` the same hooks run the macro-tagged modules through
+  `transformMacro` instead, so the module exports the CODEGEN artifact. That is
+  the honest "old compiled" leg.
+- `grammars.ts` — the four `composeLeaf()` maps plus their corpora.
+- `digest.ts` — ONE engine's answer per file, as TSV. Each leg is its own
+  process: the interpreted fuse binds the shared recognition pieces in place and
+  the macro lowering replaces the grammar module outright, so the three cannot
+  coexist. It asserts the leg is the leg it claims (a codegen rule is a
+  FUNCTION, the interpreted fuse leaves an object) — `run()` accepts both, so a
+  `compiled` leg that silently got the combinator graph would show a perfect
+  interpreted-vs-compiled agreement and prove nothing.
+- `divergence.ts` — spawns the three and joins their digests.
+
+`JESS_ROOT` overrides the checkout path (default `~/git/oss/jess`). The scss
+corpus is the first 400 sass-spec inputs in sorted order.
+
+### Two method corrections, both of which changed the answer
+
+1. **Identity is the WHOLE `RunResult`, not the tree.** A `{ ok, value,
+   unconsumedFrom }` digest agreed on files where the engines had taken
+   different paths to the same answer. The comparison is now every field `run()`
+   returns, digested per FACET — value, span (which carries the FAILURE
+   POSITION), the expected SET, its order, the recovery ERRORS with messages and
+   spans, and root trivia.
+2. **The bar is three engines, not two.** A two-way version compared the table
+   against the INTERPRETER and scored every disagreement as a table defect. Under
+   the three-way sweep **`table-outlier` is 0 in every dialect**: there is no file
+   in 626 where interpreted and compiled agree and the table alone differs.
+
+Do NOT substitute `compose([ruleMap])` for the macro leg. `composeLeaf()`
+documents that a leaf grammar never falls back to runtime codegen composition;
+that path builds a DIFFERENT parser, and it was observed disagreeing with both
+other engines on trees, spans and reducer throws. The macro leg requires
+`@jesscss/parser-shared`'s `lib/` to be current, because the macro's own module
+resolver honours package `exports` and cannot be pointed at `src/`.
+
+### What it found
+
+**Round 1 — two table-driver defects**, both invisible to `pnpm test` (the suite
+was green with both live) and both reachable only through Less, which is the only
+dialect that calls `leaf()` and the only one running `peek(classifiedTrivia)` at
+a repeat's first item:
+
+1. **`OP_LEAF` was not a capture boundary.** `leaf()` suppresses its interior's
+   own CST captures and contributes ONE leaf (`src/combinators/token.ts:89-127`).
+   The driver ran the interior with the parent's sinks live, so interior
+   terminals leaked into the parent's `children` and moved the enclosing
+   reducer's arity.
+2. **`OP_REP` skipped leading trivia before the MANDATORY first item.** Only
+   `many()` — min 0, no separator — runs its first item through `repItem`
+   (`src/combinators/repeat.ts:130-137`); `oneOrMore`/`atLeast` (`:203`) and
+   `sepBy` (`:412`) parse it at `pos`.
+
+**Round 2 — the residual is not the table.** Three-way, after both fixes:
+
+| dialect | files | identical | table-outlier | interp-outlier | compiled-outlier | three-way |
+|---|---:|---:|---:|---:|---:|---:|
+| css | 87 | 58 | **0** | 2 | 18 | 9 |
+| scss | 400 | 315 | **0** | 83 | 0 | 2 |
+| jess | 3 | 1 | **0** | 0 | 2 | 0 |
+| less | 136 | 130 | **0** | 0 | 6 | 0 |
+
+The `interp-outlier` column is what a two-way sweep called "the table's residual
+css 11 + scss 85". It is drift between the two SHIPPED engines, on `expected`
+only, and the table sides with what ships compiled. `compiled-outlier` is a
+SEPARATE pre-existing class the table is not party to — on less it moves `value`
+and `span`, i.e. the compiled engine builds a different tree on 6 fixtures where
+the interpreter and the table agree. Neither is gated by anything today.
+
+### Open, with reproductions
+
+- **`keywords()` reports the category, not its words.** `src/combinators/keywords.ts:137`
+  and `src/compiler/codegen.ts:1489,1669` emit the bare string `'keyword'`, while
+  the same combinator's own `deriveExpected` (`src/combinators/expect.ts:44`) and
+  codegen's merged-choice path both emit the N words — and `codegen.ts:1577`
+  argues in favour of the words. `expected` is public API and the basis of
+  `completionsAt`, so a category name gives an editor nothing.
+  Repro: `sequence(choice(keywords(['if','ifdef']), literal('@')), literal(';'))`
+  on `"zzz"`. Fixing all three to emit the words was tried and works, but it grows
+  `example/graphql` by 149 B (+0.21%), which crosses its committed size ceiling
+  (slack 0.1%) — an owner sign-off, not an agent decision — and it contradicts
+  `test/unit/table-encode-refusals.test.ts:337`, which pins `['keyword']` as the
+  intended answer. NOT LANDED; the owner owns this call.
+- **`routed()` escapes as a top-level expectation under the table.** Repro:
+  `a{@x}` under the css grammar — interpreted reports 26 tokens, compiled reports
+  `[";", "{"]`, the table reports `["routed()"]`, which is a combinator name and
+  not a token anyone can type. Same defect class as the one above, on the table
+  side. `ctx._fe`/`_fx` are LAST-WRITE-WINS in both `src/table/exec.ts` and
+  codegen, so which failure survives depends on evaluation order rather than on
+  depth; a standalone `routed()` attempted after the real arm failed overwrites
+  the better record.

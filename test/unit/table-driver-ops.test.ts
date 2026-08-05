@@ -3,7 +3,7 @@ import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { opHistogram, reachableOps } from '../../src/table/inspect.ts'
 import { resolveTable, type TableProgram } from '../../src/table/program.ts'
-import { OP_EMPTY, OP_NODE } from '../../src/table/ops.ts'
+import { OP_CHOICE, OP_EMPTY, OP_NODE, OP_RULE } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose } from '../../src/compiler/linker.ts'
 import { selectNodes } from '../../bench/table-grammars.ts'
@@ -454,5 +454,89 @@ describe('table driver — the committed bit does not survive a parse', () => {
     const r = t('a', 0, ctx)
     expect(r.ok).toBe(true)
     expect((ctx as unknown as { _fc?: boolean })._fc, 'a committed failure must not leak across parses').toBe(false)
+  })
+})
+
+/**
+ * THE PEEPHOLE'S OPERAND MAP IS PART OF THE OPCODE CONTRACT.
+ *
+ * `collapseIndirection` rewrites child slots to skip `OP_RULE` trampolines, and
+ * it needs each opcode's child offsets EXACTLY. For `OP_CHOICE` it had them off
+ * by one — arms start at `ip+4`, and `ip+3` is the choice's own expected-set
+ * index — so it read the `fx` index as a code offset and wrote a resolved offset
+ * back over it whenever the row at that offset happened to be an `OP_RULE`; the
+ * bogus "target" was then walked as if it were an instruction and ITS operands
+ * rewritten. The visible half of the same bug is milder and deterministic: the
+ * LAST arm was never collapsed, so it kept its trampoline.
+ *
+ * Nothing caught it. Every table test passed with the map wrong, which is why
+ * this asserts the STRUCTURE rather than a parse outcome.
+ */
+describe('table encode — the collapse peephole reads OP_CHOICE operands correctly', () => {
+  it('every reachable choice keeps a valid expected-set index and no trampoline arms', () => {
+    // The recursive reference is LAST in the choice, so it is still in flight when
+    // the arm is encoded and lands as an `OP_RULE` trampoline — exactly the arm
+    // the off-by-one skipped. (Never run; the shape is what is under test.)
+    const g = rules<Record<string, Combinator<unknown>>>(gr => ({
+      A: node('A', choice(literal('x'), sequence(literal('('), gr.A!, literal(')')), gr.A!), c => ({ t: 'A', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+    const prog = encodeTable(g)
+    const code = prog.code
+    let choices = 0
+    for (let ip = 0; ip < code.length; ip++) {
+      if (code[ip] !== OP_CHOICE) continue
+      choices++
+      const n = code[ip + 2]!
+      const fxi = code[ip + 3]!
+      expect(fxi, `choice at ${ip} indexes a real expected set`).toBeGreaterThanOrEqual(0)
+      expect(fxi).toBeLessThan(prog.fx.length)
+      for (let i = 0; i < n; i++) {
+        expect(code[code[ip + 4 + i]!], `choice at ${ip}, arm ${i} is collapsed`).not.toBe(OP_RULE)
+      }
+    }
+    // Not vacuous: there IS a choice, with three arms, and the table parses.
+    expect(choices).toBe(1)
+    expect(run(tableRules(prog).A! as never, '(x)').ok).toBe(true)
+  })
+})
+
+/**
+ * THE FALLBACK'S ROUTED BIT, WALKED RATHER THAN READ.
+ *
+ * `otherwise()` computes `usesRouted` when it is CONSTRUCTED, and a `g.X`
+ * reference inside the arm is unresolved at that moment — its thunk throws and
+ * `parserUsesRouted` answers `false`. The interpreter never trusts the stored
+ * flag alone; it ORs it with a live walk at parse time. The encoder read only the
+ * flag, so the fallback ran at the selector's END with no routed token and the
+ * `routed()` inside it had nothing to yield.
+ *
+ * Measured on jess's css grammar, this failed `@charset "UTF-8";` — one line of
+ * plain CSS — with `expected: ["routed()"]`, and 2 of 3 jess-dialect corpus files.
+ */
+describe('table encode — a dispatch fallback that reaches routed() through a REF', () => {
+  it('routes the token to the otherwise arm, as the interpreter does', () => {
+    const g = rules<Record<string, Combinator<unknown>>>(gr => ({
+      // The `routed()` is behind `gr.Tail`, so `otherwise()`'s construction-time
+      // analysis cannot see it. Nothing else about the arm changes.
+      Tail: node('Tail', sequence(routed(), literal('!')), c => ({ t: 'Tail', c })),
+      Doc: dispatch(
+        regex(/@[a-z]+/),
+        when('@known', literal('!')),
+        otherwise(gr.Tail!),
+      ) as unknown as Combinator<unknown>,
+    })) as unknown as Record<string, Combinator<unknown>>
+    // The flag really is unset — otherwise this test would pass either way.
+    const cases = (g.Doc!._def as { otherwiseUsesRouted?: boolean }).otherwiseUsesRouted
+    expect(cases, 'the stored flag misses the ref').not.toBe(true)
+    const t = tableRules(encodeTable(g)).Doc!
+    for (const input of ['@other!', '@known!', '@other']) {
+      expect(JSON.stringify(run(t as never, input)), input)
+        .toBe(JSON.stringify(run(g.Doc! as never, input)))
+    }
+    // Not vacuous: the fallback really consumed the routed token and built a node.
+    // `dispatch` yields `[key, armValue]`, so the arm's tree is the second slot.
+    const v = (run(t as never, '@other!').value as [string, { t: string; c: Array<{ value?: string }> }])[1]
+    expect(v.t).toBe('Tail')
+    expect(v.c[0]!.value, 'the routed token reached the arm').toBe('@other')
   })
 })

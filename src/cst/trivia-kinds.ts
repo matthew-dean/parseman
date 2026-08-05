@@ -1,6 +1,8 @@
 import type { Combinator, ParseContext } from '../types.ts'
 import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
+import { createDetachedParseContext } from '../parse-context.ts'
+import { charArmsFor, charTriviaEnd, charTriviaKindMask, charTriviaVisit } from './trivia-charscan.ts'
 
 export type TriviaChunk = { start: number; end: number; kindIndex: number }
 
@@ -90,7 +92,7 @@ function matchArmAt(
   // meaning to a label nor recognizes a particular comment form; it avoids
   // entering arms whose own grammar proves they cannot start at this offset.
   if (!startsFirstSet(arm, input, pos)) return null
-  const r = arm.parse(input, pos, { trackLines: false, state })
+  const r = arm.parse(input, pos, createDetachedParseContext(false, state))
   if (!r.ok || r.span.end <= pos) return null
   return { end: r.span.end }
 }
@@ -140,6 +142,11 @@ export function scanLabeledTriviaEnd(
   spec: LabeledTriviaSpec,
   state?: unknown,
 ): number {
+  // `charArmsFor` only lowers `minRepeats <= 1`, where "no chunk matched" and
+  // "the minimum was not met" are the same position — so an end IS the answer.
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaEnd(input, cur, chars)
+
   let pos = cur
   let count = 0
 
@@ -171,6 +178,9 @@ export function visitLabeledTrivia(
   visit: (start: number, end: number, kindIndex: number) => void,
 ): number | undefined {
   if (spec.minRepeats > 1) return undefined
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaVisit(input, cur, chars, visit)
+
   let pos = cur
   let count = 0
 
@@ -292,6 +302,9 @@ export function triviaKindMaskAt(
   spec: LabeledTriviaSpec,
   state?: unknown,
 ): number {
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaKindMask(input, pos, chars)
+
   let cur = pos
   let mask = 0
   while (cur < input.length) {

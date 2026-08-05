@@ -7,6 +7,7 @@
  * actually parses. See `docs/proposals/grammar-spec-generation.md`.
  */
 import type { Combinator, ParserDef } from '../types.ts'
+import type { BalancedMarked } from '../combinators/scanTo.ts'
 import { RULE_ORDER } from '../combinators/parser.ts'
 import { recoverComposedRules } from '../compiler/linker.ts'
 
@@ -271,6 +272,8 @@ export function fixedStringsOfRegex(source: string): string[] | undefined {
 
 class Builder {
   private seen = new Set<string>()
+  /** Combinators on the CURRENT walk path — the anonymous-cycle guard. */
+  private walking = new Set<Combinator<unknown>>()
   private pending: Array<{ name: string; comb: Combinator<unknown> }> = []
   private pendingNames = new Set<string>()
   private record: Record<string, Combinator<unknown>>
@@ -349,7 +352,41 @@ class Builder {
       this.enqueue(rn, c)
       return { kind: 'ref', name: rn }
     }
-    return this.walkDef(c._def, c)
+
+    // A balanced() is a delimiter scan, so render the delimiters and mark the
+    // interior opaque — see `BalancedMarked`. Checked before the cycle guard
+    // because it is the honest rendering, not merely a way to terminate.
+    const bal = (c as BalancedMarked)._balanced
+    if (bal !== undefined) {
+      return {
+        kind: 'seq',
+        items: [
+          { kind: 'terminal', text: bal.open, literal: true },
+          { kind: 'annotation', text: 'balanced …' },
+          { kind: 'terminal', text: bal.close, literal: true },
+        ],
+      }
+    }
+
+    // CYCLE CUT ON OBJECT IDENTITY.
+    //
+    // The walk used to cut only at `_ruleName`, which assumes every cycle passes
+    // through a named rule. A combinator whose interior refers back to ITSELF
+    // through an anonymous `ref()` — what `balanced()` builds, and what any caller
+    // of the public `ref()` can build — closes a cycle carrying no name, and the
+    // walk went around it until the process died (RangeError at the default stack,
+    // SIGSEGV at a raised one: a true cycle, not deep-but-finite recursion).
+    //
+    // `walking` is a PATH set, added on entry and removed on exit — not a global
+    // visited set. A combinator shared by two sibling positions is real structure
+    // that must be drawn twice; only a combinator that contains ITSELF is a cycle.
+    if (this.walking.has(c)) return { kind: 'annotation', text: '(recursive)' }
+    this.walking.add(c)
+    try {
+      return this.walkDef(c._def, c)
+    } finally {
+      this.walking.delete(c)
+    }
   }
 
   private walkDef(def: ParserDef, self: Combinator<unknown>): SpecNode {
@@ -432,8 +469,6 @@ class Builder {
       case 'node':
         return this.walk((def as { parser: Combinator<unknown> }).parser)
 
-      case 'skip':
-        return this.walk(def.main)
       case 'grammar':
         return this.walk(def.parser)
 

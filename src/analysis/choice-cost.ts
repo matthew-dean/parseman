@@ -145,6 +145,7 @@
 
 import type { Combinator, ParseContext, ParseResult, ParserDef } from '../types.ts'
 import type { ChoiceStrategyTag } from './gating.ts'
+import { childrenOf } from './gating.ts'
 import { run } from '../functional/run.ts'
 import { firstSetOf } from '../combinators/first-set.ts'
 import type { FirstSet } from '../types.ts'
@@ -345,30 +346,7 @@ export type WastedWorkReport = {
 
 // ── grammar walk ─────────────────────────────────────────────────────────────
 
-/** Ordered structural children per def tag. `lazy` is a REFERENCE, not a subtree:
- *  descending through it would make every rule's walk cover the whole grammar and
- *  turn site paths into nonsense. */
-function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
-  switch (d.tag) {
-    case 'sequence': case 'choice': return d.parsers
-    case 'dispatch': return [
-      d.selector,
-      ...d.cases.map(c => c.parser),
-      ...(d.otherwise === undefined ? [] : [d.otherwise]),
-    ]
-    case 'skip': return [d.main, d.skipped]
-    case 'sepBy': return [d.parser, d.separator]
-    case 'recover': return [d.parser, d.sentinel]
-    case 'scanTo': return [d.sentinel, ...d.skip]
-    case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
-    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'adjacency': case 'unknown':
-      return []
-    default: {
-      const rec = d as unknown as { parser?: Combinator<unknown> }
-      return rec.parser ? [rec.parser] : []
-    }
-  }
-}
+// `childrenOf` is imported from ./gating.ts; this module used to carry a copy.
 
 const ruleNameOf = (p: Combinator<unknown>): string | undefined =>
   (p as unknown as { _ruleName?: string })._ruleName
@@ -380,7 +358,6 @@ function slotLabel(d: ParserDef, index: number): string {
     case 'sequence': return `seq[${index}]`
     case 'choice':   return `choice[${index}]`
     case 'dispatch': return index === 0 ? 'dispatch.selector' : `dispatch[${index - 1}]`
-    case 'skip':     return index === 0 ? 'skip.main' : 'skip.skipped'
     case 'sepBy':    return index === 0 ? 'sepBy.item' : 'sepBy.sep'
     case 'recover':  return index === 0 ? 'recover.parser' : 'recover.sentinel'
     case 'scanTo':   return index === 0 ? 'scanTo.sentinel' : `scanTo.skip[${index - 1}]`

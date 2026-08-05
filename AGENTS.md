@@ -14,8 +14,28 @@ Run the local CI preflight and report its result before creating or pushing a
 code PR:
 
 ```sh
-pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
+pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 ```
+
+`check:invariants` decides five source-level rules that no type or test can
+see: no accessor installed onto an already-built object, no field in a public
+`*Options` type that nothing reads, no module unreachable from a published
+entry point, no declaration body duplicated across modules, and no `delete` on
+an object the enclosing function did not construct (a `delete` on a long-lived
+object flips `%HasFastProperties` to false permanently — a `delete` on a scratch
+local is fine and deliberately not flagged). It is a required CI
+step and a pre-commit guard.
+
+Its allowlist lives in `scripts/invariant-allowlist.mjs` and MAY ONLY GET
+SHORTER — adding an entry to unblock new code is the failure it exists to stop.
+That is now mechanical, not aspirational. `ALLOW_COUNT` is the committed entry
+count and the gate fails unless the list matches it exactly, so adding an entry
+costs a deliberate edit to one numbered line instead of hiding as one more line
+in a list. Every entry must declare a category — `RULE-BUG` (the rule is wrong,
+the code is right), `BY-DESIGN` (permanent and argued), or `DEBT` (must be
+fixed, and must name a `ref` that owns the fix) — and a stale entry still fails
+the gate. Outstanding `DEBT` is printed on every run, green ones included. See
+`docs/design/invariant-gate.md`.
 
 If your change touches `src/codegen.ts`, dispatch, or anything else on the parse
 hot path, also check it against the comparison-chart bar — **"still the fastest

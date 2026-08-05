@@ -115,26 +115,33 @@ export const OP_EXPECT = 21
  */
 export const OP_SEQX = 22
 /**
- * `CALL k` — run the pooled COMBINATOR at `k` through its own `.parse`.
+ * `SCAN s` — the scanning constructs. `s` indexes a `ScanSpec` in `prog.scans`.
  *
- * The escape hatch for constructs whose behaviour is not recoverable from
- * `_def`, and re-implementing them in the driver would be a second copy that
- * silently drifts:
+ * WAS `OP_CALL k`, which parked the LIVE combinator in the const pool. That ran
+ * correctly and made the program unprintable — `emitConst` refuses a live object
+ * — so no shipping grammar could be emitted at all: all four jess dialects use
+ * `scanTo()`, three of them also `balanced()`. The number is reused because
+ * `OP_CALL` has no other user and nothing in the const pool may be a live object
+ * any more; that is now an invariant rather than a convention.
  *
- *   `token()`    clears trivia AND every capture sink, then emits ONE leaf.
- *                Treating it as transparent (which this encoder did until a read
- *                of token.ts caught it) leaks the inner captures to the parent
- *                and lets trivia be skipped inside a glued token.
- *   `balanced()` OVERRIDES `.parse` to re-resolve ambient `scanSkip`, while
- *                leaving `_def` as the eager interior. Encoding from `_def`
- *                therefore builds the wrong parser and reports no error.
- *   `scanTo()`   probes its sentinel and skippers with a collector-free ctx and
- *                represents the whole scanned span as one leaf.
+ * Neither construct needs a live object. Both are DESCRIBED by data:
  *
- * It costs a ParseResult allocation per call — the combinator's own protocol.
- * These constructs are rare and already heavy, and correct beats fast here.
+ *   `scanTo()`   is a sentinel, an ordered skipper list, and two flags. Sentinel
+ *                and skippers are ordinary grammar-graph combinators, so they are
+ *                encoded as ordinary table SUBTREES and referenced by offset.
+ *   `balanced()` is an open string, a close string, an own-skip list and two
+ *                flags. Its `_def` is its EAGER interior (per-call skip only) and
+ *                its ambient re-resolution lives on `.parse`, so encoding it from
+ *                `_def` builds the wrong parser — the spec carries the
+ *                CONSTRUCTOR ARGUMENTS instead, and `balanced()` itself rebuilds.
+ *
+ * The driver does not re-implement either scan. `resolveTable`'s pool rebuilds
+ * each spec with the SHARED constructor (`scanTo`/`balanced`), handing it
+ * subtree-backed combinators, exactly as `triviaSpecs` rebuilds trivia with the
+ * shared `classifiedTrivia`. So there is one implementation of each, and the
+ * table carries only its arguments.
  */
-export const OP_CALL = 23
+export const OP_SCAN = 23
 /**
  * `FIELD k c` — `field(name, parser)`. `k` indexes the NAME in the const pool.
  *
@@ -166,6 +173,155 @@ export const OP_LIT_CI_TRACK = 28
  */
 export const OP_TOKEN = 29
 /**
+ * `SCOPE_CAP k c` — a `parser({ trivia, captureTrivia: true })` scope. Identical
+ * operands to `SCOPE`; it additionally sets `ctx.captureTrivia` for the child.
+ *
+ * A SEPARATE OPCODE rather than a third operand on `SCOPE`, for two reasons.
+ * Widening an instruction means every walker that knows its shape has to learn
+ * the new one, and there is no central arity table here to change in one place.
+ * And the driver should SELECT this piece, not test a flag inside the scope
+ * piece — capture is fixed for the whole parse, so it is an assembly decision.
+ *
+ * The interpreter's equivalent is `grammar.ts:129`:
+ * `if (opts.captureTrivia || _ctx?.captureTrivia) ctx.captureTrivia = true`.
+ * Note the INHERITANCE — an inner scope does not switch capture back off, which
+ * is why this restores the saved value rather than writing `false`.
+ */
+export const OP_SCOPE_CAP = 30
+/**
+ * `WITHCTX k c` — `withCtx(extra, c)`. `k` is `extra` in the const pool.
+ *
+ * SAVE / RESTORE, matching `withCtx.ts`. Both used to CLONE the context, which
+ * scoped far more than the state: every scalar the child wrote on `ctx` landed
+ * on the clone and died with it, `_fe` / `_fx` included, so a failing `withCtx`
+ * subtree contributed nothing to the parent's expected set. That isolation was
+ * an implementation detail nobody asked for, not the combinator's contract, so
+ * it was fixed at the source rather than mirrored here.
+ */
+export const OP_WITHCTX = 31
+/**
+ * `GUARD f e` — `gate(predicate)`. Zero-width: runs `fns[f]` against
+ * `ctx.state` and yields `null` at `pos`, or fails with the expected set at `e`.
+ *
+ * NOT `OP_GATE`, which is the first-CHAR gate — different question, different
+ * operand (a char class, not a predicate). The names are close because the
+ * combinator was renamed to `gate()` at the API surface while its def tag stayed
+ * `guard`; the opcode follows the TAG, since that is what the encoder switches on.
+ *
+ * Its first set is `any` (a state predicate cannot narrow the input), so a
+ * `gate()` leading a choice arm poisons that arm's first-char dispatch. That is
+ * a grammar-authoring caveat, not a lowering one.
+ */
+export const OP_GUARD = 32
+/**
+ * `ADJ neg kinds fx` — `adjacent()` / `notAdjacent()`. `neg` is 1 for
+ * `notAdjacent`, `kinds` indexes the category filter (a `readonly string[]`) in
+ * the const pool or is −1, and `fx` is the expected set.
+ *
+ * A BOUNDARY TEST, NOT A TERM, and that is the whole reason it is its own
+ * opcode rather than a zero-width leaf like `OP_GUARD`. It asks whether trivia
+ * sat between the PREVIOUS term and here, so it must be evaluated at the
+ * sequence cursor — BEFORE the ambient trivia scan that precedes an ordinary
+ * non-first term. A piece handed the post-scan position would find the gap
+ * already consumed and answer "adjacent" every time, silently: `adjacent()`
+ * would become a no-op and `notAdjacent()` a guaranteed failure. So the SEQ
+ * pieces read this row at assembly and run the test themselves, exactly as
+ * `sequence()` forks `parseAdjacent` (combinators/sequence.ts:118) and as
+ * codegen lowers it at the boundary (codegen.ts:1765).
+ *
+ * Reached as a row in its own right only where there IS no boundary — a bare
+ * choice arm, a `node()` body, a repeat item. The interpreter throws there
+ * (adjacency.ts) rather than answering a question that was never asked, and so
+ * does the driver: same sentence, from `adjacencyMisuse`.
+ *
+ * The kind filter is resolved against the ACTIVE trivia table at parse time,
+ * matching the interpreter — a scope can swap the table, so it is not an
+ * assembly-time fact. (Codegen resolves it at COMPILE time and therefore
+ * reports an unlabelled table or an unknown category earlier; both engines
+ * raise the same `TypeError`, only the moment differs.)
+ */
+export const OP_ADJ = 33
+/**
+ * `GREEDY sup n w1 a1 … wn an` — `choice(strategy = greedyClassify)`.
+ *
+ * NOT a choice. `choice()` auto-selects this strategy (choice.ts:186-202) for the
+ * canonical identifier-vs-keyword shape — ONE regex arm that subsumes every other
+ * arm, all of which are literals — and it runs a DIFFERENT execution, not a
+ * different arm order: the regex arm runs, and then the match is RE-ATTRIBUTED by
+ * string equality to a literal arm, whose transform chain is what produces the
+ * value (choice.ts:124-136). Encoding it as an ordered `OP_CHOICE` would let the
+ * regex arm win every time; the parse would still succeed and only the VALUE and
+ * the tree would move. So it gets its own row.
+ *
+ * `sup` is the super arm's offset, `n` the number of classified literals, and
+ * each pair is `(const-pool index of the literal string, that arm's offset)`.
+ *
+ * The literal arm is RE-RUN at `pos` rather than having its transform chain
+ * applied to a known value, and the two are the same thing here: the classified
+ * word IS the arm's literal, so `literal()` re-matches at `pos` over exactly
+ * `[pos, END)` and every transform then sees the same `(value, span)` pair the
+ * interpreter's `applyTransforms` passes. `getCoreLiteralValue` admits only a
+ * case-SENSITIVE literal under `transform` wrappers, so the re-run cannot fail
+ * and cannot land at a different end. What it does do is push a SECOND CST leaf,
+ * which is why the capture sinks are rolled back to the pre-`sup` mark first —
+ * leaving exactly one leaf, with the same text and span the interpreter's kept
+ * regex leaf has.
+ *
+ * On a failed `sup` the failure propagates VERBATIM (the regex's own expected
+ * set), not the union of the arms — choice.ts:126 returns `superResult` itself,
+ * and codegen's `emitGreedyClassify` reports `deriveExpected(superParser)`.
+ */
+export const OP_GREEDY = 34
+/**
+ * `REJECT c n t1 o1 … tn on` — one choice arm plus its `autoNot` checks.
+ *
+ * `autoNot` is the OTHER thing `choice()` computes on its own (choice.ts:55,
+ * 325-346): for a literal arm, the inline lookahead that a LATER arm — a longer
+ * literal with this one as a prefix, or a regex that subsumes it — would have
+ * consumed more. It runs AFTER the arm has already succeeded and can still
+ * reject it, so a matched arm loses and a later arm wins (choice.ts:160-164).
+ * Ignoring it lowers `if` out of `iffy` and the parse still succeeds.
+ *
+ * `c` is the arm's offset; each check is a pair `(kind, operand)` — kind 0 is
+ * `startsWith`, operand a const-pool string; kind 1 is `firstSet`, operand a
+ * char-class index. Both are tested at the arm's END, mirroring `autoNotFires`.
+ *
+ * Rejection returns `FAIL` and CLEARS `_fc`, because the interpreter's rejection
+ * is a `continue` — "pretend this arm was never entered" — whereas an ordinary
+ * failing arm's committed flag cuts the whole choice. The enclosing choice does
+ * the capture-sink rollback, exactly as it does for a failing arm.
+ *
+ * A site with any `autoNot` can never take the O(1) first-char dispatch: a check
+ * exists only when a later arm shares the arm's leading character, so those two
+ * arms' classes intersect and `resolveDispatch` reports the site non-exclusive.
+ */
+export const OP_REJECT = 35
+/**
+ * `ARMGATE f c e` — one choice arm plus its PER-ARM state gate,
+ * `choice({ gate, combinator })`. `f` indexes the predicate in `prog.fns`, `c` is
+ * the arm's offset, and `e` is the arm's own expected set.
+ *
+ * NOT `OP_GUARD`, and the difference is the entire reason the option exists.
+ * `gate()` is a zero-width TERM whose first set is `any`, so leading an arm with
+ * one replaces that arm's first set and collapses the whole choice from O(1)
+ * first-char dispatch to the ordered `firstMatch` loop (docs/guide/
+ * first-char-gating.md lists that as a known gating defect). This row wraps the
+ * arm INSTEAD of sitting inside it, so the encoder still reads the arm's own
+ * first set for `disp` and the site keeps its dispatch slot.
+ *
+ * A blocked arm is SKIPPED, not failed — `choice.ts:150` is `continue`. The row
+ * therefore clears `_fc` on the gate-false path exactly as `OP_REJECT` does:
+ * "pretend this arm was never entered", so no cut it might have raised survives
+ * to cut the choice. It still reports `e`, because the OTHER path a blocked arm
+ * can be reached by is first-char dispatch, where skip-and-retry and
+ * fail-the-choice are the same thing (choice.ts:23-34, :100-105) and the
+ * interpreter answers with `deriveExpected(arm)` — this set.
+ *
+ * The predicate is a live function, like `OP_GUARD`'s, so a grammar using one is
+ * runtime-only for `emitTableModule` unless `fnSources` are supplied.
+ */
+export const OP_ARMGATE = 36
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -190,7 +346,9 @@ export const OP_NAMES: Record<number, string> = {
   [OP_XFORM]: 'XFORM', [OP_NODE]: 'NODE', [OP_RULE]: 'RULE', [OP_GATE]: 'GATE',
   [OP_NOT]: 'NOT', [OP_PEEK]: 'PEEK', [OP_LEAF]: 'LEAF', [OP_EMPTY]: 'EMPTY',
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
-  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_CALL]: 'CALL',
+  [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_SCAN]: 'SCAN',
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
-  [OP_TOKEN]: 'TOKEN',
+  [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX', [OP_GUARD]: 'GUARD',
+  [OP_ADJ]: 'ADJ',
+  [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
 }

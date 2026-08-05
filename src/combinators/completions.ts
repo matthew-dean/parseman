@@ -1,5 +1,6 @@
 import type { Combinator, ParseFail, ParseContext, ParseResult } from '../types.ts'
 import { REC } from '../recovery/scan.ts'
+import { createParseContext } from '../parse-context.ts'
 
 /** Anything `completionsAt` can probe: an interpreter combinator OR a `compile()`d
  * grammar. A grammar compiled with `{ recovery: true }` records the probe on its fast
@@ -33,7 +34,12 @@ export function completionsAt(
   // In tolerant mode, list recovery keeps the enclosing node parsing past a bad
   // element so the failure at the cursor is actually recorded — the completion set
   // is otherwise empty when a permissive top rule "succeeds" with an unconsumed tail.
-  const ctx: ParseContext = { trackLines: false, _probe: probe, ...(options.tolerant ? { _tolerant: true, _rec: REC } : {}) }
+  const ctx = createParseContext()
+  ctx._probe = probe
+  if (options.tolerant) {
+    ctx._tolerant = true
+    ctx._rec = REC
+  }
   const sliced = input.slice(0, offset)
   const result = 'parseWithContext' in target
     ? target.parseWithContext(sliced, ctx, 0)

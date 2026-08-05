@@ -33,7 +33,6 @@ function children(def: ParserDef, winners?: Record<string, Combinator<unknown>>)
     case 'dispatch': return [def.selector, ...def.cases.map(entry => entry.parser), ...(def.matchers ? def.matchers.map(entry => entry.parser) : []), ...(def.otherwise ? [def.otherwise] : [])]
     case 'many': case 'oneOrMore': case 'optional': case 'attempt': case 'transform': case 'trivia': case 'token': case 'leaf': case 'label': case 'field': case 'grammar': case 'not': case 'peek': case 'node': case 'guard': case 'adjacency': case 'withCtx': case 'recover': case 'expect': return 'parser' in def ? [def.parser] : []
     case 'sepBy': return [def.parser, def.separator]
-    case 'skip': return [def.main, def.skipped]
     case 'scanTo': return [def.sentinel, ...def.skip]
     case 'lazy': {
       let resolved: Combinator<unknown>

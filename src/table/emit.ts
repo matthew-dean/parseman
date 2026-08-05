@@ -1,4 +1,4 @@
-import type { TableProgram } from './program.ts'
+import type { FoldedProgram, TableProgram } from './program.ts'
 
 /**
  * Print a program as the module a build emits.
@@ -35,6 +35,25 @@ function emitConst(v: unknown): string {
   if (Array.isArray(v) && v.every(x => x === null || typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean')) {
     return `[${v.map(x => (typeof x === 'string' ? jsString(x) : JSON.stringify(x))).join(',')}]`
   }
+  // A PLAIN OBJECT whose values are those primitives (or arrays of them)
+  // round-trips exactly too, by the same criterion that admitted arrays above.
+  // `withCtx(extra, …)` parks one here — `{ inFn: true }` and the like — and
+  // refusing it made every withCtx-bearing grammar unemittable for no reason the
+  // guard supports. Only a null-prototype-safe plain object qualifies: anything
+  // with a class, a function value, or nesting beyond one array level refuses.
+  if (
+    typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof RegExp)
+    && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null)
+    && Object.values(v).every(x =>
+      x === null || typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean'
+      || (Array.isArray(x) && x.every(y => y === null || typeof y === 'string' || typeof y === 'number' || typeof y === 'boolean')))
+  ) {
+    const entries = Object.entries(v).map(([key, val]) => `${jsString(key)}:${
+      typeof val === 'string' ? jsString(val)
+      : Array.isArray(val) ? `[${val.map(y => (typeof y === 'string' ? jsString(y) : JSON.stringify(y))).join(',')}]`
+      : JSON.stringify(val)}`)
+    return `{${entries.join(',')}}`
+  }
   const shown = typeof v === 'object' ? Object.prototype.toString.call(v) : typeof v
   throw new TypeError(
     `emitConst: cannot serialise a const-pool entry of type ${shown}. ` +
@@ -46,6 +65,19 @@ function emitConst(v: unknown): string {
 function emitTriviaSpec(t: import('./program.ts').TriviaSpec): string {
   if (t.plain !== undefined) return `{arms:[],plain:[${jsString(t.plain[0])},${jsString(t.plain[1])}]}`
   return `{arms:[${t.arms.map(a => `[${jsString(a[0])},${jsString(a[1])},${jsString(a[2])}]`).join(',')}]}`
+}
+
+function emitRef(r: import('./program.ts').SubtreeRef): string {
+  return `[${r[0]},${r[1]}]`
+}
+
+function emitScanSpec(s: import('./program.ts').ScanSpec): string {
+  const parts = [`kind:${s.kind}`, `flags:${s.flags}`, `skip:[${s.skip.map(emitRef).join(',')}]`]
+  if (s.sentinel !== undefined) parts.push(`sentinel:${emitRef(s.sentinel)}`)
+  if (s.sent !== undefined) parts.push(`sent:${s.sent === null ? 'null' : jsString(s.sent)}`)
+  if (s.open !== undefined) parts.push(`open:${jsString(s.open)}`)
+  if (s.close !== undefined) parts.push(`close:${jsString(s.close)}`)
+  return `{${parts.join(',')}}`
 }
 
 function emitDispatchSpec(d: import('./program.ts').DispatchSpec): string {
@@ -73,23 +105,27 @@ export type EmitOptions = {
   readonly runtime?: string
 }
 
-export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): string {
+/** Refuse a program the printer cannot express, naming the CONSTRUCT. */
+function assertPrintable(prog: TableProgram, who: string): void {
   // Fail with the CONSTRUCT, not with a type name from inside the printer.
   // Every one of these is expressible as data and simply not expressed yet, so
   // the message says which one to go and lower.
   if (prog.runtimeOnly !== undefined && prog.runtimeOnly.length > 0) {
     throw new TypeError(
-      `emitTableModule: this grammar is RUNTIME-ONLY — it parses correctly but cannot be `
+      `${who}: this grammar is RUNTIME-ONLY — it parses correctly but cannot be `
       + `printed as a module. Unlowered constructs: ${prog.runtimeOnly.join(', ')}. `
       + `Each parks a live combinator in the const pool; each is expressible as table rows.`,
     )
   }
-  const name = opts.name ?? 'grammar'
-  const runtime = opts.runtime ?? 'parseman/table'
-  const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
-  const lines = [
-    `import { tableRules } from ${jsString(runtime)}`,
-    `export const ${name} = /* @__PURE__ */ tableRules({`,
+}
+
+/**
+ * The program's fields as `key:value,` lines — the body of the object literal
+ * `tableRules` reads. Shared with the folded emitter, which prints exactly these
+ * for its ONE base table.
+ */
+function programFields(prog: TableProgram, fns: readonly string[]): string[] {
+  return [
     `c:[${prog.code.join(',')}],`,
     `k:[${prog.k.map(emitConst).join(',')}],`,
     `x:[${prog.cc.map(jsString).join(',')}],`,
@@ -106,12 +142,118 @@ export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): str
     ...(prog.dsp.length === 0 ? [] : [`p:[${prog.dsp.map(emitDispatchSpec).join(',')}],`]),
     ...(prog.labels === undefined ? [] : [`lb:[${prog.labels.map(jsString).join(',')}],`]),
     ...(prog.classified === 1 ? ['rc:1,'] : []),
+    // Without this a recovery table's MODULE loads as a strict one: the extra
+    // operands are still in `c`, but nothing selects the pieces that read them,
+    // so a tolerant parse of the emitted artifact silently collects no errors.
+    ...(prog.rec === 1 ? ['rv:1,'] : []),
     ...(prog.hostMode === undefined ? [] : [`h:${jsString(prog.hostMode)},`]),
     ...(prog.triviaSpecs === undefined ? [] : [`tv:[${prog.triviaSpecs.map(emitTriviaSpec).join(',')}],`]),
+    ...(prog.scans === undefined ? [] : [`sc:[${prog.scans.map(emitScanSpec).join(',')}],`]),
+    // Both halves or neither: `scanSkipOf` without `scanSkip` installs nothing,
+    // and `scanSkip` without `scanSkipOf` installs it nowhere. Either way the
+    // module parses and silently skips a different set than the table it came
+    // from — the failure shape this lowering exists to remove.
+    ...(prog.scanSkip === undefined ? [] : [
+      `ss:[${prog.scanSkip.map(set => `[${set.map(emitRef).join(',')}]`).join(',')}],`,
+      `so:[${(prog.scanSkipOf ?? []).join(',')}],`,
+    ]),
     `f:[${fns.join(',')}]`,
-    `})`,
   ]
-  return lines.join('\n')
+}
+
+export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): string {
+  assertPrintable(prog, 'emitTableModule')
+  const name = opts.name ?? 'grammar'
+  const runtime = opts.runtime ?? 'parseman/table'
+  const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
+  return [
+    `import { tableRules } from ${jsString(runtime)}`,
+    `export const ${name} = /* @__PURE__ */ tableRules({`,
+    ...programFields(prog, fns),
+    `})`,
+  ].join('\n')
+}
+
+export type ExpressionEmitOptions = EmitOptions & {
+  /** Which rule the expression evaluates to. */
+  readonly entry?: string
+  /** Identifier the expression expects `tableRules` to be bound to. */
+  readonly runtimeRef?: string
+}
+
+/**
+ * The table as an EXPRESSION rather than a module — for an inliner that replaces
+ * a grammar's initialiser in place.
+ *
+ * It references `tableRules` by name instead of carrying the driver, so it is
+ * not self-contained. That is deliberate and it is not a cost: the reference
+ * resolves to `parseman/table`, a package the consumer already depends on for
+ * `run()`. The alternative — inlining the driver per grammar — is precisely the
+ * 2.10 MB that this lowering exists to replace with 0.56 MB.
+ *
+ * The caller owns the import. `emitTableModule` writes its own; an inliner
+ * splicing this into existing source must ensure the binding is in scope.
+ */
+export function emitTableExpression(prog: TableProgram, opts: ExpressionEmitOptions = {}): string {
+  assertPrintable(prog, 'emitTableExpression')
+  const entry = opts.entry ?? 'grammar'
+  const ref = opts.runtimeRef ?? 'tableRules'
+  const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
+  return [
+    `/* @__PURE__ */ ${ref}({`,
+    ...programFields(prog, fns),
+    `})[${jsString(entry)}]`,
+  ].join('\n')
+}
+
+export type FoldedEmitOptions = EmitOptions & {
+  /**
+   * Exported binding per variant name. A variant with no entry is still carried
+   * in the table and simply not given a name of its own.
+   */
+  readonly names?: Readonly<Record<string, string>>
+}
+
+/**
+ * Print a FOLDED program: one base table, plus the row edits per variant.
+ *
+ * This is G4's deliverable. The four `trackLines` x `hostMode` artifacts a
+ * dialect ships stop being four near-copies of one table and become one table
+ * and three short lists of `(offset, word)` pairs — which is what the measured
+ * difference between them actually is. The reducer pool, the const pool, the
+ * char classes, the expected sets, the dispatch tables and the rule index are
+ * printed ONCE, because they are byte-identical in every variant.
+ *
+ * The base's own `l`/`h` scalars are NOT printed: every variant, base included,
+ * carries its own on its delta, so no variant inherits the base's line-tracking
+ * or host mode by accident.
+ */
+export function emitFoldedModule(folded: FoldedProgram, opts: FoldedEmitOptions = {}): string {
+  assertPrintable(folded.base, 'emitFoldedModule')
+  const runtime = opts.runtime ?? 'parseman/table'
+  const fns = opts.fnSources ?? folded.base.fns.map(() => '() => {}')
+  const base = programFields(folded.base, fns).filter(l => !l.startsWith('l:') && !l.startsWith('h:'))
+  const variants = Object.keys(folded.variants).map(n => {
+    const d = folded.variants[n]!
+    const parts = [
+      ...(d.at.length === 0 ? [] : [`a:[${d.at.join(',')}]`, `t:[${d.to.join(',')}]`]),
+      ...(d.lines === undefined ? [] : [`l:${d.lines}`]),
+      ...(d.hostMode === undefined ? [] : [`h:${jsString(d.hostMode)}`]),
+    ]
+    return `${jsString(n)}:{${parts.join(',')}}`
+  })
+  const names = opts.names ?? {}
+  return [
+    `import { tableVariants } from ${jsString(runtime)}`,
+    `const _t = {`,
+    `b:{`,
+    ...base,
+    `},`,
+    `v:{${variants.join(',')}}`,
+    `}`,
+    ...Object.keys(names).map(n =>
+      `export const ${names[n]!} = /* @__PURE__ */ tableVariants(_t, ${jsString(n)})`),
+  ].join('\n')
 }
 
 /**

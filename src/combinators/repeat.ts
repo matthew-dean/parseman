@@ -15,6 +15,14 @@ import { demoteCapturedToRaw } from '../cst/capture-buffer.ts'
  *
  * Returns the item value + end position, the underlying failure (so oneOrMore
  * can propagate a first-item failure), or 'stop'.
+ *
+ * `mandatory` marks an item `min` REQUIRES rather than one the greedy loop is
+ * merely trying. Both stops below — the EOF early-out and the zero-width stop —
+ * are TERMINATION DEVICES for an unbounded loop whose only source of progress is
+ * the item; that pressure does not exist for a prefix of exactly `min` items,
+ * which is finite by construction. A required item is therefore attempted at its
+ * position whatever is there, exactly as the first one already is (:203) — the
+ * trivia skip, which is real structure and not a stop, still applies to both.
  */
 function repItem<T>(
   combinator: Combinator<T>,
@@ -22,6 +30,7 @@ function repItem<T>(
   cur: number,
   ctx: ParseContext,
   guardable: boolean,
+  mandatory: boolean,
 ): { value: T; end: number } | { fail: ParseResult<T>; failPos: number } | 'stop' {
   const mark = saveTriviaMark(ctx)
   let pos = cur
@@ -36,8 +45,10 @@ function repItem<T>(
   }
   // Nothing but trivia left: don't speculatively parse an item at EOF (it would
   // fail and could trigger an item's expect()/error side-effects). The trivia
-  // is trailing — roll it back for the enclosing context and stop.
-  if (pos >= input.length) {
+  // is trailing — roll it back for the enclosing context and stop. SPECULATIVE
+  // is the operative word: a `mandatory` item is not speculative, so it is
+  // attempted at EOF like the first item is, and a NULLABLE one matches there.
+  if (pos >= input.length && !mandatory) {
     rollbackTrivia(ctx, mark)
     return 'stop'
   }
@@ -62,7 +73,13 @@ function repItem<T>(
     // isn't mistaken for junk and swallowed into a spurious ParseError.
     return { fail: result, failPos: pos }
   }
-  if (result.span.end === pos) {
+  // Zero-width item: it cannot make progress, so the greedy loop stops without
+  // taking it — a TERMINATION device, not a semantic filter (the same rule the
+  // table driver holds to `viaRepItem`). A `mandatory` item is counted whatever
+  // its width: `min` counts ITEMS, and `x*` over a nullable `x` derives the empty
+  // string with any number of them, so a `{ min: n }` prefix takes the n-item
+  // derivation. It cannot spin — the prefix is exactly `n` long.
+  if (result.span.end === pos && !mandatory) {
     rollbackTrivia(ctx, mark)
     return 'stop'
   }
@@ -135,7 +152,7 @@ export function many<T>(combinator: Combinator<T>, opts: RepeatOptions = {}): Co
       let count = 0
       while (cur < input.length) {
         if (count >= max) break
-        const item = repItem(combinator, input, cur, ctx, guardable)
+        const item = repItem(combinator, input, cur, ctx, guardable, false)
         if (item === 'stop') break
         if ('fail' in item) {
           if (!item.fail.ok && item.fail.committed) return item.fail
@@ -208,9 +225,11 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       let count = 1
       // Mandatory items 2..min (only entered for min > 1) — each failure propagates,
       // exactly like the first. They go through repItem so the trivia BETWEEN items
-      // is consumed the same way the loop consumes it.
+      // is consumed the same way the loop consumes it, but `mandatory` holds off its
+      // two loop-termination stops: a required item is attempted at its position
+      // whatever is there, and counts whatever its width.
       while (count < min) {
-        const item = repItem(combinator, input, cur, ctx, guardable)
+        const item = repItem(combinator, input, cur, ctx, guardable, true)
         if (item === 'stop' || 'fail' in item) {
           if (item !== 'stop' && !item.fail.ok && item.fail.committed) return item.fail
           // Anchored at `cur` — the furthest position the repeat reached — not at
@@ -227,7 +246,7 @@ function atLeast<T>(combinator: Combinator<T>, min: number, max: number): Combin
       }
       while (cur < input.length) {
         if (count >= max) break
-        const item = repItem(combinator, input, cur, ctx, guardable)
+        const item = repItem(combinator, input, cur, ctx, guardable, false)
         if (item === 'stop') break
         if ('fail' in item) {
           if (!item.fail.ok && item.fail.committed) return item.fail
@@ -437,7 +456,20 @@ export function sepBy<T, S>(
         captureError(ctx, rec.error)
         cur = rec.end
       }
-      while (cur < input.length) {
+      // `|| values.length < min` — the separated twin of `repItem`'s `mandatory`
+      // (1c5b2e8). `cur < input.length` is a TERMINATION device for the greedy
+      // tail, and that pressure does not exist for a prefix of exactly `min`
+      // items, which is finite by construction: each iteration that succeeds
+      // pushes one, so the disjunct can hold at most `min` times. Stopping on it
+      // made a REQUIRED item unreachable at EOF, so `sepBy(x, s, { min: n })` over
+      // a nullable `x` AND a nullable `s` — where the n-item derivation of the
+      // empty string genuinely exists — failed instead of taking it.
+      //
+      // A non-nullable separator still fails the list here rather than padding it:
+      // n items need n-1 separators, so there is no derivation to take, and the
+      // iteration below breaks on the separator exactly as it always did.
+      // Vacuous for `min <= 1`, which the first element already satisfies.
+      while (cur < input.length || values.length < min) {
         if (values.length >= max) break
         // One mark for the whole iteration (separator + following item): if the
         // item fails, the trailing separator must be rolled back with it, or its

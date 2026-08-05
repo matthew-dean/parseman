@@ -61,7 +61,7 @@
  */
 import type { Combinator, FirstSet, ParserDef } from '../types.ts'
 import { firstSetOf, type RefResolver } from '../combinators/first-set.ts'
-import { firstSetToString } from './gating.ts'
+import { childrenOf, firstSetToString, intersects } from './gating.ts'
 
 // ── public shapes ────────────────────────────────────────────────────────────
 
@@ -368,36 +368,7 @@ export type AnalyzeDuplicationOptions = {
 
 // ── canonical structural hashing ─────────────────────────────────────────────
 
-/**
- * Ordered structural children per def tag. Explicit rather than "every key that
- * holds a Combinator" because a SLOT's position is what near-duplicate detection
- * varies — a stable, meaningful order is load-bearing, not cosmetic.
- */
-function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
-  switch (d.tag) {
-    case 'sequence': case 'choice': return d.parsers
-    case 'dispatch': return [
-      d.selector,
-      ...d.cases.map(c => c.parser),
-      ...(d.otherwise === undefined ? [] : [d.otherwise]),
-    ]
-    case 'skip': return [d.main, d.skipped]
-    case 'sepBy': return [d.parser, d.separator]
-    case 'recover': return [d.parser, d.sentinel]
-    case 'scanTo': return [d.sentinel, ...d.skip]
-    case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
-    // A `lazy` is a REFERENCE, not a subtree: hashing through it would make every
-    // rule's shape include the whole reachable grammar. Treated as a leaf, keyed
-    // by the rule name it refers to — which is also the right semantics, since two
-    // productions referencing `g.Ident` really do fill that slot the same way.
-    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'adjacency': case 'unknown':
-      return []
-    default: {
-      const rec = d as unknown as { parser?: Combinator<unknown> }
-      return rec.parser ? [rec.parser] : []
-    }
-  }
-}
+// `childrenOf` is imported from ./gating.ts; this module used to carry a copy.
 
 const ruleNameOf = (p: Combinator<unknown>): string | undefined =>
   (p as unknown as { _ruleName?: string })._ruleName
@@ -517,7 +488,6 @@ function segment(d: ParserDef, index: number): string {
     case 'label': return `label(${d.label})`
     case 'field': return `field(${d.name})`
     case 'sepBy': return index === 0 ? 'sepBy.item' : 'sepBy.sep'
-    case 'skip': return index === 0 ? 'skip.main' : 'skip.skipped'
     case 'recover': return index === 0 ? 'recover.body' : 'recover.sentinel'
     case 'scanTo': return index === 0 ? 'scanTo.sentinel' : `scanTo.skip[${index - 1}]`
     default: return d.tag
@@ -1260,12 +1230,7 @@ function findRegexClasses(visited: Map<Combinator<unknown>, Visited>): RegexClas
 
 // ── 4. choice-arm overlap ────────────────────────────────────────────────────
 
-function intersects(a: FirstSet, b: FirstSet): boolean {
-  if (a.kind === 'any' || b.kind === 'any') return true
-  if (a.kind === 'empty' || b.kind === 'empty') return false
-  for (const ra of a.ranges) for (const rb of b.ranges) if (ra.lo <= rb.hi && rb.lo <= ra.hi) return true
-  return false
-}
+// `intersects` is imported from ./gating.ts; this module used to carry a copy.
 
 function intersection(a: FirstSet, b: FirstSet): FirstSet {
   if (a.kind === 'any') return b
