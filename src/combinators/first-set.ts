@@ -126,7 +126,6 @@ export function matchesEmpty(
     case 'node':
     case 'grammar':
     case 'recover':   return me(d.parser)
-    case 'skip':      return me(d.main)
     case 'lazy':
       try { return me(d.thunk()) }
       catch { const t = resolveNamedRef(p, resolve); return t ? me(t) : true }
@@ -301,7 +300,6 @@ export function firstSetOf(
     case 'grammar':
     case 'expect':    return fs(d.parser)
     case 'sepBy':     return fs(d.parser)   // both min 0 and min 1 start with the item
-    case 'skip':      return fs(d.main)
     default:          return p._meta.firstSet  // not / scanTo / guard / withCtx / recover / unknown
   }
 }

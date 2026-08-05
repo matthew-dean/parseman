@@ -38,7 +38,6 @@ Three words that sound alike but play different roles:
 | `oneOrMoreSep(c, sep, opts?)` | Non-empty separated list — sugar for `sepBy(c, sep, { min: 1 })`. |
 | `keepSeparator(sep)` | Wrap a separator to KEEP it in `children`. Default is items only. |
 | `transform(c, fn)` | Map the result: `fn(value, span) → newValue`. |
-| `skip(main, skipped)` | Match `main` then `skipped`; return `main`'s value. |
 | `token(c)` | Treat a contiguous parser run as one source-text token and one CST leaf. |
 | `leaf(c, reducer)` | Treat a structural grammar as one semantic leaf, without touching trivia. |
 | `label(name, c)` | Attach a string label to a combinator arm (metadata; used for per-chunk trivia kinds). |
@@ -729,19 +728,6 @@ parse(spanned, 'abc').value
 `transform` is for plain value-mapping. For rules that build a syntax tree with
 captured children and trivia, use [`node()`](./ast) — see
 [`transform` vs `node`](#mapping-vs-building-transform-vs-node).
-
-### `skip`
-
-Match both, return only `main`'s value, with the span extended across both.
-
-```ts
-// [verify]
-import { skip, regex, literal, parse } from 'parseman'
-
-const line = skip(regex(/[^\n]*/), literal('\n'))
-parse(line, 'hello\nworld')
-// → { ok: true, value: 'hello', span: { start: 0, end: 6 } }
-```
 
 ### `token`
 

@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import {
   attempt, choice, expect as expectC, field, gate, keywords, label, leaf, literal, many,
   node, not, oneOrMore, optional, parse, parser, peek, ref, regex, routed, rules, scanTo,
-  sepBy, sequence, skip, startsWith, token, transform, trivia, withCtx, dispatch, when, otherwise,
+  sepBy, sequence, startsWith, token, transform, trivia, withCtx, dispatch, when, otherwise,
   type Combinator, type ParserDef,
 } from '../../src/index.ts'
 import { rebuildCombinator } from '../../src/analysis/rebuild.ts'
@@ -61,7 +61,6 @@ describe('rebuildCombinator — the identity rebuild', () => {
     oneOrMore(literal('n'), { min: 2, max: 7 }),
     sepBy(literal('s'), literal(','), { min: 1, max: 5, trailing: 'allow' }),
     transform(literal('t'), (v: string) => v.toUpperCase()),
-    skip(literal('k'), literal(' ')),
     label('L', literal('l')),
     field('f', literal('g')),
     token(literal('tok')),

@@ -48,7 +48,7 @@ import { ref } from '../combinators/ref.ts'
 import { not } from '../combinators/not.ts'
 import { peek } from '../combinators/peek.ts'
 import { node } from '../combinators/node.ts'
-import { transform, skip, label, field } from '../combinators/map.ts'
+import { transform, label, field } from '../combinators/map.ts'
 import { token, leaf } from '../combinators/token.ts'
 import { expect } from '../combinators/expect.ts'
 import { adjacent, notAdjacent } from '../combinators/adjacency.ts'
@@ -219,7 +219,6 @@ export function rebuildCombinator(
           ...(d.trailing === undefined ? {} : { trailing: d.trailing }),
         }); break
       case 'transform': out = transform(one(d.parser), d.fn); break
-      case 'skip': out = skip(one(d.main), one(d.skipped)); break
       case 'label': out = label(d.label, one(d.parser)); break
       case 'field': out = field(d.name, one(d.parser)); break
       case 'token': out = token(one(d.parser)); break

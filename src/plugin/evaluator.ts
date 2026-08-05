@@ -217,7 +217,6 @@ const SUPPORTED: Record<string, (...args: unknown[]) => Combinator<unknown>> = {
   choice:    (...a) => (parseman.choice as (...p: Combinator<unknown>[]) => Combinator<unknown>)(...(a as Combinator<unknown>[])),
   attempt:   (...a) => parseman.attempt(a[0] as Combinator<unknown>),
   optional:  (...a) => parseman.optional(a[0] as Combinator<unknown>),
-  skip:      (...a) => parseman.skip(a[0] as Combinator<unknown>, a[1] as Combinator<unknown>),
   trivia:    (...a) => parseman.trivia(a[0] as Combinator<unknown>),
   classifiedTrivia: (...a) =>
     parseman.classifiedTrivia(

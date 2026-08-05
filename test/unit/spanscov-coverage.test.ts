@@ -17,7 +17,7 @@ import { describe, it, expect } from 'vitest'
 import {
   attempt, choice, dispatch, expect as expectP, field, gate, keywords, label, leaf,
   literal, many, matches, node, not, oneOrMore, optional, parser, peek, regex, rules, scanTo,
-  sepBy, sequence, skip, token, transform, trivia, when, otherwise, withCtx,
+  sepBy, sequence, token, transform, trivia, when, otherwise, withCtx,
   createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink,
   compiledGrammarCoverageDefinitions, composedGrammarCoverageDefinitions,
   grammarCoverageDefinitions, runWithGrammarCoverage, compose,
@@ -300,8 +300,8 @@ describe('every structural def tag is rebuilt, so coverage survives inside it', 
     expect(lr.coverage.hits).toContain('rule:N')
   })
 
-  it('skip and trivia', () => {
-    const g = rules(gg => ({ Entry: skip(gg.Main, literal(' ')), Main: literal('x') })) as Record<string, Combinator<unknown>>
+  it('an optional-trailer transform and trivia', () => {
+    const g = rules(gg => ({ Entry: transform(sequence(gg.Main, optional(literal(' '))), ([x]) => x), Main: literal('x') })) as Record<string, Combinator<unknown>>
     expect(runIt(g.Entry!, 'x').hits).toContain('rule:Main')
 
     const t = rules(gg => ({ Entry: sequence(trivia(gg.WS), literal('x')), WS: regex(/ +/) })) as Record<string, Combinator<unknown>>

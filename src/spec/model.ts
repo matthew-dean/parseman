@@ -469,8 +469,6 @@ class Builder {
       case 'node':
         return this.walk((def as { parser: Combinator<unknown> }).parser)
 
-      case 'skip':
-        return this.walk(def.main)
       case 'grammar':
         return this.walk(def.parser)
 

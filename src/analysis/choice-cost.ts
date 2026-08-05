@@ -358,7 +358,6 @@ function slotLabel(d: ParserDef, index: number): string {
     case 'sequence': return `seq[${index}]`
     case 'choice':   return `choice[${index}]`
     case 'dispatch': return index === 0 ? 'dispatch.selector' : `dispatch[${index - 1}]`
-    case 'skip':     return index === 0 ? 'skip.main' : 'skip.skipped'
     case 'sepBy':    return index === 0 ? 'sepBy.item' : 'sepBy.sep'
     case 'recover':  return index === 0 ? 'recover.parser' : 'recover.sentinel'
     case 'scanTo':   return index === 0 ? 'scanTo.sentinel' : `scanTo.skip[${index - 1}]`

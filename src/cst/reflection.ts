@@ -57,8 +57,6 @@ function childrenOf(def: ParserDef): readonly Combinator<unknown>[] {
       return def.triviaParser ? [def.parser, def.triviaParser] : [def.parser]
     case 'sepBy':
       return [def.parser, def.separator]
-    case 'skip':
-      return [def.main, def.skipped]
     case 'scanTo':
       return [def.sentinel, ...def.skip]
     case 'routed':

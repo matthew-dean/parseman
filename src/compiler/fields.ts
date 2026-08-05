@@ -24,7 +24,6 @@ export function parserHasOwnFields(p: Combinator<unknown>, seen: Set<Combinator<
     case 'choice': return d.parsers.some(x => parserHasOwnFields(x, seen))
     case 'dispatch': return parserHasOwnFields(d.selector, seen) || d.cases.some(x => parserHasOwnFields(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => parserHasOwnFields(entry.parser, seen)) : false) || (d.otherwise ? parserHasOwnFields(d.otherwise, seen) : false)
     case 'sepBy': return parserHasOwnFields(d.parser, seen) || parserHasOwnFields(d.separator, seen)
-    case 'skip': return parserHasOwnFields(d.main, seen) || parserHasOwnFields(d.skipped, seen)
     case 'grammar': return parserHasOwnFields(d.parser, seen) || (d.triviaParser ? parserHasOwnFields(d.triviaParser, seen) : false)
     case 'scanTo': return parserHasOwnFields(d.sentinel, seen) || d.skip.some(x => parserHasOwnFields(x, seen))
     case 'recover': return parserHasOwnFields(d.parser, seen) || parserHasOwnFields(d.sentinel, seen)
@@ -95,7 +94,6 @@ function hasTriviaSite(p: Combinator<unknown>, seen: Set<Combinator<unknown>>, t
     case 'sepBy':
     case 'scanTo':
     case 'recover':
-    case 'skip':
       return true
     // Nested node manages its own trivia frame; none logs into THIS frame. The
     // root log has no frames, so it must look inside.
@@ -149,7 +147,6 @@ export function parserEnablesTriviaCapture(p: Combinator<unknown>, seen: Set<Com
     case 'choice': return d.parsers.some(x => parserEnablesTriviaCapture(x, seen))
     case 'dispatch': return parserEnablesTriviaCapture(d.selector, seen) || d.cases.some(x => parserEnablesTriviaCapture(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => parserEnablesTriviaCapture(entry.parser, seen)) : false) || (d.otherwise ? parserEnablesTriviaCapture(d.otherwise, seen) : false)
     case 'sepBy': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.separator, seen)
-    case 'skip': return parserEnablesTriviaCapture(d.main, seen) || parserEnablesTriviaCapture(d.skipped, seen)
     case 'scanTo': return parserEnablesTriviaCapture(d.sentinel, seen) || d.skip.some(x => parserEnablesTriviaCapture(x, seen))
     case 'recover': return parserEnablesTriviaCapture(d.parser, seen) || parserEnablesTriviaCapture(d.sentinel, seen)
     case 'many':

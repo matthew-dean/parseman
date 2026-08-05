@@ -76,10 +76,6 @@ export function markUnusedValues(root: Combinator<unknown>): void {
         // the field capture records the parsed value → always consumed.
         visit(def.parser, true)
         return
-      case 'skip':
-        visit(def.main, consumed)   // returns main's value
-        visit(def.skipped, false)   // skipped value is discarded
-        return
       case 'sepBy':
         // sepBy is NOT elided (no valueUnused), so it always builds its array and
         // therefore always reads each item's value — regardless of whether sepBy's

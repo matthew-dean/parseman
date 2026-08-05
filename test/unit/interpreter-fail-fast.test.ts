@@ -6,7 +6,7 @@
  * composite body is never entered — matching the compiled path — while staying
  * byte-identical (the parity suites elsewhere prove interpreter ≡ compiled output).
  */
-import { many, oneOrMore, node, attempt, sequence, literal, optional, not, choice, ref, field, withCtx, skip, expect as required, parse, compile, type Combinator, type ParseContext } from '../../src/index.ts'
+import { many, oneOrMore, node, attempt, sequence, literal, optional, not, choice, ref, field, withCtx, transform, expect as required, parse, compile, type Combinator, type ParseContext } from '../../src/index.ts'
 import { deriveExpected } from '../../src/combinators/expect.ts'
 import { describe, expect, it } from 'vitest'
 
@@ -68,7 +68,7 @@ describe('interpreter first-set fail-fast (parity with codegen guards)', () => {
 
 /**
  * A first-set-miss fast-fail must report the SAME `expected` a normal start-failure
- * would — including through delegating wrappers (`field`/`withCtx`/`skip`/`expect`)
+ * would — including through delegating wrappers (`field`/`withCtx`/`transform`/`expect`)
  * that `deriveExpected` previously omitted (returning the wrapper tag instead of the
  * real leading token). The guard's synthetic `expected` is read identically by the
  * interpreter and by codegen (emitAttempt/emitNode via armStaticExpected → the same
@@ -78,7 +78,7 @@ describe('first-set-miss failure is wrapper-complete (guard == normal start-fail
   const bodies: [string, Combinator<unknown>][] = [
     ['field',   field('x', sequence(literal('@'), literal('b')))],
     ['withCtx', withCtx({}, sequence(literal('@'), literal('b')))],
-    ['skip',    skip(sequence(literal('@'), literal('b')), literal('!'))],
+    ['transform', transform(sequence(sequence(literal('@'), literal('b')), optional(literal('!'))), ([x]) => x)],
   ]
 
   for (const [name, body] of bodies) {
@@ -101,10 +101,10 @@ describe('first-set-miss failure is wrapper-complete (guard == normal start-fail
     })
   }
 
-  it('deriveExpected sees through field/withCtx/skip/expect (previously the wrapper tag)', () => {
+  it('deriveExpected sees through field/withCtx/transform/expect (previously the wrapper tag)', () => {
     expect(deriveExpected(field('x', literal('@')))).toEqual(['"@"'])
     expect(deriveExpected(withCtx({}, literal('@')))).toEqual(['"@"'])
-    expect(deriveExpected(skip(literal('@'), literal('!')))).toEqual(['"@"'])
+    expect(deriveExpected(transform(sequence(literal('@'), optional(literal('!'))), ([x]) => x))).toEqual(['"@"'])
     expect(deriveExpected(required(literal('@')))).toEqual(['"@"'])
   })
 })

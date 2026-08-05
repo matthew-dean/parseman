@@ -34,7 +34,7 @@ import { node } from '../combinators/node.ts'
 import { parser } from '../combinators/grammar.ts'
 import { scanTo, balanced, type BalancedAmbient } from '../combinators/scanTo.ts'
 import { token, leaf } from '../combinators/token.ts'
-import { classifiedTrivia, transform, skip, trivia, label, field } from '../combinators/map.ts'
+import { classifiedTrivia, transform, trivia, label, field } from '../combinators/map.ts'
 import { analyzeLabeledTrivia } from '../cst/trivia-kinds.ts'
 import { expect as expectC } from '../combinators/expect.ts'
 import { withCtx } from '../combinators/withCtx.ts'
@@ -65,7 +65,6 @@ function childrenOf(def: ParserDef): Comb[] {
     case 'expect':    return [def.parser]
     case 'grammar':   return def.triviaParser ? [def.parser, def.triviaParser] : [def.parser]
     case 'sepBy':     return [def.parser, def.separator]
-    case 'skip':      return [def.main, def.skipped]
     case 'scanTo':    return [def.sentinel, ...def.skip]
     case 'routed':    return def.fallback ? [def.fallback] : []
     case 'lazy':
@@ -252,13 +251,13 @@ export function evalRuleMapIR(ir: string): Array<[string, Comb]> {
   const fn = new Function(
     'rules', 'ref', 'regex', 'literal', 'keywords', 'sequence', 'choice', 'dispatch', 'when', 'startsWith', 'endsWith', 'matches', 'otherwise', 'routed', 'attempt',
     'many', 'oneOrMore', 'optional', 'sepBy', 'keepSeparator', 'not', 'peek', 'node', 'parser',
-    'scanTo', 'balanced', 'token', 'leaf', 'transform', 'skip', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', 'adjacent', 'notAdjacent', '_tf', '_lf', '_nd', '_gch', '_wc',
+    'scanTo', 'balanced', 'token', 'leaf', 'transform', 'trivia', 'classifiedTrivia', 'label', 'field', 'expect', 'adjacent', 'notAdjacent', '_tf', '_lf', '_nd', '_gch', '_wc',
     `return (${ir})`,
   )
   const map = fn(
     rules, ref, regex, literal, keywords, sequence, choice, dispatch, when, startsWith, endsWith, matches, otherwise, routed, attempt,
     many, oneOrMore, optional, sepBy, keepSeparator, not, peek, node, parser,
-    scanTo, balanced, token, leaf, transform, skip, trivia, classifiedTrivia, label, field, expectC, adjacent, notAdjacent, _tf, _lf, _nd, _gch, _wc,
+    scanTo, balanced, token, leaf, transform, trivia, classifiedTrivia, label, field, expectC, adjacent, notAdjacent, _tf, _lf, _nd, _gch, _wc,
   ) as Record<string, Comb>
   return Object.entries(map)
 }
@@ -536,7 +535,6 @@ class Serializer {
       case 'label':     return `label(${JSON.stringify(def.label)}, ${kid(def.parser)})`
       case 'field':     return `field(${JSON.stringify(def.name)}, ${kid(def.parser)})`
       case 'expect':    return `expect(${kid(def.parser)}${def.label !== undefined ? `, ${JSON.stringify(def.label)}` : ''})`
-      case 'skip':      return `skip(${kid(def.main)}, ${kid(def.skipped)})`
       case 'scanTo':
         return `scanTo(${kid(def.sentinel)}, { skip: [${def.skip.map(kid).join(', ')}]${def.raw ? ', raw: true' : ''}, orEOF: ${def.orEOF} })`
       case 'transform': {

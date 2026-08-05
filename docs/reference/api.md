@@ -339,10 +339,6 @@ arm matches at every position, so it disables its `choice`'s first-char dispatch
 Map a successful value (and span) through `fn(value, span)`. For plain value-mapping only;
 use [`node`](#node-type-combinator-build-opts) for tree building.
 
-### `skip(main, skipped)`
-
-Match `main` then `skipped`; return `main`'s value, with the span extended across both.
-
 ### `token(combinator)`
 
 Run `combinator` with active trivia cleared and return the matched source text as a

@@ -14,7 +14,7 @@ import {
   keywordAlternationHazards, analyzeDuplication, analyzeDuplicationRules,
   formatDuplicationFindings, duplicationFindingCount, siteToString,
   choice, sequence, literal, regex, many, oneOrMore, optional, node, field, label,
-  keywords, rules, sepBy, skip, scanTo, dispatch, when, otherwise,
+  keywords, rules, sepBy, transform, scanTo, dispatch, when, otherwise,
   type Combinator,
 } from '../../src/index.ts'
 
@@ -270,12 +270,12 @@ describe('the one-line rendering of a duplicated shape', () => {
     expect(f!.sites.map(siteToString)).toEqual(['<entry> › dispatch.when[0]', '<entry> › dispatch.otherwise'])
   })
 
-  it('names the structural path of each site — sequence, choice, skip, sepBy and scanTo', () => {
+  it('names the structural path of each site — sequence, choice, transform, sepBy and scanTo', () => {
     const mk = (): Combinator<unknown> => sequence(literal('('), regex(/\d\d/), literal(')'))
     const r = analyzeDuplicationRules(entries(rules(() => ({
       Seq: sequence(literal('a'), mk()),
       Cho: choice(literal('b'), mk()),
-      Skp: skip(mk(), literal(' ')),
+      Tfm: transform(mk(), v => v),
       Sep: sepBy(mk(), literal(',')),
       Scn: scanTo(mk(), { skip: [literal('"')] }),
     }))))
@@ -286,7 +286,7 @@ describe('the one-line rendering of a duplicated shape', () => {
       'Scn › scanTo.sentinel',
       'Sep › sepBy.item',
       'Seq › seq[1]',
-      'Skp › skip.main',
+      'Tfm › transform',
     ])
   })
 
