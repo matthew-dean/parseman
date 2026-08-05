@@ -92,11 +92,18 @@ describe('compileTable() is a drop-in for the source-lowering compile()', () => 
     expect(compiled.inlineExpression!.startsWith('import')).toBe(false)
   })
 
-  it('THROWS on { coverage: true } rather than silently dropping it', () => {
-    // A parser returned with no `coverageDefinitions` would read as a passing
-    // run that measured nothing. The build error names the reason instead.
-    expect(() => compileTable(jsonDoc as Combinator<unknown>, undefined, { coverage: true }))
-      .toThrow(/coverage/)
+  it('HONOURS { coverage: true } — it used to throw, and now it counts', () => {
+    // WAS A REFUSAL, and the refusal was right while there was nothing to count:
+    // a parser returned with no `coverageDefinitions` reads as a passing run that
+    // measured nothing. There are counter rows now (`OP_COV`), so what this pins
+    // is the thing the refusal was standing in for — the definitions come back,
+    // and they are not empty. The hits themselves are `table-coverage.test.ts`.
+    const compiled = compileTable(jsonDoc as Combinator<unknown>, undefined, { coverage: true })
+    expect(compiled.coverageDefinitions).toBeDefined()
+    expect(compiled.coverageDefinitions!.length).toBeGreaterThan(0)
+    // And it is still OFF by default: an ordinary compile carries no denominator,
+    // rather than an empty one that divides to a confident 100%.
+    expect(compileTable(jsonDoc as Combinator<unknown>).coverageDefinitions).toBeUndefined()
   })
 })
 

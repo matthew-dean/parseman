@@ -89,8 +89,8 @@ console.log(`  second   ${FIXTURES[1]!.name}  ${FIXTURES[1]!.input.length} B`)
 const g = await loadGrammar('less', 'ast')
 const prog = encodeTable(g.rules, {})
 
-const OFF: RunCfg = { hostCst: false, trackLines: false, tolerant: false }
-const ON: RunCfg = { hostCst: false, trackLines: false, tolerant: true }
+const OFF: RunCfg = { hostCst: false, trackLines: false, tolerant: false , coverage: false }
+const ON: RunCfg = { hostCst: false, trackLines: false, tolerant: true , coverage: false }
 
 const offA = pinnedRules(prog, OFF)[ENTRY]! as unknown as Entry
 const offB = pinnedRules(prog, OFF)[ENTRY]! as unknown as Entry

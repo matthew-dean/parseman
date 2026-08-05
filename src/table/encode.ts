@@ -12,13 +12,15 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
-  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_COV,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
 import { resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
 import { missingInferredType } from '../combinators/node.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
+import { covKindCode } from './program.ts'
+import type { GrammarCoveragePlan } from '../compiler/grammar-coverage-ids.ts'
 
 /**
  * Can `emitConst` print this? Mirrors the guard in `emit.ts` — scalars, arrays
@@ -76,6 +78,21 @@ export type TableSettings = {
    * project keeps finding.
    */
   readonly recovery?: boolean
+  /**
+   * THE COVERAGE PLAN, when this table is being encoded for grammar coverage.
+   *
+   * Its maps are keyed by COMBINATOR IDENTITY, which is what makes threading the
+   * plan through the encoder exact: at the moment a choice, dispatch, label or
+   * rule body is laid down, the combinator being encoded IS the key, so no code
+   * offset has to be matched back to a structural path after the fact. `OP_COV`
+   * rows go in beside those sites and the plan's definitions become `prog.cov`.
+   *
+   * A plan is a BUILD input for the same reason `hostMode` is: the rows either
+   * exist in the table or they do not, and no per-parse flag can conjure them.
+   * Which of the resulting assemblies actually counts is the separate,
+   * assembly-selected question `RunCfg.coverage` answers.
+   */
+  readonly coverage?: GrammarCoveragePlan
 }
 
 type Emitted = { readonly ip: number }
@@ -229,6 +246,34 @@ class Encoder {
   }
   rules: Record<string, number> = {}
 
+  /**
+   * THE COVERAGE DEFINITION POOL, in `plan.definitions` order, or `undefined`
+   * when this is an ordinary encode. Ordinary is the default and it must stay
+   * byte-for-byte the table it always was, so every coverage member is absent —
+   * not empty — unless a plan was passed.
+   */
+  private readonly cov: (readonly [string, 0 | 1 | 2 | 3])[] | undefined
+  private readonly covIndex: ReadonlyMap<string, number>
+  readonly plan: GrammarCoveragePlan | undefined
+
+  /**
+   * Wrap one site in its counter row.
+   *
+   * `id` comes from the plan and is therefore already a definition; an id the
+   * pool does not know is a plan/encoder disagreement and is refused rather than
+   * appended, because a hit on an id outside the denominator is a hit the
+   * collector silently drops (`createGrammarCoverageCollector.hit` tests `known`)
+   * — a site that reads as instrumented and counts nothing.
+   */
+  private covWrap(child: number, id: string | undefined, on: 0 | 1): number {
+    if (id === undefined || this.cov === undefined) return child
+    const slot = this.covIndex.get(id)
+    if (slot === undefined) {
+      throw new UnsupportedConstruct(`coverage(id ${JSON.stringify(id)} is not in the plan's definitions)`)
+    }
+    return this.emit(OP_COV, child, slot, on)
+  }
+
   private kIndex = new Map<unknown, number>()
   private ccIndex = new Map<string, number>()
   private fxIndex = new Map<string, number>()
@@ -250,6 +295,11 @@ class Encoder {
     this.settings = settings
     this.track = settings.trackLines === true
     this.rec = true
+    this.plan = settings.coverage
+    this.cov = settings.coverage === undefined
+      ? undefined
+      : settings.coverage.definitions.map(d => [d.id, covKindCode(d.kind)] as const)
+    this.covIndex = new Map((this.cov ?? []).map((d, i) => [d[0], i]))
   }
 
   /**
@@ -454,6 +504,12 @@ class Encoder {
     this.carryTriviaMeta(amb)
     this.carryTriviaMeta(p)
     if (p._def.tag === 'grammar') this.carryTriviaMeta(p._def.triviaParser)
+    // `body` is ALREADY the counter row when this rule has one — `node()` wraps
+    // it there, not here. Wrapping the rule ENTRY instead would credit the rule
+    // only when it is the start rule: an internal `g.X` reference resolves
+    // straight to the body's offset (`case 'lazy'`), so every recursive call and
+    // every cross-rule reference would jump past the counter, and a grammar with
+    // one entry would report one hit rule however much of it ran.
     this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.triviaSlot(amb), body)
   }
 
@@ -470,7 +526,12 @@ class Encoder {
     }
     const patches: number[] = []
     this.pending.set(p, patches)
-    const ip = this.encodeDef(p)
+    // A RULE IS CREDITED ON ENTRY, not on success — `codegen.ts:4529` emits the
+    // hook as the first statement of the named function body, so a rule that is
+    // reached and then fails still counts as exercised. The counter goes on the
+    // MEMOISED offset, which is the one every reference to this combinator lands
+    // on, and the recursion trampolines below are patched with it too.
+    const ip = this.covWrap(this.encodeDef(p), this.plan?.rules.get(p), 0)
     this.pending.delete(p)
     this.memo.set(p, ip)
     for (const slot of patches) this.code[slot] = ip
@@ -568,12 +629,28 @@ class Encoder {
           // every NON-super arm that has a core literal value, keyed by that value.
           // An arm without one is unreachable through classification and is left
           // to the super arm exactly as the interpreter leaves it.
+          // COVERAGE CREDITS THE CLASSIFIED ARM AND NOT THE SUPER ARM, which is
+          // what the interpreter reference does: `coverage.ts:230` suppresses the
+          // per-arm hit for a `greedyClassify` site precisely because the super
+          // arm runs as an implementation detail, and only the arm the
+          // classification SELECTS is a semantic winner. Here the selected arm is
+          // re-run (`assemble.ts` `OP_GREEDY`), so wrapping it is exact.
+          //
+          // THE SUPER ARM'S OWN ID IS NOT INSTRUMENTED, and that is a stated gap,
+          // not an oversight: it is credited when classification finds nothing,
+          // and that outcome is decided INSIDE the greedy row rather than by any
+          // child of it. Instrumenting the super arm's offset would credit it on
+          // every invocation, including the ones the interpreter credits to a
+          // literal arm — an over-count, which inflates the ratio. Leaving it
+          // uninstrumented under-counts, which is the direction every other
+          // coverage decision in this codebase fails in.
+          const covIds = this.plan?.choices.get(p)
           const pairs: number[] = []
           for (let i = 0; i < d.parsers.length; i++) {
             if (i === superIndex) continue
             const lit = getCoreLiteralValue(d.parsers[i]!)
             if (lit === null) continue
-            pairs.push(this.constant(lit), this.node(d.parsers[i]!).ip)
+            pairs.push(this.constant(lit), this.covWrap(this.node(d.parsers[i]!).ip, covIds?.[i], 1))
           }
           const head = this.emitHead(OP_GREEDY, 2 + pairs.length)
           this.code[head + 1] = sup
@@ -603,6 +680,11 @@ class Encoder {
         // it has already matched (choice.ts:160-164). Wrapping — rather than
         // splicing the predicate into the arm — is what preserves the arm's own
         // first set for `classes` below, and with it the site's O(1) dispatch.
+        // ARM IDS ARE INDEXED BY DECLARED POSITION, not by encoded position:
+        // `buildGrammarPlan` mints `choice:…/arm:i` off `def.parsers`, and `order`
+        // is a permutation of that. `src` is the declared index, so the id and the
+        // `autoNot`/`gates` entries are all taken with the same subscript.
+        const armCovIds = this.plan?.choices.get(p)
         const kids = arms.map((c, k) => {
           const src = order[k]!
           const checks = d.autoNot[src]
@@ -611,9 +693,14 @@ class Encoder {
             ? inner
             : this.reject(inner, checks)
           const gate = d.gates[src]
-          return gate === null || gate === undefined
+          const gated = gate === null || gate === undefined
             ? ip
             : this.emit(OP_ARMGATE, this.fn(gate, d.gateSrcs?.[src] ?? null), ip, this.expected(deriveExpected(c)))
+          // OUTSIDE both wrappers, because an arm is credited once it has WON —
+          // after its gate admitted it and after `autoNot` declined to reject it.
+          // Inside either, a gate-rejected or auto-rejected arm would count as
+          // covered on a parse where the choice picked somebody else.
+          return this.covWrap(gated, armCovIds?.[src], 1)
         })
         // O(1) first-char dispatch is only SOUND when the arms are disjoint.
         // With overlapping first sets, "the first arm whose class contains this
@@ -838,6 +925,14 @@ class Encoder {
           throw new UnsupportedConstruct('dispatch(routed() in selector)')
         }
         const sel = this.node(d.selector as Combinator<unknown>).ip
+        // `dispatchArmIds` mints ids in RESOLUTION ORDER — every case (one id per
+        // case, not per key), then every matcher, then `otherwise` — which is the
+        // order the two loops below push arms in, with the fallback last. A
+        // running index is what keeps the two in step; taking `ids[armIndex]`
+        // inside the key loop would consume one id per KEY and slide every
+        // subsequent arm onto somebody else's identity.
+        const dispCovIds = this.plan?.dispatches.get(p)
+        let dispCov = 0
         const arms: number[] = []
         const routed: number[] = []
         const key: string[] = [], keyArm: number[] = []
@@ -848,7 +943,7 @@ class Encoder {
         // matchers in declaration order, then otherwise. Mirrors dispatch.ts:325.
         for (const c of d.cases) {
           const arm = arms.length
-          arms.push(this.node(c.parser).ip)
+          arms.push(this.covWrap(this.node(c.parser).ip, dispCovIds?.[dispCov++], 1))
           routed.push(branchUsesRouted(c) ? 1 : 0)
           for (const kk of c.keys) {
             expected.push(JSON.stringify(kk))
@@ -859,7 +954,7 @@ class Encoder {
         const KIND = { startsWith: 0, endsWith: 1, matches: 2 } as const
         for (const m of d.matchers ?? []) {
           const arm = arms.length
-          arms.push(this.node(m.parser).ip)
+          arms.push(this.covWrap(this.node(m.parser).ip, dispCovIds?.[dispCov++], 1))
           routed.push(branchUsesRouted(m) ? 1 : 0)
           // `{ caseInsensitive: true }` ON A MATCHER ARM IS FOLDED INTO THE
           // OPERANDS HERE, not tested per parse in the driver. It was dropped
@@ -881,7 +976,9 @@ class Encoder {
           }
           match.push([m.kind === 'startsWith' ? 3 : 4, asciiFoldKey(m.value), '', arm])
         }
-        const other = d.otherwise === undefined ? -1 : this.node(d.otherwise).ip
+        const other = d.otherwise === undefined
+          ? -1
+          : this.covWrap(this.node(d.otherwise).ip, dispCovIds?.[dispCov++], 1)
         const dspIdx = this.dsp.length
         this.dsp.push({ key, keyArm, fold, foldArm, match, routed, expected })
         const head = this.emitHead(OP_DISPATCH, 5 + arms.length)
@@ -1002,8 +1099,15 @@ class Encoder {
       }
       // A LABEL IS A ROW — see `OP_LABEL`. It replaces the child's expected set,
       // which is the entire combinator.
+      // A LABEL IS CREDITED ON SUCCESS, as `codegen.ts:4530` credits it: its hook
+      // is emitted AFTER the child's statements, where a failed child has already
+      // broken out of the labelled block.
       case 'label':
-        return this.emit(OP_LABEL, this.node(d.parser).ip, this.expected([d.label]))
+        return this.covWrap(
+          this.emit(OP_LABEL, this.node(d.parser).ip, this.expected([d.label])),
+          this.plan?.labels.get(p)?.[0],
+          1,
+        )
       // Transparent wrapper: no row of its own, no dispatch at run time.
       case 'trivia':
         return this.node(d.parser).ip
@@ -1112,7 +1216,7 @@ class Encoder {
     const slots = (ip: number): number[] => {
       switch (this.code[ip]) {
         case OP_GATE: return [ip + 2]
-        case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: return [ip + 1]
+        case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: case OP_COV: return [ip + 1]
         case OP_SCOPE: case OP_SCOPE_CAP: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
@@ -1182,6 +1286,7 @@ class Encoder {
       ...(this.runtimeOnly.size === 0 ? {} : { runtimeOnly: [...this.runtimeOnly].sort() }),
       ...(this.triviaSpecs.length === 0 ? {} : { triviaSpecs: this.triviaSpecs }),
       ...(this.rec ? { rec: 1 as const } : {}),
+      ...(this.cov === undefined ? {} : { cov: this.cov }),
       lines: this.track ? 1 : 0,
     }
   }

@@ -86,6 +86,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
+  OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -150,6 +151,13 @@ function linkMatcher(m: readonly [number, string, string, number]): (key: string
 type Leaf = { _tag: 'leaf'; value: string; span: { start: number; end: number } }
 
 /**
+ * The `COV` slot's value when a parse installs no collector. ONE shared function
+ * across every assembly, so the slot's type never widens to `| undefined` and no
+ * counter piece has to test it.
+ */
+const NO_COVERAGE = (_id: string): void => {}
+
+/**
  * THE PIECE SIGNATURE — uniform, narrow, and the same for every one of the 29
  * lowerings.
  *
@@ -206,11 +214,30 @@ export type RunCfg = {
    * incorrect, not merely redundant.
    */
   readonly tolerant: boolean
+  /**
+   * `ctx._grammarCoverage` — is THIS parse counting grammar coverage?
+   *
+   * FIXED FOR THE LIFETIME OF A PARSE, checked the same way `tolerant` was. There
+   * are exactly two writers — `createGrammarInstrumentationContext` (coverage.ts),
+   * which builds the field into a FRESH context object before any parse, and
+   * `functional/run.ts:403`, which installs it on the context it is about to run
+   * — and no reader anywhere mutates or clears it, mid-parse or otherwise.
+   * `createParseContext` initialises it to `undefined` once, at construction.
+   *
+   * So it is per-PARSE, unlike `ctx._cstBuf`, which a previous lane proposed
+   * keying on and which `beginCstNodeCapture`/`endCstNodeCapture` replace per
+   * NODE — that selection would have been incorrect, not merely redundant.
+   *
+   * An ordinary table has no `OP_COV` rows at all, so this bit selects a DIFFERENT
+   * assembly only for a table encoded with a coverage plan. For every other table
+   * the two assemblies are identical work and the extra bit costs one cache slot.
+   */
+  readonly coverage: boolean
 }
 
-/** The cfg key an assembly is cached under. Three bits, so at most eight assemblies. */
+/** The cfg key an assembly is cached under. Four bits, so at most sixteen assemblies. */
 function cfgKey(c: RunCfg): number {
-  return (c.hostCst ? 1 : 0) | (c.trackLines ? 2 : 0) | (c.tolerant ? 4 : 0)
+  return (c.hostCst ? 1 : 0) | (c.trackLines ? 2 : 0) | (c.tolerant ? 4 : 0) | (c.coverage ? 8 : 0)
 }
 
 export type Assembly = {
@@ -467,6 +494,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * per-parse config read on the hottest non-terminal in the grammar.
    */
   let HOST: ParseContext['build']
+
+  /**
+   * THE COLLECTOR THIS PARSE IS COUNTING INTO, latched at the boundary exactly as
+   * `HOST` is and for the same reason: the assembly is SELECTED by whether one is
+   * present (`RunCfg.coverage`), but WHICH one it is is a per-parse VALUE, and two
+   * parses with the same option set can carry two different collectors.
+   *
+   * So no `OP_COV` piece reads `ctx` at all — it calls this slot. The initial
+   * no-op exists because `begin` is what installs the real function; a counter
+   * piece is only ever reachable from the coverage assembly, whose `begin` always
+   * finds one on the context that selected it.
+   */
+  let COV: (id: string) => void = NO_COVERAGE
 
   /**
    * A NON-FIRST sequence term: skip the installed trivia, run the child, and
@@ -775,6 +815,43 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const v = child(input, pos, ctx)
           // `_fe` UNTOUCHED — `map.ts:84` keeps `result.span`.
           if (v === FAIL) ctx._fx = xf
+          return v
+        }
+      }
+
+      case OP_COV: {
+        const child = link(code[ip + 1]!)
+        // NOT AN OPTION TEST IN A PIECE BODY — the option is resolved HERE, by
+        // choosing which of three pieces to return. `cfg.coverage` false hands
+        // back the child itself, so a coverage-encoded table run without a
+        // collector is the same graph, with the same call depth, as an ordinary
+        // one: the counter rows vanish at link time rather than short-circuiting
+        // at parse time.
+        if (!cfg.coverage) return child
+        const def = prog.cov?.[code[ip + 2]!]
+        // An `OP_COV` row with no pool behind it is a table whose `cov` field was
+        // dropped somewhere between encode and load — the emitter, the compact
+        // wire form, or a fold. Say so, rather than counting `undefined` as an id
+        // and reporting a full denominator with no hits in it.
+        if (def === undefined) {
+          throw new TypeError(
+            `assemble: OP_COV at ${ip} indexes coverage definition ${code[ip + 2]}, but this program `
+            + 'carries no `cov` pool. The counter rows and the definition pool are one artifact.',
+          )
+        }
+        const id = def[0]
+        // ENTRY vs SUCCESS, decided once. `END` is deliberately untouched on both
+        // paths: the counter runs before the child (entry) or after the child's
+        // value is already in hand (success), so nothing observes a stale end.
+        if (code[ip + 3] === 0) {
+          return (input, pos, ctx) => {
+            COV(id)
+            return child(input, pos, ctx)
+          }
+        }
+        return (input, pos, ctx) => {
+          const v = child(input, pos, ctx)
+          if (v !== FAIL) COV(id)
           return v
         }
       }
@@ -2277,6 +2354,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   function begin(ctx: ParseContext): void {
     SCAN = null
     HOST = ctx.build
+    COV = ctx._grammarCoverage ?? NO_COVERAGE
   }
 
   return { pieces, end: () => END, begin, scanSkip, reached }
@@ -2297,6 +2375,8 @@ export class AssemblyCache {
   private readonly t: ResolvedTable
   private readonly prog: TableProgram
   private readonly byCfg: Array<Assembly | undefined> = [
+    undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined,
   ]
@@ -2328,10 +2408,11 @@ export class AssemblyCache {
     const hostCst = host !== undefined && cstOutputHost(host)
     const trackLines = ctx.trackLines === true
     const tolerant = ctx._tolerant === true
-    const key = (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0)
+    const coverage = ctx._grammarCoverage !== undefined
+    const key = (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0) | (coverage ? 8 : 0)
     const hit = this.byCfg[key]
     if (hit !== undefined) return hit
-    const made = assemble(this.t, this.prog, { hostCst, trackLines, tolerant })
+    const made = assemble(this.t, this.prog, { hostCst, trackLines, tolerant, coverage })
     this.byCfg[key] = made
     return made
   }

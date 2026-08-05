@@ -150,6 +150,12 @@ function programFields(prog: TableProgram, fns: readonly string[]): string[] {
     // operands are still in `c`, but nothing selects the pieces that read them,
     // so a tolerant parse of the emitted artifact silently collects no errors.
     ...(prog.rec === 1 ? ['rv:1,'] : []),
+    // The coverage DENOMINATOR travels with the counter rows or not at all. An
+    // emitted module whose `c` stream holds `OP_COV` rows and whose `cv` pool went
+    // missing has no ids to credit and no definitions to divide by — the
+    // "no measurement reported as full coverage" shape, one hop downstream, which
+    // is why `assemble` throws on that combination rather than counting nothing.
+    ...(prog.cov === undefined ? [] : [`cv:[${prog.cov.map(([id, kind]) => `[${jsString(id)},${kind}]`).join(',')}],`]),
     ...(prog.hostMode === undefined ? [] : [`h:${jsString(prog.hostMode)},`]),
     ...(prog.triviaSpecs === undefined ? [] : [`tv:[${prog.triviaSpecs.map(emitTriviaSpec).join(',')}],`]),
     ...(prog.scans === undefined ? [] : [`sc:[${prog.scans.map(emitScanSpec).join(',')}],`]),

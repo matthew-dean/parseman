@@ -17,6 +17,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
+  OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
@@ -457,6 +458,23 @@ function makeDriver(
         return v
       }
       case OP_RULE:
+        return exec(code[ip + 1]!, input, pos, ctx)
+
+      /**
+       * A COUNTER ROW IS TRANSPARENT HERE, and that is the whole of its handling.
+       *
+       * This module is the VALUE-IDENTITY reference the assembler is bisected
+       * against, and a coverage counter is not a value: it changes nothing about
+       * what is parsed, what is built, where a failure lands or what it expected.
+       * Passing the row through keeps a coverage-encoded table runnable under the
+       * reference — which is what makes the identity sweep able to run one at all
+       * — and keeps this file exactly as behaviourally identical as it was.
+       *
+       * It does NOT record hits. Counting is the assembler's, on the product path;
+       * a second implementation of it here would be a second place for the phase
+       * semantics (entry for a rule, success for an arm) to drift.
+       */
+      case OP_COV:
         return exec(code[ip + 1]!, input, pos, ctx)
 
       case OP_LIVE: {
