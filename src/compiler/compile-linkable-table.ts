@@ -1,5 +1,5 @@
 import type { Combinator } from '../types.ts'
-import type { HostMode } from './codegen.ts'
+import type { HostMode } from '../cst/host-mode.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { serializeRuleMap } from './ir-serialize.ts'

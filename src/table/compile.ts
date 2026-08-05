@@ -1,5 +1,5 @@
-import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
-import type { CompiledParser, HostMode } from '../compiler/codegen.ts'
+import type { Combinator, CompiledParser, ParseContext, ParseError, ParseResult } from '../types.ts'
+import type { HostMode } from '../cst/host-mode.ts'
 import { createParseContext } from '../parse-context.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableModule, emitTableExpression } from './emit.ts'

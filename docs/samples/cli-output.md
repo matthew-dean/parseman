@@ -412,7 +412,7 @@ And the fix report, which is the one that carries evidence:
 ```console
 $ parseman fix examples/lang/parser.ts --export exprParser --corpus examples/lang/corpus --json 2>/dev/null | jq ".verified[0]"
 {
-  "id": "expr#arm0",
+  "id": "expr#0#arm0",
   "code": "keyword-regex",
   "rule": "expr",
   "armIndex": 0,
@@ -430,8 +430,8 @@ $ parseman fix examples/lang/parser.ts --export exprParser --corpus examples/lan
     "antiPatternsAfter": 2,
     "gatedChoicesBefore": 3,
     "gatedChoicesAfter": 3,
-    "codegenBytesBefore": 44845,
-    "codegenBytesAfter": 45024
+    "artifactBytesBefore": 3565,
+    "artifactBytesAfter": 3575
   },
   "evidence": {
     "samples": 3,

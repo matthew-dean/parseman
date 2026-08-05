@@ -5,7 +5,6 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { compileTable } from '../../src/table/compile.ts'
 import { compileRuleMapTable } from '../../src/table/compile-rule-map.ts'
-import { compile } from '../../src/compiler/codegen.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assembledRules } from '../../src/table/assemble.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
@@ -30,17 +29,20 @@ import type { ParseResult } from '../../src/types.ts'
  * coverage-enabled macro build impossible under the table. These are the counters.
  *
  * COUNTERS ONLY, per the owner ruling in `notes/RELEASE-0.48-TARGET.md` §1:
- * `_grammarTrace`'s six phases are ~40 fine-grained emission sites in
- * `codegen.ts` and are 0.48 work. Nothing here asserts a trace event, and the
- * last case in this file pins that the gap is a KNOWN one rather than a silent
- * one — a consumer that installs a sink gets no events, not wrong events.
+ * `_grammarTrace`'s six phases are ~40 fine-grained emission sites in the source
+ * lowering and are 0.48 work. Nothing here asserts a trace event, and the last
+ * case in this file pins that the gap is a KNOWN one rather than a silent one —
+ * a consumer that installs a sink gets no events, not wrong events.
  *
  * WHAT "WORKS" MEANS HERE, and why every test is written the way it is:
  *
- *   IDS MUST LINE UP WITH THE SOURCE LOWERING. An id scheme that is internally
+ *   IDS MUST LINE UP WITH THE SHARED PLANNER. An id scheme that is internally
  *   consistent and matches nothing is not a fix — a consumer switching lowerings
  *   would silently compare two different denominators. So the definition sets are
- *   asserted EQUAL to `compile()`'s, not merely well-formed.
+ *   asserted EQUAL to `buildGrammarPlan`'s, not merely well-formed, and to the
+ *   planner rather than to another engine: `buildGrammarPlan` is the one place
+ *   ids are minted, so it is the reference both lowerings answer to. Comparing
+ *   engine against engine only ever proved they called the same function.
  *
  *   HITS MUST DISCRIMINATE. "The throw is gone" and "a parser came back" are both
  *   satisfied by a build that counts nothing, which is the exact silent-nothing
@@ -88,13 +90,16 @@ function hits(rule: Rule, definitions: readonly GrammarCoverageDefinition[], inp
 }
 
 describe('the table lowering counts grammar coverage', () => {
-  it('mints the SAME definitions as the source lowering, for a single root', () => {
+  it('mints the SAME definitions the shared planner does, for a single root', () => {
     const root = (jsonRules as unknown as Record<string, Combinator<unknown>>)['Value']!
     const tabled = compileTable(root, undefined, { coverage: true })
-    const sourced = compile(root, undefined, { coverage: true })
-    // Not "both are non-empty" — EQUAL. The ids are the contract, and both
-    // engines mint them from one `buildGrammarPlan` walk over one graph.
-    expect(tabled.coverageDefinitions).toEqual(sourced.coverageDefinitions)
+    // Not "both are non-empty" — EQUAL, and equal to `buildGrammarPlan` rather
+    // than to another ENGINE. The ids are the contract and `buildGrammarPlan` is
+    // the single place they are minted (`compile.ts:117` passes the root to it
+    // verbatim), so it is the honest reference: comparing two engines only ever
+    // proved they called the same function, and it pinned the answer to whichever
+    // engine happened to be the other leg.
+    expect(tabled.coverageDefinitions).toEqual(buildGrammarPlan(root).definitions)
     expect(tabled.coverageDefinitions!.length).toBeGreaterThan(0)
   })
 

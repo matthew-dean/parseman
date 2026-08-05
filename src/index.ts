@@ -1,4 +1,4 @@
-export type { Combinator, ParseResult, ParseOk, ParseFail, ParseContext, ParseError, Span, ParserMeta, FirstSet, CharRange, ParserDef, ChoiceStrategy, AutoNotCheck, GatedArm, DispatchCase, DispatchMatcherCase, BuildHost, CstCollapsePredicate, FieldCapture, FieldMap } from './types.ts'
+export type { Combinator, CompiledParser, ParseResult, ParseOk, ParseFail, ParseContext, ParseError, Span, ParserMeta, FirstSet, CharRange, ParserDef, ChoiceStrategy, AutoNotCheck, GatedArm, DispatchCase, DispatchMatcherCase, BuildHost, CstCollapsePredicate, FieldCapture, FieldMap } from './types.ts'
 
 export { literal } from './combinators/literal.ts'
 export type { LiteralOptions } from './combinators/literal.ts'
@@ -34,7 +34,29 @@ export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/
 export { token, leaf } from './combinators/token.ts'
 
 export { compileTable as compile } from './table/compile.ts'
-export type { CompiledParser, LinkablePieces, DuplicationOption, HostMode } from './compiler/codegen.ts'
+/*
+ * `CompiledParser` is exported above, from `./types.ts` — it is the contract
+ * `compile()` answers to, so it lives with the library's types.
+ *
+ * TWO NAMES USED TO SIT HERE and no longer do. Neither was ever documented and
+ * nothing outside the source lowering referenced either; they were in the barrel
+ * because the barrel re-exported the engine, not because anything asked for them.
+ *
+ *   `LinkablePieces`    — the SOURCE-LOWERING linkable IR. Every field of it is
+ *                         source text or an input to resolving source text (see
+ *                         `compile-linkable-table.ts`), so it has no meaning for a
+ *                         table artifact and dies with the source lowering. The
+ *                         public composable-piece type is `LinkableTable`, below.
+ *   `DuplicationOption` — an option bag for the source lowering's duplication
+ *                         diagnostic, used nowhere else. The public diagnostic
+ *                         surface is `analyzeDuplication` /
+ *                         `AnalyzeDuplicationOptions`, exported further down.
+ *
+ * `HostMode` stays: it names the `hostMode` option on `rules()` and `compile()`,
+ * which is public. It now comes from the artifact↔host contract module that has
+ * owned the definition all along.
+ */
+export type { HostMode } from './cst/host-mode.ts'
 /**
  * `linkable()` produces TABLES too — the table counterpart of `compileLinkable`.
  * A piece is a table when it is self-contained, and always carries its IR, which

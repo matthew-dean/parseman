@@ -184,8 +184,8 @@ function verifiedLines(f: VerifiedFix, opts: FixRenderOptions): Line[] {
     out.push([t('   + ', TONE.good), t(f.after, TONE.good)])
     out.push([t('   effect  ', TONE.quiet), t(effect, TONE.strong)])
   }
-  if (b.codegenBytesBefore !== null && b.codegenBytesAfter !== null && b.codegenBytesAfter !== b.codegenBytesBefore) {
-    const d = b.codegenBytesAfter - b.codegenBytesBefore
+  if (b.artifactBytesBefore !== null && b.artifactBytesAfter !== null && b.artifactBytesAfter !== b.artifactBytesBefore) {
+    const d = b.artifactBytesAfter - b.artifactBytesBefore
     out.push([t('   size    ', TONE.faint),
       t(`the generated parser ${d > 0 ? 'grows' : 'shrinks'} by ${groupDigits(Math.abs(d))} bytes`, TONE.faint)])
   }

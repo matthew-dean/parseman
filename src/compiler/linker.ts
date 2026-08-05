@@ -19,9 +19,9 @@
  * addition. Fusion runs ONCE at parser construction — parsing is then full speed.
  */
 import { compileLinkable, firstSetCond, ruleDependencies, HOST_READS_DECL, RAW_ENTRY_DECL } from './codegen.ts'
-import { FUSED_HOST_MODE, FUSED_HOST_ELIDED } from '../cst/host-mode.ts'
+import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
-import type { LinkablePieces, FirstSetRecipe, HostMode } from './codegen.ts'
+import type { LinkablePieces, FirstSetRecipe } from './codegen.ts'
 import { union } from '../combinators/first-set.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, FirstSet, ParseContext, ParseResult } from '../types.ts'

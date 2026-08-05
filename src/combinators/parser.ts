@@ -1,5 +1,5 @@
 import type { Combinator } from '../types.ts'
-import type { HostMode } from '../compiler/codegen.ts'
+import type { HostMode } from '../cst/host-mode.ts'
 import { ref } from './ref.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { parser as grammarParser } from './grammar.ts'

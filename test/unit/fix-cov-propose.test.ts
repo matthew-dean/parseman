@@ -246,9 +246,9 @@ describe('proposeFixes — identity and options', () => {
 
   it('measures the compiled artifact size on both sides', () => {
     const b = proposeFixes(kw(/if(?!\w)/), { corpus: corpusOf('if') }).verified[0]!.benefit
-    expect(typeof b.codegenBytesBefore).toBe('number')
-    expect(typeof b.codegenBytesAfter).toBe('number')
-    expect(b.codegenBytesAfter).not.toBe(b.codegenBytesBefore)
+    expect(typeof b.artifactBytesBefore).toBe('number')
+    expect(typeof b.artifactBytesAfter).toBe('number')
+    expect(b.artifactBytesAfter).not.toBe(b.artifactBytesBefore)
   })
 
   it('sorts verified and located by id, deterministically', () => {
@@ -453,7 +453,7 @@ describe('applyFixEdits', () => {
       ungatedChoicesBefore: 1, ungatedChoicesAfter: 0,
       antiPatternsBefore: 1, antiPatternsAfter: 0,
       gatedChoicesBefore: 0, gatedChoicesAfter: 1,
-      codegenBytesBefore: null, codegenBytesAfter: null,
+      artifactBytesBefore: null, artifactBytesAfter: null,
     },
     evidence: { samples: 1, bytes: 1, engines: ['interpreted'], outputUnchanged: true },
     edit,

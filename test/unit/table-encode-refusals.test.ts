@@ -11,7 +11,6 @@ import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, se
 import { assembledRules } from '../../src/table/assemble.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { resolveTable } from '../../src/table/program.ts'
-import { compile } from '../../src/compiler/codegen.ts'
 import { jsonValue as shippedJsonValue } from '../../examples/json/parser.ts'
 import {
   adjacent, balanced, choice, classifiedTrivia, keywords, literal, many, node, notAdjacent,
@@ -47,7 +46,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     // its value". It does not: `recognitionOnly` appears in no combinator's
     // runtime path at all — `map.ts`'s transform never reads it. It is a marker
     // for `composeLeaf` eligibility in the LINKER (see the comment at
-    // `scanTo.ts:361`) and a codegen analysis flag, both compile-time.
+    // `scanTo.ts:361`) and a source-lowering analysis flag, both compile-time.
     //
     // So the refusal was reasoning about a runtime semantic that does not exist,
     // and the value it feared diverging is simply the fn's own result.
@@ -222,22 +221,23 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     ) as Combinator<unknown>))
     expect(resolveTable(asLeadingGate).disp.map(d => d.exclusive)).toEqual([false])
 
-    // ── FOUR-WAY DIFFERENTIAL: interpreter, codegen, exec.ts, assemble.ts ────
-    const four = (g: Combinator<unknown>, src: string): [string, string, string, string] => {
+    // ── THREE-WAY DIFFERENTIAL: interpreter, exec.ts, assemble.ts ────────────
+    // The INTERPRETER is the reference in every comparison below. The source
+    // lowering used to be a fourth leg; it is gone, and nothing is lost, because
+    // it was never the reference — it was a second answer that had to match this
+    // one anyway.
+    const three = (g: Combinator<unknown>, src: string): [string, string, string] => {
       const p = encodeTable(wrap(g))
-      const c = compile(g).parse(src)
       const norm = (o: { ok: boolean; value?: unknown; expected?: readonly string[] }): string =>
         JSON.stringify([o.ok, o.value ?? null, o.expected ?? []])
       return [
         norm(run(g as never, src)),
-        norm(c as never),
         norm(run(tableRules(p).Doc! as never, src)),
         norm(run(assembledRules(p).Doc! as never, src)),
       ]
     }
     const allAgree = (g: Combinator<unknown>, src: string): void => {
-      const [i, c, t, a] = four(g, src)
-      expect(c, `${src}: codegen vs interpreter`).toBe(i)
+      const [i, t, a] = three(g, src)
       expect(t, `${src}: exec.ts vs interpreter`).toBe(i)
       expect(a, `${src}: assemble.ts vs interpreter`).toBe(i)
     }
@@ -252,7 +252,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
       allAgree(disjointGated(), src)
     }
     for (const g of [withCtx({ on: false }, disjointGated()) as Combinator<unknown>, disjointGated()]) {
-      for (const engine of four(g, '&')) expect(JSON.parse(engine)[0]).toBe(false)
+      for (const engine of three(g, '&')) expect(JSON.parse(engine)[0]).toBe(false)
     }
 
     // ── THE GATE SKIPS, IT DOES NOT FAIL ─────────────────────────────────────
@@ -265,41 +265,38 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
       { gate: on, combinator: transform(literal('aa'), () => 'GATED') } as never,
       transform(regex(/a[a-z]/), () => 'OPEN'),
     ) as Combinator<unknown>
-    for (const engine of four(skip(), 'aa')) expect(JSON.parse(engine)).toEqual([true, 'OPEN', []])
+    for (const engine of three(skip(), 'aa')) expect(JSON.parse(engine)).toEqual([true, 'OPEN', []])
     allAgree(skip(), 'aa')
     allAgree(skip(), 'ab')
-    for (const engine of four(withCtx({ on: true }, skip()) as Combinator<unknown>, 'aa')) {
+    for (const engine of three(withCtx({ on: true }, skip()) as Combinator<unknown>, 'aa')) {
       expect(JSON.parse(engine)).toEqual([true, 'GATED', []])
     }
 
-    // ── THE FOUR NOW AGREE ON THE FAILING REPORT TOO, NOT ONLY THE VALUE ─────
+    // ── THE THREE NOW AGREE ON THE FAILING REPORT TOO, NOT ONLY THE VALUE ────
     // A failing DISPATCHED choice names the arm it dispatched to — one arm was
     // attempted, so one arm's set is the answer, and that is the rule the
-    // interpreter (choice.ts:105) and codegen (codegen.ts:1985) have always
-    // applied. The table used to answer with the choice's whole static union
-    // here, on the theory that the other two reached their answer by
-    // FURTHEST-FAILURE merging. They do not: no engine merges positionally on
-    // the `expected` path. `_fx` already holds the arm's own set when the arm
-    // fails, so matching them is declining to overwrite it (exec.ts, assemble.ts).
+    // interpreter has always applied (choice.ts:105). The table used to answer
+    // with the choice's whole static union here, on the theory that the other
+    // engines reached their answer by FURTHEST-FAILURE merging. They do not: no
+    // engine merges positionally on the `expected` path. `_fx` already holds the
+    // arm's own set when the arm fails, so matching the interpreter is declining
+    // to overwrite it (exec.ts, assemble.ts).
     const ungatedControl = choice(literal('ab'), literal('cd')) as Combinator<unknown>
-    const [ci, cc2, ct, ca] = four(ungatedControl, 'ax')
+    const [ci, ct, ca] = three(ungatedControl, 'ax')
     expect(JSON.parse(ci)[2], 'ungated: interpreter names the dispatched arm').toEqual(['"ab"'])
-    expect(cc2, 'ungated: codegen matches the interpreter').toBe(ci)
     expect(JSON.parse(ct)[2], 'ungated: the table names the dispatched arm too').toEqual(['"ab"'])
     expect(ca, 'ungated: both drivers agree with each other').toBe(ct)
     // A gate-false arm is the same shape: the arm was selected, so its set is the
     // report. OP_ARMGATE writes `deriveExpected(arm)` and nothing overwrites it.
-    const [gi, gc, gt, ga] = four(disjointGated(), '&')
+    const [gi, gt, ga] = three(disjointGated(), '&')
     expect(JSON.parse(gi)[2]).toEqual(['"&"'])
-    expect(gc).toBe(gi)
     expect(JSON.parse(gt)[2]).toEqual(['"&"'])
     expect(ga).toBe(gt)
-    // A dispatch MISS is where the union is right, and all four give it: the
+    // A dispatch MISS is where the union is right, and all three give it: the
     // interpreter's miss branch runs `parsers.flatMap`, every arm is non-nullable
     // and excluded by this char, so the flatMap's answer IS the static union.
-    const [mi, mc, mt, ma] = four(ungatedControl, 'zz')
+    const [mi, mt, ma] = three(ungatedControl, 'zz')
     expect(JSON.parse(mi)[2], 'miss: the union').toEqual(['"ab"', '"cd"'])
-    expect(mc).toBe(mi)
     expect(mt).toBe(mi)
     expect(ma).toBe(mi)
     // EOF IS A MISS, not a reason to leave the disjoint path. Every arm of a
@@ -308,9 +305,8 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     // `continue`s past a gated-off arm and so DROPPED it from the report — the
     // one position where the same gate state gave two different answers, since
     // the in-bounds miss above ignores gates and names it (choice.ts:90).
-    const [ei, ec, et, ea] = four(ungatedControl, '')
+    const [ei, et, ea] = three(ungatedControl, '')
     expect(JSON.parse(ei)[2], 'eof: the union').toEqual(['"ab"', '"cd"'])
-    expect(ec).toBe(ei)
     expect(et).toBe(ei)
     expect(ea).toBe(ei)
   })
@@ -381,8 +377,8 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
   it('parser({ trackLines: true }) TURNS THE TABLE ON, with or without the setting', () => {
     // NO LONGER A REFUSAL. This asserted that a tracking scope inside a table
     // built without `TableSettings.trackLines` threw — which made the table
-    // lowering reject a grammar `compile()` accepts and annotates: codegen makes
-    // the same decision ONCE for the whole artifact,
+    // lowering reject a grammar the source lowering accepts and annotates: it
+    // makes the same decision ONCE for the whole artifact,
     // `opts.trackLines || grammarTrackLines || hasLineTrackingDef(combinator)`.
     // Tracking is a property of the GRAMMAR as much as of the build, so the
     // encoder reads both and the setting only ever adds.
@@ -717,13 +713,13 @@ describe('terminals the table REBUILDS rather than references', () => {
  */
 describe('table failure reporting matches the interpreter and the compiled path', () => {
   // `withCtx` + `gate()` earn a row here specifically because this is the pair
-  // that DIVERGED between the two shipped engines and nothing noticed. codegen
-  // ran the child on a spread ctx and copied `_fe`/`_fx`/`_fc` back by hand; the
+  // that DIVERGED between two shipped engines and nothing noticed. One ran the
+  // child on a spread ctx and copied `_fe`/`_fx`/`_fc` back by hand; the
   // interpreter had no such workaround and simply dropped them, so a failing
   // `withCtx` subtree reported a different expected set depending on the engine.
-  // Both save/restore now — and this row is what would catch it coming back,
-  // since it is the only assertion here that compares codegen to the interpreter
-  // on a state-scoped failure.
+  // All of them save/restore now — and this row is what would catch it coming
+  // back, since it is the only assertion here that compares a LOWERED engine to
+  // the interpreter on a state-scoped failure.
   const gatedBody = transform(
     sequence(gate((st: unknown) => (st as { inFn?: boolean })?.inFn === true), literal('r')),
     () => 'SAW',
@@ -788,8 +784,8 @@ describe('table failure reporting matches the interpreter and the compiled path'
     // WAS FOUR, THEN THREE, NOW NONE. The dispatched-choice miss went first — a
     // choice now carries its own expected set and reports the union on every
     // failing exit. `Min` was second: a list ending under `min` reports the ITEM,
-    // which is what `failAt` (repeat.ts) and codegen's `deriveExpectedArr([item])`
-    // both already reported. `Kw` and `Peek` went with the table-lowering flip:
+    // which is what `failAt` (repeat.ts) and the source lowering's
+    // `deriveExpectedArr([item])` both already reported. `Kw` and `Peek` went with the table-lowering flip:
     // `keywords()` now carries its own `['keyword']` label into the row instead of
     // deriving the literals off the rebuilt regex, and `OP_PEEK` carries the
     // ASSERTION's set instead of letting the body's escape. All four shapes are
