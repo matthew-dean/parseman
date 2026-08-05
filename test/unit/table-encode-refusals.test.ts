@@ -363,7 +363,24 @@ describe('terminals the table REBUILDS rather than references', () => {
  * the reported sets directly, against BOTH shipped engines.
  */
 describe('table failure reporting matches the interpreter and the compiled path', () => {
+  // `withCtx` + `gate()` earn a row here specifically because this is the pair
+  // that DIVERGED between the two shipped engines and nothing noticed. codegen
+  // ran the child on a spread ctx and copied `_fe`/`_fx`/`_fc` back by hand; the
+  // interpreter had no such workaround and simply dropped them, so a failing
+  // `withCtx` subtree reported a different expected set depending on the engine.
+  // Both save/restore now — and this row is what would catch it coming back,
+  // since it is the only assertion here that compares codegen to the interpreter
+  // on a state-scoped failure.
+  const gatedBody = transform(
+    sequence(gate((st: unknown) => (st as { inFn?: boolean })?.inFn === true), literal('r')),
+    () => 'SAW',
+  ) as Combinator<unknown>
+  const stateScoped: Record<string, Combinator<unknown>> = {
+    Doc: withCtx({ inFn: false }, gatedBody) as Combinator<unknown>,
+  }
+
   const suites = [
+    ['withctx-gate', stateScoped, 'Doc', ['r', 'x']],
     ['base', baseNodes, 'List', ['(a,b', '(', '(,)', 'zz']],
     ['field', fieldNodes, 'Entry', ['[ab=1', '[', 'zz', '[ab=zz]']],
     ['select', selectNodes, 'Proj', ['ax', '', '###']],

@@ -579,10 +579,8 @@ class Encoder {
       case 'not':
         return this.emit(OP_NOT, this.node(d.parser).ip)
       case 'guard':
-        // The 'guard' expected label is load-bearing: it is what the compiled
-        // path and the pre-rename API both emit (gate.ts), so the identity sweep
-        // compares it.
-        return this.emit(OP_GUARD, this.fn(d.predicate), this.expected(['guard']))
+        // `'gate'`, the public name — see gate.ts. The def tag stays `'guard'`.
+        return this.emit(OP_GUARD, this.fn(d.predicate), this.expected(['gate']))
       case 'withCtx':
         return this.emit(OP_WITHCTX, this.constant(d.extra), this.node(d.parser).ip)
       case 'peek':
