@@ -35,6 +35,12 @@ export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.
 export { compileTable, type TableCompileOptions } from './compile.ts'
 export { emitTableModule, emitTableExpression, emitFoldedModule } from './emit.ts'
 /**
+ * `compileRuleMap()` for the table lowering — the MAIN macro path. `compileTable`
+ * only ever covered `compile()`, the single-root entry, so a `rules()` grammar had
+ * no table counterpart to point the build at at all.
+ */
+export { compileRuleMapTable, type TableRuleMapOptions, type CompiledRuleMapTable } from './compile-rule-map.ts'
+/**
  * THE VARIANT FOLD (G4). One base table plus per-variant row edits, selected at
  * load. Additive: `tableRules` and every existing entry are untouched, and the
  * driver still reads no option on the parse path.

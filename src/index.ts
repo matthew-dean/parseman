@@ -35,6 +35,13 @@ export { token, leaf } from './combinators/token.ts'
 
 export { compile } from './compiler/codegen.ts'
 export type { CompiledParser, LinkablePieces, DuplicationOption, HostMode } from './compiler/codegen.ts'
+/**
+ * `linkable()` produces TABLES too — the table counterpart of `compileLinkable`.
+ * A piece is a table when it is self-contained, and always carries its IR, which
+ * is what makes table-to-table composition a rule-map merge and one encode rather
+ * than a merge of two already-encoded programs.
+ */
+export { compileLinkableTable, type LinkableTable, type LinkableTableOptions } from './compiler/compile-linkable-table.ts'
 
 // THE diagnostic entry point. `compile()` never reports anything: diagnostics are a
 // deliberate act, not a side effect of producing an artifact. `diagnoseGrammar` accepts

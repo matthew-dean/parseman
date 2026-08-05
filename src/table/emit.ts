@@ -175,8 +175,16 @@ export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): str
 }
 
 export type ExpressionEmitOptions = EmitOptions & {
-  /** Which rule the expression evaluates to. */
-  readonly entry?: string
+  /**
+   * Which rule the expression evaluates to, or `null` for THE WHOLE RULE MAP.
+   *
+   * `null` is what a `rules()` call site needs: its initialiser evaluates to the
+   * `{ name: fn, … }` object, exactly what `tableRules(…)` already returns, so
+   * the map form is the expression WITHOUT the trailing index — not a second
+   * emitter. `compileRuleMap`'s replacement has the same shape and the same
+   * splice point, which is what makes the two lowerings interchangeable there.
+   */
+  readonly entry?: string | null
   /** Identifier the expression expects `tableRules` to be bound to. */
   readonly runtimeRef?: string
 }
@@ -196,13 +204,13 @@ export type ExpressionEmitOptions = EmitOptions & {
  */
 export function emitTableExpression(prog: TableProgram, opts: ExpressionEmitOptions = {}): string {
   assertPrintable(prog, 'emitTableExpression')
-  const entry = opts.entry ?? 'grammar'
+  const entry = opts.entry === undefined ? 'grammar' : opts.entry
   const ref = opts.runtimeRef ?? 'tableRules'
   const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
   return [
     `/* @__PURE__ */ ${ref}({`,
     ...programFields(prog, fns),
-    `})[${jsString(entry)}]`,
+    entry === null ? `})` : `})[${jsString(entry)}]`,
   ].join('\n')
 }
 
