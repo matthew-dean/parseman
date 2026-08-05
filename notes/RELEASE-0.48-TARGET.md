@@ -57,8 +57,15 @@ those is the one with a measured precedent — see §3.
 ## 3. The remaining table/codegen speed gap
 
 **Where it stood at the end of 0.47:** the closure assembler is ~1.66× source
-lowering on `benchmark.less`. Two of the three mechanisms tried returned
-**measured zero** and are recorded here so nobody re-runs them:
+lowering on `benchmark.less`.
+
+**DO NOT QUOTE 1.66× AS THE GAP.** It is one fixture. On the `css` perf-guard
+context the same cutover measures **~4.4×** — see §8. The honest statement is
+that the gap is fixture-dependent and ranges at least 1.66×–4.4×; anyone citing a
+single number is generalising from whichever bench they happened to run.
+
+Two of the three mechanisms tried returned **measured zero** and are recorded
+here so nobody re-runs them:
 
 | mechanism | predicted | measured |
 |---|---|---|
@@ -183,6 +190,59 @@ engines actually apply is *a failing choice reports the arms it ATTEMPTED*
 (`choice.ts:105`, `:114-117`, `:145`; `codegen.ts:1985`). There is no positional
 furthest-failure merging on the `expected` path anywhere — that framing was
 wrong and was disproved with source evidence.
+
+---
+
+## 8. `css` compiled regression — SHELVED for 0.47 by owner ruling
+
+**What.** `bench/perf-guard.ts` blocks commits. Measured on `release/0.47.0`
+itself, with no lane branches applied, against baseline `2a83f9b` (captured when
+`compile()` was codegen):
+
+```
+css/decls      interp 15.43µs (-14.7%)  compiled 10.86µs (+343.2%)  ratio 1.42× (baseline 7.38×)
+css/selector   interp 14.42µs (-12.8%)  compiled  9.93µs (+385.5%)  ratio 1.45× (baseline 8.09×)
+```
+
+The table `compile()` is **~4.4× slower than codegen** on these two bars, and the
+compiled-vs-interpreted advantage on css collapsed from **8.09× to 1.45×**.
+
+**Why it is believed rather than blamed on the box.** The same run carries its own
+control: `interp` moved −14.7% and −12.8% — *faster*, consistent with the
+labelled-trivia scanner win — in the same process, on the same box, at the same
+moment. Contention does not slow one bar 4× while speeding its neighbour up 13%.
+It also reproduces on the release line, so it belongs to neither lane in flight.
+
+**Why it was shelved.** Owner ruling: it does not appear in `bench:margin`, whose
+fixtures are json / csv / graphql / CST. There is no `css` bar in the chart, so
+this regression is invisible to the published comparison. Shelved for 0.47,
+addressed in 0.48 — explicitly NOT re-baselined, because the baseline is right
+and the measurement is the thing that moved.
+
+**How the gate must behave meanwhile.** Do NOT reach for `SKIP_PERF_GUARD=1`.
+That routes around the gate silently and makes every future regression on any
+other bar invisible too — the next real one lands unnoticed behind the same
+bypass. The shelf has to be NAMED: the `css` context's two `compiled` bars are
+known-regressed and tracked here, and everything else stays gated at its real
+tolerance. A bypass that cannot tell a shelved regression from a new one is not a
+shelf, it is a disabled gate.
+
+**How much this fixture is worth — owner ruling, and it corrects the paragraph
+this replaces.** `css/selector` and `css/decls` are *toy grammars*. A 4.4× on them
+is not, by itself, evidence the product is 4.4× slower at anything anyone runs.
+An earlier draft of this section claimed css "exposes the gap most sharply" and
+should therefore be where 0.48 starts; that was wrong, and it was reasoning from
+whichever bench happened to be wired into the pre-commit hook.
+
+**Where the gap actually shows up is Jess** — the four real dialect grammars, via
+`pnpm bench:less` / `bench/jess/fixture.ts`. Those are the piece-invocation-dense
+workloads with real selector and declaration volume. 0.48 starts by measuring
+THERE and confirming whether the css signal reproduces at scale. If it does not,
+this shelf costs nothing and the entry comes off. If it does, §3's unexplained
+~20 ns per piece invocation is the prime suspect.
+
+**Do not re-derive the priority from the css bars.** They are cheap to run, which
+is why they are in the hook, not because they are representative.
 
 ---
 
