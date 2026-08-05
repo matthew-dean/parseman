@@ -7,6 +7,9 @@ import { describe, it, expect } from 'vitest'
 import { rules, regex, literal, sequence, choice, optional, sepBy } from '../../src/index.ts'
 import { ruleDependencies } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { compile as compileCodegen, compileRuleMap as compileRuleMapCodegen } from '../../src/compiler/codegen.ts'
+import * as pm from '../../src/index.ts'
+import { isCompiledRule } from '../helpers/eval-macro-module.ts'
 
 const mkGrammar = () => rules((g: any) => ({
   Value: choice(g.Num, g.List),
@@ -39,7 +42,20 @@ export const { Value, Num, List } = rules(g => ({
   Num: regex(/[0-9]+/),
   List: sequence(literal('['), optional(sepBy(g.Value, literal(','))), literal(']')),
 }))`
-    const out = transformMacro(src, 'x.ts', new Set(['parseman']))!.code
+    const macroOut = transformMacro(src, 'x.ts', new Set(['parseman']))!.code
+    // The macro's job: every rule really lowered, none left as a runtime call.
+    for (const name of ['Value', 'Num', 'List']) {
+      expect(isCompiledRule(macroOut, name), name).toBe(true)
+    }
+    // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
+    // The CANONICAL `_r_<Name>` function and the direct local calls between siblings
+    // are the linkable form of the SOURCE lowering.
+    const g = pm.rules(gg => ({
+      Value: pm.choice(gg.Num, gg.List),
+      Num: pm.regex(/[0-9]+/),
+      List: pm.sequence(pm.literal('['), pm.optional(pm.sepBy(gg.Value, pm.literal(','))), pm.literal(']')),
+    }))
+    const out = compileRuleMapCodegen(Object.entries(g))!.replacement
     // Each rule is a canonical named function...
     for (const name of ['_r_Value', '_r_Num', '_r_List']) {
       expect(out, name).toContain(`function ${name}(input`)

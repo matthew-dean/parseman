@@ -1,5 +1,26 @@
 import { describe, it, expect } from 'vitest'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
+import { compileRuleMap } from '../../src/compiler/codegen.ts'
+import * as pm from '../../src/index.ts'
+
+/**
+ * WHY `compileCodegen` APPEARS IN A MACRO TEST.
+ *
+ * The assertions below that name `charCodeAt`, `startsWith(…)`, `codePointAt`,
+ * `| 32) ===`, `_mf`, `_r_<Name>`, or an inlined callback's TEXT are assertions
+ * about the SOURCE LOWERING — how codegen spells a construct. They are not
+ * properties of the grammar and they are not properties of the macro. The macro
+ * now emits a TABLE (`tableRules({…})` plus data), so reaching those decisions
+ * through `transformMacro` stopped being possible; each is repointed at
+ * `compile`/`compileRuleMap` on the SAME grammar, which is also what keeps
+ * codegen reachable from the suite for the three-way identity sweep.
+ *
+ * What stays on `transformMacro` in each test is the part that is genuinely the
+ * macro's job: the import went away, the declaration was replaced, no runtime
+ * combinator call survived, no warning was raised.
+ */
 
 function transform(code: string) {
   return transformMacro(code, 'test.ts', new Set(['parseman']))
@@ -35,10 +56,11 @@ const greeting = literal('hello')
     expect(result.code).not.toContain("from 'parseman'")
     // The declaration should be replaced with an inline function
     expect(result.code).toContain('const greeting =')
-    expect(result.code).toContain('function(input')
     // 'hello' is 5 chars → still an unrolled charCodeAt chain (≤16 threshold)
-    expect(result.code).toContain('charCodeAt')
-    expect(result.code).not.toContain('startsWith')
+    const lowered = compileCodegen(pm.literal('hello'))
+    expect(lowered.inlineExpression).toContain('function(input')
+    expect(lowered.source).toContain('charCodeAt')
+    expect(lowered.source).not.toContain('startsWith')
   })
 
   it('inlines a long literal() (>16 chars uses startsWith)', () => {
@@ -47,8 +69,8 @@ import { literal } from 'parseman' with { type: 'macro' }
 const kw = literal('Content-Disposition')
 `.trim()
     const result = transform(code)!
-    expect(result.code).toContain('startsWith("Content-Disposition"')
     expect(result.code).not.toContain("from 'parseman'")
+    expect(compileCodegen(pm.literal('Content-Disposition')).source).toContain('startsWith("Content-Disposition"')
   })
 
   it('inlines case-insensitive literal', () => {
@@ -59,10 +81,11 @@ const method = literal('GET', { caseInsensitive: true })
     const result = transform(code)!
     // Case-insensitive literals lower to the ASCII bit-OR fold `(c | 32) === …`,
     // NOT Intl.Collator (removed — measured ~9× slower).
-    expect(result.code).toContain('| 32) ===')
-    expect(result.code).not.toContain('_collator')
-    expect(result.code).not.toContain('Intl.Collator')
     expect(result.code).not.toContain("from 'parseman'")
+    const lowered = compileCodegen(pm.literal('GET', { caseInsensitive: true })).source
+    expect(lowered).toContain('| 32) ===')
+    expect(lowered).not.toContain('_collator')
+    expect(lowered).not.toContain('Intl.Collator')
   })
 })
 
@@ -75,7 +98,8 @@ const method = choice(literal('GET'), literal('POST'), literal('DELETE'))
     const result = transform(code)!
     expect(result.code).not.toContain("from 'parseman'")
     // Should have codePointAt dispatch
-    expect(result.code).toContain('codePointAt')
+    expect(compileCodegen(pm.choice(pm.literal('GET'), pm.literal('POST'), pm.literal('DELETE'))).source)
+      .toContain('codePointAt')
   })
 })
 
@@ -100,7 +124,7 @@ const token = transform(sequence(literal('word'), optional(literal(';'))), ([x])
     const result = transform(code)!
     expect(result.warnings).toEqual([])
     expect(result.code).not.toContain("from 'parseman'")
-    const token = new Function(`${result.code}\nreturn token`)() as (input: string, pos: number, ctx: object) => { ok: boolean; span: { end: number } }
+    const token = evalMacroModule<(input: string, pos: number, ctx: object) => { ok: boolean; span: { end: number } }>(result.code, 'token')
     expect(token('word;', 0, {}).span.end).toBe(5)
     expect(token('word', 0, {}).span.end).toBe(4)
   })
@@ -133,6 +157,10 @@ const upper = transform(literal('hello'), s => s.toUpperCase())
     expect(result).not.toBeNull()
     expect(result!.code).not.toContain('transform(')
     expect(result!.code).toContain('s => s.toUpperCase()')
+    // NOT repointed at codegen: this asserts the author callback SURVIVES into
+    // the emitted artifact, which is a property of the artifact, not a spelling.
+    // It fails because the table lowering drops author reducer SOURCES (it emits
+    // `f:[() => {}]`) — a real defect, not a harness mismatch.
     expect(result!.code).toContain('const _mf =')
   })
 })
@@ -147,6 +175,10 @@ const star = leaf(literal('*'), value => value)
     expect(result).not.toBeNull()
     expect(result!.code).not.toContain('leaf(')
     expect(result!.code).not.toContain('composeLeaf(')
+    // NOT repointed at codegen: this asserts the author callback SURVIVES into
+    // the emitted artifact, which is a property of the artifact, not a spelling.
+    // It fails because the table lowering drops author reducer SOURCES (it emits
+    // `f:[() => {}]`) — a real defect, not a harness mismatch.
     expect(result!.code).toContain('const _mf =')
   })
 
@@ -252,12 +284,11 @@ export const grammar = compose([externalGrammar, rules({ trivia: rw }, () => ({ 
 
     const runtime = await import('../../src/index.ts')
     const externalGrammar = runtime.rules(() => ({}))
-    const executable = result.code
-      .replace("import { compose, regex, rules, trivia } from 'parseman'", '')
-      .replace('export const grammar =', 'return')
-    const grammar = new Function('externalGrammar', 'compose', 'regex', 'rules', 'trivia', executable)(
-      externalGrammar, runtime.compose, runtime.regex, runtime.rules, runtime.trivia,
-    ) as { Value: unknown; rw: unknown }
+    // The compose FELL BACK to runtime, so the emitted module still calls the real
+    // combinators — inject the library alongside the external grammar it references.
+    const grammar = evalMacroModule<{ Value: unknown; rw: unknown }>(
+      result.code, 'grammar', { ...runtime, externalGrammar },
+    )
     const parsed = runtime.run(grammar.Value as never, 'alpha', { trivia: grammar.rw as never })
     expect(parsed.ok).toBe(true)
     expect(parsed.unconsumedFrom).toBeNull()
@@ -304,8 +335,9 @@ const kw = word('true')
     expect(result.code).not.toContain('_rp[')
     // Fixed literal + boundary lowers to charCodeAt dispatch, not RegExp.exec —
     // see emitKeywordsFast (PERF_IDEAS §8b follow-up).
-    expect(result.code).toContain('charCodeAt')
-    expect(result.code).not.toContain('.exec(input)')
+    const lowered = compileCodegen(pm.word('true')).source
+    expect(lowered).toContain('charCodeAt')
+    expect(lowered).not.toContain('.exec(input)')
   })
 
   it('inlines word(str, opts)', () => {
@@ -316,7 +348,8 @@ const kw = word('true', { caseInsensitive: true })
     const result = transform(code)!
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain('_rp[')
-    expect(result.code).toContain('/(?:true)(?![_0-9A-Za-z])/iy')
+    expect(compileCodegen(pm.word('true', { caseInsensitive: true })).source)
+      .toContain('/(?:true)(?![_0-9A-Za-z])/iy')
   })
 
   it('inlines makeWord() factory calls', () => {
@@ -328,8 +361,9 @@ const ifKw = kw('if')
     const result = transform(code)!
     expect(result.code).not.toContain('_rp[')
     expect(result.code).toContain('const ifKw =')
-    expect(result.code).toContain('charCodeAt')
-    expect(result.code).not.toContain('.exec(input)')
+    const lowered = compileCodegen(pm.makeWord()('if')).source
+    expect(lowered).toContain('charCodeAt')
+    expect(lowered).not.toContain('.exec(input)')
   })
 
   it('inlines makeWord(boundary)(str) chained calls', () => {
@@ -383,10 +417,12 @@ const block = sequence(literal('{'), many(regex(/[a-z]+/)), literal('}'))
 
   it('bakes recovery into the inlined output when recovery=true (dormant/gated)', () => {
     const on = transformMacro(grammar, 'test.ts', new Set(['parseman']), false, true)!
-    expect(on.code).toContain('function(input')  // still inlined
-    expect(on.code).toContain('_ctx._tolerant')  // recovery branch, gated (strict = dormant)
-    expect(on.code).toContain('_ctx._rec')       // sentinels/scan via _ctx …
-    expect(on.code).not.toContain('_rp[')        // … NOT _rp → stays macro-inlinable
+    expect(on.code).not.toContain('_rp[')        // NOT _rp → stays macro-inlinable
+    const block = pm.sequence(pm.literal('{'), pm.many(pm.regex(/[a-z]+/)), pm.literal('}'))
+    const lowered = compileCodegen(block, undefined, { recovery: true })
+    expect(lowered.inlineExpression).toContain('function(input')  // still inlined
+    expect(lowered.source).toContain('_ctx._tolerant')  // recovery branch, gated (strict = dormant)
+    expect(lowered.source).toContain('_ctx._rec')       // sentinels/scan via _ctx
   })
 
   it('emits NO recovery code by default — byte-identical to before', () => {
@@ -432,9 +468,11 @@ import { literal, node, rules, sequence } from 'parseman' with { type: 'macro' }
 ${FACTORY.replace('export ', '')}
 export const G = rules(grammarFactory)
 `.trim())!
-    expect(out.code).toContain('_r_Doc')
     // The whole point: no macro-only identifier survives with nothing binding it.
     expect(out.code).not.toContain("from 'parseman'")
+    // The canonical `_r_<Name>` rule function is a SOURCE-lowering spelling.
+    const doc = pm.node('Doc', pm.sequence(pm.literal('a'), pm.literal('b')))
+    expect(compileRuleMap([['Doc', doc]])!.replacement).toMatch(/_r_Doc|"Doc":/)
   })
 
   it('leaves a FACTORY-ONLY module untouched, so cross-module sharing still works', () => {

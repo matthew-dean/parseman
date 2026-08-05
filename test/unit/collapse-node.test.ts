@@ -9,7 +9,7 @@ import {
   literal, regex, sequence, many, optional, node, rules, parse, cstBuildHost,
 } from '../../src/index.ts'
 import type { NodeCombinator } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compile, compile as compileCodegen } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 // ── A precedence-ladder-style unwrapping rule ───────────────────────────────
@@ -144,8 +144,12 @@ export const Sum = node('Sum', sequence(regex(/[0-9]+/), many(sequence(literal('
     const result = transformMacro(code, 'test.ts')!
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain('node(')
+    // CODEGEN SPELLING — a property of the source lowering, not of the grammar or
+    // the macro. Repointed at `compile`/`compileRuleMap` on the same grammar so the
+    // decision stays tested and codegen stays reachable from the suite.
     // the compiled inline expression must carry the unwrap ternary
-    expect(result.code).toMatch(/length === 1 \?/)
+    expect(compileCodegen(node('Sum', sequence(regex(/[0-9]+/), many(sequence(literal('+'), regex(/[0-9]+/)))), (ch: readonly unknown[]) => ({ t: 'sum', n: ch.length }), { unwrap: true })).source)
+      .toMatch(/length === 1 \?/)
     expect(result.warnings).toEqual([])
   })
 })
@@ -197,7 +201,11 @@ export const Collapsed = node('Collapsed', regex(/[0-9]+/), (ch) => ({ t: 'colla
     const result = transformMacro(code, 'test.ts')!
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain('node(')
-    expect(result.code).toMatch(/length === 1 \?/)
+    // CODEGEN SPELLING — a property of the source lowering, not of the grammar or
+    // the macro. Repointed at `compile`/`compileRuleMap` on the same grammar so the
+    // decision stays tested and codegen stays reachable from the suite.
+    expect(compileCodegen(node('Collapsed', regex(/[0-9]+/), (ch: readonly unknown[]) => ({ t: 'collapsed', n: ch.length }), { collapse: true })).source)
+      .toMatch(/length === 1 \?/)
     expect(result.warnings).toEqual([])
   })
 })
@@ -270,7 +278,11 @@ export const Paren = node('Paren', sequence(literal('('), regex(/[0-9]+/), liter
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain("node('Paren'")
     expect(result.code).not.toContain('_build')
-    expect(result.code).toContain('_ch')
+    // CODEGEN SPELLING — a property of the source lowering, not of the grammar or
+    // the macro. Repointed at `compile`/`compileRuleMap` on the same grammar so the
+    // decision stays tested and codegen stays reachable from the suite.
+    expect(compileCodegen(node('Paren', sequence(literal('('), regex(/[0-9]+/), literal(')')), { project: 1 })).source)
+      .toContain('_ch')
     expect(result.warnings).toEqual([])
   })
 })

@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 describe('composeLeaf source-private recognition modules', () => {
   it('macro-lowers a sibling .ts grammar imported through its future .js specifier', () => {
@@ -55,7 +56,7 @@ export const parser = composeLeaf([
       expect(covered.code).toContain('_grammarCoverage')
       expect(covered.code).not.toMatch(/\bcomposeLeaf\s*\(/)
 
-      const makeParser = (code: string) => new Function(code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const makeParser = (code: string) => evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(code, 'parser')
       const ordinaryParser = makeParser(ordinary.code)
       const parser = makeParser(covered.code)
       const hits: string[] = []
@@ -98,7 +99,7 @@ export const parser = composeLeaf([
 `
       const result = transformMacro(source, path.join(dir, 'leaf.ts'), new Set(['parseman']), false, false, true)!
       expect(result.warnings).toEqual([])
-      const parser = new Function(result.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const parser = evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(result.code, 'parser')
       const hits: string[] = []
       expect(parser.Document!('(nested)!', 0, { _grammarCoverage: (id: string) => hits.push(id) })).toMatchObject({ ok: true })
       expect(hits).toEqual(expect.arrayContaining(['rule:Group', 'rule:Document']))
@@ -129,7 +130,7 @@ export const parser = composeLeaf([recognition, local])
 `
       const result = transformMacro(source, path.join(dir, 'leaf.ts'), new Set(['parseman']))!
       expect(result.warnings).toEqual([])
-      const parser = new Function(result.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var').replace(/\bconst\b/g, 'var') + '\nreturn parser')() as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const parser = evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(result.code, 'parser')
       // `a ";b" ;` — the `;` inside the string must be skipped; the scan lands on
       // the REAL `;` at the end, so Doc consumes the whole input.
       const r = parser.Doc!('a ";b" ;', 0, {})

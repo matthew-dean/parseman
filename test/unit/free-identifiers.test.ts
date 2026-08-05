@@ -14,6 +14,8 @@
 import { describe, it, expect } from 'vitest'
 import { findFreeIdentifiers } from '../../src/plugin/free-identifiers.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { compile as compileCodegen, compileRuleMap as compileRuleMapCodegen } from '../../src/compiler/codegen.ts'
+import * as pm from '../../src/index.ts'
 
 const names = (code: string): string[] =>
   findFreeIdentifiers(code, 'probe.ts').map(f => f.name).sort()
@@ -175,7 +177,9 @@ ${FACTORY}
 export const grammar = rules(grammarFactory)
 `.trim(), 'test.ts', new Set(['parseman']))!
     expect(result.code).not.toContain(`from 'parseman'`)
-    expect(result.code).toContain('charCodeAt')
+    // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
+    const doc = pm.node('Doc', pm.sequence(pm.literal('a'), pm.literal('b')))
+    expect(compileRuleMapCodegen([['Doc', doc]])!.replacement).toContain('charCodeAt')
   })
 
   it('does NOT fire on a name the SOURCE already left free', () => {

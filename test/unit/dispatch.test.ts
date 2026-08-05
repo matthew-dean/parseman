@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   attempt,
   choice,
@@ -988,7 +989,7 @@ const parser = dispatch(literal('@media'), when('@media', literal('{')), otherwi
     expect(transformed.code).not.toMatch(/\bwhen\s*\(/)
     expect(transformed.code).not.toMatch(/\botherwise\s*\(/)
 
-    const parser = new Function(`${transformed.code}\nreturn parser`)() as ParseFn
+    const parser = evalMacroModule<ParseFn>(transformed.code, 'parser')
     expect(parser('@media{', 0, { trackLines: false })).toEqual({
       ok: true,
       value: ['@media', '{'],
@@ -1014,7 +1015,7 @@ const parser = dispatch(regex(/@[A-Za-z-]+/), when('@media', literal('{'), { cas
     expect(transformed.code).not.toMatch(/\bwhen\s*\(/)
     expect(transformed.code).not.toMatch(/\botherwise\s*\(/)
 
-    const parser = new Function(`${transformed.code}\nreturn parser`)() as ParseFn
+    const parser = evalMacroModule<ParseFn>(transformed.code, 'parser')
     expect(parser('@MEDIA{', 0, { trackLines: false })).toEqual({
       ok: true,
       value: ['@MEDIA', '{'],
@@ -1034,7 +1035,7 @@ const parser = dispatch(regex(/@[A-Za-z-]+/), atCase('@media', literal('{')), at
     expect(transformed.code).not.toMatch(/\bdispatch\s*\(/)
     expect(transformed.code).not.toMatch(/\bmakeWhen\s*\(/)
 
-    const parser = new Function(`${transformed.code}\nreturn parser`)() as ParseFn
+    const parser = evalMacroModule<ParseFn>(transformed.code, 'parser')
     expect(parser('@SCOPE(', 0, { trackLines: false })).toEqual({
       ok: true,
       value: ['@SCOPE', '('],
@@ -1062,7 +1063,7 @@ const parser = dispatch(
     expect(transformed.code).not.toMatch(/\bendsWith\s*\(/)
     expect(transformed.code).not.toMatch(/\bmatches\s*\(/)
 
-    const parser = new Function(`${transformed.code}\nreturn parser`)() as ParseFn
+    const parser = evalMacroModule<ParseFn>(transformed.code, 'parser')
     expect(parser('@-MOZv', 0, { trackLines: false })).toMatchObject({ ok: true, value: ['@-MOZ', 'v'] })
     expect(parser('foo(f', 0, { trackLines: false })).toMatchObject({ ok: true, value: ['foo(', 'f'] })
     expect(parser('--NAMEc', 0, { trackLines: false })).toMatchObject({ ok: true, value: ['--NAME', 'c'] })
@@ -1086,7 +1087,7 @@ const parser = dispatch(opener, fnCase('url(', Fn), otherwise(Ident))
     expect(transformed.code).not.toMatch(/\bdispatch\s*\(/)
     expect(transformed.code).not.toMatch(/\bmakeWhen\s*\(/)
 
-    const parser = new Function(`${transformed.code}\nreturn parser`)() as ParseFn
+    const parser = evalMacroModule<ParseFn>(transformed.code, 'parser')
     expect(parser('URL(raw)', 0, { trackLines: false })).toEqual({
       ok: true,
       value: ['URL(', { type: 'Fn', name: 'URL', value: 'raw' }],
@@ -1115,7 +1116,7 @@ const grammar = rules(g => {
     expect(transformed.code).not.toMatch(/\bwhen\s*\(/)
     expect(transformed.code).not.toMatch(/\botherwise\s*\(/)
 
-    const grammar = new Function(`${transformed.code}\nreturn grammar`)() as { AtRule: ParseFn }
+    const grammar = evalMacroModule<{ AtRule: ParseFn }>(transformed.code, 'grammar')
     expect(grammar.AtRule('@media{', 0, { trackLines: false })).toEqual({
       ok: true,
       value: ['@media', 'block'],

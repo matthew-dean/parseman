@@ -19,6 +19,7 @@
  * vs `'`), so each position dispatches on one character.
  */
 import { describe, it, expect as vexpect, beforeAll } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, sequence, choice, many, expect, rules, parse,
 } from '../../src/index.ts'
@@ -59,8 +60,7 @@ beforeAll(async () => {
   if (!result) throw new Error('macro transform returned null — import not detected')
   if (result.code.includes("from 'parseman'"))
     throw new Error('macro transform did not remove the import')
-  const fnBody = result.code.replace(/\bexport const\b/g, 'var').replace(/\bconst\b/g, 'var') + '\nreturn region'
-  macroFn = new Function(fnBody)() as ParseFn
+  macroFn = evalMacroModule<ParseFn>(result.code, 'region')
 })
 
 function interp(input: string) {

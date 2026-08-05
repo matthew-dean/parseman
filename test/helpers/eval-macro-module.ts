@@ -1,0 +1,100 @@
+/**
+ * THE one way a test evaluates a macro-emitted module.
+ *
+ * The TABLE lowering does not emit a self-contained artifact, and that is the
+ * point: the module is `import { tableRules } from "parseman/table"` plus a data
+ * literal. The recognition logic ships ONCE and every grammar contributes only
+ * data, which is the entire reason the artifact is ~14x smaller than the source
+ * lowering's. `new Function` cannot resolve an import, so a harness that pastes
+ * macro output straight into `new Function` breaks the moment the macro emits a
+ * table — which is exactly what happened to ~112 local harnesses across 44 files.
+ *
+ * The import is the ONLY external reference in the emitted module, so injecting
+ * `tableRules` as a parameter is sufficient and keeps the tests loader-free.
+ * Use this instead of writing a 113th local variant.
+ *
+ * NOTE ON WHAT THIS IS FOR: this evaluates macro output to test BEHAVIOUR (the
+ * grammar lowered, the result parses, the transform fired, IDs are stable). A
+ * test that asserts generated SOURCE TEXT is a codegen test and must import
+ * `compile` / `compileRuleMap` from `src/compiler/codegen.ts` directly rather
+ * than reach the source lowering through the macro — see the header of
+ * `test/unit/macro-grammar-coverage.test.ts` for that ruling written out.
+ */
+import { tableRules } from '../../src/table/index.ts'
+
+/** Strip the module framing `new Function` cannot parse, leaving a function body. */
+function toFunctionBody(code: string): string {
+  return code
+    .replace(/^[ \t]*import\b[^\n]*\n/gm, '')
+    .replace(/^[ \t]*export[ \t]*\{[^}]*\}[^\n]*\n?/gm, '')
+    .replace(/^[ \t]*export[ \t]+(?=(?:const|let|var|function|class|async)\b)/gm, '')
+}
+
+/**
+ * Evaluate macro output and return `want` — an expression in the module's own
+ * scope, e.g. `'parser'`, `'grammar'`, or `'{ Call, CstOuter }'`.
+ *
+ * `bindings` supplies any identifier the grammar source referenced from outside
+ * (a base grammar, a node factory, an imported reducer). `tableRules` is always
+ * in scope and never needs to be passed.
+ */
+export function evalMacroModule<T>(code: string, want: string, bindings: Record<string, unknown> = {}): T {
+  const extra = Object.keys(bindings).filter(n => n !== 'tableRules')
+  const names = ['tableRules', ...extra]
+  const values: unknown[] = [tableRules, ...extra.map(n => bindings[n])]
+  const fn = new Function(...names, `${toFunctionBody(code)}\nreturn (${want})`) as (...args: unknown[]) => T
+  return fn(...values)
+}
+
+/**
+ * Evaluate macro output and return every top-level `export const` it declares,
+ * keyed by name — the module-object form, for harnesses that consumed several
+ * exports at once.
+ */
+export function evalMacroExports(code: string, bindings: Record<string, unknown> = {}): Record<string, unknown> {
+  const names = [...code.matchAll(/^[ \t]*export[ \t]+(?:const|let|var|function)[ \t]+([A-Za-z_$][\w$]*)/gm)].map(m => m[1])
+  return evalMacroModule<Record<string, unknown>>(code, `{ ${names.join(', ')} }`, bindings)
+}
+
+/**
+ * Rewrite the shared-driver specifier to this checkout's source, for the few
+ * harnesses that must genuinely LOAD the emitted module (a temp file, a data URL)
+ * rather than evaluate it. `parseman/table` is a published subpath that nothing
+ * outside an installed package can resolve.
+ */
+const TABLE_RUNTIME_SOURCE = new URL('../../src/table/index.ts', import.meta.url).href
+
+export function resolveTableRuntime(code: string): string {
+  return code.replace(/(\bfrom\s*)(['"])parseman\/table\2/g, (_m, from: string) => `${from}${JSON.stringify(TABLE_RUNTIME_SOURCE)}`)
+}
+
+/**
+ * True when the macro actually compiled the grammar away.
+ *
+ * The old proxy for this — "no `import` line survives" — is no longer valid:
+ * a table artifact legitimately keeps `import { tableRules } from "parseman/table"`.
+ * What must be gone is the COMBINATOR import, i.e. the package index.
+ */
+export function macroImportRemoved(code: string): boolean {
+  return !/^[ \t]*import\b[^\n]*from\s*['"]parseman['"]/m.test(code)
+}
+
+/** Throwing form, for harnesses that used the removal check as a compile guard. */
+export function assertMacroCompiled(code: string): string {
+  if (!macroImportRemoved(code)) throw new Error('macro transform did not remove the parseman import')
+  return code
+}
+
+/**
+ * Is `code` a COMPILED artifact for `rule`, rather than a re-spelled runtime call?
+ *
+ * The old proxy for this was a codegen spelling — `function _r_<Name>(input, …)`.
+ * That is a property of the SOURCE lowering, so it stopped answering the question
+ * the moment the macro emitted a table. This asks the artifact-neutral version:
+ * the rule is present in a lowered form, either as codegen's canonical rule
+ * function or as a key in a table's rule-offset map.
+ */
+export function isCompiledRule(code: string, rule: string): boolean {
+  return new RegExp(`function _r_${rule}\\(`).test(code)
+    || (/\btableRules\(/.test(code) && new RegExp(`"${rule}"\\s*:`).test(code))
+}

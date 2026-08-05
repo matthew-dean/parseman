@@ -11,18 +11,14 @@ import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 import { directBuilderUnsupportedBindings } from '../../src/plugin/direct-builder-static.ts'
 import { emitFusedSource } from '../../src/compiler/linker.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroExports, evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
 function macroModule(source: string): Record<string, unknown> {
   const transformed = transformMacro(source, '/pkg/base.ts', new Set(['parseman']))!
   expect(transformed.warnings).toEqual([])
-  const module: Record<string, unknown> = {}
-  const body = transformed.code
-    .replace(/^import[^\n]*\n/gm, '')
-    .replace(/export const (\w+)/g, 'module.$1')
-  // eslint-disable-next-line no-new-func
-  new Function('module', ...Object.keys(parseman), body)(module, ...Object.values(parseman))
+  const module = evalMacroExports(transformed.code, { ...parseman })
   return module
 }
 
@@ -224,10 +220,9 @@ export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Documen
       // parser or runtime composition.
       expect(leaf.code).toContain('_r_Atom')
 
-      const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
-      const parser = new Function('makeAst', strip(leaf.code) + '\nreturn parser')(
-        (value: unknown, span: unknown) => ({ type: 'Ast', value, span }),
-      ) as Record<string | symbol, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const parser = evalMacroModule<Record<string | symbol, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }> & Record<symbol, unknown>>(
+        leaf.code, 'parser', { makeAst: (value: unknown, span: unknown) => ({ type: 'Ast', value, span }) },
+      )
       expect(parser.Document!('token', 0, {}).value).toEqual({
         type: 'Ast',
         value: ['token'],
@@ -268,10 +263,9 @@ export const parser = composeLeaf([syntax, rules({ trivia: whitespace }, g => ({
       )!
       expect(leaf.warnings).toEqual([])
 
-      const strip = (code: string) => code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
-      const parser = new Function('makeAst', strip(leaf.code) + '\nreturn parser')(
-        (value: unknown) => ({ type: 'Ast', value }),
-      ) as Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>
+      const parser = evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(
+        leaf.code, 'parser', { makeAst: (value: unknown) => ({ type: 'Ast', value }) },
+      )
       expect(parser.Document!('word  42', 0, {}).value).toEqual({
         type: 'Ast',
         value: ['word', '42'],

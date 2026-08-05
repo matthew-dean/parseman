@@ -10,6 +10,7 @@
  * baked identically everywhere.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
+import { assertMacroCompiled, evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   rules, sequence, literal, regex, parse, compile,
 } from '../../src/index.ts'
@@ -114,12 +115,8 @@ beforeAll(async () => {
   const { transformMacro } = await import('../../src/plugin/index.ts')
   const result = transformMacro(MACRO_CODE, 'ambient-scan-skip-test.ts', new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null — import not detected')
-  if (result.code.includes("from 'parseman'"))
-    throw new Error('macro transform did not remove the import — compilation failed')
-  const fnBody = result.code
-    .replace(/\bexport const\b/g, 'var')
-    .replace(/\bconst\b/g, 'var') + '\nreturn grammar'
-  const grammar = new Function(fnBody)() as Record<string, MacroFn>
+  assertMacroCompiled(result.code)
+  const grammar = evalMacroModule<Record<string, MacroFn>>(result.code, 'grammar')
   macroEntry = grammar.entry!
   macroOp = grammar.entryOp!
   macroGroup = grammar.group!
@@ -127,24 +124,16 @@ beforeAll(async () => {
   // Second grammar: balanced() member in scanSkip — the codegen recursion class.
   const bsResult = transformMacro(MACRO_BS_CODE, 'ambient-scan-skip-bs-test.ts', new Set(['parseman']))
   if (!bsResult) throw new Error('bs macro transform returned null')
-  if (bsResult.code.includes("from 'parseman'"))
-    throw new Error('bs macro transform did not remove the import — compilation failed (possible stack overflow)')
-  const bsBody = bsResult.code
-    .replace(/\bexport const\b/g, 'var')
-    .replace(/\bconst\b/g, 'var') + '\nreturn bs'
-  const bsGrammar = new Function(bsBody)() as Record<string, MacroFn>
+  assertMacroCompiled(bsResult.code)
+  const bsGrammar = evalMacroModule<Record<string, MacroFn>>(bsResult.code, 'bs')
   macroBsBracket = bsGrammar.bracket!
   macroBsToSemi = bsGrammar.toSemi!
 
   // Third grammar: nested DIFFERENT balanced in scanSkip.
   const nbResult = transformMacro(MACRO_NB_CODE, 'ambient-scan-skip-nb-test.ts', new Set(['parseman']))
   if (!nbResult) throw new Error('nb macro transform returned null')
-  if (nbResult.code.includes("from 'parseman'"))
-    throw new Error('nb macro transform did not remove the import — compilation failed')
-  const nbBody = nbResult.code
-    .replace(/\bexport const\b/g, 'var')
-    .replace(/\bconst\b/g, 'var') + '\nreturn nb'
-  macroNbParen = (new Function(nbBody)() as Record<string, MacroFn>).paren!
+  assertMacroCompiled(nbResult.code)
+  macroNbParen = evalMacroModule<Record<string, MacroFn>>(nbResult.code, 'nb').paren!
 })
 
 // ---------------------------------------------------------------------------

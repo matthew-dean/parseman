@@ -1,4 +1,5 @@
 import { beforeAll, describe, it, expect } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   choice, leaf, literal, many, node, noTrivia, oneOrMore, optional, parse, parser, regex, sequence, token, trivia,
   sepBy, transform,
@@ -78,8 +79,7 @@ beforeAll(async () => {
   const result = transformMacro(MACRO_CODE, 'token-test.ts', new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
   if (result.code.includes("from 'parseman'")) throw new Error('macro transform did not remove import')
-  const fnBody = result.code.replace(/\bconst\b/g, 'var') + '\nreturn decl'
-  macroFn = new Function(fnBody)() as ParseFn
+  macroFn = evalMacroModule<ParseFn>(result.code, 'decl')
 })
 
 function leafValues(value: unknown): string[] {

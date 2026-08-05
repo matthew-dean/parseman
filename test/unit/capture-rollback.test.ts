@@ -16,6 +16,7 @@
  * in different code (runtime combinators vs codegen) that can drift apart.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   node, regex, literal, sequence, many, optional, sepBy, choice, compile, parse,
 } from '../../src/index.ts'
@@ -71,8 +72,7 @@ beforeAll(async () => {
   const result = transformMacro(MACRO_CODE, 'capture-rollback.ts', new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
   if (result.code.includes("from 'parseman'")) throw new Error('macro did not compile')
-  const body = result.code.replace(/\bconst\b/g, 'var') + '\nreturn { M, O, S, C }'
-  macro = new Function(body)() as Record<string, ParseFn>
+  macro = evalMacroModule<Record<string, ParseFn>>(result.code, '{ M, O, S, C }')
 })
 
 // [grammar, input, expected leaf tokens]

@@ -15,6 +15,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import plugin, { transformMacro } from '../../src/plugin/index.ts'
+import { isCompiledRule } from '../helpers/eval-macro-module.ts'
 
 const ID = '/virtual/g.ts'
 
@@ -282,7 +283,7 @@ export const g = rules(f => ({ A: literal('a') }))
     expect(out.warnings).toEqual([])
     // The macro import is gone and a compiled rule function took the call's place.
     expect(out.code).not.toContain("from 'some-wrapper'")
-    expect(out.code).toContain('function _r_A(')
+    expect(isCompiledRule(out.code, 'A'), out.code).toBe(true)
   })
 })
 

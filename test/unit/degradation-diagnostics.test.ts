@@ -22,6 +22,7 @@ import { node, sequence, literal, regex, many, choice, parser, parse } from '../
 import type { Combinator } from '../../src/index.ts'
 import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   formatDegradation, formatDegradations, beginDegradationCapture, endDegradationCapture,
   recordDegradation, resolveDegradationLevel, resetDegradationMemo,
@@ -33,8 +34,7 @@ type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value
 function macro(code: string, name: string): { fn: ParseFn; source: string; warnings: readonly string[] } {
   const result = transformMacro(code.trim(), `${name}.ts`, new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
-  const fnBody = result.code.replace(/\bexport\s+/g, '').replace(/\bconst\b/g, 'var') + `\nreturn ${name}`
-  return { fn: new Function(fnBody)() as ParseFn, source: result.code, warnings: result.warnings }
+  return { fn: evalMacroModule<ParseFn>(result.code, name), source: result.code, warnings: result.warnings }
 }
 
 // ---------------------------------------------------------------------------

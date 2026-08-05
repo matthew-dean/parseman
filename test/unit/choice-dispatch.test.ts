@@ -12,6 +12,7 @@ import type { Combinator } from '../../src/index.ts'
 import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { csvField } from '../../examples/csv/parser.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 type ParseFn = (
   input: string,
@@ -22,10 +23,7 @@ type ParseFn = (
 function makeMacroParser(code: string, exportName: string): ParseFn {
   const result = transformMacro(code, 'choice-dispatch-test.ts', new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
-  const fnBody = result.code
-    .replace(/\bexport const\b/g, 'var')
-    .replace(/\bconst\b/g, 'var') + `\nreturn ${exportName}`
-  return new Function(fnBody)() as ParseFn
+  return evalMacroModule<ParseFn>(result.code, exportName)
 }
 
 function modesFor<T>(combinator: Combinator<T>, macroCode: string, exportName: string) {

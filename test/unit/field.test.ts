@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
+import { compile as compileCodegen, compileRuleMap as compileRuleMapCodegen } from '../../src/compiler/codegen.ts'
+import * as pm from '../../src/index.ts'
 import {
   choice,
   field,
@@ -101,7 +104,9 @@ export const Attr = node('Attr', sequence(literal('['), field('name', regex(/[a-
 `.trim()
     const result = transformMacro(code, 'field-macro.ts', new Set(['parseman']))
     expect(result?.code).not.toContain("from 'parseman'")
-    expect(result?.code).toContain('_fields')
+    // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
+    const Attr = pm.node('Attr', pm.sequence(pm.literal('['), pm.field('name', pm.regex(/[a-z]+/)), pm.literal(']')), (_children: unknown, fields: unknown) => fields)
+    expect(compileCodegen(Attr).source).toContain('_fields')
   })
 
   it('captures a recursive static tail span only after its closing terminator', () => {
@@ -143,11 +148,14 @@ const Import = node('Import', sequence(literal('@import'), field('tail', Tail), 
     // comment may name parseman, so match the import + runtime refs, not the word).
     expect(result?.code).not.toMatch(/from ['"]parseman['"]|\bparseman\s*\./)
     expect(result?.code).not.toMatch(/\.parse(?:[A-Z]\w*)?\s*\(/)
-    expect(result?.code).toContain('_fields')
+    // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
+    const tail = pm.rules(g => ({ Tail: pm.sequence(pm.literal('('), pm.many(pm.choice(pm.regex(/[a-z]/), g.Tail)), pm.literal(')')) })).Tail
+    const ImportRef = pm.node('Import', pm.sequence(pm.literal('@import'), pm.field('tail', tail), pm.literal(';')), (_children: unknown, fields: unknown) => fields)
+    expect(compileCodegen(ImportRef).source).toContain('_fields')
 
-    const Import = new Function(result!.code.replace(/\bconst\b/g, 'var') + '\nreturn Import')() as {
+    const Import = evalMacroModule<{
       (input: string, pos: number, ctx: { trackLines: boolean }): { ok: boolean; value?: unknown }
-    }
+    }>(result!.code, 'Import')
     expect(Import('@import(foo(bar));', 0, { trackLines: false })).toMatchObject({
       ok: true,
       value: { tail: { span: { start: 7, end: 17 } } },

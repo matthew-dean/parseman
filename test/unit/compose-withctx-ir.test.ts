@@ -30,6 +30,7 @@ import { transformMacro } from '../../src/plugin/index.ts'
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { emitFusedSource } from '../../src/compiler/linker.ts'
+import { evalMacroExports } from '../helpers/eval-macro-module.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
@@ -40,12 +41,7 @@ function buildCompiledGrammar(src: string): Record<string, unknown> {
   const out = transformMacro(src, '/pkg/base.ts', new Set(['parseman']))
   if (!out) throw new Error('transformMacro returned null')
   expect(out.warnings).toEqual([])
-  const mod: Record<string, unknown> = {}
-  const body = out.code
-    .replace(/^import[^\n]*\n/gm, '')
-    .replace(/export const (\w+)/g, 'mod.$1')
-  // eslint-disable-next-line no-new-func
-  new Function('mod', ...Object.keys(parseman), body)(mod, ...Object.values(parseman))
+  const mod = evalMacroExports(out.code, { ...parseman })
   return mod
 }
 

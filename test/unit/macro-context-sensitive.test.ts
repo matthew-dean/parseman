@@ -12,6 +12,7 @@
  * input the interpreter rejected — the miscompile these tests pin down.
  */
 import { describe, it, expect } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, choice, sequence, parse,
   gate, withCtx,
@@ -25,9 +26,9 @@ function macroParser(imports: string, decls: string, varName: string) {
   const full = `import { ${imports} } from 'parseman' with { type: 'macro' }\n${decls}`
   const out = transformMacro(full, 'test.ts', new Set(['parseman']))
   if (!out) throw new Error('transformMacro returned null')
-  // eslint-disable-next-line no-new-func
-  const fn = new Function(`${out.code}\nreturn ${varName}`)() as
+  const fn = evalMacroModule<
     (input: string, pos: number, ctx: unknown) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
+  >(out.code, varName)
   return { fn, code: out.code, warnings: out.warnings }
 }
 

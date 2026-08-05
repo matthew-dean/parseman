@@ -13,6 +13,7 @@
  *      a rule registry.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, sequence, optional, sepBy, transform, rules, parse, parser, trivia, node, oneOrMore, choice,
   parseDoc,
@@ -90,8 +91,7 @@ beforeAll(() => {
     throw new Error('macro transform did not remove the import — compilation failed:\n' + result.code)
   }
   // Eval: const → var so new Function sees all names; return the rule map.
-  const fnBody = result.code.replace(/\bconst\b/g, 'var') + '\nreturn { Object, Pair, Value }'
-  macroRegistry = new Function('mkNode', fnBody)(mkNode) as Record<string, RuleFn>
+  macroRegistry = evalMacroModule<Record<string, RuleFn>>(result.code, '{ Object, Pair, Value }', { mkNode })
 })
 
 // Adapt the interpreter combinators to the RuleFn shape so the same doc/parity
@@ -185,8 +185,7 @@ describe('functional grammar — trivia via parser() under the macro', () => {
     if (result.code.includes("from 'parseman'")) {
       throw new Error('macro did not compile the trivia grammar:\n' + result.code)
     }
-    const fnBody = result.code.replace(/\bconst\b/g, 'var') + '\nreturn Pair'
-    triviaMacro = new Function('mkNode', fnBody)(mkNode) as RuleFn
+    triviaMacro = evalMacroModule<RuleFn>(result.code, 'Pair', { mkNode })
   })
 
   for (const input of ['foo:bar', 'foo : bar', 'foo:  bar', 'foo\t:\tbar']) {
@@ -247,8 +246,7 @@ const { Pair } = rules(g => {
     const result = transformMacro(MACRO, 'node-test.ts', new Set(['parseman']))
     if (!result) throw new Error('macro returned null')
     if (result.code.includes("from 'parseman'")) throw new Error('node() grammar not compiled:\n' + result.code)
-    const fnBody = result.code.replace(/\bconst\b/g, 'var') + '\nreturn Pair'
-    macroPair = new Function('summarize', fnBody)(summarize) as RuleFn
+    macroPair = evalMacroModule<RuleFn>(result.code, 'Pair', { summarize })
   })
 
   for (const input of ['a:1', 'a : 1', 'ab /*x*/ : /*y*/ 12', 'a:\t5']) {
@@ -306,8 +304,7 @@ const { Num, Body } = rules(g => {
     // string, so match only a bare identifier call, not the quoted label.)
     expect(result!.code).not.toMatch(/(^|[\s(,=])not\(/m)
 
-    const fnBody = result!.code.replace(/\bconst\b/g, 'var') + '\nreturn { Num, Body }'
-    const reg = new Function(fnBody)() as Record<string, RuleFn>
+    const reg = evalMacroModule<Record<string, RuleFn>>(result!.code, '{ Num, Body }')
 
     // not(): '12' parses, '12px' fails (digit followed by letter)
     expect(reg['Num']!('12', 0, { trackLines: false }).ok).toBe(true)

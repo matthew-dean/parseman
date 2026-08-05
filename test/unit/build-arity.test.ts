@@ -19,15 +19,15 @@ import type { ParserDef } from '../../src/index.ts'
 import { compile } from '../../src/compiler/codegen.ts'
 import { confirmedBuildArity, buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { assertMacroCompiled, evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 type ParseFn = (input: string, pos: number, ctx: object) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
 
 function macroParser(code: string, name: string): { fn: ParseFn; source: string } {
   const result = transformMacro(code.trim(), `${name}.ts`, new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
-  if (result.code.includes("from 'parseman'")) throw new Error('macro transform did not remove parseman import')
-  const fnBody = result.code.replace(/\bexport\s+/g, '').replace(/\bconst\b/g, 'var') + `\nreturn ${name}`
-  return { fn: new Function(fnBody)() as ParseFn, source: result.code }
+  assertMacroCompiled(result.code)
+  return { fn: evalMacroModule<ParseFn>(result.code, name), source: result.code }
 }
 
 describe('confirmedBuildArity — plain identifier params', () => {

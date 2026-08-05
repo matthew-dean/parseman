@@ -5,6 +5,7 @@
  * and expect() recovery in both the interpreter and macro output.
  */
 import { beforeAll, describe, expect, it } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   choice, compile, compose, cstBuildHost, expect as required, literal, node, oneOrMore, parse, parser, regex, rules, run,
   sequence, trivia,
@@ -66,7 +67,7 @@ beforeAll(() => {
   const result = transformMacro(MACRO, 'direct-child-raw-source.ts', new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
   if (result.code.includes("from 'parseman'")) throw new Error('macro transform did not compile')
-  macro = new Function(result.code.replace(/\bconst\b/g, 'var') + '\nreturn { Call, RecoveringCall, InternalCall, CstOuter }')() as typeof macro
+  macro = evalMacroModule<typeof macro>(result.code, '{ Call, RecoveringCall, InternalCall, CstOuter }')
 })
 
 function assertSource(value: Result | undefined): void {

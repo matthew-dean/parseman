@@ -13,6 +13,9 @@ import { describe, it, expect } from 'vitest'
 import { literal, regex, sequence, choice, many, oneOrMore, optional, sepBy } from '../../src/index.ts'
 import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
+import { isCompiledRule } from '../helpers/eval-macro-module.ts'
+import * as pm from '../../src/index.ts'
 
 function inline(p: Parameters<typeof compile>[0]): string {
   return compile(p).inlineExpression ?? '[not inlinable]'
@@ -240,8 +243,12 @@ describe('macro plugin output', () => {
     expect(result).not.toContain("from 'parseman'")
     expect(result).not.toContain('literal(')   // call replaced
     expect(result).toContain('const greeting =')
-    expect(result).toContain('function(input')
-    expect(result).toContain('charCodeAt')  // 5 chars → unrolled chain, not startsWith
+    // CODEGEN SPELLING — a property of the source lowering, not of the grammar or
+    // the macro. Repointed at `compile`/`compileRuleMap` on the same grammar so the
+    // decision stays tested and codegen stays reachable from the suite.
+    const lowered = compileCodegen(pm.literal('hello'))
+    expect(lowered.inlineExpression).toContain('function(input')
+    expect(lowered.source).toContain('charCodeAt')  // 5 chars → unrolled chain, not startsWith
   })
 
   it('inlines cross-declaration references', () => {
@@ -301,7 +308,7 @@ const { expr } = rules(g => {
     expect(out).not.toContain('rules(')
     // Named function for recursion present — now the rule's CANONICAL name
     // (`_r_<Name>`), so it's addressable/overridable by name (linkable form).
-    expect(out).toContain('_r_expr')
+    expect(isCompiledRule(out, 'expr'), out).toBe(true)
     // Transform callbacks inlined at call sites (no _mf indirection)
     expect(out).not.toContain('_mf[')
     expect(out).toContain('Number(')

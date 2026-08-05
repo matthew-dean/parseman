@@ -11,6 +11,7 @@
  *   - choice : expected = concat of tried arms' (deep) expected, span at choice pos.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, sequence, choice, node, parser, trivia,
   not, ref, withCtx, optional, parse,
@@ -22,12 +23,9 @@ import { transformMacro } from '../../src/plugin/index.ts'
 function makeMacroParser(code: string, exportName: string) {
   const result = transformMacro(code, 'failure-diagnostics-test.ts', new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
-  const fnBody = result.code
-    .replace(/\bexport const\b/g, 'var')
-    .replace(/\bconst\b/g, 'var') + `\nreturn ${exportName}`
-  return new Function(fnBody)() as (
+  return evalMacroModule<(
     input: string, pos: number, ctx: Record<string, unknown>,
-  ) => { ok: boolean; value?: unknown; span: { start: number; end: number }; expected?: string[] }
+  ) => { ok: boolean; value?: unknown; span: { start: number; end: number }; expected?: string[] }>(result.code, exportName)
 }
 
 type Fail = { ok: false; expected: string[]; span: { start: number; end: number } }

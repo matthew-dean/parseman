@@ -4,6 +4,9 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { cstBuildHost } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule, resolveTableRuntime } from '../helpers/eval-macro-module.ts'
+import { compileRuleMap as compileRuleMapCodegen } from '../../src/compiler/codegen.ts'
+import * as pm from '../../src/index.ts'
 
 type RuleFn = (input: string, pos: number, ctx: Record<string, unknown>) => {
   ok: boolean
@@ -17,7 +20,7 @@ type ModuleExports = Record<string, Record<string, RuleFn>>
 async function build(code: string, id = 'macro-line-tracking.ts'): Promise<{ mod: ModuleExports; code: string; warnings: string[] }> {
   const out = transformMacro(code, id, new Set(['parseman']))
   if (!out) throw new Error('macro did not transform')
-  const mod = await import(`data:text/javascript;base64,${Buffer.from(out.code).toString('base64')}`) as ModuleExports
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(resolveTableRuntime(out.code)).toString('base64')}`) as ModuleExports
   return { mod, code: out.code, warnings: out.warnings ?? [] }
 }
 
@@ -48,7 +51,10 @@ export const plain = rules((g) => ({
   it('compiles one shared factory into plain and line-aware artifacts', async () => {
     const { mod, code, warnings } = await build(SHARED_FACTORY)
     expect(warnings).toEqual([])
-    expect(code).toContain('_spanLines')
+    // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
+    // The table carries `trackLines` as DATA, so `_spanLines` is a codegen identifier.
+    const doc = pm.node('Doc', pm.sequence(pm.literal('a'), pm.literal('\n'), pm.literal('b')))
+    expect(compileRuleMapCodegen([['Doc', doc]], { trackLines: true })!.replacement).toContain('_spanLines')
 
     const plain = mod.plain!.Doc!('a\nb', 0, { build: cstBuildHost() })
     expect(plain.ok).toBe(true)
@@ -404,9 +410,7 @@ export const Doc = grammar.Doc
 
       expect(out!.warnings).toEqual([])
       expect(out!.code).toContain('_spanLines')
-      const grammar = new Function(
-        out!.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar',
-      )() as Record<string, RuleFn>
+      const grammar = evalMacroModule<Record<string, RuleFn>>(out!.code, 'grammar')
       const result = grammar.Doc!('a\nb', 0, { build: cstBuildHost() })
       expect(result.ok).toBe(true)
       expect(result.span).toMatchObject({

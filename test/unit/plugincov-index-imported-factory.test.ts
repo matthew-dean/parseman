@@ -17,6 +17,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { isCompiledRule } from '../helpers/eval-macro-module.ts'
 
 let dir: string
 beforeAll(() => {
@@ -56,7 +57,10 @@ const wasLowered = (code: string): boolean => !code.includes('export const gramm
 function expectCompiled(out: { code: string; warnings: string[] }): void {
   expect(out.warnings).toEqual([])
   expect(wasLowered(out.code)).toBe(true)
-  expect(out.code).toContain('function _r_Atom(input, _pos, _ctx)')
+  // Artifact-neutral: `function _r_Atom(input, …)` was a CODEGEN spelling, and the
+  // question this file asks is "did the macro lower it or leave the runtime call",
+  // which the table answers differently. See `isCompiledRule`.
+  expect(isCompiledRule(out.code, 'Atom'), out.code).toBe(true)
 }
 
 const MACRO_IMPORT = "import { literal, regex, rules, makeWord, makeWhen, balanced, scanTo } from 'parseman' with { type: 'macro' }"

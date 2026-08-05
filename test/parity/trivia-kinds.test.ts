@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   sequence, many, literal, regex, trivia, classifiedTrivia, label, parser, node, compile, rules, compose, cstBuildHost,
   oneOrMore, choice, triviaEntries, run, peek, attempt, optional, sepBy, leaf,
@@ -523,9 +524,7 @@ export const grammar = compose([rules({ trivia: rw }, (g) => ({
     if (!transformed) throw new Error('macro transform returned null')
     expect(transformed.warnings).toEqual([])
     expect(/\bcompose\s*\(/.test(transformed.code), transformed.code).toBe(false)
-    const macroGrammar = new Function(
-      transformed.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar',
-    )() as { Root: Runnable }
+    const macroGrammar = evalMacroModule<{ Root: Runnable }>(transformed.code, 'grammar')
     assertNoRootTrivia('macro rule map', macroGrammar.Root)
   })
 })

@@ -2,6 +2,7 @@ import { attempt, choice, compile, createGrammarTraceSink, expect as required, f
 import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 import { describe, expect, it } from 'vitest'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 type Runner = { parse(input: string, pos: number, ctx: Record<string, unknown>): { ok: boolean; value?: unknown; span: { start: number; end: number }; expected?: string[] } }
 
@@ -86,7 +87,7 @@ describe('attempt', () => {
     const transformed = transformMacro(source, 'attempt-macro.ts', new Set(['parseman']))!
     expect(transformed.code).not.toContain("from 'parseman'")
     expect(transformed.code).not.toMatch(/\battempt\s*\(/)
-    const parser = new Function(`${transformed.code}\nreturn parser`)() as (input: string, pos: number, ctx: ParseContext) => unknown
+    const parser = evalMacroModule<(input: string, pos: number, ctx: ParseContext) => unknown>(transformed.code, 'parser')
     expect(parser('a', 0, { trackLines: false })).toMatchObject({ ok: true, value: 'a', span: { start: 0, end: 1 } })
   })
 
@@ -112,7 +113,7 @@ describe('attempt', () => {
     const source = `import { attempt, choice, literal, sequence } from 'parseman' with { type: 'macro' }\nconst parser = choice(attempt(choice(sequence(literal('a'), literal('!')), literal('x'))), literal('a'))`
     const transformed = transformMacro(source, 'attempt-coverage-macro.ts', new Set(['parseman']), false, false, true)!
     expect(transformed.code).toContain("phase: 'rollback'")
-    const macroParser = new Function(`${transformed.code}\nreturn parser`)() as (input: string, pos: number, ctx: ParseContext) => unknown
+    const macroParser = evalMacroModule<(input: string, pos: number, ctx: ParseContext) => unknown>(transformed.code, 'parser')
     const pluginEvents: Array<{ id: string; phase: string; offset: number; end?: number }> = []
     expect(macroParser('a', 0, { trackLines: false, _grammarTrace: { write: (event: { id: string; phase: string; offset: number; end?: number }) => pluginEvents.push(event) } } as never)).toMatchObject({ ok: true })
     expect(pluginEvents).toEqual(interpreterTrace.snapshot().events)

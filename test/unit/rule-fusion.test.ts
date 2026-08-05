@@ -12,6 +12,7 @@ import type { LinkablePieces } from '../../src/compiler/codegen.ts'
 import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
 import { PARSEMAN_VERSION } from '../../src/version.ts'
 import { fuseRules, pick, cstBuildHost } from '../../src/compiler/linker.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 const link = (g: Record<string, Combinator<unknown>>, ns: string) =>
   compileLinkable([...Object.entries(g)], ns)!
@@ -59,7 +60,7 @@ export const parser = compose([cssRules, lessRules])`
     expect(/\bcompose\s*\(/.test(out.code)).toBe(false)
     expect(/new Function/.test(out.code)).toBe(false)
     // The emitted parser works, and the override reroutes (open recursion).
-    const parser = new Function(out.code.replace(/^import[^\n]*\n/m, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    const parser = evalMacroModule<Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>>(out.code, 'parser')
     expect(parser.Value!('abc', 0, {}).span.end).toBe(3)    // css.Word
     expect(parser.Value!('12X', 0, {}).span.end).toBe(3)    // css.Value → less.Num (override)
     expect(parser.Value!('12', 0, {}).ok).toBe(false)       // less.Num needs 'X'
@@ -74,9 +75,9 @@ export const grammar = compose([rules(g => ({
     const out = transformMacro(src, '/pkg/trivia.ts', new Set(['parseman']))!
     expect(out.warnings).toEqual([])
 
-    const grammar = new Function(out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar')() as {
+    const grammar = evalMacroModule<{
       rw: { _meta?: { triviaKindLabels?: readonly string[] } }
-    }
+    }>(out.code, 'grammar')
     expect(grammar.rw._meta?.triviaKindLabels).toEqual(['whitespace', 'blockComment'])
   })
 
@@ -91,7 +92,7 @@ export const parser = compose([base, over])`
     expect(/\bcompose\s*\(/.test(out.code)).toBe(false)
     expect(/function _r_a\(input, _pos, _ctx\)[\s\S]*?const _pfv\d+ = _r_B\(input, _pos, _ctx\)/.test(out.code)).toBe(true)
 
-    const parser = new Function(out.code.replace(/^import[^\n]*\n/m, '').replace(/export const/g, 'var') + '\nreturn parser')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    const parser = evalMacroModule<Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>>(out.code, 'parser')
     expect(ok(parser.B!('x', 0, {}))).toBe(1)
     expect(ok(parser.a!('x', 0, {}))).toBe(1)
     expect(ok(parser.a!('b', 0, {}))).toBe(-1)
@@ -138,8 +139,8 @@ export const parser = compose([cssRules, rules(g => ({ Num: regex(/[0-9]+Z/) }))
     expect(/\bir:\s*"rules\(/.test(lessOut.code)).toBe(true)
     // Mimic the ES import: at runtime `cssRules` is the live imported value, and
     // less's carried pieces spread its `composedPieces` off it. Provide it here.
-    const cssRules = new Function(cssOut.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn cssRules')()
-    const parser = new Function('cssRules', lessOut.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn parser')(cssRules) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    const cssRules = evalMacroModule<unknown>(cssOut.code, 'cssRules')
+    const parser = evalMacroModule<Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>>(lessOut.code, 'parser', { cssRules })
     expect(parser.Value!('abc', 0, {}).span.end).toBe(3)      // css.Word
     expect(parser.Value!('12Z', 0, {}).span.end).toBe(3)      // css.Value → less.Num (override across packages)
     expect(parser.Value!('12', 0, {}).ok).toBe(false)
@@ -174,10 +175,9 @@ export const scssGrammar = compose([lessGrammar, rules(g => ({ Num: regex(/[0-9]
     expect(/new Function/.test(scssCode)).toBe(false)
     // Mimic the ES import chain: each grammar's carried pieces spread its imported
     // ancestor's live value, so evaluate the chain css → less(css) → scss(less).
-    const strip = (c: string) => c.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var')
-    const cssGrammar = new Function(strip(cssCode) + '\nreturn cssGrammar')()
-    const lessGrammar = new Function('cssGrammar', strip(lessCode) + '\nreturn lessGrammar')(cssGrammar)
-    const scss = new Function('lessGrammar', strip(scssCode) + '\nreturn scssGrammar')(lessGrammar) as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    const cssGrammar = evalMacroModule<unknown>(cssCode, 'cssGrammar')
+    const lessGrammar = evalMacroModule<unknown>(lessCode, 'lessGrammar', { cssGrammar })
+    const scss = evalMacroModule<Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>>(scssCode, 'scssGrammar', { lessGrammar })
     expect(scss.Value!('12S', 0, {}).span.end).toBe(3)  // scss.Num overrides less overrides css
     expect(scss.Value!('12L', 0, {}).ok).toBe(false)     // less's Num was overridden by scss
     expect(scss.Value!('abc', 0, {}).span.end).toBe(3)   // css.Word inherited through the chain
@@ -206,8 +206,8 @@ export const lessGrammar = compose([cssGrammar, rules(g => ({ Num: regex(/[0-9]+
 
     // Evaluate the COMPILED modules as the ES runtime would: `cssGrammar` is a live
     // import whose value carries its pieces; less's carried pieces spread them off it.
-    const cssGrammar = new Function(strip(cssOut.code) + '\nreturn cssGrammar')()
-    const lessGrammar = new Function('cssGrammar', strip(lessOut.code) + '\nreturn lessGrammar')(cssGrammar)
+    const cssGrammar = evalMacroModule<unknown>(cssOut.code, 'cssGrammar')
+    const lessGrammar = evalMacroModule<Record<string, unknown>>(lessOut.code, 'lessGrammar', { cssGrammar })
 
     // NOW re-compose it at RUNTIME with the library compose() — NO macro, no build
     // step. This is the DX guarantee: an imported macro-compiled grammar is a normal
@@ -306,7 +306,7 @@ export const grammar = compose([base, rules(g => ({ Doc: parser({ trivia: lineTr
     const out = transformMacro(src, '/pkg/g.ts', new Set(['parseman']))!
     expect(out.warnings).toEqual([])
     expect(/new Function/.test(out.code)).toBe(false)
-    const g = new Function(out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar')() as Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>
+    const g = evalMacroModule<Record<string, (i: string, p: number, c: object) => { ok: boolean; span: { end: number } }>>(out.code, 'grammar')
     // Behavioral guard: if the fused Doc ran the base's (block-only) `_tf0` the
     // `// c` wouldn't be skipped and parsing would stop after `a` (end 1).
     expect(g.Doc!('a // c\nb', 0, {}).span.end).toBe(8)   // line comment skipped by the delta's trivia
@@ -325,7 +325,7 @@ export const grammar = compose([base, rules(g => ({ Word: regex(/[A-Z]+/) }))])`
     const out = transformMacro(src, '/pkg/n.ts', new Set(['parseman']))!
     expect(out.warnings).toEqual([])
     expect(/new Function/.test(out.code)).toBe(false)
-    const g = new Function(out.code.replace(/^import[^\n]*\n/gm, '').replace(/export const/g, 'var') + '\nreturn grammar')() as Record<string, (i: string, p: number, c: Record<string, unknown>) => { ok: boolean; value: unknown; span: { end: number } }>
+    const g = evalMacroModule<Record<string, (i: string, p: number, c: Record<string, unknown>) => { ok: boolean; value: unknown; span: { end: number } }>>(out.code, 'grammar')
     // ctx.build host turns the structural node into a tagged object.
     const built: string[] = []
     const ctx = { build: (type: string) => { built.push(type); return { type } } }

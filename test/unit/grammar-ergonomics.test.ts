@@ -14,6 +14,8 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
+import { isCompiledRule } from '../helpers/eval-macro-module.ts'
 import {
   analyzeGating, choice, compile, diagnoseGrammar, keywords, literal, makeWord, many, not, oneOrMore,
   oneOrMoreSep, optional, parse, peek, regex, rules, sepBy, sequence, word,
@@ -474,16 +476,16 @@ export const g = rules(g => ({
     // A silent interpreter fallback would warn and leave the call interpreted;
     // a static compile emits a `_r_<Name>` function per rule.
     expect(out!.warnings).toEqual([])
-    expect(out!.code).toContain('function _r_Mixin(')
+    expect(isCompiledRule(out!.code, 'Mixin'), out!.code).toBe(true)
     // The exported grammar CARRIES its IR for downstream composition — every option
     // must survive that round trip or a composed dialect silently loses it.
     expect(out!.code).toContain('peek(regex(')
     expect(out!.code).toContain('{ min: 1 }')
     expect(out!.code).toContain('{ min: 2, max: 4 }')
     expect(out!.code).toContain('trailing: \\"allow\\"')
-    const g = new Function(`${out!.code.replace(/^export /gm, '')}\nreturn g`)() as Record<
+    const g = evalMacroModule<Record<
       string, (input: string, pos: number, ctx: unknown) => { ok: boolean; value?: unknown; span?: { end: number } }
-    >
+    >>(out!.code, 'g')
     const run = (rule: string, input: string) => g[rule]!(input, 0, { trackLines: false })
 
     expect(run('Mixin', '.rounded').ok).toBe(true)

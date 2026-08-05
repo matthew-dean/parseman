@@ -23,6 +23,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import * as parseman from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroExports, evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
 
@@ -34,12 +35,7 @@ function buildComposed(src: string): Record<string | symbol, unknown> {
   if (!out) throw new Error('transformMacro returned null')
   expect(out.warnings).toEqual([])
   if (out.code.includes("from 'parseman'")) throw new Error('macro did not remove the import — compile failed')
-  const mod: Record<string, unknown> = {}
-  const body = out.code
-    .replace(/^import[^\n]*\n/gm, '')
-    .replace(/export const (\w+)/g, 'mod.$1')
-  // eslint-disable-next-line no-new-func
-  new Function('mod', ...Object.keys(parseman), body)(mod, ...Object.values(parseman))
+  const mod = evalMacroExports(out.code, { ...parseman })
   return mod as Record<string | symbol, unknown>
 }
 
@@ -170,9 +166,8 @@ export const parser = compose([base, rules(g => ({ Top: g.Doc }))])`
       expect(leaf.warnings).toEqual([])
 
       // eslint-disable-next-line no-new-func
-      const base = new Function(`${strip(baseOut.code)}\nreturn base`)()
-      // eslint-disable-next-line no-new-func
-      const parser = new Function('base', `${strip(leaf.code)}\nreturn parser`)(base) as Record<string, FusedRule>
+      const base = evalMacroModule<unknown>(baseOut.code, 'base')
+      const parser = evalMacroModule<Record<string, FusedRule>>(leaf.code, 'parser', { base })
 
       // The `;` inside the string must be skipped, so the scan reaches the REAL `;`
       // and the rule consumes the whole input. Without scanSkip on the carried

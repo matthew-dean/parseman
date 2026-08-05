@@ -7,6 +7,7 @@
  * still use the regex fallback.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   regex, literal, sequence, choice, transform, oneOrMore, many, sepBy,
   node, parser, trivia, parse,
@@ -899,10 +900,7 @@ type ParseFn = (
 function makeMacroParser(code: string, exportName: string): ParseFn {
   const result = transformMacro(code, 'scannable-regex-test.ts', new Set(['parseman']))
   if (!result) throw new Error('macro transform returned null')
-  const fnBody = result.code
-    .replace(/\bexport const\b/g, 'var')
-    .replace(/\bconst\b/g, 'var') + `\nreturn ${exportName}`
-  return new Function(fnBody)() as ParseFn
+  return evalMacroModule<ParseFn>(result.code, exportName)
 }
 
 function modesFor<T>(combinator: Parameters<typeof compile<T>>[0], macroCode: string, exportName: string) {

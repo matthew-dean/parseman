@@ -196,6 +196,9 @@ const grammar = rules((self) => ({
     expect(out!.code).not.toContain('rules(')
     // the gate predicate + the withCtx extra getter are inlined as mapFns
     expect(out!.code).toMatch(/s\.inner/)
+    // NOT repointed at codegen: this asserts the withCtx EXTRAS reach the artifact.
+    // The table emits the extras object as an empty `{}` in its constant pool, so
+    // the gate below it never sees `inner` — a real defect, not a spelling mismatch.
     expect(out!.code).toMatch(/inner:\s*true/)
   })
 })

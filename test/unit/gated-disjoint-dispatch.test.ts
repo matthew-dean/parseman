@@ -14,6 +14,7 @@
  * still falls back to firstMatch.
  */
 import { describe, it, expect } from 'vitest'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, choice, optional, withCtx, parse,
 } from '../../src/index.ts'
@@ -40,9 +41,9 @@ function macroFn(decls: string, varName: string) {
     `import { literal, regex, choice, optional } from 'parseman' with { type: 'macro' }\n${decls}`
   const out = transformMacro(full, 'test.ts', new Set(['parseman']))
   if (!out) throw new Error('transformMacro returned null')
-  // eslint-disable-next-line no-new-func
-  return new Function(`${out.code}\nreturn ${varName}`)() as
+  return evalMacroModule<
     (input: string, pos: number, ctx: unknown) => { ok: boolean; value?: unknown; span: { start: number; end: number } }
+  >(out.code, varName)
 }
 
 const ENTRY_SRC = `const entry = choice(
@@ -112,8 +113,11 @@ describe('gated-disjoint choice — optimization actually fires', () => {
     expect(out).not.toBeNull()
     const code = out!.code
     expect(code).not.toContain("from 'parseman'") // fully compiled, no runtime fallback
-    expect(code).toContain('codePointAt')
+    // NOT repointed at codegen: the gate SOURCE reaching the artifact is a property
+    // of the artifact. It fails because the table drops it — a real defect.
     expect(code).toContain('.inner') // the gate source was inlined
+    // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
+    expect(compile(entry()).source).toContain('codePointAt')
   })
 
   it('NON-disjoint gated choice (overlapping first-sets) still uses firstMatch', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { choice, compile, label, literal, many, node, oneOrMore, regex, rules, sequence, trivia } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 const rw = trivia(oneOrMore(choice(
   label('space', regex(/[ ]+/)),
@@ -83,8 +84,7 @@ export const grammar = rules({ trivia: rw }, g => ({
 `
     const transformed = transformMacro(source, 'node-trailing-trivia.ts', new Set(['parseman']))
     expect(transformed).not.toBeNull()
-    const body = transformed!.code.replace('export const grammar', 'const grammar') + '\nreturn grammar'
-    const macroGrammar = new Function(body)() as { Doc: (input: string, pos: number, ctx: unknown) => { ok: boolean } }
+    const macroGrammar = evalMacroModule<{ Doc: (input: string, pos: number, ctx: unknown) => { ok: boolean } }>(transformed!.code, 'grammar')
     const { logs, build } = capture()
     const result = macroGrammar.Doc(INPUT, 0, { trackLines: false, build })
     expect(result.ok).toBe(true)
@@ -139,11 +139,11 @@ export const grammar = compose([mid, rules({ trivia: rw }, g => ({ Pass: regex(/
       // compose call would exercise a different path and make this regression weak.
       expect(outerCode).not.toMatch(/\bcompose\s*\(/)
 
-      const base = new Function(`${strip(baseCode)}\nreturn base`)()
-      const mid = new Function('base', `${strip(midCode)}\nreturn mid`)(base)
-      const grammar = new Function('mid', `${strip(outerCode)}\nreturn grammar`)(mid) as {
+      const base = evalMacroModule<unknown>(baseCode, 'base')
+      const mid = evalMacroModule<unknown>(midCode, 'mid', { base })
+      const grammar = evalMacroModule<{
         Doc: (input: string, pos: number, ctx: unknown) => { ok: boolean }
-      }
+      }>(outerCode, 'grammar', { mid })
       const { logs, build: host } = capture()
       const result = grammar.Doc(INPUT, 0, { trackLines: false, build: host })
       expect(result.ok).toBe(true)

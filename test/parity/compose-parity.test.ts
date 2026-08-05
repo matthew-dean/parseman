@@ -5,6 +5,7 @@ import * as P from '../../src/index.ts'
 import { pick } from '../../src/compiler/linker.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { cases } from './helpers/compose-cases.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 
 /**
  * The guardrail: for each grammar, fuse it BOTH ways —
@@ -20,11 +21,8 @@ import { cases } from './helpers/compose-cases.ts'
  * including through `pick()`.
  */
 function evalModule(code: string, ...want: string[]): Record<string, any> {
-  const body = code.replace(/^\s*import[^\n]*\n/gm, '').replace(/\bexport\s+/g, '')
-  const lib: Record<string, unknown> = { ...P, pick }  // pick is internal; inject it for the harness
-  const names = Object.keys(lib)
-  // eslint-disable-next-line no-new-func
-  return new Function(...names, `${body}\nreturn { ${want.join(', ')} }`)(...names.map(n => lib[n]))
+  // `pick` is internal; inject it, and the rest of the library, for the harness.
+  return evalMacroModule(code, `{ ${want.join(', ')} }`, { ...P, pick })
 }
 const end = (r: any): string | number => (r.ok ? r.span.end : 'FAIL')
 

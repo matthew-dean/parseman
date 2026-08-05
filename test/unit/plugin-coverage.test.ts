@@ -7,6 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { parseSync } from 'oxc-parser'
 import type { Expression, Node } from '@oxc-project/types'
 import parsemanPlugin, { transformMacro } from '../../src/plugin/index.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   evaluateRefDeclaration,
   applyDefineStatement,
@@ -61,9 +62,8 @@ export const brackets = item
     item.define(sequence(literal('['), optional(item), literal(']')))
 
     const result = transform(REF_MACRO)!
-    const fnBody = result.code.replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn brackets'
     type ParseFn = (input: string, pos: number, ctx: { trackLines: boolean }) => ReturnType<typeof parse>
-    const compiled = new Function(fnBody)() as ParseFn
+    const compiled = evalMacroModule<ParseFn>(result.code, 'brackets')
 
     for (const input of ['[]', '[[]]', '[[x]]', '[a[b]]']) {
       const i = parse(item, input)
@@ -331,8 +331,7 @@ export const grammar = rules(g => ({
     expect(result.warnings).toEqual([])
     expect(result.code).toContain('"tags":["AtRule"]')
 
-    const fnBody = result.code.replace(/\s+as const\b/g, '').replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn grammar'
-    const grammar = new Function(fnBody)() as { AtRule: (input: string, pos: number, ctx: { trackLines: boolean; build: typeof cstBuildHost }) => unknown }
+    const grammar = evalMacroModule<{ AtRule: (input: string, pos: number, ctx: { trackLines: boolean; build: typeof cstBuildHost }) => unknown }>(result.code.replace(/\s+as const\b/g, ''), 'grammar')
     expect(() => grammar.AtRule('@media', 0, { trackLines: false, build: cstBuildHost })).not.toThrow()
   })
 
@@ -366,8 +365,7 @@ export const grammar = rules(g => ({
     expect(result.warnings).toEqual([])
     expect(result.code).toContain('"tags":["x"]')
 
-    const fnBody = result.code.replace(/\bexport const\b/g, 'const').replace(/\bconst\b/g, 'var') + '\nreturn grammar'
-    const grammar = new Function(fnBody)() as { T: (input: string, pos: number, ctx: Record<string, unknown>) => { ok: boolean; value?: unknown } }
+    const grammar = evalMacroModule<{ T: (input: string, pos: number, ctx: Record<string, unknown>) => { ok: boolean; value?: unknown } }>(result.code, 'grammar')
     const parsed = grammar.T('a', 0, { trackLines: false, build: cstBuildHost({ tags: true }) })
     expect(parsed.ok).toBe(true)
     expect(parsed.value).toMatchObject({ _tag: 'node', type: 'T', tags: ['x'] })

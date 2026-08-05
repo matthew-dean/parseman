@@ -24,6 +24,7 @@ import * as path from 'node:path'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import type { Runnable } from '../../src/functional/run.ts'
+import { resolveTableRuntime } from '../helpers/eval-macro-module.ts'
 
 const FAIL = 'const _pfFail = {}'
 const END = 'let _pfEnd'
@@ -179,7 +180,7 @@ function lower(tag: string, src: string): { dir: string; code: string } {
 async function loadVariants(tag: string, src: string): Promise<Record<string, { Doc: unknown }>> {
   const { dir, code } = lower(tag, src)
   writeFileSync(path.join(dir, 'recognition.js'), 'export const recognition = {}\n')
-  writeFileSync(path.join(dir, 'variants.js'), code)
+  writeFileSync(path.join(dir, 'variants.js'), resolveTableRuntime(code))
   return (await import(path.join(dir, 'variants.js'))) as unknown as Record<string, { Doc: unknown }>
 }
 
