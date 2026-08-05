@@ -6,7 +6,6 @@ import { classifyRuleMap } from '../analysis/commitment.ts'
 import { serializeRuleMap } from './ir-serialize.ts'
 import { compileRuleMapTable, compileRuleMapRunnable, type TableRuleMapOptions } from '../table/compile-rule-map.ts'
 import type { TableProgram, TableRule } from '../table/program.ts'
-import { runDuplicationDiagnosticRules } from '../table/duplication-hook.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 
 /**
@@ -153,11 +152,16 @@ export function compileLinkableTable(
   opts: LinkableTableOptions = {},
 ): LinkableTable | null {
   if (!ns) throw new Error('compileLinkableTable: ns must be a non-empty namespace')
-  runDuplicationDiagnosticRules(ruleMapArg, opts.duplication)
   const ruleMap = ruleMapArg.filter(([, rule]) => isLocal(rule))
   if (ruleMap.length === 0) return null
   const external = externalNames(ruleMap)
-  const compiled = external.length === 0 ? compileRuleMapTable(ruleMap, opts) : null
+  // The duplication diagnostic is OPT-IN here, unlike at the owning `rules()` site: the
+  // macro lowers the same map through both, so letting `PARSEMAN_DUPLICATION` alone
+  // reach this call would repeat every finding the owning site already reported. An
+  // explicit option still runs. `'off'` is passed rather than omitted because omitting
+  // it is what resolves to the env var.
+  const dedupOpts = { ...opts, duplication: opts.duplication ?? ('off' as const) }
+  const compiled = external.length === 0 ? compileRuleMapTable(ruleMap, dedupOpts) : null
   // Serialized BEFORE anything else needs it and independently of whether the
   // piece encoded: a shape with a hole is precisely the case that has no table
   // and must still compose.
@@ -175,9 +179,13 @@ export function compileLinkableTable(
   // pool, `assembledRules` binds them, and `replacement` stays null — which is the
   // artifact honestly saying it cannot be emitted as source.
   const runnable = compiled === null && external.length === 0
-    ? compileRuleMapRunnable(ruleMap, opts)
+    ? compileRuleMapRunnable(ruleMap, dedupOpts)
     : null
-  if (compiled === null && runnable === null && ir === null) return null
+  // NO REFUSAL PAST THIS POINT. A piece with neither a table nor IR is still USABLE
+  // in-process, because `ruleMap` carries the live combinators — which is exactly the
+  // case a grammar with holes AND unserializable callbacks lands in. Refusing it here
+  // made `compose()` throw for a grammar the interpreter fuses happily; the fields below
+  // already state, individually, what this piece can and cannot do.
 
   const hostMode = compiled?.hostMode
     ?? opts.hostMode
