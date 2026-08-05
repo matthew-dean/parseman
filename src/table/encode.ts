@@ -27,24 +27,6 @@ export type TableSettings = {
 
 type Emitted = { readonly ip: number }
 
-/**
- * Do these first sets share no character?
- *
- * `any` and `empty` are never disjoint from anything — an over-approximating arm
- * has to fall back to ordered first-match or the choice silently picks the wrong
- * one. See the `Keyword`-ahead-of-`Num` case in the choice encoder.
- */
-function disjointSets(sets: readonly FirstSet[]): boolean {
-  const seen: Array<{ lo: number; hi: number }> = []
-  for (const fs of sets) {
-    if (fs.kind !== 'ranges' || fs.ranges.length === 0) return false
-    for (const r of fs.ranges) {
-      for (const p of seen) if (r.lo <= p.hi && p.lo <= r.hi) return false
-      seen.push(r)
-    }
-  }
-  return true
-}
 
 class Encoder {
   code: number[] = []
@@ -364,17 +346,28 @@ class Encoder {
         // unresolved refs whose first set is `any` — so every recursive grammar
         // reports non-disjoint and loses its dispatch. (Codegen has the same
         // problem and solves it the same way: a placeholder resolved at fuse.)
-        let dispIdx = -1
-        if (arms.every(a => !matchesEmpty(a))) {
-          const sets = arms.map(a => firstSetOf(a))
-          if (disjointSets(sets)) {
-            const classes = sets.map(fs => this.charClass(fs))
-            if (classes.every(c => c >= 0)) {
-              dispIdx = this.disp.length
-              this.disp.push(classes)
-            }
-          }
-        }
+        // EVERY choice now carries its arms' classes. The old code recorded them
+        // only when the whole site qualified for O(1) selection — all arms
+        // non-nullable, pairwise disjoint and mappable — and a single failure
+        // left the site with no gate of any kind, so all its arms were entered
+        // at every position it was reached.
+        //
+        // An arm's class is its OWN gate and is sound on its own: a
+        // non-nullable arm whose first set excludes the char at `pos` cannot
+        // match there, whatever the other arms do. `firstSetOf` already skips a
+        // leading zero-width assertion so `not(X) Y` reports firstSet(Y) rather
+        // than `any` (`first-set.ts` `isZeroWidthAssertion`), and `charClass`
+        // returns −1 for anything it cannot represent — both directions are the
+        // safe one. A NULLABLE arm is never gated: it can match at a position
+        // its first set does not contain, by consuming nothing.
+        //
+        // `resolveDispatch` decides from these classes whether the site keeps
+        // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
+        // Arm ORDER is preserved on both, which is what makes this a PEG-safe
+        // change rather than a reordering.
+        const classes = arms.map(a => matchesEmpty(a) ? -1 : this.charClass(firstSetOf(a)))
+        const dispIdx = this.disp.length
+        this.disp.push(classes)
         const head = this.emitHead(OP_CHOICE, 3 + kids.length)
         this.code[head + 1] = dispIdx
         this.code[head + 2] = kids.length

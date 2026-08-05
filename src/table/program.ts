@@ -232,12 +232,36 @@ export type ResolvedClass = {
 
 /** A dispatch table expanded for execution. */
 export type ResolvedDispatch = {
-  /** charCode → arm index + 1, 0 = no arm claims it. */
+  /** charCode → arm index + 1, 0 = no arm claims it. Read only when `exclusive`. */
   readonly ascii: Uint8Array
-  /** `[lo, hi, arm]` triples for code points ≥ 128. */
+  /** `[lo, hi, arm]` triples for code points ≥ 128. Read only when `exclusive`. */
   readonly hi: readonly number[]
   /** Arms with no gate at all — tried in order after a dispatch miss. */
   readonly open: readonly number[]
+  /**
+   * The arms' OWN classes, positionally — `null` where the arm is nullable or
+   * its first set does not map to a class, and so cannot be gated.
+   *
+   * This is the per-arm gate, and it is what the compiled engine has always had:
+   * `emitFirstMatch` guards each arm on its own first set, which is sound
+   * whatever the other arms do. The table used to demand that ALL arms be
+   * disjoint, non-nullable and mappable before it would gate ANY of them, so a
+   * single unmappable arm made the whole site speculative — 98.6% of arm entries
+   * on `benchmark.less` were at such sites, and 88.8% of those failed.
+   */
+  readonly armCls: readonly (ResolvedClass | null)[]
+  /**
+   * True when the arms' classes are pairwise disjoint and every arm has one, so
+   * "the first arm whose class holds this char" IS "the first arm that matches"
+   * and the O(1) `ascii`/`hi` selection is sound. When false the arms are tried
+   * in order, each skipped by its own `armCls` entry — same order, same result,
+   * fewer entries.
+   *
+   * Computed from the RESOLVED classes rather than read off the encoder's
+   * `disjointSets` on first sets: the classes are what selection actually reads,
+   * so testing them is both tighter and the property that has to hold.
+   */
+  readonly exclusive: boolean
 }
 
 /**
@@ -297,14 +321,29 @@ function resolveDispatch(arms: readonly number[], cc: readonly ResolvedClass[]):
   const ascii = new Uint8Array(128)
   const hi: number[] = []
   const open: number[] = []
+  const armCls: (ResolvedClass | null)[] = []
+  // Disjointness over the ASCII plane, accumulated as the arms are laid in: a
+  // second arm claiming a char another already claims makes O(1) selection
+  // unsound, because "first class that holds c" stops being "first arm that
+  // matches". Above ASCII the `hi` ranges are not indexed, so any arm with a
+  // high range beyond the first is treated as overlapping — conservative, and
+  // the per-arm path below is correct for it either way.
+  let exclusive = true
+  let hiOwners = 0
   for (let a = 0; a < arms.length; a++) {
     const ci = arms[a]!
-    if (ci < 0) { open.push(a); continue }
+    if (ci < 0) { open.push(a); armCls.push(null); exclusive = false; continue }
     const cls = cc[ci]!
-    for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1 && ascii[c] === 0) ascii[c] = a + 1
+    armCls.push(cls)
+    for (let c = 0; c < 128; c++) {
+      if (cls.ascii[c] !== 1) continue
+      if (ascii[c] === 0) ascii[c] = a + 1
+      else exclusive = false
+    }
+    if (cls.hi.length > 0 && ++hiOwners > 1) exclusive = false
     for (let i = 0; i < cls.hi.length; i += 2) hi.push(cls.hi[i]!, cls.hi[i + 1]!, a)
   }
-  return { ascii, hi, open }
+  return { ascii, hi, open, armCls, exclusive }
 }
 
 /**

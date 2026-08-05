@@ -5,6 +5,44 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **The table gates each choice arm on its own class now, and `benchmark.less`
+  drops 17%.** The table granted a choice its first-char dispatch only when
+  EVERY arm was non-nullable, pairwise disjoint and class-mappable; one failure
+  left the site with no gate at all, so every arm was entered at every position
+  the site was reached. Codegen never had that rule — `emitFirstMatch` guards
+  each arm on its own first set, which is sound whatever the other arms do.
+  Global disjointness is a far stronger precondition, and real grammars violate
+  it constantly: 75.3% of reachable choice sites in the less table were ungated,
+  carrying 83.1% of its arms.
+
+  Before the change, on the less grammar, 98.6% of arm entries on
+  `benchmark.less` were at ungated sites and 88.8% of them failed. Codegen's
+  per-arm gate removes 74% of arm entries on the same grammar; the table removed
+  1.4%. That asymmetry was the penalty.
+
+  A/B in ONE directory, git-toggled, same harness, load 3.5-4.0 at both ends,
+  three-leg pinned composition, median of 16 samples:
+
+  | fixture | table before | table after | delta | control |
+  | --- | ---: | ---: | ---: | ---: |
+  | `benchmark.less` (106,802 B) | 43.52 ms (2.58x) | **36.11 ms (2.17x)** | **-17.0%** | ±0.2% |
+  | `gen-workload.less` (275,211 B) | 198.88 ms (3.81x) | **159.26 ms (3.17x)** | **-19.9%** | ±0.7% |
+
+  Counts behind it (`PM_TABLE_COUNT=1`): ungated arm entries 268,834 -> 67,027 on
+  `benchmark.less`, of which 177,823 (72.6%) are declined by the gate; failed
+  entries 238,828 -> 37,021 (-84.5%); rows executed 727,987 -> 497,360 (-31.7%).
+  On `gen-workload.less`, 75.2% declined and failures -85.7%. The 72.6%/75.2%
+  against codegen's measured 74% is the corroboration that this is codegen's
+  mechanism rather than a different one that happens to help.
+
+  Artifact cost: **214,297 -> 216,019 B (+1,722, +0.80%)** raw, 33,984 -> 34,679
+  gzipped (+2.05%), with `words` unchanged at 9,443 — no instruction growth, only
+  the per-arm class indices in the `disp` pool.
+
+  Rows fell 31.7% while time fell 17.0%, so the remaining table cost is
+  concentrated in the rows that REMAIN, not in speculation. Ungated speculation
+  was worth ~17% of the table's time, not the whole 2x.
+
 - **`run()` no longer installs three accessors on every result — small parses
   get up to 43% of their time back.** Since 0.44 every `run()` call passed its
   result through a `guardRemovedFields()` that ran three
