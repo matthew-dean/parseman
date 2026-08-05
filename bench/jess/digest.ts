@@ -6,18 +6,27 @@
  * pieces IN PLACE, and the macro lowering REPLACES the grammar module outright.
  * So each leg is its own process and `divergence.ts` joins their digests.
  *
- *   node --import ./bench/jess/register.mjs bench/jess/digest.ts <dialect> interpreted
- *   node --import ./bench/jess/register.mjs bench/jess/digest.ts <dialect> table
- *   PM_MACRO=1 node --import ./bench/jess/register.mjs bench/jess/digest.ts <dialect> compiled
+ *   node --import ./bench/jess/register.mjs bench/jess/digest.ts <dialect> interpreted [variant]
+ *   node --import ./bench/jess/register.mjs bench/jess/digest.ts <dialect> table [variant]
+ *   PM_MACRO=1 node --import ./bench/jess/register.mjs bench/jess/digest.ts <dialect> compiled [variant]
  *
  * `compiled` REQUIRES `PM_MACRO=1`; without it the grammar module is a
  * combinator graph and the leg would silently be the interpreter again.
+ *
+ * The VARIANT defaults to `ast`. It has to be a parameter rather than a
+ * constant because `trackLines` and `hostMode` are exactly the axis a table is
+ * built along, and an identity sweep that only ever ran the `ast` cell proves
+ * nothing about the other three — which is how a dead-value analysis could stop
+ * running on every tracking grammar without a single gate noticing.
  */
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
-import { corpus, DIALECTS, ENTRY, loadGrammar, type Dialect } from './grammars.ts'
+import {
+  corpus, DIALECTS, ENTRY, VARIANTS, VARIANT_SETTINGS, loadGrammar,
+  type Dialect, type Variant,
+} from './grammars.ts'
 
 type RunnableLike = Parameters<typeof run>[0]
 
@@ -60,14 +69,16 @@ async function main(): Promise<void> {
   const engine = process.argv[3] as Engine
   if (!DIALECTS.includes(dialect)) throw new Error(`unknown dialect '${String(process.argv[2])}'`)
   if (!ENGINES.includes(engine)) throw new Error(`unknown engine '${String(process.argv[3])}'`)
+  const variant = (process.argv[4] ?? 'ast') as Variant
+  if (!VARIANTS.includes(variant)) throw new Error(`unknown variant '${String(process.argv[4])}'`)
   const macro = process.env.PM_MACRO === '1'
   if ((engine === 'compiled') !== macro) {
     throw new Error(`engine '${engine}' with PM_MACRO=${macro ? '1' : 'unset'} — 'compiled' needs PM_MACRO=1 and the others need it unset`)
   }
 
-  const { rules } = await loadGrammar(dialect)
+  const { rules } = await loadGrammar(dialect, variant)
   const entry: RunnableLike = engine === 'table'
-    ? tableRules(encodeTable(rules, {}))[ENTRY] as RunnableLike
+    ? tableRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as RunnableLike
     : rules[ENTRY] as RunnableLike
   if (entry === undefined) throw new Error(`${engine}: no rule '${ENTRY}'`)
   // PROVE THE LEG IS THE LEG IT CLAIMS. `run()` accepts both shapes, so a
@@ -98,7 +109,7 @@ async function main(): Promise<void> {
     return
   }
 
-  const lines: string[] = [`# ${dialect}\t${engine}\t${COLUMNS.join('\t')}`]
+  const lines: string[] = [`# ${dialect}\t${engine}\t${variant}\t${COLUMNS.join('\t')}`]
   for (const f of corpus(dialect)) {
     let cells: string[]
     try { cells = digestRow(run(entry, f.input)) }

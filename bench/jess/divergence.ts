@@ -24,12 +24,16 @@
  * `composeLeaf()`'s interpreted fuse binds the shared recognition pieces in
  * place, and the macro lowering replaces the grammar module outright.
  *
- * Usage: `pnpm divergence:jess <dialect> [--list]`
+ * Usage: `pnpm divergence:jess <dialect> [variant] [--list]`
+ *
+ * The VARIANT defaults to `ast`. All four must be swept: `trackLines` and
+ * `hostMode` are the axis the table is built along, and an identity claim made
+ * from the `ast` cell alone says nothing about the other three.
  */
 import { execFileSync } from 'node:child_process'
 import { dirname, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { corpusTotal, DIALECTS, type Dialect } from './grammars.ts'
+import { corpusTotal, DIALECTS, VARIANTS, type Dialect, type Variant } from './grammars.ts'
 import { COLUMNS, ENGINES, FACETS, type Engine, type Facet } from './digest.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -53,10 +57,10 @@ export type FileResult = { name: string; outcome: Outcome; facets: Facet[] }
 
 type Row = Record<(typeof COLUMNS)[number], string>
 
-function legOf(dialect: Dialect, engine: Engine): Map<string, Row> {
+function legOf(dialect: Dialect, engine: Engine, variant: Variant): Map<string, Row> {
   const out = execFileSync(
     process.execPath,
-    ['--import', REGISTER, DIGEST, dialect, engine],
+    ['--import', REGISTER, DIGEST, dialect, engine, variant],
     {
       encoding: 'utf8',
       maxBuffer: 1 << 28,
@@ -100,7 +104,10 @@ async function main(): Promise<void> {
   const arg = process.argv[2]
   const dialect = (arg ?? 'less') as Dialect
   if (!DIALECTS.includes(dialect)) throw new Error(`unknown dialect '${String(arg)}'`)
-  const legs = Object.fromEntries(ENGINES.map(e => [e, legOf(dialect, e)])) as Record<Engine, Map<string, Row>>
+  const vArg = process.argv[3]
+  const variant = (vArg === undefined || vArg.startsWith('--') ? 'ast' : vArg) as Variant
+  if (!VARIANTS.includes(variant)) throw new Error(`unknown variant '${String(vArg)}'`)
+  const legs = Object.fromEntries(ENGINES.map(e => [e, legOf(dialect, e, variant)])) as Record<Engine, Map<string, Row>>
   const results = compare(legs)
   const counts = Object.fromEntries(ORDER.map(o => [o, results.filter(r => r.outcome === o).length]))
   // Print the DENOMINATOR, not just the count. `files=` is what was compared;
@@ -108,7 +115,7 @@ async function main(): Promise<void> {
   // has to say so — a count on its own reads as "covered everything".
   const total = corpusTotal(dialect)
   const bounded = results.length === total ? '' : `  (BOUNDED: ${total - results.length} of ${total} NOT compared)`
-  console.log(`${dialect}  files=${results.length} of ${total}${bounded}`)
+  console.log(`${dialect}/${variant}  files=${results.length} of ${total}${bounded}`)
   console.log('  ' + ORDER.map(o => `${o}=${counts[o]}`).join('  '))
   console.log('  facets: ' + FACETS.map(f => `${f}=${results.filter(r => r.facets.includes(f)).length}`).join(' '))
   if (process.argv.includes('--list')) {

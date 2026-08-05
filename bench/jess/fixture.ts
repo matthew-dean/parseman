@@ -36,7 +36,8 @@ import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import {
   ENTRY, JESS_ROOT, LOAD_CEILING, VARIANT_SETTINGS,
-  assertParseman, assertQuiet, exportName, headSha, loadGrammar, loads, type Dialect,
+  assertParseman, assertQuiet, exportName, headSha, loadGrammar, loads, VARIANTS,
+  type Dialect, type Variant,
 } from './grammars.ts'
 import { COLUMNS, FACETS, digestRow } from './digest.ts'
 
@@ -69,10 +70,12 @@ type Entry = Parameters<typeof run>[0]
  * that, changed, moves the number — so a pasted result carries the reason it is
  * what it is, and two results that disagree can be told apart by reading them.
  */
-function protocol(m: Measurement): string[] {
+function protocol(m: Measurement, variant: Variant): string[] {
   return [
     `  fixture     a named file under jess's packages/jess/benchmark, read verbatim, byte size printed`,
-    `  path        hostMode='ast', trackLines=false — THE AST PATH, canonical by owner ruling`,
+    `  variant     ${variant} — hostMode='${VARIANT_SETTINGS[variant].hostMode ?? 'ast'}', trackLines=${VARIANT_SETTINGS[variant].trackLines === true}.`,
+    `              The AST path is canonical by owner ruling; figures from any other variant`,
+    `              are NOT the canonical baseline and must be quoted with the variant name.`,
     `  engines     codegen (pm-macro: lowering of the SHIPPING grammar module), table`,
     `              (encodeTable + tableRules over the SAME rules), interpreter (the combinator`,
     `              graph itself). All three proved to be the engine they claim: codegen must be a`,
@@ -168,6 +171,12 @@ function rowOf(entry: Entry, input: string): string[] {
 async function main(): Promise<void> {
   const pm = await assertParseman()
   const dialect = (process.argv[2] ?? 'less') as Dialect
+  // The variant is OPTIONAL and defaults to the canonical AST path, so
+  // `pnpm bench:less` is byte-for-byte the measurement it has always been.
+  // Naming one measures THAT path instead — the only way to time a
+  // `trackLines: true` grammar, which is where `valueUnused` actually bites.
+  const variant = (process.argv[3] ?? 'ast') as Variant
+  if (!VARIANTS.includes(variant)) throw new Error(`unknown variant '${String(process.argv[3])}'`)
   console.log(`parseman ${pm.version} @ ${headSha()}   ${pm.root}`)
   console.log(`node ${process.version}   ${os.platform()}/${os.arch()}   cpus ${os.cpus().length}`)
   console.log(`jess ${JESS_ROOT}   installs parseman ${pm.installed} — NOT what is measured here`)
@@ -175,16 +184,16 @@ async function main(): Promise<void> {
   const { forced } = assertQuiet()
   console.log('')
   console.log('CANONICAL FIXTURE PROTOCOL — docs/design/canonical-fixture-benchmark.md')
-  for (const line of protocol(M)) console.log(line)
+  for (const line of protocol(M, variant)) console.log(line)
   if (forced) console.log('  *** FORCED PAST THE LOAD CEILING — these figures are NOT canonical ***')
   console.log('')
 
-  const { rules } = await loadGrammar(dialect, 'ast')
+  const { rules } = await loadGrammar(dialect, variant)
   const interpreted = rules[ENTRY] as Entry
-  const table = tableRules(encodeTable(rules, VARIANT_SETTINGS.ast))[ENTRY] as Entry
-  const tableB = tableRules(encodeTable(rules, VARIANT_SETTINGS.ast))[ENTRY] as Entry
+  const table = tableRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as Entry
+  const tableB = tableRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as Entry
   const mod = await import(`pm-macro:${resolvePath(JESS_ROOT, MODULE[dialect])}`) as Record<string, unknown>
-  const compiled = (mod[exportName(dialect, 'ast')] as Record<string, unknown>)[ENTRY] as Entry
+  const compiled = (mod[exportName(dialect, variant)] as Record<string, unknown>)[ENTRY] as Entry
   if (typeof compiled !== 'function') throw new Error(`${dialect}: 'compiled' is not a function — the macro did not run`)
   if (typeof interpreted === 'function') throw new Error(`${dialect}: 'interpreted' is a function — macro lowering leaked`)
 
