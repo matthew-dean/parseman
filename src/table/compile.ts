@@ -35,6 +35,17 @@ const ENTRY = 'Entry'
 export type TableCompileOptions = {
   readonly hostMode?: HostMode
   readonly trackLines?: boolean
+  /**
+   * Accepted for signature compatibility with the source-lowering `compile()`.
+   * Any of these that the table lowering cannot yet honour THROWS rather than
+   * being ignored — a compile that silently drops the instrumentation its caller
+   * asked for is the failure class this project keeps finding, and coverage that
+   * silently reports nothing is worse than a build error that says why.
+   */
+  readonly recovery?: boolean
+  readonly coverage?: boolean
+  readonly duplication?: unknown
+  readonly maxInline?: number
   /** Identifier the emitted expression expects to find `tableRules` under. */
   readonly runtimeRef?: string
   /** Source text per `prog.fns` entry, for a module/expression that must be printable. */
@@ -43,8 +54,20 @@ export type TableCompileOptions = {
 
 export function compileTable<T>(
   combinator: Combinator<T>,
+  mapFnSources?: readonly string[],
   opts: TableCompileOptions = {},
 ): CompiledParser<T> {
+  // Argument order mirrors `compile(combinator, mapFnSources?, opts?)` so this is
+  // a drop-in, not a second API with a different shape.
+  if (opts.coverage === true) {
+    throw new Error(
+      'compileTable: { coverage: true } is not implemented for the table lowering. '
+      + 'Coverage instrumentation is emitted per generated statement by the source '
+      + 'lowering; the table has no per-statement site to attach it to yet. This '
+      + 'throws rather than returning a parser with no coverageDefinitions, because '
+      + 'coverage that silently measures nothing reads as a passing run.',
+    )
+  }
   const settings: TableSettings = {
     ...(opts.hostMode === undefined ? {} : { hostMode: opts.hostMode }),
     ...(opts.trackLines === undefined ? {} : { trackLines: opts.trackLines }),
@@ -57,7 +80,8 @@ export function compileTable<T>(
   // they degrade to null rather than throwing out of the printer at a call site
   // that only wanted to parse.
   const printable = (prog.runtimeOnly === undefined || prog.runtimeOnly.length === 0)
-  const emitOpts = opts.fnSources === undefined ? {} : { fnSources: [...opts.fnSources] }
+  const sources = opts.fnSources ?? mapFnSources
+  const emitOpts = sources === undefined ? {} : { fnSources: [...sources] }
   const source = printable ? emitTableModule(prog, { name: 'grammar', ...emitOpts }) : ''
   const inlineExpression = printable
     ? emitTableExpression(prog, { entry: ENTRY, runtimeRef: opts.runtimeRef ?? 'tableRules', ...emitOpts })
