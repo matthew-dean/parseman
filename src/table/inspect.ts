@@ -4,6 +4,7 @@ import {
   OP_RX_TRACK, OP_SCOPE, OP_SEQ, OP_SEQV, OP_XFORM, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
   OP_SCOPE_CAP, OP_WITHCTX, OP_GUARD, OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE, OP_LIVE, OP_ATTEMPT, OP_LABEL,
+  OP_COV,
 } from './ops.ts'
 import type { TableProgram } from './program.ts'
 
@@ -49,7 +50,11 @@ export function reachableIps(prog: TableProgram): Set<number> {
       case OP_GATE:
         stack.push(code[ip + 2]!)
         break
-      case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_TOKEN: case OP_ATTEMPT: case OP_LABEL:
+      // `OP_COV` is here rather than absent because this walk THROWS on an
+      // unrecognised opcode, and a coverage-encoded program is a program: leaving
+      // it out would make `opHistogram` fail on every table the coverage build
+      // produces. It carries its child at `ip + 1` like the other wrappers.
+      case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_TOKEN: case OP_ATTEMPT: case OP_LABEL: case OP_COV:
         stack.push(code[ip + 1]!)
         break
       case OP_SEQ: case OP_SEQV: {

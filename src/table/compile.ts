@@ -4,6 +4,7 @@ import { createParseContext } from '../parse-context.ts'
 import { encodeTable, type TableSettings } from './encode.ts'
 import { emitTableModule, emitTableExpression } from './emit.ts'
 import { assembledRules } from './assemble.ts'
+import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 
 /**
  * `compile()` FOR THE TABLE LOWERING — same contract, different artifact.
@@ -41,8 +42,18 @@ export type TableCompileOptions = {
    */
   readonly recovery?: boolean
   /**
-   * Accepted for signature compatibility with the source-lowering `compile()`.
-   * Any of these that the table lowering cannot yet honour THROWS rather than
+   * GRAMMAR-COVERAGE COUNTERS, lowered as `OP_COV` rows plus the definition pool
+   * (`TableProgram.cov`). Same ids as the source lowering, because both mint them
+   * from the same `buildGrammarPlan` walk over the same combinator graph.
+   *
+   * COUNTERS ONLY — owner ruling. `_grammarTrace`'s six phases are emitted at
+   * ~40 fine-grained sites by codegen and are deferred to 0.48
+   * (`notes/RELEASE-0.48-TARGET.md` §1). A trace sink installed on a context
+   * running a table simply receives nothing; the plugin's coverage path reads
+   * `_grammarCoverage` and the definitions stamp, neither of which is trace.
+   *
+   * The remaining options below are accepted for signature compatibility with
+   * `compile()`. Any that the table lowering cannot honour THROWS rather than
    * being ignored — a compile that silently drops the instrumentation its caller
    * asked for is the failure class this project keeps finding, and coverage that
    * silently reports nothing is worse than a build error that says why.
@@ -63,18 +74,15 @@ export function compileTable<T>(
 ): CompiledParser<T> {
   // Argument order mirrors `compile(combinator, mapFnSources?, opts?)` so this is
   // a drop-in, not a second API with a different shape.
-  if (opts.coverage === true) {
-    throw new Error(
-      'compileTable: { coverage: true } is not implemented for the table lowering. '
-      + 'Coverage instrumentation is emitted per generated statement by the source '
-      + 'lowering; the table has no per-statement site to attach it to yet. This '
-      + 'throws rather than returning a parser with no coverageDefinitions, because '
-      + 'coverage that silently measures nothing reads as a passing run.',
-    )
-  }
+  // THE SAME WALK CODEGEN USES FOR A SINGLE ROOT (`codegen.ts:5377`): no winner
+  // map, so the paths are rooted at `entry` and the ids are the ones a caller
+  // switching lowerings already has. Building it differently here would produce a
+  // set that is internally consistent and lines up with nothing.
+  const plan = opts.coverage === true ? buildGrammarPlan(combinator as Combinator<unknown>) : undefined
   const settings: TableSettings = {
     ...(opts.hostMode === undefined ? {} : { hostMode: opts.hostMode }),
     ...(opts.trackLines === undefined ? {} : { trackLines: opts.trackLines }),
+    ...(plan === undefined ? {} : { coverage: plan }),
   }
   const prog = encodeTable({ [ENTRY]: combinator as Combinator<unknown> }, settings)
   const entry = assembledRules(prog)[ENTRY]!
@@ -97,6 +105,11 @@ export function compileTable<T>(
   return {
     source,
     inlineExpression,
+    // The DENOMINATOR, handed back rather than scraped out of the emitted text.
+    // `plugin/index.ts` prefers a compiler-supplied `coverageDefinitions` and only
+    // falls back to regex-scanning generated hooks; a table has no hooks to scan,
+    // so this is the channel.
+    ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
     parse(input: string, pos = 0): ParseResult<T> {
       return runOnce(input, pos, createParseContext())
     },

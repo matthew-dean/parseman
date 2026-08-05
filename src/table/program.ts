@@ -127,6 +127,56 @@ export type TableProgram = {
    * recovers only when a parse sets `ctx._tolerant`.
    */
   readonly rec?: 0 | 1
+  /**
+   * THE GRAMMAR-COVERAGE DEFINITION POOL, present only on a table encoded with
+   * `TableSettings.coverage`. `[id, kind]` per definition, in the order
+   * `buildGrammarPlan` produces (sorted by id), and `OP_COV`'s `id` operand
+   * indexes it.
+   *
+   * DEFINITIONS SHIP AS TABLE DATA rather than being scraped back out of the
+   * emitted text. The source lowering's macro path recovers its denominator by
+   * regex-scanning the generated hooks (`plugin/index.ts` `emittedCoverageDefinitions`),
+   * which it has to do because its IDs only exist inside generated statements. A
+   * table has no statements, so there is nothing to scan — and an empty scrape is
+   * NO MEASUREMENT reported as 100% coverage, which is the exact failure
+   * `'coverage-definitions-unavailable'` was declared for. Carrying the pool is
+   * what lets `compileRuleMapTable` hand back `coverageDefinitions` directly.
+   *
+   * THE POOL IS THE WHOLE DENOMINATOR, not merely the instrumented sites. A
+   * definition with no `OP_COV` row can never be hit, so it drags the ratio DOWN.
+   * That is the direction this project requires an instrumentation gap to fail in.
+   */
+  readonly cov?: readonly (readonly [id: string, kind: 0 | 1 | 2 | 3])[]
+}
+
+/**
+ * `GrammarCoverageDefinition['kind']` as the small integer `prog.cov` carries,
+ * and back. Two functions rather than a shared array literal so the mapping is
+ * exhaustive over the union in BOTH directions — a fifth kind added to
+ * `grammar-coverage-ids.ts` fails to compile here instead of silently encoding
+ * as `undefined` and reading back as `'rule'`.
+ */
+export function covKindCode(kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label'): 0 | 1 | 2 | 3 {
+  switch (kind) {
+    case 'rule': return 0
+    case 'choice-arm': return 1
+    case 'dispatch-arm': return 2
+    case 'label': return 3
+  }
+}
+
+export function covKindName(code: 0 | 1 | 2 | 3): 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' {
+  switch (code) {
+    case 0: return 'rule'
+    case 1: return 'choice-arm'
+    case 2: return 'dispatch-arm'
+    case 3: return 'label'
+  }
+}
+
+/** The pool read back as the public definition shape `compiledGrammarCoverageDefinitions` validates. */
+export function covDefinitions(prog: TableProgram): readonly { id: string; kind: 'rule' | 'choice-arm' | 'dispatch-arm' | 'label' }[] {
+  return (prog.cov ?? []).map(([id, kind]) => ({ id, kind: covKindName(kind) }))
 }
 
 /**
@@ -209,6 +259,7 @@ export type CompactProgram = {
   readonly ss?: readonly (readonly SubtreeRef[])[]
   readonly so?: readonly number[]
   readonly rv?: 0 | 1
+  readonly cv?: readonly (readonly [string, 0 | 1 | 2 | 3])[]
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
@@ -224,6 +275,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.ss === undefined ? {} : { scanSkip: p.ss }),
     ...(p.so === undefined ? {} : { scanSkipOf: p.so }),
     ...(p.rv === undefined ? {} : { rec: p.rv }),
+    ...(p.cv === undefined ? {} : { cov: p.cv }),
   }
 }
 
@@ -487,6 +539,11 @@ const SHARED_FIELDS = [
   // axis a fold varies — every variant of one export is encoded with the same
   // recovery setting, and a mismatch is two tables, which is what the refusal says.
   'rec',
+  // `cov` is a property of the GRAMMAR and its coverage plan, for the same reason
+  // `rec` is a property of the build: the plan is built from the rule map, which
+  // every variant of one export shares. It ships ONCE, and a variant that
+  // disagrees is two tables — which is what the refusal says.
+  'cov',
 ] as const satisfies readonly (keyof TableProgram)[]
 
 /**

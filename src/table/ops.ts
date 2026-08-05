@@ -398,6 +398,31 @@ export const OP_ATTEMPT = 38
  */
 export const OP_LABEL = 39
 /**
+ * `COV c id on` — A GRAMMAR-COVERAGE COUNTER SITE. Emitted ONLY into a table
+ * encoded with `TableSettings.coverage`; an ordinary table contains no such row,
+ * which is why turning coverage off costs an ordinary build exactly zero bytes.
+ *
+ * `c` is the wrapped child's offset — deliberately at `ip + 1`, the slot every
+ * other single-child wrapper uses, so `collapseIndirection`, `inspect.ts` and
+ * `exec.ts` each gain this opcode by adding it to an existing `case` list rather
+ * than by growing a new shape. `id` indexes `prog.cov`, the definition pool.
+ *
+ * `on` is 0 for ENTRY and 1 for SUCCESS, and it is read at ASSEMBLY TIME, never
+ * per parse: `assemble.ts` picks one of two closures from it, exactly as it picks
+ * pieces from `RunCfg`. The two phases are not decoration — the source lowering
+ * credits a RULE on entry (`codegen.ts:4529`) and a choice arm, dispatch arm or
+ * label only once it has SUCCEEDED, and a table that credited all four alike
+ * would report a different denominator's worth of hits than the engine it is a
+ * drop-in for.
+ *
+ * THE ROW IS WHY THIS IS NOT A SIDE TABLE keyed by code offset. `encode.ts`
+ * memoises by combinator IDENTITY, so one `g.X` reference object that is an arm
+ * of three different choices is ONE row — and an offset→id map would have to
+ * credit all three arms whenever any one of them ran. A wrapper row is per SITE,
+ * which is the granularity the IDs are minted at.
+ */
+export const OP_COV = 40
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -427,5 +452,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX', [OP_GUARD]: 'GUARD',
   [OP_ADJ]: 'ADJ',
   [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
-  [OP_LIVE]: 'LIVE', [OP_ATTEMPT]: 'ATTEMPT', [OP_LABEL]: 'LABEL',
+  [OP_LIVE]: 'LIVE', [OP_ATTEMPT]: 'ATTEMPT', [OP_LABEL]: 'LABEL', [OP_COV]: 'COV',
 }
