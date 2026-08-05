@@ -77,9 +77,9 @@ import {
   saveTriviaMark, scanTrivia, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
-  beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
-  demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
-  rollbackCstCaptureAt,
+  cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
+  demoteCapturedToRaw, pushCstChild, pushCstLeaf,
+  rollbackCstCaptureAt, type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
@@ -100,6 +100,9 @@ import { stampRuleMap } from './stamp.ts'
 const FAIL: unique symbol = Symbol('pm.fail')
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
+/** `finishCstBuf`'s two empty sentinels, held here so the node piece can inline it. */
+const EMPTY_CH: unknown[] = []
+const EMPTY_TLOG: number[] = []
 const EMPTY_FX: string[] = []
 const ROUTED_FX: string[] = ['routed()']
 /** `matchesDispatchMatcher` only reads `kind`/`value`/`flags`. Mirrors `exec.ts`. */
@@ -1509,15 +1512,45 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         return (input, pos, ctx) => {
           const host = HOST
-          const saved = beginCstNodeCapture(ctx)
+          // `beginCstNodeCapture`/`endCstNodeCapture` INLINED, and the two objects
+          // they exchange — the six-field `saved` and the three-field
+          // `{children, rawChildren, triviaLog}` — held in locals instead.
+          //
+          // This is the same scalarisation `rollbackCstCaptureAt` already documents
+          // for the five-field mark, applied to the node piece: `node()` runs
+          // 145,512 times per parse of `benchmark.less`, so those were ~291k
+          // allocations a parse that the compiled engine (which inlines its own
+          // capture prologue and epilogue) never makes.
+          const sCh = ctx._cstChildren
+          const sLv = ctx._cstLeaves
+          const sRaw = ctx._cstRawChildren
+          const sTl = ctx._cstTriviaLog
+          const sCap = ctx.captureTrivia
+          const sBuf = ctx._cstBuf
+          const buf: CstCaptureBuf = {}
+          ctx._cstBuf = buf
+          ctx._cstChildren = undefined
+          ctx._cstLeaves = undefined
+          ctx._cstRawChildren = undefined
+          ctx._cstTriviaLog = undefined
+          // `begin` sets this true and the caller immediately cleared it when the
+          // node does not capture wide. Net: the flag IS `captureWide`, a const.
+          ctx.captureTrivia = captureWide
           const savedFields = ctx._fields
           ctx._fields = wantFields ? [] : undefined
-          if (!captureWide) ctx.captureTrivia = false
           const v = child(input, pos, ctx)
           if (v !== FAIL && trailingTrivia && ctx.trivia !== undefined) END = consumeTrivia(input, END, ctx)
           const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(ctx._fields) : undefined
           ctx._fields = savedFields
-          const cap = endCstNodeCapture(ctx, saved)
+          const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
+          const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
+          const tlog = buf.tl ?? EMPTY_TLOG
+          ctx._cstBuf = sBuf
+          ctx._cstChildren = sCh
+          ctx._cstLeaves = sLv
+          ctx._cstRawChildren = sRaw
+          ctx._cstTriviaLog = sTl
+          ctx.captureTrivia = sCap
           if (v === FAIL) return FAIL
           const end = END
           const span = tracked ? spanLines(ctx, pos, end) : { start: pos, end }
@@ -1525,7 +1558,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ? Object.assign({}, ctx.state as Record<string, unknown>)
             : undefined
 
-          const kids = cap.children
           let nd: unknown
           if (unwrap && kids.length === 1) {
             nd = unwrapChild(kids[0])
@@ -1537,23 +1569,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             (hostCst || (build === undefined && proj < 0))
             && host?._parsemanCstCollapse !== undefined
             && kids.length === 1
-            && cap.rawChildren.length === 1
-            && host._parsemanCstCollapse(type, kids[0], kids, cap.rawChildren)
+            && rawKids.length === 1
+            && host._parsemanCstCollapse(type, kids[0], kids, rawKids)
           ) {
             nd = kids[0]
           } else if (proj >= 0) {
             nd = hostCst && host !== undefined
-              ? host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, readsState ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
+              ? host(type, kids, fieldMap, span, rawKids, tlog, readsState ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
               : projectChild(kids, proj, type)
           } else if (build !== undefined) {
             if (hostCst && host !== undefined) {
               // A direct builder is bypassed under a CST host.
-              nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, readsState ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
+              nd = host(type, kids, fieldMap, span, rawKids, tlog, readsState ? st : ctx.state !== undefined ? Object.assign({}, ctx.state as Record<string, unknown>) : undefined, tags)
             } else {
-              nd = build(kids, fieldMap, span, cap.rawChildren, captureWide ? cap.triviaLog : EMPTY_TL, st)
+              nd = build(kids, fieldMap, span, rawKids, captureWide ? tlog : EMPTY_TL, st)
             }
           } else if (host !== undefined) {
-            nd = host(type, kids, fieldMap, span, cap.rawChildren, cap.triviaLog, st, tags)
+            nd = host(type, kids, fieldMap, span, rawKids, tlog, st, tags)
           } else {
             nd = { _tag: 'node', type, span, state: st ?? null, children: kids }
           }
