@@ -13,9 +13,9 @@ import {
   analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings,
   duplicationFindingCount, alternationGroups, charClassMembers, extractCharClasses,
   keywordRegexShape, keywordAlternationHazards, siteToString,
-  choice, sequence, literal, regex, many, optional, node, field, ref, withCtx, keywords, rules, compile,
-  dispatch, when, otherwise,
+  choice, sequence, literal, regex, many, optional, node, field, ref, withCtx, keywords, rules, dispatch, when, otherwise,
 } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { compileRuleMap, compileLinkable } from '../../src/compiler/codegen.ts'
 import { compose } from '../../src/compiler/linker.ts'
 import type { Combinator } from '../../src/types.ts'

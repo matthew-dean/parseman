@@ -12,8 +12,9 @@
  * which a byte count would happily report as an improvement.
  */
 import { describe, it, expect } from 'vitest'
-import { word, keywords, choice, literal, regex, sequence, compile, parse } from '../../src/index.ts'
+import { word, keywords, choice, literal, regex, sequence, parse } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 /** The emitted source of a one-rule grammar, for shape assertions. */
 function emit(root: Combinator<unknown>): string {

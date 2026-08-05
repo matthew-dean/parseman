@@ -6,6 +6,7 @@ import {
   literal, regex, sequence, choice, transform, node, parser, trivia, compile, parse,
   makeWord, keywords,
 } from '../../src/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 
 function par<T>(
   label: string,
@@ -100,7 +101,7 @@ describe('choice fast paths — codegen uses optimized emitters when capturing',
       parser({ trivia: ws }, choice(literal('instanceof'), literal('in'))),
       (c, _r, s) => ({ _tag: 'node', type: 'T', span: s, c }),
     )
-    const src = compile(p).source
+    const src = compileCodegen(p).source
     // 'instanceof' is 10 chars — an unrolled charCodeAt chain (≤16 threshold),
     // not startsWith. The point of this test is literalsLongestFirst vs
     // firstMatch (no `_crok` rollback state), not the literal-length threshold.
@@ -116,7 +117,7 @@ describe('choice fast paths — codegen uses optimized emitters when capturing',
       parser({ trivia: ws }, choice(literal('true'), literal('false'), regex(/[a-z]+/))),
       (c, _r, s) => ({ _tag: 'node', type: 'T', span: s, c }),
     )
-    const src = compile(p).source
+    const src = compileCodegen(p).source
     expect(src).toContain('.exec(input)')
     expect(src).not.toContain('_crok')
     expect(src).toContain('_cstLeaves.push')

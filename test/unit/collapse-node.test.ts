@@ -6,9 +6,10 @@
  */
 import { describe, it, expect, expectTypeOf, vi } from 'vitest'
 import {
-  literal, regex, sequence, many, optional, node, rules, compile, parse, cstBuildHost,
+  literal, regex, sequence, many, optional, node, rules, parse, cstBuildHost,
 } from '../../src/index.ts'
 import type { NodeCombinator } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 // ── A precedence-ladder-style unwrapping rule ───────────────────────────────

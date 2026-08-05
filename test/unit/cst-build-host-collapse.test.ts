@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { compile, cstBuildHost, literal, node, optional, rules, run, sequence, withCtx } from '../../src/index.ts'
+import { cstBuildHost, literal, node, optional, rules, run, sequence, withCtx } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 const leafValue = (value: unknown) =>
   typeof value === 'object' && value !== null && (value as { _tag?: string })._tag === 'leaf'

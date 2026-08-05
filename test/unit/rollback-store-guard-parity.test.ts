@@ -24,8 +24,9 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  node, regex, literal, sequence, many, optional, choice, not, attempt, compile,
+  node, regex, literal, sequence, many, optional, choice, not, attempt,
 } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { saveCstMark, rollbackCstCapture } from '../../src/cst/capture-buffer.ts'
 import { saveTriviaMark, rollbackTrivia } from '../../src/combinators/trivia-skip.ts'
 import type { ParseContext } from '../../src/types.ts'

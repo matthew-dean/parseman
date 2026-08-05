@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   attempt,
   choice,
-  compile,
   dispatch,
   endsWith,
   expect as expectParser,
@@ -31,6 +30,7 @@ import {
   type ParseContext,
   type ParseError,
 } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'

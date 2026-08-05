@@ -10,6 +10,7 @@ import {
   classifiedTrivia, trivia, parser, parse as runtimeParse, compile, rules,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 
 const ws = trivia(regex(/[ \t\n\r\f]+/))
 
@@ -129,13 +130,13 @@ describe('compiled shape', () => {
   it('emits a kind probe ONLY for a kind-filtered assertion', () => {
     const filtered = parser({ trivia: classified() }, sequence(literal('a'), notAdjacent({ kinds: ['whitespace'] }), literal('b')))
     const plain = parser({ trivia: classified() }, sequence(literal('a'), notAdjacent(), literal('b')))
-    expect(compile(filtered).source).toContain('_ak0')
-    expect(compile(plain).source).not.toContain('_ak0')
+    expect(compileCodegen(filtered).source).toContain('_ak0')
+    expect(compileCodegen(plain).source).not.toContain('_ak0')
   })
 
   it('costs a grammar with no assertion exactly nothing', () => {
     const without = parser({ trivia: ws }, sequence(literal('a'), literal('b')))
-    expect(compile(without).source).not.toContain('_ak')
-    expect(compile(without).source).not.toContain('adjacent')
+    expect(compileCodegen(without).source).not.toContain('_ak')
+    expect(compileCodegen(without).source).not.toContain('adjacent')
   })
 })

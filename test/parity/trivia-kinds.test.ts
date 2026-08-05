@@ -4,6 +4,7 @@ import {
   oneOrMore, choice, triviaEntries, run, peek, attempt, optional, sepBy, leaf,
 } from '../../src/index.ts'
 import type { Runnable } from '../../src/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import {
@@ -29,8 +30,8 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
     // Structural trivia fast paths are available to both grammars. Root-category
     // retention is not: an ordinary grammar cannot service `rootTrivia.select`,
     // so its generated hot path must not pay for root-log saves or rollbacks.
-    expect(compile(ordinary).source).not.toContain('_rootTrivia')
-    expect(compile(classified).source).toContain('_rootTrivia')
+    expect(compileCodegen(ordinary).source).not.toContain('_rootTrivia')
+    expect(compileCodegen(classified).source).toContain('_rootTrivia')
   })
 
   it('records per-chunk kind indices in _triviaLog', () => {

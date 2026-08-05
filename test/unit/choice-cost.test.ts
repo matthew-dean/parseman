@@ -19,8 +19,9 @@ import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import {
-  choice, sequence, literal, regex, many, optional, node, rules, compile,
+  choice, sequence, literal, regex, many, optional, node, rules,
 } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import {
   analyzeChoiceInventory, profileWastedWork, choiceSiteKey, modelledFirstCharGate,
 } from '../../src/analysis/choice-cost.ts'

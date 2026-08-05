@@ -7,7 +7,8 @@
  * on `{ok, value, end}` for a corpus of case / boundary / partial inputs.
  */
 import { describe, it, expect } from 'vitest'
-import { regex, parse, compile } from '../../src/index.ts'
+import { regex, parse } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 const CASES: Array<{ re: RegExp; inputs: string[] }> = [
   { re: /not(?![-\w])/i, inputs: ['not', 'NOT', 'Not', 'note', 'not-x', 'not ', 'no', 'nots', 'not1', '', 'xnot'] },

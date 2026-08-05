@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { buildLineIndex, offsetToLineCol, annotateSpan, annotateTreeSpans, normalizeLineIndex, recordLineRange, compile, cstBuildHost, literal, node, parser, regex, rules, trivia, sequence, sepBy } from '../../src/index.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { ParseContext } from '../../src/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 
 describe('buildLineIndex', () => {
   it('single-line string has one entry', () => {
@@ -150,8 +151,9 @@ describe('compiled line tracking', () => {
 
   it('annotates spans when compiled with trackLines', () => {
     const c = compile(sequence(literal('foo'), literal('\n'), literal('bar')), undefined, { trackLines: true })
-    expect(c.source).not.toContain('_trackLines')
-    expect(c.source).toContain('_lineStarts.push')
+    const src = compileCodegen(sequence(literal('foo'), literal('\n'), literal('bar')), undefined, { trackLines: true }).source
+    expect(src).not.toContain('_trackLines')
+    expect(src).toContain('_lineStarts.push')
     const r = c.parse('foo\nbar')
     expect(r.ok).toBe(true)
     if (r.ok) {
@@ -172,7 +174,7 @@ describe('compiled line tracking', () => {
 
   it('uses the dynamic helper only for newline-capable regex spans', () => {
     const c = compile(regex(/(?:.|\n)+/), undefined, { trackLines: true })
-    expect(c.source).toContain('_trackLines')
+    expect(compileCodegen(regex(/(?:.|\n)+/), undefined, { trackLines: true }).source).toContain('_trackLines')
     const r = c.parse('a\nb\nc')
     expect(r.ok).toBe(true)
     if (r.ok) {

@@ -21,8 +21,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { analyzeMkInlineBuild } from '../../src/compiler/inline-build.ts'
-import { node, literal, parser, compile } from '../../src/index.ts'
+import { node, literal, parser } from '../../src/index.ts'
 import type { ParserDef } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { beginDegradationCapture, endDegradationCapture, resetDegradationMemo } from '../../src/compiler/degradation.ts'
 
 type NodeDef = Extract<ParserDef, { tag: 'node' }>
