@@ -49,17 +49,30 @@ export type TableSettings = {
   readonly hostMode?: 'ast' | 'cst'
   readonly trackLines?: boolean
   /**
-   * Lower TOLERANT RECOVERY into the table — `compile(g, …, { recovery: true })`
-   * for the table lowering, and the same trade: a recovery table carries the
-   * inferred sync data that a strict one has no use for, and the pieces that read
-   * it. It is a BUILD setting for exactly the reason `hostMode` is: the sync
-   * sentinel a list resyncs to is derived from the grammar's structure, so it has
-   * to be known before the table exists.
+   * ACCEPTED AND IGNORED. RECOVERY IS ALWAYS LOWERED (owner ruling).
    *
-   * Off, the table is word-for-word the table it always was and the recovery
-   * pieces are never instantiated. On, recovery is still DORMANT until a parse
-   * sets `ctx._tolerant` — the same runtime gate the source lowering emits
-   * (`codegen.ts:3153`) and the interpreter tests (`repeat.ts:163`).
+   * It used to be opt-in because the sync sentinel a list resyncs to is derived
+   * from grammar structure and so has to be known before the table exists — a
+   * BUILD setting for the same reason `hostMode` is. The consequence was a
+   * `CompiledParser` whose `parseWithErrors()` THREW unless the caller had
+   * happened to pass a flag `compile()` does not require, which is a contract
+   * break against the source lowering, not a trade.
+   *
+   * The cost of always lowering it is the extra rows, measured on the emitted
+   * module: json 1,081 → 1,214 B (+12.3%), graphql 2,925 → 3,397 B (+16.1%).
+   * Against codegen's 15,138 B for the same json root the table is still ~12×
+   * smaller, so the size argument for making it optional no longer holds.
+   *
+   * LOWERING RECOVERY IS NOT RUNNING IT. Every recovery path stays gated on
+   * `ctx._tolerant` — the same dormancy the source lowering emits
+   * (`codegen.ts:3153`) and the interpreter tests (`repeat.ts:163`) — so a strict
+   * parse is strict, and `test/parity/table-recovery-always.test.ts` pins that.
+   *
+   * The field is kept rather than deleted so `compileTable` stays signature-
+   * compatible with `compile()`, whose `{ recovery: true }` is real. Passing it
+   * is harmless; passing `false` does NOT switch recovery off, and saying so here
+   * is the point — a setting that silently means nothing is the defect class this
+   * project keeps finding.
    */
   readonly recovery?: boolean
 }
@@ -140,12 +153,17 @@ class Encoder {
   readonly settings: TableSettings
   /** Resolved once, HERE, at table-build time — never consulted at run time. */
   readonly track: boolean
-  /** Is this a RECOVERY table? Decides the extra operands laid down below. */
+  /**
+   * Decides the extra operands laid down below. ALWAYS TRUE — see
+   * `TableSettings.recovery`. Kept as a field rather than folded away because it
+   * is what every emit site reads, and the emit sites are where the shape of the
+   * row is stated.
+   */
   readonly rec: boolean
   constructor(settings: TableSettings) {
     this.settings = settings
     this.track = settings.trackLines === true
-    this.rec = settings.recovery === true
+    this.rec = true
   }
 
   /**

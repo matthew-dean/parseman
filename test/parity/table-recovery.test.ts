@@ -129,16 +129,20 @@ describe('tolerant recovery — the CST embed, which lives only in the tree', ()
 describe('compileTable().parseWithErrors()', () => {
   const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}')) as Combinator<unknown>
 
-  it('collects the errors the interpreter collects when built with { recovery: true }', () => {
-    const r = compileTable(block, undefined, { recovery: true }).parseWithErrors('{a:1;$$;b:2}')
+  it('collects the errors the interpreter collects — WITH OR WITHOUT { recovery: true }', () => {
+    // NO LONGER A REFUSAL, and the pair is the point. This used to assert that
+    // `compileTable(block, undefined, {})` THREW, because a table with no recovery
+    // rows would have set `_tolerant` and reported a clean parse whatever the
+    // input. Refusing was the right answer to that and OPTIONAL RECOVERY was the
+    // wrong question: `compile()` needs no such flag, so the refusal was a
+    // `CompiledParser` contract break. Recovery is always lowered now, so both
+    // builds must answer identically, and identically to the interpreter.
     const ri = runInterpreter(block, '{a:1;$$;b:2}', { tolerant: true })
-    expect(r.ok).toBe(true)
-    expect(r.errors).toEqual(ri.errors)
-  })
-
-  it('REFUSES rather than reporting a clean parse when the parser was not built to recover', () => {
-    const p = compileTable(block, undefined, {})
-    expect(() => p.parseWithErrors('{a:1;$$;b:2}')).toThrow(/recovery: true/)
+    for (const opts of [{ recovery: true }, {}]) {
+      const r = compileTable(block, undefined, opts).parseWithErrors('{a:1;$$;b:2}')
+      expect(r.ok, JSON.stringify(opts)).toBe(true)
+      expect(r.errors, JSON.stringify(opts)).toEqual(ri.errors)
+    }
   })
 })
 
