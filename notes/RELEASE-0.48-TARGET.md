@@ -284,15 +284,36 @@ An earlier draft of this section claimed css "exposes the gap most sharply" and
 should therefore be where 0.48 starts; that was wrong, and it was reasoning from
 whichever bench happened to be wired into the pre-commit hook.
 
-**Where the gap actually shows up is Jess** — the four real dialect grammars, via
-`pnpm bench:less` / `bench/jess/fixture.ts`. Those are the piece-invocation-dense
-workloads with real selector and declaration volume. 0.48 starts by measuring
-THERE and confirming whether the css signal reproduces at scale. If it does not,
-this shelf costs nothing and the entry comes off. If it does, §3's unexplained
-~20 ns per piece invocation is the prime suspect.
+**MEASURED AT SCALE — THE SIGNAL DOES NOT REPRODUCE.** `bench/jess/fixture.ts` on
+`lane/composetable` @ `1b44822`, real dialect grammars, real fixtures, table at
+HEAD against the `ref|` leg (the shipped engine at the pinned reference commit):
 
-**Do not re-derive the priority from the css bars.** They are cheap to run, which
-is why they are in the hook, not because they are representative.
+| dialect | fixture | reference | table | ratio | control |
+|---|---|---|---|---|---|
+| css | benchmark.css 123 kB | 18.58 ms | 20.32 ms | **1.09×** | +0.4% |
+| less | benchmark.less | — | 35.44 ms | **1.04×** | −0.1% |
+| less | gen-workload.less 275 kB | 148.42 ms | 155.92 ms | **1.05×** | −0.3% |
+| scss | gen-workload.scss 287 kB | 94.68 ms | 102.96 ms | **1.09×** | +0.4% |
+
+Three-way agreement YES on every fixture. Load 3.0–5.2, controls 0.1–0.4%.
+
+**So the real gap is 4–9%, not 4.4×.** The `css/selector` and `css/decls`
+perf-guard bars overstated it by roughly fiftyfold. The shelf in
+`shelvedRegressionKeys` therefore costs nothing, and the honest 0.48 framing is
+not "recover a 4.4× regression" — it is "close a 4–9% gap against an engine that
+no longer exists."
+
+**Ignore the `jess` dialect row.** `benchmark.jess` is 124 bytes and reports
+0.00 ms; its 1.97× is the same sub-microsecond artifact that got the `small` rows
+commented out of the charts in `bench/chart-specs.ts`. It measures per-call
+overhead, not parsing.
+
+**The lesson, which is the whole reason this section exists.** Two successive
+drafts of this note named a priority from whichever bench happened to be wired
+into the pre-commit hook — first css because it blocked a commit, then Jess
+because css was ruled a toy. Only the third had a measurement. A cheap bar is in
+the hook because it is cheap, and a bar's presence in a gate says nothing about
+whether it represents anything. Measure before ranking.
 
 ---
 
