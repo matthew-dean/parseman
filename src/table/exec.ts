@@ -17,7 +17,8 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ADJ,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
+  OP_ADJ, OP_GREEDY, OP_REJECT,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { stampRuleMap } from './stamp.ts'
@@ -776,6 +777,54 @@ function makeDriver(
           if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
         }
         return failChoice()
+      }
+
+      case OP_GREEDY: {
+        // The mark is taken BEFORE the super arm runs: the classified path
+        // unwinds the regex's leaf and lets the credited literal arm push its
+        // own, so exactly one leaf survives — same text, same span.
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const sup = exec(code[ip + 1]!, input, pos, ctx)
+        // choice.ts:126 — the super arm's failure is returned VERBATIM, so `_fe`
+        // and `_fx` are left exactly as it set them.
+        if (sup === FAIL) return FAIL
+        const end = END
+        const word = input.slice(pos, end)
+        const n = code[ip + 2]!
+        for (let i = 0; i < n; i++) {
+          if (k[code[ip + 3 + 2 * i]!] !== word) continue
+          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+          // Cannot fail: `word` IS this arm's case-sensitive literal at `pos`.
+          return exec(code[ip + 4 + 2 * i]!, input, pos, ctx)
+        }
+        END = end
+        return sup
+      }
+
+      case OP_REJECT: {
+        const v = exec(code[ip + 1]!, input, pos, ctx)
+        if (v === FAIL) return FAIL
+        const end = END
+        const n = code[ip + 2]!
+        for (let i = 0; i < n; i++) {
+          const o = code[ip + 4 + 2 * i]!
+          const fires = code[ip + 3 + 2 * i]! === 0
+            ? input.startsWith(k[o] as string, end)
+            : classHas(cc[o]!, lead(input, end))
+          if (!fires) continue
+          // choice.ts:161-164 is a `continue`, not a failure: the arm is treated
+          // as never entered, so a cut it raised must not survive to cut the
+          // choice. The choice does the capture-sink rollback, as for any arm.
+          ctx._fc = false
+          return FAIL
+        }
+        END = end
+        return v
       }
 
       case OP_OPT: {
