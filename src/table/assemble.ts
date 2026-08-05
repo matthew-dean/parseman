@@ -85,10 +85,25 @@ import {
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
+import { failAt } from '../combinators/probe.ts'
+/**
+ * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
+ *
+ * `failAt` (combinators/probe.ts) is called from exactly three places in the
+ * interpreter — `literal.ts`, `regex.ts`, `keywords.ts` — and codegen emits its
+ * mirror (`probeUpdate`) at the same leaf-fail sites. The table recorded
+ * NOTHING, so `completionsAt` on a table artifact saw only the top-level
+ * failure: a swallowed item failure inside a `sepBy` (`'{'` at offset 1 in a
+ * `{ decl; }` grammar) never reached the probe and the item's opener vanished
+ * from the completion set.
+ *
+ * Dormant unless `completionsAt` set `_probe`, so an ordinary parse pays one
+ * property read per terminal miss — the same price codegen pays.
+ */
 import {
   classHas, expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedTable,
@@ -505,6 +520,28 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return c._fc === true
   }
 
+  /**
+   * Accumulate one failed choice arm's expected set, in arm order.
+   *
+   * `choice.ts:167` is `expected.push(...result.expected)` per failed arm, and the
+   * accumulation — not the static union of the arms' OPENERS — is what a failing
+   * ordered choice reports. A left-factored or shared-prefix choice whose arms all
+   * failed PAST their common opener reported that opener alone: `['/::?/']` where
+   * the interpreter says `['"before"', '"hover"']`.
+   *
+   * Returns the accumulator so the common one-failing-arm case borrows the arm's
+   * own array (`slice` once) instead of building one per choice execution the way
+   * the interpreter's eager `const expected: string[] = []` does.
+   */
+  function accSet(ax: readonly string[] | undefined, acc: string[] | undefined): string[] | undefined {
+    if (ax === undefined || ax.length === 0) return acc
+    if (acc === undefined) return ax.slice()
+    for (const s of ax) acc.push(s)
+    return acc
+  }
+
+
+
   function trackLinesInto(ctx: ParseContext, input: string, end: number): void {
     const from = ctx._lineScannedTo ?? 0
     if (end <= from) return
@@ -589,6 +626,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return s
           }
           ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
           return FAIL
         }
       }
@@ -606,6 +644,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return s
           }
           ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
           return FAIL
         }
       }
@@ -624,6 +663,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return v
           }
           ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
           return FAIL
         }
       }
@@ -643,6 +683,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return v
           }
           ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
           return FAIL
         }
       }
@@ -665,6 +706,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return matched
             }
             ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
             return FAIL
           }
         }
@@ -678,6 +720,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return matched
           }
           ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
           return FAIL
         }
       }
@@ -713,11 +756,26 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const xf = fx[code[ip + 3]!] as string[]
         const child = link(code[ip + 2]!)
         return (input, pos, ctx) => {
-          if (!classHas(cls, lead(input, pos))) {
+          // SKIPPED UNDER A PROBE / TOLERANT RECOVERY, exactly as the interpreter
+          // skips it (`node.ts:239`, `attempt.ts:22`): the swallowed inner failure
+          // is what feeds a completions probe, so a fail-fast that never enters the
+          // body silently narrows `completionsAt` to the openers it could see.
+          if (ctx._probe === undefined && !ctx._tolerant && !classHas(cls, lead(input, pos))) {
             ctx._fe = pos; ctx._fx = xf
             return FAIL
           }
           return child(input, pos, ctx)
+        }
+      }
+
+      case OP_LABEL: {
+        const child = link(code[ip + 1]!)
+        const xf = fx[code[ip + 2]!] as string[]
+        return (input, pos, ctx) => {
+          const v = child(input, pos, ctx)
+          // `_fe` UNTOUCHED — `map.ts:84` keeps `result.span`.
+          if (v === FAIL) ctx._fx = xf
+          return v
         }
       }
 
@@ -918,6 +976,29 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
+      /* ── transaction ─────────────────────────────────────────────────────── */
+
+      case OP_ATTEMPT: {
+        const child = link(code[ip + 1]!)
+        return (input, pos, ctx) => {
+          const need = markCst(ctx)
+          const mRaw = MRAW
+          const mTl = MTL
+          const mLv = MLV
+          const mFl = need ? ctx._fields?.length ?? 0 : 0
+          const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+          const v = child(input, pos, ctx)
+          if (v !== FAIL) return v
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+          // A committed failure propagates VERBATIM — rolled back, not re-anchored.
+          if (committed(ctx)) return FAIL
+          ctx._fe = pos
+          return FAIL
+        }
+      }
+
       /* ── zero-width ──────────────────────────────────────────────────────── */
 
       case OP_NOT: {
@@ -941,6 +1022,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
       case OP_PEEK: {
         const child = link(code[ip + 1]!)
+        const xf = fx[code[ip + 2]!] as string[]
         return (input, pos, ctx) => {
           const need = markCst(ctx)
           const mRaw = MRAW
@@ -952,7 +1034,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          if (v === FAIL) return FAIL
+          // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
+          if (v === FAIL) { ctx._fe = pos; ctx._fx = xf; return FAIL }
           END = pos
           return null
         }
@@ -1431,6 +1514,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const base = ip + 4
         const arms: Piece[] = new Array<Piece>(n)
         for (let i = 0; i < n; i++) arms[i] = link(code[base + i]!)
+        // PER-ARM STATIC SETS, resolved once at assembly. An arm the char gate
+        // declines to enter still owes its expectation: the interpreter has no
+        // such gate, enters the arm, and its opener's failure is what lands in
+        // the accumulation.
+        const armFx: (string[])[] = new Array<string[]>(n)
+        for (let i = 0; i < n; i++) armFx[i] = fx[code[base + n + i]!] as string[]
 
         // THE TWO CHOICE SHAPES ARE TWO PIECES. `exec.ts` tested `table.exclusive`
         // on every choice execution; it is table data, so it selects here.
@@ -1531,31 +1620,44 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const mEr = need ? ctx._errors?.length ?? 0 : 0
             const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+            let acc: string[] | undefined
             if (c < 128) {
               // `c` is −1 at EOF, which indexes slot 128 — the always-enter arms.
-              let bits = mask[c < 0 ? 128 : c]!
+              const bits0 = mask[c < 0 ? 128 : c]!
+              let bits = bits0
+              // Arms below `prev` have already contributed. Only the FAILURE path
+              // advances it, so a matching arm returns without paying for any of
+              // this — the skipped arms' sets are read on no other exit.
+              let prev = 0
               while (bits !== 0) {
                 const i = 31 - Math.clz32(bits & -bits)
                 bits &= bits - 1
                 ctx._fc = false
                 const v = arms[i]!(input, pos, ctx)
                 if (v !== FAIL) return v
-                if (committed(ctx)) return FAIL
+                for (let j = prev; j < i; j++) if ((bits0 & (1 << j)) === 0) acc = accSet(armFx[j]!, acc)
+                prev = i + 1
+                acc = accSet(ctx._fx, acc)
+                // A committed arm cuts, and the interpreter reports the
+                // accumulation at the ARM's span (choice.ts:170), not at `pos`.
+                if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
                 if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               }
-              ctx._fe = pos; ctx._fx = choiceFx
+              for (let j = prev; j < n; j++) if ((bits0 & (1 << j)) === 0) acc = accSet(armFx[j]!, acc)
+              ctx._fe = pos; ctx._fx = acc ?? choiceFx
               return FAIL
             }
             for (let i = 0; i < n; i++) {
               const cls = gates[i]!
-              if (cls !== null && !classHas(cls, c)) continue
+              if (cls !== null && !classHas(cls, c)) { acc = accSet(armFx[i]!, acc); continue }
               ctx._fc = false
               const v = arms[i]!(input, pos, ctx)
               if (v !== FAIL) return v
-              if (committed(ctx)) return FAIL
+              acc = accSet(ctx._fx, acc)
+              if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
               if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             }
-            ctx._fe = pos; ctx._fx = choiceFx
+            ctx._fe = pos; ctx._fx = acc ?? choiceFx
             return FAIL
           }
         }
@@ -1570,16 +1672,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+          let acc: string[] | undefined
           for (let i = 0; i < n; i++) {
             const cls = gates[i]!
-            if (cls !== null && !classHas(cls, c)) continue
+            if (cls !== null && !classHas(cls, c)) { acc = accSet(armFx[i]!, acc); continue }
             ctx._fc = false
             const v = arms[i]!(input, pos, ctx)
             if (v !== FAIL) return v
-            if (committed(ctx)) return FAIL
+            acc = accSet(ctx._fx, acc)
+            if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
             if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           }
-          ctx._fe = pos; ctx._fx = choiceFx
+          ctx._fe = pos; ctx._fx = acc ?? choiceFx
           return FAIL
         }
       }
@@ -1656,8 +1760,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const end = END
           for (let i = 0; i < ns; i++) {
             if (!input.startsWith(strs[i]!, end)) continue
-            // A `continue` in the interpreter, not a failure — so no cut survives.
+            // A `continue` in the interpreter, not a failure — so no cut survives
+            // AND no expectation is contributed: `choice.ts:174` rolls back and
+            // moves on without touching `expected`. `_fx` still holds whatever the
+            // arm's last inner failure left, so it is cleared rather than left to
+            // be accumulated as if this arm had failed wanting something.
             ctx._fc = false
+            ctx._fx = undefined
             return FAIL
           }
           if (nc !== 0) {
@@ -1665,6 +1774,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             for (let i = 0; i < nc; i++) {
               if (!classHas(clss[i]!, c)) continue
               ctx._fc = false
+              ctx._fx = undefined
               return FAIL
             }
           }
@@ -1996,6 +2106,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ) => unknown
           : undefined
 
+        // A STRUCTURAL node — no builder, no projection — is the only shape that
+        // takes a per-node-type trivia-kind mask off the host (`node.ts:260`).
+        // Assembly-time, so a node with a reducer pays nothing for the question.
+        const structural = build === undefined && proj < 0
         return (input, pos, ctx) => {
           const host = HOST
           // `beginCstNodeCapture`/`endCstNodeCapture` INLINED, and the two objects
@@ -2024,10 +2138,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ctx.captureTrivia = captureWide
           const savedFields = ctx._fields
           ctx._fields = wantFields ? [] : undefined
+          // PER-NODE-TYPE TRIVIA-KIND MASK, scoped to the body and restored —
+          // `node.ts:259-273`, and codegen's `_triviaCaptureMask` save/install/
+          // restore around the same scope (`codegen.ts:4130-4136`). The table
+          // installed nothing, so a host that asked `Outer` for comments only got
+          // every kind the scanner saw.
+          const savedMask = structural ? ctx._triviaCaptureMask : undefined
+          if (structural && host?._parsemanTriviaKinds !== undefined) {
+            ctx._triviaCaptureMask = host._parsemanTriviaKinds(type)
+          }
           const v = child(input, pos, ctx)
           if (v !== FAIL && trailingTrivia && ctx.trivia !== undefined) END = consumeTrivia(input, END, ctx)
           const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(ctx._fields) : undefined
           ctx._fields = savedFields
+          if (structural) ctx._triviaCaptureMask = savedMask
           const kids = buf.ch ?? (buf.single !== undefined ? [buf.single] : EMPTY_CH)
           const rawKids = buf.raw ?? (buf.rawSingle !== undefined ? [buf.rawSingle] : EMPTY_CH)
           const tlog = buf.tl ?? EMPTY_TLOG
@@ -2075,7 +2199,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           } else {
             nd = { _tag: 'node', type, span, state: st ?? null, children: kids }
           }
-          pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+          // A ROOT NODE IS NOT A CHILD. `node()` pushes only when it was entered
+          // from an enclosing collector — `saved.buf !== undefined || saved.ch !==
+          // undefined` (node.ts:326). An outer `_cstLeaves` alone is a caller's
+          // own sink, not a parent node, and pushing into it published the root
+          // node as a leaf of itself.
+          if (sBuf !== undefined || sCh !== undefined) pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
           END = end
           return nd
         }

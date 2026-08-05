@@ -74,8 +74,17 @@ export const OP_NODE = 10
 export const OP_RULE = 11
 /** `GATE cc c` — first-char gate: `cc` indexes a char class; then run `c`. */
 export const OP_GATE = 12
-/** `NOT c` / `PEEK c` — zero-width. */
+/** `NOT c` — zero-width negative lookahead. */
 export const OP_NOT = 13
+/**
+ * `PEEK c fx` — zero-width positive lookahead. `fx` is the ASSERTION's own set,
+ * `['peek(<child tag>)']`, because `peek.ts:60` DISCARDS the body's expectation:
+ * a lookahead's failure is "the guard did not hold", not a request for whatever
+ * token the body happened to stop on.
+ *
+ * `encode-baseline.ts` / `exec-baseline.ts` emit and read the two-word form and
+ * are internally consistent; read the pair you are in.
+ */
 export const OP_PEEK = 14
 /** `LEAF f c` — `leaf()`: reduce, then record as a spanned leaf. */
 export const OP_LEAF = 15
@@ -350,6 +359,45 @@ export const OP_ARMGATE = 36
  */
 export const OP_LIVE = 37
 /**
+ * `ATTEMPT c` — `attempt()`, the transactional ordered-choice arm.
+ *
+ * WAS A TRANSPARENT WRAPPER (`case 'attempt': return this.node(d.parser).ip`),
+ * which is correct for exactly one placement — an arm of an `OP_CHOICE`, whose
+ * per-arm loop already saves and restores the eight capture sinks. Anywhere else
+ * — a `sequence()` term, a repeat item, a `node()` body — a failed transaction
+ * left its CST leaves, raw children, fields, recovery diagnostics and trivia-log
+ * entries behind, and reported the failure at the INNER position rather than
+ * re-anchored at the transaction's entry. Both are `attempt()`'s whole contract
+ * (`combinators/attempt.ts`), not a choice-arm detail.
+ *
+ * One child operand and no expected-set operand: on a non-committed inner
+ * failure the row keeps the inner's `_fx` VERBATIM and only re-anchors `_fe` to
+ * `pos`, exactly as `attempt.ts` returns `{ expected: result.expected, span:
+ * { start: pos, end: pos } }`. A committed failure propagates untouched — the
+ * rollback still happens, the re-anchor does not.
+ *
+ * The interpreter's first-set fail-fast guard is NOT lowered. It is an
+ * optimisation that reports `deriveExpected(parser)` in place of the start-fail
+ * the inner would have produced; running the inner produces that set for real,
+ * so the row is behaviourally the guard's post-condition without the second
+ * definition of what the inner expects.
+ */
+export const OP_ATTEMPT = 38
+/**
+ * `LABEL c fx` — `label(name, parser)`. `fx` is the one-element set `[name]`.
+ *
+ * WAS A TRANSPARENT WRAPPER, and a label is not transparent: `map.ts:84` returns
+ * `{ expected: [name], span: result.span }` on a failed child, i.e. it REPLACES
+ * the child's expected set and keeps the child's span. Dropping the row dropped
+ * the whole point of the combinator — a table lowering reported
+ * `['/[a-z]+/']` where the grammar had said `label('identifier', …)`, so every
+ * labelled diagnostic in every grammar regressed to raw regex source.
+ *
+ * `_fe` IS NOT TOUCHED, deliberately: `label()` keeps `result.span`, so the
+ * failure stays where the child put it.
+ */
+export const OP_LABEL = 39
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -379,5 +427,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX', [OP_GUARD]: 'GUARD',
   [OP_ADJ]: 'ADJ',
   [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
-  [OP_LIVE]: 'LIVE',
+  [OP_LIVE]: 'LIVE', [OP_ATTEMPT]: 'ATTEMPT', [OP_LABEL]: 'LABEL',
 }

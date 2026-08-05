@@ -10,11 +10,12 @@ import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
-  OP_LIVE,
+  OP_LIVE, OP_ATTEMPT, OP_LABEL,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
+import { resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
 import { missingInferredType } from '../combinators/node.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
@@ -105,6 +106,8 @@ class Encoder {
   disp: (readonly number[])[] = []
   dsp: DispatchSpec[] = []
   labels: readonly string[] | undefined = undefined
+  /** Trivia table in scope at the row being encoded — codegen's `ctx.activeTrivia`. */
+  activeTrivia: Combinator<unknown> | undefined = undefined
   classified = false
   scans: ScanSpec[] = []
   /** Ambient `scanSkip` sets, pooled by the ARRAY's identity (stable per grammar). */
@@ -341,7 +344,12 @@ class Encoder {
   }
 
   encodeRule(name: string, p: Combinator<unknown>): void {
+    // `rules({ trivia }, …)` is ambient for the whole rule body, so it is in
+    // scope for a `notAdjacent({ kinds })` anywhere inside it — see the same
+    // save/restore in `case 'grammar'`.
+    this.activeTrivia = p._meta.grammarTrivia
     const body = this.node(p).ip
+    this.activeTrivia = undefined
     // GRAMMAR-LEVEL AMBIENT TRIVIA (`rules({ trivia }, …)`).
     //
     // `run()` installs this from `entry._meta.grammarTrivia`, but ONLY for a
@@ -456,7 +464,12 @@ class Encoder {
         return this.emit(
           this.track ? OP_RX_TRACK : OP_RX,
           this.constant(new RegExp(`(?:${alt})${boundary}`, flags)),
-          this.expected(deriveExpected(p)),
+          // `['keyword']`, NOT `deriveExpected(p)`. `keywords.ts:137` reports the
+          // one word `keyword` — the whole point of the combinator is that a
+          // failing keyword arm names the CATEGORY rather than reciting every
+          // literal in the family. `deriveExpected` reports the literals, so the
+          // table said `'"media"'` where both other engines say `'keyword'`.
+          this.expected(['keyword']),
         )
       }
       case 'expect': {
@@ -567,12 +580,25 @@ class Encoder {
         const classes = arms.map(a => matchesEmpty(a) ? -1 : this.charClass(firstSetOf(a)))
         const dispIdx = this.disp.length
         this.disp.push(classes)
-        const head = this.emitHead(OP_CHOICE, 3 + kids.length)
+        // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. The ordered
+        // path reports the CONCATENATION of the arms' sets (`choice.ts:167`), and
+        // it must include the arms the driver's char gate declined to enter — the
+        // interpreter has no such gate, runs them, and gets exactly their static
+        // opener set back. Without these words a partially-gated site reported
+        // only the arms that happened to run.
+        const head = this.emitHead(OP_CHOICE, 3 + 2 * kids.length)
         this.code[head + 1] = dispIdx
         this.code[head + 2] = kids.length
-        // The choice's OWN expected set — the union both engines report.
-        this.code[head + 3] = this.expected(deriveExpected(p))
-        for (let i = 0; i < kids.length; i++) this.code[head + 4 + i] = kids[i]!
+        // THE CHOICE'S OWN SET IS THE ARMS' FLATMAP, NOT `deriveExpected(p)`.
+        // `deriveExpected` DEDUPES, and neither engine does: `choice.ts:110-118`
+        // is `parsers.flatMap(p => p.parse(...).expected)`, so a shared-prefix
+        // choice whose two arms both open with `/::?/` reports it TWICE. The
+        // deduped union silently collapsed that to one.
+        this.code[head + 3] = this.expected(arms.flatMap(a => deriveExpected(a)))
+        for (let i = 0; i < kids.length; i++) {
+          this.code[head + 4 + i] = kids[i]!
+          this.code[head + 4 + kids.length + i] = this.expected(deriveExpected(arms[i]!))
+        }
         return head
       }
       case 'many':
@@ -718,10 +744,21 @@ class Encoder {
         // A NULLABLE rule has no gate: it succeeds on input its first set does
         // not contain (including EOF), so gating it would reject a legal empty
         // match. Caught by the ladder's `empty` and `garbage` cases.
-        if (matchesEmpty(p)) return body
-        const cls = this.charClass(firstSetOf(p))
+        // THE BODY'S first set, not the node's. `node.ts:232` reads
+        // `combinator._meta.firstSet` where `combinator` is the BODY; a `node()`
+        // reports `any` for itself, so `firstSetOf(p)` was −1 here and NO node
+        // ever got the gate the interpreter applies. That is not just a lost
+        // fast path: when the guard fires it reports the STATIC
+        // `deriveExpected(body)`, which for a body with nullable leading terms
+        // names tokens the run would have skipped — `['"@"', '"(", '"x"']` where
+        // running the body reports `['"x"']` alone.
+        if (matchesEmpty(d.parser)) return body
+        const fs = d.parser._meta.firstSet
+        if (fs.kind === 'any') return body
+        const cls = this.charClass(fs)
         if (cls < 0) return body
-        return this.emit(OP_GATE, cls, body, this.expected(deriveExpected(p)))
+        const e = deriveExpected(d.parser)
+        return this.emit(OP_GATE, cls, body, this.expected(e.length > 0 ? e : [d.parser._tag]))
       }
       case 'token':
         return this.emit(OP_TOKEN, this.node(d.parser).ip)
@@ -835,6 +872,14 @@ class Encoder {
         // `'gate'`, the public name — see gate.ts. The def tag stays `'guard'`.
         return this.emit(OP_GUARD, this.fn(d.predicate, d.predSrc ?? null), this.expected(['gate']))
       case 'adjacency':
+        // A `kinds` LIST IS VALIDATED HERE, at encode time, against the trivia
+        // table in scope — the same `resolveAdjacencyKindMask` the interpreter
+        // calls on first reach and codegen calls while emitting the `_akN` probe
+        // (`codegen.ts:1034`). Deferring it to the driver's parse-time resolution
+        // left `compile()` accepting a grammar whose kind name no active table
+        // declares: an unlabelled table or a typo'd category compiled clean and
+        // threw only when an input happened to reach the assertion.
+        if (d.kinds !== undefined) resolveAdjacencyKindMask(this.activeTrivia, d.kinds)
         // The expected label is `adjacencyExpected`'s, not `deriveExpected`'s:
         // the interpreter fails with exactly `adjacent` / `notAdjacent` /
         // `notAdjacent(a|b)` (adjacency.ts `adjacencyFail`) and codegen emits the
@@ -857,10 +902,36 @@ class Encoder {
         return this.emit(OP_WITHCTX, this.constant(d.extra), this.node(d.parser).ip)
       }
       case 'peek':
-        return this.emit(OP_PEEK, this.node(d.parser).ip)
-      // Transparent wrappers: no row of their own, no dispatch at run time.
-      case 'attempt':
+        // The expected set is the ASSERTION's, not the body's: `peek.ts:60`
+        // reports `peek(<child tag>)` and DISCARDS what the body wanted — a
+        // lookahead's failure is "the guard did not hold", and naming the body's
+        // internals offers a token the parse never asked the author for. The
+        // table propagated the body's set instead.
+        return this.emit(OP_PEEK, this.node(d.parser).ip, this.expected([`peek(${d.parser._tag})`]))
+      // A TRANSACTION IS A ROW. See `OP_ATTEMPT` for why the transparent
+      // lowering was correct only for a choice arm.
+      case 'attempt': {
+        const inner = this.emit(OP_ATTEMPT, this.node(d.parser).ip)
+        // THE FIRST-SET FAIL-FAST GUARD, lowered as the `OP_GATE` row the `node()`
+        // case already uses — it is the same guard, written twice in the
+        // interpreter (`attempt.ts:22`, `node.ts:239`). It is NOT merely an
+        // optimisation: when it fires it reports the STATIC `deriveExpected` of
+        // the inner, which for a body with nullable leading terms names tokens the
+        // run itself would have skipped past. Running the inner instead reported a
+        // strictly smaller set, so omitting the guard was an observable divergence,
+        // not a slower equivalent.
+        const fs = d.parser._meta.firstSet
+        if (fs.kind === 'any' || matchesEmpty(d.parser)) return inner
+        const cls = this.charClass(fs)
+        if (cls < 0) return inner
+        const e = deriveExpected(d.parser)
+        return this.emit(OP_GATE, cls, inner, this.expected(e.length > 0 ? e : [d.parser._tag]))
+      }
+      // A LABEL IS A ROW — see `OP_LABEL`. It replaces the child's expected set,
+      // which is the entire combinator.
       case 'label':
+        return this.emit(OP_LABEL, this.node(d.parser).ip, this.expected([d.label]))
+      // Transparent wrapper: no row of its own, no dispatch at run time.
       case 'trivia':
         return this.node(d.parser).ip
       case 'grammar': {
@@ -915,11 +986,21 @@ class Encoder {
           | (d.triviaParser !== undefined
             && d.triviaParser._meta.rootTriviaClassified !== true
             && d.rootCapture !== 'opaque' ? 2 : 0)
-        if (d.clearTrivia === true) return this.emit(op, -1, this.node(d.parser).ip, flags)
+        // THE SCOPE'S TRIVIA IS IN SCOPE FOR ITS BODY. Tracked across the child
+        // descent so `case 'adjacency'` can resolve a `kinds` list against the
+        // table that will actually be active there, exactly as codegen's
+        // `ctx.activeTrivia` does. Saved and restored rather than assigned,
+        // because a scope is nestable and an inner one does not leak outward.
+        const savedTrivia = this.activeTrivia
+        if (d.clearTrivia === true) this.activeTrivia = undefined
+        else if (d.triviaParser !== undefined) this.activeTrivia = d.triviaParser
+        const bodyIp = this.node(d.parser).ip
+        this.activeTrivia = savedTrivia
+        if (d.clearTrivia === true) return this.emit(op, -1, bodyIp, flags)
         if (d.triviaParser === undefined) {
-          return cap || flags !== 0 ? this.emit(op, -1, this.node(d.parser).ip, flags) : this.node(d.parser).ip
+          return cap || flags !== 0 ? this.emit(op, -1, bodyIp, flags) : bodyIp
         }
-        return this.emit(op, this.triviaSlot(d.triviaParser), this.node(d.parser).ip, flags)
+        return this.emit(op, this.triviaSlot(d.triviaParser), bodyIp, flags)
       }
       /**
        * A HAND-WRITTEN COMBINATOR. `_def: { tag: 'unknown' }` is the designated
@@ -958,7 +1039,7 @@ class Encoder {
     const slots = (ip: number): number[] => {
       switch (this.code[ip]) {
         case OP_GATE: return [ip + 2]
-        case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: return [ip + 1]
+        case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: case OP_ATTEMPT: case OP_LABEL: return [ip + 1]
         case OP_SCOPE: case OP_SCOPE_CAP: case OP_WITHCTX: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
