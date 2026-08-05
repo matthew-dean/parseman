@@ -170,6 +170,38 @@ export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): str
   ].join('\n')
 }
 
+export type ExpressionEmitOptions = EmitOptions & {
+  /** Which rule the expression evaluates to. */
+  readonly entry?: string
+  /** Identifier the expression expects `tableRules` to be bound to. */
+  readonly runtimeRef?: string
+}
+
+/**
+ * The table as an EXPRESSION rather than a module — for an inliner that replaces
+ * a grammar's initialiser in place.
+ *
+ * It references `tableRules` by name instead of carrying the driver, so it is
+ * not self-contained. That is deliberate and it is not a cost: the reference
+ * resolves to `parseman/table`, a package the consumer already depends on for
+ * `run()`. The alternative — inlining the driver per grammar — is precisely the
+ * 2.10 MB that this lowering exists to replace with 0.56 MB.
+ *
+ * The caller owns the import. `emitTableModule` writes its own; an inliner
+ * splicing this into existing source must ensure the binding is in scope.
+ */
+export function emitTableExpression(prog: TableProgram, opts: ExpressionEmitOptions = {}): string {
+  assertPrintable(prog, 'emitTableExpression')
+  const entry = opts.entry ?? 'grammar'
+  const ref = opts.runtimeRef ?? 'tableRules'
+  const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
+  return [
+    `/* @__PURE__ */ ${ref}({`,
+    ...programFields(prog, fns),
+    `})[${jsString(entry)}]`,
+  ].join('\n')
+}
+
 export type FoldedEmitOptions = EmitOptions & {
   /**
    * Exported binding per variant name. A variant with no entry is still carried

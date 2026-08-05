@@ -27,7 +27,13 @@
  */
 export { assembledRules as tableRules, assembledRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
-export { emitTableModule, emitFoldedModule } from './emit.ts'
+/**
+ * `compile()` for the table lowering — same `CompiledParser` contract, a table
+ * artifact instead of generated source. A root combinator is a one-rule map, so
+ * this is a drop-in for the source-lowering `compile()` rather than a second API.
+ */
+export { compileTable, type TableCompileOptions } from './compile.ts'
+export { emitTableModule, emitTableExpression, emitFoldedModule } from './emit.ts'
 /**
  * THE VARIANT FOLD (G4). One base table plus per-variant row edits, selected at
  * load. Additive: `tableRules` and every existing entry are untouched, and the
