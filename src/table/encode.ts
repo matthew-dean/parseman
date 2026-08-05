@@ -255,6 +255,13 @@ class Encoder {
     return i
   }
 
+  /** Take trivia labels / classification off one carrier, first one wins. */
+  private carryTriviaMeta(c: Combinator<unknown> | undefined): void {
+    if (c === undefined) return
+    this.labels ??= c._meta.triviaKindLabels
+    if (c._meta.rootTriviaClassified === true) this.classified = true
+  }
+
   encodeRule(name: string, p: Combinator<unknown>): void {
     const body = this.node(p).ip
     // GRAMMAR-LEVEL AMBIENT TRIVIA (`rules({ trivia }, …)`).
@@ -277,11 +284,23 @@ class Encoder {
     const gss = p._meta.grammarScanSkip
     this.scanSkipOf.push(gss === undefined ? -1 : this.scanSkipSlot(gss))
     const amb = p._meta.grammarTrivia
-    if (amb !== undefined) {
-      // Carried so `tableRules` can stamp the entry — see TableProgram.labels.
-      this.labels ??= amb._meta.triviaKindLabels
-      if (amb._meta.rootTriviaClassified === true) this.classified = true
-    }
+    // Carried so `tableRules` can stamp the entry — see TableProgram.labels.
+    //
+    // THREE PLACES, because that is where `run()` looks (`triviaKindLabelsFromRunnable`
+    // / `rootTriviaClassifiedFromRunnable`, functional/run.ts): `rules({ trivia }, …)`
+    // leaves it on `_meta.grammarTrivia`, `classifiedTrivia()` leaves it on the
+    // combinator's OWN `_meta`, and `parser({ trivia }, …)` leaves it on
+    // `_def.triviaParser` with nothing on `_meta` at all.
+    //
+    // Reading only the first meant a table lowered from a `parser({ trivia:
+    // classifiedTrivia(…) }, …)` root PARSED correctly and then reported no
+    // labels, so `run({ rootTrivia: { select } })` rejected a grammar that plainly
+    // has labelled trivia — and a bare `classifiedTrivia()` passed as
+    // `options.trivia` lost its labels the same way. Neither is visible to a
+    // value-identity sweep: the tree is the same, only the metadata is gone.
+    this.carryTriviaMeta(amb)
+    this.carryTriviaMeta(p)
+    if (p._def.tag === 'grammar') this.carryTriviaMeta(p._def.triviaParser)
     this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.triviaSlot(amb), body)
   }
 
