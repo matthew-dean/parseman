@@ -10,19 +10,22 @@
  * SHIPS a table parser should not drag the combinator set, `compile()` and the
  * first-set analysis along with it.
  */
-export { tableRules } from './exec.ts'
 /**
- * THE ASSEMBLED DRIVER (G5). Same table, same artifact, same contract as
- * `tableRules` — but the program is LINKED into closures at run start instead of
- * interpreted row by row, so the parse path holds no opcode read, no operand
+ * THE DRIVER (G5) — `tableRules` IS the assembler. The program is LINKED into
+ * closures at run start, so the parse path holds no opcode read, no operand
  * decode and no option test.
  *
- * Exported alongside `tableRules` rather than replacing it: `exec.ts` is the
- * reference the three-way identity sweep gates the assembler against, and
- * replacing an engine before its replacement is proven identical is how a speed
- * win becomes a correctness incident.
+ * It replaced the bytecode interpreter here rather than shipping beside it. Two
+ * live drivers is two places for behaviour to drift, and that already happened
+ * once: the ambient `scanSkip` write had to move into the shared `stamp.ts`
+ * envelope because each driver was installing it separately. The gate for the
+ * swap was `exec === assembled` on the identity sweep, which it clears.
+ *
+ * `exec.ts` stays REFERENCE — the sweep still gates the assembler against it,
+ * and it is what a divergence gets bisected against. It is not on the product
+ * path and nothing emitted imports it.
  */
-export { assembledRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
+export { assembledRules as tableRules, assembledRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
 export { emitTableModule, emitFoldedModule } from './emit.ts'
 /**
