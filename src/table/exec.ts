@@ -75,7 +75,9 @@ export const tableCounters: {
   /** Rows executed INSIDE failed ungated arms — the subtree each wasted entry drags. */
   ungatedFailRows: number
   gatedEntries: number
-} = { rows: 0, byOp: new Int32Array(64), sites: new Map(), ungatedEntries: 0, ungatedFails: 0, ungatedFailRows: 0, gatedEntries: 0 }
+  /** Arm entries DECLINED by the per-arm class gate — the work this change removes. */
+  armGateSkips: number
+} = { rows: 0, byOp: new Int32Array(64), sites: new Map(), ungatedEntries: 0, ungatedFails: 0, ungatedFailRows: 0, gatedEntries: 0, armGateSkips: 0 }
 
 const COUNT = process.env.PM_TABLE_COUNT === '1'
 
@@ -93,6 +95,7 @@ export function resetTableCounters(): void {
   tableCounters.ungatedFails = 0
   tableCounters.ungatedFailRows = 0
   tableCounters.gatedEntries = 0
+  tableCounters.armGateSkips = 0
 }
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
@@ -652,9 +655,9 @@ function makeDriver(
           ctx._fx = choiceFx
           return FAIL
         }
-        if (d >= 0) {
-          const table = disp[d]!
-          const c = lead(input, pos)
+        const table = disp[d]!
+        const c = lead(input, pos)
+        if (table.exclusive) {
           let arm = -1
           if (c >= 0 && c < 128) {
             const a = table.ascii[c]!
@@ -698,7 +701,13 @@ function makeDriver(
           }
           return failChoice()
         }
+        // THE PER-ARM GATE. Arms in source order, each skipped when its own
+        // class excludes the char at `pos`. Order is untouched, so this is not a
+        // reordering: it only declines to enter arms that provably cannot match.
+        // A `null` class means nullable or unmappable, and those are always
+        // entered.
         const n = code[ip + 2]!
+        const armCls = table.armCls
         const need = rollbackNeeded(ctx)
         const mRaw = need ? cstRawLen(ctx) : 0
         const mTl = need ? cstTlLen(ctx) : 0
@@ -706,6 +715,11 @@ function makeDriver(
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
         for (let i = 0; i < n; i++) {
+          const cls = armCls[i]
+          if (cls !== undefined && cls !== null && !classHas(cls, c)) {
+            if (COUNT) tableCounters.armGateSkips++
+            continue
+          }
           ctx._fc = false
           if (COUNT) tableCounters.ungatedEntries++
           const rows0 = COUNT ? tableCounters.rows : 0

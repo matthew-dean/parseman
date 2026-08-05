@@ -66,6 +66,8 @@ console.log(JSON.stringify({
   ungatedFails: c.ungatedFails,
   ungatedFailRate: pct(c.ungatedFails, c.ungatedEntries),
   ungatedFailsPerByte: c.ungatedFails / bytes,
+  armGateSkips: c.armGateSkips,
+  entriesDeclinedShare: pct(c.armGateSkips, c.armGateSkips + c.ungatedEntries),
   ungatedFailRows: c.ungatedFailRows,
   failRowShareOfAllRows: pct(c.ungatedFailRows, c.rows),
   rowsPerByte: c.rows / bytes,

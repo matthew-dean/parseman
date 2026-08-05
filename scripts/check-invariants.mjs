@@ -65,7 +65,6 @@ const ALLOW = new Map([
    * same reason. All six entries leave when the ablation does. */
   ['INV-3:src/table/exec-baseline.ts', 'frozen ablation control — bench-only by design'],
   ['INV-3:src/table/encode-baseline.ts', 'frozen ablation control — bench-only by design'],
-  ['INV-4:src/table/encode-baseline.ts:disjointSets|src/table/encode.ts:disjointSets', 'frozen ablation control — identity with the live copy is the control'],
   ['INV-4:src/table/exec-baseline.ts:rawEntry|src/table/exec.ts:rawEntry', 'frozen ablation control — identity with the live copy is the control'],
   ['INV-4:src/table/exec-baseline.ts:trackLines|src/table/exec.ts:trackLines', 'frozen ablation control — identity with the live copy is the control'],
   ['INV-4:src/table/exec-baseline.ts:lineCol|src/table/exec.ts:lineCol', 'frozen ablation control — identity with the live copy is the control'],
