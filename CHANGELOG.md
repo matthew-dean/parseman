@@ -5,6 +5,38 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **BREAKING: `skip(main, skipped)` is removed.** It parsed `main`, then
+  OPTIONALLY consumed `skipped` immediately after it, and returned `main`'s
+  value with the span extended across both — `sequence` plus take-first, and a
+  distinct def tag carried through the encoder, the code generator, the IR
+  serializer, six analysis passes, the plugin evaluator and the spec renderer to
+  pay for it. No language needs it, and no grammar in this repo used it: every
+  call site was a test or a doc example.
+
+  Migration — note that `skipped` was **optional**, so the `optional()` is not
+  decoration:
+
+  ```ts
+  skip(a, b)   →   transform(sequence(a, optional(b)), ([x]) => x)
+  ```
+
+  Verified equivalent for value, span and expected set: when `b` matches, the
+  span extends across it; when `b` fails, `optional` succeeds zero-width, the
+  sequence rolls back and the span is `a`'s, exactly as `skip` returned `main`'s
+  result unchanged. `deriveExpected` agrees because it derives through
+  `transform` into the sequence and stops at the first non-nullable term.
+
+  Two edges where the replacement is deliberately not byte-for-byte:
+  - **Ambient trivia.** `sequence` skips the grammar's trivia between terms;
+    `skip` ran `skipped` at exactly `main`'s end. Under a grammar with ambient
+    trivia, `sequence(a, optional(b))` accepts `a <ws> b` where `skip(a, b)`
+    stopped at `a`. The adjacency-restricted form is not expressible (an
+    `adjacent()` assertion cannot lead the inner `optional`), which is the one
+    thing lost — and nothing in this repo, or in any grammar built on it, relied
+    on it.
+  - **Nullable `main`.** `skip` derived its expected set from `main` alone; the
+    sequence unions the trailer's in as well, because a nullable term 0 really
+    can let term 1 fail first. The sequence answer is the correct one.
 - **A ratchet on the invariant-gate allowlist, and a category on every entry.**
   The allowlist header said "THIS LIST MAY ONLY GET SHORTER" and called each
   entry "a numbered lane, not an acceptance", and nothing enforced either

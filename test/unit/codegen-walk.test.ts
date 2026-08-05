@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import {
-  compile, skip, literal, ref, sequence, optional, node, gate, withCtx,
+  compile, transform, literal, ref, sequence, optional, node, gate, withCtx,
 } from '../../src/index.ts'
 
 describe('codegen tree walks', () => {
-  it('compiles skip() and produces a working parser', () => {
-    const p = skip(literal('foo'), literal(' '))
+  it('compiles an optional-trailer transform(sequence(...)) and produces a working parser', () => {
+    const p = transform(sequence(literal('foo'), optional(literal(' '))), ([x]) => x)
     const compiled = compile(p)
     expect(compiled.source.length).toBeGreaterThan(0)
     expect(compiled.parse('foo ')).toEqual({
@@ -21,8 +21,8 @@ describe('codegen tree walks', () => {
     expect(compiled.source).toContain('function')
   })
 
-  it('compiles a node tree containing skip and gate wrappers', () => {
-    const Inner = node('Inner', skip(literal('a'), literal(' ')), () => null)
+  it('compiles a node tree containing transform and gate wrappers', () => {
+    const Inner = node('Inner', transform(sequence(literal('a'), optional(literal(' '))), ([x]) => x), () => null)
     const p = withCtx({ ok: true }, sequence(gate(s => !!(s as { ok: boolean }).ok), Inner))
     const src = compile(p).source
     expect(src.length).toBeGreaterThan(100)

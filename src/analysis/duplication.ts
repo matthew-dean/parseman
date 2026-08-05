@@ -488,7 +488,6 @@ function segment(d: ParserDef, index: number): string {
     case 'label': return `label(${d.label})`
     case 'field': return `field(${d.name})`
     case 'sepBy': return index === 0 ? 'sepBy.item' : 'sepBy.sep'
-    case 'skip': return index === 0 ? 'skip.main' : 'skip.skipped'
     case 'recover': return index === 0 ? 'recover.body' : 'recover.sentinel'
     case 'scanTo': return index === 0 ? 'scanTo.sentinel' : `scanTo.skip[${index - 1}]`
     default: return d.tag

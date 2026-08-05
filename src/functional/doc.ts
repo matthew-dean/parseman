@@ -92,8 +92,6 @@ function literalTextOf(parser: unknown, depth = 0): string | null {
     case 'withCtx':
     case 'grammar':
       return literalTextOf(d.parser, depth + 1)
-    case 'skip':
-      return literalTextOf(d.main, depth + 1)
     default:
       return null
   }
@@ -153,8 +151,6 @@ function producesRepetition(def: ParserDef | undefined, depth = 0): Repetition |
     case 'grammar':
     case 'optional':
       return producesRepetition(defOf(d.parser), depth + 1)
-    case 'skip':
-      return producesRepetition(defOf(d.main), depth + 1)
     // A bracketed/anchored list is a sequence whose element run is a repetition.
     case 'sequence': {
       for (const p of d.parsers as unknown[]) {

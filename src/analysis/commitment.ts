@@ -72,7 +72,6 @@ export function mayFail(p: Combinator<unknown>, seen: Set<Combinator<unknown>> =
     case 'grammar':
     case 'token':
     case 'leaf':      return mayFail(d.parser, seen)
-    case 'skip':      return mayFail(d.main, seen)
     case 'lazy':      { try { return mayFail(d.thunk(), seen) } catch { return true } }
     // An adjacency assertion is a TEST — failing is its whole job.
     case 'adjacency': return true
@@ -158,7 +157,6 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
     case 'grammar':
     case 'token':
     case 'leaf':      return alwaysConsumes(d.parser, seen)
-    case 'skip':      return alwaysConsumes(d.main, seen)
     case 'lazy':      { try { return alwaysConsumes(d.thunk(), seen) } catch { return false } }
     // Zero-width by definition — it asserts over the gap and moves nothing. This
     // `false` is load-bearing: it is what keeps the TRIVIA REWIND in place for the
@@ -184,7 +182,7 @@ export function alwaysConsumes(p: Combinator<unknown>, seen: Set<Combinator<unkn
  * having captured. node() buffers into a private sub-scope and discards it on
  * failure, so it never leaks. choice/firstMatch roll back each failed arm
  * internally. optional/many never "fail" with partial output. Delegating
- * wrappers (transform/label/grammar/withCtx/expect/skip) pass through to inner.
+ * wrappers (transform/label/grammar/withCtx/expect) pass through to inner.
  */
 export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set(), triviaActive = true): boolean {
   if (seen.has(p)) return false
@@ -275,8 +273,6 @@ export function mayLeavePartialCapture(p: Combinator<unknown>, seen: Set<Combina
     case 'withCtx':
     case 'grammar':
       return mayLeavePartialCapture(d.parser, seen, triviaActive)
-    case 'skip':
-      return mayLeavePartialCapture(d.main, seen, triviaActive)
     case 'recover':
       return mayLeavePartialCapture(d.parser, seen, triviaActive)
     case 'lazy': {
@@ -331,8 +327,6 @@ export function capturesLeaf(p: Combinator<unknown>, seen: Set<Combinator<unknow
     case 'grammar':
     case 'recover':
       return capturesLeaf(d.parser, seen)
-    case 'skip':
-      return capturesLeaf(d.main, seen)
     case 'scanTo':
       return true
     case 'lazy': {
@@ -367,7 +361,6 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
     case 'not':
     case 'peek':
     case 'transform': return hasNodeDef(d.parser, seen)
-    case 'skip':      return hasNodeDef(d.main, seen) || hasNodeDef(d.skipped, seen)
     case 'sequence':
     case 'choice':    return d.parsers.some(x => hasNodeDef(x, seen))
     case 'dispatch':  return hasNodeDef(d.selector, seen) || d.cases.some(x => hasNodeDef(x.parser, seen)) || (d.matchers ? d.matchers.some(entry => hasNodeDef(entry.parser, seen)) : false) || (d.otherwise ? hasNodeDef(d.otherwise, seen) : false)
@@ -403,8 +396,6 @@ export function mayCommitFailure(p: Combinator<unknown>, seen: Set<Combinator<un
       return mayCommitFailure(d.parser, seen)
     case 'sepBy':
       return mayCommitFailure(d.parser, seen) || mayCommitFailure(d.separator, seen)
-    case 'skip':
-      return mayCommitFailure(d.main, seen) || mayCommitFailure(d.skipped, seen)
     case 'token':
     case 'leaf':
       return mayCommitFailure(d.parser, seen)

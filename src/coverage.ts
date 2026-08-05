@@ -10,7 +10,7 @@ import { node } from './combinators/node.ts'
 import { parser as grammarParser } from './combinators/grammar.ts'
 import { expect } from './combinators/expect.ts'
 import { gate } from './combinators/gate.ts'
-import { label, field, skip, transform, trivia } from './combinators/map.ts'
+import { label, field, transform, trivia } from './combinators/map.ts'
 import { many, oneOrMore, optional, sepBy } from './combinators/repeat.ts'
 import { scanTo } from './combinators/scanTo.ts'
 import { sequence } from './combinators/sequence.ts'
@@ -341,7 +341,6 @@ function coverageEntry(entry: Combinator<unknown>, collector: GrammarCoverageCol
         }
         case 'sepBy': return sepBy(build(def.parser), build(def.separator), { min: def.min, ...(def.max === undefined ? {} : { max: def.max }), ...(def.trailing === undefined ? {} : { trailing: def.trailing }) })
         case 'transform': return transform(build(def.parser), def.fn)
-        case 'skip': return skip(build(def.main), build(def.skipped))
         case 'trivia': return trivia(build(def.parser))
         case 'token': return token(build(def.parser))
         case 'leaf': return leaf(build(def.parser), def.fn)

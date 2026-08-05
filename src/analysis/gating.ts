@@ -219,7 +219,6 @@ export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
       ...d.cases.map(c => c.parser),
       ...(d.otherwise === undefined ? [] : [d.otherwise]),
     ]
-    case 'skip': return [d.main, d.skipped]
     case 'sepBy': return [d.parser, d.separator]
     case 'recover': return [d.parser, d.sentinel]
     case 'scanTo': return [d.sentinel, ...d.skip]
@@ -434,7 +433,6 @@ function classifyBroadArm(arm: Combinator<unknown>, resolve?: RefResolver): ArmC
       case 'oneOrMore': case 'transform': case 'label': case 'field':
       case 'trivia': case 'token': case 'leaf': case 'node': case 'grammar': case 'expect':
         return walk(d.parser)
-      case 'skip': return walk(d.main)
       case 'sequence': {
         // Scan the nullable prefix the way sequenceFirstSet does: a `not(...)` or a
         // FINITE nullable term (optional/many/nullable regex) is skipped so a LATER

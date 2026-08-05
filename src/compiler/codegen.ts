@@ -139,7 +139,6 @@ export function leadingFirstSetRecipe(p: Combinator<unknown>, seen: Set<Combinat
     case 'field': case 'trivia': case 'token': case 'leaf': case 'node': case 'grammar': case 'expect':
       return rec(d.parser)
     case 'sepBy': return rec(d.parser)
-    case 'skip': return rec(d.main)
     // not / scanTo / guard / withCtx / recover / unknown → shallow set (safe).
     default: return { alts: [[seg(p._meta.firstSet, matchesEmpty(p))]] }
   }
@@ -2177,8 +2176,6 @@ function mayRecordRecoveryError(p: Combinator<unknown>, recovery: boolean, seen:
     case 'withCtx':
     case 'optional':
       return mayRecordRecoveryError(d.parser, recovery, seen)
-    case 'skip':
-      return mayRecordRecoveryError(d.main, recovery, seen) || mayRecordRecoveryError(d.skipped, recovery, seen)
     case 'scanTo':
       if (mayRecordRecoveryError(d.sentinel, recovery, seen)) return true
       for (const item of d.skip) {
@@ -4672,25 +4669,6 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
         endVar: inner.endVar,
       }
     }
-    case 'skip': {
-      const mainR = emit(def.main, ctx, pos)
-      const skipR = emit(def.skipped, ctx, mainR.endVar)
-      // skipped is optional — if it fails we just keep main's end
-      const endV = v(ctx, '_skipe')
-      return {
-        stmts: [
-          ...mainR.stmts,
-          // try skipped; if fails, keep main end
-          `${ind(ctx)}let ${endV} = ${mainR.endVar}`,
-          `${ind(ctx)}try {`,
-          ...reindentStmts(skipR.stmts, ctx.indent + 1),
-          `${ind(ctx)}  ${endV} = ${skipR.endVar}`,
-          `${ind(ctx)}} catch {}`,
-        ],
-        valueVar: mainR.valueVar,
-        endVar: endV,
-      }
-    }
     case 'lazy':     return emitLazy(p, def, ctx, pos)
     case 'trivia':   return emit(def.parser, ctx, pos)
     case 'token':    return emitToken(def, ctx, pos)
@@ -4975,7 +4953,6 @@ function childrenOf(def: ParserDef): Combinator<unknown>[] {
     // referenced from several positions within this one compiled function.
     case 'oneOrMore': return Array.from({ length: def.min + 1 }, () => def.parser)
     case 'sepBy':     return [def.parser, def.parser, def.separator]
-    case 'skip':      return [def.main, def.skipped]
     case 'recover':   return [def.parser, def.sentinel]
     case 'scanTo':    return [def.sentinel, ...def.skip]
     // A `routed()` fallback IS emitted at this site (emitRouted), so the usage

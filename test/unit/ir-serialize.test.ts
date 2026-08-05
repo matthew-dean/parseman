@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest'
 import {
   rules, regex, literal, sequence, choice, many, oneOrMore, optional, sepBy,
   not, scanTo, balanced, parser, trivia, expect as expectC, node,
-  keywords, label, skip, token, leaf, transform, dispatch, when, otherwise,
+  keywords, label, token, leaf, transform, dispatch, when, otherwise,
   endsWith, makeWhen, matches, routed, startsWith,
 } from '../../src/index.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
@@ -97,17 +97,16 @@ describe('IR serialize round-trip', () => {
     roundTrip(rm, 'Doc', ['a', 'a b c', '-a  -b', 'a-'])
   })
 
-  it('the remaining leaf/wrapper arms: keywords, oneOrMore, trivia, label, expect, skip, scanTo', () => {
+  it('the remaining leaf/wrapper arms: keywords, oneOrMore, trivia, label, expect, scanTo', () => {
     const rm = Object.entries(rules((g: any) => ({
       // keywords with both option branches (caseInsensitive + boundary); a
-      // case-insensitive literal; oneOrMore; the trivia()/label()/expect()/skip()
+      // case-insensitive literal; oneOrMore; the trivia()/label()/expect()
       // wrapper arms; and a scanTo() that actually reaches the scanTo serializer.
-      Doc: sequence(g.Kw, g.Digits, g.Named, g.Semi, g.Word, g.ToEnd),
+      Doc: sequence(g.Kw, g.Digits, g.Named, g.Semi, g.ToEnd),
       Kw: keywords(['if', 'else'], { caseInsensitive: true, boundary: '\\w' }),
       Digits: oneOrMore(regex(/[0-9]/)),
       Named: label('ident', regex(/[a-z]+/)),
       Semi: expectC(literal(';'), 'semicolon'),
-      Word: skip(regex(/[a-z]+/), literal('_')),
       ToEnd: trivia(scanTo(literal('.'), { skip: [regex(/\s+/)], orEOF: true })),
       Tok: token(sequence(literal('!'), regex(/important/i))),
       Ci: literal('url(', { caseInsensitive: true }),

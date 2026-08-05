@@ -65,8 +65,6 @@ export function parserUsesRouted(parser: Combinator<unknown>, seen: Set<Combinat
       return false
     case 'sepBy':
       return parserUsesRouted(def.parser, seen) || parserUsesRouted(def.separator, seen)
-    case 'skip':
-      return parserUsesRouted(def.main, seen) || parserUsesRouted(def.skipped, seen)
     case 'grammar':
       return parserUsesRouted(def.parser, seen) || (def.triviaParser ? parserUsesRouted(def.triviaParser, seen) : false)
     case 'scanTo':
