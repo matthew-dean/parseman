@@ -12,7 +12,8 @@
  * chV even when the opt-out is also set.
  */
 import { describe, it, expect } from 'vitest'
-import { node, regex, sequence, literal, many, trivia, parser, rules, compile, type BuildHost } from '../../src/index.ts'
+import { node, regex, sequence, literal, many, trivia, parser, rules, type BuildHost } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 const rw = trivia(regex(/[ \t\n\r\f]+/))
 // Nested structural grammar: Doc → many(Pair); Pair → Word ':' Word. Leaves

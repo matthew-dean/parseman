@@ -15,9 +15,10 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  choice, compile, dispatch, literal, node, otherwise, regex, routed, rules,
+  choice, dispatch, literal, node, otherwise, regex, routed, rules,
   sequence, when, type Combinator, type ParseContext,
 } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
 
 const run = <T>(p: Combinator<T>, input: string) => p.parse(input, 0, { trackLines: false } as ParseContext)

@@ -1,9 +1,10 @@
 import { beforeAll, describe, it, expect } from 'vitest'
 import {
-  choice, compile, leaf, literal, many, node, noTrivia, oneOrMore, optional, parse, parser, regex, sequence, token, trivia,
+  choice, leaf, literal, many, node, noTrivia, oneOrMore, optional, parse, parser, regex, sequence, token, trivia,
   sepBy, transform,
 } from '../../src/index.ts'
 import type { CSTLeaf, ParseContext } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 type CstNode = {
   _tag: 'node'

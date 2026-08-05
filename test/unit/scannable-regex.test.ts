@@ -9,9 +9,10 @@
 import { describe, it, expect, beforeAll } from 'vitest'
 import {
   regex, literal, sequence, choice, transform, oneOrMore, many, sepBy,
-  node, parser, trivia, parse, compile,
+  node, parser, trivia, parse,
 } from '../../src/index.ts'
 import type { Combinator, CSTLeaf } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { parseScanShape, scanShapeFromRegex, SPACE_RANGES } from '../../src/compiler/scannable-run.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 

@@ -6,8 +6,9 @@
  * are identical, and also inspects the generated source where useful.
  */
 import { describe, it, expect } from 'vitest'
-import { literal, sequence, choice, many, optional, transform, parse, compile } from '../../src/index.ts'
+import { literal, sequence, choice, many, optional, transform, parse } from '../../src/index.ts'
 import { gate, withCtx } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 // ---------------------------------------------------------------------------
 // gate() codegen

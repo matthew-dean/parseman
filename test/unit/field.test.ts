@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
   choice,
-  compile,
   field,
   leaf,
   literal,
@@ -16,6 +15,7 @@ import {
   run,
   sequence,
 } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { parserEnablesTriviaCapture } from '../../src/compiler/fields.ts'
 

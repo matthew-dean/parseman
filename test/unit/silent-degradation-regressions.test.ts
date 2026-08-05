@@ -13,10 +13,11 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  compile, compose, cstBuildHost, literal, node, parser, regex, rules, run, sequence,
+  compose, cstBuildHost, literal, node, parser, regex, rules, run, sequence,
   analyzeGrammarGating, compiledGrammarCoverageDefinitions, composedGrammarCoverageDefinitions,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 // ---------------------------------------------------------------------------
 // cstBuildHost({ collapse }) — a documented option that did nothing

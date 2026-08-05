@@ -7,8 +7,9 @@
  * tests lock in the codegen SHAPE (switch vs if) and cross-mode parity.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
-import { literal, regex, choice, compile } from '../../src/index.ts'
+import { literal, regex, choice } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { csvField } from '../../examples/csv/parser.ts'
 

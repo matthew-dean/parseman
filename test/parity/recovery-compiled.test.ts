@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest'
 import { regex, literal, sequence, many, oneOrMore, sepBy, node, rules, trivia, run, compile, completionsAt, cstBuildHost, expect as expectTok, optional } from '../../src/index.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 const ident = regex(/[a-z]+/)
 const num = regex(/[0-9]+/)
 const decl = sequence(ident, literal(':'), num)
@@ -89,7 +90,7 @@ describe('completionsAt on the COMPILED grammar (probe parity)', () => {
 describe('MACRO inline-expression recovers (macro-compiled grammars are recoverable)', () => {
   const block = sequence(literal('{'), many(decl), literal('}'))
   it('the inlinable macro output recovers with parity, and keeps inlineExpression', () => {
-    const rec = compile(block as Combinator<unknown>, undefined, { recovery: true })
+    const rec = compileCodegen(block as Combinator<unknown>, undefined, { recovery: true })
     // A recovery grammar must still be macro-inlinable (no _rp), else it can't be
     // baked into a shipped compiled grammar.
     expect(rec.inlineExpression).not.toBeNull()

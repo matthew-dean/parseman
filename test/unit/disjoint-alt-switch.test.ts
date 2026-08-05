@@ -5,7 +5,8 @@
  * the range-comparison if/else chain.
  */
 import { describe, it, expect } from 'vitest'
-import { regex, parse, compile } from '../../src/index.ts'
+import { regex, parse } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import type { ParseResult } from '../../src/types.ts'
 
 const norm = (r: ParseResult<unknown>) => ({ ok: r.ok, value: r.ok ? r.value : undefined, end: r.span.end })

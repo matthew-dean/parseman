@@ -18,8 +18,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { analyzeMkInlineBuild } from '../../src/compiler/inline-build.ts'
-import { node, sequence, literal, regex, many, choice, parser, compile, parse } from '../../src/index.ts'
+import { node, sequence, literal, regex, many, choice, parser, parse } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import {
   formatDegradation, formatDegradations, beginDegradationCapture, endDegradationCapture,

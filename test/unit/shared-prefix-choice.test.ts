@@ -10,6 +10,7 @@
  * the shared-recognition form. Both are asserted here.
  */
 import { choice, sequence, regex, literal, transform, not, node, parser as grammarParser, trivia, oneOrMore, compile, rules, compose, parse, type Combinator, type ParseContext } from '../../src/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 import { compileLinkable } from '../../src/compiler/codegen.ts'
 import { fusedBody } from '../../src/compiler/linker.ts'
 import { describe, expect, it } from 'vitest'
@@ -67,7 +68,7 @@ describe('choice — sharedPrefix strategy', () => {
       sequence(literal('@x'), literal('bar')),
     )
     expect(strategyOf(g)).toBe('sharedPrefix')
-    const src = compile(g).source
+    const src = compileCodegen(g).source
     expect((src.match(/!== 120/g) ?? []).length).toBe(1)
 
     for (const p of both(g)) {
@@ -108,7 +109,7 @@ describe('choice — sharedPrefix strategy', () => {
 
     // The `::?` scan (a charCodeAt do/while loop) is emitted exactly once — the arms
     // replay it rather than re-scanning.
-    const src = compile(g).source
+    const src = compileCodegen(g).source
     expect((src.match(/do \{/g) ?? []).length).toBe(1)
 
     const ctx = () => ({ trackLines: false, trivia: ws, captureTrivia: true }) as unknown as Record<string, unknown>

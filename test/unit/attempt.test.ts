@@ -1,4 +1,5 @@
 import { attempt, choice, compile, createGrammarTraceSink, expect as required, field, literal, node, oneOrMore, parser as grammarParser, runWithGrammarCoverage, sequence, trivia, type Combinator, type ParseContext } from '../../src/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 import { describe, expect, it } from 'vitest'
 import { transformMacro } from '../../src/plugin/index.ts'
 
@@ -104,7 +105,7 @@ describe('attempt', () => {
     expect(interpreterTrace.snapshot().events).toContainEqual({ id: 'attempt:entry/choice:0', phase: 'rollback', offset: 0 })
 
     const macroEvents: Array<{ id: string; phase: string; offset: number; end?: number }> = []
-    const compiled = compile(parser, undefined, { coverage: true })
+    const compiled = compileCodegen(parser, undefined, { coverage: true })
     expect(compiled.parseWithContext('a', { trackLines: false, _grammarTrace: { write: (event: { id: string; phase: string; offset: number; end?: number }) => macroEvents.push(event) } } as never)).toMatchObject({ ok: true })
     expect(macroEvents).toEqual(interpreterTrace.snapshot().events)
 

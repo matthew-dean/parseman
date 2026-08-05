@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { keywords, word, makeWord, parse, compile } from '../../src/index.ts'
+import { keywords, word, makeWord, parse } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 describe('keywords', () => {
   it('matches any keyword in the set', () => {

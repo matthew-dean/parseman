@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
-  compile, transform, literal, ref, sequence, optional, node, gate, withCtx,
+  transform, literal, ref, sequence, optional, node, gate, withCtx,
 } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 describe('codegen tree walks', () => {
   it('compiles an optional-trailer transform(sequence(...)) and produces a working parser', () => {

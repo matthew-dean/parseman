@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { choice, compile, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, leaf, label, literal, many, otherwise, regex, rules, run, runWithGrammarCoverage, sequence, startsWith, when, type GatedArm } from '../../src/index.ts'
+import { choice, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, leaf, label, literal, many, otherwise, regex, rules, run, runWithGrammarCoverage, sequence, startsWith, when, type GatedArm } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { compileRuleMap } from '../../src/compiler/codegen.ts'
 

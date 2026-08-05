@@ -20,7 +20,8 @@
  * withCtx inner — the raw inner now hoists correctly.
  */
 import { describe, it, expect } from 'vitest'
-import { choice, sequence, literal, label, withCtx, compile } from '../../src/index.ts'
+import { choice, sequence, literal, label, withCtx } from '../../src/index.ts'
+import { compile } from '../../src/compiler/codegen.ts'
 
 describe('withCtx inner hoist (self-alias regression)', () => {
   // A shared inner combinator (hoistable `choice`, size ≥ HOIST_MIN_SUBTREE),
