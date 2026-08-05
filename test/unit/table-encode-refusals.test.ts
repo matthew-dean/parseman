@@ -777,7 +777,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
     }
   })
 
-  it('TWO shapes still report a different expected set; the dispatch miss and the sepBy min do not', () => {
+  it('all four shapes report the SAME expected set in all three engines', () => {
     // All four accept and reject exactly the right inputs, so the identity sweep
     // is blind to every one of them; only the error message moves. Collected here
     // so the size of the divergence is one number rather than a rumour.
@@ -785,18 +785,21 @@ describe('table failure reporting matches the interpreter and the compiled path'
     // Characterised, not endorsed: each `toEqual` on the TABLE row is the current
     // behaviour, and each `interp`/`compiled` row is what it should be.
     //
-    // WAS FOUR, THEN THREE. The dispatched-choice miss went first — a choice now
-    // carries its own expected set and reports the union on every failing exit.
-    // `Min` is the second to go: a list ending under `min` now reports the ITEM,
+    // WAS FOUR, THEN THREE, NOW NONE. The dispatched-choice miss went first — a
+    // choice now carries its own expected set and reports the union on every
+    // failing exit. `Min` was second: a list ending under `min` reports the ITEM,
     // which is what `failAt` (repeat.ts) and codegen's `deriveExpectedArr([item])`
-    // both already reported. Both are kept in the grammar so the shapes are still
-    // encoded and exercised, and `Min` is asserted POSITIVELY below rather than
-    // deleted, so a regression cannot quietly restore the separator.
+    // both already reported. `Kw` and `Peek` went with the table-lowering flip:
+    // `keywords()` now carries its own `['keyword']` label into the row instead of
+    // deriving the literals off the rebuilt regex, and `OP_PEEK` carries the
+    // ASSERTION's set instead of letting the body's escape. All four shapes are
+    // kept and asserted POSITIVELY, so a regression cannot quietly restore any of
+    // them.
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
-      // 1. keywords(): the encoder rebuilds the terminal and derives the set from
-      //    the rebuilt regex's parts instead of the combinator's own label.
+      // 1. FIXED — keywords() carries its own label rather than the rebuilt
+      //    regex's literals.
       Kw: node('Kw', keywords(['if', 'ifdef'], { boundary: 'a-z' }), c => ({ t: 'Kw', c })),
-      // 2. peek(): the lookahead's INNER expectation escapes.
+      // 2. FIXED — the lookahead's INNER expectation no longer escapes.
       Peek: transform(sequence(peek(literal('ab')), literal('a')), v => (v as unknown[])[1]) as Combinator<unknown>,
       // 3. FIXED — a dispatched choice that matches no arm now reports the union.
       //    Kept in the grammar so the shape is still encoded and exercised.
@@ -812,14 +815,14 @@ describe('table failure reporting matches the interpreter and the compiled path'
     const t = tableRules(encodeTable(g))
     const c = compose([g as never]) as unknown as Record<string, unknown>
     const cases = [
-      ['Kw', 'ifx', ['"ifdef"', '"if"'], ['keyword']],
-      ['Peek', 'ax', ['"ab"'], ['peek(literal)']],
+      ['Kw', 'ifx', ['keyword']],
+      ['Peek', 'ax', ['peek(literal)']],
     ] as const
-    for (const [rule, input, fromTable, fromEngines] of cases) {
+    for (const [rule, input, all] of cases) {
       expect(run(t[rule]! as never, input).ok, `${rule} ${input}`).toBe(false)
-      expect(run(t[rule]! as never, input).expected, `${rule} table`).toEqual(fromTable)
-      expect(run(g[rule]! as never, input).expected, `${rule} interpreter`).toEqual(fromEngines)
-      expect(run(c[rule] as never, input).expected, `${rule} compiled`).toEqual(fromEngines)
+      expect(run(t[rule]! as never, input).expected, `${rule} table`).toEqual(all)
+      expect(run(g[rule]! as never, input).expected, `${rule} interpreter`).toEqual(all)
+      expect(run(c[rule] as never, input).expected, `${rule} compiled`).toEqual(all)
     }
     // `Min`, positively: all THREE now name the item. A list stuck under `min` is
     // stuck wanting another ITEM, and says so wherever it runs.

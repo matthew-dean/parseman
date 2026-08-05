@@ -16,10 +16,25 @@ import {
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_LIVE,
-  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
+  OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
+import { failAt } from '../combinators/probe.ts'
+/**
+ * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
+ *
+ * `failAt` (combinators/probe.ts) is called from exactly three places in the
+ * interpreter — `literal.ts`, `regex.ts`, `keywords.ts` — and codegen emits its
+ * mirror (`probeUpdate`) at the same leaf-fail sites. The table recorded
+ * NOTHING, so `completionsAt` on a table artifact saw only the top-level
+ * failure: a swallowed item failure inside a `sepBy` (`'{'` at offset 1 in a
+ * `{ decl; }` grammar) never reached the probe and the item's opener vanished
+ * from the completion set.
+ *
+ * Dormant unless `completionsAt` set `_probe`, so an ordinary parse pays one
+ * property read per terminal miss — the same price codegen pays.
+ */
 import { committed, spanLines, stampRuleMap } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
@@ -325,7 +340,11 @@ function makeDriver(
           END = e
           return s
         }
-        ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
+        {
+          const xf = fx[code[ip + 2]!] as string[]
+          ctx._fe = pos; ctx._fx = xf
+          if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+        }
         return FAIL
       }
       case OP_RX: {
@@ -339,7 +358,11 @@ function makeDriver(
           END = e
           return v
         }
-        ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
+        {
+          const xf = fx[code[ip + 2]!] as string[]
+          ctx._fe = pos; ctx._fx = xf
+          if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+        }
         return FAIL
       }
       case OP_LIT_TRACK: {
@@ -351,7 +374,11 @@ function makeDriver(
           END = e
           return s
         }
-        ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
+        {
+          const xf = fx[code[ip + 2]!] as string[]
+          ctx._fe = pos; ctx._fx = xf
+          if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+        }
         return FAIL
       }
       case OP_RX_TRACK: {
@@ -366,7 +393,11 @@ function makeDriver(
           END = e
           return v
         }
-        ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
+        {
+          const xf = fx[code[ip + 2]!] as string[]
+          ctx._fe = pos; ctx._fx = xf
+          if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+        }
         return FAIL
       }
       case OP_LIT_CI:
@@ -383,7 +414,11 @@ function makeDriver(
           END = e
           return matched
         }
-        ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
+        {
+          const xf = fx[code[ip + 2]!] as string[]
+          ctx._fe = pos; ctx._fx = xf
+          if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+        }
         return FAIL
       }
       case OP_EMPTY:
@@ -407,11 +442,19 @@ function makeDriver(
         throw adjacencyMisuse(code[ip + 1] === 1 ? 'notAdjacent' : 'adjacent')
 
       case OP_GATE: {
-        if (!classHas(cc[code[ip + 1]!]!, lead(input, pos))) {
+        // Skipped under a probe / tolerant recovery — see `assemble.ts`.
+        if (ctx._probe === undefined && !ctx._tolerant && !classHas(cc[code[ip + 1]!]!, lead(input, pos))) {
           ctx._fe = pos; ctx._fx = fx[code[ip + 3]!] as string[]
           return FAIL
         }
         return exec(code[ip + 2]!, input, pos, ctx)
+      }
+
+      case OP_LABEL: {
+        const v = exec(code[ip + 1]!, input, pos, ctx)
+        // `_fe` untouched — `map.ts:84` keeps `result.span`.
+        if (v === FAIL) ctx._fx = fx[code[ip + 2]!] as string[]
+        return v
       }
       case OP_RULE:
         return exec(code[ip + 1]!, input, pos, ctx)
@@ -845,10 +888,33 @@ function makeDriver(
         const mEr = need ? ctx._errors?.length ?? 0 : 0
         const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+        // THE ORDERED PATH REPORTS THE ARMS THAT ACTUALLY RAN, accumulated in
+        // order — `choice.ts:167`'s `expected.push(...result.expected)` per failed
+        // arm, reported at the choice's own position. The static `choiceFx` union
+        // is a set of OPENERS, so a left-factored or shared-prefix choice whose
+        // arms all failed PAST their common opener reported that opener instead of
+        // the tokens the arms were actually waiting for: `['/::?/']` where the
+        // interpreter says `['"before"', '"hover"']`.
+        //
+        // `choiceFx` is still the answer when nothing ran or every arm reported
+        // nothing — the char gate can skip arms the interpreter would have entered,
+        // and the union is what those arms' start-failures would have contributed.
+        let acc: string[] | undefined
+        const push = (ax: readonly string[] | undefined): void => {
+          if (ax === undefined || ax.length === 0) return
+          if (acc === undefined) acc = ax.slice()
+          else for (const s of ax) acc.push(s)
+        }
+        const armFx = base + n
         for (let i = 0; i < n; i++) {
           const cls = armCls[i]
           if (cls !== undefined && cls !== null && !classHas(cls, c)) {
             if (COUNT) tableCounters.armGateSkips++
+            // THE GATED ARM STILL REPORTS. The interpreter has no char gate: it
+            // enters the arm, the arm's opener fails, and its static set is what
+            // lands in the accumulation. Declining to enter must not also decline
+            // to say what the arm wanted.
+            push(fx[code[armFx + i]!] as string[])
             continue
           }
           ctx._fc = false
@@ -857,9 +923,13 @@ function makeDriver(
           const v = exec(code[base + i]!, input, pos, ctx)
           if (v !== FAIL) return v
           if (COUNT) { tableCounters.ungatedFails++; tableCounters.ungatedFailRows += tableCounters.rows - rows0 }
-          if (committed(ctx)) return FAIL
+          push(ctx._fx)
+          // A committed arm cuts, and the interpreter reports the accumulation at
+          // the arm's OWN span (`choice.ts:170`), not at the choice's position.
+          if (committed(ctx)) { if (acc !== undefined) ctx._fx = acc; return FAIL }
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         }
+        if (acc !== undefined) { ctx._fe = pos; ctx._fx = acc; return FAIL }
         return failChoice()
       }
 
@@ -917,8 +987,10 @@ function makeDriver(
           if (!fires) continue
           // choice.ts:161-164 is a `continue`, not a failure: the arm is treated
           // as never entered, so a cut it raised must not survive to cut the
-          // choice. The choice does the capture-sink rollback, as for any arm.
+          // choice, and it contributes NO expectation. The choice does the
+          // capture-sink rollback, as for any arm.
           ctx._fc = false
+          ctx._fx = undefined
           return FAIL
         }
         END = end
@@ -1203,10 +1275,18 @@ function makeDriver(
         const savedFields = ctx._fields
         ctx._fields = (flags & 16) !== 0 || hostCst ? [] : undefined
         if ((flags & 4) === 0 && !hostCst) ctx.captureTrivia = false
+        // Per-node-type trivia-kind mask — see `assemble.ts`. Structural nodes
+        // only (no builder, no projection), matching `node.ts:260`.
+        const structural = code[ip + 1]! < 0 && code[ip + 4]! < 0
+        const savedMask = structural ? ctx._triviaCaptureMask : undefined
+        if (structural && host?._parsemanTriviaKinds !== undefined) {
+          ctx._triviaCaptureMask = host._parsemanTriviaKinds(k[code[ip + 5]!] as string)
+        }
         const v = exec(code[ip + 2]!, input, pos, ctx)
         if (v !== FAIL && (flags & 128) !== 0 && ctx.trivia !== undefined) END = consumeTrivia(input, END, ctx)
         const fieldMap: FieldMap | undefined = (flags & 16) !== 0 || hostCst ? buildFieldMap(ctx._fields) : undefined
         ctx._fields = savedFields
+        if (structural) ctx._triviaCaptureMask = savedMask
         const cap = endCstNodeCapture(ctx, saved)
         if (v === FAIL) return FAIL
         const end = END
@@ -1271,9 +1351,31 @@ function makeDriver(
         } else {
           nd = { _tag: 'node', type, span, state: st ?? null, children: kids }
         }
-        pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
+        // A ROOT NODE IS NOT A CHILD — see the same guard in `assemble.ts`.
+        if (saved.buf !== undefined || saved.ch !== undefined) pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
         END = end
         return nd
+      }
+
+      case OP_ATTEMPT: {
+        // `attempt()` verbatim: mark, run, and on failure restore every capture
+        // sink and re-anchor the report at the transaction's entry. A COMMITTED
+        // failure is still rolled back and then propagated untouched — the
+        // interpreter returns `result` itself on that branch.
+        const need = rollbackNeeded(ctx)
+        const mRaw = need ? cstRawLen(ctx) : 0
+        const mTl = need ? cstTlLen(ctx) : 0
+        const mLv = need ? cstLeavesLen(ctx) : 0
+        const mFl = need ? ctx._fields?.length ?? 0 : 0
+        const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+        const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
+        const v = exec(code[ip + 1]!, input, pos, ctx)
+        if (v !== FAIL) return v
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+        if (ctx._fc === true) return FAIL
+        ctx._fe = pos
+        return FAIL
       }
 
       case OP_NOT: {
@@ -1303,7 +1405,8 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        if (v === FAIL) return FAIL
+        // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
+        if (v === FAIL) { ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]; return FAIL }
         END = pos
         return null
       }
