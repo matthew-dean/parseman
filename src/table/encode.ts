@@ -434,11 +434,14 @@ class Encoder {
         // A node legally has NO builder when its value comes from a selection:
         // `project` replaces the builder outright, and `collapse`/`unwrap` make
         // the single captured child the value. A node with none of those and no
-        // builder is STRUCTURAL — its value comes from a `ctx.build` host, which
-        // this driver does not have (see the guard in exec.ts).
-        if (d.build === undefined && d.project === undefined && d.collapse !== true && d.unwrap !== true) {
-          throw new UnsupportedConstruct('node(structural — needs a ctx.build host)')
-        }
+        // builder is STRUCTURAL — its value comes from a `ctx.build` host.
+        //
+        // This USED to refuse, on the belief that the driver had no host. It
+        // does: `assemble.ts` reads `ctx.build` once per parse in `begin()` and
+        // bakes host-ness into which pieces the assembly holds, and `exec.ts`
+        // has the same branch. The refusal was over-broad, not protective —
+        // verified by differential against the interpreter, with a host and
+        // without, on match and on failure.
         if (d.type === undefined) throw new UnsupportedConstruct('node(inferred type)')
         // FAIL CLOSED on fields this encoder does not lower. The capture flags below
         // are derived from the reducer's ARITY, which cannot express an explicit

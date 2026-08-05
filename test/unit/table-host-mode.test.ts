@@ -147,18 +147,38 @@ describe('encodeTable({ hostMode })', () => {
     expect(encodeTable(declared).code).toEqual(encodeTable(lowArity).code)
   })
 
-  it("'cst' does NOT unlock a structural node — it is still refused at encode time", () => {
+  it('a structural node lowers in BOTH host modes, and matches the interpreter', () => {
     // A node with no builder, no project and no collapse takes its value from a
-    // host. `hostMode: 'cst'` says a host is coming, yet the encoder refuses the
-    // construct in both modes, so a jess-shaped CST grammar cannot be lowered at
-    // all. The refusal is correct for `'ast'`; under `'cst'` it is a gap.
+    // `ctx.build` host. The encoder used to REFUSE it in both modes, on the
+    // belief that the driver had no host — so a jess-shaped CST grammar could
+    // not be lowered at all. The driver does have one: `assemble.ts` reads
+    // `ctx.build` once per parse in `begin()` and bakes host-ness into which
+    // pieces the assembly holds. The refusal was over-broad, not protective.
+    //
+    // The bar is not "it encodes" — it is that the table agrees with the
+    // interpreter WITH a host and WITHOUT one, on a match and on a failure,
+    // since a host that ran only at the root would pass a match-only test.
     const structural = rules<Record<string, Combinator<unknown>>>(g => ({
       S: node('S', regex(/[a-z]+/)),
       Doc: node('Doc', many(g.S!)),
     })) as unknown as Record<string, Combinator<unknown>>
+    // `hostMode: 'cst'` REQUIRES a positioned-CST host — running it hostless is
+    // a documented error (`assertHostModeCompatible`), not a case to compare —
+    // so only `'ast'` is exercised both ways.
+    const build = (type: string, children: unknown[]) => ({ H: type, n: children.length })
     for (const hostMode of ['ast', 'cst'] as const) {
-      expect(() => encodeTable(structural, { hostMode }), hostMode).toThrow(UnsupportedConstruct)
-      expect(() => encodeTable(structural, { hostMode }), hostMode).toThrow(/needs a ctx\.build host/)
+      const table = tableRules(encodeTable(structural, { hostMode })).Doc!
+      const hosts = hostMode === 'cst'
+        ? [{ build: cstBuildHost({ tags: true }) as never }]
+        : [{ build } as never, {} as never]
+      for (const opts of hosts) {
+        for (const src of ['abc', '1', '']) {
+          const t = run(table as never, src, opts as never)
+          const i = run(structural.Doc as never, src, opts as never)
+          expect(t.ok, `${hostMode} ${JSON.stringify(src)}`).toBe(i.ok)
+          expect(t.value, `${hostMode} ${JSON.stringify(src)}`).toEqual(i.value)
+        }
+      }
     }
   })
 
