@@ -22,7 +22,6 @@ import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { assembledRules } from '../../src/table/assemble.ts'
 import { compileTable } from '../../src/table/compile.ts'
-import { compile } from '../../src/compiler/codegen.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
@@ -111,17 +110,17 @@ describe('tolerant recovery — the CST embed, which lives only in the tree', ()
     Decl: node(sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/))),
   }))
 
-  it('the table embeds the same parseError children as the compiled path', () => {
-    const compiled = compile(g.Block as Combinator<unknown>, undefined, { recovery: true })
+  // AGAINST THE INTERPRETER, not against the other compiled engine. The embed is
+  // a tree fact, and the interpreter is the reference for tree facts — it is what
+  // `assertFourWay` above compares to, and a compiled leg has been the wrong one
+  // before (see the committed-failure case at the bottom of this file).
+  it('the table embeds the same parseError children as the interpreter', () => {
     for (const input of ['{a:1;b:2}', '{a:1;$$;b:2}', '{a:1;$$}', '{$$;a:1}']) {
       const ri = runTabled(g.Block as Combinator<unknown>, input, { tolerant: true, build: cstBuildHost() })
-      const errors: unknown[] = []
-      const rc = compiled.parseWithContext(input, {
-        trackLines: false, _errors: errors, _tolerant: true, _rec: REC, build: cstBuildHost(),
-      } as unknown as ParseContext, 0) as { ok: boolean; value: unknown }
-      expect(rc.ok, `${input} ok`).toBe(ri.ok)
-      expect(rc.value, `${input} tree`).toEqual(ri.value)
-      expect(errors, `${input} errors`).toEqual(ri.errors)
+      const rr = runInterpreter(g.Block as Combinator<unknown>, input, { tolerant: true, build: cstBuildHost() })
+      expect(ri.ok, `${input} ok`).toBe(rr.ok)
+      expect(ri.value, `${input} tree`).toEqual(rr.value)
+      expect(ri.errors, `${input} errors`).toEqual(rr.errors)
     }
   })
 })
@@ -199,34 +198,41 @@ describe('table drivers — local trivia scope root-capture policy', () => {
   })
 })
 
-describe('a COMMITTED failure is never recovered — all three engines', () => {
-  it('codegen no longer swallows a cut inside a many() item', () => {
+describe('a COMMITTED failure is never recovered', () => {
+  it('a cut inside a many() item is not swallowed into a resync', () => {
     // `dispatch()` commits: the selector picks an arm, so a failure INSIDE that
     // arm is definitive — the author ruled the input out. Resyncing past it
     // invents a parse.
     //
-    // `emitMany`'s STRICT branch has always checked `_fc`; its RECOVERY branch
-    // did not. So under `{recovery: true}` the compiled engine swallowed the cut
-    // into a resync, the loop exited clean, and the parse SUCCEEDED on input the
-    // interpreter rejects — measured before the fix:
+    // THE ORIGINAL DEFECT was in the source lowering: its `many` STRICT branch
+    // checked `_fc` and its RECOVERY branch did not, so under `{recovery: true}`
+    // it swallowed the cut into a resync, the loop exited clean, and the parse
+    // SUCCEEDED on input the interpreter rejects — `ok=TRUE end=0` against the
+    // interpreter's `ok=false end=1`. A different language, not a different error.
     //
-    //   interpreter  ok=false end=1
-    //   codegen      ok=TRUE  end=0     <- a different language, not a different error
-    //
-    // The interpreter checks `committed` FIRST (`repeat.ts:158,252`) and the
-    // table matches the interpreter, so codegen was the lone outlier. It mattered
-    // beyond codegen: the identity sweep compares the TABLE against this engine,
-    // so a recovery-plus-cut case in the corpus would have reported the table as
-    // wrong.
+    // The interpreter checks `committed` FIRST (`repeat.ts:158,252`), and it is
+    // the reference here for the reason the defect mattered at all: the identity
+    // sweep compares the TABLE against the interpreter, so a recovery-plus-cut
+    // case in the corpus would have reported the table as wrong. Both table
+    // drivers are asserted, because they are separate implementations.
     const item = dispatch(regex(/[@a-z]/), when('@', sequence(literal('@'), literal('ok'))))
     const g = rules(() => ({ Doc: many(item) })) as Record<string, Combinator<unknown>>
     const input = '@bad'
 
     const viaInterp = runInterpreter(g.Doc! as never, input, { tolerant: true })
-    const viaCodegen = compile(g.Doc! as never, undefined, { recovery: true }).parseWithErrors(input)
-
     expect(viaInterp.ok, 'interpreter rejects a committed failure').toBe(false)
-    expect(viaCodegen.ok, 'codegen must reject it too').toBe(false)
-    expect(viaCodegen.span?.end, 'and stop where the interpreter stops').toBe(viaInterp.span.end)
+
+    const viaTable = compileTable(g.Doc! as never, undefined, { recovery: true }).parseWithErrors(input)
+    expect(viaTable.ok, 'the table must reject it too').toBe(false)
+    expect(viaTable.span?.end, 'and stop where the interpreter stops').toBe(viaInterp.span.end)
+
+    const prog = encodeTable({ Entry: g.Doc! as never }, { recovery: true })
+    for (const [label, driver] of [['exec.ts', tableRules], ['assemble.ts', assembledRules]] as const) {
+      const errors: unknown[] = []
+      const ctx = { trackLines: false, _errors: errors, _tolerant: true, _rec: REC } as unknown as ParseContext
+      const r = driver(prog)['Entry']!(input, 0, ctx) as { ok: boolean; span: { end: number } }
+      expect(r.ok, `${label} rejects a committed failure`).toBe(false)
+      expect(r.span.end, `${label} stops where the interpreter stops`).toBe(viaInterp.span.end)
+    }
   })
 })

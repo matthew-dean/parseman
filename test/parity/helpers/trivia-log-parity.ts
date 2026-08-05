@@ -1,6 +1,5 @@
 import { expect } from 'vitest'
-import type { Combinator, ParseContext, ParseResult } from '../../../src/types.ts'
-import type { CompiledParser } from '../../../src/compiler/codegen.ts'
+import type { Combinator, CompiledParser, ParseContext, ParseResult } from '../../../src/types.ts'
 
 /** Stride for flat trivia logs: 2 or 3 numbers per entry. */
 export function triviaLogStride(log: readonly number[], labels?: readonly string[]): number {

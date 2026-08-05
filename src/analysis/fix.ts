@@ -49,7 +49,7 @@ import { firstSetOf } from '../combinators/first-set.ts'
 import { keywords } from '../combinators/keywords.ts'
 import { peek } from '../combinators/peek.ts'
 import { parse } from '../combinators/grammar.ts'
-import { compile } from '../compiler/codegen.ts'
+import { compileTable } from '../table/compile.ts'
 import { digestValue } from '../oracle/digest.ts'
 import { analyzeGating, choiceArms, firstSetToString, peelToLeading, type GatingReport } from './gating.ts'
 import { rebuildCombinator, type FrozenSubtree } from './rebuild.ts'
@@ -78,9 +78,9 @@ export type FixBenefit = {
   antiPatternsAfter: number
   gatedChoicesBefore: number
   gatedChoicesAfter: number
-  /** Bytes of `compile().source`. Deterministic. `null` when the grammar does not compile. */
-  codegenBytesBefore: number | null
-  codegenBytesAfter: number | null
+  /** Bytes of `compile().source` (the table artifact module). Deterministic. `null` when the grammar does not compile. */
+  artifactBytesBefore: number | null
+  artifactBytesAfter: number | null
 }
 
 /** A source edit, offered only when the site is UNAMBIGUOUS in the supplied text. */
@@ -175,25 +175,36 @@ function sampleToken(res: ParseResult<unknown>): string {
     : `ERR:${res.span.start}-${res.span.end}`
 }
 
-type Outputs = { interpreted: string[]; compiled: string[] | null; codegenBytes: number | null }
+type Outputs = { interpreted: string[]; compiled: string[] | null; artifactBytes: number | null }
 
+/**
+ * THE COMPILED LEG IS THE TABLE — `compileTable`, which is what `compile()` means
+ * at the library entry (`src/index.ts`). It used to be the source lowering, which
+ * made this module a live consumer of an engine that no longer ships anything.
+ *
+ * `.source` still reads as a deterministic byte count on a table artifact (the
+ * emitted module text), so the size half of the benefit measurement is unchanged
+ * in kind — only in scale, which is why the field is no longer called
+ * `codegenBytes`. Nothing here compares it across engines, only before/after
+ * within one run, so the two are never mixed.
+ */
 function outputsOf(root: Combinator<unknown>, corpus: readonly FixSample[]): Outputs {
   const interpreted = corpus.map((s) => {
     try { return sampleToken(parse(root, s.text)) }
     catch (e) { return `THROW:${e instanceof Error ? e.name : 'unknown'}` }
   })
   let compiled: string[] | null = null
-  let codegenBytes: number | null = null
+  let artifactBytes: number | null = null
   try {
-    const c = compile(root)
-    codegenBytes = c.source.length
+    const c = compileTable(root)
+    artifactBytes = c.source.length
     compiled = corpus.map((s) => {
       try { return sampleToken(c.parse(s.text)) }
       catch (e) { return `THROW:${e instanceof Error ? e.name : 'unknown'}` }
     })
   }
-  catch { compiled = null; codegenBytes = null }
-  return { interpreted, compiled, codegenBytes }
+  catch { compiled = null; artifactBytes = null }
+  return { interpreted, compiled, artifactBytes }
 }
 
 const sameList = (a: readonly string[], b: readonly string[]): boolean =>
@@ -612,7 +623,7 @@ export function proposeFixes(root: Combinator<unknown>, opts: ProposeFixOptions)
         ungatedChoicesBefore: beforeCounts.ungated, ungatedChoicesAfter: afterCounts.ungated,
         antiPatternsBefore: beforeCounts.anti, antiPatternsAfter: afterCounts.anti,
         gatedChoicesBefore: beforeCounts.gated, gatedChoicesAfter: afterCounts.gated,
-        codegenBytesBefore: baseline.codegenBytes, codegenBytesAfter: after.codegenBytes,
+        artifactBytesBefore: baseline.artifactBytes, artifactBytesAfter: after.artifactBytes,
       },
       evidence: { samples: corpus.length, bytes, engines, outputUnchanged: true },
     }

@@ -508,3 +508,49 @@ export type GatedArm<T = unknown> = {
   gate: (state: unknown) => boolean
   combinator: Combinator<T>
 }
+
+/**
+ * WHAT `compile()` HANDS BACK — the contract, not one engine's return type.
+ *
+ * This lives with the rest of the library's types rather than inside a lowering
+ * because it is the shape BOTH lowerings answer to: `table/compile.ts` returns it
+ * today and is what `src/index.ts` exports as `compile`. It started in
+ * `compiler/codegen.ts`, which made the table import its own public contract from
+ * the engine the table replaced — backwards, and a reason the engine could not be
+ * deleted.
+ */
+export type CompiledParser<T> = {
+  parse(input: string, pos?: number): ParseResult<T>
+  /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
+  parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
+  /**
+   * Like parse(), but activates the error-collection channel. Recovery points
+   * (expect()) collect their ParseErrors into result.errors instead of only
+   * embedding them as values. Always returns ParseOk — top-level failures are
+   * still ParseFail.
+   */
+  parseWithErrors(input: string, pos?: number): ParseResult<T> & { errors: ParseError[] }
+  /** The generated source (for inspection / future source maps) */
+  source: string
+  /**
+   * A self-contained JS expression (IIFE) that evaluates to a parse function.
+   * Safe to inline directly into transformed source — no external references
+   * except for runtime-fallback parsers embedded via closures.
+   * Returns null if the parser cannot be fully inlined (e.g. contains user
+   * closures that can't be serialized).
+   */
+  inlineExpression: string | null
+  /**
+   * WHY `inlineExpression` IS NULL — one named reason per cause, present only
+   * when the artifact could not be PRINTED. A null with no reason is the failure
+   * this field exists to make impossible: the caller's fallback is "leave the
+   * grammar interpreted", which is a ~5x silent perf regression, so the reason
+   * has to reach a warning rather than being inferred from a null.
+   *
+   * Empty/absent means printable. Set by the table lowering; the source lowering's
+   * own unprintable cases predate this channel and still return a bare null.
+   */
+  runtimeOnly?: readonly string[]
+  /** Present only when compiled with `{ coverage: true }`. */
+  coverageDefinitions?: readonly import('./compiler/grammar-coverage-ids.ts').GrammarCoverageDefinition[]
+}

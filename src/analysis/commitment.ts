@@ -373,6 +373,60 @@ export function hasNodeDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>
   }
 }
 
+/**
+ * Whether a grammar tree owns a DIRECT semantic node reduction — a `node(..., build)`
+ * whose callback produces the value itself, as opposed to a purely structural
+ * `node(parser)`.
+ *
+ * It is the predicate behind `hostBranchElided`: an artifact only drops a
+ * positioned-CST branch if there was a direct builder to drop, so an all-structural
+ * grammar stays usable with either host (`cst/host-mode.ts`).
+ *
+ * It belongs in THIS module for the reason stated at the top of it: both lowerings
+ * must reach the same answer, and a stamp they disagree about is a driver that
+ * accepts a host it should refuse. It previously lived in `compiler/codegen.ts`,
+ * which forced `table/compile-rule-map.ts` to import the engine the table replaced.
+ *
+ * The descent mirrors the source lowering's own `childrenOf` exactly — including a
+ * `routed()` fallback and a `dispatch` matcher arm, both of which are real emit
+ * sites and neither of which `hasNodeDef` above walks.
+ */
+export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
+  if (seen.has(p)) return false
+  seen.add(p)
+  const d = p._def
+  switch (d.tag) {
+    case 'node':      return d.build !== undefined || hasDirectBuildDef(d.parser, seen)
+    case 'lazy':      { try { return hasDirectBuildDef(d.thunk(), seen) } catch { return false } }
+    case 'grammar':
+    case 'trivia':
+    case 'token':
+    case 'leaf':
+    case 'label':
+    case 'field':
+    case 'optional':
+    case 'many':
+    case 'oneOrMore':
+    case 'attempt':
+    case 'not':
+    case 'peek':
+    case 'withCtx':
+    case 'expect':
+    case 'transform': return hasDirectBuildDef(d.parser, seen)
+    case 'sequence':
+    case 'choice':    return d.parsers.some(x => hasDirectBuildDef(x, seen))
+    case 'dispatch':  return hasDirectBuildDef(d.selector, seen)
+      || d.cases.some(x => hasDirectBuildDef(x.parser, seen))
+      || (d.matchers ? d.matchers.some(x => hasDirectBuildDef(x.parser, seen)) : false)
+      || (d.otherwise ? hasDirectBuildDef(d.otherwise, seen) : false)
+    case 'sepBy':     return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.separator, seen)
+    case 'scanTo':    return hasDirectBuildDef(d.sentinel, seen) || d.skip.some(x => hasDirectBuildDef(x, seen))
+    case 'recover':   return hasDirectBuildDef(d.parser, seen) || hasDirectBuildDef(d.sentinel, seen)
+    case 'routed':    return d.fallback ? hasDirectBuildDef(d.fallback, seen) : false
+    default:          return false
+  }
+}
+
 /** True when `p` can report a committed failure through emitFallible's failure channel. */
 export function mayCommitFailure(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
   if (seen.has(p)) return false

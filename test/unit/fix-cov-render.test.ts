@@ -37,8 +37,8 @@ const fix = (over: Partial<VerifiedFix> = {}): VerifiedFix => ({
     antiPatternsAfter: 2,
     gatedChoicesBefore: 0,
     gatedChoicesAfter: 1,
-    codegenBytesBefore: 1000,
-    codegenBytesAfter: 900,
+    artifactBytesBefore: 1000,
+    artifactBytesAfter: 900,
   },
   evidence: { samples: 1, bytes: 12, engines: ['interpreted'], outputUnchanged: true },
   ...over,
@@ -186,7 +186,7 @@ describe('fixReportLines — effect assembly', () => {
         ungatedChoicesBefore: 2, ungatedChoicesAfter: 2,
         antiPatternsBefore: 3, antiPatternsAfter: 3,
         gatedChoicesBefore: 1, gatedChoicesAfter: 1,
-        codegenBytesBefore: 500, codegenBytesAfter: 500,
+        artifactBytesBefore: 500, artifactBytesAfter: 500,
       },
       armFirstSetBefore: "'i'",
       armFirstSetAfter: "'i'",
@@ -241,21 +241,21 @@ describe('fixReportLines — codegen size line', () => {
     lines(renderFixReport(report({ verified: [f] }))).find(x => x.startsWith('   size    '))
 
   it('says grows, with a grouped absolute delta, when the parser gets bigger', () => {
-    expect(sizeOf(fix({ benefit: { ...fix().benefit, codegenBytesBefore: 1000, codegenBytesAfter: 13500 } })))
+    expect(sizeOf(fix({ benefit: { ...fix().benefit, artifactBytesBefore: 1000, artifactBytesAfter: 13500 } })))
       .toBe('   size    the generated parser grows by 12,500 bytes')
   })
 
   it('says shrinks when the parser gets smaller', () => {
-    expect(sizeOf(fix({ benefit: { ...fix().benefit, codegenBytesBefore: 4000, codegenBytesAfter: 1500 } })))
+    expect(sizeOf(fix({ benefit: { ...fix().benefit, artifactBytesBefore: 4000, artifactBytesAfter: 1500 } })))
       .toBe('   size    the generated parser shrinks by 2,500 bytes')
   })
 
   it('omits the line when the size is unchanged or unmeasured', () => {
-    expect(sizeOf(fix({ benefit: { ...fix().benefit, codegenBytesBefore: 900, codegenBytesAfter: 900 } })))
+    expect(sizeOf(fix({ benefit: { ...fix().benefit, artifactBytesBefore: 900, artifactBytesAfter: 900 } })))
       .toBeUndefined()
-    expect(sizeOf(fix({ benefit: { ...fix().benefit, codegenBytesBefore: null, codegenBytesAfter: 900 } })))
+    expect(sizeOf(fix({ benefit: { ...fix().benefit, artifactBytesBefore: null, artifactBytesAfter: 900 } })))
       .toBeUndefined()
-    expect(sizeOf(fix({ benefit: { ...fix().benefit, codegenBytesBefore: 1000, codegenBytesAfter: null } })))
+    expect(sizeOf(fix({ benefit: { ...fix().benefit, artifactBytesBefore: 1000, artifactBytesAfter: null } })))
       .toBeUndefined()
   })
 })

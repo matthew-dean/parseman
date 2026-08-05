@@ -6,13 +6,13 @@
  * `break <label>` rather than an IIFE return — no function call, no result
  * object allocation per node.
  */
-import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
+import type { Combinator, CompiledParser, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
 import { createParseContext } from '../parse-context.ts'
 import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { missingInferredType } from '../combinators/node.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
-import { mayCommitFailure, mayLeavePartialCapture, capturesLeaf, hasNodeDef, alwaysConsumes } from '../analysis/commitment.ts'
+import { mayCommitFailure, mayLeavePartialCapture, capturesLeaf, hasNodeDef, hasDirectBuildDef, alwaysConsumes } from '../analysis/commitment.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { assertHostModeCompatible, type HostMode } from '../cst/host-mode.ts'
 import { analyzeDuplication, analyzeDuplicationRules, formatDuplicationFindings, duplicationFindingCount, type DuplicationReport, type DuplicationWarnLevel } from '../analysis/duplication.ts'
@@ -4875,42 +4875,6 @@ function emitDispatch(p: Combinator<unknown>, ctx: Ctx, pos: string): ER {
 export { assertHostModeCompatible, FUSED_HOST_MODE, FUSED_HOST_ELIDED } from '../cst/host-mode.ts'
 export type { HostMode } from '../cst/host-mode.ts'
 
-export type CompiledParser<T> = {
-  parse(input: string, pos?: number): ParseResult<T>
-  /** Like parse(), but with a caller-supplied ParseContext (e.g. `_triviaLog` for CST grammars). */
-  parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
-  /**
-   * Like parse(), but activates the error-collection channel. Recovery points
-   * (expect()) collect their ParseErrors into result.errors instead of only
-   * embedding them as values. Always returns ParseOk — top-level failures are
-   * still ParseFail.
-   */
-  parseWithErrors(input: string, pos?: number): ParseResult<T> & { errors: ParseError[] }
-  /** The generated source (for inspection / future source maps) */
-  source: string
-  /**
-   * A self-contained JS expression (IIFE) that evaluates to a parse function.
-   * Safe to inline directly into transformed source — no external references
-   * except for runtime-fallback parsers embedded via closures.
-   * Returns null if the parser cannot be fully inlined (e.g. contains user
-   * closures that can't be serialized).
-   */
-  inlineExpression: string | null
-  /**
-   * WHY `inlineExpression` IS NULL — one named reason per cause, present only
-   * when the artifact could not be PRINTED. A null with no reason is the failure
-   * this field exists to make impossible: the caller's fallback is "leave the
-   * grammar interpreted", which is a ~5x silent perf regression, so the reason
-   * has to reach a warning rather than being inferred from a null.
-   *
-   * Empty/absent means printable. Set by the table lowering; codegen's own
-   * unprintable cases predate this channel and still return a bare null.
-   */
-  runtimeOnly?: readonly string[]
-  /** Present only when compiled with `{ coverage: true }`. */
-  coverageDefinitions?: readonly import('./grammar-coverage-ids.ts').GrammarCoverageDefinition[]
-}
-
 function hasLineTrackingDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
   if (seen.has(p)) return false
   seen.add(p)
@@ -4933,18 +4897,6 @@ function parserUsesRouted(p: Combinator<unknown>, seen: Set<Combinator<unknown>>
     case 'dispatch':  return false
     default:          return childrenOf(d).some(child => parserUsesRouted(child, seen))
   }
-}
-
-/** Whether a grammar tree owns a direct semantic node reduction. */
-export function hasDirectBuildDef(p: Combinator<unknown>, seen: Set<Combinator<unknown>> = new Set()): boolean {
-  if (seen.has(p)) return false
-  seen.add(p)
-  const d = p._def
-  if (d.tag === 'node' && d.build !== undefined) return true
-  if (d.tag === 'lazy') {
-    try { return hasDirectBuildDef(d.thunk(), seen) } catch { return false }
-  }
-  return childrenOf(d).some(child => hasDirectBuildDef(child, seen))
 }
 
 /** Immediate child combinators of a def, for generic tree walks (childrenOf). */

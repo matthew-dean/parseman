@@ -7,7 +7,7 @@ import { relativizeCST, absoluteSpanCST } from '../cst/relative-spans.ts'
 import { REC } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
 import { fusedHostModeOf, fusedHostElidedOf } from '../compiler/linker.ts'
-import { assertHostModeCompatible } from '../compiler/codegen.ts'
+import { assertHostModeCompatible } from '../cst/host-mode.ts'
 
 /**
  * Build the parse ctx for a (re)parse. In `tolerant` mode the same recovery bundle

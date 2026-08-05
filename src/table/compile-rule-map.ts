@@ -1,6 +1,6 @@
 import type { Combinator } from '../types.ts'
-import { hasDirectBuildDef } from '../compiler/codegen.ts'
-import type { HostMode } from '../compiler/codegen.ts'
+import { hasDirectBuildDef } from '../analysis/commitment.ts'
+import type { HostMode } from '../cst/host-mode.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableExpression } from './emit.ts'
@@ -248,8 +248,8 @@ export function compileRuleMapTable(
     // off. `mode === 'ast'` alone over-reports it: an all-STRUCTURAL grammar has no
     // direct builder, so there was no branch to drop and it stays usable with either
     // host — the long-standing `node(parser)` contract. Same predicate codegen uses
-    // for its own `hasDirectBuilders` (`codegen.ts:6180`), so the two lowerings stamp
-    // the same artifact rather than disagreeing about it.
+    // for its own `hasDirectBuilders` (both read `analysis/commitment.ts`), so the two
+    // lowerings stamp the same artifact rather than disagreeing about it.
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
