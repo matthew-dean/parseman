@@ -7,6 +7,9 @@ import { tableRules } from '../../src/table/exec.ts'
 import { expandCompact, resolveTable } from '../../src/table/program.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
+import { cstBuildHost } from '../../src/compiler/linker.ts'
+import { digestValue } from '../../src/oracle/index.ts'
+import type { Combinator } from '../../src/types.ts'
 
 /**
  * A grammar with enough shape variety that the assembler's memoisation, its
@@ -102,5 +105,57 @@ describe('table assembler', () => {
     // reached offset is distinct by construction (it is a Set) AND the count
     // never exceeds the table's own reachable count.
     expect(asm.reached.size).toBeLessThanOrEqual(reachableIps(prog).size)
+  })
+
+  /**
+   * BACKTRACKING OVER A `node()`, UNDER A CST HOST — the assembler's mark
+   * protocol against `exec.ts`.
+   *
+   * Every other assembler gate runs the AST path: `bench/jess/g5-identity.ts`
+   * loads `(dialect, 'ast')`, and `bench/table-lowering-identity.ts` drives
+   * `tableRules` only. On that path `ctx._cstBuf` is `undefined` for the whole
+   * parse, so the assembler's mark protocol is only ever exercised down its
+   * `_cstChildren`/`_cstLeaves` arm — the LAZY BUFFER arm, which is the one a
+   * `node()` installs, had no coverage at all.
+   *
+   * That arm is where a stale `ctx._cstBuf` hides. The buffer is per-NODE
+   * state: `beginCstNodeCapture` installs a fresh one and `endCstNodeCapture`
+   * restores the parent's, so between a mark and its rollback the buffer object
+   * can be replaced. A mark that reads a length off a buffer that is no longer
+   * the live one does not throw and does not fail the parse — it silently keeps
+   * or drops CST children.
+   *
+   * `Item`'s first arm is what forces the case: it matches a `Word` node — which
+   * pushes a captured child into the ENCLOSING `Doc` buffer — and then demands a
+   * `!` that is not there, so the choice must roll that child back out before
+   * the second arm re-recognises the same text. A stale mark leaves the `Word`
+   * behind and `Doc` ends up with it twice.
+   */
+  it('agrees with the bytecode driver when a choice backtracks over a node(), under a CST host', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- as above
+    const cg = rules<Record<string, Combinator<unknown>>>({ trivia: regex(/[ \t\n]+/) }, (g: any) => ({
+      Word: node('Word', regex(/[a-z]+/), (c: readonly unknown[]) => ({ t: 'Word', c })),
+      Num: node('Num', regex(/\d+/), (c: readonly unknown[]) => ({ t: 'Num', c })),
+      // Arm 1 CONSUMES A NODE AND THEN FAILS. Arms 2/3 re-recognise the same
+      // text, so a rollback that kept the arm-1 capture duplicates it.
+      Item: choice(sequence(g.Word, literal('!')), g.Word, g.Num),
+      Doc: node('Doc', many(g.Item), (c: readonly unknown[]) => ({ t: 'Doc', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+
+    const prog = encodeTable(cg, { hostMode: 'cst' })
+    const a = assembledRules(prog).Doc!
+    const e = tableRules(prog).Doc!
+    for (const input of ['ab', 'ab cd', 'ab! cd 12', 'ab cd! 12 ef', 'ab  12  cd', '', 'ab cd 12 !']) {
+      const build = (): never => cstBuildHost({ tags: true }) as never
+      const ra = run(a as never, input, { build: build() })
+      const re = run(e as never, input, { build: build() })
+      const label = JSON.stringify(input)
+      expect(ra.ok, `${label} ok`).toBe(re.ok)
+      // The whole CST — children, rawChildren, spans, trivia log — not just `ok`.
+      expect(digestValue(ra.value), `${label} cst`).toBe(digestValue(re.value))
+      expect(ra.unconsumedFrom, `${label} unconsumed`).toBe(re.unconsumedFrom)
+      expect([...(ra.expected ?? [])].sort(), `${label} expected`)
+        .toEqual([...(re.expected ?? [])].sort())
+    }
   })
 })

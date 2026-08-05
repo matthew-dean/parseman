@@ -77,7 +77,7 @@ import {
   saveTriviaMark, scanTrivia, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
-  cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
+  cstCaptureActive, cstLeavesLen,
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
   rollbackCstCaptureAt, type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
@@ -226,6 +226,80 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       || ctx._rootTriviaLog !== undefined
   }
 
+  /**
+   * The three CST lengths of a rollback mark, as out-slots — see `markCst`.
+   *
+   * Slots for the same reason `END` and `TERMV` are slots: a `{ raw, tl, lv }`
+   * return would be an allocation per mark, and marks are the single most
+   * executed thing in the driver.
+   *
+   * READ THEM IMMEDIATELY. They are only valid until the next `markCst`, which
+   * in practice means the three lines under the call.
+   */
+  let MRAW = 0
+  let MTL = 0
+  let MLV = 0
+
+  /**
+   * Take a rollback mark's three CST lengths with ONE `ctx._cstBuf` load, and
+   * answer `rollbackNeeded` on the way past.
+   *
+   * Every backtrackable construct marks before trying something it may roll
+   * back, and `nextTerm` alone reaches here >200,000 times per parse of
+   * `benchmark.less`. The previous shape called `rollbackNeeded` and then
+   * `cstRawLen`/`cstTlLen`/`cstLeavesLen` — four calls, three of them
+   * CROSS-MODULE into `../cst/capture-buffer.ts` and each independently
+   * re-loading `ctx._cstBuf`. V8 inlined the local `rollbackNeeded` and did NOT
+   * inline the other three: they cost 1.0% + 0.7% + 0.9% of the assembled
+   * parse in SELF time. Source lowering emits the same mark as inline direct
+   * loads, which is why it never paid this.
+   *
+   * The hoist is valid at EXACTLY this granularity and no wider. `_cstBuf` is
+   * per-NODE state, not per-parse config: `beginCstNodeCapture` sets it and
+   * `endCstNodeCapture` restores it, so it changes DURING a parse. The three
+   * lengths are read here at one instant with nothing running between them, so
+   * one load serves all three. It must NOT be cached in a piece or held across
+   * the child call — between the mark and the rollback the child RUNS and may
+   * replace or clear the buffer, so `rollbackCstCaptureAt` re-loads. A buffer
+   * held across that would roll back against a stale object, which does not
+   * throw: it silently keeps or drops CST children.
+   *
+   * `capture-buffer.ts`'s helpers stay exported and are still what `exec.ts`
+   * calls. `exec.ts` is the identity reference a divergence is bisected
+   * against; it is not inlined there.
+   */
+  function markCst(ctx: ParseContext): boolean {
+    const b = ctx._cstBuf
+    if (b !== undefined) {
+      // `cstRawLen`/`cstLeavesLen` collapse the lazy single-entry form; `cstTlLen`
+      // has no single form. `rollbackNeeded` short-circuits true on a live buffer,
+      // so the other seven sinks are not consulted — as before.
+      const raw = b.raw
+      MRAW = raw !== undefined ? raw.length : b.rawSingle !== undefined ? 1 : 0
+      const ch = b.ch
+      MLV = ch !== undefined ? ch.length : b.single !== undefined ? 1 : 0
+      const tl = b.tl
+      MTL = tl !== undefined ? tl.length : 0
+      return true
+    }
+    if (ctx._cstLeaves !== undefined
+      || ctx._cstRawChildren !== undefined
+      || ctx._cstTriviaLog !== undefined
+      || ctx._fields !== undefined
+      || ctx._errors !== undefined
+      || ctx._triviaLog !== undefined
+      || ctx._rootTriviaLog !== undefined) {
+      MRAW = ctx._cstRawChildren?.length ?? 0
+      MTL = ctx._cstTriviaLog?.length ?? 0
+      MLV = ctx._cstLeaves?.length ?? 0
+      return true
+    }
+    MRAW = 0
+    MTL = 0
+    MLV = 0
+    return false
+  }
+
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
     const s = SCAN
     if (s !== null
@@ -288,10 +362,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       return END
     }
     // SCALAR MARKS — no per-term mark object, as `exec.ts` established.
-    const need = rollbackNeeded(ctx)
-    const mRaw = need ? cstRawLen(ctx) : 0
-    const mTl = need ? cstTlLen(ctx) : 0
-    const mLv = need ? cstLeavesLen(ctx) : 0
+    const need = markCst(ctx)
+    const mRaw = MRAW
+    const mTl = MTL
+    const mLv = MLV
     const mFl = need ? ctx._fields?.length ?? 0 : 0
     const mEr = need ? ctx._errors?.length ?? 0 : 0
     const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
@@ -681,10 +755,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_NOT: {
         const child = link(code[ip + 1]!)
         return (input, pos, ctx) => {
-          const need = rollbackNeeded(ctx)
-          const mRaw = need ? cstRawLen(ctx) : 0
-          const mTl = need ? cstTlLen(ctx) : 0
-          const mLv = need ? cstLeavesLen(ctx) : 0
+          const need = markCst(ctx)
+          const mRaw = MRAW
+          const mTl = MTL
+          const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const v = child(input, pos, ctx)
@@ -698,10 +772,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_PEEK: {
         const child = link(code[ip + 1]!)
         return (input, pos, ctx) => {
-          const need = rollbackNeeded(ctx)
-          const mRaw = need ? cstRawLen(ctx) : 0
-          const mTl = need ? cstTlLen(ctx) : 0
-          const mLv = need ? cstLeavesLen(ctx) : 0
+          const need = markCst(ctx)
+          const mRaw = MRAW
+          const mTl = MTL
+          const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const v = child(input, pos, ctx)
@@ -715,10 +789,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_OPT: {
         const child = link(code[ip + 1]!)
         return (input, pos, ctx) => {
-          const need = rollbackNeeded(ctx)
-          const mRaw = need ? cstRawLen(ctx) : 0
-          const mTl = need ? cstTlLen(ctx) : 0
-          const mLv = need ? cstLeavesLen(ctx) : 0
+          const need = markCst(ctx)
+          const mRaw = MRAW
+          const mTl = MTL
+          const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           ctx._fc = false
@@ -1187,10 +1261,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mask = cand
           return (input, pos, ctx) => {
             const c = lead(input, pos)
-            const need = rollbackNeeded(ctx)
-            const mRaw = need ? cstRawLen(ctx) : 0
-            const mTl = need ? cstTlLen(ctx) : 0
-            const mLv = need ? cstLeavesLen(ctx) : 0
+            const need = markCst(ctx)
+            const mRaw = MRAW
+            const mTl = MTL
+            const mLv = MLV
             const mFl = need ? ctx._fields?.length ?? 0 : 0
             const mEr = need ? ctx._errors?.length ?? 0 : 0
             if (c < 128) {
@@ -1224,10 +1298,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
         return (input, pos, ctx) => {
           const c = lead(input, pos)
-          const need = rollbackNeeded(ctx)
-          const mRaw = need ? cstRawLen(ctx) : 0
-          const mTl = need ? cstTlLen(ctx) : 0
-          const mLv = need ? cstLeavesLen(ctx) : 0
+          const need = markCst(ctx)
+          const mRaw = MRAW
+          const mTl = MTL
+          const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           for (let i = 0; i < n; i++) {
@@ -1254,10 +1328,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const byWord = new Map<string, Piece>()
         for (let i = 0; i < n; i++) byWord.set(k[code[ip + 3 + 2 * i]!] as string, link(code[ip + 4 + 2 * i]!))
         return (input, pos, ctx) => {
-          const need = rollbackNeeded(ctx)
-          const mRaw = need ? cstRawLen(ctx) : 0
-          const mTl = need ? cstTlLen(ctx) : 0
-          const mLv = need ? cstLeavesLen(ctx) : 0
+          const need = markCst(ctx)
+          const mRaw = MRAW
+          const mTl = MTL
+          const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
           const v = sup(input, pos, ctx)
@@ -1363,9 +1437,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // the LOOP HEAD. Held to `count >= min` so an under-`min` list still
             // attempts the separator and reports its expected set.
             if (sep !== undefined && count > 0 && count >= min && cur >= input.length) break
-            const mRaw = needMark ? cstRawLen(ctx) : 0
-            const mTl = needMark ? cstTlLen(ctx) : 0
-            const mLv = needMark ? cstLeavesLen(ctx) : 0
+            // Per ITERATION, never hoisted: a preceding item's `node()` opened and
+            // closed a capture buffer, so `ctx._cstBuf` is not the object it was
+            // at the loop head. `needMark` is the pre-existing loop-invariant.
+            if (needMark) markCst(ctx)
+            const mRaw = needMark ? MRAW : 0
+            const mTl = needMark ? MTL : 0
+            const mLv = needMark ? MLV : 0
             const mFl = needMark ? ctx._fields?.length ?? 0 : 0
             const mEr = needMark ? ctx._errors?.length ?? 0 : 0
             const mLog = needMark ? ctx._triviaLog?.length ?? 0 : 0
