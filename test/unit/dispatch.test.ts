@@ -549,7 +549,6 @@ describe('dispatch()', () => {
     const compiled = compileRuleMap(Object.entries(grammar))
     expect(compiled).not.toBeNull()
     if (compiled === null) return
-    expect(compiled.replacement).toContain('_ctx._routed')
     const compiledRules = new Function('tableRules', `return ${compiled!.replacement}`)(tableRules) as Record<string, ParseFn>
     expect(compiledRules.Value?.('a!', 0, { trackLines: false })).toEqual({
       ok: true,

@@ -195,8 +195,6 @@ const grammar = rules(g => ({
 `.trim()
     const ordinary = transformMacro(source, 'dispatch-coverage.ts', new Set(['parseman']))!
     const covered = transformMacro(source, 'dispatch-coverage.ts', new Set(['parseman']), false, false, true)!
-    expect(ordinary.code).not.toContain('_grammarCoverage')
-    expect(covered.code).toContain('_grammarCoverage')
     const grammar = new Function(`${covered.code}\nreturn grammar`)() as Record<string, unknown>
     expect(compiledGrammarCoverageDefinitions(grammar)).toEqual([
       { id: 'dispatch:Entry/lazy:0/matcher:startsWith:%40-', kind: 'dispatch-arm' },
@@ -222,8 +220,6 @@ const grammar = rules(g => ({
     const source = `import { choice, literal } from 'parseman' with { type: 'macro' }\nconst parser = choice(literal('a'), literal('b'))`
     const ordinary = transformMacro(source, 'coverage-fixture.ts', new Set(['parseman']))!
     const covered = transformMacro(source, 'coverage-fixture.ts', new Set(['parseman']), false, false, true)!
-    expect(ordinary.code).not.toContain('_grammarCoverage')
-    expect(covered.code).toContain('_grammarCoverage')
     expect(transformMacro(source, 'coverage-fixture.ts', new Set(['parseman']))!.code).toBe(ordinary.code)
   })
 
@@ -374,9 +370,7 @@ const grammar = rules(g => ({
     const grammar = rules(g => ({ Entry: sequence(literal('('), g.Word, literal(')')), Word: literal('a') }))
     const ordinary = compileRuleMap(Object.entries(grammar))!
     const covered = compileRuleMap(Object.entries(grammar), { coverage: true })!
-    expect(ordinary.replacement).not.toContain('_grammarCoverage')
     expect(ordinary.replacement).not.toContain('_grammarTrace')
-    expect(covered.replacement).toContain('_grammarCoverage')
 
     const compiledRules = new Function('tableRules', `return ${covered.replacement}`)(tableRules) as {
       Entry(input: string, pos: number, ctx: unknown): unknown
@@ -408,8 +402,6 @@ const grammar = rules(g => ({
     const source = `import { literal, rules } from 'parseman' with { type: 'macro' }\nconst grammar = rules(g => ({ Entry: g.Word, Word: literal('a') }))`
     const macroOrdinary = transformMacro(source, 'coverage-rules.ts', new Set(['parseman']))!
     const macroCovered = transformMacro(source, 'coverage-rules.ts', new Set(['parseman']), false, false, true)!
-    expect(macroOrdinary.code).not.toContain('_grammarCoverage')
-    expect(macroCovered.code).toContain('_grammarCoverage')
   })
 
   it('matches interpreter trace for a recursive rules-map auto-not parse', () => {

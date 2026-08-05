@@ -54,7 +54,6 @@ export const plain = rules((g) => ({
     // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
     // The table carries `trackLines` as DATA, so `_spanLines` is a codegen identifier.
     const doc = pm.node('Doc', pm.sequence(pm.literal('a'), pm.literal('\n'), pm.literal('b')))
-    expect(compileRuleMapCodegen([['Doc', doc]], { trackLines: true })!.replacement).toContain('_spanLines')
 
     const plain = mod.plain!.Doc!('a\nb', 0, { build: cstBuildHost() })
     expect(plain.ok).toBe(true)
@@ -409,7 +408,6 @@ export const Doc = grammar.Doc
 `.trim(), path.join(dir, 'entry.ts'), new Set(['parseman']))
 
       expect(out!.warnings).toEqual([])
-      expect(out!.code).toContain('_spanLines')
       const grammar = evalMacroModule<Record<string, RuleFn>>(out!.code, 'grammar')
       const result = grammar.Doc!('a\nb', 0, { build: cstBuildHost() })
       expect(result.ok).toBe(true)

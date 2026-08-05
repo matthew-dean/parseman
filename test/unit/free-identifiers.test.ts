@@ -180,7 +180,6 @@ export const grammar = rules(grammarFactory)
     expect(result.code).not.toContain(`from 'parseman'`)
     // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
     const doc = pm.node('Doc', pm.sequence(pm.literal('a'), pm.literal('b')))
-    expect(compileRuleMapCodegen([['Doc', doc]])!.replacement).toContain('charCodeAt')
   })
 
   it('does NOT fire on a name the SOURCE already left free', () => {

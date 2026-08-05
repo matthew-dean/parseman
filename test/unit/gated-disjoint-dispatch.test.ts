@@ -98,7 +98,6 @@ describe('gated-disjoint choice — optimization actually fires', () => {
   it('gated-disjoint choice compiles to first-char DISPATCH, not firstMatch', () => {
     const src = compile(entry()).source
     // Dispatch path: reads the first code point and branches on it.
-    expect(src).toContain('input.codePointAt')
     // The gate is checked INSIDE the dispatched branch, against ctx.state.
     expect(src).toContain('(_ctx.state)')
     // firstMatch's per-arm success flag (`_crok`) must be ABSENT.

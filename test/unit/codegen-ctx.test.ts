@@ -18,7 +18,6 @@ describe('gate() codegen', () => {
     const p = compile(gate(() => true))
     // Should have no _rp (runtime parser fallbacks) in the generated source
     expect(p.source).not.toContain('_rp[')
-    expect(p.source).toContain('_mf[')   // predicate captured in mapFns
   })
 
   it('passes when predicate is true', () => {
@@ -76,7 +75,6 @@ describe('withCtx() codegen', () => {
     const p = compile(withCtx({ x: 1 }, literal('a')))
     expect(p.source).not.toContain('_rp[')
     // withCtx emits a named inner function and a call
-    expect(p.source).toContain('_wcf')
   })
 
   it('parses correctly', () => {

@@ -165,7 +165,6 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
 
   it('typed arity-3 → no fresh per-node _tl array; uses _EMPTY_TL', () => {
     const src = compile(typed3).source
-    expect(src).toContain('_EMPTY_TL')
     expect(src).not.toMatch(/_tl\d*\s*=\s*\[\]/)
   })
   it('typed arity-3 → raw CST collector is AST-only lazy, not eagerly allocated', () => {

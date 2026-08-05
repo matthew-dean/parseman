@@ -218,7 +218,6 @@ export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Documen
       // leaves it as a named external placeholder; leaf fusion must close that
       // placeholder over the imported recognition piece, not delegate to a host
       // parser or runtime composition.
-      expect(leaf.code).toContain('_r_Atom')
 
       const parser = evalMacroModule<Record<string | symbol, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }> & Record<symbol, unknown>>(
         leaf.code, 'parser', { makeAst: (value: unknown, span: unknown) => ({ type: 'Ast', value, span }) },

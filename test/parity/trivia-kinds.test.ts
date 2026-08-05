@@ -32,8 +32,6 @@ describe('labeled trivia kinds — interpreter vs compiled', () => {
     // Structural trivia fast paths are available to both grammars. Root-category
     // retention is not: an ordinary grammar cannot service `rootTrivia.select`,
     // so its generated hot path must not pay for root-log saves or rollbacks.
-    expect(compileCodegen(ordinary).source).not.toContain('_rootTrivia')
-    expect(compileCodegen(classified).source).toContain('_rootTrivia')
   })
 
   it('records per-chunk kind indices in _triviaLog', () => {

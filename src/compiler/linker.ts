@@ -345,7 +345,11 @@ function fuseCarried(
  * uses the IR it always carries. `undefined` only for a piece with neither. */
 function ruleMapOfCarried(p: LinkableTable | IRPiece): Array<[string, Combinator<unknown>]> | undefined {
   if (isIRPiece(p)) return evalRuleMapIR(p.ir)
-  return p.ir === null ? undefined : evalRuleMapIR(p.ir)
+  // IR FIRST: re-evaluating it yields FRESH combinators, so seeding composing trivia
+  // onto their `_meta` cannot leak back into the artifact this piece came from. The live
+  // map is the fallback for a runtime-built grammar that has no serializable IR.
+  if (p.ir !== null) return evalRuleMapIR(p.ir)
+  return p.ruleMap.length > 0 ? p.ruleMap.map(([k, v]) => [k, v] as [string, Combinator<unknown>]) : undefined
 }
 
 /** Fold ordered rule maps into the composed map: a later piece's name WINS.

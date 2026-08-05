@@ -86,6 +86,17 @@ export type LinkableTable = {
    * programs instead of merging rule maps.
    */
   ir: string | null
+  /**
+   * The piece's rule map as LIVE COMBINATORS — present only for an in-process
+   * artifact, never serialized.
+   *
+   * `ir` is the portable composable half, and a grammar BUILT AT RUNTIME often has no
+   * `ir` at all (a live callback has no recoverable source). Such a piece still has to
+   * compose, and in-process it can: the combinators themselves are right there. Without
+   * this the runtime `compose([linkable(g)])` refused a grammar the source lowering
+   * composed happily.
+   */
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>
   hostMode: HostMode
   hostBranchElided: boolean
   /**
@@ -214,6 +225,7 @@ export function compileLinkableTable(
     rules: compiled?.rules ?? runnable?.rules ?? null,
     replacement: compiled?.replacement ?? null,
     ir,
+    ruleMap,
     hostMode,
     hostBranchElided: hostMode === 'ast',
     ...classifyRuleMap(ruleMap),
