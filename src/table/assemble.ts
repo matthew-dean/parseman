@@ -682,6 +682,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_EXPECT: {
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
+        // TODO(table/expect-span-lines): the interpreter annotates this span with
+        // line/column when `ctx.trackLines` is on (`combinators/expect.ts:145`,
+        // `annotateSpanFromLineContext`) and neither table driver does — measured
+        // divergence, `expect()` only, PRE-EXISTING and left alone here because it
+        // needs `spanLines` proven equivalent to `annotateSpanFromLineContext`
+        // first, and `recordLineRangeFromContext` decided for the zero-width case.
+        // List-recovery errors are unaffected: `recoverScan` annotates for every
+        // engine. Tracked in the recovery lane's report.
         // TOLERANT `expect()` EMBEDS ITS ERROR IN THE TREE, not only in the flat
         // `_errors` side-channel (`combinators/expect.ts:150`, and codegen's
         // `_ctx._rec.capture` at codegen.ts:4470) — so a tree walk finds every

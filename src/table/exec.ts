@@ -429,6 +429,14 @@ function makeDriver(
         if (v !== FAIL) return v
         // Mirrors src/combinators/expect.ts:135-150 — succeed at zero width with
         // a ParseError value, and record it in the flat sink when present.
+        // TODO(table/expect-span-lines): the interpreter annotates this span with
+        // line/column when `ctx.trackLines` is on (`combinators/expect.ts:145`,
+        // `annotateSpanFromLineContext`) and neither table driver does — measured
+        // divergence, `expect()` only, PRE-EXISTING and left alone here because it
+        // needs `spanLines` proven equivalent to `annotateSpanFromLineContext`
+        // first, and `recordLineRangeFromContext` decided for the zero-width case.
+        // List-recovery errors are unaffected: `recoverScan` annotates for every
+        // engine. Tracked in the recovery lane's report.
         const span = { start: pos, end: pos }
         const err = { _tag: 'parseError' as const, span, expected: fx[code[ip + 2]!] as string[] }
         ctx._errors?.push(err)
