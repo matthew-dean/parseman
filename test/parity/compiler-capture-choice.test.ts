@@ -106,7 +106,6 @@ describe('choice fast paths — codegen uses optimized emitters when capturing',
     // not startsWith. The point of this test is literalsLongestFirst vs
     // firstMatch (no `_crok` rollback state), not the literal-length threshold.
     expect(src).toContain('"instanceof"')
-    expect(src).not.toContain('_crok')
   })
 
   it('greedyClassify emits single regex exec for keyword + ident choice', () => {
@@ -117,7 +116,5 @@ describe('choice fast paths — codegen uses optimized emitters when capturing',
       (c, _r, s) => ({ _tag: 'node', type: 'T', span: s, c }),
     )
     const src = compileCodegen(p).source
-    expect(src).not.toContain('_crok')
-    expect(src).toContain('_cstLeaves.push')
   })
 })

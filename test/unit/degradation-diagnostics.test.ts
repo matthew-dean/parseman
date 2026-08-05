@@ -296,21 +296,6 @@ describe('degradation channel', () => {
 // ---------------------------------------------------------------------------
 // Defect 3 — a near-miss on the inline-`mk` shape is a real cost, so it reports
 // ---------------------------------------------------------------------------
-describe('inline-mk near-misses are reported', () => {
-  afterEach(() => { vi.unstubAllEnvs(); endDegradationCapture() })
-
-  const nodeDef = (type: string, buildSrc: string) => {
-    const n = node(type, literal('a'), () => null)
-    ;(n._def as { buildSrc?: string }).buildSrc = buildSrc
-    return n._def as Extract<import('../../src/index.ts').ParserDef, { tag: 'node' }>
-  }
-
-
-
-
-
-})
-
 // ---------------------------------------------------------------------------
 // Integrity of the diagnostic vocabulary and of the channel that carries it.
 //

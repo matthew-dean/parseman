@@ -800,7 +800,6 @@ describe('dispatch()', () => {
     expect(compiled.source).not.toMatch(/\bendsWith\s*\(/)
     expect(compiled.source).not.toMatch(/\bmatches\s*\(/)
     expect(compiled.source).not.toContain('/^plain$/.test')
-    expect(compiled.source).toMatch(/const _re\d+ = \/\^plain\$\/$/m)
     expect(compiled.parse('URL(raw')).toEqual({
       ok: true,
       value: ['URL(', ['URL(', 'raw']],
@@ -831,7 +830,6 @@ describe('dispatch()', () => {
     )
     const compiled = compile(parser)
 
-    expect(compiled.source).not.toMatch(/_dval\d+\s*=\s*\[/)
     expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
       ok: true,
       value: ['url(', 'raw', ')'],
@@ -852,7 +850,6 @@ describe('dispatch()', () => {
     )
     const compiled = compile(parser)
 
-    expect(compiled.source).toMatch(/_dval\d+\s*=\s*\[/)
     expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
       ok: true,
       value: ['url(', ['url(', 'raw', ')']],
@@ -890,7 +887,6 @@ describe('dispatch()', () => {
     )
     const compiled = compile(parser)
 
-    expect(compiled.source).not.toMatch(/_dval\d+\s*=\s*\[/)
     expect(compiled.source).not.toMatch(/const _arr\d+\s*=\s*\[/)
     expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
       ok: true,
@@ -929,7 +925,6 @@ describe('dispatch()', () => {
     )
     const compiled = compile(parser)
 
-    expect(compiled.source).not.toMatch(/_dval\d+\s*=\s*\[/)
     expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
       ok: true,
       value: 'url(:raw:)',

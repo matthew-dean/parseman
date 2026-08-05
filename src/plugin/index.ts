@@ -1891,6 +1891,14 @@ function transformMacroImpl(
           if (compiledRules.replacement === null) {
             if (!pieces || pieces.external.length === 0) {
               warn(init.start, `${varName}: rule map couldn't be inlined` + reasonSuffix(compiledRules.refusals))
+              // THE WHOLE MODULE FALLS BACK, for the same reason a runtime `compose()`
+              // does. This map keeps its `rules(…)` source and is therefore built by the
+              // INTERPRETER, from combinators — but its ambient trivia is an ordinary
+              // declaration that this pass may already have lowered to a compiled rule
+              // function. Mixing the two hands `rules()` a function where it needs a
+              // combinator, and it throws walking it for reflection. Partial lowering is
+              // only ever safe when every consumer of a lowered declaration also lowered.
+              runtimeComposeFallback = true
               continue
             }
             keepMacroImport = true

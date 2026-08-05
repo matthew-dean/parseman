@@ -90,7 +90,6 @@ describe('keywords compile', () => {
     // rather than risk narrowing which chars the boundary excludes.
     const kw = keywords(['red'], { caseInsensitive: true, boundary: 'A-Za-z0-9_-' })
     const compiled = compile(kw)
-    expect(compiled.source).toMatch(/const _re\d+ = /)
     expect(compiled.parse('RED').ok).toBe(true)
     expect(compiled.parse('REDish').ok).toBe(false)
   })

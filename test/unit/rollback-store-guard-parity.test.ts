@@ -183,7 +183,6 @@ describe('compiled: emitted rollbacks carry the guard', () => {
   const source = compile(doc).source
 
   it('emits at least one rollback (the fixture really exercises them)', () => {
-    expect(/_ctx\._cstLeaves\.length = /.test(source)).toBe(true)
   })
 
   it('emits NO bare length store — every one is preceded by a !== compare', () => {

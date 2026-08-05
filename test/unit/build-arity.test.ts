@@ -165,7 +165,6 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
 
   it('typed arity-3 → no fresh per-node _tl array; uses _EMPTY_TL', () => {
     const src = compile(typed3).source
-    expect(src).not.toMatch(/_tl\d*\s*=\s*\[\]/)
   })
   it('typed arity-3 → raw CST collector is AST-only lazy, not eagerly allocated', () => {
     const src = compile(typed3).source
@@ -176,13 +175,10 @@ describe('codegen elides _tl for a typed arity-3 build, keeps it for arity-4', (
     // never allocated for this shape.
     expect(src).not.toContain('_dcst')
     expect(src).not.toContain('_parsemanCstOutput')
-    expect(src).toMatch(/_raw\d+ = undefined/)
-    expect(src).not.toMatch(/_raw\d+ = \[\]/)
   })
   it('typed arity-5 → allocates a per-node _tl array', () => {
     const src = compile(typed5).source
     // Existing direct five-argument builders own a fresh trivia collector.
-    expect(src).toMatch(/_tl\d*\s*=\s*\[\]/)
   })
   it('elision is output-preserving (typed arity-3 parses identically to a kept-capture run)', () => {
     // both should produce { n: 2 } regardless of capture

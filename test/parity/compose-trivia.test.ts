@@ -56,8 +56,15 @@ export const g = compose([base, rules({ trivia: rw }, (g) => ({ Doc: sequence(li
     // `compose([...])` call (the options-first `rules({trivia}, …)` used to break the
     // plugin's piece disambiguation and force that fallback).
     expect(src.includes('compose(['), 'compose must inline, not fall back to runtime').toBe(false)
-    // …and the fused rules must skip trivia between terms.
-    expect(/_tf\d/.test(src), 'macro-fused compose output must contain a trivia-skip').toBe(true)
+    // …and the fused rules must skip trivia between terms. This used to grep the output
+    // for `_tf<n>`, codegen's emitted trivia-skip function. The table encodes the skip as
+    // DATA, and which pool it lands in is an encoder detail — so assert the PROPERTY the
+    // name of this test claims, by running the fused grammar. That is also what the
+    // runtime-fuse case above asserts, so the two now agree on what is being checked.
+    const { g: fused } = evalFused(src, 'g')
+    expect(run(fused.Doc, 'x a b y').ok, 'fused rules must skip trivia between terms').toBe(true)
+    expect(run(fused.Doc, 'x a b y').span.end).toBe(7)
+    expect(run(fused.Pair, 'a b').ok, 'inherited rule must skip trivia too').toBe(true)
     // The import must be fully removed (nothing fell back to the interpreter).
     expect(src.includes("from 'parseman'"), 'macro import must be fully stripped').toBe(false)
 

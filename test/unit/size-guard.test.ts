@@ -444,9 +444,6 @@ describe('the size gate refuses to record bytes for a HOLLOW artifact', { timeou
   })
 })
 
-describe('standing debt never reads as a fresh regression', { timeout: ONE_SPAWN_MS }, () => {
-})
-
 describe('size gate measures multi-variant duplication', { timeout: ONE_SPAWN_MS }, () => {
   it('gates 1 / 2 / 4-variant fixtures', () => {
     // Real grammars emit four variants from one factory (trackLines x hostMode).

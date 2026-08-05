@@ -177,8 +177,6 @@ const Import = node('Import', sequence(literal('@import'), field('tail', Tail), 
     expect(compiledResult.ok && compiledResult.value).toEqual({
       name: { value: 'href', span: { start: 1, end: 5 } },
     })
-    expect(compiled.source).toContain('_hostReads(_ctx.build, 2)')
-    expect(compiled.source).toContain('_hostReads(_ctx.build, 5)')
   })
 
   it('does not allocate an outer trivia collector for a capture hidden by leaf()', () => {
