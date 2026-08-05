@@ -3,6 +3,7 @@ import {
   OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCOPE, OP_SEQ, OP_SEQV, OP_XFORM, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
+  OP_SCOPE_CAP, OP_WITHCTX, OP_GUARD, OP_ADJ,
 } from './ops.ts'
 import type { TableProgram } from './program.ts'
 
@@ -38,7 +39,10 @@ export function reachableIps(prog: TableProgram): Set<number> {
     seen.add(ip)
     const op = code[ip]!
     switch (op) {
+      // ZERO-WIDTH / TERMINAL ROWS — no successor. `OP_GUARD` and `OP_ADJ` are
+      // both childless tests; the walk ends at them.
       case OP_LIT: case OP_RX: case OP_LIT_TRACK: case OP_RX_TRACK: case OP_EMPTY: case OP_SCAN: case OP_LIT_CI: case OP_LIT_CI_TRACK:
+      case OP_GUARD: case OP_ADJ:
         break
       case OP_GATE:
         stack.push(code[ip + 2]!)
@@ -75,7 +79,10 @@ export function reachableIps(prog: TableProgram): Set<number> {
         stack.push(code[ip + 1]!)
         if (code[ip + 4]! >= 0) stack.push(code[ip + 4]!)
         break
-      case OP_XFORM: case OP_LEAF: case OP_SCOPE: case OP_FIELD:
+      // `OP_SCOPE_CAP` and `OP_WITHCTX` carry their child at `ip + 2` like
+      // `OP_SCOPE`; both were added to the encoder without reaching this walk,
+      // so `opHistogram` threw "unknown opcode" on any program containing one.
+      case OP_XFORM: case OP_LEAF: case OP_SCOPE: case OP_SCOPE_CAP: case OP_WITHCTX: case OP_FIELD:
         stack.push(code[ip + 2]!)
         break
       case OP_NODE: case OP_NODE_TRACK:
