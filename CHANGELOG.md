@@ -20,13 +20,35 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   per-arm gate removes 74% of arm entries on the same grammar; the table removed
   1.4%. That asymmetry was the penalty.
 
-  A/B in ONE directory, git-toggled, same harness, load 3.5-4.0 at both ends,
-  three-leg pinned composition, median of 16 samples:
+  MEASURED SPEED — RESTATED. The first figures quoted here (-17.0% / -19.9%,
+  43.52 -> 36.11 ms) came from two SEPARATE PROCESS LAUNCHES of `bench:less`, one
+  per build, defended by that harness's in-run A/A control. That control
+  interleaves its two legs in one process, so it reads ±0.1-0.8% however noisy
+  the box is: it measures the instrument WITHIN a run and cannot defend a
+  before/after ACROSS builds and processes — the regime the same harness's header
+  warns about ("separate process launches on this hardware read 9.4 ms and 26 ms
+  for the same case"). Those absolute milliseconds are WITHDRAWN.
 
-  | fixture | table before | table after | delta | control |
+  Re-measured through `bench/workload-perf-guard.ts`, which is built for exactly
+  this: both sides in one process, paired and order-alternated, both RECOMPILED
+  each pass, 5 independent passes, against a control pair of two reference
+  instances measuring the null in the same passes.
+
+  | workload | median across 5 passes | min | pairs won | null |
   | --- | ---: | ---: | ---: | ---: |
-  | `benchmark.less` (106,802 B) | 43.52 ms (2.58x) | **36.11 ms (2.17x)** | **-17.0%** | ±0.2% |
-  | `gen-workload.less` (275,211 B) | 198.88 ms (3.81x) | **159.26 ms (3.17x)** | **-19.9%** | ±0.7% |
+  | `table/less-stylesheet` (52 KB) | **-11.5% … -10.3%** | -11.6% … -9.9% | 12/12 in all 5 | +0.4%, 48.3% |
+  | `table/css-stylesheet` (64 KB) | **-5.9% … -4.3%** | -5.8% … -4.3% | 12/12 in all 5 | +0.3%, 53.3% |
+
+  The win is real and replicated — every one of 12 interleaved pairs won in every
+  one of 5 passes on both workloads, against a null that wins ~50% and moves
+  ±0.4%. The MAGNITUDE is -10 to -11.5% on less-shaped input, not the -17% first
+  claimed; roughly six points of that was cross-process noise. This box's
+  cross-build noise floor on this instrument is ±1.8% worst single pass, measured
+  by `--self` over all five stock workloads (0/25 passes breached).
+
+  These two rows are the gate's own less/css grammars and corpora, NOT jess's
+  `benchmark.less`, so they corroborate the mechanism and size the win on
+  comparable material rather than re-measuring the original fixture.
 
   Counts behind it (`PM_TABLE_COUNT=1`): ungated arm entries 268,834 -> 67,027 on
   `benchmark.less`, of which 177,823 (72.6%) are declined by the gate; failed
@@ -39,9 +61,19 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   gzipped (+2.05%), with `words` unchanged at 9,443 — no instruction growth, only
   the per-arm class indices in the `disp` pool.
 
-  Rows fell 31.7% while time fell 17.0%, so the remaining table cost is
+  Rows fell 31.7% while time fell ~11%, so the remaining table cost is
   concentrated in the rows that REMAIN, not in speculation. Ungated speculation
-  was worth ~17% of the table's time, not the whole 2x.
+  was worth ~11% of the table's time, not the whole 2x.
+
+  COVERAGE GAP, unfixed and worth fixing: `workload-perf-guard` has no table
+  case — every stock workload goes through `compile()` — so any change confined
+  to `src/table/` reads flat on the only cross-build gate this repo has. That is
+  why a table claim ended up defended by an in-run A/A control in the first
+  place. Table workloads were prototyped and measured (the numbers above came
+  from them) but NOT landed: the gate's pinned reference `a5dc9bd` predates
+  `src/table/`, so adding them makes the default `pnpm perf:workloads` fail to
+  resolve on the reference side. Landing table coverage needs the pinned
+  reference moved to a table-era commit first, which is an owner decision.
 
 - **`run()` no longer installs three accessors on every result — small parses
   get up to 43% of their time back.** Since 0.44 every `run()` call passed its
