@@ -2,6 +2,8 @@ import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { classifiedTrivia, trivia as triviaOf } from '../combinators/map.ts'
 import { fastTriviaScanner, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import { regex } from '../combinators/regex.ts'
+import { choice } from '../combinators/choice.ts'
+import { many } from '../combinators/repeat.ts'
 
 /**
  * The emitted form of a grammar under the table lowering.
@@ -163,6 +165,19 @@ export type TriviaSpec = {
   readonly arms: readonly (readonly [string, string, string])[]
   /** Set for a plain `trivia(regex)`: `[source, flags]`. */
   readonly plain?: readonly [string, string]
+  /**
+   * Set for an UNLABELLED alternation body — `trivia(oneOrMore(choice(ws,
+   * comment)))`, which is what a grammar that does not need trivia CATEGORIES
+   * writes and what `examples/css/parser.ts` has always written. `[source,
+   * flags]` per arm, in order, because a PEG choice is ordered.
+   *
+   * Distinct from `arms` rather than folded into it with a synthetic label:
+   * `classifiedTrivia()` puts its labels in the CST trivia log, so a made-up name
+   * would appear in a consumer's tree for a category the grammar never declared.
+   */
+  readonly alts?: readonly (readonly [string, string])[]
+  /** The `alts` repetition floor — 1 for `oneOrMore`, 0 for `many`. */
+  readonly min?: number
   /**
    * A trivia combinator whose shape this encoder cannot express as data, kept
    * live so the program still RUNS. Its presence is recorded in `runtimeOnly`,
@@ -374,6 +389,16 @@ function resolveDispatch(arms: readonly number[], cc: readonly ResolvedClass[]):
 function buildTrivia(spec: TriviaSpec): Combinator<unknown> {
   if (spec.live !== undefined) return spec.live as Combinator<unknown>
   if (spec.plain !== undefined) return triviaOf(regex(new RegExp(spec.plain[0], spec.plain[1])))
+  if (spec.alts !== undefined) {
+    const [head, ...rest] = spec.alts.map(([source, flags]) => regex(new RegExp(source, flags)))
+    if (head === undefined) throw new TypeError('trivia spec has an EMPTY alternation, which matches nothing')
+    const body = rest.length === 0 ? head : choice(head, ...rest)
+    // `many(x, { min: 1 })` and `oneOrMore(x)` are the IDENTICAL combinator, not
+    // merely equivalent — min>=1 routes to the same `atLeast` implementation
+    // (combinators/repeat.ts:126-131). So this rebuilds the source shape exactly
+    // for both floors and there is no second constructor to keep in step.
+    return triviaOf(many(body, { min: spec.min ?? 1 }))
+  }
   const arms: Record<string, Combinator<unknown>> = {}
   for (const [name, source, flags] of spec.arms) arms[name] = regex(new RegExp(source, flags))
   return classifiedTrivia(arms)

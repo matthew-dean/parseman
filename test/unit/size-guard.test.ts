@@ -314,10 +314,56 @@ describe('printability ratchets in both directions', { timeout: ONE_SPAWN_MS }, 
     return gate(ROOT, `--baseline=${path.join(d, 'bench', 'size-baseline.json')}`)
   }
 
+  /**
+   * A CHECKOUT in which one gated grammar genuinely cannot print.
+   *
+   * Every fixture in the real tree prints again, so the unprintable half of this
+   * ratchet has nothing in-tree left to observe it with. It used to be observed
+   * only because `example/css` and `example/jsonc` HAPPENED to be broken — which
+   * is not a test, it is a coincidence that expired the moment they were fixed,
+   * and a guard nobody can see fail is not known to work.
+   *
+   * So the state is CONSTRUCTED. `--root=` is documented as "pointing the real
+   * gate at a fixture checkout" and now really does (bench/size-guard.ts imports
+   * each grammar through ROOT), so this builds one: the real `src`, the real
+   * `node_modules`, and a COPY of `examples/` with a single grammar's trivia
+   * swapped for a shape the table encoder refuses by name. `src` is a symlink,
+   * so the child measures the code under test, not a stale copy of it.
+   */
+  function unprintableRoot(): string {
+    const d = scratch()
+    for (const entry of ['src', 'node_modules', 'package.json', 'tsconfig.json']) {
+      fs.symlinkSync(path.join(ROOT, entry), path.join(d, entry))
+    }
+    fs.cpSync(path.join(ROOT, 'examples'), path.join(d, 'examples'), { recursive: true })
+    const cssPath = path.join(d, 'examples/css/parser.ts')
+    const css = fs.readFileSync(cssPath, 'utf8')
+    const original = 'const rw = trivia(oneOrMore(choice(ws, comment)))'
+    // Fail LOUDLY if the line moved: a silent no-op patch would leave the fixture
+    // printable and every assertion below would then be asserting nothing.
+    expect(css, 'the trivia line this fixture patches has moved').toContain(original)
+    // A BOUNDED repeat has nowhere to put `max` in a TriviaSpec, so the encoder
+    // keeps the combinator live and names it. The grammar still PARSES — which is
+    // the whole distinction the unprintable path exists to draw.
+    fs.writeFileSync(cssPath, css.replace(original, 'const rw = trivia(oneOrMore(choice(ws, comment), { max: 4 }))'))
+    return d
+  }
+
+  /** The gate run against that checkout, with a baseline the caller shapes. */
+  function againstUnprintable(mutate: (fixtures: Record<string, Entry>) => void): Result {
+    const d = unprintableRoot()
+    const real = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/size-baseline.json'), 'utf8')) as {
+      fixtures: Record<string, Entry>
+    }
+    mutate(real.fixtures)
+    writeBaseline(d, real)
+    return gate(d)
+  }
+
   it('FAILS a fixture that had a ceiling and now emits nothing', () => {
     // The baseline says example/css printed; the tree says it does not. That is a
     // loss of capability, and it BLOCKS.
-    const r = against(f => {
+    const r = againstUnprintable(f => {
       delete f['example/css']!.printable
       delete f['example/css']!.unprintable
     })
@@ -338,11 +384,14 @@ describe('printability ratchets in both directions', { timeout: ONE_SPAWN_MS }, 
   })
 
   it('renders a recorded unprintable fixture as tracked debt, on a GREEN run', () => {
-    const r = gate(ROOT)
+    const r = againstUnprintable(f => {
+      f['example/css']!.printable = false
+      f['example/css']!.unprintable = ['rules({ trivia }) — trivia body is a BOUNDED repeat']
+    })
     expect(r.ok).toBe(true)
     expect(r.out).toMatch(/NO ARTIFACT — \d+ fixture\(s\) RUN but cannot be printed/)
     // WHICH construct, not just which fixture.
-    expect(r.out).toMatch(/trivia arm is 'regex', not a labelled arm/)
+    expect(r.out).toMatch(/trivia body is a BOUNDED repeat/)
     // Green must never read as "fine": the ok line repeats that they are ungated.
     expect(r.out).toMatch(/UNGATED for size/)
   })
@@ -350,7 +399,10 @@ describe('printability ratchets in both directions', { timeout: ONE_SPAWN_MS }, 
   it('shows a dash, never 0 B, for a fixture with no artifact', () => {
     // "0 B / 0.0x" would sort as the best row in the table and read as the win of
     // the release. There is no artifact; the table must say so.
-    const r = gate(ROOT)
+    const r = againstUnprintable(f => {
+      f['example/css']!.printable = false
+      f['example/css']!.unprintable = ['rules({ trivia }) — trivia body is a BOUNDED repeat']
+    })
     expect(r.out).toMatch(/example\/css\s+[\d,]+ B\s+—\s+—\s+—\s+—\s+—\s+unprintable/)
     expect(r.out).not.toMatch(/example\/css\s+[\d,]+ B\s+0 B/)
   })

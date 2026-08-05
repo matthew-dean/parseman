@@ -270,16 +270,25 @@ export type Baseline = {
  * and is blind to css/lang/toml-ish and to the jsonc/jsonl VARIANTS — which is
  * precisely where the cost hides.
  */
-const EXAMPLE_SPECS: { id: string; module: string; exportName: string; source: string; precompiled?: boolean }[] = [
-  { id: 'example/json', module: '../examples/json/parser.ts', exportName: 'jsonDoc', source: 'examples/json/parser.ts' },
-  { id: 'example/csv', module: '../examples/csv/parser.ts', exportName: 'csvParser', source: 'examples/csv/parser.ts' },
-  { id: 'example/graphql', module: '../examples/graphql/parser.ts', exportName: 'graphqlDoc', source: 'examples/graphql/parser.ts' },
-  { id: 'example/css', module: '../examples/css/parser.ts', exportName: 'Stylesheet', source: 'examples/css/parser.ts' },
-  { id: 'example/lang', module: '../examples/lang/parser.ts', exportName: 'exprParser', source: 'examples/lang/parser.ts' },
+export type ExampleSpec = { id: string; exportName: string; source: string; precompiled?: boolean }
+
+/**
+ * EXPORTED because it is the repo's ONE registry of shipped example grammars,
+ * and `test/unit/example-emission.test.ts` gates emission over exactly this set.
+ * A second hand-maintained list in the test would be a second thing to forget —
+ * which is the failure mode both that test's STALE sweep and this file's own
+ * STALE check exist to catch.
+ */
+export const EXAMPLE_SPECS: ExampleSpec[] = [
+  { id: 'example/json', exportName: 'jsonDoc', source: 'examples/json/parser.ts' },
+  { id: 'example/csv', exportName: 'csvParser', source: 'examples/csv/parser.ts' },
+  { id: 'example/graphql', exportName: 'graphqlDoc', source: 'examples/graphql/parser.ts' },
+  { id: 'example/css', exportName: 'Stylesheet', source: 'examples/css/parser.ts' },
+  { id: 'example/lang', exportName: 'exprParser', source: 'examples/lang/parser.ts' },
   // toml-ish exports only its already-compiled artifact, not the combinator.
-  { id: 'example/toml-ish', module: '../examples/toml-ish/parser.ts', exportName: 'compiledConfig', source: 'examples/toml-ish/parser.ts', precompiled: true },
-  { id: 'example/jsonc', module: '../examples/json/jsonc.ts', exportName: 'jsoncValue', source: 'examples/json/jsonc.ts' },
-  { id: 'example/jsonl', module: '../examples/json/jsonl.ts', exportName: 'jsonl', source: 'examples/json/jsonl.ts' },
+  { id: 'example/toml-ish', exportName: 'compiledConfig', source: 'examples/toml-ish/parser.ts', precompiled: true },
+  { id: 'example/jsonc', exportName: 'jsoncValue', source: 'examples/json/jsonc.ts' },
+  { id: 'example/jsonl', exportName: 'jsonl', source: 'examples/json/jsonl.ts' },
 ]
 
 /**
@@ -324,7 +333,17 @@ async function measureExamples(): Promise<Fixture[]> {
 
     let mod: Record<string, unknown>
     try {
-      mod = (await import(join(HERE, spec.module))) as Record<string, unknown>
+      // Imported through ROOT, not through `HERE`. `--root=` is documented as the
+      // injection point that "points the real gate at a fixture checkout", and it
+      // did not: only the baseline path and the existence check honoured it while
+      // the grammar itself was always imported out of THIS checkout. So the one
+      // property that cannot be constructed from a baseline — whether a grammar
+      // PRINTS — had no way to be exercised at all, and the printability ratchet
+      // was only ever observed working because two shipped fixtures happened to be
+      // unprintable. `spec.source` and `spec.module` name the same file (one
+      // root-relative, one bench-relative), so this is the same import in the
+      // ordinary case and a real redirect under `--root=`.
+      mod = (await import(sourcePath)) as Record<string, unknown>
     } catch (e) {
       fail(`fixture ${spec.id}: FAILED TO BUILD — ${(e as Error).message.split('\n')[0]}\n  A build failure is a gate failure. Fix the grammar; do not drop it from the set.`)
     }

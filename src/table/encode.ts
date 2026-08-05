@@ -145,20 +145,63 @@ class Encoder {
     }
     const d = t._def
     if (d.tag !== 'trivia') return unlowered(`expected a trivia() wrapper, got '${d.tag}'`)
-    const inner = d.parser._def
+    let inner = d.parser._def
+    // A `transform()` over a trivia body is a VALUE map, and a trivia VALUE is
+    // never observed by anything: `advanceTrivia` and `scanTrivia`
+    // (combinators/trivia-skip.ts:189, :219) are the only consumers of `ctx.trivia`
+    // and both read `span.end` alone — the parsed value is dropped on every path.
+    // So the wrapper is UNWRAPPED rather than refused. This is not "close enough":
+    // the recognition it wraps is the entire observable contract of trivia, and
+    // dropping a reducer whose result provably cannot escape loses nothing.
+    // (`examples/json/jsonc.ts` writes exactly `transform(many(…), () => '')`.)
+    while (inner.tag === 'transform') inner = inner.parser._def
     if (inner.tag === 'regex') return { arms: [], plain: [inner.source, inner.flags] }
-    // classifiedTrivia's exact shape.
-    const rep = inner.tag === 'oneOrMore' || (inner.tag === 'many' && inner.min >= 1) ? inner.parser._def : null
-    if (rep === null || rep.tag !== 'choice') return unlowered(`unrecognised trivia body '${inner.tag}'`)
-    const arms: Array<readonly [string, string, string]> = []
-    for (const arm of rep.parsers) {
+    // The repetition around the alternation. `oneOrMore` is the tag min>=1 always
+    // carries (repeat.ts:201) and `many` is the nullable min-0 loop; both lower,
+    // and the floor travels in the spec so the rebuild is the same combinator
+    // rather than a same-shaped one. A BOUNDED repeat does not lower — `max` has
+    // nowhere to go in the spec and silently unbounding it would accept input the
+    // grammar rejects.
+    if (inner.tag !== 'oneOrMore' && inner.tag !== 'many') {
+      return unlowered(`unrecognised trivia body '${inner.tag}'`)
+    }
+    if (inner.max !== undefined) {
+      return unlowered(`trivia body is a BOUNDED repeat (max ${inner.max}), which the spec cannot carry`)
+    }
+    const min = inner.min
+    const rep = inner.parser._def
+    // A single un-alternated body (`trivia(many(regex))`) is the one-arm case.
+    const parsers = rep.tag === 'choice' ? rep.parsers : [inner.parser]
+    // Two shapes, and an arm set must be wholly one or the other. LABELLED is
+    // `classifiedTrivia()`'s exact output. UNLABELLED is the plain
+    // `trivia(oneOrMore(choice(ws, comment)))` that `examples/css/parser.ts`
+    // writes and that had no lowering at all. Mixing them is refused rather than
+    // half-labelled: `classifiedTrivia` requires a label per arm, so there is no
+    // rebuild that keeps both, and inventing labels would put names in the CST
+    // trivia log that the grammar never wrote.
+    const labelled: Array<readonly [string, string, string]> = []
+    const bare: Array<readonly [string, string]> = []
+    for (const arm of parsers) {
       const a = arm._def
-      if (a.tag !== 'label') return unlowered(`trivia arm is '${a.tag}', not a labelled arm`)
+      if (a.tag === 'regex') {
+        bare.push([a.source, a.flags])
+        continue
+      }
+      if (a.tag !== 'label') return unlowered(`trivia arm is '${a.tag}', not a labelled arm or a regex`)
       const body = a.parser._def
       if (body.tag !== 'regex') return unlowered(`trivia arm ${JSON.stringify(a.label)} is '${body.tag}', not a regex`)
-      arms.push([a.label, body.source, body.flags])
+      labelled.push([a.label, body.source, body.flags])
     }
-    return { arms }
+    if (labelled.length > 0 && bare.length > 0) {
+      return unlowered('trivia arms are a MIX of labelled and bare regexes, which has no single rebuild')
+    }
+    if (labelled.length > 0) {
+      // `classifiedTrivia()` builds min-1 by construction, so a min-0 labelled
+      // body cannot be rebuilt through it and is not quietly promoted.
+      if (min !== 1) return unlowered(`labelled trivia arms need a min-1 repeat, got min ${min}`)
+      return { arms: labelled }
+    }
+    return { arms: [], alts: bare, min }
   }
   rules: Record<string, number> = {}
 

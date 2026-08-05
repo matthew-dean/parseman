@@ -1,6 +1,6 @@
 {
   "updatedAt": "2026-08-05",
-  "gitRev": "d4b57e5",
+  "gitRev": "df392a3",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -23,14 +23,10 @@
       "locMultiplier": 0.046
     },
     "example/css": {
-      "genBytes": 0,
-      "gzipBytes": 0,
-      "bytesRatio": 0,
-      "locMultiplier": 0,
-      "printable": false,
-      "unprintable": [
-        "rules({ trivia }) — trivia arm is 'regex', not a labelled arm"
-      ]
+      "genBytes": 8563,
+      "gzipBytes": 2407,
+      "bytesRatio": 0.882,
+      "locMultiplier": 0.065
     },
     "example/lang": {
       "genBytes": 2443,
@@ -45,14 +41,10 @@
       "locMultiplier": 0.133
     },
     "example/jsonc": {
-      "genBytes": 0,
-      "gzipBytes": 0,
-      "bytesRatio": 0,
-      "locMultiplier": 0,
-      "printable": false,
-      "unprintable": [
-        "rules({ trivia }) — unrecognised trivia body 'transform'"
-      ]
+      "genBytes": 1295,
+      "gzipBytes": 626,
+      "bytesRatio": 1.144,
+      "locMultiplier": 0.353
     },
     "example/jsonl": {
       "genBytes": 1285,

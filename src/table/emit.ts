@@ -64,6 +64,10 @@ function emitConst(v: unknown): string {
 
 function emitTriviaSpec(t: import('./program.ts').TriviaSpec): string {
   if (t.plain !== undefined) return `{arms:[],plain:[${jsString(t.plain[0])},${jsString(t.plain[1])}]}`
+  if (t.alts !== undefined) {
+    const alts = t.alts.map(a => `[${jsString(a[0])},${jsString(a[1])}]`).join(',')
+    return `{arms:[],alts:[${alts}],min:${t.min ?? 1}}`
+  }
   return `{arms:[${t.arms.map(a => `[${jsString(a[0])},${jsString(a[1])},${jsString(a[2])}]`).join(',')}]}`
 }
 
