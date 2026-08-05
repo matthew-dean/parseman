@@ -1123,16 +1123,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (v !== FAIL) return v
               // THE CUT — a committed failure fails the whole choice.
               if (committed(ctx)) return FAIL
+              // THE DISPATCHED ARM'S OWN SET IS THE ANSWER, at the choice's own
+              // position — the rule both shipped engines apply (choice.ts:105,
+              // codegen.ts:1985). `_fx` already holds it; reporting the arm is
+              // declining to overwrite it. See `exec.ts` for why this is NOT
+              // furthest-failure merging and what the residual JSON gap is.
+              const armFx = ctx._fx
+              if (armFx !== undefined && armFx.length > 0) { ctx._fe = pos; return FAIL }
             }
-            // THE UNION IS REPORTED EVEN THOUGH ONE ARM WAS SELECTED, deliberately.
-            // Both other engines answer with the DISPATCHED arm's set — on `ax`
-            // against `choice(literal('ab'), literal('cd'))` they say `["ab"]` and
-            // the table says `["ab","cd"]` — but they reach it by FURTHEST-FAILURE
-            // merging, which this driver does not have: `_fe`/`_fx` are
-            // last-write-wins, so preserving the arm's `_fx` here reports whatever
-            // failed LAST, not furthest. Measured: it collapses JSON `[1,2,]` from
-            // the engines' seven expected tokens to the single `"]"` the innermost
-            // literal happened to write.
+            // THE UNION IS REPORTED ONLY ON A DISPATCH MISS, where the interpreter's
+            // `parsers.flatMap` over non-nullable, char-excluded arms yields exactly
+            // each arm's own opener — this set, without running the arms.
             ctx._fe = pos; ctx._fx = choiceFx
             return FAIL
           }
