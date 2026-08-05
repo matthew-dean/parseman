@@ -3036,7 +3036,27 @@ function emitMany(def: Extract<ParserDef, { tag: 'many' | 'oneOrMore' }>, ctx: C
   // `min` MANDATORY matches, inlined with early-return on failure. min 0/1 is the
   // whole world today, so the loop runs 0 or 1 times and the output is unchanged;
   // `many(x, { min: n })` simply inlines n of them.
+  //
+  // Items 2..min are preceded by INTER-ITEM TRIVIA, exactly as the loop's are —
+  // the repeat owns the trivia BETWEEN its items, and only the trivia before the
+  // FIRST one belongs to the enclosing context (repeat.ts:201-203, :211-213, where
+  // items 2..min go through `repItem` and skip it). Inlining them flush against
+  // each other made `many(x, { min: 2 })` reject `"a a"` — input `many(x)` parses
+  // as two items, so a `{ min: 2 }` list refusing it contradicts `min` counting
+  // ITEMS. No rollback is emitted: a mandatory item's failure fails the WHOLE
+  // repeat, so there is no path that hands this trivia back.
   for (let i = 0; i < def.min; i++) {
+    if (i > 0 && ctx.activeTrivia) {
+      const npV = v(ctx, '_mnp')
+      if (ctx.capturing) {
+        stmts.push(`${ind(ctx)}const ${npV} = ${ensureTriviaCaptureFn(ctx)}(input, ${curV}, _ctx, 1)`)
+      } else {
+        stmts.push(
+          `${ind(ctx)}const ${npV} = ${ensureTriviaFn(ctx)}(input, ${curV}, _ctx, ${hasSelectedRootTrivia(ctx) ? '_ctx._rootTriviaLog !== undefined ? 2 : 0' : '0'})`,
+        )
+      }
+      stmts.push(...emitLineTrack(ctx, curV, npV), `${ind(ctx)}${curV} = ${npV}`)
+    }
     const firstR = emit(def.parser, ctx, curV)
     stmts.push(...firstR.stmts)
     if (wantValue) stmts.push(`${ind(ctx)}${arrV}.push(${firstR.valueVar})`)

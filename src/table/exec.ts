@@ -817,7 +817,15 @@ function makeDriver(
           // reaches `repItem` at all. The trivia branch below already encodes this
           // (its `else if` is unreachable for `sep >= 0`); the two guards after it
           // did not, and applied `repItem`'s rules to items that never run it.
-          const viaRepItem = sep < 0 && (count > 0 || skipBeforeFirst)
+          //
+          // `count >= min` extends that to ALL of `atLeast`'s mandatory items, not
+          // just its first: items 2..min go through `repItem` (repeat.ts:213) but as
+          // MANDATORY, which holds off both of its loop-termination stops. Without
+          // it a `{ min: 2 }` repeat over a NULLABLE item stopped on the required
+          // second item and then failed `count < min` — never satisfiable at all,
+          // where the compiled engine yields the n-item derivation. `min === 0`
+          // makes the clause vacuous, so `many()` is untouched.
+          const viaRepItem = sep < 0 && count >= min && (count > 0 || skipBeforeFirst)
           if (sep >= 0 && count > 0) {
             // separator, with trivia on BOTH sides — mirrors repeat.ts's sepBy loop
             const leavesBefore = cstLeavesLen(ctx)
