@@ -726,23 +726,39 @@ function makeDriver(
             // was being SET by OP_DISPATCH and read by nobody, so the table
             // accepted input both shipped engines reject.
             if (committed(ctx)) return FAIL
+            // THE DISPATCHED ARM'S OWN SET IS THE ANSWER, at the choice's own
+            // position. This is the rule BOTH shipped engines apply — see the
+            // block comment below `failChoice` — and `_fx` already holds it, so
+            // the whole of "report the arm" is declining to overwrite it.
+            const armFx = ctx._fx
+            if (armFx !== undefined && armFx.length > 0) { ctx._fe = pos; return FAIL }
           }
           // THERE ARE NO OPEN ARMS TO FALL BACK TO. An open arm is one whose class
           // is −1, and `resolveDispatch` clears `exclusive` for exactly those arms
           // (program.ts), so `table.open` is empty whenever `exclusive` holds — the
           // fallback loop this branch used to carry was unreachable code.
           //
-          // THE UNION IS REPORTED EVEN THOUGH ONE ARM WAS SELECTED, and that is
-          // deliberate. Both other engines answer with the DISPATCHED arm's set —
-          // on `ax` against `choice(literal('ab'), literal('cd'))` they say
-          // `["ab"]` and the table says `["ab","cd"]` — but they reach it by
-          // FURTHEST-FAILURE merging, which this driver does not have: `_fe`/`_fx`
-          // are last-write-wins, so preserving the arm's `_fx` here reports
-          // whatever failed LAST rather than what failed furthest. Measured: it
-          // collapses JSON `[1,2,]` from the engines' seven expected tokens to the
-          // single `"]"` the innermost literal happened to write. The union at the
-          // choice's own position is the closer answer until the driver merges by
-          // position, and that is a change to the failure model, not to a choice.
+          // THE UNION IS REPORTED ONLY WHEN NO ARM WAS SELECTED — a dispatch miss,
+          // where the interpreter runs `parsers.flatMap(p => p.parse(...))`
+          // (choice.ts:110-118) and, every arm being non-nullable and excluded by
+          // the char at `pos`, gets back exactly each arm's own opener. The static
+          // union IS that flatMap's answer, without running seven parsers to
+          // rediscover it.
+          //
+          // NOT furthest-failure merging, which no engine on the `expected` path
+          // performs. `failAt` (combinators/probe.ts:13-24) and its compiled mirror
+          // `probeUpdate` (codegen.ts:692) are the only positional merges in the
+          // library, they are gated on `_ctx._probe` and they surface as
+          // `RunResult.furthestFail` under `{recover:true}` — a different field.
+          // Every `_fe`/`_fx` site in all three drivers is last-write-wins.
+          //
+          // A residual JSON divergence survives this and is NOT a failure-reporting
+          // bug: on `{"a":]` this driver reports `["}"]` (the Obj arm's own
+          // propagated set) and both engines report seven tokens, because
+          // `choice()` froze `disjoint = false` for `Value` at CONSTRUCTION, when
+          // its `g.X` arms were unresolved refs (choice.ts:35 — the same staleness
+          // `encode.ts` recomputes around), so they firstMatch all seven arms where
+          // this driver dispatches to one. The arm sets differ, not the rule.
           return failChoice()
         }
         // THE PER-ARM GATE. Arms in source order, each skipped when its own

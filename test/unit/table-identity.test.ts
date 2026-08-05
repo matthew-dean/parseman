@@ -35,23 +35,68 @@ describe('table lowering — tree identity', () => {
         { name: 'unicode-key', input: '{"\\u00e9": "caf\\u00e9"}' },
         { name: 'bad-trailing-comma', input: '[1,2,]' },
         { name: 'bad-unclosed', input: '{"a":' },
+        // A dispatch HIT that fails inside the arm, next to a dispatch MISS. The
+        // miss (`@@@`: no arm claims `@`) agrees everywhere; the hit is where the
+        // stale `disjoint` below shows.
+        { name: 'bad-bare', input: 'nope' },
         { name: 'bad-garbage', input: '@@@' },
       ],
       { trivia: jsonWs },
     )
-    // TWO CASES ARE KNOWN-DIVERGENT and named rather than excluded, so this fails
-    // if a THIRD appears or if these are fixed without the list being updated.
+    // THE THREE REJECTING CASES DIVERGE, and all three are ONE defect, which is
+    // not in the failure-reporting code at all. See `STALE_DISJOINT` below.
     //
-    // Both are failure-REPORTING divergences, newly visible because the identity
-    // digest now covers `expected` — it compared only success before, which made
-    // every difference in HOW a parse fails invisible to every sweep. The
-    // remaining gap is furthest-failure merging: both engines report the set at
-    // the furthest position reached (so `[1,2,]` includes the enclosing `"]"`),
-    // while the table reports the failing choice's own union at its own
-    // position. The trees and consumption agree; only the expected set differs.
-    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-trailing-comma', 'bad-unclosed']
+    // NOT furthest-failure merging, which the previous note here claimed and
+    // which no engine performs on the `expected` path — `failAt`
+    // (combinators/probe.ts) and `probeUpdate` (codegen.ts) are the library's
+    // only positional merges, they are gated on `_ctx._probe`, and they surface
+    // as `RunResult.furthestFail`. Every `_fe`/`_fx` site in all three drivers is
+    // last-write-wins.
+    //
+    // `Value` is `choice(g.Obj, g.Arr, g.Str, g.Num, g.True, g.False, g.Null)`.
+    // At the moment `choice()` runs, those `g.X` arms are `ref()` slots whose
+    // first set is still `any()` (combinators/ref.ts:21 — `define()` fills the
+    // meta in place, AFTERWARDS), so `areDisjoint` says no and `disjoint` freezes
+    // FALSE (combinators/choice.ts:35). The interpreter and codegen both read
+    // that frozen flag, so both firstMatch all seven arms and concatenate seven
+    // expected sets. `encode.ts:439` recomputes disjointness from the RESOLVED
+    // classes, gets the right answer, and dispatches to one arm — so the table
+    // reports one arm's set. The rule is the same in all three; the set of arms
+    // ATTEMPTED is not, and no change to failure recording can reconcile that.
+    //
+    // The proof is the next case: `examples/json/parser.ts` is the SAME LANGUAGE
+    // spelled with local consts instead of `g.X` refs, so its arms' first sets
+    // are resolved when `choice()` runs, `disjoint` is TRUE in every engine, and
+    // it diverges on NOTHING.
+    const STALE_DISJOINT = ['bad-bare', 'bad-trailing-comma', 'bad-unclosed']
     expect([...new Set(r.mismatches.map(m => m.case))].sort())
-      .toEqual(KNOWN_EXPECTED_SET_DIVERGENCE)
+      .toEqual(STALE_DISJOINT)
+  })
+
+  it('the SHIPPED json grammar — same language, resolved arms — agrees on every case', async () => {
+    // The control for the row above. Identical inputs, including all four that
+    // reject. `jsonValue`'s choice arms are local consts, so `disjoint` is
+    // computed from real first sets and every engine dispatches to the same arm.
+    // Zero divergences: with the same dispatch decision, the three engines agree
+    // on the expected set as well as the tree.
+    const { jsonValue, ws } = await import('../../examples/json/parser.ts')
+    const r = checkIdentity(
+      { jsonValue } as unknown as Record<string, Combinator<unknown>>,
+      'jsonValue',
+      [
+        { name: 'scalars', input: '[1, -2.5, 1e10, true, false, null, "a\\nb", "\\u0041"]' },
+        { name: 'nested', input: '{"a":{"b":[{"c":[[[]]]}]},"d":[]}' },
+        { name: 'empty-obj', input: '{}' },
+        { name: 'ws', input: '  {  "a" :  [ 1 , 2 ]  ,  "b" : null  }  ' },
+        { name: 'bad-trailing-comma', input: '[1,2,]' },
+        { name: 'bad-unclosed', input: '{"a":' },
+        { name: 'bad-bare', input: 'nope' },
+        { name: 'bad-garbage', input: '@@@' },
+      ],
+      { trivia: ws },
+    )
+    expect(r.mismatches).toEqual([])
+    expect(r.total).toBeGreaterThan(0)
   })
 
   it('a node()-building grammar agrees, including sepBy separator demotion', () => {
@@ -129,14 +174,12 @@ describe('table lowering — three-way identity across every encodable grammar',
     const { checkIdentity: ci } = await import('../../bench/table-lowering-identity.ts')
     const { JSON_CASES } = await import('./table-identity-cases.ts')
     const r = ci(jsonRules as unknown as Record<string, Combinator<unknown>>, 'Value', JSON_CASES, { trivia: jsonWs })
-    // Two KNOWN failure-reporting divergences, named rather than excluded, so a
-    // third one fails this and so does fixing these without updating the list.
-    // Newly visible: the identity digest now covers `expected`, where before it
-    // compared only success. The residual gap is furthest-failure merging —
-    // both engines report the set at the furthest position reached (so `[1,2,]`
-    // includes the enclosing `"]"`) while the table reports the failing choice's
-    // own union at its own position. Trees and consumption agree.
-    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-trailing-comma', 'bad-unclosed']
+    // The same THREE rejecting cases as the `tree identity` row above, and the
+    // same single cause: `jsonRules.Value`'s arms are `g.X` refs, so `disjoint`
+    // froze FALSE at construction (choice.ts:35 / ref.ts:21) and the two engines
+    // firstMatch seven arms where the table dispatches to one. Read the long note
+    // there; the SHIPPED spelling of the same language diverges on nothing.
+    const KNOWN_EXPECTED_SET_DIVERGENCE = ['bad-bare', 'bad-trailing-comma', 'bad-unclosed']
     expect([...new Set(r.mismatches.map(m => m.case))].sort(), JSON.stringify(r.mismatches.slice(0, 3)))
       .toEqual(KNOWN_EXPECTED_SET_DIVERGENCE)
     expect(r.total).toBeGreaterThan(0)

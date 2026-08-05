@@ -12,6 +12,7 @@ import { assembledRules } from '../../src/table/assemble.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { resolveTable } from '../../src/table/program.ts'
 import { compile } from '../../src/compiler/codegen.ts'
+import { jsonValue as shippedJsonValue } from '../../examples/json/parser.ts'
 import {
   adjacent, balanced, choice, classifiedTrivia, keywords, literal, many, node, notAdjacent,
   optional, parser, peek, regex, rules,
@@ -271,27 +272,47 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
       expect(JSON.parse(engine)).toEqual([true, 'GATED', []])
     }
 
-    // ── THE ONE PLACE THE FOUR DISAGREE, AND WHY IT IS NOT THE GATE ──────────
-    // On a choice that FAILS, the table reports the choice's own expected union
-    // where both other engines report the DISPATCHED arm's set. That predates
-    // this lowering and has nothing to do with gates — the ungated control below
-    // shows the identical split — because the other two reach their answer by
-    // FURTHEST-FAILURE merging and this driver's `_fe`/`_fx` are last-write-wins.
-    // Making the exclusive path preserve the arm's `_fx` was tried and is WORSE:
-    // it collapses JSON `[1,2,]` from the engines' seven expected tokens to the
-    // one `"]"` the innermost literal happened to write last.
+    // ── THE FOUR NOW AGREE ON THE FAILING REPORT TOO, NOT ONLY THE VALUE ─────
+    // A failing DISPATCHED choice names the arm it dispatched to — one arm was
+    // attempted, so one arm's set is the answer, and that is the rule the
+    // interpreter (choice.ts:105) and codegen (codegen.ts:1985) have always
+    // applied. The table used to answer with the choice's whole static union
+    // here, on the theory that the other two reached their answer by
+    // FURTHEST-FAILURE merging. They do not: no engine merges positionally on
+    // the `expected` path. `_fx` already holds the arm's own set when the arm
+    // fails, so matching them is declining to overwrite it (exec.ts, assemble.ts).
     const ungatedControl = choice(literal('ab'), literal('cd')) as Combinator<unknown>
     const [ci, cc2, ct, ca] = four(ungatedControl, 'ax')
     expect(JSON.parse(ci)[2], 'ungated: interpreter names the dispatched arm').toEqual(['"ab"'])
     expect(cc2, 'ungated: codegen matches the interpreter').toBe(ci)
-    expect(JSON.parse(ct)[2], 'ungated: the table names the union').toEqual(['"ab"', '"cd"'])
+    expect(JSON.parse(ct)[2], 'ungated: the table names the dispatched arm too').toEqual(['"ab"'])
     expect(ca, 'ungated: both drivers agree with each other').toBe(ct)
-    // The gate-false path lands in exactly that pre-existing class, no wider.
+    // A gate-false arm is the same shape: the arm was selected, so its set is the
+    // report. OP_ARMGATE writes `deriveExpected(arm)` and nothing overwrites it.
     const [gi, gc, gt, ga] = four(disjointGated(), '&')
     expect(JSON.parse(gi)[2]).toEqual(['"&"'])
     expect(gc).toBe(gi)
-    expect(JSON.parse(gt)[2]).toEqual(['"&"', '"x"', '/[0-9]+/'])
+    expect(JSON.parse(gt)[2]).toEqual(['"&"'])
     expect(ga).toBe(gt)
+    // A dispatch MISS is where the union is right, and all four give it: the
+    // interpreter's miss branch runs `parsers.flatMap`, every arm is non-nullable
+    // and excluded by this char, so the flatMap's answer IS the static union.
+    const [mi, mc, mt, ma] = four(ungatedControl, 'zz')
+    expect(JSON.parse(mi)[2], 'miss: the union').toEqual(['"ab"', '"cd"'])
+    expect(mc).toBe(mi)
+    expect(mt).toBe(mi)
+    expect(ma).toBe(mi)
+    // EOF IS A MISS, not a reason to leave the disjoint path. Every arm of a
+    // disjoint choice is non-nullable, so nothing can match at EOF and the answer
+    // is the same union. The interpreter used to fall to firstMatch here, which
+    // `continue`s past a gated-off arm and so DROPPED it from the report — the
+    // one position where the same gate state gave two different answers, since
+    // the in-bounds miss above ignores gates and names it (choice.ts:90).
+    const [ei, ec, et, ea] = four(ungatedControl, '')
+    expect(JSON.parse(ei)[2], 'eof: the union').toEqual(['"ab"', '"cd"'])
+    expect(ec).toBe(ei)
+    expect(et).toBe(ei)
+    expect(ea).toBe(ei)
   })
 
   it('node(captureTrivia) — an explicit request the arity cannot express, now HONOURED', () => {
@@ -704,8 +725,27 @@ describe('table failure reporting matches the interpreter and the compiled path'
     Doc: withCtx({ inFn: false }, gatedBody) as Combinator<unknown>,
   }
 
+  // A DISPATCHED choice and a dispatch MISS in one grammar, because the two are
+  // the two halves of the rule and only agreeing on both is agreement. `ax`
+  // dispatches to arm 0 and every engine names that arm; `zz` (in-bounds miss) and
+  // `''` (EOF, which is a miss — a disjoint choice's arms are all non-nullable)
+  // name the union. `ax` was a live three-way divergence: the table answered with
+  // the static union on the dispatch hit as well.
+  const twoLiterals: Record<string, Combinator<unknown>> = {
+    Doc: choice(literal('ab'), literal('cd')) as Combinator<unknown>,
+  }
+  // The SHIPPED json root. Its choice arms are local consts, so `disjoint` is
+  // computed from resolved first sets and all three engines dispatch alike —
+  // unlike `bench/table-grammars.ts`'s `g.X`-ref spelling, whose stale `disjoint`
+  // is pinned separately below.
+  const shippedJson: Record<string, Combinator<unknown>> = {
+    jsonValue: shippedJsonValue as unknown as Combinator<unknown>,
+  }
+
   const suites = [
     ['withctx-gate', stateScoped, 'Doc', ['r', 'x']],
+    ['two-literals', twoLiterals, 'Doc', ['ax', 'zz', '']],
+    ['shipped-json', shippedJson, 'jsonValue', ['{"a":]', '{"a":', '[1,2,]', 'nope', '@@@', '']],
     ['base', baseNodes, 'List', ['(a,b', '(', '(,)', 'zz']],
     ['field', fieldNodes, 'Entry', ['[ab=1', '[', 'zz', '[ab=zz]']],
     ['select', selectNodes, 'Proj', ['ax', '', '###']],
@@ -780,37 +820,58 @@ describe('table failure reporting matches the interpreter and the compiled path'
       expect(run(engine as never, 'a').ok).toBe(false)
       expect(run(engine as never, 'a').expected).toEqual(['/[a-z]/'])
     }
-    // THE FAILURE POSITION NO LONGER MOVES. It did: for '[1,2,]' the table
-    // stopped at offset 4 naming one token while both engines reported offset 0
-    // and seven. The choice fix corrected the position AND the count; what is
-    // left is a single ELEMENT of the seven.
+    // THE RESIDUE IS NOT A FAILURE-REPORTING DIVERGENCE. The note here used to
+    // call it furthest-failure merging; nothing in the library merges positionally
+    // on the `expected` path (`failAt`/`probeUpdate` are `_probe`-gated and surface
+    // as `RunResult.furthestFail`). All three drivers apply the SAME rule — a
+    // failing choice reports the arms it ATTEMPTED — and disagree about which arms
+    // those are.
     //
-    // Both engines report at the furthest position the enclosing sequence could
-    // also have closed at, so they name the CLOSER (`"]"` / `"}"`) in place of
-    // one of the value choice's own openers. That is furthest-failure merging,
-    // and it is the whole of the residue — pinned at exactly that width so a
-    // wider regression cannot hide inside a vague "expected sets differ".
+    // `jsonRules.Value` is `choice(g.Obj, …)`. Those `g.X` arms are `ref()` slots
+    // still carrying `any()` when `choice()` runs (ref.ts:21 fills the meta in
+    // place, afterwards), so `disjoint` freezes FALSE (choice.ts:35). The two
+    // engines read that flag and firstMatch all seven arms, concatenating seven
+    // sets; `encode.ts:439` recomputes from resolved classes and dispatches to
+    // one, so the table reports that one arm — `["}"]` for `{"a":`, which is
+    // exactly what the engines' OWN `Obj` arm returns inside their seven.
+    //
+    // Pinned as a SUBSET relation, which is the true shape: the table's answer is
+    // one of the engines' elements, never a token they did not name. A regression
+    // that invents a token, or moves the position, still fails this.
     const jt = tableRules(encodeTable(jsonRules as never)).Value!
     const jc = (compose([jsonRules as never]) as unknown as Record<string, unknown>).Value!
-    for (const [bad, engineOnly, tableOnly] of [['[1,2,]', '"]"', '"["'], ['{"a":', '"}"', '"{"']] as const) {
+    for (const [bad, dispatched] of [['[1,2,]', '"]"'], ['{"a":', '"}"'], ['nope', '"null"']] as const) {
       const fromTable = run(jt as never, bad)
       const fromInterp = run(jsonRules.Value! as never, bad)
       const fromCompiled = run(jc as never, bad)
-      // Position and count agree across all three.
+      // The position agrees across all three; only the arm count differs.
       expect(fromTable.span, bad).toEqual({ start: 0, end: 0 })
       expect(fromInterp.span, bad).toEqual({ start: 0, end: 0 })
       expect(fromCompiled.span, bad).toEqual({ start: 0, end: 0 })
-      expect(fromTable.expected, bad).toHaveLength(fromInterp.expected.length)
-      // The residue is one element, and it is exactly the closer-for-opener swap.
-      const tSet = new Set(fromTable.expected)
-      const iSet = new Set(fromInterp.expected)
-      expect([...iSet].filter(x => !tSet.has(x)), `${bad}: engines-only`).toEqual([engineOnly])
-      expect([...tSet].filter(x => !iSet.has(x)), `${bad}: table-only`).toEqual([tableOnly])
+      // The engines attempt seven arms; the table attempts the one it dispatched.
+      expect(fromInterp.expected, bad).toHaveLength(7)
+      expect(fromCompiled.expected, bad).toEqual(fromInterp.expected)
+      expect(fromTable.expected, bad).toEqual([dispatched])
+      expect(fromInterp.expected, `${bad}: the table's token is one of theirs`)
+        .toContain(dispatched)
     }
-    // All three still REJECT — only one element of the report differs.
-    for (const bad of ['[1,2,]', '{"a":']) {
+    // All three still REJECT — only the arm count in the report differs.
+    for (const bad of ['[1,2,]', '{"a":', 'nope']) {
       for (const r of [run(jt as never, bad), run(jsonRules.Value! as never, bad), run(jc as never, bad)]) {
         expect(r.ok, bad).toBe(false)
+      }
+    }
+    // THE CONTROL. `examples/json/parser.ts` is the same language spelled with
+    // local consts, so its arms' first sets are resolved when `choice()` runs,
+    // `disjoint` is TRUE everywhere, and all three name the dispatched arm and
+    // agree exactly. Same rule, same arms, no divergence — which is what makes
+    // the rows above a `disjoint`-staleness finding and not a reporting one.
+    const st = tableRules(encodeTable({ jsonValue: shippedJsonValue } as never)).jsonValue!
+    const sc = (compose([{ jsonValue: shippedJsonValue } as never]) as unknown as Record<string, unknown>).jsonValue!
+    for (const [bad, only] of [['[1,2,]', '"]"'], ['{"a":', '"}"'], ['nope', '"null"']] as const) {
+      for (const r of [run(st as never, bad), run(shippedJsonValue as never, bad), run(sc as never, bad)]) {
+        expect(r.ok, bad).toBe(false)
+        expect(r.expected, `shipped ${bad}`).toEqual([only])
       }
     }
 
