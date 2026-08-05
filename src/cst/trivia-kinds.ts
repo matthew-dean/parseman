@@ -2,6 +2,7 @@ import type { Combinator, ParseContext } from '../types.ts'
 import { pushCstTriviaEntry, pushTriviaLogEntry } from './capture-buffer.ts'
 import { startsFirstSet } from '../combinators/first-set.ts'
 import { createDetachedParseContext } from '../parse-context.ts'
+import { charArmsFor, charTriviaEnd, charTriviaKindMask, charTriviaVisit } from './trivia-charscan.ts'
 
 export type TriviaChunk = { start: number; end: number; kindIndex: number }
 
@@ -141,6 +142,11 @@ export function scanLabeledTriviaEnd(
   spec: LabeledTriviaSpec,
   state?: unknown,
 ): number {
+  // `charArmsFor` only lowers `minRepeats <= 1`, where "no chunk matched" and
+  // "the minimum was not met" are the same position — so an end IS the answer.
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaEnd(input, cur, chars)
+
   let pos = cur
   let count = 0
 
@@ -172,6 +178,9 @@ export function visitLabeledTrivia(
   visit: (start: number, end: number, kindIndex: number) => void,
 ): number | undefined {
   if (spec.minRepeats > 1) return undefined
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaVisit(input, cur, chars, visit)
+
   let pos = cur
   let count = 0
 
@@ -293,6 +302,9 @@ export function triviaKindMaskAt(
   spec: LabeledTriviaSpec,
   state?: unknown,
 ): number {
+  const chars = charArmsFor(spec)
+  if (chars !== null) return charTriviaKindMask(input, pos, chars)
+
   let cur = pos
   let mask = 0
   while (cur < input.length) {
