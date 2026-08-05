@@ -79,7 +79,7 @@ import {
 import {
   cstCaptureActive, cstLeavesLen,
   demoteCapturedToRaw, pushCstChild, pushCstLeaf,
-  rollbackCstCaptureAt, type CstCaptureBuf,
+  type CstCaptureBuf,
 } from '../cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
@@ -95,6 +95,8 @@ import {
   type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 import { stampRuleMap } from './stamp.ts'
+import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
+import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 
 /** Failure sentinel — identity-compared, never inspected. Mirrors `exec.ts`. */
 const FAIL: unique symbol = Symbol('pm.fail')
@@ -193,6 +195,38 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const triviaScan = t.triviaScan
   const swapLegal = !cfg.trackLines
   const hostCst = cfg.hostCst
+  /**
+   * IS THIS A RECOVERY TABLE? Table data, not an option — `encodeTable({ recovery })`
+   * lays down the inferred sync operands, and their presence is what selects the
+   * recovery pieces below. A strict table reaches none of them.
+   *
+   * Recovery is still DORMANT until a parse sets `ctx._tolerant`, exactly as the
+   * source lowering's `{ recovery: true }` build is (`codegen.ts:3153`) and as the
+   * interpreter always is (`repeat.ts:163`). The gate is on the FAILURE path of a
+   * list and on sequence entry, never on a matching term.
+   */
+  const REC = prog.rec === 1
+  /**
+   * The sync sentinel for a char-class index, built ONCE at assembly.
+   *
+   * `firstSetSentinel` is the interpreter's own constructor and codegen calls it
+   * per publish through `_ctx._rec.sentinel(...)`; the ranges are recoverable from
+   * the class spec, so the table builds the identical combinator here and the
+   * publish is a slot read. −1 means "no usable sentinel", which is the same
+   * answer `firstSetSentinel` gives for an `any`/`empty` first set.
+   */
+  const sentinels = new Map<number, Combinator<null> | undefined>()
+  function sentinelFor(cls: number): Combinator<null> | undefined {
+    if (cls < 0) return undefined
+    const hit = sentinels.get(cls)
+    if (hit !== undefined || sentinels.has(cls)) return hit
+    const spec = prog.cc[cls]!
+    const ranges: { lo: number; hi: number }[] = []
+    for (let i = 0; i < spec.length; i += 2) ranges.push({ lo: spec.charCodeAt(i), hi: spec.charCodeAt(i + 1) })
+    const made = firstSetSentinel({ kind: 'ranges', ranges }) ?? undefined
+    sentinels.set(cls, made)
+    return made
+  }
 
   /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
   let END = 0
@@ -298,6 +332,37 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     MTL = 0
     MLV = 0
     return false
+  }
+
+  /**
+   * Wrap a scope piece in its ROOT-CAPTURE POLICY, when it has one.
+   *
+   * Both bits are TABLE DATA, so the wrapping happens here and the common scope
+   * — every scope in every grammar that never asked for either — gets the bare
+   * piece back and pays nothing. `parser()` answers the same two questions in
+   * `combinators/grammar.ts`; the table answered neither.
+   */
+  function scopeRootPolicy(piece: Piece, flags: number): Piece {
+    let out = piece
+    if ((flags & 1) !== 0) {
+      // `grammar.ts:141` on a per-scope ctx COPY. One shared ctx here, so restore.
+      const inner = out
+      out = (input, pos, ctx) => {
+        const saved = ctx._rootTriviaCapture
+        ctx._rootTriviaCapture = false
+        const v = inner(input, pos, ctx)
+        ctx._rootTriviaCapture = saved
+        return v
+      }
+    }
+    if ((flags & 2) !== 0) {
+      const inner = out
+      out = (input, pos, ctx) => {
+        refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
+        return inner(input, pos, ctx)
+      }
+    }
+    return out
   }
 
   function skipTrivia(input: string, cur: number, ctx: ParseContext): number {
@@ -617,6 +682,24 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       case OP_EXPECT: {
         const child = link(code[ip + 1]!)
         const xf = fx[code[ip + 2]!] as string[]
+        // TOLERANT `expect()` EMBEDS ITS ERROR IN THE TREE, not only in the flat
+        // `_errors` side-channel (`combinators/expect.ts:150`, and codegen's
+        // `_ctx._rec.capture` at codegen.ts:4470) — so a tree walk finds every
+        // diagnostic and the node survives incremental subtree reuse. The table
+        // pushed to `_errors` and stopped, so a tolerant CST parse was missing the
+        // `parseError` child the other two engines both produce.
+        if (REC) {
+          return (input, pos, ctx) => {
+            const v = child(input, pos, ctx)
+            if (v !== FAIL) return v
+            const span = { start: pos, end: pos }
+            const err = { _tag: 'parseError' as const, span, expected: xf }
+            ctx._errors?.push(err)
+            if (ctx._tolerant === true) captureError(ctx, err)
+            END = pos
+            return err
+          }
+        }
         return (input, pos, ctx) => {
           const v = child(input, pos, ctx)
           if (v !== FAIL) return v
@@ -701,37 +784,37 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // Both RESTORE rather than clear: capture is an OR with the enclosing
         // context (`grammar.ts:129`), so an inner scope must not switch an outer
         // capture off.
-        if (code[ip] === OP_SCOPE_CAP) {
-          return (input, pos, ctx) => {
-            const saved = ctx.trivia
-            const savedLabels = ctx.triviaKindLabels
-            const savedScan = SCAN
-            const savedCap = ctx.captureTrivia
-            SCAN = scanFor
-            ctx.trivia = scopeTrivia
-            ctx.triviaKindLabels = scopeLabels
-            ctx.captureTrivia = true
-            const v = child(input, pos, ctx)
-            ctx.captureTrivia = savedCap
-            ctx.trivia = saved
-            ctx.triviaKindLabels = savedLabels
-            SCAN = savedScan
-            return v
-          }
-        }
-        return (input, pos, ctx) => {
-          const saved = ctx.trivia
-          const savedLabels = ctx.triviaKindLabels
-          const savedScan = SCAN
-          SCAN = scanFor
-          ctx.trivia = scopeTrivia
-          ctx.triviaKindLabels = scopeLabels
-          const v = child(input, pos, ctx)
-          ctx.trivia = saved
-          ctx.triviaKindLabels = savedLabels
-          SCAN = savedScan
-          return v
-        }
+        const scopePiece: Piece = code[ip] === OP_SCOPE_CAP
+          ? (input, pos, ctx) => {
+              const saved = ctx.trivia
+              const savedLabels = ctx.triviaKindLabels
+              const savedScan = SCAN
+              const savedCap = ctx.captureTrivia
+              SCAN = scanFor
+              ctx.trivia = scopeTrivia
+              ctx.triviaKindLabels = scopeLabels
+              ctx.captureTrivia = true
+              const v = child(input, pos, ctx)
+              ctx.captureTrivia = savedCap
+              ctx.trivia = saved
+              ctx.triviaKindLabels = savedLabels
+              SCAN = savedScan
+              return v
+            }
+          : (input, pos, ctx) => {
+              const saved = ctx.trivia
+              const savedLabels = ctx.triviaKindLabels
+              const savedScan = SCAN
+              SCAN = scanFor
+              ctx.trivia = scopeTrivia
+              ctx.triviaKindLabels = scopeLabels
+              const v = child(input, pos, ctx)
+              ctx.trivia = saved
+              ctx.triviaKindLabels = savedLabels
+              SCAN = savedScan
+              return v
+            }
+        return scopeRootPolicy(scopePiece, code[ip + 3]!)
       }
 
       case OP_ROUTED: {
@@ -761,8 +844,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const v = child(input, pos, ctx)
-          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           if (v === FAIL) { END = pos; return null }
           ctx._fe = pos
           return FAIL
@@ -778,8 +863,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const v = child(input, pos, ctx)
-          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           if (v === FAIL) return FAIL
           END = pos
           return null
@@ -795,11 +882,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           ctx._fc = false
           const v = child(input, pos, ctx)
           if (v === FAIL) {
             if (committed(ctx)) return FAIL
-            if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+            if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             END = pos
             // NULL, not undefined — `repeat.ts:269,277`, and grammars TEST for it.
             return null
@@ -956,6 +1045,94 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
          * construction, since the gap before the first term belongs to the
          * caller — so the first child is still called directly.
          */
+        /**
+         * RECOVERY SEQUENCES PUBLISH `ctx._sync`, and that is the whole of
+         * "recovery config" — no grammar carries any.
+         *
+         * Before term `i`, the sentinel for the union of every LATER term's first
+         * set becomes the sync point a list nested in that term resyncs to, so a
+         * `sepBy` inside `sequence('{', list, '}')` finds `}` with nothing
+         * annotated. Where there is no usable local follow (the last term, an
+         * `any` first set) the INHERITED sync stays published, which is how the
+         * enclosing delimiter reaches across a rule boundary.
+         *
+         * ONE generic loop rather than the arity-specialised pieces: this is only
+         * reached in a recovery table, where the arity unroll buys a fraction of a
+         * cold-path parse and costs four more copies of the publish protocol to
+         * keep in step with the other two engines.
+         *
+         * The restore is `sequence()`'s `finally` (combinators/sequence.ts:105).
+         * Codegen does not restore and compensates by having every list capture
+         * `_sync` at ENTRY (codegen.ts:3032); the table captures at entry too, so
+         * this is unobservable either way — it is here because leaving a stale
+         * sentinel published is the kind of state a later reader will trust.
+         */
+        if (REC) {
+          const syncs: (Combinator<unknown> | undefined)[] = new Array<Combinator<unknown> | undefined>(n)
+          for (let i = 0; i < n; i++) syncs[i] = sentinelFor(code[base + n + i]!)
+          const runners: TermRunner[] = new Array<TermRunner>(n)
+          for (let i = 1; i < n; i++) {
+            const kidIp = code[base + i]!
+            if (code[kidIp] !== OP_ADJ) {
+              const kid = kids[i]!
+              runners[i] = (input, cur, ctx) => nextTerm(kid, input, cur, ctx)
+              continue
+            }
+            const negated = code[kidIp + 1] === 1
+            const ki = code[kidIp + 2]!
+            const kinds = ki < 0 ? undefined : k[ki] as readonly string[]
+            const xf = fx[code[kidIp + 3]!] as string[]
+            runners[i] = (input, cur, ctx) => {
+              if (!adjacencyHolds(input, cur, ctx, negated, kinds)) {
+                ctx._fe = cur; ctx._fx = xf
+                return -1
+              }
+              TERMV = null
+              return cur
+            }
+          }
+          const runSyncTerms = (input: string, pos: number, ctx: ParseContext, values: unknown[] | undefined): number => {
+            const inherited = ctx._sync
+            ctx._sync = syncs[0] ?? inherited
+            const v0 = kids[0]!(input, pos, ctx)
+            if (v0 === FAIL) { ctx._sync = inherited; return -1 }
+            if (values !== undefined) values.push(v0)
+            let cur = END
+            for (let i = 1; i < n; i++) {
+              ctx._sync = syncs[i] ?? inherited
+              cur = runners[i]!(input, cur, ctx)
+              if (cur < 0) { ctx._sync = inherited; return -1 }
+              if (values !== undefined) values.push(TERMV)
+            }
+            ctx._sync = inherited
+            return cur
+          }
+          if (fused) {
+            return (input, pos, ctx) => {
+              const values: unknown[] = []
+              const cur = runSyncTerms(input, pos, ctx, values)
+              if (cur < 0) return FAIL
+              END = cur
+              return fn!(values, { start: pos, end: cur })
+            }
+          }
+          if (wantValues) {
+            return (input, pos, ctx) => {
+              const values: unknown[] = []
+              const cur = runSyncTerms(input, pos, ctx, values)
+              if (cur < 0) return FAIL
+              END = cur
+              return values
+            }
+          }
+          return (input, pos, ctx) => {
+            const cur = runSyncTerms(input, pos, ctx, undefined)
+            if (cur < 0) return FAIL
+            END = cur
+            return undefined
+          }
+        }
+
         let hasAdj = false
         for (let i = 1; i < n; i++) if (code[code[base + i]!] === OP_ADJ) { hasAdj = true; break }
         if (hasAdj) {
@@ -1267,6 +1444,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const mLv = MLV
             const mFl = need ? ctx._fields?.length ?? 0 : 0
             const mEr = need ? ctx._errors?.length ?? 0 : 0
+            const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+            const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             if (c < 128) {
               // `c` is −1 at EOF, which indexes slot 128 — the always-enter arms.
               let bits = mask[c < 0 ? 128 : c]!
@@ -1277,7 +1456,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 const v = arms[i]!(input, pos, ctx)
                 if (v !== FAIL) return v
                 if (committed(ctx)) return FAIL
-                if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+                if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               }
               ctx._fe = pos; ctx._fx = choiceFx
               return FAIL
@@ -1289,7 +1468,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const v = arms[i]!(input, pos, ctx)
               if (v !== FAIL) return v
               if (committed(ctx)) return FAIL
-              if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+              if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             }
             ctx._fe = pos; ctx._fx = choiceFx
             return FAIL
@@ -1304,6 +1483,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           for (let i = 0; i < n; i++) {
             const cls = gates[i]!
             if (cls !== null && !classHas(cls, c)) continue
@@ -1311,7 +1492,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const v = arms[i]!(input, pos, ctx)
             if (v !== FAIL) return v
             if (committed(ctx)) return FAIL
-            if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+            if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           }
           ctx._fe = pos; ctx._fx = choiceFx
           return FAIL
@@ -1334,6 +1515,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mLv = MLV
           const mFl = need ? ctx._fields?.length ?? 0 : 0
           const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+          const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const v = sup(input, pos, ctx)
           // The super arm's failure propagates verbatim — its `_fe`/`_fx`, not
           // the union of the arms (choice.ts:126).
@@ -1343,7 +1526,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (lit === undefined) { END = end; return v }
           // Unwind the regex's leaf so the credited arm's own leaf is the only
           // one. Re-running the arm cannot fail: the word IS its literal.
-          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           return lit(input, pos, ctx)
         }
       }
@@ -1424,6 +1607,127 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         // its FIRST item through `repItem` and so skips leading trivia. The shape
         // identifies itself, and it is table data, so it is decided here.
         const skipBeforeFirst = sepIp < 0 && min === 0
+
+        /**
+         * TOLERANT RECOVERY — the third implementation of `recoverScan`'s
+         * protocol, and it calls the SAME functions the other two do
+         * (`recovery/scan.ts`), so an error's span, its expected set and its CST
+         * embedding cannot drift between engines.
+         *
+         * Reached only in a recovery table, and inside it only on the FAILURE of
+         * an element, so a matching item pays a `_sync` read at entry and nothing
+         * else. The `ctx._tolerant` gate is the same dormancy the source lowering
+         * and the interpreter have.
+         *
+         * WHAT RECOVERS, AND WHERE THE THREE ENGINES AGREE:
+         *  - a MANDATORY item (`count < min`) of a separator-less repeat does NOT
+         *    recover: `oneOrMore`'s first item propagates its failure
+         *    (repeat.ts:221), and codegen inlines the `min` items ahead of the
+         *    loop with an early return. A `sepBy`'s first element DOES recover,
+         *    which is why the test is `sep !== undefined || count >= min`.
+         *  - the check is `at(mySync, itemStart)`: sitting ON the sync token is a
+         *    clean list end, not junk, and `itemStart` is past any leading trivia
+         *    so that trivia is never swallowed into the error span
+         *    (repeat.ts:167).
+         *  - a separated list scans to its OWN separator or the enclosing
+         *    delimiter (`orSentinel`, repeat.ts:454).
+         *  - `mySync` is captured at ENTRY. An element's own sequence publishes
+         *    over `_sync` while it runs; the interpreter restores in a `finally`
+         *    and codegen saves at entry (codegen.ts:3032) — same value, both ways.
+         *  - the separator-less path rolls the leading trivia back BEFORE
+         *    recovering (repeat.ts's `repItem`), and the separated path does NOT:
+         *    a consumed separator and the error after it both belong to the list
+         *    (repeat.ts:533).
+         */
+        if (REC) {
+          const itemFx = fx[code[ip + 6]!] as string[]
+          const sepSent = sentinelFor(code[ip + 7]!)
+          return (input, pos, ctx) => {
+            const out: unknown[] | undefined = collect ? [] : undefined
+            const hasTrivia = ctx.trivia !== undefined
+            const needMark = rollbackNeeded(ctx)
+            const mySync = ctx._sync
+            let cur = pos
+            let count = 0
+            for (;;) {
+              if (max >= 0 && count >= max) break
+              if (sep !== undefined && count > 0 && count >= min && cur >= input.length) break
+              if (needMark) markCst(ctx)
+              const mRaw = needMark ? MRAW : 0
+              const mTl = needMark ? MTL : 0
+              const mLv = needMark ? MLV : 0
+              const mFl = needMark ? ctx._fields?.length ?? 0 : 0
+              const mEr = needMark ? ctx._errors?.length ?? 0 : 0
+              const mLog = needMark ? ctx._triviaLog?.length ?? 0 : 0
+              const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
+              let itemStart = cur
+              let sepEnd = -1
+              const viaRepItem = sep === undefined && count >= min && (count > 0 || skipBeforeFirst)
+              if (sep !== undefined && count > 0) {
+                const leavesBefore = cstLeavesLen(ctx)
+                let sp = cur
+                if (hasTrivia) sp = skipTrivia(input, sp, ctx)
+                ctx._fc = false
+                const sv = sep(input, sp, ctx)
+                if (sv === FAIL) {
+                  if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                  if (committed(ctx)) return FAIL
+                  break
+                }
+                if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
+                sepEnd = END
+                itemStart = hasTrivia ? skipTrivia(input, END, ctx) : END
+              } else if (hasTrivia && (count > 0 || skipBeforeFirst)) {
+                itemStart = skipTrivia(input, itemStart, ctx)
+              }
+              if (itemStart >= input.length && viaRepItem) {
+                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (trailingAllowed && sepEnd >= 0) cur = sepEnd
+                break
+              }
+              ctx._fc = false
+              const v = child(input, itemStart, ctx)
+              if (v === FAIL) {
+                if (committed(ctx)) {
+                  if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                  return FAIL
+                }
+                if (ctx._tolerant === true
+                  && mySync !== undefined
+                  && (sep !== undefined || count >= min)
+                  && !matchesAt(mySync, input, itemStart, ctx)) {
+                  if (sep === undefined && needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                  const rr = recoverScan(
+                    input, itemStart, ctx,
+                    sep === undefined ? mySync : orSentinel(sepSent ?? mySync, sepSent === undefined ? undefined : mySync),
+                    itemFx,
+                  )
+                  if (out !== undefined) out.push(rr.error)
+                  captureError(ctx, rr.error)
+                  count++
+                  cur = rr.end
+                  continue
+                }
+                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                if (trailingAllowed && sepEnd >= 0) cur = sepEnd
+                break
+              }
+              if (END === itemStart && viaRepItem) {
+                if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+                break
+              }
+              if (out !== undefined) out.push(v)
+              cur = END
+              count++
+            }
+            if (count < min) {
+              if (reportItem) { ctx._fe = cur; ctx._fx = itemFx }
+              return FAIL
+            }
+            END = cur
+            return out
+          }
+        }
 
         return (input, pos, ctx) => {
           const out: unknown[] | undefined = collect ? [] : undefined

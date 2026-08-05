@@ -11,7 +11,6 @@ import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTrivi
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
-  rollbackCstCaptureAt,
 } from '../cst/capture-buffer.ts'
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
@@ -22,6 +21,8 @@ import {
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { stampRuleMap } from './stamp.ts'
+import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
+import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
 import {
   expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
@@ -206,6 +207,32 @@ function makeDriver(
    */
   let SCAN: FastTriviaScanner | null = null
   let FAST = false
+  /**
+   * IS THIS A RECOVERY TABLE? Table data, decided once when the driver is built,
+   * exactly as the assembler decides it — the two engines must agree here or a
+   * tolerant parse diverges on the one path no identity digest covers, since
+   * `errors` and `expected` are not in it.
+   *
+   * Recovery is DORMANT until a parse sets `ctx._tolerant`.
+   */
+  const REC = prog.rec === 1
+  /**
+   * Sync sentinels by char-class index, built at most once each. The ranges are
+   * recoverable from the class spec, and `firstSetSentinel` is the interpreter's
+   * own constructor — the same object codegen builds per publish through
+   * `_ctx._rec.sentinel(...)`.
+   */
+  const sentinels = new Map<number, Combinator<unknown> | undefined>()
+  function sentinelFor(cls: number): Combinator<unknown> | undefined {
+    if (cls < 0) return undefined
+    if (sentinels.has(cls)) return sentinels.get(cls)
+    const spec = prog.cc[cls]!
+    const ranges: { lo: number; hi: number }[] = []
+    for (let i = 0; i < spec.length; i += 2) ranges.push({ lo: spec.charCodeAt(i), hi: spec.charCodeAt(i + 1) })
+    const made = firstSetSentinel({ kind: 'ranges', ranges }) ?? undefined
+    sentinels.set(cls, made)
+    return made
+  }
   /**
    * Is this parse's host a CST-output host? `ctx.build` is fixed by `run()` before
    * the entry is called, so this is a PER-PARSE constant that `OP_NODE` was
@@ -405,6 +432,10 @@ function makeDriver(
         const span = { start: pos, end: pos }
         const err = { _tag: 'parseError' as const, span, expected: fx[code[ip + 2]!] as string[] }
         ctx._errors?.push(err)
+        // A TOLERANT `expect()` also embeds the error in the TREE (expect.ts:150,
+        // codegen.ts:4470), so a tree walk finds every diagnostic and it survives
+        // incremental subtree reuse — the flat sink alone is not the contract.
+        if (REC && ctx._tolerant === true) captureError(ctx, err)
         END = pos
         return err
       }
@@ -586,7 +617,17 @@ function makeDriver(
         // inner scope must not switch an outer capture off.
         const savedCap = ctx.captureTrivia
         if (code[ip] === OP_SCOPE_CAP) ctx.captureTrivia = true
+        // ROOT-CAPTURE POLICY (ip + 3). Bit 1 = `rootCapture: 'opaque'`, which is
+        // NOT inert: it suppresses selected root rows for the region
+        // (`grammar.ts:141`), and the flag is restored here because the table
+        // shares one ctx where `parser()` copies it. Bit 2 = the unclassified-scope
+        // refusal `grammar.ts:98` raises.
+        const policy = code[ip + 3]!
+        if ((policy & 2) !== 0) refuseUnclassifiedRootScope(ctx._rootTriviaStrictScopes)
+        const savedRootCap = ctx._rootTriviaCapture
+        if ((policy & 1) !== 0) ctx._rootTriviaCapture = false
         const v = exec(code[ip + 2]!, input, pos, ctx)
+        if ((policy & 1) !== 0) ctx._rootTriviaCapture = savedRootCap
         ctx.captureTrivia = savedCap
         ctx.trivia = saved
         ctx.triviaKindLabels = savedLabels
@@ -602,7 +643,15 @@ function makeDriver(
         const n = code[fused ? ip + 2 : ip + 1]!
         const values: unknown[] | undefined = code[ip] === OP_SEQV ? undefined : []
         let cur = pos
+        // RECOVERY SYNC PUBLISH. A recovery table carries one follow-set class per
+        // term after the child slots; before each term the sentinel for it becomes
+        // `ctx._sync`, so a list nested in that term resyncs to this sequence's
+        // enclosing delimiter with nothing annotated (combinators/sequence.ts:75,
+        // compiler/codegen.ts:1758). Restored on every exit, as `sequence()`'s
+        // `finally` does. Strict tables never enter any of this.
+        const inheritedSync = REC ? ctx._sync : undefined
         for (let i = 0; i < n; i++) {
+          if (REC) ctx._sync = sentinelFor(code[base + n + i]!) ?? inheritedSync
           const child = code[base + i]!
           // ADJACENCY IS TESTED AT `cur`, BEFORE THE BOUNDARY'S TRIVIA SCAN, and
           // moves nothing — the next term re-scans the same gap and keeps its own
@@ -615,7 +664,7 @@ function makeDriver(
             const ki = code[child + 2]!
             if (!adjacencyHolds(input, cur, ctx, code[child + 1] === 1, ki < 0 ? undefined : k[ki] as readonly string[])) {
               ctx._fe = cur; ctx._fx = fx[code[child + 3]!] as string[]
-              return FAIL
+              { if (REC) ctx._sync = inheritedSync; return FAIL }
             }
             if (values !== undefined) values.push(null)
             continue
@@ -633,7 +682,7 @@ function makeDriver(
             const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
             const scanEnd = skipTrivia(input, cur, ctx)
             const v = exec(child, input, scanEnd, ctx)
-            if (v === FAIL) return FAIL
+            if (v === FAIL) { if (REC) ctx._sync = inheritedSync; return FAIL }
             if (END > scanEnd) cur = END
             else if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             if (values !== undefined) values.push(v)
@@ -653,7 +702,7 @@ function makeDriver(
             const lit = k[code[child + 1]!] as string
             if (!input.startsWith(lit, cur)) {
               ctx._fe = cur; ctx._fx = fx[code[child + 2]!] as string[]
-              return FAIL
+              { if (REC) ctx._sync = inheritedSync; return FAIL }
             }
             const e = cur + lit.length
             if (cstCaptureActive(ctx)) pushLeaf(ctx, lit, cur, e)
@@ -667,7 +716,7 @@ function makeDriver(
             const m = re.exec(input)
             if (m === null) {
               ctx._fe = cur; ctx._fx = fx[code[child + 2]!] as string[]
-              return FAIL
+              { if (REC) ctx._sync = inheritedSync; return FAIL }
             }
             const mv = m[0]
             const e = cur + mv.length
@@ -677,10 +726,11 @@ function makeDriver(
             continue
           }
           const v = exec(child, input, cur, ctx)
-          if (v === FAIL) return FAIL
+          if (v === FAIL) { if (REC) ctx._sync = inheritedSync; return FAIL }
           if (values !== undefined) values.push(v)
           cur = END
         }
+        if (REC) ctx._sync = inheritedSync
         END = cur
         if (fused) {
           const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
@@ -774,6 +824,8 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+        const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         for (let i = 0; i < n; i++) {
           const cls = armCls[i]
           if (cls !== undefined && cls !== null && !classHas(cls, c)) {
@@ -787,7 +839,7 @@ function makeDriver(
           if (v !== FAIL) return v
           if (COUNT) { tableCounters.ungatedFails++; tableCounters.ungatedFailRows += tableCounters.rows - rows0 }
           if (committed(ctx)) return FAIL
-          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         }
         return failChoice()
       }
@@ -802,6 +854,8 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+        const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const sup = exec(code[ip + 1]!, input, pos, ctx)
         // choice.ts:126 — the super arm's failure is returned VERBATIM, so `_fe`
         // and `_fx` are left exactly as it set them.
@@ -811,7 +865,7 @@ function makeDriver(
         const n = code[ip + 2]!
         for (let i = 0; i < n; i++) {
           if (k[code[ip + 3 + 2 * i]!] !== word) continue
-          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           // Cannot fail: `word` IS this arm's case-sensitive literal at `pos`.
           return exec(code[ip + 4 + 2 * i]!, input, pos, ctx)
         }
@@ -859,13 +913,15 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+        const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         ctx._fc = false
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v === FAIL) {
           // repeat.ts:277 — `optional()` propagates a committed failure rather
           // than reporting "absent".
           if (committed(ctx)) return FAIL
-          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+          if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           END = pos
           // NULL, not undefined. `optional()` yields `null` on no-match
           // (src/combinators/repeat.ts:269,277) and grammars TEST for it:
@@ -901,6 +957,15 @@ function makeDriver(
         // responsibility. `many` is the only OP_REP with no separator and min 0,
         // so the shape identifies itself and no extra flag is needed.
         const skipBeforeFirst = sep < 0 && min === 0
+        // TOLERANT RECOVERY, dormant unless `ctx._tolerant`. `mySync` is captured
+        // at ENTRY because an element's own sequence publishes over `_sync` while
+        // it runs — the interpreter restores in a `finally` (sequence.ts:105) and
+        // codegen saves at entry (codegen.ts:3032); either way this is the list's
+        // own sync. The item's expected set is at ip + 6 and the separator's
+        // sentinel class at ip + 7, both laid down only for a recovery table.
+        const mySync = REC ? ctx._sync : undefined
+        const recFx = REC ? fx[code[ip + 6]!] as string[] : undefined
+        const sepSent = REC ? sentinelFor(code[ip + 7]!) : undefined
         let cur = pos
         let count = 0
         for (;;) {
@@ -987,11 +1052,37 @@ function makeDriver(
           ctx._fc = false
           const v = exec(child, input, itemStart, ctx)
           if (v === FAIL) {
-            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             // repeat.ts:141/215/233 — a committed item failure fails the WHOLE
             // repetition. Breaking here is what let `many(dispatch(...))` return
             // ok:true with a silently truncated document.
-            if (committed(ctx)) return FAIL
+            if (committed(ctx)) {
+              if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              return FAIL
+            }
+            // RESYNC. A mandatory item of a separator-less repeat does NOT recover
+            // (`oneOrMore`'s first item propagates, repeat.ts:221); a `sepBy`'s
+            // first element does. Sitting ON the sync token is a clean list end,
+            // tested at `itemStart` so leading trivia is never swallowed into the
+            // span. A separated list scans to its own separator OR the enclosing
+            // delimiter, and does NOT roll back: the separator it consumed and the
+            // error after it both belong to the list (repeat.ts:533).
+            if (REC && ctx._tolerant === true
+              && mySync !== undefined
+              && (sep >= 0 || count >= min)
+              && !matchesAt(mySync, input, itemStart, ctx)) {
+              if (sep < 0 && needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
+              const rr = recoverScan(
+                input, itemStart, ctx,
+                sep < 0 ? mySync : orSentinel(sepSent ?? mySync, sepSent === undefined ? undefined : mySync),
+                recFx!,
+              )
+              if (out !== undefined) out.push(rr.error)
+              captureError(ctx, rr.error)
+              count++
+              cur = rr.end
+              continue
+            }
+            if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             // `trailing: 'allow'` keeps a separator that no item followed.
             if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
@@ -1173,8 +1264,10 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+        const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
-        if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         if (v === FAIL) { END = pos; return null }
         ctx._fe = pos
         return FAIL
@@ -1187,8 +1280,10 @@ function makeDriver(
         const mLv = need ? cstLeavesLen(ctx) : 0
         const mFl = need ? ctx._fields?.length ?? 0 : 0
         const mEr = need ? ctx._errors?.length ?? 0 : 0
+        const mLog = need ? ctx._triviaLog?.length ?? 0 : 0
+        const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
-        if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+        if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         if (v === FAIL) return FAIL
         END = pos
         return null

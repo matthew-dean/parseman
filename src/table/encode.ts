@@ -1,5 +1,5 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
+import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
@@ -13,6 +13,7 @@ import {
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import { adjacencyExpected } from '../combinators/adjacency.ts'
+import { missingInferredType } from '../combinators/node.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 
@@ -45,6 +46,20 @@ export class UnsupportedConstruct extends Error {
 export type TableSettings = {
   readonly hostMode?: 'ast' | 'cst'
   readonly trackLines?: boolean
+  /**
+   * Lower TOLERANT RECOVERY into the table — `compile(g, …, { recovery: true })`
+   * for the table lowering, and the same trade: a recovery table carries the
+   * inferred sync data that a strict one has no use for, and the pieces that read
+   * it. It is a BUILD setting for exactly the reason `hostMode` is: the sync
+   * sentinel a list resyncs to is derived from the grammar's structure, so it has
+   * to be known before the table exists.
+   *
+   * Off, the table is word-for-word the table it always was and the recovery
+   * pieces are never instantiated. On, recovery is still DORMANT until a parse
+   * sets `ctx._tolerant` — the same runtime gate the source lowering emits
+   * (`codegen.ts:3153`) and the interpreter tests (`repeat.ts:163`).
+   */
+  readonly recovery?: boolean
 }
 
 type Emitted = { readonly ip: number }
@@ -123,9 +138,27 @@ class Encoder {
   readonly settings: TableSettings
   /** Resolved once, HERE, at table-build time — never consulted at run time. */
   readonly track: boolean
+  /** Is this a RECOVERY table? Decides the extra operands laid down below. */
+  readonly rec: boolean
   constructor(settings: TableSettings) {
     this.settings = settings
     this.track = settings.trackLines === true
+    this.rec = settings.recovery === true
+  }
+
+  /**
+   * The class of the follow set of term `i` in a sequence — the sync sentinel a
+   * list nested in that term resyncs to, INFERRED from structure exactly as
+   * `sequence()` (combinators/sequence.ts:58) and `emitSeqValues`
+   * (compiler/codegen.ts:1756) infer it: the union of every LATER term's first
+   * set, not merely up to the first non-nullable one, so a mandatory middle term
+   * cannot hide a later close. −1 where there is no usable sentinel, which is the
+   * same set of cases `firstSetSentinel` answers `null` for.
+   */
+  private followClass(parsers: readonly Combinator<unknown>[], i: number): number {
+    let fs: FirstSet = { kind: 'empty' }
+    for (let j = i + 1; j < parsers.length; j++) fs = union(fs, firstSetOf(parsers[j]!))
+    return this.charClass(fs)
   }
 
   private constant(v: unknown): number {
@@ -388,9 +421,16 @@ class Encoder {
       }
       case 'sequence': {
         const kids = d.parsers.map(c => this.node(c).ip)
-        const head = this.emitHead(d.valueUnused ? OP_SEQV : OP_SEQ, 1 + kids.length)
+        // A RECOVERY table appends one follow-set class per term AFTER the child
+        // slots. Appending keeps every existing read (`ip + 2 + i`) and the
+        // `collapseIndirection` slot map exactly as they were, so a strict table
+        // is word-for-word the table it always was.
+        const head = this.emitHead(d.valueUnused ? OP_SEQV : OP_SEQ, 1 + kids.length + (this.rec ? kids.length : 0))
         this.code[head + 1] = kids.length
         for (let i = 0; i < kids.length; i++) this.code[head + 2 + i] = kids[i]!
+        if (this.rec) {
+          for (let i = 0; i < kids.length; i++) this.code[head + 2 + kids.length + i] = this.followClass(d.parsers, i)
+        }
         return head
       }
       case 'choice': {
@@ -493,10 +533,16 @@ class Encoder {
       case 'many':
       case 'oneOrMore': {
         const child = this.node(d.parser).ip
-        return this.emit(
-          d.valueUnused ? OP_REPV : OP_REP,
-          child, d.tag === 'many' ? 0 : d.min, d.max ?? -1, -1, 0,
-        )
+        const op = d.valueUnused ? OP_REPV : OP_REP
+        const min = d.tag === 'many' ? 0 : d.min
+        // ip + 6 is the ITEM's expected set and ip + 7 the separator's sentinel
+        // class (−1: there is no separator). Both are only laid down for a
+        // recovery table, where the resync error's payload has to be the ITEM's
+        // set — `deriveExpected(combinator)` in repeat.ts:170, and
+        // `deriveExpectedArr([def.parser])` in codegen's emitMany.
+        return this.rec
+          ? this.emit(op, child, min, d.max ?? -1, -1, 0, this.expected(deriveExpected(d.parser)), -1)
+          : this.emit(op, child, min, d.max ?? -1, -1, 0)
       }
       case 'sepBy': {
         const child = this.node(d.parser).ip
@@ -513,6 +559,17 @@ class Encoder {
         // it means the FIRST item failed, and that failure already set the
         // item's own set. So no committed grammar grows by a word.
         const flags = (d.trailing === 'allow' ? 1 : 0) | (d.keepSeparators === true ? 2 : 0) | (d.min >= 2 ? 4 : 0)
+        // A RECOVERY table always carries ip + 6 (the ITEM's expected set, which
+        // the resync error reports) and ip + 7 (the SEPARATOR's sentinel class, so
+        // a tolerant list resyncs to its own separator OR the enclosing
+        // delimiter — `orSentinel(separator, term)` in repeat.ts:454 and
+        // `_rec.or(sepSent, mySync)` in codegen's emitSepBy).
+        if (this.rec) {
+          return this.emit(
+            OP_REP, child, d.min, d.max ?? -1, sep, flags,
+            this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator)),
+          )
+        }
         return d.min >= 2
           ? this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags, this.expected(deriveExpected(d.parser)))
           : this.emit(OP_REP, child, d.min, d.max ?? -1, sep, flags)
@@ -530,10 +587,13 @@ class Encoder {
         const inner = d.parser._def as ParserDef
         if (inner.tag === 'sequence' && !this.memo.has(d.parser) && !this.pending.has(d.parser)) {
           const kids = inner.parsers.map(c => this.node(c).ip)
-          const head = this.emitHead(OP_SEQX, 2 + kids.length)
+          const head = this.emitHead(OP_SEQX, 2 + kids.length + (this.rec ? kids.length : 0))
           this.code[head + 1] = this.fn(d.fn)
           this.code[head + 2] = kids.length
           for (let i = 0; i < kids.length; i++) this.code[head + 3 + i] = kids[i]!
+          if (this.rec) {
+            for (let i = 0; i < kids.length; i++) this.code[head + 3 + kids.length + i] = this.followClass(inner.parsers, i)
+          }
           return head
         }
         const child = this.node(d.parser).ip
@@ -555,7 +615,8 @@ class Encoder {
         // has the same branch. The refusal was over-broad, not protective —
         // verified by differential against the interpreter, with a host and
         // without, on match and on failure.
-        if (d.type === undefined) throw new UnsupportedConstruct('node(inferred type)')
+        // An AUTHORING error, not a table gap — raise what the other two engines do.
+        if (d.type === undefined) missingInferredType()
         const child = this.node(d.parser).ip
         // Capture flags, resolved HERE from the reducer's declared arity using the
         // same analysis codegen runs (`src/compiler/build-arity.ts`). `hostMode:
@@ -758,11 +819,28 @@ class Encoder {
         // shortcut, which would otherwise drop the request on the floor.
         const cap = d.captureTrivia === true
         const op = cap ? OP_SCOPE_CAP : OP_SCOPE
-        if (d.clearTrivia === true) return this.emit(op, -1, this.node(d.parser).ip)
+        // ROOT-CAPTURE POLICY, as two bits on the row (ip + 3).
+        //
+        // `rootCapture: 'opaque'` is NOT inert — that claim was wrong, and it is
+        // what let a table parse hand back root markers from a region the grammar
+        // declared opaque. `grammar.ts:141` sets `ctx._rootTriviaCapture = false`
+        // for the scope, and the scope's ctx is a COPY there, so the flag reverts
+        // by construction; the table shares one ctx, so the piece has to restore it.
+        //
+        // Bit 1 is the STRICT-SCOPE refusal `grammar.ts:98` raises: with selected
+        // root trivia active, a local scope whose trivia is not classified and is
+        // not declared opaque cannot be reported faithfully, so it throws rather
+        // than silently dropping markers. Codegen emits the same throw
+        // (codegen.ts:4705); the table emitted nothing at all.
+        const flags = (d.rootCapture === 'opaque' ? 1 : 0)
+          | (d.triviaParser !== undefined
+            && d.triviaParser._meta.rootTriviaClassified !== true
+            && d.rootCapture !== 'opaque' ? 2 : 0)
+        if (d.clearTrivia === true) return this.emit(op, -1, this.node(d.parser).ip, flags)
         if (d.triviaParser === undefined) {
-          return cap ? this.emit(op, -1, this.node(d.parser).ip) : this.node(d.parser).ip
+          return cap || flags !== 0 ? this.emit(op, -1, this.node(d.parser).ip, flags) : this.node(d.parser).ip
         }
-        return this.emit(op, this.triviaSlot(d.triviaParser), this.node(d.parser).ip)
+        return this.emit(op, this.triviaSlot(d.triviaParser), this.node(d.parser).ip, flags)
       }
       default:
         throw new UnsupportedConstruct(d.tag)
@@ -853,6 +931,7 @@ class Encoder {
       ...(this.settings.hostMode === undefined ? {} : { hostMode: this.settings.hostMode }),
       ...(this.runtimeOnly.size === 0 ? {} : { runtimeOnly: [...this.runtimeOnly].sort() }),
       ...(this.triviaSpecs.length === 0 ? {} : { triviaSpecs: this.triviaSpecs }),
+      ...(this.rec ? { rec: 1 as const } : {}),
       lines: this.track ? 1 : 0,
     }
   }

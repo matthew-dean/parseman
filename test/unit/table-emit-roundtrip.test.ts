@@ -9,7 +9,7 @@ import { tableRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes } from '../../bench/table-grammars.ts'
-import { balanced, choice, literal, many, node, optional, regex, rules, scanTo, sequence, token, type Combinator } from '../../src/index.ts'
+import { balanced, choice, literal, many, node, optional, regex, rules, scanTo, sepBy, sequence, token, type Combinator } from '../../src/index.ts'
 import type { TableProgram } from '../../src/table/program.ts'
 
 /**
@@ -57,6 +57,23 @@ function outcome(rule: unknown, input: string, opts?: Record<string, unknown>): 
 }
 
 describe('table lowering — the EMITTED module round-trips', () => {
+  it('a RECOVERY table stays a recovery table across emit', async () => {
+    // `rec` selects the pieces that read the sync operands. Emitted without it,
+    // the operands are still in `c` and nothing reads them: the module LOADS,
+    // PARSES, and silently collects no errors — a strict artifact wearing a
+    // tolerant one's shape, which is why the emitted form is asserted here and
+    // not only the in-memory one.
+    const g = sequence(literal('{'), sepBy(sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/)), literal(';')), literal('}'))
+    const prog = encodeTable({ Entry: g as Combinator<unknown> }, { recovery: true })
+    const emitted = await loadEmitted(prog, 'recovery')
+    const input = '{a:1;$$;b:2}'
+    const opts = { tolerant: true }
+    expect(outcome(emitted.Entry, input, opts)).toBe(outcome(g as Combinator<unknown>, input, opts))
+    expect(run(emitted.Entry as never, input, opts).errors)
+      .toEqual(run(g as never, input, opts).errors)
+    expect(run(emitted.Entry as never, input, opts).errors).toHaveLength(1)
+  })
+
   it('baseNodes: emitted, loaded, and parse-identical to the table AND the interpreter', async () => {
     const prog = encodeTable(baseNodes)
     const emitted = await loadEmitted(prog, 'base')

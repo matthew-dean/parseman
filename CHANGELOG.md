@@ -5,6 +5,52 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **Tolerant recovery in the table lowering, in both drivers.** `src/table/` had
+  no recovery at all: no sync publication, no resync scan, no error-node
+  emission, and the encoder recorded no inferred sync sentinel. A tolerant parse
+  routed through the table returned `ok: true` with an empty `errors` array on
+  input the interpreter and the source lowering both report on — and the
+  three-way identity sweep could not see it, because its digest is
+  `{ ok, value, unconsumedFrom }` and `errors`/`expected` are not in it.
+
+  `encodeTable(rules, { recovery: true })` now lays down the inferred sync data —
+  a follow-set class per sequence term, and per repetition the item's expected
+  set plus the separator's sentinel class — and both `exec.ts` and `assemble.ts`
+  select the pieces that read it. The recovery path calls the SAME functions the
+  other two engines call (`src/recovery/scan.ts`), so a recovered error's span,
+  its expected set and its CST embedding cannot drift between engines.
+  `test/parity/table-recovery.test.ts` compares all four on `errors` and
+  `expected` directly.
+
+  Recovery is a BUILD setting for the reason `hostMode` is: the sync point is
+  derived from grammar structure, so it must be known before the table exists.
+  It is still DORMANT until a parse sets `ctx._tolerant`, so a strict table is
+  word-for-word the table it was and a strict parse of a recovery table takes the
+  identical path.
+- **`compileTable().parseWithErrors()` refuses instead of reporting a clean
+  file.** It set `_tolerant` on a driver that ignored it, so it collected nothing
+  whatever the input — a flag that measures nothing. It now needs
+  `compileTable(g, …, { recovery: true })`, which is also newly honoured rather
+  than accepted and dropped, and throws by name otherwise.
+- **A local trivia scope's root-capture policy reaches the table.**
+  `parser({ rootCapture: 'opaque' })` was lowered as inert, so a table parse
+  handed back selected root markers from a region the grammar declared opaque;
+  and the unclassified-scope refusal `parser()` raises under selected root
+  capture (`combinators/grammar.ts`) was absent from the table entirely, so a
+  table parse accepted a grammar the other two engines reject. Both are now two
+  bits on the scope row, and the refusal itself lives in one place
+  (`src/cst/root-trivia-scope.ts`) that all three engines call.
+- **Backtracking in the table drivers rolls back the trivia logs.** `choice`,
+  `not`, `peek`, `optional`, `greedyClassify` and `armGate` unwound the CST
+  buffers but not `_triviaLog` or `_rootTriviaLog`, so a rejected arm left its
+  rows behind: root capture reported `[1,8,2,7,0, 1,8,2,7,0]` where the
+  interpreter reports `[1,8,2,7,0]`. They now take the same eight-slot mark the
+  repetition and sequence paths already took.
+- **`node()` with no `rules()` key reports the authoring error, not a table
+  gap.** The encoder answered `table lowering: no opcode for 'node(inferred
+  type)'`, which names neither the mistake nor the fix. All three engines now
+  raise `node(): inferred node type requires a rules() key…` from one place.
+
 - **BREAKING: `skip(main, skipped)` is removed.** It parsed `main`, then
   OPTIONALLY consumed `skipped` immediately after it, and returned `main`'s
   value with the span extended across both — `sequence` plus take-first, and a

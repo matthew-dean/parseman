@@ -142,6 +142,10 @@ function programFields(prog: TableProgram, fns: readonly string[]): string[] {
     ...(prog.dsp.length === 0 ? [] : [`p:[${prog.dsp.map(emitDispatchSpec).join(',')}],`]),
     ...(prog.labels === undefined ? [] : [`lb:[${prog.labels.map(jsString).join(',')}],`]),
     ...(prog.classified === 1 ? ['rc:1,'] : []),
+    // Without this a recovery table's MODULE loads as a strict one: the extra
+    // operands are still in `c`, but nothing selects the pieces that read them,
+    // so a tolerant parse of the emitted artifact silently collects no errors.
+    ...(prog.rec === 1 ? ['rv:1,'] : []),
     ...(prog.hostMode === undefined ? [] : [`h:${jsString(prog.hostMode)},`]),
     ...(prog.triviaSpecs === undefined ? [] : [`tv:[${prog.triviaSpecs.map(emitTriviaSpec).join(',')}],`]),
     ...(prog.scans === undefined ? [] : [`sc:[${prog.scans.map(emitScanSpec).join(',')}],`]),

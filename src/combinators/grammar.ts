@@ -2,6 +2,7 @@ import type { Combinator, ParseContext, ParseResult, ParseFail, ParseError } fro
 import { createLineIndex, recordLineRange, normalizeLineIndex, annotateSpan, type LineIndex } from '../line-index.ts'
 import { markUnusedValues } from '../compiler/value-usage.ts'
 import { triviaKindMask } from '../cst/trivia-kinds.ts'
+import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { createParseContext } from '../parse-context.ts'
 
 export type ParseOptions = {
@@ -95,11 +96,9 @@ export function parser<T>(opts: ParserOptions, root: Combinator<T>): ParsemanPar
       trackLines: opts.trackLines ?? false,
     },
     parse(input: string, pos?: number, _ctx?: ParseContext): ParseResult<T> {
-      if (_ctx?._rootTriviaStrictScopes && opts.trivia !== undefined && opts.trivia !== null
+      if (opts.trivia !== undefined && opts.trivia !== null
         && !opts.trivia._meta.rootTriviaClassified && !opaqueRootCapture) {
-        throw new TypeError(
-          'parser(): selected root trivia requires classifiedTrivia() for every local trivia scope, or rootCapture: \'opaque\'.',
-        )
+        refuseUnclassifiedRootScope(_ctx?._rootTriviaStrictScopes)
       }
       const trackLines = opts.trackLines ?? _ctx?.trackLines ?? false
       const lineContext = trackLines && _ctx?._lineIndex === undefined && _ctx?._lineStarts === undefined

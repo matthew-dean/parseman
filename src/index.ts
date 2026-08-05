@@ -116,7 +116,14 @@ export type { CSTNode, CSTLeaf, CSTError, CSTTrivia, CSTChild, CSTRawChild, Node
 
 export { parseDoc } from './functional/doc.ts'
 export type { ParseDoc, ParseDocOptions, Registry, RuleFn } from './functional/doc.ts'
-export { run } from './functional/run.ts'
+/* THE PUBLIC PARSE PATH IS THE TABLE. `functional/run.ts` is the driver and
+ * still walks a combinator directly when handed one — that branch is the
+ * interpreter, and it stays reachable from `test/` and the identity sweep so a
+ * table/codegen divergence has something to be bisected against. It is not what
+ * the main entry hands out. See `functional/run-tabled.ts` for why the encode
+ * cannot live inside the driver (`parseman/run`'s closure) and why the cache is
+ * load-bearing rather than an optimisation. */
+export { run } from './functional/run-tabled.ts'
 export type { RootTriviaCapture, RunResult, RunOptions, Runnable } from './functional/run.ts'
 export { GRAMMAR_COVERAGE_DEFINITIONS, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, grammarCoverageDefinitions, composedGrammarCoverageDefinitions, runWithGrammarCoverage } from './coverage.ts'
 export type { GrammarCoverageCollector, GrammarCoverageDefinition, GrammarCoverageSnapshot, GrammarInstrumentationContext, GrammarTraceEvent, GrammarTracePhase, GrammarTraceSink, GrammarTraceSnapshot } from './coverage.ts'

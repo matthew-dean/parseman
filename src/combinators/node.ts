@@ -112,7 +112,13 @@ function isCstChild(value: unknown): boolean {
       || (value as { _tag?: string })._tag === 'parseError')
 }
 
-function missingInferredType(): never {
+/**
+ * The authoring error for `node()` with no rules() key, raised IDENTICALLY by
+ * every engine. Exported because the table encoder used to answer it with
+ * `UnsupportedConstruct: no opcode for 'node(inferred type)'` — a message that
+ * reads as a table gap and names neither the mistake nor the fix.
+ */
+export function missingInferredType(): never {
   throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
 }
 

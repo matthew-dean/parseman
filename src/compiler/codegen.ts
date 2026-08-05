@@ -10,6 +10,7 @@ import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseE
 import { createParseContext } from '../parse-context.ts'
 import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
+import { missingInferredType } from '../combinators/node.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
 import { mayCommitFailure, mayLeavePartialCapture, capturesLeaf, hasNodeDef, alwaysConsumes } from '../analysis/commitment.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -3957,7 +3958,7 @@ function emitNodeProjectExpr(type: string, project: NonNullable<Extract<ParserDe
  */
 function emitNode(def: Extract<ParserDef, { tag: 'node' }>, ctx: Ctx, pos: string): ER {
   if (def.type === undefined) {
-    throw new Error('node(): inferred node type requires a rules() key; pass node("Type", parser) outside rules()')
+    missingInferredType()
   }
   // A STRUCTURAL node has no own build — it builds via the `ctx.build` host at
   // parse time, else a default positioned CST. No build fn is captured.

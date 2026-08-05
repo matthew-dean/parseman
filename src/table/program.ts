@@ -115,6 +115,16 @@ export type TableProgram = {
    * `rules({ trivia }, …)` grammar.
    */
   readonly triviaSpecs?: readonly TriviaSpec[]
+  /**
+   * 1 when this table was encoded with `TableSettings.recovery` — the sequences
+   * carry their inferred follow-set classes and the repetitions their item
+   * expected-set and separator sentinel class.
+   *
+   * TABLE DATA, read once when the driver/assembly is built. It selects the
+   * recovery pieces; it is not a per-parse option, and a recovery table still
+   * recovers only when a parse sets `ctx._tolerant`.
+   */
+  readonly rec?: 0 | 1
 }
 
 /**
@@ -183,6 +193,7 @@ export type CompactProgram = {
   readonly sc?: readonly ScanSpec[]
   readonly ss?: readonly (readonly SubtreeRef[])[]
   readonly so?: readonly number[]
+  readonly rv?: 0 | 1
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
@@ -197,6 +208,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.sc === undefined ? {} : { scans: p.sc }),
     ...(p.ss === undefined ? {} : { scanSkip: p.ss }),
     ...(p.so === undefined ? {} : { scanSkipOf: p.so }),
+    ...(p.rv === undefined ? {} : { rec: p.rv }),
   }
 }
 
@@ -439,6 +451,10 @@ export type CompactFolded = {
 const SHARED_FIELDS = [
   'k', 'cc', 'fx', 'disp', 'dsp', 'rules', 'labels', 'classified',
   'scanSkip', 'scanSkipOf', 'scans', 'triviaSpecs', 'runtimeOnly',
+  // `rec` is a property of the GRAMMAR BUILD, not of the trackLines/hostMode
+  // axis a fold varies — every variant of one export is encoded with the same
+  // recovery setting, and a mismatch is two tables, which is what the refusal says.
+  'rec',
 ] as const satisfies readonly (keyof TableProgram)[]
 
 /**
