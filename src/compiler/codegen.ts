@@ -7,6 +7,7 @@
  * object allocation per node.
  */
 import type { Combinator, ParserDef, FirstSet, ParseResult, ParseContext, ParseError, ChoiceStrategy, FieldMap } from '../types.ts'
+import { createParseContext } from '../parse-context.ts'
 import { getCoreLiteralValue, getCoreRegexDef, leadingTermOfArm } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { firstSetOf, matchesEmpty, union, empty, any, isZeroWidthAssertion } from '../combinators/first-set.ts'
@@ -5459,10 +5460,11 @@ function compileImpl<T>(combinator: Combinator<T>, mapFnSources?: string[], opts
     ctx: ParseContext,
   ) => ParseResult<T>
 
-  const defaultCtx: ParseContext = {
-    trackLines: false,
-    ...(ctx.triviaKindLabels ? { triviaKindLabels: ctx.triviaKindLabels } : {}),
-  }
+  // The ctx a compiled parser runs with when the caller supplied none. One
+  // shared shape — see `parse-context.ts`; a conditional spread here gave the
+  // no-ctx entry its own hidden class.
+  const defaultCtx = createParseContext()
+  if (ctx.triviaKindLabels) defaultCtx.triviaKindLabels = ctx.triviaKindLabels
 
   const annotateWithTrackedLines = <R extends ParseResult<T>>(result: R, lineStarts: number[]): R => {
     const index = normalizeLineIndex({ lineStarts })
