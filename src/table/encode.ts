@@ -69,6 +69,22 @@ class Encoder {
   code: number[] = []
   k: unknown[] = []
   fns: unknown[] = []
+  /**
+   * SOURCE TEXT per `fns` entry, or `null` where the author's callback reached
+   * the encoder as a live closure with no source (the runtime path).
+   *
+   * Parallel to `fns`, in the same order, because that is the order the emitters
+   * print `f:[…]` in. Without it a macro build has no way to print an author
+   * reducer at all: `emitTableModule` falls back to `() => {}` per entry, which
+   * produces a module that LOADS and returns the wrong tree — the exact class of
+   * failure that a `null` return from `compileRuleMap` (its `mfCovered &&
+   * buildCovered` gate) exists to prevent on the source-lowering side. The table
+   * counterpart cannot honour that same all-or-nothing contract without this.
+   *
+   * NOT part of `TableProgram`: it is build-time metadata for the printer, never
+   * data the driver reads, and it must not travel in an emitted artifact.
+   */
+  fnSrcs: (string | null)[] = []
   cc: string[] = []
   fx: (readonly string[])[] = []
   disp: (readonly number[])[] = []
@@ -189,9 +205,18 @@ class Encoder {
     return i
   }
 
-  private fn(v: unknown): number {
+  /**
+   * Park an author callback, WITH its source when the caller has it.
+   *
+   * `src` is required at every call site rather than optional so that adding a
+   * new `fn()`-bearing lowering forces a decision about its source instead of
+   * silently defaulting to "unprintable" — which reads as a working encode and
+   * emits a `() => {}` placeholder downstream.
+   */
+  private fn(v: unknown, src: string | null): number {
     const i = this.fns.length
     this.fns.push(v)
+    this.fnSrcs.push(src)
     return i
   }
 
@@ -488,7 +513,7 @@ class Encoder {
           const gate = d.gates[src]
           return gate === null || gate === undefined
             ? ip
-            : this.emit(OP_ARMGATE, this.fn(gate), ip, this.expected(deriveExpected(c)))
+            : this.emit(OP_ARMGATE, this.fn(gate, d.gateSrcs?.[src] ?? null), ip, this.expected(deriveExpected(c)))
         })
         // O(1) first-char dispatch is only SOUND when the arms are disjoint.
         // With overlapping first sets, "the first arm whose class contains this
@@ -588,7 +613,7 @@ class Encoder {
         if (inner.tag === 'sequence' && !this.memo.has(d.parser) && !this.pending.has(d.parser)) {
           const kids = inner.parsers.map(c => this.node(c).ip)
           const head = this.emitHead(OP_SEQX, 2 + kids.length + (this.rec ? kids.length : 0))
-          this.code[head + 1] = this.fn(d.fn)
+          this.code[head + 1] = this.fn(d.fn, d.fnSrc ?? null)
           this.code[head + 2] = kids.length
           for (let i = 0; i < kids.length; i++) this.code[head + 3 + i] = kids[i]!
           if (this.rec) {
@@ -597,11 +622,11 @@ class Encoder {
           return head
         }
         const child = this.node(d.parser).ip
-        return this.emit(OP_XFORM, this.fn(d.fn), child)
+        return this.emit(OP_XFORM, this.fn(d.fn, d.fnSrc ?? null), child)
       }
       case 'leaf': {
         const child = this.node(d.parser).ip
-        return this.emit(OP_LEAF, this.fn(d.fn), child)
+        return this.emit(OP_LEAF, this.fn(d.fn, d.fnSrc ?? null), child)
       }
       case 'node': {
         // A node legally has NO builder when its value comes from a selection:
@@ -660,7 +685,7 @@ class Encoder {
           | (d.trailingTrivia === true ? 128 : 0)
         const body = this.emit(
           this.track ? OP_NODE_TRACK : OP_NODE,
-          d.build === undefined ? -1 : this.fn(d.build),
+          d.build === undefined ? -1 : this.fn(d.build, d.buildSrc ?? null),
           child, flags,
           d.project ?? -1,
           this.constant(d.type),
@@ -754,7 +779,7 @@ class Encoder {
         return this.emit(OP_NOT, this.node(d.parser).ip)
       case 'guard':
         // `'gate'`, the public name — see gate.ts. The def tag stays `'guard'`.
-        return this.emit(OP_GUARD, this.fn(d.predicate), this.expected(['gate']))
+        return this.emit(OP_GUARD, this.fn(d.predicate, d.predSrc ?? null), this.expected(['gate']))
       case 'adjacency':
         // The expected label is `adjacencyExpected`'s, not `deriveExpected`'s:
         // the interpreter fails with exactly `adjacent` / `notAdjacent` /
@@ -948,7 +973,25 @@ export function encodeTable(
   ruleMap: Record<string, Combinator<unknown>>,
   settings: TableSettings = {},
 ): TableProgram {
+  return encodeTableProgram(ruleMap, settings).prog
+}
+
+/**
+ * `encodeTable` PLUS the reducer sources, for a caller that must PRINT the table.
+ *
+ * The sources are not on `TableProgram` because they are not data the driver
+ * reads and must never travel in an emitted artifact; they are the printer's
+ * input, in `prog.fns` order. A build that lowers macro-evaluated combinators
+ * gets a real source per entry (`fnSrc` / `buildSrc` / `predSrc` / `gateSrcs`,
+ * set by the macro evaluator); a runtime caller gets `null`s and must therefore
+ * refuse to print rather than emit `() => {}` placeholders.
+ */
+export function encodeTableProgram(
+  ruleMap: Record<string, Combinator<unknown>>,
+  settings: TableSettings = {},
+): { prog: TableProgram; fnSrcs: (string | null)[] } {
   const enc = new Encoder(settings)
   for (const name of Object.keys(ruleMap)) enc.encodeRule(name, ruleMap[name]!)
-  return enc.finish()
+  const prog = enc.finish()
+  return { prog, fnSrcs: enc.fnSrcs }
 }
