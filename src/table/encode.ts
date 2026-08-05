@@ -117,6 +117,30 @@ class Encoder {
   scanSkipOf: number[] = []
   /** Reasons this program can RUN but not be EMITTED. */
   runtimeOnly = new Set<string>()
+  /**
+   * The rule map being encoded, so a named reference resolves BY NAME.
+   *
+   * This is what makes a MERGED rule map — the shape composition produces, where
+   * a later piece overrides an earlier piece's rule — encode to the parser
+   * `compose()` means. Without it `case 'lazy'` resolves a reference by calling
+   * its thunk, and a thunk closes over the piece that DEFINED the reference: a
+   * base piece's internal `g.Atom` keeps reaching the base's own `Atom` even
+   * after the merged map binds that name to an override. The encode succeeds,
+   * the table parses, and it silently returns the base's tree — open recursion,
+   * which `compose()` is largely FOR, quietly absent.
+   *
+   * The source lowering never had this problem because it compiles every rule to
+   * a canonical `_r_<Name>` and fusion drops them into one scope, so a reference
+   * resolves by name for free (`compiler/linker.ts:1`). The table has no shared
+   * scope, so the name lookup has to be explicit and is done here.
+   *
+   * For a NON-merged map this is a no-op: the name resolves to the same
+   * combinator the thunk returns. The `_win !== p` guard is load-bearing — a
+   * rule map entry may BE the named lazy proxy for its own body, and resolving
+   * that to itself would return the in-progress memoized row and never encode
+   * the body at all.
+   */
+  winners: Readonly<Record<string, Combinator<unknown>>> | undefined = undefined
   triviaSpecs: TriviaSpec[] = []
   private triviaIndex = new Map<Combinator<unknown>, number>()
 
@@ -901,6 +925,12 @@ class Encoder {
         // through. The encoder threw at build time instead, which made the table
         // lowering refuse a grammar the source lowering accepts. Deferring to the
         // ref's own `.parse` reproduces codegen's timing and its message.
+        // BY NAME first, when this reference names a rule of the map being
+        // encoded — see `winners` for why a thunk is the wrong resolver for a
+        // merged (composed) map, and why the identity guard is required.
+        const refName = (p as unknown as { _ruleName?: string })._ruleName
+        const winner = refName === undefined ? undefined : this.winners?.[refName]
+        if (winner !== undefined && winner !== p) return this.node(winner).ip
         let resolved: Combinator<unknown>
         try { resolved = d.thunk() }
         catch {
@@ -1233,6 +1263,7 @@ export function encodeTableProgram(
   const track = settings.trackLines === true
     || names.some(n => hasScopedTrackLines(ruleMap[n]!, seen))
   const enc = new Encoder(track === (settings.trackLines === true) ? settings : { ...settings, trackLines: true })
+  enc.winners = ruleMap
   for (const name of names) enc.encodeRule(name, ruleMap[name]!)
   const prog = enc.finish()
   return { prog, fnSrcs: enc.fnSrcs }
