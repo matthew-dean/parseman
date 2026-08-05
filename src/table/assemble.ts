@@ -172,11 +172,30 @@ export type RunCfg = {
   readonly hostCst: boolean
   /** `ctx.trackLines` — decides whether the trivia leaf swap is legal at all. */
   readonly trackLines: boolean
+  /**
+   * `ctx._tolerant` — is THIS parse allowed to recover?
+   *
+   * FIXED FOR THE LIFETIME OF A PARSE, which is what makes it legal here rather
+   * than a per-piece test. Every writer of `ctx._tolerant` sets it BEFORE the
+   * parse begins and never during — `compile.ts:119` (`parseWithErrors`),
+   * `functional/run.ts:399`, `functional/doc.ts:29`, `combinators/completions.ts:40`.
+   * The single mid-parse mutation is `recovery/scan.ts:36`, which CLEARS it for
+   * the duration of a sentinel probe and restores it in `finally`; a sentinel is
+   * a `firstSetSentinel` char-class combinator (or an `orSentinel` of two), never
+   * an assembled rule, so no piece runs under the cleared value. Even if one did,
+   * the selection would be the RIGHT one: a probe must not recover, and it would
+   * get the strict assembly.
+   *
+   * Contrast `cstCaptureActive`, which a previous lane proposed for the same
+   * treatment and which is per-NODE state — keying on that would have been
+   * incorrect, not merely redundant.
+   */
+  readonly tolerant: boolean
 }
 
-/** The cfg key an assembly is cached under. Two bits, so at most four assemblies. */
+/** The cfg key an assembly is cached under. Three bits, so at most eight assemblies. */
 function cfgKey(c: RunCfg): number {
-  return (c.hostCst ? 1 : 0) | (c.trackLines ? 2 : 0)
+  return (c.hostCst ? 1 : 0) | (c.trackLines ? 2 : 0) | (c.tolerant ? 4 : 0)
 }
 
 export type Assembly = {
@@ -213,16 +232,28 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   const swapLegal = !cfg.trackLines
   const hostCst = cfg.hostCst
   /**
-   * IS THIS A RECOVERY TABLE? Table data, not an option — `encodeTable({ recovery })`
-   * lays down the inferred sync operands, and their presence is what selects the
-   * recovery pieces below. A strict table reaches none of them.
+   * DOES THIS ASSEMBLY LOWER RECOVERY? Two facts, both known here.
    *
-   * Recovery is still DORMANT until a parse sets `ctx._tolerant`, exactly as the
-   * source lowering's `{ recovery: true }` build is (`codegen.ts:3153`) and as the
-   * interpreter always is (`repeat.ts:163`). The gate is on the FAILURE path of a
-   * list and on sequence entry, never on a matching term.
+   * `prog.rec === 1` is TABLE DATA — `encodeTable({ recovery })` lays down the
+   * inferred sync operands, and their presence is what makes the recovery pieces
+   * lowerable at all. It is now always 1, since recovery is always lowered.
+   *
+   * `cfg.tolerant` is the OPTION half. Recovery being lowered into the table must
+   * not make a strict parse pay for it, and the way this design resolves an
+   * option is by CHOOSING A PIECE, not by testing a flag inside one. So the
+   * tolerant assembly holds the recovery pieces and the strict assembly holds the
+   * arity-specialised ones it always held — `RunCfg.tolerant` documents why that
+   * is sound. `parseWithErrors` and `completionsAt` set `_tolerant` before the
+   * entry runs, so they land on the tolerant assembly; every other parse gets a
+   * graph with no recovery in it anywhere.
+   *
+   * Dormancy is unchanged for the OTHER two engines: the source lowering
+   * (`codegen.ts:3153`) and the interpreter (`repeat.ts:163`) still gate on
+   * `ctx._tolerant` at runtime, and the recovery pieces below keep their own
+   * `_tolerant === true` failure-path gates so `exec.ts` stays the identity
+   * reference.
    */
-  const REC = prog.rec === 1
+  const REC = prog.rec === 1 && cfg.tolerant
   /**
    * The sync sentinel for a char-class index, built ONCE at assembly.
    *
@@ -2125,16 +2156,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 /**
  * Assemblies for one resolved table, one per option set, built on demand.
  *
- * The option set is not known when the rule map is created — `ctx.build` and
- * `ctx.trackLines` arrive with the parse — so the entry computes the two-bit key
- * and takes the assembly for it, building it the first time that combination is
- * seen. That is the "assembled at run start" half of G5: at most four assemblies
- * per table per process, each holding ONLY the pieces its options reach.
+ * The option set is not known when the rule map is created — `ctx.build`,
+ * `ctx.trackLines` and `ctx._tolerant` arrive with the parse — so the entry
+ * computes the three-bit key and takes the assembly for it, building it the first
+ * time that combination is seen. That is the "assembled at run start" half of G5:
+ * at most eight assemblies per table per process, each holding ONLY the pieces
+ * its options reach. A process that never parses tolerantly never builds, and
+ * never runs, a single recovery piece.
  */
 export class AssemblyCache {
   private readonly t: ResolvedTable
   private readonly prog: TableProgram
-  private readonly byCfg: Array<Assembly | undefined> = [undefined, undefined, undefined, undefined]
+  private readonly byCfg: Array<Assembly | undefined> = [
+    undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined,
+  ]
 
   constructor(prog: TableProgram) {
     this.prog = prog
@@ -2156,16 +2192,17 @@ export class AssemblyCache {
    * THE ONLY CONFIG READ ON THE RUN PATH, and it happens once per parse at the
    * boundary rather than once per row. It allocates nothing: the key is computed
    * inline and the `RunCfg` object is built only on the miss that builds an
-   * assembly, which is at most four times per table per process.
+   * assembly, which is at most eight times per table per process.
    */
   forCtx(ctx: ParseContext): Assembly {
     const host = ctx.build
     const hostCst = host !== undefined && cstOutputHost(host)
     const trackLines = ctx.trackLines === true
-    const key = (hostCst ? 1 : 0) | (trackLines ? 2 : 0)
+    const tolerant = ctx._tolerant === true
+    const key = (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0)
     const hit = this.byCfg[key]
     if (hit !== undefined) return hit
-    const made = assemble(this.t, this.prog, { hostCst, trackLines })
+    const made = assemble(this.t, this.prog, { hostCst, trackLines, tolerant })
     this.byCfg[key] = made
     return made
   }
@@ -2176,7 +2213,7 @@ export class AssemblyCache {
  * through linked closures instead of the bytecode interpreter.
  *
  * The two config reads that remain are HERE, at the boundary, once per parse:
- * `AssemblyCache.cfgOf` turns the `ctx` into a two-bit option set and takes the
+ * `AssemblyCache.forCtx` turns the `ctx` into a three-bit option set and takes the
  * assembly built for it. Everything past that point is pieces, and no piece body
  * reads an option — `scripts/check-invariants.mjs` asserts it.
  */

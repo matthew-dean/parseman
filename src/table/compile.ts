@@ -36,12 +36,8 @@ export type TableCompileOptions = {
   readonly hostMode?: HostMode
   readonly trackLines?: boolean
   /**
-   * Lower tolerant recovery, as the source lowering's `{ recovery: true }` does:
-   * `many`/`sepBy`/`oneOrMore` resync to a sync point inferred from grammar
-   * structure and emit a `ParseError` over the skipped span, and `expect()`
-   * embeds its error in the tree. Dormant until a parse sets `ctx._tolerant` —
-   * which `parseWithErrors` does, and which is why building WITHOUT this makes
-   * `parseWithErrors` refuse rather than quietly collect nothing.
+   * ACCEPTED AND IGNORED — recovery is ALWAYS lowered (see `TableSettings.recovery`).
+   * Kept so this stays a drop-in for `compile(g, …, { recovery: true })`.
    */
   readonly recovery?: boolean
   /**
@@ -79,7 +75,6 @@ export function compileTable<T>(
   const settings: TableSettings = {
     ...(opts.hostMode === undefined ? {} : { hostMode: opts.hostMode }),
     ...(opts.trackLines === undefined ? {} : { trackLines: opts.trackLines }),
-    ...(opts.recovery === true ? { recovery: true } : {}),
   }
   const prog = encodeTable({ [ENTRY]: combinator as Combinator<unknown> }, settings)
   const entry = assembledRules(prog)[ENTRY]!
@@ -109,24 +104,15 @@ export function compileTable<T>(
       return runOnce(input, pos, parseCtx)
     },
     /**
-     * REFUSES A PARSER THAT CANNOT RECOVER, rather than returning `errors: []`.
-     *
-     * This set `_tolerant` on a driver with no recovery lowered into it at all,
-     * so every call reported a clean parse with an empty error list whatever the
-     * input — a flag that measures nothing, which is the same defect class as
-     * coverage instrumentation that silently records none. `expect()` alone would
-     * still have filled `_errors`, which is worse: SOME grammars looked like they
-     * worked.
+     * NO LONGER REFUSES. It used to throw unless the caller passed
+     * `{ recovery: true }`, because setting `_tolerant` on a table with no
+     * recovery rows would report a clean parse with an empty error list whatever
+     * the input — refusing was the right answer to that, and OPTIONAL RECOVERY
+     * was the wrong question. `compile()` requires no such flag, so the refusal
+     * was a `CompiledParser` contract break; recovery is now always lowered and
+     * there is nothing left to refuse.
      */
     parseWithErrors(input: string, pos = 0): ParseResult<T> & { errors: ParseError[] } {
-      if (opts.recovery !== true) {
-        throw new Error(
-          'compileTable: parseWithErrors() needs a parser built with { recovery: true }. '
-          + 'The sync point a tolerant list resyncs to is inferred from grammar structure and '
-          + 'lowered into the table, so it has to be chosen at BUILD time. Without it this call '
-          + 'would parse strictly and hand back an empty `errors` array, which reads as a clean file.',
-        )
-      }
       const ctx = createParseContext()
       const errors: ParseError[] = []
       ctx._errors = errors
