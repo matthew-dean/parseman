@@ -6,6 +6,7 @@ import { emitTableModule, emitTableExpression } from './emit.ts'
 import { assembledRules } from './assemble.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnostic, type DuplicationOption } from './duplication-hook.ts'
+import { beginCompileDegradationDrain } from '../compiler/degradation.ts'
 
 /**
  * `compile()` FOR THE TABLE LOWERING — same contract, different artifact.
@@ -118,6 +119,24 @@ export function compileTable<T>(
   // switching lowerings already has. Building it differently here would produce a
   // set that is internally consistent and lines up with nothing.
   runDuplicationDiagnostic(combinator, opts.duplication)
+  // ONE AGGREGATED BLOCK per compile, as the source lowering drained it. Without this
+  // every degradation prints the instant it is recorded, so a grammar with twenty
+  // unconfirmable reducers produces twenty walls of text instead of the capped, counted
+  // summary — and `PARSEMAN_DEGRADATION=error` stops at the first instead of listing all.
+  const drain = beginCompileDegradationDrain()
+  let compiled = false
+  try {
+    const out = compileTableImpl(combinator, mapFnSources, opts)
+    compiled = true
+    return out
+  } finally { drain(compiled) }
+}
+
+function compileTableImpl<T>(
+  combinator: Combinator<T>,
+  mapFnSources?: readonly string[],
+  opts: TableCompileOptions = {},
+): CompiledParser<T> {
   const plan = opts.coverage === true ? buildGrammarPlan(combinator as Combinator<unknown>) : undefined
   const settings: TableSettings = {
     ...(opts.hostMode === undefined ? {} : { hostMode: opts.hostMode }),
