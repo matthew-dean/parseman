@@ -351,3 +351,193 @@ export function resolveTable(prog: TableProgram): ResolvedTable {
   _tableCache.set(prog, built)
   return built
 }
+
+/* ── THE VARIANT FOLD (ledger row G4) ────────────────────────────────────── */
+
+/**
+ * One variant's whole difference from the base table, as SPARSE ROW EDITS.
+ *
+ * G5 says the variants *"differ in table contents, not in code"*, and G4 asks
+ * for ONE compiled output per input grammar. Measured across jess's four
+ * dialects, the four `trackLines` x `hostMode` tables differ in `code` and in
+ * two scalars and in NOTHING else — `k`, `cc`, `fx`, `disp`, `dsp`, `rules`,
+ * `fns`, `labels`, `classified`, `scanSkip`, `scanSkipOf`, `scans` and
+ * `triviaSpecs` are byte-identical in all four, and the code streams are the
+ * same LENGTH. So a variant is not another table. It is a list of words to
+ * overwrite.
+ *
+ * `at` is stored as ASCENDING GAPS, not absolute offsets: the edits are dense
+ * enough (mean gap under 10 on every dialect) that gaps are one or two digits
+ * where offsets are four, and the load-time cost of the difference is one `+=`.
+ */
+export type TableDelta = {
+  /** Gaps between successive edited word offsets; the first is absolute. */
+  readonly at: readonly number[]
+  /** Replacement words, parallel to `at`. */
+  readonly to: readonly number[]
+  readonly lines?: 0 | 1
+  readonly hostMode?: 'ast' | 'cst'
+}
+
+/** A base table plus the row edits that turn it into each named variant. */
+export type FoldedProgram = {
+  readonly base: TableProgram
+  /** Variant name → its edits. The base's own name maps to an empty delta. */
+  readonly variants: Readonly<Record<string, TableDelta>>
+}
+
+/** The wire form a folded artifact prints — short keys, as `CompactProgram`. */
+export type CompactFolded = {
+  readonly b: CompactProgram
+  readonly v: Readonly<Record<string, { a?: readonly number[]; t?: readonly number[]; l?: 0 | 1; h?: 'ast' | 'cst' }>>
+}
+
+/**
+ * The fields a fold requires to be IDENTICAL across every variant.
+ *
+ * Named rather than derived so the refusal can say which one broke.
+ */
+const SHARED_FIELDS = [
+  'k', 'cc', 'fx', 'disp', 'dsp', 'rules', 'labels', 'classified',
+  'scanSkip', 'scanSkipOf', 'scans', 'triviaSpecs', 'runtimeOnly',
+] as const satisfies readonly (keyof TableProgram)[]
+
+/**
+ * Every field of `TableProgram`, classified: shared once, compared by identity
+ * (`fns`), overwritten per variant (`code`), or carried on the delta as a
+ * scalar (`lines`, `hostMode`).
+ *
+ * `FoldExhaustive` fails to COMPILE the moment a field is added to
+ * `TableProgram` without a decision, which is the only way this list can be kept
+ * honest. A new variant-dependent field landing in `SHARED_FIELDS`' blind spot
+ * would ship one variant's data under every variant's name, and every parse
+ * would succeed.
+ */
+type FoldClassified = 'code' | 'fns' | 'lines' | 'hostMode' | (typeof SHARED_FIELDS)[number]
+type AssertNever<T extends never> = T
+export type FoldExhaustive = AssertNever<Exclude<keyof TableProgram, FoldClassified>>
+
+/**
+ * Fold N encoded programs into ONE table plus per-variant row edits.
+ *
+ * FAILS CLOSED, and that is the point. Every assumption the fold rests on is
+ * asserted here against the actual programs, so a grammar or a setting that
+ * breaks one produces a build error naming the field — not an artifact that
+ * loads and parses with the wrong table. The alternative, trusting a measurement
+ * taken once on four grammars, is how a variant axis acquires a silent third
+ * dimension.
+ *
+ * `fns` is compared by IDENTITY, not by source text. Two closures can print the
+ * same and capture different scopes; sharing one pool between variants is only
+ * sound when they are literally the same functions, which they are when the
+ * variants are encodings of ONE grammar export.
+ */
+export function foldPrograms(
+  programs: Readonly<Record<string, TableProgram>>,
+  baseName: string,
+): FoldedProgram {
+  const base = programs[baseName]
+  if (base === undefined) throw new TypeError(`foldPrograms: no program named ${JSON.stringify(baseName)}`)
+  const variants: Record<string, TableDelta> = {}
+  for (const name of Object.keys(programs)) {
+    const p = programs[name]!
+    if (p.code.length !== base.code.length) {
+      throw new TypeError(
+        `foldPrograms: variant ${JSON.stringify(name)} has ${p.code.length} code words, base `
+        + `${JSON.stringify(baseName)} has ${base.code.length}. A fold overwrites words; it cannot `
+        + 'resize the stream. These are two different tables, not one table and its edits.',
+      )
+    }
+    for (const f of SHARED_FIELDS) {
+      if (JSON.stringify(p[f]) !== JSON.stringify(base[f])) {
+        throw new TypeError(
+          `foldPrograms: variant ${JSON.stringify(name)} differs from base ${JSON.stringify(baseName)} `
+          + `in ${JSON.stringify(f)}, which the fold ships ONCE. Either the variants are not encodings `
+          + 'of one grammar, or this field has become variant-dependent and needs its own delta.',
+        )
+      }
+    }
+    if (p.fns.length !== base.fns.length || p.fns.some((f, i) => f !== base.fns[i])) {
+      throw new TypeError(
+        `foldPrograms: variant ${JSON.stringify(name)} does not share the base's reducer pool BY `
+        + 'IDENTITY. Equal source text is not enough — two closures can print alike and capture '
+        + 'different scopes. Encode every variant from ONE grammar export.',
+      )
+    }
+    const at: number[] = []
+    const to: number[] = []
+    let prev = 0
+    for (let i = 0; i < p.code.length; i++) {
+      if (p.code[i] === base.code[i]) continue
+      at.push(i - prev)
+      to.push(p.code[i]!)
+      prev = i
+    }
+    variants[name] = {
+      at, to,
+      ...(p.lines === undefined ? {} : { lines: p.lines }),
+      ...(p.hostMode === undefined ? {} : { hostMode: p.hostMode }),
+    }
+  }
+  return { base, variants }
+}
+
+/** WeakMap-keyed per folded program, so repeated selection is a lookup. */
+const _variantCache = new WeakMap<FoldedProgram, Map<string, TableProgram>>()
+
+/**
+ * Materialise ONE variant of a folded table, at load, when it is selected.
+ *
+ * Every field but `code` is shared BY REFERENCE with the base — no copying, no
+ * re-parsing. The resolved table is derived from the base's, so N variants cost
+ * ONE char-class expansion, ONE dispatch build and ONE trivia rebuild between
+ * them instead of N. Selecting a variant is strictly LESS load work than
+ * building an Nth independent table, which is the opposite of the usual
+ * size-versus-load-time trade.
+ *
+ * The driver still sees nothing but a `TableProgram`. There is no variant flag
+ * on the parse path and nothing here is consulted again after load — the option
+ * half of G5 is untouched.
+ */
+export function unfoldVariant(folded: FoldedProgram, name: string): TableProgram {
+  let byName = _variantCache.get(folded)
+  if (byName === undefined) { byName = new Map(); _variantCache.set(folded, byName) }
+  const hit = byName.get(name)
+  if (hit !== undefined) return hit
+  const d = folded.variants[name]
+  if (d === undefined) {
+    throw new TypeError(
+      `unfoldVariant: no variant ${JSON.stringify(name)}. This table carries: `
+      + `${Object.keys(folded.variants).map(n => JSON.stringify(n)).join(', ')}.`,
+    )
+  }
+  const base = folded.base
+  const code = [...base.code]
+  let ip = 0
+  for (let i = 0; i < d.at.length; i++) { ip += d.at[i]!; code[ip] = d.to[i]! }
+  const prog: TableProgram = {
+    ...base,
+    code,
+    ...(d.lines === undefined ? {} : { lines: d.lines }),
+    ...(d.hostMode === undefined ? {} : { hostMode: d.hostMode }),
+  }
+  // Seeded from the BASE's resolved table: `cc`, `disp`, `dsp` and the rebuilt
+  // trivia are identical by `foldPrograms`' own assertion, so N variants cost
+  // ONE of each between them. Only the code stream is per variant.
+  _tableCache.set(prog, { ...resolveTable(base), prog, code: Int32Array.from(code) })
+  byName.set(name, prog)
+  return prog
+}
+
+export function expandCompactFolded(f: CompactFolded): FoldedProgram {
+  const variants: Record<string, TableDelta> = {}
+  for (const name of Object.keys(f.v)) {
+    const d = f.v[name]!
+    variants[name] = {
+      at: d.a ?? [], to: d.t ?? [],
+      ...(d.l === undefined ? {} : { lines: d.l }),
+      ...(d.h === undefined ? {} : { hostMode: d.h }),
+    }
+  }
+  return { base: expandCompact(f.b), variants }
+}
