@@ -1326,14 +1326,36 @@ function transformMacroImpl(
     return { pieces, trackLines }
   }
 
-  /** Fold ordered rule maps into the composed map: a later piece's name WINS, and
+  /**
+   * Fold ordered rule maps into the composed map: a later piece's name WINS, and
    * `Map` keeps each name at its first-sighting position so the encoded rule order
-   * tracks the source lowering's rather than drifting per compose. */
+   * tracks the source lowering's rather than drifting per compose.
+   *
+   * A REFERENCE IS NOT A DEFINITION. A `rules(g => …)` cache also holds every `g.X`
+   * that was merely ACCESSED, so a delta that calls `g.Pair` carries a `Pair` entry
+   * that is an unresolved named lazy. Merged in name order that entry lands LAST and
+   * shadows the base piece which actually defines `Pair` — the encoder then finds a
+   * hole where the winner should be and refuses the whole grammar with "ref() used
+   * before .define()". The same filter guards `compileLinkableTable`'s `isLocal`
+   * (`compile-linkable-table.ts:96`), `itemCarried` (`linker.ts:696`) and
+   * `recoverComposedRules`; this is the fourth site that needs it, for the same
+   * reason, and skipping it is why cross-piece composition looked blocked.
+   *
+   * The reference itself is not lost: it stays inside the delta's own rule bodies and
+   * `enc.winners` binds it BY NAME to whichever piece supplies the definition.
+   */
   const mergeRuleMaps = (
     maps: ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
   ): Array<[string, Combinator<unknown>]> => {
     const winners = new Map<string, Combinator<unknown>>()
-    for (const map of maps) for (const [name, rule] of map) winners.set(name, rule)
+    for (const map of maps) {
+      for (const [name, rule] of map) {
+        if (rule._def.tag === 'lazy') {
+          try { rule._def.thunk() } catch { continue }
+        }
+        winners.set(name, rule)
+      }
+    }
     return [...winners]
   }
 
@@ -1343,6 +1365,31 @@ function transformMacroImpl(
     const carriedMaps = carriedRuleMaps(items)
     if (carriedMaps === null) return null
     return { rules: mergeRuleMaps(carriedMaps.pieces.map(p => p.rules)), trackLines: carriedMaps.trackLines }
+  }
+
+  /**
+   * COMPOSING-WINS, as an OVERRIDE rather than a gap-fill.
+   *
+   * `compileRuleMapTable`'s `applyAmbient` only fills a rule that carries no trivia of
+   * its own — correct for `composeLeaf`, whose pieces may legitimately disagree, and
+   * WRONG for `compose`, where the composing grammar's trivia governs every fused rule
+   * INCLUDING the inherited ones. Gap-filling leaves a base rule that declared its own
+   * `rules({ trivia }, …)` still skipping the base's trivia after a delta re-declared
+   * it, so `compose([css, less])` silently parses the inherited rules under css's
+   * whitespace — the multi-level composing-wins contract, inverted.
+   *
+   * Safe to mutate: every rule here came from `evalRuleMapIR`, which constructs FRESH
+   * combinators per piece per compose, so this cannot leak into another compose of the
+   * same base grammar.
+   */
+  const applyComposingTrivia = (
+    ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+    composing: Combinator<unknown>,
+  ): void => {
+    for (const [, rule] of ruleMap) {
+      if (rule._meta.isTrivia) continue
+      ;(rule._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia = composing
+    }
   }
 
   /** Materialize the exact combinator identities that will be lowered for a
@@ -1597,6 +1644,7 @@ function transformMacroImpl(
     // so a downstream re-compose behaves identically whichever engine emitted here.
     const merged = mergedCarriedRules(carried)
     if (merged !== null) {
+      if (composing) applyComposingTrivia(merged.rules, composing)
       const refusals: string[] = []
       const compiled = compileRuleMapTable(merged.rules, {
         ...(composing ? { trivia: composing } : {}),
@@ -1609,7 +1657,13 @@ function transformMacroImpl(
       if (compiled !== null) {
         usedTableRuntime = true
         return {
-          replacement: compiled.replacement,
+          // The host-mode stamp is NOT optional. `fusedBody` bakes it into the fused
+          // closure, so the source lowering carried it for free; a table expression
+          // carries nothing until it is stamped, and an unstamped map reads as
+          // `{ mode: 'ast', elided: false }` — every driver compatibility check then
+          // passes vacuously, which is precisely the silent-mismatch failure the stamp
+          // exists to catch.
+          replacement: withHostMode(compiled.replacement, compiled.hostMode, compiled.hostBranchElided),
           carried,
           ...(composing ? { trivia: composing } : {}),
           ...(importedFactories.length ? { importedFactories } : {}),
@@ -1744,9 +1798,15 @@ function transformMacroImpl(
             if (meta.grammarScanSkip === undefined) meta.grammarScanSkip = localScanSkip
           }
         }
+        const leafMerged = mergeRuleMaps([...carriedMaps.pieces.map(p => p.rules), localEntries])
+        // Composing-wins governs the leaf fuse too. The local entries are NOT freshly
+        // evaluated (they come from this module's own `rules()` factory), so they are
+        // excluded from the override — their declared trivia IS the composing candidate,
+        // and rewriting `_meta` on them would mutate the module-level grammar object.
+        if (composing) applyComposingTrivia(carriedMaps.pieces.flatMap(p => p.rules), composing)
         const refusals: string[] = []
         const compiled = compileRuleMapTable(
-          mergeRuleMaps([...carriedMaps.pieces.map(p => p.rules), localEntries]),
+          leafMerged,
           {
             ...(composing ? { trivia: composing } : {}),
             ...(carriedMaps.trackLines ? { trackLines: true } : {}),
@@ -1757,7 +1817,9 @@ function transformMacroImpl(
         )
         if (compiled !== null) {
           usedTableRuntime = true
-          const tableReplacement = withLeafMarker(compiled.replacement)
+          const tableReplacement = withLeafMarker(
+            withHostMode(compiled.replacement, compiled.hostMode, compiled.hostBranchElided),
+          )
           return {
             replacement: withCoverageDefinitions(
               tableReplacement,
