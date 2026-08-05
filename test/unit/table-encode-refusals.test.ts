@@ -39,14 +39,29 @@ const throws = (g: Record<string, Combinator<unknown>>, re: RegExp): void => {
 }
 
 describe('encodeTable refuses what it cannot lower faithfully', () => {
-  it('transform(recognitionOnly) — a suppressed value is not an inert transform', () => {
-    // Set on the def by `scanTo.ts`, which has no public constructor for it.
-    // A recognition-only transform SUPPRESSES its value; lowering it as an
-    // ordinary transform would produce a value the other two engines do not.
-    const suppressed = transform(literal('a'), v => v)
+  it('transform(recognitionOnly) lowers as an ordinary transform — it is a COMPILE-time marker', () => {
+    // This refused on the claim that a recognition-only transform "SUPPRESSES
+    // its value". It does not: `recognitionOnly` appears in no combinator's
+    // runtime path at all — `map.ts`'s transform never reads it. It is a marker
+    // for `composeLeaf` eligibility in the LINKER (see the comment at
+    // `scanTo.ts:361`) and a codegen analysis flag, both compile-time.
+    //
+    // So the refusal was reasoning about a runtime semantic that does not exist,
+    // and the value it feared diverging is simply the fn's own result.
+    const suppressed = transform(literal('a'), v => `X:${String(v)}`)
     ;(suppressed._def as { recognitionOnly?: boolean }).recognitionOnly = true
-    throws(wrap(suppressed as Combinator<unknown>), /transform\(recognitionOnly\)/)
-    expect(() => encodeTable(wrap(transform(literal('a'), v => v) as Combinator<unknown>))).not.toThrow()
+    const g = wrap(suppressed as Combinator<unknown>)
+    expect(() => encodeTable(g)).not.toThrow()
+    const table = tableRules(encodeTable(g)).Doc!
+    for (const src of ['a', 'z']) {
+      const t = run(table as never, src)
+      const i = run(suppressed as never, src)
+      expect(t.ok, src).toBe(i.ok)
+      expect(t.value, src).toEqual(i.value)
+      expect(t.expected, src).toEqual(i.expected)
+    }
+    // The transform really ran — an inert lowering would yield the raw literal.
+    expect(run(table as never, 'a').value).toBe('X:a')
   })
 
   it('choice(greedyClassify) lowers, and the LITERAL arm is the one credited', () => {

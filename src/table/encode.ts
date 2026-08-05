@@ -474,7 +474,6 @@ class Encoder {
         // Declared on the def and not lowered here. Refuse rather than assume it is
         // inert: a recognition-only transform suppresses its value, and a table that
         // produced one anyway would differ from both other engines.
-        if (d.recognitionOnly === true) throw new UnsupportedConstruct('transform(recognitionOnly)')
         // FUSE `transform(sequence(...))` — the dominant shape — into one row.
         // Emitted separately it costs two dispatches and two call frames per
         // rule invocation. The inner sequence must not be shared with anything
