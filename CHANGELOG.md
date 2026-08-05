@@ -5,6 +5,66 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **The table is LINKED into closures at run start instead of interpreted row by
+  row, and `benchmark.less` drops 20%.** `src/table/exec.ts` builds the
+  reference table and then walks it with one `switch (code[ip])` over 29
+  opcodes, executed once per ROW — 497,360 rows for one parse of
+  `benchmark.less` — each re-reading its opcode, re-decoding its operands from
+  the `Int32Array`, and re-testing the same per-parse options. That is the
+  per-node branching design ledger row G5 exists to remove: *build the grammar
+  reference at run start, making the swaps on rules and leaves at that point,
+  then run with no logic branching for that option input.*
+
+  `src/table/assemble.ts` does that. It walks the reachable table ONCE and
+  lowers each site to a PIECE — a closure with its operands captured as `const`s
+  and its children bound as direct references to their own pieces. At parse time
+  there is no opcode read, no operand decode and no switch.
+
+  The ratio is what makes it obviously right: **2,241 distinct reachable sites
+  against 497,360 row executions** on the less grammar. Pieces are grammar-sized;
+  rows are input-sized. Assembly allocates ~2.2k closures once and removes a
+  dispatch plus an operand decode from ~497k executions.
+
+  The mechanism is structural, not marginal. A 29-case switch on a typed-array
+  load is a jump table whose successor V8 cannot know, so the interpreter loop
+  is one basic block with 29 merge edges and TurboFan can specialise no arm
+  against its caller. Measured on this branch: `exec` reaches TURBOFAN and is
+  deoptimised back to MAGLEV repeatedly — 100 deopt events in a 20-parse run. The
+  design was not paying dispatch overhead, it was opting its hot path out of the
+  optimising compiler.
+
+  All legs in ONE process, interleaved and order-alternated per
+  `bench/ab-harness.ts`, both controls printed:
+
+  | fixture | bytecode driver | assembled | delta | wins | controls |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | `benchmark.less` (106,802 B) | 31.05 ms | **24.74 ms** | **-20.3%** | 16/16 | -0.9% / -1.1% |
+  | `mixins-guards.less` (9,757 B) | 4.33 ms | **3.51 ms** | **-18.9%** | 16/16 | -0.7% / -0.6% |
+
+  Absolute milliseconds are comparable only WITHIN a run — this machine has
+  produced 9.4 ms and 26 ms for the same case in consecutive launches.
+
+  Identity is not traded for it: the assembler answers exactly what `exec.ts`
+  answers on all **2,833** corpus files across the four dialects (less 314, css
+  87, scss 2,408, jess 24), on every facet the three-way sweep compares.
+  `exec.ts` is kept as the reference it is gated against.
+
+  The artifact does not grow. The pieces ship ONCE in the runtime, shared by
+  every grammar and every variant; what a bundle carries is still the table, as
+  data.
+
+  Two consequences worth their own note:
+
+  - Options are consumed by SELECTION. The piece set is a superset and assembly
+    instantiates only what the option set reaches, so a piece an option excludes
+    is never allocated — not a cheap branch, zero. `trackLines` and the host mode
+    now pick a piece instead of being tested inside one.
+  - **INV-6** in `scripts/check-invariants.mjs` makes that mechanical: no
+    assembled piece body may read a per-parse config field off `ctx`. It caught a
+    real one on its first run — the node piece opened with `const host =
+    ctx.build`, a config read on the hottest non-terminal in the grammar, now
+    hoisted to once per parse.
+
 - **The table gates each choice arm on its own class now, and `benchmark.less`
   drops 17%.** The table granted a choice its first-char dispatch only when
   EVERY arm was non-nullable, pairwise disjoint and class-mappable; one failure

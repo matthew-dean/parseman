@@ -448,8 +448,13 @@ describe('grammar-level scanSkip reaches an emitted module as data', () => {
     const readers = walk(root)
       .filter(f => readFileSync(f, 'utf8').split('\n').some(l => isCode(l) && l.includes('ctx.scanSkip')))
       .map(f => path.relative(root, f)).sort()
-    // `table/exec.ts` WRITES it (the entry installs the ambient set); `scanTo.ts`
-    // is the only reader. Both are listed so a new file cannot slip in either way.
-    expect(readers).toEqual(['combinators/scanTo.ts', 'table/exec.ts'])
+    // `table/stamp.ts` WRITES it — the rule-map envelope both table drivers
+    // share installs the ambient set at the entry, which is the one place that
+    // knows the entry rule. It moved there from `table/exec.ts` when the closure
+    // assembler (`table/assemble.ts`) became the second driver: two copies of
+    // the envelope would have been two places for this write to drift.
+    // `scanTo.ts` is the only reader. Both are listed so a new file cannot slip
+    // in either way.
+    expect(readers).toEqual(['combinators/scanTo.ts', 'table/stamp.ts'])
   })
 })

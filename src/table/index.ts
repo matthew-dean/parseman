@@ -11,6 +11,18 @@
  * first-set analysis along with it.
  */
 export { tableRules } from './exec.ts'
+/**
+ * THE ASSEMBLED DRIVER (G5). Same table, same artifact, same contract as
+ * `tableRules` — but the program is LINKED into closures at run start instead of
+ * interpreted row by row, so the parse path holds no opcode read, no operand
+ * decode and no option test.
+ *
+ * Exported alongside `tableRules` rather than replacing it: `exec.ts` is the
+ * reference the three-way identity sweep gates the assembler against, and
+ * replacing an engine before its replacement is proven identical is how a speed
+ * win becomes a correctness incident.
+ */
+export { assembledRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
 export { emitTableModule, emitFoldedModule } from './emit.ts'
 /**

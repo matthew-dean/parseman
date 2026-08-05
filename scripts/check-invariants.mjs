@@ -18,6 +18,8 @@
  *   INV-2  no field in a public `*Options` type that nothing reads
  *   INV-3  every module under src/ is reachable from a published entry point
  *   INV-4  no declaration body duplicated across modules
+ *   INV-5  no `delete` on an object the enclosing function did not construct
+ *   INV-6  no assembled piece body reads a per-parse config field
  *
  * Usage:
  *   node scripts/check-invariants.mjs            # gate — exits 1 on any new finding
@@ -120,6 +122,12 @@ const ALLOW = new Map([
   ['INV-5:src/combinators/token.ts:parse:ctx._rootTriviaLog', 'per-token delete on the long-lived ctx — measurement lane owns the fix'],
   ['INV-5:src/table/exec.ts:exec:ctx._triviaLog', 'mirrored into the table driver for behavioural fidelity — same lane'],
   ['INV-5:src/table/exec.ts:exec:ctx._rootTriviaLog', 'mirrored into the table driver for behavioural fidelity — same lane'],
+  // The assembler's `token()` / `leaf()` pieces mirror the SAME combinator, for
+  // the same reason and with the same restoration-by-presence constraint. They
+  // are exempt on the same terms and go stale together: whichever lane removes
+  // the deletes removes all six entries at once, and the gate will require it.
+  ['INV-5:src/table/assemble.ts:lower:ctx._triviaLog', 'mirrored into the table assembler for behavioural fidelity — same lane'],
+  ['INV-5:src/table/assemble.ts:lower:ctx._rootTriviaLog', 'mirrored into the table assembler for behavioural fidelity — same lane'],
 
   // INV-5 x3 on `_meta` — `const meta = slot._meta` / `value._meta` is an ALIAS
   // of a combinator's long-lived meta object, and `_meta` is read during
@@ -544,6 +552,79 @@ const MIN_DUP_CHARS = 160
     report('INV-4', first.file, first.line,
       `identical declaration body duplicated across modules — ${where}. Import one; a copy that drifts is worse than no copy`,
       `INV-4:${sites.map((s) => `${s.file}:${s.name}`).sort().join('|')}`)
+  }
+}
+
+/* ================================================================== *
+ * INV-6 — no assembled PIECE body may read a per-parse CONFIG field.
+ *
+ * DECIDES: a member read of one of `CONFIG_FIELDS` off the piece signature's
+ * `ctx` parameter, inside a function that `src/table/assemble.ts`'s `lower`
+ * returns — i.e. inside a piece.
+ *
+ * WHY THIS EXACT SHAPE: the table lowering's whole premise (design ledger row
+ * G5) is that the branching on OPTIONS runs ONCE, at assembly, and its OUTPUT
+ * is the parser path — so the path itself contains no option test. The
+ * distinction the rule encodes is not "is this field private", it is WHEN the
+ * field can change:
+ *
+ *   CONFIG   fixed by `run()` before the entry is called and constant for the
+ *            whole parse — `trackLines`, the host (`build`), the trivia
+ *            policy in scope. A read of one of these inside a piece is a
+ *            decision that assembly should have made by SELECTING that piece.
+ *            There is a tracking piece and a non-tracking piece; a CST piece
+ *            and an AST piece. The piece does not know the option exists.
+ *
+ *   RUNTIME  varies DURING a parse — the position, the capture sinks a
+ *            `node()` opens and closes, the error sink's contents. Those stay
+ *            exactly where they are; resolving them early would be wrong, not
+ *            fast.
+ *
+ * So `_cstBuf`, `_fields`, `_errors` and the other SINKS are deliberately NOT
+ * on this list: `beginCstNodeCapture` sets and clears them mid-parse, and a
+ * piece has to ask. `trackLines` and `build` are, because they cannot change.
+ *
+ * The cost this prevents is not hypothetical. Each of these reads is a load
+ * plus a branch, and `benchmark.less` executes 497,360 rows — the bytecode
+ * driver it replaces re-tested them on every one.
+ * ================================================================== */
+{
+  /**
+   * Fields fixed for the life of a parse. A read of one of these inside a piece
+   * is the violation; a read at ASSEMBLY time (outside any piece) is the
+   * intended resolution and is not reported.
+   */
+  const CONFIG_FIELDS = new Set(['trackLines', 'build'])
+  const ASSEMBLER = 'src/table/assemble.ts'
+  const entry = parsed.get(ASSEMBLER)
+  if (entry) {
+    const { ast, lineAt } = entry
+    // A PIECE is a function whose parameter list is the piece signature —
+    // `(input, pos, ctx)` — since that is what `lower` returns and what the
+    // assembled graph calls. Matching on the signature rather than on position
+    // inside `lower` keeps the rule decidable without dataflow, and it also
+    // catches a piece factored out to a helper.
+    const isPiece = (n) => {
+      if (n.type !== 'ArrowFunctionExpression' && n.type !== 'FunctionExpression') return false
+      const p = n.params
+      if (!p || p.length !== 3) return false
+      const names = p.map((x) => (x.type === 'Identifier' ? x.name : null))
+      return names[2] === 'ctx' && (names[0] === 'input' || names[0] === '_input')
+    }
+    /** Report every config read anywhere under `node`. */
+    const scan = (node, pieceLine) => {
+      walkScoped(node, (n) => {
+        if (n.type !== 'StaticMemberExpression' && n.type !== 'MemberExpression') return
+        if (n.computed) return
+        if (!isId(unwrap(n.object), 'ctx')) return
+        const f = n.property?.name
+        if (!CONFIG_FIELDS.has(f)) return
+        report('INV-6', ASSEMBLER, lineAt(n.start),
+          `piece body (opened at line ${pieceLine}) reads the per-parse config field \`ctx.${f}\` — that decision belongs to assembly, which should SELECT a piece rather than emit one that tests; see RunCfg`,
+          `INV-6:${ASSEMBLER}:${f}:${pieceLine}`)
+      })
+    }
+    walkScoped(ast, (n) => { if (isPiece(n)) scan(n.body, lineAt(n.start)) })
   }
 }
 

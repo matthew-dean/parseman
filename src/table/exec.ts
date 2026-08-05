@@ -4,7 +4,6 @@ import { buildFieldMap } from '../compiler/fields.ts'
 import { asciiFoldKey, matchesDispatchMatcher } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
-import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import type { DispatchMatcherKind } from '../types.ts'
@@ -20,6 +19,7 @@ import {
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
+import { stampRuleMap } from './stamp.ts'
 import {
   expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
@@ -1192,69 +1192,23 @@ export function tableRules(
   const t = resolveTable(prog)
   const scan = opts.leafSwap === false ? t.triviaScan.map(() => null) : t.triviaScan
   const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog)
-  const out: Record<string, TableRule> = {}
-  // `run()` reads trivia metadata off the ENTRY and takes its
-  // `typeof r === 'function'` branch for compiled entries, which codegen stamps
-  // with `_meta`. A table entry is a function too, so it must be stamped or
-  // `run({ rootTrivia })` rejects a grammar that plainly has labelled trivia.
-  const meta = prog.labels === undefined && prog.classified !== 1
-    ? undefined
-    : {
-        ...(prog.labels === undefined ? {} : { triviaKindLabels: prog.labels }),
-        ...(prog.classified === 1 ? { rootTriviaClassified: true as const } : {}),
-      }
-  // Chosen ONCE, from table data, at rule-map construction. Not a per-parse
-  // branch on an option: a plain table never has this wrapper at all.
-  const lines = prog.lines === 1
   const names = Object.keys(prog.rules)
-  for (let ri = 0; ri < names.length; ri++) {
-    const name = names[ri]!
-    const entry = prog.rules[name]!
-    // Ambient scanSkip, which `run()` cannot install for a function entry. Chosen
-    // PER RULE, from `scanSkipOf`, because that is what `run()` does — it reads
-    // the ENTRY rule's own `_meta.grammarScanSkip` (grammar.ts:203). Installing
-    // one program-wide set instead gave a `composeLeaf` piece's rules a skip list
-    // the interpreter never gives them, and the divergence is invisible: the parse
-    // succeeds, having skipped over a delimiter it should have stopped at.
-    const ownSkip = d.scanSkip[prog.scanSkipOf?.[ri] ?? -1]
-    const entryFn = (input: string, pos: number, ctx: ParseContext): ParseResult<unknown> => {
-      if (ownSkip !== undefined && ctx.scanSkip === undefined) {
-        ctx.scanSkip = ownSkip as ParseContext['scanSkip']
-      }
-      ctx._fe = -1
-      ctx._fx = EMPTY_FX
-      // `_fc` is a SPECULATION-LOCAL bit: every reader writes `false` immediately
-      // before the `exec` it guards, so a stale `true` cannot currently be read.
-      // It is cleared here anyway because the invariant belongs at the boundary,
-      // not in the discipline of six call sites — a seventh reader added without
-      // its paired write would otherwise inherit a committed failure from a
-      // PREVIOUS parse on the same reused `ctx`, and read as "the cut fired".
-      ctx._fc = false
+  const entries = names.map(n => prog.rules[n]!)
+  let last: unknown
+  return stampRuleMap(prog, {
+    runRule: (ri, input, pos, ctx) => {
       d.begin(ctx)
-      if (lines && ctx._lineStarts === undefined) { ctx._lineStarts = [0]; ctx._lineScannedTo = 0 }
-      const v = d.exec(entry, input, pos, ctx)
-      if (v === FAIL) {
-        const fe = ctx._fe
-        const at = fe === undefined || fe < 0 ? pos : fe
-        return { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: { start: at, end: at } }
-      }
-      return { ok: true, value: v, span: { start: pos, end: d.end() } }
-    }
-    out[name] = meta === undefined ? entryFn : Object.assign(entryFn, { _meta: meta })
-  }
-  // STAMP THE HOST MODE. `run()` reads it off the entry through
-  // `FUSED_HOST_MODE` and `assertHostModeCompatible` throws when a 'cst'
-  // artifact runs without a CST host. Encoding with `hostMode: 'cst'` set the
-  // capture flags but nothing stamped the mode, so such a table returned the
-  // grammar's own AST objects with `ok: true` while paying full CST capture —
-  // the compiled engine throws on that input. This is the guard half.
-  const mode = prog.hostMode ?? 'ast'
-  const elided = mode === 'ast'
-  for (const name of Object.keys(out)) {
-    Object.defineProperty(out[name]!, FUSED_HOST_MODE, { value: mode, enumerable: false })
-    Object.defineProperty(out[name]!, FUSED_HOST_ELIDED, { value: elided, enumerable: false })
-  }
-  Object.defineProperty(out, FUSED_HOST_MODE, { value: mode, enumerable: false })
-  Object.defineProperty(out, FUSED_HOST_ELIDED, { value: elided, enumerable: false })
-  return out
+      const v = d.exec(entries[ri]!, input, pos, ctx)
+      if (v === FAIL) return -1
+      last = v
+      return d.end()
+    },
+    lastValue: () => last,
+    // Chosen PER RULE, from `scanSkipOf`: `run()` reads the ENTRY rule's own
+    // `_meta.grammarScanSkip` (grammar.ts:203), and installing one program-wide
+    // set instead gave a `composeLeaf` piece's rules a skip list the interpreter
+    // never gives them — a divergence that is invisible, because the parse
+    // succeeds having skipped over a delimiter it should have stopped at.
+    scanSkipFor: ri => d.scanSkip[prog.scanSkipOf?.[ri] ?? -1],
+  })
 }
