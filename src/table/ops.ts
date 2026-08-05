@@ -297,6 +297,31 @@ export const OP_GREEDY = 34
  */
 export const OP_REJECT = 35
 /**
+ * `ARMGATE f c e` — one choice arm plus its PER-ARM state gate,
+ * `choice({ gate, combinator })`. `f` indexes the predicate in `prog.fns`, `c` is
+ * the arm's offset, and `e` is the arm's own expected set.
+ *
+ * NOT `OP_GUARD`, and the difference is the entire reason the option exists.
+ * `gate()` is a zero-width TERM whose first set is `any`, so leading an arm with
+ * one replaces that arm's first set and collapses the whole choice from O(1)
+ * first-char dispatch to the ordered `firstMatch` loop (docs/guide/
+ * first-char-gating.md lists that as a known gating defect). This row wraps the
+ * arm INSTEAD of sitting inside it, so the encoder still reads the arm's own
+ * first set for `disp` and the site keeps its dispatch slot.
+ *
+ * A blocked arm is SKIPPED, not failed — `choice.ts:150` is `continue`. The row
+ * therefore clears `_fc` on the gate-false path exactly as `OP_REJECT` does:
+ * "pretend this arm was never entered", so no cut it might have raised survives
+ * to cut the choice. It still reports `e`, because the OTHER path a blocked arm
+ * can be reached by is first-char dispatch, where skip-and-retry and
+ * fail-the-choice are the same thing (choice.ts:23-34, :100-105) and the
+ * interpreter answers with `deriveExpected(arm)` — this set.
+ *
+ * The predicate is a live function, like `OP_GUARD`'s, so a grammar using one is
+ * runtime-only for `emitTableModule` unless `fnSources` are supplied.
+ */
+export const OP_ARMGATE = 36
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -325,5 +350,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
   [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX', [OP_GUARD]: 'GUARD',
   [OP_ADJ]: 'ADJ',
-  [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT',
+  [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT', [OP_ARMGATE]: 'ARMGATE',
 }

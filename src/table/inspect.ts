@@ -3,7 +3,7 @@ import {
   OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCOPE, OP_SEQ, OP_SEQV, OP_XFORM, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
-  OP_SCOPE_CAP, OP_WITHCTX, OP_GUARD, OP_ADJ, OP_GREEDY, OP_REJECT,
+  OP_SCOPE_CAP, OP_WITHCTX, OP_GUARD, OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
 } from './ops.ts'
 import type { TableProgram } from './program.ts'
 
@@ -65,8 +65,6 @@ export function reachableIps(prog: TableProgram): Set<number> {
         for (let i = 0; i < n; i++) stack.push(code[ip + 4 + i]!)
         break
       }
-      case OP_GUARD:
-        break
       case OP_GREEDY: {
         stack.push(code[ip + 1]!)
         const n = code[ip + 2]!
@@ -75,6 +73,10 @@ export function reachableIps(prog: TableProgram): Set<number> {
       }
       case OP_REJECT:
         stack.push(code[ip + 1]!)
+        break
+      // `OP_ARMGATE` carries its gated arm at `ip + 2`, like the other wrappers.
+      case OP_ARMGATE:
+        stack.push(code[ip + 2]!)
         break
       case OP_ROUTED:
         if (code[ip + 1]! >= 0) stack.push(code[ip + 1]!)
