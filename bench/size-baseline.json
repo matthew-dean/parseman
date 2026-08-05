@@ -1,6 +1,6 @@
 {
   "updatedAt": "2026-08-05",
-  "gitRev": "c398044",
+  "gitRev": "f4d2099",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
@@ -77,32 +77,28 @@
       "locMultiplier": 0.459
     },
     "probe/compose-depth-1": {
-      "genBytes": 22378,
-      "gzipBytes": 4325,
-      "bytesRatio": 20.797,
-      "locMultiplier": 27.375,
-      "overCeiling": true
+      "genBytes": 2162,
+      "gzipBytes": 945,
+      "bytesRatio": 2.009,
+      "locMultiplier": 1.125
     },
     "probe/compose-depth-2": {
-      "genBytes": 24964,
-      "gzipBytes": 4418,
-      "bytesRatio": 16.316,
-      "locMultiplier": 21.391,
-      "overCeiling": true
+      "genBytes": 2291,
+      "gzipBytes": 985,
+      "bytesRatio": 1.497,
+      "locMultiplier": 0.783
     },
     "probe/compose-depth-3": {
-      "genBytes": 27544,
-      "gzipBytes": 4511,
-      "bytesRatio": 13.883,
-      "locMultiplier": 18.2,
-      "overCeiling": true
+      "genBytes": 2414,
+      "gzipBytes": 1017,
+      "bytesRatio": 1.217,
+      "locMultiplier": 0.6
     },
     "probe/compose-leaf": {
-      "genBytes": 15223,
-      "gzipBytes": 3153,
-      "bytesRatio": 19.617,
-      "locMultiplier": 23.071,
-      "overCeiling": true
+      "genBytes": 1477,
+      "gzipBytes": 686,
+      "bytesRatio": 1.903,
+      "locMultiplier": 1.286
     },
     "probe/trivia-on": {
       "genBytes": 2292,
@@ -129,32 +125,28 @@
       "locMultiplier": 1.889
     },
     "probe/variant": {
-      "genBytes": 20942,
-      "gzipBytes": 4159,
-      "bytesRatio": 20.817,
-      "locMultiplier": 27.533,
-      "overCeiling": true
+      "genBytes": 1969,
+      "gzipBytes": 887,
+      "bytesRatio": 1.957,
+      "locMultiplier": 1.2
     },
     "probe/variants-1": {
-      "genBytes": 19218,
-      "gzipBytes": 3740,
-      "bytesRatio": 22.879,
-      "locMultiplier": 25.2,
-      "overCeiling": true
+      "genBytes": 1730,
+      "gzipBytes": 789,
+      "bytesRatio": 2.06,
+      "locMultiplier": 1.933
     },
     "probe/variants-2": {
-      "genBytes": 29868,
-      "gzipBytes": 4328,
-      "bytesRatio": 29.168,
-      "locMultiplier": 30.778,
-      "overCeiling": true
+      "genBytes": 2994,
+      "gzipBytes": 846,
+      "bytesRatio": 2.924,
+      "locMultiplier": 2.333
     },
     "probe/variants-4": {
-      "genBytes": 50751,
-      "gzipBytes": 5523,
-      "bytesRatio": 36.045,
-      "locMultiplier": 37.542,
-      "overCeiling": true
+      "genBytes": 5518,
+      "gzipBytes": 912,
+      "bytesRatio": 3.919,
+      "locMultiplier": 2.792
     }
   }
 }
