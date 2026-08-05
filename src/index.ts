@@ -33,7 +33,7 @@ export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
 export { token, leaf } from './combinators/token.ts'
 
-export { compile } from './compiler/codegen.ts'
+export { compileTable as compile } from './table/compile.ts'
 export type { CompiledParser, LinkablePieces, DuplicationOption, HostMode } from './compiler/codegen.ts'
 /**
  * `linkable()` produces TABLES too — the table counterpart of `compileLinkable`.

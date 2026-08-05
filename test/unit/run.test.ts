@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { rules, regex, many, choice, parser, trivia, classifiedTrivia, node, sequence, literal, compile, run, label, oneOrMore } from '../../src/index.ts'
+import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
 
 const blockTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))
 const lineTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//), regex(/\/\/[^\n]*/))))
@@ -67,26 +68,34 @@ describe('run() — generic grammar-entry driver', () => {
     expect(result.rootTrivia?.index.gapBefore(8)?.text(input)).toBe(' /*x*/ ')
   })
 
-  it('does not fill CST trivia buffers for non-node root trivia logging', () => {
+  it('SOURCE LOWERING does not fill CST trivia buffers for non-node root trivia logging', () => {
+    // A CODEGEN-SHAPE ASSERTION, and it is the ONE engine that behaves this way.
+    // Codegen decides at compile time that a root with no `node()` cannot want a
+    // CST trivia log and emits a scan that fills `_triviaLog` alone. The
+    // interpreter and the table both go through the SHARED `advanceTrivia`
+    // (`trivia-skip.ts:133`), whose condition is `captureTrivia && (_cstBuf ||
+    // _cstTriviaLog)` — a caller that supplies the buffer AND asks for capture
+    // gets it filled, node or no node. So this names codegen, and the parity
+    // assertion below is the one that would catch a table regression.
     const rw = trivia(regex(/[ \t]+/))
     const root = parser({ trivia: rw }, sequence(literal('a'), literal('b')))
-    const compiled = compile(root)
-    const triviaLog: number[] = []
-    const cstTriviaLog: number[] = []
-    const rawChildren: unknown[] = []
+    const sinks = () => ({ _triviaLog: [] as number[], _cstTriviaLog: [] as number[], _cstRawChildren: [] as unknown[] })
 
-    const result = compiled.parseWithContext('a b', {
-      trackLines: false,
-      _triviaLog: triviaLog,
-      _cstTriviaLog: cstTriviaLog,
-      _cstRawChildren: rawChildren,
-      captureTrivia: true,
-    }, 0)
-
+    const cg = sinks()
+    const result = compileCodegen(root).parseWithContext('a b', { trackLines: false, ...cg, captureTrivia: true }, 0)
     expect(result.ok).toBe(true)
-    expect(triviaLog).toEqual([1, 2])
-    expect(cstTriviaLog).toEqual([])
-    expect(rawChildren).toEqual([])
+    expect(cg._triviaLog).toEqual([1, 2])
+    expect(cg._cstTriviaLog).toEqual([])
+    expect(cg._cstRawChildren).toEqual([])
+
+    // Interpreter and table agree with each other, which is the contract that
+    // matters for the shipped lowering.
+    const int = sinks()
+    root.parse('a b', 0, { trackLines: false, ...int, captureTrivia: true } as never)
+    const tab = sinks()
+    compile(root).parseWithContext('a b', { trackLines: false, ...tab, captureTrivia: true }, 0)
+    expect(tab).toEqual(int)
+    expect(tab._cstRawChildren).toEqual([])
   })
 
   it('reports leftover at the first non-trivia offset', () => {
