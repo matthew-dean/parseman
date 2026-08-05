@@ -7,7 +7,8 @@ import { emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
-import { many, node, regex, rules } from '../../src/index.ts'
+import { literal, many, node, oneOrMore, oneOrMoreSep, regex, rules, sepBy } from '../../src/index.ts'
+import { csvParser } from '../../examples/csv/parser.ts'
 import type { Combinator } from '../../src/types.ts'
 
 /**
@@ -642,5 +643,80 @@ describe('table lowering — three-way identity across every encodable grammar',
     const f = run(forbid as never, 'a,b,')
     expect(f.unconsumedFrom).toBe(run(forbidSep.Doc! as never, 'a,b,').unconsumedFrom)
     expect(f.unconsumedFrom).toBe(3)
+  })
+
+  /**
+   * A NULLABLE repetition ITEM — the one shape the 2,833-file corpus sweep never
+   * contained, and the only known case where the table was the odd engine out. It
+   * was found in parseman's own `examples/csv`, whose unquoted field is
+   * a regex matching a possibly-empty run of non-comma, non-newline characters:
+   * an empty CSV line is ONE empty field, not zero fields.
+   *
+   * `repItem`'s zero-width stop is a TERMINATION device — a `many` loop whose only
+   * source of progress is the item spins forever without it. The driver applied it
+   * to every item, including the ones `repItem` never parses: `oneOrMore`/`atLeast`
+   * parse the mandatory first item themselves (repeat.ts:203) and `sepBy` parses
+   * BOTH its first (:412) and every post-separator item (:481) itself, because a
+   * separated list is advanced by its SEPARATOR and needs no such stop. The result
+   * was a table that returned `[]` for `sepBy` over `",a"` having consumed NOTHING
+   * — a wrong tree that dropped real input, with no error.
+   *
+   * Pinned as the ENGINE-AGREEMENT it is, plus the literal values, so neither a
+   * table regression nor a silent move in the two shipped engines can pass.
+   */
+  it('a NULLABLE repetition item: all three engines agree, and count a zero-width item', () => {
+    const Field = regex(/[^,]*/)
+    const shapes = {
+      Many: many(Field),
+      More: oneOrMore(Field),
+      Sep: sepBy(Field, literal(',')),
+      SepMin: oneOrMoreSep(Field, literal(',')),
+      SepTrail: sepBy(Field, literal(','), { trailing: 'allow' }),
+    } as unknown as Record<string, Combinator<unknown>>
+
+    const r = checkIdentity(shapes, 'Sep', [
+      { name: 'empty', input: '' },
+      { name: 'bare-sep', input: ',' },
+      { name: 'two-seps', input: ',,' },
+      { name: 'trailing-empty', input: 'a,' },
+      { name: 'leading-empty', input: ',a' },
+      { name: 'plain', input: 'a,b' },
+    ])
+    expect(r.mismatches).toEqual([])
+    expect(r.matched).toBe(r.total)
+
+    const tbl = tableRules(encodeTable(shapes))
+    const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
+    // A SEPARATED list counts items as separators + 1, zero-width or not — the
+    // `,a` row is the one no reading of `(item (sep item)*)?` can call `[]`.
+    expect(val('Sep', '')).toEqual([''])
+    expect(val('Sep', ',')).toEqual(['', ''])
+    expect(val('Sep', ',a')).toEqual(['', 'a'])
+    expect(val('Sep', 'a,')).toEqual(['a', ''])
+    expect(val('SepMin', '')).toEqual([''])
+    expect(val('SepTrail', 'a,')).toEqual(['a', ''])
+    // `many` is the one that genuinely must stop: its loop has no other source of
+    // progress, so a zero-width item ends the list and yields NO item.
+    expect(val('Many', '')).toEqual([])
+    expect(val('Many', ',a')).toEqual([])
+    // …and the mandatory first item is not subject to that stop, in all three.
+    expect(val('More', '')).toEqual([''])
+    expect(val('More', ',a')).toEqual([''])
+  })
+
+  it('the csv example drops its trailing empty row on all three engines', () => {
+    // The defect's real-world face: `row` is `sepBy(field, comma)` over a nullable
+    // field, and the grammar's drop-trailing-empty-row transform tests for exactly
+    // `['']`. Under the table's `[]` it never fired, so a 4-row fixture parsed as
+    // 5 — a wrong tree, no error, invisible to every assertion but this one.
+    const map = { CSV: csvParser } as unknown as Record<string, Combinator<unknown>>
+    const r = checkIdentity(map, 'CSV', [
+      { name: 'trailing-newline', input: 'a,b\n1,2\n3,4\n5,6\n' },
+      { name: 'no-trailing-newline', input: 'a,b\n1,2' },
+      { name: 'empty-fields', input: 'a,,b\n,,\n' },
+    ])
+    expect(r.mismatches).toEqual([])
+    expect(run(tableRules(encodeTable(map)).CSV! as never, 'a,b\n1,2\n3,4\n5,6\n').value)
+      .toEqual([['a', 'b'], ['1', '2'], ['3', '4'], ['5', '6']])
   })
 })

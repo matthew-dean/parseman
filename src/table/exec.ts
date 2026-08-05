@@ -746,6 +746,14 @@ function makeDriver(
         let count = 0
         for (;;) {
           if (max >= 0 && count >= max) break
+          // A SEPARATED list is bounded by its SEPARATOR, so it stops at EOF at the
+          // LOOP HEAD — `while (cur < input.length)` at repeat.ts's sepBy loop. The
+          // `repItem` early-out below sits after the separator, a different
+          // position, and standing in for this one dropped the item following a
+          // final separator. Held to `count >= min`: a list still short of `min`
+          // must attempt the separator so its failure sets the expected set, which
+          // is the only thing an under-`min` list has to report.
+          if (sep >= 0 && count > 0 && count >= min && cur >= input.length) break
           // One mark pair for the whole loop when a rollback is even possible,
           // refreshed per iteration rather than reallocated.
           // SCALAR MARKS. This loop took TWO allocations per item (a CST mark and
@@ -762,6 +770,15 @@ function makeDriver(
           const mRoot = needMark ? ctx._rootTriviaLog?.length ?? 0 : 0
           let itemStart = cur
           let sepEnd = -1
+          // WHICH ITEMS `repItem` ACTUALLY PARSES — the scope of every rule below
+          // that was copied from it. `many` runs ALL its items through `repItem`;
+          // `oneOrMore`/`atLeast` parse the mandatory first at `pos` themselves
+          // (repeat.ts:203) and `sepBy` parses BOTH its first item (:412) and
+          // every post-separator item (:481) itself, so a separated list never
+          // reaches `repItem` at all. The trivia branch below already encodes this
+          // (its `else if` is unreachable for `sep >= 0`); the two guards after it
+          // did not, and applied `repItem`'s rules to items that never run it.
+          const viaRepItem = sep < 0 && (count > 0 || skipBeforeFirst)
           if (sep >= 0 && count > 0) {
             // separator, with trivia on BOTH sides — mirrors repeat.ts's sepBy loop
             const leavesBefore = cstLeavesLen(ctx)
@@ -791,7 +808,7 @@ function makeDriver(
           // This is `repItem`'s early-out, so it applies only where `repItem`
           // runs — never to a mandatory first item, which both other engines
           // attempt at `pos` whatever is there.
-          if (itemStart >= input.length && (count > 0 || skipBeforeFirst)) {
+          if (itemStart >= input.length && viaRepItem) {
             if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             // A trailing separator at EOF is the COMMON case for
             // `trailing: 'allow'` (`a,b,`), and this early-out ran before the
@@ -812,8 +829,15 @@ function makeDriver(
             if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
           }
-          if (END === itemStart) {
-            // Zero-width item: it cannot make progress, so stop without taking it.
+          if (END === itemStart && viaRepItem) {
+            // Zero-width item: `repItem`'s stop, and a TERMINATION device, not a
+            // semantic filter — a `many` loop whose only source of progress is the
+            // item itself spins forever without it. That pressure does not exist
+            // for a mandatory item (parsed once) or for a separated list (the
+            // SEPARATOR advances the loop), and both shipped engines accordingly
+            // take a zero-width item there: `sepBy(nullable, ',')` over `",a"` is
+            // `["", "a"]`. Applying the stop to them made the table return `[]`
+            // having consumed NOTHING, silently dropping real input.
             if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             break
           }
