@@ -214,6 +214,61 @@ export const OP_WITHCTX = 31
  */
 export const OP_GUARD = 32
 /**
+ * `GREEDY sup n w1 a1 … wn an` — `choice(strategy = greedyClassify)`.
+ *
+ * NOT a choice. `choice()` auto-selects this strategy (choice.ts:186-202) for the
+ * canonical identifier-vs-keyword shape — ONE regex arm that subsumes every other
+ * arm, all of which are literals — and it runs a DIFFERENT execution, not a
+ * different arm order: the regex arm runs, and then the match is RE-ATTRIBUTED by
+ * string equality to a literal arm, whose transform chain is what produces the
+ * value (choice.ts:124-136). Encoding it as an ordered `OP_CHOICE` would let the
+ * regex arm win every time; the parse would still succeed and only the VALUE and
+ * the tree would move. So it gets its own row.
+ *
+ * `sup` is the super arm's offset, `n` the number of classified literals, and
+ * each pair is `(const-pool index of the literal string, that arm's offset)`.
+ *
+ * The literal arm is RE-RUN at `pos` rather than having its transform chain
+ * applied to a known value, and the two are the same thing here: the classified
+ * word IS the arm's literal, so `literal()` re-matches at `pos` over exactly
+ * `[pos, END)` and every transform then sees the same `(value, span)` pair the
+ * interpreter's `applyTransforms` passes. `getCoreLiteralValue` admits only a
+ * case-SENSITIVE literal under `transform` wrappers, so the re-run cannot fail
+ * and cannot land at a different end. What it does do is push a SECOND CST leaf,
+ * which is why the capture sinks are rolled back to the pre-`sup` mark first —
+ * leaving exactly one leaf, with the same text and span the interpreter's kept
+ * regex leaf has.
+ *
+ * On a failed `sup` the failure propagates VERBATIM (the regex's own expected
+ * set), not the union of the arms — choice.ts:126 returns `superResult` itself,
+ * and codegen's `emitGreedyClassify` reports `deriveExpected(superParser)`.
+ */
+export const OP_GREEDY = 33
+/**
+ * `REJECT c n t1 o1 … tn on` — one choice arm plus its `autoNot` checks.
+ *
+ * `autoNot` is the OTHER thing `choice()` computes on its own (choice.ts:55,
+ * 325-346): for a literal arm, the inline lookahead that a LATER arm — a longer
+ * literal with this one as a prefix, or a regex that subsumes it — would have
+ * consumed more. It runs AFTER the arm has already succeeded and can still
+ * reject it, so a matched arm loses and a later arm wins (choice.ts:160-164).
+ * Ignoring it lowers `if` out of `iffy` and the parse still succeeds.
+ *
+ * `c` is the arm's offset; each check is a pair `(kind, operand)` — kind 0 is
+ * `startsWith`, operand a const-pool string; kind 1 is `firstSet`, operand a
+ * char-class index. Both are tested at the arm's END, mirroring `autoNotFires`.
+ *
+ * Rejection returns `FAIL` and CLEARS `_fc`, because the interpreter's rejection
+ * is a `continue` — "pretend this arm was never entered" — whereas an ordinary
+ * failing arm's committed flag cuts the whole choice. The enclosing choice does
+ * the capture-sink rollback, exactly as it does for a failing arm.
+ *
+ * A site with any `autoNot` can never take the O(1) first-char dispatch: a check
+ * exists only when a later arm shares the arm's leading character, so those two
+ * arms' classes intersect and `resolveDispatch` reports the site non-exclusive.
+ */
+export const OP_REJECT = 34
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -241,4 +296,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_SCAN]: 'SCAN',
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
   [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP', [OP_WITHCTX]: 'WITHCTX', [OP_GUARD]: 'GUARD',
+  [OP_GREEDY]: 'GREEDY', [OP_REJECT]: 'REJECT',
 }

@@ -5,7 +5,8 @@ import { encodeTable, UnsupportedConstruct } from '../../src/table/encode.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
 import { tableRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
-import { compose } from '../../src/compiler/linker.ts'
+import { compose, cstBuildHost } from '../../src/compiler/linker.ts'
+import { checkIdentity } from '../../bench/table-lowering-identity.ts'
 import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, selectNodes } from '../../bench/table-grammars.ts'
 import {
   balanced, choice, keywords, literal, many, node, optional, parser, peek, regex, rules,
@@ -45,16 +46,119 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     expect(() => encodeTable(wrap(transform(literal('a'), v => v) as Combinator<unknown>))).not.toThrow()
   })
 
-  it('choice(greedyClassify) — one arm runs and ANOTHER arm is credited', () => {
-    // Auto-detected: one regex arm that subsumes every literal arm. It runs the
-    // regex and then re-attributes the match by string equality, re-applying a
-    // different arm's transforms. Ordered choice is a different execution, not a
-    // different order, so it is refused rather than approximated.
-    const g = wrap(choice(regex(/[a-z]+/), literal('if')) as Combinator<unknown>)
+  it('choice(greedyClassify) lowers, and the LITERAL arm is the one credited', () => {
+    // Auto-detected (choice.ts:186-202): one regex arm that subsumes every other
+    // arm, all of which are literals. It runs the regex ONCE and re-attributes
+    // the match by string equality, running a DIFFERENT arm's transform chain —
+    // so this is not an arm ordering, and `OP_CHOICE` cannot express it.
+    //
+    // THE ARMS PRODUCE DIFFERENT VALUES ON PURPOSE. A greedyClassify test whose
+    // arms agree proves nothing: an ordered-choice lowering runs the regex arm
+    // first and succeeds, and every assertion still passes. Here the regex arm
+    // tags `ident` and the literal arm tags `KEYWORD`, so crediting the wrong
+    // arm is visible in the value.
+    const g = wrap(choice(
+      transform(regex(/[a-z]+/), w => ({ kind: 'ident', w })),
+      transform(literal('if'), w => ({ kind: 'KEYWORD', w })),
+    ) as Combinator<unknown>)
     expect((g.Doc!._def as { strategy?: { tag: string } }).strategy?.tag).toBe('greedyClassify')
-    throws(g, /greedyClassify/)
-    // Control: the same arms with no subsumption lower fine.
-    expect(() => encodeTable(wrap(choice(regex(/[0-9]+/), literal('if')) as Combinator<unknown>))).not.toThrow()
+
+    const r = checkIdentity(g, 'Doc', [
+      { name: 'classified', input: 'if' },
+      { name: 'regex-wins-longer', input: 'ifx' },
+      { name: 'regex-wins-other', input: 'zz' },
+      { name: 'no-match', input: '1' },
+    ])
+    expect(r.mismatches).toEqual([])
+    expect(r.matched).toBe(r.total)
+
+    // ARM ATTRIBUTION, stated directly. The regex arm MATCHES 'if' — it is what
+    // produced the span — and the literal arm is credited anyway, with its own
+    // transform running. An ordered `choice` would answer `ident` here.
+    const t = tableRules(encodeTable(g)).Doc!
+    expect(run(t as never, 'if').value).toEqual({ kind: 'KEYWORD', w: 'if' })
+    expect(run(g.Doc! as never, 'if').value).toEqual({ kind: 'KEYWORD', w: 'if' })
+    // One char more and attribution moves back to the regex arm.
+    expect(run(t as never, 'ifx').value).toEqual({ kind: 'ident', w: 'ifx' })
+    // The super arm's failure propagates VERBATIM — the regex's own expected
+    // set, not the union of the arms (choice.ts:126).
+    expect(run(t as never, '1').expected).toEqual(run(g.Doc! as never, '1').expected)
+    expect(run(t as never, '1').expected).toEqual(['/[a-z]+/'])
+  })
+
+  it('greedyClassify contributes ONE cst leaf, whichever arm is credited', () => {
+    // The interpreter keeps the leaf the regex arm pushed and merely relabels the
+    // VALUE; the table rolls the capture sinks back to the pre-super mark and lets
+    // the credited literal arm push its own. Both are one leaf with the same text
+    // and span — but only because the classified word IS the arm's literal, so it
+    // is asserted rather than assumed. A lowering that skipped the rollback would
+    // emit two.
+    const g: Record<string, Combinator<unknown>> = {
+      Doc: node('Doc', choice(
+        transform(regex(/[a-z]+/), w => ({ kind: 'ident', w })),
+        transform(literal('if'), w => ({ kind: 'KEYWORD', w })),
+      ), () => ({ t: 'Doc' })) as Combinator<unknown>,
+    }
+    const t = tableRules(encodeTable(g, { hostMode: 'cst' })).Doc!
+    for (const src of ['if', 'ifx']) {
+      const a = run(t as never, src, { build: cstBuildHost({ tags: true }) as never })
+      const b = run(g.Doc! as never, src, { build: cstBuildHost({ tags: true }) as never })
+      expect(a.ok, src).toBe(true)
+      expect(a.value, src).toEqual(b.value)
+      expect((a.value as { children: unknown[] }).children, src).toHaveLength(1)
+    }
+  })
+
+  it('choice(autoNot) lowers: an arm that MATCHED is rejected and a later arm wins', () => {
+    // `autoNot` is computed inside `choice()` (choice.ts:55, 325-346) for a
+    // literal arm whenever a LATER arm would have consumed more — a longer
+    // literal with this one as a prefix (`startsWith`), or a regex that subsumes
+    // it (`firstSet` over the continuation chars). Both kinds run AFTER the arm
+    // has succeeded and can still reject it.
+    //
+    // Both kinds are covered, because they lower to different operands. The
+    // third arm in each shape exists only to keep the site off
+    // `literalsLongestFirst` / `greedyClassify`, which are different executions.
+    const startsWith = wrap(choice(
+      transform(literal('if'), () => 'IF'),
+      transform(literal('iffy'), () => 'IFFY'),
+      transform(sequence(literal('z'), literal('z')), () => 'ZZ'),
+    ) as Combinator<unknown>)
+    const firstSet = wrap(choice(
+      transform(literal('if'), () => 'IF'),
+      transform(regex(/[a-z]+/), w => `ID:${String(w)}`),
+      transform(regex(/[0-9]+/), w => `NUM:${String(w)}`),
+    ) as Combinator<unknown>)
+
+    type Def = { strategy?: { tag: string }; autoNot?: (unknown[] | null)[] }
+    expect((startsWith.Doc!._def as Def).strategy?.tag).toBe('firstMatch')
+    expect((startsWith.Doc!._def as Def).autoNot![0]).toEqual([{ kind: 'startsWith', value: 'fy' }])
+    expect((firstSet.Doc!._def as Def).strategy?.tag).toBe('firstMatch')
+    expect((firstSet.Doc!._def as Def).autoNot![0]).toEqual(
+      [{ kind: 'firstSet', set: { kind: 'ranges', ranges: [{ lo: 97, hi: 122 }] } }],
+    )
+
+    const cases = ['if', 'iff', 'iffy', 'ifx', 'zz', 'q', '12'].map(input => ({ name: input, input }))
+    for (const [name, g] of [['startsWith', startsWith], ['firstSet', firstSet]] as const) {
+      const r = checkIdentity(g, 'Doc', cases)
+      expect(r.mismatches, name).toEqual([])
+      expect(r.matched, name).toBe(r.total)
+    }
+
+    // POST-SUCCESS REJECTION, stated directly. `literal('if')` MATCHES the first
+    // two chars of 'iffy' in both shapes — it is arm zero and it succeeded — and
+    // the check fires at its end, so a LATER arm is what the choice returns.
+    // Ignoring `autoNot` answers 'IF' to all four of these.
+    const ts = tableRules(encodeTable(startsWith)).Doc!
+    const tf = tableRules(encodeTable(firstSet)).Doc!
+    expect(run(ts as never, 'iffy').value).toBe('IFFY')
+    expect(run(tf as never, 'iffy').value).toBe('ID:iffy')
+    expect(run(tf as never, 'ifx').value).toBe('ID:ifx')
+    // And the check is a LOOKAHEAD, not a blanket veto: with nothing that a later
+    // arm could extend into, the arm keeps its win.
+    expect(run(ts as never, 'iff').value).toBe('IF')
+    expect(run(ts as never, 'if').value).toBe('IF')
+    expect(run(tf as never, 'if').value).toBe('IF')
   })
 
   it('choice(gate:) — a per-arm state predicate is a condition with no row', () => {

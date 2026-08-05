@@ -1,5 +1,6 @@
-import type { Combinator, FirstSet, ParserDef } from '../types.ts'
+import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
 import { firstSetOf, matchesEmpty } from '../combinators/first-set.ts'
+import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
 import { buildReadsState, buildReadsTrivia } from '../compiler/build-arity.ts'
 import { buildReadsFields, parserHasOwnFields } from '../compiler/fields.ts'
@@ -9,6 +10,7 @@ import {
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
+  OP_GREEDY, OP_REJECT,
 } from './ops.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
@@ -143,6 +145,29 @@ class Encoder {
     this.cc.push(spec)
     this.ccIndex.set(spec, i)
     return i
+  }
+
+  /**
+   * Wrap one choice arm in its `autoNot` checks (`OP_REJECT`).
+   *
+   * A `firstSet` check's class comes from `codesToFirstSet` (choice.ts), which
+   * only ever builds a non-empty `ranges` set over codes 1..127 — so `charClass`
+   * cannot answer −1 here. It is asserted rather than assumed, because a −1 would
+   * index past `cc` and silently stop rejecting.
+   */
+  private reject(child: number, checks: readonly AutoNotCheck[]): number {
+    const ops: number[] = []
+    for (const c of checks) {
+      if (c.kind === 'startsWith') { ops.push(0, this.constant(c.value)); continue }
+      const cls = this.charClass(c.set)
+      if (cls < 0) throw new UnsupportedConstruct('choice(autoNot: unmappable first set)')
+      ops.push(1, cls)
+    }
+    const head = this.emitHead(OP_REJECT, 2 + ops.length)
+    this.code[head + 1] = child
+    this.code[head + 2] = ops.length >> 1
+    for (let i = 0; i < ops.length; i++) this.code[head + 3 + i] = ops[i]!
+    return head
   }
 
   private emit(...words: number[]): number {
@@ -313,29 +338,50 @@ class Encoder {
       }
       case 'choice': {
         if (d.gates.some(g => g !== null)) throw new UnsupportedConstruct('choice(gate:)')
-        // Arm ORDER is semantics. `literalsLongestFirst` / `sharedPrefix` /
-        // `greedyClassify` reorder or restructure the arms, so encoding them as
-        // a plain ordered choice would pick a different arm and build a
-        // different tree while still parsing. Refuse them rather than lower them
-        // wrong.
-        // `greedyClassify` runs ONE arm and then re-attributes the match to a
-        // DIFFERENT arm by string equality, re-applying that arm's transforms.
-        // That is a different execution, not a different order, so it is refused
-        // rather than approximated.
-        if (d.strategy.tag === 'greedyClassify') throw new UnsupportedConstruct('choice(strategy=greedyClassify)')
-        // `autoNot` rejects an arm that matched but is followed by a char in a
-        // sibling's first set, so a later arm can win. Ignoring it would pick a
-        // different arm and build a different tree behind a successful parse.
-        if (d.autoNot.some(a => a !== null)) throw new UnsupportedConstruct('choice(autoNot)')
-        // ORDER is the only thing the remaining strategies change, and order is
-        // table data. `literalsLongestFirst` carries its order explicitly;
-        // `sharedPrefix` is documented in choice.ts:52 as a firstMatch
-        // specialization, so declared order is already correct for it.
+        // `greedyClassify` is NOT a choice at all — one arm runs and another arm
+        // is credited — so it gets its own row rather than an arm ordering.
+        if (d.strategy.tag === 'greedyClassify') {
+          const superIndex = d.strategy.superIndex
+          const sup = this.node(d.parsers[superIndex]!).ip
+          // Same construction as `choice()`'s own `greedyLitMap` (choice.ts:64-70):
+          // every NON-super arm that has a core literal value, keyed by that value.
+          // An arm without one is unreachable through classification and is left
+          // to the super arm exactly as the interpreter leaves it.
+          const pairs: number[] = []
+          for (let i = 0; i < d.parsers.length; i++) {
+            if (i === superIndex) continue
+            const lit = getCoreLiteralValue(d.parsers[i]!)
+            if (lit === null) continue
+            pairs.push(this.constant(lit), this.node(d.parsers[i]!).ip)
+          }
+          const head = this.emitHead(OP_GREEDY, 2 + pairs.length)
+          this.code[head + 1] = sup
+          this.code[head + 2] = pairs.length >> 1
+          for (let i = 0; i < pairs.length; i++) this.code[head + 3 + i] = pairs[i]!
+          return head
+        }
+        // Arm ORDER is semantics. `literalsLongestFirst` / `sharedPrefix` reorder
+        // the arms, so encoding them as a declared-order choice would pick a
+        // different arm and build a different tree while still parsing. ORDER is
+        // the only thing they change, though, and order is table data:
+        // `literalsLongestFirst` carries its order explicitly, and `sharedPrefix`
+        // is documented in choice.ts:52 as a firstMatch specialization, so
+        // declared order is already correct for it.
         const order = d.strategy.tag === 'literalsLongestFirst'
           ? d.strategy.sortedIndices
           : d.parsers.map((_, i) => i)
         const arms = order.map(i => d.parsers[i]!)
-        const kids = arms.map(c => this.node(c).ip)
+        // `autoNot` rejects an arm that ALREADY MATCHED when a later arm would
+        // have consumed more, so a matched arm loses. It wraps the arm's row and
+        // does not touch the arm's identity in `memo`: the same combinator used
+        // at a site with no `autoNot` still reaches the bare row.
+        const kids = arms.map((c, k) => {
+          const checks = d.autoNot[order[k]!]
+          const ip = this.node(c).ip
+          return checks === null || checks === undefined || checks.length === 0
+            ? ip
+            : this.reject(ip, checks)
+        })
         // O(1) first-char dispatch is only SOUND when the arms are disjoint.
         // With overlapping first sets, "the first arm whose class contains this
         // char" is not "the first arm that matches": a `Keyword` arm whose first
@@ -665,6 +711,12 @@ class Encoder {
         // rewritten as if they were child slots. It also left the LAST arm
         // uncollapsed, which is the only part of this that was merely slow.
         case OP_CHOICE: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 4 + i)
+        // GREEDY's operands INTERLEAVE a const index with an arm offset, so only
+        // the odd slots are children — rewriting a const-pool index as if it were
+        // a code offset is the same class of bug the OP_CHOICE note above records.
+        case OP_GREEDY: return [ip + 1, ...Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 4 + 2 * i)]
+        // REJECT's check operands are const/class indices, never offsets.
+        case OP_REJECT: return [ip + 1]
         case OP_REP: case OP_REPV: return this.code[ip + 4]! >= 0 ? [ip + 1, ip + 4] : [ip + 1]
         default: return []
       }

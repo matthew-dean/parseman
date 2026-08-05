@@ -86,6 +86,7 @@ import {
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
   OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD,
+  OP_GREEDY, OP_REJECT,
 } from './ops.ts'
 import {
   classHas, expandCompact, resolveTable,
@@ -1128,6 +1129,74 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           }
           ctx._fe = pos; ctx._fx = choiceFx
           return FAIL
+        }
+      }
+
+      /* ── greedyClassify / autoNot ────────────────────────────────────────── */
+
+      case OP_GREEDY: {
+        const sup = link(code[ip + 1]!)
+        const n = code[ip + 2]!
+        // THE CLASSIFICATION MAP, BUILT ONCE. `choice()` builds the same map once
+        // per construction (choice.ts:64-70); nothing about it is per-parse.
+        const byWord = new Map<string, Piece>()
+        for (let i = 0; i < n; i++) byWord.set(k[code[ip + 3 + 2 * i]!] as string, link(code[ip + 4 + 2 * i]!))
+        return (input, pos, ctx) => {
+          const need = rollbackNeeded(ctx)
+          const mRaw = need ? cstRawLen(ctx) : 0
+          const mTl = need ? cstTlLen(ctx) : 0
+          const mLv = need ? cstLeavesLen(ctx) : 0
+          const mFl = need ? ctx._fields?.length ?? 0 : 0
+          const mEr = need ? ctx._errors?.length ?? 0 : 0
+          const v = sup(input, pos, ctx)
+          // The super arm's failure propagates verbatim — its `_fe`/`_fx`, not
+          // the union of the arms (choice.ts:126).
+          if (v === FAIL) return FAIL
+          const end = END
+          const lit = byWord.get(input.slice(pos, end))
+          if (lit === undefined) { END = end; return v }
+          // Unwind the regex's leaf so the credited arm's own leaf is the only
+          // one. Re-running the arm cannot fail: the word IS its literal.
+          if (need) rollbackCstCaptureAt(ctx, mRaw, mTl, mLv, mFl, mEr)
+          return lit(input, pos, ctx)
+        }
+      }
+
+      case OP_REJECT: {
+        const child = link(code[ip + 1]!)
+        const n = code[ip + 2]!
+        // The checks SPLIT BY KIND here, so neither loop below tests which kind
+        // it is holding. `autoNotFires` is a pure OR over independent lookahead
+        // predicates, so grouping them changes nothing but the branch.
+        const strs: string[] = []
+        const clss: ResolvedClass[] = []
+        for (let i = 0; i < n; i++) {
+          const o = code[ip + 4 + 2 * i]!
+          if (code[ip + 3 + 2 * i]! === 0) strs.push(k[o] as string)
+          else clss.push(cc[o]!)
+        }
+        const ns = strs.length
+        const nc = clss.length
+        return (input, pos, ctx) => {
+          const v = child(input, pos, ctx)
+          if (v === FAIL) return FAIL
+          const end = END
+          for (let i = 0; i < ns; i++) {
+            if (!input.startsWith(strs[i]!, end)) continue
+            // A `continue` in the interpreter, not a failure — so no cut survives.
+            ctx._fc = false
+            return FAIL
+          }
+          if (nc !== 0) {
+            const c = lead(input, end)
+            for (let i = 0; i < nc; i++) {
+              if (!classHas(clss[i]!, c)) continue
+              ctx._fc = false
+              return FAIL
+            }
+          }
+          END = end
+          return v
         }
       }
 
