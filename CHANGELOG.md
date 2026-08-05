@@ -5,6 +5,51 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **`many(x, { min: n })` with `n >= 2` now means the same thing in all three
+  engines. It previously meant three different things.** Over the input `"a,b"`
+  with a nullable item, `many(Field, { min: 2 })` returned `["a", ""]` compiled,
+  and FAILED interpreted and table-lowered. Over `"a a"` with an ordinary
+  NON-nullable item and a trivia rule, it returned `["a", "a"]` interpreted and
+  table-lowered, and FAILED compiled. No engine was right about both.
+
+  Two independent defects, and each engine had exactly one of them:
+
+  - **`repItem`'s zero-width stop and EOF early-out were applied to `atLeast`'s
+    mandatory items** (interpreter `repeat.ts`, and the table driver via
+    `viaRepItem`). Both are TERMINATION devices for an unbounded loop whose only
+    source of progress is the item — the point `00b9f79` settled for `sepBy` —
+    and a prefix of exactly `min` items is finite by construction and cannot
+    spin. Applying them made `min >= 2` over a nullable item *unsatisfiable at
+    all*.
+  - **The compiled engine inlined mandatory items 2..min flush against each
+    other, with no inter-item trivia skip** (`codegen.ts` `emitMany`). A repeat
+    owns the trivia BETWEEN its items; only the trivia before the first belongs
+    to the enclosing context.
+
+  The rule now shared by all three: **a mandatory item is an ordinary repetition
+  item preceded by inter-item trivia, exempt only from the two loop-termination
+  stops.** `min` counts ITEMS (`RepeatOptions`), `oneOrMore(x)` IS
+  `many(x, { min: 1 })`, and `matchesEmpty` reports a `min`-bearing repeat as
+  nullable exactly when its item is, for any `min` — so a `{ min: n }` repeat
+  over a nullable item matches the empty string with `n` items, which is a
+  derivation `x*` genuinely has. `many(x, { min: 5 })` over `""` is five empty
+  items. The unbounded `many(x)` still stops at zero width and still returns
+  `[]`: it takes the FEWEST-item derivation because it must halt, which is a
+  termination property and not a claim that zero-width items do not count.
+
+  **Consumer-visible.** Only repetitions with `min >= 2` move; `many`,
+  `oneOrMore` and `many(x, { min: 1 })` are untouched, and the three-way
+  identity sweep is byte-identical to the previous commit on every corpus,
+  because no committed grammar uses `min >= 2`. If you have a `min >= 2` repeat
+  you will notice it as: a list over a NULLABLE item that used to fail now
+  succeeds, padded to `min` with zero-width items (interpreted and table); a
+  list over any item separated by trivia that used to fail now succeeds
+  (compiled); and a `{ min: 2 }` list over a nullable item that used to return
+  `["a", ""]` still does, but now everywhere. If you were relying on `min >= 2`
+  over a nullable item as a way to FAIL, it no longer is — make the item
+  non-nullable, which is what the bound was always documented to require of you
+  (`min >= 1` is what makes a repeat non-nullable *given a non-nullable item*).
+
 - **`run()` no longer installs three accessors on every result — small parses
   get up to 43% of their time back.** Since 0.44 every `run()` call passed its
   result through a `guardRemovedFields()` that ran three

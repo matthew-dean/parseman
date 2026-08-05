@@ -7,7 +7,7 @@ import { emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
-import { literal, many, node, oneOrMore, oneOrMoreSep, regex, rules, sepBy } from '../../src/index.ts'
+import { literal, many, node, oneOrMore, oneOrMoreSep, regex, rules, sepBy, trivia } from '../../src/index.ts'
 import { csvParser } from '../../examples/csv/parser.ts'
 import type { Combinator } from '../../src/types.ts'
 
@@ -718,5 +718,100 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(r.mismatches).toEqual([])
     expect(run(tableRules(encodeTable(map)).CSV! as never, 'a,b\n1,2\n3,4\n5,6\n').value)
       .toEqual([['a', 'b'], ['1', '2'], ['3', '4'], ['5', '6']])
+  })
+
+  /**
+   * `min >= 2` — the bound the three engines each got HALF right, and the only
+   * shape where all three shipped a different answer.
+   *
+   * The contract, from `RepeatOptions`: `min` counts ITEMS, `oneOrMore(x)` IS
+   * `many(x, { min: 1 })` (repeat.ts:105, :114 — the identical combinator), and
+   * `first-set.ts`'s `matchesEmpty` reports `case 'oneOrMore': me(d.parser)` — a
+   * `min`-bearing repeat is NULLABLE exactly when its item is, for ANY `min`. A
+   * combinator the analysis declares nullable must match the empty string.
+   *
+   * So `x*` over a nullable `x` derives the empty string with ANY number of items,
+   * and `{ min: n }` takes the n-item derivation. `many` (min 0) takes the FEWEST
+   * because its unbounded loop's only source of progress is the item, so it must
+   * stop at zero width — a TERMINATION device, not a semantic filter. A prefix of
+   * exactly `n` items is finite by construction and cannot spin, so the stop does
+   * not apply to it. This is the same rule 00b9f79 settled for `sepBy`.
+   *
+   * Each engine violated one half and no two the same one, which is why "the
+   * majority answer" was wrong here: the compiled engine alone padded (and had
+   * the nullable case right), while the interpreter and table alone skipped the
+   * inter-item trivia (and had the trivia case right).
+   */
+  it('min >= 2 over a NULLABLE item: all three pad to `min` items rather than refusing', () => {
+    const Field = regex(/[^,]*/)
+    const shapes = {
+      Many: many(Field),
+      Min1: many(Field, { min: 1 }),
+      Min2: many(Field, { min: 2 }),
+      Min3: many(Field, { min: 3 }),
+      Min5: many(Field, { min: 5 }),
+      Min2Max3: many(Field, { min: 2, max: 3 }),
+    } as unknown as Record<string, Combinator<unknown>>
+
+    const r = checkIdentity(shapes, 'Min2', [
+      { name: 'empty', input: '' },
+      { name: 'one-field', input: 'a' },
+      { name: 'stops-at-sep', input: 'a,b' },
+      { name: 'leading-sep', input: ',a' },
+    ])
+    expect(r.mismatches).toEqual([])
+    expect(r.matched).toBe(r.total)
+
+    const tbl = tableRules(encodeTable(shapes))
+    const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
+    // The unbounded list still stops at zero width — the termination device stands.
+    expect(val('Many', '')).toEqual([])
+    expect(val('Many', 'a,b')).toEqual(['a'])
+    // min 1 is unmoved (it was already right in all three, and is `oneOrMore`).
+    expect(val('Min1', '')).toEqual([''])
+    // `min` counts ITEMS, so `n` of them come back — `max` never enters into it.
+    expect(val('Min2', '')).toEqual(['', ''])
+    expect(val('Min2', 'a,b')).toEqual(['a', ''])
+    expect(val('Min3', 'a,b')).toEqual(['a', '', ''])
+    expect(val('Min5', '')).toEqual(['', '', '', '', ''])
+    expect(val('Min2Max3', 'a,b')).toEqual(['a', ''])
+    // …and the list is still SHORT of a real second field: `,b` is unconsumed, so
+    // the padding never pretends to have read input it did not read.
+    expect(run(tbl.Min2! as never, 'a,b').unconsumedFrom).toBe(1)
+  })
+
+  it('min >= 2 skips INTER-ITEM trivia before every mandatory item, in all three', () => {
+    // The repeat owns the trivia BETWEEN its items; only the trivia before the
+    // FIRST belongs to the enclosing context. The compiled engine inlined items
+    // 2..min flush against each other with no skip, so `many(a, { min: 2 })`
+    // REJECTED `"a a"` — which `many(a)` parses as two items. A `{ min: 2 }` list
+    // refusing a list the unbounded one returns with 2 items contradicts `min`
+    // counting items, and it is a NON-nullable item, so ordinary grammars are
+    // exposed to it and not just the nullable corner.
+    const ws = trivia(regex(/[ \t]*/))
+    const A = literal('a')
+    const shapes = rules<Record<string, Combinator<unknown>>>({ trivia: ws }, () => ({
+      Min1: many(A, { min: 1 }),
+      Min2: many(A, { min: 2 }),
+      Min3: many(A, { min: 3 }),
+    })) as unknown as Record<string, Combinator<unknown>>
+
+    for (const entry of ['Min1', 'Min2', 'Min3']) {
+      const r = checkIdentity(shapes, entry, [
+        { name: 'spaced-2', input: 'a a' },
+        { name: 'spaced-3', input: 'a a a' },
+        { name: 'tight', input: 'aa' },
+        { name: 'wide', input: 'a  a  a' },
+        { name: 'short', input: 'a' },
+      ], { trivia: ws })
+      expect({ entry, mismatches: r.mismatches }).toEqual({ entry, mismatches: [] })
+    }
+
+    const tbl = tableRules(encodeTable(shapes))
+    const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input, { trivia: ws as never }).value
+    expect(val('Min2', 'a a')).toEqual(['a', 'a'])
+    expect(val('Min3', 'a  a  a')).toEqual(['a', 'a', 'a'])
+    // Still genuinely bounded: two items cannot be found in one.
+    expect(run(tbl.Min3! as never, 'a a', { trivia: ws as never }).ok).toBe(false)
   })
 })
