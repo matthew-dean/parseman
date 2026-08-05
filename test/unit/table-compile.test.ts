@@ -3,6 +3,9 @@ import { compileTable } from '../../src/table/compile.ts'
 import { run } from '../../src/functional/run.ts'
 import { csvParser } from '../../examples/csv/parser.ts'
 import { jsonDoc } from '../../examples/json/parser.ts'
+import { classifiedTrivia, parser, regex, rules, sequence, trivia } from '../../src/index.ts'
+import { encodeTable } from '../../src/table/encode.ts'
+import { assembledRules } from '../../src/table/assemble.ts'
 import type { Combinator } from '../../src/types.ts'
 
 /**
@@ -94,5 +97,72 @@ describe('compileTable() is a drop-in for the source-lowering compile()', () => 
     // run that measured nothing. The build error names the reason instead.
     expect(() => compileTable(jsonDoc as Combinator<unknown>, undefined, { coverage: true }))
       .toThrow(/coverage/)
+  })
+})
+
+/**
+ * A table entry must report the SAME trivia metadata the interpreter reports for
+ * the combinator it was encoded from.
+ *
+ * This is the metadata `run()` reads to decide whether `{ rootTrivia: { select } }`
+ * is even legal — `triviaKindLabelsFromRunnable` / `rootTriviaClassifiedFromRunnable`
+ * in `functional/run.ts`. The encoder used to take it from ONE of the three places
+ * a combinator can carry it (`_meta.grammarTrivia`, set by `rules({ trivia }, …)`),
+ * so the other two lowered to a table that PARSED correctly and then claimed to
+ * have no labelled trivia at all.
+ *
+ * No value-identity sweep can see this: the tree and the spans are unchanged, and
+ * the loss surfaces only as `run()` rejecting a root-trivia request on a grammar
+ * that plainly has labelled trivia — or, for `classifiedTrivia()` handed straight
+ * to `options.trivia`, silently widening capture, because `triviaKindMask(undefined,
+ * …)` means "capture everything".
+ */
+describe('a table entry carries the trivia metadata run() reads', () => {
+  const labels = ['whitespace', 'blockComment']
+  const mkTrivia = () => classifiedTrivia({
+    whitespace: regex(/[ \t\n\r\f]+/),
+    blockComment: regex(/\/\*(?:[^*]|\*(?!\/))*\*\//),
+  })
+
+  /** The `_meta` a table rule function is stamped with, as `run()` sees it. */
+  const metaOf = (fn: unknown): { triviaKindLabels?: readonly string[]; rootTriviaClassified?: true } | undefined =>
+    (fn as { _meta?: { triviaKindLabels?: readonly string[]; rootTriviaClassified?: true } })._meta
+
+  it('takes them off `parser({ trivia }, …)`, which leaves nothing on _meta', () => {
+    // `parser()` stores the trivia on `_def.triviaParser` only — `_meta.grammarTrivia`
+    // is undefined here, which is exactly the case the encoder used to miss.
+    const doc = parser({ trivia: mkTrivia() }, sequence(regex(/a/), regex(/b/)))
+    expect(doc._meta.grammarTrivia).toBeUndefined()
+
+    const entry = assembledRules(encodeTable({ Doc: doc }))['Doc']
+    expect(metaOf(entry)?.triviaKindLabels).toEqual(labels)
+    expect(metaOf(entry)?.rootTriviaClassified).toBe(true)
+  })
+
+  it("takes them off the combinator's own _meta, for a bare classifiedTrivia() root", () => {
+    // This is what `options.trivia` is handed as. It is a transparent `trivia`
+    // wrapper, so it contributes no row of its own and used to reach the stamp
+    // with nothing at all.
+    const rw = mkTrivia()
+    const entry = assembledRules(encodeTable({ Trivia: rw }))['Trivia']
+    expect(metaOf(entry)?.triviaKindLabels).toEqual(labels)
+    expect(metaOf(entry)?.rootTriviaClassified).toBe(true)
+  })
+
+  it('still takes them off `rules({ trivia }, …)` ambient trivia', () => {
+    // The one carrier that already worked — pinned so the added lookups are a
+    // widening, not a replacement.
+    const g = rules({ trivia: mkTrivia() }, () => ({
+      Doc: sequence(regex(/a/), regex(/b/)),
+    }))
+    expect(g['Doc']!._meta.grammarTrivia).toBeDefined()
+    const entry = assembledRules(encodeTable({ Doc: g['Doc']! }))['Doc']
+    expect(metaOf(entry)?.triviaKindLabels).toEqual(labels)
+    expect(metaOf(entry)?.rootTriviaClassified).toBe(true)
+  })
+
+  it('leaves an unlabelled grammar with no metadata to report', () => {
+    const doc = parser({ trivia: trivia(regex(/\s+/)) }, regex(/a/))
+    expect(metaOf(assembledRules(encodeTable({ Doc: doc }))['Doc'])).toBeUndefined()
   })
 })
