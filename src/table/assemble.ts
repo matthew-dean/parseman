@@ -84,7 +84,7 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
 import {
@@ -561,7 +561,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
       }
 
-      case OP_SCOPE: {
+      case OP_SCOPE:
+      case OP_SCOPE_CAP: {
         const ki = code[ip + 1]!
         const scopeTrivia = ki < 0 ? undefined : (trivia[ki] as ParseContext['trivia'])
         const scopeLabels = scopeTrivia?._meta.triviaKindLabels
@@ -572,6 +573,32 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const scanFor: FastTriviaScanner | null =
           swapLegal && ki >= 0 && !triviaLabelled[ki]! ? triviaScan[ki]! : null
         const child = link(code[ip + 2]!)
+        // TWO PIECES, SELECTED HERE — not one piece that tests the opcode. Capture
+        // is fixed for the whole parse, so `code[ip] === OP_SCOPE_CAP` is an
+        // assembly-time fact and reading it per scope entry would be exactly the
+        // config test INV-6 forbids.
+        //
+        // Both RESTORE rather than clear: capture is an OR with the enclosing
+        // context (`grammar.ts:129`), so an inner scope must not switch an outer
+        // capture off.
+        if (code[ip] === OP_SCOPE_CAP) {
+          return (input, pos, ctx) => {
+            const saved = ctx.trivia
+            const savedLabels = ctx.triviaKindLabels
+            const savedScan = SCAN
+            const savedCap = ctx.captureTrivia
+            SCAN = scanFor
+            ctx.trivia = scopeTrivia
+            ctx.triviaKindLabels = scopeLabels
+            ctx.captureTrivia = true
+            const v = child(input, pos, ctx)
+            ctx.captureTrivia = savedCap
+            ctx.trivia = saved
+            ctx.triviaKindLabels = savedLabels
+            SCAN = savedScan
+            return v
+          }
+        }
         return (input, pos, ctx) => {
           const saved = ctx.trivia
           const savedLabels = ctx.triviaKindLabels

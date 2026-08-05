@@ -63,18 +63,65 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     expect(() => encodeTable(wrap(choice(literal('a'), literal('b')) as Combinator<unknown>))).not.toThrow()
   })
 
-  it('node(captureTrivia) — the request cannot be expressed as a reducer arity', () => {
-    // The capture flags come from the reducer's ARITY. A 3-argument reducer that
-    // ALSO asks for capture is a request the arity analysis answers "no" to, so
-    // honouring the arity would parse perfectly and drop the trivia.
-    throws(wrap(node('N', literal('a'), c => c, { captureTrivia: true })), /node\(captureTrivia\)/)
-    expect(() => encodeTable(wrap(node('N', literal('a'), c => c)))).not.toThrow()
+  it('node(captureTrivia) — an explicit request the arity cannot express, now HONOURED', () => {
+    // The capture flags are derived from the reducer's ARITY, and a 3-argument
+    // reducer that ALSO asks for capture is a request the arity analysis answers
+    // "no" to. That used to REFUSE. Honouring the arity alone would have parsed
+    // perfectly and dropped the trivia, which is the silent-failure this guards.
+    //
+    // The fix is not to trust the arity: `encode.ts` mirrors `node.ts:215` term
+    // for term, so the explicit flag is an OR alongside the derived bit. The bar
+    // is that the trivia REACHES THE REDUCER, not that the grammar encodes — a
+    // flag set and never read would pass an encode-only assertion.
+    const ws = trivia(regex(/[ \t]*/))
+    const seen: Record<string, readonly number[]> = {}
+    const mk = (tag: string, opts?: { captureTrivia?: true }) =>
+      parser({ trivia: ws }, node('N', sequence(literal('a'), literal('b')),
+        // arity 5 reaches `triviaLog`; the point is that arity 3 + the flag does too.
+        ((c: readonly unknown[], _f: unknown, _s: unknown, _r: unknown, tl: readonly number[]) => {
+          seen[tag] = tl.slice()   // COPY: the log is ctx-owned and gets truncated on rollback
+          return c
+        }) as never, opts as never)) as unknown as Combinator<unknown>
+
+    const withFlag = mk('on', { captureTrivia: true })
+    expect(() => encodeTable(wrap(withFlag))).not.toThrow()
+    const table = tableRules(encodeTable({ Doc: withFlag })).Doc!
+    expect(run(table as never, 'a b').ok).toBe(true)
+    const fromTable = seen.on
+    delete seen.on
+    run(withFlag as never, 'a b')
+    const fromInterp = seen.on
+    // The interpreter is the reference: the table must capture the SAME log.
+    // Both are COPIES taken inside the reducer, so this cannot pass by aliasing.
+    expect(fromTable, 'table trivia log').toEqual(fromInterp)
+    expect(fromTable!.length, 'the run between "a" and "b" was captured').toBeGreaterThan(0)
   })
 
-  it('parser({ captureTrivia }) — refused at the scope, as at the node', () => {
+  it('parser({ captureTrivia }) — lowered at the scope, as at the node', () => {
+    // The scope form sets `ctx.captureTrivia` for its whole subtree
+    // (`grammar.ts:129`). It lowers to OP_SCOPE_CAP — a SEPARATE opcode rather
+    // than a flag operand, so the assembler SELECTS the capturing piece instead
+    // of testing a config field per scope entry.
     const ws = trivia(regex(/[ \t]*/))
-    const scope = parser({ trivia: ws, captureTrivia: true }, sequence(literal('a'), literal('b'))) as unknown as Combinator<unknown>
-    throws(wrap(scope), /parser\(captureTrivia\)/)
+    const mk = (opts: Record<string, unknown>) => {
+      const seen: number[][] = []
+      const inner = node('N', sequence(literal('a'), literal('b')),
+        ((c: readonly unknown[], _f: unknown, _s: unknown, _r: unknown, tl: readonly number[]) => {
+          seen.push([...tl]); return c
+        }) as never)
+      return { g: parser({ trivia: ws, ...opts }, inner) as unknown as Combinator<unknown>, seen }
+    }
+    const on = mk({ captureTrivia: true })
+    expect(() => encodeTable(wrap(on.g))).not.toThrow()
+    const table = tableRules(encodeTable({ Doc: on.g })).Doc!
+    expect(run(table as never, 'a b').ok).toBe(true)
+    const fromTable = on.seen.at(-1)!
+    run(on.g as never, 'a b')
+    const fromInterp = on.seen.at(-1)!
+    // Table must match the interpreter, and must actually have captured the run.
+    expect(fromTable, 'scope-level capture').toEqual(fromInterp)
+    expect(fromTable.length, 'the run between "a" and "b" was captured').toBeGreaterThan(0)
+    // Control: the same scope WITHOUT the flag still lowers.
     const plain = parser({ trivia: ws }, sequence(literal('a'), literal('b'))) as unknown as Combinator<unknown>
     expect(() => encodeTable(wrap(plain))).not.toThrow()
   })

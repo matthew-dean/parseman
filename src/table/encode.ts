@@ -7,7 +7,7 @@ import { asciiFoldKey, branchUsesRouted, parserUsesRouted } from '../combinators
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
@@ -443,29 +443,43 @@ class Encoder {
         // verified by differential against the interpreter, with a host and
         // without, on match and on failure.
         if (d.type === undefined) throw new UnsupportedConstruct('node(inferred type)')
-        // FAIL CLOSED on fields this encoder does not lower. The capture flags below
-        // are derived from the reducer's ARITY, which cannot express an explicit
-        // `captureTrivia: true` on a 3-argument reducer — the author asked for
-        // capture and the arity analysis would say no. Silently ignoring the request
-        // yields a table that parses and drops trivia, which is the exact
-        // silent-failure class this lowering exists to avoid.
-        if (d.captureTrivia !== undefined) throw new UnsupportedConstruct('node(captureTrivia)')
         const child = this.node(d.parser).ip
         // Capture flags, resolved HERE from the reducer's declared arity using the
         // same analysis codegen runs (`src/compiler/build-arity.ts`). `hostMode:
         // 'cst'` forces them on, exactly as the emitted `cstOut` path does. The
         // driver reads a bit; it re-derives nothing and sees no setting.
         const cstOut = this.settings.hostMode === 'cst'
-        // Field capture mirrors the interpreter's `effFields`
-        // (src/combinators/node.ts): the body must actually contain `field()`
-        // captures AND the reducer must read them. A node that reads fields but
-        // has none, or has them and never reads them, allocates nothing.
-        const wantsFields = parserHasOwnFields(d.parser) && (cstOut || buildReadsFields(d))
-        // `trailingTrivia` consumes trivia INSIDE the node's capture scope, so it
-        // lands in THIS node's log — the interpreter does it before
-        // `endCstNodeCapture`, and doing it after would put the run in the parent.
-        const flags = (cstOut || buildReadsTrivia(d) ? 4 : 0)
-          | (cstOut || buildReadsState(d) ? 8 : 0)
+        // THE THREE DERIVED CAPTURE BITS, mirroring `node.ts:215` term for term:
+        //
+        //   capturesTrivia = captureTrivia || trailingTrivia
+        //                    || (build ? buildReadsTrivia(def) : project === undefined)
+        //
+        // `cstOut` is the static stand-in for "a CST host is coming", which the
+        // interpreter reaches dynamically off `ctx.build`.
+        //
+        // Two of these terms were MISSING and each was a real divergence:
+        //
+        //   `captureTrivia` — an explicit request the arity analysis cannot
+        //     express (an author can ask for capture on a 3-argument reducer).
+        //     This used to REFUSE rather than lower, so a documented option no
+        //     grammar could use through the table.
+        //   `trailingTrivia` — trivia consumed INSIDE the node's capture scope
+        //     lands in THIS node's log. The interpreter counts it; the table did
+        //     not, so a node with `trailingTrivia` and a non-trivia-reading
+        //     reducer captured under the interpreter and dropped under the table.
+        //
+        // The `build ? … : project === undefined` split matters now that a
+        // STRUCTURAL node lowers: with no builder the interpreter captures unless
+        // a `project` replaces the value outright.
+        const noBuildCaptures = d.project === undefined
+        const derivedTrivia = d.build !== undefined ? buildReadsTrivia(d) : noBuildCaptures
+        const derivedState = d.build !== undefined ? buildReadsState(d) : noBuildCaptures
+        const derivedFields = d.build !== undefined ? buildReadsFields(d) : noBuildCaptures
+        // Field capture additionally requires the body to CONTAIN `field()`
+        // captures: a node that reads fields but has none allocates nothing.
+        const wantsFields = parserHasOwnFields(d.parser) && (cstOut || derivedFields)
+        const flags = (cstOut || d.captureTrivia === true || d.trailingTrivia === true || derivedTrivia ? 4 : 0)
+          | (cstOut || derivedState ? 8 : 0)
           | (wantsFields ? 16 : 0)
           | (d.collapse === true ? 32 : 0)
           | (d.unwrap === true ? 64 : 0)
@@ -576,7 +590,6 @@ class Encoder {
         // is the one field here that is RECONCILED rather than refused: the driver
         // takes it from TableSettings, so a scope asking for something different is a
         // silent disagreement between the grammar and the artifact.
-        if (d.captureTrivia !== undefined) throw new UnsupportedConstruct('parser(captureTrivia)')
         // `rootCapture: 'opaque'` is INERT for parsing. grammar.ts reads it only
         // inside a `_rootTriviaStrictScopes` validation throw; it declares that
         // this scope's trivia is opaque to root capture, which `run()` consumes.
@@ -599,9 +612,19 @@ class Encoder {
         }
         // A trivia scope is a ROW, not a lowering decision: the scope's trivia
         // combinator goes in the const pool and the driver installs it.
-        if (d.clearTrivia === true) return this.emit(OP_SCOPE, -1, this.node(d.parser).ip)
-        if (d.triviaParser === undefined) return this.node(d.parser).ip
-        return this.emit(OP_SCOPE, this.triviaSlot(d.triviaParser), this.node(d.parser).ip)
+        // `captureTrivia: true` picks the SCOPE_CAP piece. It is an OR with the
+        // inherited context in the interpreter (`grammar.ts:129`), never a
+        // switch-off, so a scope without it emits plain SCOPE and leaves an
+        // outer capture alone. A scope that ONLY asks for capture still needs a
+        // row — hence the `cap` branch before the `triviaParser === undefined`
+        // shortcut, which would otherwise drop the request on the floor.
+        const cap = d.captureTrivia === true
+        const op = cap ? OP_SCOPE_CAP : OP_SCOPE
+        if (d.clearTrivia === true) return this.emit(op, -1, this.node(d.parser).ip)
+        if (d.triviaParser === undefined) {
+          return cap ? this.emit(op, -1, this.node(d.parser).ip) : this.node(d.parser).ip
+        }
+        return this.emit(op, this.triviaSlot(d.triviaParser), this.node(d.parser).ip)
       }
       default:
         throw new UnsupportedConstruct(d.tag)
@@ -624,7 +647,7 @@ class Encoder {
       switch (this.code[ip]) {
         case OP_GATE: return [ip + 2]
         case OP_RULE: case OP_OPT: case OP_NOT: case OP_PEEK: case OP_EXPECT: return [ip + 1]
-        case OP_SCOPE: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
+        case OP_SCOPE: case OP_SCOPE_CAP: case OP_XFORM: case OP_LEAF: case OP_NODE: case OP_NODE_TRACK: return [ip + 2]
         case OP_SEQ: case OP_SEQV: return Array.from({ length: this.code[ip + 1]! }, (_, i) => ip + 2 + i)
         case OP_SEQX: return Array.from({ length: this.code[ip + 2]! }, (_, i) => ip + 3 + i)
         // ARMS START AT ip+4. `ip+3` is the choice's own EXPECTED-SET index, and

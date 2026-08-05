@@ -173,6 +173,22 @@ export const OP_LIT_CI_TRACK = 28
  */
 export const OP_TOKEN = 29
 /**
+ * `SCOPE_CAP k c` — a `parser({ trivia, captureTrivia: true })` scope. Identical
+ * operands to `SCOPE`; it additionally sets `ctx.captureTrivia` for the child.
+ *
+ * A SEPARATE OPCODE rather than a third operand on `SCOPE`, for two reasons.
+ * Widening an instruction means every walker that knows its shape has to learn
+ * the new one, and there is no central arity table here to change in one place.
+ * And the driver should SELECT this piece, not test a flag inside the scope
+ * piece — capture is fixed for the whole parse, so it is an assembly decision.
+ *
+ * The interpreter's equivalent is `grammar.ts:129`:
+ * `if (opts.captureTrivia || _ctx?.captureTrivia) ctx.captureTrivia = true`.
+ * Note the INHERITANCE — an inner scope does not switch capture back off, which
+ * is why this restores the saved value rather than writing `false`.
+ */
+export const OP_SCOPE_CAP = 30
+/**
  * `DISPATCH sel d other otherRouted n a1 … an` — `dispatch()`.
  *
  * `sel` is the selector's offset, `d` indexes a dispatch table in `prog.dsp`,
@@ -199,5 +215,5 @@ export const OP_NAMES: Record<number, string> = {
   [OP_LIT_TRACK]: 'LIT_TRACK', [OP_RX_TRACK]: 'RX_TRACK', [OP_NODE_TRACK]: 'NODE_TRACK',
   [OP_SCOPE]: 'SCOPE', [OP_EXPECT]: 'EXPECT', [OP_SEQX]: 'SEQX', [OP_SCAN]: 'SCAN',
   [OP_FIELD]: 'FIELD', [OP_LIT_CI]: 'LIT_CI', [OP_LIT_CI_TRACK]: 'LIT_CI_TRACK', [OP_DISPATCH]: 'DISPATCH', [OP_ROUTED]: 'ROUTED',
-  [OP_TOKEN]: 'TOKEN',
+  [OP_TOKEN]: 'TOKEN', [OP_SCOPE_CAP]: 'SCOPE_CAP',
 }

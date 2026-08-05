@@ -16,7 +16,7 @@ import {
 import {
   OP_CHOICE, OP_EMPTY, OP_GATE, OP_LEAF, OP_LIT, OP_NODE, OP_NOT, OP_OPT,
   OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX, OP_SEQ, OP_SEQV, OP_XFORM,
-  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_EXPECT, OP_SEQX, OP_SCAN,
+  OP_LIT_TRACK, OP_RX_TRACK, OP_NODE_TRACK, OP_SCOPE, OP_SCOPE_CAP, OP_EXPECT, OP_SEQX, OP_SCAN,
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN,
 } from './ops.ts'
 import { stampRuleMap } from './stamp.ts'
@@ -536,7 +536,8 @@ function makeDriver(
         return r.value
       }
 
-      case OP_SCOPE: {
+      case OP_SCOPE:
+      case OP_SCOPE_CAP: {
         const ki = code[ip + 1]!
         const saved = ctx.trivia
         const savedLabels = ctx.triviaKindLabels
@@ -554,7 +555,14 @@ function makeDriver(
         // even test `_rootTriviaLog` — so a scope that sets trivia without its
         // labels captures NOTHING at the root, silently.
         ctx.triviaKindLabels = scopeTrivia?._meta.triviaKindLabels
+        // SCOPE_CAP additionally turns capture ON for the child. It is an OR with
+        // whatever the enclosing context already asked for (`grammar.ts:129`), so
+        // the RESTORE puts the saved value back rather than writing `false` — an
+        // inner scope must not switch an outer capture off.
+        const savedCap = ctx.captureTrivia
+        if (code[ip] === OP_SCOPE_CAP) ctx.captureTrivia = true
         const v = exec(code[ip + 2]!, input, pos, ctx)
+        ctx.captureTrivia = savedCap
         ctx.trivia = saved
         ctx.triviaKindLabels = savedLabels
         SCAN = savedScan
