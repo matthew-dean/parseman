@@ -16,7 +16,7 @@
  * patching `@FS:` first-set placeholders per winner. That is why the linker needed
  * `'unsafe-eval'`; the merge is now data, so it does not.
  */
-import { ruleDependencies } from '../analysis/gating.ts'
+import { ruleDependencies, childrenOf } from '../analysis/gating.ts'
 import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-mode.ts'
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
@@ -307,6 +307,7 @@ function fuseCarried(
     maps.push(rules)
   }
   const merged = mergeCarriedRuleMaps(maps)
+  materializeDirectBuilders(merged)
   // COMPOSING-WINS is an OVERRIDE, not a gap-fill: the composing grammar's trivia
   // governs every fused rule INCLUDING inherited ones. `applyAmbient` inside
   // `compileRuleMapTable` only fills a rule that declares none, which would leave an
@@ -346,6 +347,44 @@ function fuseCarried(
   // as an empty grammar and every visitor silently matches nothing.
   Object.defineProperty(map, GRAMMAR_REFLECTION, { value: compiled.reflection, enumerable: false })
   return map
+}
+
+/**
+ * Re-attach a DIRECT node builder that came back from IR as an inert sentinel.
+ *
+ * `evalRuleMapIR` deliberately refuses to evaluate a captured `buildSrc`: raw IR
+ * interpretation must not run arbitrary source, so `_nd` installs a thrower and keeps
+ * the text. Only a COMPILER consumer may materialize it — and the runtime fuse is one.
+ * The source lowering did exactly this, less visibly: it inlined `buildSrc` into the
+ * fused body and `new Function` evaluated it. The table parks callbacks in a pool
+ * instead of inlining them, so the same materialization has to be explicit or the
+ * sentinel reaches the pool and throws on the first parse through that node.
+ *
+ * Scoped to the runtime fuse. The MACRO never comes here: its encoder captures
+ * `buildSrc` and PRINTS it, so it needs no live function at all.
+ */
+function materializeDirectBuilders(ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>): void {
+  const seen = new Set<Combinator<unknown>>()
+  const visit = (p: Combinator<unknown>): void => {
+    if (seen.has(p)) return
+    seen.add(p)
+    const d = p._def as { tag: string; build?: unknown; buildSrc?: string }
+    if (d.tag === 'node' && typeof d.buildSrc === 'string') {
+      try {
+        // eslint-disable-next-line no-eval
+        const fn = (0, eval)(`(${d.buildSrc})`) as unknown
+        if (typeof fn === 'function') d.build = fn
+      } catch { /* leave the sentinel: it throws with its own message on reach */ }
+    }
+    if (d.tag === 'lazy') {
+      let resolved: Combinator<unknown> | undefined
+      try { resolved = (d as unknown as { thunk: () => Combinator<unknown> }).thunk() } catch { return }
+      if (resolved) visit(resolved)
+      return
+    }
+    for (const child of childrenOf(p._def)) visit(child)
+  }
+  for (const [, rule] of ruleMap) visit(rule)
 }
 
 /** The combinator map behind a carried piece: IR is evaluated back, a table piece
