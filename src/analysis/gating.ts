@@ -201,11 +201,51 @@ export type GatingReport = {
   antiPatterns: AntiPattern[]
 }
 
+// ── grammar walk ─────────────────────────────────────────────────────────────
+
+/**
+ * Ordered structural children per def tag. Explicit rather than "every key that
+ * holds a Combinator" because a SLOT's position is what near-duplicate detection
+ * varies — a stable, meaningful order is load-bearing, not cosmetic.
+ *
+ * Lives here, in the module every analysis pass already imports, because
+ * `./choice-cost.ts` and `./duplication.ts` each carried a byte-identical copy.
+ */
+export function childrenOf(d: ParserDef): readonly Combinator<unknown>[] {
+  switch (d.tag) {
+    case 'sequence': case 'choice': return d.parsers
+    case 'dispatch': return [
+      d.selector,
+      ...d.cases.map(c => c.parser),
+      ...(d.otherwise === undefined ? [] : [d.otherwise]),
+    ]
+    case 'skip': return [d.main, d.skipped]
+    case 'sepBy': return [d.parser, d.separator]
+    case 'recover': return [d.parser, d.sentinel]
+    case 'scanTo': return [d.sentinel, ...d.skip]
+    case 'grammar': return d.triviaParser ? [d.parser, d.triviaParser] : [d.parser]
+    // A `lazy` is a REFERENCE, not a subtree. Descending through it would make
+    // every rule's walk cover the whole reachable grammar — site paths become
+    // nonsense, and a structural hash includes half the grammar. Treated as a
+    // leaf, keyed by the rule name it refers to, which is also the right
+    // semantics: two productions referencing `g.Ident` really do fill that slot
+    // the same way.
+    case 'lazy': case 'literal': case 'regex': case 'keywords': case 'guard': case 'adjacency': case 'unknown':
+      return []
+    default: {
+      const rec = d as unknown as { parser?: Combinator<unknown> }
+      return rec.parser ? [rec.parser] : []
+    }
+  }
+}
+
 // ── first-set helpers (local, to avoid importing codegen and creating a cycle) ──
 
 const isAny = (fs: FirstSet): boolean => fs.kind === 'any'
 
-function intersects(a: FirstSet, b: FirstSet): boolean {
+/** Do two first-sets share any character? Exported because `./duplication.ts`
+ *  had a byte-identical copy; every analysis module already imports this one. */
+export function intersects(a: FirstSet, b: FirstSet): boolean {
   if (a.kind === 'any' || b.kind === 'any') return true
   if (a.kind === 'empty' || b.kind === 'empty') return false
   for (const ra of a.ranges) for (const rb of b.ranges) if (ra.lo <= rb.hi && rb.lo <= ra.hi) return true

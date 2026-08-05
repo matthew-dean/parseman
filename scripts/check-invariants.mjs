@@ -18,15 +18,16 @@
  *   INV-2  no field in a public `*Options` type that nothing reads
  *   INV-3  every module under src/ is reachable from a published entry point
  *   INV-4  no declaration body duplicated across modules
+ *   INV-5  no `delete` on an object the enclosing function did not construct
  *
  * Usage:
  *   node scripts/check-invariants.mjs            # gate — exits 1 on any new finding
  *   node scripts/check-invariants.mjs --list     # print every finding, exit 0
  *   node scripts/check-invariants.mjs --json     # machine-readable
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseSync } from 'oxc-parser'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -45,92 +46,87 @@ const SRC = join(ROOT, 'src')
 const USE_ALLOW = !rootArg || process.argv.includes('--assert-allowlist')
 
 /* ------------------------------------------------------------------ *
- * ALLOWLIST
+ * ALLOWLIST — loaded from scripts/invariant-allowlist.mjs, which carries the
+ * entries, their categories, and the committed count. It is a separate module
+ * for two reasons: the count is a single reviewable line rather than a fact
+ * buried in a list, and a fixture tree can supply its OWN allowlist so that the
+ * checks below can be observed FAILING (test/unit/invariant-gate.test.ts).
  *
- * THIS LIST MAY ONLY GET SHORTER. Every entry names one pre-existing
- * violation and states why it is not being fixed in the commit that added the
- * gate. Adding an entry to unblock NEW code is the failure mode this whole
- * file exists to stop: fix the code, or argue the invariant is wrong and
- * delete it. There is deliberately no wildcard syntax and no per-rule
- * blanket — an entry is one exact finding key.
+ * Three things are enforced here, none of which were before:
+ *
+ *   RATCHET    `ALLOW.size` must equal the committed `ALLOW_COUNT` exactly.
+ *              "THIS LIST MAY ONLY GET SHORTER" was a sentence in a comment;
+ *              this is the sentence with teeth. Adding an entry now costs a
+ *              deliberate edit to a numbered line that shows up in review on
+ *              its own, instead of one more line hiding among sixteen.
+ *              It is a ratchet, not a wall: a real architectural change that
+ *              retires modules from the export graph raises the count in the
+ *              same commit and the gate goes green (proven in the test file).
+ *              A ratchet that cannot be raised is a hard block, and a hard
+ *              block gets bypassed, taking the rules that matter with it.
+ *   STRUCTURE  Every entry declares a category — RULE-BUG / BY-DESIGN / DEBT —
+ *              and DEBT declares a tracking ref. An entry with neither owner
+ *              nor expiry is a silent, permanent decision to not do the work.
+ *   STALENESS  An entry whose finding no longer exists fails the gate, so an
+ *              exemption cannot outlive the violation it names. (Pre-existing;
+ *              reported alongside the two above.)
+ *
+ * BY-DESIGN VS DEBT IS THE WHOLE POINT — READ THIS BEFORE ADDING AN ENTRY.
+ * The two look identical on the day they are written and could not be more
+ * different a year later.
+ *
+ *   BY-DESIGN  is a finished argument. The code is staying in this shape. The
+ *              entry leaves only if the design changes — `src/table/
+ *              exec-baseline.ts` is unimported BECAUSE it is a frozen control,
+ *              and reference code deliberately retired from the product path
+ *              while the measurement harness still reaches it is the same
+ *              shape.
+ *   DEBT       is an unfinished obligation. Something is owed, and the `ref`
+ *              names who owes it.
+ *
+ * `INV-3 token-alphabet.ts` / `token-scanner.ts` is why this is enforced rather
+ * than trusted. The rule CORRECTLY caught built-but-never-wired analysis — the
+ * sixth instance of that shape in this project — and the entry stated a real
+ * obligation, "wire into the compiler or delete". Nothing enforced the
+ * obligation and nothing ever restated it, so over time it read exactly like
+ * the frozen-control entries above it: a permanent, accepted exemption. Debt
+ * decays into by-design by neglect, never the other way round. Naming the
+ * category and PRINTING the DEBT list on every run, pass or fail, is what stops
+ * that: debt that is never restated is debt that is never paid.
  * ------------------------------------------------------------------ */
-const ALLOW = new Map([
-  /* ---- The frozen ablation controls: 6 entries -------------------------
-   * `src/table/exec-baseline.ts` and `src/table/encode-baseline.ts` are
-   * deliberate FROZEN COPIES of the table driver and encoder, kept alive in
-   * process so bench/table-alloc-ablation.ts can measure one change against a
-   * same-path control. Nothing imports them outside bench/ (INV-3) and their
-   * helpers are byte-identical to the live ones by construction (INV-4) —
-   * that IS the control. vitest.config.ts excludes them from coverage for the
-   * same reason. All six entries leave when the ablation does. */
-  ['INV-3:src/table/exec-baseline.ts', 'frozen ablation control — bench-only by design'],
-  ['INV-3:src/table/encode-baseline.ts', 'frozen ablation control — bench-only by design'],
-  ['INV-4:src/table/exec-baseline.ts:rawEntry|src/table/exec.ts:rawEntry', 'frozen ablation control — identity with the live copy is the control'],
-  ['INV-4:src/table/exec-baseline.ts:trackLines|src/table/exec.ts:trackLines', 'frozen ablation control — identity with the live copy is the control'],
-  ['INV-4:src/table/exec-baseline.ts:lineCol|src/table/exec.ts:lineCol', 'frozen ablation control — identity with the live copy is the control'],
+const ALLOW_MODULE = 'scripts/invariant-allowlist.mjs'
+/** A fixture tree with its own allowlist uses it; otherwise `--assert-allowlist`
+ *  means "run THIS repo's allowlist against that tree", which is how the
+ *  stale-entry failure is exercised. */
+const allowRoot = !USE_ALLOW ? null : existsSync(join(ROOT, ALLOW_MODULE)) ? ROOT : REPO
+const allowMod = allowRoot ? await import(pathToFileURL(join(allowRoot, ALLOW_MODULE)).href) : null
+/** @type {Map<string, { category: string, why: string, ref?: string }>} */
+const ALLOW = allowMod?.ALLOW ?? new Map()
+const CATEGORIES = allowMod?.CATEGORIES ?? []
 
-  /* ---- Real debt, not fixed by the commit that added the gate: 6 entries
-   * These are the findings the gate was built to catch, left standing on
-   * purpose so the gate lands separately from the fixes. Each one is a
-   * numbered lane, not an acceptance. */
-
-
-  // INV-1. Lazy fuse on the composed rule map: one accessor per rule, once per
-  // `composeLeaf()`, so the grammar you actually use is fused on first access
-  // and a second conflicting one fails loudly. This is ARGUED, not debt — see
-  // the comment at the site. It is listed rather than exempted by a rule
-  // carve-out so that if the site changes the entry goes stale and someone
-  // must look at it again.
-  // RULE BUG, not a violation — INV-1 fires on the CORRECT pattern here. This
-  // `defineProperty` runs ONCE at module load, on a PROTOTYPE, which is exactly
-  // the fix that replaced per-instance installation (measured 42% on a 7-byte
-  // parse). INV-1 should exempt module-scope prototype installation; until it
-  // does, this entry keeps the gate green. REMOVE IT when the rule is refined.
-  ['INV-1:src/functional/run.ts:<module>', 'RULE BUG — module-scope prototype install is the correct pattern; refine INV-1'],
-  ['INV-1:src/compiler/linker.ts:composeLeaf', 'deliberate — per-compose lazy fuse, not per parse; see the comment at the site'],
-
-  // INV-3 x2. The derived-tokenization lane (docs/design/derived-tokenization.md)
-  // landed its alphabet and scanner before the consumer that reads them. This
-  // is precisely the "87 KB of analysis nothing imports" shape, caught this
-  // time; the entries go when the lane wires them into the compiler.
-  ['INV-3:src/compiler/token-alphabet.ts', 'derived-tokenization lane — wire into the compiler or delete'],
-  ['INV-3:src/compiler/token-scanner.ts', 'derived-tokenization lane — wire into the compiler or delete'],
-
-  // INV-4 x2. Two genuine copy-pastes between analysis modules. Both are pure
-  // helpers with no reason to be duplicated; the fix is one import each.
-  ['INV-4:src/analysis/choice-cost.ts:childrenOf|src/analysis/duplication.ts:childrenOf', 'DEDUPE — identical helper in two analysis modules'],
-  ['INV-4:src/analysis/duplication.ts:intersects|src/analysis/gating.ts:intersects', 'DEDUPE — identical helper in two analysis modules'],
-
-  // INV-5 x4 on `ctx` — 12 delete SITES, on the object every combinator reads on
-  // every step, running PER TOKEN and PER LEAF. This is the sharpest instance in
-  // the catalogue: one delete flips %HasFastProperties to false and re-adding the
-  // property does not restore it, so the first `token()` in a parse can leave
-  // `ctx` in dictionary mode for the whole parse. The table-driver copies are
-  // there because the driver is deliberately MIRRORED from the combinator for
-  // behavioural fidelity — three-way identity rewards exactly that, which is how
-  // one shape defect became two.
-  //
-  // Restoration here is by PRESENCE (readers test whether the property exists),
-  // so `= undefined` is not a drop-in and this is correct code with a
-  // catastrophic shape consequence. A separate lane is measuring what it costs
-  // end to end and may remove the deletes outright; when it lands these entries
-  // go stale and the gate will REQUIRE their deletion, which is the intended
-  // interaction and not a conflict.
-  ['INV-5:src/combinators/token.ts:parse:ctx._triviaLog', 'per-token delete on the long-lived ctx — measurement lane owns the fix'],
-  ['INV-5:src/combinators/token.ts:parse:ctx._rootTriviaLog', 'per-token delete on the long-lived ctx — measurement lane owns the fix'],
-  ['INV-5:src/table/exec.ts:exec:ctx._triviaLog', 'mirrored into the table driver for behavioural fidelity — same lane'],
-  ['INV-5:src/table/exec.ts:exec:ctx._rootTriviaLog', 'mirrored into the table driver for behavioural fidelity — same lane'],
-
-  // INV-5 x3 on `_meta` — `const meta = slot._meta` / `value._meta` is an ALIAS
-  // of a combinator's long-lived meta object, and `_meta` is read during
-  // interpreted parses. Cold sites (fuse time), so the cost is the shape the
-  // object carries afterwards rather than the delete itself. Fix is to assign a
-  // fixed absent value, which is available here: these readers test `!== undefined`,
-  // not presence.
-  ['INV-5:src/compiler/linker.ts:repointRef:meta.triviaKindLabels', 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx'],
-  ['INV-5:src/compiler/linker.ts:repointRef:meta.disjoint', 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx'],
-  ['INV-5:src/compiler/linker.ts:fusePieces:meta.grammarHostMode', 'delete on an aliased long-lived _meta — assignable to undefined, unlike ctx'],
-])
+if (allowMod) {
+  /** @type {string[]} */
+  const bad = []
+  for (const [key, entry] of ALLOW) {
+    if (!entry || typeof entry !== 'object') { bad.push(`${key} — entry is not an object { category, why, ref? }`); continue }
+    if (!CATEGORIES.includes(entry.category)) bad.push(`${key} — category must be one of ${CATEGORIES.join(' / ')}, got ${JSON.stringify(entry.category)}`)
+    if (typeof entry.why !== 'string' || !entry.why.trim()) bad.push(`${key} — \`why\` must be a non-empty string`)
+    if (entry.category === 'DEBT' && (typeof entry.ref !== 'string' || !entry.ref.trim())) bad.push(`${key} — DEBT requires a \`ref\`: name the lane, doc, or issue that owns the fix`)
+  }
+  if (bad.length) {
+    console.error(`invariant gate: malformed allowlist entr${bad.length === 1 ? 'y' : 'ies'} in ${ALLOW_MODULE}.`)
+    console.error('Every entry needs a category (RULE-BUG / BY-DESIGN / DEBT) and a reason; DEBT needs a tracking ref.\n  ' + bad.join('\n  '))
+    process.exit(1)
+  }
+  if (ALLOW.size !== allowMod.ALLOW_COUNT) {
+    const verb = ALLOW.size > allowMod.ALLOW_COUNT ? 'GREW' : 'shrank'
+    console.error(`invariant gate: the allowlist ${verb} — ${ALLOW.size} entries against a committed ALLOW_COUNT of ${allowMod.ALLOW_COUNT}.`)
+    console.error(ALLOW.size > allowMod.ALLOW_COUNT
+      ? `The list may only get SHORTER. Fix the code, or argue the invariant is wrong. If the entry is genuinely\nunavoidable, raise ALLOW_COUNT to ${ALLOW.size} in ${ALLOW_MODULE} in the same commit — that edit is the review.`
+      : `Lower ALLOW_COUNT to ${ALLOW.size} in ${ALLOW_MODULE}. Leaving it high is slack a later commit spends for free.`)
+    process.exit(1)
+  }
+}
 
 /* ------------------------------------------------------------------ */
 
@@ -559,20 +555,35 @@ const allowed = findings.filter(isAllowed)
 const live = findings.filter((f) => !isAllowed(f))
 const staleAllow = USE_ALLOW ? [...ALLOW.keys()].filter((k) => !findings.some((f) => f.key === k)) : []
 
+/** Every DEBT entry, restated on every run. Debt nobody says out loud is debt
+ *  nobody pays: these are the entries that carry a promise to do work, and the
+ *  gate going green is the only moment anyone is reliably looking at it. */
+const debt = [...ALLOW].filter(([, e]) => e.category === 'DEBT')
+
 if (asJson) {
-  console.log(JSON.stringify({ live, allowed: allowed.map((f) => f.key), staleAllow }, null, 2))
+  console.log(JSON.stringify({
+    live,
+    allowed: allowed.map((f) => f.key),
+    staleAllow,
+    allowCount: ALLOW.size,
+    debt: debt.map(([key, e]) => ({ key, why: e.why, ref: e.ref })),
+  }, null, 2))
 } else {
   for (const f of live) console.log(`${f.rule}  ${f.file}:${f.line}\n    ${f.message}\n`)
   if (allowed.length) {
-    // One line per allowlist ENTRY, with the site count it covers — several
-    // sites can share one entry (six `delete ctx._triviaLog` calls in one
-    // function are one exemption, not six).
+    // One line per allowlist ENTRY, with its category and the site count it
+    // covers — several sites can share one entry (six `delete ctx._triviaLog`
+    // calls in one function are one exemption, not six).
     const byKey = new Map()
     for (const f of allowed) byKey.set(f.key, (byKey.get(f.key) ?? 0) + 1)
     console.log(`${byKey.size} allowlisted pre-existing entr${byKey.size === 1 ? 'y' : 'ies'} covering ${allowed.length} site${allowed.length === 1 ? '' : 's'}:`)
-    for (const [k, n] of byKey) console.log(`  ${k}${n > 1 ? `  (x${n})` : ''}`)
+    for (const [k, n] of byKey) console.log(`  [${ALLOW.get(k).category}] ${k}${n > 1 ? `  (x${n})` : ''}`)
   }
-  console.log(`invariant gate: ${files.length} modules examined, ${live.length} finding${live.length === 1 ? '' : 's'}`)
+  if (debt.length) {
+    console.log(`\n${debt.length} outstanding DEBT entr${debt.length === 1 ? 'y' : 'ies'} — these are owed, not accepted:`)
+    for (const [key, e] of debt) console.log(`  ${key}  →  ${e.ref}`)
+  }
+  console.log(`\ninvariant gate: ${files.length} modules examined, ${live.length} finding${live.length === 1 ? '' : 's'}`)
 }
 
 // A stale allowlist entry is a FAILURE, not a shrug: it means the violation is

@@ -5,6 +5,44 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **A ratchet on the invariant-gate allowlist, and a category on every entry.**
+  The allowlist header said "THIS LIST MAY ONLY GET SHORTER" and called each
+  entry "a numbered lane, not an acceptance", and nothing enforced either
+  sentence. The cost was concrete: `INV-3` correctly caught
+  `src/compiler/token-alphabet.ts` and `src/compiler/token-scanner.ts` as
+  built-but-never-wired analysis — the sixth instance of that shape in this
+  project — and the allowlist entry silently converted the live finding into a
+  permanent accepted state, where it stayed. An entry with no owner and no
+  expiry is a decision to never do the work.
+
+  The entries move to `scripts/invariant-allowlist.mjs`, which also carries
+  `ALLOW_COUNT`, the committed entry count; the gate fails unless the list
+  matches it exactly. Adding an entry now costs a deliberate edit to a single
+  numbered line that a reviewer sees as its own hunk, rather than one more line
+  among sixteen. Every entry declares a machine-checked category — `RULE-BUG`
+  (the rule is wrong, the code is right), `BY-DESIGN` (permanent and argued), or
+  `DEBT` (must be fixed, and must name a `ref` that owns it) — and outstanding
+  `DEBT` is printed on every run, green ones included, because debt that is
+  never restated is never paid. `BY-DESIGN` versus `DEBT` is the distinction
+  that failed here — the token-scanner entry stated a real obligation and
+  decayed into a de facto exemption because nothing enforced or restated it, and
+  debt decays that direction only — so the header says so where the next person
+  adding an entry will read it.
+
+  Both new checks are proven to FIRE in `test/unit/invariant-gate.test.ts`,
+  against fixture trees carrying their own allowlist, on the same standard the
+  file already applied to the five rules. A fourth fixture proves the ratchet
+  can be RAISED: an architectural change that retires modules from the export
+  graph adds `BY-DESIGN` entries and bumps `ALLOW_COUNT` in the same commit, and
+  the gate goes green. A ratchet that cannot be raised is a hard block, and a
+  hard block gets bypassed.
+
+  The ratchet's first act: the two `INV-4` entries were "one import each" by
+  their own comment, so `childrenOf` and `intersects` now live once in
+  `src/analysis/gating.ts` — the module every analysis pass already imports —
+  and the entries are gone. **18 entries covering 26 sites -> 16 covering 24**,
+  categorized 7 `BY-DESIGN` / 1 `RULE-BUG` / 9 `DEBT`.
+
 - **The table gates each choice arm on its own class now, and `benchmark.less`
   drops 17%.** The table granted a choice its first-char dispatch only when
   EVERY arm was non-nullable, pairwise disjoint and class-mappable; one failure
@@ -205,9 +243,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   function did not construct — one `delete` flips `%HasFastProperties` to false
   and re-adding the property does not restore it, and `delete ctx._triviaLog`
   runs per token and per leaf on the object every combinator reads on every
-  step. Nineteen allowlist entries covering 27 pre-existing sites are recorded
+  step. Eighteen allowlist entries covering 26 pre-existing sites are recorded
   by name with a reason each; the list may only get shorter, and a stale entry
-  fails the gate. A fifth candidate — conditional spread into an object literal
+  fails the gate. (Made mechanical, and trimmed to 16/24, by the ratchet entry
+  above.) A fifth candidate — conditional spread into an object literal
   — was implemented, measured at 177 pre-existing hits in overwhelmingly cold
   code, and REJECTED rather than shipped noisy. See
   `docs/design/invariant-gate.md`, which also records what could not be

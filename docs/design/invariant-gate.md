@@ -149,50 +149,97 @@ escape analysis. The rule under-reports rather than over-reports, on purpose.
 
 ## The allowlist
 
-`ALLOW` in `scripts/check-invariants.mjs`. **It may only get shorter.** Adding
+`ALLOW` in `scripts/invariant-allowlist.mjs`. **It may only get shorter.** Adding
 an entry to unblock new code is the failure this whole file exists to stop.
 
-Two mechanical properties keep that honest rather than aspirational:
+For one release that sentence was only a sentence. Nothing enforced it, and
+nothing required an entry to say who owned it or when it expired — so
+`INV-3 token-alphabet.ts` / `token-scanner.ts`, a *correctly detected* live
+finding of the built-but-never-wired shape this project has now hit six times,
+was converted by its own allowlist entry into a permanent accepted state. An
+entry with no owner and no expiry is a silent decision to never do the work.
 
-1. A **stale entry fails the gate**. If the violation an entry names is gone,
+Four mechanical properties keep the rule honest rather than aspirational. Each
+of the first three is proven to FIRE in `test/unit/invariant-gate.test.ts`,
+against fixture trees that ship their own allowlist:
+
+1. **The ratchet.** `ALLOW_COUNT` is the committed entry count and the gate
+   fails unless `ALLOW.size` matches it exactly. An added entry can no longer
+   hide as one more line in a list — it costs a deliberate edit to a single
+   numbered line, which a reviewer sees as its own hunk. A *removed* entry costs
+   the same edit, which is what keeps the ratchet tight instead of leaving slack
+   for a later commit to spend for free. It is a **ratchet, not a wall**: a real
+   architectural change that retires modules from the export graph raises
+   `ALLOW_COUNT` in the same commit and the gate goes green. A ratchet that
+   cannot be raised is a hard block, and a hard block gets bypassed, taking the
+   rules that matter with it.
+2. **Structure.** Every entry declares a `category`, machine-checked against
+   exactly three values, and a reason:
+   - `RULE-BUG` — the rule is wrong and the code is right; the fix is to refine
+     the rule, and the entry leaves when it is refined.
+   - `BY-DESIGN` — a finished argument. The code is staying in this shape, and
+     the entry leaves only if the design changes. Not debt.
+   - `DEBT` — an unfinished obligation. Must be fixed, and must carry a `ref`
+     naming the lane, doc, or issue that owes it.
+
+   **`BY-DESIGN` vs `DEBT` is the distinction that failed**, and the reason the
+   category is machine-checked rather than trusted to prose. The two look
+   identical on the day they are written. `INV-3 token-alphabet.ts` /
+   `token-scanner.ts` was real debt with a stated obligation — "wire into the
+   compiler or delete" — and nothing enforced it and nothing restated it, so it
+   came to read exactly like the frozen-control entries above it: a permanent,
+   accepted exemption. Debt decays into by-design by neglect, never the other
+   way round.
+3. A **stale entry fails the gate**. If the violation an entry names is gone,
    the entry is now a standing licence to reintroduce it, so the gate goes red
-   until it is deleted. (`test/unit/invariant-gate.test.ts` proves this fires.)
-2. Keys are **name-based, not line-based** (`file:enclosingFunction`,
+   until it is deleted.
+4. Keys are **name-based, not line-based** (`file:enclosingFunction`,
    `file:declName`). A line-numbered key would go stale on any edit above it and
    turn the allowlist into a source of unrelated red.
 
+Every `DEBT` entry is **printed on every run, including green ones**, with its
+ref. Debt that is never restated is debt that is never paid.
+
 There is deliberately no wildcard syntax and no per-rule blanket.
 
-**19 allowlist entries covering 27 finding sites** are recorded at the commit
-that added the gate, in three groups.
+**16 allowlist entries covering 24 finding sites** stand today — 7 `BY-DESIGN`,
+1 `RULE-BUG`, 9 `DEBT` — in three groups. (18 covering 26 at the commit that
+added the gate; the ratchet's first act was to take the two `INV-4` analysis
+duplications below off the list by fixing them.)
 
-Six are the **frozen ablation controls** — `src/table/exec-baseline.ts` and
+Five are the **frozen ablation controls** — `src/table/exec-baseline.ts` and
 `src/table/encode-baseline.ts`, deliberate frozen copies kept in process so
 `bench/table-alloc-ablation.ts` can measure a change against a same-path
 control. Being unimported (INV-3) and byte-identical to the live helpers
 (INV-4) *is* the control. `vitest.config.ts` excludes them from coverage for
 the same reason. They leave when the ablation does.
 
-Six are **real debt**, left standing so the gate lands separately from the
-fixes:
+Four cover the findings the gate was built to catch, left standing so the gate
+could land separately from the fixes:
 
-- `INV-1 src/functional/run.ts:guardRemovedFields` — **the 36.9% defect, still
-  live on this branch.** Two throwing accessors installed on every `run()`
-  result to explain fields removed in 0.44.0. Deleting the function is the fix.
-- `INV-1 src/compiler/linker.ts:composeLeaf` — one accessor per rule, once per
-  `composeLeaf()`, so the grammar you actually use is fused on first access and
-  a second conflicting one fails loudly. This one is **argued, not debt**; it is
-  listed rather than carved out of the rule so that if the site changes the
+- `INV-1 src/functional/run.ts:<module>` — **`RULE-BUG`.** This
+  `Object.defineProperty` runs once at module load, on a PROTOTYPE, and that is
+  exactly the fix that replaced the per-instance installation the rule was
+  written against. INV-1 fires on the correct pattern here; it should exempt
+  module-scope prototype installation, and the entry leaves when it does.
+- `INV-1 src/compiler/linker.ts:composeLeaf` — **`BY-DESIGN`.** One accessor per
+  rule, once per `composeLeaf()`, so the grammar you actually use is fused on
+  first access and a second conflicting one fails loudly. Argued at the site,
+  and listed rather than carved out of the rule so that if the site changes the
   entry goes stale and someone has to look again.
 - `INV-3 src/compiler/token-alphabet.ts`, `INV-3 src/compiler/token-scanner.ts`
-  — the derived-tokenization lane landed its alphabet and scanner before the
-  consumer that reads them. Precisely the "analysis nothing imports" shape,
-  caught this time.
-- `INV-4 childrenOf` (`analysis/choice-cost.ts` ↔ `analysis/duplication.ts`),
-  `INV-4 intersects` (`analysis/duplication.ts` ↔ `analysis/gating.ts`) — two
-  genuine copy-pastes. One import each.
+  — **`DEBT`**, ref `docs/design/derived-tokenization.md`. The lane landed its
+  alphabet and scanner before the consumer that reads them: precisely the
+  "analysis nothing imports" shape, caught this time. A design lane decides
+  whether they get wired or deleted; either way the entries go.
 
-Seven entries cover the **`delete`-on-long-lived-object findings**, 15 sites:
+`INV-4 childrenOf` (`analysis/choice-cost.ts` ↔ `analysis/duplication.ts`) and
+`INV-4 intersects` (`analysis/duplication.ts` ↔ `analysis/gating.ts`) were also
+in this group. Both were one import each, and both are now gone: the helpers
+live once in `analysis/gating.ts`, the module every analysis pass already
+imports.
+
+Seven entries — all `DEBT` — cover the **`delete`-on-long-lived-object findings**, 15 sites:
 
 - `INV-5 ctx._triviaLog` / `ctx._rootTriviaLog` in `combinators/token.ts` (6
   sites) and `table/exec.ts` (6 sites) — **the sharpest instance in the
@@ -202,13 +249,15 @@ Seven entries cover the **`delete`-on-long-lived-object findings**, 15 sites:
   what three-way identity rewards: one shape defect became two. A separate lane
   is measuring what these cost end to end and may remove them; when it lands,
   these entries go stale and the gate will REQUIRE their deletion. That is the
-  intended interaction, not a conflict.
+  intended interaction, not a conflict. Ref `lane/ctx-shape`.
 - `INV-5 meta.triviaKindLabels`, `meta.disjoint`, `meta.grammarHostMode` in
   `compiler/linker.ts` (3 sites) — `const meta = slot._meta` is an alias of a
   combinator's long-lived meta, which is read during interpreted parses. Cold
   sites, so the cost is the shape the object carries afterwards. Unlike `ctx`,
   these readers test `!== undefined` rather than presence, so `= undefined` IS a
-  drop-in here.
+  drop-in here. **No lane owns these three yet**; the `ref` points back at this
+  section, which is where the available fix is written down. That is the weakest
+  ref on the list and the next one that should get a real owner.
 
 ## Candidate checks that were REJECTED
 
