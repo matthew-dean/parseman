@@ -65,8 +65,6 @@ export function reachableIps(prog: TableProgram): Set<number> {
         for (let i = 0; i < n; i++) stack.push(code[ip + 4 + i]!)
         break
       }
-      case OP_GUARD:
-        break
       case OP_GREEDY: {
         stack.push(code[ip + 1]!)
         const n = code[ip + 2]!
