@@ -317,6 +317,68 @@ whether it represents anything. Measure before ranking.
 
 ---
 
+## 9. RECOVER THE LITERAL / REGEX / TRIVIA FAST PATHS — an LLM oversight, not a decision
+
+**Owner ruling, recorded verbatim in substance:** optimising the SHAPE of codegen
+into a table was the goal. Retiring its literal- and regex-recognition
+optimisations was **a non-goal, and was never agreed to.** It happened anyway.
+
+**What was deleted.** These were removed during the 0.47 cutover on the reasoning
+that they were "only reachable from codegen." That reasoning is wrong: *only
+reachable from the deleted engine* is not the same as *not worth keeping*, and
+nobody made the second judgement. All recoverable from `3d4dac6`:
+
+| file | lines | what it did |
+|---|---|---|
+| `src/compiler/scannable-run.ts` | **1627** | the bulk of literal/regex run recognition |
+| `src/compiler/trivia-fast-path.ts` | 296 | trivia scanning specialisation |
+| `src/compiler/module-hoist.ts` | 221 | shared-subtree hoisting |
+| `src/compiler/inline-build.ts` | 111 | build-call inlining analysis |
+| `src/compiler/inline-callback.ts` | 105 | reducer callback inlining |
+| `src/compiler/scannable-terminal.ts` | 31 | terminal scan classification |
+
+Also gone: `src/compiler/line-index.ts`, `src/compiler/codegen.ts`, and the
+benches `codegen-ab.ts`, `shared-prefix-ab.ts`, `composeleaf-firstset.ts`.
+
+`git show 3d4dac6:src/compiler/scannable-run.ts` — none of it is lost, and 1627
+lines of literal-recognition work is not something to re-derive from scratch.
+
+**What it appears to have cost.** CI `workload-perf`, HEAD vs the pinned
+reference, on a quiet runner (load 0.27 → 1.37), null control worst median ±0.7%:
+
+```
+less/mixins       59 KB   median +780.6% … +810.9%   won 0/12   breached 5/5
+css/stylesheet    64 KB   median +666.3% … +759.5%   won 0/12   breached 5/5
+json/document     59 KB   median +126.9% … +134.3%   won 0/12   breached 5/5
+graphql/document  49 KB   median  +93.4% … +112.6%   won 0/12   breached 5/5
+```
+
+**UNRECONCILED, and it must be reconciled before anyone acts on either number.**
+`bench/jess/fixture.ts` on the real dialect grammars measured css 1.09× and less
+1.05× against its `ref|` leg (§8 above), with three-way agreement on every
+fixture. CI measures +666% and +780% on its own css/less workloads. Both cannot
+describe the same thing. Candidate explanations, none yet tested: the two
+harnesses pin different reference commits; the CI workloads exercise the deleted
+scan fast paths where the dialect fixtures do not; or one harness's reference leg
+is not the pre-deletion engine at all. **Do not quote either figure as the gap
+until this is resolved** — §8's numbers are provisional pending it.
+
+**The 0.48 instruction.** When token streaming lands, take whatever was valuable
+out of these modules. Token streaming is where literal and regex recognition
+should get *faster*, not the occasion to accept having lost it — classified
+tokens make leaf matching an integer compare, which is the same objective
+`scannable-run.ts` was pursuing through a different mechanism. Read it before
+designing the replacement.
+
+**The process lesson, which is why this is written down rather than just fixed.**
+Three separate agent briefs listed these files for deletion, and every one
+justified it as "its only consumer is codegen." That is a reachability fact, not
+a value judgement, and reachability was allowed to stand in for the judgement at
+every step — including by me, when I wrote the briefs. A module that only the
+deleted engine called still has to be asked *what does it do, and do we want it*.
+
+---
+
 ## Standing hazard for anything above
 
 **`expected` is NOT in the identity digest.** `bench/table-lowering-identity.ts`
