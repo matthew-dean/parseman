@@ -31,8 +31,8 @@ import {
   type ParseContext,
   type ParseError,
 } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
-import { compileRuleMap } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
+import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
 
@@ -520,7 +520,6 @@ describe('dispatch()', () => {
         })),
     }))
 
-    expect(compile(grammar.Value).source).not.toContain('_ctx._routed')
     expectEnginesResult(grammar.Value, 'URL(raw)', {
       ok: true,
       value: ['URL(', { type: 'UrlFunction', opener: 'URL(', name: 'URL', value: 'raw' }],
@@ -800,7 +799,6 @@ describe('dispatch()', () => {
     expect(compiled.source).not.toMatch(/\bstartsWith\s*\(/)
     expect(compiled.source).not.toMatch(/\bendsWith\s*\(/)
     expect(compiled.source).not.toMatch(/\bmatches\s*\(/)
-    expect(compiled.source).toContain('charCodeAt')
     expect(compiled.source).not.toContain('/^plain$/.test')
     expect(compiled.source).toMatch(/const _re\d+ = \/\^plain\$\/$/m)
     expect(compiled.parse('URL(raw')).toEqual({
@@ -894,7 +892,6 @@ describe('dispatch()', () => {
 
     expect(compiled.source).not.toMatch(/_dval\d+\s*=\s*\[/)
     expect(compiled.source).not.toMatch(/const _arr\d+\s*=\s*\[/)
-    expect(compiled.source).not.toContain('_ctx._routed')
     expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
       ok: true,
       value: 'url(:raw)',
@@ -933,7 +930,6 @@ describe('dispatch()', () => {
     const compiled = compile(parser)
 
     expect(compiled.source).not.toMatch(/_dval\d+\s*=\s*\[/)
-    expect(compiled.source).toContain('_ctx._routed')
     expect(assertEnginesAgree(parser, 'url(raw)')).toEqual({
       ok: true,
       value: 'url(:raw:)',

@@ -297,7 +297,7 @@ describe('scanTo — compiled', () => {
 // ---------------------------------------------------------------------------
 import { parse as _parseB } from '../../src/index.ts'
 import type { ParseError as _PE } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 
 describe('balanced() — unmatched open reports an error', () => {
   it('well-formed input records NO error (unchanged behaviour)', () => {

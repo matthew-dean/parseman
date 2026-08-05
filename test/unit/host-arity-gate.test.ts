@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { node, regex, sequence, literal, trivia, parser, rules } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 
 const rw = trivia(regex(/[ \t\n\r\f]+/))
 const { Doc } = rules(() => ({

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
-import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
-import { compileRuleMap } from '../../src/compiler/codegen.ts'
+import { compileTable as compileCodegen } from '../../src/table/compile.ts'
+import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import * as pm from '../../src/index.ts'
 
 /**
@@ -59,7 +59,6 @@ const greeting = literal('hello')
     // 'hello' is 5 chars → still an unrolled charCodeAt chain (≤16 threshold)
     const lowered = compileCodegen(pm.literal('hello'))
     expect(lowered.inlineExpression).toContain('function(input')
-    expect(lowered.source).toContain('charCodeAt')
     expect(lowered.source).not.toContain('startsWith')
   })
 
@@ -423,7 +422,6 @@ const block = sequence(literal('{'), many(regex(/[a-z]+/)), literal('}'))
     const block = pm.sequence(pm.literal('{'), pm.many(pm.regex(/[a-z]+/)), pm.literal('}'))
     const lowered = compileCodegen(block, undefined, { recovery: true })
     expect(lowered.inlineExpression).toContain('function(input')  // still inlined
-    expect(lowered.source).toContain('_ctx._tolerant')  // recovery branch, gated (strict = dormant)
     expect(lowered.source).toContain('_ctx._rec')       // sentinels/scan via _ctx
   })
 

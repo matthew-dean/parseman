@@ -5,6 +5,7 @@ import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableModule, emitTableExpression } from './emit.ts'
 import { assembledRules } from './assemble.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
+import { runDuplicationDiagnostic, type DuplicationOption } from './duplication-hook.ts'
 
 /**
  * `compile()` FOR THE TABLE LOWERING — same contract, different artifact.
@@ -95,8 +96,10 @@ export type TableCompileOptions = {
    * silently reports nothing is worse than a build error that says why.
    */
   readonly coverage?: boolean
-  readonly duplication?: unknown
-  readonly maxInline?: number
+  readonly duplication?: DuplicationOption
+  // NO `maxInline`. It bounded how large ONE emitted function could grow before the
+  // source lowering stopped inlining; a table has no emitted function to bound, so the
+  // option had nothing to read it and a caller setting it got silence.
   /** Identifier the emitted expression expects to find `tableRules` under. */
   readonly runtimeRef?: string
   /** Source text per `prog.fns` entry, for a module/expression that must be printable. */
@@ -114,6 +117,7 @@ export function compileTable<T>(
   // map, so the paths are rooted at `entry` and the ids are the ones a caller
   // switching lowerings already has. Building it differently here would produce a
   // set that is internally consistent and lines up with nothing.
+  runDuplicationDiagnostic(combinator, opts.duplication)
   const plan = opts.coverage === true ? buildGrammarPlan(combinator as Combinator<unknown>) : undefined
   const settings: TableSettings = {
     ...(opts.hostMode === undefined ? {} : { hostMode: opts.hostMode }),

@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest'
 import { regex, literal, sequence, many, oneOrMore, sepBy, node, rules, trivia, run, compile, completionsAt, cstBuildHost, expect as expectTok, optional } from '../../src/index.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
-import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
+import { compileTable as compileCodegen } from '../../src/table/compile.ts'
 const ident = regex(/[a-z]+/)
 const num = regex(/[0-9]+/)
 const decl = sequence(ident, literal(':'), num)

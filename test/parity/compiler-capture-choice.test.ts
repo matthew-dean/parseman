@@ -6,7 +6,7 @@ import {
   literal, regex, sequence, choice, transform, node, parser, trivia, compile, parse,
   makeWord, keywords,
 } from '../../src/index.ts'
-import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
+import { compileTable as compileCodegen } from '../../src/table/compile.ts'
 
 function par<T>(
   label: string,

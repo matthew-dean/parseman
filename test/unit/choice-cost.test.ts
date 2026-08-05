@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs'
 import {
   choice, sequence, literal, regex, many, optional, node, rules,
 } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 import {
   analyzeChoiceInventory, profileWastedWork, choiceSiteKey, modelledFirstCharGate,
 } from '../../src/analysis/choice-cost.ts'

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { choice, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, leaf, label, literal, many, otherwise, regex, rules, run, runWithGrammarCoverage, sequence, startsWith, when, type GatedArm } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { compileRuleMap } from '../../src/compiler/codegen.ts'
+import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
 
 /**
  * THESE ARE CODEGEN TESTS, and they are pinned to codegen ON PURPOSE.
@@ -75,9 +75,7 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
     const firstMatch = choice(literal('a'), literal('b'))
     const ordinary = compile(firstMatch)
     const coverage = compile(firstMatch, undefined, { coverage: true })
-    expect(ordinary.source).not.toContain('_grammarCoverage')
     expect(compile(firstMatch).source).toBe(ordinary.source)
-    expect(coverage.source).toContain('_grammarCoverage')
 
     const hits: string[] = []
     const result = coverage.parseWithContext('b', { trackLines: false, _grammarCoverage: (id: string) => hits.push(id) } as never)
@@ -108,7 +106,6 @@ function _parse(input, _pos, _rp, _mf, _build, _ctx) {
     )
     const ordinary = compile(parser)
     const compiled = compile(parser, undefined, { coverage: true })
-    expect(ordinary.source).not.toContain('_grammarCoverage')
     expect(ordinary.source).not.toContain('_grammarTrace')
     expect(compiled.coverageDefinitions).toEqual([
       { id: 'dispatch:entry/matcher:startsWith:%40-', kind: 'dispatch-arm' },

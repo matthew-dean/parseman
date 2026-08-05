@@ -18,6 +18,7 @@
  */
 import type { Combinator, ParserDef } from '../types.ts'
 import { regexCanMatchEmpty } from '../regex/first-set.ts'
+import { childrenOf } from './gating.ts'
 
 /**
  * Can `p` FAIL at all?
@@ -464,5 +465,87 @@ export function mayCommitFailure(p: Combinator<unknown>, seen: Set<Combinator<un
       return true
     default:
       return false
+  }
+}
+
+/** A leaf-composed imported piece may carry Parseman's own structural balanced
+ * text reconstruction, but never a grammar-authored semantic callback.
+ *
+ * `externalRefs` are the unresolved NAMED refs `compileLinkable`'s pre-pass already
+ * classified as external (`g.Value` naming a rule this artifact doesn't define). They
+ * are the one case that fails OPEN: the ref is a HOLE, it holds no callback of its
+ * own, and codegen emits it as a by-name `_r_<Name>` call bound at fuse time by
+ * whichever piece supplies the name — either another pre-final piece (itself put
+ * through this same gate) or the local leaf (allowed to be semantic by design). So
+ * an artifact whose only "unknown" is a hole is genuinely recognition-only.
+ *
+ * EVERY other lazy failure still fails CLOSED. In particular an UNNAMED `ref()` that
+ * was never `.define()`d is NOT external — nobody can bind it by name — so it stays
+ * an opaque subtree of unknown semantics and the answer is "semantic". Catching all
+ * errors here instead would let that (and any future thunk failure) pass the
+ * recognition-only gate. */
+function hasSemanticReduction(
+  roots: readonly Combinator<unknown>[],
+  externalRefs?: ReadonlySet<Combinator<unknown>>,
+): boolean {
+  const seen = new Set<Combinator<unknown>>()
+  const visit = (parser: Combinator<unknown>): boolean => {
+    if (seen.has(parser)) return false
+    seen.add(parser)
+    const def = parser._def
+    if (def.tag === 'transform' && !def.recognitionOnly) return true
+    if (def.tag === 'choice' && def.gates.some(Boolean)) return true
+    if (def.tag === 'guard' || def.tag === 'withCtx') return true
+    if (def.tag === 'node' && def.build !== undefined) return true
+    if (def.tag === 'lazy') {
+      if (externalRefs?.has(parser)) return false
+      try { return visit(def.thunk()) } catch { return true }
+    }
+    return childrenOf(def).some(visit)
+  }
+  return roots.some(visit)
+}
+
+/**
+ * `hasDirectBuilders` / `isRecognitionOnly` for a rule map WITHOUT lowering it.
+ *
+ * `composeLeaf()` gates on both: every pre-final grammar must prove recognition-only,
+ * and the local leaf's direct builders decide whether the recognition pieces need
+ * terminal capture. Both were only ever available as fields on `LinkablePieces`, so
+ * the gate forced a full `compileLinkable()` of every piece purely to read two
+ * booleans off the result — which is why the table lowering appeared to be blocked on
+ * porting the source lowering wholesale.
+ *
+ * They are not lowering products. Both are predicates over the COMBINATOR GRAPH, and
+ * this computes them from the graph directly, with the SAME `externalRefs` rule the
+ * lowering applies (`:6008`): a named `lazy` whose thunk throws is a HOLE, bound by
+ * name at fuse time, and is therefore not evidence of unknown semantics. An UNNAMED
+ * unresolved `ref()` stays semantic — nobody can bind it, so it fails closed.
+ */
+export function classifyRuleMap(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+): { hasDirectBuilders: boolean; isRecognitionOnly: boolean } {
+  const externalRefs = new Set<Combinator<unknown>>()
+  const scanned = new Set<Combinator<unknown>>()
+  const scanExternal = (p: Combinator<unknown>): void => {
+    if (scanned.has(p)) return
+    scanned.add(p)
+    const def = p._def
+    if (def.tag === 'lazy') {
+      let resolved: Combinator<unknown> | undefined
+      try { resolved = def.thunk() } catch { resolved = undefined }
+      if (resolved === undefined) {
+        if ((p as unknown as { _ruleName?: string })._ruleName) externalRefs.add(p)
+        return
+      }
+      scanExternal(resolved)
+      return
+    }
+    for (const child of childrenOf(def)) scanExternal(child)
+  }
+  for (const [, rule] of ruleMap) scanExternal(rule)
+  return {
+    hasDirectBuilders: ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
+    isRecognitionOnly: !hasSemanticReduction(ruleMap.map(([, rule]) => rule), externalRefs),
   }
 }

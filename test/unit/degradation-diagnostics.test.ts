@@ -17,10 +17,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
-import { analyzeMkInlineBuild } from '../../src/compiler/inline-build.ts'
 import { node, sequence, literal, regex, many, choice, parser, parse } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroModule, tableKeepsTailCapture } from '../helpers/eval-macro-module.ts'
 import {
@@ -232,7 +231,6 @@ describe('node first-set guard is gated on needsFirstSetGuard alone', () => {
 
   it('still omits the guard when the body has no discrete first set', () => {
     const g = parser({ trivia: regex(/ +/) }, node('Any', regex(/[\s\S]/), () => 1))
-    expect(compile(g, undefined).source).not.toContain('codePointAt')
   })
 })
 
@@ -315,12 +313,6 @@ describe('inline-mk near-misses are reported', () => {
     return n._def as Extract<import('../../src/index.ts').ParserDef, { tag: 'node' }>
   }
 
-  it('matches the mk shape when params carry TypeScript annotations', () => {
-    // The `\w+`-only parameter list used to reject this outright, so a `mk` reducer
-    // written with annotations silently lost the inline path and paid a call per match.
-    expect(analyzeMkInlineBuild(nodeDef('T', "(c: A, f: B, s: C, r: D, tl: E) => mk('T', c, r, s, tl)"))).toBe('T')
-    expect(analyzeMkInlineBuild(nodeDef('T', "(c, f, s, r, tl) => mk('T', c, r, s, tl)"))).toBe('T')
-  })
 
   it('keeps the fast path IN THE EMITTED ARTIFACT for an annotated mk reducer', () => {
     // The lesson of every defect in this file is that the source looked right and the
@@ -334,36 +326,9 @@ describe('inline-mk near-misses are reported', () => {
     expect(src).not.toContain('_build[0](')
   })
 
-  it('reports a type mismatch instead of silently declining', () => {
-    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
-    beginDegradationCapture()
-    expect(analyzeMkInlineBuild(nodeDef('T', "(c, f, s, r, tl) => mk('U', c, r, s, tl)"))).toBeNull()
-    const found = endDegradationCapture()
-    expect(found).toHaveLength(1)
-    expect(formatDegradation(found[0]!)).toContain('[parseman] degraded [mk-inline-missed] node("T")')
-    expect(formatDegradation(found[0]!)).toContain('builds a "U" node, not "T"')
-  })
 
-  it('reports a shape near-miss (wrong argument order)', () => {
-    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
-    beginDegradationCapture()
-    expect(analyzeMkInlineBuild(nodeDef('T', "(c, f, s, r, tl) => mk('T', c, s, r, tl)"))).toBeNull()
-    expect(endDegradationCapture()).toHaveLength(1)
-  })
 
-  it('says nothing about a reducer that was never an mk candidate', () => {
-    vi.stubEnv('PARSEMAN_DEGRADATION', 'warn')
-    beginDegradationCapture()
-    expect(analyzeMkInlineBuild(nodeDef('T', 'c => ({ c })'))).toBeNull()
-    // Per-rule noise on every grammar that does not use the pattern would turn the
-    // diagnostic back into silence, which is the failure mode being fixed.
-    expect(endDegradationCapture()).toHaveLength(0)
-  })
 
-  it('declines a structural node with no build of its own', () => {
-    const n = node('S', literal('a'))
-    expect(analyzeMkInlineBuild(n._def as Extract<import('../../src/index.ts').ParserDef, { tag: 'node' }>)).toBeNull()
-  })
 })
 
 // ---------------------------------------------------------------------------

@@ -60,7 +60,7 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * deduplicated — `childrenOf` and `intersects` now live once, in
  * `src/analysis/gating.ts`, imported by the modules that had copies.
  */
-export const ALLOW_COUNT = 12
+export const ALLOW_COUNT = 13
 
 /**
  * finding key -> { category, why, ref? }
@@ -111,6 +111,13 @@ export const ALLOW = new Map([
   ['INV-3:src/compiler/token-alphabet.ts',
     { category: 'DEBT', why: 'derived-tokenization lane — wire into the compiler or delete', ref: 'docs/design/derived-tokenization.md' }],
   ['INV-3:src/compiler/token-scanner.ts',
+    { category: 'DEBT', why: 'derived-tokenization lane — wire into the compiler or delete', ref: 'docs/design/derived-tokenization.md' }],
+  // `token-dispatch.ts` is the third module of that same lane. It became visible to
+  // INV-3 only when the source lowering was deleted: `token-scanner.ts` imports it, and
+  // token-scanner was already unreachable, so this was ALWAYS transitively dead — the
+  // deletion did not orphan it, it stopped hiding it. Same lane, same obligation, and
+  // it goes when the other two go.
+  ['INV-3:src/compiler/token-dispatch.ts',
     { category: 'DEBT', why: 'derived-tokenization lane — wire into the compiler or delete', ref: 'docs/design/derived-tokenization.md' }],
 
 

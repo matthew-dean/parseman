@@ -28,8 +28,7 @@ import * as parseman from '../../src/index.ts'
 import type { FusedRule } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { emitFusedSource } from '../../src/compiler/linker.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { evalMacroExports } from '../helpers/eval-macro-module.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
@@ -80,8 +79,9 @@ describe('compose over a compiled base with a withCtx (0.26.3)', () => {
     const ir = carried.find(p => typeof p.ir === 'string')!.ir
     expect(ir).toContain('_wc') // withCtx serialized through the state-preserving helper
     const pieces = compileLinkable(evalRuleMapIR(ir), '_relow_')!
-    expect(pieces.mfFns.length).toBe(0)   // state inlined from source, not a runtime closure
-    expect(() => emitFusedSource([pieces])).not.toThrow()
+    // Encoding IS the statement that the state was inlined from source rather than
+    // captured as a live closure — a live one makes the encoder refuse.
+    expect(pieces.replacement).not.toBeNull()
   })
 
   it('standalone: the compiled base parses a ruleset', () => {
@@ -139,8 +139,7 @@ export const typed = rules(g => ({
     const ir = carried.find(p => typeof p.ir === 'string')!.ir
     expect(ir).not.toContain(' as {')
     const pieces = compileLinkable(evalRuleMapIR(ir), '_typed_')!
-    expect(pieces.mfFns).toHaveLength(0)
-    expect(() => emitFusedSource([pieces])).not.toThrow()
+    expect(pieces.replacement).not.toBeNull()
 
     const delta = parseman.rules(() => ({ Extra: parseman.literal('z') }))
     const composed = parseman.compose([base as never, delta]) as unknown as Record<string, FusedRule>

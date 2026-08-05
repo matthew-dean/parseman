@@ -742,3 +742,49 @@ export function formatGatingWarnings(report: GatingReport): string[] {
     lines.push(`parseman anti-pattern [${ap.kind}] @ ${ap.rule} arm[${ap.armIndex}]: ${ap.message}`)
   return lines
 }
+
+/**
+ * Dependency manifest for a rule map: for each rule, the set of OTHER rule names
+ * its body references. A referenced rule is a BOUNDARY — record the edge and do
+ * NOT descend into it (its own deps are its own entry). Self-references are
+ * included, because a recursive rule does depend on itself.
+ *
+ * Used for a la carte dep-closure selection (`pick`) and the compose-time name
+ * closure check. This lives here rather than in a lowering because it is a walk
+ * over the COMBINATOR GRAPH and has nothing to do with how that graph is lowered
+ * — it outlived the source lowering it was first written inside.
+ */
+export function ruleDependencies(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+): Map<string, string[]> {
+  const nameOf = new Map<Combinator<unknown>, string>()
+  for (const [name, comb] of ruleMap) nameOf.set(comb, name)
+
+  const deps = new Map<string, string[]>()
+  for (const [name, comb] of ruleMap) {
+    const found = new Set<string>()
+    const seen = new Set<Combinator<unknown>>()
+    const walk = (p: Combinator<unknown>, isRoot: boolean): void => {
+      const def = p._def
+      // `_ruleName` (set by `rules()`) also catches EXTERNAL refs — rules referenced
+      // by name but defined in another artifact — which is what makes the closure
+      // correct across a composition boundary.
+      const boundary = def.tag === 'lazy'
+        ? (nameOf.get(p) ?? (p as unknown as { _ruleName?: string })._ruleName)
+        : nameOf.get(p)
+      if (!isRoot && boundary !== undefined) { found.add(boundary); return }
+      if (seen.has(p)) return
+      seen.add(p)
+      if (def.tag === 'lazy') {
+        let resolved: Combinator<unknown>
+        try { resolved = def.thunk() } catch { return }
+        walk(resolved, false)
+        return
+      }
+      for (const child of childrenOf(def)) walk(child, false)
+    }
+    walk(comb, true)
+    deps.set(name, [...found])
+  }
+  return deps
+}

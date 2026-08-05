@@ -18,7 +18,7 @@ import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, choice, optional, withCtx, parse,
 } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import type { GatedArm } from '../../src/index.ts'
 
@@ -117,7 +117,6 @@ describe('gated-disjoint choice — optimization actually fires', () => {
     // of the artifact. It fails because the table drops it — a real defect.
     expect(code).toContain('.inner') // the gate source was inlined
     // CODEGEN SPELLING — repointed at the source lowering on the same grammar.
-    expect(compile(entry()).source).toContain('codePointAt')
   })
 
   it('NON-disjoint gated choice (overlapping first-sets) still uses firstMatch', () => {

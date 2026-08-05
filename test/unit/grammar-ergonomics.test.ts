@@ -23,7 +23,8 @@ import {
 } from '../../src/index.ts'
 import { node, runWithGrammarCoverage } from '../../src/index.ts'
 import { matchesEmpty, firstSetOf } from '../../src/combinators/first-set.ts'
-import { compileRuleMap, compileLinkable } from '../../src/compiler/codegen.ts'
+import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { serializeRuleMap, evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 
 /** Does this choice emit O(1) first-char dispatch? The single gating question. */

@@ -9,8 +9,8 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { rules, regex } from '../../src/index.ts'
 import { PARSEMAN_VERSION } from '../../src/version.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { fuseRules } from '../../src/compiler/linker.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
+import { compose } from '../../src/compiler/linker.ts'
 
 describe('artifact version stamp', () => {
   it('matches package.json version', () => {
@@ -26,14 +26,14 @@ describe('artifact version stamp', () => {
   it('fusedBody REFUSES to link an artifact stamped with a different version', () => {
     const p = compileLinkable(Object.entries(rules(() => ({ N: regex(/[0-9]+/) }))), '_v_')!
     const stale = { ...p, v: '0.0.0-stale' }
-    expect(() => fuseRules([stale])).toThrow(/version-locked|does not fuse across versions/)
+    expect(() => compose([stale])).toThrow(/version-locked|does not fuse across versions/)
     // a same-version artifact still fuses fine
-    expect(() => fuseRules([p])).not.toThrow()
+    expect(() => compose([p])).not.toThrow()
   })
 
   it('fusedBody REFUSES an UNSTAMPED artifact (pre-invariant, missing v)', () => {
     const p = compileLinkable(Object.entries(rules(() => ({ N: regex(/[0-9]+/) }))), '_v_')!
     const unstamped = { ...p, v: undefined } as unknown as typeof p
-    expect(() => fuseRules([unstamped])).toThrow(/UNSTAMPED|does not fuse unversioned/)
+    expect(() => compose([unstamped])).toThrow(/UNSTAMPED|does not fuse unversioned/)
   })
 })

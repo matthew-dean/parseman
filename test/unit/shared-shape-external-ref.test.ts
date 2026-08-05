@@ -19,7 +19,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import * as parseman from '../../src/index.ts'
 import { literal, ref, rules, sequence, node, transform, choice, gate, withCtx } from '../../src/index.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 
 type Parse = (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }

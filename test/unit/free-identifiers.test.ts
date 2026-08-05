@@ -14,7 +14,8 @@
 import { describe, it, expect } from 'vitest'
 import { findFreeIdentifiers } from '../../src/plugin/free-identifiers.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { compile as compileCodegen, compileRuleMap as compileRuleMapCodegen } from '../../src/compiler/codegen.ts'
+import { compileTable as compileCodegen } from '../../src/table/compile.ts'
+import { compileRuleMapTable as compileRuleMapCodegen } from '../../src/table/compile-rule-map.ts'
 import * as pm from '../../src/index.ts'
 
 const names = (code: string): string[] =>

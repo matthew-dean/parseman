@@ -16,7 +16,7 @@
 import { describe, it, expect } from 'vitest'
 import { node, sequence, regex, literal, parser, parse, triviaEntries, cstBuildHost } from '../../src/index.ts'
 import type { ParserDef } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 import { confirmedBuildArity, buildReadsChildren, buildReadsRaw, buildReadsTrivia, buildReadsState } from '../../src/compiler/build-arity.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { assertMacroCompiled, evalMacroModule, tableKeepsTailCapture } from '../helpers/eval-macro-module.ts'

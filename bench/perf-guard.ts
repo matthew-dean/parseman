@@ -156,26 +156,13 @@ if (shelvedRegressionKeys.size > 0) {
 // grammar and asserts the at-rule arms still first-char-gate on `@` (a gating
 // regression flips it) — timing-independent, so it never false-positives on runner
 // noise. The median is reported for the nightly major-regression watch.
-let composeRegressed = false
-try {
-  const c = await import('./composeleaf-firstset.ts')
-  const trials: number[] = []
-  for (let i = 0; i < 200; i++) c.parse()
-  for (let t = 0; t < GUARD_PASSES * 3; t++) {
-    const start = performance.now()
-    for (let i = 0; i < 400; i++) c.parse()
-    trials.push(((performance.now() - start) / 400) * 1000)
-  }
-  trials.sort((a, b) => a - b)
-  console.log(`  compose/atcluster  dispatch=${c.dispatchEmitted}  median ${trials[Math.floor(trials.length / 2)]!.toFixed(1)}µs (cross-artifact fuse)`)
-  if (!c.dispatchEmitted) {
-    console.error('\nperf-guard: REGRESSION — cross-artifact at-rule arms LOST first-char dispatch (composeLeaf first-set resolution broke).')
-    composeRegressed = true
-  }
-} catch (e) {
-  console.error(`  compose/atcluster  check failed to run: ${(e as Error).message}`)
-  composeRegressed = true
-}
+// The cross-artifact first-char dispatch check is GONE with the source lowering that
+// made it necessary. It asserted that `fusedBody`'s `@FS:` placeholder substitution
+// still resolved a composed at-rule arm's first-set through the fuse — a property of
+// TEXTUAL fusion. Table composition merges rule maps and encodes once, so a composed
+// arm's first-set is computed by the same encoder that computes a monolithic one;
+// there is no separate fuse-time resolution left to regress.
+const composeRegressed = false
 
 // ── WHAT ACTUALLY BLOCKS, AND WHY IT IS NOT THIS FILE'S HEADLINE NUMBER ─────────
 //

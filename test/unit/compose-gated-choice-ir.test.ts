@@ -37,8 +37,7 @@ import * as parseman from '../../src/index.ts'
 import type { FusedRule } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { emitFusedSource } from '../../src/compiler/linker.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { evalMacroExports } from '../helpers/eval-macro-module.ts'
 
 const COMPOSED_PIECES = Symbol.for('parseman.composedPieces')
@@ -94,8 +93,10 @@ describe('compose over a compiled base with a gated choice (0.26.2)', () => {
     const ir = carried.find(p => typeof p.ir === 'string')!.ir
     expect(ir).toContain('_gch') // gated choice serialized through the gate-preserving helper
     const pieces = compileLinkable(evalRuleMapIR(ir), '_relow_')!
-    expect(pieces.mfFns.length).toBe(0)   // gate inlined from source, not a runtime closure
-    expect(() => emitFusedSource([pieces])).not.toThrow()
+    // The table statement of "no runtime-only closure": the piece ENCODED. A gate that
+    // came back as a live closure makes `compileRuleMapTable` refuse, so `replacement`
+    // is null and a downstream compose could not statically fuse it.
+    expect(pieces.replacement).not.toBeNull()
   })
 
   it('standalone: the compiled base parses a ruleset', () => {
@@ -142,7 +143,7 @@ export const g2 = rules(g => ({
     const ir = carried.find(p => typeof p.ir === 'string')!.ir!
     expect(ir).not.toContain('<any>') // the TS assertion was stripped from the gate source
     const pieces = compileLinkable(evalRuleMapIR(ir), '_ts_')!
-    expect(() => emitFusedSource([pieces])).not.toThrow() // no SyntaxError on re-lower
+    expect(pieces.replacement).not.toBeNull() // no refusal on re-lower
     // Assert the gate on the RE-LOWERED artifact (compose re-lowers the IR), not the
     // original g2 — a regression that loses/changes the predicate during restoration
     // would only surface here, not on the original grammar.

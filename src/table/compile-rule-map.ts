@@ -7,6 +7,7 @@ import { emitTableExpression } from './emit.ts'
 import { assembledRules } from './assemble.ts'
 import type { TableProgram, TableRule } from './program.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition } from '../compiler/grammar-coverage-ids.ts'
+import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplication-hook.ts'
 
 /**
  * `compileRuleMap()` FOR THE TABLE LOWERING — the counterpart that did not exist.
@@ -85,6 +86,11 @@ export type TableRuleMapOptions = {
    * checks for `null` and that contract is unchanged.
    */
   readonly refusals?: string[]
+  /**
+   * The structural duplication diagnostic. Ran inside the source lowering; it runs
+   * here for the same reason, so a build that asked for it keeps getting it.
+   */
+  readonly duplication?: DuplicationOption
 }
 
 export type CompiledRuleMapTable = {
@@ -175,6 +181,7 @@ export function compileRuleMapTable(
   // uses the winner map to give a shared subtree ONE owner; filtering differently
   // here would mint `rule:` ids the source lowering does not, so a consumer
   // comparing the two engines' coverage would be comparing two denominators.
+  runDuplicationDiagnosticRules(ruleMap, opts.duplication)
   const plan = opts.coverage === true
     ? buildGrammarPlan(
         ruleMap.map(([, rule]) => rule),

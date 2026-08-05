@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { rules, regex, many, choice, parser, trivia, classifiedTrivia, node, sequence, literal, compile, run, label, oneOrMore } from '../../src/index.ts'
-import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
+import { compileTable as compileCodegen } from '../../src/table/compile.ts'
 
 const blockTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))
 const lineTrivia = trivia(many(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//), regex(/\/\/[^\n]*/))))

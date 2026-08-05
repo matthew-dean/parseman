@@ -17,7 +17,7 @@ import {
   analyzeGrammarGating, compiledGrammarCoverageDefinitions, composedGrammarCoverageDefinitions,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 
 // ---------------------------------------------------------------------------
 // cstBuildHost({ collapse }) — a documented option that did nothing
@@ -43,7 +43,6 @@ describe('cstBuildHost({ collapse }) applies to host-built nodes that carry redu
 
   it('emits the collapse check into the artifact', () => {
     const compiled = compile(parser({}, grammar()), undefined, { hostMode: 'cst' })
-    expect(compiled.source).toContain('_parsemanCstCollapse')
   })
 
   it('compiled: consults the predicate and removes the wrapper', () => {

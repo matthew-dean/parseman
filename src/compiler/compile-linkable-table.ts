@@ -2,9 +2,11 @@ import type { Combinator } from '../types.ts'
 import type { HostMode } from '../cst/host-mode.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
+import { classifyRuleMap } from '../analysis/commitment.ts'
 import { serializeRuleMap } from './ir-serialize.ts'
 import { compileRuleMapTable, type TableRuleMapOptions } from '../table/compile-rule-map.ts'
 import type { TableProgram, TableRule } from '../table/program.ts'
+import { runDuplicationDiagnosticRules } from '../table/duplication-hook.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 
 /**
@@ -84,6 +86,14 @@ export type LinkableTable = {
   ir: string | null
   hostMode: HostMode
   hostBranchElided: boolean
+  /**
+   * Whether any rule carries a DIRECT builder, and whether the piece is free of
+   * semantic reduction. `composeLeaf` gates on both, and they are predicates over the
+   * combinator graph rather than products of lowering it — so they belong on the
+   * artifact regardless of which lowering produced it.
+   */
+  hasDirectBuilders: boolean
+  isRecognitionOnly: boolean
   reflection: GrammarReflection
 }
 
@@ -132,6 +142,7 @@ export function compileLinkableTable(
   opts: LinkableTableOptions = {},
 ): LinkableTable | null {
   if (!ns) throw new Error('compileLinkableTable: ns must be a non-empty namespace')
+  runDuplicationDiagnosticRules(ruleMapArg, opts.duplication)
   const ruleMap = ruleMapArg.filter(([, rule]) => isLocal(rule))
   if (ruleMap.length === 0) return null
   const external = externalNames(ruleMap)
@@ -157,6 +168,7 @@ export function compileLinkableTable(
     ir,
     hostMode,
     hostBranchElided: hostMode === 'ast',
+    ...classifyRuleMap(ruleMap),
     reflection: compiled?.reflection ?? collectGrammarReflection(ruleMap),
   }
 }

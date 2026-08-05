@@ -64,6 +64,7 @@ export type { HostMode } from './cst/host-mode.ts'
  * than a merge of two already-encoded programs.
  */
 export { compileLinkableTable, type LinkableTable, type LinkableTableOptions } from './compiler/compile-linkable-table.ts'
+export type { DuplicationOption } from './table/duplication-hook.ts'
 
 // THE diagnostic entry point. `compile()` never reports anything: diagnostics are a
 // deliberate act, not a side effect of producing an artifact. `diagnoseGrammar` accepts

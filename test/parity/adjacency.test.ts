@@ -10,7 +10,7 @@ import {
   classifiedTrivia, trivia, parser, parse as runtimeParse, compile, rules,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
-import { compile as compileCodegen } from '../../src/compiler/codegen.ts'
+import { compileTable as compileCodegen } from '../../src/table/compile.ts'
 
 const ws = trivia(regex(/[ \t\n\r\f]+/))
 

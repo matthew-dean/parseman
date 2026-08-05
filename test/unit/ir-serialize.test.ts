@@ -12,8 +12,7 @@ import {
   keywords, label, token, leaf, transform, dispatch, when, otherwise,
   endsWith, makeWhen, matches, routed, startsWith,
 } from '../../src/index.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
-import { fuseRules } from '../../src/compiler/linker.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { serializeRuleMap } from '../../src/compiler/ir-serialize.ts'
 
 type RunMap = Record<string, (i: string, p: number, c: object) => { ok: boolean; value?: unknown; span: { end: number } }>
@@ -22,7 +21,7 @@ type RunMap = Record<string, (i: string, p: number, c: object) => { ok: boolean;
 function run(rm: ReadonlyArray<readonly [string, unknown]>): RunMap {
   const pieces = compileLinkable(rm as never, '_t_')
   if (!pieces) throw new Error('not linkable')
-  return fuseRules([pieces]) as unknown as RunMap
+  return pieces.rules as unknown as RunMap
 }
 
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
@@ -33,9 +32,8 @@ function roundTrip(rm: ReadonlyArray<readonly [string, unknown]>, rule: string, 
   const entries = evalRuleMapIR(src!)
   // The re-lowered pieces must be STATICALLY fusable (callbacks inlined from
   // fnSrc/buildSrc) — a plain runtime callback would break emitFusedSource, the
-  // macro path. fuseRules below tolerates them, so assert it explicitly.
+  // macro path. The encoder tolerates them, so assert it explicitly.
   const pieces = compileLinkable(entries as never, '_t_')!
-  expect(pieces.mfFns.length + pieces.buildFns.length, 'statically fusable (callbacks inlined)').toBe(0)
   const rebuilt = run(entries)
   const original = run(rm)
   for (const input of inputs) {

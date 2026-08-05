@@ -15,8 +15,9 @@ import {
   keywordRegexShape, keywordAlternationHazards, siteToString,
   choice, sequence, literal, regex, many, optional, node, field, ref, withCtx, keywords, rules, dispatch, when, otherwise,
 } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
-import { compileRuleMap, compileLinkable } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
+import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { compose } from '../../src/compiler/linker.ts'
 import type { Combinator } from '../../src/types.ts'
 

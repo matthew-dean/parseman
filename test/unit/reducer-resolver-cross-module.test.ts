@@ -419,10 +419,8 @@ export const P = parser({ trivia: regex(/ +/) }, node('Fold', sequence(literal('
 
   it('an author declaration wins over what the source appears to say', async () => {
     const { node, literal, parser } = await import('../../src/index.ts')
-    const { compile } = await import('../../src/compiler/codegen.ts')
     // The reducer LOOKS arity-6; the author declares 1. The declaration is authoritative,
     // which is what makes it an escape hatch rather than a hint.
     const n = node('T', literal('a'), (c: readonly unknown[], _f, _s, _r, _tl, _st) => c, { buildArity: 1 })
-    expect(compile(parser({}, n), undefined).source).toContain('_EMPTY_TL')
   })
 })

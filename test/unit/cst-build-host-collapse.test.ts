@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { cstBuildHost, literal, node, optional, rules, run, sequence, withCtx } from '../../src/index.ts'
-import { compile } from '../../src/compiler/codegen.ts'
+import { compileTable as compile } from '../../src/table/compile.ts'
 
 const leafValue = (value: unknown) =>
   typeof value === 'object' && value !== null && (value as { _tag?: string })._tag === 'leaf'
@@ -33,7 +33,6 @@ describe('cstBuildHost options', () => {
     const doc = result.value as { children: unknown[] }
     expect((doc.children[0] as { type?: string }).type).toBe('Inner')
     expect((doc.children[1] as { type?: string }).type).toBe('Keep')
-    expect(compiled.source).toContain('_parsemanCstCollapse')
   })
 
   // The collapse branch is gated on `cstOutput || (!build && project === undefined)`, so

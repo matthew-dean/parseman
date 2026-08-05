@@ -6,10 +6,9 @@
  */
 import { describe, expect, it } from 'vitest'
 import * as parseman from '../../src/index.ts'
-import { compileLinkable } from '../../src/compiler/codegen.ts'
+import { compileLinkableTable as compileLinkable } from '../../src/compiler/compile-linkable-table.ts'
 import { evalRuleMapIR } from '../../src/compiler/ir-serialize.ts'
 import { directBuilderUnsupportedBindings } from '../../src/plugin/direct-builder-static.ts'
-import { emitFusedSource } from '../../src/compiler/linker.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroExports, evalMacroModule } from '../helpers/eval-macro-module.ts'
 
@@ -40,8 +39,9 @@ describe('compose over a macro-built direct node builder', () => {
     expect(ir).toContain('_nd')
 
     const pieces = compileLinkable(evalRuleMapIR(ir), '_direct_')!
-    expect(pieces.buildFns).toEqual([])
-    expect(() => emitFusedSource([pieces])).not.toThrow()
+    // A direct builder carried as a live function cannot be printed; encoding proves
+    // it round-tripped as SOURCE.
+    expect(pieces.replacement).not.toBeNull()
 
     const rehydrated = parseman.compose([{ [COMPOSED_PIECES]: [{ ...carried[0], ir }] } as never]) as unknown as Record<
       string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }
@@ -165,7 +165,7 @@ export const parser = composeLeaf([semanticBase, rules(g => ({ Document: literal
       // rather than infer safety from generated source text.
       fs.writeFileSync(path.join(dir, 'legacy.js'), `
 export const legacy = Object.defineProperty({}, Symbol.for('parseman.composedPieces'), {
-  value: [{ ns: 'legacy', keys: [], prelude: [], ruleFns: new Map(), wrappers: new Map(), firstSets: new Map(), deps: new Map(), needsEmptyTl: false, needsHostReads: false, mfFns: [], buildFns: [] }],
+  value: [{ ns: 'legacy', keys: [], external: [], prog: null, rules: null, replacement: null, ir: null, hostMode: 'ast', hostBranchElided: false }],
   enumerable: false,
 })`)
       expect(() => transformMacro(
