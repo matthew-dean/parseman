@@ -139,6 +139,7 @@ export function markUnusedValues(root: Combinator<unknown>): void {
     let cur = c
     while (!guard.has(cur)) {
       const d = cur._def as ParserDef
+      if (d.tag === 'grammar') { guard.add(cur); cur = d.parser; continue }
       if (d.tag !== 'lazy') return cur
       guard.add(cur)
       try { cur = d.thunk() } catch { return c }  // undefined ref → leave as-is
