@@ -1,59 +1,64 @@
 {
-  "updatedAt": "2026-08-01",
-  "gitRev": "2344460",
+  "updatedAt": "2026-08-05",
+  "gitRev": "d4b57e5",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
     "example/json": {
-      "genBytes": 15138,
-      "gzipBytes": 3256,
-      "bytesRatio": 2.624,
-      "locMultiplier": 2.695
+      "genBytes": 1237,
+      "gzipBytes": 595,
+      "bytesRatio": 0.214,
+      "locMultiplier": 0.078
     },
     "example/csv": {
-      "genBytes": 7680,
-      "gzipBytes": 1909,
-      "bytesRatio": 3.924,
-      "locMultiplier": 3.985
+      "genBytes": 697,
+      "gzipBytes": 361,
+      "bytesRatio": 0.356,
+      "locMultiplier": 0.162
     },
     "example/graphql": {
-      "genBytes": 69936,
-      "gzipBytes": 12792,
-      "bytesRatio": 6.767,
-      "locMultiplier": 6.29
+      "genBytes": 3503,
+      "gzipBytes": 1314,
+      "bytesRatio": 0.339,
+      "locMultiplier": 0.046
     },
     "example/css": {
-      "genBytes": 224100,
-      "gzipBytes": 36563,
-      "bytesRatio": 23.075,
-      "locMultiplier": 21.145,
-      "overCeiling": true
+      "genBytes": 0,
+      "gzipBytes": 0,
+      "bytesRatio": 0,
+      "locMultiplier": 0,
+      "printable": false,
+      "unprintable": [
+        "rules({ trivia }) — trivia arm is 'regex', not a labelled arm"
+      ]
     },
     "example/lang": {
-      "genBytes": 41772,
-      "gzipBytes": 7559,
-      "bytesRatio": 8.504,
-      "locMultiplier": 8.623
+      "genBytes": 2443,
+      "gzipBytes": 935,
+      "bytesRatio": 0.497,
+      "locMultiplier": 0.082
     },
     "example/toml-ish": {
-      "genBytes": 13223,
-      "gzipBytes": 2883,
-      "bytesRatio": 3.992,
-      "locMultiplier": 3.278
+      "genBytes": 1195,
+      "gzipBytes": 578,
+      "bytesRatio": 0.361,
+      "locMultiplier": 0.133
     },
     "example/jsonc": {
-      "genBytes": 18033,
-      "gzipBytes": 3847,
-      "bytesRatio": 15.93,
-      "locMultiplier": 14.324,
-      "overCeiling": true
+      "genBytes": 0,
+      "gzipBytes": 0,
+      "bytesRatio": 0,
+      "locMultiplier": 0,
+      "printable": false,
+      "unprintable": [
+        "rules({ trivia }) — unrecognised trivia body 'transform'"
+      ]
     },
     "example/jsonl": {
-      "genBytes": 16019,
-      "gzipBytes": 3418,
-      "bytesRatio": 19.441,
-      "locMultiplier": 18.75,
-      "overCeiling": true
+      "genBytes": 1285,
+      "gzipBytes": 610,
+      "bytesRatio": 1.559,
+      "locMultiplier": 0.5
     },
     "probe/node-scale-4": {
       "genBytes": 20056,

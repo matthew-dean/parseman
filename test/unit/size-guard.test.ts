@@ -204,7 +204,13 @@ describe('size gate enforces the budget against the real tree', { timeout: ONE_S
   it('names each over-target fixture, its ratio, and how far it must fall', () => {
     const r = gate(ROOT)
     // Actionable: which grammar, how far over, by what multiple, to what number.
-    expect(r.out).toMatch(/example\/css\s+[\d.]+x\s+[\d,]+ B\s+[\d.]+x\s+\(to [\d,]+ B\)/)
+    //
+    // Pinned to a probe row, not example/css. The probe lowers through
+    // `transformMacro`, which still emits SOURCE — so these are the rows that are
+    // genuinely over the 10x target now. example/css goes through the library
+    // `compile()`, which is the table, and it emits nothing at all (see the
+    // NO ARTIFACT suite); a fixture with no artifact has no ratio to name.
+    expect(r.out).toMatch(/probe\/node-scale-32\s+[\d.]+x\s+[\d,]+ B\s+[\d.]+x\s+\(to [\d,]+ B\)/)
     expect(r.out).toMatch(/Worst: \S+ at [\d.]+x/)
     expect(r.out).toMatch(/pnpm size:probe/)
   })
@@ -281,6 +287,75 @@ describe('the committed ceiling ratchets in both directions', { timeout: ONE_SPA
   })
 })
 
+/**
+ * PRINTABILITY IS THE OTHER THING THAT CAN REGRESS, and a bytes-only gate scores
+ * losing it as the best result it has ever seen.
+ *
+ * The table lowering keeps a construct it cannot serialise LIVE: the grammar still
+ * parses, and `emitTableModule` refuses. `compile()` returns `source: ''` with a
+ * null `inlineExpression`. Under the old gate that was an immediate hard failure
+ * with no way to record it; under a naive re-baseline it would have become 0 B —
+ * a 100% "improvement" — and the ceiling would have been 0 forever after, which is
+ * a ceiling nothing can ever breach.
+ *
+ * So it ratchets in both directions like the bytes do, and both directions are
+ * pinned here. A guard that cannot be observed failing is not known to work.
+ */
+describe('printability ratchets in both directions', { timeout: ONE_SPAWN_MS }, () => {
+  type Entry = { genBytes: number; printable?: false; unprintable?: readonly string[] }
+
+  function against(mutate: (fixtures: Record<string, Entry>) => void): Result {
+    const d = scratch()
+    const real = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/size-baseline.json'), 'utf8')) as {
+      fixtures: Record<string, Entry>
+    }
+    mutate(real.fixtures)
+    writeBaseline(d, real)
+    return gate(ROOT, `--baseline=${path.join(d, 'bench', 'size-baseline.json')}`)
+  }
+
+  it('FAILS a fixture that had a ceiling and now emits nothing', () => {
+    // The baseline says example/css printed; the tree says it does not. That is a
+    // loss of capability, and it BLOCKS.
+    const r = against(f => {
+      delete f['example/css']!.printable
+      delete f['example/css']!.unprintable
+    })
+    expect(r.ok).toBe(false)
+    expect(r.out).toMatch(/STOPPED PRINTING/)
+    expect(r.out).toMatch(/example\/css/)
+    // Named, not just counted — otherwise the reader cannot act on it.
+    expect(r.out).toMatch(/rules\(\{ trivia \}\)/)
+    // And it must never be described as a size win.
+    expect(r.out).not.toMatch(/BANK THE WIN[\s\S]*example\/css/)
+  })
+
+  it('REPORTS a fixture that prints again, without failing on good news', () => {
+    const r = against(f => { f['example/json']!.printable = false })
+    expect(r.ok).toBe(true)
+    expect(r.out).toMatch(/PRINT AGAIN/)
+    expect(r.out).toMatch(/example\/json/)
+  })
+
+  it('renders a recorded unprintable fixture as tracked debt, on a GREEN run', () => {
+    const r = gate(ROOT)
+    expect(r.ok).toBe(true)
+    expect(r.out).toMatch(/NO ARTIFACT — \d+ fixture\(s\) RUN but cannot be printed/)
+    // WHICH construct, not just which fixture.
+    expect(r.out).toMatch(/trivia arm is 'regex', not a labelled arm/)
+    // Green must never read as "fine": the ok line repeats that they are ungated.
+    expect(r.out).toMatch(/UNGATED for size/)
+  })
+
+  it('shows a dash, never 0 B, for a fixture with no artifact', () => {
+    // "0 B / 0.0x" would sort as the best row in the table and read as the win of
+    // the release. There is no artifact; the table must say so.
+    const r = gate(ROOT)
+    expect(r.out).toMatch(/example\/css\s+[\d,]+ B\s+—\s+—\s+—\s+—\s+—\s+unprintable/)
+    expect(r.out).not.toMatch(/example\/css\s+[\d,]+ B\s+0 B/)
+  })
+})
+
 describe('standing debt never reads as a fresh regression', { timeout: ONE_SPAWN_MS }, () => {
   it('renders known over-target fixtures as tracked, not as something this change did', () => {
     const r = gate(ROOT)
@@ -292,12 +367,15 @@ describe('standing debt never reads as a fresh regression', { timeout: ONE_SPAWN
   })
 
   it('marks a fixture that crosses the target in THIS change as fresh', () => {
-    // Same tree, but a baseline claiming example/css was comfortably under target.
+    // Same tree, but a baseline claiming probe/node-scale-32 was comfortably under
+    // target. The doctored genBytes must be the REAL measured value, or the fixture
+    // trips the bytes ratchet first and this stops testing what it names.
     const d = scratch()
     const real = JSON.parse(fs.readFileSync(path.join(ROOT, 'bench/size-baseline.json'), 'utf8')) as {
-      fixtures: Record<string, unknown>
+      fixtures: Record<string, { genBytes: number; gzipBytes: number; bytesRatio: number; locMultiplier: number }>
     }
-    real.fixtures['example/css'] = { genBytes: 252441, gzipBytes: 39522, bytesRatio: 5, locMultiplier: 23.2 }
+    const was = real.fixtures['probe/node-scale-32']!
+    real.fixtures['probe/node-scale-32'] = { genBytes: was.genBytes, gzipBytes: was.gzipBytes, bytesRatio: 5, locMultiplier: 69.9 }
     writeBaseline(d, real)
     const r = gate(ROOT, `--baseline=${path.join(d, 'bench', 'size-baseline.json')}`)
     expect(r.out).toMatch(/crossed in THIS change/)
