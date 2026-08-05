@@ -5,6 +5,8 @@ import { collectGrammarReflection, type GrammarReflection } from '../cst/reflect
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { serializeRuleMap } from './ir-serialize.ts'
 import { compileRuleMapTable, type TableRuleMapOptions } from '../table/compile-rule-map.ts'
+import { encodeTableProgram, type TableSettings } from '../table/encode.ts'
+import { assembledRules } from '../table/assemble.ts'
 import type { TableProgram, TableRule } from '../table/program.ts'
 import { runDuplicationDiagnosticRules } from '../table/duplication-hook.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -136,6 +138,22 @@ function externalNames(
   return out
 }
 
+/** The ambient trivia/scan-skip an OPTIONS caller declared, landed where the encoder
+ * reads it (per rule `_meta`), filling gaps only — the same contract
+ * `compileRuleMapTable.applyAmbient` has. Without it a run-only encode drops the
+ * grammar's whitespace handling entirely. */
+function applyAmbientForRun(
+  ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
+  opts: LinkableTableOptions,
+): void {
+  for (const [, rule] of ruleMap) {
+    if (rule._meta.isTrivia) continue
+    const meta = rule._meta as { grammarTrivia?: Combinator<unknown>; grammarScanSkip?: Combinator<unknown>[] }
+    if (opts.trivia !== undefined && meta.grammarTrivia === undefined) meta.grammarTrivia = opts.trivia
+    if (opts.scanSkip !== undefined && meta.grammarScanSkip === undefined) meta.grammarScanSkip = opts.scanSkip
+  }
+}
+
 export function compileLinkableTable(
   ruleMapArg: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   ns: string,
@@ -151,7 +169,37 @@ export function compileLinkableTable(
   // piece encoded: a shape with a hole is precisely the case that has no table
   // and must still compose.
   const ir = serializeRuleMap(ruleMap, opts.scanSkip ?? null)
-  if (compiled === null && ir === null) return null
+  // RUNNABLE IS NOT PRINTABLE, and `linkable()` only needs the first.
+  //
+  // `compileRuleMapTable` refuses a map whose reducers have no captured SOURCE, because
+  // printing one would emit `() => {}` and silently return the wrong tree. That gate is
+  // right for the macro, which prints — and wrong here: a grammar BUILT AT RUNTIME (every
+  // interpreter-path `linkable()` caller) has live callbacks and no sources by
+  // construction, and it is never printed. Treating "cannot print" as "cannot compile"
+  // made `linkable()` reject the ordinary runtime grammar the source lowering accepted.
+  //
+  // So: encode again for RUNNING only. `prog` still holds the live callbacks in its
+  // pool, `assembledRules` binds them, and `replacement` stays null — which is the
+  // artifact honestly saying it cannot be emitted as source.
+  let runnable: { prog: TableProgram; rules: Record<string, TableRule> } | null = null
+  if (compiled === null && external.length === 0) {
+    try {
+      const settings: TableSettings = {
+        hostMode: opts.hostMode
+          ?? ruleMap.map(([, r]) => r._meta.grammarHostMode).find(Boolean)
+          ?? 'ast',
+        ...(opts.trackLines === true ? { trackLines: true } : {}),
+        ...(opts.recovery === true ? { recovery: true } : {}),
+      }
+      applyAmbientForRun(ruleMap, opts)
+      const { prog } = encodeTableProgram(Object.fromEntries(ruleMap), settings)
+      // `prog.runtimeOnly` is IGNORED here, deliberately. It means "this program parses
+      // but cannot be emitted as source" — which is the exact state this branch exists
+      // to serve. Treating it as a failure here would reinstate the refusal.
+      runnable = { prog, rules: assembledRules(prog) }
+    } catch { runnable = null }
+  }
+  if (compiled === null && runnable === null && ir === null) return null
 
   const hostMode = compiled?.hostMode
     ?? opts.hostMode
@@ -162,8 +210,8 @@ export function compileLinkableTable(
     ns,
     keys: ruleMap.map(([key]) => key),
     external,
-    prog: compiled?.prog ?? null,
-    rules: compiled?.rules ?? null,
+    prog: compiled?.prog ?? runnable?.prog ?? null,
+    rules: compiled?.rules ?? runnable?.rules ?? null,
     replacement: compiled?.replacement ?? null,
     ir,
     hostMode,

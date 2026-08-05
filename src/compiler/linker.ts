@@ -22,6 +22,7 @@ import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
 import { compileRuleMapTable } from '../table/compile-rule-map.ts'
 import { tableRules } from '../table/exec.ts'
+import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, ParseContext, ParseResult } from '../types.ts'
 
@@ -333,6 +334,10 @@ function fuseCarried(
   }
   Object.defineProperty(map, FUSED_HOST_MODE, { value: compiled.hostMode, enumerable: false })
   Object.defineProperty(map, FUSED_HOST_ELIDED, { value: compiled.hostBranchElided, enumerable: false })
+  // GRAMMAR REFLECTION, which `fusedBody` merged across pieces and stamped. A visitor
+  // built over a composed grammar reads it to know the node types; unstamped, it reads
+  // as an empty grammar and every visitor silently matches nothing.
+  Object.defineProperty(map, GRAMMAR_REFLECTION, { value: compiled.reflection, enumerable: false })
   return map
 }
 
