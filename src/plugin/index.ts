@@ -24,7 +24,9 @@ import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compile, compileRuleMap, compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
+import { compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
+import { compileTable } from '../table/compile.ts'
+import { compileRuleMapTable } from '../table/compile-rule-map.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
 import {
@@ -48,6 +50,16 @@ import type {
   Statement,
   ExportNamedDeclaration,
 } from '@oxc-project/types'
+
+/**
+ * Where a lowered module imports the shared table driver from.
+ *
+ * The PUBLIC subpath, not a deep path into `src/`: this string is written into a
+ * consumer's build output, so it has to be a specifier their resolver can see.
+ * `parseman/table` is declared in package.json `exports` and re-exports
+ * `assembledRules` as `tableRules` (src/table/index.ts:28).
+ */
+const TABLE_RUNTIME_SPECIFIER = 'parseman/table'
 
 export type ParsecraftPluginOptions = {
   /** Extra module specifiers to treat as parseman re-exports */
@@ -742,6 +754,18 @@ function transformMacroImpl(
   // fully compiled pieces for downstream composition. The import must survive, but
   // this is not an unresolved shape, so it neither warns nor blocks other cleanups.
   let keepMacroImport = false
+  /**
+   * Set when any emitted replacement is a TABLE, which references the shared
+   * driver `tableRules` by name.
+   *
+   * This is the one CONTRACT DIVERGENCE the table lowering states openly
+   * (`table/compile.ts`): a table expression is not self-contained, because the
+   * driver being external is exactly why the artifact is 0.56 MB rather than
+   * 2.10 MB. Inlining the driver per grammar rebuilds the size this lowering
+   * exists to remove. So the plugin owns the import, and the free-identifier net
+   * at the end of this transform is what proves it was actually emitted.
+   */
+  let usedTableRuntime = false
   /** Exported `rules()` factories, whose bodies are left verbatim. See the push site. */
   const exportedFactories: Array<{ name: string; pos: number }> = []
   let runtimeComposeFallback = false
@@ -914,7 +938,11 @@ function transformMacroImpl(
   ): { replacement: string | null; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
-    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage })
+    const compiled = compileRuleMapTable([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage })
+    // A table replacement names `tableRules`, which nothing in the consumer's
+    // module binds. That reference is the whole reason the artifact is small (the
+    // driver is SHARED, not inlined per grammar), so the import is owned here.
+    if (compiled !== null) usedTableRuntime = true
     return {
       replacement: compiled?.replacement ?? null,
       ruleMap: evaluated.ruleMap,
@@ -1690,11 +1718,12 @@ function transformMacroImpl(
           const refEntry = scope.get(varName)
           const refCombi = refEntry?.combi ?? null
           if (refCombi) {
-            const compiled = compile(refCombi, undefined, { recovery, coverage: grammarCoverage })
+            const compiled = compileTable(refCombi, undefined, { recovery, coverage: grammarCoverage })
             if (compiled.inlineExpression === null) {
               warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`)
               continue
             }
+            usedTableRuntime = true
             replacements.push({ start: init.start, end: init.end, replacement: compiled.inlineExpression })
             continue
           }
@@ -1867,12 +1896,13 @@ function transformMacroImpl(
 
         // Sources are carried on each transform's def (set by the evaluator), so
         // codegen derives them in traversal order — no positional array needed.
-        const compiled = compile(parser, undefined, { recovery, coverage: grammarCoverage })
+        const compiled = compileTable(parser, undefined, { recovery, coverage: grammarCoverage })
         if (compiled.inlineExpression === null) {
           warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`)
           continue
         }
 
+        usedTableRuntime = true
         replacements.push({
           start: init.start,
           end: init.end,
@@ -2097,6 +2127,15 @@ function transformMacroImpl(
   // Stamp the generated artifact with a version-lock banner. This is the exact spot a
   // stale artifact is inspected, and the version here IS the stamp fusedBody's
   // version-lock assertion compares (see src/version.ts).
+  // THE SHARED DRIVER. A table replacement names `tableRules` and nothing in the
+  // consumer's module binds it — the macro import it might have come from is
+  // exactly what lowering deletes. Emitted only when a table was actually applied,
+  // so a module that lowered nothing (or fell back to runtime compose) does not
+  // acquire an import it never uses, and so the artifact of a source-lowered
+  // module is unchanged.
+  if (usedTableRuntime && applied.length > 0) {
+    ms.prepend(`import { tableRules } from ${JSON.stringify(TABLE_RUNTIME_SPECIFIER)}\n`)
+  }
   if (applied.length > 0) {
     ms.prepend(
       `// Generated by parseman v${PARSEMAN_VERSION} — DO NOT EDIT.\n` +
