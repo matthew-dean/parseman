@@ -455,12 +455,16 @@ describe('grammar-level scanSkip reaches an emitted module as data', () => {
     // which this census could not see because the key was a literal rather than
     // `ctx.scanSkip`. They now assign it as a plain store on the canonical
     // context shape, so the write is finally visible to this test. All four are
+    // `table/stamp.ts` replaced `table/exec.ts` here when the closure assembler
+    // (`table/assemble.ts`) became the second driver: the rule-map envelope both
+    // drivers share is the one place that knows the entry rule, so two copies of
+    // the write would have been two places for it to drift. All four are
     // listed so a new file cannot slip in either way.
     expect(readers).toEqual([
       'combinators/grammar.ts',
       'combinators/scanTo.ts',
       'functional/run.ts',
-      'table/exec.ts',
+      'table/stamp.ts',
     ])
   })
 })
