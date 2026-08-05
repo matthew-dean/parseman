@@ -24,7 +24,7 @@ import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
-import { compileLinkable, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
+import { compileLinkable, classifyRuleMap, hasExternalRuleRef, beginLoweringCapture, endLoweringCapture, beginInlineCapCapture, endInlineCapCapture, formatInlineCapSites, resolveInlineMax } from '../compiler/codegen.ts'
 import { compileTable } from '../table/compile.ts'
 import { compileRuleMapTable } from '../table/compile-rule-map.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
@@ -1274,6 +1274,77 @@ function transformMacroImpl(
     return out
   }
 
+  /**
+   * MERGE a carried list to ONE rule map — the table lowering's entire composition
+   * mechanism, and the reason it needs no linker.
+   *
+   * Source composition is a TEXTUAL splice: each piece is lowered on its own to
+   * namespaced `_r_<Name>` functions, and `fusedBody()` picks a winner per name and
+   * substitutes the `@FS:` dispatch placeholders with that winner's first-set
+   * condition. A table has no text to splice and no placeholders to resolve, so the
+   * merge moves one level UP, onto the combinators: evaluate each piece's IR back to
+   * a rule map, let a later piece's name override an earlier one — which is exactly
+   * what `compose()` means — and hand the single merged map to
+   * `compileRuleMapTable`, which encodes ONCE.
+   *
+   * This is what makes table composition the easy kind: no relocation of code
+   * offsets, no merging of const / fn / class / expected / dispatch pools between
+   * two already-encoded programs. `encodeTableProgram` points `enc.winners` at the
+   * merged map (`table/encode.ts:1383`), so a base piece's internal `g.Atom`
+   * resolves BY NAME to the override (`:1036`) rather than through a thunk that
+   * closes over the base. Open recursion — much of the point of compose — therefore
+   * survives the merge, and the result is the table the merged grammar would have
+   * produced had it been written as a single `rules()` call.
+   *
+   * `null` means some piece cannot contribute combinators: a FULL BAKED piece (the
+   * un-serializable fallback at `localCarried`) carries lowered SOURCE and nothing
+   * else. That shape is codegen-only, so the caller falls back to fused source
+   * rather than refusing the grammar.
+   */
+  type CarriedRuleMap = { ns: string; rules: Array<[string, Combinator<unknown>]> }
+  const carriedRuleMaps = (
+    items: CarriedItem[],
+  ): { pieces: CarriedRuleMap[]; trackLines: boolean } | null => {
+    const pieces: CarriedRuleMap[] = []
+    let trackLines = false
+    const add = (item: RawItem): boolean => {
+      if (!isIR(item)) return false
+      // `trackLines` rides on the CARRIED ITEM, not inside the IR (`IRPiece.trackLines`
+      // is a sibling field of `ir`), so it has to be lifted here. Left behind, the
+      // merged encode resolves `trackLines` from `_meta` alone and silently drops line
+      // tracking for a grammar that asked for it.
+      if (item.trackLines === true) trackLines = true
+      pieces.push({ ns: item.ns, rules: evalRuleMapIR(item.ir) })
+      return true
+    }
+    for (const item of items) {
+      if (isSpread(item)) {
+        const imported = importedPieces(item.__spreadLocal)
+        if (!imported || !imported.every(add)) return null
+      } else if (!add(item as RawItem)) return null
+    }
+    return { pieces, trackLines }
+  }
+
+  /** Fold ordered rule maps into the composed map: a later piece's name WINS, and
+   * `Map` keeps each name at its first-sighting position so the encoded rule order
+   * tracks the source lowering's rather than drifting per compose. */
+  const mergeRuleMaps = (
+    maps: ReadonlyArray<ReadonlyArray<readonly [string, Combinator<unknown>]>>,
+  ): Array<[string, Combinator<unknown>]> => {
+    const winners = new Map<string, Combinator<unknown>>()
+    for (const map of maps) for (const [name, rule] of map) winners.set(name, rule)
+    return [...winners]
+  }
+
+  const mergedCarriedRules = (
+    items: CarriedItem[],
+  ): { rules: Array<[string, Combinator<unknown>]>; trackLines: boolean } | null => {
+    const carriedMaps = carriedRuleMaps(items)
+    if (carriedMaps === null) return null
+    return { rules: mergeRuleMaps(carriedMaps.pieces.map(p => p.rules)), trackLines: carriedMaps.trackLines }
+  }
+
   /** Materialize the exact combinator identities that will be lowered for a
    * coverage-enabled terminal composition.  Coverage IDs are WeakMap keyed, so
    * planning from a second IR hydration would silently leave the emitted pieces
@@ -1519,6 +1590,36 @@ function transformMacroImpl(
     }
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
+    // TABLE FIRST. The merged map IS the composed grammar (see `mergedCarriedRules`),
+    // so `compose()` lowers through the SAME `compileRuleMapTable` a plain `rules()`
+    // does — one encode, one `tableRules(…)` expression, no linker. `carried` is
+    // unchanged either way: it is the re-lowerable IR list, not a lowering artifact,
+    // so a downstream re-compose behaves identically whichever engine emitted here.
+    const merged = mergedCarriedRules(carried)
+    if (merged !== null) {
+      const refusals: string[] = []
+      const compiled = compileRuleMapTable(merged.rules, {
+        ...(composing ? { trivia: composing } : {}),
+        ...(merged.trackLines ? { trackLines: true } : {}),
+        ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
+        recovery,
+        coverage: grammarCoverage,
+        refusals,
+      })
+      if (compiled !== null) {
+        usedTableRuntime = true
+        return {
+          replacement: compiled.replacement,
+          carried,
+          ...(composing ? { trivia: composing } : {}),
+          ...(importedFactories.length ? { importedFactories } : {}),
+        }
+      }
+      // NOT silent. A refusal here means this grammar keeps the source lowering while
+      // every `rules()` around it is a table — the exact mixed state that looks like
+      // normal operation and costs the artifact-size win the table exists for.
+      warn(init.start, `compose(): table lowering refused; using fused source instead${reasonSuffix(refusals)}`)
+    }
     const pieces = materializeCarried(carried, composing, false, cHostMode as HostMode | undefined)
     try {
       return {
@@ -1603,9 +1704,76 @@ function transformMacroImpl(
       // capture enabled so that node receives the imported token values in its
       // normal child collector; the pieces still contain no semantic callback.
       const localNs = nsFor(`composeLeaf${init.start}`)
+      const localEntries = [...localRules] as Array<[string, Combinator<unknown>]>
+
+      // TABLE FIRST — same merge as `compose()`, with the local leaf map appended LAST
+      // so it wins every name and binds the imported shapes' holes (`enc.winners`
+      // resolves those by name; see `mergedCarriedRules`).
+      //
+      // The recognition-only gate is preserved EXACTLY, and is the reason this path
+      // needs no `compileLinkable`: `hasDirectBuilders` / `isRecognitionOnly` are
+      // predicates over the combinator graph, not products of lowering it, so
+      // `classifyRuleMap` answers both from the piece's own rule map. Lowering every
+      // piece to read two booleans off `LinkablePieces` was the only thing making this
+      // gate look codegen-shaped.
+      //
+      // Coverage needs no `materializeLeafCoverage` counterpart here. That helper
+      // exists because coverage ids are WeakMap-keyed and planning from a second IR
+      // hydration would leave the EMITTED pieces uninstrumented; the table plans from
+      // the merged map it then encodes, so the planned identities and the encoded
+      // identities are the same objects by construction.
+      const carriedMaps = carriedRuleMaps(carried)
+      if (carriedMaps !== null) {
+        const unproven = carriedMaps.pieces.find(p => {
+          const c = classifyRuleMap(p.rules)
+          return c.hasDirectBuilders || !c.isRecognitionOnly
+        })
+        if (unproven) {
+          warn(init.start, 'composeLeaf(): every pre-final grammar must explicitly prove recognition-only')
+          return null
+        }
+        // The local grammar's OWN ambient scanSkip is stamped onto the LOCAL entries
+        // only. Passing it as a merged-map option instead would let `applyAmbient`
+        // hand it to every imported rule that happens to carry no stamp of its own —
+        // opaque units are dialect-specific, and that is precisely the leak the
+        // per-piece threading in the source path exists to avoid.
+        if (localScanSkip) {
+          for (const [, rule] of localEntries) {
+            if (rule._meta.isTrivia) continue
+            const meta = rule._meta as { grammarScanSkip?: Combinator<unknown>[] }
+            if (meta.grammarScanSkip === undefined) meta.grammarScanSkip = localScanSkip
+          }
+        }
+        const refusals: string[] = []
+        const compiled = compileRuleMapTable(
+          mergeRuleMaps([...carriedMaps.pieces.map(p => p.rules), localEntries]),
+          {
+            ...(composing ? { trivia: composing } : {}),
+            ...(carriedMaps.trackLines ? { trackLines: true } : {}),
+            recovery,
+            coverage: grammarCoverage,
+            refusals,
+          },
+        )
+        if (compiled !== null) {
+          usedTableRuntime = true
+          const tableReplacement = withLeafMarker(compiled.replacement)
+          return {
+            replacement: withCoverageDefinitions(
+              tableReplacement,
+              compiled.coverageDefinitions?.length
+                ? compiled.coverageDefinitions
+                : emittedCoverageDefinitions(tableReplacement, `${id} composeLeaf()`),
+            ),
+            ...(importedFactories.length ? { importedFactories } : {}),
+          }
+        }
+        warn(init.start, `composeLeaf(): table lowering refused; using fused source instead${reasonSuffix(refusals)}`)
+      }
+
       // The local leaf map is the LAST (winning) contributor, and is usually the one
       // that binds the imported shapes' holes — so it must be part of the fused view.
-      const plainLocalPiece = compileLinkable([...localRules] as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
+      const plainLocalPiece = compileLinkable(localEntries as never, localNs, { ...(composing ? { trivia: composing } : {}), ...(localScanSkip ? { scanSkip: localScanSkip } : {}), recovery })
       if (!plainLocalPiece) {
         warn(init.start, 'composeLeaf(): local rules could not be statically compiled')
         return null
