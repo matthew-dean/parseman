@@ -258,8 +258,13 @@ export const composedCst = compose([astG], { hostMode: 'cst' })
 `.trim()
 
   /** The fused map's own stamp — the last `fusedHostMode` written, on `_map`. */
+  /** The fused map's own stamp — the last `fusedHostMode` value written.
+   *
+   * Matched on the SYMBOL rather than on the variable it is written to: `_map` was
+   * `fusedBody`'s local name, and the table stamps through its own emitter. The symbol
+   * is the contract; the identifier never was. */
   const fusedStamp = (code: string): string | undefined =>
-    [...code.matchAll(/_map,\s*Symbol\.for\("parseman\.fusedHostMode"\),\s*\{\s*value:\s*"(\w+)"/g)].pop()?.[1]
+    [...code.matchAll(/Symbol\.for\(['"]parseman\.fusedHostMode['"]\),\s*\{\s*value:\s*['"](\w+)['"]/g)].pop()?.[1]
 
   it('stamps the FUSED artifact cst when compose asks for it', () => {
     const out = transformMacro(COMPOSE_CST, 'test.ts', new Set(['parseman']))

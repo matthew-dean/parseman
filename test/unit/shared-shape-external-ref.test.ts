@@ -89,7 +89,7 @@ describe('shared shape with unresolved external g. refs', () => {
       expect(leaf.warnings).toEqual([])
       expect(leaf.code).not.toMatch(/\bcomposeLeaf\s*\(/)
       expect(leaf.code).not.toContain('new Function')
-      expect(leaf.code).toContain('_r_Ratio')
+      expect(leaf.code).toContain('tableRules(')  // the shape was fused in, not left interpreted
 
       const r = makeParser(leaf.code).Document!('16/9', 0, {})
       expect(r.ok).toBe(true)
@@ -187,11 +187,21 @@ describe('recognition-only gate stays sound', () => {
     // A bare `ref()` that was never `.define()`d is NOT an external ref: it carries no
     // rule name, so nothing can bind it by name at fuse time. `hasSemanticReduction`
     // deliberately does not fail open for it (only refs the external-ref pre-pass
-    // CLASSIFIED are exempt), and codegen independently refuses to inline it — so it
-    // can never reach `composeLeaf`'s gate wearing a recognition-only badge.
+    // CLASSIFIED are exempt), so it can never reach `composeLeaf`'s gate wearing a
+    // recognition-only badge.
+    //
+    // WHAT CHANGED, and why the guarantee is unaffected: the source lowering refused to
+    // inline such a grammar at all, so the piece was `null` and the gate never saw it.
+    // The table TOLERATES an undefined ref — it parks the slot live and throws only if a
+    // parse actually reaches it (`table/encode.ts` case 'lazy'), which is the same timing
+    // codegen's own runtime fallback had. So a piece now exists, and the badge is what
+    // has to hold — it does: `isRecognitionOnly` is false, which is the property
+    // `composeLeaf` gates on.
     const orphan = ref<unknown>()
-    expect(compileLinkable([['A', sequence(literal('x'), orphan)]] as never, '_orphan_')).toBeNull()
-    expect(compileLinkable(entriesOf(rules(_g => ({ A: sequence(literal('x'), orphan) }))), '_orphan2_')).toBeNull()
+    const one = compileLinkable([['A', sequence(literal('x'), orphan)]] as never, '_orphan_')
+    expect(one?.isRecognitionOnly).toBe(false)
+    const two = compileLinkable(entriesOf(rules(_g => ({ A: sequence(literal('x'), orphan) }))), '_orphan2_')
+    expect(two?.isRecognitionOnly).toBe(false)
   })
 
   it('composeLeaf REJECTS a pre-final shape that carries its own reduction', () => {

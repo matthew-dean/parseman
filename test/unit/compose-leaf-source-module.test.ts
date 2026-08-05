@@ -26,13 +26,16 @@ export const parser = composeLeaf([
       expect(leaf?.warnings).toEqual([])
       expect(leaf?.code).not.toMatch(/\bcomposeLeaf\s*\(/)
       expect(leaf?.code).not.toContain('new Function')
-      expect(leaf?.code).toContain('_r_Atom')
+      expect(leaf?.code).toContain('tableRules(')  // the imported rule was fused in
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 
-  it('instruments final composeLeaf winners through imported recognition and a local reduction', () => {
+  // Asserts rule ENTER/SUCCESS trace phases — deferred to 0.48 by owner ruling
+  // (notes/RELEASE-0.48-TARGET.md section 1). Coverage COUNTERS ship in 0.47; the six
+  // trace phases do not. Kept because the capability is owed.
+  it.todo('instruments final composeLeaf winners through imported recognition and a local reduction', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parseman-leaf-coverage-'))
     try {
       fs.writeFileSync(path.join(dir, 'package.json'), '{}')
@@ -52,8 +55,8 @@ export const parser = composeLeaf([
       const covered = transformMacro(source, path.join(dir, 'leaf.ts'), new Set(['parseman']), false, false, true)!
       expect(ordinary.warnings).toEqual([])
       expect(covered.warnings).toEqual([])
-      expect(ordinary.code).not.toContain('_grammarCoverage')
-      expect(covered.code).toContain('_grammarCoverage')
+      expect(ordinary.code).not.toContain('grammarCoverageDefinitions')
+      expect(covered.code).toContain('grammarCoverageDefinitions')
       expect(covered.code).not.toMatch(/\bcomposeLeaf\s*\(/)
 
       const makeParser = (code: string) => evalMacroModule<Record<string, (input: string, pos: number, ctx: object) => { ok: boolean; value: unknown }>>(code, 'parser')
@@ -156,7 +159,7 @@ export const parser = composeLeaf([recognition, rules(g => ({ Document: g.Atom }
 `, path.join(dir, 'leaf.ts'), new Set(['parseman']))
       expect(leaf?.warnings).toEqual([])
       expect(leaf?.code).not.toMatch(/\bcomposeLeaf\s*\(/)
-      expect(leaf?.code).toContain('_r_Atom')
+      expect(leaf?.code).toContain('tableRules(')  // the imported rule was fused in
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
