@@ -101,25 +101,23 @@ const ALLOW = new Map([
   ['INV-4:src/analysis/choice-cost.ts:childrenOf|src/analysis/duplication.ts:childrenOf', 'DEDUPE — identical helper in two analysis modules'],
   ['INV-4:src/analysis/duplication.ts:intersects|src/analysis/gating.ts:intersects', 'DEDUPE — identical helper in two analysis modules'],
 
-  // INV-5 x4 on `ctx` — 12 delete SITES, on the object every combinator reads on
-  // every step, running PER TOKEN and PER LEAF. This is the sharpest instance in
-  // the catalogue: one delete flips %HasFastProperties to false and re-adding the
-  // property does not restore it, so the first `token()` in a parse can leave
-  // `ctx` in dictionary mode for the whole parse. The table-driver copies are
-  // there because the driver is deliberately MIRRORED from the combinator for
-  // behavioural fidelity — three-way identity rewards exactly that, which is how
-  // one shape defect became two.
+  // The four `ctx` INV-5 entries that stood here — 12 delete sites in
+  // `token.ts`/`table/exec.ts` — are GONE, fixed rather than waived.
   //
-  // Restoration here is by PRESENCE (readers test whether the property exists),
-  // so `= undefined` is not a drop-in and this is correct code with a
-  // catastrophic shape consequence. A separate lane is measuring what it costs
-  // end to end and may remove the deletes outright; when it lands these entries
-  // go stale and the gate will REQUIRE their deletion, which is the intended
-  // interaction and not a conflict.
-  ['INV-5:src/combinators/token.ts:parse:ctx._triviaLog', 'per-token delete on the long-lived ctx — measurement lane owns the fix'],
-  ['INV-5:src/combinators/token.ts:parse:ctx._rootTriviaLog', 'per-token delete on the long-lived ctx — measurement lane owns the fix'],
-  ['INV-5:src/table/exec.ts:exec:ctx._triviaLog', 'mirrored into the table driver for behavioural fidelity — same lane'],
-  ['INV-5:src/table/exec.ts:exec:ctx._rootTriviaLog', 'mirrored into the table driver for behavioural fidelity — same lane'],
+  // The waiver rested on a claim that turned out to be false: that restoration
+  // was "by PRESENCE", so `= undefined` was not a drop-in. No reader
+  // distinguishes an absent field from an `undefined` one — every one tests
+  // `!== undefined` or truthiness, and there is no `in`, `hasOwnProperty`, or
+  // `Object.keys` on a `ParseContext` anywhere. `recovery/scan.ts` already
+  // restored these exact fields by assigning the saved value, `undefined`
+  // included.
+  //
+  // The real defect was the SHAPE, not the operation. `ctx` was built with
+  // conditional spreads, so these fields were absent from the map on the paths
+  // that did not take the branch — which is why `delete` was expensive where
+  // they were present and why `= undefined` was a property ADD where they were
+  // not. `src/parse-context.ts` now declares every field unconditionally, so
+  // clearing is an in-object store to an existing slot on every path.
 
   // INV-5 x3 on `_meta` — `const meta = slot._meta` / `value._meta` is an ALIAS
   // of a combinator's long-lived meta object, and `_meta` is read during

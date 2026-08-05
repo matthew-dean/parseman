@@ -15,6 +15,7 @@ import {
   saveCstMark,
 } from '../cst/capture-buffer.ts'
 import { recordLineRangeFromContext } from '../line-index.ts'
+import { createDetachedParseContext } from '../parse-context.ts'
 
 /**
  * Result of scanning trivia: the position after it, plus a `commit()` that
@@ -84,13 +85,10 @@ function parseTriviaNoCapture(
   cur: number,
   ctx: ParseContext,
 ): ParseResult<unknown> {
-  const probeCtx: ParseContext = {
-    trackLines: ctx.trackLines,
-    state: ctx.state,
-    ...(ctx._lineIndex ? { _lineIndex: ctx._lineIndex } : {}),
-    ...(ctx._lineStarts ? { _lineStarts: ctx._lineStarts } : {}),
-    ...(ctx._lineScannedTo !== undefined ? { _lineScannedTo: ctx._lineScannedTo } : {}),
-  }
+  const probeCtx = createDetachedParseContext(ctx.trackLines, ctx.state)
+  probeCtx._lineIndex = ctx._lineIndex
+  probeCtx._lineStarts = ctx._lineStarts
+  probeCtx._lineScannedTo = ctx._lineScannedTo
   const result = triviaP.parse(input, cur, probeCtx)
   ctx._lineScannedTo = probeCtx._lineScannedTo
   return result
@@ -195,7 +193,7 @@ export function advanceTrivia(input: string, cur: number, ctx: ParseContext): nu
     const fast = fastTriviaScanner(triviaP)
     if (fast) return fast(input, cur)
     if (ctx.triviaKindLabels) return skipWithLabels(input, cur, ctx)
-    const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
+    const tr = triviaP.parse(input, cur, createDetachedParseContext(ctx.trackLines, ctx.state))
     return tr.ok && tr.span.end > cur ? tr.span.end : cur
   }
   const trackTriviaLines = ctx.trackLines && triviaP._meta.canMatchNewline
@@ -238,10 +236,10 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
     if (ctx.triviaKindLabels) return { end: skipWithLabels(input, cur, ctx), commit: NOOP_COMMIT }
 
     if (log !== undefined || rootLog !== undefined || captureTl) {
-      const tr = triviaP.parse(input, cur, {
-        trackLines: log !== undefined ? false : ctx.trackLines,
-        state: ctx.state,
-      })
+      const tr = triviaP.parse(input, cur, createDetachedParseContext(
+        log !== undefined ? false : ctx.trackLines,
+        ctx.state,
+      ))
       if (!tr.ok || tr.span.end === cur) return { end: cur, commit: NOOP_COMMIT }
       const end = tr.span.end
       return {
@@ -253,7 +251,7 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
       }
     }
 
-    const tr = triviaP.parse(input, cur, { trackLines: ctx.trackLines, state: ctx.state })
+    const tr = triviaP.parse(input, cur, createDetachedParseContext(ctx.trackLines, ctx.state))
     return { end: tr.ok ? tr.span.end : cur, commit: NOOP_COMMIT }
   }
   const trackTriviaLines = ctx.trackLines && triviaP._meta.canMatchNewline

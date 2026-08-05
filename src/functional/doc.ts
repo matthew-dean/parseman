@@ -5,6 +5,7 @@ import type { Combinator, ParseContext, ParseError, ParseResult, ParserDef, Span
 import type { NodeLike, CSTLeaf, CSTError } from '../cst/types.ts'
 import { relativizeCST, absoluteSpanCST } from '../cst/relative-spans.ts'
 import { REC } from '../recovery/scan.ts'
+import { createParseContext } from '../parse-context.ts'
 import { fusedHostModeOf, fusedHostElidedOf } from '../compiler/linker.ts'
 import { assertHostModeCompatible } from '../compiler/codegen.ts'
 
@@ -905,7 +906,7 @@ function triviaOf<N extends NodeLike>(
 function unconsumedAfter(end: number, input: string, trivia: Combinator<unknown> | undefined): number | null {
   let pos = end
   if (trivia && pos < input.length) {
-    const t = trivia.parse(input, pos, { trackLines: false })
+    const t = trivia.parse(input, pos, createParseContext())
     if (t.ok && t.span.end > pos) pos = t.span.end
   }
   return pos < input.length ? pos : null
