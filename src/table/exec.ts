@@ -456,9 +456,12 @@ function makeDriver(
 
       case OP_TOKEN: {
         // Mirrors src/combinators/token.ts:21-65 exactly, including that
-        // `_triviaLog`/`_rootTriviaLog` are DELETED rather than set undefined
-        // and restored by presence, and that the leaf is pushed only when the
-        // caller was capturing BEFORE the sinks were cleared.
+        // `_triviaLog`/`_rootTriviaLog` are ASSIGNED `undefined` rather than
+        // deleted, and that the leaf is pushed only when the caller was
+        // capturing BEFORE the sinks were cleared. Restoration is by VALUE, not
+        // by presence: every reader of these two tests `undefined` or
+        // truthiness, so assignment is sufficient. `delete` flipped `ctx` out of
+        // fast properties whenever the property was present.
         const sTrivia = ctx.trivia, sKinds = ctx.triviaKindLabels
         const sBuf = ctx._cstBuf, sChildren = ctx._cstChildren, sLeaves = ctx._cstLeaves
         const sRaw = ctx._cstRawChildren, sTl = ctx._cstTriviaLog
@@ -474,8 +477,8 @@ function makeDriver(
         ctx._cstLeaves = undefined
         ctx._cstRawChildren = undefined
         ctx._cstTriviaLog = undefined
-        delete ctx._triviaLog
-        delete ctx._rootTriviaLog
+        ctx._triviaLog = undefined
+        ctx._rootTriviaLog = undefined
 
         let v: unknown
         try {
@@ -489,10 +492,8 @@ function makeDriver(
           ctx._cstLeaves = sLeaves
           ctx._cstRawChildren = sRaw
           ctx._cstTriviaLog = sTl
-          if (sOuterTl === undefined) delete ctx._triviaLog
-          else ctx._triviaLog = sOuterTl
-          if (sRootTl === undefined) delete ctx._rootTriviaLog
-          else ctx._rootTriviaLog = sRootTl
+          ctx._triviaLog = sOuterTl
+          ctx._rootTriviaLog = sRootTl
         }
         if (v === FAIL) return FAIL
         const end = END
@@ -855,7 +856,7 @@ function makeDriver(
         ctx._cstLeaves = undefined
         ctx._cstRawChildren = undefined
         ctx._cstTriviaLog = undefined
-        delete ctx._triviaLog
+        ctx._triviaLog = undefined
 
         let v: unknown
         try {
@@ -866,8 +867,7 @@ function makeDriver(
           ctx._cstLeaves = sLeaves
           ctx._cstRawChildren = sRaw
           ctx._cstTriviaLog = sTl
-          if (sOuterTl === undefined) delete ctx._triviaLog
-          else ctx._triviaLog = sOuterTl
+          ctx._triviaLog = sOuterTl
         }
         if (v === FAIL) return FAIL
         const end = END

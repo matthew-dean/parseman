@@ -37,8 +37,14 @@ export function token(root: Combinator<unknown>): Combinator<string> {
       ctx._cstLeaves = undefined
       ctx._cstRawChildren = undefined
       ctx._cstTriviaLog = undefined
-      delete ctx._triviaLog
-      delete ctx._rootTriviaLog
+      // ASSIGNED, not deleted. Every reader of these two tests `undefined` or
+      // truthiness — there is no `in`/hasOwnProperty check on either name
+      // anywhere in src/ — so assignment restores them exactly. `delete` was
+      // strictly worse: deleting a PRESENT property flips `ctx` out of fast
+      // properties for the rest of the parse and re-adding does not restore it,
+      // and `ctx` is read on every combinator step.
+      ctx._triviaLog = undefined
+      ctx._rootTriviaLog = undefined
 
       let result: ParseResult<unknown>
       try {
@@ -51,10 +57,8 @@ export function token(root: Combinator<unknown>): Combinator<string> {
         ctx._cstLeaves = savedLeaves
         ctx._cstRawChildren = savedRaw
         ctx._cstTriviaLog = savedTriviaLog
-        if (savedOuterTriviaLog === undefined) delete ctx._triviaLog
-        else ctx._triviaLog = savedOuterTriviaLog
-        if (savedRootTriviaLog === undefined) delete ctx._rootTriviaLog
-        else ctx._rootTriviaLog = savedRootTriviaLog
+        ctx._triviaLog = savedOuterTriviaLog
+        ctx._rootTriviaLog = savedRootTriviaLog
       }
 
       if (!result.ok) return result
@@ -102,7 +106,8 @@ export function leaf<T, U>(
       ctx._cstLeaves = undefined
       ctx._cstRawChildren = undefined
       ctx._cstTriviaLog = undefined
-      delete ctx._triviaLog
+      // Assigned, not deleted — see the note in token() above.
+      ctx._triviaLog = undefined
       let result: ParseResult<T>
       try { result = root.parse(input, pos, ctx) }
       finally {
@@ -111,8 +116,7 @@ export function leaf<T, U>(
         ctx._cstLeaves = savedLeaves
         ctx._cstRawChildren = savedRaw
         ctx._cstTriviaLog = savedTriviaLog
-        if (savedOuterTriviaLog === undefined) delete ctx._triviaLog
-        else ctx._triviaLog = savedOuterTriviaLog
+        ctx._triviaLog = savedOuterTriviaLog
       }
       if (!result.ok) return result
       const value = fn(result.value, result.span)
