@@ -51,7 +51,7 @@
  */
 import type { ParseContext } from '../types.ts'
 import {
-  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_EMPTY, OP_GATE, OP_LIT, OP_LIT_TRACK, OP_NAMES,
+  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_EMPTY, OP_GATE, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX,
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_XFORM,
 } from './ops.ts'
@@ -536,6 +536,57 @@ const e=pos+${s.length}
 ${captureLeaf(q(s))}
 ${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
 return ${q(s)}
+}
+ctx._fe=pos;ctx._fx=${xf}
+${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+}`
+      }
+
+      case OP_LIT_CI:
+      case OP_LIT_CI_TRACK: {
+        const s = k[code[ip + 1]!] as string
+        const xf = fxRef(code[ip + 2]!)
+        const track = op === OP_LIT_CI_TRACK
+        // THE FOLD, UNROLLED AGAINST CONSTANTS.
+        //
+        // `assemble.ts:866-873` holds the folded literal in an ARRAY and walks it
+        // with a loop and a ternary per character — a load, a bounds check and a
+        // branch for a comparison whose right-hand side is known here. Emitted, the
+        // literal is not data at all: each character is one or two compares
+        // against integers, straight-line, no array and no closure.
+        //
+        // Semantics are `asciiFoldEq`'s exactly. `foldedLit[i]` is the literal
+        // folded, so it is never in A-Z; and `fold` maps A-Z INTO a-z and is the
+        // identity everywhere else. So for a folded character `c`:
+        //   - `c` in a-z  — the input matches iff it is `c` or `c - 32`
+        //   - otherwise   — the input matches iff it is exactly `c`, because the
+        //                   only characters fold moves land in a-z
+        // Past end of input `charCodeAt` is NaN, which compares unequal to both —
+        // the same answer the length test gave.
+        //
+        // The match VALUE is `input.slice(pos, e)`, the INPUT's casing and not the
+        // literal's, exactly as `literal.ts:86` has it — returning the literal
+        // would silently normalise case in any node built from it.
+        const tests: string[] = []
+        const reads: string[] = []
+        for (let i = 0; i < s.length; i++) {
+          const raw = s.charCodeAt(i)
+          const f = raw >= 65 && raw <= 90 ? raw + 32 : raw
+          const at = i === 0 ? 'pos' : `pos+${i}`
+          if (f >= 97 && f <= 122) {
+            reads.push(`const c${i}=input.charCodeAt(${at})`)
+            tests.push(`(c${i}===${f}||c${i}===${f - 32})`)
+          } else {
+            tests.push(`input.charCodeAt(${at})===${f}`)
+          }
+        }
+        return `${head}
+${reads.length > 0 ? `${reads.join('\n')}\n` : ''}if(${tests.join('&&')}){
+const e=pos+${s.length}
+const v=input.slice(pos,e)
+${captureLeaf('v')}
+${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
+return v
 }
 ctx._fe=pos;ctx._fx=${xf}
 ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
