@@ -51,13 +51,14 @@
  */
 import type { ParseContext } from '../types.ts'
 import {
-  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_EMPTY, OP_GATE, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
-  OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_RX,
-  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_XFORM,
+  OP_ADJ, OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EMPTY, OP_EXPECT, OP_FIELD, OP_GATE,
+  OP_LABEL, OP_LEAF, OP_LIT, OP_LIT_CI, OP_LIT_CI_TRACK, OP_LIT_TRACK, OP_NAMES,
+  OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE, OP_RX,
+  OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 import type { ResolvedClass, ResolvedTable, TableProgram } from './program.ts'
 import {
-  CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, type SiteLabel,
+  CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
@@ -90,11 +91,12 @@ export class Unemittable extends Error {
  */
 export const EMITTED_PARAMS = [
   'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
-  'SCANS', 'DISP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
+  'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
   'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
   'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
   'scanTrivia', 'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
+  'asciiFoldKey', 'ROUTED_FX',
 ] as const
 
 /**
@@ -176,6 +178,25 @@ function q(s: string): string {
 }
 
 /**
+ * WHICH SIDE SINKS A MARK IN THIS ASSEMBLY HAS TO COVER.
+ *
+ * `_fields` and `_errors` used to be free: `emitRollback`'s own comment argued
+ * that neither could grow in an emitted assembly, because `OP_FIELD` and
+ * `OP_EXPECT` were both unemittable and a table carrying one fell back whole.
+ * Emitting them retires that argument, so the marks come back — but ONLY for a
+ * table that actually contains the writer, which is an emit-time fact about the
+ * program and not a per-parse test.
+ *
+ * Per TABLE and not per SITE, deliberately. A site's subtree reaches through
+ * `OP_RULE` into the rule graph, so "can a field run under this mark" is very
+ * nearly "does the grammar have a field" for every mark that is not a leaf's —
+ * and a per-site answer would buy a handful of sites at the cost of a second
+ * fixpoint walk over the code array.
+ */
+type Sinks = { readonly fd: boolean; readonly er: boolean }
+const NO_SINKS: Sinks = { fd: false, er: false }
+
+/**
  * The rollback-mark prologue as SSA locals, rather than the eight shared slots
  * `assemble.ts` writes and reads back.
  *
@@ -185,22 +206,30 @@ function q(s: string): string {
  * body already has. Same scalarisation `rollbackCstCaptureAt` documents, one
  * step further because the source form can take it.
  */
-function emitMark(t: string, buf: boolean): string {
+function sinkSlots(t: string, s: Sinks): string {
+  return `${s.fd ? `,${t}fd=0` : ''}${s.er ? `,${t}er=0` : ''}`
+}
+function sinkReads(t: string, s: Sinks): string {
+  return `${s.fd ? `\n${t}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${s.er ? `\n${t}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
+}
+
+function emitMark(t: string, buf: boolean, s: Sinks = NO_SINKS, decl = true): string {
   // THE SITE IS INSIDE A NODE. `OP_NODE` opens `ctx._cstBuf` unconditionally and
   // closes it on the way out, so the whole discriminating chain below — which
   // sink is live, and whether a mark is needed at all — has ONE answer here, and
   // the pass knows it. What is left is the five loads a mark actually is.
+  //
+  // `decl === false` RE-TAKES a mark into locals that already exist —
+  // `OP_DISPATCH` marks, rolls back to the selector's mark, and marks again.
   if (buf) {
-    return `let ${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0
-{const b=ctx._cstBuf
+    return `${decl ? `let ${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : ''}{const b=ctx._cstBuf
 const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
 const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${t}tl=l!==undefined?l.length:0
 ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
-${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0}`
+${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, s)}}`
   }
-  return `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0
-{const b=ctx._cstBuf
+  return `${decl ? `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0${sinkSlots(t, s)}\n` : `${t}n=false\n`}{const b=ctx._cstBuf
 if(b!==undefined){
 const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
 const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
@@ -214,7 +243,7 @@ ${t}n=true
 }
 if(${t}n){
 ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
-${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${sinkReads(t, s)}
 }}`
 }
 
@@ -237,12 +266,22 @@ ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
  * `_fields` has no such guard — `length = undefined` would throw — so it takes
  * the literal `0` that a per-node `_fields` no `OP_FIELD` can push to always has.
  */
-function emitRollback(t: string, buf: boolean): string {
+function emitRollback(t: string, buf: boolean, s: Sinks = NO_SINKS): string {
   // `_rbBuf` is the `_cstBuf` arm of `rollbackCstCaptureAt` plus the two trivia
   // truncations, with the sink discrimination the label already answered removed.
   // It takes no piece, so the header's sharing rule admits it.
-  if (buf) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)`
-  return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,0,undefined,${t}lg,${t}rt)`
+  //
+  // The two side sinks stay OUT of `_rbBuf` rather than growing its parameter
+  // list: they are absent from most tables, and a fixed seven-argument helper
+  // would make every grammar pay the two extra pushes to serve the ones that
+  // carry a field. Guarded exactly as `rollbackCstCaptureAt:242,233` guards them
+  // — `_errors` on a defined mark, because `undefined` is its "no mark taken"
+  // sentinel, and `_fields` on the array alone.
+  const fd = s.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${t}fd)ctx._fields.length=${t}fd` : ''
+  const er = s.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${t}er)ctx._errors.length=${t}er` : ''
+  if (buf) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)${fd}${er}`
+  if (!s.fd && !s.er) return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,0,undefined,${t}lg,${t}rt)`
+  return `if(${t}n){rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${s.fd ? `${t}fd` : '0'},${s.er ? `${t}er` : 'undefined'},${t}lg,${t}rt)}`
 }
 
 /**
@@ -259,19 +298,19 @@ function emitRollback(t: string, buf: boolean): string {
  * only the first branch, a known slot keeps only the second (with the scope's own
  * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string, s: Sinks): string {
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 cur=_pfEnd`
   if (l.tri === TRI_NONE) return fast
-  const scanned = `${emitMark(t, l.buf)}
+  const scanned = `${emitMark(t, l.buf, s)}
 const ${t}s=${skip}(input,cur,ctx)
 const ${t}v=${callee}(input,${t}s,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(_pfEnd>${t}s)cur=_pfEnd
-else{${emitRollback(t, l.buf)}}`
+else{${emitRollback(t, l.buf, s)}}`
   if (l.tri !== TRI_UNKNOWN) return scanned
   return `if(ctx.trivia===undefined){
 ${fast}
@@ -320,7 +359,7 @@ export function emitAssemblySource(
   cfg: { hostCst: boolean; trackLines: boolean; tolerant: boolean; coverage: boolean; probe: boolean },
   extraIps: readonly number[] = [],
 ): EmitResult {
-  const { code, k, disp, triviaLabelled } = t
+  const { code, k, disp, dsp, triviaLabelled } = t
   const swapLegal = !cfg.trackLines
   const hostCst = cfg.hostCst
 
@@ -336,15 +375,40 @@ export function emitAssemblySource(
   // `link` is called on from outside a body — the rule entries and the scan
   // pool's `extraIps` — and each starts at `TOP`, because a caller outside the
   // emitted scope supplies a context this pass cannot see.
-  const labels = computeSiteLabels(
-    code,
-    [...Object.values(prog.rules), ...extraIps],
-    hostCst,
-  )
+  const roots = [...Object.values(prog.rules), ...extraIps]
+  const labels = computeSiteLabels(code, roots, hostCst)
+
+  // THE SIDE-SINK CENSUS, over the same reachable set the labels are computed
+  // from. `OP_FIELD` is the only ROW that writes `_fields` and `OP_EXPECT` the
+  // only emittable row that writes `_errors` — `recoverScan` is the other, and a
+  // recovery assembly is refused above. A table with neither pays for neither.
+  //
+  // `OP_SCAN` RAISES BOTH, and that is not caution — it is a measured defect.
+  // The row runs an INTERPRETED combinator (`scanTo`/`balanced`, rebuilt by
+  // `resolveTable`'s pool from subtrees), so its interior is not in this code
+  // array and this walk cannot see what it writes. `balanced()`'s unclosed-group
+  // failure pushes a `parseError` carrying its closer, and less's `at-rules.less`
+  // and `css-3.less` each left several of them on `RunResult.errors` — errors
+  // that the CLOSURE engine rolls back, because its mark covers `_errors`
+  // unconditionally. The two engines disagreed on the errors facet of a parse
+  // that otherwise matched byte for byte.
+  //
+  // Any future row whose child is not an offset in `code` belongs here for the
+  // same reason. `OP_LIVE` is the other such row, and it is unemittable.
+  const sinks: Sinks = (() => {
+    let fd = false
+    let er = false
+    for (const ip of reachableSites(code, roots)) {
+      const op = code[ip]
+      if (op === OP_SCAN) { fd = true; er = true; break }
+      if (op === OP_FIELD) fd = true
+      else if (op === OP_EXPECT) er = true
+    }
+    return { fd, er }
+  })()
 
   const bodies: string[] = []
   const byIp = new Map<number, string>()
-  const alias = new Map<number, string>()
   const reached = new Set<number>()
   const prelude: string[] = []
   const skipDefs: string[] = []
@@ -436,29 +500,56 @@ return skipTriviaScanned(${sc},input,cur,ctx)}`)
   function link(ip: number): string {
     const hit = byIp.get(ip)
     if (hit !== undefined) return hit
-    const al = alias.get(ip)
-    if (al !== undefined) return al
     // An ALIAS site forwards to its child with no body of its own. Resolved
     // before reservation so no name is minted for a function that would only
     // add a call frame — `assemble.ts` makes the same choice by returning the
     // child piece itself.
-    const forwarded = aliasOf(ip)
-    if (forwarded !== undefined) {
-      reached.add(ip)
-      // Provisional, so a cycle through an alias terminates.
-      alias.set(ip, `_pf${ip}`)
-      const target = link(forwarded)
-      alias.set(ip, target)
-      return target
-    }
-    const fname = `_pf${ip}`
+    const target = resolveAlias(ip)
+    const done = byIp.get(target)
+    if (done !== undefined) return done
+    const fname = `_pf${target}`
     // Reserved BEFORE lowering, so a back-edge into a site still in flight binds
     // to the hoisted declaration rather than to a forwarding stub. This is the
     // whole of `assemble.ts`'s `inFlight` map and its one shared closure.
-    byIp.set(ip, fname)
-    reached.add(ip)
-    bodies.push(lower(ip, fname))
+    byIp.set(target, fname)
+    bodies.push(lower(target, fname))
     return fname
+  }
+
+  /**
+   * FOLLOW THE ALIAS CHAIN TO THE FIRST SITE WITH A BODY — iteratively, and
+   * BEFORE anything is reserved.
+   *
+   * The previous form recursed through `link` and parked a PROVISIONAL name
+   * `_pf<ip>` in the alias map so that a cycle would terminate. It terminated,
+   * and it emitted a call to a function that does not exist: `OP_RULE` is the
+   * only back-edge in a table, `OP_RULE` is an alias, so a recursive rule whose
+   * cycle re-enters through the alias row still in flight bound to the
+   * provisional name, and every grammar with that shape compiled to
+   * `_pf1100 is not defined` — a ReferenceError at parse time, from a body that
+   * the `new Function` call above accepts as syntactically valid.
+   *
+   * Resolving the chain first removes the window: no name is ever handed out for
+   * a site that will not get a body, because the only name handed out is the
+   * CHAIN'S END, which is always lowered.
+   *
+   * A cycle of alias-only rows — `A` aliasing to `B` aliasing back to `A`, with
+   * no body anywhere in between — is a rule that expands to itself and consumes
+   * nothing. Refused BY NAME rather than looped on: it is a defect in the
+   * grammar, and the closure engine meets it as a stack overflow at parse time.
+   */
+  function resolveAlias(ip: number): number {
+    let cur = ip
+    let seen: Set<number> | undefined
+    for (;;) {
+      reached.add(cur)
+      const next = aliasOf(cur)
+      if (next === undefined) return cur
+      if (seen === undefined) seen = new Set([cur])
+      else if (seen.has(cur)) throw new Unemittable('a cycle of alias-only sites (a rule that expands to itself)')
+      else seen.add(cur)
+      cur = next
+    }
   }
 
   /** Sites that forward to a child with no body, decided by option, data, or LABEL. */
@@ -637,6 +728,78 @@ return ${fn}(v,{start:pos,end:_pfEnd})
 }`
       }
 
+      case OP_LABEL: {
+        const child = link(code[ip + 1]!)
+        const xf = fxRef(code[ip + 2]!)
+        // `_fe` IS NOT TOUCHED — `map.ts:84` keeps the child's span and replaces
+        // only the expected set. A label that moved the failure position would
+        // report the diagnostic at the label's start rather than where the input
+        // actually stopped.
+        return `${head}
+const v=${child}(input,pos,ctx)
+if(v===FAIL)ctx._fx=${xf}
+return v
+}`
+      }
+
+      case OP_FIELD: {
+        const name = q(k[code[ip + 1]!] as string)
+        const child = link(code[ip + 2]!)
+        // `ctx._fields?.push(…)` — conditional on a field-reading node being
+        // open, exactly as `map.ts` has it, so a field outside one costs a load
+        // and a branch. The ARRAY is what `OP_NODE` hands to `buildFieldMap`.
+        return `${head}
+const v=${child}(input,pos,ctx)
+if(v===FAIL)return FAIL
+const f=ctx._fields
+if(f!==undefined)f.push({name:${name},value:v,span:{start:pos,end:_pfEnd}})
+return v
+}`
+      }
+
+      case OP_EXPECT: {
+        const child = link(code[ip + 1]!)
+        const xf = fxRef(code[ip + 2]!)
+        // ONE ARM, NOT TWO. `assemble.ts:1050` branches on
+        // `REC = prog.rec === 1 && cfg.tolerant`, and this emitter refuses a
+        // tolerant recovery assembly outright (above), so `REC` is false for
+        // every table that reaches here and the tree-embedding arm is dead.
+        // Emitting it would be a fourth implementation of a protocol that
+        // already has three.
+        //
+        // `_fc` IS CLEARED: a recovered failure is no longer a failure, and the
+        // commit bit the child raised must not survive it and cut an enclosing
+        // choice (`assemble.ts:1058-1066`).
+        return `${head}
+const v=${child}(input,pos,ctx)
+if(v!==FAIL)return v
+const err={_tag:'parseError',span:{start:pos,end:pos},expected:${xf}}
+const es=ctx._errors
+if(es!==undefined)es.push(err)
+ctx._fc=false
+_pfEnd=pos
+return err
+}`
+      }
+
+      case OP_ROUTED: {
+        const fb = code[ip + 1]!
+        const fallback = fb >= 0 ? link(fb) : undefined
+        // The SPAN is the routed item's own object, not a copy — `assemble.ts`
+        // hands the same one to the leaf, and a fresh `{start,end}` here would
+        // be a different tree for any consumer comparing by identity.
+        const push = `pushCstLeaf(ctx,{_tag:'leaf',value:it.value,span:it.span})`
+        return `${head}
+const it=ctx._routed
+if(it===undefined||pos!==it.span.start){
+${fallback !== undefined ? `return ${fallback}(input,pos,ctx)` : 'ctx._fe=pos;ctx._fx=ROUTED_FX;return FAIL'}
+}
+${L.buf ? push : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${push}`}
+_pfEnd=it.span.end
+return it.value
+}`
+      }
+
       case OP_SCAN: {
         const si = code[ip + 1]!
         // The scan pool is built FROM subtrees, so it is populated after this
@@ -680,14 +843,74 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
 }`
       }
 
+      /* ── boundaries ──────────────────────────────────────────────────────── */
+
+      case OP_TOKEN:
+      case OP_LEAF: {
+        const isToken = op === OP_TOKEN
+        const fn = isToken ? undefined : fnRef(code[ip + 1]!)
+        const child = link(isToken ? code[ip + 1]! : code[ip + 2]!)
+        // `try`/`finally`, AS `assemble.ts` HAS IT. `OP_SCOPE` restores linearly
+        // and this does not, and the difference is not an oversight in either:
+        // `test/unit/token.test.ts:198` pins CONTEXT RESTORATION ON A THROWING
+        // BODY across the interpreter and `compileTable`, and jess's reducers
+        // throw on purpose — that is how its dialects reject illegal constructs
+        // (`bench/jess/digest.ts:64`). A boundary that leaked `ctx.trivia` and
+        // five capture sinks on the way out would corrupt every subsequent parse
+        // through the same context, so the handler IS the semantics here.
+        //
+        // `cstCaptureActive` IS THE SAVED STATE, read BEFORE the sinks are
+        // cleared — the leaf this body contributes goes to the OUTER collector.
+        // Inside a node the answer is the label's, and the call disappears.
+        const wasCap = L.buf ? 'true' : '(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)'
+        // `token()` additionally clears the TRIVIA scope and the root trivia
+        // log: its whole point is that the child sees no ambient skipping, so
+        // the match is one contiguous run of input (`ops.ts:180-190`).
+        return `${head}
+const sBuf=ctx._cstBuf,sCh=ctx._cstChildren,sLv=ctx._cstLeaves,sRaw=ctx._cstRawChildren,sTl=ctx._cstTriviaLog
+const sOtl=ctx._triviaLog
+${isToken ? 'const sTri=ctx.trivia,sKinds=ctx.triviaKindLabels,sScan=_pfScan,sRtl=ctx._rootTriviaLog\n' : ''}const wasCap=${wasCap}
+${isToken ? `_pfScan=null
+ctx.trivia=undefined
+ctx.triviaKindLabels=undefined
+` : ''}ctx._cstBuf=undefined
+ctx._cstChildren=undefined
+ctx._cstLeaves=undefined
+ctx._cstRawChildren=undefined
+ctx._cstTriviaLog=undefined
+ctx._triviaLog=undefined
+${isToken ? 'ctx._rootTriviaLog=undefined\n' : ''}let v
+try{v=${child}(input,pos,ctx)}finally{
+${isToken ? `_pfScan=sScan
+ctx.trivia=sTri
+ctx.triviaKindLabels=sKinds
+ctx._rootTriviaLog=sRtl
+` : ''}ctx._cstBuf=sBuf
+ctx._cstChildren=sCh
+ctx._cstLeaves=sLv
+ctx._cstRawChildren=sRaw
+ctx._cstTriviaLog=sTl
+ctx._triviaLog=sOtl
+}
+if(v===FAIL)return FAIL
+const e=_pfEnd
+const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
+if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:out,span:{start:pos,end:e}})
+_pfEnd=e
+return out
+}`
+      }
+
+      /* ── transaction ─────────────────────────────────────────────────────── */
+
       case OP_ATTEMPT: {
         const child = link(code[ip + 1]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf)}
+${emitMark(p, L.buf, sinks)}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-${emitRollback(p, L.buf)}
+${emitRollback(p, L.buf, sinks)}
 if(ctx._fc===true)return FAIL
 ctx._fe=pos
 return FAIL
@@ -699,9 +922,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf)}
+${emitMark(p, L.buf, sinks)}
 const v=${child}(input,pos,ctx)
-${emitRollback(p, L.buf)}
+${emitRollback(p, L.buf, sinks)}
 if(v===FAIL){_pfEnd=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
@@ -714,9 +937,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf)}
+${emitMark(p, L.buf, sinks)}
 const v=${child}(input,pos,ctx)
-${emitRollback(p, L.buf)}
+${emitRollback(p, L.buf, sinks)}
 if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 _pfEnd=pos
 return null
@@ -727,12 +950,12 @@ return null
         const child = link(code[ip + 1]!)
         const p = tmp()
         return `${head}
-${emitMark(p, L.buf)}
+${emitMark(p, L.buf, sinks)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
 if(ctx._fc===true)return FAIL
-${emitRollback(p, L.buf)}
+${emitRollback(p, L.buf, sinks)}
 _pfEnd=pos
 return null
 }
@@ -770,7 +993,7 @@ return v
         for (let i = 1; i < n; i++) {
           const vn = `v${i}`
           parts.push(`let ${vn}`)
-          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
+          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L), sinks))
           names.push(vn)
         }
         parts.push('_pfEnd=cur')
@@ -856,7 +1079,7 @@ for(let j=prev;j<${i};j++)if((bits&(1<<j))===0)acc=_accSet(${afx}[j],acc)
 prev=${i + 1}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p, L.buf)}
+${emitRollback(p, L.buf, sinks)}
 }`).join('')
 
         const generalArms = arms.map((a, i) => `
@@ -866,12 +1089,12 @@ ctx._fc=false
 if(v!==FAIL)return v}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p, L.buf)}
+${emitRollback(p, L.buf, sinks)}
 }else acc=_accSet(${afx}[${i}],acc)`).join('')
 
         return `${head}
 const c=lead(input,pos)
-${emitMark(p, L.buf)}
+${emitMark(p, L.buf, sinks)}
 let acc
 ${maskable ? `if(c<128){
 const bits=${maskName}[c<0?128:c]
@@ -884,6 +1107,83 @@ return FAIL
 ` : ''}${generalArms}
 ctx._fe=pos;ctx._fx=acc??${choiceFx}
 return FAIL
+}`
+      }
+
+      case OP_DISPATCH: {
+        const di = code[ip + 2]!
+        const spec = dsp[di]!
+        const selector = link(code[ip + 1]!)
+        const otherIp = code[ip + 3]!
+        const other = otherIp >= 0 ? link(otherIp) : undefined
+        const otherRouted = code[ip + 4]! === 1
+        const n = code[ip + 5]!
+        const armBase = ip + 6
+        const arms: string[] = []
+        for (let i = 0; i < n; i++) arms.push(link(code[armBase + i]!))
+        const bk = hoist('bk', `DSP[${di}].byKey`)
+        const rt = hoist('rt', `DSP[${di}].routed`)
+        const dx = hoist('dx', `DSP[${di}].expected`)
+        // THE MATCHER ARMS, AS SOURCE. `exec.ts`'s `linkMatcher` mints one
+        // closure per arm from four literals it already has in hand; the four
+        // are TABLE DATA, so here they are the test itself and no closure, no
+        // pool and no indexed call exist. Kinds are `matcherClaims`'s exactly
+        // — 0/1 raw prefix/suffix, 3/4 the pre-folded pair, anything else a
+        // regex. The regex is built PER TEST, deliberately: a hoisted one
+        // carries `lastIndex` across parses whenever the author's pattern is
+        // sticky or global (`exec.ts:140-144`).
+        const claims = (m: readonly [number, string, string, number]): string => {
+          switch (m[0]) {
+            case 0: return `key.startsWith(${q(m[1])})`
+            case 1: return `key.endsWith(${q(m[1])})`
+            case 3: return `asciiFoldKey(key).startsWith(${q(m[1])})`
+            case 4: return `asciiFoldKey(key).endsWith(${q(m[1])})`
+            default: return `new RegExp(${q(m[1])},${q(m[2])}).test(key)`
+          }
+        }
+        const chain = spec.match.length === 0
+          ? ''
+          : `if(arm===undefined){\n${spec.match.map((m, i) => `${i === 0 ? '' : 'else '}if(${claims(m)})arm=${m[3]}`).join('\n')}\n}\n`
+        const fold = spec.byFold.size > 0
+          ? `if(arm===undefined)arm=${hoist('bf', `DSP[${di}].byFold`)}.get(asciiFoldKey(key))\n`
+          : ''
+        const m1 = tmp()
+        const m2 = tmp()
+        // THE SELECTOR RUNS ONCE and the key it returns picks the arm — that is
+        // what `dispatch()` buys over a choice of arms that each re-parse the
+        // opener. A routed arm rewinds the selector's trivia capture and gets
+        // the token handed to it (`OP_ROUTED`) instead of re-matching it.
+        return `${head}
+${emitMark(m1, L.buf, sinks)}
+const sv=${selector}(input,pos,ctx)
+if(sv===FAIL)return FAIL
+const selEnd=_pfEnd
+const key=sv
+let arm=${bk}.get(key)
+${fold}${chain}let ur
+if(arm===undefined){
+${other === undefined ? `ctx._fe=selEnd;ctx._fx=${dx};return FAIL` : `ur=${String(otherRouted)}`}
+}else ur=${rt}[arm]===1
+const savedRouted=ctx._routed
+${emitMark(m2, L.buf, sinks)}
+if(ur){
+${emitRollback(m1, L.buf, sinks)}
+${emitMark(m2, L.buf, sinks, false)}
+ctx._routed={value:key,span:{start:pos,end:selEnd}}
+}
+const at=ur?pos:selEnd
+let v
+switch(arm){
+${arms.map((a, i) => `case ${i}:v=${a}(input,at,ctx);break`).join('\n')}
+${other === undefined ? '' : `default:v=${other}(input,at,ctx)`}
+}
+if(ur)ctx._routed=savedRouted
+if(v===FAIL){
+${emitRollback(m2, L.buf, sinks)}
+ctx._fc=true
+return FAIL
+}
+return [key,v]
 }`
       }
 
@@ -920,21 +1220,24 @@ return FAIL
         const knownTrivia = L.tri === TRI_NONE ? false : L.tri !== TRI_UNKNOWN ? true : undefined
         const hasTrivia = knownTrivia === undefined ? 'hasTrivia' : String(knownTrivia)
         const needMark = L.buf ? 'true' : 'needMark'
-        // THE `_fields` AND `_errors` MARKS ARE NOT TAKEN, on exactly the argument
-        // `emitRollback` already makes for the non-loop marks (45eb01a): neither
-        // sink can grow in an EMITTED assembly, because `OP_FIELD`, `OP_EXPECT`
-        // and `recoverScan` are all unemittable and a table carrying one falls
-        // back whole. The loop was still paying two loads and two stores per item.
+        // THE `_fields` AND `_errors` MARKS ARE TAKEN ONLY WHERE THE TABLE HAS A
+        // WRITER, which is the same emit-time census `emitMark` applies to the
+        // non-loop marks. Before `OP_FIELD` and `OP_EXPECT` were emittable the
+        // answer was "never"; it is now "per table", and a grammar with no field
+        // still pays neither the two loads nor the two stores per item.
+        const pfd = sinks.fd ? `${p}fd` : '0'
+        const per = sinks.er ? `${p}er` : 'undefined'
         const rb = L.buf
-          ? `_rbBuf(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)`
-          : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,0,undefined,${p}lg,${p}rt)`
+          ? `_rbBuf(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)${sinks.fd ? `\nif(ctx._fields!==undefined&&ctx._fields.length!==${p}fd)ctx._fields.length=${p}fd` : ''}${sinks.er ? `\nif(ctx._errors!==undefined&&ctx._errors.length!==${p}er)ctx._errors.length=${p}er` : ''}`
+          : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${pfd},${per},${p}lg,${p}rt)`
+        const markSinks = `${sinks.fd ? `\n${p}fd=ctx._fields!==undefined?ctx._fields.length:0` : ''}${sinks.er ? `\n${p}er=ctx._errors!==undefined?ctx._errors.length:0` : ''}`
         const markBody = L.buf
           ? `const b=ctx._cstBuf
 const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
 const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
 const l=b.tl;${p}tl=l!==undefined?l.length:0
 ${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
-${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0`
+${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}`
           : `if(needMark){
 const b=ctx._cstBuf
 if(b!==undefined){
@@ -947,14 +1250,14 @@ ${p}tl=ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0
 ${p}lv=ctx._cstLeaves!==undefined?ctx._cstLeaves.length:0
 }
 ${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
-${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
+${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
 }`
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
 ${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}let cur=pos
 let count=0
 for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
 ${markBody}
 let itemStart=cur
 let sepEnd=-1

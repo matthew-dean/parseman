@@ -60,9 +60,9 @@
  * label licenses at a leaf is dropping the TEST — never the capture.
  */
 import {
-  OP_ATTEMPT, OP_CHOICE, OP_GATE, OP_LABEL, OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT,
-  OP_PEEK, OP_REP, OP_REPV, OP_RULE, OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX,
-  OP_XFORM,
+  OP_ATTEMPT, OP_CHOICE, OP_DISPATCH, OP_EXPECT, OP_FIELD, OP_GATE, OP_LABEL, OP_LEAF,
+  OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE,
+  OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 
 /** No scope on this path installs a known trivia — the lattice's top element. */
@@ -118,6 +118,8 @@ function childSlots(code: Int32Array, ip: number, out: number[]): void {
     case OP_XFORM:
     case OP_NODE:
     case OP_NODE_TRACK:
+    case OP_FIELD:
+    case OP_LEAF:
       out.push(code[ip + 2]!)
       return
     case OP_RULE:
@@ -126,8 +128,26 @@ function childSlots(code: Int32Array, ip: number, out: number[]): void {
     case OP_PEEK:
     case OP_ATTEMPT:
     case OP_LABEL:
+    case OP_EXPECT:
+    case OP_TOKEN:
       out.push(code[ip + 1]!)
       return
+    // `ROUTED fallback` — the operand is an offset or −1. The routed token
+    // itself is data the enclosing `dispatch()` already consumed, so the only
+    // edge is the fallback.
+    case OP_ROUTED:
+      if (code[ip + 1]! >= 0) out.push(code[ip + 1]!)
+      return
+    // `DISPATCH sel d other otherRouted n a1 … an` — the SELECTOR is a child on
+    // exactly the same footing as the arms: it runs inside whatever node and
+    // scope this site sits in.
+    case OP_DISPATCH: {
+      out.push(code[ip + 1]!)
+      if (code[ip + 3]! >= 0) out.push(code[ip + 3]!)
+      const n = code[ip + 5]!
+      for (let i = 0; i < n; i++) out.push(code[ip + 6 + i]!)
+      return
+    }
     case OP_SEQ:
     case OP_SEQV: {
       const n = code[ip + 1]!
@@ -154,6 +174,31 @@ function childSlots(code: Int32Array, ip: number, out: number[]): void {
 }
 
 /**
+ * The sites reachable from `roots` THROUGH THE EDGES THIS FILE KNOWS.
+ *
+ * Deliberately the same `childSlots` the label pass walks, and deliberately not
+ * `inspect.ts`'s `reachableIps`: that one walks a whole program from its rule
+ * entries, and the emitter's question is about the set IT will lower — the rule
+ * entries plus the scan pool's `extraIps`. Sharing the edge table is what keeps
+ * the two answers from drifting when an opcode is added to one and not the
+ * other, which is the exact failure mode `childSlots`'s own header describes.
+ */
+export function reachableSites(code: Int32Array, roots: Iterable<number>): Set<number> {
+  const seen = new Set<number>()
+  const stack = [...roots]
+  const kids: number[] = []
+  while (stack.length > 0) {
+    const ip = stack.pop()!
+    if (seen.has(ip)) continue
+    seen.add(ip)
+    kids.length = 0
+    childSlots(code, ip, kids)
+    for (const c of kids) stack.push(c)
+  }
+  return seen
+}
+
+/**
  * What a site hands DOWN to its children. Every op but the two that write the
  * context passes its own label through unchanged.
  */
@@ -175,6 +220,25 @@ function transfer(code: Int32Array, ip: number, at: SiteLabel, hostCst: boolean)
     const cap = ((code[ip + 3]! & 4) !== 0 || hostCst) ? CAP_ON : CAP_OFF
     if (at.buf && cap === at.cap) return at
     return { tri: at.tri, buf: true, cap }
+  }
+  // THE TWO BOUNDARIES clear every capture sink for their child and contribute
+  // ONE leaf for the whole match; `token()` clears `ctx.trivia` as well. So a
+  // site inside either has NO open `_cstBuf`.
+  //
+  // The label can only say `buf: false`, which this lattice reads as UNKNOWN
+  // rather than as "guaranteed absent" (see the asymmetry note above). That is
+  // the SOUND direction and it is the one that matters: `_rbBuf` and
+  // `_pushLeafBuf` dereference `ctx._cstBuf` with no null test, so a site that
+  // inherited `buf: true` through a `token()` would throw on the first rollback.
+  // Losing the elision inside a token is the price; being wrong there is not
+  // an option.
+  if (op === OP_TOKEN) {
+    if (at.tri === TRI_NONE && !at.buf) return at
+    return { tri: TRI_NONE, buf: false, cap: at.cap }
+  }
+  if (op === OP_LEAF) {
+    if (!at.buf) return at
+    return { tri: at.tri, buf: false, cap: at.cap }
   }
   return at
 }
