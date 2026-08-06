@@ -1,0 +1,17 @@
+{
+  "_comment": "Configuration for `pnpm bench:jess:ab` — see bench/jess/ab.ts. This is the PARSEMAN axis of jess grammar tracking: the same four shipping grammars, HEAD against a pinned parseman release. The complementary jess-side axis lives in the jess repo at scripts/bench-compare-ref.mjs and moves the GRAMMAR while holding parseman still.",
+
+  "referenceSha": "a5dc9bd",
+  "_referenceNote": "v0.46.0, the PREVIOUS RELEASE — the same anchor bench/workloads/config.json uses, deliberately, so a row here and a row there refer to the same pair of builds. Both sides are built from THIS repo and interleaved in ONE process against a null control, so nothing machine-specific is stored and the comparison re-derives itself on whatever box runs it. Bump this to the released sha at every release, in the release PR, quoting the numbers read in that PR. Do NOT bump it to silence a red gate: moving the reference forward onto a slower build launders the regression into the baseline and destroys the record for everyone after.",
+
+  "_refEngineNote": "0.46 has NO `src/table/` — the table engine landed in the 0.47 stack. So the reference side's shipping engine is the MACRO CODEGEN, and that is what `--ref-engine` defaults to. A default of `table` on both sides is not available at this anchor and would be a silent lie if it were accepted; ab.ts refuses it by name. When the reference moves to a release that has a table, change the default here and say so in the release PR.",
+
+  "measurement": {
+    "targetSampleMs": 0,
+    "warmup": 3,
+    "timed": 5,
+    "rounds": 8,
+    "runs": 2,
+    "_note": "ONE parse per repetition (targetSampleMs 0 disables calibration): these fixtures are 100 KB+, so a single parse is already a sample of useful size and the reported millisecond IS one parse. Deliberately identical to `M` in bench/jess/fixture.ts so a figure from the two harnesses differs by the LEGS and by nothing else."
+  }
+}
