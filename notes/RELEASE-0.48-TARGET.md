@@ -317,6 +317,61 @@ whether it represents anything. Measure before ranking.
 
 ---
 
+## 8b. THE DESIGN, STATED BY THE OWNER — read this before touching the assembler
+
+Every paraphrase of this in earlier notes and in the 0.47 PR was wrong in the
+same direction, so it is recorded verbatim in substance:
+
+> "I basically proposed a shape in which we could INFER the same shape as codegen
+> but with an assemblage of fixed, generated, static types & paths."
+
+**The goal is EQUIVALENCE BY ASSEMBLY, not subtraction.** The table is supposed to
+reconstruct, at run start, the same specialised body codegen emitted at build
+time. Nothing about recognition, code generation, inlining or char-code dispatch
+was ever to be retired — those are the techniques being *reproduced*, by a
+different mechanism.
+
+Wordings that are WRONG and keep recurring: "retired the source-lowering engine",
+"deleted an engine", "replaced generated code with data", "the table is the only
+lowering", "two recognisers became one". Each describes removal. The spec is
+reproduction.
+
+**Where the implementation actually stands.** Assembly specialises on two axes and
+not the third:
+
+| axis | specialised? | evidence |
+|---|---|---|
+| options (trivia / CST / lines / recovery) | **yes** | `cfgKey` selects the assembly; no per-node flag tests |
+| arity | **yes** | unrolled per-term-count pieces; generic `runTerms` is the fallback |
+| **child kind** | **NO** | every child is an opaque `Piece` behind a call |
+
+The third is the gap. A sequence whose first term is `literal('@media')` assembles
+to the same shape as one whose first term is a rule reference — it *calls* the
+child. Codegen emitted `input.startsWith('@media', pos)` directly into the
+sequence body; the specialisation went to the leaf. To reach parity the piece set
+must be selected on child SHAPE as well: the superset becomes
+(option × arity × child-shape) rather than (option × arity).
+
+`assemble.ts`'s `OP_SEQ` states the bet the current shape rests on — that
+TurboFan "removes [the call cost] by INLINING a small monomorphic child". That
+bet is what the numbers below test, and `kids[i](…)` in a loop over heterogeneous
+children is not a monomorphic site.
+
+**The number that isolates it.** `json/document`: **zero** `OP_LIVE` interpreter
+fallbacks, no `compose`, 138 code rows, build outside the timed region — and it
+still measures **+137%** against 0.46.0, stable to a tenth of a percent across
+five passes (137.9 / 137.5 / 137.2 / 137.1 / 124.6). Nothing exotic is available
+to explain it. That is the cost of the un-built third, measured clean.
+
+Five mechanisms were proposed for that gap during 0.47 and the evidence killed
+all five: runtime `compose()` (no workload uses it), per-parse assembly
+(`w.make()` is outside the timed region), per-rule assembly (`runRule` is the
+boundary, once per parse), startup cost (`min` is HIGHER than `median`, which a
+fixed cost cannot produce), and interpreter fallback (0-4 `OP_LIVE` rows per
+grammar). Do not re-propose them.
+
+---
+
 ## 9. RECOVER THE LITERAL / REGEX / TRIVIA FAST PATHS — an LLM oversight, not a decision
 
 **Owner ruling, recorded verbatim in substance:** optimising the SHAPE of codegen
