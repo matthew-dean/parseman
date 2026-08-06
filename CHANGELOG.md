@@ -5,6 +5,33 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **A reference re-establishes its rule's trivia scope ONLY where the rule has a
+  boundary to repair.** The fix that stopped `benchmark.less` truncating installed
+  the target rule's ambient trivia at every `g.X` reference taken from a cleared
+  region. Applied to every reference that does not narrow a `noTrivia(...)` region,
+  it ENDS it: the installed scope is inherited by whatever the referenced rule
+  delegates to.
+
+  jess's shipping SCSS grammar sits on that seam. `ValueTerm` clears trivia and
+  spells its own separators; `MathUnary` is `choice(noTrivia(…), noTrivia(…),
+  g.ValueAtom)` — a bare alternation, which never consults an ambient scanner
+  itself. The scope it gained repaired nothing about `MathUnary` and handed its
+  third arm a live one, and `KeywordOrInterpolatedValue`'s `many()` then skipped
+  the space between two identifiers. `a{b: c d}` produced the ONE keyword `bc`
+  with `ok: true` and no errors; `gen-workload.scss` stopped at byte 218 of
+  287543 in all three engines, where 0.46 read the whole file.
+
+  `hasOwnTriviaBoundary` (`src/combinators/trivia-boundary.ts`) is the gate, and
+  BOTH engines ask it — `ref.ts` resolves it once at `define()`, the encoder's
+  `scopedRef` at encode time — because a question only one engine asks is how the
+  two came to parse different languages in the first place. A body that is an
+  alternation, a dispatch, or a single terminal gets no scope.
+
+  Measured over `bench/jess/consumed-sweep.ts`, all four grammars × both engines,
+  2837 records: 4 repaired, 0 regressed. `gen-workload.scss` reads 287542 —
+  byte-for-byte what 0.46's codegen produced — and `benchmark.less` still reads
+  106802/106802. Coverage in `test/parity/rules-trivia.test.ts`; reverting either
+  half turns its own engine's leg red.
 - **Tolerant recovery in the table lowering, in both drivers.** `src/table/` had
   no recovery at all: no sync publication, no resync scan, no error-node
   emission, and the encoder recorded no inferred sync sentinel. A tolerant parse

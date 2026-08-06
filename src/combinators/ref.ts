@@ -1,5 +1,6 @@
 import type { Combinator, ParseContext, ParseResult, ParserMeta } from '../types.ts'
 import { any } from './first-set.ts'
+import { hasOwnTriviaBoundary } from './trivia-boundary.ts'
 
 /**
  * Create a forward-declared parser slot for mutually recursive grammars.
@@ -16,6 +17,8 @@ import { any } from './first-set.ts'
  */
 export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
   let resolved: Combinator<T> | null = null
+  /** `hasOwnTriviaBoundary(resolved)`, resolved at `define()`. See `parse`. */
+  let ownBoundary = false
 
   const meta: ParserMeta = {
     firstSet: any(),
@@ -62,21 +65,36 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
       // fixes. Restricting to the cleared case keeps every repair and drops that
       // regression.
       //
-      // Hot path is an `undefined` check plus one `undefined` compare.
+      // ONLY WHERE THE RULE HAS A BOUNDARY TO REPAIR. `ownBoundary` is resolved
+      // once in `define()` (see `hasOwnTriviaBoundary`): a rule whose body is a
+      // bare ALTERNATION, a dispatch, or a single terminal has no position of its
+      // own at which ambient trivia is consulted, so re-establishing the scope
+      // there cannot repair anything — it can only leak past the arms into
+      // whatever they delegate to.
+      //
+      // That leak is what jess's SCSS value grammar hit. `ValueTerm` clears, and
+      // `MathUnary` — `choice(noTrivia(…), noTrivia(…), g.ValueAtom)` — restored
+      // for a body that never uses it, handing its third arm a live scope.
+      // `ValueAtom` → `KeywordOrInterpolatedValue`, whose `many()` concatenates
+      // identifier chunks, then skipped the space between its terms:
+      // `gen-workload.scss` stopped at byte 218 of 287543, and `a{b: c d}` silently
+      // produced the ONE keyword `bc` with `ok: true` and no errors.
+      //
+      // Hot path is one boolean check.
       const gt = meta.grammarTrivia
-      if (gt !== undefined && ctx.trivia === undefined) {
-        const savedTrivia = ctx.trivia
+      if (gt !== undefined && ownBoundary && ctx.trivia === undefined) {
         const savedLabels = ctx.triviaKindLabels
         ctx.trivia = gt
         ctx.triviaKindLabels = gt._meta.triviaKindLabels
         try { return resolved.parse(input, pos, ctx) }
-        finally { ctx.trivia = savedTrivia; ctx.triviaKindLabels = savedLabels }
+        finally { ctx.trivia = undefined; ctx.triviaKindLabels = savedLabels }
       }
       return resolved.parse(input, pos, ctx)
     },
     define(p: Combinator<T>): void {
       if (resolved) throw new Error('ref<T>() already defined')
       resolved = p
+      ownBoundary = hasOwnTriviaBoundary(p as Combinator<unknown>)
       meta.firstSet = p._meta.firstSet
       meta.canMatchNewline = p._meta.canMatchNewline
       meta.isTrivia = p._meta.isTrivia

@@ -17,6 +17,7 @@ import {
 import { adjacencyExpected } from '../combinators/adjacency.ts'
 import { resolveAdjacencyKindMask } from '../cst/trivia-kinds.ts'
 import { missingInferredType } from '../combinators/node.ts'
+import { hasOwnTriviaBoundary } from '../combinators/trivia-boundary.ts'
 import type { BalancedSpec } from '../combinators/scanTo.ts'
 import type { DispatchSpec, ScanSpec, SubtreeRef, TableProgram, TriviaSpec } from './program.ts'
 import { covKindCode } from './program.ts'
@@ -551,6 +552,17 @@ class Encoder {
    * wherever the scope merely DIFFERS — also overrides a caller that set its own
    * live trivia, and that regressed `@less/test-data`'s `selectors.less` from 3791
    * bytes to 1784 while repairing nothing extra.
+   *
+   * ONLY WHERE THE TARGET HAS A BOUNDARY TO REPAIR — `hasOwnTriviaBoundary`, the
+   * same gate `ref.ts` applies, because the two engines must ask the same question
+   * or they parse different languages again. A rule whose body is a bare
+   * alternation, a dispatch, or a single terminal never consults an ambient
+   * scanner itself, so the scope row cannot repair it and only leaks past its arms.
+   * jess's SCSS `MathUnary` — `choice(noTrivia(…), noTrivia(…), g.ValueAtom)` — is
+   * exactly that shape: the row it gained handed its third arm a live scope, and
+   * `KeywordOrInterpolatedValue`'s `many()` then skipped the space between two
+   * identifiers. `gen-workload.scss` stopped at byte 218 of 287543 and `a{b: c d}`
+   * silently produced the ONE keyword `bc`.
    */
   private scopedRef(p: Combinator<unknown>, target: Combinator<unknown>): number {
     const ip = this.node(target).ip
@@ -558,6 +570,7 @@ class Encoder {
     // is the REF itself; a composed `winners` entry carries it on the target.
     const amb = p._meta.grammarTrivia ?? target._meta.grammarTrivia
     if (amb === undefined || this.activeTrivia !== undefined) return ip
+    if (!hasOwnTriviaBoundary(target)) return ip
     return this.emit(OP_SCOPE, this.triviaSlot(amb), ip)
   }
 
@@ -566,7 +579,8 @@ class Encoder {
     // other construct once for the program.
     const lazyRef = (p._def as ParserDef).tag === 'lazy'
     const scopeKey = lazyRef ? this.activeTrivia : undefined
-    const hit = lazyRef ? this.refMemo.get(p)?.get(scopeKey) : this.memo.get(p)
+    const refMemo = this.refMemo
+    const hit = lazyRef ? refMemo.get(p)?.get(scopeKey) : this.memo.get(p)
     if (hit !== undefined) return { ip: hit }
     // Recursion: reserve a trampoline row now, patch its target when the real
     // body lands. One extra indirection per recursive rule, zero per call site.
@@ -586,8 +600,8 @@ class Encoder {
     const ip = this.covWrap(this.encodeDef(p), this.plan?.rules.get(p), 0)
     this.pending.delete(p)
     if (lazyRef) {
-      let byScope = this.refMemo.get(p)
-      if (byScope === undefined) { byScope = new Map(); this.refMemo.set(p, byScope) }
+      let byScope = refMemo.get(p)
+      if (byScope === undefined) { byScope = new Map(); refMemo.set(p, byScope) }
       byScope.set(scopeKey, ip)
     } else {
       this.memo.set(p, ip)

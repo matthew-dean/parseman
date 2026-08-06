@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  rules, trivia, sequence, literal, oneOrMore, optional, regex, compile, run, parse, parser, noTrivia,
+  rules, trivia, sequence, literal, oneOrMore, optional, many, choice, dispatch, when, routed, regex,
+  compile, run, parse, parser, noTrivia,
   type Combinator, type ParseContext, type ParseResult,
 } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -172,6 +173,96 @@ describe('rules({ trivia }) — a reference re-establishes the target rule\'s sc
 
   it('all four engines agree — no engine is the outlier', () => {
     for (const input of ['a:v !important', 'a:v!important', 'a : v', 'a:v']) {
+      const got = fourEngines(input)
+      const answers = new Set(Object.values(got))
+      expect(answers.size, `engines disagree on ${JSON.stringify(input)}: ${JSON.stringify(got)}`).toBe(1)
+    }
+  })
+})
+
+/**
+ * ...AND ONLY WHERE THE REFERENCED RULE HAS A BOUNDARY TO REPAIR.
+ *
+ * The repair above re-establishes a rule's ambient trivia when it is referenced
+ * from a region that CLEARED it. Applied to EVERY reference it does not narrow a
+ * `noTrivia(...)` region — it ENDS it, because the restored scope is then inherited
+ * by whatever the referenced rule delegates to.
+ *
+ * jess's shipping SCSS grammar sits on that second seam. `ValueTerm` clears trivia
+ * and spells its own separators; `MathUnary` — `choice(noTrivia(…), noTrivia(…),
+ * g.ValueAtom)` — is a bare ALTERNATION, so an ambient scanner installed for it
+ * repairs nothing about `MathUnary` and everything about its third arm. Through
+ * `g.ValueAtom` it reached `KeywordOrInterpolatedValue`, whose `many()`
+ * concatenates identifier chunks, and whitespace was skipped between its terms.
+ * `a{b: c d}` then produced the ONE keyword `bc` with `ok: true` and no errors, and
+ * `gen-workload.scss` stopped at byte 218 of 287543 in all three engines.
+ *
+ * So the gate is structural (`hasOwnTriviaBoundary`) and BOTH engines apply it: a
+ * body that is an alternation, a dispatch, or a single terminal never consults an
+ * ambient scanner itself, so it is given no scope. The replica below is that shape
+ * in five bytes, and the load-bearing assertion is the FAILURE — a gap the grammar
+ * forbids must stay forbidden however many references deep the glued rule sits.
+ */
+describe('rules({ trivia }) — a reference does NOT re-establish a scope its target cannot use', () => {
+  /**
+   * `glued` must never cross a gap, and — as in SCSS — it is INLINE behind a route,
+   * not a rule of its own: the only rule between the `noTrivia(...)` and it is
+   * `Alt`, a bare alternation. That is the whole shape. A replica that made `glued`
+   * its own rule would test nothing, because a reference to a rule that DOES have a
+   * boundary is exactly the case the scope is for.
+   */
+  const glued = dispatch(literal('x'), when('x', sequence(routed(), literal('y'))))
+
+  function gluedGrammar(): Record<string, Combinator<unknown>> {
+    return rules({ trivia: rw }, (r: Record<string, Combinator<unknown>>) => ({
+      Alt: choice(literal('n'), glued),
+      List: noTrivia(sequence(r.Alt!, many(sequence(literal(' '), r.Alt!)))),
+    })) as unknown as Record<string, Combinator<unknown>>
+  }
+
+  /** The same four legs as above: interpreter, compiled, and both table drivers. */
+  function fourEngines(input: string): Record<string, string> {
+    const g = gluedGrammar()
+    const prog = encodeTable({ Alt: g.Alt!, List: g.List! }, {})
+    const ctx = (): ParseContext => ({ trackLines: false, trivia: rw } as ParseContext)
+    const results: Record<string, ParseResult<unknown>> = {
+      interpreted: g.List!.parse(input, 0, ctx()),
+      compiled: compile(g.List!).parse(input),
+      'table(exec)': tableRules(prog)['List']!(input, 0, ctx()),
+      'table(assembled)': assembledRules(prog)['List']!(input, 0, ctx()),
+    }
+    // ACCEPTANCE, not the diagnostic. The four engines report different failure
+    // OFFSETS for a rejected route here (0 from the interpreter, 1 from the other
+    // three) — a pre-existing difference in where a dispatch reports its miss, and
+    // not what this describe block is about. The language is: does `x y` parse.
+    const out: Record<string, string> = {}
+    for (const [name, res] of Object.entries(results)) {
+      out[name] = res.ok ? `ok@${res.span.end}` : 'FAIL'
+    }
+    return out
+  }
+
+  it('a gap inside the glued route stays forbidden two references down, in all four engines', () => {
+    // THE DEFECT, in three bytes. With a scope installed for `Alt`, the route's
+    // body inherited it and crossed the space: every engine answered ok@3 for input
+    // the grammar forbids. That is the same skip that glued SCSS `c d` into `cd`.
+    const got = fourEngines('x y')
+    for (const name of Object.keys(got)) {
+      expect(got[name], `${name} must reject the gap inside the glued route`).toBe('FAIL')
+    }
+  })
+
+  it('the separator the caller DID spell still works', () => {
+    // Not "noTrivia got stricter": the region's own ` ` separator still joins two
+    // glued atoms, so the gate removes exactly the skip nobody asked for.
+    const got = fourEngines('xy xy')
+    for (const name of Object.keys(got)) {
+      expect(got[name], `${name} must consume the whole input`).toBe('ok@5')
+    }
+  })
+
+  it('all four engines agree — no engine is the outlier', () => {
+    for (const input of ['x y', 'xy xy', 'xy', 'n xy']) {
       const got = fourEngines(input)
       const answers = new Set(Object.values(got))
       expect(answers.size, `engines disagree on ${JSON.stringify(input)}: ${JSON.stringify(got)}`).toBe(1)
