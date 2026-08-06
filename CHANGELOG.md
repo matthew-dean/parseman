@@ -120,6 +120,69 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `src/analysis/gating.ts` — the module every analysis pass already imports —
   and the entries are gone. **18 entries covering 26 sites -> 16 covering 24**,
   categorized 7 `BY-DESIGN` / 1 `RULE-BUG` / 9 `DEBT`.
+- **An emitted `OP_RX` row does not allocate a match array, and most of them do
+  not run a regex at all.** Every regex row called `re.exec` and read `m[0]` off
+  a freshly allocated `JSRegExpResult` — 6,005 rows per `json/document` parse,
+  9,738 per `less/stylesheet`, and every field of the array but one discarded.
+
+  Two changes, in order. A row whose pattern is a recognised SHAPE is emitted as
+  straight-line `charCodeAt` source, with the ranges and code points constant
+  folded into the body (`src/table/scan-shapes.ts`, restored from
+  `archive/codegen-fastpaths`). Regex invocations per parse:
+  `less/stylesheet` 38,115 -> 27, `less/mixins` 41,513 -> 36, `css/stylesheet`
+  12,716 -> 1,880, `graphql/document` 8,736 -> 728, `json/document` 6,005 ->
+  4,953. A row that does NOT lower runs the same sticky match through `test` and
+  reads `lastIndex` for the end, which V8 serves without materialising the
+  result array — so the match-array count is zero on all five, lowered or not.
+
+  Bytes allocated per 200 parses, summed from `--trace-gc` deltas rather than
+  counting scavenges (V8 resizes the semi-space, so a scavenge COUNT has a
+  moving constant): `json/document` **355/356/356/356 -> 241/242/242/242 MB**
+  and `graphql/document` **388 -> 277 MB**, both dead stable on both sides. The
+  `css/*` and `less/*` rows are NOT reported as a delta: they are BIMODAL on
+  both sides — `less/stylesheet` alone spans 2,383-3,572 MB at base across
+  eight runs — and this instrument cannot resolve a direction through that. The
+  regex-invocation and match-array counts above have no such noise floor and are
+  the result this entry rests on.
+
+  The lowering DECLINES rather than guesses — a `u` flag, an ambiguous greedy
+  chain, an alternation that would need arm switching all fall through to the
+  regex. Two gates, and both were checked against a planted defect:
+  `bench/scan-shape-oracle.ts` drives every regex constant of every workload
+  grammar at every position of its own corpus (2,764,636 comparisons) against
+  the sticky `exec` it replaces, and `test/unit/scan-shape-lowering.test.ts` is
+  its CI-sized twin plus the recognition pins. Emitted bodies are built at run
+  start, so `pnpm size:guard` is +0.00% on all 24 fixtures.
+
+  A lowered row pushes its leaf through the SITE'S `captureLeaf` — the same
+  label-resolved form `OP_LIT` and `OP_LIT_CI` use — rather than re-deriving the
+  capture test inside the one body that runs most.
+
+  TWO SHAPES THAT LOWERED WRONGLY, both restored intact from the archive and both
+  found the moment the four SHIPPING grammars began to emit — until every
+  remaining opcode was lowered they refused emission entirely, so no gate in this
+  repo had ever pointed this code at them. `bench/jess/scan-shape-oracle-one.ts`
+  is the workload oracle aimed at those four, and it found:
+
+  - **a lookahead over an OPTIONAL trailing literal.** `trailingBacktrackClass`
+    read every `lit` tail as fixed-length, but `::?` can give its second colon
+    back: on `":: "`, `::?(?![ \t\n\r\f])` matches ONE colon and the emitted scan
+    reported no match. Now declined — the exposed class is computable, but a
+    chain of optional parts exposes more than the one level this analysis models.
+  - **a lookahead whose operand is a SEQUENCE.** `parseClassOperand` tests only
+    that a body opens with `[` and closes with `]`, which `[ \t\n\r\f]*[\$(]`
+    satisfies without being one class; its members became the union of everything
+    between the outer brackets, whitespace included, and scss's
+    `\+(?=[ \t\n\r\f]*[\$(])` matched a `+` before a space. Now declined, in
+    `stripTrailingLookahead` rather than in the shared `parseClassOperand`, which
+    the first-set analyser also uses.
+
+  Both cost one regex each (css 26 -> 25 lowered, scss 50 -> 48) and neither
+  occurs in the four workload grammars. Pinned in the unit test, since the jess
+  oracle needs a checkout CI does not have. The emitted engine and the closure
+  engine are now byte-identical across all four dialects at both host modes —
+  **5,666 file-runs, 2,833 files x `ast`/`cst`** — and that comparison was
+  confirmed to move under a planted defect.
 - **The table is LINKED into closures at run start instead of interpreted row by
   row, and `benchmark.less` drops 20%.** `src/table/exec.ts` builds the
   reference table and then walks it with one `switch (code[ip])` over 29

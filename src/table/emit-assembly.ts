@@ -57,6 +57,7 @@ import {
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
 import type { ResolvedClass, ResolvedTable, TableProgram } from './program.ts'
+import { emitShapeMatch, scanShapeFromRegex } from './scan-shapes.ts'
 import {
   CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, reachableSites, type SiteLabel,
 } from './site-labels.ts'
@@ -497,6 +498,54 @@ return skipTriviaScanned(${sc},input,cur,ctx)}`)
     return nm
   }
 
+  /**
+   * The BODY OF A LOWERED REGEX ROW, or `undefined` when the shape declines.
+   *
+   * Declining is the safe direction and the only one this can take: a shape it
+   * fails to recognise falls through to the regex, which is what the row did
+   * before. A shape it recognises WRONGLY is a defect, and the gate for that is
+   * `bench/scan-shape-oracle.ts` — every regex constant of every workload
+   * grammar driven at every position of its own corpus against the sticky
+   * `exec` it replaces, end for end.
+   *
+   * The value is `input.slice(pos, end)`, which for a STICKY regex is `m[0]`
+   * character for character. The `u`/`i`/`m`/`s` flags are handled inside
+   * `scanShapeFromRegex`; `u` declines outright, because a code-unit scan is not
+   * a code-point one.
+   *
+   * `captureLeaf` is the SITE'S — it arrives from `lower`, already resolved
+   * against that site's label, so a lowered row pushes its leaf through exactly
+   * the form `OP_LIT` and `OP_LIT_CI` push theirs. Re-deriving the capture test
+   * here would put a second answer to a settled question inside the one body
+   * that runs most.
+   */
+  function emitScan(
+    ki: number,
+    xf: string,
+    track: boolean,
+    captureLeaf: (value: string) => string,
+  ): string | undefined {
+    const re = k[ki]
+    if (!(re instanceof RegExp)) return undefined
+    const shape = scanShapeFromRegex(re.source, re.flags)
+    if (shape === null) return undefined
+    let n = 0
+    const p = tmp()
+    const m = emitShapeMatch(shape, 'pos', (prefix = '_v') => `${p}${prefix}${n++}`, '')
+    return `
+${m.setup.join('\n')}
+if(${m.ok}){
+const e=${m.end}
+const v=input.slice(pos,e)
+${captureLeaf('v')}
+${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
+return v
+}
+ctx._fe=pos;ctx._fx=${xf}
+${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
+`
+  }
+
   function link(ip: number): string {
     const hit = byIp.get(ip)
     if (hit !== undefined) return hit
@@ -686,16 +735,40 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 
       case OP_RX:
       case OP_RX_TRACK: {
-        const re = kRef(code[ip + 1]!)
         const xf = fxRef(code[ip + 2]!)
         const track = op === OP_RX_TRACK
+        // THE MATCH ARRAY IS THE COST, not the matching. `re.exec` allocates one
+        // per row — 6,005 rows per `json/document` parse, 12.9% of everything
+        // executed — and every field of it but `[0]` is discarded here. A shape
+        // that lowers replaces the call with a straight-line scan over
+        // `charCodeAt`, and the ranges are FOLDED INTO THE SOURCE by
+        // `classCond`/`litCond`/`foldEq` rather than read from a table at run
+        // time: emitted as a static body consulting `inRanges`, this would
+        // reproduce the per-character loop it exists to remove.
+        const scanned = emitScan(code[ip + 1]!, xf, track, captureLeaf)
+        if (scanned !== undefined) return `${head}${scanned}}`
+        // STICKINESS IS THE PRECONDITION OF BOTH FORMS BELOW, and it is checked
+        // rather than assumed. `encode.ts:588` appends `y` to every regex row it
+        // emits, so a non-sticky constant here would be a new encoder path — and
+        // `lastIndex=pos` would already have been meaningless for it, silently
+        // matching from wherever the last row left off.
+        const rxk = k[code[ip + 1]!]
+        if (!(rxk instanceof RegExp) || !rxk.sticky) throw new Unemittable('a non-sticky regex row')
+        // A ROW THAT DOES NOT LOWER STILL NEED NOT ALLOCATE. `test` and `exec`
+        // run the identical match; `exec` additionally materialises a
+        // JSRegExpResult, and V8's `test` fast path does not. For a STICKY
+        // regex `lastIndex` IS the match end on success (RegExpBuiltinExec
+        // step 15), so `input.slice(pos, lastIndex)` is `m[0]` character for
+        // character, and the array was the only thing dropped. Counted, not
+        // reasoned: 400×~2k sticky matches of json's unlowered string body take
+        // 99 scavenges through `exec` and 10 through `test`, reproduced.
+        const re = kRef(code[ip + 1]!)
         return `${head}
 ${re}.lastIndex=pos
-const m=${re}.exec(input)
-if(m!==null){
-const v=m[0]
-const e=pos+v.length
-${captureLeaf("v")}
+if(${re}.test(input)){
+const e=${re}.lastIndex
+const v=input.slice(pos,e)
+${captureLeaf('v')}
 ${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
 return v
 }

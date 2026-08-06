@@ -155,14 +155,27 @@ describe('the corpus turns claims into measurements', () => {
     // its own grammar path as a flag. Quoting cannot fix that — the shell strips the
     // quotes and `parseArgs` still sees the leading `-`.
     // The grammar has to sit beside its own relative imports and INSIDE the cwd, since
-    // `relative()` is what strips the `./`. So: copy it next to `ast.ts`, and run from
-    // there. `./--parser.ts` is also the only spelling that reaches the CLI at all —
-    // `parseArgs` reads a bare `--parser.ts` as a flag, which is the whole point.
-    const dashed = 'examples/lang/--parser.ts'
-    cpSync('examples/lang/parser.ts', dashed)
+    // `relative()` is what strips the `./`. So: copy `examples/lang` WHOLE — `ast.ts`
+    // and `corpus/` come with it — and run from there. `./--parser.ts` is also the only
+    // spelling that reaches the CLI at all: `parseArgs` reads a bare `--parser.ts` as a
+    // flag, which is the whole point.
+    //
+    // The copy goes to a scratch dir NEXT TO `examples/`, not into it, because
+    // `test/unit/example-emission.test.ts` enumerates `examples/**` and asserts every
+    // `.ts` under it is a registered grammar. Writing `--parser.ts` into the real tree
+    // failed that test whenever the two files happened to run at the same time — an
+    // order-dependent red that appeared and vanished as unrelated test FILES were added,
+    // which is the worst shape a failure can have.
+    //
+    // The DEPTH is load-bearing and is why this is not `tmpdir()`: `parser.ts` imports
+    // `../../src/index.ts`, so its directory has to sit exactly two levels under the
+    // repo root, as `examples/lang` does. Hence `<root>/<scratch>/lang`.
+    const dir = mkdtempSync(join(process.cwd(), '.cli-cov-dashed-'))
+    cpSync('examples/lang', join(dir, 'lang'), { recursive: true })
+    cpSync(join(dir, 'lang', 'parser.ts'), join(dir, 'lang', '--parser.ts'))
     const cwd = process.cwd()
     try {
-      process.chdir('examples/lang')
+      process.chdir(join(dir, 'lang'))
       const r = await runCli(['diagnose', './--parser.ts', '--export', 'exprParser', '--width', '200', '--corpus', 'corpus'])
       const line = r.stdout.split('\n').find(l => l.includes('parseman fix'))
       expect(line).toBeDefined()
@@ -170,7 +183,7 @@ describe('the corpus turns claims into measurements', () => {
     }
     finally {
       process.chdir(cwd)
-      rmSync(dashed, { force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 25 })
     }
   }, 60_000)
 
