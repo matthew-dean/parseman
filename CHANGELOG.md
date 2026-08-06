@@ -5,6 +5,123 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **PARSE TIME REGRESSED 2.2×-2.6× AGAINST 0.46, and this release ships with it.**
+  Stated first because two earlier drafts of this record said otherwise.
+
+  `bench/jess/ab.ts`, HEAD against `a5dc9bd` (v0.46.0, the anchor in
+  `bench/jess/ab-config.json`), jess's four SHIPPING dialect grammars,
+  `--two-graph`, self-check 0.999-1.033:
+
+  | fixture | 0.46 | 0.47 | ratio |
+  | --- | ---: | ---: | ---: |
+  | `benchmark.css` (123,029 B) | 5.67 ms | 14.97 ms | **2.641x** |
+  | `benchmark.less` (106,802 B) | 17.40 ms | 38.65 ms | **2.221x** |
+  | `gen-workload.less` (275,211 B) | 49.96 ms | 112.55 ms | **2.253x** |
+
+  **0.47 is where it turns, and 0.46 is not implicated.** `benchmark.less` across
+  release anchors reads 17.26 / 16.84 / 17.19 ms at 0.44 / 0.45 / 0.46 — flat —
+  then 38.65 at HEAD.
+
+  **What was claimed before, and why it was wrong.** A previous version of this
+  record, and of `notes/RELEASE-0.48-TARGET.md` §8, said the regression "does not
+  reproduce at scale" and quoted css **1.09x**, less **1.05x**, scss **1.09x**
+  from `bench/jess/fixture.ts`. That harness **builds every leg at HEAD**; its
+  `ref|`/`head|` labels are the a/b sides of one contest, not a reference build.
+  It was timing the emitted assembly against the `exec.ts` opcode driver, both at
+  this release, and had no 0.46 in the process. Those three figures are withdrawn.
+  A null control proved the box was quiet; it could not prove the two sides were
+  different builds. `bench/jess/ab.ts` is the harness that answers "versus the
+  last release", and its header now says so by name.
+
+  The `css/selector` and `css/decls` `perf-guard` bars remain shelved in
+  `shelvedRegressionKeys` rather than bypassed. Their **magnitude** (~4.4x) was a
+  toy-grammar artifact, but their **direction** was right and was dismissed on a
+  measurement that did not exist.
+
+  **Which engine a figure describes now matters**, because three run here. On
+  `benchmark.css` at HEAD: emitted assembly (`src/table/emit-assembly.ts`, what
+  ships) **13.23 ms**; the `exec.ts` opcode loop (the gated reference)
+  **22.18 ms**; the closure interpreter (`src/functional/run.ts`) **43.42 ms**.
+  A note that says "the table" without naming one of those is ambiguous. Related:
+  every count taken with `PM_TABLE_COUNT=1` measures `exec.ts` ONLY — the emitter
+  carries no counters — so a row or arm-entry tally in this file describes the
+  opcode interpreter, not the shipping path.
+
+- **KNOWN BROKEN AT THIS RELEASE — none of the following is fixed.**
+
+  - **The `*-lines` grammar variants cannot parse anything.** `ast-lines` and
+    `cst-lines` build a self-referential `OP_RULE ip -> ip` row, which every
+    engine meets as a stack overflow on **every file of every corpus**, all four
+    dialects. A **pre-existing encoder defect**, not introduced here; the
+    emitter's new refusal names it instead of compiling it into a
+    `ReferenceError`. Consequence: every consumed sweep and every A/B figure in
+    this release is `variant: 'ast'`, so **`trackLines` is unmeasured**, not
+    measured-and-fine. A lane is on it.
+  - **`benchmark.jess` accepts 0 of its 124 bytes** — `ok: true`, `errors: 0` —
+    on **0.46 and 0.47 alike**, across `compiled`, `interpreted` and `table`.
+    Recorded in `notes/results/parse-consumed.jsonl`; re-derivable without
+    running anything. This is the exact silent-truncation mode the consumed
+    baseline exists to catch, sitting in the jess dialect's own timing fixture,
+    and it predates the release.
+  - **`tolerant: true` assemblies refuse emission in all four dialects**
+    (`src/table/emit-assembly.ts:372`). Recovery parses therefore run the
+    **closure engine**, never the emitted assembly that serves strict parses. No
+    recovery figure in this release describes the same engine as a strict one.
+  - **`parseClassOperand` has a latent compound-body hole.** It accepts any body
+    opening `[` and closing `]` (`src/regex/classes.ts:82`), so a SEQUENCE like
+    `[ \t\n\r\f]*[\$(]` reads as one class. The fix above put the guard at ONE
+    caller (`src/table/scan-shapes.ts`), deliberately, to avoid moving first
+    sets; `src/combinators/trivia-skip.ts` and the first-set analyser still call
+    it unguarded. Nothing mis-lowers through them today, and nothing prevents it.
+  - **`forCtx` is still a per-parse option consult** (`src/table/assemble.ts`),
+    the last standing violation of this project's own criterion — *build the
+    reference at run start, then run with no logic branching for that option
+    input*. One read per parse rather than per row, but the criterion says none.
+
+- **A rule reference re-establishes its OWN trivia scope, in both engines — this
+  release had been silently parsing 68.5% of `benchmark.less` and reporting
+  success.** jess's shipping Less grammar consumed **73,117 of 106,802 bytes**
+  and returned `ok: true` with an empty `errors` array. No error, no warning, no
+  exception, and all 3,318 tests green.
+
+  A `rules({ trivia }, …)` grammar stamps `grammarTrivia` on every rule precisely
+  so entering any one of them installs it, and only the parse ENTRY ever read it.
+  So the interpreter and the table scoped trivia DYNAMICALLY, by caller. A rule's
+  meaning depended on where it was called from, and the three engines were not
+  disagreeing about a diagnostic — **they were parsing different languages.**
+  jess's `StandardDeclaration` sits on that seam: it wraps its value in
+  `noTrivia(...)`, the `!important` tail lives in the referenced rule
+  `ValueListWithPriority`, and under the caller's cleared scope the space in
+  `color: red !important` was uncrossable. The declaration failed, the enclosing
+  `many()` took that for a clean loop exit, and the file stopped at the first
+  `!important` in it.
+
+  This shipped the moment the table did: 0.44-0.46 emitted inlined codegen and
+  read the file whole; 0.47 made the table the macro's output and the divergence
+  became the product. Both engines needed the fix — `ref.ts` installs the
+  target's `grammarTrivia` for the duration when it differs, and the encoder's
+  `scopedRef` restores the `OP_SCOPE` a cross-rule `g.X` jump had skipped past,
+  memoised **per referencing scope** because a single global slot would freeze
+  the first reference's scope onto every later one.
+
+  Measured over the corpus, **9 files repaired** against the 0.46 baseline
+  (`namespacing-3`, `namespacing-functions`, `comments`, `merge`,
+  `mixins-important`, `property-targeted`, `variables.less`, `benchmark.less`,
+  `variables.jess`), recorded in `notes/results/parse-consumed.jsonl` at
+  `1f5d3ea`. It also introduced the SCSS regression the next entry repairs, and
+  one further Less regression (`selectors.less`, 3,791 -> 1,784) fixed by the
+  follow-on `4cfc0bd`.
+
+  **A caveat on the reference this rests on.** The commit message asserts that
+  codegen "scopes it LEXICALLY, per rule". Read at `a5dc9bd`, it does not:
+  `ctx.activeTrivia` is a mutable field on a shared `Ctx`, and `emitLazy` emits
+  each named rule's body ONCE under whatever scope is active at its **first
+  emission site**, then memoises it — while explicitly saving and restoring
+  `indent`, `failLabel`, `recordFail` and the rest, but not `activeTrivia`. 0.46
+  was emission-order dependent and was right on both affected grammars by luck.
+  It is a sound BASELINE — the last build that read the corpus whole — but it is
+  not a specification, and the trivia model has none. See
+  `notes/RELEASE-0.48-TARGET.md` §9b.
 - **A reference re-establishes its rule's trivia scope ONLY where the rule has a
   boundary to repair.** The fix that stopped `benchmark.less` truncating installed
   the target rule's ambient trivia at every `g.X` reference taken from a cleared
@@ -28,7 +145,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   alternation, a dispatch, or a single terminal gets no scope.
 
   Measured over `bench/jess/consumed-sweep.ts`, all four grammars × both engines,
-  2837 records: 4 repaired, 0 regressed. `gen-workload.scss` reads 287542 —
+  2837 records per leg: **4 records repaired, 0 regressed — 2 FILES**
+  (`gen-workload.scss` and `sass-spec/inputs/0f80fb7c65a744ac.scss`), each on
+  both the interpreted and table legs. `gen-workload.scss` reads 287542 —
   byte-for-byte what 0.46's codegen produced — and `benchmark.less` still reads
   106802/106802. Coverage in `test/parity/rules-trivia.test.ts`; reverting either
   half turns its own engine's leg red.
@@ -147,10 +266,50 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   `src/analysis/gating.ts` — the module every analysis pass already imports —
   and the entries are gone. **18 entries covering 26 sites -> 16 covering 24**,
   categorized 7 `BY-DESIGN` / 1 `RULE-BUG` / 9 `DEBT`.
+- **The seven opcodes that kept every shipping grammar off the emitted engine.**
+  None of jess's four grammars had ever run an emitted body. `emit-assembly.ts`
+  refused each of them, and a single refusal drops the WHOLE assembly back to
+  `assemble.ts`'s closure walk — so 3-4.5% of sites cost 100% of the engine, and
+  the emitted-source work landed earlier in this release never reached the
+  grammars it was built for.
+
+  Lowered, in census order: `OP_TOKEN`, `OP_ROUTED`, `OP_FIELD`, `OP_DISPATCH`,
+  `OP_LABEL`, `OP_EXPECT`, `OP_LEAF`. All four grammars now emit at `hostMode`
+  `ast` AND `cst`, and the reachable-site census is **0 unlowered for every one
+  of them**. `OP_DISPATCH` carries its matcher arms as SOURCE rather than
+  `linkMatcher`'s per-arm closures, so the indexed call this unit exists to
+  remove does not appear; the regex arm is still built per test, because a
+  hoisted one carries `lastIndex` across parses.
+
+  Three defects found on the way. A back-edge onto an alias row emitted a
+  DANGLING NAME — `link` parked a provisional `_pf<ip>` so a cycle would
+  terminate, and a recursive rule re-entering through the in-flight alias bound
+  to it, which is valid JavaScript that throws `_pf1100 is not defined` on the
+  first parse; `resolveAlias` now follows the chain before anything is reserved,
+  and an alias-only cycle is refused by name. `OP_SCAN` runs an interpreted
+  subgraph the emitter cannot see, and a `balanced()` inside one pushes a
+  `parseError` to `_errors` — the closure engine's mark covered that sink and the
+  emitted mark did not, so less's `at-rules.less` and `css-3.less` carried ghost
+  errors the other engine had rolled back. And the two boundaries keep
+  `try`/`finally`, because jess's reducers throw on purpose.
+
+  Gated by `bench/jess/emit-identity-one.ts`: `assembledRules` under
+  `PM_TABLE_EMIT=0` and `=1`, digested per facet over all four dialects and all
+  four variants, 2,833 files each — identical everywhere the emitter serves. The
+  sweep is non-vacuous by plant, not by assertion: a planted one-character defect
+  in `OP_RX` moves 288/314 on less/ast and 287/314 on less/cst.
+
+  **The `*-lines` variants are NOT served, and cannot be** — see the known-broken
+  list at the head of this release.
 - **An emitted `OP_RX` row does not allocate a match array, and most of them do
   not run a regex at all.** Every regex row called `re.exec` and read `m[0]` off
   a freshly allocated `JSRegExpResult` — 6,005 rows per `json/document` parse,
   9,738 per `less/stylesheet`, and every field of the array but one discarded.
+  (Those two ROW counts are `PM_TABLE_COUNT=1`, which instruments
+  `src/table/exec.ts` — the opcode interpreter, not the emitted assembly that
+  ships. They size the work the grammar implies. The regex-invocation and
+  match-array counts below are counted at the `RegExp` itself and hold on both
+  engines.)
 
   Two changes, in order. A row whose pattern is a recognised SHAPE is emitted as
   straight-line `charCodeAt` source, with the ranges and code points constant
@@ -214,7 +373,8 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   row, and `benchmark.less` drops 20%.** `src/table/exec.ts` builds the
   reference table and then walks it with one `switch (code[ip])` over 29
   opcodes, executed once per ROW — 497,360 rows for one parse of
-  `benchmark.less` — each re-reading its opcode, re-decoding its operands from
+  `benchmark.less`, counted by `PM_TABLE_COUNT=1` inside `exec.ts` and so a
+  property of THAT engine — each re-reading its opcode, re-decoding its operands from
   the `Int32Array`, and re-testing the same per-parse options. That is the
   per-node branching design ledger row G5 exists to remove: *build the grammar
   reference at run start, making the swaps on rules and leaves at that point,
@@ -293,7 +453,9 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   | `benchmark.less` (106,802 B) | 43.52 ms (2.58x) | **36.11 ms (2.17x)** | **-17.0%** | ±0.2% |
   | `gen-workload.less` (275,211 B) | 198.88 ms (3.81x) | **159.26 ms (3.17x)** | **-19.9%** | ±0.7% |
 
-  Counts behind it (`PM_TABLE_COUNT=1`): ungated arm entries 268,834 -> 67,027 on
+  Counts behind it (`PM_TABLE_COUNT=1`, which instruments `src/table/exec.ts`
+  ONLY — the opcode interpreter, not the emitted assembly that ships; the
+  emitter carries no counters): ungated arm entries 268,834 -> 67,027 on
   `benchmark.less`, of which 177,823 (72.6%) are declined by the gate; failed
   entries 238,828 -> 37,021 (-84.5%); rows executed 727,987 -> 497,360 (-31.7%).
   On `gen-workload.less`, 75.2% declined and failures -85.7%. The 72.6%/75.2%

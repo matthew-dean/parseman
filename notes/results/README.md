@@ -68,14 +68,42 @@ when reading; do not delete lines.
 
 ### What is in the file today
 
-Three builds, 19859 records:
+**Five builds, 31207 records** (2837 per build × engine). The earlier "three
+builds, 19859 records" note is stale.
 
 | build | engine(s) | note |
 |---|---|---|
 | `a5dc9bd` 0.46.0 | `compiled` | inlined codegen — the engine that shipped at 0.46, and the only one that parsed `benchmark.less` whole |
 | `45eb01a` 0.47.0 | `interpreted`, `table` | the release candidate, BEFORE the trivia-scope fix |
-| `45eb01a` + fix | `interpreted`, `table` | after; carries `src-dirty` because it is an uncommitted working tree |
+| `1f5d3ea` | `interpreted`, `table` | the trivia-scope fix; also present as a `src-dirty` pair taken from the working tree before commit |
+| `e9443dc` | `interpreted`, `table` | after the regex lowering |
+| `d7bf366` | `interpreted`, `table` | after the scss `hasOwnTriviaBoundary` fix — **`src/` here is byte-identical to release `90aa867`**, so this is the release's state |
 
-Against the 0.46 codegen baseline the fix repairs nine files and leaves two
-known SCSS regressions — see the lane report and
+Divergence from the 0.46 codegen baseline, per build, counting a change of
+`threw` / `ok` / `consumed` (table leg; the interpreted leg agrees at every
+build measured):
+
+| build | files differing from 0.46 |
+|---|---:|
+| `45eb01a` | 16 |
+| `1f5d3ea` | 10 |
+| `e9443dc` | 9 |
+| `d7bf366` (= release) | **7** |
+
+The trivia-scope fix repaired **9** files and introduced 3 regressions, of which
+`4cfc0bd` fixed one (`selectors.less`) and `d7bf366` fixed the other two. **All 7
+residual divergences are THROWS**, the same 7 present at `45eb01a`: they are
+0.47 regressions that are still open, not pre-0.47 state. See
 `test/parity/rules-trivia.test.ts` for what is pinned.
+
+### Two traps in reading this file
+
+- **`consumed` is meaningless when `ok` is false.** The field is
+  `unconsumedFrom ?? bytes`, and a failed parse reports `unconsumedFrom: null`,
+  so `consumed` falls back to the FULL byte count. `gen-workload.scss` at
+  `1f5d3ea` records `consumed: 287543` with `ok: false` — that is a total
+  failure, not a complete parse. Always read `ok` and `threw` first.
+- **Everything here is `variant: 'ast'`.** The `*-lines` variants stack-overflow
+  on every file of every corpus (a pre-existing self-referential `OP_RULE ip→ip`
+  encoder defect), so `trackLines` has no baseline at all — it is unmeasured, not
+  clean.

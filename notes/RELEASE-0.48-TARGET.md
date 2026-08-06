@@ -56,13 +56,24 @@ those is the one with a measured precedent — see §3.
 
 ## 3. The remaining table/codegen speed gap
 
-**Where it stood at the end of 0.47:** the closure assembler is ~1.66× source
-lowering on `benchmark.less`.
+**BOTH NUMBERS THIS SECTION USED TO CARRY WERE DISPROVED. See §8 for the
+measurement that replaces them.** It said "the closure assembler is ~1.66×
+source lowering on `benchmark.less`", then "DO NOT QUOTE 1.66× — on the `css`
+perf-guard context the same cutover measures ~4.4×", then "the gap is
+fixture-dependent and ranges at least 1.66×–4.4×."
 
-**DO NOT QUOTE 1.66× AS THE GAP.** It is one fixture. On the `css` perf-guard
-context the same cutover measures **~4.4×** — see §8. The honest statement is
-that the gap is fixture-dependent and ranges at least 1.66×–4.4×; anyone citing a
-single number is generalising from whichever bench they happened to run.
+- **1.66× has no surviving provenance.** No fixture run, no commit, no harness
+  is recorded for it anywhere in this repo, and it does not appear in
+  `notes/results/parse-consumed.jsonl` or `bench/size-baseline.json`. Treat it
+  as unsourced.
+- **4.4× was `css/selector` and `css/decls`** — two `bench/perf-guard.ts`
+  micro-bars, and §8 records the owner ruling that they are toy grammars.
+- **The range built out of the two is therefore a range between an unsourced
+  figure and a micro-bar.** It was never a measurement of anything shipped.
+
+The gap that IS measured, HEAD against 0.46 (`a5dc9bd`) on jess's four shipping
+grammars, is in §8: **2.2×–2.6×**, and it is a REGRESSION introduced at 0.47,
+not a standing table-vs-codegen distance.
 
 Two of the three mechanisms tried returned **measured zero** and are recorded
 here so nobody re-runs them:
@@ -77,9 +88,15 @@ here so nobody re-runs them:
 frame. The trivia scanner profiled at ~7.3% of parse self-time and was worth
 ~3.4%. Bound before building, and expect the profile to overstate.
 
-**Still unexplored:** 48 ns per piece invocation against codegen's ~28 ns for the
-same logical work. That is ~20 ns of *work* per piece, not call overhead — a
-closure call is 1–2 ns. Nobody has located it.
+**Still unexplored, and UNSOURCED — do not build on it.** An earlier draft said
+"48 ns per piece invocation against codegen's ~28 ns for the same logical work…
+~20 ns of *work* per piece, not call overhead." Both figures were searched for
+in this tree and **no fixture, commit, harness or committed result produces
+either of them** — `48 ns` occurs exactly once in the repo, in this sentence.
+The §8b prediction that the un-built child-kind axis is what that 20 ns buys
+leaned on it, so that prediction is currently resting on an unsourced number.
+Either re-derive per-piece cost against `bench/jess/g5-ms.ts` and record the run,
+or drop the claim.
 
 ---
 
@@ -243,7 +260,7 @@ wrong and was disproved with source evidence.
 
 ---
 
-## 8. `css` compiled regression — SHELVED for 0.47 by owner ruling
+## 8. The 0.47 parse-time regression — REAL, REPRODUCED AT SCALE, and shelved on a justification that has since been withdrawn
 
 **What.** `bench/perf-guard.ts` blocks commits. Measured on `release/0.47.0`
 itself, with no lane branches applied, against baseline `2a83f9b` (captured when
@@ -263,11 +280,13 @@ labelled-trivia scanner win — in the same process, on the same box, at the sam
 moment. Contention does not slow one bar 4× while speeding its neighbour up 13%.
 It also reproduces on the release line, so it belongs to neither lane in flight.
 
-**Why it was shelved.** Owner ruling: it does not appear in `bench:margin`, whose
-fixtures are json / csv / graphql / CST. There is no `css` bar in the chart, so
-this regression is invisible to the published comparison. Shelved for 0.47,
-addressed in 0.48 — explicitly NOT re-baselined, because the baseline is right
-and the measurement is the thing that moved.
+**Why it was shelved — and the part of that reasoning that no longer holds.**
+Owner ruling: it does not appear in `bench:margin`, whose fixtures are json / csv
+/ graphql / CST, so there is no `css` bar in the published chart. That much is
+still true. What was *also* claimed — that at real scale the same change measures
+~1.09× and the shelf therefore costs nothing — is **withdrawn**; see below.
+Shelved for 0.47, addressed in 0.48, and explicitly NOT re-baselined, because the
+baseline is right and the measurement is the thing that moved.
 
 **How the gate must behave meanwhile.** Do NOT reach for `SKIP_PERF_GUARD=1`.
 That routes around the gate silently and makes every future regression on any
@@ -277,43 +296,101 @@ known-regressed and tracked here, and everything else stays gated at its real
 tolerance. A bypass that cannot tell a shelved regression from a new one is not a
 shelf, it is a disabled gate.
 
-**How much this fixture is worth — owner ruling, and it corrects the paragraph
-this replaces.** `css/selector` and `css/decls` are *toy grammars*. A 4.4× on them
-is not, by itself, evidence the product is 4.4× slower at anything anyone runs.
-An earlier draft of this section claimed css "exposes the gap most sharply" and
-should therefore be where 0.48 starts; that was wrong, and it was reasoning from
-whichever bench happened to be wired into the pre-commit hook.
+**How much these two bars are worth — owner ruling.** `css/selector` and
+`css/decls` are *toy grammars*. A 4.4× on them is not, by itself, evidence the
+product is 4.4× slower at anything anyone runs. An earlier draft claimed css
+"exposes the gap most sharply" and should therefore be where 0.48 starts; that
+was reasoning from whichever bench happened to be wired into the pre-commit
+hook.
 
-**MEASURED AT SCALE — THE SIGNAL DOES NOT REPRODUCE.** `bench/jess/fixture.ts` on
-`lane/composetable` @ `1b44822`, real dialect grammars, real fixtures, table at
-HEAD against the `ref|` leg (the shipped engine at the pinned reference commit):
+But the correction that replaced it was **also wrong**, and in the opposite
+direction — see below. Two wrong passes, and this is the third.
 
-| dialect | fixture | reference | table | ratio | control |
-|---|---|---|---|---|---|
-| css | benchmark.css 123 kB | 18.58 ms | 20.32 ms | **1.09×** | +0.4% |
-| less | benchmark.less | — | 35.44 ms | **1.04×** | −0.1% |
-| less | gen-workload.less 275 kB | 148.42 ms | 155.92 ms | **1.05×** | −0.3% |
-| scss | gen-workload.scss 287 kB | 94.68 ms | 102.96 ms | **1.09×** | +0.4% |
+### The "does not reproduce at scale" claim — DISPROVED
 
-Three-way agreement YES on every fixture. Load 3.0–5.2, controls 0.1–0.4%.
+A block here read **"MEASURED AT SCALE — THE SIGNAL DOES NOT REPRODUCE"** and
+quoted `bench/jess/fixture.ts` at css **1.09×**, less **1.05×**, scss **1.09×**,
+concluding "the real gap is 4–9%, not 4.4×" and "the shelf costs nothing."
 
-**So the real gap is 4–9%, not 4.4×.** The `css/selector` and `css/decls`
-perf-guard bars overstated it by roughly fiftyfold. The shelf in
-`shelvedRegressionKeys` therefore costs nothing, and the honest 0.48 framing is
-not "recover a 4.4× regression" — it is "close a 4–9% gap against an engine that
-no longer exists."
+**Every one of those figures is deleted.** They measure nothing about any
+regression, for a mechanical reason:
 
-**Ignore the `jess` dialect row.** `benchmark.jess` is 124 bytes and reports
-0.00 ms; its 1.97× is the same sub-microsecond artifact that got the `small` rows
-commented out of the charts in `bench/chart-specs.ts`. It measures per-call
-overhead, not parsing.
+> `bench/jess/fixture.ts` **builds every leg at HEAD.** Its three contests are
+> `compiled -> table`, `CONTROL table -> table` and `compiled -> interpreter`,
+> all constructed from this worktree's `src/` (`bench/jess/fixture.ts:33-40`,
+> `:190-196`). Its `ref|` / `head|` labels are the **a/b labels of a contest**,
+> emitted by `interleave` — not a reference build. There is no 0.46 in the
+> process.
 
-**The lesson, which is the whole reason this section exists.** Two successive
-drafts of this note named a priority from whichever bench happened to be wired
-into the pre-commit hook — first css because it blocked a commit, then Jess
-because css was ruled a toy. Only the third had a measurement. A cheap bar is in
-the hook because it is cheap, and a bar's presence in a gate says nothing about
-whether it represents anything. Measure before ranking.
+So the row labelled "reference" was the macro-lowered leg at HEAD, and at 0.47
+the macro emits a table too. The contest was **emitted assembly against the
+`exec.ts` opcode driver, both at HEAD** — table against table. It cannot answer
+"versus the last release", and quoting it as if it could is what produced the
+1.09× / 1.05× / 1.09× row. `bench/jess/ab.ts` now says so in its own header,
+by name.
+
+### What HEAD vs 0.46 actually measures
+
+`bench/jess/ab.ts`, HEAD against `a5dc9bd` (v0.46.0, the anchor in
+`bench/jess/ab-config.json`), jess's four SHIPPING grammars, `--two-graph`,
+self-check 0.999–1.033:
+
+| fixture | 0.46 | HEAD | ratio |
+|---|---:|---:|---|
+| `benchmark.css` 123,029 B | 5.67 ms | 14.97 ms | **2.641×** |
+| `benchmark.less` 106,802 B | 17.40 ms | 38.65 ms | **2.221×** |
+| `gen-workload.less` 275,211 B | 49.96 ms | 112.55 ms | **2.253×** |
+
+**0.47 is a 2.2×–2.6× regression on the grammars a downstream parser ships.**
+Not 4–9%, not "does not reproduce."
+
+### Which release turned — 0.46 is NOT the regression, 0.47 is
+
+Sweeping the same fixture across release anchors, `benchmark.less` reads:
+
+| anchor | 0.44 | 0.45 | 0.46 | HEAD (0.47) |
+|---|---:|---:|---:|---:|
+| `benchmark.less` | 17.26 ms | 16.84 ms | 17.19 ms | 38.65 ms |
+
+Flat across three releases, then it turns. Whatever landed in the 0.47 stack owns
+all of it; there is no slow drift to blame and no earlier anchor that would
+launder it.
+
+**The consequence for the shelf.** `shelvedRegressionKeys` was justified on the
+ground that the regression "does not appear in `bench:margin`" and "at real scale
+measures 1.09%". The second half of that is withdrawn. The `css/selector` and
+`css/decls` bars were *directionally right* and only wrong about magnitude — they
+said css regressed, and css regressed 2.6×. The shelf is now hiding a real,
+reproduced, at-scale regression, and 0.48's framing is **"recover a 2.2×–2.6×
+regression"**, not "close a 4–9% gap."
+
+### The engine inventory, because "the table" is now ambiguous
+
+Three engines run in this repo, and a note that says "the table" without saying
+which one is unreadable. On `benchmark.css` at HEAD:
+
+| engine | module | `benchmark.css` |
+|---|---|---:|
+| emitted assembly — **what ships** | `src/table/emit-assembly.ts` | 13.23 ms |
+| `exec.ts` opcode loop — the reference | `src/table/exec.ts` | 22.18 ms |
+| closure interpreter | `src/functional/run.ts` | 43.42 ms |
+
+`src/table/assemble.ts` links the closure pieces the emitter prints; it is the
+fallback whenever emission refuses (see §10). Name the engine in any figure.
+
+**Ignore the `jess` dialect row wherever it appears.** `benchmark.jess` is 124
+bytes and reports 0.00 ms — and per `notes/results/parse-consumed.jsonl` it
+consumes **0 of its 124 bytes** while returning `ok: true`, on 0.46 and 0.47
+alike (§10). It is not a timing fixture and it is not a parse.
+
+**The lesson, which is the whole reason this section exists.** THREE successive
+drafts named a priority from a bench that could not answer the question — first
+css because it blocked a commit, then Jess because css was ruled a toy, then a
+table-against-table contest read as a release comparison. The third had numbers
+and a control and three-way agreement and was still wrong, because the *legs*
+were wrong. A control proves the box was quiet. It does not prove the two sides
+are different builds. **Check what a harness builds before quoting what it
+prints.**
 
 ---
 
@@ -408,15 +485,26 @@ json/document     59 KB   median +126.9% … +134.3%   won 0/12   breached 5/5
 graphql/document  49 KB   median  +93.4% … +112.6%   won 0/12   breached 5/5
 ```
 
-**UNRECONCILED, and it must be reconciled before anyone acts on either number.**
-`bench/jess/fixture.ts` on the real dialect grammars measured css 1.09× and less
-1.05× against its `ref|` leg (§8 above), with three-way agreement on every
-fixture. CI measures +666% and +780% on its own css/less workloads. Both cannot
-describe the same thing. Candidate explanations, none yet tested: the two
-harnesses pin different reference commits; the CI workloads exercise the deleted
-scan fast paths where the dialect fixtures do not; or one harness's reference leg
-is not the pre-deletion engine at all. **Do not quote either figure as the gap
-until this is resolved** — §8's numbers are provisional pending it.
+**RECONCILED — and it was the dialect harness that was wrong, not CI.** This
+paragraph used to read "UNRECONCILED": `bench/jess/fixture.ts` measured css 1.09×
+and less 1.05× while CI measured +666% and +780%, and it listed three candidate
+explanations. The third of them was the right one — *one harness's reference leg
+is not the pre-deletion engine at all*.
+
+`bench/jess/fixture.ts` builds **every leg at HEAD** (§8). Its `ref|` label is a
+contest's a-side, not a reference build, so it had no pre-deletion engine in the
+process and its 1.09× / 1.05× row is withdrawn. CI's `workload-perf` really does
+interleave HEAD against a pinned reference, and it is not contradicted.
+
+What remains open is only MAGNITUDE, and the two surviving measurements are
+consistent in sign and roughly an order apart in size: CI's synthetic workloads
+read +666%/+780% where `bench/jess/ab.ts` reads **+122%/+164%** (2.221×/2.641×)
+on the shipping dialect grammars against the same 0.46 anchor. The remaining
+candidate is the second one on the old list — the CI workloads lean harder on the
+deleted scan fast paths than the dialect fixtures do. **Quote the `ab.ts`
+figures for "what did this release do to a shipping grammar"; quote CI's for
+"what did deleting these modules cost the workloads that exercised them."** They
+are different questions.
 
 **The 0.48 instruction.** When token streaming lands, take whatever was valuable
 out of these modules. Token streaming is where literal and regex recognition
@@ -434,7 +522,119 @@ deleted engine called still has to be asked *what does it do, and do we want it*
 
 ---
 
+## 9b. The trivia model's REFERENCE is weaker than the fix that rests on it claimed
+
+`1f5d3ea` ("a rule reference re-establishes its OWN trivia scope, in both
+engines") is the commit that stopped `benchmark.less` truncating, and the whole
+model it installed rests on one sentence in its message:
+
+> "the interpreter and the table scoped trivia DYNAMICALLY, by caller, while
+> codegen scopes it **LEXICALLY, per rule** — it binds each rule's trivia scanner
+> at compile time."
+
+**That is not confirmable from 0.46's codegen, and the mechanism is not lexical.**
+Read at `a5dc9bd`:
+
+- `ctx.activeTrivia` is a **mutable field on the shared `Ctx`**, saved and
+  restored around `noTrivia(…)` / `trivia(…)` regions
+  (`src/compiler/codegen.ts:4243-4268`, `:3437-3442`).
+- `emitLazy` (`:3880`) emits a named rule's body **once**, guarded by
+  `ctx.namedParsers.has(p)`, under whatever `ctx.activeTrivia` happens to be at
+  the **first emission site it is reached from**. Every later reference is a bare
+  `emitNamedFnCall`.
+- `emitLazy` explicitly saves and restores `indent`, `failLabel`, `recordFail`,
+  `inlineLeft`, `currentFnName` and the coverage fields for the fresh function
+  scope. **`activeTrivia` is not among them.**
+
+So 0.46's scoping was **first-emission-site, then memoised** — emission-order
+dependent. It is lexical only when the first site a rule is emitted from happens
+to carry the rule's own scope, which on jess's two affected grammars it did. The
+reference behaved correctly on the grammars anyone checked, **by luck of emission
+order**, not by construction.
+
+**Why this matters and is not a footnote.** The 0.47 fix, its follow-on
+(`4cfc0bd`), the `hasOwnTriviaBoundary` gate (`d7bf366`) and the byte-consumed
+baseline in `notes/results/parse-consumed.jsonl` all treat 0.46 codegen as the
+oracle for what a scope should be. It is a good *baseline* — it is the last build
+that parsed the corpus whole — but it is not a *specification*, and a grammar
+whose emission order differs from jess's could have made 0.46 disagree with
+itself. Anything in 0.48 that reasons "codegen did X, therefore X is right" needs
+its own argument. Nobody has written down what the trivia scope rule IS,
+independent of an engine that reproduced it accidentally.
+
+---
+
+## 10. KNOWN BROKEN AT 0.47 — stated here, not buried
+
+None of this is fixed at `90aa867`. It is listed so a reader does not have to
+discover it.
+
+1. **The `*-lines` grammar variants cannot parse anything.** `ast-lines` and
+   `cst-lines` (`bench/jess/grammars.ts:42`, `trackLines: true`) build a
+   self-referential `OP_RULE ip→ip` and stack-overflow on **every file of every
+   corpus**, all four dialects. Pre-existing, not introduced by the 0.47 stack, and
+   a lane is on it. Consequence for everything else in this file: every consumed
+   sweep and every A/B figure quoted anywhere is `variant: 'ast'` only, so
+   **`trackLines` is unmeasured, not measured-and-fine.**
+
+2. **`benchmark.jess` accepts 0 of its 124 bytes.** `ok: true`, `errors: 0`,
+   `consumed: 0` — on **0.46 and 0.47 alike**, on all of `compiled`,
+   `interpreted` and `table`. Verifiable in `notes/results/parse-consumed.jsonl`
+   without re-running anything. This is the silent-truncation failure mode the
+   whole consumed baseline exists to catch, sitting in the jess dialect's own
+   timing fixture, and it predates the release. Any `jess` row in any chart is
+   measuring an immediate accept of nothing.
+
+3. **`tolerant: true` assemblies refuse emission in all four dialects.**
+   `src/table/emit-assembly.ts:372` throws `Unemittable('a recovery (tolerant)
+   assembly')`. Recovery parses therefore run the **closure engine**
+   (`src/table/assemble.ts`), never the emitted assembly that ships for strict
+   parses. Every recovery figure describes a different engine from every strict
+   figure.
+
+4. **`parseClassOperand` has a latent compound-body hole.** It accepts any body
+   that starts `[` and ends `]` (`src/regex/classes.ts:82`), so
+   `[ \t\n\r\f]*[\$(]` — a sequence — parses as one class whose members are the
+   garbage union of everything between the outer brackets. The 0.47 fix put the
+   guard `isWholeClassToken` at **one caller**
+   (`src/table/scan-shapes.ts:659`), deliberately, to avoid moving first sets.
+   The other callers — `src/combinators/trivia-skip.ts:511`, `:640`, and the
+   first-set analyser — still call it unguarded. Nothing currently mis-lowers
+   through them; nothing stops one from doing so.
+
+5. **`forCtx` is still a per-parse option consult** — the last standing violation
+   of this project's own stated criterion (*build the grammar reference at run
+   start, make the swaps at that point, then run with no logic branching for that
+   option input*). `src/table/assemble.ts:2672` reads five `ctx` fields per parse
+   at the `runRule` boundary. It is one read per parse rather than per row, and
+   its own comment concedes it is "THE ONLY CONFIG READ ON THE RUN PATH" — but
+   the criterion says none. (That comment also still says "three-bit option set"
+   while the code computes a five-bit key.)
+
+---
+
 ## Standing hazard for anything above
+
+**EVERY `PM_TABLE_COUNT` FIGURE DESCRIBES AN ENGINE NOBODY RUNS.** The counters
+live in **`src/table/exec.ts` only** — `const COUNT = process.env.PM_TABLE_COUNT
+=== '1'` at `exec.ts:101`, incremented inside the opcode `switch`. Neither
+`src/table/assemble.ts` nor `src/table/emit-assembly.ts` counts anything, and
+**the emitted assembly is what ships**. So every row count, arm-entry count and
+per-op tally in this repo's notes and CHANGELOG — "497,360 rows for one parse of
+`benchmark.less`", "ungated arm entries 268,834 → 67,027", "6,005 `OP_RX` rows
+per `json/document` parse", any `OP_SCAN` execution count — is a measurement of
+the **bytecode interpreter**, not of the shipping path.
+
+They are not worthless: `exec.ts` is the reference the emitter is gated against,
+so a row count is a fair proxy for *how much work the grammar implies*. They are
+worthless as statements about *what the product executes*. On the emitted path
+the same work has a different shape entirely — `balanced` is entered **12 times**
+per 123 KB parse of `benchmark.css`, against opcode-level tallies in the
+thousands, because the emitter folds the surrounding rows into straight-line
+source rather than executing them as rows.
+
+**Rule: any count sourced from `PM_TABLE_COUNT` must name `exec.ts` in the same
+sentence.** Do not compare one against a figure taken from the emitted engine.
 
 **`expected` is NOT in the identity digest.** `bench/table-lowering-identity.ts`
 digests `{ok, value, unconsumedFrom}`, so a table that accepts and rejects
