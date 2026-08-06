@@ -98,6 +98,13 @@ export const EMITTED_PARAMS = [
   'demoteCapturedToRaw', 'cstLeavesLen', 'skipTriviaScanned', 'needsDeferredTriviaCommit',
   'scanTrivia', 'advanceTrivia', 'refuseUnclassifiedRootScope', 'spanLines', 'rawEntry', 'lead',
   'asciiFoldKey', 'ROUTED_FX',
+  // RECOVERY, bound rather than reimplemented. `SENTS` is the sync sentinel per
+  // char-class index — the emitted twin of `assemble.ts`'s `sentinelFor` memo,
+  // and an interpreted `Combinator` indexed out of an array for the same reason
+  // `SCANS` is. The four functions are `recovery/scan.ts`'s own, so an error's
+  // span, expected set and CST embedding are produced by the SAME code in every
+  // engine and cannot drift.
+  'SENTS', 'matchesAt', 'recoverScan', 'orSentinel', 'captureError',
 ] as const
 
 /**
@@ -364,12 +371,31 @@ export function emitAssemblySource(
   const swapLegal = !cfg.trackLines
   const hostCst = cfg.hostCst
 
-  // RECOVERY IS NOT EMITTED. `recoverScan`'s protocol has three implementations
-  // already and a fourth is how an error span drifts between engines that are
-  // gated against each other to stop exactly that. It is also cold by
-  // construction — reached only on the failure of an element — so the speed
-  // argument for emitting it is absent. Refused BY NAME, not skipped.
-  if (prog.rec === 1 && cfg.tolerant) throw new Unemittable('a recovery (tolerant) assembly')
+  /**
+   * RECOVERY IS EMITTED, and the refusal this replaces was wrong in SCOPE.
+   *
+   * The refusal read: *"`recoverScan`'s protocol has three implementations
+   * already and a fourth is how an error span drifts... It is also cold by
+   * construction — reached only on the failure of an element — so the speed
+   * argument for emitting it is absent."*
+   *
+   * The drift half is answered by construction, not by argument: NOTHING of the
+   * protocol is reimplemented here. `recoverScan`, `matchesAt`, `orSentinel` and
+   * `captureError` are BOUND and CALLED, exactly as the closure engine calls
+   * them, so there is no fourth implementation to drift — the same reason
+   * `OP_SCAN` may bind an interpreted combinator and index it (`SCANS[i]`).
+   *
+   * The cold half was true of recovery and FALSE of the refusal. This throw sat
+   * at the top of the emitter, so it did not decline the cold recovery rows — it
+   * declined THE ENTIRE ASSEMBLY. Every tolerant parse in the product therefore
+   * ran the array-indexed closure walk for its whole hot path: every literal,
+   * every choice, every repetition, none of which is recovery and all of which is
+   * as hot as the strict path that is emitted. The speed argument is absent for
+   * `recoverScan` and was never absent for the table around it.
+   *
+   * What stays interpreted is what was already interpreted for the strict path.
+   */
+  const REC = prog.rec === 1 && cfg.tolerant
   if (cfg.coverage) throw new Unemittable('a coverage assembly')
 
   // THE DOWNWARD PASS, BEFORE ANY LOWERING. The roots are exactly the sites
@@ -398,7 +424,16 @@ export function emitAssemblySource(
   // same reason. `OP_LIVE` is the other such row, and it is unemittable.
   const sinks: Sinks = (() => {
     let fd = false
-    let er = false
+    // A RECOVERY ASSEMBLY IS AN `_errors` WRITER EVERYWHERE. `recoverScan` pushes
+    // through `captureError` from inside any `OP_REP` that recovers, and the
+    // recovering row is the repetition itself rather than a distinguishable
+    // opcode — so there is no site to census and the answer is the assembly's.
+    //
+    // This is the `OP_SCAN` lesson applied before it costs anything rather than
+    // after: that row raised both sinks because its interior is not in `code`,
+    // and the defect it was raised for was precisely an `_errors` rollback the
+    // two engines disagreed on while matching byte for byte on the tree.
+    let er = REC
     for (const ip of reachableSites(code, roots)) {
       const op = code[ip]
       if (op === OP_SCAN) { fd = true; er = true; break }
@@ -431,6 +466,14 @@ export function emitAssemblySource(
   const kRef = (i: number): string => hoist('k', `K[${i}]`)
   const fxRef = (i: number): string => hoist('fx', `FX[${i}]`)
   const fnRef = (i: number): string => hoist('fn', `FNS[${i}]`)
+  /**
+   * The sync sentinel for a char-class index, hoisted once per class.
+   *
+   * −1 is "no usable sentinel" — the same answer `firstSetSentinel` gives for an
+   * `any`/`empty` first set — and it lowers to the literal `undefined` so the
+   * publish below collapses to the inherited sentinel with no array read.
+   */
+  const sentRef = (cls: number): string => cls < 0 ? 'undefined' : hoist('sent', `SENTS[${cls}]`)
 
   /** A fresh local prefix, so two inlined marks in one body cannot collide. */
   let uid = 0
@@ -833,23 +876,23 @@ return v
       case OP_EXPECT: {
         const child = link(code[ip + 1]!)
         const xf = fxRef(code[ip + 2]!)
-        // ONE ARM, NOT TWO. `assemble.ts:1050` branches on
-        // `REC = prog.rec === 1 && cfg.tolerant`, and this emitter refuses a
-        // tolerant recovery assembly outright (above), so `REC` is false for
-        // every table that reaches here and the tree-embedding arm is dead.
-        // Emitting it would be a fourth implementation of a protocol that
-        // already has three.
+        // TWO ARMS, mirroring `assemble.ts:1050`. A TOLERANT `expect()` EMBEDS
+        // ITS ERROR IN THE TREE and not only in the flat `_errors` side-channel
+        // (`combinators/expect.ts:150`, codegen's `_ctx._rec.capture` at
+        // codegen.ts:4470) — so a tree walk finds every diagnostic and the node
+        // survives incremental subtree reuse. `captureError` is the shared
+        // function, called; the embedding is not restated here.
         //
-        // `_fc` IS CLEARED: a recovered failure is no longer a failure, and the
-        // commit bit the child raised must not survive it and cut an enclosing
-        // choice (`assemble.ts:1058-1066`).
+        // `_fc` IS CLEARED IN BOTH: a recovered failure is no longer a failure,
+        // and the commit bit the child raised must not survive it and cut an
+        // enclosing choice (`assemble.ts:1058-1066`).
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
 const err={_tag:'parseError',span:{start:pos,end:pos},expected:${xf}}
 const es=ctx._errors
 if(es!==undefined)es.push(err)
-ctx._fc=false
+${REC ? 'if(ctx._tolerant===true)captureError(ctx,err)\n' : ''}ctx._fc=false
 _pfEnd=pos
 return err
 }`
@@ -1056,16 +1099,49 @@ return v
         const fn = fused ? fnRef(code[ip + 1]!) : undefined
         const kids: string[] = []
         for (let i = 0; i < n; i++) kids.push(link(code[base + i]!))
-        const parts: string[] = [head, `const v0=${kids[0]}(input,pos,ctx)`, 'if(v0===FAIL)return FAIL']
+        /**
+         * A RECOVERY SEQUENCE PUBLISHES `ctx._sync`, and that is the WHOLE of
+         * "recovery config" — no grammar carries any (`assemble.ts:1446`).
+         *
+         * Before term `i`, the sentinel for the union of every LATER term's first
+         * set becomes the sync point a list nested in that term resyncs to, so a
+         * `sepBy` inside `sequence('{', list, '}')` finds `}` with nothing
+         * annotated. Where there is no usable local follow — the last term, an
+         * `any` first set — the INHERITED sentinel stays published, which is how
+         * an enclosing delimiter reaches across a rule boundary. `sentRef` emits
+         * the literal `undefined` for that case, so it costs no array read.
+         *
+         * THE `n` SYNC OPERANDS SIT AFTER THE `n` CHILD OPERANDS, laid down by
+         * `encodeTable({ recovery })` — the same operands `assemble.ts:1468`
+         * reads, at the same offsets.
+         *
+         * RESTORED IN A `finally`, matching `sequence()`'s own
+         * (`combinators/sequence.ts:105`) and the closure engine's. `emitTerm`
+         * emits `return FAIL` INLINE at several points, so a restore placed on
+         * the fall-through paths alone would leak a stale sentinel out of exactly
+         * the failure the recovery path is about to read. `finally` is the only
+         * placement that covers an inlined return, and it is on the tolerant
+         * assembly only — the strict one emits none of this.
+         */
+        const sy = REC ? `${tmp()}sy` : ''
+        const pub = (i: number): string => {
+          const s = sentRef(code[base + n + i]!)
+          return s === 'undefined' ? `ctx._sync=${sy}` : `ctx._sync=${s}??${sy}`
+        }
+        const parts: string[] = [head]
+        if (REC) parts.push(`const ${sy}=ctx._sync`, 'try{', pub(0))
+        parts.push(`const v0=${kids[0]}(input,pos,ctx)`, 'if(v0===FAIL)return FAIL')
+        const close = (): string => REC ? `${parts.join('\n')}\n}finally{ctx._sync=${sy}}\n}` : `${parts.join('\n')}\n}`
         if (n === 1) {
           parts.push(fused ? `return ${fn}([v0],{start:pos,end:_pfEnd})` : wantValues ? 'return [v0]' : 'return undefined')
-          return `${parts.join('\n')}\n}`
+          return close()
         }
         parts.push('let cur=_pfEnd')
         const names: string[] = ['v0']
         for (let i = 1; i < n; i++) {
           const vn = `v${i}`
           parts.push(`let ${vn}`)
+          if (REC) parts.push(pub(i))
           parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L), sinks))
           names.push(vn)
         }
@@ -1073,7 +1149,7 @@ return v
         parts.push(fused
           ? `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
           : wantValues ? `return [${names.join(',')}]` : 'return undefined')
-        return `${parts.join('\n')}\n}`
+        return close()
       }
 
       case OP_CHOICE: {
@@ -1325,9 +1401,60 @@ ${p}lv=ctx._cstLeaves!==undefined?ctx._cstLeaves.length:0
 ${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0${markSinks}
 }`
+        /**
+         * TOLERANT RECOVERY — the SAME functions the other three engines call
+         * (`recovery/scan.ts`), so an error's span, its expected set and its CST
+         * embedding are produced once and cannot drift between engines.
+         *
+         * Reached only in a recovery table, and inside it only on the FAILURE of
+         * an element, so a matching item pays one `_sync` read at entry and
+         * nothing else. Everything else in this loop is the emitted strict loop
+         * unchanged — which is the whole point, and what the top-level refusal
+         * this replaces was giving up.
+         *
+         * THE FOUR AGREEMENTS WITH `assemble.ts:2036`, each load-bearing:
+         *  - a MANDATORY item of a separator-less repeat does NOT recover, so the
+         *    gate is `sep !== undefined || count >= min`. Both conjuncts are
+         *    table data here, so the test is CONSTANT-FOLDED rather than run.
+         *  - the check is `matchesAt(mySync, itemStart)`: sitting ON the sync
+         *    token is a clean list end, not junk, and `itemStart` is past any
+         *    leading trivia so trivia is never swallowed into the error span.
+         *  - a separated list scans to its OWN separator or the enclosing
+         *    delimiter (`orSentinel`); a separator-less one to the inherited
+         *    sentinel alone.
+         *  - the separator-less path rolls leading trivia back BEFORE recovering
+         *    and the separated path does NOT — a consumed separator and the error
+         *    after it both belong to the list (repeat.ts:533). This is why the
+         *    strict loop's unconditional `${'${rb}'}` could not simply be reused.
+         *
+         * `mySync` IS CAPTURED AT ENTRY, not read per item: an element's own
+         * sequence publishes over `_sync` while it runs. The interpreter restores
+         * in a `finally`, codegen saves at entry — same value, and so does this.
+         */
+        const my = `${p}my`
+        // `reportItem` gates the FAILURE report only. `recoverScan`'s expected set
+        // is taken unconditionally by the closure engine (`assemble.ts:2067`), so
+        // it is resolved separately from `itemFx` — reusing that one would hand
+        // `EMPTY_FX` to every recovered error in a grammar that does not report.
+        const recFx = REC ? fxRef(code[ip + 6]!) : ''
+        const sepSent = REC ? sentRef(code[ip + 7]!) : 'undefined'
+        const recSent = sep === undefined
+          ? my
+          : sepSent === 'undefined'
+            ? `orSentinel(${my},undefined)`
+            : `orSentinel(${sepSent}??${my},${sepSent}===undefined?undefined:${my})`
+        const recGate = sep !== undefined || min === 0 ? '' : `count>=${min}&&`
+        const recBranch = !REC ? '' : `if(ctx._tolerant===true&&${my}!==undefined&&${recGate}!matchesAt(${my},input,itemStart,ctx)){
+${sep === undefined ? `${rb}\n` : ''}const rr=recoverScan(input,itemStart,ctx,${recSent},${recFx})
+${collect ? 'out.push(rr.error)\n' : ''}captureError(ctx,rr.error)
+count++
+cur=rr.end
+continue
+}
+`
         return `${head}
 const out=${collect ? '[]' : 'undefined'}
-${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}let cur=pos
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}${REC ? `const ${my}=ctx._sync\n` : ''}let cur=pos
 let count=0
 for(;;){
 ${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0${sinks.fd ? `,${p}fd=0` : ''}${sinks.er ? `,${p}er=0` : ''}
@@ -1355,8 +1482,20 @@ ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 ctx._fc=false
 const v=${child}(input,itemStart,ctx)
 if(v===FAIL){
+${REC
+  // THE ROLLBACK MOVES INSIDE THE ARMS. The strict loop rolls back
+  // unconditionally before testing `_fc`, which is sound because every path out
+  // of it rolls back. The recovery arm is the one path that must NOT: a
+  // separated list keeps the consumed separator and the trivia after it, both of
+  // which belong to the list (repeat.ts:533). So `committed` is tested first and
+  // each arm takes its own rollback — the same order as `assemble.ts:2113`.
+  ? `if(ctx._fc===true){
 ${rb}
-if(ctx._fc===true)return FAIL
+return FAIL
+}
+${recBranch}${rb}`
+  : `${rb}
+if(ctx._fc===true)return FAIL`}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
 if(_pfEnd===itemStart&&${via}){

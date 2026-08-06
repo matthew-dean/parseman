@@ -143,6 +143,8 @@ const EMPTY_CH: unknown[] = []
 const EMPTY_TLOG: number[] = []
 const EMPTY_FX: string[] = []
 const ROUTED_FX: string[] = ['routed()']
+/** The sentinel pool a STRICT emitted assembly binds — it has no reader. */
+const EMPTY_SENTS: readonly (Combinator<null> | undefined)[] = Object.freeze([])
 /**
  * One encoded matcher arm, LINKED into a predicate at assembly.
  *
@@ -2550,6 +2552,13 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
         asciiFoldKey, ROUTED_FX,
+        // THE SENTINEL POOL, dense over char-class indices so the emitted text can
+        // index it the way it indexes `SCANS`. Built only for a recovery assembly
+        // — a strict one emits no reader — and through the SAME `sentinelFor` memo
+        // the closure pieces use, so both engines resync to the same combinator
+        // object rather than to two separately constructed ones.
+        REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
+        matchesAt, recoverScan, orSentinel, captureError,
       )
       emitReached = em.reached
     } catch (e) {
