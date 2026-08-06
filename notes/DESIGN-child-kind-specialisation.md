@@ -7,6 +7,74 @@ below labelled PREDICTED is a prediction to be measured against, not a measureme
 
 ---
 
+## THE PURPOSE — and it is a pass/fail criterion, not a goal
+
+> **The purpose of this linking is to resolve logic paths at runtime ONLY ONCE, and
+> NOT per combinator / rule at parse time.**
+>
+> — the owner, verbatim in substance
+
+**Stated as the test this document is held to:**
+
+> ## Any consulting of options at parse time, per rule or per combinator, is a FAIL.
+
+Not a cost. Not a smell. Not "acceptable where cheap." **A fail.** That framing is the
+point, because every violation now in the tree survived by being individually
+defensible as cheap: `nextTerm`'s `if (ctx.trivia === undefined)` is one predictable
+branch; `OP_LIT`'s `ctx._probe !== undefined` is one property load;
+`AssemblyCache.forCtx(ctx)` is a cached lookup. Each is negligible alone. Together
+they are the architecture. **A criterion that admits "cheap enough" readmits all of
+them**, which is exactly how they got in.
+
+### What "once" is scoped to
+
+**ONCE PER RUN. Not once per parse, and not once per rule entry.** A second parse with
+the same options must re-resolve nothing.
+
+The current code gets this subtly wrong in a way that reads as fine.
+`AssemblyCache.forCtx(ctx)` (`assemble.ts:2409-2420`) is called from `runRule` on
+**every rule entry** (`:2443`) and does, each time: five `ctx` property reads, a call
+to `cstOutputHost(host)`, four ternaries, a bitwise fold, an array index. Its own
+doc comment (`:2404`) calls it *"THE ONLY CONFIG READ ON THE RUN PATH"* and defends it
+as cheap and allocation-free — which is true, and which is the wrong defence.
+**Cheap-because-cached is not resolved-once.** The decision still lives on the parse
+path; it has merely been made inexpensive. The design does not settle for that.
+
+### What "not per combinator / per rule" forbids, with the canonical violations
+
+| the rule | the violation in the tree |
+|---|---|
+| no option consulted per **term** | `nextTerm`'s `if (ctx.trivia === undefined)` — `assemble.ts:526`, on every non-first term of every sequence |
+| no option consulted per **leaf** | `OP_LIT`'s `if (ctx._probe !== undefined)` — `assemble.ts:665`, on every literal failure; and the same test at 5 further sites |
+| no option consulted per **rule entry** | `cache.forCtx(ctx)` — `assemble.ts:2443` |
+| no option consulted per **scope entry** | `skipTrivia`'s three-clause capture test — `assemble.ts:460-462`, on every term |
+
+### Elimination, not amortisation
+
+A resolved path contains **no residue of the decision**: no flag read, no cached
+lookup, no branch that always goes the same way, no memo hit. The operational test:
+
+> **If a reader can ask "how expensive is that check?", the check should not be there
+> at all.**
+
+Caching, hoisting to a per-parse latch, and folding four branches into one are all
+*amortisation*. They are legitimate intermediate steps and this document proposes
+several — but a unit that only amortises has **not** satisfied the criterion, and
+§6.1 marks each unit accordingly rather than letting "faster" read as "done."
+
+### How this document is held to it
+
+1. **No unit is described as done while its parse path still consults an option.**
+   §6.1 is the compliance table and it reports partial results honestly.
+2. **§5 and U0 make it mechanically enforceable.** The checker's job is exactly this
+   criterion — *no option-derived value read on a parse path* — and the reason the
+   existing `INV-6` cannot express it is spelled out in §5.
+3. **Exceptions are declared or they are defects.** §5.4 is the exception list. It has
+   one entry. A criterion with no declared exceptions and three undeclared ones is
+   worse than one with a documented exception list.
+
+---
+
 ## 0. Corrections to the brief, before anything is built on it
 
 I was asked to correct the framing where the tree disagrees with it. Six places do.
@@ -225,8 +293,12 @@ nothing leaks between them.
 >
 > What IS load-bearing here, and survives whatever the spelling turns out to be:
 > each child is a **named binding, not an array slot**; the option branch happens
-> **once, in `link`**, never on the parse path; and each call site names **one**
-> binding in emitted source so it is a distinct FunctionLiteral (§0.3).
+> **once, at resolve time**, never on the parse path; and each call site names
+> **one** binding in emitted source so it is a distinct FunctionLiteral (§0.3).
+>
+> **§1.1 replaces these two spellings with the names the repo already uses.**
+> `link` and `make` are retired from the rest of this document except where they
+> refer to real in-tree identifiers.
 
 ```
 _s0 = link('s0', opts)      // resolve this binding to a static piece — ONCE, at run start
@@ -241,22 +313,100 @@ _r1.parse(input)
 every grammar in the bundle. Its cost is source size and maintenance, not per-grammar
 bytes. This is the superset §2 enumerates.
 
-**2. `link(name, opts)`.** Runs once at startup. **Every** option branch is paid here
+**2. Binding resolution.** Runs once at startup. **Every** option branch is paid here
 and nowhere else: trivia present or absent, CST or AST, line tracking, tolerance,
-probe. `link` returns the piece; the piece does not know the option exists.
+probe. It returns the piece; the piece does not know the option exists.
 
-**3. `make(...)`.** Composes resolved bindings into the rule's parse function.
+**3. Rule composition.** Composes resolved bindings into the rule's parse function.
 
-After `make`, the parse path holds no option test, no array index, no lookup — and,
-per §0.3, each call site names one binding **in emitted source**, so it is a distinct
-FunctionLiteral with its own feedback vector.
+After composition, the parse path holds no option test, no array index, no lookup —
+and, per §0.3, each call site names one binding **in emitted source**, so it is a
+distinct FunctionLiteral with its own feedback vector.
 
 **Where the per-grammar artifact ends up.** It stops being pure data and becomes
-generated wiring: a static binding per node plus a `make(...)` naming its children.
+generated wiring: a static binding per node plus a rule function naming its children.
 A line or two per node, **not** an inlined body per node. That is the middle ground
 — codegen's shape without codegen's bulk. §6 puts a predicted byte figure on each
 stage against `bench/size-baseline.json` (`example/json` 1,336 B; `example/css`
 9,229 B; ceiling 10, `ratchetSlackPct` 0.1).
+
+---
+
+### 1.1 Naming and prior art — mined, not invented
+
+The owner's instinct was right on both counts: `link`/`make` were off-the-cuff, and
+the shapes already exist. They exist in **two** places, and the second is the
+surprise — **the linkable/fuse vocabulary is not archived, it is live in this tree.**
+
+| role in this design | existing name | where | status |
+|---|---|---|---|
+| resolve one site to a static body, memoised, cycle-safe | **`link(ip)`** | `src/table/assemble.ts:632` — **live**, returns `Piece`, memoised by code offset, stubs back-edges | **The role already has this name.** The design does not introduce it; it changes what `link` *returns* (an emitted binding rather than a closed-over closure) and what it *resolves against* (child kind as well as option and arity). |
+| the per-rule surface siblings call by name | **`_r_<Name>`** | `codegen.ts:424-439` — *"the composition surface (intended collision = override)"*, never inlined so it stays addressable, never namespaced | This is what my `make(...)` produces. Adopt verbatim. |
+| the hoisted declaration block an artifact contributes | **`prelude`** | `LinkablePieces.prelude`, `codegen.ts:5851` — *"namespaced hoisted decls (regexes, expected, `_mf`/`_build`, and private `_pf` helper fns)"* | This is where the static bindings go. Adopt verbatim. |
+| per-artifact namespace for hoisted names | **`ns`** | `codegen.ts:433-442`; **live** at `linkable()` (`src/compiler/linker.ts:40`) and `LinkableTable.ns` | Adopt verbatim, including its rule: hoisted names are prefixed, `_r_<Name>` is not. |
+| hoisted pools | **`_re<N>`** regexes, **`_fx<N>`** expected sets, **`_pf<N>`** private parse fns, **`_mf`** map fns, **`_build`** build fns | `codegen.ts:631-633`, `675-683`, `793-798` | Adopt verbatim. See below — this answers the `_s0` question outright. |
+| public per-rule entry | **`wrappers`** | `LinkablePieces.wrappers` | Adopt. |
+| the emitted expression for a compiled program | **`replacement`** | `LinkableTable.replacement` — **live**, `src/compiler/compile-linkable-table.ts` | U4's emitted wiring belongs here. There is already a field for it. |
+| combining independently-compiled artifacts | **`fuse` / `fusedBody()` / `compose()`** | `src/compiler/linker.ts:695` (`compose`), `:743` (`composeLeaf`), `:934` (`fuseInterpreted`) — **live** | Not this design's operation. See the collision note. |
+| deferring a decision to artifact-combination time | **"fuse time"**, via a `/*@FS:rule:codevar@*/true` placeholder rewritten by `fusedBody()` | `codegen.ts:446-451`, `:2640-2641` | Codegen's own "resolve later, branch never" mechanism. Directly relevant prior art for §3's selection — it deferred a *first-set dispatch condition* into emitted text and substituted it when the winning rule was known. |
+| artifact version lock | **`v`** | `LinkablePieces.v`; **live** at `LinkableTable.v` | Any emitted form from U4 must stamp it. Named here so U4 does not rediscover it. |
+
+**`link` is the wrong name at the emitted level, for a reason worth stating.**
+In this repo *linking* already means **fusing independently-compiled artifacts** —
+`linkable()`, `LinkableTable`, `linker.ts`, `fusedBody()`. That is an
+artifact-to-artifact operation. Resolving one node's binding for one option set is a
+different, smaller thing, and it already has a name one level down (`assemble.ts`'s
+`link(ip)`) where the collision is contained because it is module-private. Promoting
+that spelling into emitted source would put two meanings of "link" in the same
+generated file. **Keep `link` as the internal resolver name it already is; do not
+emit it.**
+
+**`make` is wrong twice.** It collides with `_r_<Name>`, which already occupies the
+role and comes with a documented override semantics; and it collides with the bench
+harness's own `make` (`bench/workloads/index.ts:102`, `make: () => { parse: … }`) —
+the very `w.make()` that §8b and the perf-guard analysis refer to as being outside
+the timed region. Two different `make`s in one discussion is how the "per-parse
+assembly" mechanism got proposed and killed twice.
+
+**`_s0` needs no new name.** A bound node body hoisted into the prelude is exactly
+what `_pf<N>` already is: a private, hoisted, namespaced parse function.
+`pushNamedFnDecl` (`codegen.ts:800-824`) mints them, `emitNamedFnCall`
+(`:826-840`) calls them, `ns` namespaces them, and `LinkablePieces.prelude`
+documents them as belonging there. **Adopt `_pf<N>`.** I proposed `_s<N>` and it was
+an invention with no advantage.
+
+**The one divergence I want to justify rather than smuggle.** Codegen's `_pf<N>` is a
+hoisted function whose *body is emitted per site*. This design's `_pf<N>` is a hoisted
+binding whose *value is selected from the shared library*. Same name, same namespace
+rule, different provenance — and the divergence is deliberate, because sharing the
+body is what keeps `example/css` near 16-24 KB instead of 224,100 B. It is safe for
+the property §0.3 cares about (the **call site** `_pf3(input, pos, ctx)` is still a
+distinct site in emitted source with its own feedback) but see §1.2 for the limit.
+
+### 1.2 What the naming pass forced out: which bodies may be shared, and which must be emitted
+
+Adopting `_pf<N>` as a *binding to a shared body* rather than an *emitted body* has a
+consequence that only became visible once the two were named the same thing, and it
+sharpens §2.3's cutoff:
+
+- A body with **no internal call site** — every scannable leaf — may be a shared
+  library reference. Its callers each get their own feedback; it has no ICs of its own
+  to pollute. `_pf7 = _lib.litLen1(123, _fx4)`.
+- A body **with** internal call sites — every sequence, choice, repetition, node —
+  **must be emitted per site**, because §0.3 applies recursively: a shared arity-2
+  body reintroduces exactly the shared feedback vector the design exists to remove.
+  Sharing it would move the megamorphism from `assemble.ts` into the library and
+  change nothing.
+
+So the "piece library" is a **leaf** library, and the composite shapes are
+**emitters** — which is precisely codegen's split (`emitLit`/`emitShapeMatch` paste;
+`emitSeq`/`emitChoice` emit per site). I had this as an efficiency argument in §2.3;
+it is actually a correctness argument for the design's central claim, and the
+vocabulary is what surfaced it.
+
+**This does not change the staging.** U1–U3 remain leaf and term work inside
+`assemble.ts`; U4 remains the emitter. It changes what U4 is allowed to put in the
+library, and it is stated here so a reviewer can attack it.
 
 ---
 
@@ -297,7 +447,7 @@ sits under a trivia-bearing scope is a static property of the encoded table: it 
 the nearest enclosing `OP_SCOPE`/`OP_SCOPE_CAP`, and `encode.ts:520` already emits
 that wrapper with the trivia slot. A downward pass over the code array labels each
 sequence site `trivia: none | slot-N`. That is an **encoder-side** analysis, resolved
-before `link` ever runs, and it makes the trivia decision a child of the *site* rather
+before resolution ever runs, and it makes the trivia decision a child of the *site* rather
 than of the *options* — which is what codegen did (`ctx.activeTrivia`,
 `codegen.ts:1774`).
 
@@ -336,20 +486,49 @@ subtrees over `HOIST_MIN_SUBTREE = 3` nodes hoist to a call (`:4545-4585`,
 `:5002`). Codegen bounded its own explosion with a node budget and a use-count
 threshold, and inlined nothing that had internal control flow of its own.
 
-| child kind | opcode | inline into parent? | body |
-|---|---|---|---|
-| literal, len 1 | `OP_LIT` | **yes** | `input.charCodeAt(p) !== 123` |
-| literal, len 2–16 | `OP_LIT` | **yes** | bounds check + unrolled `charCodeAt` OR-chain |
-| literal, len > 16 | `OP_LIT` | **yes** | `input.startsWith(s, p)` |
-| literal, case-insensitive | `OP_LIT_CI` | **yes** | `foldEq` chain (`scannable-run.ts:120`) |
-| regex with a `ScanShape` | `OP_RX` | **yes** | `emitShapeMatch` form — char loop, ident, until, delimited, string, seq, litFold, alt, lookahead |
-| regex without a `ScanShape` | `OP_RX` | **yes** | hoisted sticky `re.exec`, still straight-line |
-| char class | (a `chars` `ScanShape`) | **yes** | `while` + `classCond` |
-| trivia scan | site property, not a child | **yes** | the specialised scan loop, spliced per term position |
-| `OP_EMPTY`, `OP_ADJ` | | **yes** | zero-width, already trivial |
-| rule reference | `OP_RULE` | **no — call** | named binding `_s0(input, p, ctx)` |
-| nested seq / choice / rep / opt / node | `OP_SEQ`… | **no — call** | named binding |
-| everything else (24 opcodes) | | **no — call** | named binding |
+**Every row cites the codegen emitter that already produced that shape.** Reusing a
+proven emitted shape is cheaper and less risky than authoring one, and an existing
+emitter is the strongest available evidence that a piece is well-formed — it means
+the shape has already passed the identity sweep against the interpreter. **No row in
+this table is a new invention.** Where a row has no prior art I say so.
+
+| child kind | opcode | inline into parent? | body | codegen prior art |
+|---|---|---|---|---|
+| literal, len 1 | `OP_LIT` | **yes** | `input.charCodeAt(p) !== 123` | `emitLit` `codegen.ts:1401-1406` |
+| literal, len 2–16 | `OP_LIT` | **yes** | bounds check + unrolled `charCodeAt` OR-chain | `emitLit` `:1407-1414`, pivot `CHARCODE_CHAIN_MAX = 16` `:1377` |
+| literal, len > 16 | `OP_LIT` | **yes** | `input.startsWith(s, p)` | `emitLit` `:1415-1421` |
+| literal, case-insensitive | `OP_LIT_CI` | **yes** | ASCII bit-OR fold chain | `emitLit` `:1386-1398`, via `foldEq` `scannable-run.ts:120` |
+| literal, as a pure condition (choice arm) | — | **yes** | same 16-char pivot, no fail branch | `emitLiteralCondition` `:3005-3016` |
+| regex with a `ScanShape` | `OP_RX` | **yes** | the nine `emitShapeMatch` forms — chars, ident, until, delimited, string, seq, litFold, lookahead, alt | `emitRegex` `:1681-1697` → `emitScannableTerminal` (`scannable-terminal.ts`) → `emitShapeMatch` `scannable-run.ts:1244-1595` |
+| regex without a `ScanShape` | `OP_RX` | **yes** | hoisted sticky `_re<N>` + `exec`, still straight-line | `emitRegex` `:1698-1724`, hoist `:1703-1710` |
+| char class | (a `chars` `ScanShape`) | **yes** | `while` + `classCond` | `emitShapeMatch` `scannable-run.ts:1358-1369`; `classCond` `:1163-1166` |
+| trivia scan | site property, not a child | **yes** | the specialised scan loop, spliced per term position | `ensureTriviaFn` `:1044-1130`, `trivia-fast-path.ts` `composeFastLoop` `:88-97`, splice `emitSeqValues` `:1774-1878` |
+| `OP_EMPTY`, `OP_ADJ` | | **yes** | zero-width, already trivial | `emitAdjacency` `:1003-1141` |
+| rule reference | `OP_RULE` | **no — call** | `_r_<Name>(input, p, ctx)` | `emitLazy` `:4343-4434`; named rules never inline `:4349-4352` |
+| nested seq / choice / rep / opt / node | `OP_SEQ`… | **no — call** *(or paste under a budget)* | hoisted `_pf<N>` | `emitSeq` `:1888`, `emitSeqValues` `:1739`, `emitChoice` `:2065`, `emitMany` `:3018`; hoist rule `:4545-4585`, `HOIST_MIN_SUBTREE = 3` `:5002` |
+| everything else (24 opcodes) | | **no — call** | hoisted `_pf<N>` | `pushNamedFnDecl` `:800-824`, `emitNamedFnCall` `:826-840` |
+
+**Two divergences from codegen's convention, stated rather than quietly renamed.**
+
+1. **Codegen pasted composite bodies under a node budget; this design does not.**
+   `emitLazy` inlined a single-use private ref when `sizes <= ctx.inlineLeft` with
+   `INLINE_MAX_NODES = 1000` (`:5036`), and `emit()` hoisted only shared subtrees of
+   3+ nodes. That budget is most of the 224,100 B `example/css`. **Divergence
+   justified by the size mandate**: this design hoists to `_pf<N>` at a much lower
+   threshold and accepts the call, because the middle ground is the requirement.
+   §6/U4's byte predictions assume this and would be wrong under codegen's budget.
+2. **Codegen had no shared leaf library — it pasted leaves inline everywhere.**
+   This design allows a leaf to be a shared library reference (§1.2). **Divergence
+   justified by §1.2's rule**, and bounded by it: only bodies with no internal call
+   site may be shared. Where a leaf is a *child of a sequence being emitted per
+   site*, pasting it inline as codegen did remains available and is strictly better;
+   the shared-library form is for leaves reached through a binding.
+
+**No prior art, flagged as genuinely new:** the per-site trivia label (§3.2) has no
+codegen equivalent, because codegen carried `ctx.activeTrivia` in the emitter's own
+recursion (`:1774`) and never needed to record it in an artifact. It is new because
+the table separates encode from assemble and codegen did not. Proposed name follows
+the encoder's existing operand convention, not a new vocabulary.
 
 **So the taxonomy is small.** Two child classes: *scannable leaves*, which paste;
 and *everything else*, which becomes a named static binding called from a distinct
@@ -434,8 +613,8 @@ leg through `bench/ab-harness.ts`'s `materialise`.
 
 | archived capability | becomes | why |
 |---|---|---|
-| `scannable-run.ts` — `parseScanShape` / `scanShapeFromRegex` (lines 1–1152, the analysis half) | **encoder-side or assembly-side analysis, not a piece.** Ported as a shape recogniser consumed by `link`. | It is a *classifier*: regex source → one of nine shapes. Nothing about it runs at parse time. ~71% of the file is soundness proofs (`seqIsUnambiguous`, `trailingBacktrackClass`, `allPairsDisjoint`, `delimitedBodySound`) answering "does greedy one-pass scanning provably equal the backtracking engine" — that is exactly the correctness argument the new pieces need, and re-deriving it is the largest avoidable cost in this project. |
-| `scannable-run.ts` — `emitShapeMatch` (lines 1154–1627, the emission half) | **nine piece bodies**, one per `ScanShape` variant, selected by `link` from the recognised shape. | These *are* the piece library's leaf half. `chars`, `ident`, `until`, `delimited`, `string`, `seq`, `litFold`, `lookahead`, `alt`. `delimited` is the one css needs back (§0.6). |
+| `scannable-run.ts` — `parseScanShape` / `scanShapeFromRegex` (lines 1–1152, the analysis half) | **encoder-side or assembly-side analysis, not a piece.** Ported as a shape recogniser consumed by `link(ip)` (`assemble.ts:632`) at resolve time. | It is a *classifier*: regex source → one of nine shapes. Nothing about it runs at parse time. ~71% of the file is soundness proofs (`seqIsUnambiguous`, `trailingBacktrackClass`, `allPairsDisjoint`, `delimitedBodySound`) answering "does greedy one-pass scanning provably equal the backtracking engine" — that is exactly the correctness argument the new pieces need, and re-deriving it is the largest avoidable cost in this project. |
+| `scannable-run.ts` — `emitShapeMatch` (lines 1154–1627, the emission half) | **nine piece bodies**, one per `ScanShape` variant, selected at resolve time from the recognised shape. | These *are* the piece library's leaf half. `chars`, `ident`, `until`, `delimited`, `string`, `seq`, `litFold`, `lookahead`, `alt`. `delimited` is the one css needs back (§0.6). |
 | `scannable-terminal.ts` (31 lines) | **the composition rule**, not a piece. | Correcting the brief: this file contains no classification. It is a five-line wrapper — run `emitShapeMatch`, fail if `ok !== 'true'`, slice the value. Its value is its header claim: terminal and trivia share **one** match core so they can never disagree about an incomplete token. That invariant must be preserved by construction in the new library. |
 | `trivia-fast-path.ts` (296 lines) | **trivia-scan piece bodies, spliced per term position**, selected by the site's trivia label × the capture bit. | Four tiers: unlabeled scannable, labeled scannable, labeled all-regex arms, labeled runtime arms (`ensureTriviaFn`, `codegen.ts:1044-1130`). The capture tail (`CAP_RECORD`, `:74-79`) is **part of the loop body**, which is how it captures with zero allocation — versus today's `{end, commit}` object per term (§0.6). Note it never emitted inline into the sequence body either: it built a whole `_tfN` function and the sequence called it. That is a real precedent for a *call* being acceptable here, and it is why §6's U2 targets the option branch and the allocation rather than the call. |
 | `trivia-fast-path.ts` — the commit-only-if-the-term-consumed rule (`codegen.ts:1785`, `:1832`) | **selection**: when `alwaysConsumes(term)` is statically true, emit no marks and no rollback at all. | This is `nextTerm`'s `if (END > scanEnd) … else rollbackTriviaAt(…)` (`assemble.ts:545-549`) turned into a compile-time fact. `alwaysConsumes` is derivable from the child opcode. Free win on every term whose child is a literal or a `min>=1` regex. |
@@ -467,13 +646,34 @@ measurement leg does not depend on this ruling either.
 
 ---
 
-## 5. The invariant, and how a reviewer detects a violation
+## 5. The criterion, and how a reviewer detects a violation
 
-**The invariant.** Options are resolved by selecting a body. No parse path contains a
-test on a fact that is fixed before the parse (or fixed for the site). No parse path
-indexes an array to find a child.
+**This section is the enforcement half of the PURPOSE statement at the top of the
+document.** Restating the test it enforces:
 
-**How each proposal preserves it**, and this is the table a reviewer should demand:
+> **Any consulting of options at parse time, per rule or per combinator, is a FAIL.**
+> Resolution happens ONCE PER RUN — not per parse, not per rule entry, not per
+> combinator. Elimination, not amortisation: a resolved path holds no flag read, no
+> cached lookup, no branch that always goes the same way.
+
+Its structural twin, which `INV-7` covers: no parse path indexes an array to find a
+child.
+
+**How each proposal moves toward it.** Note the fourth column — three of these
+proposals do not improve compliance at all, and §6.1 is where each unit's overall
+verdict lands.
+
+| proposal | option consults it removes from the parse path | new tests introduced | compliance or work? |
+|---|---|---|---|
+| `_probe` → `RunCfg` bit | 6 per-leaf `ctx._probe !== undefined` | none | **compliance** |
+| trivia label per site | `nextTerm`'s `ctx.trivia === undefined`, per term | none | **compliance** |
+| `triviaCapture` → `RunCfg` bit | `skipTrivia`'s 3-clause test, per term | none | **compliance** |
+| `alwaysConsumes` at selection | the mark block + `END > scanEnd` + rollback, per term | none | **compliance** |
+| AST-host capture elision (§3.4) | 9 `cstCaptureActive` on the AST assembly | none | **compliance** |
+| emitted `_pf<N>` bindings (U4) | `AssemblyCache.forCtx` per rule entry; every array index | none | **compliance — the only full pass** |
+| length-keyed literal bodies | none | none | work only |
+| `ScanShape` leaf bodies | none (`re.exec` → scan loop is work) | none | work only |
+| shared-prefix scan-once (§8b.3) | none | none | work only |
 
 | proposal | option decisions it removes from the path | new tests introduced |
 |---|---|---|
@@ -485,25 +685,103 @@ indexes an array to find a child.
 | `ScanShape` leaf bodies | `re.exec` for shapes that lower | none |
 | AST-host capture elision (§3.4) | 9 `cstCaptureActive` on the AST assembly | none |
 
-**Detection — three mechanisms, in increasing strength.**
+### 5.1 Detection — three mechanisms, in increasing strength
 
-1. **Extend `INV-6`'s `CONFIG_FIELDS`** to `{ trackLines, build, _probe, _tolerant, trivia }`.
-   That alone makes §0.4's defect a build failure. Cheap, and it should land in the
-   first unit so every later unit is checked by it.
-2. **Fix `INV-6`'s `isPiece`** so a helper that takes a `Piece` as a parameter is
-   treated as piece-internal. The current 3-parameter test is exactly why `nextTerm`
-   evaded it (§0.5). Concretely: any function whose parameter list *ends* in
-   `(input, cur|pos, ctx)` is piece-internal, regardless of leading parameters.
+The checker's job is to make the PURPOSE criterion mechanically enforceable:
+**no option-derived value read on a parse path, full stop.** `INV-6` was written for
+exactly that and cannot currently express it.
+
+1. **Extend `INV-6`'s `CONFIG_FIELDS`.** §5.2 audits `ParseContext` and gives the
+   full list. This alone makes §0.4's defect a build failure. It should land in U0 so
+   every later unit is checked by it.
+2. **Fix `INV-6`'s `isPiece`.** The current test requires **exactly three**
+   parameters with `names[2] === 'ctx'`, which is why `nextTerm(child, input, cur,
+   ctx)` — four parameters — is invisible to it (§0.5). Generalise to: **any function
+   whose parameter list *ends* in `(input, pos|cur, ctx)`, regardless of leading
+   parameters.** That catches every helper reached from a piece, which is what
+   "parse path" means. A stricter and more future-proof form: any function whose last
+   parameter is named `ctx` **and** which is reachable from a `lower()` return.
 3. **A new invariant, `INV-7`: no parse-path array index.** Decidable syntactically —
    a computed member expression on a `Piece[]`-typed binding inside a piece body.
    `kids[i]`, `arms[i]` (`assemble.ts:1627`, `:1716`, `:1734`, `:1760`, `:2135`),
-   `runners[i]` (`:1351`, `:1418`) are the current population. This is the invariant
-   that keeps §1's "no arrays on the parse path" enforced rather than aspirational.
+   `runners[i]` (`:1351`, `:1418`) are the current population. This keeps §1's "no
+   arrays on the parse path" enforced rather than aspirational. It is separate from
+   `INV-6` because an array index is not an *option* read — it is the other half of
+   the criterion, resolve-time work left on the parse path.
 
-A reviewer who is handed a unit and asked "does this violate the invariant" should
-run these three and then ask, for every remaining `ctx.` read inside a piece, *when
-can this field change* — the `RunCfg` doc comments are the model for the answer, and
-an answer of "never during a parse" is a violation, not a justification.
+A reviewer handed a unit and asked "does this pass" runs these three, then asks, for
+every remaining `ctx.` read inside a piece, *when can this field change*. **An answer
+of "never during a parse" is a FAIL, not a justification.** The `RunCfg` doc comments
+(`assemble.ts:198-235`) are the model for a correct answer.
+
+### 5.2 What `CONFIG_FIELDS` must contain — audited against `ParseContext`
+
+`createParseContext()` (`src/parse-context.ts:42-77`) is the canonical literal and
+lists 33 fields in declaration order. Partitioned by **when the field can change**:
+
+**OPTION-DERIVED — fixed before the parse, must all be in `CONFIG_FIELDS`:**
+
+| field | fixed by | in `CONFIG_FIELDS` today |
+|---|---|---|
+| `trivia` | `parser()` / `rules({trivia})` — **per SCOPE, see 5.3** | no |
+| `scanSkip` | `rules({ scanSkip })` | no |
+| `triviaKindLabels` | grammar construction | no |
+| `captureTrivia` | run options | no |
+| `_triviaCaptureMask` | derived from `captureTrivia` | no |
+| `trackLines` | run options | **yes** |
+| `build` | run options (the host) | **yes** |
+| `_tolerant` | `parseWithErrors` / `completionsAt` — argued per-parse-fixed at `assemble.ts:198-216` | no |
+| `_probe` | IDE/recovery entry | no |
+| `_grammarCoverage` | `createGrammarInstrumentationContext` — argued per-parse-fixed at `:217-235` | no |
+| `_grammarTrace` | instrumentation entry | no |
+
+**RUNTIME — varies during a parse, must stay OUT of the list.** Adding any of these
+would be a *correctness* error, not merely over-strict: `state`, `_errors`, `_sync`,
+`_rec`, `_fe`, `_fx`, `_fc`, `_cstChildren`, `_cstLeaves`, `_cstRawChildren`,
+`_triviaLog`, `_rootTriviaLog`, `_rootTriviaKindIndex`, `_rootTriviaStrictScopes`,
+`_rootTriviaCapture`, `_cstTriviaLog`, `_fields`, `_cstBuf`, `_routed`, `_lineStarts`,
+`_lineIndex`, `_lineScannedTo`.
+
+**Note the trap in the coordinator's suggested list:** `_errors` is a **sink**, not an
+option — `node()` and recovery append to it mid-parse, and `nextTerm` marks its length
+for rollback (`assemble.ts:538`). It must **not** go in `CONFIG_FIELDS`. What *is* an
+option is whether error recovery is enabled at all, and that is `_tolerant`. Coverage
+likewise: `_grammarCoverage` the *field* is per-parse-fixed and belongs in the list;
+the counter it holds is a value, which is why `assemble.ts:498-509` latches it into
+`COV` at the boundary rather than reading it per piece.
+
+**Two of these are `_`-prefixed and one is not**, so the checker must key on an
+explicit list, not on a naming convention.
+
+### 5.3 The one field that resists — `trivia`, and why it is a site label not a bit
+
+`trivia` is option-derived but **not per-parse fixed**: `OP_SCOPE` swaps it mid-parse
+(`assemble.ts:1014`, `:1019`, `:1029`, `:1161`, `:1176`) because `rules({ trivia })`
+is per-scope. So it cannot join `cfgKey`.
+
+It still must not be *consulted* per term. §3.2's per-site trivia label is how the
+criterion is satisfied without a bit: the decision moves from the option set to the
+**site**, which is strictly stronger — resolved at encode time, before resolution even
+runs. Putting `trivia` in `CONFIG_FIELDS` is therefore correct **and** achievable, and
+the checker should flag it.
+
+### 5.4 The exception list — one entry, declared
+
+A criterion with no declared exceptions and three undeclared ones is worse than one
+with a documented exception list. There is exactly one construct I cannot resolve at
+run start:
+
+**`OP_LIVE` — the interpreter fallback.** `encode.ts:1035-1043` (a `ref()` used before
+`.define()`) and `:1205-1207` (a hand-written combinator run through its own `.parse`).
+Both delegate to a combinator the table never saw, so its internal option consulting is
+outside this design's reach entirely. **Declared exception**, and it is a narrow one:
+`encode.ts:1208-1213` deliberately refuses to widen anything else into `OP_LIVE`
+(*"silently running it live would trade a build error for a permanent slow path nobody
+would ever find"*), and the workloads carry 0–4 such rows, `json/document` zero.
+
+**Everything else must resolve.** If a later unit finds a second construct that cannot,
+that is a finding to write down here with its reason — not something to absorb
+silently into a piece body.
 
 ---
 
@@ -516,16 +794,47 @@ tenth of a percent, +137% floor) except where stated.
 Baseline for size claims: `bench/size-baseline.json` — `example/json` 1,336 B,
 `example/css` 9,229 B, ceiling 10, `ratchetSlackPct` 0.1.
 
+### 6.1 Compliance with the PURPOSE criterion — honest, and mostly partial
+
+**Any consulting of options at parse time, per rule or per combinator, is a FAIL.**
+Walking each unit against it. "Amortises" means the decision is made cheaper but is
+still on the parse path — a legitimate intermediate step, labelled as one.
+
+| after this unit | still consults an option on the parse path? | what remains |
+|---|---|---|
+| **U0** | **YES — unchanged.** U0 changes no parse path. | Everything. U0 makes the violations *visible*, which is its whole value. |
+| **U1** | **YES — PARTIAL PASS.** Removes the per-leaf `_probe` consult (6 sites) by moving it to `RunCfg`. | `nextTerm`'s `ctx.trivia` per term; `skipTrivia`'s 3-clause capture test per term; `cstCaptureActive` per leaf; `forCtx` per rule entry. The literal-length half of U1 is **not** a criterion improvement at all — it is a work reduction. Stated plainly so it is not read as compliance. |
+| **U2** | **YES — PARTIAL PASS, largest single step.** Removes the per-term `trivia` consult (site label), the per-term capture consult (`RunCfg` bit), and the mark/rollback block wherever `alwaysConsumes` is statically true. | `cstCaptureActive` per leaf; `forCtx` per rule entry. |
+| **U3** | **NO CHANGE to compliance.** Pure work reduction — better leaf and trivia recognisers. | Same as after U2. Do not let U3's expected size on css/less read as progress against the criterion; it is orthogonal. |
+| **U4** | **PASS, and it is the only unit that reaches it.** Bindings are emitted names resolved once per run; `forCtx`'s per-rule-entry resolve is replaced by binding at emit/startup; no array index survives (`INV-7` goes from reporting-only to enforcing). | Only the §5.4 `OP_LIVE` exception. |
+| **U5** | **Completes the leaf half.** AST-host capture elision removes the last 9 `cstCaptureActive` consults on the AST assembly. | Only the §5.4 exception. |
+
+**Three things this table makes visible that the prose did not:**
+
+1. **No unit before U4 satisfies the criterion.** U1–U3 are amortisation and work
+   reduction. They are worth landing — they are cheap, independently valuable, and
+   they shrink U4 — but none of them is "done" in the criterion's terms.
+2. **`AssemblyCache.forCtx` survives every unit until U4.** It is the resolve step
+   that most looks like it has already been solved (it is cached, it allocates
+   nothing, its own comment defends it) and it is the last one standing.
+3. **U1's headline half is not compliance work.** The length-keyed literal bodies are
+   the biggest predicted single win in the cheap tier and they contribute **nothing**
+   to the criterion. Two different axes of goodness; the document should not blur
+   them, and the staging is ordered by measurement value, not by compliance.
+
 ---
 
 ### U0 — Tighten the invariant checker. *Land first, alone.*
 
-**Change.** `CONFIG_FIELDS` += `_probe`, `_tolerant`, `trivia`. `isPiece` matches on a
-trailing `(input, pos|cur, ctx)` parameter suffix. Add `INV-7` (no parse-path array
-index) in *reporting-only* mode.
+**Change.** `CONFIG_FIELDS` becomes the audited eleven-field list of §5.2. `isPiece`
+matches on a trailing `(input, pos|cur, ctx)` parameter suffix (§5.1). Add `INV-7`
+(no parse-path array index) in *reporting-only* mode. Record the §5.4 exception.
 
 **Hypothesis.** The checker currently green-lights the defects this design exists to
-remove; making it red is how every later unit gets checked for free.
+remove; making it red is how every later unit gets checked for free. **This unit is
+the specification of the PURPOSE criterion in executable form** — without it, every
+claim below that a unit "removes an option consult" is an assertion rather than a
+gate.
 
 **Predicted effect.** Zero on performance. It will report ~6 `_probe` sites, 1
 `ctx.trivia` site, and ~9 array-index sites. If it reports substantially more than
@@ -644,12 +953,17 @@ where the archive saves the most work.**
 
 ---
 
-### U4 — Emitted source with static bindings: the actual `link`/`make` shape.
+### U4 — Emitted source: a `prelude` of `_pf<N>` bindings and one `_r_<Name>` per rule.
 
-**Change.** The per-grammar artifact becomes generated wiring: `const _s0 = link(...)`
-per node, `const _r1 = make(_s0, _s1, _s2, _s3)` per rule, with the sequence bodies
-emitted per site so each call site is a distinct FunctionLiteral. `kids`, `arms` and
-`runners` cease to exist on the parse path.
+**Change**, in the recovered vocabulary of §1.1. The per-grammar artifact grows a
+`prelude` of namespaced hoisted `_pf<N>` bindings — one per node, resolved once at run
+start — and one `_r_<Name>` per rule, the composition surface siblings call by name.
+Composite bodies (sequence, choice, repetition, node) are **emitted per site** per
+§1.2; scannable leaves may be library references. The emitted text lands in
+`LinkableTable.replacement`, which already exists, and must carry the artifact version
+stamp `v`. `kids`, `arms` and `runners` cease to exist on the parse path.
+
+**This is the only unit that fully satisfies the purpose criterion** — see §6.1.
 
 **Hypothesis.** §0.3 — inline-cache feedback is per-FunctionLiteral, so process-wide
 megamorphism at every piece call site is unavoidable inside `assemble.ts` and can only
@@ -672,7 +986,7 @@ profile rather than a model.
 
 **Size.** This is the unit that moves bytes. PREDICTED `example/json` 1,336 B →
 **2,200–3,000 B**; `example/css` 9,229 B → **16,000–24,000 B**. Reasoning: one
-binding line (~25 B) plus one `make(...)` argument list per node, against codegen's
+`_pf<N>` binding line (~25 B) plus one `_r_<Name>` argument list per node, against codegen's
 15,138 B / 224,100 B which pasted whole bodies. That lands roughly 1.7–2.5× above the
 table and 5–10× below codegen — the middle ground, biased small, as instructed.
 `bytesRatio` for `example/css` is 0.95 today against a ceiling of 10, so there is
@@ -718,6 +1032,14 @@ dominate, U1's change is correct on its own terms and stays.
 And it is fully self-contained: no encoder change, no emitted-source change, no size
 movement, one opcode family, and `test/parity/failure-diagnostics.test.ts` plus the
 identity sweep cover it completely.
+
+**Said against the criterion rather than against the clock:** U1 is a PARTIAL PASS
+(§6.1) and its larger half is not compliance work at all. **If the question is "which
+unit should land first to satisfy the purpose", the answer is not U1 — it is U4, and
+nothing short of U4 reaches a pass.** I am ordering by evidence-per-cost because the
++137% is unexplained and a cheap discriminator is worth more right now than a partial
+step toward a criterion U4 will satisfy wholesale. Those are two different questions
+and the document should not let the ordering imply an answer to the second.
 
 ---
 
@@ -781,8 +1103,7 @@ fourth axis, not a value on an existing one.** The selection key becomes
 ```
 
 with `input-representation ∈ { chars, tokens }`. A char-consuming literal body and a
-token-consuming literal body are two members of one family, chosen by `link` at run
-start, with no parse-path branch either way. That is exactly the property §2 is built
+token-consuming literal body are two members of one family, chosen at resolve time, with no parse-path branch either way. That is exactly the property §2 is built
 on and it holds without modification.
 
 **What has to be true for that to work, and it is not free.** The piece signature
@@ -811,7 +1132,7 @@ overbuilding against the middle-ground mandate.
 | U1 (length-keyed literals, `_probe` bit) | **superseded, not reworked.** A token-consuming literal body is an integer compare on token kind — it replaces the `charCodeAt` chain rather than modifying it. U1's `_probe` half is neutral and survives. U1 is a day's work, so losing half of it later is not a reason to defer it. |
 | U2 (`nextTerm` inlined away) | **the one to design for, per the brief's own point.** If trivia is classified once by the stream, the per-term scan does not shrink — it *disappears*, because the stream has already skipped it. So U2's term bodies must be selected in three variants, not two: `no-trivia`, `scan-trivia`, and (later) `stream-pre-classified`. **Cheap choice available now:** make the site's trivia label an enum with room for a third value rather than a boolean. That is the "cheap choice now that avoids a rewrite later" the brief asked for, and it costs nothing. |
 | U3 (`ScanShape` recognition) | **partly superseded, and this is the strongest argument for sequencing it after U4.** The nine shape bodies are char-level recognisers. If tokens land, `delimited` (block comments) and `string` become the *tokeniser's* job, not the leaf's — `token-alphabet.ts` exists to classify exactly those. U3 is the largest unit by cost (1627 lines, ~71% soundness proofs) and the most exposed to being redone. **Flagging this as a real sequencing risk:** if token streaming is going to land in 0.48, U3 should be scoped down to *only* what the trivia path needs (the `chars`, `alt` and `delimited` shapes) rather than porting all nine. |
-| U4 (emitted source, static bindings) | **neutral, and it is the enabler.** `link`/`make` is representation-agnostic by construction. Whether `_s0` resolves to a char body or a token body is one more thing `link` decides. |
+| U4 (emitted source, static bindings) | **neutral, and it is the enabler.** The resolve step is representation-agnostic by construction. Whether a `_pf<N>` binding resolves to a char body or a token body is one more thing resolution decides. |
 
 **The bound I am not allowed to use, and am not using.** `RELEASE-0.48-TARGET.md:32-45`
 records ~1.4 ms for token scanning, ~1.6 ms for superoperators, ~10% for
@@ -825,7 +1146,7 @@ which is a separate piece of work from this design.
 ### 8b.2 `_grammarTrace` parity (§1) — a clean variant, plus one honest caveat
 
 Codegen emits the six trace phases at ~40 fine-grained sites. In this architecture
-trace is **a clean additional variant**: one more `RunCfg` bit, and `link` resolves
+trace is **a clean additional variant**: one more `RunCfg` bit, and resolution selects
 traced/untraced bodies exactly as it resolves probe/tolerant. That is the same law
 this design already enforces, so trace costs no new mechanism.
 
@@ -855,7 +1176,7 @@ from scratch.
 
 This belongs on the mining list beside `scannable-run.ts`, and it fits the taxonomy
 without a new axis: a `sharedPrefix` choice is a **choice-kind child shape**, selected
-at link time from a table-recorded prefix, with a body that matches the prefix once
+at resolve time from a table-recorded prefix, with a body that matches the prefix once
 and then dispatches. It is a `U5`-class item — I have no evidence about its magnitude
 and will not invent one. The concrete deliverable now is to correct the comment at
 `encode.ts:668-676`, which currently reads as though the strategy were fully
@@ -910,7 +1231,7 @@ produce silently wrong output rather than a slow parse. I have put it in U5 for 
 reason, and I would accept an argument that it should be dropped entirely.
 
 **9.6 — I have not read all 2,457 lines of `assemble.ts`.** I read `OP_SEQ` in full,
-the leaf terminals, `nextTerm`, `skipTrivia`, `markCst`, `link`, and `RunCfg`. The
+the leaf terminals, `nextTerm`, `skipTrivia`, `markCst`, `link(ip)`, and `RunCfg`. The
 choice/repetition/dispatch pieces I have only grepped for array indexing. There may be
 further option tests on the parse path in the pieces I did not read — U0's extended
 checker is precisely the instrument that would enumerate them, which is another reason
@@ -922,7 +1243,28 @@ likely to be partly redone. If token streaming is in scope for 0.48, U3 should b
 down to the trivia-path shapes only; if it is not, the full nine-shape port is right.
 I cannot resolve that from the tree.
 
-**9.8 — The `graphql/document` +107–137% row is unexplained by my model.** graphql is
+**9.8 — The `CONFIG_FIELDS` audit (§5.2) is a partition I made by reading
+`createParseContext`, not by tracing every writer.** I am confident about
+`trivia`, `trackLines`, `build`, `_probe`, `_tolerant`, `_grammarCoverage` — those
+have explicit written arguments in `assemble.ts:198-235` or are demonstrated by the
+scope-swap sites. I am **less** confident about `scanSkip`, `triviaKindLabels`,
+`captureTrivia` and `_triviaCaptureMask`: I classified them as option-derived on the
+strength of where they are set, not on an exhaustive writer search. If any of them is
+mutated mid-parse the way `trivia` is, it belongs in §5.3's treatment rather than in
+`CONFIG_FIELDS`, and adding it to the list would produce a *false* build failure that
+someone would then "fix" by weakening the checker. **U0 must verify each of those four
+against its writers before the list is enforced**, and that verification is part of U0,
+not a follow-up.
+
+**9.9 — I recommend adopting `_pf<N>` for node bindings and I have not proved the
+namespace collision is safe.** Codegen minted `_pf<N>` for its own hoisted private
+functions under `ns`. If U4's emitter also mints `_pf<N>` and both forms ever coexist
+in one fused scope — during a migration, or in a mixed artifact — the counters must
+share a minter or they will collide silently. Adopting an existing name inherits its
+allocation discipline as well as its spelling, and I have not checked where that
+counter lives.
+
+**9.10 — The `graphql/document` +107–137% row is unexplained by my model.** graphql is
 `withoutCapture` like json and lands at the same floor, which is consistent. But I did
 not read `examples/graphql/parser.ts` and cannot say whether its literal-length
 distribution supports U1's prediction there. If U1 moves json and not graphql, that is
