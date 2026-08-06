@@ -56,6 +56,9 @@ import {
   OP_RX_TRACK, OP_SCAN, OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_XFORM,
 } from './ops.ts'
 import type { ResolvedClass, ResolvedTable, TableProgram } from './program.ts'
+import {
+  CAP_OFF, CAP_ON, TRI_NONE, TRI_UNKNOWN, TOP, computeSiteLabels, type SiteLabel,
+} from './site-labels.ts'
 
 /** What the compiled factory hands back — the emitted twin of `Assembly`. */
 export type EmittedPiece = (input: string, pos: number, ctx: ParseContext) => unknown
@@ -134,6 +137,28 @@ ctx._lineScannedTo=end
 function _rollbackNeeded(ctx){
 return ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined||ctx._cstRawChildren!==undefined||ctx._cstTriviaLog!==undefined||ctx._fields!==undefined||ctx._errors!==undefined||ctx._triviaLog!==undefined||ctx._rootTriviaLog!==undefined
 }
+function _rbBuf(ctx,raw,tl,lv,lg,rt){
+const b=ctx._cstBuf
+const ra=b.raw
+if(ra!==undefined){
+if(raw===0)b.raw=undefined
+else if(raw===1){b.rawSingle=ra[0];b.raw=undefined}
+else if(ra.length!==raw)ra.length=raw
+}else if(raw===0)b.rawSingle=undefined
+const ch=b.ch
+if(ch!==undefined){
+if(lv===0)b.ch=undefined
+else if(lv===1){b.single=ch[0];b.ch=undefined}
+else if(ch.length!==lv)ch.length=lv
+}else if(lv===0)b.single=undefined
+const bt=b.tl
+if(bt!==undefined){
+if(tl===0)b.tl=undefined
+else if(bt.length!==tl)bt.length=tl
+}
+if(ctx._triviaLog!==undefined&&ctx._triviaLog.length!==lg)ctx._triviaLog.length=lg
+if(ctx._rootTriviaLog!==undefined&&ctx._rootTriviaLog.length!==rt)ctx._rootTriviaLog.length=rt
+}
 `
 
 function q(s: string): string {
@@ -150,7 +175,20 @@ function q(s: string): string {
  * body already has. Same scalarisation `rollbackCstCaptureAt` documents, one
  * step further because the source form can take it.
  */
-function emitMark(t: string): string {
+function emitMark(t: string, buf: boolean): string {
+  // THE SITE IS INSIDE A NODE. `OP_NODE` opens `ctx._cstBuf` unconditionally and
+  // closes it on the way out, so the whole discriminating chain below — which
+  // sink is live, and whether a mark is needed at all — has ONE answer here, and
+  // the pass knows it. What is left is the five loads a mark actually is.
+  if (buf) {
+    return `let ${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0
+{const b=ctx._cstBuf
+const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+const h=b.ch;${t}lv=h!==undefined?h.length:b.single!==undefined?1:0
+const l=b.tl;${t}tl=l!==undefined?l.length:0
+${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0}`
+  }
   return `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0
 {const b=ctx._cstBuf
 if(b!==undefined){
@@ -189,7 +227,11 @@ ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
  * `_fields` has no such guard — `length = undefined` would throw — so it takes
  * the literal `0` that a per-node `_fields` no `OP_FIELD` can push to always has.
  */
-function emitRollback(t: string): string {
+function emitRollback(t: string, buf: boolean): string {
+  // `_rbBuf` is the `_cstBuf` arm of `rollbackCstCaptureAt` plus the two trivia
+  // truncations, with the sink discrimination the label already answered removed.
+  // It takes no piece, so the header's sharing rule admits it.
+  if (buf) return `_rbBuf(ctx,${t}raw,${t}tl,${t}lv,${t}lg,${t}rt)`
   return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,0,undefined,${t}lg,${t}rt)`
 }
 
@@ -200,26 +242,46 @@ function emitRollback(t: string): string {
  * `FAIL` directly, because emitted here there is no shared return channel to
  * encode a −1 sentinel into.
  *
- * The `ctx.trivia === undefined` test SURVIVES this unit. It is a per-SCOPE
- * runtime read, not an option — `OP_SCOPE` swaps `ctx.trivia` mid-parse — so
- * lifting it needs the encoder's downward site-attribute pass, which is a
- * different unit and is not claimed here.
+ * The `ctx.trivia === undefined` test is GONE wherever the site label answers
+ * it. It was never an option — `OP_SCOPE` swaps `ctx.trivia` mid-parse, which is
+ * why it could not be lifted into `RunCfg` — but it IS a property of where the
+ * term sits, and `site-labels.ts` resolves it at encode time. `TRI_NONE` keeps
+ * only the first branch, a known slot keeps only the second (with the scope's own
+ * scanner already bound into `skip`), and `TRI_UNKNOWN` keeps both.
  */
-function emitTerm(callee: string, dst: string, t: string): string {
-  return `if(ctx.trivia===undefined){
-const ${t}v=${callee}(input,cur,ctx)
+function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: string): string {
+  const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
-cur=_pfEnd
-}else{
-${emitMark(t)}
-const ${t}s=_skipTrivia(input,cur,ctx)
+cur=_pfEnd`
+  if (l.tri === TRI_NONE) return fast
+  const scanned = `${emitMark(t, l.buf)}
+const ${t}s=${skip}(input,cur,ctx)
 const ${t}v=${callee}(input,${t}s,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
 if(_pfEnd>${t}s)cur=_pfEnd
-else{${emitRollback(t)}}
+else{${emitRollback(t, l.buf)}}`
+  if (l.tri !== TRI_UNKNOWN) return scanned
+  return `if(ctx.trivia===undefined){
+${fast}
+}else{
+${scanned}
 }`
+}
+
+/**
+ * The repetition's LEAD-TRIVIA skip, as a BLOCK.
+ *
+ * A block and not a bare statement because the separator form spells it
+ * `} else <this>`, and a label that erases the skip entirely would otherwise
+ * leave a dangling `else` to swallow the statement after it.
+ */
+function leadSkip(hasTrivia: string, leadTrivia: string, skip: string): string {
+  if (hasTrivia === 'false') return '{}'
+  const call = `itemStart=${skip}(input,itemStart,ctx)`
+  if (hasTrivia === 'true') return leadTrivia === 'true' ? `{${call}}` : `{if(${leadTrivia})${call}}`
+  return `{if(hasTrivia&&${leadTrivia})${call}}`
 }
 
 /** Everything the compiled factory needs bound, beside the emitted text. */
@@ -260,11 +322,23 @@ export function emitAssemblySource(
   if (prog.rec === 1 && cfg.tolerant) throw new Unemittable('a recovery (tolerant) assembly')
   if (cfg.coverage) throw new Unemittable('a coverage assembly')
 
+  // THE DOWNWARD PASS, BEFORE ANY LOWERING. The roots are exactly the sites
+  // `link` is called on from outside a body — the rule entries and the scan
+  // pool's `extraIps` — and each starts at `TOP`, because a caller outside the
+  // emitted scope supplies a context this pass cannot see.
+  const labels = computeSiteLabels(
+    code,
+    [...Object.values(prog.rules), ...extraIps],
+    hostCst,
+  )
+
   const bodies: string[] = []
   const byIp = new Map<number, string>()
   const alias = new Map<number, string>()
   const reached = new Set<number>()
   const prelude: string[] = []
+  const skipDefs: string[] = []
+  const skipPool = new Map<string, string>()
   const pool = new Map<string, string>()
   const masks: Uint32Array[] = []
   const classes: (ResolvedClass | null)[][] = []
@@ -286,6 +360,68 @@ export function emitAssemblySource(
   /** A fresh local prefix, so two inlined marks in one body cannot collide. */
   let uid = 0
   const tmp = (): string => `_t${uid++}_`
+
+  /**
+   * THE TRIVIA SCAN FOR ONE SITE LABEL.
+   *
+   * `_skipTrivia` answers four questions on every call — is a scanner installed,
+   * is the global trivia log live, is capture on, is a capture sink open — and
+   * three of them are what the label already knows. This mints the arm that
+   * survives, once per distinct label, and every site with that label calls it by
+   * name.
+   *
+   * Shared, and the header's rule is why it may be: none of these takes a PIECE.
+   * The installed scanner arrives as a hoisted `TRIVIASCAN[ki]` const, not as an
+   * argument, so a second caller cannot pollute a call site's feedback. That is
+   * the same test `_skipTrivia` passed and `nextTerm` failed.
+   *
+   * `_triviaLog` is deliberately NOT resolved here. It is neither an option nor a
+   * site property — nothing in `src` writes it except a caller-supplied
+   * `ParseContext` (`types.ts:524`) — so it stays the one runtime read.
+   */
+  function skipFor(l: SiteLabel): string {
+    if (l.tri < 0) return '_skipTrivia'
+    const ki = l.tri
+    // `TRIVIASCAN[ki]` IS NULLABLE. `program.ts:475` maps every trivia through
+    // `fastTriviaScanner`, which declines any shape it cannot lower, so the slot
+    // holds `null` for those — which is why `OP_SCOPE` installs a scanner it
+    // still has to null-test. The presence of a lowering is table data like the
+    // label bit beside it, so it belongs in the key rather than in a branch.
+    const hasScan = swapLegal && !triviaLabelled[ki]! && t.triviaScan[ki] != null
+    const key = `${ki}|${hasScan ? 1 : 0}|${l.buf ? 1 : 0}|${l.cap}`
+    const hit = skipPool.get(key)
+    if (hit !== undefined) return hit
+    const nm = `_sk${skipPool.size}`
+    skipPool.set(key, nm)
+    if (!hasScan) {
+      // No installed scanner: the labelled/`trackLines` path, which records
+      // through `scanTrivia`. `needsDeferredTriviaCommit` is implied by an open
+      // buffer, so an in-node site skips the call that asks.
+      skipDefs.push(l.buf
+        ? `function ${nm}(input,cur,ctx){const s=scanTrivia(input,cur,ctx);s.commit();return s.end}`
+        : `function ${nm}(input,cur,ctx){
+if(needsDeferredTriviaCommit(ctx)){const s=scanTrivia(input,cur,ctx);s.commit();return s.end}
+return advanceTrivia(input,cur,ctx)}`)
+      return nm
+    }
+    const sc = hoist('ts', `TRIVIASCAN[${ki}]`)
+    // `ctx.captureTrivia === true && (a sink is open)`, with both conjuncts
+    // resolved as far as the label takes them.
+    const sink = l.buf ? 'true' : '(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)'
+    const capturing = l.cap === CAP_OFF ? 'false' : l.cap === CAP_ON ? sink : `(ctx.captureTrivia===true&&${sink})`
+    if (capturing === 'true') {
+      // Capture is on and a sink is open: the bare-scanner arm is unreachable.
+      skipDefs.push(`function ${nm}(input,cur,ctx){return skipTriviaScanned(${sc},input,cur,ctx)}`)
+      return nm
+    }
+    const guard = capturing === 'false'
+      ? 'ctx._triviaLog===undefined'
+      : `ctx._triviaLog===undefined&&!${capturing}`
+    skipDefs.push(`function ${nm}(input,cur,ctx){
+if(${guard})return ${sc}(input,cur)
+return skipTriviaScanned(${sc},input,cur,ctx)}`)
+    return nm
+  }
 
   function link(ip: number): string {
     const hit = byIp.get(ip)
@@ -315,19 +451,53 @@ export function emitAssemblySource(
     return fname
   }
 
-  /** Sites that forward to a child with no body, decided by option or by data. */
+  /** Sites that forward to a child with no body, decided by option, data, or LABEL. */
   function aliasOf(ip: number): number | undefined {
     const op = code[ip]
     // `OP_GATE` under a probe or a tolerant recovery is a no-op that forwards to
     // its child, exactly as `assemble.ts:952` resolves it.
     if (op === OP_GATE && (cfg.tolerant || cfg.probe)) return code[ip + 2]!
     if (op === OP_RULE) return code[ip + 1]!
+    // A SCOPE THAT INSTALLS WHAT IS ALREADY INSTALLED. `encode.ts:520` wraps
+    // EVERY rule of a `rules({ trivia }, …)` map in its own `OP_SCOPE`, so a
+    // grammar with one ambient trivia re-installs the same slot at every rule
+    // entry — six context stores, a scanner swap and their six restores, per
+    // call, to arrive at the values already there.
+    //
+    // The label is what makes this decidable: `tri >= 0` can ONLY have come from
+    // an enclosing `OP_SCOPE` carrying that slot, and that scope set
+    // `ctx.triviaKindLabels` and `_pfScan` from the same slot, so all three are
+    // already the values this row would write. Restricted to plain `OP_SCOPE`
+    // with no root-capture policy: `OP_SCOPE_CAP` also raises `captureTrivia`,
+    // and the two flag bits are a real refusal and a real save/restore.
+    //
+    // `ki >= 0` is required rather than implied: `TRI_NONE` and `TRI_UNKNOWN` are
+    // themselves negative, so comparing a negative operand against a lattice
+    // element would read "unknown" as a match.
+    if (op === OP_SCOPE && code[ip + 3]! === 0 && code[ip + 1]! >= 0
+      && labels.at(ip).tri === code[ip + 1]!) {
+      return code[ip + 2]!
+    }
     return undefined
   }
 
   function lower(ip: number, fname: string): string {
     const op = code[ip]
     const head = `function ${fname}(input,pos,ctx){`
+    const L = labels.at(ip)
+    /**
+     * THE LEAF CAPTURE TEST, and only the test.
+     *
+     * `cstCaptureActive` is `_cstBuf !== undefined || _cstLeaves !== undefined`,
+     * and `OP_NODE` opens `_cstBuf` on entry regardless of host mode — so under a
+     * node the answer is a constant `true`. What that licenses is dropping the
+     * CALL, never the capture: the captured leaves feed `kids` → `build(...)`,
+     * and eliding them on `hostCst === false` would be a wrong tree, not a fast
+     * one. Off-label the test is INLINED rather than called, which is sound
+     * everywhere and costs nothing.
+     */
+    const captureLeaf = (expr: string): string =>
+      L.buf ? expr : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${expr}`
     switch (op) {
       case OP_LIT:
       case OP_LIT_TRACK: {
@@ -344,7 +514,7 @@ export function emitAssemblySource(
         return `${head}
 if(${test}){
 const e=pos+${s.length}
-if(cstCaptureActive(ctx))_pushLeaf(ctx,${q(s)},pos,e)
+${captureLeaf(`_pushLeaf(ctx,${q(s)},pos,e)`)}
 ${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
 return ${q(s)}
 }
@@ -364,7 +534,7 @@ const m=${re}.exec(input)
 if(m!==null){
 const v=m[0]
 const e=pos+v.length
-if(cstCaptureActive(ctx))_pushLeaf(ctx,v,pos,e)
+${captureLeaf('_pushLeaf(ctx,v,pos,e)')}
 ${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
 return v
 }
@@ -444,10 +614,10 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
         const child = link(code[ip + 1]!)
         const p = tmp()
         return `${head}
-${emitMark(p)}
+${emitMark(p, L.buf)}
 const v=${child}(input,pos,ctx)
 if(v!==FAIL)return v
-${emitRollback(p)}
+${emitRollback(p, L.buf)}
 if(ctx._fc===true)return FAIL
 ctx._fe=pos
 return FAIL
@@ -459,9 +629,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p)}
+${emitMark(p, L.buf)}
 const v=${child}(input,pos,ctx)
-${emitRollback(p)}
+${emitRollback(p, L.buf)}
 if(v===FAIL){_pfEnd=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
@@ -474,9 +644,9 @@ return FAIL
         const xf = fxRef(code[ip + 2]!)
         const p = tmp()
         return `${head}
-${emitMark(p)}
+${emitMark(p, L.buf)}
 const v=${child}(input,pos,ctx)
-${emitRollback(p)}
+${emitRollback(p, L.buf)}
 if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
 _pfEnd=pos
 return null
@@ -487,12 +657,12 @@ return null
         const child = link(code[ip + 1]!)
         const p = tmp()
         return `${head}
-${emitMark(p)}
+${emitMark(p, L.buf)}
 ctx._fc=false
 const v=${child}(input,pos,ctx)
 if(v===FAIL){
 if(ctx._fc===true)return FAIL
-${emitRollback(p)}
+${emitRollback(p, L.buf)}
 _pfEnd=pos
 return null
 }
@@ -530,7 +700,7 @@ return v
         for (let i = 1; i < n; i++) {
           const vn = `v${i}`
           parts.push(`let ${vn}`)
-          parts.push(emitTerm(kids[i]!, vn, tmp()))
+          parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L)))
           names.push(vn)
         }
         parts.push('_pfEnd=cur')
@@ -616,7 +786,7 @@ for(let j=prev;j<${i};j++)if((bits&(1<<j))===0)acc=_accSet(${afx}[j],acc)
 prev=${i + 1}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p)}
+${emitRollback(p, L.buf)}
 }`).join('')
 
         const generalArms = arms.map((a, i) => `
@@ -626,12 +796,12 @@ ctx._fc=false
 if(v!==FAIL)return v}
 acc=_accSet(ctx._fx,acc)
 if(ctx._fc===true){if(acc!==undefined)ctx._fx=acc;return FAIL}
-${emitRollback(p)}
+${emitRollback(p, L.buf)}
 }else acc=_accSet(${afx}[${i}],acc)`).join('')
 
         return `${head}
 const c=lead(input,pos)
-${emitMark(p)}
+${emitMark(p, L.buf)}
 let acc
 ${maskable ? `if(c<128){
 const bits=${maskName}[c<0?128:c]
@@ -671,16 +841,31 @@ return FAIL
             ? (skipBeforeFirst ? 'true' : 'count>0')
             : `count>=${min}&&count>0`
         const leadTrivia = skipBeforeFirst ? 'true' : 'count>0'
-        const rb = `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,${p}fl,${p}er,${p}lg,${p}rt)`
-        return `${head}
-const out=${collect ? '[]' : 'undefined'}
-const hasTrivia=ctx.trivia!==undefined
-const needMark=_rollbackNeeded(ctx)
-let cur=pos
-let count=0
-for(;;){
-${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}fl=0,${p}er=0,${p}lg=0,${p}rt=0
-if(needMark){
+        // THE TWO LOOP-INVARIANT HOISTS, RESOLVED AT EMIT WHERE THE LABEL ANSWERS
+        // THEM. `hasTrivia` is the site's trivia scope; `needMark` is implied by
+        // an open `_cstBuf`. Both were read once per repetition SITE, which is
+        // cheap on its own and is not the point — what they gated was a branch
+        // per item and a branch at every one of the five rollback points below.
+        const skip = skipFor(L)
+        const knownTrivia = L.tri === TRI_NONE ? false : L.tri !== TRI_UNKNOWN ? true : undefined
+        const hasTrivia = knownTrivia === undefined ? 'hasTrivia' : String(knownTrivia)
+        const needMark = L.buf ? 'true' : 'needMark'
+        // THE `_fields` AND `_errors` MARKS ARE NOT TAKEN, on exactly the argument
+        // `emitRollback` already makes for the non-loop marks (45eb01a): neither
+        // sink can grow in an EMITTED assembly, because `OP_FIELD`, `OP_EXPECT`
+        // and `recoverScan` are all unemittable and a table carrying one falls
+        // back whole. The loop was still paying two loads and two stores per item.
+        const rb = L.buf
+          ? `_rbBuf(ctx,${p}raw,${p}tl,${p}lv,${p}lg,${p}rt)`
+          : `if(needMark)rollbackTriviaAt(ctx,${p}raw,${p}tl,${p}lv,0,undefined,${p}lg,${p}rt)`
+        const markBody = L.buf
+          ? `const b=ctx._cstBuf
+const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
+const h=b.ch;${p}lv=h!==undefined?h.length:b.single!==undefined?1:0
+const l=b.tl;${p}tl=l!==undefined?l.length:0
+${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
+${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0`
+          : `if(needMark){
 const b=ctx._cstBuf
 if(b!==undefined){
 const r=b.raw;${p}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
@@ -691,18 +876,22 @@ ${p}raw=ctx._cstRawChildren!==undefined?ctx._cstRawChildren.length:0
 ${p}tl=ctx._cstTriviaLog!==undefined?ctx._cstTriviaLog.length:0
 ${p}lv=ctx._cstLeaves!==undefined?ctx._cstLeaves.length:0
 }
-${p}fl=ctx._fields!==undefined?ctx._fields.length:0
-${p}er=ctx._errors!==undefined?ctx._errors.length:0
 ${p}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${p}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
-}
+}`
+        return `${head}
+const out=${collect ? '[]' : 'undefined'}
+${knownTrivia === undefined ? 'const hasTrivia=ctx.trivia!==undefined\n' : ''}${L.buf ? '' : 'const needMark=_rollbackNeeded(ctx)\n'}let cur=pos
+let count=0
+for(;;){
+${max >= 0 ? `if(count>=${max})break\n` : ''}${sep !== undefined ? `if(count>0&&count>=${min}&&cur>=input.length)break\n` : ''}let ${p}raw=0,${p}tl=0,${p}lv=0,${p}lg=0,${p}rt=0
+${markBody}
 let itemStart=cur
 let sepEnd=-1
 ${sep !== undefined ? `if(count>0){
 const lb=cstLeavesLen(ctx)
 let sp=cur
-if(hasTrivia)sp=_skipTrivia(input,sp,ctx)
-ctx._fc=false
+${hasTrivia === 'false' ? '' : hasTrivia === 'true' ? `sp=${skip}(input,sp,ctx)\n` : `if(hasTrivia)sp=${skip}(input,sp,ctx)\n`}ctx._fc=false
 const sv=${sep}(input,sp,ctx)
 if(sv===FAIL){
 ${rb}
@@ -710,9 +899,9 @@ if(ctx._fc===true)return FAIL
 break
 }
 ${keepSeparators ? '' : 'demoteCapturedToRaw(ctx,lb)\n'}sepEnd=_pfEnd
-itemStart=hasTrivia?_skipTrivia(input,_pfEnd,ctx):_pfEnd
-}else if(hasTrivia&&${leadTrivia})itemStart=_skipTrivia(input,itemStart,ctx)
-` : `if(hasTrivia&&${leadTrivia})itemStart=_skipTrivia(input,itemStart,ctx)
+itemStart=${hasTrivia === 'false' ? '_pfEnd' : hasTrivia === 'true' ? `${skip}(input,_pfEnd,ctx)` : `hasTrivia?${skip}(input,_pfEnd,ctx):_pfEnd`}
+}else ${leadSkip(hasTrivia, leadTrivia, skip)}
+` : `${leadSkip(hasTrivia, leadTrivia, skip)}
 `}if(itemStart>=input.length&&${via}){
 ${rb}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
@@ -795,7 +984,9 @@ ctx._fields=${wantFields ? '[]' : 'undefined'}
 ${structural ? `const savedMask=ctx._triviaCaptureMask
 if(_pfHost!==undefined&&_pfHost._parsemanTriviaKinds!==undefined)ctx._triviaCaptureMask=_pfHost._parsemanTriviaKinds(${ty})
 ` : ''}const v=${child}(input,pos,ctx)
-${trailingTrivia ? 'if(v!==FAIL&&ctx.trivia!==undefined)_pfEnd=consumeTrivia(input,_pfEnd,ctx)\n' : ''}const fieldMap=${wantFields ? 'buildFieldMap(ctx._fields)' : 'undefined'}
+${trailingTrivia && L.tri !== TRI_NONE
+  ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})_pfEnd=consumeTrivia(input,_pfEnd,ctx)\n`
+  : ''}const fieldMap=${wantFields ? 'buildFieldMap(ctx._fields)' : 'undefined'}
 ctx._fields=savedFields
 ${structural ? 'ctx._triviaCaptureMask=savedMask\n' : ''}const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
 const rawKids=buf.raw??(buf.rawSingle!==undefined?[buf.rawSingle]:EMPTY_CH)
@@ -813,7 +1004,11 @@ const st=${readsState ? '(ctx.state!==undefined?Object.assign({},ctx.state):unde
 let nd
 ${unwrap ? 'if(kids.length===1)nd=unwrapChild(kids[0])\nelse ' : ''}${collapse ? 'if(kids.length===1)nd=kids[0]\nelse ' : ''}${collapsible ? `if(_pfHost!==undefined&&_pfHost._parsemanCstCollapse!==undefined&&kids.length===1&&rawKids.length===1&&_pfHost._parsemanCstCollapse(${ty},kids[0],kids,rawKids))nd=kids[0]
 else ` : ''}{${value}}
-if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))
+${L.buf
+  // The OUTER buffer, which this body saved into `sBuf` before opening its own —
+  // so an in-node site's parent collector is present by the same fact.
+  ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
+  : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
 _pfEnd=end
 return nd
 }`
@@ -838,8 +1033,13 @@ return nd
   const extra: string[] = []
   for (const ip of extraIps) extra.push(`${ip}:${link(ip)}`)
 
+  // The per-label trivia scans sit AFTER the hoisted pool they close over: they
+  // are `function` declarations, so a body may call one that is textually below
+  // it, but the `const _ts<N>` each one reads must be initialised before any
+  // parse runs, not merely before the declaration is evaluated.
   const source = `${RUNTIME_PRELUDE}
 ${prelude.join('\n')}
+${skipDefs.join('\n')}
 ${bodies.join('\n')}
 function _begin(ctx){_pfScan=null;_pfHost=ctx.build}
 return{
