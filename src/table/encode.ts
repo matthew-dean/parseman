@@ -544,17 +544,20 @@ class Encoder {
    * `ValueListWithPriority`, so `color: red !important` could not cross the space
    * before `!` — and a 107 KB stylesheet stopped at 68.5% reporting `ok: true`.
    *
-   * ONLY WHERE IT DIFFERS. `activeTrivia` is the encoder's lexical scope tracker
-   * (maintained by `case 'grammar'` across `parser()` / `noTrivia`), so a reference
-   * made under the scope the target already wants stays a bare jump and the table
-   * gains no rows. The scope is added exactly at the boundaries that were wrong.
+   * ONLY WHERE THE SCOPE WAS CLEARED. `activeTrivia` is the encoder's lexical scope
+   * tracker (maintained by `case 'grammar'` across `parser()` / `noTrivia`), and a
+   * reference made under ANY live trivia stays a bare jump, so the table gains no
+   * rows anywhere except inside a cleared region. The broader form — restore
+   * wherever the scope merely DIFFERS — also overrides a caller that set its own
+   * live trivia, and that regressed `@less/test-data`'s `selectors.less` from 3791
+   * bytes to 1784 while repairing nothing extra.
    */
   private scopedRef(p: Combinator<unknown>, target: Combinator<unknown>): number {
     const ip = this.node(target).ip
     // `rules()` stamps `grammarTrivia` on the map entry, which for a proxied rule
     // is the REF itself; a composed `winners` entry carries it on the target.
     const amb = p._meta.grammarTrivia ?? target._meta.grammarTrivia
-    if (amb === undefined || amb === this.activeTrivia) return ip
+    if (amb === undefined || this.activeTrivia !== undefined) return ip
     return this.emit(OP_SCOPE, this.triviaSlot(amb), ip)
   }
 

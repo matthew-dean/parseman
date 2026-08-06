@@ -53,9 +53,18 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
       // Codegen shipped through 0.44-0.46 and was right; 0.47 made the table the
       // shipping engine and the divergence became the product.
       //
-      // Hot path is an `undefined` check plus one identity compare.
+      // ONLY WHERE THE SCOPE WAS CLEARED, not wherever it merely differs. The
+      // broader form (`ctx.trivia !== gt`) also OVERRIDES a caller that set a
+      // different live trivia, and that measurably broke recognition: over jess's
+      // four corpora it regressed `@less/test-data`'s `selectors.less` from 3791
+      // bytes to 1784. A caller running under its own live trivia is making a
+      // deliberate choice; a caller that CLEARED it is the `noTrivia(...)` case this
+      // fixes. Restricting to the cleared case keeps every repair and drops that
+      // regression.
+      //
+      // Hot path is an `undefined` check plus one `undefined` compare.
       const gt = meta.grammarTrivia
-      if (gt !== undefined && ctx.trivia !== gt) {
+      if (gt !== undefined && ctx.trivia === undefined) {
         const savedTrivia = ctx.trivia
         const savedLabels = ctx.triviaKindLabels
         ctx.trivia = gt
