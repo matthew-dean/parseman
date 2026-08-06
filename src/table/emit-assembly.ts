@@ -151,7 +151,7 @@ function q(s: string): string {
  * step further because the source form can take it.
  */
 function emitMark(t: string): string {
-  return `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}fl=0,${t}er=0,${t}lg=0,${t}rt=0
+  return `let ${t}n=false,${t}raw=0,${t}tl=0,${t}lv=0,${t}lg=0,${t}rt=0
 {const b=ctx._cstBuf
 if(b!==undefined){
 const r=b.raw;${t}raw=r!==undefined?r.length:b.rawSingle!==undefined?1:0
@@ -165,16 +165,32 @@ ${t}lv=ctx._cstLeaves!==undefined?ctx._cstLeaves.length:0
 ${t}n=true
 }
 if(${t}n){
-${t}fl=ctx._fields!==undefined?ctx._fields.length:0
-${t}er=ctx._errors!==undefined?ctx._errors.length:0
 ${t}lg=ctx._triviaLog!==undefined?ctx._triviaLog.length:0
 ${t}rt=ctx._rootTriviaLog!==undefined?ctx._rootTriviaLog.length:0
 }}`
 }
 
-/** The matching rollback for a mark emitted with prefix `t`. */
+/**
+ * The matching rollback for a mark emitted with prefix `t`.
+ *
+ * THE `_fields` AND `_errors` MARKS ARE NOT TAKEN, because in an EMITTED
+ * assembly neither sink can grow. `OP_FIELD` is the only writer of `_fields`
+ * and `OP_EXPECT`/`recoverScan` the only writers of `_errors`, and none of the
+ * three is lowered by this file — a table containing one raises `Unemittable`
+ * and the WHOLE assembly falls back to `assemble.ts`'s closures, so no emitted
+ * body ever runs beside one. That is what makes this an emit-time fact rather
+ * than a per-parse guess, and it is why `assemble.ts`'s `nextTerm` still takes
+ * all seven: it is the engine those constructs actually run in.
+ *
+ * The two sinks are passed differently because `rollbackCstCaptureAt` guards
+ * them differently. `_errors` is guarded on `errors !== undefined`, so
+ * `undefined` is its established "no mark taken" sentinel and is correct even
+ * for a caller-supplied context that arrived with errors already on it.
+ * `_fields` has no such guard — `length = undefined` would throw — so it takes
+ * the literal `0` that a per-node `_fields` no `OP_FIELD` can push to always has.
+ */
 function emitRollback(t: string): string {
-  return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,${t}fl,${t}er,${t}lg,${t}rt)`
+  return `if(${t}n)rollbackTriviaAt(ctx,${t}raw,${t}tl,${t}lv,0,undefined,${t}lg,${t}rt)`
 }
 
 /**
