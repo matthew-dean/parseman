@@ -214,7 +214,42 @@ type TableModule = {
  * `run`, `encodeTable` and `tableRules` come from the SIDE'S OWN `src/`. A
  * reference leg driven by HEAD's `run()` is HEAD wearing the reference's name.
  */
+/** This worktree's `src/`, resolved the same way `ab-hooks.mjs` resolves it. */
+const HEAD_SRC = path.resolve(HERE, '../../src')
+
+/**
+ * A LEG'S SIDE LETTER AND ITS `src` MUST AGREE, or the leg is two versions at once.
+ *
+ * `ab-hooks.mjs`'s `srcOf()` maps every `h<n>` side to HEAD unconditionally and
+ * never sees this `src` argument. So `buildLeg('h1', …, anchorSrc)` loads the
+ * ANCHOR's modules by absolute path while every bare `parseman` underneath them —
+ * and the macro that lowers the grammar — comes from HEAD. The `src` argument is
+ * silently half-ignored and the result is a chimera.
+ *
+ * That is not hypothetical: the first pass of the 0.46-vs-0.47 sweep did exactly
+ * this and read 44.65 ms for 0.46 against the same anchor's 17.34 ms — a 2.5x
+ * "self-check" that looked like a real finding. Both legs of an anchor must be
+ * `r<n>`.
+ *
+ * Cheap to check and impossible to get wrong once checked: an `h` side must be
+ * HEAD's `src/`, an `r` side must not be — with the ONE exception of a deliberate
+ * self-check, where the reference IS head and both legs are still built `r<n>`.
+ */
+function assertSideMatchesSrc(side: string, src: string): void {
+  const isHead = path.resolve(src) === path.resolve(HEAD_SRC)
+  if (/^h\d+$/.test(side) && !isHead) {
+    throw new Error(
+      `leg '${side}' was given src ${src}, which is not this worktree's ${HEAD_SRC}. `
+      + "`srcOf()` maps every h-side to HEAD, so this leg would load that src's modules by path while "
+      + 'every bare `parseman` under them — and the macro lowering the grammar — came from HEAD. '
+      + 'That is a two-version chimera, and it previously produced a convincing 2.5x self-check. '
+      + 'Both legs of an anchor must be r<n>.',
+    )
+  }
+}
+
 async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: string): Promise<Leg> {
+  assertSideMatchesSrc(side, src)
   const grammarPath = path.resolve(JESS_ROOT, MODULE[dialect])
   const name = exportName(dialect, 'ast')
   const { run: runner } = await import(`pm-side:${side}:${path.join(src, 'functional/run.ts')}`) as { run: Runner }

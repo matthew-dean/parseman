@@ -41,7 +41,7 @@
  * Usage: `node --import ./bench/jess/ab-register.mjs bench/jess/ab.ts`
  */
 import { pathToFileURL, fileURLToPath } from 'node:url'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, resolve as resolvePath } from 'node:path'
 import { transformSync } from 'esbuild'
 
@@ -63,17 +63,70 @@ const SHARED_SRC = resolvePath(JESS_ROOT, 'packages/parser-shared/src')
  * reference worktree at all.
  */
 const POINTER = resolvePath(here, '../../.cache/jess-ab-refsrc')
+
+/**
+ * A POINTER OLDER THAN THIS PROCESS IS THE PREVIOUS RUN'S, and reading it is how
+ * this harness produced a published, wrong result.
+ *
+ * `load()` asks `refSrcPath()` for EVERY module, including the untagged ones —
+ * `ab.ts` itself, `ab-harness.ts`, `grammars.ts`, `digest.ts`. Those load before
+ * `main()` runs, and `main()` is what writes the pointer. So the value memoised
+ * was the PREVIOUS invocation's reference, and the run then measured against it
+ * while the protocol block printed the sha that had been asked for. Nothing
+ * errored and nothing warned.
+ *
+ * Demonstrated, back to back, same command, same commit: `ab.ts less --self`
+ * immediately after a `--ref=a5dc9bd` run read 2.199x / 3.426x with
+ * `three-way agreement: *** NO ***` — it was measuring HEAD against 0.46 and
+ * calling it a self-check — and the same command again, pointer now holding its
+ * own sha, read 0.998x / 0.992x.
+ *
+ * The old guard anticipated the wrong failure: it special-cased EMPTY (never
+ * cache an absent reference) and had nothing at all to say about STALE.
+ */
+const PROCESS_START_MS = Date.now()
 let refSrc = ''
+
+/**
+ * The reference `src/`, or `''` when there is not a usable one YET.
+ *
+ * Never memoises a non-answer, and never returns a pointer written before this
+ * process started. Returning `''` rather than throwing is deliberate: `load()`
+ * calls this for head-side modules too, purely to classify a path, and a
+ * head-only run legitimately has no reference at all. The loud failure belongs at
+ * the TAGGED resolve, which is the only place a reference is actually required —
+ * see `requireRefSrc`.
+ */
 function refSrcPath() {
-  // An EMPTY answer is never cached. `load()` asks this for every head-side
-  // module, and the first of those runs before the harness has materialised the
-  // reference — memoising that '' pinned the reference side to "absent" for the
-  // rest of the process, which surfaced as a resolve error on the first tagged
-  // import and looked exactly like a missing worktree.
-  if (refSrc === '') {
-    refSrc = process.env.PM_REF_SRC ?? (existsSync(POINTER) ? readFileSync(POINTER, 'utf8').trim() : '')
-  }
+  if (refSrc !== '') return refSrc
+  const env = process.env.PM_REF_SRC
+  if (env !== undefined && env !== '') { refSrc = env; return refSrc }
+  if (!existsSync(POINTER)) return ''
+  if (statSync(POINTER).mtimeMs < PROCESS_START_MS) return ''
+  refSrc = readFileSync(POINTER, 'utf8').trim()
   return refSrc
+}
+
+/**
+ * The reference `src/` for a leg that genuinely needs one — or a THROW naming
+ * which of the two failure modes happened. A stale pointer must never be
+ * substituted silently for the one that was requested.
+ */
+function requireRefSrc(side) {
+  const s = refSrcPath()
+  if (s !== '') return s
+  const stale = process.env.PM_REF_SRC === undefined && existsSync(POINTER)
+    && statSync(POINTER).mtimeMs < PROCESS_START_MS
+  if (stale) {
+    throw new Error(
+      `side '${side}': the reference pointer ${POINTER} was written BEFORE this process started `
+      + `(${new Date(statSync(POINTER).mtimeMs).toISOString()} < ${new Date(PROCESS_START_MS).toISOString()}), `
+      + 'so it belongs to a PREVIOUS run and will not be used. Its content is a reference this run never '
+      + 'asked for, and measuring against it while reporting the requested sha is exactly the defect this '
+      + 'check exists to stop. Let the harness write the pointer for THIS run, or set PM_REF_SRC explicitly.',
+    )
+  }
+  throw new Error(`side '${side}': no reference src — set PM_REF_SRC or write ${POINTER}`)
 }
 
 /**
@@ -135,7 +188,8 @@ export async function resolve(specifier, context, nextResolve) {
     if (macro) rest = rest.slice('macro:'.length)
     const s = srcOf(side)
     if (s === undefined) throw new Error(`unknown side '${side}' in ${specifier}`)
-    if (s === '') throw new Error(`side '${side}': no reference src — set PM_REF_SRC or write ${POINTER}`)
+    // A reference leg REQUIRES a reference, and a stale pointer is not one.
+    if (s === '') requireRefSrc(side)
     return ok(tagged(rest, side, macro))
   }
   // `pm-macro:<path>` — HEAD's per-module macro lowering, same contract as
