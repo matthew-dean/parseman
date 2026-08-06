@@ -1,10 +1,27 @@
 # Derived tokenization
 
-**Status:** **partially landed.** Token-keyed `dispatch` is **implemented and shipped
-as the default** in `codegen.ts` (§9.1, commits `caa3d14` / `e8612eb`, selectable via
-`PARSEMAN_DISPATCH`). The scanner itself is **not** implemented — it exists only as a
-standalone prototype (§10). Sections are marked **settled** (owner decision, build to
-it), **measured**, or **hypothesis** (plausible, unmeasured).
+> ## 0.47.0: read every §-reference to `codegen.ts` as HISTORY
+>
+> `src/compiler/codegen.ts` was the second implementation of recognition and was removed
+> in 0.47.0. Every measurement, byte count, expansion ratio and dedup-key line number on
+> this page was taken against it and **does not transfer** — including §8.6's
+> `29.16× → 26.34×` expansion figures and §9's whole-artifact sizes, which are now
+> superseded by `bench/size-baseline.json` (worst case 4.15×). §11's conclusion that the
+> technique "does not reach 250 KB, or 10×, or 4×" was scoped to that engine's emitted
+> form and says nothing about the table.
+>
+> What is LIVE from this page: `src/compiler/token-scanner.ts`, `token-alphabet.ts` and
+> `token-dispatch.ts` all survive in-tree as built-but-never-wired analysis, carry `DEBT`
+> entries in `scripts/invariant-allowlist.mjs` pointing here, and are the 0.48 token-
+> streaming target (`notes/RELEASE-0.48-TARGET.md` §2 — which also records that a prior
+> ~1.4 ms bound was measured against a replaced architecture and must be re-derived).
+
+**Status:** **design record.** Token-keyed `dispatch` was implemented and shipped as the
+default in the recogniser removed in 0.47.0 (§9.1, commits `caa3d14` / `e8612eb`,
+selectable via `PARSEMAN_DISPATCH`); it has no table equivalent today. The scanner itself
+is **not** implemented — it exists only as a standalone prototype (§10). Sections are
+marked **settled** (owner decision, build to it), **measured**, or **hypothesis**
+(plausible, unmeasured).
 
 > ## Read these first — two results that invert earlier expectations
 >

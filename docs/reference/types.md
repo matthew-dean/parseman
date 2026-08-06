@@ -161,8 +161,9 @@ type CompiledParser<T> = {
   parse(input: string, pos?: number, opts?: ParseOptions): ParseResult<T>
   parseWithContext(input: string, ctx: ParseContext, pos?: number): ParseResult<T>
   parseWithErrors(input: string, pos?: number): ParseResult<T>  // enables the _errors channel
-  source: string             // the generated JS source
-  inlineExpression: string   // a self-contained expression (what the plugin inlines)
+  source: string             // the artifact as a module (writes its own `parseman/table` import)
+  inlineExpression: string | null   // the artifact as an expression; names `tableRules`, so NOT self-contained
+  runtimeOnly?: readonly string[]   // why inlineExpression is null, when it is
 }
 ```
 

@@ -1,13 +1,35 @@
 # Under the hood: regex lowering
 
-When you compile a grammar — with [`compile()`](./modes#compile-runtime-jit) or the
+::: danger This page describes the previous recogniser — most of it is not current
+**Read this before the rest of the page.** The shape catalogue below (`seq`, `ident`,
+`string`, `litFold`, `lookahead`, `alt`) was implemented by
+`src/compiler/scannable-run.ts` and `scannable-terminal.ts`, which were part of the
+per-grammar recogniser removed in 0.47.0. Those modules are gone, and **the compiled path
+does not currently lower those shapes.**
+
+What survives, on every path including the interpreter, is the narrow case in
+`src/combinators/regex.ts`: a `regex()` whose source is a **single positive character
+class or `\d`/`\w`/`\s` shorthand** with a `+` or `*` quantifier and no
+`i`/`m`/`s`/`u`/`v`/`y` flag runs as a `charCodeAt` scan (`shortScanner`). Everything else
+runs through `RegExp.exec` with a sticky anchored pattern.
+
+First-char gating — the part that decides *whether* a terminal is even attempted — is
+unaffected: first sets are still derived from regex source (`src/regex/first-set.ts`) and
+still drive O(1) dispatch. See [First-char gating](./first-char-gating), which is current.
+
+The rest of this page is kept as the design rationale for that work rather than a
+description of what ships today. Whether the catalogue returns is open; the 0.48 token
+streaming work targets the same cost from a different direction.
+:::
+
+When you compile a grammar — with [`compile()`](./modes#compile-runtime-build) or the
 [macro build](./macro-mode) — Parséman doesn't just wrap your `regex(…)` terminals in
 `RegExp.exec`. Where it can *prove* the result is identical, it rewrites the pattern into a
 tight `charCodeAt` scan loop with no regex engine, no match object, and no allocation on
 the hot path.
 
 This page explains **what** gets lowered, **why**, **into what**, how we **test** that the
-rewrite is correct and actually faster, and how we keep the generated code from ballooning.
+rewrite is correct and actually faster, and how we keep the emitted code from ballooning.
 
 If you just want to write fast grammars, [Performance](./performance) has the one lever you
 control. This page is the "how the sausage is made" companion — useful when you're
@@ -64,8 +86,9 @@ segments (required or optional `x?`) and character-class runs (positive or negat
 
 ## Into what — worked examples
 
-These are trimmed from the **actual** compiled output (the `function _parse(…)` wrapper,
-the failure branch, and the leaf-capture tail are elided for readability).
+These are trimmed from the compiled output *of the removed recogniser* (its `function
+_parse(…)` wrapper, the failure branch, and the leaf-capture tail are elided for
+readability). They show the shape of the rewrite, not what 0.47.0 emits.
 
 ### `chars` — `/[0-9]+/`
 
@@ -228,7 +251,7 @@ call. Measurement showed the unrolled chain is faster or tied out to surprisingl
 literals — but its *generated source* grows linearly with length while `startsWith` is a
 near-constant call site. So the crossover is set at **16 characters**: a literal of 16
 chars or fewer gets the fast unrolled form, and anything longer falls back to `startsWith`
-to cap worst-case codegen bloat. Most grammar terminals sit well under that — keywords,
+to cap worst-case emitted-size bloat. Most grammar terminals sit well under that — keywords,
 operators, and punctuation are short (the longest in the example grammars is `important`,
 9 chars) — so the unrolled path is what almost every literal actually takes.
 
@@ -243,8 +266,10 @@ grammar), see [Macro mode → Code size](./macro-mode#code-size-what-to-expect).
 
 ## Where this lives in the repo
 
-The recognizer and emitters are in
-[`src/compiler/scannable-run.ts`](https://github.com/matthew-dean/parseman/blob/main/src/compiler/scannable-run.ts);
-the per-shape catalog, with rationale and measurements, is in
+The recognizer and emitters were in `src/compiler/scannable-run.ts` and
+`scannable-terminal.ts`, both **removed in 0.47.0** with the per-grammar recogniser; read
+them out of git history. The surviving short-scan path is `shortScanner` in
+[`src/combinators/regex.ts`](https://github.com/matthew-dean/parseman/blob/main/src/combinators/regex.ts).
+The per-shape catalog, with rationale and measurements, is in
 [`notes/PERF_IDEAS.md`](https://github.com/matthew-dean/parseman/blob/main/notes/PERF_IDEAS.md).
 This page is the conceptual overview; the catalog is the shape-by-shape detail.

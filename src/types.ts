@@ -512,12 +512,12 @@ export type GatedArm<T = unknown> = {
 /**
  * WHAT `compile()` HANDS BACK — the contract, not one engine's return type.
  *
- * This lives with the rest of the library's types rather than inside a lowering
- * because it is the shape BOTH lowerings answer to: `table/compile.ts` returns it
- * today and is what `src/index.ts` exports as `compile`. It started in
- * `compiler/codegen.ts`, which made the table import its own public contract from
- * the engine the table replaced — backwards, and a reason the engine could not be
- * deleted.
+ * This lives with the rest of the library's types rather than inside the lowering
+ * that satisfies it: `table/compile.ts` returns it, and is what `src/index.ts`
+ * exports as `compile`. It started inside the second recognition implementation,
+ * which made the table import its own public contract from the implementation it
+ * was replacing — backwards, and one reason that duplicate could not be removed.
+ * It has been (0.47.0).
  */
 export type CompiledParser<T> = {
   parse(input: string, pos?: number): ParseResult<T>
@@ -530,14 +530,25 @@ export type CompiledParser<T> = {
    * still ParseFail.
    */
   parseWithErrors(input: string, pos?: number): ParseResult<T> & { errors: ParseError[] }
-  /** The generated source (for inspection / future source maps) */
+  /**
+   * The emitted artifact as a MODULE, for inspection and for a build to write out.
+   * It is the table as a data literal plus the grammar's own reducer sources, and
+   * it opens with its own `import { tableRules } from 'parseman/table'` — the
+   * recognizer is not in this string.
+   */
   source: string
   /**
-   * A self-contained JS expression (IIFE) that evaluates to a parse function.
-   * Safe to inline directly into transformed source — no external references
-   * except for runtime-fallback parsers embedded via closures.
-   * Returns null if the parser cannot be fully inlined (e.g. contains user
-   * closures that can't be serialized).
+   * The emitted artifact as an EXPRESSION, for an inliner replacing a grammar's
+   * initialiser in place.
+   *
+   * NOT self-contained: it names `tableRules`, and the caller owns getting that
+   * binding into scope (`emitTableModule` writes the import; an inliner must
+   * splice one). That single external reference is deliberate — one shared
+   * recogniser in `parseman/table`, rather than one per artifact, is why the
+   * artifact is 0.56 MB rather than 2.10 MB.
+   *
+   * Returns null if the parser cannot be printed at all (e.g. author callbacks
+   * with no recoverable source); see `runtimeOnly` for the reason.
    */
   inlineExpression: string | null
   /**
@@ -547,8 +558,7 @@ export type CompiledParser<T> = {
    * grammar interpreted", which is a ~5x silent perf regression, so the reason
    * has to reach a warning rather than being inferred from a null.
    *
-   * Empty/absent means printable. Set by the table lowering; the source lowering's
-   * own unprintable cases predate this channel and still return a bare null.
+   * Empty/absent means printable.
    */
   runtimeOnly?: readonly string[]
   /** Present only when compiled with `{ coverage: true }`. */

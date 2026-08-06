@@ -80,6 +80,20 @@ production parsing stays unchanged.
 
 ## Trace
 
+::: warning Trace is INTERPRETER-ONLY in 0.47.0
+**Coverage works everywhere; trace does not.** The six `_grammarTrace` phases were emitted
+at ~40 fine-grained sites by the recogniser removed in 0.47.0, and the table has no
+equivalent yet — it is deferred to 0.48 (`notes/RELEASE-0.48-TARGET.md` §1).
+
+**A trace sink attached to a compiled (`compile()` or macro) parse receives nothing, and
+nothing warns you.** `trace.snapshot().events` comes back empty and `dropped` is 0, which
+reads exactly like a parse that took no traced route. Coverage **counters** are lowered
+(`OP_COV`) and are unaffected on every path.
+
+Until 0.48, run trace against the interpreter — the same grammar, so the routes it reports
+are the routes the compiled parser takes.
+:::
+
 Trace is intentionally more verbose. It records lifecycle events with the same
 IDs: rule entry/success/failure, choice-arm attempt/failure/backtrack/selection,
 dispatch-arm attempt/selection/success/failure, and successful labels.
@@ -119,10 +133,14 @@ export default {
 }
 ```
 
-With this option off, the macro emits its normal parser source: no collector,
-trace sink, helper, or observability identifier is present. With it on, the
-generated parser reads the dedicated coverage/trace context supplied by its test
-harness. Use the typed helper rather than constructing internal context fields:
+With this option off, the macro emits its normal table: no collector, trace sink, helper,
+or observability identifier is present. With it on, the emitted table carries a coverage
+plan and the parse reads the dedicated context supplied by its test harness. Use the typed
+helper rather than constructing internal context fields:
+
+Note the trace caveat above — under the macro, the `trace` half of the context is inert in
+0.47.0. Pass it if you want the code to be forward-compatible; do not gate a test on its
+contents.
 
 ```ts
 import {

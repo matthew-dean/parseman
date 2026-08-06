@@ -1,8 +1,18 @@
 # Design invariant: compiled artifacts are version-locked
 
 **Audience:** anyone editing parseman's compiler, linker, or macro plugin — especially
-the compiled-artifact format (`LinkablePieces`, `firstSetRecipes`, the fused-body
-shape, the serialized `rules()`/`composeLeaf()` output a package ships).
+the compiled-artifact format (`LinkableTable`, the serialized `rules()`/`composeLeaf()`
+output a package ships).
+
+> **Names updated for 0.47.0.** The rule below is unchanged and still enforced. The
+> artifact it is stated over is now `LinkableTable`
+> (`src/compiler/compile-linkable-table.ts`, exported from the barrel), which carries the
+> piece as a table plus its IR. `LinkablePieces` — the `prelude`/`ruleFns`/`wrappers`/
+> `firstSets`/`firstSetRecipes`/`nullable`/`deps` bundle — and the `fusedBody` textual
+> splice belonged to the second recognition implementation removed in 0.47.0, and are no
+> longer exported. Where this page says `LinkablePieces`, `firstSetRecipes`, `_r_<Name>`
+> or `fusedBody`, read `LinkableTable` and `fuseCarried` (`src/compiler/linker.ts`); the
+> version stamp lives on `LinkableTable.v` and the refusal is `fuseCarried`'s.
 
 ## The rule
 

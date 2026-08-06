@@ -447,8 +447,15 @@ export function fusedHostElidedOf(registry: object): boolean {
  * macro emits and a package ships). So a package needs no opt-in wrapper to be
  * composable — `compose([importedGrammar, myRules])` just works.
  *
- * The macro compiles `compose([...])` to STATIC fused source (no `new Function`).
- * Called at runtime (no macro, like `compile()`) it fuses via `new Function`.
+ * The macro lowers `compose([...])` to a STATIC table — a `tableRules({…})` data
+ * literal, no `new Function` anywhere in the emitted module.
+ *
+ * At runtime (no macro) the MERGE is data — rule maps in, one `encodeTable` out —
+ * so the linker itself needs no eval. What still does: hydrating a carried piece
+ * back to combinators goes through `evalRuleMapIR` (`ir-serialize.ts`), which uses
+ * `new Function`, and `materializeDirectBuilders` evals a captured `buildSrc`. So a
+ * runtime `compose()` still wants `'unsafe-eval'` under a strict CSP; `compile()`
+ * and a macro-built or `linkable()`-shipped artifact no longer do.
  */
 /** A composed parser carries its flattened source pieces (non-enumerable) so it
  * can be composed AGAIN — `compose([lessGrammar, delta])` where `lessGrammar` is

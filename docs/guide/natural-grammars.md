@@ -123,21 +123,15 @@ const combinator = choice(literal('>'), literal('+'), literal('~'), literal('|')
 ```
 
 ```js
-// Codegen emits one read + a jump table (planDisjointDispatch):
-const _code = pos < input.length ? (input.codePointAt(pos) ?? -1) : -1
-switch (_code) {
-  case 62: /* > */ ...
-  case 43: /* + */ ...
-  case 126: /* ~ */ ...
-  case 124: /* | */ ...
-  default: /* fail */
-}
+// One read of the leading code point, then a jump straight to the only arm
+// that can match it — no arm is tried and rejected.
+const c = input.charCodeAt(pos)   // 62 '>' · 43 '+' · 126 '~' · 124 '|'
 ```
 
 You didn't design a lexer, and you didn't write a dispatch table — you wrote four
-alternatives. The interpreter builds the same thing at runtime as a 128-entry ASCII
-table (`buildAsciiDispatch`); the compiler bakes it into a `switch` or an `if/else`
-range chain.
+alternatives. The interpreter builds the dispatch at runtime as a 128-entry ASCII table
+(`buildAsciiDispatch`); the compiler resolves the same decision when it assembles the
+table, so the arms are already keyed by leading code point before the first parse.
 
 **When it kicks in, and the honest limits:**
 
@@ -147,10 +141,9 @@ range chain.
   [what ordered actually costs](#what-ordered-actually-costs) below.
 - No arm may match the empty string. A nullable arm matches at *any* position, so
   first-char dispatch can't represent it; such a choice stays on `firstMatch`.
-- The **`switch` jump-table** form is used only when the arms key off a few discrete code
-  points (roughly ≥3 and ≤48 cases total — `SWITCH_MIN_CASES`/`SWITCH_MAX_CASES`/
-  `SWITCH_RANGE_LIMIT` in `codegen.ts`). A wide char-class arm like `[a-z]+` would explode
-  into dozens of `case` labels, so those keep the `if/else` range-comparison form instead.
+- Arms keying off a few discrete code points dispatch on the code point directly; a wide
+  char-class arm like `[a-z]+` is matched by range comparison instead. Either way the
+  decision is resolved when the table is assembled, not per parse.
 
 ## What ordered actually costs
 
@@ -328,21 +321,27 @@ The one difference is that the arm's leading terminal replays the once-computed 
 position and value, and pushes an identical leaf into that arm's own capture scope. The
 result is that your reducer's `children[0]` (value **and** span), the node's trivia log,
 every other span, and the choice's failure `expected` set are all bit-for-bit what the
-un-factored grammar produced — in both the interpreter and the compiled output.
+un-factored grammar produced.
 
-**Where the dedup applies.** It's a **compiled-output** transform (both `compile()` and
-the macro build), and it stays enabled for **linkable/`compose` fusion** (`deferFirstSetRefs`)
-too — the shared prefix is always a concrete literal/regex, never a ref, so it is scanned
-once even in the fused form. The **interpreter runs the ordinary `firstMatch` loop** and
-re-scans the prefix per arm — identical output, natural authoring, no dedup — because
-replaying the prefix at runtime would mean threading a cache through the core `parse()`
-dispatch of every combinator, and the free byte-identity of the `firstMatch` fallback is
-worth more than a runtime win on a path that exists mainly for tests and REPLs. Because the
-strategy is a faithful specialization of `firstMatch`, it *does* fall back to plain
-`firstMatch` in two situations where the rewrite can't apply: the scope-unsafe case (a
-grouped arm hoisted into its own function — see the same-scope limit below), and compiles
-carrying extra per-arm bookkeeping the rewrite doesn't reproduce (coverage tracing and
-error-recovery). Every fallback is byte-identical to the un-factored choice.
+::: warning Not currently applied by the compiled path
+**Changed in 0.47.0.** The scan-once rewrite belonged to the per-grammar recogniser that
+was removed. The table encoder recognises `sharedPrefix` as a `firstMatch` specialisation
+that changes arm **order** only, and encodes the choice in declared order
+(`src/table/encode.ts`), so **the compiled path re-scans the shared prefix per arm today**,
+exactly as the interpreter always has.
+
+Nothing about your grammar's *output* changes — the strategy was byte-identical to the
+un-factored choice by construction, which is why it could be dropped without a
+differential. What you lose is the saved scan. `detectSharedPrefix` still runs and the
+[choice-cost diagnostics](./grammar-duplication) still report the shape, so a grammar
+written to exploit it is not now mis-shaped; it is simply not being paid for.
+:::
+
+The **interpreter** has always run the ordinary `firstMatch` loop and re-scanned the prefix
+per arm — identical output, natural authoring, no dedup — because replaying the prefix at
+runtime would mean threading a cache through the core `parse()` dispatch of every
+combinator, and the free byte-identity of the `firstMatch` fallback is worth more than a
+runtime win on a path that exists mainly for tests and REPLs.
 
 **Honest limits — what it conservatively skips.** Correctness comes first, so the detector
 only fires where the factoring is provably behavior-identical:
@@ -362,12 +361,5 @@ only fires where the factoring is provably behavior-identical:
 - Prefixes hidden **behind a rule reference** (`choice(g.RuleA, g.RuleB)`, where the
   shared leading terminal lives one level down inside each referenced rule) are not
   factored — the detector runs at grammar-construction time and does not resolve refs.
-- Arms that would compile into **separate function bodies** are not factored. The prefix
-  is recognized once into a variable in the *choice's* function; if a grouped arm is a
-  shared subtree hoisted into its own `_pf` function, or a named rule in the linkable/fused
-  form, its replayed prefix would reference that variable out of scope. So the strategy
-  fires only for **self-contained, single-function** shared-prefix choices; when the arms
-  span a function boundary the choice falls back to `firstMatch`.
-
 These are places the factoring is skipped, not places where output could diverge — anything
 the detector isn't sure about falls back to the ordered `firstMatch` you'd have had anyway.

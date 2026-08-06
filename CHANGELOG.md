@@ -5,6 +5,109 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **BREAKING: recognition was implemented twice; now it is implemented once.**
+  `src/compiler/codegen.ts` is deleted, along with `trivia-fast-path.ts`,
+  `module-hoist.ts`, `scannable-terminal.ts`, `scannable-run.ts`,
+  `inline-callback.ts`, `inline-build.ts` and `line-index.ts` beside it, and the
+  benches `codegen-ab.ts`, `shared-prefix-ab.ts` and `composeleaf-firstset.ts`.
+
+  It was **not** deleted because generating code is the wrong technique. Every
+  technique it used is retained: the table artifact is still an emitted JS module
+  (`emitTableModule`), first-char gating is still `input.charCodeAt(pos)`
+  (`src/table/assemble.ts`), regexes are still emitted as source literals
+  (`src/table/emit.ts`), `ir-serialize.ts` and `linker.ts` still emit, and
+  `token-scanner.ts` / `token-alphabet.ts` / `token-dispatch.ts` all survive as
+  the 0.48 token-streaming target.
+
+  It was deleted because it was a **second independent implementation of
+  recognition**, so every feature was built twice and the two copies drifted. The
+  differential caught the shape that argument predicts: a committed failure inside
+  `many()` under recovery returned `ok: true` from one engine and `ok: false` from
+  the other. That is a different language, not a different error message.
+
+  `compile()`, `rules()` and `compose()` now all emit a table — `tableRules(…)`
+  plus data — which a closure assembler links at run start. **`compile()`'s public
+  name is unchanged** (`src/index.ts` is `export { compileTable as compile }`);
+  this is a lowering swap, not a rename.
+
+- **`compile()` no longer requires `'unsafe-eval'`.** Building a parser used to
+  mean handing emitted source to `new Function`, so `compile()` could not run under
+  a strict Content Security Policy. The table is assembled with ordinary closures,
+  and composition is a rule-map merge plus one encode rather than a textual splice,
+  so neither path evals. **If you relaxed a CSP for parseman, you can put it back.**
+
+  One exception, and it is narrow: a **runtime** `compose()` (no macro) hydrates
+  each carried piece back to combinators through `evalRuleMapIR`, which uses
+  `new Function`, and a `node()` builder recovered from a serialized artifact is
+  evaluated on the same path. Compose at build time with the macro, or ship a
+  `linkable()` artifact, and neither runs. The interpreter, `compile()`, and a
+  macro-built artifact never eval.
+
+- **Artifacts are several times smaller, and the size gate is green.** A `parser()`
+  grammar went **2,976 B → 860 B** (3.46×); a `compose()` grammar 4,585 → 2,328 B;
+  the `variants-4` probe **50,174 B → 5,518 B**. Every fixture in
+  `bench/size-baseline.json` is now under **4.2×** against the 10× ceiling — the
+  gate had been red on purpose for several releases. Most example grammars now emit
+  *less* than their own source (`example/json` 0.23×, `example/css` 0.95×), because
+  the recogniser lives once in `parseman/table` instead of once per artifact.
+  Marginal cost is ≈326 B per `node()` site, down from ≈4.2 kB.
+
+  Not everything improved: **variant duplication got worse as a ratio** — four
+  variants of one grammar cost 3.19× one, against ~2.6× before, because the
+  previous lowering's module-level hoist shared byte-identical rule functions and
+  the table currently does not. Recorded rather than smoothed over.
+
+- **The emitted module names `tableRules`.** `CompiledParser.inlineExpression` was
+  documented as self-contained with "no external references". A table artifact
+  cannot honour that and stay a table: the shared recogniser being external is
+  exactly why the artifact is 0.56 MB rather than 2.10 MB. `emitTableModule` writes
+  its own `import { tableRules } from 'parseman/table'`; an inliner splicing
+  `inlineExpression` must ensure that binding is in scope. `parseman/table` is a
+  declared package export.
+
+- **Barrel changes.** `LinkablePieces` and `DuplicationOption`'s source-lowering
+  form are no longer exported — every field of `LinkablePieces` was source text or
+  an input to resolving it, so it had no meaning for a table artifact.
+  `LinkableTable` (`compileLinkableTable`, `LinkableTableOptions`) is the shipping
+  equivalent. `CompiledParser` moved to `src/types.ts`; `HostMode` now comes from
+  `src/cst/host-mode.ts`. Neither dropped name was ever documented, and nothing
+  outside the removed engine referenced either.
+
+- **Charts regenerated; the sub-microsecond rows are gone.** The `small` fixtures
+  (27–54 byte inputs, ~1 µs) are commented out of `bench/chart-specs.ts` and the
+  four SVGs in `assets/` were regenerated on a quiet box — worst A/A control 1.1%,
+  against 2.0% on the previous contaminated run. A bar whose noise floor exceeds
+  its own margin cannot rank anything, and the removal is not results-driven: three
+  of the four dropped rows were bars Parséman won. **Verdict: bar held** — fastest
+  competitor-ranked JS parser in every group. The margins are narrow where they are
+  narrow: JSON 1.05–1.07× over Chevrotain, GraphQL 1.14–1.27× over Chevrotain, CSV
+  3.4× over Parsimmon, CST 2.1× over Lezer.
+
+  The **interpreter** slipped relative to the field and the docs now say so: a
+  well-tuned Chevrotain is ahead of it on both JSON fixtures and on GraphQL, and on
+  GraphQL large Peggy edges it too. It remains the fastest option after the macro
+  build on CSV.
+
+- **Known gaps, stated rather than discovered.** These are things 0.47.0 does not
+  do, and the guides now warn where a user would otherwise be misled:
+  - **`_grammarTrace` phase events are not emitted by the table.** Coverage
+    *counters* are (`OP_COV`). A trace sink attached to a compiled parse receives
+    nothing and nothing warns; run trace against the interpreter until 0.48
+    (`notes/RELEASE-0.48-TARGET.md` §1).
+  - **An export whose IR will not serialize can no longer be composed
+    downstream.** It still runs. `compose()` refuses it by name rather than
+    producing a parser missing its rules.
+  - **`sharedPrefix` scan-once is not applied by the compiled path.** The encoder
+    treats it as a `firstMatch` specialisation that changes arm order only, so the
+    shared prefix is re-scanned per arm. Output is unaffected — the strategy was
+    byte-identical by construction — but the saved scan is not currently paid.
+  - **The deterministic half of `perf:guard` is unguarded.**
+    `bench/composeleaf-firstset.ts` asserted first-char dispatch by regex over
+    emitted text and went with the engine; nothing replaced it. `docs/design/perf-gates.md`
+    predicted this failure mode in advance and now records that it happened.
+  - 24 `test.todo` / `it.todo` entries across 7 files record the rest of the owed
+    work, 16 of them in `test/unit/macro-grammar-coverage.test.ts`.
+
 - **Tolerant recovery in the table lowering, in both drivers.** `src/table/` had
   no recovery at all: no sync publication, no resync scan, no error-node
   emission, and the encoder recorded no inferred sync sentinel. A tolerant parse

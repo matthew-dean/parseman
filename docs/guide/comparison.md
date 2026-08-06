@@ -42,7 +42,7 @@ Two questions sort most of the field:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | **Grammar style** | JS/TS combinators | PEG text DSL | JS combinators | JS imperative DSL | BNF text DSL | Yacc/BNF text DSL | LR text DSL | JS DSL → generated C |
 | **Algorithm** | PEG-style ordered choice | PEG (packrat opt-in) | PEG-style ordered choice | LL(k) + backtracking | Earley (general CFG) | LALR(1) | LR (opt-in GLR) | GLR |
-| **Delivery** | library · `compile()` · build macro | codegen | runtime library | runtime library | codegen (`nearleyc`) | codegen | codegen (`@lezer/generator`) | codegen → C / WASM |
+| **Delivery** | library · `compile()` · build macro (emits a table) | codegen | runtime library | runtime library | codegen (`nearleyc`) | codegen | codegen (`@lezer/generator`) | codegen → C / WASM |
 | **Output** | object CST/AST **+ spans + trivia**, or plain JS values | whatever your actions return | whatever you build | automatic CST, or visitor output | postprocessor output (may be ambiguous) | whatever your actions return | compact buffer `Tree` | buffer CST (via bindings) |
 
 ## Capabilities
@@ -68,10 +68,12 @@ Two questions sort most of the field:
   (breakpoints, real stack traces) and read the parser *as code*, rather than debugging a
   generated state table or a parser in another language. Runtime combinator/DSL libraries
   qualify; generators mostly don't — Peggy emits JS you *can* trace, hence ⚠️. Parséman's
-  ✅ covers the interpreter (your combinator source, run directly) and the **JS-codegen
-  lowering** used by `compile()` and the macro build, whose output is readable JavaScript
-  you can breakpoint. It is a claim about those paths, not about any lowering that
-  produces a data table rather than code.
+  ✅ covers the interpreter — your combinator source, run directly, with breakpoints on the
+  `choice(...)` lines you wrote. It is **not** a claim about the compiled path: since
+  0.47.0 `compile()` and the macro build emit a table, so stepping a compiled parse lands
+  you in the shared recogniser (`parseman/table`) rather than in code shaped like your
+  grammar. Develop against the interpreter, ship compiled — the two produce identical
+  results, which is the point of having one recogniser.
 - **Grammar coverage / trace** — Parséman can record successful named rules,
   choice arms, and labels plus a bounded semantic lifecycle trace. This row is
   intentionally not a claim that the other tools lack test-runner coverage,
@@ -332,8 +334,8 @@ rich CST and context sensitivity.
   spans and trivia, with **context-sensitive rules**, incremental re-parse, and a full
   **editor backend** (recovery + completions + diagnostics on the compiled parser, via an
   external grammar-pure language service) — authored and **debugged in TypeScript** (no
-  separate grammar file to maintain, and the macro build's generated JS maps back to your
-  combinator source rather than being the thing you step through), with no build step
+  separate grammar file to maintain, and the macro build's source maps point back to your
+  combinator source rather than at the emitted table), with no build step
   required and generator-class speed when you want it.
 - **[Peggy](https://peggyjs.org/)** — a quick, readable PEG DSL for a config language or
   small DSL where a text grammar file is the deliverable.

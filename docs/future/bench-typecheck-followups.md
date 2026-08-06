@@ -66,9 +66,9 @@ context, `ParseContext._pmProfile`, `bench/alloc-profile.ts`, and the `entry`
 export in `bench/alloc-model.ts` that only that bench used.
 
 **What was deliberately kept:** the `profileRecognizer` / `profileCapture`
-emission-time gates in `src/compiler/codegen.ts`. They are the literal string
-`'false'` and fold away, so nothing reaches the artifact; they exist so the ~15
-emission sites keep one shape and a reinstatement does not have to reshape them.
+emission-time gates in `src/compiler/codegen.ts`. **They went with that file in 0.47.0**
+— the ~15 emission sites they were preserving no longer exist, so a reinstatement now
+has to be stated over `src/table/` from scratch.
 
 ### What restoring it would take
 
@@ -86,8 +86,15 @@ Restoring it under the **`src/table/` driver** is a different proposition: the
 driver is one shared interpreter over a data table, so instrumentation is *one*
 site rather than one per emitted rule, and it costs the artifact nothing. That is
 a note about where a future restoration becomes cheap, **not a request to build
-it** — the table is an unexported prototype, roughly 2.65× slower than codegen,
-and not on the shipping path. Do not build profiling for the table.
+it**.
+
+> **Updated for 0.47.0.** "The table is an unexported prototype, roughly 2.65× slower
+> than codegen, and not on the shipping path. Do not build profiling for the table."
+> — all four clauses are now false. The table is what `compile()` and the macro emit,
+> it is the only recogniser, and the codegen figures it was measured against are gone.
+> The observation above (one instrumentation site rather than one per emitted rule)
+> survives and is now the *only* way this could be restored. It is still not a request
+> to build it.
 
 If it comes back, it must come back as a *working* option. The previous shape —
 declared in the public type, unimplemented underneath — is the defect this entry

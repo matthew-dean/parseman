@@ -267,8 +267,8 @@ the rest. These were implemented or specified and then dropped:
 **Conditional spread into an object literal** (`{ ...(c ? {a} : {}) }`) — the
 hidden-class-split rule, and jess's 46% incident. Decidable, implemented,
 measured: **177 pre-existing hits across `src/`**, concentrated in
-`plugin/index.ts` (28), `compiler/codegen.ts` (19), `combinators/grammar.ts`
-(18) — overwhelmingly cold code that assembles strings or descriptors once per
+`plugin/index.ts` (28), `compiler/codegen.ts` (19 — that file was removed in
+0.47.0, so the count is stale), `combinators/grammar.ts` (18) — overwhelmingly cold code that assembles strings or descriptors once per
 compile, where a second hidden class costs nothing. Source carries no notion of
 call frequency, so the rule cannot separate the hot case from the idiom, and
 177 findings is the definition of crying wolf. *Recommended follow-up:* a

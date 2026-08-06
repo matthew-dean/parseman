@@ -101,9 +101,9 @@ each `compose()` / `composeLeaf()` that binds the hole.
 
 ### Running a composed grammar without a build step
 
-`compose()` fuses by **codegen**, so a composed grammar is a map of compiled functions.
-When you need the composition as a live **combinator graph** instead — profiling,
-gating analysis, anything that must stay in interpreted mode and never reach codegen —
+`compose()` lowers to a **table**, so a composed grammar is a map of driver-backed rule
+functions, not combinators. When you need the composition as a live **combinator graph**
+instead — profiling, gating analysis, anything that must stay in interpreted mode —
 use `fuseInterpreted()` with the same items:
 
 ```ts
@@ -171,19 +171,35 @@ The dialect's build reads the base's **compiled** grammar — never its TypeScri
 and never recompiles it. There is no "ship your source for speed" tradeoff; a published,
 compiled-only package composes fine.
 
+::: warning What a composable export must now carry
+Composition is a rule-map merge, so every piece has to be able to hand back a combinator
+graph. A piece does that from its **serialized IR**, which it carries alongside its table.
+
+**If a grammar's IR will not serialize, that grammar can be run but not composed
+downstream.** `compose()` refuses it by name (`carried piece "…" has no re-lowerable IR
+and cannot be fused`) rather than silently producing a parser missing its rules. The usual
+cause is an author callback the encoder cannot capture a source for. If you are publishing
+a grammar for others to `compose()`, compose it once in your own tests — running it is not
+evidence that it composes.
+:::
+
 ## How this behaves in each execution mode
 
 `compose()` works whether a grammar [runs interpreted, via `compile()`, or via the
 macro](./modes):
 
-- **Macro (build):** `compose([...])` is fused at **build time** into one static parser —
-  a plain closure of direct rule calls, emitted as ordinary source. It needs no base
-  grammar source (the pieces travel on the imported value) and runs under any CSP, so it
-  ships in strict-CSP contexts (browser extensions, some CDNs) with no configuration.
-- **`compile()` / interpreter (runtime):** `compose([...])` fuses when it's called, using
-  the same code generation `compile()` uses — so, like `compile()`, it builds the fused
-  parser via `new Function` (which needs `'unsafe-eval'` under a strict CSP). Construction
-  happens once; parsing afterward is full speed.
+- **Macro (build):** `compose([...])` is lowered at **build time** to one static table — a
+  `tableRules({…})` data literal plus your own reducers. It needs no base grammar source
+  (the pieces travel on the imported value) and contains no `eval`, so it ships in
+  strict-CSP contexts (browser extensions, some CDNs) with no configuration.
+- **Runtime (no macro):** `compose([...])` merges when it's called. The merge and the
+  encode are data — but hydrating each carried piece back to a combinator graph goes
+  through `new Function`, so a **runtime `compose()` still wants `'unsafe-eval'`** under a
+  strict CSP. Construction happens once; parsing afterward is full speed.
 
-Either way the parse is identical — a single fused scope of direct rule calls, override
+`compile()` and the interpreter, by contrast, need no `eval` at all since 0.47.0 — a
+runtime `compose()` is now the only path in the library that does. If you are shipping into
+a strict CSP, compose at build time with the macro, or ship a `linkable()` artifact.
+
+Either way the parse is identical — one encoded table over the merged rule map, override
 resolved across the whole set.

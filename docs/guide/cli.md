@@ -190,7 +190,7 @@ says so plainly when it is not.
 
 Everything the CLI does is available at `parseman/diagnostics` — a separate entry point,
 because the verification loop reaches the compiler and no consumer who only wanted to
-parse something should carry codegen on its account.
+parse something should carry it on its account.
 
 ```ts
 import { proposeFixes, renderFixReport } from 'parseman/diagnostics'

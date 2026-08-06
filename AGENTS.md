@@ -37,7 +37,7 @@ fixed, and must name a `ref` that owns the fix) — and a stale entry still fail
 the gate. Outstanding `DEBT` is printed on every run, green ones included. See
 `docs/design/invariant-gate.md`.
 
-If your change touches `src/codegen.ts`, dispatch, or anything else on the parse
+If your change touches `src/table/`, dispatch, or anything else on the parse
 hot path, also check it against the comparison-chart bar — **"still the fastest
 compiled JS parser in the SVG tests"** — before claiming a trade-off is
 acceptable:

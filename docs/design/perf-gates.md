@@ -392,6 +392,14 @@ exactly the band it exists to watch.**
   constant against it. `perf:guard`'s deterministic `composeLeaf` dispatch
   assertion still carries first-set-dispatch coverage.
 
+  > **0.47.0: this played out exactly as written below, and the assertion is gone.**
+  > `bench/composeleaf-firstset.ts` was deleted with the second recognition
+  > implementation, and `dispatchEmitted` exists nowhere in the tree. `perf:guard`
+  > (`bench/perf-guard.ts`) now carries only the timing half. **The deterministic
+  > first-set-dispatch coverage this section calls "the reason this workflow is worth
+  > having" is currently unguarded**, and needs a replacement stated over the table
+  > (`prog.cc` classes / the assembled arm gates) rather than over emitted text.
+
   **That assertion inspects EMITTED SOURCE, and it fails GREEN if there is none.**
   `dispatchEmitted` is a regex over the string `fusedBody([...]).body` returns
   (`bench/composeleaf-firstset.ts`) — it asks whether the fused *text* contains a

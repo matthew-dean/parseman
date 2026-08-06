@@ -821,11 +821,14 @@ run(g.Value, '12 x', { trivia: g.rw })  // unconsumedFrom → offset of 'x'
 
 ### `compile(combinator, mapFnSources?)`
 
-JIT-compile a combinator tree to an optimized JS function at runtime. Returns a
-[`CompiledParser`](./types#compiledparser) exposing `.parse()`, `.parseWithContext()`,
-`.parseWithErrors()`, plus the generated `.source` and `.inlineExpression` strings.
-Requires `new Function` (won't run under a strict CSP). See
-[The three modes](../guide/modes#compile-runtime-jit).
+Compile a combinator tree to a **table** at runtime, linked against the shared driver by a
+closure assembler at run start. Returns a [`CompiledParser`](./types#compiledparser) exposing
+`.parse()`, `.parseWithContext()`, `.parseWithErrors()`, plus the emitted `.source` (a module,
+carrying its own `import { tableRules } from 'parseman/table'`) and `.inlineExpression` (the
+same artifact as an expression, which names `tableRules` and so is *not* self-contained).
+
+**Since 0.47.0 this uses no `eval` and no `new Function`, and runs under a strict CSP.**
+See [The three modes](../guide/modes#compile-runtime-build).
 
 ## Spec generation
 
@@ -921,11 +924,17 @@ re-binds every rule reference in one shared scope, an override reroutes the base
 calls too (open recursion). Each item is a grammar (a `rules()` result) or an
 already-compiled artifact.
 
-- **With the macro (build time):** `compose([...])` is fused into **static source** — a
-  plain closure of direct calls. **No `new Function`, no eval** in the emitted code.
-- **Without the macro (runtime):** `compose([...])` fuses when it runs, via `new Function`
-  — the same JIT `compile()` uses (so, like `compile()`, it needs `'unsafe-eval'` under a
-  strict CSP). Parsing is never eval; only the one-time fuse is.
+Composition is a **rule-map merge plus one encode**: each piece's rules are merged (later
+wins), and `encodeTable` runs once over the merged map, so the result is the table the merged
+grammar would have produced had it been written as a single `rules()` call. There are no
+already-encoded programs to relocate and no source to splice.
+
+- **With the macro (build time):** `compose([...])` lowers to a **static table** — a
+  `tableRules({…})` data literal. **No `new Function`, no eval** in the emitted module.
+- **Without the macro (runtime):** the merge itself is data and needs no eval, but hydrating
+  each carried piece back to combinators goes through `new Function`, so a runtime
+  `compose()` still wants `'unsafe-eval'` under a strict CSP. Parsing is never eval; only the
+  one-time hydration is. Unlike `compile()`, which no longer evals at all.
 
 ## Error recovery
 

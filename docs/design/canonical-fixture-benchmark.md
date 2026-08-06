@@ -1,5 +1,12 @@
 # The canonical fixture benchmark — `pnpm bench:less`
 
+> **0.47.0: the `codegen` column is a historical baseline, not a runnable lane.** The
+> second recognition implementation was removed, so the three-engine comparison below
+> cannot be re-run as written — only `table` and `interpreter` still exist. The
+> *methodology* (absolute ms, named fixture, leg count and loadavg recorded, control
+> spread reported) is the point of this page and is unchanged. Current standing against
+> the removed baseline is in `notes/RELEASE-0.48-TARGET.md` §3.
+
 The table lowering's target is stated in **absolute milliseconds** against a
 named fixture. This page is how that number is taken, and it exists because the
 same fixture had two remembered baselines **27% apart**:

@@ -81,15 +81,17 @@ List recovery is the `tolerant` run flag plus the **inferred** sync on
 guard for the emitted error nodes. `expect` (required-token, in-place) and
 `scanTo`/`balanced` remain distinct primitives — they are not list recovery.
 
-Tolerant recovery + the completions probe run on **both of the two lowerings that
-execute grammars today** — the interpreter and codegen. ("Both" enumerates those two;
-it is not a claim that every lowering parseman may grow implements recovery. The
-additive table prototype in `src/table/` implements none of it — no `_tolerant`, no
-`_rec`, no `_probe` — which is a statement of its current scope, not a defect.) The
-interpreter path
-is always available. The compiled (`compile()`) path emits them under an opt-in gate —
-`compile(g, { recovery: true })` (or the `parseman({ recovery: true })` macro option) —
-so the published compiled artifact recovers and answers completions on the fast path,
-while a default compile emits **zero** recovery code (byte-identical, macro-inlinable).
-The compiled path reuses the exact interpreter recovery functions via `ctx._rec`, so
-the two are byte-for-byte at parity. See [Editor / language-server integration](./guide/editor-integration).
+Tolerant recovery + the completions probe run on **both lowerings that execute
+grammars** — the interpreter and the table. (Updated for 0.47.0: this paragraph used to
+name codegen as the second, and to record that `src/table/` implemented none of it. Both
+statements are now historical — codegen was removed, and the table gained recovery in the
+same release, calling the SAME functions in `src/recovery/scan.ts` the other engine calls,
+so a recovered error's span, its expected set and its CST embedding cannot drift between
+them.) The interpreter path is always available. The compiled (`compile()`) path lowers
+recovery under an opt-in gate — `compile(g, { recovery: true })` (or the
+`parseman({ recovery: true })` macro option) — so the published compiled artifact recovers
+and answers completions on the fast path. Recovery is a BUILD setting for the reason
+`hostMode` is: the sync point is derived from grammar structure, so it must be known
+before the table exists. It stays DORMANT until a parse sets `ctx._tolerant`, so a strict
+parse of a recovery table takes the identical path a strict table takes. See
+[Editor / language-server integration](./guide/editor-integration).

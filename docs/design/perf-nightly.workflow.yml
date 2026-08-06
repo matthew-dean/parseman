@@ -12,11 +12,12 @@
 # schedule and only alerts on MAJOR regressions.
 #
 # What it actually protects:
-#   - DETERMINISTIC (noise-free, machine-independent): `perf:guard` fails if the
-#     cross-artifact composeLeaf at-rule cluster loses first-char dispatch
-#     (bench/composeleaf-firstset.ts `dispatchEmitted`). This is the reliable signal
-#     and the reason this workflow is worth having — it guards the exact path jess
-#     depends on, regardless of timing noise.
+#   - DETERMINISTIC (noise-free, machine-independent): REMOVED IN 0.47.0. This was
+#     `perf:guard` failing if the cross-artifact composeLeaf at-rule cluster lost
+#     first-char dispatch (bench/composeleaf-firstset.ts `dispatchEmitted`). That
+#     bench asserted over EMITTED SOURCE and was deleted with the second recognition
+#     implementation; nothing has replaced it. See docs/design/perf-gates.md — the
+#     deterministic half of this workflow is currently unguarded.
 #   - TIMING (best-effort): `perf:guard --all` compares medians to the committed
 #     baseline with a LOOSE tolerance so only a catastrophic (~2x) slowdown trips it.
 #
