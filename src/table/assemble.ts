@@ -91,6 +91,16 @@ import {
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { failAt } from '../combinators/probe.ts'
 /**
+ * U4 — the emitted engine, and the three pure helpers both engines share.
+ *
+ * `spanLines`/`rawEntry`/`lead` moved out of this function's closure so the
+ * emitted assembly can call the SAME definitions. A second copy of `rawEntry`
+ * is exactly how a CST leaf's span drifts between two engines that exist to be
+ * gated against each other.
+ */
+import { EMITTED_PARAMS, Unemittable, emitAssemblySource, type EmittedAssembly, type EmittedFactory } from './emit-assembly.ts'
+import { lead, rawEntry, spanLines } from './run-support.ts'
+/**
  * THE COMPLETIONS PROBE, at the terminal fail sites and nowhere else.
  *
  * `failAt` (combinators/probe.ts) is called from exactly three places in the
@@ -112,6 +122,17 @@ import {
 import { stampRuleMap } from './stamp.ts'
 import { refuseUnclassifiedRootScope } from '../cst/root-trivia-scope.ts'
 import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } from '../recovery/scan.ts'
+
+/**
+ * Is the EMITTED engine (`emit-assembly.ts`) enabled for this process?
+ *
+ * Read ONCE, here, at module load — never on a parse path and never per
+ * assembly. It exists so the two engines can be A/B'd in ONE checkout: the
+ * bench guidance is explicit that a cross-worktree comparison carries a bias
+ * repetition does not remove.
+ */
+const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+  .process?.env?.PM_TABLE_EMIT !== '0'
 
 /** Failure sentinel — identity-compared, never inspected. Mirrors `exec.ts`. */
 const FAIL: unique symbol = Symbol('pm.fail')
@@ -278,6 +299,16 @@ export type Assembly = {
    * `test/unit/table-assemble-subset.test.ts` makes on that.
    */
   readonly reached: ReadonlySet<number>
+  /**
+   * WHY THIS ASSEMBLY IS RUNNING CLOSURES, when it is.
+   *
+   * `undefined` means the emitted engine (`emit-assembly.ts`) built this
+   * assembly. A string names the construct it refused. It is a field rather
+   * than a log line because a grammar that quietly drops to the closure path
+   * is a permanently slow path nobody would ever find — the same failure
+   * `encode.ts:1208-1213` refuses to allow for `OP_LIVE`.
+   */
+  readonly emitRefusal: string | undefined
 }
 
 /**
@@ -574,13 +605,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return cur
   }
 
-  function lead(input: string, pos: number): number {
-    if (pos >= input.length) return -1
-    const c = input.charCodeAt(pos)
-    if (c < 0xd800 || c > 0xdbff) return c
-    return input.codePointAt(pos) ?? c
-  }
-
   function committed(c: ParseContext): boolean {
     return c._fc === true
   }
@@ -614,30 +638,6 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     if (starts === undefined) return
     for (let i = from; i < end; i++) if (input.charCodeAt(i) === 10) starts.push(i + 1)
     ctx._lineScannedTo = end
-  }
-
-  function lineCol(ctx: ParseContext, offset: number): [number, number] {
-    const starts = ctx._lineStarts ?? [0]
-    let lo = 0, hi = starts.length - 1
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1
-      if (starts[mid]! <= offset) lo = mid
-      else hi = mid - 1
-    }
-    return [lo + 1, offset - starts[lo]! + 1]
-  }
-
-  function spanLines(ctx: ParseContext, start: number, end: number): { start: number; end: number; startLine: number; startColumn: number; endLine: number; endColumn: number } {
-    const s = lineCol(ctx, start), e = lineCol(ctx, end)
-    return { start, end, startLine: s[0], startColumn: s[1], endLine: e[0], endColumn: e[1] }
-  }
-
-  function rawEntry(v: unknown, input: string, s: number, e: number): unknown {
-    if (typeof v === 'object' && v !== null) {
-      const tg = (v as { _tag?: string })._tag
-      if (tg === 'node' || tg === 'leaf' || tg === 'parseError') return v
-    }
-    return { _tag: 'leaf', value: typeof v === 'string' ? v : (typeof v === 'object' && v !== null ? input.slice(s, e) : ''), span: { start: s, end: e } }
   }
 
   /* ── the link step ──────────────────────────────────────────────────────── */
@@ -2447,7 +2447,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /* ── scans, built once per assembly exactly as `exec.ts` builds them ─────── */
 
   function subtreeComb(r: SubtreeRef, def?: ParserDef): Combinator<unknown> {
-    const piece = link(r[0])
+    const piece = pieceAt(r[0])
+    // THE END SLOT BELONGS TO WHICHEVER ENGINE RAN THE PIECE. Reading this
+    // file's `END` after an emitted piece ran would report the end of whatever
+    // the closure engine last did — in a fresh emitted assembly, zero — and a
+    // scan sentinel would silently match an empty span.
+    const endOf = emitted !== undefined ? emitted.end : (): number => END
     return {
       _tag: 'tableSubtree',
       _meta: { firstSet: refFirstSet(r[1]), canMatchNewline: true, isTrivia: false },
@@ -2459,7 +2464,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const at = fe === undefined || fe < 0 ? pos : fe
           return { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: { start: at, end: at } }
         }
-        return { ok: true, value: v, span: { start: pos, end: END } }
+        return { ok: true, value: v, span: { start: pos, end: endOf() } }
       },
     }
   }
@@ -2473,22 +2478,126 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return { kind: 'ranges', ranges }
   }
 
-  const scans: readonly Combinator<unknown>[] = (prog.scans ?? []).map(s => {
+  /* ── U4: the EMITTED assembly, tried before the closure one ─────────────── */
+
+  /**
+   * Emitted source is attempted FIRST, and the closure walk above runs only for
+   * what it refuses.
+   *
+   * The reason it has to be source at all is in `emit-assembly.ts`'s header:
+   * V8's inline-cache feedback is per FUNCTION LITERAL, so every piece minted
+   * from one literal here shares one feedback vector and every call site inside
+   * it is megamorphic. That is not a property this file can rearrange away.
+   *
+   * The refusal is RECORDED, not swallowed. A grammar that silently drops to
+   * the closure path is a permanently slow path nobody would ever find, which
+   * is the same failure `encode.ts:1208-1213` refuses for `OP_LIVE`.
+   */
+  const scansArr: Combinator<unknown>[] = []
+  let emitted: EmittedAssembly | undefined
+  let emitRefusal: string | undefined
+  let emitReached: ReadonlySet<number> | undefined
+  {
+    // The scan pool and the scan-skip sets are built FROM subtrees, so their
+    // sites need emitted names too or `subtreeComb` would have to fall back to
+    // a closure for them and the two engines would both be live in one parse.
+    const extraIps: number[] = []
+    for (const s of prog.scans ?? []) {
+      for (const r of s.skip) extraIps.push(r[0])
+      if (s.sentinel !== undefined) extraIps.push(s.sentinel[0])
+    }
+    for (const set of prog.scanSkip ?? []) for (const r of set) extraIps.push(r[0])
+    try {
+      // THE A/B TOGGLE, read ONCE at module load and never on a parse path.
+      // Two engines that can only be compared across two checkouts cannot be
+      // compared at all: the bench harness's own guidance is that a
+      // cross-worktree measurement carries a bias no repetition removes. Same
+      // spelling as `PM_TABLE_COUNT` (`bench/table-opcode-gaps.ts`).
+      if (!EMIT_ENABLED) throw new Unemittable('PM_TABLE_EMIT=0 (measurement toggle)')
+      const em = emitAssemblySource(t, prog, cfg, extraIps)
+      /**
+       * COMPILING THE TEXT — and the two ways it can fail are NOT the same.
+       *
+       * An `EvalError` is the ENVIRONMENT refusing: a Content-Security-Policy
+       * without `unsafe-eval` forbids the `Function` constructor. That is a
+       * legitimate refusal and the closure engine is the correct answer.
+       *
+       * A `SyntaxError` is THIS EMITTER having generated invalid JavaScript.
+       * That is a bug in `emit-assembly.ts`, and catching it would ship a
+       * permanently slow path that is also permanently undiagnosed — every
+       * grammar would quietly run closures because of one bad template. It
+       * propagates, with the offending source attached.
+       */
+      let factory: EmittedFactory
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+        factory = new Function(...EMITTED_PARAMS, em.source) as EmittedFactory
+      } catch (e) {
+        if (e instanceof SyntaxError) {
+          throw new Error(
+            `table emitter: generated invalid JavaScript (${e.message}). This is a defect in `
+            + 'emit-assembly.ts, not a property of the grammar.\n' + em.source,
+          )
+        }
+        throw new Unemittable(`the Function constructor (${String(e)})`)
+      }
+      emitted = factory(
+        FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
+        trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
+        scansArr, disp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
+        cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
+        classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
+        demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
+        scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+      )
+      emitReached = em.reached
+    } catch (e) {
+      if (!(e instanceof Unemittable)) throw e
+      emitRefusal = e.construct
+    }
+  }
+
+  /** One piece for a site, from whichever engine this assembly is running. */
+  function pieceAt(ip: number): Piece {
+    const em = emitted
+    if (em !== undefined) {
+      const p = em.byIp[ip]
+      if (p === undefined) throw new Error(`table emitter: no emitted body for site ${ip}`)
+      return p as Piece
+    }
+    return link(ip)
+  }
+
+  for (const s of prog.scans ?? []) {
     const skip = s.skip.map(r => subtreeComb(r))
     const raw = (s.flags & 1) !== 0
     if (s.kind === 1) {
-      return balanced(s.open!, s.close!, { skip, raw, strict: (s.flags & 4) !== 0 }) as Combinator<unknown>
+      scansArr.push(balanced(s.open!, s.close!, { skip, raw, strict: (s.flags & 4) !== 0 }) as Combinator<unknown>)
+      continue
     }
     const sentDef: ParserDef | undefined = typeof s.sent === 'string'
       ? { tag: 'literal', value: s.sent, caseInsensitive: false } as unknown as ParserDef
       : undefined
-    return scanTo(subtreeComb(s.sentinel!, sentDef), { skip, raw, orEOF: (s.flags & 2) !== 0 }) as Combinator<unknown>
-  })
+    scansArr.push(scanTo(subtreeComb(s.sentinel!, sentDef), { skip, raw, orEOF: (s.flags & 2) !== 0 }) as Combinator<unknown>)
+  }
+  const scans: readonly Combinator<unknown>[] = scansArr
 
   const scanSkip: readonly (readonly Combinator<unknown>[])[] =
     (prog.scanSkip ?? []).map(set => set.map(r => subtreeComb(r)))
 
   /* ── link the rules ──────────────────────────────────────────────────────── */
+
+  if (emitted !== undefined) {
+    const em = emitted
+    return {
+      pieces: em.pieces as Record<string, Piece>,
+      end: em.end,
+      begin: em.begin,
+      scanSkip,
+      reached: emitReached!,
+      emitRefusal: undefined,
+    }
+  }
 
   const pieces: Record<string, Piece> = {}
   for (const [name, entryIp] of Object.entries(prog.rules)) pieces[name] = link(entryIp)
@@ -2509,7 +2618,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     COV = ctx._grammarCoverage ?? NO_COVERAGE
   }
 
-  return { pieces, end: () => END, begin, scanSkip, reached }
+  return { pieces, end: () => END, begin, scanSkip, reached, emitRefusal }
 }
 
 /**

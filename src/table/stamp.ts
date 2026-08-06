@@ -39,27 +39,15 @@ export function committed(c: ParseContext): boolean {
  * a bare `{ start, end }` regardless, so a tracked table parse handed back a
  * result with no `startLine`/`endColumn` at all while paying for the tracking.
  *
- * The binary search over `_lineStarts` is the same one both drivers hold
- * privately for `node()` spans; only the ENTRY needs it here, so it is not worth
- * exporting one of theirs and giving the hot node piece a cross-module call.
+ * The binary search over `_lineStarts` now lives in `run-support.ts`. The
+ * private copy that sat here was justified by "not worth giving the hot node
+ * piece a cross-module call"; the EMITTED engine needs the same answer, the
+ * node piece no longer calls this copy at all, and a THIRD copy is how a
+ * reported column drifts between two engines that are gated against each other
+ * precisely so that it cannot.
  */
-function lineCol(ctx: ParseContext, offset: number): [number, number] {
-  const starts = ctx._lineStarts ?? [0]
-  let lo = 0, hi = starts.length - 1
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1
-    if (starts[mid]! <= offset) lo = mid
-    else hi = mid - 1
-  }
-  return [lo + 1, offset - starts[lo]! + 1]
-}
-
-export function spanLines(ctx: ParseContext, start: number, end: number): {
-  start: number; end: number; startLine: number; startColumn: number; endLine: number; endColumn: number
-} {
-  const s = lineCol(ctx, start), e = lineCol(ctx, end)
-  return { start, end, startLine: s[0], startColumn: s[1], endLine: e[0], endColumn: e[1] }
-}
+import { spanLines } from './run-support.ts'
+export { spanLines }
 
 /**
  * What a driver must provide per parse, in the order the entry needs it.

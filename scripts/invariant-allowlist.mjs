@@ -83,7 +83,10 @@ export const ALLOW = new Map([
     { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
   ['INV-4:src/table/exec-baseline.ts:trackLines|src/table/exec.ts:trackLines',
     { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
-  ['INV-4:src/table/exec-baseline.ts:lineCol|src/table/stamp.ts:lineCol',
+  // The live copy MOVED from `stamp.ts` to `run-support.ts`, where the emitted
+  // engine can call it too. Three copies became two, and the survivor beside the
+  // frozen control is now the only one. Same entry, same reason, new path.
+  ['INV-4:src/table/exec-baseline.ts:lineCol|src/table/run-support.ts:lineCol',
     { category: 'BY-DESIGN', why: 'frozen ablation control — identity with the live copy is the control' }],
 
   // INV-1. RULE BUG, not a violation — INV-1 fires on the CORRECT pattern here.
