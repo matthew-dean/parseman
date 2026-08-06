@@ -16,22 +16,35 @@ import { digestValue } from '../src/oracle/index.ts'
 import { run } from '../src/functional/run.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable, type TableSettings } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+/**
+ * `assembledRules` IS THE SHIPPED TABLE ENGINE — `src/table/index.ts` re-exports
+ * it under the name `tableRules`, and `compileTable`/`compileRuleMapTable` build
+ * through it. This sweep imported the name `tableRules` from `src/table/exec.ts`
+ * instead, which is the REFERENCE driver: every case here, and every case in the
+ * CI subset (`test/unit/table-identity.test.ts`), gated a driver nothing ships
+ * while the assembler went unexecuted.
+ *
+ * Both legs run now. `assembled` is the one under gate; `reference` stays because
+ * `exec.ts` is what an assembler divergence gets bisected against, and losing it
+ * would trade one blind spot for another.
+ */
+import { assembledRules } from '../src/table/assemble.ts'
+import { tableRules as referenceRules } from '../src/table/exec.ts'
 import type { Combinator } from '../src/types.ts'
 
 export type Paths = {
   interpreted: Record<string, Combinator<unknown>>
   compiled: Record<string, (input: string, pos: number, ctx: never) => unknown>
-  table: ReturnType<typeof tableRules>
+  table: ReturnType<typeof assembledRules>
 }
 
-/** Build the three paths for one rule map + settings pair. */
+/** Build the shipped table path for one rule map + settings pair. */
 export function buildPaths(
   ruleMap: Record<string, Combinator<unknown>>,
   settings: TableSettings = {},
-): { table: ReturnType<typeof tableRules>; compiledSource: string } {
+): { table: ReturnType<typeof assembledRules>; compiledSource: string } {
   const prog = encodeTable(ruleMap, settings)
-  return { table: tableRules(prog), compiledSource: '' }
+  return { table: assembledRules(prog), compiledSource: '' }
 }
 
 export type IdentityCase = { name: string; input: string }
@@ -81,8 +94,10 @@ export function checkIdentity(
   if (interp === undefined) throw new Error(`no rule '${entryRule}'`)
 
   const prog = encodeTable(ruleMap, settings)
-  const tbl = tableRules(prog)[entryRule]
+  const tbl = assembledRules(prog)[entryRule]
   if (tbl === undefined) throw new Error(`table has no rule '${entryRule}'`)
+  const ref = referenceRules(prog)[entryRule]
+  if (ref === undefined) throw new Error(`reference table has no rule '${entryRule}'`)
 
   // The shipped compiled path, fused at runtime (same codegen, `new Function`
   // instead of a build-time splice).
@@ -98,9 +113,11 @@ export function checkIdentity(
     const di = digestRun(interp as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
     const dc = comp === undefined ? undefined : digestRun(comp, c.input, opts.trivia as RunnableLike | undefined)
     const dt = digestRun(tbl as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
+    const dr = digestRun(ref as RunnableLike, c.input, opts.trivia as RunnableLike | undefined)
     let ok = true
     if (dt !== di) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs interpreted', a: dt, b: di }) }
     if (dc !== undefined && dt !== dc) { ok = false; report.mismatches.push({ case: c.name, path: 'table vs compiled', a: dt, b: dc }) }
+    if (dt !== dr) { ok = false; report.mismatches.push({ case: c.name, path: 'assembled vs reference table', a: dt, b: dr }) }
     if (ok) report.matched++
   }
   return report

@@ -73,7 +73,7 @@ import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
   advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt,
-  saveTriviaMark, scanTrivia, type FastTriviaScanner,
+  saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner,
 } from '../combinators/trivia-skip.ts'
 import {
   cstCaptureActive, cstLeavesLen,
@@ -462,6 +462,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
       return s(input, cur)
     }
+    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER — see `skipTriviaScanned`.
+    // Appended rather than folded into the test above so the non-capturing path
+    // keeps the exact branch it had.
+    if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
     if (needsDeferredTriviaCommit(ctx)) {
       const scan = scanTrivia(input, cur, ctx)
       scan.commit()

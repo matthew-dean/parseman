@@ -6,7 +6,7 @@ import { projectChild, unwrapChild } from '../combinators/node.ts'
 import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
-import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt, saveTriviaMark, scanTrivia, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
+import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, rollbackTriviaAt, saveTriviaMark, scanTrivia, skipTriviaScanned, type FastTriviaScanner } from '../combinators/trivia-skip.ts'
 import {
   beginCstNodeCapture, cstCaptureActive, cstLeavesLen, cstRawLen, cstTlLen,
   demoteCapturedToRaw, endCstNodeCapture, pushCstChild, pushCstLeaf,
@@ -315,6 +315,12 @@ function makeDriver(
       && !(ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined))) {
       return s(input, cur)
     }
+    // CAPTURE IS NOT A REASON TO LEAVE THE SCANNER. The recording an installed
+    // scanner's scope can owe is one `(cur, end)` row, so it is written here
+    // rather than through a deferred `{ end, commit }` pair per term. Appended
+    // rather than folded into the test above so the non-capturing path — every
+    // grammar that already had a scanner — keeps the exact branch it had.
+    if (s !== null) return skipTriviaScanned(s, input, cur, ctx)
     if (needsDeferredTriviaCommit(ctx)) {
       const scan = scanTrivia(input, cur, ctx)
       scan.commit()

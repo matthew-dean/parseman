@@ -1,5 +1,5 @@
 import type { Combinator, ParseContext, ParseFail, ParseResult } from '../types.ts'
-import { parseClassRanges } from '../regex/classes.ts'
+import { literalCodePoints, parseClassOperand, parseClassRanges } from '../regex/classes.ts'
 import {
   analyzeLabeledTrivia,
   recordTriviaChunks,
@@ -182,6 +182,18 @@ function skipWithLabels(input: string, cur: number, ctx: ParseContext): number {
   return tr.ok && tr.span.end > cur ? tr.span.end : cur
 }
 
+/** End of the trivia run at `cur` via the interpreter — the no-scanner fallback. */
+function triviaEndByParse(
+  triviaP: Combinator<unknown>,
+  input: string,
+  cur: number,
+  ctx: ParseContext,
+  trackLines: boolean,
+): number {
+  const tr = triviaP.parse(input, cur, createDetachedParseContext(trackLines, ctx.state))
+  return tr.ok ? tr.span.end : cur
+}
+
 /**
  * Skip trivia at `cur` and return the new position. No recording, no wrapper
  * object — use between sequence/repeat terms when CST trivia capture is off.
@@ -236,12 +248,16 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
     if (ctx.triviaKindLabels) return { end: skipWithLabels(input, cur, ctx), commit: NOOP_COMMIT }
 
     if (log !== undefined || rootLog !== undefined || captureTl) {
-      const tr = triviaP.parse(input, cur, createDetachedParseContext(
-        log !== undefined ? false : ctx.trackLines,
-        ctx.state,
-      ))
-      if (!tr.ok || tr.span.end === cur) return { end: cur, commit: NOOP_COMMIT }
-      const end = tr.span.end
+      // CAPTURE DOES NOT NEED THE INTERPRETER. What lands in either sink is the
+      // one `(cur, end)` row below — the trivia's internal structure is never
+      // read — so a scanner that agrees with `triviaP` on `end` produces byte-
+      // identical capture. Delegating to `triviaP.parse` cost a detached
+      // `ParseContext` plus a full re-entry into the combinator interpreter PER
+      // SEQUENCE TERM, and bought nothing that survived the call.
+      const end = fast
+        ? fast(input, cur)
+        : triviaEndByParse(triviaP, input, cur, ctx, log !== undefined ? false : ctx.trackLines)
+      if (end === cur) return { end: cur, commit: NOOP_COMMIT }
       return {
         end,
         commit: () => {
@@ -276,9 +292,17 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
   }
 
   if (log !== undefined || rootLog !== undefined || captureTl) {
-    const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
-    if (!tr.ok || tr.span.end === cur) return { end: cur, commit: NOOP_COMMIT }
-    const end = tr.span.end
+    // Same equivalence as the `trackLines`-off twin above; line ranges are
+    // recorded from the SPAN either way, so the scanner loses nothing.
+    let end: number
+    if (fast) {
+      end = fast(input, cur)
+      if (trackTriviaLines) recordLineRangeFromContext(ctx, input, cur, end)
+    } else {
+      const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
+      end = tr.ok ? tr.span.end : cur
+    }
+    if (end === cur) return { end: cur, commit: NOOP_COMMIT }
     return {
       end,
       commit: () => {
@@ -290,6 +314,33 @@ export function scanTrivia(input: string, cur: number, ctx: ParseContext): Trivi
 
   const tr = parseTriviaNoCapture(triviaP, input, cur, ctx)
   return { end: tr.ok ? tr.span.end : cur, commit: NOOP_COMMIT }
+}
+
+/**
+ * Skip trivia at `cur` through an INSTALLED scanner, recording it immediately.
+ *
+ * The table drivers install a scanner only for UNLABELLED trivia with
+ * `trackLines` off, and that is exactly the case where the deferred path's whole
+ * commit is the single row `(cur, end)` — so there is nothing to defer, and the
+ * `{ end, commit }` pair plus its closure that `scanTrivia(…).commit()` allocated
+ * on EVERY sequence term of EVERY capturing grammar buy nothing. This is that
+ * branch with the allocations removed, kept here so recording has one home.
+ */
+export function skipTriviaScanned(
+  s: FastTriviaScanner,
+  input: string,
+  cur: number,
+  ctx: ParseContext,
+): number {
+  const end = s(input, cur)
+  if (end !== cur) {
+    // `pushTriviaLogEntry`'s kind-index branch is unreachable without labels.
+    if (ctx._triviaLog !== undefined) ctx._triviaLog.push(cur, end)
+    if (ctx.captureTrivia === true && (ctx._cstBuf !== undefined || ctx._cstTriviaLog !== undefined)) {
+      pushCstTriviaEntry(ctx, cur, end)
+    }
+  }
+  return end
 }
 
 /**
@@ -386,6 +437,21 @@ function regexTriviaScanner(parser: Combinator<unknown>): FastTriviaScanner | nu
   const source = parser._def.source
   return classRunSource(source)
     ?? altStarSource(source)
+    ?? prefixRunSource(source)
+    ?? delimitedSource(source)
+}
+
+/**
+ * Literal fragments are compared with `charCodeAt`, which reads CODE UNITS — the
+ * same granularity the non-`u` engine matches at (a `u` flag is rejected upstream
+ * with every other flag). An astral literal would have been folded to one code
+ * POINT by `literalCodePoints`, so it could never compare equal; declining keeps
+ * the scanner exact rather than silently under-matching.
+ */
+function bmpString(cps: number[] | null): string | null {
+  if (!cps) return null
+  for (let i = 0; i < cps.length; i++) if (cps[i]! > 0xffff) return null
+  return String.fromCharCode(...cps)
 }
 
 function inRanges(cp: number, ranges: Array<[number, number]>): boolean {
@@ -425,6 +491,162 @@ function untilLineBreakScanner(leaderCode: number): FastTriviaScanner {
 function classRunSource(source: string): FastTriviaScanner | null {
   const m = /^\[([^\]^](?:[^\]]|\\.)*)\][*+]$/.exec(source)
   return m ? classScanner(m[1]!) : null
+}
+
+/**
+ * `<literal><class-run>` — a literal opener followed by a single char-class run,
+ * `//[^\n]*` and `#[^\n\r]*` being the line-comment spellings of it. The class may
+ * be negated or positive; `*` admits the bare opener, `+` requires one class char.
+ *
+ * This is the whole-arm generalisation of `classifyTriviaArm`'s `untilLineBreak`,
+ * which only ever saw ONE leader char inside a `(?:…)*` group — a two-char `//`
+ * opener had no lowering at all, so every Less trivia scan fell back to the
+ * interpreter.
+ */
+function prefixRunSource(source: string): FastTriviaScanner | null {
+  const m = /^((?:\\.|[^\\[\]()*+?|^$.{}])*)(\[(?:\\.|[^\]])+\])([*+])$/.exec(source)
+  if (!m) return null
+  const prefix = bmpString(literalCodePoints(m[1]!))
+  if (prefix === null) return null
+  const cls = parseClassOperand(m[2]!)
+  if (!cls) return null
+  const { ranges, negated } = cls
+  const minOne = m[3] === '+'
+  return (input, cur) => {
+    if (!input.startsWith(prefix, cur)) return cur
+    const start = cur + prefix.length
+    const len = input.length
+    let pos = start
+    while (pos < len && inRanges(input.charCodeAt(pos), ranges) !== negated) pos++
+    return minOne && pos === start ? cur : pos
+  }
+}
+
+/**
+ * `<open>(?:body)*<close>` scanned as "advance to the first `close`" — the block
+ * comment shape (`/*…*\/`), which no other recognizer here can classify, so css
+ * and Less trivia had NO fast scanner at all.
+ *
+ * The lowering ignores the body, so it is only legal when `(?:body)*` provably
+ * cannot span the `close` literal; `delimitedBodySound` is the proof, and an
+ * unproven body declines rather than scanning wrong. Ported from the archived
+ * `scannable-run.ts`, whose coverage is the specification for this shape.
+ */
+function delimitedSource(source: string): FastTriviaScanner | null {
+  // An escaped backslash in the body makes this a STRING shape, where "advance to
+  // the first close" would stop at an escaped delimiter. Not modelled; decline.
+  if (source.includes('\\\\')) return null
+  let i = 0
+  while (i < source.length && source[i] !== '(') i += source[i] === '\\' ? 2 : 1
+  if (source[i] !== '(' || source[i + 1] !== '?' || source[i + 2] !== ':') return null
+  let k = i + 3
+  let depth = 1
+  while (k < source.length && depth > 0) {
+    const ch = source[k]
+    if (ch === '\\') { k += 2; continue }
+    if (ch === '[') {
+      let j = k + 1
+      if (source[j] === '^') j++
+      while (j < source.length && source[j] !== ']') j += source[j] === '\\' ? 2 : 1
+      if (source[j] !== ']') return null
+      k = j + 1
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    k++
+  }
+  if (depth !== 0 || source[k] !== '*') return null
+  const body = source.slice(i + 3, k - 1)
+  const openCps = literalCodePoints(source.slice(0, i))
+  const closeCps = literalCodePoints(source.slice(k + 1))
+  if (!openCps || !closeCps || !delimitedBodySound(body, closeCps)) return null
+  const open = bmpString(openCps)
+  const close = bmpString(closeCps)
+  if (open === null || close === null) return null
+  return (input, cur) => {
+    if (!input.startsWith(open, cur)) return cur
+    const hit = input.indexOf(close, cur + open.length)
+    // Unterminated: the regex requires the close literal, so it does not match.
+    return hit === -1 ? cur : hit + close.length
+  }
+}
+
+/** Split a `(?:…)` body on top-level `|`, respecting classes and nested groups. */
+function splitDelimArms(body: string): string[] | null {
+  const arms: string[] = []
+  let depth = 0
+  let last = 0
+  let i = 0
+  while (i < body.length) {
+    const ch = body[i]
+    if (ch === '\\') { i += 2; continue }
+    if (ch === '[') {
+      let j = i + 1
+      if (body[j] === '^') j++
+      while (j < body.length && body[j] !== ']') j += body[j] === '\\' ? 2 : 1
+      if (body[j] !== ']') return null
+      i = j + 1
+      continue
+    }
+    if (ch === '(') { depth++; i++; continue }
+    if (ch === ')') { depth--; if (depth < 0) return null; i++; continue }
+    if (ch === '|' && depth === 0) { arms.push(body.slice(last, i)); last = i + 1 }
+    i++
+  }
+  if (depth !== 0) return null
+  arms.push(body.slice(last))
+  return arms
+}
+
+/**
+ * Prove "scan to the first `close`" EQUIVALENT to `<open>(?:body)*<close>`. That
+ * holds iff `(?:body)*` can never match text containing `close`: greedy repetition
+ * then stops exactly before the first `close`, which is where the raw scan lands.
+ *
+ * Proven only for the delimiter-safe idiom — the sole body shape that says "any
+ * char that does not form the close":
+ *
+ *   close is one char `l0`:      body must be exactly `[^l0]`
+ *   close is `l0 l1`:            body must be exactly `[^l0] | l0(?!l1)`
+ *
+ * The bulk arm takes every char but `l0`; the guard arm takes `l0` only when `l1`
+ * does not follow. So the body admits `l0`, never `l0 l1`, and rejects nothing
+ * else — a body NARROWER than that would stop early while the raw scan ran on to
+ * the next close, and the two would diverge. Anything outside the template is
+ * declined. Sound by construction: true is only ever returned for a body proven
+ * not to contain `close`.
+ */
+function delimitedBodySound(body: string, close: number[]): boolean {
+  if (close.length > 2) return false
+  const l0 = close[0]!
+  const arms = splitDelimArms(body)
+  if (!arms) return false
+  let bulkSeen = false
+  let guardSeen = false
+  for (const arm of arms) {
+    const bulk = /^\[\^((?:\\.|[^\]])+)\]$/.exec(arm)
+    if (bulk) {
+      if (bulkSeen) return false
+      const ranges = parseClassRanges(bulk[1]!)
+      if (!ranges || ranges.length !== 1 || ranges[0]![0] !== l0 || ranges[0]![1] !== l0) return false
+      bulkSeen = true
+      continue
+    }
+    if (close.length === 2 && arm.endsWith(')')) {
+      const idx = arm.indexOf('(?!')
+      if (idx === -1 || guardSeen) return false
+      const prefix = literalCodePoints(arm.slice(0, idx))
+      const op = parseClassOperand(arm.slice(idx + 3, -1))
+      if (prefix?.length !== 1 || prefix[0] !== l0) return false
+      if (!op || op.negated || op.ranges.length !== 1
+        || op.ranges[0]![0] !== close[1] || op.ranges[0]![1] !== close[1]) return false
+      guardSeen = true
+      continue
+    }
+    return false
+  }
+  return bulkSeen && guardSeen === (close.length === 2)
 }
 
 /**

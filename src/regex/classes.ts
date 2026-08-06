@@ -46,6 +46,55 @@ export function readUnicodeEscape(body: string, i: number): { cp: number; next: 
   return { cp: Number.parseInt(hex, 16), next: i + 6 }
 }
 
+/** Regex syntax characters that cannot appear in a LITERAL fragment unescaped. */
+const META = new Set('()[]{}*+?|^$.'.split(''))
+
+/**
+ * A regex fragment that is a plain run of literal characters → its code points,
+ * or null when the fragment contains any operator (so a caller can never mistake
+ * `a*` for the two-char literal `a*`). An empty fragment returns null, because
+ * every caller wants "at least one char to match".
+ */
+export function literalCodePoints(frag: string): number[] | null {
+  const out: number[] = []
+  let i = 0
+  while (i < frag.length) {
+    const ch = frag[i]!
+    if (ch === '\\') {
+      const e = frag[i + 1]
+      if (e === undefined) return null
+      out.push(e in CLASS_ESCAPES ? CLASS_ESCAPES[e]! : e.codePointAt(0)!)
+      i += 2
+      continue
+    }
+    if (META.has(ch)) return null
+    out.push(ch.codePointAt(0)!)
+    i += 1
+  }
+  return out.length ? out : null
+}
+
+/**
+ * A single-character MATCHER fragment as a (possibly negated) range set: a
+ * bracketed class `[…]`/`[^…]`, a `\d`/`\w`/`\s` shorthand, or one literal char.
+ * Anything wider (a group, a multi-char literal, `.`) returns null.
+ */
+export function parseClassOperand(body: string): { ranges: Array<[number, number]>; negated: boolean } | null {
+  if (body === '\\d' || body === '\\w' || body === '\\s') {
+    return { ranges: shorthandRanges(body[1] as 'd' | 'w' | 's'), negated: false }
+  }
+  if (body.length >= 2 && body[0] === '[' && body[body.length - 1] === ']') {
+    let inner = body.slice(1, -1)
+    const negated = inner.startsWith('^')
+    if (negated) inner = inner.slice(1)
+    const ranges = parseClassRanges(inner)
+    return ranges ? { ranges, negated } : null
+  }
+  const cps = literalCodePoints(body)
+  if (cps && cps.length === 1) return { ranges: [[cps[0]!, cps[0]!]], negated: false }
+  return null
+}
+
 type ClassAtom = { cp: number } | { set: Array<[number, number]> }
 
 /**
