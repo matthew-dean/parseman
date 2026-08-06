@@ -17,6 +17,8 @@ import { describe, it, expect } from 'vitest'
 import { regex, literal, choice, sequence, transform, not, parse, compile } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
 import { parseValue } from '../helpers/parse-result.ts'
+import { parseClassOperand } from '../../src/regex/classes.ts'
+import { scanShapeFromRegex } from '../../src/table/scan-shapes.ts'
 
 // ---------------------------------------------------------------------------
 // Helper: compiler parity
@@ -346,5 +348,61 @@ describe('regex groups', () => {
   it('group parity', () => {
     par(regex(/(?:foo|bar)/), ['foo', 'bar', 'baz', ''])
     par(regex(/([0-9]+)/),    ['123', 'abc', ''])
+  })
+})
+
+/**
+ * `parseClassOperand` answers "is this fragment ONE single-char matcher", and
+ * every caller — `scan-shapes`' trailing-lookahead strip and delimited-body
+ * proof, `trivia-skip`'s prefix-run scanner — depends on the matcher being the
+ * WHOLE fragment. It used to test only that a bracketed body OPENS with `[` and
+ * ENDS with `]`, which a sequence of two classes also satisfies.
+ */
+describe('parseClassOperand — one class token, or nothing', () => {
+  const members = (body: string): number[] | null => {
+    const op = parseClassOperand(body)
+    if (!op || op.negated) return null
+    return op.ranges.flatMap(([lo, hi]) => Array.from({ length: hi - lo + 1 }, (_, k) => lo + k))
+  }
+
+  it('refuses a two-class SEQUENCE instead of unioning across the gap', () => {
+    // The live case: scss's descendant combinator is `\+(?=[ \t\n\r\f]*[\$(])`.
+    // Read as one class, its members became everything between the OUTER
+    // brackets — SPACE (32), `]` (93), `*` (42), `[` (91) — so the lookahead
+    // admitted a `+` followed by a space, at 203 positions of the scss corpus.
+    expect(parseClassOperand('[ \\t\\n\\r\\f]*[\\$(]')).toBeNull()
+    expect(parseClassOperand('[a][b]')).toBeNull()
+    expect(parseClassOperand('[a]*[b]')).toBeNull()
+  })
+
+  it('refuses a class followed by a quantifier — that is two tokens', () => {
+    expect(parseClassOperand('[abc]*')).toBeNull()
+    expect(parseClassOperand('[abc]?')).toBeNull()
+  })
+
+  it('refuses `[]]`, which JS reads as the EMPTY class then a literal `]`', () => {
+    // Not a single matcher, and emphatically not the class {]} that the
+    // trailing-`]` test used to make it.
+    expect(parseClassOperand('[]]')).toBeNull()
+    expect(parseClassOperand('[^]]')).toBeNull()
+  })
+
+  it('still accepts every genuine single-char matcher', () => {
+    expect(members('[abc]')).toEqual([97, 98, 99])
+    expect(members('[0-9]')).toEqual([48, 49, 50, 51, 52, 53, 54, 55, 56, 57])
+    expect(members('[\\]]')).toEqual([93]) // an ESCAPED `]` is a member, not the close
+    expect(members('a')).toEqual([97])
+    expect(members('\\t')).toEqual([9])
+    expect(parseClassOperand('[^\\n]')).toEqual({ ranges: [[10, 10]], negated: true })
+    expect(parseClassOperand('\\d')).toEqual({ ranges: [[48, 57]], negated: false })
+  })
+
+  it('the refusal reaches the shape lowering it protects', () => {
+    // Declining costs a fast path; accepting produced a scan that matched where
+    // the RegExp it replaces does not.
+    expect(scanShapeFromRegex('\\+(?=[ \\t\\n\\r\\f]*[\\$(])', '')).toBeNull()
+    expect(/\+(?=[ \t\n\r\f]*[\$(])/y.exec('+ x')).toBeNull()
+    // The genuine single-class spelling still lowers.
+    expect(scanShapeFromRegex('\\+(?=[\\$(])', '')?.kind).toBe('lookahead')
   })
 })

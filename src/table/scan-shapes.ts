@@ -616,47 +616,16 @@ function lookaheadUnambiguous(inner: ScanShape, operand: CharSet, negative: bool
  * metachar (`META`) and fall back to `RegExp.exec`, so a false read here can
  * only fail to lower, never mis-lower.
  */
-/**
- * Does a bracketed body consist of ONE class token spanning the whole string?
- *
- * `parseClassOperand` tests `body[0] === '['` and `body[at end] === ']'`, which
- * is not the same question. `[ \t\n\r\f]*[\$(]` satisfies both and is a
- * SEQUENCE — a whitespace run then one of `$(`. Stripped as if it were a single
- * class, its members become the garbage union of everything between the outer
- * brackets, whitespace included, and `\+(?=[ \t\n\r\f]*[\$(])` then matched a
- * `+` followed by a space. That is scss's descendant-combinator regex, and the
- * oracle caught it at 203 positions of the scss corpus.
- *
- * Asked HERE rather than in `parseClassOperand`, which is shared with the
- * first-set analyser: this is the one caller whose operand must be the ENTIRE
- * lookahead body, and widening a shared predicate to satisfy it would move
- * first sets in code no gate of this lane covers.
- *
- * A leading `]` (a literal member in real regex syntax) is deliberately NOT
- * special-cased — treating it as the close makes this return false, and a false
- * here only declines.
- */
-function isWholeClassToken(body: string): boolean {
-  if (body[0] !== '[') return true
-  let i = 1
-  if (body[i] === '^') i++
-  while (i < body.length) {
-    const ch = body[i]
-    if (ch === '\\') { i += 2; continue }
-    if (ch === ']') return i === body.length - 1
-    i++
-  }
-  return false
-}
-
 function stripTrailingLookahead(source: string): TrailingLookahead | null {
   if (!source.endsWith(')')) return null
   for (const negative of [true, false] as const) {
     const lead = negative ? '(?!' : '(?='
     const idx = source.lastIndexOf(lead)
     if (idx === -1) continue
-    const body = source.slice(idx + lead.length, -1)
-    const operand = body.length && isWholeClassToken(body) ? parseClassOperand(body) : null
+    // The operand must be the ENTIRE lookahead body. `parseClassOperand` enforces
+    // that a bracketed body is ONE class token, so a sequence like
+    // `[ \t\n\r\f]*[\$(]` is declined here rather than read as one garbage class.
+    const operand = parseClassOperand(source.slice(idx + lead.length, -1))
     if (!operand) continue
     return { base: source.slice(0, idx), ranges: operand.ranges, classNegated: operand.negated, negative }
   }
