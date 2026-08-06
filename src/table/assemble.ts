@@ -2544,11 +2544,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       emitted = factory(
         FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
-        scansArr, disp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
+        scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
         classHas, consumeTrivia, buildFieldMap, projectChild, unwrapChild,
         demoteCapturedToRaw, cstLeavesLen, skipTriviaScanned, needsDeferredTriviaCommit,
         scanTrivia, advanceTrivia, refuseUnclassifiedRootScope, spanLines, rawEntry, lead,
+        asciiFoldKey, ROUTED_FX,
       )
       emitReached = em.reached
     } catch (e) {
