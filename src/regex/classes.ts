@@ -75,15 +75,49 @@ export function literalCodePoints(frag: string): number[] | null {
 }
 
 /**
+ * Index of the `]` that CLOSES the class opening at `body[0]`, honouring `\]`,
+ * or −1 if the class is unterminated. A leading `^` is negation, never a member;
+ * every other char up to the first unescaped `]` is. This is JS's own non-`u`
+ * reading, under which `[]` is the empty class — so in `[]]` the FIRST `]`
+ * closes and a literal `]` follows, and this returns 1, not 2.
+ */
+function classCloseIndex(body: string): number {
+  let i = 1
+  if (body[i] === '^') i++
+  while (i < body.length) {
+    const ch = body[i]
+    if (ch === '\\') { i += 2; continue }
+    if (ch === ']') return i
+    i++
+  }
+  return -1
+}
+
+/**
  * A single-character MATCHER fragment as a (possibly negated) range set: a
  * bracketed class `[…]`/`[^…]`, a `\d`/`\w`/`\s` shorthand, or one literal char.
  * Anything wider (a group, a multi-char literal, `.`) returns null.
+ *
+ * "Bracketed class" means the WHOLE fragment is ONE class. Testing only that it
+ * opens with `[` and ends with `]` is a different, weaker question, and
+ * `[ \t\n\r\f]*[\$(]` answers it while being a SEQUENCE — a whitespace run, then
+ * one of `$(`. Read as a single class its members become the garbage union of
+ * everything between the OUTER brackets, whitespace and `*` and `[` included, so
+ * scss's `\+(?=[ \t\n\r\f]*[\$(])` matched a `+` before a space; the shape oracle
+ * caught it at 203 positions of the scss corpus. Every caller here asks "is this
+ * ONE char matcher", so a fragment that is not gets null — declining costs a
+ * lowering or widens a first-set to `any()`, both of which only forgo a fast
+ * path, whereas accepting yields a wrong member set, which is a wrong scan or a
+ * wrong dispatch.
  */
 export function parseClassOperand(body: string): { ranges: Array<[number, number]>; negated: boolean } | null {
   if (body === '\\d' || body === '\\w' || body === '\\s') {
     return { ranges: shorthandRanges(body[1] as 'd' | 'w' | 's'), negated: false }
   }
-  if (body.length >= 2 && body[0] === '[' && body[body.length - 1] === ']') {
+  if (body.length >= 2 && body[0] === '[') {
+    // The class must close at the LAST char; anything after it is a second token
+    // (a quantifier, another class, a literal) that this fragment cannot express.
+    if (classCloseIndex(body) !== body.length - 1) return null
     let inner = body.slice(1, -1)
     const negated = inner.startsWith('^')
     if (negated) inner = inner.slice(1)
