@@ -286,6 +286,13 @@ class Encoder {
   private fxIndex = new Map<string, number>()
   /** Memoized by combinator identity: a shared sub-combinator is ONE row. */
   memo = new Map<Combinator<unknown>, number>()
+  /**
+   * Memo for `lazy` REFERENCES, keyed by the trivia scope the reference is made
+   * from. A cross-rule reference's row depends on that scope (`scopedRef`), so the
+   * single `memo` slot every other construct uses would freeze the FIRST
+   * reference's scope onto every later one and undo the fix.
+   */
+  refMemo = new Map<Combinator<unknown>, Map<Combinator<unknown> | undefined, number>>()
   pending = new Map<Combinator<unknown>, number[]>()
 
   readonly settings: TableSettings
@@ -520,8 +527,43 @@ class Encoder {
     this.rules[name] = amb === undefined ? body : this.emit(OP_SCOPE, this.triviaSlot(amb), body)
   }
 
+  /**
+   * The row a cross-rule `g.X` reference jumps to — the target's body, RE-WRAPPED
+   * in the target rule's own ambient trivia when that differs from the trivia
+   * lexically active at the reference.
+   *
+   * `encodeRule` wraps a rule ENTRY in `OP_SCOPE`, but only the entry: a `g.X`
+   * reference resolves straight to the body's offset and jumps past it (the note
+   * at `encodeRule`). So a rule referenced from inside a `noTrivia(...)` region ran
+   * with NO ambient trivia of its own — the table scoped trivia DYNAMICALLY, by
+   * caller, where codegen scopes it LEXICALLY, per rule, by binding each rule's
+   * trivia scanner at compile time.
+   *
+   * jess's Less grammar sits on that seam: `StandardDeclaration` wraps its value in
+   * `noTrivia(...)` while the `!important` tail lives in the referenced rule
+   * `ValueListWithPriority`, so `color: red !important` could not cross the space
+   * before `!` — and a 107 KB stylesheet stopped at 68.5% reporting `ok: true`.
+   *
+   * ONLY WHERE IT DIFFERS. `activeTrivia` is the encoder's lexical scope tracker
+   * (maintained by `case 'grammar'` across `parser()` / `noTrivia`), so a reference
+   * made under the scope the target already wants stays a bare jump and the table
+   * gains no rows. The scope is added exactly at the boundaries that were wrong.
+   */
+  private scopedRef(p: Combinator<unknown>, target: Combinator<unknown>): number {
+    const ip = this.node(target).ip
+    // `rules()` stamps `grammarTrivia` on the map entry, which for a proxied rule
+    // is the REF itself; a composed `winners` entry carries it on the target.
+    const amb = p._meta.grammarTrivia ?? target._meta.grammarTrivia
+    if (amb === undefined || amb === this.activeTrivia) return ip
+    return this.emit(OP_SCOPE, this.triviaSlot(amb), ip)
+  }
+
   node(p: Combinator<unknown>): Emitted {
-    const hit = this.memo.get(p)
+    // See `refMemo`: a reference is memoised per REFERENCING trivia scope, every
+    // other construct once for the program.
+    const lazyRef = (p._def as ParserDef).tag === 'lazy'
+    const scopeKey = lazyRef ? this.activeTrivia : undefined
+    const hit = lazyRef ? this.refMemo.get(p)?.get(scopeKey) : this.memo.get(p)
     if (hit !== undefined) return { ip: hit }
     // Recursion: reserve a trampoline row now, patch its target when the real
     // body lands. One extra indirection per recursive rule, zero per call site.
@@ -540,7 +582,13 @@ class Encoder {
     // on, and the recursion trampolines below are patched with it too.
     const ip = this.covWrap(this.encodeDef(p), this.plan?.rules.get(p), 0)
     this.pending.delete(p)
-    this.memo.set(p, ip)
+    if (lazyRef) {
+      let byScope = this.refMemo.get(p)
+      if (byScope === undefined) { byScope = new Map(); this.refMemo.set(p, byScope) }
+      byScope.set(scopeKey, ip)
+    } else {
+      this.memo.set(p, ip)
+    }
     for (const slot of patches) this.code[slot] = ip
     return { ip }
   }
@@ -1034,14 +1082,14 @@ class Encoder {
         // merged (composed) map, and why the identity guard is required.
         const refName = (p as unknown as { _ruleName?: string })._ruleName
         const winner = refName === undefined ? undefined : this.winners?.[refName]
-        if (winner !== undefined && winner !== p) return this.node(winner).ip
+        if (winner !== undefined && winner !== p) return this.scopedRef(p, winner)
         let resolved: Combinator<unknown>
         try { resolved = d.thunk() }
         catch {
           this.runtimeOnly.add('ref() used before .define() — the slot is run live')
           return this.emit(OP_LIVE, this.fn(p, null))
         }
-        return this.node(resolved).ip
+        return this.scopedRef(p, resolved)
       }
       // `not.ts:50` fails with EXACTLY `not(<child tag>)`, at the assertion's own
       // position — the same shape `OP_PEEK` below carries. The table emitted no
