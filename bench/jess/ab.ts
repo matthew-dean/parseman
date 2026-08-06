@@ -80,7 +80,7 @@
  * not ceremony: the first working version of this harness left the head legs
  * untagged and sharing one module graph, and `--self` read 3.70x. See buildLeg.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -114,6 +114,34 @@ const argValue = (flag: string): string | null =>
  * quoting any number from here on a machine or a node version this has not been
  * run on.
  */
+/**
+ * TWO GRAPHS, AND NOTHING ELSE — the only configuration measured to be unbiased.
+ *
+ * The rich configuration realises seven module graphs per dialect (the gate pair,
+ * two control pairs, the identity interpreter). MEASURED, that is the confound:
+ *
+ *   2 graphs (head, ref)            benchmark.less  33.11 / 33.87 ms   0.98x
+ *   6 graphs (3 per side)           benchmark.css   h1 12.6  h3 12.7  h4 15.5
+ *                                                   r1 15.2  r2 15.3  r3 15.1
+ *
+ * `h4` is a HEAD leg on HEAD's own `src/`, and it runs with the reference legs,
+ * not with its own side. So the split is not head-versus-reference and not the
+ * `.cache` copy: graphs realised beyond the first couple run ~18-20% slower, and
+ * the effect is stable across rounds and does NOT move when the reference group is
+ * constructed first (0.837x head-first, 0.856x ref-first — the same answer).
+ *
+ * Since the head leg was always among the earliest graphs and the reference legs
+ * later, EVERY ratio this harness printed carried that bias, in the direction that
+ * makes HEAD look faster. `--self` read 0.820x-0.839x on css and both less
+ * fixtures with every control inside 1.9%.
+ *
+ * So the timed comparison gets its own process with exactly two graphs in it. The
+ * noise floor is a SEPARATE `--self --two-graph` run of the identical shape rather
+ * than an in-process control leg, because an in-process control is a third graph
+ * and a third graph is the thing being avoided. Identity checking keeps the rich
+ * mode, where realising an interpreter costs nothing that matters.
+ */
+const TWO_GRAPH = process.argv.includes('--two-graph')
 const SELF = process.argv.includes('--self')
 const cleanHeadSha = (): string => {
   const sha = headSha()
@@ -192,7 +220,40 @@ type Engine = (typeof ENGINES)[number]
 type Entry = Parameters<typeof run>[0]
 type Runner = (entry: Entry, input: string) => ReturnType<typeof run>
 
-type Leg = { entry: Entry; run: Runner; engine: Engine; side: string }
+/**
+ * `provenance` is not decoration — it is the only thing that can distinguish a
+ * release difference from the two sides running DIFFERENT CODE.
+ *
+ * A leg is a triple: which `src/` compiled it, which engine it ended up in, and
+ * what `run()` it is driven by. All three were previously invisible, and each of
+ * them has already been wrong once here: a chimera leg (`h<n>` given a non-HEAD
+ * `src`), a mixed-engine pair, and a stale reference pointer. `assertSideMatchesSrc`
+ * catches the first by construction; the other two are only catchable by LOOKING,
+ * so every row now prints what it actually ran.
+ *
+ * `shape` is the discriminator that costs nothing and settles the "is one side on
+ * the emitted engine and the other on the closure engine?" question outright: an
+ * emitted entry is a generated function of some size, an interpreted one is a
+ * combinator object, and a table entry is a closure over encoded rows. Two legs
+ * whose shapes differ are not comparable no matter what the engine LABELS say.
+ */
+type Leg = {
+  entry: Entry
+  run: Runner
+  engine: Engine
+  side: string
+  /** `realpath` of the `src/` this leg's compiler and `run()` came from. */
+  srcReal: string
+  /** `typeof` the entry, plus its source size when it is a function. */
+  shape: string
+}
+
+/** What the entry actually IS, in a form two legs can be compared on. */
+function shapeOf(entry: unknown): string {
+  if (typeof entry === 'function') return `fn ${(entry as { name: string }).name || '(anon)'} ${String(entry).length} B`
+  if (typeof entry === 'object' && entry !== null) return `obj ${entry.constructor?.name ?? '(null-proto)'} keys=${Object.keys(entry).length}`
+  return typeof entry
+}
 
 type TableModule = {
   encodeTable: (rules: Record<string, unknown>, settings: unknown) => unknown
@@ -254,11 +315,13 @@ async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: str
   const name = exportName(dialect, 'ast')
   const { run: runner } = await import(`pm-side:${side}:${path.join(src, 'functional/run.ts')}`) as { run: Runner }
 
+  const srcReal = realpathSync(src)
+
   if (engine === 'codegen') {
     const mod = await import(`pm-side:${side}:macro:${grammarPath}`) as Record<string, Record<string, unknown>>
     const entry = mod[name]?.[ENTRY] as Entry
     if (typeof entry !== 'function') throw new Error(`${side} codegen: not a function — the macro did not run`)
-    return { entry, run: runner, engine, side }
+    return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry) }
   }
 
   const mod = await import(`pm-side:${side}:${grammarPath}`) as Record<string, Record<string, unknown>>
@@ -272,7 +335,7 @@ async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: str
   if (engine === 'interpreter') {
     const entry = rules[ENTRY] as Entry
     if (typeof entry === 'function') throw new Error(`${side} interpreter: got a function — macro lowering leaked`)
-    return { entry, run: runner, engine, side }
+    return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry) }
   }
 
   if (!existsSync(path.join(src, 'table', 'encode.ts'))) {
@@ -284,7 +347,7 @@ async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: str
   const enc = await import(`pm-side:${side}:${path.join(src, 'table/encode.ts')}`) as Pick<TableModule, 'encodeTable'>
   const exec = await import(`pm-side:${side}:${path.join(src, 'table/exec.ts')}`) as Pick<TableModule, 'tableRules'>
   const entry = exec.tableRules(enc.encodeTable(rules, VARIANT_SETTINGS.ast))[ENTRY] as Entry
-  return { entry, run: runner, engine, side }
+  return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry) }
 }
 
 /** THE PROTOCOL, printed with the numbers. A figure without it is not quotable. */
@@ -305,15 +368,21 @@ function protocol(headEngine: Engine, refEngine: Engine, refSha: string): string
     `  process     ONE process, sides interleaved in adjacent order-alternated pairs`,
     `              (bench/ab-harness.ts interleave). Separate process launches on this hardware read`,
     `              9.4 ms and 26 ms for the same case; nothing survives that.`,
-    `  composition PINNED at exactly two contests — the gate pair and the control — so the legs a`,
-    `              figure was taken beside never change silently. They share one heap; adding a leg`,
-    `              MOVES the others (measured elsewhere: 18% on benchmark.less).`,
+    `  composition THREE hot graphs PER SIDE, symmetric by construction: the gate pair (h1/r1,`,
+    `              used nowhere else) plus one control pair on each side. They share one heap and`,
+    `              adding a leg MOVES the others by ~18% on benchmark.less, so the two sides must`,
+    `              carry the SAME number of legs. They did not: the reference leg was the 'a' side`,
+    `              of both the gate and the control, giving the reference side two hot graphs to`,
+    `              the head side's one, and --self read 0.835x/0.822x on the two less fixtures`,
+    `              against controls of +0.3%/-0.1% — a 17-18% bias flattering HEAD.`,
     `  warmup      ${M.warmup} parses per side before any sample is kept`,
     `  sampling    ${M.rounds} rounds x ${M.runs} runs = ${M.rounds * M.runs} samples per side, ONE parse per repetition, each`,
     `              sample itself the median of ${M.timed} timed repetitions`,
     `  statistic   MEDIAN of the ${M.rounds * M.runs} samples. Not the min, not the mean.`,
-    `  control     two INDEPENDENTLY LOADED reference graphs against each other. Identical code.`,
-    `              Its delta is this run's noise floor; a gap smaller than it is not a result.`,
+    `  control     ONE PER SIDE — two independently loaded graphs of the SAME build against each`,
+    `              other, on the reference side and on the head side. Identical code in both cases.`,
+    `              The WORSE of the two deltas is this run's noise floor; a gap smaller than it is`,
+    `              not a result. A control that is flat on one side and not the other is a finding.`,
     `  cross-check every leg is ALSO timed alone, outside the pairing, and both figures printed.`,
     `              They must agree; when they do not, the pairing changed what was measured and`,
     `              the row says so. A mixed-engine pair once read 5.35 ms for a 19.4 ms leg.`,
@@ -325,6 +394,46 @@ function protocol(headEngine: Engine, refEngine: Engine, refSha: string): string
 function rowOf(leg: Leg, input: string): string[] {
   try { return digestRow(leg.run(leg.entry, input)) }
   catch (e) { return Array.from({ length: COLUMNS.length }, () => `threw:${(e as Error).message.split('\n')[0] ?? ''}`) }
+}
+
+/**
+ * DID THE LEG PARSE THE FILE, or did it stop 218 bytes in?
+ *
+ * `parse ok` used to be `!row[0].startsWith('threw:')` — which reports whether
+ * `run()` THREW, and a failing parse does not throw. It returns `ok: false` with
+ * `span` at the failure position, and the old line printed `parse ok: true` for
+ * it.
+ *
+ * That is not a cosmetic wrong label. `gen-workload.scss` is 287,543 B and HEAD
+ * stops at byte 218 of it; the row read `HEAD 0.1615 ms` against the reference's
+ * `34.64 ms`, printed `1780 MB/s` — computed from the file's FULL size, none of
+ * which was parsed — and ranked it `0.005x`, i.e. as a 200-fold SPEEDUP. It was a
+ * grammar the release had stopped being able to parse, and every part of the row
+ * was consistent with a triumph.
+ *
+ * So acceptance and the consumed-byte count are read off the RunResult directly
+ * and printed on every row, and a row that did not consume its file is refused a
+ * ratio. A throughput figure over bytes nobody looked at is not slow or fast, it
+ * is nothing.
+ */
+type Outcome = { threw: boolean; ok: boolean; consumed: number; at: number; detail: string }
+function outcomeOf(leg: Leg, input: string, bytes: number): Outcome {
+  try {
+    const r = leg.run(leg.entry, input) as unknown as {
+      ok?: boolean; span?: { start?: number; end?: number }
+    }
+    const ok = r.ok === true
+    const consumed = ok ? r.span?.end ?? 0 : 0
+    const at = r.span?.start ?? 0
+    return {
+      threw: false, ok, consumed, at,
+      detail: ok
+        ? consumed >= bytes ? 'parsed in full' : `ACCEPTED only ${consumed} of ${bytes} B`
+        : `FAILED at byte ${at} of ${bytes}`,
+    }
+  } catch (e) {
+    return { threw: true, ok: false, consumed: 0, at: 0, detail: `THREW: ${(e as Error).message.split('\n')[0] ?? ''}` }
+  }
 }
 
 /** The constructor `run()` returns its result in — see {@link identity}. */
@@ -362,16 +471,37 @@ async function measureDialect(
 ): Promise<void> {
   console.log(`\n################  ${dialect.toUpperCase()}  ${MODULE[dialect]}`)
 
+  // THE GATE PAIR — h1 and r1 — and nothing else touches either of them.
   const head = await buildLeg('h1', headEngine, dialect, headSrc)
   const ref = await buildLeg('r1', refEngine, dialect, refSrc)
-  const ref2 = await buildLeg('r2', refEngine, dialect, refSrc)
+  // A CONTROL PAIR PER SIDE. Three hot graphs on each side, symmetric by
+  // construction; see the `contests` comment for the 17-18% this cost while the
+  // reference side carried two hot legs and the head side carried one.
+  const ref2 = TWO_GRAPH ? null : await buildLeg('r2', refEngine, dialect, refSrc)
+  const ref3 = TWO_GRAPH ? null : await buildLeg('r3', refEngine, dialect, refSrc)
+  const head2 = TWO_GRAPH ? null : await buildLeg('h3', headEngine, dialect, headSrc)
+  const head3 = TWO_GRAPH ? null : await buildLeg('h4', headEngine, dialect, headSrc)
   // The third opinion, in its OWN graph. The identity question is three-way —
   // interpreter, HEAD engine, reference engine — and two agreeing engines out of
   // two prove nothing about which is right when they disagree. It gets its own
   // graph because the interpreted fuse mutates recognition pieces in place: built
   // beside the timed head leg it de-optimises it, which is precisely the bias the
   // self-check caught.
-  const interp = headEngine === 'interpreter' ? head : await buildLeg('h2', 'interpreter', dialect, headSrc)
+  // The identity leg is a THIRD graph, so `--two-graph` does not build it and the
+  // three-way check is skipped there. Identity is the rich mode's job; this mode
+  // exists only to produce a millisecond that is not 18% wrong.
+  const interp = headEngine === 'interpreter' || TWO_GRAPH
+    ? head
+    : await buildLeg('h2', 'interpreter', dialect, headSrc)
+
+  // WHAT EACH LEG ACTUALLY IS, before any millisecond is printed. See `Leg`.
+  // A self-check that reads 17% apart on identical code is answered here or not
+  // at all: if the two sides' `src` realpaths or entry shapes differ, that is the
+  // finding, and no amount of re-running the timing will produce a better one.
+  console.log(`    legs (${TWO_GRAPH ? 'TWO-GRAPH mode — the only shape measured to be unbiased' : 'rich mode — see --two-graph'}):`)
+  for (const l of [head, ref, ref2, ref3, head2, head3, interp].filter((l): l is Leg => l !== null)) {
+    console.log(`      ${l.side.padEnd(3)} ${l.engine.padEnd(11)} ${l.shape.padEnd(34)} ${l.srcReal}`)
+  }
 
   for (const rel of FIXTURES[dialect]) {
     const p = path.resolve(JESS_ROOT, rel)
@@ -382,10 +512,20 @@ async function measureDialect(
 
     const rh = rowOf(head, input), rr = rowOf(ref, input), ri = rowOf(interp, input)
     const [ih, ir, ii] = [identity(rh), identity(rr), identity(ri)]
-    const threw = (r: string[]): boolean => r[0]!.startsWith('threw:')
-    if (ih === ir && ih === ii) {
+    // ACCEPTANCE, read off the RunResult rather than inferred from the absence of
+    // a throw. See `outcomeOf` — this line is the one that was lying.
+    const oh = outcomeOf(head, input, bytes)
+    const or = outcomeOf(ref, input, bytes)
+    const oi = outcomeOf(interp, input, bytes)
+    console.log(`    parse:  HEAD ${headEngine} ${oh.detail}`)
+    if (!TWO_GRAPH) console.log(`            HEAD interpreter ${oi.detail}`)
+    console.log(`            ${REF} ${refEngine} ${or.detail}`)
+    if (TWO_GRAPH) {
+      console.log('    identity: NOT CHECKED — the interpreter is a third graph. Run without')
+      console.log('              --two-graph for the three-way check.')
+    } else if (ih === ir && ih === ii) {
       console.log(`    three-way agreement (HEAD ${headEngine} / HEAD interpreter / ${REF} ${refEngine}): YES`)
-      console.log(`    parse ok: ${String(!threw(rh))}   facets: ${FACETS.join(', ')}`)
+      console.log(`    facets: ${FACETS.join(', ')}`)
     } else {
       // A disagreement OUTRANKS every timing number here, and it is named rather
       // than skipped: a fixture the engines get differently must not quietly stop
@@ -397,9 +537,17 @@ async function measureDialect(
       console.log(`    three-way agreement: *** NO *** — ${who}`)
       const differing = FACETS.filter((_f, n) => rh[n + 1] !== rr[n + 1] || rh[n + 1] !== ri[n + 1])
       console.log(`    differing facets: ${differing.join(', ')}`)
-      console.log(`    parse ok: HEAD ${String(!threw(rh))}  interp ${String(!threw(ri))}  ${REF} ${String(!threw(rr))}`)
       console.log('    TIMED ANYWAY, CAVEATED: the sides are not doing identical work, so the')
       console.log('    milliseconds below are indicative of cost and NOT a like-for-like contest.')
+    }
+    // A leg that did not consume the file is not a slower or faster parse of it —
+    // it is not a parse of it. Say so where the ratio would otherwise be read.
+    const bothParsed = oh.consumed >= bytes && or.consumed >= bytes
+    if (!bothParsed) {
+      console.log('    *** NO RATIO IS QUOTABLE FOR THIS ROW: a side did not consume the file.')
+      console.log(`        HEAD consumed ${oh.consumed} B, ${REF} consumed ${or.consumed} B, of ${bytes} B.`)
+      console.log('        The milliseconds below are the cost of REACHING THE FAILURE, and the MB/s')
+      console.log('        figures are computed over bytes that side never looked at.')
     }
     // The container is reported EVERY time, agreement or not: it is the reason
     // `whole` cannot be the verdict across releases, and a reader who does not
@@ -415,16 +563,50 @@ async function measureDialect(
       run: (reps: number) => { for (let n = 0; n < reps; n++) leg.run(leg.entry, input) },
     }]
     const reps = new Map([[rel, 1]])
+    /**
+     * ONE CONTROL PER SIDE, and the gate's legs are not reused by either.
+     *
+     * The composition this replaces was: gate `ref -> head`, control `ref -> ref2`.
+     * Read as a set of hot parsers rather than as two contests, that is THREE hot
+     * codegen graphs on the reference side (r1 twice over, r2) and ONE on the head
+     * side (h1) — because `ref` was the `a` side of BOTH contests. The head leg
+     * therefore ran in a lightly-loaded heap and the reference legs in a crowded
+     * one, and the file's own protocol block already knew what that is worth:
+     * "adding a leg MOVES the others (measured elsewhere: 18% on benchmark.less)".
+     *
+     * MEASURED, on this composition, `--self` — HEAD against a checkout of the SAME
+     * commit, byte-identical `src/`, macro lowerings verified byte-identical, entry
+     * functions the same 888 B — read 0.835x on benchmark.less and 0.822x on
+     * gen-workload.less against controls of +0.3% and -0.1%, and the gap survived
+     * the solo cross-check. A 17-18% instrument bias, in the direction that makes
+     * HEAD look FASTER, sitting under every ratio this harness has ever printed.
+     *
+     * So: three graphs per side, symmetric by construction. The gate pair is h1/r1
+     * and neither appears anywhere else; each side's control is its own untouched
+     * pair. Two noise floors get printed instead of one, which is strictly more
+     * information — a control that is flat on one side and not the other is itself
+     * a finding, and the old single control could not express it.
+     *
+     * This costs two more graphs, and the absolute milliseconds rise accordingly
+     * (~18% for everyone, measured). That is the correct trade: the ratio is what
+     * this harness exists to produce, and it is now taken between two legs that
+     * were treated identically.
+     */
     const contests: Contest[] = [
       { label: 'ref -> head', a: mk(ref, `${REF} ${refEngine}`), b: mk(head, `HEAD ${headEngine}`) },
-      { label: 'CONTROL ref -> ref', a: mk(ref, `${REF} ${refEngine}`), b: mk(ref2, `${REF} ${refEngine}`) },
     ]
+    if (ref2 !== null && ref3 !== null && head2 !== null && head3 !== null) {
+      contests.push(
+        { label: 'CONTROL ref -> ref', a: mk(ref2, `${REF} ${refEngine}`), b: mk(ref3, `${REF} ${refEngine}`) },
+        { label: 'CONTROL head -> head', a: mk(head2, `HEAD ${headEngine}`), b: mk(head3, `HEAD ${headEngine}`) },
+      )
+    }
     const out = interleave(contests, reps, M)
     const g = out.get('ref -> head')!
-    const c = out.get('CONTROL ref -> ref')!
+    const c = out.get('CONTROL ref -> ref')
+    const ch = out.get('CONTROL head -> head')
     const rm = median(g.get(`ref|${rel}`)!)
     const hm = median(g.get(`head|${rel}`)!)
-    const ctlA = median(c.get(`ref|${rel}`)!), ctlB = median(c.get(`head|${rel}`)!)
     console.log('')
     console.log(`    ONE PARSE, median of ${M.rounds * M.runs} samples:`)
     // Sub-millisecond fixtures print more places rather than a row of `0.00 ms`.
@@ -433,19 +615,47 @@ async function measureDialect(
     console.log(`      HEAD    ${headEngine.padEnd(11)} ${ms(hm)} ms   ${(bytes / hm / 1000).toFixed(2)} MB/s`)
     console.log(`      ${REF} ${refEngine.padEnd(11)} ${ms(rm)} ms   ${(bytes / rm / 1000).toFixed(2)} MB/s`)
     console.log(`      ratio HEAD/${REF}   ${(hm / rm).toFixed(3)}x   (${sign((hm / rm - 1) * 100)} — negative is HEAD faster)`)
-    const ctl = Math.abs(ctlB / ctlA - 1)
-    console.log(`      CONTROL ref/ref     ${sign((ctlB / ctlA - 1) * 100)}   — this run's noise floor`)
-    if (Math.abs(hm / rm - 1) <= ctl) {
+    if (!bothParsed) console.log('      ^ VOID — see the acceptance lines above. This is not a like-for-like ratio.')
+    // BOTH noise floors. The worst of the two is what the gate is judged against:
+    // a gap smaller than either side's own self-disagreement is not a result.
+    //
+    // In `--two-graph` there is no in-process control BY DESIGN — a control leg is
+    // a third graph, and a third graph is the bias. The floor for this shape comes
+    // from a separate `--self --two-graph` run, and the row says so rather than
+    // printing a floor it did not measure.
+    let ctl = 0
+    if (c !== undefined && ch !== undefined) {
+      const ctlA = median(c.get(`ref|${rel}`)!), ctlB = median(c.get(`head|${rel}`)!)
+      const ctlHA = median(ch.get(`ref|${rel}`)!), ctlHB = median(ch.get(`head|${rel}`)!)
+      ctl = Math.max(Math.abs(ctlB / ctlA - 1), Math.abs(ctlHB / ctlHA - 1))
+      console.log(`      CONTROL ref/ref     ${sign((ctlB / ctlA - 1) * 100)}   — ${REF}-side noise floor`)
+      console.log(`      CONTROL head/head   ${sign((ctlHB / ctlHA - 1) * 100)}   — HEAD-side noise floor`)
+      console.log('      ^ NOTE both controls are taken in a SEVEN-GRAPH process, and graphs realised')
+      console.log('        beyond the first couple run ~18-20% slower. A flat control here does NOT')
+      console.log('        clear the gate ratio; only --two-graph does. See TWO_GRAPH in this file.')
+    } else {
+      console.log('      CONTROL             none in-process — --two-graph deliberately has no third')
+      console.log('        graph. Take the floor from a separate `--self --two-graph` run of this shape.')
+    }
+    if (ctl > 0 && Math.abs(hm / rm - 1) <= ctl) {
       console.log('      ^ the gap is INSIDE the control. That is not a result in either direction.')
     }
 
     // THE PAIRING CROSS-CHECK. See `solo`.
-    const hs = solo(head, input, M), rs = solo(ref, input, M)
+    //
+    // BOTH ORDERS, and the median of the two — because "alone" still has a
+    // position. Timed head-then-ref every time, the head leg always gets the
+    // cleaner heap, so a positional bias would reproduce identically in the solo
+    // figures and be read as CONFIRMING the paired ones. Running it both ways
+    // costs one more pass and removes the only ordering this check had.
+    const hs1 = solo(head, input, M), rs1 = solo(ref, input, M)
+    const rs2 = solo(ref, input, M), hs2 = solo(head, input, M)
+    const hs = median([hs1, hs2]), rs = median([rs1, rs2])
     const drift = (paired: number, alone: number): number => paired / alone - 1
     console.log('')
     console.log('    SAME LEGS, TIMED ALONE — does the pairing agree with itself?')
-    console.log(`      HEAD    ${headEngine.padEnd(11)} ${ms(hs)} ms   paired ${sign(drift(hm, hs) * 100)}`)
-    console.log(`      ${REF} ${refEngine.padEnd(11)} ${ms(rs)} ms   paired ${sign(drift(rm, rs) * 100)}`)
+    console.log(`      HEAD    ${headEngine.padEnd(11)} ${ms(hs)} ms   paired ${sign(drift(hm, hs) * 100)}   (first ${ms(hs1)}, second ${ms(hs2)})`)
+    console.log(`      ${REF} ${refEngine.padEnd(11)} ${ms(rs)} ms   paired ${sign(drift(rm, rs) * 100)}   (first ${ms(rs1)}, second ${ms(rs2)})`)
     // A tolerance of 5x the control, and no tighter: a solo leg genuinely runs in
     // a different GC and cache environment, so small drift is expected and is not
     // what this is looking for. It is looking for the 3.6x kind.
