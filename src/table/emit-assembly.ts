@@ -120,6 +120,16 @@ if(needsDeferredTriviaCommit(ctx)){const sc=scanTrivia(input,cur,ctx);sc.commit(
 return advanceTrivia(input,cur,ctx)
 }
 function _pushLeaf(ctx,value,s,e){pushCstLeaf(ctx,{_tag:'leaf',value,span:{start:s,end:e}})}
+function _pushLeafBuf(ctx,value,s,e){
+const l={_tag:'leaf',value,span:{start:s,end:e}}
+const b=ctx._cstBuf
+if(b.ch!==undefined)b.ch.push(l)
+else if(b.single!==undefined){b.ch=[b.single,l];b.single=undefined}
+else b.single=l
+if(b.raw!==undefined)b.raw.push(l)
+else if(b.rawSingle!==undefined){b.raw=[b.rawSingle,l];b.rawSingle=undefined}
+else b.rawSingle=l
+}
 function _accSet(ax,acc){
 if(ax===undefined||ax.length===0)return acc
 if(acc===undefined)return ax.slice()
@@ -495,9 +505,18 @@ return skipTriviaScanned(${sc},input,cur,ctx)}`)
      * and eliding them on `hostCst === false` would be a wrong tree, not a fast
      * one. Off-label the test is INLINED rather than called, which is sound
      * everywhere and costs nothing.
+     *
+     * THE PUSH ITSELF is two cross-module calls — `pushCstLeaf` to decide on
+     * `trackLines`, then `pushCstChild` to decide which collector is live — on
+     * the most-executed path there is. Both decisions are settled here:
+     * `trackLines` is `RunCfg`, and an open `_cstBuf` is the label. `_pushLeafBuf`
+     * is that pair with both branches taken, and it takes no piece.
      */
-    const captureLeaf = (expr: string): string =>
-      L.buf ? expr : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${expr}`
+    const pushLeaf = L.buf && !cfg.trackLines ? '_pushLeafBuf' : '_pushLeaf'
+    const captureLeaf = (value: string): string => {
+      const call = `${pushLeaf}(ctx,${value},pos,e)`
+      return L.buf ? call : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${call}`
+    }
     switch (op) {
       case OP_LIT:
       case OP_LIT_TRACK: {
@@ -514,7 +533,7 @@ return skipTriviaScanned(${sc},input,cur,ctx)}`)
         return `${head}
 if(${test}){
 const e=pos+${s.length}
-${captureLeaf(`_pushLeaf(ctx,${q(s)},pos,e)`)}
+${captureLeaf(q(s))}
 ${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
 return ${q(s)}
 }
@@ -534,7 +553,7 @@ const m=${re}.exec(input)
 if(m!==null){
 const v=m[0]
 const e=pos+v.length
-${captureLeaf('_pushLeaf(ctx,v,pos,e)')}
+${captureLeaf("v")}
 ${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
 return v
 }
