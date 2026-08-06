@@ -126,7 +126,8 @@
     "speed:jess": "node --import ./bench/jess/register.mjs bench/jess/speed.ts",
     "load:jess": "node --import ./bench/jess/register.mjs bench/jess/load.ts",
     "fixture:jess": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts",
-    "bench:less": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts less"
+    "bench:less": "node --import ./bench/jess/register.mjs bench/jess/fixture.ts less",
+    "bench:jess:ab": "node --import ./bench/jess/ab-register.mjs bench/jess/ab.ts"
   },
   "keywords": [
     "parser",
