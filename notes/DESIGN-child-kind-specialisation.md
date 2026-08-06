@@ -216,6 +216,18 @@ cutover, and it is a small fraction of that coverage.
 Three artefacts, kept strictly separate. The design's whole discipline is that
 nothing leaks between them.
 
+> **PSEUDO-CODE — ILLUSTRATIVE, NOT LITERAL.** The block below sketches the owner's
+> statement of the shape. It is not the emitted form, not an API, and not a naming
+> proposal. `link`, `make`, `_s0` and `opts` are stand-ins for *roles* — resolve a
+> binding, compose the bindings, a bound child, the resolved option set — and the
+> real spellings, signatures and emission strategy are what §2–§5 work out. Do not
+> implement this block; implement the units.
+>
+> What IS load-bearing here, and survives whatever the spelling turns out to be:
+> each child is a **named binding, not an array slot**; the option branch happens
+> **once, in `link`**, never on the parse path; and each call site names **one**
+> binding in emitted source so it is a distinct FunctionLiteral (§0.3).
+
 ```
 _s0 = link('s0', opts)      // resolve this binding to a static piece — ONCE, at run start
 _s1 = link('s1', opts)
