@@ -35,6 +35,43 @@ export function ref<T>(): Combinator<T> & { define(p: Combinator<T>): void } {
     },
     parse(input: string, pos: number, ctx: ParseContext): ParseResult<T> {
       if (!resolved) throw new Error('ref<T>() used before .define() was called')
+      // A RULE CARRIES ITS OWN AMBIENT TRIVIA — see `rules()` in parser.ts, which
+      // stamps `grammarTrivia` on EVERY rule precisely so that entering any one of
+      // them installs it. Reading it only at the parse ENTRY (grammar.ts) made the
+      // interpreter scope trivia DYNAMICALLY: a rule referenced from underneath a
+      // `noTrivia(...)` ran without trivia, so its meaning depended on its caller.
+      // Codegen never had that behaviour — it binds each rule's trivia scanner at
+      // COMPILE time (the emitted `_tf0(input, cur, ctx, 1)` before every sequence
+      // boundary), so a `g.Foo` reference always runs under Foo's own scope.
+      //
+      // The two engines therefore parsed DIFFERENT LANGUAGES, and jess's Less
+      // grammar sits exactly on the seam: `StandardDeclaration` wraps its value in
+      // `noTrivia(...)` and the `!important` tail lives in the referenced rule
+      // `ValueListWithPriority`, so the interpreter and both table drivers could not
+      // cross the space in `color: red !important`. That one construct truncated a
+      // 107 KB stylesheet at 68.5% while reporting `ok: true` with no errors.
+      // Codegen shipped through 0.44-0.46 and was right; 0.47 made the table the
+      // shipping engine and the divergence became the product.
+      //
+      // ONLY WHERE THE SCOPE WAS CLEARED, not wherever it merely differs. The
+      // broader form (`ctx.trivia !== gt`) also OVERRIDES a caller that set a
+      // different live trivia, and that measurably broke recognition: over jess's
+      // four corpora it regressed `@less/test-data`'s `selectors.less` from 3791
+      // bytes to 1784. A caller running under its own live trivia is making a
+      // deliberate choice; a caller that CLEARED it is the `noTrivia(...)` case this
+      // fixes. Restricting to the cleared case keeps every repair and drops that
+      // regression.
+      //
+      // Hot path is an `undefined` check plus one `undefined` compare.
+      const gt = meta.grammarTrivia
+      if (gt !== undefined && ctx.trivia === undefined) {
+        const savedTrivia = ctx.trivia
+        const savedLabels = ctx.triviaKindLabels
+        ctx.trivia = gt
+        ctx.triviaKindLabels = gt._meta.triviaKindLabels
+        try { return resolved.parse(input, pos, ctx) }
+        finally { ctx.trivia = savedTrivia; ctx.triviaKindLabels = savedLabels }
+      }
       return resolved.parse(input, pos, ctx)
     },
     define(p: Combinator<T>): void {
