@@ -68,7 +68,6 @@ import { balanced, scanTo } from '../combinators/scanTo.ts'
 import { buildFieldMap } from '../compiler/fields.ts'
 import { asciiFoldKey } from '../combinators/dispatch.ts'
 import { projectChild, unwrapChild } from '../combinators/node.ts'
-import { asciiFoldEq } from '../combinators/literal.ts'
 import { cstOutputHost } from '../compiler/build-arity.ts'
 import { consumeTrivia } from '../combinators/trivia-skip.ts'
 import {
@@ -233,11 +232,33 @@ export type RunCfg = {
    * the two assemblies are identical work and the extra bit costs one cache slot.
    */
   readonly coverage: boolean
+  /**
+   * `ctx._probe !== undefined` — is THIS parse feeding a completions probe?
+   *
+   * FIXED FOR THE LIFETIME OF A PARSE, on exactly the evidence `tolerant` is
+   * held to. The two writers both install it BEFORE the parse begins and never
+   * during — `combinators/grammar.ts:213` (built in `run()`'s prologue when
+   * `recover` is set) and `combinators/completions.ts:38`. The single mid-parse
+   * mutation is `recovery/scan.ts:29`, which CLEARS it for the duration of a
+   * sentinel probe and restores it in `finally`; a sentinel is a
+   * `firstSetSentinel` char-class combinator, never an assembled rule, so no
+   * piece runs under the cleared value. Even if one did the selection would be
+   * the RIGHT one — a sentinel probe must fail fast, and it would get the
+   * strict assembly.
+   *
+   * It is here for `OP_GATE`, which is the only piece that reads it on a
+   * SUCCESS path. The six leaf sites read it after their own `return`, on the
+   * failure path only, and are deliberately left alone: selecting a second body
+   * per literal length to remove a failure-path test would double the runtime's
+   * literal bodies to buy nothing measurable.
+   */
+  readonly probe: boolean
 }
 
-/** The cfg key an assembly is cached under. Four bits, so at most sixteen assemblies. */
+/** The cfg key an assembly is cached under. Five bits, so at most thirty-two assemblies. */
 function cfgKey(c: RunCfg): number {
-  return (c.hostCst ? 1 : 0) | (c.trackLines ? 2 : 0) | (c.tolerant ? 4 : 0) | (c.coverage ? 8 : 0)
+  return (c.hostCst ? 1 : 0) | (c.trackLines ? 2 : 0) | (c.tolerant ? 4 : 0)
+    | (c.coverage ? 8 : 0) | (c.probe ? 16 : 0)
 }
 
 export type Assembly = {
@@ -662,6 +683,51 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const s = k[code[ip + 1]!] as string
         const len = s.length
         const xf = fx[code[ip + 2]!] as string[]
+        // LENGTH IS TABLE DATA, so the COMPARE is chosen here rather than
+        // delegated to a builtin that has to rediscover it. See `litBodyNote`.
+        if (len === 1) {
+          const c0 = s.charCodeAt(0)
+          return (input, pos, ctx) => {
+            if (input.charCodeAt(pos) === c0) {
+              const e = pos + 1
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
+              END = e
+              return s
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
+        if (len === 2) {
+          const c0 = s.charCodeAt(0), c1 = s.charCodeAt(1)
+          return (input, pos, ctx) => {
+            if (input.charCodeAt(pos) === c0 && input.charCodeAt(pos + 1) === c1) {
+              const e = pos + 2
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
+              END = e
+              return s
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
+        if (len === 3) {
+          const c0 = s.charCodeAt(0), c1 = s.charCodeAt(1), c2 = s.charCodeAt(2)
+          return (input, pos, ctx) => {
+            if (input.charCodeAt(pos) === c0 && input.charCodeAt(pos + 1) === c1
+              && input.charCodeAt(pos + 2) === c2) {
+              const e = pos + 3
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
+              END = e
+              return s
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
         return (input, pos, ctx) => {
           if (input.startsWith(s, pos)) {
             const e = pos + len
@@ -679,6 +745,52 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const s = k[code[ip + 1]!] as string
         const len = s.length
         const xf = fx[code[ip + 2]!] as string[]
+        if (len === 1) {
+          const c0 = s.charCodeAt(0)
+          return (input, pos, ctx) => {
+            if (input.charCodeAt(pos) === c0) {
+              const e = pos + 1
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
+              trackLinesInto(ctx, input, e)
+              END = e
+              return s
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
+        if (len === 2) {
+          const c0 = s.charCodeAt(0), c1 = s.charCodeAt(1)
+          return (input, pos, ctx) => {
+            if (input.charCodeAt(pos) === c0 && input.charCodeAt(pos + 1) === c1) {
+              const e = pos + 2
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
+              trackLinesInto(ctx, input, e)
+              END = e
+              return s
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
+        if (len === 3) {
+          const c0 = s.charCodeAt(0), c1 = s.charCodeAt(1), c2 = s.charCodeAt(2)
+          return (input, pos, ctx) => {
+            if (input.charCodeAt(pos) === c0 && input.charCodeAt(pos + 1) === c1
+              && input.charCodeAt(pos + 2) === c2) {
+              const e = pos + 3
+              if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
+              trackLinesInto(ctx, input, e)
+              END = e
+              return s
+            }
+            ctx._fe = pos; ctx._fx = xf
+            if (ctx._probe !== undefined) failAt(ctx, xf, pos)
+            return FAIL
+          }
+        }
         return (input, pos, ctx) => {
           if (input.startsWith(s, pos)) {
             const e = pos + len
@@ -739,11 +851,33 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const xf = fx[code[ip + 2]!] as string[]
         // The track/no-track choice was a per-row `code[ip] === OP_LIT_CI_TRACK`
         // re-read in `exec.ts`. It is a property of the ROW, so it is resolved here.
+        // ASCII FOLD, one char at a time, WITHOUT the slice.
+        //
+        // `asciiFoldEq(input.slice(pos, e), s)` allocated a string on every
+        // ATTEMPT — including the failures, which is where a case-insensitive
+        // literal spends most of its executions (it is nearly always an arm of a
+        // choice). The chain compares in place and allocates only the value it
+        // is about to hand back, so the failure path allocates nothing at all.
+        //
+        // The semantics are `asciiFoldEq`'s, exactly: fold only A-Z (65-90) on
+        // BOTH sides, compare code unit by code unit. Past end-of-input
+        // `charCodeAt` is NaN, which folds to NaN and compares unequal — the
+        // same answer `asciiFoldEq` gave via its short-slice length test.
+        const fold = (c: number): number => (c >= 65 && c <= 90 ? c + 32 : c)
+        const foldedLit: number[] = []
+        for (let i = 0; i < len; i++) foldedLit.push(fold(s.charCodeAt(i)))
+        const matchesFolded = (input: string, pos: number): boolean => {
+          for (let i = 0; i < len; i++) {
+            if (fold(input.charCodeAt(pos + i)) !== foldedLit[i]!) return false
+          }
+          return true
+        }
         if (op === OP_LIT_CI_TRACK) {
           return (input, pos, ctx) => {
             const e = pos + len
-            const matched = input.slice(pos, e)
-            if (asciiFoldEq(matched, s)) {
+            if (matchesFolded(input, pos)) {
+              // Yields the INPUT's casing (`literal.ts:86`), not the literal's.
+              const matched = input.slice(pos, e)
               if (cstCaptureActive(ctx)) pushLeaf(ctx, matched, pos, e)
               trackLinesInto(ctx, input, e)
               END = e
@@ -756,9 +890,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         }
         return (input, pos, ctx) => {
           const e = pos + len
-          // Yields the INPUT's casing (`literal.ts:86`), not the literal's.
-          const matched = input.slice(pos, e)
-          if (asciiFoldEq(matched, s)) {
+          if (matchesFolded(input, pos)) {
+            // Yields the INPUT's casing (`literal.ts:86`), not the literal's.
+            const matched = input.slice(pos, e)
             if (cstCaptureActive(ctx)) pushLeaf(ctx, matched, pos, e)
             END = e
             return matched
@@ -799,12 +933,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const cls = cc[code[ip + 1]!]!
         const xf = fx[code[ip + 3]!] as string[]
         const child = link(code[ip + 2]!)
+        // SKIPPED ENTIRELY UNDER A PROBE / TOLERANT RECOVERY, exactly as the
+        // interpreter skips it (`node.ts:239`, `attempt.ts:22`): the swallowed
+        // inner failure is what feeds a completions probe, so a fail-fast that
+        // never enters the body silently narrows `completionsAt` to the openers
+        // it could see.
+        //
+        // Both halves of that condition are per-PARSE options, so the gate is
+        // resolved HERE. Under either the gate is a no-op that forwards to the
+        // child, and an assembly that forwards is better expressed as the child
+        // itself: those assemblies drop the closure AND its call frame. The
+        // strict assembly gets a body whose only test is the `classHas` the gate
+        // exists for — the success path no longer reads `_probe` or `_tolerant`
+        // at all, which is two context loads per gate execution removed (css has
+        // 13 `GATE` rows, less 22, json none).
+        if (cfg.tolerant || cfg.probe) return child
         return (input, pos, ctx) => {
-          // SKIPPED UNDER A PROBE / TOLERANT RECOVERY, exactly as the interpreter
-          // skips it (`node.ts:239`, `attempt.ts:22`): the swallowed inner failure
-          // is what feeds a completions probe, so a fail-fast that never enters the
-          // body silently narrows `completionsAt` to the openers it could see.
-          if (ctx._probe === undefined && !ctx._tolerant && !classHas(cls, lead(input, pos))) {
+          if (!classHas(cls, lead(input, pos))) {
             ctx._fe = pos; ctx._fx = xf
             return FAIL
           }
@@ -2386,6 +2531,10 @@ export class AssemblyCache {
     undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined,
     undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined,
   ]
 
   constructor(prog: TableProgram) {
@@ -2416,10 +2565,12 @@ export class AssemblyCache {
     const trackLines = ctx.trackLines === true
     const tolerant = ctx._tolerant === true
     const coverage = ctx._grammarCoverage !== undefined
-    const key = (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0) | (coverage ? 8 : 0)
+    const probe = ctx._probe !== undefined
+    const key = (hostCst ? 1 : 0) | (trackLines ? 2 : 0) | (tolerant ? 4 : 0)
+      | (coverage ? 8 : 0) | (probe ? 16 : 0)
     const hit = this.byCfg[key]
     if (hit !== undefined) return hit
-    const made = assemble(this.t, this.prog, { hostCst, trackLines, tolerant, coverage })
+    const made = assemble(this.t, this.prog, { hostCst, trackLines, tolerant, coverage, probe })
     this.byCfg[key] = made
     return made
   }

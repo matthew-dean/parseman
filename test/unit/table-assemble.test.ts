@@ -72,9 +72,9 @@ describe('table assembler', () => {
     const t = resolveTable(prog)
     const reachable = reachableIps(prog)
     for (const cfg of [
-      { hostCst: false, trackLines: false, tolerant: false , coverage: false },
-      { hostCst: false, trackLines: true, tolerant: false , coverage: false },
-      { hostCst: false, trackLines: false, tolerant: true , coverage: false },
+      { hostCst: false, trackLines: false, tolerant: false , coverage: false, probe: false },
+      { hostCst: false, trackLines: true, tolerant: false , coverage: false, probe: false },
+      { hostCst: false, trackLines: false, tolerant: true , coverage: false, probe: false },
     ]) {
       const asm = assemble(t, prog, cfg)
       for (const ip of asm.reached) {
@@ -87,9 +87,9 @@ describe('table assembler', () => {
 
   it('caches ONE assembly per option set, not one per parse', () => {
     const cache = new AssemblyCache(expandCompact(encodeTable(g, {})))
-    const a1 = cache.for({ hostCst: false, trackLines: false, tolerant: false , coverage: false })
-    const a2 = cache.for({ hostCst: false, trackLines: false, tolerant: false , coverage: false })
-    const b = cache.for({ hostCst: false, trackLines: true, tolerant: false , coverage: false })
+    const a1 = cache.for({ hostCst: false, trackLines: false, tolerant: false , coverage: false, probe: false })
+    const a2 = cache.for({ hostCst: false, trackLines: false, tolerant: false , coverage: false, probe: false })
+    const b = cache.for({ hostCst: false, trackLines: true, tolerant: false , coverage: false, probe: false })
     expect(a1, 'the same option set must reuse its assembly').toBe(a2)
     expect(b, 'a different option set is a different assembly').not.toBe(a1)
   })
@@ -100,7 +100,7 @@ describe('table assembler', () => {
     // assembly proportional to the GRAMMAR rather than to the reference count.
     const prog = expandCompact(encodeTable(g, {}))
     const t = resolveTable(prog)
-    const asm = assemble(t, prog, { hostCst: false, trackLines: false, tolerant: false , coverage: false })
+    const asm = assemble(t, prog, { hostCst: false, trackLines: false, tolerant: false , coverage: false, probe: false })
     // The reached set is keyed by offset, so a double-link would be invisible in
     // its size — instead assert the invariant that makes it impossible: every
     // reached offset is distinct by construction (it is a Set) AND the count
