@@ -568,6 +568,11 @@ The next 0.48 experiments are therefore structural, not helper micro-tuning:
    roughly 6.9% self time).
 4. Emit site-specialized trivia/range/lead scans rather than adding generic
    runtime branches.
+5. Hoist `when(matches(/…/), …)` regex construction into the table/assembly
+   build phase. The current dispatch selector constructs a `RegExp` for each
+   routed value in all three engines; `matches()` already rejects `g`/`y`, so a
+   stable compiled regex is safe. This is allocation hygiene, not an explanation
+   for the Jess regression (Jess does not use this matcher).
 
 ---
 
