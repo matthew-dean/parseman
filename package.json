@@ -78,6 +78,7 @@
     "lint": "oxlint --ignore-path .oxlintignore src test examples bench",
     "check:control-bytes": "node scripts/check-control-bytes.mjs",
     "check:invariants": "node scripts/check-invariants.mjs",
+    "check:differentials": "node scripts/check-differentials.mjs",
     "bench": "node --import tsx/esm bench/run.ts",
     "bench:parseman": "node --import tsx/esm bench/parseman.ts",
     "bench:composeleaf": "node --import tsx/esm bench/composeleaf-firstset.ts",

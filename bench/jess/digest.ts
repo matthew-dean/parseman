@@ -19,6 +19,7 @@
  * nothing about the other three — which is how a dead-value analysis could stop
  * running on every tracking grammar without a single gate noticing.
  */
+import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
@@ -89,6 +90,16 @@ async function main(): Promise<void> {
   if (engine === 'compiled' && !isFn) throw new Error("engine 'compiled' got a combinator, not a codegen rule — the macro did not run")
   if (engine === 'interpreted' && isFn) throw new Error("engine 'interpreted' got a codegen rule — PM_MACRO leaked in")
 
+  // A `cst` GRAMMAR REFUSES TO RUN WITHOUT A HOST. `host-mode.ts` throws on the
+  // first node, so every row of a hostless `cst`/`cst-lines` leg was the SAME
+  // `threw:` string — 87 of 87 for css, and a leg whose every row is identical
+  // agrees with any other leg that is equally dead. Two of the four variants
+  // this file exists to cover were therefore vacuous in every engine, and a
+  // planted defect in any of them would have moved zero rows. `emit-identity-one.ts`
+  // has passed a host since the day it was written; this is the same line.
+  // The `ast` variants take no host by construction.
+  const opts = VARIANT_SETTINGS[variant].hostMode === 'cst' ? { build: cstBuildHost() } : {}
+
   // `--raw <substring>`: print the READABLE failure report for matching files
   // instead of digests. A digest says two engines disagree; only this says what
   // about, and every claim that one engine is the wrong one is argued from it.
@@ -98,7 +109,7 @@ async function main(): Promise<void> {
     for (const f of corpus(dialect)) {
       if (!f.name.includes(needle)) continue
       try {
-        const r = run(entry, f.input)
+        const r = run(entry, f.input, opts)
         console.log(JSON.stringify({
           file: f.name, engine, ok: r.ok, span: r.span, unconsumedFrom: r.unconsumedFrom,
           expected: r.expected, errorCount: r.errors.length,
@@ -112,7 +123,7 @@ async function main(): Promise<void> {
   const lines: string[] = [`# ${dialect}\t${engine}\t${variant}\t${COLUMNS.join('\t')}`]
   for (const f of corpus(dialect)) {
     let cells: string[]
-    try { cells = digestRow(run(entry, f.input)) }
+    try { cells = digestRow(run(entry, f.input, opts)) }
     catch (e) { cells = [`${THREW}: ${(e as Error).message.split('\n')[0] ?? ''}`] }
     lines.push(`${f.name}\t${cells.join('\t')}`)
   }
