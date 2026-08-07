@@ -14,7 +14,7 @@
  *  - the caller pairs an A/A control (the same config measured twice) so the noise
  *    floor is measured, not assumed.
  */
-import { buildSites, wrapSites, makeCtx } from './pieces.mjs'
+import { buildSites, wrapSites, wrapSitesIndirect, makeCtx } from './pieces.mjs'
 
 const WARMUP_ROUNDS = 10
 const REPS = 11
@@ -26,12 +26,12 @@ function median(xs) {
 }
 
 export function measure(cfg) {
-  const { kind, n, shapes, captures, chain, wrapper, callSites, iters } = cfg
-  const built = buildSites(kind, n, shapes, captures, chain)
+  const { kind, n, shapes, captures, chain, wrapper, callSites, leafPad, iters } = cfg
+  const built = buildSites(kind, n, shapes, captures, chain, leafPad)
   let sites = built.sites
   let wrapperBytes = 0
   if (wrapper) {
-    const w = wrapSites(sites)
+    const w = wrapper === 'indirect' ? wrapSitesIndirect(sites) : wrapSites(sites)
     sites = w.wrapped
     wrapperBytes = w.bytes
   }

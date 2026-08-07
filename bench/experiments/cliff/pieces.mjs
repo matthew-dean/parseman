@@ -49,6 +49,48 @@ export function makeLeaf(text, shapeId) {
   return base
 }
 
+/**
+ * A leaf whose BYTECODE SIZE is controllable, for bracketing V8's inlining budgets
+ * (--max-inlined-bytecode-size-small=27, --max-inlined-bytecode-size=460,
+ * --max-inlined-bytecode-size-cumulative=920, --max-inlined-bytecode-size-absolute=4600).
+ *
+ * The padding sits behind `if (pos < 0)`, which never holds for a real parse and which
+ * TurboFan cannot fold away, so BYTECODE grows while EXECUTED WORK stays constant. A
+ * size sweep that also changed the work per op would price the work, not the budget.
+ *
+ * Generated source (hence `new Function`) because bytecode size is the independent
+ * variable here and there is no other way to dial it. The generated leaf is otherwise
+ * byte-for-byte the same shape as `makeLeaf`'s.
+ */
+export function makeSizedLeaf(text, shapeId, pad) {
+  const padSrc = Array.from(
+    { length: pad },
+    (_, j) => `    acc = (acc * 31 + input.charCodeAt(pos + ${j % 7})) | 0`,
+  ).join('\n')
+  const src = `
+const len = text.length
+return {
+  _tag: 'literal',
+  _meta: { firstSet: text.charCodeAt(0), canMatchNewline: false, isTrivia: false },
+  _def: { tag: 'literal', text },
+  parse(input, pos, _ctx) {
+    if (pos < 0) {
+      let acc = 0
+${padSrc}
+      return acc
+    }
+    if (input.startsWith(text, pos)) {
+      return { ok: true, value: text, span: { start: pos, end: pos + len } }
+    }
+    return FAIL
+  },
+}`
+  // eslint-disable-next-line no-new-func
+  const base = new Function('text', 'FAIL', src)(text, FAIL)
+  if (shapeId !== null) base[SHAPE_NAMES[shapeId % SHAPE_NAMES.length]] = 1
+  return { leaf: base, src }
+}
+
 /** Cheap, never-taken liveness pin for k captured variables (see notes). */
 
 /**
@@ -154,44 +196,52 @@ export function capsFor(k) {
  * chain: when true, the piece's terms are themselves shared pieces (a `choice` site),
  *        so we can see whether the cliff compounds through a call chain.
  */
-export function buildSites(kind, n, shapes, captureCount, chain) {
+export function buildSites(kind, n, shapes, captureCount, chain, leafPad) {
   const caps = capsFor(captureCount)
   const sites = []
   const inputs = []
+  // `leafPad` swaps in size-controlled leaves. A cold twin is kept so its bytecode
+  // size can be read with %DebugPrint: a function that has already tiered up prints
+  // `- code: <Code TURBOFAN_JS>` and NO `- bytecode:` line, so the hot leaf cannot be
+  // asked its own size.
+  const mkLeaf = leafPad
+    ? (t, sid) => makeSizedLeaf(t, sid, leafPad).leaf
+    : (t, sid) => makeLeaf(t, sid)
+  const coldLeafTwin = leafPad ? makeSizedLeaf('a', null, leafPad).leaf : makeLeaf('a', null)
   for (let i = 0; i < n; i++) {
     const shapeId = shapes === 'distinct' ? i : null
     if (kind === 'seq') {
       let terms
       if (chain) {
         terms = [
-          makeChoice([makeLeaf('a', shapeId), makeLeaf('b', shapeId)], caps),
-          makeChoice([makeLeaf('c', shapeId), makeLeaf('d', shapeId)], caps),
-          makeChoice([makeLeaf('e', shapeId), makeLeaf('f', shapeId)], caps),
+          makeChoice([mkLeaf('a', shapeId), mkLeaf('b', shapeId)], caps),
+          makeChoice([mkLeaf('c', shapeId), mkLeaf('d', shapeId)], caps),
+          makeChoice([mkLeaf('e', shapeId), mkLeaf('f', shapeId)], caps),
         ]
       } else {
-        terms = [makeLeaf('a', shapeId), makeLeaf('c', shapeId), makeLeaf('e', shapeId)]
+        terms = [mkLeaf('a', shapeId), mkLeaf('c', shapeId), mkLeaf('e', shapeId)]
       }
       sites.push(makeSeq(terms, caps))
       inputs.push('ace')
     } else if (kind === 'choice') {
       const arms = chain
         ? [
-            makeSeq([makeLeaf('a', shapeId), makeLeaf('c', shapeId)], caps),
-            makeSeq([makeLeaf('b', shapeId), makeLeaf('d', shapeId)], caps),
-            makeSeq([makeLeaf('e', shapeId), makeLeaf('f', shapeId)], caps),
+            makeSeq([mkLeaf('a', shapeId), mkLeaf('c', shapeId)], caps),
+            makeSeq([mkLeaf('b', shapeId), mkLeaf('d', shapeId)], caps),
+            makeSeq([mkLeaf('e', shapeId), mkLeaf('f', shapeId)], caps),
           ]
-        : [makeLeaf('a', shapeId), makeLeaf('b', shapeId), makeLeaf('e', shapeId)]
+        : [mkLeaf('a', shapeId), mkLeaf('b', shapeId), mkLeaf('e', shapeId)]
       sites.push(makeChoice(arms, caps))
       inputs.push(chain ? 'ac' : 'a')
     } else {
       const body = chain
-        ? makeChoice([makeLeaf('a', shapeId), makeLeaf('b', shapeId)], caps)
-        : makeLeaf('a', shapeId)
+        ? makeChoice([mkLeaf('a', shapeId), mkLeaf('b', shapeId)], caps)
+        : mkLeaf('a', shapeId)
       sites.push(makeMany(body, caps))
       inputs.push('aaaaaaaa')
     }
   }
-  return { sites, inputs }
+  return { sites, inputs, coldLeafTwin }
 }
 
 /**
@@ -214,6 +264,36 @@ export function wrapSites(sites) {
     bytes += src.length
     // eslint-disable-next-line no-new-func
     return new Function('inner', src)(site)
+  })
+  return { wrapped, bytes }
+}
+
+/**
+ * Control for `wrapSites`. Identical per-site FunctionLiteral, identical call depth,
+ * identical bytes-per-site to within the index literal — the ONLY difference is that
+ * `inner` arrives through an array element instead of a captured binding, so it is not
+ * a constant TurboFan can fold through.
+ *
+ * If the plain wrapper's win comes from constant-folding the captured `inner` (and
+ * thence the shared body's own captured callee), this variant gives it back. If the
+ * win survives here, the explanation is something else and the constant-folding
+ * reading is wrong.
+ */
+export function wrapSitesIndirect(sites) {
+  let bytes = 0
+  const box = { all: sites }
+  const wrapped = sites.map((site, i) => {
+    const src = `return {
+  _tag: ${JSON.stringify(site._tag)},
+  _meta: box.all[${i}]._meta,
+  _def: box.all[${i}]._def,
+  site: ${i},
+  parse(input, pos, ctx) { return box.all[${i}].parse(input, pos, ctx) },
+}`
+    bytes += src.length
+    void site
+    // eslint-disable-next-line no-new-func
+    return new Function('box', src)(box)
   })
   return { wrapped, bytes }
 }

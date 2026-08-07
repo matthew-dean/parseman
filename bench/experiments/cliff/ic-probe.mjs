@@ -19,7 +19,7 @@
  * the parent.
  */
 import { writeFileSync } from 'node:fs'
-import { buildSites, wrapSites, makeCtx, makeLeaf, makeSeq, makeChoice, makeMany } from './pieces.mjs'
+import { buildSites, wrapSites, wrapSitesIndirect, makeCtx, makeLeaf, makeSeq, makeChoice, makeMany } from './pieces.mjs'
 
 const dbg = (x) => %DebugPrint(x)
 const optStatus = (f) => %GetOptimizationStatus(f)
@@ -52,14 +52,14 @@ const decodeStatus = (v) => STATUS_BITS.filter(([b]) => (v & b) !== 0).map(([, n
 
 const cfg = JSON.parse(process.argv[2])
 const outFile = process.argv[3]
-const { kind, n, shapes, captures = 0, chain = false, wrapper = false, callSites, iters = 80000 } = cfg
+const { kind, n, shapes, captures = 0, chain = false, wrapper = false, callSites, leafPad = 0, iters = 80000 } = cfg
 
-const built = buildSites(kind, n, shapes, captures, chain)
+const built = buildSites(kind, n, shapes, captures, chain, leafPad)
 const innerSites = built.sites
 let sites = innerSites
 let wrapperBytes = 0
 if (wrapper) {
-  const w = wrapSites(innerSites)
+  const w = wrapper === 'indirect' ? wrapSitesIndirect(innerSites) : wrapSites(innerSites)
   sites = w.wrapped
   wrapperBytes = w.bytes
 }
@@ -119,3 +119,10 @@ writeFileSync(outFile, JSON.stringify(record) + '\n')
 dbg(innerSites[0].parse)
 dbg(innerSites[innerSites.length - 1].parse)
 if (wrapper) dbg(sites[0].parse)
+// LAST block: the cold leaf twin. Never called, so it is still interpreted and its
+// DebugPrint carries the `- bytecode: <BytecodeArray[N]>` line the hot leaf has
+// already lost to tier-up. Same source as the hot leaves ⇒ same bytecode size.
+// ONE call first: lazy compilation means an uncalled function has no BytecodeArray at
+// all to print. One call compiles it and is far short of tier-up.
+built.coldLeafTwin.parse('a', 0, ctx)
+dbg(built.coldLeafTwin.parse)

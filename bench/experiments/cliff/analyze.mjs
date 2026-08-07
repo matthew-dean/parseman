@@ -27,6 +27,18 @@ const SHORT = { UNINITIALIZED: 'uninit', MONOMORPHIC: 'mono', POLYMORPHIC: 'poly
 const byKey = new Map(recs.map(r => [r.group + '|' + r.key, r]))
 const series = (group, pred) => recs.filter(r => r.group === group && pred(r)).sort((a, b) => a.n - b.n)
 
+/**
+ * In the `identical` series NOTHING varies with N — that is the finding, not a bug —
+ * so the "which slots move" rule finds nothing to report on. Fall back to the slots
+ * the matching `distinct` series identified, which are the same slots in the same
+ * bytecode, so the identical row is read at exactly the same place.
+ */
+function dispatchSlotsFor(kind, shapes) {
+  const own = dispatchSlots(series('sweep', r => r.kind === kind && r.shapes === shapes))
+  if (own.length) return own
+  return dispatchSlots(series('sweep', r => r.kind === kind && r.shapes === 'distinct'))
+}
+
 function dispatchSlots(rs) {
   // slots present in every member of the series, whose state is not constant
   const states = new Map()
