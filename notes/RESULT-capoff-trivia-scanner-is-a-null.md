@@ -79,24 +79,39 @@ table/table` rows across these 12 legs span −1.5% to +1.9%, centred on zero.
 `g5-ms.ts` reports +12-15% on the same shared `ab-harness.ts`, so the cause is
 that file's contest wiring rather than the shared harness.
 
-## What is NOT established
+## The cross-harness gap — RESOLVED, and it is not a harness fault
 
-The 24% disagreement between this harness's assembler leg (33.5-34.3 ms on
-`benchmark.less`) and `g5-ms.ts`'s (27.3 ms) is **unexplained**. An earlier draft
-of this note blamed the composition tax; that is wrong, and this run's own data
-refutes it. `fixture.ts` re-runs each fixture with the interpreter leg dropped,
-and the assembler moved **−1.5% on css and +7.0% on less** — not −24%, and not
-consistently in either direction. `fixture.ts:277-281` says the same thing
+This section previously read "unexplained". `lane/linker-engine` settled it in
+`249cbd9`, and the answer is that **neither harness was wrong: they measure
+different artifacts.**
+
+- `g5-ms.ts` measures `assembledRules` over the **interpreted fuse's** realised
+  rule map (`grammars.ts:75-85`).
+- `fixture.ts` measures the **macro-fused shipping artifact** (`import('pm-macro:…')`).
+
+Both built in one process, same grammar, same 278 rules, identical tree, identical
+106802 bytes consumed, `benchmark.less`:
+
+| leg | run 1 | run 2 |
+|---|---:|---:|
+| `assembled` (interpreted fuse) | 28.03 ms | 27.65 ms |
+| macro artifact (SHIPPED) | 36.05 ms | 35.91 ms |
+| ratio | 1.286× | 1.299× |
+| macro wins | 0/16 | 0/16 |
+| CONTROL assembled/assembled | 1.8% | −0.1% |
+
+So the shipping artifact is ~29% slower than the same engine over the interpreted
+fuse. That is why this file's assembler leg reads 33.5-34.3 ms where `g5-ms.ts`
+reads 27.3 — and it is a real defect on the path every consumer ships, not a
+measurement artefact.
+
+An earlier draft of this note blamed the composition tax for the gap. **That was
+wrong and this run's own data refutes it**: `fixture.ts` re-runs each fixture with
+the interpreter leg dropped, and the assembler moved −1.5% on css and +7.0% on
+less — not −24%, and not consistently signed. `fixture.ts:277-281` says it
 directly: dropping the interpreter leg moved *the table* by 18% *"while codegen
 did not move at all"*.
 
-The live hypothesis is that the two harnesses build different artifacts —
-`fixture.ts` measures the macro-fused shipping module, `g5-ms.ts` measures
-`assembledRules` over the interpreted fuse's realised rule map — and that the
-legs which agree (both `exec`, both from `encodeTable`) are the identically-built
-ones. Untested here.
-
-Consequently the circulating **2.0-2.3×** table-vs-codegen figure is
-**unexamined**, not refuted and not corroborated. The 1.61-1.63× this harness
-prints is a ratio between two mislabelled columns and should not be quoted
-against it.
+The circulating **2.0-2.3×** table-vs-codegen figure remains **unexamined** —
+neither refuted nor corroborated. The 1.61-1.63× this harness prints is a ratio
+between two mislabelled columns and must not be quoted against it.
