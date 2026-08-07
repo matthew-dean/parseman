@@ -4,6 +4,24 @@ import { fastTriviaScanner, type FastTriviaScanner } from '../combinators/trivia
 import { regex } from '../combinators/regex.ts'
 import { choice } from '../combinators/choice.ts'
 import { many } from '../combinators/repeat.ts'
+import type { EmittedFactory, PoolPlan } from './emit-assembly.ts'
+
+/**
+ * One assembly the BUILD already compiled, so the run does not have to.
+ *
+ * `key` is `cfgKey(RunCfg)` — the five option bits an assembly is specialised
+ * for. `factory` is the emitted scope as a real function literal, taking
+ * `EMITTED_PARAMS` in order. `plan` rebuilds the three data pools the factory
+ * expects (see `PoolPlan`), and `reached` is the emitter's site set, which
+ * `Assembly.reached` publishes and `test/unit/table-assemble-subset.test.ts`
+ * asserts on.
+ */
+export type PrecompiledAssembly = {
+  readonly key: number
+  readonly factory: EmittedFactory
+  readonly plan: PoolPlan
+  readonly reached: readonly number[]
+}
 
 /**
  * The emitted form of a grammar under the table lowering.
@@ -147,6 +165,28 @@ export type TableProgram = {
    * That is the direction this project requires an instrumentation gap to fail in.
    */
   readonly cov?: readonly (readonly [id: string, kind: 0 | 1 | 2 | 3])[]
+  /**
+   * PRE-COMPILED ASSEMBLIES — the whole reason the macro path can promise no
+   * `Function` constructor.
+   *
+   * The table engine's fast path is EMITTED SOURCE (`emit-assembly.ts`): V8's
+   * inline-cache feedback is per function literal, so one literal minting every
+   * piece makes every call site inside it megamorphic. That is a real constraint
+   * and it is not going away. What was wrong is WHO compiles the text. At runtime
+   * `assemble.ts` did it with `new Function`, which a Content-Security-Policy
+   * without `unsafe-eval` forbids — so the two shipped statements that a macro
+   * build is the CSP answer (`docs/guide/modes.md`, `docs/reference/api.md`) were
+   * false, and a CSP consumer silently got the closure engine instead.
+   *
+   * A build-time emitter knows the program, so it can run the SAME emitter and
+   * print the factory as an ordinary function literal in the module it is already
+   * writing. One entry per option set (`RunCfg`, keyed by `cfgKey`); an option set
+   * with no entry falls back to the runtime constructor exactly as before.
+   *
+   * This is DATA in the same sense `fns` is: the program already carries author
+   * callbacks as printed function literals.
+   */
+  readonly asm?: readonly PrecompiledAssembly[]
 }
 
 /**
@@ -260,6 +300,8 @@ export type CompactProgram = {
   readonly so?: readonly number[]
   readonly rv?: 0 | 1
   readonly cv?: readonly (readonly [string, 0 | 1 | 2 | 3])[]
+  /** Pre-compiled assemblies — see `TableProgram.asm`. */
+  readonly a?: readonly PrecompiledAssembly[]
 }
 
 export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
@@ -276,6 +318,7 @@ export function expandCompact(p: TableProgram | CompactProgram): TableProgram {
     ...(p.so === undefined ? {} : { scanSkipOf: p.so }),
     ...(p.rv === undefined ? {} : { rec: p.rv }),
     ...(p.cv === undefined ? {} : { cov: p.cv }),
+    ...(p.a === undefined ? {} : { asm: p.a }),
   }
 }
 
@@ -557,7 +600,17 @@ const SHARED_FIELDS = [
  * would ship one variant's data under every variant's name, and every parse
  * would succeed.
  */
-type FoldClassified = 'code' | 'fns' | 'lines' | 'hostMode' | (typeof SHARED_FIELDS)[number]
+/**
+ * `asm` is classified as DROPPED, and it is the only field in that class.
+ *
+ * A pre-compiled assembly is emitted FROM a `code` stream, and `code` is exactly
+ * what a fold overwrites per variant — so a base assembly is wrong for every
+ * variant but the base, and silently so: it would parse, and parse the base
+ * grammar. Folding therefore happens BEFORE pre-compiling, and `foldPrograms`
+ * refuses an input that already carries one rather than dropping it quietly.
+ */
+type FoldDropped = 'asm'
+type FoldClassified = 'code' | 'fns' | 'lines' | 'hostMode' | FoldDropped | (typeof SHARED_FIELDS)[number]
 type AssertNever<T extends never> = T
 export type FoldExhaustive = AssertNever<Exclude<keyof TableProgram, FoldClassified>>
 
@@ -585,6 +638,16 @@ export function foldPrograms(
   const variants: Record<string, TableDelta> = {}
   for (const name of Object.keys(programs)) {
     const p = programs[name]!
+    // See `FoldDropped`. Refused rather than dropped: a base assembly carried
+    // onto a variant parses the BASE grammar under the variant's name, which no
+    // test that only asks "did it parse" would ever see.
+    if (p.asm !== undefined) {
+      throw new TypeError(
+        `foldPrograms: program ${JSON.stringify(name)} already carries pre-compiled assemblies. `
+        + 'An assembly is emitted from a `code` stream and a fold overwrites `code` per variant, so '
+        + 'pre-compiling must happen AFTER the fold, per variant — not before it.',
+      )
+    }
     if (p.code.length !== base.code.length) {
       throw new TypeError(
         `foldPrograms: variant ${JSON.stringify(name)} has ${p.code.length} code words, base `

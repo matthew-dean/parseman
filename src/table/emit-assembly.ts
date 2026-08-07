@@ -341,6 +341,29 @@ function leadSkip(hasTrivia: string, leadTrivia: string, skip: string): string {
   return `{if(hasTrivia&&${leadTrivia})${call}}`
 }
 
+/**
+ * THE THREE POOLS, SAID AS INDICES INTO THE PROGRAM.
+ *
+ * The pools themselves are `Uint32Array`s, `{ascii, hi}` class objects and
+ * string arrays — printable, but at 129 words per mask and 128 bytes per class
+ * they would dwarf the table they belong to. Every entry is already IN the
+ * program: a class is `cc[i]`, an arm's expected set is `fx[i]`, and a mask is a
+ * pure function of its class row. So the plan is three arrays of small integers,
+ * and `rebuildPools` turns it back into the pools with allocation only — no
+ * string building, and in particular no `Function` constructor.
+ *
+ * This is what lets the macro pre-compile an assembly: the FACTORY is printed as
+ * a real function literal, and its data arguments are rebuilt from this.
+ */
+export type PoolPlan = {
+  /** Per `CLS` row: the `cc` index of each entry, `-1` for a null (ungated) arm. */
+  readonly classes: readonly (readonly number[])[]
+  /** Per `AFX` row: the `fx` index of each arm's expected set. */
+  readonly armExpected: readonly (readonly number[])[]
+  /** Per `MASK` row: the `CLS` index the mask is computed from. */
+  readonly masks: readonly number[]
+}
+
 /** Everything the compiled factory needs bound, beside the emitted text. */
 export type EmitResult = {
   readonly source: string
@@ -352,6 +375,37 @@ export type EmitResult = {
   readonly classes: readonly (ResolvedClass | null)[][]
   /** Hoisted per-arm expected sets, in `AFX` order. */
   readonly armExpected: readonly (readonly string[])[][]
+  /** The same three pools as indices, for a build-time emitter. */
+  readonly plan: PoolPlan
+}
+
+/** The candidate mask for one `CLS` row — the ONE definition, shared with the emitter. */
+function maskForClassRow(gates: readonly (ResolvedClass | null)[]): Uint32Array {
+  const m = new Uint32Array(129)
+  for (let i = 0; i < gates.length; i++) {
+    const cls = gates[i]!
+    const bit = 1 << i
+    if (cls === null) { for (let c = 0; c < 129; c++) m[c]! |= bit; continue }
+    for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) m[c]! |= bit
+  }
+  return m
+}
+
+/**
+ * Rebuild the three pools a pre-compiled factory takes, from the resolved table
+ * and the plan the emitter printed. Allocation only.
+ */
+export function rebuildPools(
+  cc: readonly ResolvedClass[],
+  fx: readonly (readonly string[])[],
+  plan: PoolPlan,
+): { masks: Uint32Array[]; classes: (ResolvedClass | null)[][]; armExpected: (readonly string[])[][] } {
+  const classes = plan.classes.map(row => row.map(i => (i < 0 ? null : cc[i] ?? null)))
+  return {
+    classes,
+    armExpected: plan.armExpected.map(row => row.map(i => fx[i] ?? [])),
+    masks: plan.masks.map(ci => maskForClassRow(classes[ci]!)),
+  }
 }
 
 /**
@@ -453,6 +507,16 @@ export function emitAssemblySource(
   const masks: Uint32Array[] = []
   const classes: (ResolvedClass | null)[][] = []
   const armExpected: (readonly string[])[][] = []
+  /**
+   * THE POOLS, SAID AS INDICES — see `PoolPlan`. Written in lockstep with the
+   * three arrays above so a build-time emitter can print the plan instead of the
+   * pools, and `rebuildPools` can reproduce them from the resolved table alone.
+   * Kept adjacent to each `push` for exactly the reason `EMITTED_PARAMS` is one
+   * list: two orders that must agree cannot be allowed to live apart.
+   */
+  const classPlan: number[][] = []
+  const armExpectedPlan: number[][] = []
+  const maskPlan: number[] = []
 
   /** `codegen.ts`'s hoisted pools, same spelling: `_k<N>` / `_fx<N>` / `_fn<N>`. */
   function hoist(kind: string, expr: string): string {
@@ -826,6 +890,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       case OP_GATE: {
         const child = link(code[ip + 2]!)
         const ci = classes.push([t.cc[code[ip + 1]!]!]) - 1
+        classPlan.push([code[ip + 1]!])
         const cls = hoist('cl', `CLS[${ci}][0]`)
         const xf = fxRef(code[ip + 3]!)
         return `${head}
@@ -1162,6 +1227,7 @@ return v
         const axi = armExpected.push(
           Array.from({ length: n }, (_, i) => t.fx[code[base + n + i]!] as readonly string[]),
         ) - 1
+        armExpectedPlan.push(Array.from({ length: n }, (_, i) => code[base + n + i]!))
         const afx = hoist('afx', `AFX[${axi}]`)
 
         if (table.exclusive) {
@@ -1200,19 +1266,19 @@ return FAIL
         // `Uint32Array` load replaces `n` class tests, then walks the set bits
         // through `arms[i]`. The mask survives here; the indexed CALL does not.
         const ci = classes.push(Array.from({ length: n }, (_, i) => table.armCls[i] ?? null)) - 1
+        // `resolveDispatch` builds `armCls[a]` as `cc[disp[di][a]]`, or null when
+        // that index is negative (program.ts:419-423), so the arm's CLASS INDEX
+        // is the dispatch row itself. Nothing is re-derived here.
+        classPlan.push(Array.from({ length: n }, (_, i) => prog.disp[code[ip + 1]!]![i] ?? -1))
         const gates = classes[ci]!
         const gRef = hoist('g', `CLS[${ci}]`)
         const maskable = n <= 32
         let maskName = ''
         if (maskable) {
-          const m = new Uint32Array(129)
-          for (let i = 0; i < n; i++) {
-            const cls = gates[i]!
-            const bit = 1 << i
-            if (cls === null) { for (let c = 0; c < 129; c++) m[c]! |= bit; continue }
-            for (let c = 0; c < 128; c++) if (cls.ascii[c] === 1) m[c]! |= bit
-          }
-          maskName = hoist('mk', `MASK[${masks.push(m) - 1}]`)
+          maskName = hoist('mk', `MASK[${masks.push(maskForClassRow(gates)) - 1}]`)
+          // The mask is a pure function of `gates`, i.e. of `CLS[ci]`, so the
+          // plan records the class-pool index rather than 129 words per site.
+          maskPlan.push(ci)
         }
         const p = tmp()
         // THE SKIPPED ARMS' SETS STAY LAZY. `prev` and the catch-up loop are the
@@ -1634,5 +1700,8 @@ end:function(){return _pfEnd},
 begin:_begin
 }`
 
-  return { source, reached, masks, classes, armExpected }
+  return {
+    source, reached, masks, classes, armExpected,
+    plan: { classes: classPlan, armExpected: armExpectedPlan, masks: maskPlan },
+  }
 }
