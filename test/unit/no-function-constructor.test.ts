@@ -4,17 +4,16 @@
  * Two shipped statements say so, and until this file existed nothing decided
  * either of them:
  *
- *   docs/guide/modes.md      "compile() uses new Function … Use the interpreter
- *                             or the macro build plugin in those environments."
- *   docs/reference/api.md    "With the macro: … No new Function, no eval in the
- *                             emitted code."
+ *   docs/guide/modes.md      now promises one CSP-safe compact table artifact
+ *                             for `compile()` and macro output.
+ *   docs/reference/api.md    documents the same contract for `compile()` and
+ *                             `compose()`.
  *
- * Both were FALSE. `tableRules(<data>)` is lazy — it triggers nothing — and the
- * FIRST `parse()` builds the emitted assembly with `new Function`
- * (`src/table/assemble.ts`). So a CSP environment without `unsafe-eval` did not
- * get "the macro build plugin" as an escape hatch; it got a silent drop to the
- * closure engine, which is the permanently-slow-and-undiagnosed path the rest of
- * this package refuses to allow anywhere else.
+ * They used to disagree: runtime `compile()` omitted `asm` and lazily constructed
+ * emitted source with `new Function`, while macro output printed `a:[]` and used
+ * closures. That made execution strategy depend on construction path. Every
+ * compiler-created program now carries `a:[]`; the constructor is unreachable
+ * from public compilation and macro routes.
  *
  * ── WHY A COUNTER AND NOT A SOURCE SCAN ─────────────────────────────────────
  *
@@ -47,6 +46,8 @@ import { compile } from '../../src/table/compile.ts'
 import { cssRules } from '../../examples/css/parser.ts'
 import { jsonDoc } from '../../examples/json/parser.ts'
 import { resolveTableRuntime } from '../helpers/eval-macro-module.ts'
+import { evalMacroModule } from '../helpers/eval-macro-module.ts'
+import { transformMacro } from '../../src/plugin/index.ts'
 import type { Combinator } from '../../src/types.ts'
 
 type RuleMap = Record<string, Combinator<unknown>>
@@ -155,11 +156,11 @@ describe('the macro path never reaches the Function constructor', () => {
   }
 
   /**
-   * THE ARTIFACT AS A MODULE, loaded rather than reconstructed — with the
-   * assemblies actually pre-compiled, so this is the path that keeps the EMITTED
-   * engine under a CSP rather than dropping to closures.
+   * Low-level emitter experiment only. It proves a serialized factory can load,
+   * but is deliberately not a macro or `compile()` route: those must continue to
+   * construct the canonical compact closure program tested below.
    */
-  it('a pre-compiled artifact runs the emitted engine and constructs nothing', async () => {
+  it('an explicit low-level emitted-factory artifact constructs nothing at parse time', async () => {
     const prog = encodeTable(jsonRules as unknown as RuleMap, {})
     const literal = emitTableExpression(prog, {
       fnSources: JSON_FN_SOURCES,
@@ -199,7 +200,7 @@ describe('the macro path never reaches the Function constructor', () => {
     // it would make this test pass while the pre-compiled path went unexecuted.
     const cfg = defaultAssemblyCfgs(prog)[0]!
     expect(new AssemblyCache(loaded).for(cfg).emitRefusal,
-      'a pre-compiled artifact must run the EMITTED engine').toBeUndefined()
+      'the explicit factory artifact must run its emitted engine').toBeUndefined()
     // And a stamped-but-empty artifact must not quietly reach the constructor.
     expect(new AssemblyCache({ ...prog, asm: [] }).for(cfg).emitRefusal)
       .toMatch(/did not pre-compile/)
@@ -271,6 +272,21 @@ describe('the macro path never reaches the Function constructor', () => {
 })
 
 describe('runtime compile and macro use one compact table artifact', () => {
+  it('the actual macro transform serializes the same empty inventory and parses without Function', () => {
+    const transformed = transformMacro(
+      "import { literal } from 'parseman' with { type: 'macro' }\nexport const Entry = literal('yes')",
+      'canonical-closure-macro.ts', new Set(['parseman']),
+    )
+    expect(transformed).not.toBeNull()
+    expect(transformed!.code).toContain('a:[],')
+    const entry = evalMacroModule<Combinator<unknown>>(transformed!.code, 'Entry')
+    const calls = functionConstructorCalls(() => {
+      const r = run(entry, 'yes')
+      if (!r.ok || r.span.end !== 3) throw new Error('macro table failed')
+    })
+    expect(calls).toEqual([])
+  })
+
   it('runtime compile stamps the same empty assembly inventory and constructs no function', () => {
     let compiled!: ReturnType<typeof compile>
     const calls = functionConstructorCalls(() => {

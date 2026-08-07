@@ -112,6 +112,35 @@ that work, understood well enough to size, and either **deferred on purpose** or
 subsequently closed before release. Each entry records its current disposition
 without rewriting the historical measurement context.
 
+## 0.47 canonical-artifact correction — LANDED; static-source experiment REJECTED
+
+The first table cutover accidentally had two normal construction paths: runtime
+`compile()` omitted `asm`, so `assemble.ts` made emitted functions with
+`new Function`; macro output printed `a:[]`, so it assembled closures. That split
+made the public benchmark path different from Jess's actual macro artifact.
+
+0.47 now stamps **every compiler-created program** — `compile()`, rule-map and
+linkable compilation, `run-tabled`, macro output, and folded variants — with the
+same explicit empty inventory, `a:[]`. Both paths therefore construct the same
+compact closure-backed table object and never invoke `Function`. The regression
+test proxies `globalThis.Function` across actual macro output and every public
+compiler route.
+
+Static emitted factories were tested as the obvious way to retain codegen-like
+direct calls. They are **REJECTED for 0.47**, not deleted: strict-only factory
+serialization blew the 24-fixture size guard by **17.5–46.6×**; the real Less
+macro would grow from about **1.11 MB** to roughly **9.17 MB** strict-only (and
+about **19.3 MB** for strict+tolerant), exceeding the roughly **11.7 MB** 0.46
+artifact in the latter case. It also exposed unexercised CST rollback parity
+failures. Whole-factory source deduplication saves only 0.5–1.8%, because the
+factory bodies close over private environments.
+
+0.48's viable direction is a compact linked-piece ABI with selective hot-piece
+specialization, measured on actual macro artifacts. It is not “serialize every
+factory,” and it must preserve the one canonical `TableProgram` shape. All old
+uses below of “emitted assembly — what ships” are historical descriptions of the
+now-removed split, not current architecture or release evidence.
+
 The remaining `QUEUED` entries are the 0.48 work. The wrong-parse defects found
 during 0.47 (`expect()` not clearing the ctx-global commit bit;
 `caseInsensitive` dropped from dispatch matcher arms), plus the §10 defects now
