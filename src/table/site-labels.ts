@@ -64,6 +64,7 @@ import {
   OP_NODE, OP_NODE_TRACK, OP_NOT, OP_OPT, OP_PEEK, OP_REP, OP_REPV, OP_ROUTED, OP_RULE,
   OP_SCOPE, OP_SCOPE_CAP, OP_SEQ, OP_SEQV, OP_SEQX, OP_TOKEN, OP_XFORM,
 } from './ops.ts'
+import { childSlots } from './child-slots.ts'
 
 /** No scope on this path installs a known trivia — the lattice's top element. */
 export const TRI_UNKNOWN = -2
@@ -102,86 +103,19 @@ function meet(a: SiteLabel, b: SiteLabel): SiteLabel {
 }
 
 /**
- * The child slots of a site, as code offsets.
+ * The sites reachable from `roots` THROUGH THE SHARED EDGE TABLE.
  *
- * Restricted to what `emit-assembly.ts` lowers. Anything else contributes no
- * edges, which is safe in both directions: an unlowered op raises `Unemittable`
- * and the WHOLE assembly falls back to `assemble.ts`'s closures, so no emitted
- * body ever runs beside one — and any site this walk misses is looked up through
- * `labelAt`, which answers `TOP`.
- */
-function childSlots(code: Int32Array, ip: number, out: number[]): void {
-  switch (code[ip]) {
-    case OP_GATE:
-    case OP_SCOPE:
-    case OP_SCOPE_CAP:
-    case OP_XFORM:
-    case OP_NODE:
-    case OP_NODE_TRACK:
-    case OP_FIELD:
-    case OP_LEAF:
-      out.push(code[ip + 2]!)
-      return
-    case OP_RULE:
-    case OP_OPT:
-    case OP_NOT:
-    case OP_PEEK:
-    case OP_ATTEMPT:
-    case OP_LABEL:
-    case OP_EXPECT:
-    case OP_TOKEN:
-      out.push(code[ip + 1]!)
-      return
-    // `ROUTED fallback` — the operand is an offset or −1. The routed token
-    // itself is data the enclosing `dispatch()` already consumed, so the only
-    // edge is the fallback.
-    case OP_ROUTED:
-      if (code[ip + 1]! >= 0) out.push(code[ip + 1]!)
-      return
-    // `DISPATCH sel d other otherRouted n a1 … an` — the SELECTOR is a child on
-    // exactly the same footing as the arms: it runs inside whatever node and
-    // scope this site sits in.
-    case OP_DISPATCH: {
-      out.push(code[ip + 1]!)
-      if (code[ip + 3]! >= 0) out.push(code[ip + 3]!)
-      const n = code[ip + 5]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 6 + i]!)
-      return
-    }
-    case OP_SEQ:
-    case OP_SEQV: {
-      const n = code[ip + 1]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 2 + i]!)
-      return
-    }
-    case OP_SEQX: {
-      const n = code[ip + 2]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 3 + i]!)
-      return
-    }
-    case OP_CHOICE: {
-      const n = code[ip + 2]!
-      for (let i = 0; i < n; i++) out.push(code[ip + 4 + i]!)
-      return
-    }
-    case OP_REP:
-    case OP_REPV:
-      out.push(code[ip + 1]!)
-      if (code[ip + 4]! >= 0) out.push(code[ip + 4]!)
-      return
-    default:
-  }
-}
-
-/**
- * The sites reachable from `roots` THROUGH THE EDGES THIS FILE KNOWS.
- *
- * Deliberately the same `childSlots` the label pass walks, and deliberately not
- * `inspect.ts`'s `reachableIps`: that one walks a whole program from its rule
+ * Not `inspect.ts`'s `reachableIps`: that one walks a whole program from its rule
  * entries, and the emitter's question is about the set IT will lower — the rule
- * entries plus the scan pool's `extraIps`. Sharing the edge table is what keeps
- * the two answers from drifting when an opcode is added to one and not the
- * other, which is the exact failure mode `childSlots`'s own header describes.
+ * entries plus the scan pool's `extraIps`. Different ROOTS, same EDGES, and the
+ * edges now live in `child-slots.ts` so the two answers cannot drift when an
+ * opcode is added to one and not the other. That drift is the failure this file's
+ * header used to warn about while guarding only against it happening within this
+ * file; the copy it warned about was in `inspect.ts` the whole time.
+ *
+ * `childSlots`'s false return (an opcode it does not know) is ignored here: the
+ * site resolves to `TOP` through `labelAt`, and the enclosing assembly is
+ * unemittable regardless.
  */
 export function reachableSites(code: Int32Array, roots: Iterable<number>): Set<number> {
   const seen = new Set<number>()

@@ -476,6 +476,36 @@ describe('OP_NAMES covers every declared opcode', () => {
     const spelled = declared.map(([, code]) => names[code]!)
     expect(new Set(spelled).size).toBe(spelled.length)
   })
+
+  /**
+   * THE EDGE TABLE IS A THIRD COPY OF THE OPCODE LIST — now a first copy, gated.
+   *
+   * "Which operand slots hold child instructions" was written twice: `site-labels.ts`
+   * over the 35 opcodes the emitter lowers, and `inspect.ts`'s `reachableIps` over all
+   * 40. They agreed slot-for-slot everywhere they overlapped, which is what made the
+   * duplication invisible — adding an opcode meant editing two switches in two files,
+   * and NOTHING failed if you edited one. `site-labels.ts`'s header warned about that
+   * drift while guarding only against it happening inside `site-labels.ts`.
+   *
+   * Collapsed to `child-slots.ts`. This is the gate that keeps it collapsed: asserted
+   * over the MODULE's exports, so a new opcode cannot be added without an edge answer,
+   * exactly as the block above does for names. The operands are zeroed, so every
+   * count-prefixed row (SEQ, CHOICE, DISPATCH, GREEDY) reports zero children — this
+   * asserts RECOGNITION, which is the half that silently regresses.
+   */
+  it('child-slots.ts has an edge answer for each OP_* constant', async () => {
+    const ops = await import('../../src/table/ops.ts')
+    const { childSlots } = await import('../../src/table/child-slots.ts')
+    const declared: Array<[string, number]> = Object.entries(ops as Record<string, unknown>)
+      .filter(([n, v]) => n.startsWith('OP_') && n !== 'OP_NAMES' && typeof v === 'number')
+      .map(([n, v]) => [n, v as number])
+    const unknown = declared.filter(([, code]) => {
+      const stream = new Int32Array(16)
+      stream[0] = code
+      return !childSlots(stream, 0, [])
+    }).map(([n]) => n)
+    expect(unknown, 'every opcode must declare which slots are children').toEqual([])
+  })
 })
 
 /**
