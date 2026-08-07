@@ -5,6 +5,7 @@ import { collectGrammarReflection, type GrammarReflection } from '../cst/reflect
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableExpression } from './emit.ts'
 import { tableRules } from './assemble.ts'
+import { closureArtifact } from './program.ts'
 import type { TableProgram, TableRule } from './program.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplication-hook.ts'
@@ -218,7 +219,7 @@ export function compileRuleMapRunnable(
   const encoded = encodeForRun(ruleMap, opts)
   if (encoded === null) return null
   const { prog, hostMode, plan } = encoded
-  const artifact = { ...prog, asm: [] as const }
+  const artifact = closureArtifact(prog)
   return {
     keys: ruleMap.map(([key]) => key),
     hostMode,
@@ -274,7 +275,7 @@ export function compileRuleMap(
   const encoded = encodeForRun(ruleMap, opts)
   if (encoded === null) return null
   const { prog, fnSrcs, hostMode, plan } = encoded
-  const artifact = { ...prog, asm: [] as const }
+  const artifact = closureArtifact(prog)
 
   // RUNTIME-ONLY: the program parses but cannot be PRINTED (a live trivia
   // combinator parked in the pool, say). `compileRuleMap` returns null for its

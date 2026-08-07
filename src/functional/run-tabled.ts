@@ -44,6 +44,7 @@ import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { run as runDriver, type Runnable, type RunOptions, type RunResult } from './run.ts'
 import { encodeTable } from '../table/encode.ts'
 import { tableRules } from '../table/assemble.ts'
+import { closureArtifact } from '../table/program.ts'
 
 const ENTRY = 'Entry'
 
@@ -109,7 +110,7 @@ function tableEntryFor(c: Combinator<unknown>, hostCst: boolean, tolerant: boole
   // Match compiler-produced and macro-produced table artifacts: an explicit
   // empty inventory selects the shared closure assembler rather than making
   // this public runtime convenience a hidden `new Function` path.
-  const made = tableRules({ ...encoded, asm: [] })[ENTRY]!
+  const made = tableRules(closureArtifact(encoded))[ENTRY]!
   slots[i] = made
   return made
 }

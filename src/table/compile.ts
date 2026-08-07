@@ -4,6 +4,7 @@ import { createParseContext } from '../parse-context.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableModule, emitTableExpression } from './emit.ts'
 import { tableRules } from './assemble.ts'
+import { closureArtifact } from './program.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnostic, type DuplicationOption } from './duplication-hook.ts'
 import { beginCompileDegradationDrain } from '../compiler/degradation.ts'
@@ -164,7 +165,7 @@ function compileImpl<T>(
    * closure assembler. Static factories remain an opt-in experiment until they
    * can satisfy both semantic identity and the size budget.
    */
-  const artifact = { ...prog, asm: [] as const }
+  const artifact = closureArtifact(prog)
   const entry = tableRules(artifact)[ENTRY]!
 
   // Captured-first, supplied-as-fill-in. The encoder records a source per author

@@ -283,4 +283,14 @@ describe('runtime compile and macro use one compact table artifact', () => {
     expect(compiled.source).toContain('a:[],')
     expect(compiled.inlineExpression).toContain('a:[],')
   })
+
+  it('in-memory folded tables carry the same inventory as emitted folds', () => {
+    const folded = foldPrograms({ plain: encodeTable({ Entry: jsonRules.Value as unknown as Combinator<unknown> }) }, 'plain')
+    expect(folded.base.asm).toEqual([])
+    const calls = functionConstructorCalls(() => {
+      const r = run(tableVariants(folded, 'plain').Entry! as never, 'true')
+      if (!r.ok) throw new Error('folded table failed')
+    })
+    expect(calls).toEqual([])
+  })
 })

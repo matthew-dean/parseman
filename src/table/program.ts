@@ -190,6 +190,17 @@ export type TableProgram = {
 }
 
 /**
+ * The one compact artifact shape produced by the table compiler.
+ *
+ * Compiler and macro artifacts are explicitly closure-backed: an empty
+ * inventory is materially different from an absent one, which is reserved for
+ * a caller that deliberately hands `tableRules()` a live runtime program.
+ */
+export function closureArtifact(prog: TableProgram): TableProgram {
+  return { ...prog, asm: [] }
+}
+
+/**
  * `GrammarCoverageDefinition['kind']` as the small integer `prog.cov` carries,
  * and back. Two functions rather than a shared array literal so the mapping is
  * exhaustive over the union in BOTH directions — a fifth kind added to
@@ -724,8 +735,12 @@ export function foldPrograms(
   programs: Readonly<Record<string, TableProgram>>,
   baseName: string,
 ): FoldedProgram {
-  const base = programs[baseName]
-  if (base === undefined) throw new TypeError(`foldPrograms: no program named ${JSON.stringify(baseName)}`)
+  const suppliedBase = programs[baseName]
+  if (suppliedBase === undefined) throw new TypeError(`foldPrograms: no program named ${JSON.stringify(baseName)}`)
+  // The in-memory fold and its emitted form must be the same artifact: the
+  // emitter prints `a:[]`, so preserve that policy when a caller folds tables
+  // directly instead of loading a module.
+  const base = closureArtifact(suppliedBase)
   const variants: Record<string, TableDelta> = {}
   for (const name of Object.keys(programs)) {
     const p = programs[name]!
