@@ -10,8 +10,8 @@
  * Usage: `node --import ./bench/jess/register.mjs bench/jess/g5-identity.ts [dialect]`
  */
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { corpus, ENTRY, loadGrammar, type Dialect } from './grammars.ts'
@@ -21,8 +21,8 @@ type Entry = Parameters<typeof run>[0]
 const dialect = (process.argv[2] ?? 'less') as Dialect
 const g = await loadGrammar(dialect, 'ast')
 const prog = encodeTable(g.rules, {})
-const interp = tableRules(prog)[ENTRY]! as unknown as Entry
-const asm = assembledRules(prog)[ENTRY]! as unknown as Entry
+const interp = execRules(prog)[ENTRY]! as unknown as Entry
+const asm = tableRules(prog)[ENTRY]! as unknown as Entry
 
 function digest(entry: Entry, input: string): string {
   try {

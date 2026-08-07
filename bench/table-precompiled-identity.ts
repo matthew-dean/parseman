@@ -6,7 +6,7 @@
 import { digestValue } from '../src/oracle/index.ts'
 import { run } from '../src/functional/run.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { assembledRules, AssemblyCache } from '../src/table/assemble.ts'
+import { tableRules, AssemblyCache } from '../src/table/assemble.ts'
 import { defaultAssemblyCfgs } from '../src/table/emit.ts'
 import { emitAssemblySource } from '../src/table/emit-assembly.ts'
 import { resolveTable, type TableProgram, type PrecompiledAssembly } from '../src/table/program.ts'
@@ -60,9 +60,9 @@ const bad: string[] = []
 for (const [name, map, entryRule, input, trivia] of CASES) {
   for (const tolerant of [false, true]) {
     const prog = encodeTable(map, {})
-    const runtimeEntry = assembledRules(prog)[entryRule]!
+    const runtimeEntry = tableRules(prog)[entryRule]!
     const pre: TableProgram = { ...prog, asm: precompile(prog) }
-    const preEntry = assembledRules(pre)[entryRule]!
+    const preEntry = tableRules(pre)[entryRule]!
 
     // Prove WHICH engine each leg ran, before any number.
     const cfg = { hostCst: false, trackLines: false, tolerant, coverage: false, probe: false }

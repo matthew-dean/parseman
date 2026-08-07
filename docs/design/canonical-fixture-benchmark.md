@@ -1,5 +1,33 @@
 # The canonical fixture benchmark — `pnpm bench:less`
 
+> ## ⚠ THE COLUMN NAMES ON THIS PAGE ARE WRONG. THE NUMBERS ARE REAL.
+>
+> Every `codegen` and `table` column below was taken from `bench/jess/fixture.ts`
+> under labels that named the wrong engines. Corrected:
+>
+> | printed as | is actually |
+> | --- | --- |
+> | `codegen` | **`assembled (shipped)`** — the `pm-macro:` artifact, which imports `tableRules` from `parseman/table` — the shipped engine, declared in `src/table/assemble.ts`. `src/compiler/codegen.ts` was **deleted in `37c57b5`**; no harness has measured a source lowering since. |
+> | `table` | **`exec (reference)`** — `execRules(encodeTable(…))`, the reference bytecode INTERPRETER. Nothing ships on it. |
+> | `interpreter` | unchanged — the combinator graph. |
+>
+> The cause: `src/table/exec.ts` and `parseman/table` both exported a function
+> called `tableRules`, with the same signature. The import path was the only
+> thing selecting an engine, and it type-checked either way. The reference
+> export is now `execRules`, `bench/jess/fixture.ts` prints the corrected names,
+> and `scripts/check-invariants.mjs` **INV-11** fails any specifier that lets one
+> engine answer to the other's name.
+>
+> **What this does and does not invalidate.** The measurements are sound: the
+> harness timed exactly what it built, and the composition, batching and load
+> findings below are properties of the instrument, not of the engine labels — they
+> stand. What does NOT stand is any reading of a `codegen` vs `table` ratio as
+> "source lowering vs table lowering". It was never that. It is assembler vs
+> reference interpreter, and **that comparison is not the one this project cares
+> about** — the reference interpreter is a bisection oracle, not a shipping
+> alternative. Re-taking these figures under the corrected legs is an owner call
+> and has not been done here.
+
 The table lowering's target is stated in **absolute milliseconds** against a
 named fixture. This page is how that number is taken, and it exists because the
 same fixture had two remembered baselines **27% apart**:
@@ -94,7 +122,7 @@ provenance. Restated here so a lane can check a number it was handed:
 | --- | --- |
 | fixture | a named file under jess's `packages/jess/benchmark`, read verbatim, byte size printed |
 | path | `hostMode: 'ast'`, `trackLines: false` — the AST path, canonical by owner ruling |
-| engines | **codegen** (`pm-macro:` lowering of the shipping grammar module), **table** (`encodeTable` + `tableRules` over the same rules), **interpreter** (the combinator graph). Each is proved to be the engine it claims: codegen must be a function, the interpreter must not be. |
+| engines | **assembled (shipped)** (the `pm-macro:` artifact of the shipping grammar module, which imports `tableRules` from `parseman/table`, the shipped engine declared in `src/table/assemble.ts`), **exec (reference)** (`encodeTable` + `execRules` over the same rules — the bytecode INTERPRETER, which nothing ships on), **interpreter** (the combinator graph). These are TWO TABLE ENGINES plus the graph, not a source lowering versus a table: `src/compiler/codegen.ts` was deleted in `37c57b5`. The in-harness proof is a SHAPE check only — assembled must be a function, interpreter must not be — and it cannot distinguish the two table engines, which is why they are imported under distinct names and gated by INV-11. |
 | entry | every engine invoked through `run()`, identically, so `run()`'s own cost cannot favour one |
 | process | ONE process, engines interleaved in adjacent order-alternated pairs (`bench/ab-harness.ts` `interleave`). Separate process launches on this hardware read 9.4 ms and 26 ms for the same case. |
 | composition | **PINNED** at exactly three legs plus the control, in that order. Load-bearing, not a detail — the legs share one heap, so adding or removing one moves the others by ~18%. A harness with a different leg set produces different absolutes from identical code. |
@@ -134,10 +162,12 @@ so every lane's output changes with it.
 A diagnostic that answers one question and is deleted is fine. A second harness
 that anyone quotes a millisecond from is not.
 
-## `benchmark.less` is a compiled-outlier, and a timing fixture only
+## `benchmark.less` is an assembled-outlier, and a timing fixture only
 
-The table and the interpreter agree on `benchmark.less`; the shipped **codegen**
-engine is the odd one out, on the `value` and `span` facets. The harness reports
+The reference interpreter and the combinator graph agree on `benchmark.less`;
+the **shipped assembler** is the odd one out — note that this makes the outlier
+the engine that actually ships, which is the more serious reading of the same
+observation — on the `value` and `span` facets. The harness reports
 that, names the facets, and times it anyway — it is the fixture that gets asked
 about by name, and "not measured" is a worse answer than a measured number with
 its caveat attached.

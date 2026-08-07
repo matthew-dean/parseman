@@ -19,7 +19,7 @@ import {
   choice, label, literal, many, node, oneOrMore, regex, rules, sequence, trivia,
 } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run, type RunResult } from '../../src/functional/run.ts'
 import type { Combinator } from '../../src/types.ts'
 
@@ -33,7 +33,7 @@ const grammar = rules({ trivia: rw }, (g: any) => ({
   Block: node('Block', sequence(literal('{'), many(literal('a')), literal('}'))),
 }))
 
-const table = tableRules(encodeTable(grammar, {}))
+const table = execRules(encodeTable(grammar, {}))
 
 /** The same question asked of the interpreter and of the table. */
 function bothEngines(rule: 'Doc' | 'Block', input: string, options = {}): {
@@ -144,7 +144,7 @@ describe('run() — the entry rule owns the document\'s trailing trivia', () => 
       Doc: node('Doc', many(g.Block)),
       Block: node('Block', sequence(literal('{'), literal('a'), literal('}'))),
     }))
-    const bareTable = tableRules(encodeTable(bare, {}))
+    const bareTable = execRules(encodeTable(bare, {}))
     const input = '{a}\n'
     const a = run(bare.Doc as Combinator<unknown>, input)
     const b = run(bareTable.Doc!, input)

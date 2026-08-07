@@ -1,29 +1,36 @@
 /**
  * THE NAMED FIXTURE, IN MILLISECONDS — `benchmark.less`, 106,802 B, AST path.
  *
- * The owner's target is `codegen 17.41 ms, table 46.86` and he wants to watch
- * that number move, so this reports absolute medians rather than percentages.
- * The interpreter is timed alongside as the third absolute.
+ * The owner's target was recorded as `codegen 17.41 ms, table 46.86` — those two
+ * names are the OLD spelling of the two legs below (`codegen` = `assembled`,
+ * `table` = `exec`), and he wants to watch that number move, so this reports
+ * absolute medians rather than percentages. The combinator interpreter is timed
+ * alongside as the third absolute.
  *
  * FOUR legs, all from the SAME grammar module in the SAME process:
  *
- *   compiled   `compose()` — the shipped codegen, fused at runtime
- *   table-     `tableRules(prog, { leafSwap: false })`  the driver BEFORE the swap
- *   table      `tableRules(prog)`                       the driver WITH it
+ *   assembled  `compose()` — the shipped ASSEMBLER, fused at runtime. There is
+ *              no source-lowering "codegen" engine: `src/compiler/codegen.ts`
+ *              was DELETED in `37c57b5`.
+ *   exec-      `execRules(prog, { leafSwap: false })`  the REFERENCE bytecode
+ *              interpreter BEFORE the swap (NOT what ships)
+ *   exec       `execRules(prog)`                       the same reference
+ *              interpreter WITH it
  *   interp     the combinator graph
  *
- * `table-` and `table` are the same driver code differing only in TABLE DATA
+ * `exec-` and `exec` are the same driver code differing only in TABLE DATA
  * (an all-null `triviaScan`), which is what makes the swap's cost measurable in
  * one process on a machine where cross-run comparison is not reliable.
  *
  * TWO CAVEATS, both stated rather than hidden:
  *
- * 1. `benchmark.less` is a COMPILED OUTLIER. The table and the interpreter agree
- *    on `value` and `span`; the shipped codegen engine is the odd one out. So the
+ * 1. `benchmark.less` is an ASSEMBLED OUTLIER. The reference interpreter and the
+ *    combinator interpreter agree on `value` and `span`; the shipped assembler is
+ *    the odd one out. So the
  *    three parses are NOT identical and the milliseconds are indicative of cost,
  *    not a like-for-like contest. This prints the digest agreement rather than
  *    aborting on it, so a tree difference can never quietly become a speed claim.
- *    `table-` vs `table` IS like-for-like and is gated hard: a swap that changed
+ *    `exec-` vs `exec` IS like-for-like and is gated hard: a swap that changed
  *    the tree is a defect, not a win.
  * 2. The penalty does NOT track input size — a sibling lane measured 4.11x on a
  *    275 KB file against 2.69x on this 107 KB one, same dialect. It tracks which
@@ -38,7 +45,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { compose } from '../../src/compiler/linker.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { assertParseman, corpus, ENTRY, JESS_ROOT, loadGrammar } from './grammars.ts'
@@ -79,8 +86,8 @@ const prog = encodeTable(g.rules, {})
 
 const compiledA = (compose([g.rules as never]) as unknown as Record<string, Entry>)[ENTRY]!
 const compiledB = (compose([g.rules as never]) as unknown as Record<string, Entry>)[ENTRY]!
-const tableOld = tableRules(prog, { leafSwap: false })[ENTRY]! as unknown as Entry
-const tableNew = tableRules(prog)[ENTRY]! as unknown as Entry
+const tableOld = execRules(prog, { leafSwap: false })[ENTRY]! as unknown as Entry
+const tableNew = execRules(prog)[ENTRY]! as unknown as Entry
 const interp = g.rules[ENTRY]! as unknown as Entry
 
 /** Digest the whole outcome, as the identity sweep does — not just the value. */
@@ -95,7 +102,7 @@ function digest(entry: Entry, input: string): string {
 }
 
 console.log('')
-console.log('IDENTITY — printed, not assumed. `table- === table` is a GATE; the rest is context.')
+console.log('IDENTITY — printed, not assumed. `exec- === exec` is a GATE; the rest is context.')
 for (const f of FIXTURES) {
   const dc = digest(compiledA, f.input)
   const dOld = digest(tableOld, f.input)
@@ -105,7 +112,7 @@ for (const f of FIXTURES) {
     console.error(`ABORT: ${f.name} — the leaf swap CHANGED THE TREE. That is a defect, not a win.`)
     process.exit(1)
   }
-  console.log(`  ${f.name.padEnd(46)} table-===table OK   table===interp ${dNew === di ? 'OK ' : 'NO '}  table===compiled ${dNew === dc ? 'OK' : 'NO  <- compiled outlier'}`)
+  console.log(`  ${f.name.padEnd(46)} exec-===exec OK   exec===interp ${dNew === di ? 'OK ' : 'NO '}  exec===assembled ${dNew === dc ? 'OK' : 'NO  <- assembled outlier'}`)
 }
 
 function makeCases(entry: Entry, tag: string): Case[] {
@@ -136,9 +143,9 @@ const reps = calibrateReps(makeCases(compiledA, 'cal'))
 
 const contests: Contest[] = [
   { label: 'CONTROL', a: makeCases(compiledA, 'compiled'), b: makeCases(compiledB, 'compiled') },
-  { label: 'table- -> table', a: makeCases(tableOld, 'table-'), b: makeCases(tableNew, 'table') },
-  { label: 'compiled -> table', a: makeCases(compiledA, 'compiled'), b: makeCases(tableNew, 'table') },
-  { label: 'compiled -> interp', a: makeCases(compiledA, 'compiled'), b: makeCases(interp, 'interp') },
+  { label: 'exec- -> exec', a: makeCases(tableOld, 'table-'), b: makeCases(tableNew, 'table') },
+  { label: 'assembled -> exec', a: makeCases(compiledA, 'compiled'), b: makeCases(tableNew, 'table') },
+  { label: 'assembled -> interp', a: makeCases(compiledA, 'compiled'), b: makeCases(interp, 'interp') },
 ]
 
 const out = interleave(contests, reps, M)
@@ -151,9 +158,9 @@ console.log('MILLISECONDS PER PARSE  (median of the interleaved samples)')
 for (const f of FIXTURES) {
   const id = f.name
   const control = out.get('CONTROL')!
-  const swap = out.get('table- -> table')!
-  const gate = out.get('compiled -> table')!
-  const ref = out.get('compiled -> interp')!
+  const swap = out.get('exec- -> exec')!
+  const gate = out.get('assembled -> exec')!
+  const ref = out.get('assembled -> interp')!
   const compiledMs = perParse(control.get(`ref|${id}`)!, id)
   const oldMs = perParse(swap.get(`ref|${id}`)!, id)
   const newMs = perParse(swap.get(`head|${id}`)!, id)
@@ -167,10 +174,10 @@ for (const f of FIXTURES) {
   console.log('')
   console.log(`  ${id}  (${f.input.length} B, ${reps.get(id)} parses per sample)`)
   console.log(`    interp          ${interpMs.toFixed(2).padStart(7)} ms`)
-  console.log(`    table- (before) ${oldMs.toFixed(2).padStart(7)} ms`)
-  console.log(`    table  (after)  ${newMs.toFixed(2).padStart(7)} ms    <- the swap: ${(newMs - oldMs).toFixed(2)} ms, ${((newMs / oldMs - 1) * 100).toFixed(1)}%, ${wins}/${b.length} wins`)
-  console.log(`    table  (gate)   ${tableMs.toFixed(2).padStart(7)} ms    (same leg, second contest — agreement is the sanity check)`)
-  console.log(`    codegen         ${compiledMs.toFixed(2).padStart(7)} ms`)
+  console.log(`    exec-  (before) ${oldMs.toFixed(2).padStart(7)} ms`)
+  console.log(`    exec   (after)  ${newMs.toFixed(2).padStart(7)} ms    <- the swap: ${(newMs - oldMs).toFixed(2)} ms, ${((newMs / oldMs - 1) * 100).toFixed(1)}%, ${wins}/${b.length} wins`)
+  console.log(`    exec   (gate)   ${tableMs.toFixed(2).padStart(7)} ms    (same leg, second contest — agreement is the sanity check)`)
+  console.log(`    assembled       ${compiledMs.toFixed(2).padStart(7)} ms`)
   console.log(`    REMAINING GAP   ${(newMs - compiledMs).toFixed(2).padStart(7)} ms   (${(newMs / compiledMs).toFixed(2)}x)   control ${ctlDelta >= 0 ? '+' : ''}${ctlDelta.toFixed(1)}%`)
 }
 

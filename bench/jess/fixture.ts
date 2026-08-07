@@ -5,9 +5,16 @@
  * This reports the wall time of ONE parse of ONE named fixture, with the fixture
  * named and its byte size printed, for all three engines.
  *
+ * THE THREE ENGINES ARE `assembled (shipped)`, `exec (reference)` and
+ * `interpreter`. They were called `codegen`, `table` and `interpreter` until this
+ * commit and TWO of those three names were wrong: `codegen` names a source
+ * lowering deleted in `37c57b5`, and `table` named the reference bytecode
+ * interpreter rather than the shipped assembler. Any figure quoted from this
+ * harness under the old column names means something other than what it printed.
+ *
  * THE PATH IS THE AST PATH — `hostMode: 'ast'`, `trackLines: false` — the same
  * canonical measure `speed.ts` uses. Same one-process `interleave` engine, same
- * table-vs-table CONTROL contest.
+ * same-engine CONTROL contest.
  *
  * `benchmark.less` is EXEMPT from byte-identity by standing rule: it is a timing
  * fixture only, and nothing here compares its tree to anything. The three-way
@@ -33,7 +40,25 @@ import { interleave, median, sign, type Case, type Contest, type Measurement } f
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+/**
+ * THE REFERENCE INTERPRETER, imported BY ITS OWN NAME.
+ *
+ * This harness prints two table columns and they are two DIFFERENT ENGINES:
+ *
+ *   assembled (shipped)   the `pm-macro:` artifact, which emits
+ *                         `import { tableRules } from 'parseman/table'` →
+ *                         `src/table/index.ts:40`, `tableRules as tableRules`
+ *   exec (reference)      `execRules(encodeTable(...))` — this import
+ *
+ * Both columns were previously wrong. `src/compiler/codegen.ts` was DELETED in
+ * `37c57b5`, so the column headed `codegen` has measured the ASSEMBLER, not a
+ * source lowering, since that commit. And the column headed `table` bound
+ * `tableRules` from `exec.ts` — the same identifier `parseman/table` exports for
+ * the assembler — so it has always been the reference interpreter. The two names
+ * type-checked identically, which is why the mislabel survived a cycle of being
+ * quoted. See `src/table/exec.ts`'s export comment for the full defect class.
+ */
+import { execRules } from '../../src/table/exec.ts'
 import {
   ENTRY, JESS_ROOT, LOAD_CEILING, VARIANT_SETTINGS,
   assertParseman, assertQuiet, exportName, headSha, loadGrammar, loads, VARIANTS,
@@ -76,10 +101,15 @@ function protocol(m: Measurement, variant: Variant): string[] {
     `  variant     ${variant} — hostMode='${VARIANT_SETTINGS[variant].hostMode ?? 'ast'}', trackLines=${VARIANT_SETTINGS[variant].trackLines === true}.`,
     `              The AST path is canonical by owner ruling; figures from any other variant`,
     `              are NOT the canonical baseline and must be quoted with the variant name.`,
-    `  engines     codegen (pm-macro: lowering of the SHIPPING grammar module), table`,
-    `              (encodeTable + tableRules over the SAME rules), interpreter (the combinator`,
-    `              graph itself). All three proved to be the engine they claim: codegen must be a`,
-    `              FUNCTION, interpreter must NOT be.`,
+    `  engines     assembled (shipped) — the pm-macro: artifact of the SHIPPING grammar module,`,
+    `              which imports tableRules from parseman/table, i.e. tableRules;`,
+    `              exec (reference) — execRules(encodeTable(...)) over the SAME rules, the`,
+    `              bytecode INTERPRETER that nothing ships on; interpreter — the combinator`,
+    `              graph itself. NOTE these are TWO TABLE ENGINES plus the graph, not a source`,
+    `              lowering vs a table: src/compiler/codegen.ts was DELETED in 37c57b5 and this`,
+    `              harness has measured no codegen since. The proof below is a SHAPE check only`,
+    `              (assembled must be a FUNCTION, interpreter must NOT be) — it cannot tell the`,
+    `              two table engines apart, which is why they are imported by distinct names.`,
     `  entry       every engine is invoked through run() — the public entry, identically on all`,
     `              three sides, so run()'s own per-parse cost cannot favour one of them`,
     `  process     ONE process, all engines interleaved in adjacent order-alternated pairs`,
@@ -88,7 +118,7 @@ function protocol(m: Measurement, variant: Variant): string[] {
     `  composition PINNED at exactly three legs plus the control, in this order. This is a`,
     `              LOAD-BEARING part of the protocol, not a detail: the legs share one heap, so`,
     `              adding or removing one MOVES the others. Dropping the interpreter leg and`,
-    `              changing nothing else moved the table 18% on benchmark.less. A harness with a`,
+    `              changing nothing else moved the exec leg 18% on benchmark.less. A harness with a`,
     `              different set of legs produces different absolute milliseconds from identical`,
     `              code — which is exactly how this fixture acquired two baselines 27% apart.`,
     `  warmup      ${m.warmup} parses per side before any sample is kept`,
@@ -97,7 +127,7 @@ function protocol(m: Measurement, variant: Variant): string[] {
     `              size and the reported millisecond IS one parse. Each sample is itself the`,
     `              median of ${m.timed} timed repetitions.`,
     `  statistic   MEDIAN of the ${m.rounds * m.runs} samples (each a median of ${m.timed}). Not the min, not the mean.`,
-    `  control     an in-run table-vs-table contest — two independently built instances of the`,
+    `  control     an in-run exec-vs-exec contest — two independently built instances of the`,
     `              SAME engine. Its delta is this run's noise floor. A figure read without it is`,
     `              not a measurement.`,
     `  load gate   REFUSED above a 1-minute load average of ${LOAD_CEILING}. PM_FORCE=1 overrides and`,
@@ -190,11 +220,11 @@ async function main(): Promise<void> {
 
   const { rules } = await loadGrammar(dialect, variant)
   const interpreted = rules[ENTRY] as Entry
-  const table = tableRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as Entry
-  const tableB = tableRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as Entry
+  const exec = execRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as Entry
+  const execB = execRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as Entry
   const mod = await import(`pm-macro:${resolvePath(JESS_ROOT, MODULE[dialect])}`) as Record<string, unknown>
-  const compiled = (mod[exportName(dialect, variant)] as Record<string, unknown>)[ENTRY] as Entry
-  if (typeof compiled !== 'function') throw new Error(`${dialect}: 'compiled' is not a function — the macro did not run`)
+  const assembled = (mod[exportName(dialect, variant)] as Record<string, unknown>)[ENTRY] as Entry
+  if (typeof assembled !== 'function') throw new Error(`${dialect}: 'assembled' is not a function — the macro did not run`)
   if (typeof interpreted === 'function') throw new Error(`${dialect}: 'interpreted' is a function — macro lowering leaked`)
 
   for (const rel of FIXTURES[dialect]) {
@@ -203,23 +233,23 @@ async function main(): Promise<void> {
     const input = readFileSync(p, 'utf8')
     const bytes = Buffer.byteLength(input)
     const di = digest(interpreted, input)
-    const dc = digest(compiled, input)
-    const dt = digest(table, input)
+    const dc = digest(assembled, input)
+    const dt = digest(exec, input)
     const agree = di === dc && di === dt
     console.log(`=== ${rel}   ${bytes} B`)
     // A disagreement is REPORTED, and named. Silently skipping is how a fixture
-    // the table gets wrong stops appearing in anyone's numbers.
+    // an engine gets wrong stops appearing in anyone's numbers.
     if (!agree) {
-      const who = di === dt ? 'the COMPILED engine is the outlier — table sides with the interpreter'
-        : di === dc ? 'the TABLE is the outlier'
+      const who = di === dt ? 'the ASSEMBLED engine is the outlier — exec sides with the interpreter'
+        : di === dc ? 'the EXEC reference is the outlier'
         : 'no two agree'
       console.log(`    three-way agreement: NO — ${who}`)
       const facets = FACETS.filter((_f, n) => {
-        const [ri, rc, rt] = [rowOf(interpreted, input), rowOf(compiled, input), rowOf(table, input)]
+        const [ri, rc, rt] = [rowOf(interpreted, input), rowOf(assembled, input), rowOf(exec, input)]
         return ri[n + 1] !== rc[n + 1] || ri[n + 1] !== rt[n + 1]
       })
       console.log(`    differing facets: ${facets.length > 0 ? facets.join(', ') : '(outside the facet set)'}`)
-      console.log(`    parse ok: interp ${String(!di.startsWith('threw:'))}  compiled ${String(!dc.startsWith('threw:'))}  table ${String(!dt.startsWith('threw:'))}`)
+      console.log(`    parse ok: interp ${String(!di.startsWith('threw:'))}  assembled ${String(!dc.startsWith('threw:'))}  exec ${String(!dt.startsWith('threw:'))}`)
       // Timed ANYWAY, because this is the fixture that gets asked about by name
       // and "not measured" is a worse answer than a measured number with its
       // caveat attached. The three parses are NOT identical, so read the
@@ -231,12 +261,12 @@ async function main(): Promise<void> {
       // none of it. These three numbers bound it: if the engines build the same
       // number of nodes and differ on a handful of subtrees, the divergence is
       // not what a 2-3x gap is made of.
-      const [ti, tc, tt] = [treeOf(interpreted, input), treeOf(compiled, input), treeOf(table, input)]
+      const [ti, tc, tt] = [treeOf(interpreted, input), treeOf(assembled, input), treeOf(exec, input)]
       const [si, sc, st] = [treeStats(ti), treeStats(tc), treeStats(tt)]
-      console.log(`    tree scale: interp ${si.nodes} nodes / ${si.bytes} B   codegen ${sc.nodes} / ${sc.bytes}   table ${st.nodes} / ${st.bytes}`)
-      console.log(`    minimal differing subtrees: codegen vs table ${divergentSubtrees(tc, tt)}`
-        + `   table vs interp ${divergentSubtrees(tt, ti)}`)
-      console.log(`    node-count delta codegen vs table: ${sc.nodes - st.nodes} (${st.nodes === 0 ? 'n/a' : ((sc.nodes / st.nodes - 1) * 100).toFixed(2)}%)`)
+      console.log(`    tree scale: interp ${si.nodes} nodes / ${si.bytes} B   assembled ${sc.nodes} / ${sc.bytes}   exec ${st.nodes} / ${st.bytes}`)
+      console.log(`    minimal differing subtrees: assembled vs exec ${divergentSubtrees(tc, tt)}`
+        + `   exec vs interp ${divergentSubtrees(tt, ti)}`)
+      console.log(`    node-count delta assembled vs exec: ${sc.nodes - st.nodes} (${st.nodes === 0 ? 'n/a' : ((sc.nodes / st.nodes - 1) * 100).toFixed(2)}%)`)
       console.log('    Read the millisecond gap against THAT: an engine that built the same number')
       console.log('    of nodes did the same amount of allocation, whatever it labelled them.')
     } else {
@@ -251,34 +281,42 @@ async function main(): Promise<void> {
     }]
     const reps = new Map([[rel, 1]])
     const contests: Contest[] = [
-      { label: 'compiled -> table', a: mk(compiled, 'compiled'), b: mk(table, 'table') },
-      { label: 'CONTROL table -> table', a: mk(table, 'table'), b: mk(tableB, 'table') },
-      { label: 'compiled -> interpreter', a: mk(compiled, 'compiled'), b: mk(interpreted, 'interp') },
+      { label: 'assembled -> exec', a: mk(assembled, 'assembled'), b: mk(exec, 'exec') },
+      { label: 'CONTROL exec -> exec', a: mk(exec, 'exec'), b: mk(execB, 'exec') },
+      { label: 'assembled -> interpreter', a: mk(assembled, 'assembled'), b: mk(interpreted, 'interp') },
     ]
     const out = interleave(contests, reps, M)
     const ms = (v: number[]): string => `${median(v).toFixed(2)} ms`
-    const g = out.get('compiled -> table')!
-    const c = out.get('CONTROL table -> table')!
-    const i = out.get('compiled -> interpreter')!
+    const g = out.get('assembled -> exec')!
+    const c = out.get('CONTROL exec -> exec')!
+    const i = out.get('assembled -> interpreter')!
     const cm = median(g.get(`ref|${rel}`)!)
     const tm = median(g.get(`head|${rel}`)!)
     const im = median(i.get(`head|${rel}`)!)
     console.log('')
     console.log(`    ONE PARSE, median of ${M.rounds * M.runs} samples:`)
-    console.log(`      codegen (shipped)  ${ms(g.get(`ref|${rel}`)!).padStart(10)}   ${(bytes / cm / 1000).toFixed(2)} MB/s`)
-    console.log(`      table              ${ms(g.get(`head|${rel}`)!).padStart(10)}   ${(bytes / tm / 1000).toFixed(2)} MB/s   ${(tm / cm).toFixed(2)}x codegen`)
-    console.log(`      interpreter        ${ms(i.get(`head|${rel}`)!).padStart(10)}   ${(bytes / im / 1000).toFixed(2)} MB/s   ${(im / cm).toFixed(2)}x codegen`)
+    console.log(`      assembled (shipped)  ${ms(g.get(`ref|${rel}`)!).padStart(10)}   ${(bytes / cm / 1000).toFixed(2)} MB/s`)
+    console.log(`      exec (reference)     ${ms(g.get(`head|${rel}`)!).padStart(10)}   ${(bytes / tm / 1000).toFixed(2)} MB/s`)
+    console.log(`      interpreter          ${ms(i.get(`head|${rel}`)!).padStart(10)}   ${(bytes / im / 1000).toFixed(2)} MB/s`)
+    // NO RATIO COLUMN. It read `Nx codegen` and it was a ratio of the reference
+    // interpreter to the assembler — neither of which is what either name said.
+    // The ratio it is natural to want from this harness is table-lowering vs a
+    // source lowering, and that quantity NO LONGER EXISTS: codegen.ts was deleted
+    // in `37c57b5`. Absolute milliseconds against a named fixture and its byte
+    // size are what this harness can honestly report, so that is all it prints.
     const ctlA = median(c.get(`ref|${rel}`)!), ctlB = median(c.get(`head|${rel}`)!)
-    console.log(`      CONTROL table/table ${sign((ctlB / ctlA - 1) * 100)} — this run's noise floor`)
+    console.log(`      CONTROL exec/exec  ${sign((ctlB / ctlA - 1) * 100)} — this run's noise floor`)
     if (forced) console.log('      *** FORCED: taken over the load ceiling, NOT a canonical number ***')
 
     // THE COMPOSITION TAX, measured rather than left to be rediscovered.
     //
     // Every leg above shares ONE heap, and the interpreter allocates ~6x what
-    // the table does per parse. Its garbage lands on its neighbours' samples.
-    // Measured on `benchmark.less`: dropping the interpreter leg and changing
-    // NOTHING else moved the table from 45.92 to 38.80 ms — 18% — while codegen
-    // did not move at all.
+    // a table engine does per parse. Its garbage lands on its neighbours'
+    // samples. Measured on `benchmark.less`: dropping the interpreter leg and
+    // changing NOTHING else moved the exec leg by 18% while the assembled leg
+    // did not move at all. (Those two legs were labelled `table` and `codegen`
+    // when that was measured — see the import comment; the SHAPE of the finding
+    // is unaffected, the NAMES on it were wrong.)
     //
     // That is why the canonical composition is PINNED, not why it is wrong: the
     // 3-leg shape is the one the standing reference figures were taken in, and
@@ -286,22 +324,22 @@ async function main(): Promise<void> {
     // the tax is REPORTED instead: the pinned figure stays comparable, and the
     // second line says how much of it is the harness.
     //
-    // A lane optimising the table should watch BOTH. They move together; if they
-    // ever stop, the change did something to allocation rather than to work.
+    // A lane optimising a table engine should watch BOTH. They move together; if
+    // they ever stop, the change did something to allocation rather than to work.
     const soloOut = interleave([
-      { label: 'compiled -> table', a: mk(compiled, 'compiled'), b: mk(table, 'table') },
-      { label: 'CONTROL table -> table', a: mk(table, 'table'), b: mk(tableB, 'table') },
+      { label: 'assembled -> exec', a: mk(assembled, 'assembled'), b: mk(exec, 'exec') },
+      { label: 'CONTROL exec -> exec', a: mk(exec, 'exec'), b: mk(execB, 'exec') },
     ], reps, M)
-    const sg = soloOut.get('compiled -> table')!
-    const sc = soloOut.get('CONTROL table -> table')!
+    const sg = soloOut.get('assembled -> exec')!
+    const sc = soloOut.get('CONTROL exec -> exec')!
     const scm = median(sg.get(`ref|${rel}`)!)
     const stm = median(sg.get(`head|${rel}`)!)
     console.log('')
     console.log(`    SAME RUN, interpreter leg DROPPED — the composition tax:`)
-    console.log(`      codegen            ${scm.toFixed(2).padStart(7)} ms   ${sign((scm / cm - 1) * 100)} vs pinned`)
-    console.log(`      table              ${stm.toFixed(2).padStart(7)} ms   ${sign((stm / tm - 1) * 100)} vs pinned   ${(stm / scm).toFixed(2)}x codegen`)
-    console.log(`      CONTROL table/table ${sign((median(sc.get(`head|${rel}`)!) / median(sc.get(`ref|${rel}`)!) - 1) * 100)}`)
-    console.log(`      The interpreter allocates ~6x the table per parse and they share one heap.`)
+    console.log(`      assembled (shipped)  ${scm.toFixed(2).padStart(7)} ms   ${sign((scm / cm - 1) * 100)} vs pinned`)
+    console.log(`      exec (reference)     ${stm.toFixed(2).padStart(7)} ms   ${sign((stm / tm - 1) * 100)} vs pinned`)
+    console.log(`      CONTROL exec/exec  ${sign((median(sc.get(`head|${rel}`)!) / median(sc.get(`ref|${rel}`)!) - 1) * 100)}`)
+    console.log(`      The interpreter allocates ~6x a table engine per parse; they share one heap.`)
     console.log(`      Quote the PINNED figure — it is the one the reference was taken in — and read`)
     console.log(`      this one to know how much of it is the neighbour rather than the engine.`)
     console.log('')

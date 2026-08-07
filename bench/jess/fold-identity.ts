@@ -6,8 +6,18 @@
  * variant and every file in the real corpus, it compares the whole `RunResult`
  * digest of
  *
- *   tableVariants(foldPrograms({...}), v)      the ONE folded table
- *   tableRules(encodeTable(rules, S[v]))       the four tables that shipped
+ *   tableVariants(foldPrograms({...}), v)     the ONE folded table, run on the
+ *                                             shipped ASSEMBLER (`tableVariants`
+ *                                             calls `tableRules`)
+ *   execRules(encodeTable(rules, S[v]))       each of the four tables encoded
+ *                                             SEPARATELY, run on the REFERENCE
+ *                                             bytecode interpreter — nothing
+ *                                             ships on that engine; it is the
+ *                                             identity reference
+ *
+ * So this gates TWO things at once, and that is deliberate: the fold must not
+ * change the parse, and the assembler must agree with the reference interpreter.
+ * A difference here does not by itself say which of the two moved.
  *
  * ONE process per dialect, and that is itself the finding: the four
  * `trackLines` x `hostMode` artifacts are four ENCODINGS of a single grammar
@@ -22,7 +32,7 @@ import { fileURLToPath } from 'node:url'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { tableVariants } from '../../src/table/fold.ts'
 import { foldPrograms, type TableProgram } from '../../src/table/program.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
@@ -52,7 +62,7 @@ async function one(dialect: Dialect): Promise<void> {
   const total = corpusTotal(dialect)
   for (const v of VARIANTS) {
     const viaFold = tableVariants(folded, v)[ENTRY] as Runnable
-    const direct = tableRules(progs[v]!)[ENTRY] as Runnable
+    const direct = execRules(progs[v]!)[ENTRY] as Runnable
     let same = 0
     const differing: string[] = []
     for (const f of files) {
@@ -76,7 +86,7 @@ async function main(): Promise<void> {
   const pm = await assertParseman()
   console.log(`parseman ${pm.version}   ${pm.root}`)
   console.log('')
-  console.log('=== FOLDED vs the four tables it replaces — whole RunResult digest, real corpora')
+  console.log('=== FOLDED (assembled) vs four SEPARATE tables (exec, reference) — whole RunResult digest, real corpora')
   for (const d of DIALECTS) {
     process.stdout.write(execFileSync(process.execPath, ['--import', REGISTER, SELF, d], {
       encoding: 'utf8', maxBuffer: 1 << 28,

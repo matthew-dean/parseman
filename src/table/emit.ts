@@ -161,7 +161,7 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
    * THE DEFAULT IS A MEASUREMENT, NOT A COMMITMENT. It rests on two numbers —
    * the size cost above, and the absence of a demonstrated speed gap the
    * pre-compiled path closes — and only the first of those is settled. A macro
-   * artifact measured ~29% slower than `assembledRules` over the same grammar
+   * artifact measured ~29% slower than `tableRules` over the same grammar
    * during 0.47 (36.0 vs 27.8 ms, 0/16 wins, -0.1% control, identical trees);
    * that is being diagnosed as an emitted-PROGRAM difference, not an engine
    * one, but if pre-compiling turns out to close it the default is an owner
@@ -223,6 +223,19 @@ export type EmitOptions = {
   readonly fnSources?: readonly string[]
   /** Import specifier for the shared driver. */
   readonly runtime?: string
+  /**
+   * NAME of the driver export to import from `runtime`, defaulting to the
+   * shipped one.
+   *
+   * `runtime` alone was not enough to say which engine a module binds, and that
+   * gap was load-bearing: `parseman/table` exports the ASSEMBLER as `tableRules`
+   * while `src/table/exec.ts` exports the reference INTERPRETER under a name
+   * that used to be identical. Pointing `runtime` at `exec.ts` therefore emitted
+   * a module that read as the shipped artifact and ran the reference engine.
+   * The reference export is now `execRules`, and a differential that wants it
+   * has to SAY so here — which is the whole point of separating the names.
+   */
+  readonly runtimeRef?: string
 }
 
 /** Refuse a program the printer cannot express, naming the CONSTRUCT. */
@@ -293,9 +306,10 @@ export function emitTableModule(prog: TableProgram, opts: EmitOptions = {}): str
   const name = opts.name ?? 'grammar'
   const runtime = opts.runtime ?? 'parseman/table'
   const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
+  const ref = opts.runtimeRef ?? 'tableRules'
   return [
-    `import { tableRules } from ${jsString(runtime)}`,
-    `export const ${name} = /* @__PURE__ */ tableRules({`,
+    `import { ${ref} } from ${jsString(runtime)}`,
+    `export const ${name} = /* @__PURE__ */ ${ref}({`,
     ...programFields(prog, fns, opts),
     `})`,
   ].join('\n')
@@ -312,8 +326,6 @@ export type ExpressionEmitOptions = EmitOptions & {
    * splice point, which is what makes the two lowerings interchangeable there.
    */
   readonly entry?: string | null
-  /** Identifier the expression expects `tableRules` to be bound to. */
-  readonly runtimeRef?: string
 }
 
 /**

@@ -155,7 +155,7 @@ const REGISTRY = [
     id: 'table-lowering-identity',
     needs: 'repo',
     file: 'test/unit/table-identity.test.ts (bench/table-lowering-identity.ts)',
-    legs: 'interpreted combinator graph vs compose() codegen vs assembledRules (shipped) vs tableRules (reference driver), digested per case',
+    legs: 'interpreted combinator graph vs compose() codegen vs tableRules (shipped) vs execRules (reference driver), digested per case',
     cleanExit: 0,
     // The vitest test, not `bench/table-lowering-sweep.ts`: the sweep prints its
     // mismatches and exits 0 whatever it finds, so it is a report, not a gate.
@@ -170,7 +170,7 @@ const REGISTRY = [
     id: 'jess-oracle',
     needs: 'jess',
     file: 'bench/jess/divergence.ts (legs from bench/jess/digest.ts)',
-    legs: 'interpreted fuse vs PM_MACRO codegen vs tableRules, one process per leg, over jess\'s css corpus',
+    legs: 'interpreted fuse vs the PM_MACRO artifact (the shipped ASSEMBLER — codegen.ts was deleted in 37c57b5) vs execRules (reference), one process per leg, over jess\'s css corpus',
     // `divergence.ts` exits 0 whatever it finds — it prints outcome counts. The
     // teeth test is therefore that those counts MOVE, not that it returns non-zero.
     cleanExit: 0,

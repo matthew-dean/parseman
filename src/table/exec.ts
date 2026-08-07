@@ -1544,12 +1544,28 @@ function makeDriver(
 }
 
 /**
- * Turn a program into the rule map a compiled artifact exports.
+ * THE REFERENCE DRIVER. Turn a program into a rule map, by INTERPRETING the
+ * bytecode. Nothing ships on this — `tableRules` (`table/assemble.ts`) is
+ * what `parseman/table` exports as `tableRules`, and what every artifact binds.
  *
- * The entries have the SAME signature as codegen rule functions, so `run()`,
- * the linker's public wrappers and every consumer are unchanged.
+ * IT IS CALLED `execRules` AND NOT `tableRules` FOR A MEASURED REASON. Until
+ * this rename the two engines exported the SAME name with the SAME signature
+ * across a module boundary, so `import { tableRules } from '…/table/exec.ts'`
+ * and `import { tableRules } from 'parseman/table'` type-checked identically
+ * and silently selected different engines. Three modules picked the wrong one:
+ * `compiler/linker.ts` (the whole `compose()`/`fuse()` path), `table/fold.ts`
+ * (every folded artifact's variant load), and `bench/jess/fixture.ts` — the
+ * CANONICAL fixture harness, whose column printed as `table` was this function
+ * for the entire cycle it was quoted in.
+ *
+ * A name that two engines can answer to is not a naming preference; it is a
+ * defect with no diagnostic. Do not re-alias this to `tableRules` anywhere.
+ *
+ * The entries have the SAME signature as the assembler's, so `run()`, the
+ * linker's public wrappers and every consumer are unchanged — which is exactly
+ * why the substitution was invisible.
  */
-export function tableRules(
+export function execRules(
   source: TableProgram | CompactProgram,
   /**
    * MEASUREMENT CONTROL, not a feature. `leafSwap: false` hands the driver a

@@ -79,6 +79,20 @@ export const CATEGORIES = /** @type {const} */ (['RULE-BUG', 'BY-DESIGN', 'DEBT'
  * argued name/key collisions. Every one of them is a claim someone can now read,
  * rather than a fact nobody could see. Adding a rule always surfaces a backlog; the
  * backlog is the point.
+ *
+ * 14 -> 15 -> 14, WITHIN ONE LANE. INV-11 landed and immediately caught a second
+ * instance of the shape it was written for: `src/index.ts` published
+ * `compileTable` under the second name `compile`. It was entered as DEBT for
+ * exactly as long as it took to get an owner ruling on which name survives —
+ * `compile`, on the same argument that settled `assembledRules` -> `tableRules`:
+ * it names WHAT the thing does, not HOW it currently does it. The declaration
+ * was renamed and `compileTable` deleted, so the entry went with it and the
+ * count came back down.
+ *
+ * That round trip is the ratchet behaving correctly, not churn. The count went
+ * up because a real finding existed and nobody was licensed to guess at the fix;
+ * it came down in the same lane because the fix arrived. DEBT that is paid is
+ * the only kind that should ever have been entered.
  */
 export const ALLOW_COUNT = 28
 
@@ -122,7 +136,14 @@ export const ALLOW = new Map([
    * nothing. The gate was not wrong; the reachability it measured was real. This
    * entry appearing is the SIGNAL that the last product import is gone, and it
    * must not be deleted to "fix" a future finding — a finding here means
-   * something started importing the reference engine again. */
+   * something started importing the reference engine again.
+   *
+   * THE NAME COLLISION ITSELF IS GONE. `exec.ts` now exports `execRules`, so the
+   * two engines can no longer be confused by import path, and INV-7 fails any
+   * specifier that re-aliases one to the other across src/, test/ and bench/.
+   * This entry stays exactly as it is: INV-7 bans the mechanism, this entry
+   * records that the reference driver is deliberately unreachable from a
+   * published entry, and the two answer different questions. */
   ['INV-3:src/table/exec.ts',
     { category: 'BY-DESIGN', why: 'reference driver — the identity sweep gates the assembler against it; bench/test only' }],
 

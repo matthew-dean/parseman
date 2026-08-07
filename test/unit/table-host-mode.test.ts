@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable, UnsupportedConstruct } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose, cstBuildHost } from '../../src/compiler/linker.ts'
 import { FUSED_HOST_MODE } from '../../src/cst/host-mode.ts'
@@ -82,8 +82,8 @@ describe('encodeTable({ hostMode })', () => {
     // "A property exists" is not the assertion — the VALUE decides which pairing
     // is admitted, and a stamp put only on the map (or only on the entries) would
     // leave half the callers unguarded, so both are read.
-    const cst = tableRules(encodeTable(hostNodes, { hostMode: 'cst' }))
-    const ast = tableRules(encodeTable(hostNodes))
+    const cst = execRules(encodeTable(hostNodes, { hostMode: 'cst' }))
+    const ast = execRules(encodeTable(hostNodes))
     expect((cst as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
     expect((cst.Doc as unknown as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
     expect((cst.Marked as unknown as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
@@ -103,8 +103,8 @@ describe('encodeTable({ hostMode })', () => {
     // both VALID pairings are exercised in the same test and their outputs are
     // read: the 'ast' table builds the grammar's own reducer output, the 'cst'
     // table builds host nodes.
-    const cst = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
-    const ast = tableRules(encodeTable(hostNodes)).Doc!
+    const cst = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const ast = execRules(encodeTable(hostNodes)).Doc!
     const host = cstBuildHost({ tags: true })
 
     expect(() => run(cst as never, 'abc')).toThrow(/host mode "cst"/)
@@ -136,7 +136,7 @@ describe('encodeTable({ hostMode })', () => {
     })) as unknown as Record<string, Combinator<unknown>>
     expect((declared.Doc!._meta as { grammarHostMode?: string }).grammarHostMode).toBe('cst')
 
-    const table = tableRules(encodeTable(declared))
+    const table = execRules(encodeTable(declared))
     const compiled = compose([declared as never]) as unknown as Record<string, unknown>
     expect((table as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('ast')
     expect((compiled as Record<symbol, unknown>)[FUSED_HOST_MODE]).toBe('cst')
@@ -167,7 +167,7 @@ describe('encodeTable({ hostMode })', () => {
     // so only `'ast'` is exercised both ways.
     const build = (type: string, children: unknown[]) => ({ H: type, n: children.length })
     for (const hostMode of ['ast', 'cst'] as const) {
-      const table = tableRules(encodeTable(structural, { hostMode })).Doc!
+      const table = execRules(encodeTable(structural, { hostMode })).Doc!
       const hosts = hostMode === 'cst'
         ? [{ build: cstBuildHost({ tags: true }) as never }]
         : [{ build } as never, {} as never]
@@ -186,7 +186,7 @@ describe('encodeTable({ hostMode })', () => {
     // The existing host tests assert the root and one child. A host that ran only
     // at the root — or only where a reducer was absent — would satisfy those.
     const host = cstBuildHost({ tags: true })
-    const table = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const table = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
     const root = run(table as never, 'abc', { build: host as never }).value as Record<string, unknown>
     expect(root._tag).toBe('node')
     expect(root.type).toBe('Doc')
@@ -218,7 +218,7 @@ describe('encodeTable({ hostMode })', () => {
       Word: node('Word', regex(/[a-z]/), c => ({ t: 'Word', c })),
       Pair: node('Pair', sequence(gg.Word!, gg.Word!), c => ({ t: 'Pair', c })),
     })) as unknown as Record<string, Combinator<unknown>>
-    run(tableRules(encodeTable(g, { hostMode: 'cst' })).Pair! as never, 'ab', { build: spy as never })
+    run(execRules(encodeTable(g, { hostMode: 'cst' })).Pair! as never, 'ab', { build: spy as never })
     expect(seen.map(s => s.type)).toEqual(['Word', 'Word', 'Pair'])
     expect(seen[0]!.span).toEqual({ start: 0, end: 1 })
     expect(seen[1]!.span).toEqual({ start: 1, end: 2 })

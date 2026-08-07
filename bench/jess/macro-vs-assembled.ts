@@ -1,5 +1,5 @@
 /**
- * THE MACRO-FUSED SHIPPING ARTIFACT vs `assembledRules` OVER THE INTERPRETED FUSE.
+ * THE MACRO-FUSED SHIPPING ARTIFACT vs `tableRules` OVER THE INTERPRETED FUSE.
  *
  * WHY THIS EXISTS. `bench/jess/g5-ms.ts` and `bench/jess/fixture.ts` disagree by ~24%
  * on the ASSEMBLER while agreeing closely on the reference interpreter — 27.3 ms here
@@ -11,12 +11,12 @@
  * The live hypothesis is that the two harnesses do not measure the same PROGRAM:
  *   - `fixture.ts` measures `import('pm-macro:…')`, the MACRO-FUSED artifact, where
  *     `composeLeaf` picks winners statically at build time.
- *   - `g5-ms.ts` measures `assembledRules(encodeTable(rules))`, the assembler over the
+ *   - `g5-ms.ts` measures `tableRules(encodeTable(rules))`, the assembler over the
  *     INTERPRETED fuse's realised rule map, where cross-piece refs are repointed.
  * Settings are not the variable: `VARIANT_SETTINGS['ast']` is `{}` in both.
  *
  * Both run the SAME engine — the macro emits `import { tableRules } from 'parseman/table'`
- * (`src/plugin/index.ts:2259`), which `src/table/index.ts:28` aliases to `assembledRules`.
+ * (`src/plugin/index.ts:2259`), which `src/table/index.ts:28` aliases to `tableRules`.
  * So any gap here is the ARTIFACT, not the driver, and it lands on the SHIPPED path.
  *
  * INSTANCE USE IS BALANCED, which is the whole reason this file does not just add a leg
@@ -31,7 +31,7 @@ import os from 'node:os'
 import { readFileSync, statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { ENTRY, JESS_ROOT, assertParseman, exportName, loadGrammar } from './grammars.ts'
@@ -54,8 +54,8 @@ console.log(`  fixture  ${path}  ${statSync(path).size} B`)
 
 const g = await loadGrammar('less', 'ast')
 const prog = encodeTable(g.rules, {})
-const asmA = assembledRules(prog)[ENTRY]! as unknown as Entry
-const asmB = assembledRules(prog)[ENTRY]! as unknown as Entry
+const asmA = tableRules(prog)[ENTRY]! as unknown as Entry
+const asmB = tableRules(prog)[ENTRY]! as unknown as Entry
 
 const modPath = resolvePath(JESS_ROOT, MODULE)
 const macroMod = await import(`pm-macro:${modPath}`) as Record<string, unknown>

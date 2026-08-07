@@ -506,7 +506,7 @@ export function measure(u: Unit, lower: Lowerer): Row {
 
     // A HOLLOW MEASUREMENT IS A HARNESS FAILURE FOR THE SAME REASON AN IMPLAUSIBLY
     // SMALL ONE IS, and this half is no longer exempt: `transformMacro` now lowers
-    // 10 of these 16 units through `compileTable` (they emit `tableRules`), so the
+    // 10 of these 16 units through `compile` (they emit `tableRules`), so the
     // dropped-reducer defect reaches the probe exactly as it reached `compile()`.
     // Every unit here declares `node()` sites, so every one of them HAS reducers —
     // an empty arrow in this output is a dropped callback, never a grammar that

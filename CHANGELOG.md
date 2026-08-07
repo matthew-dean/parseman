@@ -5,6 +5,101 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
 
 ## 0.47.0 — unreleased
 
+- **BREAKING: one engine now has one name. `src/table/exec.ts` exports
+  `execRules`; `assembledRules` is renamed `tableRules` and `assembledRules` no
+  longer exists. Every `codegen` / `table` column printed by a bench harness this
+  cycle names the wrong engine.**
+
+  Two functions shared the name `tableRules` across a module boundary, with the
+  same signature and the same return type:
+
+  | import | engine |
+  | --- | --- |
+  | `parseman/table` → `src/table/index.ts` | `assembledRules as tableRules` — **the shipped closure assembler** |
+  | `src/table/exec.ts` | the **reference bytecode interpreter** |
+
+  TypeScript could not tell them apart, so the import PATH was the only thing
+  selecting an engine and a wrong path was silent. Three modules took the wrong
+  one. `src/compiler/linker.ts` put the whole `compose()`/`fuse()` path on the
+  interpreter and `src/table/fold.ts` did the same for every folded artifact's
+  variant load — both fixed earlier this cycle. The third is
+  **`bench/jess/fixture.ts`**, the canonical fixture harness, and it was still
+  live:
+
+  - its column headed `table` was `execRules` — the reference interpreter
+  - its column headed `codegen` was the `pm-macro:` artifact, which imports
+    `tableRules` from `parseman/table` — that is **also a table engine**, the
+    shipped one. `src/compiler/codegen.ts` was **deleted in `37c57b5`**; no
+    harness has measured a source lowering since.
+
+  So the headline `table` vs `codegen` figures are **reference interpreter vs
+  shipped assembler**, which is not the comparison anyone read them as. The
+  measurements are sound — the harness timed exactly what it built — but the
+  ratio between those two columns does not mean what its names said. Figures
+  affected: `CHANGELOG.md` §0.47 (the per-fixture `codegen`/`table` table and the
+  composition-tax table), `docs/design/canonical-fixture-benchmark.md` (now
+  carries a correction banner), `notes/TABLE-DRIVER.md`, and the 39,718
+  `"engine":"table"` records in `notes/results/parse-consumed.jsonl`. **Nothing
+  has been re-measured or regenerated** — re-taking them under the corrected legs
+  is an owner call.
+
+  **BOTH HALVES OF THE MECHANISM ARE GONE.** Removing either alone would have
+  left the class expressible.
+
+  1. The reference export is `execRules` (and `exec-baseline.ts`'s is
+     `execRulesBaseline`), updated across `src/`, `test/` and `bench/`.
+  2. `src/table/index.ts` read `export { assembledRules as tableRules,
+     assembledRules, … }` — **one function published under two names**. That
+     synonym, not any cross-engine import, is what made the collision available
+     in the first place. The declaration in `src/table/assemble.ts` is now named
+     `tableRules` and re-exported unrenamed; **`assembledRules` is gone
+     entirely** (43 files).
+
+  `tableRules` won because it is the name emitted artifacts already import —
+  `emit.ts`, `compile.ts`, `compile-rule-map.ts` and `plugin/index.ts` all write
+  it — so unifying on it changes **no emitted byte**, where the other direction
+  would have rewritten four emit sites and every artifact they have produced. It
+  also names *what the thing is* at a public boundary, where `assembledRules`
+  named *how it is currently built*; closure assembly has already replaced one
+  engine and may be replaced again. jess references neither name (verified by
+  grep over the sibling checkout), so nothing downstream was pinned.
+
+  Also: `emitTableModule` gained a `runtimeRef` option so an emitted module SAYS
+  which engine it binds; `fixture.ts` prints `assembled (shipped)` /
+  `exec (reference)` and no longer prints an `Nx codegen` ratio, because the
+  quantity that ratio named no longer exists.
+
+  New gate: **INV-11** in `scripts/check-invariants.mjs`, two halves — (a) no
+  import/export specifier may bind one engine's name to the other's; (b) no
+  `src/**/index.ts` may re-export a symbol under a second name. Scoped to `src/`,
+  `test/` and `bench/` because bench is where this survived longest. Both halves
+  proven to fire against `test/fixtures/invariant-gate/inv11`.
+
+- **BREAKING: `compileTable` is now `compile`, and `compileRuleMapTable` is now
+  `compileRuleMap`.**
+
+  INV-11 found this the day it landed, which is the rule working. `src/index.ts`
+  read `export { compileTable as compile }`, so one function had two public names
+  — `compile` from `parseman`, `compileTable` from `parseman/table`. The
+  identical shape the rule was written for, one level up.
+
+  `compile` survives on the same argument that settled `assembledRules` →
+  `tableRules`: it names *what the function does*, where `compileTable` named
+  *how it currently does it*, and the table lowering has itself already replaced
+  one engine. `compileRuleMapTable` followed — the `*Table` pair was the only
+  argument for the suffix, and with one gone the other had none.
+
+  The call sites had already voted: 27 files wrote `import { compileTable as
+  compile }`, renaming the import to the name they actually wanted, and several
+  imported `compile` from `parseman` **and** `compileTable` from
+  `parseman/table` in the same file — the same function twice, under two names.
+  Those collapsed to one import each. A further batch of `compileCodegen` /
+  `compileRuleMapCodegen` local aliases went too: they named an engine deleted in
+  `37c57b5`.
+
+  56 files. jess references none of these names. `ALLOW_COUNT` returned 15 → 14
+  as the DEBT entry was paid inside the same lane that opened it.
+
 - **PARSE TIME REGRESSED 2.2×-2.6× AGAINST 0.46, and this release ships with it.**
   Stated first because two earlier drafts of this record said otherwise.
 
@@ -173,10 +268,10 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   It is still DORMANT until a parse sets `ctx._tolerant`, so a strict table is
   word-for-word the table it was and a strict parse of a recovery table takes the
   identical path.
-- **`compileTable().parseWithErrors()` refuses instead of reporting a clean
+- **`compile().parseWithErrors()` refuses instead of reporting a clean
   file.** It set `_tolerant` on a driver that ignored it, so it collected nothing
   whatever the input — a flag that measures nothing. It now needs
-  `compileTable(g, …, { recovery: true })`, which is also newly honoured rather
+  `compile(g, …, { recovery: true })`, which is also newly honoured rather
   than accepted and dropped, and throws by name otherwise.
 - **A local trivia scope's root-capture policy reaches the table.**
   `parser({ rootCapture: 'opaque' })` was lowered as inert, so a table parse
@@ -293,7 +388,7 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   errors the other engine had rolled back. And the two boundaries keep
   `try`/`finally`, because jess's reducers throw on purpose.
 
-  Gated by `bench/jess/emit-identity-one.ts`: `assembledRules` under
+  Gated by `bench/jess/emit-identity-one.ts`: `tableRules` under
   `PM_TABLE_EMIT=0` and `=1`, digested per facet over all four dialects and all
   four variants, 2,833 files each — identical everywhere the emitter serves. The
   sweep is non-vacuous by plant, not by assertion: a planted one-character defect

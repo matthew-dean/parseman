@@ -27,9 +27,22 @@
  * Each is rewritten to an absolute path so neither needs a `node_modules`.
  *
  * The table artifact additionally gets the SAME `@jesscss/core/ast` import the
- * codegen one carries. Its reducers reference those bindings as free variables,
- * so omitting it would let the table skip a dependency load its real build pays
- * — an asymmetry worth several milliseconds, all of it in the table's favour.
+ * macro-lowered one carries. Its reducers reference those bindings as free
+ * variables, so omitting it would let the table skip a dependency load its real
+ * build pays — an asymmetry worth several milliseconds, all of it in the table's
+ * favour.
+ *
+ * ENGINE TOKEN LEGEND — the `LOWERINGS` tokens are a WIRE CONTRACT (`load.ts`
+ * passes them positionally) and keep their historical spelling; this is what
+ * each one actually binds:
+ *   codegen   transformMacro() / `pm-macro:`   the shipped ASSEMBLER. There is
+ *                                              no source-lowering engine:
+ *                                              `src/compiler/codegen.ts` was
+ *                                              DELETED in `37c57b5`.
+ *   table     execRules()                      the REFERENCE bytecode
+ *                                              interpreter (NOT what ships)
+ * The `parse` phase's emitted JSON keys were renamed to match the engines:
+ * `codegenMs` -> `assembledMs`, `tableMs` -> `execMs`.
  */
 import { createRequire } from 'node:module'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -213,12 +226,12 @@ async function main(): Promise<void> {
     // cannot parse (the table's reducer sources are recovered from closures and
     // have lost their captured scope), and this phase needs a working parser.
     const { run } = await import('../../src/functional/run.ts')
-    const { tableRules } = await import('../../src/table/exec.ts')
+    const { execRules } = await import('../../src/table/exec.ts')
     const { interleave } = await import('../ab-harness.ts')
     const { rules } = await loadGrammar(dialect, 'ast')
     const input = readFileSync(resolvePath(JESS_ROOT, RATE_FIXTURE[dialect]), 'utf8')
     type E = Parameters<typeof run>[0]
-    const table = tableRules(encodeTable(rules, VARIANT_SETTINGS.ast))[ENTRY] as E
+    const table = execRules(encodeTable(rules, VARIANT_SETTINGS.ast))[ENTRY] as E
     const codegen = ((await import(`pm-macro:${resolvePath(JESS_ROOT, MODULE[dialect])}`) as Record<string, unknown>)[exportName(dialect, 'ast')] as Record<string, unknown>)[ENTRY] as E
     if (typeof codegen !== 'function') throw new Error(`${dialect}: 'codegen' is not a function — the macro did not run`)
     const mk = (e: E) => [{
@@ -235,8 +248,8 @@ async function main(): Promise<void> {
     const bytes = Buffer.byteLength(input)
     process.stdout.write(JSON.stringify({
       dialect, phase, lazy, jsBytes: bytes, file: RATE_FIXTURE[dialect],
-      codegenMs: median(s.get(`ref|${dialect}`)!),
-      tableMs: median(s.get(`head|${dialect}`)!),
+      assembledMs: median(s.get(`ref|${dialect}`)!),
+      execMs: median(s.get(`head|${dialect}`)!),
       parseman: pm.version,
     }) + '\n')
     return

@@ -7,7 +7,11 @@
  *
  *   1. How many REALISED maps does `ctx` have across the configuration matrix
  *      (ast / trackLines / rootTrivia / tolerant / trailing-trivia) crossed with
- *      the three engines (interpreted / codegen / table)? Measured with
+ *      the three engines — the combinator graph (`interp`), the shipped
+ *      ASSEMBLER `compose()` (`assembled`), and the REFERENCE bytecode
+ *      interpreter `execRules()` (`exec`)? There is no source-lowering
+ *      "codegen" engine: `src/compiler/codegen.ts` was DELETED in `37c57b5`.
+ *      Measured with
  *      `%HaveSameMap`, not asserted.
  *   2. Is `ctx` still in fast properties after a parse that clears the trivia
  *      sinks? Measured with `%HasFastProperties` before and after.
@@ -28,7 +32,7 @@ import { classifiedTrivia } from '../src/combinators/map.ts'
 import { run } from '../src/functional/run.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+import { execRules } from '../src/table/exec.ts'
 import type { Combinator, ParseContext } from '../src/types.ts'
 
 const haveSameMap = eval('(a, b) => %HaveSameMap(a, b)') as (a: object, b: object) => boolean
@@ -41,8 +45,8 @@ let CURRENT = 'init'
 
 /**
  * Wrap an entry so it records the `ctx` the driver handed it. Works for all
- * three engines: interpreted entries are combinators (patch `.parse`), codegen
- * and table entries are plain functions.
+ * three engines: interpreted entries are combinators (patch `.parse`), assembled
+ * and exec entries are plain functions.
  */
 function spyEntry(entry: Runnable): Runnable {
   if (typeof entry === 'function') {
@@ -84,8 +88,8 @@ const INPUT = 'alpha 12 beta ; gamma /* c */ delta 7 ; epsilon 99'
 
 const ENGINES: Array<[string, Runnable]> = [
   ['interp', grammar.Doc! as unknown as Runnable],
-  ['codegen', (compose([grammar as never]) as unknown as Record<string, Runnable>).Doc!],
-  ['table', tableRules(encodeTable(grammar)).Doc! as unknown as Runnable],
+  ['assembled', (compose([grammar as never]) as unknown as Record<string, Runnable>).Doc!],
+  ['exec', execRules(encodeTable(grammar)).Doc! as unknown as Runnable],
 ]
 
 const CONFIGS: Array<[string, Parameters<typeof run>[2]]> = [

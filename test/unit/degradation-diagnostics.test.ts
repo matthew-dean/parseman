@@ -19,7 +19,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
 import { node, sequence, literal, regex, many, choice, parser, parse } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroModule, tableKeepsTailCapture } from '../helpers/eval-macro-module.ts'
 import {
@@ -471,7 +471,7 @@ describe('a runtime compile() drains its degradations as ONE aggregated block', 
     return parser({}, (nodes as Array<Combinator<unknown>>).reduce((a, b) => sequence(a, b) as Combinator<unknown>))
   }
 
-    // DRAIN SHAPE, unreachable to drive here. `compileTable` opens the same aggregating
+    // DRAIN SHAPE, unreachable to drive here. `compile` opens the same aggregating
   // drain `compile()` did, but the only degradation that produced N sites on demand was
   // `mk-inline-missed`, recorded by the source lowering. The one code left that fires in
   // bulk — `build-arity-unconfirmed` — is recorded at COMBINATOR CONSTRUCTION, before any
@@ -496,7 +496,7 @@ describe('a runtime compile() drains its degradations as ONE aggregated block', 
     expect(seen[0]).toContain('[parseman] degraded [build-arity-unconfirmed]')
   })
 
-    // DRAIN SHAPE, unreachable to drive here. `compileTable` opens the same aggregating
+    // DRAIN SHAPE, unreachable to drive here. `compile` opens the same aggregating
   // drain `compile()` did, but the only degradation that produced N sites on demand was
   // `mk-inline-missed`, recorded by the source lowering. The one code left that fires in
   // bulk — `build-arity-unconfirmed` — is recorded at COMBINATOR CONSTRUCTION, before any

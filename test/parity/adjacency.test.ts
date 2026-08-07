@@ -10,7 +10,6 @@ import {
   classifiedTrivia, trivia, parser, parse as runtimeParse, compile, rules,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
-import { compileTable as compileCodegen } from '../../src/table/compile.ts'
 
 const ws = trivia(regex(/[ \t\n\r\f]+/))
 
@@ -134,7 +133,7 @@ describe('compiled shape', () => {
 
   it('costs a grammar with no assertion exactly nothing', () => {
     const without = parser({ trivia: ws }, sequence(literal('a'), literal('b')))
-    expect(compileCodegen(without).source).not.toContain('_ak')
-    expect(compileCodegen(without).source).not.toContain('adjacent')
+    expect(compile(without).source).not.toContain('_ak')
+    expect(compile(without).source).not.toContain('adjacent')
   })
 })

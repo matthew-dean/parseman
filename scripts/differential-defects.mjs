@@ -57,8 +57,8 @@ export const DEFECTS = {
   /**
    * The reference table driver (`exec.ts`) does the same thing.
    *
-   * Separate from `emit-node-span` on purpose: `assembledRules` is what ships and
-   * `tableRules` is what a divergence gets bisected against, and a sweep that
+   * Separate from `emit-node-span` on purpose: `tableRules` is what ships and
+   * `execRules` is what a divergence gets bisected against, and a sweep that
    * imported one while claiming the other is exactly how `bench/table-lowering-identity.ts`
    * spent a release gating a driver nothing ships. Two plants, one per driver, is
    * how that stays visible.

@@ -96,7 +96,7 @@ need; leave the rest.
 38–42× on the artifact would hand back the size win the table lowering exists
 for, and because nothing yet shows the pre-compiled path buying enough to pay
 for that. Both halves of that are measurements, and either can move — a macro
-artifact's parse speed against `assembledRules` is under investigation as of
+artifact's parse speed against `tableRules` is under investigation as of
 0.47. If pre-compiling turns out to close a gap the default path has, this
 default is an owner decision to revisit, not a design commitment.
 :::

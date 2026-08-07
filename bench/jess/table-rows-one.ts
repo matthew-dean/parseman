@@ -10,7 +10,7 @@
  * branch and a store on the hottest path in the driver.
  */
 import { encodeTable } from '../../src/table/encode.ts'
-import { resetTableCounters, tableCounters, tableRules } from '../../src/table/exec.ts'
+import { resetTableCounters, tableCounters, execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import * as OPS from '../../src/table/ops.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
@@ -26,7 +26,7 @@ const dialect = process.argv[2] as Dialect
 const prov = await assertParseman()
 const g = await loadGrammar(dialect, 'ast')
 const prog = encodeTable(g.rules, {})
-const rules = tableRules(prog)
+const rules = execRules(prog)
 const entry = rules[ENTRY]
 if (entry === undefined) throw new Error(`${dialect}: table has no '${ENTRY}'`)
 

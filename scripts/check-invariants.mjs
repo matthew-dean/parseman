@@ -24,6 +24,7 @@
  *   INV-8  no exported NAME resolves to two different declarations
  *   INV-9  no cross-module KEY string minted in more than one module
  *   INV-10 no comment naming a repo path that does not exist
+ *   INV-11 one engine, one public name — no `as` rename across engine vocabularies
  *
  * INV-8/9/10 are the NAMING rules. They exist because every duplicate-definition
  * defect this project has paid for was found by accident, and three of the five
@@ -1033,6 +1034,162 @@ const MIN_DUP_CHARS = 160
           `INV-10:${file}:${p}`)
       }
     }
+  }
+}
+
+/* ================================================================== *
+ * INV-11 — one engine, one public name.
+ *
+ * NUMBERED 11, NOT 8. `lane/shared-definitions` (`2d6d389`) lands INV-8/9/10 in
+ * parallel with this, and its INV-8 is aimed at the SAME motivating defect from
+ * the OPPOSITE direction. The two are duals and neither subsumes the other:
+ *
+ *   their INV-8   one NAME  -> two DECLARATIONS. Follows the export graph to
+ *                 each origin. Strictly more general than anything hardcoded,
+ *                 and it is the better rule for that half — it needs no
+ *                 vocabulary list. It caught `tableRules` resolving to both
+ *                 engines.
+ *   this INV-11   one DECLARATION -> two NAMES. Their rule is SILENT here by
+ *                 design: `export { X as Y }` re-exports one declaration, so it
+ *                 resolves to ONE origin and their check passes. That is exactly
+ *                 the shape of `assembledRules as tableRules` — the line that
+ *                 MINTED the collision their rule then detected.
+ *
+ * Neither ordering of the merges breaks either rule. If both land, the pair
+ * closes the name/declaration correspondence in both directions, which is the
+ * property actually wanted: one declaration, one name, and no way to reach
+ * either from the other under a synonym.
+ *
+ * DECIDES two shapes, both read straight off a specifier node — `import { X as
+ * Y }` and `export { X as Y }` carry both names on the SAME node, so neither
+ * check needs dataflow and neither has a threshold to argue about:
+ *
+ *   11a  CROSS-VOCABULARY RENAME. A specifier binding a name from one table
+ *       engine's vocabulary to a name from the other's.
+ *   11b  RENAMING RE-EXPORT FROM AN ENTRY POINT. Any `export { X as Y }` with
+ *       `X !== Y` in a `src/**\/index.ts`. A public entry may PUBLISH a symbol;
+ *       it may not RENAME one.
+ *
+ * WHY. There are two table engines with the SAME signature and the same return
+ * type:
+ *
+ *   tableRules  src/table/assemble.ts  THE SHIPPED ENGINE, and what every
+ *                                      emitted artifact imports from
+ *                                      `parseman/table`.
+ *   execRules   src/table/exec.ts      THE REFERENCE bytecode interpreter.
+ *                                      Nothing ships on it; it is the side a
+ *                                      divergence gets bisected against.
+ *
+ * Because they agree structurally, TypeScript cannot tell a consumer which one
+ * it bound. For two releases both exported the identical name `tableRules` and
+ * the only thing selecting an engine was the import PATH. Three modules picked
+ * the wrong one; every one type-checked clean and ran correctly, on the wrong
+ * engine:
+ *
+ *   src/compiler/linker.ts   the whole compose()/fuse() composition path
+ *   src/table/fold.ts        every folded artifact's variant load
+ *   bench/jess/fixture.ts    THE CANONICAL fixture harness — its column printed
+ *                            as `table` was the reference interpreter for the
+ *                            entire cycle those figures were quoted in
+ *
+ * 11b EXISTS BECAUSE 11a ALONE WOULD HAVE MISSED THE ORIGIN. The collision was not
+ * introduced by anyone importing across vocabularies. It was introduced by
+ * `src/table/index.ts` reading `export { assembledRules as tableRules,
+ * assembledRules, … }` — ONE function published under TWO names. Nothing was
+ * renamed across engines there; a second public name was simply minted, and the
+ * second name happened to be one another module already exported. An `as` at a
+ * boundary whose both sides we own is never a compatibility shim — it is a
+ * synonym, and a synonym is the seam a wrong import slips through. So the rule
+ * bans the shape that CREATED the hazard, not only the shape that expressed it.
+ *
+ * INV-3 covers the src/ half by REACHABILITY (`exec.ts` is allowlisted BY-DESIGN
+ * precisely so a product import of it reappearing turns the gate red). It cannot
+ * cover bench/ or test/, which import the reference engine legitimately — and
+ * bench/ is where the mislabel survived longest, because a harness that binds
+ * the wrong engine still runs and still prints a number. Hence src/, test/ and
+ * bench/.
+ *
+ * NOT COVERED, deliberately: whether a bench COLUMN HEADER matches the engine
+ * under it. Not source-decidable — no rule can read a string literal and know
+ * which `run()` argument it describes — and a heuristic would fire on prose.
+ * What this rule guarantees is narrower and checkable: one engine has one name,
+ * so a reviewer reading an import KNOWS which one a harness bound.
+ *
+ * False-positive risk: nil. Two set-membership tests and a string inequality on
+ * a specifier node.
+ * ================================================================== */
+{
+  /** Names that must always mean the SHIPPED engine. */
+  const SHIPPED = new Set(['tableRules'])
+  /** Names that must always mean the REFERENCE interpreter. */
+  const REFERENCE = new Set(['execRules', 'execRulesBaseline'])
+  const vocabularyOf = (n) => (SHIPPED.has(n) ? 'shipped' : REFERENCE.has(n) ? 'reference' : null)
+
+  /** A published entry point: `src/**\/index.ts`. These may publish, not rename. */
+  const isEntry = (f) => /^src\/(?:.*\/)?index\.ts$/.test(f.replaceAll('\\', '/'))
+
+  const EXTRA_ROOTS = ['test', 'bench']
+  const extraFiles = []
+  for (const d of EXTRA_ROOTS) {
+    const p = join(ROOT, d)
+    if (existsSync(p) && statSync(p).isDirectory()) sources(p, extraFiles)
+  }
+  /**
+   * `test/fixtures/` is where the gate's OWN planted violations live — including
+   * this rule's, at `test/fixtures/invariant-gate/inv11/src/index.ts`. Scanning
+   * them would make the repo run red on a file whose entire purpose is to be red
+   * when the gate is pointed AT it with `--root=`.
+   */
+  const FIXTURES = join('test', 'fixtures') + '/'
+  const skipFixture = (f) => f.replaceAll('\\', '/').startsWith(FIXTURES.replaceAll('\\', '/'))
+
+  const check = (file, ast, lineAt) => {
+    walk(ast, (n) => {
+      if (n.type !== 'ImportSpecifier' && n.type !== 'ExportSpecifier') return
+      // `imported`/`exported` is the name on the MODULE side; `local` is the name
+      // this file (or a re-exporting consumer) will see.
+      const from = n.type === 'ImportSpecifier' ? n.imported : n.local
+      const to = n.type === 'ImportSpecifier' ? n.local : n.exported
+      // 11b — a published entry may PUBLISH a symbol, never RENAME one. This is
+      // the shape that minted `assembledRules as tableRules`: one function, two
+      // public names, and the synonym is what made the collision expressible.
+      if (n.type === 'ExportSpecifier' && isEntry(file) && from?.name !== to?.name) {
+        report('INV-11', file, lineAt(n.start),
+          `\`${from?.name}\` is re-exported from a published entry point under the SECOND name \`${to?.name}\`. `
+          + `An entry point may publish a symbol; it may not rename one. Two public names for one function is a `
+          + `synonym, not a compatibility shim — rename the DECLARATION and export it unrenamed. `
+          + `\`assembledRules as tableRules\` on this exact line is how the two table engines came to share a name.`,
+          `INV-11b:${file}:${from?.name}->${to?.name}`)
+        return
+      }
+      // 11a — a rename ACROSS the two engines' vocabularies.
+      const a = vocabularyOf(from?.name)
+      const b = vocabularyOf(to?.name)
+      if (a === null || b === null || a === b) return
+      report('INV-11', file, lineAt(n.start),
+        `\`${from.name}\` is bound to the name \`${to.name}\` — those name the TWO DIFFERENT table engines `
+        + `(tableRules = shipped, execRules = reference interpreter). They share a signature, so nothing `
+        + `downstream can tell them apart and a wrong binding runs the wrong engine silently. Use each engine's own name.`,
+        `INV-11a:${file}:${from.name}->${to.name}`)
+    })
+  }
+
+  for (const f of files) {
+    const e = parsed.get(f)
+    if (e) check(f, e.ast, e.lineAt)
+  }
+  for (const f of extraFiles) {
+    if (skipFixture(f)) continue
+    const code = readFileSync(join(ROOT, f), 'utf8')
+    const r = parseSync(f, code, { lang: 'ts' })
+    const starts = [0]
+    for (let i = 0; i < code.length; i++) if (code.charCodeAt(i) === 10) starts.push(i + 1)
+    const lineAt = (idx) => {
+      let lo = 0, hi = starts.length - 1
+      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= idx) lo = mid; else hi = mid - 1 }
+      return lo + 1
+    }
+    check(f, r.program, lineAt)
   }
 }
 

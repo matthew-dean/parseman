@@ -4,7 +4,7 @@ import type { HostMode } from '../cst/host-mode.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableExpression } from './emit.ts'
-import { assembledRules } from './assemble.ts'
+import { tableRules } from './assemble.ts'
 import type { TableProgram, TableRule } from './program.ts'
 import { buildGrammarPlan, type GrammarCoverageDefinition } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplication-hook.ts'
@@ -12,12 +12,12 @@ import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplica
 /**
  * `compileRuleMap()` FOR THE TABLE LOWERING — the counterpart that did not exist.
  *
- * `compileTable` covered `compile()`, the SINGLE-ROOT entry point, which the
+ * `compile` covered `compile()`, the SINGLE-ROOT entry point, which the
  * plugin uses only for standalone combinators (`plugin/index.ts:1693`, `:1870`).
  * The main path — every `rules()` grammar — goes through `compileRuleMap`, and
  * with no table counterpart there was nothing for the macro build to point at.
  * This is that function, and it is the EASY direction: `encodeTable` takes a
- * named rule map natively, so nothing here adapts a shape. `compileTable` is the
+ * named rule map natively, so nothing here adapts a shape. `compile` is the
  * one that adapts (it wraps a root as `{ Entry: root }`).
  *
  * ── THE CONTRACT IT MATCHES ──────────────────────────────────────────────────
@@ -30,7 +30,7 @@ import { runDuplicationDiagnosticRules, type DuplicationOption } from './duplica
  * reflection. It returns `null`, all-or-nothing, when the map cannot be inlined.
  *
  * Every one of those is reproduced here, with ONE stated divergence, the same
- * one `compileTable` documents: the expression references `tableRules` and is
+ * one `compile` documents: the expression references `tableRules` and is
  * therefore NOT self-contained. That reference is the entire reason a table
  * artifact is small; inlining the driver per grammar rebuilds exactly the size
  * this lowering exists to remove. The consumer owns the import.
@@ -64,7 +64,7 @@ export type TableRuleMapOptions = {
   readonly runtimeRef?: string
   /**
    * Reducer sources in `prog.fns` order, for a caller that holds them OUT OF
-   * BAND — the same escape `compileTable(combinator, mapFnSources?)` provides.
+   * BAND — the same escape `compile(combinator, mapFnSources?)` provides.
    *
    * The encoder captures a source per callback from the def (`fnSrc` /
    * `buildSrc` / `predSrc` / `gateSrcs`), which the macro evaluator sets and a
@@ -175,7 +175,7 @@ function applyAmbient(
 /**
  * ENCODE FOR RUNNING, with no printability requirement.
  *
- * `compileRuleMapTable` refuses a map whose author callbacks have no captured SOURCE,
+ * `compileRuleMap` refuses a map whose author callbacks have no captured SOURCE,
  * because PRINTING one would emit `() => {}` and the parse would return the wrong tree.
  * That gate is right for the macro, which prints, and wrong for every caller that only
  * ever RUNS the result: a grammar built at runtime has live callbacks and no sources by
@@ -200,7 +200,7 @@ export function compileRuleMapRunnable(
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    rules: assembledRules(prog),
+    rules: tableRules(prog),
     prog,
   }
 }
@@ -233,7 +233,7 @@ function encodeForRun(
   }
 }
 
-export function compileRuleMapTable(
+export function compileRuleMap(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts: TableRuleMapOptions = {},
 ): CompiledRuleMapTable | null {
@@ -295,7 +295,7 @@ export function compileRuleMapTable(
   }
   if (supplied !== undefined && supplied.length > fnSrcs.length) {
     throw new Error(
-      `compileRuleMapTable: got ${supplied.length} fnSources for a pool of ${fnSrcs.length}. `
+      `compileRuleMap: got ${supplied.length} fnSources for a pool of ${fnSrcs.length}. `
       + 'The list is positional, in prog.fns order, so a longer one means it belongs to a '
       + 'different encode — and the entries would be silently misassigned.',
     )
@@ -321,7 +321,7 @@ export function compileRuleMapTable(
     hostBranchElided: hostMode === 'ast' && ruleMap.some(([, rule]) => hasDirectBuildDef(rule)),
     reflection: collectGrammarReflection(ruleMap),
     ...(plan === undefined ? {} : { coverageDefinitions: plan.definitions }),
-    rules: assembledRules(prog),
+    rules: tableRules(prog),
     prog,
   }
 }

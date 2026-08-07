@@ -147,6 +147,81 @@ function and **escaping** it is exempt — `src/combinators/ref.ts:47,49` delete
 from a `meta` built in `ref()` that outlives the call. Catching that needs
 escape analysis. The rule under-reports rather than over-reports, on purpose.
 
+### INV-11 — one engine, one public name
+
+Decides two shapes, both read straight off a specifier node:
+
+- **11a — cross-vocabulary rename.** A specifier binding a name from one table
+  engine's vocabulary to a name from the other's. `tableRules` is the SHIPPED
+  vocabulary (declared in `src/table/assemble.ts`, re-exported unrenamed by
+  `src/table/index.ts`, and the name every emitted artifact imports);
+  `execRules` / `execRulesBaseline` are the REFERENCE vocabulary
+  (`src/table/exec.ts`, the bytecode interpreter the closure assembler
+  replaced).
+- **11b — renaming re-export from an entry point.** Any `export { X as Y }` with
+  `X !== Y` in a `src/**/index.ts`. A published entry may **publish** a symbol;
+  it may not **rename** one.
+
+Why a rule and not a convention: the two engines have the **same signature and
+the same return type**, so TypeScript cannot tell a consumer which one it bound.
+For two releases both exported the identical name `tableRules` and the import
+PATH was the only thing selecting an engine. Three modules picked the wrong one,
+each type-checking clean and each running correctly, only slower or only
+measuring the wrong thing:
+
+- `src/compiler/linker.ts` — the whole `compose()`/`fuse()` composition path
+- `src/table/fold.ts` — every folded artifact's variant load
+- `bench/jess/fixture.ts` — the canonical fixture harness, whose column printed
+  as `table` was the reference interpreter for the entire cycle its figures were
+  quoted in
+
+**11b exists because 11a alone would have missed the origin.** Nobody introduced
+the collision by importing across vocabularies. It was introduced by
+`src/table/index.ts` reading `export { assembledRules as tableRules,
+assembledRules, … }` — one function published under two names. No rename crossed
+engines there; a synonym was simply minted, and it happened to collide with a
+name another module already exported. An `as` at a boundary whose both sides we
+own is never a compatibility shim — it is a synonym, and a synonym is the seam a
+wrong import slips through. So the rule bans the shape that **created** the
+hazard, not only the shape that expressed it.
+
+INV-3 covers the `src/` half by reachability, and `src/table/exec.ts` is
+allowlisted BY-DESIGN precisely so a product import of it reappearing turns the
+gate red. It cannot cover `bench/` or `test/`: those import the reference engine
+legitimately, as the reference side of a differential. And `bench/` is where the
+defect survived longest, because a harness that binds the wrong engine still
+runs and still prints a number. So INV-11 is scoped to `src/`, `test/` and
+`bench/`.
+
+**It found a second instance on the commit that added it, and that instance is
+now fixed.** `src/index.ts:36` read `export { compileTable as compile }`, so one
+function had two public names — `compile` from `parseman`, `compileTable` from
+`parseman/table` — the identical shape this rule was written for.
+
+It was entered as DEBT only for as long as it took to get an owner ruling on
+which name survives. The ruling: **`compile`**, on the same argument that settled
+`assembledRules` → `tableRules` one level down — it names *what the function
+does*, where `compileTable` named *how it currently does it*, and the table
+lowering has itself already replaced one engine. `compileTable` is deleted, and
+`compileRuleMapTable` → `compileRuleMap` followed it: the `*Table` pair was the
+only argument for keeping the suffix, and with one gone the other had none.
+
+The strongest evidence was in the call sites. Every consumer already wrote
+`import { compileTable as compile }` — 27 files renaming the import to the name
+they actually wanted. Several imported `compile` from `parseman` *and*
+`compileTable` from `parseman/table` in the same file, i.e. the same function
+twice under two names, which is what the rule exists to make visible. Those
+collapsed to one import each. jess references neither name.
+
+Deliberately NOT covered: whether a bench column header matches the engine
+beneath it. No source rule can read a string literal and know which `run()`
+argument it describes, and a heuristic that guessed would fire on prose. What
+this rule guarantees is narrower and checkable: one engine has one name, so a
+reviewer reading an import knows which engine a harness bound.
+
+False-positive risk: **nil**. Two set-membership tests and a string inequality
+on a specifier node — no threshold, no dataflow.
+
 ## The naming rules — INV-8, INV-9, INV-10
 
 These three were added together, for one reason.

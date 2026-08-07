@@ -33,7 +33,7 @@ export { parse, parser, noTrivia } from './combinators/grammar.ts'
 export type { ParseOptions, ParserOptions, ParsemanParser } from './combinators/grammar.ts'
 export { token, leaf } from './combinators/token.ts'
 
-export { compileTable as compile } from './table/compile.ts'
+export { compile } from './table/compile.ts'
 /*
  * `CompiledParser` is exported above, from `./types.ts` — it is the contract
  * `compile()` answers to, so it lives with the library's types.

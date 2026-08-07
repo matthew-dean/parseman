@@ -1,8 +1,14 @@
 /**
  * THE MATERIALISING VARIANT — a ceiling probe, not a product.
  *
- * The question this exists to answer: the table lowering is 2.2x-3.3x slower
- * than codegen, and one live explanation is that `src/table/exec.ts` is an
+ * WHICH ENGINES THIS BINDS. `execRules()` (`src/table/exec.ts`) is the REFERENCE
+ * bytecode interpreter and is NOT what ships; `compose()`
+ * (`src/compiler/linker.ts`) is the shipped ASSEMBLER. No source-lowering
+ * "codegen" engine appears here — `src/compiler/codegen.ts` was DELETED in
+ * `37c57b5`.
+ *
+ * The question this exists to answer: the reference interpreter is 2.2x-3.3x
+ * slower than the assembler, and one live explanation is that `src/table/exec.ts` is an
  * INTERPRETER — it reads `code[ip]`, switches on it, and loads every operand out
  * of an `Int32Array`, once per row, on every parse. If that dispatch is the
  * cost, then building the same table into a tree of CLOSURES once at load, and
@@ -42,7 +48,7 @@ import os from 'node:os'
 import type { Combinator, ParseContext, ParseResult } from '../src/types.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+import { execRules } from '../src/table/exec.ts'
 import { resolveTable, type TableProgram } from '../src/table/program.ts'
 import { run } from '../src/functional/run.ts'
 import { advanceTrivia, needsDeferredTriviaCommit, rollbackTrivia, saveTriviaMark, scanTrivia } from '../src/combinators/trivia-skip.ts'
@@ -541,7 +547,7 @@ function main(): void {
   const prog = encodeTable(map)
   const compiledA = (compose([map as never]) as unknown as Record<string, Entry>).Value!
   const compiledB = (compose([map as never]) as unknown as Record<string, Entry>).Value!
-  const table = tableRules(prog).Value! as unknown as Entry
+  const table = execRules(prog).Value! as unknown as Entry
   const mat = entryOf(materialize(prog), 'Value') as unknown as Entry
   const matSpec = entryOf(materialize(prog, { specializeTerminals: true }), 'Value') as unknown as Entry
 
@@ -554,20 +560,20 @@ function main(): void {
     const m = JSON.stringify(run(mat, text, { trivia: jsonWs as Entry }).value)
     const ms = JSON.stringify(run(matSpec, text, { trivia: jsonWs as Entry }).value)
     if (a !== t || a !== m || a !== ms) {
-      console.error(`ABORT: ${id} — paths disagree (compiled/table/materialised); timings would be meaningless.`)
+      console.error(`ABORT: ${id} — paths disagree (assembled/exec/materialised); timings would be meaningless.`)
       process.exit(1)
     }
   }
-  console.log('  same-parse precondition: OK on all cases (compiled = table = materialised)')
+  console.log('  same-parse precondition: OK on all cases (assembled = exec = materialised)')
 
   const reps = calibrateReps(makeCases(compiledA, 'cal'))
 
   const contests: Contest[] = [
-    { label: 'CONTROL: compiled -> compiled', a: makeCases(compiledA, 'compiled'), b: makeCases(compiledB, 'compiled') },
-    { label: 'A: compiled -> table (the shipped gap)', a: makeCases(compiledA, 'compiled'), b: makeCases(table, 'table') },
-    { label: 'B: compiled -> materialised (THE CEILING)', a: makeCases(compiledA, 'compiled'), b: makeCases(mat, 'mat') },
-    { label: 'C: table -> materialised (what dispatch removal buys)', a: makeCases(table, 'table'), b: makeCases(mat, 'mat') },
-    { label: 'D: compiled -> materialised + SPECIALISED TERMINALS', a: makeCases(compiledA, 'compiled'), b: makeCases(matSpec, 'mat+') },
+    { label: 'CONTROL: assembled -> assembled', a: makeCases(compiledA, 'compiled'), b: makeCases(compiledB, 'compiled') },
+    { label: 'A: assembled (shipped) -> exec (reference)', a: makeCases(compiledA, 'compiled'), b: makeCases(table, 'table') },
+    { label: 'B: assembled -> materialised (THE CEILING)', a: makeCases(compiledA, 'compiled'), b: makeCases(mat, 'mat') },
+    { label: 'C: exec (reference) -> materialised (what dispatch removal buys)', a: makeCases(table, 'table'), b: makeCases(mat, 'mat') },
+    { label: 'D: assembled -> materialised + SPECIALISED TERMINALS', a: makeCases(compiledA, 'compiled'), b: makeCases(matSpec, 'mat+') },
     { label: 'E: materialised -> materialised + SPECIALISED TERMINALS', a: makeCases(mat, 'mat'), b: makeCases(matSpec, 'mat+') },
   ]
 

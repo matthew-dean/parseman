@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { choice, literal, many, regex, rules, sequence, transform } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { fuseInterpreted } from '../../src/compiler/linker.ts'
 import { run } from '../../src/functional/run.ts'
 import type { Combinator } from '../../src/types.ts'
@@ -50,7 +50,7 @@ function mergeMaps(pieces: Entries[]): Record<string, Combinator<unknown>> {
 
 /** The merged map as a RUNNABLE table — merge, then ONE encode. */
 function tabledMerge(pieces: Entries[]): Record<string, unknown> {
-  return assembledRules(encodeTable(mergeMaps(pieces))) as unknown as Record<string, unknown>
+  return tableRules(encodeTable(mergeMaps(pieces))) as unknown as Record<string, unknown>
 }
 
 /** Both engines over one rule and one input, all four observable fields. */

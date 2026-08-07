@@ -7,7 +7,7 @@
  *
  *   interpreted   the combinator graph            (semantic reference)
  *   compiled      compileRuleMap()                (what ships today)
- *   table         encodeTable() + tableRules()    (what this lane builds)
+ *   table         encodeTable() + tableRules()  (what this lane builds)
  *
  * `interpreted ≡ compiled` is already gated by `test/parity/*`, so
  * `table ≡ interpreted` and `table ≡ compiled` together pin the new path.
@@ -17,9 +17,9 @@ import { run } from '../src/functional/run.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable, type TableSettings } from '../src/table/encode.ts'
 /**
- * `assembledRules` IS THE SHIPPED TABLE ENGINE — `src/table/index.ts` re-exports
- * it under the name `tableRules`, and `compileTable`/`compileRuleMapTable` build
- * through it. This sweep imported the name `tableRules` from `src/table/exec.ts`
+ * `tableRules` IS THE SHIPPED TABLE ENGINE — `src/table/index.ts` re-exports
+ * it under the name `tableRules`, and `compile`/`compileRuleMap` build
+ * through it. This sweep imported a same-named export from `src/table/exec.ts`
  * instead, which is the REFERENCE driver: every case here, and every case in the
  * CI subset (`test/unit/table-identity.test.ts`), gated a driver nothing ships
  * while the assembler went unexecuted.
@@ -28,23 +28,23 @@ import { encodeTable, type TableSettings } from '../src/table/encode.ts'
  * `exec.ts` is what an assembler divergence gets bisected against, and losing it
  * would trade one blind spot for another.
  */
-import { assembledRules } from '../src/table/assemble.ts'
-import { tableRules as referenceRules } from '../src/table/exec.ts'
+import { tableRules } from '../src/table/assemble.ts'
+import { execRules as referenceRules } from '../src/table/exec.ts'
 import type { Combinator } from '../src/types.ts'
 
 export type Paths = {
   interpreted: Record<string, Combinator<unknown>>
   compiled: Record<string, (input: string, pos: number, ctx: never) => unknown>
-  table: ReturnType<typeof assembledRules>
+  table: ReturnType<typeof tableRules>
 }
 
 /** Build the shipped table path for one rule map + settings pair. */
 export function buildPaths(
   ruleMap: Record<string, Combinator<unknown>>,
   settings: TableSettings = {},
-): { table: ReturnType<typeof assembledRules>; compiledSource: string } {
+): { table: ReturnType<typeof tableRules>; compiledSource: string } {
   const prog = encodeTable(ruleMap, settings)
-  return { table: assembledRules(prog), compiledSource: '' }
+  return { table: tableRules(prog), compiledSource: '' }
 }
 
 export type IdentityCase = { name: string; input: string }
@@ -94,7 +94,7 @@ export function checkIdentity(
   if (interp === undefined) throw new Error(`no rule '${entryRule}'`)
 
   const prog = encodeTable(ruleMap, settings)
-  const tbl = assembledRules(prog)[entryRule]
+  const tbl = tableRules(prog)[entryRule]
   if (tbl === undefined) throw new Error(`table has no rule '${entryRule}'`)
   const ref = referenceRules(prog)[entryRule]
   if (ref === undefined) throw new Error(`reference table has no rule '${entryRule}'`)

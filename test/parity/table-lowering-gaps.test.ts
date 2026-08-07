@@ -19,8 +19,8 @@ import {
   type Combinator, type ParseContext, type ParseResult,
 } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { reachableOps } from '../../src/table/inspect.ts'
 
 /** The interpreter's answer, and both drivers', for one grammar and one input. */
@@ -31,8 +31,8 @@ function engines(entry: Combinator<unknown>, input: string): {
   const prog = encodeTable({ Entry: entry })
   return {
     interpreted: entry.parse(input, 0, ctx()),
-    exec: tableRules(prog)['Entry']!(input, 0, ctx()),
-    assembled: assembledRules(prog)['Entry']!(input, 0, ctx()),
+    exec: execRules(prog)['Entry']!(input, 0, ctx()),
+    assembled: tableRules(prog)['Entry']!(input, 0, ctx()),
   }
 }
 
@@ -154,7 +154,7 @@ describe('table lowering — gaps found by pointing compile() at the table', () 
     expect(prog.runtimeOnly?.join(' ')).toMatch(/ref\(\) used before \.define\(\)/)
     // Deferred, not swallowed: parsing THROUGH the empty slot still throws, and
     // it throws the ref's own message, exactly as the compiled fallback does.
-    expect(() => assembledRules(prog)['Entry']!('ab', 0, { trackLines: false } as ParseContext))
+    expect(() => tableRules(prog)['Entry']!('ab', 0, { trackLines: false } as ParseContext))
       .toThrow(/used before \.define\(\)/)
     // Once defined, the same slot lowers normally.
     slot.define(literal('a') as Combinator<string>)

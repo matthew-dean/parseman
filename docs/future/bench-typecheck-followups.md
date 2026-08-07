@@ -27,7 +27,7 @@ so the two cannot drift. The bench now runs to completion (exit 0) and reports
 all five contests.
 
 The "`emitConst` failure in the same bench" this entry also mentioned is not
-present: the bench encodes and RUNS tables (`encodeTable` + `tableRules`) and
+present: the bench encodes and RUNS tables (`encodeTable` + `execRules`) and
 never calls `emitTableModule`, so nothing in it reaches `emitConst`.
 
 **`exclude` is now empty of bench entries** and must stay that way — the whole

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { keywords, word, makeWord, parse } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 
 describe('keywords', () => {
   it('matches any keyword in the set', () => {

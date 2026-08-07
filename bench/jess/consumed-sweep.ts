@@ -50,7 +50,7 @@ const PM_ROOT = resolve(HERE, '../..')
 /**
  * `table` IS THE BYTECODE INTERPRETER (`src/table/exec.ts`), NOT WHAT SHIPS.
  *
- * `src/table/index.ts` re-exports `assembledRules` under the name `tableRules`,
+ * `src/table/index.ts` re-exports `tableRules` under the name `tableRules`,
  * so "the table engine" as a consumer sees it is the ASSEMBLED closure graph;
  * this file has always imported the interpreter by path instead. That is a
  * legitimate leg — it is the identity reference the assembler is gated against —
@@ -62,6 +62,19 @@ const PM_ROOT = resolve(HERE, '../..')
  * `table` records stay comparable with future ones. It honours `PM_TABLE_EMIT`,
  * which only `assemble.ts` reads (0 forces the closure walk, 1 the emitted
  * source), and records it in `flags` so the two are never mistaken for each other.
+ *
+ * ENGINE TOKEN LEGEND. These four strings are a WIRE CONTRACT — they are written
+ * into the `engine` field of the committed `notes/results/parse-consumed.jsonl`
+ * and 65k existing records use them — so they keep their historical spelling.
+ * This is what each one actually binds:
+ *   table        execRules()        the REFERENCE bytecode interpreter (NOT what
+ *                                   ships; the identity reference)
+ *   assembled    tableRules()   the shipped ASSEMBLER
+ *   compiled     PM_MACRO=1         also the shipped ASSEMBLER — the macro
+ *                                   routes to it. There is no source-lowering
+ *                                   "codegen" engine: `src/compiler/codegen.ts`
+ *                                   was DELETED in `37c57b5`.
+ *   interpreted  the combinator graph
  */
 type Engine = 'interpreted' | 'compiled' | 'table' | 'assembled'
 
@@ -100,13 +113,13 @@ const { rules } = await loadGrammar(dialect, 'ast')
 let entry: unknown = rules[ENTRY]
 if (engine === 'table') {
   const { encodeTable } = await import('../../src/table/encode.ts')
-  const { tableRules } = await import('../../src/table/exec.ts')
-  entry = tableRules(encodeTable(rules, {}))[ENTRY]
+  const { execRules } = await import('../../src/table/exec.ts')
+  entry = execRules(encodeTable(rules, {}))[ENTRY]
 }
 if (engine === 'assembled') {
   const { encodeTable } = await import('../../src/table/encode.ts')
-  const { assembledRules } = await import('../../src/table/assemble.ts')
-  entry = assembledRules(encodeTable(rules, {}))[ENTRY]
+  const { tableRules } = await import('../../src/table/assemble.ts')
+  entry = tableRules(encodeTable(rules, {}))[ENTRY]
   flags.push(`PM_TABLE_EMIT=${process.env.PM_TABLE_EMIT ?? '(unset ⇒ 1)'}`)
 }
 // PROVE THE LEG IS THE LEG IT CLAIMS: the macro lowers a rule to a FUNCTION, the
@@ -114,7 +127,7 @@ if (engine === 'assembled') {
 // combinator graph would agree with the interpreter perfectly and prove nothing.
 const isFn = typeof entry === 'function'
 if (engine === 'compiled' && !isFn) throw new Error("engine 'compiled' got a combinator — the macro did not run")
-if (engine === 'interpreted' && isFn) throw new Error("engine 'interpreted' got a codegen rule — PM_MACRO leaked in")
+if (engine === 'interpreted' && isFn) throw new Error("engine 'interpreted' got an assembled rule — PM_MACRO leaked in")
 
 /** Large hand-maintained fixtures the corpus roots do not cover. */
 const EXTRA: Record<Dialect, string[]> = {

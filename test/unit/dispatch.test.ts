@@ -32,8 +32,8 @@ import {
   type ParseContext,
   type ParseError,
 } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
-import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { compile } from '../../src/table/compile.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
 

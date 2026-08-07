@@ -3,12 +3,12 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { encodeTable, UnsupportedConstruct } from '../../src/table/encode.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose, cstBuildHost } from '../../src/compiler/linker.ts'
 import { checkIdentity } from '../../bench/table-lowering-identity.ts'
 import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, jsonRules, selectNodes } from '../../bench/table-grammars.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { resolveTable } from '../../src/table/program.ts'
 import { jsonValue as shippedJsonValue } from '../../examples/json/parser.ts'
@@ -54,7 +54,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     ;(suppressed._def as { recognitionOnly?: boolean }).recognitionOnly = true
     const g = wrap(suppressed as Combinator<unknown>)
     expect(() => encodeTable(g)).not.toThrow()
-    const table = tableRules(encodeTable(g)).Doc!
+    const table = execRules(encodeTable(g)).Doc!
     for (const src of ['a', 'z']) {
       const t = run(table as never, src)
       const i = run(suppressed as never, src)
@@ -95,7 +95,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     // ARM ATTRIBUTION, stated directly. The regex arm MATCHES 'if' — it is what
     // produced the span — and the literal arm is credited anyway, with its own
     // transform running. An ordered `choice` would answer `ident` here.
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     expect(run(t as never, 'if').value).toEqual({ kind: 'KEYWORD', w: 'if' })
     expect(run(g.Doc! as never, 'if').value).toEqual({ kind: 'KEYWORD', w: 'if' })
     // One char more and attribution moves back to the regex arm.
@@ -119,7 +119,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
         transform(literal('if'), w => ({ kind: 'KEYWORD', w })),
       ), () => ({ t: 'Doc' })) as Combinator<unknown>,
     }
-    const t = tableRules(encodeTable(g, { hostMode: 'cst' })).Doc!
+    const t = execRules(encodeTable(g, { hostMode: 'cst' })).Doc!
     for (const src of ['if', 'ifx']) {
       const a = run(t as never, src, { build: cstBuildHost({ tags: true }) as never })
       const b = run(g.Doc! as never, src, { build: cstBuildHost({ tags: true }) as never })
@@ -169,8 +169,8 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     // two chars of 'iffy' in both shapes — it is arm zero and it succeeded — and
     // the check fires at its end, so a LATER arm is what the choice returns.
     // Ignoring `autoNot` answers 'IF' to all four of these.
-    const ts = tableRules(encodeTable(startsWith)).Doc!
-    const tf = tableRules(encodeTable(firstSet)).Doc!
+    const ts = execRules(encodeTable(startsWith)).Doc!
+    const tf = execRules(encodeTable(firstSet)).Doc!
     expect(run(ts as never, 'iffy').value).toBe('IFFY')
     expect(run(tf as never, 'iffy').value).toBe('ID:iffy')
     expect(run(tf as never, 'ifx').value).toBe('ID:ifx')
@@ -232,8 +232,8 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
         JSON.stringify([o.ok, o.value ?? null, o.expected ?? []])
       return [
         norm(run(g as never, src)),
+        norm(run(execRules(p).Doc! as never, src)),
         norm(run(tableRules(p).Doc! as never, src)),
-        norm(run(assembledRules(p).Doc! as never, src)),
       ]
     }
     const allAgree = (g: Combinator<unknown>, src: string): void => {
@@ -333,7 +333,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
 
     const withFlag = mk('on', { captureTrivia: true })
     expect(() => encodeTable(wrap(withFlag))).not.toThrow()
-    const table = tableRules(encodeTable({ Doc: withFlag })).Doc!
+    const table = execRules(encodeTable({ Doc: withFlag })).Doc!
     expect(run(table as never, 'a b').ok).toBe(true)
     const fromTable = seen.on
     delete seen.on
@@ -361,7 +361,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     }
     const on = mk({ captureTrivia: true })
     expect(() => encodeTable(wrap(on.g))).not.toThrow()
-    const table = tableRules(encodeTable({ Doc: on.g })).Doc!
+    const table = execRules(encodeTable({ Doc: on.g })).Doc!
     expect(run(table as never, 'a b').ok).toBe(true)
     const fromTable = on.seen.at(-1)!
     run(on.g as never, 'a b')
@@ -388,7 +388,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     for (const prog of [encodeTable(g), encodeTable(g, { trackLines: true })]) {
       expect(prog.lines).toBe(1)
       // …and it really tracks: the span carries line fields, not just `{start,end}`.
-      const span = (run(tableRules(prog).Doc! as never, 'a').value as { span: Record<string, number> }).span
+      const span = (run(execRules(prog).Doc! as never, 'a').value as { span: Record<string, number> }).span
       expect(span.startLine).toBe(1)
       expect(span.endColumn).toBe(2)
     }
@@ -427,7 +427,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
       notInFn: withCtx({ inFn: false }, body) as Combinator<unknown>,
       bare: body as Combinator<unknown>,
     }
-    const r = tableRules(encodeTable(cases))
+    const r = execRules(encodeTable(cases))
     for (const key of Object.keys(cases)) {
       for (const src of ['r', 'x']) {
         const t = run(r[key]! as never, src)
@@ -472,7 +472,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     const prog = encodeTable(cases)
     expect(opHistogram(prog).ADJ).toBe(6)
     // BOTH drivers: `exec.ts` is the reference and `assemble.ts` is what ships.
-    for (const [driver, r] of [['exec', tableRules(prog)], ['assembled', assembledRules(prog)]] as const) {
+    for (const [driver, r] of [['exec', execRules(prog)], ['assembled', tableRules(prog)]] as const) {
       for (const key of Object.keys(cases)) {
         for (const src of inputs) {
           const t = run(r[key]! as never, src)
@@ -486,7 +486,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     }
     // The assertions really decide, in both directions — a differential against
     // an interpreter that had the same bug would agree on everything.
-    const r = assembledRules(prog)
+    const r = tableRules(prog)
     const ok = (key: string, src: string): boolean => run(r[key]! as never, src).ok
     expect([ok('Adj', 'ab'), ok('Adj', 'a b')]).toEqual([true, false])
     expect([ok('NotAdj', 'ab'), ok('NotAdj', 'a b'), ok('NotAdj', 'a/*x*/b')]).toEqual([false, true, true])
@@ -511,8 +511,8 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     const prog = encodeTable(cases)
     for (const [key, re] of [['Bare', /^adjacent\(\): adjacency assertions are boundary tests/], ['Repeated', /^notAdjacent\(\): adjacency assertions are boundary tests/]] as const) {
       expect(() => run(cases[key]! as never, 'a')).toThrow(re)
+      expect(() => run(execRules(prog)[key]! as never, 'a')).toThrow(re)
       expect(() => run(tableRules(prog)[key]! as never, 'a')).toThrow(re)
-      expect(() => run(assembledRules(prog)[key]! as never, 'a')).toThrow(re)
     }
   })
 
@@ -528,12 +528,12 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     const plain = encodeTable({ D: withCtx({ inFn: true, depth: 2, tags: ['a', 'b'] }, literal('a')) as Combinator<unknown> })
     const mod = emitTableModule(plain, { name: 'G' })
     expect(mod).toContain('inFn')
-    expect(run(tableRules(plain).D! as never, 'a').ok).toBe(true)
+    expect(run(execRules(plain).D! as never, 'a').ok).toBe(true)
 
     const rich = encodeTable({ D: withCtx({ fn: () => 1 }, literal('a')) as Combinator<unknown> })
     expect([...rich.runtimeOnly ?? []].join(' ')).toMatch(/withCtx\(extra\)/)
     // …and it still RUNS. Unemittable is not unusable.
-    expect(run(tableRules(rich).D! as never, 'a').ok).toBe(true)
+    expect(run(execRules(rich).D! as never, 'a').ok).toBe(true)
   })
 
   it('an empty rule map still produces a runnable table', () => {
@@ -542,7 +542,7 @@ describe('encodeTable refuses what it cannot lower faithfully', () => {
     const prog = encodeTable({})
     expect(prog.code.length).toBeGreaterThan(0)
     expect(prog.rules).toEqual({})
-    expect(Object.keys(tableRules(prog))).toEqual([])
+    expect(Object.keys(execRules(prog))).toEqual([])
   })
 })
 
@@ -564,7 +564,7 @@ describe('the scanning constructs — carried as specs, and emittable', () => {
 
   it('balanced() and token() parse identically to the interpreter through the table', () => {
     for (const [name, g] of [['balanced', balancedGrammar], ['token', tokenGrammar]] as const) {
-      const table = tableRules(encodeTable(g)).Doc!
+      const table = execRules(encodeTable(g)).Doc!
       for (const input of ['(a(b)c)', '(a', 'abb', 'a', '', 'zz']) {
         expect(JSON.stringify(run(table as never, input)), `${name} ${JSON.stringify(input)}`)
           .toBe(JSON.stringify(run(g.Doc! as never, input)))
@@ -572,9 +572,9 @@ describe('the scanning constructs — carried as specs, and emittable', () => {
     }
     // Not vacuous: the balanced scan really consumed the nesting, and `token`
     // really flattened its sequence to one string.
-    const b = run(tableRules(encodeTable(balancedGrammar)).Doc! as never, '(a(b)c)').value as { c: Array<{ value: string }> }
+    const b = run(execRules(encodeTable(balancedGrammar)).Doc! as never, '(a(b)c)').value as { c: Array<{ value: string }> }
     expect(b.c[0]!.value).toBe('(a(b)c)')
-    const t = run(tableRules(encodeTable(tokenGrammar)).Doc! as never, 'abb').value as { c: Array<{ value: string }> }
+    const t = run(execRules(encodeTable(tokenGrammar)).Doc! as never, 'abb').value as { c: Array<{ value: string }> }
     expect(t.c[0]!.value).toBe('abb')
   })
 
@@ -611,7 +611,7 @@ describe('trivia scopes are table rows, not lowering decisions', () => {
   })) as unknown as Record<string, Combinator<unknown>>
 
   it('a cleared scope stops skipping, and a replaced scope skips the OTHER thing', () => {
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     // One input, three scopes — the difference IS the scope row.
     expect(run(t.Loose! as never, 'a b', opts).ok).toBe(true)
     expect(run(t.Tight! as never, 'a b', opts).ok).toBe(false)
@@ -635,7 +635,7 @@ describe('terminals the table REBUILDS rather than references', () => {
       Kw: node('Kw', keywords(['if', 'ifdef'], { boundary: 'a-z' }), c => ({ t: 'Kw', c })),
       Ci: node('Ci', keywords(['red', 'blue'], { caseInsensitive: true }), c => ({ t: 'Ci', c })),
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     const value = (rule: string, input: string): string =>
       (run(t[rule]! as never, input).value as { c: Array<{ value: string }> }).c[0]!.value
     // Longest-first, and the boundary refusing a longer word.
@@ -663,8 +663,8 @@ describe('terminals the table REBUILDS rather than references', () => {
     })) as unknown as Record<string, Combinator<unknown>>
     const first = (rule: unknown, input: string): string =>
       (run(rule as never, input).value as { c: Array<{ value: string }> }).c[0]!.value
-    const plain = tableRules(encodeTable(g)).Doc!
-    const tracked = tableRules(encodeTable(g, { trackLines: true })).Doc!
+    const plain = execRules(encodeTable(g)).Doc!
+    const tracked = execRules(encodeTable(g, { trackLines: true })).Doc!
     expect(first(plain, 'AbC')).toBe('AbC')
     expect(first(tracked, 'AbC')).toBe('AbC')
     expect(run(plain as never, 'abd').ok).toBe(false)
@@ -679,7 +679,7 @@ describe('terminals the table REBUILDS rather than references', () => {
       Emoji: node('Emoji', regex(/[\u{1F600}-\u{1F64F}]+/u), c => ({ t: 'Emoji', c })),
       Accent: node('Accent', regex(/[à-ÿ]+/), c => ({ t: 'Accent', c })),
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     expect(run(t.Emoji! as never, '\u{1F600}\u{1F601}').ok).toBe(true)
     expect(run(t.Emoji! as never, 'a').ok).toBe(false)
     expect(run(t.Accent! as never, 'é').ok).toBe(true)
@@ -696,7 +696,7 @@ describe('terminals the table REBUILDS rather than references', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: transform(sequence(literal('a'), optional(literal('b'))), v => (v as unknown[])[1]) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     expect(run(t as never, 'a').value).toBeNull()
     expect(run(t as never, 'a').value).not.toBeUndefined()
     expect(run(t as never, 'ab').value).toBe('b')
@@ -758,7 +758,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
 
   it('every failing input reports the same expected set on all three paths', () => {
     for (const [name, g, rule, inputs] of suites) {
-      const table = tableRules(encodeTable(g as never))[rule]!
+      const table = execRules(encodeTable(g as never))[rule]!
       const compiled = (compose([g as never]) as unknown as Record<string, unknown>)[rule]!
       for (const input of inputs) {
         const t = run(table as never, input)
@@ -808,7 +808,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
       //    separator. Kept in the grammar so the shape is still encoded.
       Min: sepBy(regex(/[a-z]/), literal(','), { min: 2 }) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     const c = compose([g as never]) as unknown as Record<string, unknown>
     const cases = [
       ['Kw', 'ifx', ['keyword']],
@@ -844,7 +844,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
     // Pinned as a SUBSET relation, which is the true shape: the table's answer is
     // one of the engines' elements, never a token they did not name. A regression
     // that invents a token, or moves the position, still fails this.
-    const jt = tableRules(encodeTable(jsonRules as never)).Value!
+    const jt = execRules(encodeTable(jsonRules as never)).Value!
     const jc = (compose([jsonRules as never]) as unknown as Record<string, unknown>).Value!
     for (const [bad, dispatched] of [['[1,2,]', '"]"'], ['{"a":', '"}"'], ['nope', '"null"']] as const) {
       const fromTable = run(jt as never, bad)
@@ -875,7 +875,7 @@ describe('table failure reporting matches the interpreter and the compiled path'
     // `disjoint` is TRUE everywhere, and all three name the dispatched arm and
     // agree exactly. Same rule, same arms, no divergence — which is what makes
     // the rows above a `disjoint`-staleness finding and not a reporting one.
-    const st = tableRules(encodeTable({ jsonValue: shippedJsonValue } as never)).jsonValue!
+    const st = execRules(encodeTable({ jsonValue: shippedJsonValue } as never)).jsonValue!
     const sc = (compose([{ jsonValue: shippedJsonValue } as never]) as unknown as Record<string, unknown>).jsonValue!
     for (const [bad, only] of [['[1,2,]', '"]"'], ['{"a":', '"}"'], ['nope', '"null"']] as const) {
       for (const r of [run(st as never, bad), run(shippedJsonValue as never, bad), run(sc as never, bad)]) {

@@ -2570,7 +2570,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
      * three properties a silent eval had none of.
      *
      * A program with NO `asm` at all is the runtime path (`compile()`,
-     * `compose()`, a hand-built `assembledRules(prog)`), where `new Function` is
+     * `compose()`, a hand-built `tableRules(prog)`), where `new Function` is
      * what the docs have always said it is.
      */
     try {
@@ -2785,7 +2785,7 @@ export class AssemblyCache {
    * table per process.
    *
    * DO NOT CACHE THE RESULT ACROSS CALLS. Keying it on anything but the `ctx`'s
-   * own option bits is how `assembledRules` handed a strict parse the PREVIOUS
+   * own option bits is how `tableRules` handed a strict parse the PREVIOUS
    * parse's tolerant assembly (`test/unit/table-assemble.test.ts`).
    */
   forCtx(ctx: ParseContext): Assembly {
@@ -2815,7 +2815,7 @@ export class AssemblyCache {
  * reads an option — `scripts/check-invariants.mjs` INV-6 asserts it. `forCtx`
  * carries the argument for why that read is irreducible rather than merely cheap.
  */
-export function assembledRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
+export function tableRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
   const prog = expandCompact(source)
   const cache = new AssemblyCache(prog)
   const names = Object.keys(prog.rules)

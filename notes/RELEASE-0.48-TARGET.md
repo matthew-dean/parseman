@@ -153,8 +153,9 @@ not 12.2x. All **eight** examples print (see §5b); the earlier "six that still
 print" is stale.
 
 **The `probe/*` half has partly flipped too** — the previous claim that all 16
-probe ceilings are byte-identical is stale. `src/plugin/index.ts` imports BOTH
-`compile` and `compileTable` and picks per unit. Measured: 10 of 16 emit
+probe ceilings are byte-identical is stale. `src/plugin/index.ts` imports both the single-root and rule-map
+compilers (`compile` / `compileRuleMap`, named `compileTable` / `compileRuleMapTable`
+when this was written) and picks per unit. Measured: 10 of 16 emit
 `tableRules` (four `node-scale-*`, both `trivia-*`, both `hostmode-*`, three
 `variants-*`) and fell by up to **91.5%**; the six that do not
 (`compose-depth-1/2/3`, `compose-leaf`, `variant`) are byte-identical to their

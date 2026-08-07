@@ -25,8 +25,8 @@ import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
 import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
-import { compileTable } from '../table/compile.ts'
-import { compileRuleMapTable } from '../table/compile-rule-map.ts'
+import { compile } from '../table/compile.ts'
+import { compileRuleMap } from '../table/compile-rule-map.ts'
 import { compileLinkableTable } from '../compiler/compile-linkable-table.ts'
 import { createReducerResolver } from './reducer-resolver.ts'
 import { findFreeIdentifiers } from './free-identifiers.ts'
@@ -57,7 +57,7 @@ import type {
  * The PUBLIC subpath, not a deep path into `src/`: this string is written into a
  * consumer's build output, so it has to be a specifier their resolver can see.
  * `parseman/table` is declared in package.json `exports` and re-exports
- * `assembledRules` as `tableRules` (src/table/index.ts:28).
+ * `tableRules` as `tableRules` (src/table/index.ts:28).
  */
 const TABLE_RUNTIME_SPECIFIER = 'parseman/table'
 
@@ -941,7 +941,7 @@ function transformMacroImpl(
     // The reasons, out of the encoder and into the warning. A bare "couldn't be
     // inlined" leaves the author with a ~5x silent perf regression and no lead.
     const refusals: string[] = []
-    const compiled = compileRuleMapTable([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage, refusals })
+    const compiled = compileRuleMap([...evaluated.ruleMap], { ...(evaluated.trivia ? { trivia: evaluated.trivia } : {}), ...(evaluated.scanSkip ? { scanSkip: evaluated.scanSkip } : {}), ...(evaluated.trackLines ? { trackLines: true } : {}), recovery, coverage: grammarCoverage, refusals })
     // A table replacement names `tableRules`, which nothing in the consumer's
     // module binds. That reference is the whole reason the artifact is small (the
     // driver is SHARED, not inlined per grammar), so the import is owned here.
@@ -1205,7 +1205,7 @@ function transformMacroImpl(
    * merge moves one level UP, onto the combinators: evaluate each piece's IR back to
    * a rule map, let a later piece's name override an earlier one — which is exactly
    * what `compose()` means — and hand the single merged map to
-   * `compileRuleMapTable`, which encodes ONCE.
+   * `compileRuleMap`, which encodes ONCE.
    *
    * This is what makes table composition the easy kind: no relocation of code
    * offsets, no merging of const / fn / class / expected / dispatch pools between
@@ -1290,7 +1290,7 @@ function transformMacroImpl(
   /**
    * COMPOSING-WINS, as an OVERRIDE rather than a gap-fill.
    *
-   * `compileRuleMapTable`'s `applyAmbient` only fills a rule that carries no trivia of
+   * `compileRuleMap`'s `applyAmbient` only fills a rule that carries no trivia of
    * its own — correct for `composeLeaf`, whose pieces may legitimately disagree, and
    * WRONG for `compose`, where the composing grammar's trivia governs every fused rule
    * INCLUDING the inherited ones. Gap-filling leaves a base rule that declared its own
@@ -1532,7 +1532,7 @@ function transformMacroImpl(
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
     // TABLE FIRST. The merged map IS the composed grammar (see `mergedCarriedRules`),
-    // so `compose()` lowers through the SAME `compileRuleMapTable` a plain `rules()`
+    // so `compose()` lowers through the SAME `compileRuleMap` a plain `rules()`
     // does — one encode, one `tableRules(…)` expression, no linker. `carried` is
     // unchanged either way: it is the re-lowerable IR list, not a lowering artifact,
     // so a downstream re-compose behaves identically whichever engine emitted here.
@@ -1540,7 +1540,7 @@ function transformMacroImpl(
     if (merged !== null) {
       if (composing) applyComposingTrivia(merged.rules, composing)
       const refusals: string[] = []
-      const compiled = compileRuleMapTable(merged.rules, {
+      const compiled = compileRuleMap(merged.rules, {
         ...(composing ? { trivia: composing } : {}),
         ...(merged.trackLines ? { trackLines: true } : {}),
         ...(cHostMode ? { hostMode: cHostMode as HostMode } : {}),
@@ -1690,7 +1690,7 @@ function transformMacroImpl(
         // and rewriting `_meta` on them would mutate the module-level grammar object.
         if (composing) applyComposingTrivia(carriedMaps.pieces.flatMap(p => p.rules), composing)
         const refusals: string[] = []
-        const compiled = compileRuleMapTable(
+        const compiled = compileRuleMap(
           leafMerged,
           {
             ...(composing ? { trivia: composing } : {}),
@@ -1836,7 +1836,7 @@ function transformMacroImpl(
             // built this combinator. The encoder's def-carried sources win; this only
             // fills holes. Passing `undefined` here is what made a ref()'s reducers
             // print as `() => {}`.
-            const compiled = compileTable(refCombi, refEntry?.mfSrcs, { recovery, coverage: grammarCoverage })
+            const compiled = compile(refCombi, refEntry?.mfSrcs, { recovery, coverage: grammarCoverage })
             if (compiled.inlineExpression === null) {
               warn(init.start, `"${varName}" is a ref() that couldn't be inlined (was .define() called with a static combinator?)`
                 + reasonSuffix(compiled.runtimeOnly))
@@ -2048,7 +2048,7 @@ function transformMacroImpl(
         // the TABLE ENCODER needs whichever is present, so hand it both — the def
         // sources win and the positional list fills holes. Passing `undefined` here
         // is what made every macro-lowered reducer print as `() => {}`.
-        const compiled = compileTable(parser, mapFnSources, { recovery, coverage: grammarCoverage })
+        const compiled = compile(parser, mapFnSources, { recovery, coverage: grammarCoverage })
         if (compiled.inlineExpression === null) {
           warn(init.start, `"${varName}" couldn't be inlined (likely closes over a runtime value)`
             + reasonSuffix(compiled.runtimeOnly))

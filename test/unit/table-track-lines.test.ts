@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { choice, literal, regex, rules, sequence, trivia } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { OP_RULE } from '../../src/table/ops.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
@@ -109,8 +109,8 @@ describe('table lowering of rules({ trackLines: true })', () => {
     ] as const) {
       const settings = { trackLines: true } as const
       const interp = run(build()[rule] as never, input)
-      const exec = run(tableRules(encodeTable(build(), settings))[rule] as never, input)
-      const closure = run(assembledRules(encodeTable(build(), settings))[rule] as never, input)
+      const exec = run(execRules(encodeTable(build(), settings))[rule] as never, input)
+      const closure = run(tableRules(encodeTable(build(), settings))[rule] as never, input)
       expect(interp.ok, name).toBe(true)
       expect(exec, `${name}: exec.ts driver`).toEqual(interp)
       expect(closure, `${name}: assemble.ts driver`).toEqual(interp)
@@ -122,7 +122,7 @@ describe('table lowering of rules({ trackLines: true })', () => {
     // above; `trackLines` exists to put `line`/`column` on the span.
     const prog = encodeTable(spaced(), { trackLines: true })
     expect(prog.lines).toBe(1)
-    const r = run(tableRules(prog)['List'] as never, '[\n  [ ab ]\n]')
+    const r = run(execRules(prog)['List'] as never, '[\n  [ ab ]\n]')
     expect(r.ok).toBe(true)
     expect(r.span).toMatchObject({ startLine: 1, startColumn: 1, endLine: 3, endColumn: 2 })
   })

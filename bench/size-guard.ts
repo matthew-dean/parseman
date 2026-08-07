@@ -65,7 +65,7 @@
  * ----------------------------------------------------
  * "Record what it says" is only safe while what it measures is REAL, and the
  * ceilings have already been cut once against artifacts that were not.
- * `compileTable` dropped the encoder's reducer sources, `emitTable*` substituted
+ * `compile` dropped the encoder's reducer sources, `emitTable*` substituted
  * `() => {}` for every author callback, and the modules that reached this gate
  * were 8-34% smaller than the correct ones — `example/graphql` by 33.7%. They
  * loaded, they parsed, they reported `ok`, and they returned `undefined` instead
@@ -172,9 +172,9 @@
  * knowing that will mislead you.
  *
  *   - the `example/*` fixtures go through the library entry `compile()`, which
- *     `src/index.ts` now binds to `compileTable` — so they size the TABLE.
+ *     `src/index.ts` now binds to `compile` — so they size the TABLE.
  *   - the `probe/*` fixtures go through `transformMacro` (`src/plugin/index.ts`),
- *     which imports BOTH `compile` (`src/compiler/codegen.ts`) and `compileTable`
+ *     which imports BOTH `compile` (`src/compiler/codegen.ts`) and `compile`
  *     (`src/table/compile.ts`) and picks per unit — so they size whichever
  *     lowering that unit reached.
  *
@@ -430,7 +430,7 @@ async function measureExamples(): Promise<Fixture[]> {
     if (printable && (typeof gen !== 'string' || gen.trim().length === 0)) fail(`fixture ${spec.id}: compile() produced EMPTY output`)
 
     // A HOLLOW ARTIFACT IS NOT A SMALL ONE. This is the check whose absence let
-    // the previous re-baselining happen: `compileTable` dropped the encoder's
+    // the previous re-baselining happen: `compile` dropped the encoder's
     // reducer sources, `emitTable*` substituted `() => {}` for every author
     // callback, and the resulting modules were 8-34% SMALLER than the correct
     // ones. Every gate in this file then worked exactly as designed on a number

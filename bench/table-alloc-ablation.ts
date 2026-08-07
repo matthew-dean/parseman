@@ -1,22 +1,36 @@
 /**
- * Table-driver ablation: does removing the per-item mark ALLOCATION account for the
- * widening gap?
+ * Reference-interpreter ablation: does removing the per-item mark ALLOCATION
+ * account for the widening gap?
  *
- * `src/table/exec-baseline.ts` is the driver as committed at `c11cc60` —
- * identical in every respect except that it allocates `saveCstMark` /
- * `saveTriviaMark` objects unconditionally in the repetition and choice loops.
+ * WHICH ENGINES THIS BINDS.
+ *   `execRulesBaseline` / `execRules`   the REFERENCE bytecode interpreter
+ *                                       (`src/table/exec.ts`), old snapshot and
+ *                                       HEAD. NOT what ships.
+ *   `compose()`                         the shipped ASSEMBLER
+ *                                       (`src/compiler/linker.ts`).
+ * There is no source-lowering "codegen" engine here — `src/compiler/codegen.ts`
+ * was DELETED in `37c57b5`.
+ *
+ * The CONTROL and ABLATION rows are an INTERNAL ablation of the reference
+ * interpreter against itself: `src/table/exec-baseline.ts` is that driver as
+ * committed at `c11cc60` — identical in every respect except that it allocates
+ * `saveCstMark` / `saveTriviaMark` objects unconditionally in the repetition and
+ * choice loops. Same table, same grammar, same reducers: the ONLY difference
+ * between those two sides is the allocation. That comparison is like-for-like
+ * and is the point of this file.
+ *
+ * The GATE rows are the cross-engine rows: the shipped assembler against the
+ * reference interpreter at HEAD. They are context, not the ablation.
+ *
  * Both drivers are loaded in ONE process and run over `interleave`, paired and
  * order-alternated, with baseline-vs-baseline as the control.
- *
- * Same table, same grammar, same reducers: the ONLY difference between the two
- * sides is the allocation.
  */
 import os from 'node:os'
 import { interleave, median, type Case, type Contest, type Measurement, type Samples, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
-import { tableRulesBaseline } from '../src/table/exec-baseline.ts'
+import { execRules } from '../src/table/exec.ts'
+import { execRulesBaseline } from '../src/table/exec-baseline.ts'
 import { encodeTableBaseline } from '../src/table/encode-baseline.ts'
 import { run } from '../src/functional/run.ts'
 import { jsonRules, jsonWs } from './table-grammars.ts'
@@ -68,9 +82,9 @@ function main(): void {
   // table to the old driver would just crash on an opcode it never had.
   const oldProg = encodeTableBaseline(map)
   const newProg = encodeTable(map)
-  const oldA = tableRulesBaseline(oldProg).Value! as unknown as Entry
-  const oldB = tableRulesBaseline(oldProg).Value! as unknown as Entry
-  const neu = tableRules(newProg).Value! as unknown as Entry
+  const oldA = execRulesBaseline(oldProg).Value! as unknown as Entry
+  const oldB = execRulesBaseline(oldProg).Value! as unknown as Entry
+  const neu = execRules(newProg).Value! as unknown as Entry
   const compiled = (compose([map as never]) as unknown as Record<string, Entry>).Value!
 
   for (const [id, text] of INPUTS) {
@@ -88,8 +102,9 @@ function main(): void {
 
   // SECOND ABLATION — trivia. The driver reaches trivia through the runtime's
   // `advanceTrivia` (a WeakMap scanner lookup plus several ctx branches, per
-  // term and per repetition item); codegen inlines a charCode loop. If that is
-  // a per-item cost, the gap should shrink on input with NO trivia to skip.
+  // term and per repetition item); the shipped assembler inlines a charCode
+  // loop. If that is a per-item cost, the gap should shrink on input with NO
+  // trivia to skip.
   const dense = INPUTS.map(([id, t]) => [`${id}-dense`, JSON.stringify(JSON.parse(t))] as [string, string])
   function denseCases(entry: Entry): Case[] {
     return dense.map(([id, text]) => ({
@@ -114,7 +129,7 @@ function main(): void {
     { label: 'ABLATION baseline -> fuse+collapse', a: cases(oldA), b: cases(neu) },
   ]
   const gateContests: Contest[] = [
-    { label: 'GATE     compiled -> fuse+collapse', a: cases(compiled), b: cases(neu) },
+    { label: 'GATE     assembled -> exec', a: cases(compiled), b: cases(neu) },
   ]
   // ONE map, not a spread into an array. `interleave` returns `Map<string,
   // Samples>`; spreading two of them yields `Array<[string, Samples]>`, which has
@@ -125,8 +140,8 @@ function main(): void {
     ...interleave(gateContests, gateReps, M),
   ])
   const denseContests: Contest[] = [
-    { label: 'CONTROL  compiled -> compiled  (no trivia)', a: denseCases(compiled), b: denseCases(compiled) },
-    { label: 'GATE     compiled -> table     (no trivia)', a: denseCases(compiled), b: denseCases(neu) },
+    { label: 'CONTROL  assembled -> assembled (no trivia)', a: denseCases(compiled), b: denseCases(compiled) },
+    { label: 'GATE     assembled -> exec      (no trivia)', a: denseCases(compiled), b: denseCases(neu) },
   ]
   const denseOut = interleave(denseContests, denseReps, M)
   console.log('')
@@ -149,7 +164,7 @@ function main(): void {
       const a = s.get(`ref|${id}`)!, b = s.get(`head|${id}`)!
       parts.push(`${(id.split('/')[1] ?? id).padEnd(12)} min ${sign((Math.min(...b) / Math.min(...a) - 1) * 100).padStart(8)}`)
     }
-    console.log(`  ${k.label.padEnd(42)} ${parts.join('  ')}`)
+    console.log(`  ${k.label.padEnd(44)} ${parts.join('  ')}`)
   }
 }
 

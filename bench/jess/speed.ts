@@ -1,5 +1,15 @@
 /**
- * AST-path parse speed over jess's real corpora: TABLE vs CODEGEN vs INTERPRETER.
+ * AST-path parse speed over jess's real corpora: the REFERENCE BYTECODE
+ * INTERPRETER vs the shipped ASSEMBLER vs the COMBINATOR INTERPRETER.
+ *
+ * ENGINE TOKEN LEGEND — the `Engines` field names and the argv/label tokens keep
+ * their historical spelling; this is what each one actually binds:
+ *   table        execRules()   the REFERENCE bytecode interpreter (NOT what ships)
+ *   compiled     pm-macro:     the shipped ASSEMBLER — the macro routes
+ *                              `compileLinkableTable` to the assembler; there is
+ *                              no source-lowering "codegen" engine, because
+ *                              `src/compiler/codegen.ts` was DELETED in `37c57b5`
+ *   interpreted  the combinator graph
  *
  * THE PATH IS THE AST PATH. By owner ruling that is the canonical performance
  * measure, and a speed number that does not name its path is not a result. Every
@@ -23,10 +33,11 @@
  *
  * Timing a set of files the engines disagree about would be timing three
  * different parses, which `ab-harness.ts`'s `assertSameParse` exists to prevent.
- * The excluded files are the known interpreter/codegen drift the three-way sweep
- * catalogues, not table defects — the table is the outlier on zero of them.
+ * The excluded files are the known combinator-interpreter/assembler drift the
+ * three-way sweep catalogues, not reference-interpreter defects — the reference
+ * interpreter is the outlier on zero of them.
  *
- * A CONTROL contest runs alongside: table-vs-table, two instances of the SAME
+ * A CONTROL contest runs alongside: exec-vs-exec, two instances of the SAME
  * path. Its delta is this machine's noise floor for this run, and no gate number
  * is readable without it.
  *
@@ -38,7 +49,7 @@ import { calibrate, interleave, median, sign, type Case, type Contest, type Meas
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import {
   DIALECTS, ENTRY, JESS_ROOT, LOAD_CEILING, VARIANT_SETTINGS,
   assertParseman, assertQuiet, corpus, corpusTotal, exportName, loadGrammar, loads,
@@ -67,8 +78,8 @@ async function engines(dialect: Dialect): Promise<Engines> {
   // Two independently built tables. `ab-harness.ts` records that two instances of
   // byte-identical code do not run at identical speed and that the winner is
   // fixed for the life of a pass; the control contest exists to show that.
-  const table = tableRules(encodeTable(rules, VARIANT_SETTINGS[VARIANT]))[ENTRY] as Entry
-  const tableB = tableRules(encodeTable(rules, VARIANT_SETTINGS[VARIANT]))[ENTRY] as Entry
+  const table = execRules(encodeTable(rules, VARIANT_SETTINGS[VARIANT]))[ENTRY] as Entry
+  const tableB = execRules(encodeTable(rules, VARIANT_SETTINGS[VARIANT]))[ENTRY] as Entry
   const mod = await import(`pm-macro:${resolvePath(JESS_ROOT, MODULE[dialect])}`) as Record<string, unknown>
   const grammar = mod[exportName(dialect, VARIANT)] as Record<string, unknown> | undefined
   if (grammar === undefined) throw new Error(`${dialect}: macro lowering exposed no ${exportName(dialect, VARIANT)}`)
@@ -159,16 +170,16 @@ async function main(): Promise<void> {
     console.log(`=== ${d}   timing ${files.length} files (${bytes} B) of ${all.length} taken, of ${total} in the corpus`)
     console.log(`    ${threw} of the timed files end in a reducer throw — a real answer, taken identically by all three`)
     console.log(`    excluded ${all.length - files.length}: the three engines do not agree on them, so timing them`)
-    console.log(`    would time three different parses. See divergence.ts — the table is the outlier on none.`)
+    console.log(`    would time three different parses. See divergence.ts — the reference interpreter is the outlier on none.`)
     if (files.length === 0) { console.log('    NOTHING TO TIME.'); continue }
 
     const cases = (entry: Entry, tag: string): Case[] => [makeCase(entry, files, d, tag)]
     const reps = calibrate(cases(e.compiled, 'cal'), M)
 
     const contests: Contest[] = [
-      { label: 'gate:      compiled -> table', a: cases(e.compiled, 'compiled'), b: cases(e.table, 'table') },
-      { label: 'CONTROL:   table    -> table', a: cases(e.table, 'table'), b: cases(e.tableB, 'table') },
-      { label: 'reference: compiled -> interpreter', a: cases(e.compiled, 'compiled'), b: cases(e.interpreted, 'interp') },
+      { label: 'gate:      assembled -> exec', a: cases(e.compiled, 'compiled'), b: cases(e.table, 'table') },
+      { label: 'CONTROL:   exec      -> exec', a: cases(e.table, 'table'), b: cases(e.tableB, 'table') },
+      { label: 'reference: assembled -> interpreter', a: cases(e.compiled, 'compiled'), b: cases(e.interpreted, 'interp') },
     ]
     const out = interleave(contests, reps, M)
     console.log(`    ${reps.get(d)} sweep(s) per sample, ${M.rounds * M.runs} samples per side`)
@@ -181,7 +192,7 @@ async function main(): Promise<void> {
       let wins = 0
       for (let n = 0; n < b.length; n++) if (b[n]! < a[n]!) wins++
       console.log(
-        `    ${k.label.padEnd(34)} median ${sign(dMed).padStart(8)}   min ${sign(dMin).padStart(8)}`
+        `    ${k.label.padEnd(36)} median ${sign(dMed).padStart(8)}   min ${sign(dMin).padStart(8)}`
         + `   B-wins ${String(wins).padStart(2)}/${b.length}   (${median(a).toFixed(2)} -> ${median(b).toFixed(2)} ms)`,
       )
     }

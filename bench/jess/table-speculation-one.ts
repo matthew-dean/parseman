@@ -16,7 +16,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { encodeTable } from '../../src/table/encode.ts'
-import { resetTableCounters, tableCounters, tableRules } from '../../src/table/exec.ts'
+import { resetTableCounters, tableCounters, execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { assertParseman, corpus, ENTRY, loadGrammar, type Dialect } from './grammars.ts'
 
@@ -28,7 +28,7 @@ const only = process.argv[3]
 const prov = await assertParseman()
 const g = await loadGrammar(dialect, 'ast')
 const prog = encodeTable(g.rules, {})
-const rules = tableRules(prog)
+const rules = execRules(prog)
 const entry = rules[ENTRY]
 if (entry === undefined) throw new Error(`${dialect}: table has no '${ENTRY}'`)
 

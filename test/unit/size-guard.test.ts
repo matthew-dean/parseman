@@ -383,7 +383,7 @@ describe('printability ratchets in both directions', { timeout: ONE_SPAWN_MS }, 
  * A HOLLOW ARTIFACT MUST NEVER BECOME A CEILING.
  *
  * This is the failure that already happened, and every mechanism above worked
- * perfectly throughout it. `compileTable` dropped the encoder's reducer sources,
+ * perfectly throughout it. `compile` dropped the encoder's reducer sources,
  * `emitTable*` substituted `() => {}` for each one, and the modules that reached
  * this gate were 8-34% SMALLER than the correct ones. They printed, so the
  * printability ratchet was satisfied. They shrank, so the bytes ratchet reported

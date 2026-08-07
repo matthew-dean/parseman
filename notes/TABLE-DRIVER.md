@@ -1,5 +1,23 @@
 # Grammar as a table, read by one shared driver
 
+> **⚠ READ THE ENGINE NAMES ON THIS PAGE AGAINST THIS LEGEND.** Every figure
+> below was taken from `bench/table-speed-ab.ts`, `bench/table-vs-field.ts`,
+> `bench/table-alloc-ablation.ts` or `bench/table-time-attribution.ts`, all of
+> which bound the **reference bytecode interpreter** (`src/table/exec.ts`, now
+> exported as `execRules`) under the column name `table`, and the **shipped
+> assembler** — reached via `compose()` or `pm-macro:` — under the name
+> `codegen`. `src/compiler/codegen.ts` was **deleted in `37c57b5`**; nothing here
+> measured a source lowering after that commit.
+>
+> So a row reading `GATE compiled -> table +82%` is **shipped assembler vs
+> reference interpreter**, and the sentence "the table driver is ~2.6× slower
+> than codegen" is about a driver nothing ships, against an engine that is itself
+> a table. The measurements are sound; the names on them were not. Re-taking them
+> under the corrected legs is an owner call and has not been done here. See
+> `docs/design/canonical-fixture-benchmark.md` for the same correction applied to
+> the canonical harness, and INV-11 in `scripts/check-invariants.mjs` for the gate
+> that stops the two engines sharing a name again.
+
 Status: **working prototype, landed on `pm-g5-driver`.** Not wired into the
 macro, `compile()` or `compose()`; `src/table/` is additive and nothing existing
 imports it. What follows is what was built and what it measured, so the next

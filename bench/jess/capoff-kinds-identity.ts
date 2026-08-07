@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { run } from '../../src/functional/run.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { ENTRY, JESS_ROOT, corpus, loadGrammar, VARIANT_SETTINGS, type Dialect, type Variant } from './grammars.ts'
 
@@ -25,7 +25,7 @@ const dialect = (process.argv[2] ?? 'css') as Dialect
 const variant = (process.argv[3] ?? 'ast') as Variant
 const { rules } = await loadGrammar(dialect, variant)
 const prog = encodeTable(rules, VARIANT_SETTINGS[variant])
-const entry = assembledRules(prog)[ENTRY] as RunnableLike | undefined
+const entry = tableRules(prog)[ENTRY] as RunnableLike | undefined
 if (entry === undefined) throw new Error(`no rule '${ENTRY}'`)
 
 // The labels the grammar actually declares. Selecting a label the grammar does

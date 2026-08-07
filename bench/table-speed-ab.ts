@@ -1,25 +1,37 @@
 /**
- * Table-vs-compiled parse-speed A/B — the obvious risk, measured rather than assumed.
+ * Reference-interpreter-vs-assembler parse-speed A/B — the obvious risk,
+ * measured rather than assumed.
+ *
+ * WHICH ENGINES THIS BINDS. `compose()` (`src/compiler/linker.ts`) is the
+ * shipped ASSEMBLER; `execRules()` (`src/table/exec.ts`) is the REFERENCE
+ * bytecode interpreter, which is NOT what ships. There is no source-lowering
+ * "codegen" engine anywhere in this comparison — `src/compiler/codegen.ts` was
+ * DELETED in `37c57b5`.
  *
  * A shared driver can trade emitted bytes for interpretive overhead, so this
- * compares the TABLE path against the SHIPPED compiled path on the same
- * grammar, in ONE process, with the two sides measured in adjacent
- * order-alternated pairs (`bench/ab-harness.ts`'s `interleave`, the repo's
- * controlled-A/B engine — not a new one).
+ * compares the reference interpreter against the assembler on the same grammar,
+ * in ONE process, with the two sides measured in adjacent order-alternated pairs
+ * (`bench/ab-harness.ts`'s `interleave`, the repo's controlled-A/B engine — not
+ * a new one).
  *
- * A CONTROL contest runs alongside the gate contest: compiled-vs-compiled, i.e.
- * two instances of the SAME path. Its reported delta is this machine's noise
- * floor for this run, and the gate number is only readable against it.
+ * A CONTROL contest runs alongside the gate contest: assembled-vs-assembled,
+ * i.e. two instances of the SAME path. Its reported delta is this machine's
+ * noise floor for this run, and the gate number is only readable against it.
  *
- * The interpreter is measured too, as the existing shared-driver datum: it is
- * also "one driver, grammar as data", and the difference between it and the
- * table path is what the flat encoding and the zero-allocation protocol buy.
+ * The combinator interpreter is measured too, as the existing shared-driver
+ * datum: it is also "one driver, grammar as data", and the difference between it
+ * and the reference-interpreter path is what the flat encoding and the
+ * zero-allocation protocol buy.
+ *
+ * PUBLISHED FIGURES. The numbers from this harness that live in
+ * `notes/TABLE-DRIVER.md` were recorded under the OLD row names
+ * (`compiled` = this file's `assembled`, `table` = this file's `exec`).
  */
 import os from 'node:os'
 import { interleave, median, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+import { execRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
 import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
@@ -68,7 +80,7 @@ function main(): void {
   // Both sides built from the SAME rule map in the SAME process.
   const compiledA = (compose([map as never]) as unknown as Record<string, Entry>).Value!
   const compiledB = (compose([map as never]) as unknown as Record<string, Entry>).Value!
-  const table = tableRules(encodeTable(map)).Value! as unknown as Entry
+  const table = execRules(encodeTable(map)).Value! as unknown as Entry
   const interp = map.Value! as unknown as Entry
 
   // Same-parse precondition: a timing comparison between two different parses
@@ -87,9 +99,9 @@ function main(): void {
   const reps = calibrateReps(makeCases(compiledA, 'cal'))
 
   const contests: Contest[] = [
-    { label: 'gate: compiled -> table', a: makeCases(compiledA, 'compiled'), b: makeCases(table, 'table') },
-    { label: 'CONTROL: compiled -> compiled', a: makeCases(compiledA, 'compiled'), b: makeCases(compiledB, 'compiled') },
-    { label: 'reference: compiled -> interpreter', a: makeCases(compiledA, 'compiled'), b: makeCases(interp, 'interp') },
+    { label: 'gate: assembled (shipped) -> exec (reference)', a: makeCases(compiledA, 'compiled'), b: makeCases(table, 'table') },
+    { label: 'CONTROL: assembled (shipped) -> assembled (shipped)', a: makeCases(compiledA, 'compiled'), b: makeCases(compiledB, 'compiled') },
+    { label: 'reference: assembled (shipped) -> interpreter', a: makeCases(compiledA, 'compiled'), b: makeCases(interp, 'interp') },
   ]
 
   const out = interleave(contests, reps, M)

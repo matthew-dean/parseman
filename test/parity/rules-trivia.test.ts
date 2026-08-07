@@ -5,8 +5,8 @@ import {
   type Combinator, type ParseContext, type ParseResult,
 } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 
 const rw = trivia(oneOrMore(regex(/[ \t\n]+/)))
 
@@ -133,8 +133,8 @@ describe('rules({ trivia }) — a reference re-establishes the target rule\'s sc
       // A compiled entry BAKES its trivia in, so it takes no ctx — see the
       // `compiled ≡ interpreter` case above, which calls it the same way.
       compiled: compile(g.Decl!).parse(input),
-      'table(exec)': tableRules(prog)['Decl']!(input, 0, ctx()),
-      'table(assembled)': assembledRules(prog)['Decl']!(input, 0, ctx()),
+      'table(exec)': execRules(prog)['Decl']!(input, 0, ctx()),
+      'table(assembled)': tableRules(prog)['Decl']!(input, 0, ctx()),
     }
     const out: Record<string, string> = {}
     for (const [name, res] of Object.entries(results)) {
@@ -228,8 +228,8 @@ describe('rules({ trivia }) — a reference does NOT re-establish a scope its ta
     const results: Record<string, ParseResult<unknown>> = {
       interpreted: g.List!.parse(input, 0, ctx()),
       compiled: compile(g.List!).parse(input),
-      'table(exec)': tableRules(prog)['List']!(input, 0, ctx()),
-      'table(assembled)': assembledRules(prog)['List']!(input, 0, ctx()),
+      'table(exec)': execRules(prog)['List']!(input, 0, ctx()),
+      'table(assembled)': tableRules(prog)['List']!(input, 0, ctx()),
     }
     // ACCEPTANCE, not the diagnostic. The four engines report different failure
     // OFFSETS for a rejected route here (0 from the interpreter, 1 from the other

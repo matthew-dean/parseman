@@ -66,6 +66,13 @@ describe('invariant gate', () => {
     ['inv8', 'INV-8', 'resolves to 2 DIFFERENT declarations'],
     ['inv9', 'INV-9', 'is minted in 2 modules'],
     ['inv10', 'INV-10', 'which does not exist'],
+    // INV-11 plants BOTH halves in one fixture. 11a is `import { execRules as
+    // tableRules }` — the edit that let the reference interpreter answer to the
+    // shipped engine's name for two releases. 11b is a renaming re-export from an
+    // entry point, which is the shape that MINTED that collision rather than the
+    // one that expressed it. Both type-check, so only a specifier rule catches
+    // either.
+    ['inv11', 'INV-11', 'TWO DIFFERENT table engines'],
   ]
   for (const [dir, rule, phrase] of planted) {
     it(`${rule} fires on its planted violation and exits non-zero`, () => {
@@ -75,6 +82,22 @@ describe('invariant gate', () => {
       expect(code).toBe(1)
     })
   }
+
+  /**
+   * INV-11's two halves catch DIFFERENT shapes, so one assertion on the rule id
+   * cannot show both work — 11a alone would satisfy the loop above while 11b was
+   * silently broken. 11b is the half that matters most: it is the shape that
+   * MINTED the engine collision (`assembledRules as tableRules`), not the one
+   * that expressed it, and it is the half with no second gate behind it.
+   */
+  it('INV-11 fires on BOTH halves — the cross-engine rename and the renaming re-export', () => {
+    const { code, out } = runGate([`--root=${fixture('inv11')}`])
+    expect(out, '11a — a rename across the two engines\' vocabularies')
+      .toContain('TWO DIFFERENT table engines')
+    expect(out, '11b — one function published under a second name from an entry point')
+      .toContain('may not rename one')
+    expect(code).toBe(1)
+  })
 
   it('fails when an allowlist entry no longer matches a finding', () => {
     // The allowlist may only get SHORTER. A stale entry is a standing licence

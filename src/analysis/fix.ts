@@ -49,7 +49,7 @@ import { firstSetOf } from '../combinators/first-set.ts'
 import { keywords } from '../combinators/keywords.ts'
 import { peek } from '../combinators/peek.ts'
 import { parse } from '../combinators/grammar.ts'
-import { compileTable } from '../table/compile.ts'
+import { compile } from '../table/compile.ts'
 import { digestValue } from '../oracle/digest.ts'
 import { analyzeGating, choiceArms, firstSetToString, peelToLeading, type GatingReport } from './gating.ts'
 import { rebuildCombinator, type FrozenSubtree } from './rebuild.ts'
@@ -178,7 +178,7 @@ function sampleToken(res: ParseResult<unknown>): string {
 type Outputs = { interpreted: string[]; compiled: string[] | null; artifactBytes: number | null }
 
 /**
- * THE COMPILED LEG IS THE TABLE — `compileTable`, which is what `compile()` means
+ * THE COMPILED LEG IS THE TABLE — `compile`, which is what `compile()` means
  * at the library entry (`src/index.ts`). It used to be the source lowering, which
  * made this module a live consumer of an engine that no longer ships anything.
  *
@@ -196,7 +196,7 @@ function outputsOf(root: Combinator<unknown>, corpus: readonly FixSample[]): Out
   let compiled: string[] | null = null
   let artifactBytes: number | null = null
   try {
-    const c = compileTable(root)
+    const c = compile(root)
     artifactBytes = c.source.length
     compiled = corpus.map((s) => {
       try { return sampleToken(c.parse(s.text)) }

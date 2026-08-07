@@ -30,7 +30,7 @@ import {
 } from '../../src/index.ts'
 import type { Runnable } from '../../src/functional/run.ts'
 import type { Combinator } from '../../src/types.ts'
-import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { tableRules } from '../../src/table/index.ts'
 
 function labeledRw() {

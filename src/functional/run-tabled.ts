@@ -43,14 +43,14 @@
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { run as runDriver, type Runnable, type RunOptions, type RunResult } from './run.ts'
 import { encodeTable } from '../table/encode.ts'
-import { assembledRules } from '../table/assemble.ts'
+import { tableRules } from '../table/assemble.ts'
 
 const ENTRY = 'Entry'
 
 /**
  * The assembled table entry for a combinator, built at most once per combinator.
  *
- * A root combinator is a one-rule map — the same construction `compileTable()`
+ * A root combinator is a one-rule map — the same construction `compile()`
  * uses, verified round-tripping value-identically on the shipped json/csv/graphql
  * roots.
  *
@@ -106,7 +106,7 @@ function tableEntryFor(c: Combinator<unknown>, hostCst: boolean, tolerant: boole
     ...(trackLines ? { trackLines: true } : {}),
     ...(tolerant ? { recovery: true } : {}),
   })
-  const made = assembledRules(prog)[ENTRY]!
+  const made = tableRules(prog)[ENTRY]!
   slots[i] = made
   return made
 }
