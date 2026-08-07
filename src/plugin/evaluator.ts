@@ -16,6 +16,7 @@ import type {
 import type { Combinator } from '../types.ts'
 import type { DispatchArm } from '../combinators/dispatch.ts'
 import { ref } from '../combinators/ref.ts'
+import { markUnusedValues } from '../compiler/value-usage.ts'
 import * as parseman from '../index.ts'
 import { directBuilderUnsupportedBindings } from './direct-builder-static.ts'
 import type { ReducerResolver } from './reducer-resolver.ts'
@@ -1376,6 +1377,36 @@ export function evaluateParserFactory(
     }
     ruleRefs.get(key)!.define(val as Combinator<unknown>)
   }
+
+  /*
+   * DEAD-VALUE ANALYSIS — the last thing `rules()` does, and the one step this
+   * function was missing.
+   *
+   * `evaluateParserFactory` IS the build-time `rules()`: it creates the ref per
+   * key, evaluates the factory against a `g` proxy, and defines each slot. What
+   * it never did is `rules()`'s closing pass (`combinators/parser.ts:246-249`),
+   * which marks every container whose aggregate only feeds a `node()`'s capture
+   * as `valueUnused`. Nothing else sets that flag, so a MACRO-lowered grammar
+   * reached the encoder with it unset on every rule while the same grammar
+   * loaded at runtime reached it set.
+   *
+   * The encoder reads the flag directly — `d.valueUnused ? OP_SEQV : OP_SEQ`
+   * (`table/encode.ts:748`) and `d.valueUnused ? OP_REPV : OP_REP` (`:895`) — so
+   * the omission is not a missed diagnostic, it is a DIFFERENT PROGRAM. Measured
+   * on jess's less grammar (`bench/jess/macro-program-diff.ts`), the shipped
+   * artifact carried 326 tuple-building `SEQ` rows against 8, and 110
+   * array-building `REP` rows against 20, versus `encodeTable` over the same
+   * grammar realised at runtime: 318 sequence rows and 90 repeat rows each
+   * allocating an aggregate, on every execution, that nothing reads.
+   *
+   * Placed HERE rather than in `compileRuleMapTable` because this is the map's
+   * constructor, and every macro consumer of it — the plain `rules()` lowering,
+   * `composeLeaf`'s merge, `compileLinkableTable` — inherits the answer instead
+   * of each having to remember. `markUnusedValues` is idempotent and
+   * `consumed = true` is sticky, so a map that already went through the real
+   * `rules()` is unchanged by a second pass.
+   */
+  for (const slot of ruleRefs.values()) markUnusedValues(slot)
 
   return ruleRefs as Map<string, Combinator<unknown>>
 }

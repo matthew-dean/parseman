@@ -43,7 +43,14 @@ function toFunctionBody(code: string): string {
 export function evalMacroModule<T>(code: string, want: string, bindings: Record<string, unknown> = {}): T {
   const extra = Object.keys(bindings).filter(n => n !== 'tableRules')
   const names = ['tableRules', ...extra]
-  const values: unknown[] = [tableRules, ...extra.map(n => bindings[n])]
+  // A SUPPLIED `tableRules` WINS. It still never NEEDS to be passed — the default
+  // is the real driver — but a harness that passes one is asking to see the
+  // program the macro printed, which is the only way to compare artifacts rather
+  // than parse results. Ignoring it silently handed such a harness the real
+  // driver and a capture list that stayed empty, which reads as "the macro
+  // emitted no table" rather than as a harness that did not take effect.
+  const driver = 'tableRules' in bindings ? bindings['tableRules'] : tableRules
+  const values: unknown[] = [driver, ...extra.map(n => bindings[n])]
   const fn = new Function(...names, `${toFunctionBody(code)}\nreturn (${want})`) as (...args: unknown[]) => T
   return fn(...values)
 }
