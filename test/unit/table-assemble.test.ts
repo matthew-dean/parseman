@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { choice, literal, many, node, optional, regex, sequence, transform } from '../../src/index.ts'
+import { balanced, choice, literal, many, node, optional, regex, sequence, token, transform } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { assemble, assembledRules, AssemblyCache } from '../../src/table/assemble.ts'
@@ -9,7 +9,8 @@ import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { digestValue } from '../../src/oracle/index.ts'
-import type { Combinator } from '../../src/types.ts'
+import { createParseContext } from '../../src/parse-context.ts'
+import type { Combinator, ParseContext } from '../../src/types.ts'
 
 /**
  * A grammar with enough shape variety that the assembler's memoisation, its
@@ -158,5 +159,48 @@ describe('table assembler', () => {
       expect([...(ra.expected ?? [])].sort(), `${label} expected`)
         .toEqual([...(re.expected ?? [])].sort())
     }
+  })
+
+  /**
+   * A PARSE MUST BE INSTALLED WITH ITS OWN ASSEMBLY'S `scanSkip`, NOT THE
+   * PREVIOUS PARSE'S.
+   *
+   * `stamp.ts`'s entry calls `scanSkipFor` BEFORE `runRule`, and `assembledRules`
+   * used to answer it from an assembly cached across parses ("memoised, so this
+   * is an array index after the first parse"). The set is not shared: each
+   * assembly wraps ITS OWN pieces (`subtreeComb`), so a strict parse following a
+   * tolerant one was handed the tolerant assembly's recognisers and its end slot.
+   *
+   * Object identity is the assertion, not a parse outcome. The two assemblies
+   * agree on this grammar, which is exactly why nothing caught it: a stale
+   * selection is not a thrown error, it is the wrong graph running quietly.
+   */
+  it('selects the scanSkip set from THIS parse\'s option set, not the last parse\'s', () => {
+    const skip = token(sequence(literal('"'), regex(/[^"]*/), literal('"')))
+    const sg = rules<Record<string, Combinator<unknown>>>({ scanSkip: [skip as Combinator<unknown>] }, () => ({
+      Doc: node('Doc', balanced('(', ')'), (c: readonly unknown[]) => ({ t: 'Doc', c })),
+    })) as unknown as Record<string, Combinator<unknown>>
+
+    const prog = expandCompact(encodeTable(sg))
+    const cfg = { hostCst: false, trackLines: false, coverage: false, probe: false }
+    const ref = new AssemblyCache(prog)
+    const strictSkip = ref.for({ ...cfg, tolerant: false }).scanSkip[0]
+    const tolerantSkip = ref.for({ ...cfg, tolerant: true }).scanSkip[0]
+    expect(strictSkip, 'the two assemblies must wrap DIFFERENT pieces, or this proves nothing')
+      .not.toBe(tolerantSkip)
+
+    const entry = assembledRules(prog).Doc! as unknown as
+      (i: string, p: number, c: ParseContext) => unknown
+    const installed = (tolerant: boolean): unknown => {
+      const ctx = createParseContext()
+      if (tolerant) { ctx._tolerant = true; ctx._errors = [] }
+      entry('("a)b")', 0, ctx)
+      return ctx.scanSkip
+    }
+    // The ORDER is the test: the tolerant parse is what leaves a selection behind.
+    const first = installed(true)
+    const second = installed(false)
+    expect(first, 'a tolerant parse gets a tolerant-shaped set').not.toBe(second)
+    expect(second, 'the strict parse must not inherit the tolerant parse\'s set').not.toBe(first)
   })
 })
