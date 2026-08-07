@@ -37,7 +37,6 @@ import {
 import type { HostMode } from '../cst/host-mode.ts'
 import { pickRuleMaps } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
-import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import { grammarReflectionSource, type GrammarReflection } from '../cst/reflection.ts'
 import { createHash } from 'node:crypto'
@@ -1488,7 +1487,7 @@ function transformMacroImpl(
   /** Compile `compose([...])` to STATIC fused source (eval-free) + its carried
    * (re-lowerable) list (for a sidecar / same-file chaining). null → leave the
    * runtime `compose()` in place (correct, just not build-fused). */
-  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[] } | null => {
+  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[]; coverageDefinitions?: readonly { id: string; kind: string }[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -1561,6 +1560,10 @@ function transformMacroImpl(
           carried,
           ...(composing ? { trivia: composing } : {}),
           ...(importedFactories.length ? { importedFactories } : {}),
+          // The AUTHORITATIVE denominator, from `buildGrammarPlan` via
+          // `compileRuleMapTable`. It was computed here and dropped, leaving the
+          // compose() call site with nothing but the regex scrape — see the call site.
+          ...(compiled.coverageDefinitions ? { coverageDefinitions: compiled.coverageDefinitions } : {}),
         }
       }
       // There is no second lowering to fall back TO. Leaving the runtime `compose()`
@@ -1974,7 +1977,14 @@ function transformMacroImpl(
           const replacement = exportPrefix
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement
-          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, emittedCoverageDefinitions(replacement, `${id} compose()`)) })
+          // The PLAN, then the scrape — the same order `rules()` and `composeLeaf()`
+          // already use. This call site had only the scrape, and a table has no
+          // `id: "…"` statements to scrape (ids ship as `prog.cov` pairs), so a
+          // macro-composed grammar's coverage denominator was EMPTY. An empty
+          // denominator is no measurement, not full coverage.
+          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, fused.coverageDefinitions?.length
+            ? fused.coverageDefinitions
+            : emittedCoverageDefinitions(replacement, `${id} compose()`)) })
           markUsedImportedFactories(fused.importedFactories)
           continue
         }
