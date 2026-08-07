@@ -6,10 +6,8 @@
  * lets a later piece's name override an earlier one, and encodes the merged map ONCE.
  * `enc.winners` binds every by-name reference against that merged map, so overriding a
  * rule reroutes EVERY call to it — including calls inside a base piece's own rules
- * (open recursion) — with no shared scope and no relocation.
- *   - **override** — later piece wins per rule name.
- *   - **à la carte** — `pick(grammar, names)` keeps only those rules + their transitive
- *     dependency closure.
+ * (open recursion) — with no shared scope and no relocation. Later piece wins per
+ * rule name.
  *
  * This replaced a textual splice. The source lowering compiled each piece to namespaced
  * `_r_<Name>` function sources and concatenated them into one `new Function` scope,
@@ -167,97 +165,6 @@ export type FusedRule = (
   ctx: ParseContext | Record<string, unknown>,
 ) => ParseResult<unknown> & { readonly value?: unknown }
 
-/**
- * Restrict a grammar/artifact to `names` plus their transitive rule-dependency
- * closure (à la carte selection) — e.g. Jess taking parts of Less and parts of
- * Sass: `compose([pick(less, ['MixinCall']), pick(sass, ['EachFor']), css])`. A
- * picked rule pulls in every rule name it references, so the result is always
- * self-consistent within the artifact. Accepts a grammar (`rules()` result) or a
- * compiled artifact; returns an artifact for `compose()`.
- */
-export function pick(
-  grammar: Record<string, Combinator<unknown>>,
-  names: string[],
-): Record<string, unknown> {
-  // Selection happens on RULE MAPS, not on lowered pieces. The source lowering had to
-  // filter compiled artifacts (`keys`/`ruleFns`/`wrappers`/`deps` in parallel, each a
-  // separate Map that had to stay in sync); the table has one representation — the
-  // combinator map — so the filter is applied once, to that, and the result is carried
-  // as IR like any other piece.
-  const carried = (grammar as Record<symbol, unknown>)[COMPOSED_PIECES]
-  // `pick` FREEZES its grammar's trivia — it runs standalone, before any compose — so
-  // the ambient trivia has to travel with the result. A composed grammar states it on
-  // COMPOSED_TRIVIA; a plain `rules({ trivia }, …)` states it only on its rules' `_meta`,
-  // and the IR does not carry `_meta` (trivia is seeded at fuse). Read it off the rules
-  // and re-state it on the result, or the picked rules stop skipping whitespace.
-  const trivia = ((grammar as Record<symbol, unknown>)[COMPOSED_TRIVIA] as Combinator<unknown> | undefined)
-    ?? (Array.isArray(carried)
-      ? undefined
-      : Object.values(grammar).map(v => (v as Combinator<unknown> | undefined)?._meta?.grammarTrivia).find(Boolean))
-  // A COMPOSED grammar has no single rule map — its rules live across carried pieces,
-  // and the selection must keep each rule in the piece that WINS it.
-  const sources: Array<{ ns: string; rules: Array<[string, Combinator<unknown>]> }> = Array.isArray(carried)
-    ? (carried as Array<LinkableTable | IRPiece>).flatMap(pc => {
-        const rules = ruleMapOfCarried(pc)
-        return rules === undefined ? [] : [{ ns: pc.ns, rules }]
-      })
-    : [{ ns: `_lk${_nsCounter++}_`, rules: Object.entries(grammar) }]
-
-  const filtered = pickRuleMaps(sources, names)
-  // Always a COMPOSED-LIKE value, for both inputs. `pick` used to return a bare artifact
-  // for a plain grammar and a composed-like object for a composed one, so a downstream
-  // `compose([pick(x, …)])` took a different flattening path depending on which kind of
-  // grammar it was handed. One shape, one path.
-  const out: Record<string, unknown> = {}
-  const pieces: IRPiece[] = filtered.flatMap(s => {
-    const ir = serializeRuleMap(s.rules, undefined)
-    return ir === null ? [] : [{ ns: s.ns, ir }]
-  })
-  Object.defineProperty(out, COMPOSED_PIECES, { value: pieces, enumerable: false })
-  if (trivia) Object.defineProperty(out, COMPOSED_TRIVIA, { value: trivia, enumerable: false })
-  return out
-}
-
-/** Restrict ordered rule maps to `names` + their transitive dep closure, keeping each
- * surviving rule in the map that WINS it (later map wins, matching compose override
- * order). Shared by `pick()` (runtime) and the macro's build-time `pick(...)`, so
- * à-la-carte selection is identical on both paths. */
-export function pickRuleMaps(
-  sources: ReadonlyArray<{ ns: string; rules: Array<[string, Combinator<unknown>]> }>,
-  names: string[],
-): Array<{ ns: string; rules: Array<[string, Combinator<unknown>]> }> {
-  const winner = new Map<string, { ns: string; rules: Array<[string, Combinator<unknown>]> }>()
-  const deps = new Map<string, string[]>()
-  for (const s of sources) {
-    const d = ruleDependencies(s.rules)
-    for (const [k, v] of d) deps.set(k, v)
-    // A REFERENCE IS NOT A DEFINITION: a `rules(g => …)` cache also holds every `g.X`
-    // that was merely accessed, as an unresolvable lazy. Left in, such an entry claims
-    // to define a name it only mentions, and `pick` would hand back a hole where the
-    // real definition was. Same guard as the compose merge.
-    for (const [k, rule] of s.rules) {
-      if (rule._def.tag === 'lazy') { try { rule._def.thunk() } catch { continue } }
-      winner.set(k, s)
-    }
-  }
-  // A requested name that isn't in the grammar is a typo — fail here, not later with a
-  // confusing name-closure error at compose() time.
-  for (const n of names) {
-    if (!winner.has(n)) throw new Error(`pick: rule "${n}" is not in this grammar (available: ${[...winner.keys()].join(', ')})`)
-  }
-  const keep = new Set<string>()
-  const visit = (n: string): void => {
-    // A missing winner is an EXTERNAL dep (a base-grammar rule) — it resolves at
-    // compose() time, not here. Top-level `names` were already validated above.
-    if (keep.has(n) || !winner.has(n)) return
-    keep.add(n)
-    for (const d of deps.get(n) ?? []) visit(d)
-  }
-  for (const n of names) visit(n)
-  return sources
-    .map(s => ({ ns: s.ns, rules: s.rules.filter(([k]) => keep.has(k) && winner.get(k) === s) }))
-    .filter(s => s.rules.length > 0)
-}
 
 /**
  * Fuse carried pieces into a runnable rule map — the TABLE equivalent of the
@@ -479,10 +386,9 @@ export function composedPiecesOf(
 const LEAF_COMPOSED = Symbol.for('parseman.leafComposed')
 
 /** The composing (outermost) trivia a runtime `compose()` applied — stored so a
- * later `pick(composedGrammar, …)` can re-lower the selected rules under the SAME
- * trivia (composing-wins survives à-la-carte selection). The carried IR pieces hold
- * no trivia of their own, so it must be remembered separately. Not serialized by the
- * macro (which delegates pick to the runtime linker). */
+ * LATER `compose([thisResult, …])` that declares no trivia of its own still re-lowers
+ * these rules under the SAME trivia (composing-wins survives re-composition). The
+ * carried IR pieces hold no trivia of their own, so it must be remembered separately. */
 const COMPOSED_TRIVIA = Symbol.for('parseman.composedTrivia')
 
 /** Final winner map for semantic-coverage tooling. It exists only when every
@@ -682,10 +588,10 @@ function composingTriviaOf(items: Array<LinkableTable | Record<string, unknown>>
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i] as Record<string, unknown> | undefined
     if (!item || isLinkableTable(item)) continue
-    // A COMPOSED or PICKED item states its trivia on the stamp rather than on its
-    // values (its rules live in carried IR, which does not carry `_meta`). Skipping
-    // such an item entirely — as this did — loses the trivia of every grammar that
-    // reached compose through a prior compose or a pick.
+    // A COMPOSED item states its trivia on the stamp rather than on its values (its
+    // rules live in carried IR, which does not carry `_meta`). Skipping such an item
+    // entirely — as this did — loses the trivia of every grammar that reached this
+    // compose through a PRIOR compose.
     const stamped = (item as Record<symbol, unknown>)[COMPOSED_TRIVIA] as Combinator<unknown> | undefined
     if (stamped) return stamped
     if ((item as Record<symbol, unknown>)[COMPOSED_PIECES]) continue
@@ -787,7 +693,7 @@ export function composeLeaf(
  *
  * The interpreted fuse binds those placeholders directly, with the SAME semantics
  * the compiled fuse gets from name resolution:
- *   - later piece wins per rule name (matching `fuseRules`/`pickPieces`);
+ *   - later piece wins per rule name (matching the compiled merge);
  *   - an override REPOINTS the slot every call site already holds, so a base
  *     piece's internal calls reroute too (open recursion);
  *   - the composing grammar's trivia governs every fused rule (`composingTriviaOf`);

@@ -122,11 +122,8 @@ export type {
   ArmOverlapFinding, RewriteFinding, RewriteKind, SepByVerdict, KeywordRegexFinding, DivergentNodeFinding,
   StructureLossFinding,
 } from './analysis/duplication.ts'
-// `pick()` is deliberately NOT re-exported: build-inlining a `pick()` of an imported
-// grammar can't yet carry that grammar's ambient trivia across the module boundary, so
-// the macro would diverge from the interpreter. It stays internal (./compiler/linker.ts)
-// for later exploration of that lowering. `composeLeaf()` is terminal by design;
-// ordinary reusable grammar composition remains `compose()`.
+// `composeLeaf()` is terminal by design; ordinary reusable grammar composition is
+// `compose()`. There is no à-la-carte rule selection: compose small pieces instead.
 export { compose, composeLeaf, cstBuildHost, fuseInterpreted, isInterpretedFuse } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 

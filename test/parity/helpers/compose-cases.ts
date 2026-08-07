@@ -9,12 +9,9 @@ export const TRIVIA = String.raw`
 const ws  = trivia(oneOrMore(regex(/[ \t\n]+/)))
 const wsc = trivia(oneOrMore(choice(regex(/[ \t\n]+/), regex(/\/\*[^]*?\*\//))))`
 
-// NB: `pick` is deliberately NOT imported here — it's internal (not a public 'parseman'
-// export). The macro recognises `pick(…)` by callee name, and the runtime path injects
-// `pick` separately (see evalModule), so the pick cases run without a public import.
 export const IMPORTS = `import { rules, compose, parser, noTrivia, trivia, sequence, literal, oneOrMore, choice, regex } from 'parseman' with { type: 'macro' }`
 
-export type Case = { name: string; src: string; entry: string; inputs: string[]; pick?: boolean; expect?: Record<string, string | number> }
+export type Case = { name: string; src: string; entry: string; inputs: string[]; expect?: Record<string, string | number> }
 
 export const cases: Case[] = [
   {
@@ -75,27 +72,6 @@ export const g = compose([less, rules({ trivia: wsc }, (g) => ({ Doc: sequence(l
     entry: 'Doc',
     inputs: ['x m a/*c*/b', 'x m a b', 'xmab'],
     expect: { 'x m a/*c*/b': 11, 'x m a b': 7 },
-  },
-  {
-    name: 'pick from a trivia-declaring grammar: the picked rule still skips trivia',
-    src: `${IMPORTS}${TRIVIA}
-const base = rules({ trivia: ws }, (r) => ({ Pair: sequence(literal('a'), literal('b')), Junk: literal('z') }))
-export const g = compose([pick(base, ['Pair'])])`,
-    entry: 'Pair',
-    inputs: ['a b', 'ab', 'a  b', 'q'],
-    pick: true,
-    expect: { 'a b': 3, 'ab': 2 },
-  },
-  {
-    name: 'pick from a composed grammar: composing-wins wsc survives the pick',
-    src: `${IMPORTS}${TRIVIA}
-const base = rules({ trivia: ws }, (r) => ({ Pair: sequence(literal('a'), literal('b')) }))
-const composed = compose([base, rules({ trivia: wsc }, (r) => ({ Doc: sequence(literal('x'), r.Pair) }))])
-export const g = compose([pick(composed, ['Pair'])])`,
-    entry: 'Pair',
-    inputs: ['a/*c*/b', 'a b', 'ab'],
-    pick: true,
-    expect: { 'a/*c*/b': 7, 'a b': 3 },
   },
 ]
 

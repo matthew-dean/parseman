@@ -35,7 +35,6 @@ import {
   resolveDegradationLevel, recordDegradation, degradationCaptureDepth, unwindDegradationCapture,
 } from '../compiler/degradation.ts'
 import type { HostMode } from '../cst/host-mode.ts'
-import { pickRuleMaps } from '../compiler/linker.ts'
 import { evalRuleMapIR, serializeRuleMap } from '../compiler/ir-serialize.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
@@ -976,11 +975,6 @@ function transformMacroImpl(
     && (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier'
     && (init as unknown as { callee: { name?: string } }).callee.name === 'composeLeaf'
 
-  const isPickCall = (init: Expression): boolean =>
-    init.type === 'CallExpression' &&
-    (init as unknown as { callee: { type: string; name?: string } }).callee.type === 'Identifier' &&
-    (init as unknown as { callee: { name?: string } }).callee.name === 'pick'
-
   // Local `rules()` grammars, so a same-file `compose([myRules, …])` can recover
   // the pieces to fuse (name → the rule map evaluated at build). A grammar stays a
   // usable parser AND is composable — no opt-in wrapper.
@@ -1106,9 +1100,6 @@ function transformMacroImpl(
   // later same-file compose can chain it AND re-lower it under that compose's own
   // composing trivia (composing-wins holds at every level).
   const localComposedCarried = new Map<string, CarriedItem[]>()
-  // …and each local composed grammar's OWN composing trivia, so `pick(g, …)` bakes
-  // that trivia (pick freezes its grammar's trivia, like the runtime).
-  const localComposedTrivia = new Map<string, Combinator<unknown>>()
 
   // Cache of RE-LOWERABLE pieces lists read from imported COMPILED grammars'
   // carried pieces (IR pieces + spreads left un-materialized, so the composing
@@ -1337,57 +1328,7 @@ function transformMacroImpl(
     return null
   }
 
-  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[]; importedFactories?: string[]; frozenTrivia?: Combinator<unknown> } | null => {
-    // `pick(grammar, ['A', 'B'])` — à-la-carte selection. Resolve the inner grammar's
-    // carried items, materialize them under the INNER grammar's OWN trivia (pick freezes
-    // its grammar's trivia — it runs standalone, BEFORE any compose, so the outer
-    // composing trivia does NOT reach it; mirrors the runtime pick), then filter to the
-    // picked names + their transitive dep closure (same pickPieces() the runtime uses).
-    if (isPickCall(arg)) {
-      const pargs = (arg as unknown as { arguments: Expression[] }).arguments
-      const inner = pargs[0]
-      const namesArg = pargs[1] as AnyNode | undefined
-      if (!inner || namesArg?.type !== 'ArrayExpression') return null
-      const names: string[] = []
-      for (const el of (namesArg.elements as AnyNode[] | undefined) ?? []) {
-        // oxc emits array string elements as `Literal` (object keys as `StringLiteral`).
-        const v = (el as { type?: string; value?: unknown } | undefined)?.value
-        if ((el?.type === 'Literal' || el?.type === 'StringLiteral') && typeof v === 'string') names.push(v)
-        else return null
-      }
-      // NOTE: `pick()` is withdrawn from the public API and kept internal/experimental
-      // (see src/index.ts + docs/guide/extending.md). Its build-time lowering has known
-      // edges — an IMPORTED grammar's ambient trivia can't be carried across the module
-      // boundary here, and a picked composed grammar's trivia is frozen against a later
-      // outer compose — which is why it's held back. These are not exercised by any
-      // public grammar; they'll be resolved if/when pick is re-exposed.
-      const innerArg = argPieces(inner, `${label}_pick`)
-      if (!innerArg) return null
-      try {
-        // Selection is on RULE MAPS now, and the picked result is re-serialized to IR so
-        // it stays a normal carried piece. Previously the pick had to LOWER every inner
-        // piece just to filter it, which is what froze the picked grammar's trivia
-        // against a later outer compose; carrying IR keeps it re-lowerable.
-        const maps = carriedRuleMaps(innerArg.carried)
-        if (maps === null) { warn(arg.start, 'pick(): inner grammar has no re-lowerable IR'); return null }
-        const picked = pickRuleMaps(maps.pieces, names)
-        const carried: CarriedItem[] = []
-        for (const s of picked) {
-          const ir = serializeRuleMap(s.rules, undefined)
-          if (ir === null) { warn(arg.start, `pick(): picked rules for ns "${s.ns}" could not be serialized`); return null }
-          carried.push({ ns: s.ns, ir })
-        }
-        return {
-          carried,
-          // `pick` FREEZES its grammar's trivia (it runs standalone, before any compose).
-          // The IR does not carry `_meta`, so the trivia has to be reported out of band
-          // or the picked rules stop skipping whitespace — the runtime `pick` states the
-          // same thing on its COMPOSED_TRIVIA stamp.
-          ...(ownTrivia(inner) ? { frozenTrivia: ownTrivia(inner)! } : {}),
-          ...(innerArg.importedFactories ? { importedFactories: innerArg.importedFactories } : {}),
-        }
-      } catch (e) { warn(arg.start, `pick(): ${(e as Error).message}`); return null }
-    }
+  const argPieces = (arg: Expression, label: string, composing?: Combinator<unknown>): { carried: CarriedItem[]; importedFactories?: string[] } | null => {
     // Inline `rules(g => …)` or `rules({ trivia }, g => …)` (options-first). The
     // element's OWN trivia option is ignored for lowering — composing-wins means the
     // composing grammar's trivia (computed in compileComposeCall) governs every
@@ -1452,23 +1393,6 @@ function transformMacroImpl(
         if (t) return t
         // local composed / imported compiled grammar → contributes rules, not trivia.
       }
-      // a pick(...) element carries a frozen artifact → contributes rules, not trivia.
-    }
-    return undefined
-  }
-
-  /** A single grammar element's OWN declared trivia (used by pick, which freezes it):
-   * an inline `rules({ trivia }, …)`, a local `rules({ trivia }, …)`, a local composed
-   * grammar's composing trivia, or (recursively) the grammar inside a nested pick. */
-  const ownTrivia = (arg: Expression): Combinator<unknown> | undefined => {
-    if (isRulesCall(arg)) return rulesCallTrivia(arg)
-    if (isPickCall(arg)) {
-      const inner = (arg as unknown as { arguments: Expression[] }).arguments[0]
-      return inner ? ownTrivia(inner) : undefined
-    }
-    if (arg.type === 'Identifier') {
-      const name = (arg as unknown as { name: string }).name
-      return localGrammarTrivia.get(name) ?? localComposedTrivia.get(name)
     }
     return undefined
   }
@@ -1506,21 +1430,15 @@ function transformMacroImpl(
     }
     // Composing-wins (B): ONE composing trivia, from the last plain grammar in the
     // list that declares one, governs EVERY fused rule — including inherited ones.
-    let composing = composingTrivia(elements)
+    const composing = composingTrivia(elements)
     const carried: CarriedItem[] = []       // re-lowerable; also SERIALIZED onto the value
     const importedFactories: string[] = []
-    let frozenTrivia: Combinator<unknown> | undefined
     for (let i = 0; i < elements.length; i++) {
       const r = argPieces(elements[i]!, `compose${init.start}_${i}`, composing)
       if (!r) { warn(init.start, `compose(): argument ${i} isn't a build-resolvable grammar; falling back to runtime`); return null }
       carried.push(...r.carried)
       importedFactories.push(...(r.importedFactories ?? []))
-      if (r.frozenTrivia) frozenTrivia ??= r.frozenTrivia
     }
-    // No element DECLARED a composing trivia, but a picked element carries one it froze.
-    // Composing-wins still holds — a declared trivia would have won above — this only
-    // stops `compose([pick(g, …)])` from losing the trivia `g` declared.
-    composing ??= frozenTrivia
     // Lower the whole list ONCE, seeding the composing trivia into every re-lowerable
     // piece (composing-wins), then fuse.
     // TABLE FIRST. The merged map IS the composed grammar (see `mergedCarriedRules`),
@@ -1962,7 +1880,6 @@ function transformMacroImpl(
           // grammar via `import { <name> }` (re-composition, no source) and re-lower it
           // under ITS composing trivia.
           localComposedCarried.set(varName, fused.carried)
-          if (fused.trivia) localComposedTrivia.set(varName, fused.trivia)
           const replacement = exportPrefix
             ? withCarriedPieces(fused.replacement, fused.carried)
             : fused.replacement

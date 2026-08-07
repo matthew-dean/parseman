@@ -124,11 +124,6 @@ override reaches the base's own call sites — so **one interpreted fusion per p
 a second, conflicting fusion over the same piece objects throws rather than silently
 rewriting the first one's parser. Build a fresh instance of the piece for the second.
 
-> **There is no public `pick()`.** Selecting a subset of a grammar's rules plus their
-> transitive closure is internal-only: such a selection over an *imported* grammar cannot
-> carry that grammar's ambient trivia across the module boundary, which would make the
-> macro build diverge from the interpreter. Compose small pieces instead (above).
-
 ## Building trees: swap the output shape
 
 If your grammar's `node()` rules build an AST, `compose()` still lets a caller choose a
