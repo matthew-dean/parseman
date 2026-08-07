@@ -60,8 +60,13 @@ import {
  * be consulted here: two settings pairs are two tables, not two code paths.
  */
 
-/** Failure sentinel — identity-compared, never inspected. */
-const FAIL: unique symbol = Symbol('pm.fail')
+/**
+ * Failure sentinel and end-position cell — SHARED with the other two engines,
+ * see `cell.ts`. Private copies were correct only while one engine ran a whole
+ * parse; a mixed assembly has two live at once and a private sentinel reads as
+ * a successful match to the other engine.
+ */
+import { FAIL, newEndCell, type EndCell } from './cell.ts'
 
 /**
  * DIAGNOSTIC ROW COUNTER — off unless `PM_TABLE_COUNT=1` at process start.
@@ -193,9 +198,13 @@ function makeDriver(
   triviaScan: readonly (FastTriviaScanner | null)[],
   triviaLabelled: readonly boolean[],
   prog: TableProgram,
+  /**
+   * The assembly's end-position cell (`_pfEnd` in emitted code). INJECTED
+   * rather than owned, so a mixed assembly's driver and its emitted pieces
+   * write one slot — see `cell.ts`.
+   */
+  EC: EndCell,
 ): Driver {
-  /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
-  let END = 0
 
   /**
    * THE INSTALLED TRIVIA LEAF — G5's *"some swaps on rules or sub-rules
@@ -344,7 +353,7 @@ function makeDriver(
         if (input.startsWith(s, pos)) {
           const e = pos + s.length
           if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
-          END = e
+          EC.e = e
           return s
         }
         {
@@ -362,7 +371,7 @@ function makeDriver(
           const v = m[0]
           const e = pos + v.length
           if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
-          END = e
+          EC.e = e
           return v
         }
         {
@@ -378,7 +387,7 @@ function makeDriver(
           const e = pos + s.length
           if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
           trackLines(ctx, input, e)
-          END = e
+          EC.e = e
           return s
         }
         {
@@ -397,7 +406,7 @@ function makeDriver(
           const e = pos + v.length
           if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
           trackLines(ctx, input, e)
-          END = e
+          EC.e = e
           return v
         }
         {
@@ -418,7 +427,7 @@ function makeDriver(
         if (asciiFoldEq(matched, s)) {
           if (cstCaptureActive(ctx)) pushLeaf(ctx, matched, pos, e)
           if (code[ip] === OP_LIT_CI_TRACK) trackLines(ctx, input, e)
-          END = e
+          EC.e = e
           return matched
         }
         {
@@ -429,12 +438,12 @@ function makeDriver(
         return FAIL
       }
       case OP_EMPTY:
-        END = pos
+        EC.e = pos
         return ''
 
       case OP_GUARD: {
         if ((fns[code[ip + 1]!] as (s: unknown) => boolean)(ctx.state)) {
-          END = pos
+          EC.e = pos
           return null
         }
         ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]
@@ -496,7 +505,7 @@ function makeDriver(
           ctx._fc = r.committed === true
           return FAIL
         }
-        END = r.span.end
+        EC.e = r.span.end
         return r.value
       }
 
@@ -523,7 +532,7 @@ function makeDriver(
         // See assemble.ts OP_EXPECT: the recovered failure is a SUCCESS, so the
         // child's commit bit must not survive to cut an enclosing choice.
         ctx._fc = false
-        END = pos
+        EC.e = pos
         return err
       }
 
@@ -537,7 +546,7 @@ function makeDriver(
           return FAIL
         }
         if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: item.value, span: item.span })
-        END = item.span.end
+        EC.e = item.span.end
         return item.value
       }
 
@@ -550,7 +559,7 @@ function makeDriver(
         const selectorMark = saveTriviaMark(ctx)
         const selVal = exec(code[ip + 1]!, input, pos, ctx)
         if (selVal === FAIL) return FAIL
-        const selEnd = END
+        const selEnd = EC.e
         const key = selVal as string
 
         let arm = spec.byKey.get(key)
@@ -599,7 +608,7 @@ function makeDriver(
           ctx._fc = true
           return FAIL
         }
-        // END already holds the branch's end — dispatch's span runs from `pos`
+        // The end cell already holds the branch's end — dispatch's span runs from `pos`
         // to there, which is what the caller reads.
         return [key, v]
       }
@@ -609,7 +618,7 @@ function makeDriver(
         if (v === FAIL) return FAIL
         // Conditional on a live sink, exactly as src/combinators/map.ts has it:
         // a `field()` outside any field-reading node costs nothing.
-        ctx._fields?.push({ name: k[code[ip + 1]!] as string, value: v, span: { start: pos, end: END } })
+        ctx._fields?.push({ name: k[code[ip + 1]!] as string, value: v, span: { start: pos, end: EC.e } })
         return v
       }
 
@@ -652,10 +661,10 @@ function makeDriver(
           ctx._rootTriviaLog = sRootTl
         }
         if (v === FAIL) return FAIL
-        const end = END
+        const end = EC.e
         const value = input.slice(pos, end)
         if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
-        END = end
+        EC.e = end
         return value
       }
 
@@ -667,7 +676,7 @@ function makeDriver(
           ctx._fx = (r.expected ?? EMPTY_FX) as string[]
           return FAIL
         }
-        END = r.span.end
+        EC.e = r.span.end
         return r.value
       }
 
@@ -769,7 +778,7 @@ function makeDriver(
             const scanEnd = skipTrivia(input, cur, ctx)
             const v = exec(child, input, scanEnd, ctx)
             if (v === FAIL) { if (REC) ctx._sync = inheritedSync; return FAIL }
-            if (END > scanEnd) cur = END
+            if (EC.e > scanEnd) cur = EC.e
             else if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
             if (values !== undefined) values.push(v)
             continue
@@ -814,10 +823,10 @@ function makeDriver(
           const v = exec(child, input, cur, ctx)
           if (v === FAIL) { if (REC) ctx._sync = inheritedSync; return FAIL }
           if (values !== undefined) values.push(v)
-          cur = END
+          cur = EC.e
         }
         if (REC) ctx._sync = inheritedSync
-        END = cur
+        EC.e = cur
         if (fused) {
           const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
           if (COUNT) siteFn('SEQX fn()', fn)
@@ -973,7 +982,7 @@ function makeDriver(
         // choice.ts:126 — the super arm's failure is returned VERBATIM, so `_fe`
         // and `_fx` are left exactly as it set them.
         if (sup === FAIL) return FAIL
-        const end = END
+        const end = EC.e
         const word = input.slice(pos, end)
         const n = code[ip + 2]!
         for (let i = 0; i < n; i++) {
@@ -982,7 +991,7 @@ function makeDriver(
           // Cannot fail: `word` IS this arm's case-sensitive literal at `pos`.
           return exec(code[ip + 4 + 2 * i]!, input, pos, ctx)
         }
-        END = end
+        EC.e = end
         return sup
       }
 
@@ -1001,7 +1010,7 @@ function makeDriver(
       case OP_REJECT: {
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (v === FAIL) return FAIL
-        const end = END
+        const end = EC.e
         const n = code[ip + 2]!
         for (let i = 0; i < n; i++) {
           const o = code[ip + 4 + 2 * i]!
@@ -1017,7 +1026,7 @@ function makeDriver(
           ctx._fx = undefined
           return FAIL
         }
-        END = end
+        EC.e = end
         return v
       }
 
@@ -1037,7 +1046,7 @@ function makeDriver(
           // than reporting "absent".
           if (committed(ctx)) return FAIL
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          END = pos
+          EC.e = pos
           // NULL, not undefined. `optional()` yields `null` on no-match
           // (src/combinators/repeat.ts:269,277) and grammars TEST for it:
           // examples/lang's `call` reducer is `if (args === null) return callee`,
@@ -1141,8 +1150,8 @@ function makeDriver(
             // Demote the separator out of `children`, exactly where the
             // interpreter does it (src/combinators/repeat.ts, sepBy loop).
             if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
-            sepEnd = END
-            itemStart = hasTrivia ? skipTrivia(input, END, ctx) : END
+            sepEnd = EC.e
+            itemStart = hasTrivia ? skipTrivia(input, EC.e, ctx) : EC.e
           } else if (hasTrivia && (count > 0 || skipBeforeFirst)) {
             // Trivia precedes every item a `repItem` loop parses, the first of a
             // `many()` included — skipping it only for later items dropped
@@ -1202,7 +1211,7 @@ function makeDriver(
             if (trailingAllowed && sepEnd >= 0) cur = sepEnd
             break
           }
-          if (END === itemStart && viaRepItem) {
+          if (EC.e === itemStart && viaRepItem) {
             // Zero-width item: `repItem`'s stop, and a TERMINATION device, not a
             // semantic filter — a `many` loop whose only source of progress is the
             // item itself spins forever without it. That pressure does not exist
@@ -1215,7 +1224,7 @@ function makeDriver(
             break
           }
           if (out !== undefined) out.push(v)
-          cur = END
+          cur = EC.e
           count++
         }
         if (count < min) {
@@ -1230,7 +1239,7 @@ function makeDriver(
           if ((code[ip + 5]! & 4) !== 0) { ctx._fe = cur; ctx._fx = fx[code[ip + 6]!] as string[] }
           return FAIL
         }
-        END = cur
+        EC.e = cur
         return out
       }
 
@@ -1239,7 +1248,7 @@ function makeDriver(
         if (v === FAIL) return FAIL
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         if (COUNT) siteFn('XFORM fn()', fn)
-        return fn(v, { start: pos, end: END })
+        return fn(v, { start: pos, end: EC.e })
       }
 
       case OP_LEAF: {
@@ -1277,12 +1286,12 @@ function makeDriver(
           ctx._triviaLog = sOuterTl
         }
         if (v === FAIL) return FAIL
-        const end = END
+        const end = EC.e
         const fn = fns[code[ip + 1]!] as (value: unknown, span: { start: number; end: number }) => unknown
         if (COUNT) siteFn('LEAF fn()', fn)
         const out = fn(v, { start: pos, end })
         if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
-        END = end
+        EC.e = end
         return out
       }
 
@@ -1307,13 +1316,13 @@ function makeDriver(
           ctx._triviaCaptureMask = host._parsemanTriviaKinds(k[code[ip + 5]!] as string)
         }
         const v = exec(code[ip + 2]!, input, pos, ctx)
-        if (v !== FAIL && (flags & 128) !== 0 && ctx.trivia !== undefined) END = consumeTrivia(input, END, ctx)
+        if (v !== FAIL && (flags & 128) !== 0 && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
         const fieldMap: FieldMap | undefined = (flags & 16) !== 0 || hostCst ? buildFieldMap(ctx._fields) : undefined
         ctx._fields = savedFields
         if (structural) ctx._triviaCaptureMask = savedMask
         const cap = endCstNodeCapture(ctx, saved)
         if (v === FAIL) return FAIL
-        const end = END
+        const end = EC.e
         const span = code[ip] === OP_NODE_TRACK ? spanLines(ctx, pos, end) : { start: pos, end }
         const st = (flags & 8) !== 0 && ctx.state !== undefined
           ? Object.assign({}, ctx.state as Record<string, unknown>)
@@ -1377,7 +1386,7 @@ function makeDriver(
         }
         // A ROOT NODE IS NOT A CHILD — see the same guard in `assemble.ts`.
         if (saved.buf !== undefined || saved.ch !== undefined) pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
-        END = end
+        EC.e = end
         return nd
       }
 
@@ -1413,7 +1422,7 @@ function makeDriver(
         const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
         const v = exec(code[ip + 1]!, input, pos, ctx)
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-        if (v === FAIL) { END = pos; return null }
+        if (v === FAIL) { EC.e = pos; return null }
         // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
         ctx._fe = pos
         ctx._fx = fx[code[ip + 2]!] as string[]
@@ -1433,7 +1442,7 @@ function makeDriver(
         if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
         // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
         if (v === FAIL) { ctx._fe = pos; ctx._fx = fx[code[ip + 2]!] as string[]; return FAIL }
-        END = pos
+        EC.e = pos
         return null
       }
 
@@ -1473,7 +1482,7 @@ function makeDriver(
           const at = fe === undefined || fe < 0 ? pos : fe
           return { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: { start: at, end: at } }
         }
-        return { ok: true, value: v, span: { start: pos, end: END } }
+        return { ok: true, value: v, span: { start: pos, end: EC.e } }
       },
     }
   }
@@ -1528,7 +1537,7 @@ function makeDriver(
     HOSTCST = host !== undefined && cstOutputHost(host)
   }
 
-  return { exec, end: () => END, begin, scanSkip }
+  return { exec, end: () => EC.e, begin, scanSkip }
 }
 
 /**
@@ -1553,7 +1562,7 @@ export function tableRules(
   const prog = expandCompact(source)
   const t = resolveTable(prog)
   const scan = opts.leafSwap === false ? t.triviaScan.map(() => null) : t.triviaScan
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog)
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog, newEndCell())
   const names = Object.keys(prog.rules)
   const entries = names.map(n => prog.rules[n]!)
   let last: unknown
