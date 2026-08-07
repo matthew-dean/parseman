@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { encodeTable, type TableSettings } from '../../src/table/encode.ts'
 import { emitFoldedModule } from '../../src/table/emit.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { tableVariants, variantNames } from '../../src/table/fold.ts'
 import { foldPrograms, unfoldVariant, type TableProgram } from '../../src/table/program.ts'
 import { run } from '../../src/functional/run.ts'
@@ -96,7 +96,7 @@ describe('table variant fold — one base table plus per-variant row edits', () 
     const progs = encodeAll(baseNodes)
     const folded = foldPrograms(progs, 'ast')
     for (const name of Object.keys(PAIRS)) {
-      const direct = tableRules(progs[name]!)
+      const direct = execRules(progs[name]!)
       const viaFold = tableVariants(folded, name)
       expect(Object.keys(viaFold).sort()).toEqual(Object.keys(direct).sort())
       for (const input of INPUTS) {
@@ -116,7 +116,7 @@ describe('table variant fold — one base table plus per-variant row edits', () 
     // The span a reducer is handed carries line/column ONLY under trackLines.
     expect(outcome(plain.Doc, 'ab\ncd')).not.toBe(outcome(lines.Doc, 'ab\ncd'))
     // ...and each still matches the table it replaces.
-    expect(outcome(lines.Doc, 'ab\ncd')).toBe(outcome(tableRules(progs['ast-lines']!).Doc, 'ab\ncd'))
+    expect(outcome(lines.Doc, 'ab\ncd')).toBe(outcome(execRules(progs['ast-lines']!).Doc, 'ab\ncd'))
   })
 
   it('selecting the same variant twice is one program and one resolved table', () => {
@@ -174,7 +174,7 @@ describe('table variant fold — one base table plus per-variant row edits', () 
       'ast': 'gAst', 'ast-lines': 'gAstLines', 'cst': 'gCst', 'cst-lines': 'gCstLines',
     }
     for (const name of Object.keys(PAIRS)) {
-      const direct = tableRules(progs[name]!)
+      const direct = execRules(progs[name]!)
       const emitted = mod[byExport[name]!]!
       for (const input of INPUTS) {
         expect(outcome(emitted.Doc, input, name), `emitted ${name} on ${JSON.stringify(input)}`)

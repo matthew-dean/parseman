@@ -18,7 +18,7 @@ import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import {
   literal, regex, choice, optional, withCtx, parse,
 } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import type { GatedArm } from '../../src/index.ts'
 

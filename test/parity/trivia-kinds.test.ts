@@ -6,8 +6,7 @@ import {
   oneOrMore, choice, triviaEntries, run, peek, attempt, optional, sepBy, leaf,
 } from '../../src/index.ts'
 import type { Runnable } from '../../src/index.ts'
-import { compileTable as compileCodegen } from '../../src/table/compile.ts'
-import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import {
   expectTriviaLogParity,

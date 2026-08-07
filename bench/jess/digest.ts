@@ -10,6 +10,16 @@
  *   node --import ./bench/jess/register.mjs bench/jess/digest.ts <dialect> table [variant]
  *   PM_MACRO=1 node --import ./bench/jess/register.mjs bench/jess/digest.ts <dialect> compiled [variant]
  *
+ * ENGINE TOKEN LEGEND — the `ENGINES` tokens are a WIRE CONTRACT (argv, and the
+ * TSV `divergence.ts` joins on) and keep their historical spelling; this is what
+ * each one actually binds:
+ *   table        execRules()   the REFERENCE bytecode interpreter (NOT what ships)
+ *   compiled     PM_MACRO=1    the shipped ASSEMBLER — the macro routes to it;
+ *                              there is no source-lowering "codegen" engine,
+ *                              because `src/compiler/codegen.ts` was DELETED in
+ *                              `37c57b5`
+ *   interpreted  the combinator graph
+ *
  * `compiled` REQUIRES `PM_MACRO=1`; without it the grammar module is a
  * combinator graph and the leg would silently be the interpreter again.
  *
@@ -23,7 +33,7 @@ import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import {
   corpus, DIALECTS, ENTRY, VARIANTS, VARIANT_SETTINGS, loadGrammar,
   type Dialect, type Variant,
@@ -79,7 +89,7 @@ async function main(): Promise<void> {
 
   const { rules } = await loadGrammar(dialect, variant)
   const entry: RunnableLike = engine === 'table'
-    ? tableRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as RunnableLike
+    ? execRules(encodeTable(rules, VARIANT_SETTINGS[variant]))[ENTRY] as RunnableLike
     : rules[ENTRY] as RunnableLike
   if (entry === undefined) throw new Error(`${engine}: no rule '${ENTRY}'`)
   // PROVE THE LEG IS THE LEG IT CLAIMS. `run()` accepts both shapes, so a
@@ -87,8 +97,8 @@ async function main(): Promise<void> {
   // perfect interpreted-vs-compiled agreement and prove nothing at all. The
   // macro lowers a rule to a FUNCTION; the interpreted fuse leaves an object.
   const isFn = typeof entry === 'function'
-  if (engine === 'compiled' && !isFn) throw new Error("engine 'compiled' got a combinator, not a codegen rule — the macro did not run")
-  if (engine === 'interpreted' && isFn) throw new Error("engine 'interpreted' got a codegen rule — PM_MACRO leaked in")
+  if (engine === 'compiled' && !isFn) throw new Error("engine 'compiled' got a combinator, not an assembled rule — the macro did not run")
+  if (engine === 'interpreted' && isFn) throw new Error("engine 'interpreted' got an assembled rule — PM_MACRO leaked in")
 
   // A `cst` GRAMMAR REFUSES TO RUN WITHOUT A HOST. `host-mode.ts` throws on the
   // first node, so every row of a hostless `cst`/`cst-lines` leg was the SAME

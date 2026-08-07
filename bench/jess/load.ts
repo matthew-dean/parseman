@@ -1,11 +1,25 @@
 /**
- * LOAD / JS-INTERPRETATION cost, table vs codegen — the other side of the ledger.
+ * LOAD / JS-INTERPRETATION cost, reference interpreter vs macro lowering — the
+ * other side of the ledger.
  *
- * The parse-speed result says the table is 2-4x slower per byte. That is only
- * half the trade: a lowered codegen grammar is MEGABYTES OF JAVASCRIPT that V8
- * must parse and compile before anything runs, and a table is a numeric literal
- * it must not. This measures both halves in the same units and reports where
- * they cross.
+ * ENGINE TOKEN LEGEND — the `LOWERINGS` tokens (`load-one.ts`) and the `${d}|…`
+ * map keys below are a WIRE CONTRACT and keep their historical spelling; this is
+ * what each one actually binds:
+ *   codegen   transformMacro() / `pm-macro:`   the shipped ASSEMBLER. There is
+ *                                              no source-lowering engine:
+ *                                              `src/compiler/codegen.ts` was
+ *                                              DELETED in `37c57b5`.
+ *   table     execRules()                      the REFERENCE bytecode
+ *                                              interpreter (NOT what ships)
+ * The figures from this harness published in `CHANGELOG.md` were taken under the
+ * OLD names — `codegen` for what the columns now call `assembled`, and `table`
+ * for what they now call `exec`.
+ *
+ * The parse-speed result says the reference interpreter is 2-4x slower per byte.
+ * That is only half the trade: a macro-lowered grammar is MEGABYTES OF
+ * JAVASCRIPT that V8 must parse and compile before anything runs, and a table is
+ * a numeric literal it must not. This measures both halves in the same units and
+ * reports where they cross.
  *
  * Every measurement is a FRESH PROCESS. Node's module cache and V8's compilation
  * cache each make a second measurement of the same thing meaningless, and this
@@ -15,9 +29,9 @@
  * Three phases, three different claims:
  *   compile   V8 parse+compile of the artifact source (`vm.Script`). Run BOTH
  *             lazily (V8's default: function bodies are compiled on first call)
- *             and under `--no-lazy`. The gap is what codegen DEFERS, not what it
- *             avoids — it is paid on first call instead, and a parser's
- *             functions are all called.
+ *             and under `--no-lazy`. The gap is what the macro lowering DEFERS,
+ *             not what it avoids — it is paid on first call instead, and a
+ *             parser's functions are all called.
  *   import    real `import()` to parser-callable, including dependency loads.
  *             This is what a consumer pays and is the number the crossover uses.
  *   parse     per-byte parse cost on the dialect's largest real fixture, so the
@@ -25,9 +39,9 @@
  *
  * THE DRIVER IS COUNTED. A table artifact imports `parseman/table`; its real
  * built file (`dist/table/index.js`) is loaded as part of the table's `import`
- * phase, so its cost is inside the table's number, not hidden. The codegen
+ * phase, so its cost is inside the table's number, not hidden. The macro-lowered
  * artifact imports NO parseman runtime at all — the macro inlines the
- * recognition pieces — which is a genuine advantage for codegen and is stated
+ * recognition pieces — which is a genuine advantage for that side and is stated
  * as one. Both sides import `@jesscss/core/ast`.
  *
  * Usage: `node --import ./bench/jess/register.mjs bench/jess/load.ts`
@@ -58,7 +72,7 @@ function one(dialect: Dialect, lowering: Lowering, phase: string, reps: number, 
   return JSON.parse(out.trim().split('\n').at(-1)!) as LoadRow
 }
 
-type Rates = { codegenMs: number; tableMs: number; jsBytes: number }
+type Rates = { assembledMs: number; execMs: number; jsBytes: number }
 
 /** Both parse rates from ONE interleaved process. `lowering` is ignored by that
  * phase; `table` is passed only because the argument is positional. */
@@ -107,13 +121,13 @@ async function main(): Promise<void> {
     // ONE interleaved process gives BOTH parse rates; see `load-one.ts`'s
     // `parse` phase for why they cannot be measured in separate ones.
     const pr = parseRates(d)
-    data.get(`${d}|codegen`)!.parse = pr.codegenMs
-    data.get(`${d}|table`)!.parse = pr.tableMs
+    data.get(`${d}|codegen`)!.parse = pr.assembledMs
+    data.get(`${d}|table`)!.parse = pr.execMs
     rateBytes.set(d, pr.jsBytes)
   }
 
   console.log('=== V8 COMPILE COST of the artifact source (vm.Script, fresh source each rep)')
-  console.log('           |------------- codegen -------------|  |------------- table -------------|   lazy')
+  console.log('           |------------ assembled ------------|  |-------------- exec -------------|   lazy')
   console.log('            JS KB    lazy ms   eager ms  deferred   JS KB   lazy ms  eager ms  deferred   ratio')
   for (const d of DIALECTS) {
     const c = data.get(`${d}|codegen`)!
@@ -125,11 +139,11 @@ async function main(): Promise<void> {
     )
   }
   console.log('    "deferred" is eager minus lazy: work V8 postpones to first call, not work avoided.')
-  console.log('    A parser calls every one of its rule functions, so codegen pays it in full.')
+  console.log('    A parser calls every one of its rule functions, so the assembled side pays it in full.')
   console.log('')
 
   console.log('=== COLD IMPORT to parser-callable (fresh process each, median of ' + String(IMPORT_PROCS) + ')')
-  console.log('           codegen ms    table ms   table saves   ratio')
+  console.log('         assembled ms     exec ms    exec saves   ratio')
   for (const d of DIALECTS) {
     const c = data.get(`${d}|codegen`)!
     const t = data.get(`${d}|table`)!
@@ -137,10 +151,10 @@ async function main(): Promise<void> {
       `  ${d.padEnd(6)} ${c.imp.toFixed(1).padStart(10)} ${t.imp.toFixed(1).padStart(11)} ${(c.imp - t.imp).toFixed(1).padStart(13)} ${(c.imp / t.imp).toFixed(1).padStart(7)}x`,
     )
   }
-  console.log('    TABLE side includes loading the shared driver; CODEGEN side imports no parseman at all.')
+  console.log('    EXEC side includes loading the shared driver; ASSEMBLED side imports no parseman at all.')
   console.log('')
 
-  console.log('=== CROSSOVER — how much input codegen must parse to repay its load cost')
+  console.log('=== CROSSOVER — how much input the assembled side must parse to repay its load cost')
   console.log('    Total(B) = load + B * per-byte parse cost. Solve for equality.')
   console.log('')
   console.log('           load delta   parse rate delta      crossover      crossover')
@@ -161,8 +175,8 @@ async function main(): Promise<void> {
   }
   console.log('')
   console.log(`    Rate fixtures: ${DIALECTS.map(d => `${d}=${RATE_FIXTURE[d].split('/').pop()!}`).join(', ')}`)
-  console.log('    BELOW the crossover the table is ahead overall; ABOVE it codegen is.')
-  console.log('    Read it as: the table wins whenever a process parses less than this much input.')
+  console.log('    BELOW the crossover the exec side is ahead overall; ABOVE it the assembled side is.')
+  console.log('    Read it as: exec wins whenever a process parses less than this much input.')
   console.log('')
   console.log(`loadavg at END ${os.loadavg().map(n => n.toFixed(2)).join(' ')}`)
 }

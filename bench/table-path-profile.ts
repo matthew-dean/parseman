@@ -6,13 +6,21 @@
  * over one input and reports where ITS time goes, so the table and compiled
  * profiles can be read side by side.
  *
+ * ENGINE TOKEN LEGEND — the argv tokens below are a WIRE CONTRACT and keep their
+ * historical spelling; this is what each one actually binds:
+ *   table     execRules()   the REFERENCE bytecode interpreter (NOT what ships)
+ *   compiled  compose()     the shipped ASSEMBLER
+ *   interp    the combinator graph
+ * There is no source-lowering "codegen" engine to select — `src/compiler/codegen.ts`
+ * was DELETED in `37c57b5`.
+ *
  * Usage: `node bench/table-path-profile.ts <table|compiled|interp> [reps]`
  */
 import { Session } from 'node:inspector/promises'
 import type { Combinator } from '../src/types.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+import { execRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
 import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON } from './fixtures.ts'
@@ -24,6 +32,12 @@ type ProfileNode = {
 }
 
 const which = process.argv[2] ?? 'table'
+/** Token -> the engine it actually binds. See the legend in the header. */
+const ENGINE_NAME: Record<string, string> = {
+  table: 'exec (reference bytecode interpreter)',
+  compiled: 'assembled (shipped)',
+  interp: 'interpreter (combinator graph)',
+}
 const reps = Number(process.argv[3] ?? 400)
 const map = jsonRules as unknown as Record<string, Combinator<unknown>>
 
@@ -31,7 +45,7 @@ const entry: Entry = which === 'compiled'
   ? (compose([map as never]) as unknown as Record<string, Entry>).Value!
   : which === 'interp'
     ? map.Value! as unknown as Entry
-    : tableRules(encodeTable(map)).Value! as unknown as Entry
+    : execRules(encodeTable(map)).Value! as unknown as Entry
 
 const fn = (): void => { run(entry, LARGE_JSON, { trivia: jsonWs as Entry }) }
 
@@ -56,7 +70,7 @@ for (const n of nodes) {
   const file = f.url === '' ? '(emitted)' : f.url.replace(/^.*\/(src|bench|node_modules)\//, '$1/')
   by.set(`${f.functionName || '(anon)'}  ${file}:${f.lineNumber + 1}`, (by.get(`${f.functionName || '(anon)'}  ${file}:${f.lineNumber + 1}`) ?? 0) + h)
 }
-console.log(`${which} — ${total} samples over ${reps} parses of ${LARGE_JSON.length} B`)
+console.log(`${which} = ${ENGINE_NAME[which] ?? 'UNKNOWN TOKEN'} — ${total} samples over ${reps} parses of ${LARGE_JSON.length} B`)
 for (const [k, v] of [...by.entries()].sort((a, b) => b[1] - a[1]).slice(0, 16)) {
   console.log(`  ${(100 * v / total).toFixed(1).padStart(5)}%  ${k}`)
 }

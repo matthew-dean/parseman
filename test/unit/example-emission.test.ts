@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { encodeTable } from '../../src/table/encode.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { EXAMPLE_SPECS } from '../../bench/size-guard.ts'
 import type { Combinator } from '../../src/types.ts'
@@ -210,18 +210,21 @@ describe('every shipped example grammar ENCODES, PRINTS, round-trips, and matche
       //    regression says WHICH construct blocked it, not merely that it did.
       expect([...(prog.runtimeOnly ?? [])], `${spec.id} cannot be printed`).toEqual([])
       const fnSources = prog.fns.map(reducerSource)
-      const source = emitTableModule(prog, { name: 'g', runtime: EXEC, fnSources })
+      // `runtime: EXEC` + `runtimeRef: 'execRules'` — this round-trip binds the
+      // REFERENCE interpreter on purpose (it is the oracle two steps below), and
+      // the emitted source now SAYS which engine that is.
+      const source = emitTableModule(prog, { name: 'g', runtime: EXEC, runtimeRef: 'execRules', fnSources })
       expect(source.length, `${spec.id} emitted an EMPTY module`).toBeGreaterThan(0)
-      expect(source).toContain('tableRules(')
+      expect(source).toContain('execRules(')
 
       // 3. ROUND-TRIPS — written, imported, parsed with.
-      const preamble = await preambleFor(modulePath, ['g', 'tableRules'])
+      const preamble = await preambleFor(modulePath, ['g', 'execRules'])
       const dir = mkdtempSync(path.join(tmpdir(), `pm-example-emit-${spec.id.replace(/\W+/g, '-')}-`))
       writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}')
       const file = path.join(dir, 'grammar.ts')
       writeFileSync(file, `${preamble}\n${source}`)
       const emitted = (await import(/* @vite-ignore */ pathToFileURL(file).href) as { g: Record<string, unknown> }).g
-      const memory = tableRules(prog)
+      const memory = execRules(prog)
 
       expect(Object.keys(emitted).sort()).toEqual(Object.keys(memory).sort())
 

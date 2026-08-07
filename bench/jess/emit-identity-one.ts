@@ -1,7 +1,7 @@
 /**
  * THE EMITTED ENGINE AGAINST THE CLOSURE ENGINE, ON ONE SHIPPING GRAMMAR.
  *
- * `assembledRules` is the SHIPPED table engine, and it picks between two
+ * `tableRules` is the SHIPPED table engine, and it picks between two
  * lowerings of the same table: `emit-assembly.ts`'s generated source, or
  * `assemble.ts`'s closure walk when the emitter refuses. `PM_TABLE_EMIT=0`
  * forces the second. So the differential is this file run TWICE, once with each
@@ -23,7 +23,7 @@
  */
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { run } from '../../src/functional/run.ts'
-import { assemble, assembledRules } from '../../src/table/assemble.ts'
+import { assemble, tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { resolveTable } from '../../src/table/program.ts'
 import { COLUMNS, digestRow } from './digest.ts'
@@ -60,7 +60,7 @@ const prog = encodeTable(rules, settings)
   console.error(`# ${dialect}/${variant}  PM_TABLE_EMIT=${process.env.PM_TABLE_EMIT ?? '(unset ⇒ 1)'}  ${verdict}  ${files}/${corpusTotal(dialect)} files`)
 }
 
-const entry = assembledRules(prog)[ENTRY] as RunnableLike | undefined
+const entry = tableRules(prog)[ENTRY] as RunnableLike | undefined
 if (entry === undefined) throw new Error(`no rule '${ENTRY}'`)
 
 // A `cst` TABLE REFUSES TO RUN WITHOUT A HOST. `host-mode.ts:65` throws on the

@@ -5,7 +5,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { encodeTable } from '../../src/table/encode.ts'
 import { emitTableModule, emitTableOnly } from '../../src/table/emit.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { baseNodes, dispatchNodes, fieldNodes, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes } from '../../bench/table-grammars.ts'
@@ -37,7 +37,11 @@ async function loadEmitted(prog: TableProgram, tag: string, preamble = ''): Prom
   // placeholders would make every reducer-bearing rule return `undefined` and
   // the round-trip vacuous — the grammars here are chosen closure-free so
   // `String(fn)` is a faithful source.
-  const src = emitTableModule(prog, { name: 'g', runtime: EXEC, fnSources: prog.fns.map(f => String(f)) })
+  // `runtimeRef` NAMES the engine this round-trip binds. `runtime: EXEC` aims the
+  // emitted import at the REFERENCE interpreter — deliberately, it is the oracle
+  // here — and before the two engines had distinct names that aim was invisible
+  // from the emitted source, which read exactly like a shipped artifact.
+  const src = emitTableModule(prog, { name: 'g', runtime: EXEC, runtimeRef: 'execRules', fnSources: prog.fns.map(f => String(f)) })
   const dir = mkdtempSync(path.join(tmpdir(), `pm-table-emit-${tag}-`))
   writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}')
   const file = path.join(dir, 'grammar.ts')
@@ -77,7 +81,7 @@ describe('table lowering — the EMITTED module round-trips', () => {
   it('baseNodes: emitted, loaded, and parse-identical to the table AND the interpreter', async () => {
     const prog = encodeTable(baseNodes)
     const emitted = await loadEmitted(prog, 'base')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
 
     expect(Object.keys(emitted).sort()).toEqual(Object.keys(memory).sort())
 
@@ -107,7 +111,7 @@ describe('table lowering — the EMITTED module round-trips', () => {
     // success-only comparison can see — every accepting case still passes.
     const prog = encodeTable(baseNodes)
     const emitted = await loadEmitted(prog, 'fail')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     for (const input of ['(a,b', '(', '(,)']) {
       const a = run(emitted.List as never, input)
       const b = run(memory.List as never, input)
@@ -136,7 +140,7 @@ describe('table lowering — the EMITTED module round-trips', () => {
   it('field() maps survive emission, populated and not merely present', async () => {
     const prog = encodeTable(fieldNodes)
     const emitted = await loadEmitted(prog, 'field')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     for (const input of ['ab=12', '[ab=1,cd=2,ef=3]', '[ab=1;zz]', '[ab=1', '']) {
       expect(outcome(emitted.Doc, input), input).toBe(outcome(memory.Doc, input))
       expect(outcome(emitted.Doc, input), input).toBe(outcome(fieldNodes.Doc, input))
@@ -184,7 +188,7 @@ describe('table lowering — the EMITTED module round-trips', () => {
     expect(spans[0]!.span.startLine).toBe(1)
     expect(spans[1]!.span.startLine).toBe(2)
     expect(spans[1]!.span.startColumn).toBe(1)
-    expect(outcome(emitted.Doc, 'ab\ncd')).toBe(outcome(tableRules(tracked).Doc, 'ab\ncd'))
+    expect(outcome(emitted.Doc, 'ab\ncd')).toBe(outcome(execRules(tracked).Doc, 'ab\ncd'))
     // The plain module is the control: same grammar, no line fields at all.
     const plainEmitted = await loadEmitted(encodeTable(lined), 'lines-plain')
     const plainSpans = (run(plainEmitted.Doc as never, 'ab\ncd').value as { c: Array<{ span: Record<string, number> }> }).c
@@ -256,7 +260,7 @@ describe('table lowering — the emitted module carries every side table', () =>
     expect(src).toContain('p:[')
 
     const emitted = await loadEmitted(prog, 'dispatch')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     const armFor = (rules_: Record<string, unknown>, input: string): unknown =>
       (run(rules_.Doc as never, input).value as [string, unknown])[1]
     expect(armFor(emitted, '@media')).toBe('K:media')        // exact key
@@ -288,7 +292,7 @@ describe('table lowering — the emitted module carries every side table', () =>
     expect(kid.type).toBe('Marked')
     expect(kid.tags).toEqual(['decl'])
     expect(JSON.stringify(root))
-      .toBe(JSON.stringify(run(tableRules(prog).Doc! as never, 'abc', { build: host as never }).value))
+      .toBe(JSON.stringify(run(execRules(prog).Doc! as never, 'abc', { build: host as never }).value))
   })
 
   it('the emitted module carries its HOST MODE, and refuses the wrong pairing', async () => {
@@ -351,7 +355,7 @@ function objectFromPairs(pairs) {
     // table's failure position and expected set differ from both shipped engines
     // on ordinary JSON (pinned in table-encode-refusals.test.ts). The emitted
     // module must still reject exactly what the in-memory table rejects.
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     for (const input of ['[1,2,]', '{"a":', '@@@']) {
       expect(outcome(emitted.Value, input), input).toBe(outcome(memory.Value, input))
       expect(run(emitted.Value as never, input).ok, input).toBe(false)
@@ -472,7 +476,7 @@ function objectFromPairs(pairs) {
     const prog = encodeTable(g)
     expect(prog.runtimeOnly).toBeUndefined()
     const emitted = await loadEmitted(prog, 'scanto')
-    const memory = tableRules(prog)
+    const memory = execRules(prog)
     for (const input of ['a "b{c" d{', 'ab{', '{', '']) {
       expect(outcome(emitted.Doc, input), `Doc ${input}`).toBe(outcome(g.Doc, input))
       expect(outcome(emitted.Tail, input), `Tail ${input}`).toBe(outcome(g.Tail, input))

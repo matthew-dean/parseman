@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { cstBuildHost } from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroModule, resolveTableRuntime } from '../helpers/eval-macro-module.ts'
-import { compileRuleMapTable as compileRuleMapCodegen } from '../../src/table/compile-rule-map.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import * as pm from '../../src/index.ts'
 
 type RuleFn = (input: string, pos: number, ctx: Record<string, unknown>) => {

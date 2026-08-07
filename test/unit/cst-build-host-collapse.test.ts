@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { cstBuildHost, literal, node, optional, rules, run, sequence, withCtx } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 
 const leafValue = (value: unknown) =>
   typeof value === 'object' && value !== null && (value as { _tag?: string })._tag === 'leaf'

@@ -106,7 +106,11 @@ working-tree cleanliness — none of these are the thing under test.
 ### V6 — an import that reaches past the shipped export
 
 `bench/table-lowering-identity.ts` imported `tableRules` from `src/table/exec.ts`
-while `src/table/index.ts` re-exports `assembledRules` under that name. A whole
+while `src/table/index.ts` re-exports `assembledRules` under that name. (The
+reference export is now `execRules`, so that specific import can no longer be
+written; INV-11 in `scripts/check-invariants.mjs` fails any re-aliasing of one
+engine to the other. The same trap also cost `bench/jess/fixture.ts` a cycle of
+mislabelled figures — see docs/design/canonical-fixture-benchmark.md.) A whole
 sweep, and the CI subset in `test/unit/table-identity.test.ts`, validated a
 reference driver that nothing ships while the assembler went unexecuted.
 Repaired at `90e115c`: both drivers run, and the gate now carries one plant per
@@ -174,8 +178,8 @@ Registered today:
 | differential | legs | plants |
 |---|---|---|
 | `scan-shape-oracle` | emitted straight-line scan vs sticky `RegExp.exec`, per regex, per position | `scan-class-narrow` |
-| `table-lowering-identity` | interpreted vs `compose()` codegen vs `assembledRules` vs `tableRules` | `emit-node-span`, `exec-node-span` |
-| `jess-oracle` | interpreted fuse vs `PM_MACRO` codegen vs table, one process per leg | `exec-node-span` |
+| `table-lowering-identity` | interpreted vs `compose()` codegen vs `tableRules` (shipped) vs `execRules` (reference) | `emit-node-span`, `exec-node-span` |
+| `jess-oracle` | interpreted fuse vs the `PM_MACRO` artifact (the shipped assembler) vs `execRules` (reference), one process per leg | `exec-node-span` |
 | `emit-identity-one` | `PM_TABLE_EMIT=1` emitted assembly vs `=0` closure walk | `emit-node-span` |
 | `consumed-sweep` | bytes consumed per file, one build, appended as JSONL | `interp-many-cap`; BLIND to `tolerant-rec-off` |
 | `tolerant-sweep` | the RECOVERY assembly, errors/spans/value digest per file | `tolerant-rec-off` |

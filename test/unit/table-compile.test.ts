@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { compileTable } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 import { run } from '../../src/functional/run.ts'
 import { csvParser } from '../../examples/csv/parser.ts'
 import { jsonDoc } from '../../examples/json/parser.ts'
 import { classifiedTrivia, leaf, literal, node, parser, regex, rules, sequence, transform, trivia } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { EMPTY_ARROW } from '../../bench/empty-reducer.ts'
 import type { Combinator } from '../../src/types.ts'
 
 /**
- * `compileTable()` — the `CompiledParser` contract over a table artifact.
+ * `compile()` — the `CompiledParser` contract over a table artifact.
  *
  * The reported blocker for making the table the default lowering was a signature
  * mismatch: `compile()` takes a ROOT COMBINATOR, `encodeTable()` takes a NAMED
@@ -21,7 +21,7 @@ import type { Combinator } from '../../src/types.ts'
  * example exports — not hand-rebuilt rule maps — which is the whole point: if
  * they had to be rewritten to encode, this would not be a drop-in.
  */
-describe('compileTable() is a drop-in for the source-lowering compile()', () => {
+describe('compile() is a drop-in for the source-lowering compile()', () => {
   // Third element is a GOOD input, fourth a definitely-BAD one. The bad input is
   // stated per grammar rather than derived by truncation: a truncated CSV is
   // still valid CSV, so a derived one would have silently tested nothing.
@@ -32,7 +32,7 @@ describe('compileTable() is a drop-in for the source-lowering compile()', () => 
 
   it('parses the SHIPPED example roots identically to the interpreter', () => {
     for (const [name, root, input] of cases) {
-      const compiled = compileTable(root)
+      const compiled = compile(root)
       const t = compiled.parse(input)
       const i = run(root as never, input)
       expect(t.ok, name).toBe(true)
@@ -68,7 +68,7 @@ describe('compileTable() is a drop-in for the source-lowering compile()', () => 
     // NUL, an unterminated quote and an unclosed row. There is no failing input
     // to compare, so listing one would have tested nothing.
     for (const [name, root, , bad] of cases.filter(c => c[0] !== 'csv')) {
-      const compiled = compileTable(root)
+      const compiled = compile(root)
       const t = compiled.parse(bad)
       const i = run(root as never, bad)
       expect(t.ok, `${name} must actually fail`).toBe(false)
@@ -79,7 +79,7 @@ describe('compileTable() is a drop-in for the source-lowering compile()', () => 
   })
 
   it('emits BOTH artifacts — a module and an expression', () => {
-    const compiled = compileTable(jsonDoc as Combinator<unknown>)
+    const compiled = compile(jsonDoc as Combinator<unknown>)
     // The module imports the shared driver; that import is why the artifact is
     // 0.56 MB rather than source lowering's 2.10 MB, and it is not a new
     // dependency — it resolves to `parseman/table`, which a consumer calling
@@ -99,12 +99,12 @@ describe('compileTable() is a drop-in for the source-lowering compile()', () => 
     // measured nothing. There are counter rows now (`OP_COV`), so what this pins
     // is the thing the refusal was standing in for — the definitions come back,
     // and they are not empty. The hits themselves are `table-coverage.test.ts`.
-    const compiled = compileTable(jsonDoc as Combinator<unknown>, undefined, { coverage: true })
+    const compiled = compile(jsonDoc as Combinator<unknown>, undefined, { coverage: true })
     expect(compiled.coverageDefinitions).toBeDefined()
     expect(compiled.coverageDefinitions!.length).toBeGreaterThan(0)
     // And it is still OFF by default: an ordinary compile carries no denominator,
     // rather than an empty one that divides to a confident 100%.
-    expect(compileTable(jsonDoc as Combinator<unknown>).coverageDefinitions).toBeUndefined()
+    expect(compile(jsonDoc as Combinator<unknown>).coverageDefinitions).toBeUndefined()
   })
 })
 
@@ -148,7 +148,7 @@ describe('a table entry carries the trivia metadata run() reads', () => {
     const doc = parser({ trivia: mkTrivia() }, sequence(regex(/a/), regex(/b/)))
     expect(doc._meta.grammarTrivia).toBeUndefined()
 
-    const entry = assembledRules(encodeTable({ Doc: doc }))['Doc']
+    const entry = tableRules(encodeTable({ Doc: doc }))['Doc']
     expect(metaOf(entry)?.triviaKindLabels).toEqual(labels)
     expect(metaOf(entry)?.rootTriviaClassified).toBe(true)
   })
@@ -158,7 +158,7 @@ describe('a table entry carries the trivia metadata run() reads', () => {
     // wrapper, so it contributes no row of its own and used to reach the stamp
     // with nothing at all.
     const rw = mkTrivia()
-    const entry = assembledRules(encodeTable({ Trivia: rw }))['Trivia']
+    const entry = tableRules(encodeTable({ Trivia: rw }))['Trivia']
     expect(metaOf(entry)?.triviaKindLabels).toEqual(labels)
     expect(metaOf(entry)?.rootTriviaClassified).toBe(true)
   })
@@ -170,14 +170,14 @@ describe('a table entry carries the trivia metadata run() reads', () => {
       Doc: sequence(regex(/a/), regex(/b/)),
     }))
     expect(g['Doc']!._meta.grammarTrivia).toBeDefined()
-    const entry = assembledRules(encodeTable({ Doc: g['Doc']! }))['Doc']
+    const entry = tableRules(encodeTable({ Doc: g['Doc']! }))['Doc']
     expect(metaOf(entry)?.triviaKindLabels).toEqual(labels)
     expect(metaOf(entry)?.rootTriviaClassified).toBe(true)
   })
 
   it('leaves an unlabelled grammar with no LABEL metadata to report', () => {
     const doc = parser({ trivia: trivia(regex(/\s+/)) }, regex(/a/))
-    const meta = metaOf(assembledRules(encodeTable({ Doc: doc }))['Doc'])
+    const meta = metaOf(tableRules(encodeTable({ Doc: doc }))['Doc'])
     expect(meta?.triviaKindLabels).toBeUndefined()
     expect(meta?.rootTriviaClassified).toBeUndefined()
     // The trivia ITSELF is still stamped, labels or not: `run()` consumes the
@@ -191,7 +191,7 @@ describe('a table entry carries the trivia metadata run() reads', () => {
 /**
  * A PRINTED MODULE CAN NEVER CONTAIN AN EMPTY REDUCER.
  *
- * This is the invariant, not the incident. `compileTable` used to call
+ * This is the invariant, not the incident. `compile` used to call
  * `encodeTable`, which drops the encoder's `fnSrcs` side-channel, so every author
  * callback reached `emitTable*` with no source and the emitters substituted
  * `prog.fns.map(() => '() => {}')`. The result was the worst shape a compiler can
@@ -227,7 +227,7 @@ describe('a printed table never ships an empty reducer', () => {
 
   for (const [name, root] of withReducers) {
     it(`${name}: prints real reducer text, or refuses BY NAME`, () => {
-      const compiled = compileTable(root)
+      const compiled = compile(root)
       const reasons = compiled.runtimeOnly ?? []
       if (compiled.inlineExpression === null) {
         // Refusal is a legal outcome. A SILENT one is not.
@@ -246,7 +246,7 @@ describe('a printed table never ships an empty reducer', () => {
     // the interpreter rather than against `2`, so the case cannot drift into
     // agreeing with a rewritten expectation.
     const root = node('N', sequence(literal('a'), literal('b')), children => children.length)
-    const t = compileTable(root as Combinator<unknown>).parse('ab')
+    const t = compile(root as Combinator<unknown>).parse('ab')
     const i = run(root as never, 'ab')
     expect(t.ok).toBe(true)
     expect(i.ok).toBe(true)

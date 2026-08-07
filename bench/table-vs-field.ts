@@ -1,18 +1,23 @@
 /**
- * With the table driver, is parseman still the fastest parser
+ * With the reference bytecode interpreter, is parseman still the fastest parser
  * in the JSON comparison?
  *
- * A relative slowdown against parseman's own codegen only matters if it costs
- * the field. This measures the table path against the SAME external parsers the
- * comparison chart uses, in ONE process, paired and order-alternated
- * (`bench/ab-harness.ts`'s `interleave`), with parseman-compiled-vs-itself as
- * the control.
+ * WHICH ENGINES THIS BINDS. `compose()` (`src/compiler/linker.ts`) is the
+ * shipped ASSEMBLER; `execRules()` (`src/table/exec.ts`) is the REFERENCE
+ * bytecode interpreter, which is NOT what ships. No source-lowering "codegen"
+ * engine is involved — `src/compiler/codegen.ts` was DELETED in `37c57b5`.
+ *
+ * A relative slowdown of the reference interpreter against parseman's own
+ * assembler only matters if it costs the field. This measures the reference
+ * interpreter against the SAME external parsers the comparison chart uses, in
+ * ONE process, paired and order-alternated (`bench/ab-harness.ts`'s
+ * `interleave`), with parseman-assembled-vs-itself as the control.
  */
 import os from 'node:os'
 import { interleave, median, type Case, type Contest, type Measurement, sign } from './ab-harness.ts'
 import { compose } from '../src/compiler/linker.ts'
 import { encodeTable } from '../src/table/encode.ts'
-import { tableRules } from '../src/table/exec.ts'
+import { execRules } from '../src/table/exec.ts'
 import { run } from '../src/functional/run.ts'
 import { jsonRules, jsonWs } from './table-grammars.ts'
 import { LARGE_JSON, MEDIUM_JSON, SMALL_JSON } from './fixtures.ts'
@@ -62,7 +67,7 @@ function main(): void {
 
   const compiledA = (compose([map as never]) as unknown as Record<string, Entry>).Value!
   const compiledB = (compose([map as never]) as unknown as Record<string, Entry>).Value!
-  const table = tableRules(encodeTable(map)).Value! as unknown as Entry
+  const table = execRules(encodeTable(map)).Value! as unknown as Entry
 
   const pmCompiled: Parse = t => run(compiledA, t, { trivia: jsonWs as Entry }).value
   const pmCompiledB: Parse = t => run(compiledB, t, { trivia: jsonWs as Entry }).value
@@ -79,7 +84,7 @@ function main(): void {
   // Every side must produce the same VALUE, or the timings compare two jobs.
   for (const [id, text] of INPUTS) {
     const want = JSON.stringify(JSON.parse(text))
-    for (const [name, p] of [['pm/compiled', pmCompiled], ['pm/table', pmTable], ...rivals] as Array<[string, Parse]>) {
+    for (const [name, p] of [['pm/assembled', pmCompiled], ['pm/exec', pmTable], ...rivals] as Array<[string, Parse]>) {
       let got: string
       try { got = JSON.stringify(p(text)) } catch (e) { console.error(`ABORT ${name} ${id}: ${(e as Error).message}`); process.exit(1) }
       if (got !== want) { console.error(`ABORT ${name} ${id}: parsed a DIFFERENT value than JSON.parse`); process.exit(1) }
@@ -89,9 +94,9 @@ function main(): void {
 
   const reps = calibrateReps(cases(pmCompiled))
   const contests: Contest[] = [
-    { label: 'CONTROL  pm/compiled -> pm/compiled', a: cases(pmCompiled), b: cases(pmCompiledB) },
-    { label: 'GATE     pm/compiled -> pm/table', a: cases(pmCompiled), b: cases(pmTable) },
-    ...rivals.map(([name, p]) => ({ label: `FIELD    pm/table   -> ${name}`, a: cases(pmTable), b: cases(p) })),
+    { label: 'CONTROL  pm/assembled -> pm/assembled', a: cases(pmCompiled), b: cases(pmCompiledB) },
+    { label: 'GATE     pm/assembled -> pm/exec', a: cases(pmCompiled), b: cases(pmTable) },
+    ...rivals.map(([name, p]) => ({ label: `FIELD    pm/exec      -> ${name}`, a: cases(pmTable), b: cases(p) })),
   ]
 
   const out = interleave(contests, reps, M)

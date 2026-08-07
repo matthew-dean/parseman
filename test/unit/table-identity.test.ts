@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { checkIdentity } from '../../bench/table-lowering-identity.ts'
 import { baseNodes, dispatchNoFallback, dispatchNodes, fieldNodes, cutUnderChoice, cutUnderMany, forbidSep, hostNodes, jsonRules, jsonWs, rootTriviaNodes, selectNodes, trailingSep, trailingTriviaNodes } from '../../bench/table-grammars.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
@@ -138,8 +138,8 @@ describe('table lowering — tree identity', () => {
     const spansOf = (v: unknown): Array<Record<string, unknown>> =>
       (v as { spans: Array<Record<string, unknown>> }).spans
 
-    const plain = run(tableRules(encodeTable(probe)).Doc! as never, input)
-    const tracked = run(tableRules(encodeTable(probe, { trackLines: true })).Doc! as never, input)
+    const plain = run(execRules(encodeTable(probe)).Doc! as never, input)
+    const tracked = run(execRules(encodeTable(probe, { trackLines: true })).Doc! as never, input)
     expect(plain.ok).toBe(true)
     expect(tracked.ok).toBe(true)
     expect(Object.keys(spansOf(plain.value)[0]!)).toEqual(['start', 'end'])
@@ -232,7 +232,7 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('the field map is POPULATED, not vacuously undefined on all three paths', () => {
     // Three paths agreeing that the map is `undefined` would pass the identity
     // check above while the capability did nothing. Assert the contents.
-    const table = tableRules(encodeTable(fieldNodes)).Doc!
+    const table = execRules(encodeTable(fieldNodes)).Doc!
     const fieldsOf = (input: string): Record<string, unknown> => {
       const v = run(table as never, input).value
       return (v as { c: Array<{ f: Record<string, unknown> }> }).c[0]!.f
@@ -281,7 +281,7 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('dispatch selects the RIGHT arm, which identity alone cannot show', () => {
     // If two arms produced the same tree for an input, identity would pass while
     // the wrong arm ran. Each arm returns a distinct marker, read back here.
-    const table = tableRules(encodeTable(dispatchNodes)).Doc!
+    const table = execRules(encodeTable(dispatchNodes)).Doc!
     const armFor = (input: string): unknown => {
       const r = run(table as never, input)
       // dispatch yields [selectorValue, armValue]
@@ -297,7 +297,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(run(table as never, '@whatever').unconsumedFrom).toBe(null)
 
     // A miss with no otherwise() is a FAILURE, not a silent empty match.
-    const noFb = tableRules(encodeTable(dispatchNoFallback)).Doc!
+    const noFb = execRules(encodeTable(dispatchNoFallback)).Doc!
     expect(run(noFb as never, '@media').ok).toBe(true)
     expect(run(noFb as never, '@nope').ok).toBe(false)
   })
@@ -329,7 +329,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     ])
     expect(r.mismatches).toEqual([])
 
-    const table = tableRules(encodeTable(selectNodes)).Doc!
+    const table = execRules(encodeTable(selectNodes)).Doc!
     const kids = (input: string): unknown[] =>
       (run(table as never, input).value as { c: unknown[] }).c
 
@@ -355,7 +355,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // collapse body was always single-child, so the arity it named could not
     // occur, and `expect(length).toBeGreaterThan(0)` passed for any non-empty
     // array regardless.
-    const table = tableRules(encodeTable(selectNodes)).Doc!
+    const table = execRules(encodeTable(selectNodes)).Doc!
     const kids = (run(table as never, 'zz!zz').value as { c: unknown[] }).c
     const node0 = kids[0] as Record<string, unknown>
     expect(node0._tag).toBe('node')
@@ -374,7 +374,7 @@ describe('table lowering — three-way identity across every encodable grammar',
 
     // The node's SPAN must extend over the trailing run. Consuming it after the
     // capture scope closed would leave the span short and log it in the parent.
-    const table = tableRules(encodeTable(trailingTriviaNodes)).Root!
+    const table = execRules(encodeTable(trailingTriviaNodes)).Root!
     const withTail = run(table as never, 'ab cd   ', { trivia: jsonWs as never }).value as { end: number }
     const noTail = run(table as never, 'ab cd', { trivia: jsonWs as never }).value as { end: number }
     expect(noTail.end).toBe(5)
@@ -402,7 +402,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // pairing, and these tests only passed before because the table carried no
     // stamped mode at all.
     const host = cstBuildHost({ tags: true })
-    const table = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const table = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
     const out = run(table as never, 'abc', { build: host as never })
     expect(out.ok).toBe(true)
 
@@ -426,7 +426,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // `NamedColor`, which HAS a reducer, so the reducer-bearing case is the one
     // that matters and the one asserted here.
     const collapsing = cstBuildHost({ tags: true, collapse: (t: string) => t === 'Marked' })
-    const table = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const table = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
     const out = run(table as never, 'abc', { build: collapsing as never })
     const kid = ((out.value as Record<string, unknown>).children as Array<Record<string, unknown>>)[0]!
     // Collapsed: the node IS its single child, so the leaf surfaces directly.
@@ -440,8 +440,8 @@ describe('table lowering — three-way identity across every encodable grammar',
     // Two TABLES from one grammar — the 'cst' one is driven with a host, the
     // 'ast' one with its own builders. That is the shape the engine allows, and
     // the two must differ or the host is not reaching the node.
-    const cstTable = tableRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
-    const astTable = tableRules(encodeTable(hostNodes)).Doc!
+    const cstTable = execRules(encodeTable(hostNodes, { hostMode: 'cst' })).Doc!
+    const astTable = execRules(encodeTable(hostNodes)).Doc!
     const withHost = JSON.stringify(run(cstTable as never, 'abc', { build: cstBuildHost({ tags: true }) as never }).value)
     const withBuilder = JSON.stringify(run(astTable as never, 'abc').value)
     expect(withHost).not.toBe(withBuilder)
@@ -468,7 +468,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(pooled.length).toBeGreaterThan(0)
     for (const re of pooled) re.lastIndex = 0
 
-    const table = tableRules(prog).Doc!
+    const table = execRules(prog).Doc!
     run(table as never, '(a,1)zz(b)7')
 
     // At least one pooled regex must show it was USED by the parse.
@@ -497,7 +497,7 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('rootTrivia records the exact comment span, and matches the interpreter', () => {
     const input = 'aa /* keep me */ bb'
     const opts = { rootTrivia: { select: ['comment'] } } as never
-    const table = tableRules(encodeTable(rootTriviaNodes)).Doc!
+    const table = execRules(encodeTable(rootTriviaNodes)).Doc!
 
     const fromTable = run(table as never, input, opts)
     const fromInterp = run(rootTriviaNodes.Doc! as never, input, opts)
@@ -517,7 +517,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // Whitespace is labelled but not selected, so it must produce nothing —
     // a driver that logged every trivia run would still pass a length check.
     const opts = { rootTrivia: { select: ['comment'] } } as never
-    const table = tableRules(encodeTable(rootTriviaNodes)).Doc!
+    const table = execRules(encodeTable(rootTriviaNodes)).Doc!
     const fromTable = run(table as never, 'aa    bb', opts)
     const fromInterp = run(rootTriviaNodes.Doc! as never, 'aa    bb', opts)
     expect(fromTable.ok).toBe(true)
@@ -532,7 +532,7 @@ describe('table lowering — three-way identity across every encodable grammar',
   it('the table entry carries the trivia metadata run() reads off it', () => {
     // Without this stamp `run({ rootTrivia })` rejects a grammar that plainly
     // HAS labelled trivia, because it inspects the entry rather than the table.
-    const entry = tableRules(encodeTable(rootTriviaNodes)).Doc!
+    const entry = execRules(encodeTable(rootTriviaNodes)).Doc!
     expect((entry as { _meta?: { triviaKindLabels?: readonly string[] } })._meta?.triviaKindLabels)
       .toEqual(['space', 'comment'])
   })
@@ -542,7 +542,7 @@ describe('table lowering — three-way identity across every encodable grammar',
    *
    * Emitting IS the point of this lowering, and it had NO behavioural coverage —
    * the only emit test asserted the output STRING contained `tableRules(` and no
-   * `function`. Nothing ever fed an emitted module back through `tableRules` and
+   * `function`. Nothing ever fed an emitted module back through `execRules` and
    * parsed with it, so every field the driver reads but the emitter forgot to
    * write was invisible. Two such fields shipped: `p` (dispatch specs) threw
    * "Cannot read properties of undefined (reading 'byKey')" on every input, and
@@ -551,12 +551,14 @@ describe('table lowering — three-way identity across every encodable grammar',
    * A string assertion cannot catch a missing field. Only a parse can.
    */
   function roundTrip(prog: ReturnType<typeof encodeTable>, fnSources: string[]): Record<string, unknown> {
-    const src = emitTableModule(prog, { name: 'g', fnSources })
+    // Bound to `execRules` below, so the emitted source must NAME the reference
+    // engine rather than the shipped `tableRules` it otherwise defaults to.
+    const src = emitTableModule(prog, { name: 'g', runtimeRef: 'execRules', fnSources })
     // Strip the import and evaluate the literal, so the test exercises the
     // EMITTED SHAPE rather than a module loader.
     const body = src.replace(/^import .*$/m, '').replace(/^export const g = /m, 'return ')
     // eslint-disable-next-line no-new-func
-    return (new Function('tableRules', `${body}`) as (t: typeof tableRules) => Record<string, unknown>)(tableRules)
+    return (new Function('execRules', `${body}`) as (t: typeof execRules) => Record<string, unknown>)(execRules)
   }
 
   it('an emitted DISPATCH grammar round-trips and parses', () => {
@@ -565,7 +567,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     const emitted = roundTrip(prog, [
       `() => 'K:media'`, `() => 'CI:import'`, `() => 'M:vendor'`, `v => 'O:' + String(v)`,
     ])
-    const inMemory = tableRules(prog)
+    const inMemory = execRules(prog)
     for (const input of ['@media', '@IMPORT', '@-webkit-x', '@whatever', 'nope']) {
       const a = run(inMemory.Doc! as never, input)
       const b = run(emitted.Doc as never, input)
@@ -594,7 +596,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // do with the lowering under test.
     expect(prog.fns.length).toBe(2)
     const emitted = roundTrip(prog, [`c => ({ t: 'Word', c })`, `c => ({ t: 'Doc', c })`])
-    const inMemory = tableRules(prog)
+    const inMemory = execRules(prog)
     const input = 'aa /* keep me */ bb'
     const opts = { rootTrivia: { select: ['comment'] } } as never
 
@@ -634,7 +636,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     // stamped the mode onto the entry — so `run()` read it as 'ast' and the
     // table returned the grammar's own AST objects with ok:true while paying
     // full CST capture. `encodeTable` with `hostMode` had ZERO coverage.
-    const cst = tableRules(encodeTable(hostNodes, { hostMode: 'cst' }))
+    const cst = execRules(encodeTable(hostNodes, { hostMode: 'cst' }))
     expect(() => run(cst.Doc! as never, 'abc')).toThrow()
 
     // With a CST host it is fine, and the host — not the reducer — builds.
@@ -643,7 +645,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect((withHost.value as Record<string, unknown>).t).toBeUndefined()
 
     // And an 'ast' table is unaffected.
-    const ast = tableRules(encodeTable(hostNodes))
+    const ast = execRules(encodeTable(hostNodes))
     expect(run(ast.Doc! as never, 'abc').ok).toBe(true)
   })
 
@@ -661,7 +663,7 @@ describe('table lowering — three-way identity across every encodable grammar',
       ['choice', cutUnderChoice, '@x'],
       ['many', cutUnderMany, '@x!@x'],
     ] as const) {
-      const table = tableRules(encodeTable(g)).Doc!
+      const table = execRules(encodeTable(g)).Doc!
       const fromTable = run(table as never, input)
       const fromInterp = run(g.Doc! as never, input)
       expect(fromTable.ok, `${name}: must not accept what the interpreter rejects`).toBe(fromInterp.ok)
@@ -675,8 +677,8 @@ describe('table lowering — three-way identity across every encodable grammar',
     // nobody, so 'a,b,' stopped at 3 while both engines consumed to 4. The
     // contrast against `forbid` is what makes this test about the BIT rather
     // than about the parse happening to succeed.
-    const allow = tableRules(encodeTable(trailingSep)).Doc!
-    const forbid = tableRules(encodeTable(forbidSep)).Doc!
+    const allow = execRules(encodeTable(trailingSep)).Doc!
+    const forbid = execRules(encodeTable(forbidSep)).Doc!
 
     const a = run(allow as never, 'a,b,')
     expect(a.ok).toBe(true)
@@ -728,7 +730,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(r.mismatches).toEqual([])
     expect(r.matched).toBe(r.total)
 
-    const tbl = tableRules(encodeTable(shapes))
+    const tbl = execRules(encodeTable(shapes))
     const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
     // A SEPARATED list counts items as separators + 1, zero-width or not — the
     // `,a` row is the one no reading of `(item (sep item)*)?` can call `[]`.
@@ -759,7 +761,7 @@ describe('table lowering — three-way identity across every encodable grammar',
       { name: 'empty-fields', input: 'a,,b\n,,\n' },
     ])
     expect(r.mismatches).toEqual([])
-    expect(run(tableRules(encodeTable(map)).CSV! as never, 'a,b\n1,2\n3,4\n5,6\n').value)
+    expect(run(execRules(encodeTable(map)).CSV! as never, 'a,b\n1,2\n3,4\n5,6\n').value)
       .toEqual([['a', 'b'], ['1', '2'], ['3', '4'], ['5', '6']])
   })
 
@@ -801,7 +803,7 @@ describe('table lowering — three-way identity across every encodable grammar',
       expect(r.mismatches, rule).toEqual([])
     }
 
-    const tbl = tableRules(encodeTable(shapes))
+    const tbl = execRules(encodeTable(shapes))
     const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
     // A nullable separator: the derivation exists, so `min` pads with zero-width
     // items rather than failing. Consumes nothing on the empty string.
@@ -860,7 +862,7 @@ describe('table lowering — three-way identity across every encodable grammar',
     expect(r.mismatches).toEqual([])
     expect(r.matched).toBe(r.total)
 
-    const tbl = tableRules(encodeTable(shapes))
+    const tbl = execRules(encodeTable(shapes))
     const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input).value
     // The unbounded list still stops at zero width — the termination device stands.
     expect(val('Many', '')).toEqual([])
@@ -905,7 +907,7 @@ describe('table lowering — three-way identity across every encodable grammar',
       expect({ entry, mismatches: r.mismatches }).toEqual({ entry, mismatches: [] })
     }
 
-    const tbl = tableRules(encodeTable(shapes))
+    const tbl = execRules(encodeTable(shapes))
     const val = (rule: string, input: string): unknown => run(tbl[rule]! as never, input, { trivia: ws as never }).value
     expect(val('Min2', 'a a')).toEqual(['a', 'a'])
     expect(val('Min3', 'a  a  a')).toEqual(['a', 'a', 'a'])

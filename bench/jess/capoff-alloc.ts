@@ -19,7 +19,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { run } from '../../src/functional/run.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { encodeTable } from '../../src/table/encode.ts'
 import { ENTRY, JESS_ROOT, loadGrammar, VARIANT_SETTINGS, type Dialect, type Variant } from './grammars.ts'
 
@@ -39,7 +39,7 @@ const variant = (process.argv[4] ?? 'ast') as Variant
 const input = readFileSync(resolvePath(JESS_ROOT, FIXTURE[dialect]), 'utf8')
 const { rules } = await loadGrammar(dialect, variant)
 const prog = encodeTable(rules, VARIANT_SETTINGS[variant])
-const entry = assembledRules(prog)[ENTRY] as RunnableLike | undefined
+const entry = tableRules(prog)[ENTRY] as RunnableLike | undefined
 if (entry === undefined) throw new Error(`no rule '${ENTRY}'`)
 
 // WARM, then MARK. Everything before the mark is compilation, first-call

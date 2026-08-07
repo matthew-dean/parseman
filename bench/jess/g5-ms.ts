@@ -1,6 +1,12 @@
 /**
- * THE NAMED FIXTURE, IN MILLISECONDS — codegen vs the bytecode driver vs the
- * closure assembler. `benchmark.less`, 106,802 B, AST path.
+ * THE NAMED FIXTURE, IN MILLISECONDS — `compose()` vs the reference bytecode
+ * interpreter vs the closure assembler. `benchmark.less`, 106,802 B, AST path.
+ *
+ * WHICH ENGINES THIS BINDS. `compose()` (`src/compiler/linker.ts`) and
+ * `tableRules()` (`src/table/assemble.ts`) are both the shipped ASSEMBLER,
+ * reached by two routes; `execRules()` (`src/table/exec.ts`) is the REFERENCE
+ * bytecode interpreter and is NOT what ships. No source-lowering "codegen"
+ * engine is timed here — `src/compiler/codegen.ts` was DELETED in `37c57b5`.
  *
  * This is `bench/jess/table-less-ms.ts`'s instrument with one leg added, kept as
  * a separate file so that harness's own gate (`table- === table`) is untouched.
@@ -21,8 +27,8 @@ import { readFileSync, statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { compose } from '../../src/compiler/linker.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { assertParseman, corpus, ENTRY, JESS_ROOT, loadGrammar } from './grammars.ts'
@@ -61,9 +67,9 @@ const prog = encodeTable(g.rules, {})
 
 const compiledA = (compose([g.rules as never]) as unknown as Record<string, Entry>)[ENTRY]!
 const compiledB = (compose([g.rules as never]) as unknown as Record<string, Entry>)[ENTRY]!
-const execTable = tableRules(prog)[ENTRY]! as unknown as Entry
-const asmA = assembledRules(prog)[ENTRY]! as unknown as Entry
-const asmB = assembledRules(prog)[ENTRY]! as unknown as Entry
+const execTable = execRules(prog)[ENTRY]! as unknown as Entry
+const asmA = tableRules(prog)[ENTRY]! as unknown as Entry
+const asmB = tableRules(prog)[ENTRY]! as unknown as Entry
 
 function digest(entry: Entry, input: string): string {
   const r = run(entry, input)
@@ -92,10 +98,10 @@ for (const f of FIXTURES) {
 {
   const t0 = performance.now()
   const n = 10
-  for (let i = 0; i < n; i++) assembledRules(prog)
+  for (let i = 0; i < n; i++) tableRules(prog)
   const build = (performance.now() - t0) / n
   const t1 = performance.now()
-  for (let i = 0; i < n; i++) tableRules(prog)
+  for (let i = 0; i < n; i++) execRules(prog)
   const drv = (performance.now() - t1) / n
   console.log('')
   console.log(`ASSEMBLY  ${build.toFixed(2)} ms per rule-map   (bytecode driver build: ${drv.toFixed(2)} ms)`)
@@ -162,7 +168,7 @@ for (const f of FIXTURES) {
   console.log(`    exec      (bytecode)  ${execMs.toFixed(2).padStart(7)} ms`)
   console.log(`    assembled (closures)  ${asmMs.toFixed(2).padStart(7)} ms   <- ${((asmMs / execMs - 1) * 100).toFixed(1)}%, ${wins}/${b.length} wins`)
   console.log(`    assembled (2nd leg)   ${asmGateMs.toFixed(2).padStart(7)} ms   (same leg, other contest — agreement is the sanity check)`)
-  console.log(`    codegen               ${compiledMs.toFixed(2).padStart(7)} ms`)
+  console.log(`    assembled (compose)   ${compiledMs.toFixed(2).padStart(7)} ms`)
   console.log(`    REMAINING GAP         ${(asmMs - compiledMs).toFixed(2).padStart(7)} ms   (${(asmMs / compiledMs).toFixed(2)}x)`)
   console.log(`    controls: compiled ${ctlCd >= 0 ? '+' : ''}${ctlCd.toFixed(1)}%   assembled ${ctlAd >= 0 ? '+' : ''}${ctlAd.toFixed(1)}%   <- the noise floor`)
 }

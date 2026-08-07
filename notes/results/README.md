@@ -49,7 +49,7 @@ assumed from the checkout, because a stale pointer resolves silently:
 | `srcRealpath` | the `src/` actually loaded, resolved through symlinks |
 | `srcDirty` | `git status --porcelain -- src` was non-empty |
 | `jessRoot`, `jessSha` | the grammar corpus is an UNPINNED sibling checkout and moves on its own |
-| `engine` | `interpreted`, `compiled` (codegen) or `table` |
+| `engine` | one of **four** tokens. The spelling is a WIRE CONTRACT — records already committed use it — so read it against this legend rather than at face value: `interpreted` = the combinator graph; `table` = `execRules` (`src/table/exec.ts`), the **reference bytecode INTERPRETER**, which nothing ships on; `assembled` = `tableRules` (`src/table/assemble.ts`; it was called `assembledRules` when these records were written), **the shipped engine**; `compiled` = the `PM_MACRO` artifact, which imports `tableRules` from `parseman/table` and is therefore **also the shipped assembler** — `src/compiler/codegen.ts` was deleted in `37c57b5` and this token has not named a source lowering since. An earlier version of this legend listed three tokens, omitted `assembled`, and glossed `compiled` as "(codegen)". |
 | `dialect`, `variant`, `file`, `bytes` | what was parsed |
 | **`consumed`** | `unconsumedFrom ?? bytes` — the field this file exists for |
 | `ok`, `unconsumedFrom`, `errors`, `threw` | the rest of the answer |

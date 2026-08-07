@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import {
   classifiedTrivia, leaf, literal, many, node, noTrivia, oneOrMore, oneOrMoreSep, parser,
@@ -25,7 +25,7 @@ const ws = classifiedTrivia({ whitespace: regex(/[ \t\n\r\f]+/) })
 const num = node('Num', regex(/[0-9]+/), (c: readonly unknown[]) => ({ t: 'Num', c }))
 
 function both(map: Record<string, Combinator<unknown>>, rule: string, input: string): { interp: string; table: string } {
-  const t = tableRules(encodeTable(map))[rule]!
+  const t = execRules(encodeTable(map))[rule]!
   return {
     interp: JSON.stringify(run(map[rule] as never, input)),
     table: JSON.stringify(run(t as never, input)),
@@ -50,7 +50,7 @@ describe('table driver — leaf() is a CAPTURE BOUNDARY, not a transform', () =>
     // Three children — operand, the leaf's value, operand. Before the fix the
     // table produced FIVE, because the leaf's three interior terminals were
     // captured by the enclosing node instead of being suppressed.
-    const table = tableRules(encodeTable(map)).Leafed!
+    const table = execRules(encodeTable(map)).Leafed!
     const v = run(table as never, '1 + 1').value as { n: number; c: unknown[] }
     expect(v.n).toBe(3)
     expect((v.c[1] as { _tag: string; value: unknown })._tag).toBe('leaf')
@@ -84,7 +84,7 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
     })) as unknown as Record<string, Combinator<unknown>>
     const { interp, table } = both(map, 'Peek', ' 2')
     expect(table).toBe(interp)
-    expect(run(tableRules(encodeTable(map)).Peek as never, ' 2').ok).toBe(true)
+    expect(run(execRules(encodeTable(map)).Peek as never, ' 2').ok).toBe(true)
   })
 
   it('a space-separated value list keeps every piece', () => {
@@ -95,7 +95,7 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
       Cont: parser({ trivia: ws }, sequence(peek(ws), g.Piece!)),
       Seq: node('Seq', noTrivia(sequence(g.Piece!, many(g.Cont!))), (c: readonly unknown[]) => ({ n: c.length })),
     })) as unknown as Record<string, Combinator<unknown>>
-    const table = tableRules(encodeTable(map)).Seq!
+    const table = execRules(encodeTable(map)).Seq!
     expect((run(table as never, '1 2 3').value as { n: number }).n).toBe(3)
     expect(both(map, 'Seq', '1 2 3').table).toBe(both(map, 'Seq', '1 2 3').interp)
   })
@@ -106,7 +106,7 @@ describe('table driver — who owns the trivia in front of a repeat\'s FIRST ite
     const map = rules<Record<string, Combinator<unknown>>>({ trivia: ws }, () => ({
       Many: node('Many', many(num), (c: readonly unknown[]) => ({ n: c.length })),
     })) as unknown as Record<string, Combinator<unknown>>
-    const table = tableRules(encodeTable(map)).Many!
+    const table = execRules(encodeTable(map)).Many!
     expect((run(table as never, '  1 2').value as { n: number }).n).toBe(2)
     expect(both(map, 'Many', '  1 2').table).toBe(both(map, 'Many', '  1 2').interp)
   })

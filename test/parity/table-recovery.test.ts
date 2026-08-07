@@ -19,9 +19,9 @@ import { literal, regex, sequence, many, oneOrMore, sepBy, node, rules, trivia, 
 import { run as runInterpreter } from '../../src/functional/run.ts'
 import { run as runTabled } from '../../src/functional/run-tabled.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
-import { compileTable } from '../../src/table/compile.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
+import { compile } from '../../src/table/compile.ts'
 import { cstBuildHost } from '../../src/compiler/linker.ts'
 import { REC } from '../../src/recovery/scan.ts'
 import type { Combinator, ParseContext } from '../../src/index.ts'
@@ -36,11 +36,11 @@ function engines(entry: Combinator<unknown>, input: string, amb?: Combinator<unk
   const prog = encodeTable({ Entry: entry }, { recovery: true })
   const execCtxErrors: unknown[] = []
   const execCtx = { trackLines: false, _errors: execCtxErrors, _tolerant: true, _rec: REC } as unknown as ParseContext
-  const execEntry = tableRules(prog)['Entry']!
+  const execEntry = execRules(prog)['Entry']!
   const execResult = execEntry(input, 0, execCtx) as { ok: boolean; value?: unknown }
   const asmErrors: unknown[] = []
   const asmCtx = { trackLines: false, _errors: asmErrors, _tolerant: true, _rec: REC } as unknown as ParseContext
-  const asmEntry = assembledRules(prog)['Entry']!
+  const asmEntry = tableRules(prog)['Entry']!
   const asmResult = asmEntry(input, 0, asmCtx) as { ok: boolean; value?: unknown }
   return {
     interpreter: runInterpreter(entry, input, opts),
@@ -125,12 +125,12 @@ describe('tolerant recovery — the CST embed, which lives only in the tree', ()
   })
 })
 
-describe('compileTable().parseWithErrors()', () => {
+describe('compile().parseWithErrors()', () => {
   const block = sequence(literal('{'), sepBy(decl, literal(';')), literal('}')) as Combinator<unknown>
 
   it('collects the errors the interpreter collects — WITH OR WITHOUT { recovery: true }', () => {
     // NO LONGER A REFUSAL, and the pair is the point. This used to assert that
-    // `compileTable(block, undefined, {})` THREW, because a table with no recovery
+    // `compile(block, undefined, {})` THREW, because a table with no recovery
     // rows would have set `_tolerant` and reported a clean parse whatever the
     // input. Refusing was the right answer to that and OPTIONAL RECOVERY was the
     // wrong question: `compile()` needs no such flag, so the refusal was a
@@ -138,7 +138,7 @@ describe('compileTable().parseWithErrors()', () => {
     // builds must answer identically, and identically to the interpreter.
     const ri = runInterpreter(block, '{a:1;$$;b:2}', { tolerant: true })
     for (const opts of [{ recovery: true }, {}]) {
-      const r = compileTable(block, undefined, opts).parseWithErrors('{a:1;$$;b:2}')
+      const r = compile(block, undefined, opts).parseWithErrors('{a:1;$$;b:2}')
       expect(r.ok, JSON.stringify(opts)).toBe(true)
       expect(r.errors, JSON.stringify(opts)).toEqual(ri.errors)
     }
@@ -164,8 +164,8 @@ describe('table drivers — local trivia scope root-capture policy', () => {
   const drive = (entry: Combinator<unknown>, input: string, ctx: Partial<ParseContext>) => {
     const prog = encodeTable({ Entry: entry }, {})
     return {
-      exec: () => tableRules(prog)['Entry']!(input, 0, { trackLines: false, ...ctx } as ParseContext),
-      assembled: () => assembledRules(prog)['Entry']!(input, 0, { trackLines: false, ...ctx } as ParseContext),
+      exec: () => execRules(prog)['Entry']!(input, 0, { trackLines: false, ...ctx } as ParseContext),
+      assembled: () => tableRules(prog)['Entry']!(input, 0, { trackLines: false, ...ctx } as ParseContext),
     }
   }
 
@@ -222,12 +222,12 @@ describe('a COMMITTED failure is never recovered', () => {
     const viaInterp = runInterpreter(g.Doc! as never, input, { tolerant: true })
     expect(viaInterp.ok, 'interpreter rejects a committed failure').toBe(false)
 
-    const viaTable = compileTable(g.Doc! as never, undefined, { recovery: true }).parseWithErrors(input)
+    const viaTable = compile(g.Doc! as never, undefined, { recovery: true }).parseWithErrors(input)
     expect(viaTable.ok, 'the table must reject it too').toBe(false)
     expect(viaTable.span?.end, 'and stop where the interpreter stops').toBe(viaInterp.span.end)
 
     const prog = encodeTable({ Entry: g.Doc! as never }, { recovery: true })
-    for (const [label, driver] of [['exec.ts', tableRules], ['assemble.ts', assembledRules]] as const) {
+    for (const [label, driver] of [['exec.ts', execRules], ['assemble.ts', tableRules]] as const) {
       const errors: unknown[] = []
       const ctx = { trackLines: false, _errors: errors, _tolerant: true, _rec: REC } as unknown as ParseContext
       const r = driver(prog)['Entry']!(input, 0, ctx) as { ok: boolean; span: { end: number } }

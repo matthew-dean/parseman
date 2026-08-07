@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { balanced, choice, literal, many, node, optional, regex, sequence, token, transform } from '../../src/index.ts'
 import { rules } from '../../src/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assemble, assembledRules, AssemblyCache } from '../../src/table/assemble.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { assemble, tableRules, AssemblyCache } from '../../src/table/assemble.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { expandCompact, resolveTable } from '../../src/table/program.ts'
 import { reachableIps } from '../../src/table/inspect.ts'
 import { run } from '../../src/functional/run.ts'
@@ -37,8 +37,8 @@ const g = rules((g: any) => ({
 describe('table assembler', () => {
   it('answers exactly what the bytecode driver answers', () => {
     const prog = encodeTable(g, {})
-    const a = assembledRules(prog)
-    const e = tableRules(prog)
+    const a = tableRules(prog)
+    const e = execRules(prog)
     for (const input of ['1', '1+2', '(1+2)', '1+(2+3)', '((7))', '', '(', '1+', 'x']) {
       for (const name of ['Expr', 'List', 'Maybe', 'One'] as const) {
         const ra = run(a[name]!, input)
@@ -59,7 +59,7 @@ describe('table assembler', () => {
     // patched `OP_RULE` trampoline for it. If the assembler's cycle handling
     // were wrong this either recurses forever at ASSEMBLY time or links the
     // wrong target; both are visible here and neither is a slow-path.
-    const a = assembledRules(encodeTable(g, {}))
+    const a = tableRules(encodeTable(g, {}))
     expect(run(a.Expr!, '1+2+3').ok).toBe(true)
     expect(run(a.Expr!, '((1+2))').ok).toBe(true)
   })
@@ -115,7 +115,7 @@ describe('table assembler', () => {
    *
    * Every other assembler gate runs the AST path: `bench/jess/g5-identity.ts`
    * loads `(dialect, 'ast')`, and `bench/table-lowering-identity.ts` drives
-   * `tableRules` only. On that path `ctx._cstBuf` is `undefined` for the whole
+   * `execRules` only. On that path `ctx._cstBuf` is `undefined` for the whole
    * parse, so the assembler's mark protocol is only ever exercised down its
    * `_cstChildren`/`_cstLeaves` arm — the LAZY BUFFER arm, which is the one a
    * `node()` installs, had no coverage at all.
@@ -145,8 +145,8 @@ describe('table assembler', () => {
     })) as unknown as Record<string, Combinator<unknown>>
 
     const prog = encodeTable(cg, { hostMode: 'cst' })
-    const a = assembledRules(prog).Doc!
-    const e = tableRules(prog).Doc!
+    const a = tableRules(prog).Doc!
+    const e = execRules(prog).Doc!
     for (const input of ['ab', 'ab cd', 'ab! cd 12', 'ab cd! 12 ef', 'ab  12  cd', '', 'ab cd 12 !']) {
       const build = (): never => cstBuildHost({ tags: true }) as never
       const ra = run(a as never, input, { build: build() })
@@ -165,7 +165,7 @@ describe('table assembler', () => {
    * A PARSE MUST BE INSTALLED WITH ITS OWN ASSEMBLY'S `scanSkip`, NOT THE
    * PREVIOUS PARSE'S.
    *
-   * `stamp.ts`'s entry calls `scanSkipFor` BEFORE `runRule`, and `assembledRules`
+   * `stamp.ts`'s entry calls `scanSkipFor` BEFORE `runRule`, and `tableRules`
    * used to answer it from an assembly cached across parses ("memoised, so this
    * is an array index after the first parse"). The set is not shared: each
    * assembly wraps ITS OWN pieces (`subtreeComb`), so a strict parse following a
@@ -189,7 +189,7 @@ describe('table assembler', () => {
     expect(strictSkip, 'the two assemblies must wrap DIFFERENT pieces, or this proves nothing')
       .not.toBe(tolerantSkip)
 
-    const entry = assembledRules(prog).Doc! as unknown as
+    const entry = tableRules(prog).Doc! as unknown as
       (i: string, p: number, c: ParseContext) => unknown
     const installed = (tolerant: boolean): unknown => {
       const ctx = createParseContext()

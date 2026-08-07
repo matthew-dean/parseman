@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { opHistogram, reachableOps } from '../../src/table/inspect.ts'
 import { resolveTable, type TableProgram } from '../../src/table/program.ts'
 import { OP_CHOICE, OP_EMPTY, OP_NODE, OP_RULE } from '../../src/table/ops.ts'
@@ -34,7 +34,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     // used ('abc', '123', 'abc123', '', '###') is claimed by Proj or Unwr, so the
     // collapse branch of OP_NODE executed on NO test path — while two tests carry
     // "collapse" in their names. 'zz' is the input that reaches it.
-    const table = tableRules(encodeTable(selectNodes)).Doc!
+    const table = execRules(encodeTable(selectNodes)).Doc!
     const kid = (one(table, 'zz') as { c: unknown[] }).c[0] as Record<string, unknown>
     // Collapsed: the value IS the single captured child, so the `Coll` wrapper is
     // gone and the Marker surfaces in its place. Not collapsing would leave a
@@ -54,7 +54,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
       Two: node('Two', sequence(literal('a'), literal('b')), { collapse: true }),
       One: node('One', sequence(literal('a')), { collapse: true }),
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     const two = one(t.Two, 'ab') as Record<string, unknown>
     expect(two._tag).toBe('node')
     expect(two.type).toBe('Two')
@@ -72,7 +72,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
       Peeked: transform(sequence(peek(literal('ab')), literal('a')), v => (v as unknown[])[1]) as Combinator<unknown>,
       NotB: transform(sequence(not(literal('b')), literal('a')), v => (v as unknown[])[1]) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     // The peek must not eat 'ab' — the literal after it still has to match 'a'.
     const peeked = run(t.Peeked! as never, 'ab')
     expect(peeked.ok).toBe(true)
@@ -94,7 +94,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: transform(sequence(literal('a'), expectC(literal('b'), 'a b')), v => (v as unknown[])[1]) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const hit = run(t as never, 'ab')
     expect(hit.ok).toBe(true)
     expect(hit.value).toBe('b')
@@ -110,7 +110,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: leaf(sequence(literal('ab'), literal('cd')), (_v, span) => `${span.start}-${span.end}`) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     expect(one(t, 'abcd')).toBe('0-4')
     expect(one(t, 'abcd')).toBe(one(g.Doc, 'abcd'))
   })
@@ -124,10 +124,10 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const bare = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: routed() as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const fb = tableRules(encodeTable(withFallback)).Doc!
+    const fb = execRules(encodeTable(withFallback)).Doc!
     expect(one(fb, 'x')).toBe('x')
     expect(run(fb as never, 'y').ok).toBe(false)
-    const none = tableRules(encodeTable(bare)).Doc!
+    const none = execRules(encodeTable(bare)).Doc!
     expect(run(none as never, 'x').ok).toBe(false)
     expect(run(none as never, 'x').expected).toEqual(['routed()'])
     expect(JSON.stringify(run(fb as never, 'y'))).toBe(JSON.stringify(run(withFallback.Doc! as never, 'y')))
@@ -153,7 +153,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
         regex(/@[a-z]+/) as Combinator<unknown>,
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(inChoice)).Doc!
+    const t = execRules(encodeTable(inChoice)).Doc!
     const compiledChoice = (compose([inChoice as never]) as unknown as Record<string, unknown>).Doc!
     expect(one(t, '@x!')).toEqual(['@x', '!'])          // the arm, when it works
     // The cut: the second arm must NOT re-recognise `@x`.
@@ -168,7 +168,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const inMany = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: many(dispatch(regex(/@[a-z]+/), when('@x', transform(literal('!'), () => 'hit'))) as unknown as Combinator<unknown>) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const tm = tableRules(encodeTable(inMany)).Doc!
+    const tm = execRules(encodeTable(inMany)).Doc!
     const compiledMany = (compose([inMany as never]) as unknown as Record<string, unknown>).Doc!
     const fromTable = run(tm as never, '@x!@x')
     expect(fromTable.ok).toBe(false)
@@ -191,7 +191,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
         transform(regex(/[0-9]+/), v => `digit:${String(v)}`),
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     expect(one(t, 'é')).toBe('accent:é')
     expect(one(t, '\u{1F600}')).toBe('emoji:\u{1F600}')
     expect(one(t, '7')).toBe('digit:7')
@@ -217,7 +217,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
         transform(literal('\u{1F600}'), () => 'grin'),
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Doc!
     expect(one(t, 'é')).toBe('e-acute')
     expect(one(t, 'ü')).toBe('u-uml')
@@ -244,7 +244,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
         transform(literal('\u{1F600}'), () => 'grin'),
       ) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Doc!
     const fromTable = run(t as never, 'e').expected
     expect(fromTable).toHaveLength(3)
@@ -259,7 +259,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: token(sequence(literal('a'), literal('b'))) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const miss = run(t as never, 'ax')
     expect(miss.ok).toBe(false)
     expect(JSON.stringify(miss)).toBe(JSON.stringify(run(g.Doc! as never, 'ax')))
@@ -272,7 +272,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Doc: many(transform(literal(''), () => 'z')) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const out = run(t as never, 'abc')
     expect(out.ok).toBe(true)
     expect(out.value).toEqual([])
@@ -284,7 +284,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Two: sepBy(regex(/[a-z]/), literal(','), { min: 2 }) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g))
+    const t = execRules(encodeTable(g))
     expect(run(t.Two! as never, 'a').ok).toBe(false)
     expect(one(t.Two, 'a,b')).toEqual(['a', 'b'])
     // Accept/reject and value parity. (The expected SET on the `min` failure
@@ -305,7 +305,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const g = rules<Record<string, Combinator<unknown>>>(() => ({
       Trail: sepBy(regex(/[a-z]/), literal(','), { trailing: 'allow' }) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Trail!
+    const t = execRules(encodeTable(g)).Trail!
     const compiled = (compose([g as never]) as unknown as Record<string, unknown>).Trail!
     // FIXED — bit 0 is read. The trailing separator is consumed, matching both
     // shipped engines, and the ITEMS are unchanged (a list contributes its items
@@ -321,7 +321,7 @@ describe('table driver — rows the grammar corpus never reached', () => {
     const forbid = rules<Record<string, Combinator<unknown>>>(() => ({
       Trail: sepBy(regex(/[a-z]/), literal(',')) as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const tf = tableRules(encodeTable(forbid)).Trail!
+    const tf = execRules(encodeTable(forbid)).Trail!
     expect(run(tf as never, 'a,b,').span.end).toBe(3)
     expect(run(forbid.Trail! as never, 'a,b,').span.end).toBe(3)
   })
@@ -336,7 +336,7 @@ describe('table driver — contract with the table itself', () => {
     ({ code, k: [], fns: [], cc: [], fx: [], disp: [], dsp: [], rules: rules_ })
 
   it('OP_EMPTY succeeds at zero width', () => {
-    const r = run(tableRules(prog([OP_EMPTY], { Doc: 0 })).Doc! as never, 'abc')
+    const r = run(execRules(prog([OP_EMPTY], { Doc: 0 })).Doc! as never, 'abc')
     expect(r.ok).toBe(true)
     expect(r.value).toBe('')
     expect(r.span).toEqual({ start: 0, end: 0 })
@@ -346,7 +346,7 @@ describe('table driver — contract with the table itself', () => {
     // Both readers decode the same stream. A new row taught to one and not the
     // other is the failure this pair of throws exists to make loud.
     const bogus = prog([9999], { Doc: 0 })
-    expect(() => run(tableRules(bogus).Doc! as never, 'a')).toThrow(/unknown opcode 9999/)
+    expect(() => run(execRules(bogus).Doc! as never, 'a')).toThrow(/unknown opcode 9999/)
     expect(() => reachableOps(bogus)).toThrow(/unknown opcode 9999/)
   })
 
@@ -397,7 +397,7 @@ describe('table driver — dispatch fallback ownership', () => {
         otherwise(transform(literal('!'), () => 'other')),
       ) as unknown as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     expect(one(t, '@x!')).toEqual(['@x', 'hit'])
     expect(one(t, '@y!')).toEqual(['@y', 'other'])
     expect(JSON.stringify(run(t as never, '@y!'))).toBe(JSON.stringify(run(g.Doc! as never, '@y!')))
@@ -449,7 +449,7 @@ describe('table driver — the committed bit does not survive a parse', () => {
       // this parse assigns `_fc` and only the entry reset can clear it.
       Doc: literal('a') as unknown as Combinator<unknown>,
     })) as unknown as Record<string, Combinator<unknown>>
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     const ctx = { _fc: true } as unknown as Parameters<typeof t>[2]
     const r = t('a', 0, ctx)
     expect(r.ok).toBe(true)
@@ -496,7 +496,7 @@ describe('table encode — the collapse peephole reads OP_CHOICE operands correc
     }
     // Not vacuous: there IS a choice, with three arms, and the table parses.
     expect(choices).toBe(1)
-    expect(run(tableRules(prog).A! as never, '(x)').ok).toBe(true)
+    expect(run(execRules(prog).A! as never, '(x)').ok).toBe(true)
   })
 })
 
@@ -528,7 +528,7 @@ describe('table encode — a dispatch fallback that reaches routed() through a R
     // The flag really is unset — otherwise this test would pass either way.
     const cases = (g.Doc!._def as { otherwiseUsesRouted?: boolean }).otherwiseUsesRouted
     expect(cases, 'the stored flag misses the ref').not.toBe(true)
-    const t = tableRules(encodeTable(g)).Doc!
+    const t = execRules(encodeTable(g)).Doc!
     for (const input of ['@other!', '@known!', '@other']) {
       expect(JSON.stringify(run(t as never, input)), input)
         .toBe(JSON.stringify(run(g.Doc! as never, input)))

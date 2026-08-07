@@ -38,7 +38,7 @@ const M: Measurement = { targetSampleMs: 60, warmup: 3, timed: 5, rounds: 8, run
 const PRIMARY = 'packages/jess/benchmark/benchmark.less'
 
 /**
- * `assembledRules` with the option set PINNED rather than read off the `ctx`.
+ * `tableRules` with the option set PINNED rather than read off the `ctx`.
  *
  * A copy of that wiring is the only honest way to contest the two assemblies: the
  * production entry picks its assembly from `ctx._tolerant`, and setting

@@ -27,31 +27,65 @@
  *
  * THAT SENTENCE WAS FALSE FOR TWO RELEASES, and the shape of the failure is
  * worth keeping. `63666b6` made the assembler `tableRules` by editing THIS FILE
- * and nothing else. `exec.ts` exports its own function ALSO called `tableRules`
+ * and nothing else. `exec.ts` exported its own function ALSO called `tableRules`
  * with the identical signature, so any module reaching PAST this entry bound the
- * interpreter, type-checked clean and ran correctly — just slower. Two modules
- * did: `table/fold.ts` (predating the swap) and `compiler/linker.ts` (added
- * after it, in `37c57b5`). Between them they put the whole `compose()`/`fuse()`
- * composition path and every folded artifact's `tableVariants` load on the
- * reference engine. Both now import `assembledRules` BY ITS OWN NAME, which is
- * the actual fix: a re-export that renames an engine is a trap for as long as
- * two functions share the name across a module boundary.
+ * interpreter, type-checked clean and ran correctly — just slower. THREE modules
+ * did: `table/fold.ts` (predating the swap), `compiler/linker.ts` (added after
+ * it, in `37c57b5`), and `bench/jess/fixture.ts` — the CANONICAL fixture
+ * harness, whose column printed as `table` was the reference interpreter for the
+ * whole cycle its figures were quoted in. Between them they put the entire
+ * `compose()`/`fuse()` composition path, every folded artifact's `tableVariants`
+ * load, and the repo's headline parse-time figure on the reference engine.
+ *
+ * BOTH HALVES OF THE MECHANISM ARE GONE, AND ONLY REMOVING BOTH WAS ENOUGH.
+ *
+ * Half one: `exec.ts` now exports `execRules`. The reference driver no longer
+ * answers to the shipped engine's name.
+ *
+ * Half two, and the one that made the class EXPRESSIBLE: this line used to read
+ * `export { assembledRules as tableRules, assembledRules, … }` — ONE function
+ * published under TWO names. An `as` re-export across a boundary we own both
+ * sides of is not a compatibility shim; it is a second name for a thing that
+ * needs one, and it is exactly the seam a wrong import slips through. The
+ * function in `assemble.ts` is now NAMED `tableRules` at its declaration and
+ * re-exported unrenamed. `assembledRules` no longer exists anywhere.
+ *
+ * WHY `tableRules` WON AND `assembledRules` DIED:
+ *
+ *   1. It is the name EMITTED ARTIFACTS import. `emit.ts:emitTableModule` writes
+ *      `import { <ref> } from 'parseman/table'` with `ref` defaulting to
+ *      `tableRules`; `compile.ts` and `compile-rule-map.ts` default `runtimeRef`
+ *      to the same; `plugin/index.ts` prepends that exact import into every
+ *      consumer bundle it rewrites. Unifying on this name changes NO emitted
+ *      byte — the alternative direction would have rewritten four emit sites and
+ *      every artifact they have ever produced, for no gain.
+ *   2. It names WHAT THE THING IS at a public boundary — the rule map of a table
+ *      lowering — where `assembledRules` named HOW it is currently built.
+ *      Closure assembly is an implementation that has already replaced one
+ *      engine and may be replaced again; the boundary name has now outlived one
+ *      such swap and should outlive the next.
+ *
+ * `scripts/check-invariants.mjs` INV-11 fails any `as` rename across the two
+ * engines' vocabularies, and any renaming re-export from a `src/**` entry point,
+ * across `src/`, `test/` and `bench/`. The rule exists because the alias above
+ * was not a mistake anyone made twice — it was a shape that made the mistake
+ * available.
  */
-export { assembledRules as tableRules, assembledRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
+export { tableRules, assemble, AssemblyCache, type Assembly, type RunCfg } from './assemble.ts'
 export { encodeTable, UnsupportedConstruct, type TableSettings } from './encode.ts'
 /**
  * `compile()` for the table lowering — same `CompiledParser` contract, a table
  * artifact instead of generated source. A root combinator is a one-rule map, so
  * this is a drop-in for the source-lowering `compile()` rather than a second API.
  */
-export { compileTable, type TableCompileOptions } from './compile.ts'
+export { compile, type TableCompileOptions } from './compile.ts'
 export { emitTableModule, emitTableExpression, emitFoldedModule } from './emit.ts'
 /**
- * `compileRuleMap()` for the table lowering — the MAIN macro path. `compileTable`
+ * `compileRuleMap()` for the table lowering — the MAIN macro path. `compile`
  * only ever covered `compile()`, the single-root entry, so a `rules()` grammar had
  * no table counterpart to point the build at at all.
  */
-export { compileRuleMapTable, type TableRuleMapOptions, type CompiledRuleMapTable } from './compile-rule-map.ts'
+export { compileRuleMap, type TableRuleMapOptions, type CompiledRuleMapTable } from './compile-rule-map.ts'
 /**
  * THE VARIANT FOLD (G4). One base table plus per-variant row edits, selected at
  * load. Additive: `tableRules` and every existing entry are untouched, and the

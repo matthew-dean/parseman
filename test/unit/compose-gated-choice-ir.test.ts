@@ -94,7 +94,7 @@ describe('compose over a compiled base with a gated choice (0.26.2)', () => {
     expect(ir).toContain('_gch') // gated choice serialized through the gate-preserving helper
     const pieces = compileLinkable(evalRuleMapIR(ir), '_relow_')!
     // The table statement of "no runtime-only closure": the piece ENCODED. A gate that
-    // came back as a live closure makes `compileRuleMapTable` refuse, so `replacement`
+    // came back as a live closure makes `compileRuleMap` refuse, so `replacement`
     // is null and a downstream compose could not statically fuse it.
     expect(pieces.replacement).not.toBeNull()
   })

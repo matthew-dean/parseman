@@ -17,7 +17,7 @@ import {
   analyzeGrammarGating, compiledGrammarCoverageDefinitions, composedGrammarCoverageDefinitions,
 } from '../../src/index.ts'
 import type { Combinator } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 
 // ---------------------------------------------------------------------------
 // cstBuildHost({ collapse }) — a documented option that did nothing

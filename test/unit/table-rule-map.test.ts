@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { compileRuleMapTable } from '../../src/table/compile-rule-map.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { compileLinkableTable } from '../../src/compiler/compile-linkable-table.ts'
 import { tableRules } from '../../src/table/index.ts'
 import { run } from '../../src/functional/run.ts'
@@ -8,10 +8,10 @@ import { jsonRules, JSON_FN_SOURCES, baseNodes } from '../../bench/table-grammar
 import type { Combinator } from '../../src/types.ts'
 
 /**
- * `compileRuleMapTable()` — the table counterpart of `compileRuleMap()`.
+ * `compileRuleMap()` — the table counterpart of `compileRuleMap()`.
  *
  * The main macro path is `rules()` grammars, and it goes through
- * `compileRuleMap`. `compileTable` only ever covered `compile()`, the
+ * `compileRuleMap`. `compile` only ever covered `compile()`, the
  * single-root entry the plugin uses for standalone combinators, so a `rules()`
  * grammar had nothing to be pointed at.
  *
@@ -42,11 +42,11 @@ function differential(
   }
 }
 
-describe('compileRuleMapTable() matches compileRuleMap()\'s contract', () => {
+describe('compileRuleMap() matches compileRuleMap()\'s contract', () => {
   const jsonEntries = Object.entries(jsonRules as unknown as Record<string, Combinator<unknown>>)
 
   it('returns keys, a replacement, a host mode and a runnable map', () => {
-    const c = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES })
+    const c = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES })
     expect(c).not.toBeNull()
     if (!c) return
     // `keys` is the entry list the caller validates against the source's own.
@@ -77,24 +77,24 @@ describe('compileRuleMapTable() matches compileRuleMap()\'s contract', () => {
    * `() => {}` per unsourced entry — so it needs the same refusal.
    */
   it('REFUSES to compile a map whose reducers have no source', () => {
-    expect(compileRuleMapTable(jsonEntries)).toBeNull()
+    expect(compileRuleMap(jsonEntries)).toBeNull()
   })
 
   it('rejects a positional fnSources list that cannot belong to this pool', () => {
-    expect(() => compileRuleMapTable(jsonEntries, { fnSources: [...JSON_FN_SOURCES, 'x => x'] }))
+    expect(() => compileRuleMap(jsonEntries, { fnSources: [...JSON_FN_SOURCES, 'x => x'] }))
       .toThrow(/positional/)
   })
 
   /** Sources CAPTURED off the def (what the macro evaluator sets) are used. */
   it('uses the source the encoder captured, with nothing passed in', () => {
     const g = twoRuleGrammar()
-    const c = compileRuleMapTable(g)
+    const c = compileRuleMap(g)
     expect(c).not.toBeNull()
     expect(c?.replacement).toContain('v => v[1]')
   })
 })
 
-describe('compileRuleMapTable() is value-, span- and expected-identical to the interpreter', () => {
+describe('compileRuleMap() is value-, span- and expected-identical to the interpreter', () => {
   const jsonEntries = Object.entries(jsonRules as unknown as Record<string, Combinator<unknown>>)
   const nodeEntries = Object.entries(baseNodes)
 
@@ -109,7 +109,7 @@ describe('compileRuleMapTable() is value-, span- and expected-identical to the i
   ]
 
   it('agrees on VALUE and SPAN for every reachable JSON rule', () => {
-    const c = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES })!
+    const c = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES })!
     expect(c).not.toBeNull()
     for (const { name, input } of good) {
       const { table, interp } = differential(jsonEntries, c.rules, 'Value', input)
@@ -126,7 +126,7 @@ describe('compileRuleMapTable() is value-, span- and expected-identical to the i
    * so it is asserted here explicitly, per failing input, as a SET comparison.
    */
   it('agrees on the EXPECTED set for every failing JSON input', () => {
-    const c = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES })!
+    const c = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES })!
     const bad: Case[] = [
       { name: 'array hole', input: '[1,,2]' },
       { name: 'unclosed object', input: '{"a":1' },
@@ -147,7 +147,7 @@ describe('compileRuleMapTable() is value-, span- and expected-identical to the i
       if (JSON.stringify(t) === JSON.stringify(i)) continue
       /**
        * A PRE-EXISTING, UNADJUDICATED DIVERGENCE — not one this function
-       * introduced. `compileTable()` on the same `Value` rule reports the same
+       * introduced. `compile()` on the same `Value` rule reports the same
        * sets (verified directly), and `test/unit/table-compile.test.ts` already
        * records it as open: on a failure under a top-level `choice` of rule
        * refs the table reports the arm that failed LAST and the interpreter
@@ -166,7 +166,7 @@ describe('compileRuleMapTable() is value-, span- and expected-identical to the i
 
   /** Every rule as an ENTRY, not just the grammar's own start production. */
   it('agrees rule-by-rule when each entry is driven directly', () => {
-    const c = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES })!
+    const c = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES })!
     const per: Array<[string, string]> = [
       ['Str', '"hi"'], ['Num', '-1.5e3'], ['True', 'true'], ['False', 'false'],
       ['Null', 'null'], ['Arr', '[1,2]'], ['Obj', '{"a":1}'], ['Pair', '"a":1'],
@@ -185,7 +185,7 @@ describe('compileRuleMapTable() is value-, span- and expected-identical to the i
 
   /** A node()-bearing map, so tree BUILDING is differenced and not only scalars. */
   it('agrees on a node()-bearing rule map', () => {
-    const c = compileRuleMapTable(nodeEntries, { fnSources: nodeEntries.map(() => 'c => ({ t: "x", c })') })
+    const c = compileRuleMap(nodeEntries, { fnSources: nodeEntries.map(() => 'c => ({ t: "x", c })') })
     // The reducers here are stand-ins; identity is asserted on the RUNNABLE
     // table, which uses the encoder's live callbacks, not the printed ones.
     expect(c).not.toBeNull()
@@ -203,7 +203,7 @@ describe('compileRuleMapTable() is value-, span- and expected-identical to the i
 describe('the EMITTED expression is the same parser as the compiled one', () => {
   it('evaluates to a rule map that parses identically to the interpreter', () => {
     const g = twoRuleGrammar()
-    const c = compileRuleMapTable(g)!
+    const c = compileRuleMap(g)!
     expect(c).not.toBeNull()
     // The one stated contract divergence: the expression references
     // `tableRules` rather than carrying the driver, so the consumer supplies

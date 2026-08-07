@@ -18,7 +18,7 @@ import {
   choice, dispatch, literal, node, otherwise, regex, routed, rules,
   sequence, when, type Combinator, type ParseContext,
 } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 import { assertEnginesAgree } from '../parity/helpers/engine-parity.ts'
 
 const run = <T>(p: Combinator<T>, input: string) => p.parse(input, 0, { trackLines: false } as ParseContext)

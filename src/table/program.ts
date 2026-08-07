@@ -158,7 +158,7 @@ export type TableProgram = {
    * table has no statements, so there is nothing to scan — and an empty scrape is
    * NO MEASUREMENT reported as 100% coverage, which is the exact failure
    * `'coverage-definitions-unavailable'` was declared for. Carrying the pool is
-   * what lets `compileRuleMapTable` hand back `coverageDefinitions` directly.
+   * what lets `compileRuleMap` hand back `coverageDefinitions` directly.
    *
    * THE POOL IS THE WHOLE DENOMINATOR, not merely the instrumented sites. A
    * definition with no `OP_COV` row can never be hit, so it drags the ratio DOWN.
@@ -656,7 +656,7 @@ export function foldPrograms(
      * variant inherits it.
      *
      * This mattered the moment `65fc9a4` moved `fold.ts` off the bytecode
-     * interpreter onto `assembledRules`: the interpreter never evaluated
+     * interpreter onto `tableRules`: the interpreter never evaluated
      * anything, so the fold path was trivially clean, and swapping the driver
      * silently handed every folded artifact a `new Function` on its first parse.
      * `test/unit/no-function-constructor.test.ts` caught it on the merge.

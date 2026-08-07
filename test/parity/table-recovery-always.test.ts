@@ -2,7 +2,7 @@
  * RECOVERY IS ALWAYS LOWERED; A STRICT PARSE IS STILL STRICT.
  *
  * `TableSettings.recovery` used to gate whether the encoder laid down recovery
- * rows at all, which made `compileTable(...).parseWithErrors()` THROW unless the
+ * rows at all, which made `compile(...).parseWithErrors()` THROW unless the
  * caller passed a flag `compile()` does not require — a `CompiledParser` contract
  * break. The owner's ruling is that recovery is always lowered: the emitted
  * module grows (json 1,081 → 1,214 B, graphql 2,925 → 3,397 B) against codegen's
@@ -21,10 +21,10 @@ import {
   literal, regex, sepBy, sequence,
   type Combinator, type ParseContext, type ParseError, type ParseResult,
 } from '../../src/index.ts'
-import { compileTable } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { execRules } from '../../src/table/exec.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { REC } from '../../src/recovery/scan.ts'
 
 const decl = sequence(regex(/[a-z]+/), literal(':'), regex(/[0-9]+/))
@@ -45,8 +45,8 @@ function strict(entry: Combinator<unknown>, input: string): {
   const assembledErrors: ParseError[] = []
   return {
     interpreted: entry.parse(input, 0, { trackLines: false, _errors: [] } as unknown as ParseContext),
-    exec: tableRules(prog)['Entry']!(input, 0, { trackLines: false, _errors: execErrors } as unknown as ParseContext),
-    assembled: assembledRules(prog)['Entry']!(input, 0, { trackLines: false, _errors: assembledErrors } as unknown as ParseContext),
+    exec: execRules(prog)['Entry']!(input, 0, { trackLines: false, _errors: execErrors } as unknown as ParseContext),
+    assembled: tableRules(prog)['Entry']!(input, 0, { trackLines: false, _errors: assembledErrors } as unknown as ParseContext),
     execErrors,
     assembledErrors,
   }
@@ -73,14 +73,14 @@ describe('table lowering — recovery always lowered, still dormant', () => {
     const ctx = {
       trackLines: false, _errors: errors, _tolerant: true, _rec: REC,
     } as unknown as ParseContext
-    const r = assembledRules(prog)['Entry']!(INPUT, 0, ctx)
+    const r = tableRules(prog)['Entry']!(INPUT, 0, ctx)
     expect(r.ok).toBe(true)
     expect(errors.length).toBeGreaterThan(0)
   })
 
   it('parseWithErrors() works on a parser built with NO options at all', () => {
     // The refusal this replaces was the whole reason recovery was optional.
-    const r = compileTable(block).parseWithErrors(INPUT)
+    const r = compile(block).parseWithErrors(INPUT)
     expect(r.ok).toBe(true)
     expect(r.errors.length).toBeGreaterThan(0)
   })

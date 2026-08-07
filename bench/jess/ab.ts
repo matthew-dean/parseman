@@ -63,7 +63,7 @@
  * flag was spelled `codegen` and defaulted on both sides, but `codegen` only ever
  * named the MACRO — and `src/compiler/codegen.ts` is DELETED at HEAD, where the
  * macro instead routes `compileLinkableTable` → `compileRuleMapRunnable` →
- * `assembledRules` → the emitted assembly. So the banner announced one engine
+ * `tableRules` → the emitted assembly. So the banner announced one engine
  * while the run measured 0.46's source lowering against HEAD's emitted table.
  * The harness could already SEE it — the leg shapes read `entryFn 888 B` against
  * `(anon) 406 B`, and `Leg`'s own comment says two legs whose shapes differ "are
@@ -74,6 +74,22 @@
  * user of that release gets, which is the right thing for a release A/B. Only the
  * CLAIM is corrected. `Leg.lowering` is detected per side and printed, and the
  * banner names the two lowerings rather than asserting they are one.
+ *
+ * ## ENGINE TOKEN LEGEND
+ *
+ * The `ENGINES` tokens are a WIRE CONTRACT — committed invocations and
+ * `bench/jess/ab-config.json` pass them — so they keep their historical
+ * spelling. This is what each one actually binds AT HEAD:
+ *
+ *   table        execRules()   the REFERENCE bytecode interpreter (NOT what ships)
+ *   macro        the macro     at HEAD, the shipped ASSEMBLER; at the pinned
+ *                              reference release it may still be a source
+ *                              lowering, which is why `Leg.lowering` is DETECTED
+ *                              per side rather than assumed
+ *   interpreter  the combinator graph
+ *   codegen      ACCEPTED ALIAS for `macro`, normalised by `normEngine`. It names
+ *                a request, not an engine: `src/compiler/codegen.ts` was DELETED
+ *                in `37c57b5`, so nothing at HEAD lowers to source.
  *
  * ## Reading a result — three things, not one
  *
@@ -273,7 +289,7 @@ type Leg = {
    * the answer is a property of the side's `src/`, not of the flag. 0.46 has
    * `src/compiler/codegen.ts` and lowers to generated source; HEAD deleted it and
    * the macro routes `compileLinkableTable` → `compileRuleMapRunnable` →
-   * `assembledRules` → the EMITTED ASSEMBLY. So the historic default of
+   * `tableRules` → the EMITTED ASSEMBLY. So the historic default of
    * `codegen` on both sides names one engine and runs two.
    *
    * That is still the right comparison for a RELEASE — it is what users get on
@@ -304,7 +320,7 @@ function shapeOf(entry: unknown): string {
 
 type TableModule = {
   encodeTable: (rules: Record<string, unknown>, settings: unknown) => unknown
-  tableRules: (t: unknown) => Record<string, unknown>
+  execRules: (t: unknown) => Record<string, unknown>
 }
 
 /**
@@ -319,7 +335,7 @@ type TableModule = {
  * that to it. Every leg isolated, both sides built the same way, and the
  * self-check reads flat.
  *
- * `run`, `encodeTable` and `tableRules` come from the SIDE'S OWN `src/`. A
+ * `run`, `encodeTable` and `execRules` come from the SIDE'S OWN `src/`. A
  * reference leg driven by HEAD's `run()` is HEAD wearing the reference's name.
  */
 /** This worktree's `src/`, resolved the same way `ab-hooks.mjs` resolves it. */
@@ -394,8 +410,8 @@ async function buildLeg(side: string, engine: Engine, dialect: Dialect, src: str
     )
   }
   const enc = await import(`pm-side:${side}:${path.join(src, 'table/encode.ts')}`) as Pick<TableModule, 'encodeTable'>
-  const exec = await import(`pm-side:${side}:${path.join(src, 'table/exec.ts')}`) as Pick<TableModule, 'tableRules'>
-  const entry = exec.tableRules(enc.encodeTable(rules, VARIANT_SETTINGS.ast))[ENTRY] as Entry
+  const exec = await import(`pm-side:${side}:${path.join(src, 'table/exec.ts')}`) as Pick<TableModule, 'execRules'>
+  const entry = exec.execRules(enc.encodeTable(rules, VARIANT_SETTINGS.ast))[ENTRY] as Entry
   return { entry, run: runner, engine, side, srcReal, shape: shapeOf(entry), lowering }
 }
 

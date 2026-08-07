@@ -508,7 +508,7 @@ function makeDriver(
  * The entries have the SAME signature as codegen rule functions, so `run()`,
  * the linker's public wrappers and every consumer are unchanged.
  */
-export function tableRulesBaseline(source: TableProgram | CompactProgram): Record<string, TableRule> {
+export function execRulesBaseline(source: TableProgram | CompactProgram): Record<string, TableRule> {
   const prog = expandCompact(source)
   const t = resolveTable(prog)
   const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp)

@@ -3,7 +3,7 @@ import type { HostMode } from '../cst/host-mode.ts'
 import { createParseContext } from '../parse-context.ts'
 import { encodeTableProgram, type TableSettings } from './encode.ts'
 import { emitTableModule, emitTableExpression } from './emit.ts'
-import { assembledRules } from './assemble.ts'
+import { tableRules } from './assemble.ts'
 import { buildGrammarPlan } from '../compiler/grammar-coverage-ids.ts'
 import { runDuplicationDiagnostic, type DuplicationOption } from './duplication-hook.ts'
 import { beginCompileDegradationDrain } from '../compiler/degradation.ts'
@@ -22,7 +22,7 @@ const ENTRY = 'Entry'
  * THE LAST RESORT FOR A REDUCER'S SOURCE — the function's own text.
  *
  * Third in precedence, behind the encoder's captured `fnSrc`/`buildSrc`/`predSrc`
- * and behind a positional list. It exists because `compileTable` is the library
+ * and behind a positional list. It exists because `compile` is the library
  * `compile()` (`src/index.ts`), and a grammar BUILT AT RUNTIME has no captured
  * sources at all — every `examples/*` fixture is one. Refusing them outright would
  * make `.source` and `.inlineExpression` empty for every library caller, which
@@ -107,7 +107,7 @@ export type TableCompileOptions = {
   readonly fnSources?: readonly string[]
 }
 
-export function compileTable<T>(
+export function compile<T>(
   combinator: Combinator<T>,
   mapFnSources?: readonly string[],
   opts: TableCompileOptions = {},
@@ -126,13 +126,13 @@ export function compileTable<T>(
   const drain = beginCompileDegradationDrain()
   let compiled = false
   try {
-    const out = compileTableImpl(combinator, mapFnSources, opts)
+    const out = compileImpl(combinator, mapFnSources, opts)
     compiled = true
     return out
   } finally { drain(compiled) }
 }
 
-function compileTableImpl<T>(
+function compileImpl<T>(
   combinator: Combinator<T>,
   mapFnSources?: readonly string[],
   opts: TableCompileOptions = {},
@@ -149,10 +149,10 @@ function compileTableImpl<T>(
   // (emit.ts:178/219/252), so every author reducer — `node` build fns, `transform`,
   // `leaf` — became an empty arrow. The grammar still parsed, still returned `ok`,
   // and returned `undefined` where the interpreter and codegen both returned a tree.
-  // `compileRuleMapTable` has guarded this since it was written (compile-rule-map.ts);
+  // `compileRuleMap` has guarded this since it was written (compile-rule-map.ts);
   // this is the same guard on the single-root entry point.
   const { prog, fnSrcs } = encodeTableProgram({ [ENTRY]: combinator as Combinator<unknown> }, settings)
-  const entry = assembledRules(prog)[ENTRY]!
+  const entry = tableRules(prog)[ENTRY]!
 
   // Captured-first, supplied-as-fill-in. The encoder records a source per author
   // callback from the def (`fnSrc` / `buildSrc` / `predSrc` / `gateSrcs`), which the

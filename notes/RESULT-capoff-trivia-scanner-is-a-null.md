@@ -85,7 +85,7 @@ This section previously read "unexplained". `lane/linker-engine` settled it in
 `249cbd9`, and the answer is that **neither harness was wrong: they measure
 different artifacts.**
 
-- `g5-ms.ts` measures `assembledRules` over the **interpreted fuse's** realised
+- `g5-ms.ts` measures `tableRules` over the **interpreted fuse's** realised
   rule map (`grammars.ts:75-85`).
 - `fixture.ts` measures the **macro-fused shipping artifact** (`import('pm-macro:…')`).
 

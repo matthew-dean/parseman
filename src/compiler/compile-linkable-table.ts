@@ -4,7 +4,7 @@ import { childrenOf } from '../analysis/gating.ts'
 import { collectGrammarReflection, type GrammarReflection } from '../cst/reflection.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { serializeRuleMap } from './ir-serialize.ts'
-import { compileRuleMapTable, compileRuleMapRunnable, type TableRuleMapOptions } from '../table/compile-rule-map.ts'
+import { compileRuleMap, compileRuleMapRunnable, type TableRuleMapOptions } from '../table/compile-rule-map.ts'
 import type { TableProgram, TableRule } from '../table/program.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 
@@ -161,14 +161,14 @@ export function compileLinkableTable(
   // explicit option still runs. `'off'` is passed rather than omitted because omitting
   // it is what resolves to the env var.
   const dedupOpts = { ...opts, duplication: opts.duplication ?? ('off' as const) }
-  const compiled = external.length === 0 ? compileRuleMapTable(ruleMap, dedupOpts) : null
+  const compiled = external.length === 0 ? compileRuleMap(ruleMap, dedupOpts) : null
   // Serialized BEFORE anything else needs it and independently of whether the
   // piece encoded: a shape with a hole is precisely the case that has no table
   // and must still compose.
   const ir = serializeRuleMap(ruleMap, opts.scanSkip ?? null)
   // RUNNABLE IS NOT PRINTABLE, and `linkable()` only needs the first.
   //
-  // `compileRuleMapTable` refuses a map whose reducers have no captured SOURCE, because
+  // `compileRuleMap` refuses a map whose reducers have no captured SOURCE, because
   // printing one would emit `() => {}` and silently return the wrong tree. That gate is
   // right for the macro, which prints — and wrong here: a grammar BUILT AT RUNTIME (every
   // interpreter-path `linkable()` caller) has live callbacks and no sources by
@@ -176,7 +176,7 @@ export function compileLinkableTable(
   // made `linkable()` reject the ordinary runtime grammar the source lowering accepted.
   //
   // So: encode again for RUNNING only. `prog` still holds the live callbacks in its
-  // pool, `assembledRules` binds them, and `replacement` stays null — which is the
+  // pool, `tableRules` binds them, and `replacement` stays null — which is the
   // artifact honestly saying it cannot be emitted as source.
   const runnable = compiled === null && external.length === 0
     ? compileRuleMapRunnable(ruleMap, dedupOpts)

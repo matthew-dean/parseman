@@ -3,10 +3,10 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { compileTable } from '../../src/table/compile.ts'
-import { compileRuleMapTable } from '../../src/table/compile-rule-map.ts'
+import { compile } from '../../src/table/compile.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { opHistogram } from '../../src/table/inspect.ts'
 import { buildGrammarPlan } from '../../src/compiler/grammar-coverage-ids.ts'
 import {
@@ -24,7 +24,7 @@ import type { ParseResult } from '../../src/types.ts'
 /**
  * GRAMMAR-COVERAGE COUNTERS FOR THE TABLE LOWERING.
  *
- * `compileTable` and `compileRuleMapTable` used to THROW on `{ coverage: true }`,
+ * `compile` and `compileRuleMap` used to THROW on `{ coverage: true }`,
  * which was the honest answer while there was nothing to count — but it made a
  * coverage-enabled macro build impossible under the table. These are the counters.
  *
@@ -61,7 +61,7 @@ const jsonEntries = Object.entries(jsonRules as unknown as Record<string, Combin
 /**
  * A coverage-encoded rule map, assembled, WITHOUT going through the printer.
  *
- * `compileRuleMapTable` answers `null` for a grammar whose reducers reached it as
+ * `compileRuleMap` answers `null` for a grammar whose reducers reached it as
  * live closures with no source — an all-or-nothing PRINTING gate, unrelated to
  * coverage, and every grammar built inside a test is in that position. The
  * counters are the same rows either way, so the cases that only need to observe
@@ -77,7 +77,7 @@ function covRules(g: Record<string, Combinator<unknown>>): {
     Object.fromEntries(entries.filter(([, r]) => r._def.tag !== 'lazy')),
   )
   const prog = encodeTable(g, { coverage: plan })
-  return { rules: assembledRules(prog) as unknown as Record<string, Rule>, definitions: plan.definitions }
+  return { rules: tableRules(prog) as unknown as Record<string, Rule>, definitions: plan.definitions }
 }
 
 /** Parse once with a collector attached and hand back the ids it recorded. */
@@ -92,7 +92,7 @@ function hits(rule: Rule, definitions: readonly GrammarCoverageDefinition[], inp
 describe('the table lowering counts grammar coverage', () => {
   it('mints the SAME definitions the shared planner does, for a single root', () => {
     const root = (jsonRules as unknown as Record<string, Combinator<unknown>>)['Value']!
-    const tabled = compileTable(root, undefined, { coverage: true })
+    const tabled = compile(root, undefined, { coverage: true })
     // Not "both are non-empty" — EQUAL, and equal to `buildGrammarPlan` rather
     // than to another ENGINE. The ids are the contract and `buildGrammarPlan` is
     // the single place they are minted (`compile.ts:117` passes the root to it
@@ -104,7 +104,7 @@ describe('the table lowering counts grammar coverage', () => {
   })
 
   it('mints the SAME definitions as the source lowering, for a rule map', () => {
-    const compiled = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
+    const compiled = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
     // `compileRuleMap` cannot return a replacement for this map (its reducers
     // reach a module-level helper, so nothing can be inlined) and answers `null`.
     // Its DEFINITIONS are still `buildGrammarPlan`'s, built from the same winner
@@ -118,7 +118,7 @@ describe('the table lowering counts grammar coverage', () => {
   })
 
   it('records RULE and CHOICE-ARM hits, and only the ones the input reaches', () => {
-    const compiled = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
+    const compiled = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
     const definitions = compiled.coverageDefinitions!
     const value = compiled.rules['Value'] as unknown as Rule
 
@@ -147,7 +147,7 @@ describe('the table lowering counts grammar coverage', () => {
     // `Arr` contains `Value` contains `Arr`. The encoder patches recursion with an
     // `OP_RULE` trampoline, and the counter has to be on the offset the trampoline
     // is patched WITH — otherwise the second and deeper entries jump past it.
-    const compiled = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
+    const compiled = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
     const arr = compiled.rules['Arr'] as unknown as Rule
     expect(hits(arr, compiled.coverageDefinitions!, '[[1]]')).toContain('rule:Arr')
   })
@@ -189,9 +189,9 @@ describe('the table lowering counts grammar coverage', () => {
     // bigger" is only acceptable while the ordinary table is byte-for-byte what it
     // was. Both the emitted text and the reachable opcode histogram are compared,
     // because a row that is present and unreachable would not show in the text.
-    const plain = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES })!
-    const explicitlyOff = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: false })!
-    const covered = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
+    const plain = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES })!
+    const explicitlyOff = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: false })!
+    const covered = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
 
     expect(plain.replacement).toBe(explicitlyOff.replacement)
     expect(plain.replacement).not.toContain('cv:')
@@ -238,8 +238,8 @@ describe('the table lowering counts grammar coverage', () => {
     // assembly for `coverage: false` returns the child piece itself), so this is
     // the assertion that the option is selected at ASSEMBLY and not tested per
     // node.
-    const compiled = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
-    const plain = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES })!
+    const compiled = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
+    const plain = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES })!
     const input = '{"a":[1,true,null,"s"]}'
     const covered = (compiled.rules['Value'] as unknown as Rule)(input, 0, { trackLines: false })
     const ordinary = (plain.rules['Value'] as unknown as Rule)(input, 0, { trackLines: false })
@@ -249,7 +249,7 @@ describe('the table lowering counts grammar coverage', () => {
   it('a trace sink receives NOTHING — the 0.48 gap is known, not silent', () => {
     // Stated as a test rather than left to a comment. If trace parity lands, this
     // is the assertion that has to be rewritten, which is the point of pinning it.
-    const compiled = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
+    const compiled = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
     const events: unknown[] = []
     const ctx = createGrammarInstrumentationContext({
       collector: createGrammarCoverageCollector(compiled.coverageDefinitions!),
@@ -265,7 +265,7 @@ describe('the table lowering counts grammar coverage', () => {
     // pool has to pass it — an `[id, kind]` pair that read back with a `kind`
     // outside the union would be rejected there, one hop away from where it was
     // produced.
-    const compiled = compileRuleMapTable(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
+    const compiled = compileRuleMap(jsonEntries, { fnSources: JSON_FN_SOURCES, coverage: true })!
     const grammar: Record<string | symbol, unknown> = { ...compiled.rules }
     grammar[GRAMMAR_COVERAGE_DEFINITIONS] = compiled.coverageDefinitions
     expect(compiledGrammarCoverageDefinitions(grammar as Record<string, unknown>))

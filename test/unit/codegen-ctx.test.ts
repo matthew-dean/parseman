@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import { literal, sequence, choice, many, optional, transform, parse } from '../../src/index.ts'
 import { gate, withCtx } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 
 // ---------------------------------------------------------------------------
 // gate() codegen

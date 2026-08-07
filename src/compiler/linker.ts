@@ -21,7 +21,7 @@ import { FUSED_HOST_MODE, FUSED_HOST_ELIDED, type HostMode } from '../cst/host-m
 import { evalRuleMapIR, serializeRuleMap } from './ir-serialize.ts'
 import { compileLinkableTable, type LinkableTable } from './compile-linkable-table.ts'
 import { compileRuleMapRunnable } from '../table/compile-rule-map.ts'
-import { assembledRules } from '../table/assemble.ts'
+import { tableRules } from '../table/assemble.ts'
 import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, ParseContext, ParseResult } from '../types.ts'
@@ -310,7 +310,7 @@ function fuseCarried(
   materializeDirectBuilders(merged)
   // COMPOSING-WINS is an OVERRIDE, not a gap-fill: the composing grammar's trivia
   // governs every fused rule INCLUDING inherited ones. `applyAmbient` inside
-  // `compileRuleMapTable` only fills a rule that declares none, which would leave an
+  // `compileRuleMap` only fills a rule that declares none, which would leave an
   // inherited rule still skipping its own base's whitespace after a delta re-declared
   // it. Safe to mutate — `evalRuleMapIR` builds fresh combinators per fuse.
   if (trivia) {
@@ -331,12 +331,12 @@ function fuseCarried(
   if (compiled === null) {
     throw new Error(`compose: the merged grammar could not be encoded to a table${refusals.length ? ` — ${refusals.join('; ')}` : ''}`)
   }
-  // `assembledRules`, NOT `exec.ts`'s same-named `tableRules`. Both return
+  // `tableRules`, NOT `exec.ts`'s same-named `tableRules`. Both return
   // `Record<string, TableRule>`, so binding the interpreter here type-checked and ran
   // correctly — it was just the SLOW engine, on the one path (compose/fuse) that never
-  // goes through `table/index.ts` and so never saw the `assembledRules as tableRules`
+  // goes through `table/index.ts` and so never saw the `tableRules as tableRules`
   // re-export. Import the assembler by its own name so the binding cannot go stale again.
-  const map = assembledRules(compiled.prog) as unknown as Record<string, FusedRule>
+  const map = tableRules(compiled.prog) as unknown as Record<string, FusedRule>
   // The host-mode stamp went on the fused closure before; a table carries nothing until
   // it is stamped, and an UNSTAMPED map reads as `{ ast, false }` so every driver
   // compatibility check passes vacuously. Stamped on the rule functions too, because

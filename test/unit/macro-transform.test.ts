@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
-import { compileTable as compileCodegen } from '../../src/table/compile.ts'
-import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { compile } from '../../src/table/compile.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import * as pm from '../../src/index.ts'
 
 /**
@@ -69,7 +69,7 @@ const method = literal('GET', { caseInsensitive: true })
     // Case-insensitive literals lower to the ASCII bit-OR fold `(c | 32) === …`,
     // NOT Intl.Collator (removed — measured ~9× slower).
     expect(result.code).not.toContain("from 'parseman'")
-    const lowered = compileCodegen(pm.literal('GET', { caseInsensitive: true })).source
+    const lowered = compile(pm.literal('GET', { caseInsensitive: true })).source
     expect(lowered).not.toContain('_collator')
     expect(lowered).not.toContain('Intl.Collator')
   })
@@ -320,7 +320,7 @@ const kw = word('true')
     expect(result.code).not.toContain('_rp[')
     // Fixed literal + boundary lowers to charCodeAt dispatch, not RegExp.exec —
     // see emitKeywordsFast (PERF_IDEAS §8b follow-up).
-    const lowered = compileCodegen(pm.word('true')).source
+    const lowered = compile(pm.word('true')).source
     expect(lowered).not.toContain('.exec(input)')
   })
 
@@ -332,7 +332,7 @@ const kw = word('true', { caseInsensitive: true })
     const result = transform(code)!
     expect(result.code).not.toContain("from 'parseman'")
     expect(result.code).not.toContain('_rp[')
-    expect(compileCodegen(pm.word('true', { caseInsensitive: true })).source)
+    expect(compile(pm.word('true', { caseInsensitive: true })).source)
       .toContain('/(?:true)(?![_0-9A-Za-z])/iy')
   })
 
@@ -345,7 +345,7 @@ const ifKw = kw('if')
     const result = transform(code)!
     expect(result.code).not.toContain('_rp[')
     expect(result.code).toContain('const ifKw =')
-    const lowered = compileCodegen(pm.makeWord()('if')).source
+    const lowered = compile(pm.makeWord()('if')).source
     expect(lowered).not.toContain('.exec(input)')
   })
 
@@ -402,7 +402,7 @@ const block = sequence(literal('{'), many(regex(/[a-z]+/)), literal('}'))
     const on = transformMacro(grammar, 'test.ts', new Set(['parseman']), false, true)!
     expect(on.code).not.toContain('_rp[')        // NOT _rp → stays macro-inlinable
     const block = pm.sequence(pm.literal('{'), pm.many(pm.regex(/[a-z]+/)), pm.literal('}'))
-    const lowered = compileCodegen(block, undefined, { recovery: true })
+    const lowered = compile(block, undefined, { recovery: true })
     expect(lowered.inlineExpression).toContain('tableRules(')  // still inlined
   })
 

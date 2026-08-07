@@ -1036,7 +1036,7 @@ ${rootCap ? 'ctx._rootTriviaCapture=sR\n' : ''}return v
         // `try`/`finally`, AS `assemble.ts` HAS IT. `OP_SCOPE` restores linearly
         // and this does not, and the difference is not an oversight in either:
         // `test/unit/token.test.ts:198` pins CONTEXT RESTORATION ON A THROWING
-        // BODY across the interpreter and `compileTable`, and jess's reducers
+        // BODY across the interpreter and `compile`, and jess's reducers
         // throw on purpose — that is how its dialects reject illegal constructs
         // (`bench/jess/digest.ts:64`). A boundary that leaked `ctx.trivia` and
         // five capture sinks on the way out would corrupt every subsequent parse

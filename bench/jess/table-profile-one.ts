@@ -8,6 +8,14 @@
  * measured on json is therefore not a cost share for less, and this exists so
  * the named fixture gets profiled rather than extrapolated to.
  *
+ * ENGINE TOKEN LEGEND — the argv tokens below are a WIRE CONTRACT and keep their
+ * historical spelling; this is what each one actually binds:
+ *   table     execRules()   the REFERENCE bytecode interpreter (NOT what ships)
+ *   compiled  compose()     the shipped ASSEMBLER
+ *   interp    the combinator graph
+ * There is no source-lowering "codegen" engine to select — `src/compiler/codegen.ts`
+ * was DELETED in `37c57b5`.
+ *
  * Usage: `node --import ./bench/jess/register.mjs bench/jess/table-profile-one.ts <dialect> <table|compiled|interp> [reps]`
  */
 import { Session } from 'node:inspector/promises'
@@ -15,7 +23,7 @@ import { readFileSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { compose } from '../../src/compiler/linker.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { tableRules } from '../../src/table/exec.ts'
+import { execRules } from '../../src/table/exec.ts'
 import { run } from '../../src/functional/run.ts'
 import { ENTRY, JESS_ROOT, loadGrammar, type Dialect } from './grammars.ts'
 
@@ -24,6 +32,12 @@ type ProfileNode = { callFrame: { functionName: string; url: string; lineNumber:
 
 const dialect = (process.argv[2] ?? 'less') as Dialect
 const which = process.argv[3] ?? 'table'
+/** Token -> the engine it actually binds. See the legend in the header. */
+const ENGINE_NAME: Record<string, string> = {
+  table: 'exec (reference bytecode interpreter)',
+  compiled: 'assembled (shipped)',
+  interp: 'interpreter (combinator graph)',
+}
 const reps = Number(process.argv[4] ?? 60)
 const FIXTURE = process.env.PM_FIXTURE ?? 'packages/jess/benchmark/benchmark.less'
 const input = readFileSync(resolvePath(JESS_ROOT, FIXTURE), 'utf8')
@@ -33,7 +47,7 @@ const entry: Entry = which === 'compiled'
   ? (compose([g.rules as never]) as unknown as Record<string, Entry>)[ENTRY]!
   : which === 'interp'
     ? g.rules[ENTRY]! as unknown as Entry
-    : tableRules(encodeTable(g.rules, {}))[ENTRY]! as unknown as Entry
+    : execRules(encodeTable(g.rules, {}))[ENTRY]! as unknown as Entry
 
 const fn = (): void => { run(entry, input) }
 
@@ -59,7 +73,7 @@ for (const n of nodes) {
   const key = `${f.functionName || '(anon)'}  ${file}:${f.lineNumber + 1}`
   by.set(key, (by.get(key) ?? 0) + h)
 }
-console.log(`${dialect}/${which} — ${total} samples over ${reps} parses of ${FIXTURE} (${input.length} B)`)
+console.log(`${dialect}/${which} = ${ENGINE_NAME[which] ?? 'UNKNOWN TOKEN'} — ${total} samples over ${reps} parses of ${FIXTURE} (${input.length} B)`)
 for (const [k, v] of [...by.entries()].sort((a, b) => b[1] - a[1]).slice(0, 18)) {
   console.log(`  ${(100 * v / total).toFixed(1).padStart(5)}%  ${k}`)
 }

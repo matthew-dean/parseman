@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
 import { tableRules } from '../../src/table/index.ts'
 import { choice, compiledGrammarCoverageDefinitions, createGrammarCoverageCollector, createGrammarInstrumentationContext, createGrammarTraceSink, dispatch, endsWith, leaf, label, literal, many, otherwise, regex, rules, run, runWithGrammarCoverage, sequence, startsWith, when, type GatedArm } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
-import { compileRuleMapTable as compileRuleMap } from '../../src/table/compile-rule-map.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 
 /**
  * THESE ARE CODEGEN TESTS, and they are pinned to codegen ON PURPOSE.

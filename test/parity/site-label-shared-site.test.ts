@@ -22,9 +22,9 @@ import { describe, it, expect } from 'vitest'
 import {
   rules, parser, trivia, sequence, literal, oneOrMore, choice, regex, parse,
 } from '../../src/index.ts'
-// `index.ts:36` exports `compileTable` AS `compile`, so the public compiler IS
+// `index.ts:36` exports `compile` AS `compile`, so the public compiler IS
 // the table — named here for what it is, since this test is about the emitter.
-import { compileTable } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 import type { Combinator, ParseResult } from '../../src/types.ts'
 
 const ws = trivia(oneOrMore(regex(/[ \t\n]+/)))
@@ -46,7 +46,7 @@ describe('a site reached from two different trivia scopes is labelled by the MEE
   /** The interpreter is the semantic reference; the table is what emits per site. */
   const all = (input: string): Record<string, number | 'FAIL'> => ({
     interpreted: end(parse(g.Doc!, input)),
-    table: end(compileTable(g.Doc!).parse(input)),
+    table: end(compile(g.Doc!).parse(input)),
   })
 
   const same = (v: number | 'FAIL'): Record<string, number | 'FAIL'> =>

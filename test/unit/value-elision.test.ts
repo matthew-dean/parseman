@@ -23,7 +23,7 @@ import {
   parse, parser, node, rules, ref,
 } from '../../src/index.ts'
 import type { Combinator, ParserDef, CSTNode, Span } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
+import { compile } from '../../src/table/compile.ts'
 import { markUnusedValues } from '../../src/compiler/value-usage.ts'
 
 const digits = regex(/[0-9]+/)

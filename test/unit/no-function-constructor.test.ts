@@ -31,7 +31,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { encodeTable, type TableSettings } from '../../src/table/encode.ts'
-import { assembledRules, AssemblyCache } from '../../src/table/assemble.ts'
+import { tableRules, AssemblyCache } from '../../src/table/assemble.ts'
 import { emitTableModule, emitTableExpression } from '../../src/table/emit.ts'
 import { run } from '../../src/functional/run.ts'
 import {
@@ -91,7 +91,7 @@ function functionConstructorCalls(body: () => void): string[] {
  * export").
  */
 function macroArtifact(map: RuleMap, settings: TableSettings = {}): {
-  rules: ReturnType<typeof assembledRules>
+  rules: ReturnType<typeof tableRules>
   source: string
 } {
   const prog = encodeTable(map, settings)
@@ -101,7 +101,7 @@ function macroArtifact(map: RuleMap, settings: TableSettings = {}): {
   // artifact; this test asserts on the same object both halves describe.
   const emitsAssemblyField = /\ba:\[/.test(source)
   expect(emitsAssemblyField, 'the emitted module must carry the `a:` field').toBe(true)
-  return { rules: assembledRules({ ...prog, asm: [] }), source }
+  return { rules: tableRules({ ...prog, asm: [] }), source }
 }
 
 /**
@@ -186,7 +186,7 @@ describe('the macro path never reaches the Function constructor', () => {
     expect(loaded.asm?.length, 'the loaded artifact carries its assemblies').toBe(2)
 
     const calls = functionConstructorCalls(() => {
-      const entry = assembledRules(loaded).Value!
+      const entry = tableRules(loaded).Value!
       const r = run(entry as never, '{"a":[1,-2.5,true,null,"x"]}', { trivia: jsonWs as never })
       if (!r.ok) throw new Error(`emitted module: parse failed — expected ${JSON.stringify(r.expected)}`)
     })
@@ -209,7 +209,7 @@ describe('the macro path never reaches the Function constructor', () => {
    * `tableVariants`/`variantNames` are public exports of `src/table/index.ts`
    * and `emit.ts` writes `import { tableVariants }` into every folded module, so
    * this is a shipped path. It bound the BYTECODE INTERPRETER (`exec.ts`) until
-   * `65fc9a4` moved it onto `assembledRules` — and the interpreter never
+   * `65fc9a4` moved it onto `tableRules` — and the interpreter never
    * evaluated anything, so the fold was trivially clean and the driver swap
    * silently handed every folded artifact a `new Function` on its first parse.
    * This case caught that on the merge, which is the whole argument for a

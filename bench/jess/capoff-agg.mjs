@@ -9,7 +9,7 @@
  *
  * Column names are the CORRECTED ones. `fixture.ts` prints "codegen" for the
  * pm-macro leg, which resolves through `parseman/table` to
- * `src/table/index.ts:28`'s `assembledRules as tableRules` — the shipped
+ * `src/table/index.ts:28`'s `tableRules as tableRules` — the shipped
  * ASSEMBLER. It prints "table" for a direct `src/table/exec.ts` import — the
  * reference INTERPRETER, which `src/table/index.ts:24-26` says is not on the
  * product path. `src/compiler/codegen.ts` was deleted in 37c57b5.

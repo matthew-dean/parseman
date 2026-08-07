@@ -4,7 +4,7 @@
  * `src/table/emit.ts` still carries `opts.fnSources ?? prog.fns.map(() => '() => {}')`
  * at three sites. That fallback is legitimate for `emitTableOnly()`, which is
  * measuring machinery on purpose — and it is a silent catastrophe anywhere else:
- * `compileTable` used to reach it for every author callback, and the module it
+ * `compile` used to reach it for every author callback, and the module it
  * printed loaded, parsed, reported `ok`, and returned `undefined` where both
  * other engines returned a tree. Nothing failed. Nothing warned.
  *

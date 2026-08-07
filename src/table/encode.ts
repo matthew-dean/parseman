@@ -103,7 +103,7 @@ export type TableSettings = {
    * (`codegen.ts:3153`) and the interpreter tests (`repeat.ts:163`) — so a strict
    * parse is strict, and `test/parity/table-recovery-always.test.ts` pins that.
    *
-   * The field is kept rather than deleted so `compileTable` stays signature-
+   * The field is kept rather than deleted so `compile` stays signature-
    * compatible with `compile()`, whose `{ recovery: true }` is real. Passing it
    * is harmless; passing `false` does NOT switch recovery off, and saying so here
    * is the point — a setting that silently means nothing is the defect class this

@@ -60,8 +60,10 @@ this way. The modes, each with the instance that shipped:
 - **A result dominated by an artifact of the harness** — leg count changing V8
   inlining, leg order, output paths, a dirty working tree.
 - **An import that reaches past the shipped export.** A sweep imported
-  `tableRules` from `exec.ts` while the shipped name is `assembledRules`, and
-  gated a driver nothing ships.
+  `tableRules` from `exec.ts` while the shipped function of that name lived in
+  `assemble.ts`, and gated a driver nothing ships. Both halves are now retired:
+  the reference export is `execRules`, the shipped one is `tableRules` and is
+  re-exported UNRENAMED, and INV-11 fails any `as` that mints a second name.
 
 Two standing obligations:
 

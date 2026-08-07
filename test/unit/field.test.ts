@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { evalMacroModule } from '../helpers/eval-macro-module.ts'
-import { compileTable as compileCodegen } from '../../src/table/compile.ts'
-import { compileRuleMapTable as compileRuleMapCodegen } from '../../src/table/compile-rule-map.ts'
+import { compile } from '../../src/table/compile.ts'
+import { compileRuleMap } from '../../src/table/compile-rule-map.ts'
 import * as pm from '../../src/index.ts'
 import {
   choice,
@@ -19,7 +19,6 @@ import {
   run,
   sequence,
 } from '../../src/index.ts'
-import { compileTable as compile } from '../../src/table/compile.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { parserEnablesTriviaCapture } from '../../src/compiler/fields.ts'
 

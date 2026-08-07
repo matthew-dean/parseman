@@ -1,4 +1,4 @@
-import { assembledRules } from './assemble.ts'
+import { tableRules } from './assemble.ts'
 import { expandCompactFolded, unfoldVariant, type CompactFolded, type FoldedProgram, type TableRule } from './program.ts'
 
 /**
@@ -14,7 +14,7 @@ import { expandCompactFolded, unfoldVariant, type CompactFolded, type FoldedProg
  * shipping a single-variant table does not pull the fold in, and so the driver
  * keeps having no import of its own.
  *
- * IT DRIVES `assembledRules`, the shipped engine. This module predates
+ * IT DRIVES `tableRules`, the shipped engine. This module predates
  * `63666b6`, which made the assembler `tableRules` by editing `table/index.ts`
  * ALONE; `fold.ts` imports `exec.ts` directly and so kept the interpreter. Every
  * folded artifact ships `import { tableVariants }` (`emit.ts`), so that was a
@@ -25,7 +25,7 @@ export function tableVariants(
   name: string,
 ): Record<string, TableRule> {
   const folded = 'base' in source ? source : expandCompactFolded(source)
-  return assembledRules(unfoldVariant(folded, name))
+  return tableRules(unfoldVariant(folded, name))
 }
 
 /** The variant names a folded table carries, for a caller that wants to check. */

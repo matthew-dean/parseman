@@ -12,7 +12,7 @@ import { Session } from 'node:inspector/promises'
 import { readFileSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { run } from '../../src/functional/run.ts'
 import { ENTRY, JESS_ROOT, loadGrammar } from './grammars.ts'
 
@@ -24,7 +24,7 @@ const FIXTURE = process.env.PM_FIXTURE ?? 'packages/jess/benchmark/benchmark.les
 const input = readFileSync(resolvePath(JESS_ROOT, FIXTURE), 'utf8')
 
 const g = await loadGrammar('less', 'ast')
-const entry = assembledRules(encodeTable(g.rules, {}))[ENTRY]! as unknown as Entry
+const entry = tableRules(encodeTable(g.rules, {}))[ENTRY]! as unknown as Entry
 const fn = (): void => { run(entry, input) }
 
 const session = new Session()

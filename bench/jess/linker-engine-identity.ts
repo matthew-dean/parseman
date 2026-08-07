@@ -5,7 +5,7 @@
  * timing slot; it answers the correctness half of the linker-engine swap and nothing
  * else. `bench/jess/g5-ms.ts` is the instrument for the timing half.
  *
- * WHAT IS COMPARED. `compose([rules])` against `assembledRules(encodeTable(rules))`
+ * WHAT IS COMPARED. `compose([rules])` against `tableRules(encodeTable(rules))`
  * over the whole corpus of a dialect. After the swap those two run the SAME engine on
  * the SAME merged program, so every row must be `SAME`. Run this with `linker.ts`
  * reverted to `exec.ts` and the rows say whether the interpreter and the assembler
@@ -26,7 +26,7 @@
  */
 import { compose } from '../../src/compiler/linker.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { digestValue } from '../../src/oracle/index.ts'
 import { run } from '../../src/functional/run.ts'
 import { DIALECTS, ENTRY, JESS_ROOT, assertParseman, corpus, loadGrammar, type Dialect } from './grammars.ts'
@@ -61,7 +61,7 @@ function digest(entry: Entry, input: string): { d: string; ok: boolean; consumed
  * supported", …) on the compose leg and not on the direct leg. That gap is
  * `compose()`'s IR round-trip plus `materializeDirectBuilders` re-attaching direct
  * builders, and it PREDATES the engine swap: the identical 20, with identical
- * messages, appear with `compose()` bound to `exec.ts` and to `assembledRules`.
+ * messages, appear with `compose()` bound to `exec.ts` and to `tableRules`.
  * Counted and printed, never conflated with a digest mismatch.
  */
 let bad = 0
@@ -70,7 +70,7 @@ const builderThrows: string[] = []
 for (const dialect of DIALECTS as readonly Dialect[]) {
   const g = await loadGrammar(dialect, 'ast')
   const composed = (compose([g.rules as never]) as unknown as Record<string, Entry>)[ENTRY]!
-  const direct = assembledRules(encodeTable(g.rules, {}))[ENTRY]! as unknown as Entry
+  const direct = tableRules(encodeTable(g.rules, {}))[ENTRY]! as unknown as Entry
   const files = corpus(dialect)
   let same = 0
   let okC = 0
@@ -108,4 +108,4 @@ if (bad > 0) {
   console.log(`${bad} DIGEST DIVERGENCE(S) — the compose path does not agree with the shipped engine.`)
   process.exit(1)
 }
-console.log('compose() === assembledRules on every corpus file that parses, digest including `expected`.')
+console.log('compose() === tableRules on every corpus file that parses, digest including `expected`.')
