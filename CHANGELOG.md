@@ -100,22 +100,22 @@ All notable changes to **Parseman** are documented here, grouped by minor versio
   56 files. jess references none of these names. `ALLOW_COUNT` returned 15 → 14
   as the DEBT entry was paid inside the same lane that opened it.
 
-- **PARSE TIME REGRESSED 2.2×-2.6× AGAINST 0.46, and this release ships with it.**
+- **PARSE TIME REGRESSED 2.3×-2.9× AGAINST 0.46, and this release ships with it.**
   Stated first because two earlier drafts of this record said otherwise.
 
   `bench/jess/ab.ts`, HEAD against `a5dc9bd` (v0.46.0, the anchor in
-  `bench/jess/ab-config.json`), jess's four SHIPPING dialect grammars,
-  `--two-graph`, self-check 0.999-1.033:
+  `bench/jess/ab-config.json`), jess's shipping dialect grammars,
+  `--two-graph`, Node 25.9.0, self checks 0.980-1.027:
 
   | fixture | 0.46 | 0.47 | ratio |
   | --- | ---: | ---: | ---: |
-  | `benchmark.css` (123,029 B) | 5.67 ms | 14.97 ms | **2.641x** |
-  | `benchmark.less` (106,802 B) | 17.40 ms | 38.65 ms | **2.221x** |
-  | `gen-workload.less` (275,211 B) | 49.96 ms | 112.55 ms | **2.253x** |
+  | `benchmark.css` (123,029 B) | 5.37 ms | 15.28 ms | **2.845x** |
+  | `benchmark.less` (106,802 B) | 16.93 ms | 39.60 ms | **2.340x** |
+  | `gen-workload.less` (275,211 B) | 42.13 ms | 110.18 ms | **2.615x** |
 
   **0.47 is where it turns, and 0.46 is not implicated.** `benchmark.less` across
   release anchors reads 17.26 / 16.84 / 17.19 ms at 0.44 / 0.45 / 0.46 — flat —
-  then 38.65 at HEAD.
+  then 39.60 at the audited candidate.
 
   **What was claimed before, and why it was wrong.** A previous version of this
   record, and of `notes/RELEASE-0.48-TARGET.md` §8, said the regression "does not

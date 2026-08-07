@@ -9,36 +9,36 @@ protocol, and status below. Update the row when the final candidate changes.
 | Item | Value | Status |
 | --- | --- | --- |
 | Remote release base | `origin/release/0.47.0` at `9c3ce450ff7cd35efc0cdc76a5f27df65a9fad2b` | pinned |
-| Code candidate | `fix/0.47-audit` at `a076972991316927af7d17d5c83da21a077ae4e9` | all final source/artifact gates below passed except the historical coverage ratchet |
+| Code candidate | `fix/0.47-audit` at `82f6e8e` | final source/artifact and external-parser gates passed; historical coverage ratchet remains red |
 | 0.46 comparison base | `a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3` (`v0.46.0`) | pinned |
 
 ## Correctness and API
 
 | Claim | Evidence | Status |
 | --- | --- | --- |
-| Table/interpreter/closure parity audit | Targeted matrix suite: rule-map, closure engines, commitment, scan shape, trivia skip, linker state, fields, line index, reflection, functional driver, and dispatch matcher matrices | full suite passing (3,813 passed; 3 skipped; 22 todo) |
+| Table/interpreter/closure parity audit | Targeted matrix suite: rule-map, closure engines, commitment, scan shape, trivia skip, linker state, fields, line index, reflection, functional driver, dispatch matcher matrices | full suite passing (3,816 passed; 3 skipped; 22 todo); ordinary-host re-entry now restores all assembly slots on return and throw |
 | Public table API contract | Compile options, host mode, host capability, line/recovery, Unicode class, rule-map isolation regressions | passing in final suite |
 | Grammar analysis reaches every authored child | Dispatch matcher arms, `routed(fallback)`, grammar trivia, and recovery sentinel traversal regressions | passing in final suite |
 | Trace | Table `_grammarTrace` rejects explicitly rather than silently reporting empty data | intentional 0.48 work; documented rejection |
-| V8 construction shape | `src/table/**` contains no descriptor installation or `WeakMap`; table maps are born with metadata prototypes and macro metadata is never own/spread-visible | `INV-12` is a required CI invariant with planted descriptor and `WeakMap` failures; passing |
+| V8 construction shape | `parseman/table`'s complete local import graph contains no import-time descriptor installation or `WeakMap`; table maps are born with metadata prototypes and macro metadata is never own/spread-visible | `INV-12` traverses the entry graph; a fresh built-package import spy observes zero `WeakMap` and zero `Object.defineProperty` calls; passing |
 
 ## Artifact size
 
 | Comparison | Evidence | Result | Status |
 | --- | --- | --- | --- |
 | Generated grammar output | `pnpm size:guard`, 24 established fixtures versus v0.46 | Every fixture remains smaller; structural metadata/cache candidate is 8,385 raw bytes below its guard ceiling. | pass |
-| Published package | `pnpm build && npm pack --dry-run --json --ignore-scripts`, v0.46 comparison | 0.47: 3,062,538 B tarball / 13,020,012 B unpacked; 0.46: 5,200,286 B / 19,958,344 B. 0.47 is 41.1% / 34.8% smaller. | pass |
+| Published package | `pnpm build && npm pack --dry-run --json --ignore-scripts`, v0.46 comparison | 0.47: 3,073,125 B tarball / 13,063,793 B unpacked; 0.46: 5,200,286 B / 19,958,344 B. 0.47 is 40.9% / 34.5% smaller. | pass |
 | Package maps | Build maps exclude repeated `sourcesContent`; package ships `src/` once | 131 maps parse; zero missing mapped sources in package. | pass |
 
 ## Performance: never collapse these rows into one claim
 
 | Comparison | Protocol | Observed result | Meaning | Status |
 | --- | --- | --- | --- | --- |
-| 0.47 table vs 0.46 on Jess/Less | Same-machine two-graph workload comparison | `benchmark.less`: 55.55 vs 17.35 (3.202x slower); generated workload: 162.81 vs 47.81 (3.405x slower) | A real production-shaped regression; 0.48 work, not hidden. | recorded |
-| 0.47 table vs external parsers, JSON | Exact `a076972`, `pnpm bench:margin -- --charts json,csv,graphql`; fresh process/bar, 3 rotated rounds, all rivals 3/3 | PM/Chevrotain: small 0.555/0.952us (1.72x), medium 14.913/28.359us (1.90x), large 116.757/228.239us (1.95x); worst PM A/A 3.0% | External-parser win at every measured size. | pass |
-| 0.47 table vs external parsers, CSV | same | PM: small 0.404us vs Peggy 1.847us (4.58x); large 70.575us vs Parsimmon 412.195us (5.84x); A/A 0.2–1.0% | External-parser win. | pass |
-| 0.47 table vs external parsers, GraphQL | same | PM: small 0.649us vs Peggy 2.072us (3.19x); medium 5.134us vs Chevrotain 12.146us (2.37x); large 111.440us vs Peggy 320.380us (2.87x) | External-parser win at every measured size. | pass |
-| Commented small rows: JSON/CSV/GraphQL | Same final-candidate protocol with all three normally-commented small groups enabled together | All reported above; tightest eligible margin JSON small at 1.72x, above the 1.05x floor. | Diagnostic rows retained; no selective omission. | pass |
+| 0.47 table vs 0.46 on Jess/Less | Exact `82f6e8e` vs `a5dc9bd`, macro→emitted against macro→source, Node 25.9.0, `bench/jess/ab.ts --two-graph` | `benchmark.less`: 39.60 vs 16.93 ms (2.340x slower); generated workload: 110.18 vs 42.13 ms (2.615x slower); CSS: 15.28 vs 5.37 ms (2.845x slower). Full consumption; self checks 0.980-1.027x. | A real production-shaped regression; 0.48 work, not hidden. | recorded |
+| 0.47 table vs external parsers, JSON | Exact `82f6e8e`, `pnpm bench:margin -- --charts json,csv,graphql`; fresh process/bar, 3 rotated rounds, all rivals 3/3 | PM/Chevrotain: small 0.567/0.960us (1.69x), medium 15.191/28.333us (1.87x), large 120.098/228.785us (1.90x); A/A 0.1–0.4% | External-parser win at every measured size. | pass |
+| 0.47 table vs external parsers, CSV | same | PM/Peggy: small 0.412/1.881us (4.57x), large 70.991/412.163us (5.81x); A/A 0.9–4.6%; all five chart parsers yield equal rows and Parseman consumes 54/54 and 14,816/14,816 bytes. | External-parser win with permanent whole-input parity coverage. | pass |
+| 0.47 table vs external parsers, GraphQL | same | PM/Peggy: small 0.651/2.077us (3.19x), medium 5.176/12.337us versus Chevrotain (2.38x), large 113.279/319.030us (2.82x) | External-parser win at every measured size. | pass |
+| Commented small rows: JSON/CSV/GraphQL | Same final-candidate protocol with all three normally-commented small groups enabled together | All reported above; tightest eligible margin JSON small at 1.69x, above the 1.05x floor. | Diagnostic rows retained; no selective omission. | pass |
 | CST bars | Supporting/non-identical work (rich object CST vs Lezer compact tree / Chev conversion) | Not used in the final external-equivalence gate. | Do not turn into a headline claim. | recorded |
 
 The 0.47 ship condition is **faster than the relevant external parsers on medium
@@ -49,14 +49,14 @@ are reported as evidence but do not decide the gate.
 ## Release gate still open
 
 `pnpm coverage:guard` is red against the historical `ed81612` baseline after a
-successful final coverage run: lines `90.18%` vs `95.91%` (-5.73), statements
-`87.95%` vs `92.12%` (-4.17), functions `91.25%` vs `96.55%` (-5.30); branches
-improved to `86.61%` from `85.80%`. The baseline has not been rewritten and no
+successful final coverage run: lines `90.20%` vs `95.91%` (-5.71), statements
+`87.94%` vs `92.12%` (-4.18), functions `91.47%` vs `96.55%` (-5.08); branches
+improved to `86.56%` from `85.80%`. The baseline has not been rewritten and no
 exclusions were added. `ed81612` predates the table cutover entirely (zero
 `src/table` files); the candidate adds 21 table files / 13,631 lines, while the
 coverage denominator includes 18 shipped table files at 87.64% lines. Even
 theoretical 100% coverage of `assemble.ts` alone could only raise aggregate
-lines to 92.96%, statements to 90.82%, and functions to 92.59%. The full suite
+lines to 92.91%, statements to 90.78%, and functions to 92.81%. The full suite
 already added net 19,285 test lines over the baseline. This needs an explicit
 release-owner exception or a substantial new test campaign; it is the only
 remaining release decision.

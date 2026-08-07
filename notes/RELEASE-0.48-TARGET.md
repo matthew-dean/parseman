@@ -56,8 +56,8 @@ headline · §8's "does not reproduce at scale" claim `REFERENCE` (a retracted
 reading of a harness — `fixture.ts` **builds every leg at HEAD**; there is no 0.46
 in the process) and its replacement measurement `REFERENCE` (the best-sourced
 block in these five files: harness `bench/jess/ab.ts`, anchor `a5dc9bd`, config
-`bench/jess/ab-config.json`, self-check 0.999–1.033, `benchmark.less` 106,802 B →
-**2.221×**) · the shelf mechanism (`shelvedRegressionKeys`, no
+`bench/jess/ab-config.json`, self-check 0.980–1.027, `benchmark.less` 106,802 B →
+**2.340×**) · the shelf mechanism (`shelvedRegressionKeys`, no
 `SKIP_PERF_GUARD=1`) `LANDED` as policy, though its stated justification is
 withdrawn · §8b `QUEUED` for the child-kind axis, `REFERENCE` for the owner's
 specification restatement; **the five mechanisms proposed for the gap during 0.47
@@ -193,7 +193,7 @@ fixture-dependent and ranges at least 1.66×–4.4×."
   figure and a micro-bar.** It was never a measurement of anything shipped.
 
 The gap that IS measured, HEAD against 0.46 (`a5dc9bd`) on jess's four shipping
-grammars, is in §8: **2.2×–2.6×**, and it is a REGRESSION introduced at 0.47,
+grammars, is in §8: **2.3×–2.9×**, and it is a REGRESSION introduced at 0.47,
 not a standing table-vs-codegen distance.
 
 Two of the three mechanisms tried returned **measured zero** and are recorded
@@ -469,16 +469,16 @@ by name.
 ### What HEAD vs 0.46 actually measures
 
 `bench/jess/ab.ts`, HEAD against `a5dc9bd` (v0.46.0, the anchor in
-`bench/jess/ab-config.json`), jess's four SHIPPING grammars, `--two-graph`,
-self-check 0.999–1.033:
+`bench/jess/ab-config.json`), jess's shipping grammars, `--two-graph`, Node
+25.9.0, self checks 0.980–1.027:
 
 | fixture | 0.46 | HEAD | ratio |
 |---|---:|---:|---|
-| `benchmark.css` 123,029 B | 5.67 ms | 14.97 ms | **2.641×** |
-| `benchmark.less` 106,802 B | 17.40 ms | 38.65 ms | **2.221×** |
-| `gen-workload.less` 275,211 B | 49.96 ms | 112.55 ms | **2.253×** |
+| `benchmark.css` 123,029 B | 5.37 ms | 15.28 ms | **2.845×** |
+| `benchmark.less` 106,802 B | 16.93 ms | 39.60 ms | **2.340×** |
+| `gen-workload.less` 275,211 B | 42.13 ms | 110.18 ms | **2.615×** |
 
-**0.47 is a 2.2×–2.6× regression on the grammars a downstream parser ships.**
+**0.47 is a 2.3×–2.9× regression on the grammars a downstream parser ships.**
 Not 4–9%, not "does not reproduce."
 
 ### Which release turned — 0.46 is NOT the regression, 0.47 is
@@ -487,7 +487,7 @@ Sweeping the same fixture across release anchors, `benchmark.less` reads:
 
 | anchor | 0.44 | 0.45 | 0.46 | HEAD (0.47) |
 |---|---:|---:|---:|---:|
-| `benchmark.less` | 17.26 ms | 16.84 ms | 17.19 ms | 38.65 ms |
+| `benchmark.less` | 17.26 ms | 16.84 ms | 17.19 ms | 39.60 ms |
 
 Flat across three releases, then it turns. Whatever landed in the 0.47 stack owns
 all of it; there is no slow drift to blame and no earlier anchor that would
@@ -497,8 +497,8 @@ launder it.
 ground that the regression "does not appear in `bench:margin`" and "at real scale
 measures 1.09%". The second half of that is withdrawn. The `css/selector` and
 `css/decls` bars were *directionally right* and only wrong about magnitude — they
-said css regressed, and css regressed 2.6×. The shelf is now hiding a real,
-reproduced, at-scale regression, and 0.48's framing is **"recover a 2.2×–2.6×
+said css regressed, and css regressed 2.8×. The shelf is now hiding a real,
+reproduced, at-scale regression, and 0.48's framing is **"recover a 2.3×–2.9×
 regression"**, not "close a 4–9% gap."
 
 ### The engine inventory, because "the table" is now ambiguous
@@ -531,11 +531,10 @@ prints.**
 
 ### 0.47 release-audit handoff — measured attempts, all default-off
 
-The release audit re-ran the two-graph comparison on Node 25.9.0. Its exact
-absolute timings differ from the earlier machine, but the conclusion is
-stronger rather than different: `benchmark.less` was 55.55 / 17.35 ms
-(**3.202×**) and `gen-workload.less` was 162.81 / 47.81 ms (**3.405×**), with
-paired/solo agreement within 3% and load 4.44 → 4.55. This is acceptable 0.47
+The final release audit re-ran the two-graph comparison on Node 25.9.0 at
+`82f6e8e`: `benchmark.less` was 39.60 / 16.93 ms (**2.340×**) and
+`gen-workload.less` was 110.18 / 42.13 ms (**2.615×**); self checks ranged
+0.980–1.027× and both inputs consumed fully. This is acceptable 0.47
 performance debt only if the release candidate still beats relevant external
 parsers on equivalent medium/large workloads; parsing identity and artifact
 size remain hard release blockers regardless.
@@ -680,7 +679,7 @@ interleave HEAD against a pinned reference, and it is not contradicted.
 
 What remains open is only MAGNITUDE, and the two surviving measurements are
 consistent in sign and roughly an order apart in size: CI's synthetic workloads
-read +666%/+780% where `bench/jess/ab.ts` reads **+122%/+164%** (2.221×/2.641×)
+read +666%/+780% where `bench/jess/ab.ts` reads **+134%/+162%** (2.340×/2.615×)
 on the shipping dialect grammars against the same 0.46 anchor. The remaining
 candidate is the second one on the old list — the CI workloads lean harder on the
 deleted scan fast paths than the dialect fixtures do. **Quote the `ab.ts`
