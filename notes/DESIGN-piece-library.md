@@ -40,6 +40,12 @@ Two endpoints are disqualified and this document does not revisit them: the full
 closure table (2.0–2.3× slower, remeasured by `lane/emitprofile` at `c274a04`) and fully inline
 codegen (`example/css` 224,100 B).
 
+> **On the 2.0–2.3×**, since it is quoted often and loosely: the attribution above is the one this
+> document uses and it is intact. But it is an attribution to `lane/emitprofile` at `c274a04`, and
+> **not** to `exp/cliff` or `exp/wiring`, which are the two artifacts it now tends to get quoted
+> against. Those two measured the *mechanisms* (§1), not this ratio. The ratio is neither confirmed
+> nor refuted by them, and H-6 is the hypothesis that would connect the two.
+
 ### 0.1 — There are TWO engines, not three, and the axis is per-construct
 
 An earlier framing of this work — including my own first draft — treated *emitted source* and
@@ -222,7 +228,7 @@ too big.
 
 Real emitted `_pf` bodies are **17.4 KB (css)** and **31.7 KB (less)**. Both sit far past 460 B,
 i.e. **entirely inside the not-inlined plateau.** And it is not only the outliers: `exp/wiring`
-measures **17–28% of all real pieces already over the 460 ceiling** — json 6/28, graphql 21/74,
+measures **16.6–28.4% of all real pieces already over the 460 ceiling** — json 6/28, graphql 21/74,
 css 20/103, less 53/319 — **and they are the composites.**
 
 Three things follow, and together they are the largest correction in this document.
@@ -255,12 +261,13 @@ Three things follow, and together they are the largest correction in this docume
 > **Two retractions, both measured by `lane/capoff`, recorded here because this document cited the
 > withdrawn figures.**
 >
-> - **`46.3` vs `26.8` MB/parse is retracted as unreproduced.** The allocation figure with stated
->   provenance is **34.68 MB/parse at `6bc265f`** — css `benchmark.css` (123,029 B), 100 parses
->   after 5 warmups, all `ok=100` with full `consumed`, via `--trace-gc` byte deltas. It cannot be
->   reconciled with 46.3 without the other lane's harness. **Use 34.7.** Nothing in this document's
->   byte or allocation argument rests on 46.3 — §5 is entirely artifact bytes, not heap bytes — so
->   no re-basing is needed, but the figure must not be re-cited.
+> - **`46.3` vs `26.8` MB/parse is retracted.** The figures with stated provenance are
+>   **34.68 MB/parse (css)** and **64.48 MB/parse (less)** at `6bc265f` — css `benchmark.css`
+>   (123,029 B), 100 parses after 5 warmups, all `ok=100` with full `consumed`, via `--trace-gc`
+>   byte deltas. 46.3 could not be reconciled without the other lane's harness, and **`26.8` has no
+>   counterpart in any committed artifact at all** — it is not a contested number, it is an
+>   unsourced one. Nothing in this document's byte argument rests on either — §5 is entirely
+>   artifact bytes, not heap bytes — but neither figure may be re-cited.
 > - **The `09f3452` inflation caveat I added in an earlier revision is retracted entirely.** Same
 >   protocol at both commits: `90e115c9` 34.78 → `6bc265f` 34.68 MB/parse, a **0.3%** difference. It
 >   inflated nothing. That caveat was speculation and it was wrong; the profile's shares stand on
@@ -299,7 +306,7 @@ Both halves are necessary and neither previous design had both.
 Someone holding a new opcode, or a new site, applies this and gets an answer.
 
 **This procedure has been reordered by `exp/cliff` and `exp/wiring`.** The original put the IC
-axes first and the size check last, as D6. That was wrong: §M-5b shows 17–28% of real pieces —
+axes first and the size check last, as D6. That was wrong: §M-5b shows 16.6–28.4% of real pieces —
 and every composite — already fail the size condition, so for them the IC questions never arise.
 **Size is now D0 and it gates everything after it.**
 
@@ -382,7 +389,7 @@ status and paste until the remaining calls out are cold.
 distinct kind at that slot (M-4 `specialised`).
 
 > **D5 is the weakest step in this procedure and may be net-negative on real grammars.**
-> `exp/wiring` measures 17–28% of real pieces already over 460 — json 6/28, graphql 21/74, css
+> `exp/wiring` measures 16.6–28.4% of real pieces already over 460 — json 6/28, graphql 21/74, css
 > 20/103, less 53/319 — **and they are the composites**, which is exactly the class D5 specialises.
 > Specialising a parent per child kind grows the parent. So D5 spends size budget on the pieces
 > already at the limit: it recovers the *child's* inlining and can lose the *parent's*. Apply D5
@@ -833,6 +840,16 @@ axis plus `OP_NODE` opening `ctx._cstBuf` unconditionally, and most of *that* is
 `_cstBuf` collects the node's children and `build(kids, …)` consumes them in AST mode too. **Do not
 try to elide `_cstBuf`.** `rawChildren` is the separable dead half.
 
+> **A relayed figure I never used, recorded so nobody adds it later.** A "74%/84% CAP_ON" share was
+> relayed to me as fact for this attribution. It has **no committed source anywhere** in the tree.
+> This document never leaned on it — the paragraph above rests on capoff's byte-identical dump and
+> on the `buildReadsRaw` reachability argument, both of which I verified directly — and it must not
+> be introduced now that it has been repeated. What the artifacts *do* say cuts the other way and
+> strengthens the sentence above: **`buf: true` is the CHEAP mark**, so eliding it would be
+> *slower*, not faster. That is a second, independent reason not to touch `_cstBuf`, and it makes
+> the `raw`/`buf` split load-bearing rather than incidental: the dead half and the cheap half are
+> different fields and only one of them is worth an encoder bit.
+
 **Why this is a §7 problem and not a peephole.** The question "does any reachable builder read
 `rawKids`?" is determined by program structure alone — it is an **encode-row** fact by §7.1, and it
 should be bound there. The oracle is already written and already tested and is **called from nowhere
@@ -960,16 +977,23 @@ identity reference. Rule 3 does not admit that justification.
    `build(kids, fieldMap, span, rawKids, …)` is a 4th formal parameter no reachable css or less node
    def declares. Not a correction to the brief so much as a finding the brief handed me; recorded
    here because it is the first 0.48 unit and the only one independent of every open hypothesis.
-10. **Cap labels cost zero bytes** — `lane/capoff` dumped emitted css/ast before and after forcing
+10. **The 27.5–28.4% trivia self-time figure is a measured NULL** (§9.6). Removing the work
+   entirely — `triviaScanLowered` all-`false` → all-`true`, verified in the emitted table — moved
+   the parse not at all across 12 load-gated legs. Sampled self-time was wrong by more than an
+   order of magnitude. **I was wrong about this number in both directions**, first attaching a
+   staleness caveat and then re-endorsing it as "a figure that stands" while citing §1/M-5, a
+   section about inlining budgets that says nothing about trivia. A wrong citation on a release
+   branch is worse than a wrong number, because it survives review by looking checked.
+11. **Cap labels cost zero bytes** — `lane/capoff` dumped emitted css/ast before and after forcing
    the cap label and got 1,049,296 bytes **identical**. My §3.1 lists site attributes as an axis
    that "earns a distinct piece"; for the `cap` field specifically that is now measured false, and
    §7.2 explains why (it is a residual, not a fact). The `buf` field is the one that costs.
-11. **`PM_TABLE_COUNT` instruments `exec.ts`.** Honoured: every count in this document is either
+12. **`PM_TABLE_COUNT` instruments `exec.ts`.** Honoured: every count in this document is either
    re-derived here (`probe/*`, `reachableIps`) or attributed to the lane that measured it.
    Relatedly, `bench/table-lowering-identity.ts:19` imports `tableRules` from `exec.ts`, so the
    ~2,800-file corpus sweep has never executed `assemble.ts` — the same defect the
    `consumed-sweep.ts` fix just addressed, in the gate this design's correctness rests on.
-12. **`exec.ts` IS on the product path, and a public export runs it.** `src/table/index.ts:25–26`
+13. **`exec.ts` IS on the product path, and a public export runs it.** `src/table/index.ts:25–26`
     asserts of the bytecode interpreter: *"It is not on the product path and nothing emitted imports
     it."* Both halves are false at `6bc265f`. `src/table/fold.ts:1` imports `tableRules` from
     `./exec.ts` and is re-exported publicly as `tableVariants`/`variantNames` (`index.ts:48`);
@@ -981,7 +1005,7 @@ identity reference. Rule 3 does not admit that justification.
     (`index.ts:18–20`), already realised. It also means `example/*` fold fixtures and `compose()`
     users are not exercising the engine this design is about. Not this document's fix, but it must
     not be discovered later as a surprise: it silently narrows what every corpus gate covers.
-13. **jess's real Less grammar is not in this repo.** `bench/workloads/less.ts` is a vendored
+14. **jess's real Less grammar is not in this repo.** `bench/workloads/less.ts` is a vendored
     re-creation (its own header says so). Every "less" cardinality in §3/§4 is the vendored
     grammar's.
 
@@ -1001,7 +1025,7 @@ should be read before anything is built.
 **9.2 — RESOLVED, and the worry was the right one.** I flagged that my `seq2` was 51 bytecode bytes
 against real pieces that are far larger, and that on real pieces the D2 win might be smaller because
 "the parent was never going to inline the child anyway." That is exactly what `exp/cliff` and
-`exp/wiring` found: **17–28% of real pieces, and every composite, are already past 460 B**, so for
+`exp/wiring` found: **16.6–28.4% of real pieces, and every composite, are already past 460 B**, so for
 them there is no inlining to win. The instinct was right and I still built D5 on the assumption it
 was not. That is the pattern to watch in the rest of this document — §9 correctly named two of my
 three biggest errors before they were measured, and naming them did not stop me designing on them.
@@ -1030,15 +1054,41 @@ source, 1.30–1.32× slower" is the sharpest unexplained fact in the tree and m
 is a hypothesis with a one-run falsifier. If it is wrong, roughly half the remaining gap has no
 owner in this design either.
 
-**9.6 — The `ScanShape` fallback (§4.4) is where I am least comfortable calling something
-"correct genericity."** Tier S reproduces `inRanges`, and `inRanges` is on the trivia path, and the
-trivia path is 27.5–28.4% of self-time per `lane/emitprofile` (a figure that **stands** — the
-staleness caveat I attached to it in an earlier revision is retracted at §1, M-5). Saying "cold sites get the slow
-shape" is only safe if trivia sites are cold, and I have not established that they are. If trivia
-scanning is hot everywhere, §4.4 is not a correct genericity call — it is a deferred defect, and
-D3's threshold has to be set by execution count on the trivia path specifically. **`lane/capoff`'s
-dump of the actually-emitted trivia-skip functions is the input that settles this**, and it should
-be read before §4.4 is treated as decided.
+**9.6 — RESOLVED by a null, and my previous revision of this paragraph was wrong twice over.**
+
+The worry was: Tier S reproduces `inRanges`, `inRanges` is on the trivia path, and "cold sites get
+the slow shape" is only safe if trivia sites are cold — which I had not established.
+
+**It is now established, by removal.** `notes/RESULT-capoff-trivia-scanner-is-a-null.md` (`bccc32f`
+against `6bc265f`) flips `triviaScanLowered` from all-`false` to all-`true` — verified *in the
+emitted table*, not inferred — so every trivia gap stops going through the per-character labelled
+classifier (`src/cst/trivia-charscan.ts`) and through a fused scanner instead. 12 load-gated legs,
+3 interleaved rounds × 2 dialects: **every delta inside its own base-to-base spread, signs
+inconsistent across dialects.** A null, pre-registered as one. So **trivia scanning was never 28% of
+parse time**, and the sampled self-time attribution that produced 27.5–28.4% is wrong by more than
+an order of magnitude — the exact failure mode the brief warned about, sampled profiling
+over-crediting frequent cheap frames.
+
+**Two errors of mine, and the second is worse than the first.** I cited 27.5–28.4% as a figure that
+"stands", and I justified that by pointing at §1/M-5 — which is the inlining-budget section and says
+nothing whatever about trivia. That is a citation to a section that does not support the claim, in a
+document on a release branch. I had earlier attached a *staleness* caveat to the same figure, which
+was also wrong (retracted at §1, M-5, correctly). So I have now been wrong about this number in both
+directions, and the thing I never did was ask what would happen if the work were removed.
+
+**Bearing on §4.4, stated with its limit.** The null is evidence in the right direction and it is
+the strongest available: making the trivia path substantially *faster* bought nothing measurable, so
+Tier S's somewhat-slower `inRanges` fallback is unlikely to cost anything measurable either. That
+bounds the **magnitude** of the whole trivia path. It does **not** prove any particular slower
+implementation is free, and it is not licence to treat §4.4 as settled without a direct A/B of the
+Tier S fallback itself. What it does retire is the specific fear stated here — that trivia is hot
+enough for a generic fallback to be a deferred defect. It is not.
+
+**Standing note on this figure.** It has four documents and three numbers in the tree — capoff's
+null, `exp/mixture` still using 28% as a denominator, this paragraph's prior re-endorsement, and
+`RELEASE-0.48-TARGET.md:88` carrying 7.3%. `lane/perf-ideas-consolidation` has recorded all four
+without smoothing them, which is the right treatment. Anyone reaching for a trivia share should
+start from the null, not from any of the percentages.
 
 **9.7 — `OP_ADJ` (§4.5), capture-reachability, and the site-attribute record are the three places
 this design can produce silently wrong output** rather than a slow parse. They are the ones to gate
