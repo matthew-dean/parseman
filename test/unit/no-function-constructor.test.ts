@@ -206,15 +206,21 @@ describe('the macro path never reaches the Function constructor', () => {
   /**
    * THE VARIANT FOLD (G4), which is a DIFFERENT DRIVER.
    *
-   * `src/table/fold.ts:1` imports `tableRules` from `./exec.ts` — the bytecode
-   * interpreter — not the assembler, and `tableVariants`/`variantNames` are
-   * public exports of `src/table/index.ts`. A property proved only against
-   * `assembledRules` says nothing about a shipped path that never reaches it.
-   * (`src/table/index.ts` claimed exec "is not on the product path"; that claim
-   * was false and is corrected in this change.)
+   * `tableVariants`/`variantNames` are public exports of `src/table/index.ts`
+   * and `emit.ts` writes `import { tableVariants }` into every folded module, so
+   * this is a shipped path. It bound the BYTECODE INTERPRETER (`exec.ts`) until
+   * `65fc9a4` moved it onto `assembledRules` — and the interpreter never
+   * evaluated anything, so the fold was trivially clean and the driver swap
+   * silently handed every folded artifact a `new Function` on its first parse.
+   * This case caught that on the merge, which is the whole argument for a
+   * property covering paths rather than one entry point.
+   *
+   * The program folded here carries the build stamp (`asm: []`), because that is
+   * what an EMITTED artifact carries; folding a bare `encodeTable` result would
+   * test a program no build produces.
    */
   it('the variant fold serves every variant without the constructor', () => {
-    const ast = encodeTable(jsonRules as unknown as RuleMap, { hostMode: 'ast' })
+    const ast = { ...encodeTable(jsonRules as unknown as RuleMap, { hostMode: 'ast' }), asm: [] }
     const folded = foldPrograms({ ast }, 'ast')
     expect(variantNames(folded)).toEqual(['ast'])
     for (const name of variantNames(folded)) {

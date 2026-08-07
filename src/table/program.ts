@@ -641,13 +641,26 @@ export function foldPrograms(
     // See `FoldDropped`. Refused rather than dropped: a base assembly carried
     // onto a variant parses the BASE grammar under the variant's name, which no
     // test that only asks "did it parse" would ever see.
-    if (p.asm !== undefined) {
+    if (p.asm !== undefined && p.asm.length > 0) {
       throw new TypeError(
         `foldPrograms: program ${JSON.stringify(name)} already carries pre-compiled assemblies. `
         + 'An assembly is emitted from a `code` stream and a fold overwrites `code` per variant, so '
         + 'pre-compiling must happen AFTER the fold, per variant — not before it.',
       )
     }
+    /**
+     * AN EMPTY `asm` IS NOT AN ASSEMBLY, it is the artifact saying "a build made
+     * me" — the flag that switches the runtime `Function` constructor off. It
+     * carries through the fold, because a folded artifact is no less a build
+     * product than an unfolded one. `unfoldVariant` spreads the base, so the
+     * variant inherits it.
+     *
+     * This mattered the moment `65fc9a4` moved `fold.ts` off the bytecode
+     * interpreter onto `assembledRules`: the interpreter never evaluated
+     * anything, so the fold path was trivially clean, and swapping the driver
+     * silently handed every folded artifact a `new Function` on its first parse.
+     * `test/unit/no-function-constructor.test.ts` caught it on the merge.
+     */
     if (p.code.length !== base.code.length) {
       throw new TypeError(
         `foldPrograms: variant ${JSON.stringify(name)} has ${p.code.length} code words, base `
