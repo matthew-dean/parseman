@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { tableRules } from '../../src/table/exec.ts'
+import { tableRulesBaseline } from '../../src/table/exec-baseline.ts'
+import { assembledRules } from '../../src/table/assemble.ts'
+import { defaultAssemblyCfgs, emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram, reachableOps } from '../../src/table/inspect.ts'
-import { resolveTable, type TableProgram } from '../../src/table/program.ts'
+import { resolveTable, type TableProgram, type TableRule } from '../../src/table/program.ts'
 import { OP_CHOICE, OP_EMPTY, OP_NODE, OP_RULE } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose } from '../../src/compiler/linker.ts'
@@ -340,6 +343,49 @@ describe('table driver — contract with the table itself', () => {
     expect(r.ok).toBe(true)
     expect(r.value).toBe('')
     expect(r.span).toEqual({ start: 0, end: 0 })
+  })
+
+  /**
+   * ...and it succeeds at zero width in EVERY engine, with the same value.
+   *
+   * The test above ran `tableRules` only, and that is precisely how the divergence
+   * survived: `emit-assembly.ts` returned `null` for OP_EMPTY where `exec.ts`,
+   * `exec-baseline.ts` and `assemble.ts` all returned `''`. The three-way identity
+   * sweep compares engines on grammars built from the combinator API, and no
+   * combinator lowers to OP_EMPTY — the opcode is emitted only as `finish()` padding
+   * when the rule map is EMPTY (encode.ts), and an empty rule map gives the emitter
+   * zero walk roots, so its OP_EMPTY arm was never compiled.
+   *
+   * Nothing ASSERTS that. It is two unguarded facts that happen to compose: no
+   * producer, and no roots. An `epsilon()` combinator, or an optimizer collapsing a
+   * zero-width construct, makes the divergence live with no build-time signal. This
+   * test removes the dependence on that accident — it reaches the row as DATA, which
+   * is the stated contract of this whole describe block, and pins all four engines
+   * to one answer.
+   */
+  it('OP_EMPTY yields the SAME value in all four engines', () => {
+    const p = prog([OP_EMPTY], { Doc: 0 })
+    const engines: Array<[string, Record<string, TableRule>]> = [
+      ['exec', tableRules(p)],
+      ['exec-baseline', tableRulesBaseline(p)],
+      ['assembled', assembledRules(p)],
+    ]
+    for (const [name, rulesOf] of engines) {
+      const r = run(rulesOf.Doc! as never, 'abc')
+      expect(r.ok, name).toBe(true)
+      // `null` here is the emitted engine disagreeing with the other three.
+      expect(r.value, name).toBe('')
+      expect(r.span, name).toEqual({ start: 0, end: 0 })
+    }
+  })
+
+  it('the EMITTED module lowers OP_EMPTY to the same value it means everywhere else', () => {
+    // Asserted on the emitted SOURCE: `assembledRules` may serve this program from the
+    // closure engine, which would hide the emitter's answer behind an agreeing one.
+    const p = prog([OP_EMPTY], { Doc: 0 })
+    const src = emitTableModule(p, { assemblies: defaultAssemblyCfgs(p) })
+    expect(src).toMatch(/EC\.e=pos;return ''/)
+    expect(src).not.toMatch(/EC\.e=pos;return null/)
   })
 
   it('an unknown opcode THROWS in the driver and in the inspector', () => {

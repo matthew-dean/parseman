@@ -887,7 +887,15 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       }
 
       case OP_EMPTY:
-        return `${head}EC.e=pos;return null}`
+        // `''`, not `null` — the zero-width match's value. The other three engines
+        // (exec.ts, exec-baseline.ts, assemble.ts) all return `''`; this one returned
+        // `null`, so the SAME program yielded a different `value` depending only on
+        // which engine ran. Unreached from the combinator API today — `OP_EMPTY` is
+        // emitted only as `finish()` padding for an EMPTY rule map, which then has no
+        // walk roots for the emitter to visit — but that is an accident of two
+        // unguarded facts, not an invariant, and it is already reachable through the
+        // hand-built-program idiom this file's driver tests use.
+        return `${head}EC.e=pos;return ''}`
 
       case OP_GATE: {
         const child = link(code[ip + 2]!)
