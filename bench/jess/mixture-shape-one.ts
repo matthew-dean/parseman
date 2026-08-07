@@ -34,7 +34,7 @@ const prog = encodeTable(rules, settings)
 const t = resolveTable(prog)
 
 const hostCst = settings.hostMode === 'cst'
-const cfg = { hostCst, trackLines: settings.trackLines === true, tolerant: false, coverage: false, probe: false }
+const cfg = { hostCst, trackLines: settings.trackLines === true, tolerant: false, coverage: false, probe: false, mix: undefined }
 
 // The scan pool's sites are roots too — `assemble.ts` passes them as `extraIps`
 // and an emitted body exists for each, so a census that omitted them would

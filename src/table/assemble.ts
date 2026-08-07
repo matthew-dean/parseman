@@ -87,6 +87,7 @@ import {
   OP_FIELD, OP_DISPATCH, OP_ROUTED, OP_LIT_CI, OP_LIT_CI_TRACK, OP_TOKEN, OP_WITHCTX, OP_GUARD, OP_ATTEMPT, OP_LABEL,
   OP_COV,
   OP_ADJ, OP_GREEDY, OP_REJECT, OP_ARMGATE,
+  OP_NAMES,
 } from './ops.ts'
 import { adjacencyHolds, adjacencyMisuse } from '../combinators/adjacency.ts'
 import { failAt } from '../combinators/probe.ts'
@@ -98,6 +99,7 @@ import { failAt } from '../combinators/probe.ts'
  * is exactly how a CST leaf's span drifts between two engines that exist to be
  * gated against each other.
  */
+import { mixDriver } from './exec.ts'
 import { EMITTED_PARAMS, Unemittable, emitAssemblySource, type EmittedAssembly, type EmittedFactory } from './emit-assembly.ts'
 import { lead, rawEntry, spanLines } from './run-support.ts'
 /**
@@ -133,6 +135,42 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
  */
 const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | undefined> } })
   .process?.env?.PM_TABLE_EMIT !== '0'
+
+/**
+ * THE MIXTURE KNOB — `PM_MIX_DRIVER=NODE,LEAF,XFORM`.
+ *
+ * Names the construct kinds this process gives to the SHARED DRIVER; every
+ * other kind stays specialised. Read ONCE at module load into a module const,
+ * like `PM_TABLE_EMIT`, so it is not a per-parse option branch: by the time a
+ * parse runs, the choice is already expressed as which body each site got.
+ *
+ * `PM_MIX_DRIVER=*` gives the driver everything — the all-shared endpoint —
+ * and an unset or empty value is the all-specialised endpoint, which is the
+ * shipped configuration.
+ *
+ * An unknown name THROWS rather than being ignored. A silently-dropped opcode
+ * name would produce a configuration that looks flipped, measures identical to
+ * the endpoint, and reads as "this construct doesn't matter".
+ */
+const MIX_OPS: ReadonlySet<number> | undefined = (() => {
+  const raw = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+    .process?.env?.PM_MIX_DRIVER
+  if (raw === undefined || raw === '') return undefined
+  const byName = new Map<string, number>()
+  for (const [op, name] of Object.entries(OP_NAMES)) byName.set(name, Number(op))
+  if (raw === '*') return new Set(byName.values())
+  const out = new Set<number>()
+  for (const n of raw.split(',')) {
+    const name = n.trim()
+    if (name === '') continue
+    const op = byName.get(name)
+    if (op === undefined) {
+      throw new Error(`PM_MIX_DRIVER: unknown construct '${name}'. Known: ${[...byName.keys()].sort().join(', ')}`)
+    }
+    out.add(op)
+  }
+  return out.size === 0 ? undefined : out
+})()
 
 /** Failure sentinel — SHARED with the other two engines, see `cell.ts`. */
 import { FAIL, newEndCell, type EndCell } from './cell.ts'
@@ -2526,7 +2564,29 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       // cross-worktree measurement carries a bias no repetition removes. Same
       // spelling as `PM_TABLE_COUNT` (`bench/table-opcode-gaps.ts`).
       if (!EMIT_ENABLED) throw new Unemittable('PM_TABLE_EMIT=0 (measurement toggle)')
-      const em = emitAssemblySource(t, prog, cfg, extraIps)
+      /**
+       * THE SHARED-DRIVER HALF, BUILT FIRST — and the cycle it breaks.
+       *
+       * The emitted scope needs `DRV` bound before its text can be compiled;
+       * the driver needs the specialised pieces before it can hand a child
+       * back. Neither can be second. `OVR` is created EMPTY, the driver is
+       * built over it, and the entries are filled once the pieces exist — the
+       * driver holds the array by reference, so the fill is visible without a
+       * rebuild and `DRV` stays a direct binding rather than a forwarder.
+       *
+       * A forwarder would have cost an extra call on every cross-engine edge,
+       * i.e. on exactly the configurations being measured and none of the
+       * endpoints — which would have shown up as mixtures being slower and
+       * been indistinguishable from the finding.
+       *
+       * Built even when nothing is mixed. `mixDriver` allocates one closure set
+       * per assembly, not per parse, and a configuration that pays for it only
+       * when mixed would make the endpoints incomparable with the middle.
+       */
+      const OVR: (((input: string, pos: number, ctx: ParseContext) => unknown) | undefined)[] =
+        new Array<undefined>(t.code.length).fill(undefined)
+      const drv = mixDriver(t, prog, EC, OVR)
+      const em = emitAssemblySource(t, prog, { ...cfg, mix: MIX_OPS }, extraIps)
       /**
        * COMPILING THE TEXT — and the two ways it can fail are NOT the same.
        *
@@ -2554,7 +2614,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         throw new Unemittable(`the Function constructor (${String(e)})`)
       }
       emitted = factory(
-        EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
+        EC, drv.exec, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
@@ -2570,6 +2630,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         REC ? prog.cc.map((_, i) => sentinelFor(i)) : EMPTY_SENTS,
         matchesAt, recoverScan, orSentinel, captureError,
       )
+      /**
+       * FILL THE OVERRIDE TABLE — the specialised sites, and only those.
+       *
+       * A site whose opcode went to the driver must stay `undefined` here or
+       * the driver would bounce straight back into the stub that called it and
+       * recurse until the stack ran out. So the test is the SAME set the
+       * emitter used, read the same way.
+       */
+      if (MIX_OPS !== undefined) {
+        for (const [ipStr, piece] of Object.entries(emitted.byIp)) {
+          const ip = Number(ipStr)
+          if (piece !== undefined && !MIX_OPS.has(t.code[ip]!)) OVR[ip] = piece as Piece
+        }
+      }
       emitReached = em.reached
     } catch (e) {
       if (!(e instanceof Unemittable)) throw e

@@ -42,7 +42,7 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
 import {
   expandCompact, resolveTable,
   type CompactProgram, type ResolvedClass, type ResolvedDispatch, type ResolvedDispatchSpec,
-  type SubtreeRef, type TableProgram, type TableRule,
+  type ResolvedTable, type SubtreeRef, type TableProgram, type TableRule,
 } from './program.ts'
 
 /**
@@ -204,6 +204,25 @@ function makeDriver(
    * write one slot — see `cell.ts`.
    */
   EC: EndCell,
+  /**
+   * SITES THIS DRIVER MUST NOT RUN — the mixture seam, and the whole of it.
+   *
+   * Dense over code offsets. `OVR[ip]` is the SPECIALISED piece for that site
+   * when the site is specialised, and `undefined` when the site belongs to this
+   * driver. A driver-run site's children are reached through `exec`, so the
+   * check below is what hands a specialised child back to its own engine, and
+   * it is the only place the two engines meet inside a parse.
+   *
+   * ASSIGNMENT IS STATIC — computed once when the assembly is built, never per
+   * parse — so this is not the per-node option branch G5 forbids: the array is
+   * already the answer, and the driver reads it rather than deciding.
+   *
+   * A PURE-DRIVER configuration passes an all-`undefined` array and pays the
+   * same load and the same `undefined` test as a mixed one. That is deliberate:
+   * a mechanism only the mixtures paid for would show up as the mixtures being
+   * slower, which is the measurement this exists to take.
+   */
+  OVR: readonly (((input: string, pos: number, ctx: ParseContext) => unknown) | undefined)[],
 ): Driver {
 
   /**
@@ -347,6 +366,12 @@ function makeDriver(
 
   function exec(ip: number, input: string, pos: number, ctx: ParseContext): unknown {
     if (COUNT) { tableCounters.rows++; tableCounters.byOp[code[ip]!]!++ }
+    // THE SEAM. See `OVR`. The specialised piece writes the SAME `EC` cell and
+    // returns the SAME `FAIL` (`cell.ts`), so there is nothing to translate
+    // here — which is exactly why the private sentinel and private end slot had
+    // to go before a mixture could run at all.
+    const ovr = OVR[ip]
+    if (ovr !== undefined) return ovr(input, pos, ctx)
     switch (code[ip]) {
       case OP_LIT: {
         const s = k[code[ip + 1]!] as string
@@ -1546,6 +1571,34 @@ function makeDriver(
  * The entries have the SAME signature as codegen rule functions, so `run()`,
  * the linker's public wrappers and every consumer are unchanged.
  */
+/**
+ * A DRIVER OVER AN ALREADY-RESOLVED TABLE — the shared-driver half of a mixed
+ * assembly.
+ *
+ * `tableRules` owns the whole pipeline (expand, resolve, build, stamp) because
+ * a pure-interpreter rule map has nothing to share with. A mixed assembly does:
+ * `assemble.ts` has already resolved the table and minted the end cell, and the
+ * driver must be built over THOSE rather than over a second resolution, or the
+ * two engines would hold different `trivia` objects and different const pools
+ * for the same grammar.
+ *
+ * `OVR` is handed in EMPTY and filled by the caller after the specialised
+ * pieces exist. The driver keeps the reference, so the fill is visible to it
+ * without the driver having to be rebuilt — which is what breaks the cycle
+ * between "the emitted scope needs `DRV`" and "the driver needs the pieces".
+ */
+export function mixDriver(
+  t: ResolvedTable,
+  prog: TableProgram,
+  EC: EndCell,
+  OVR: readonly (((input: string, pos: number, ctx: ParseContext) => unknown) | undefined)[],
+): Driver {
+  return makeDriver(
+    t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, t.triviaScan, t.triviaLabelled,
+    prog, EC, OVR,
+  )
+}
+
 export function tableRules(
   source: TableProgram | CompactProgram,
   /**
@@ -1562,7 +1615,8 @@ export function tableRules(
   const prog = expandCompact(source)
   const t = resolveTable(prog)
   const scan = opts.leafSwap === false ? t.triviaScan.map(() => null) : t.triviaScan
-  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog, newEndCell())
+  const d = makeDriver(t.code, t.k, t.fns, t.cc, t.fx, t.disp, t.dsp, t.trivia, scan, t.triviaLabelled, prog,
+    newEndCell(), new Array<undefined>(t.code.length).fill(undefined))
   const names = Object.keys(prog.rules)
   const entries = names.map(n => prog.rules[n]!)
   let last: unknown

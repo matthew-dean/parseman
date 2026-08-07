@@ -91,7 +91,7 @@ export class Unemittable extends Error {
  * runs and is wrong, which no type in this file would catch.
  */
 export const EMITTED_PARAMS = [
-  'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
+  'EC', 'DRV', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
   'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
@@ -366,7 +366,19 @@ export type EmitResult = {
 export function emitAssemblySource(
   t: ResolvedTable,
   prog: TableProgram,
-  cfg: { hostCst: boolean; trackLines: boolean; tolerant: boolean; coverage: boolean; probe: boolean },
+  cfg: {
+    hostCst: boolean; trackLines: boolean; tolerant: boolean; coverage: boolean; probe: boolean
+    /**
+     * OPCODES THIS ASSEMBLY GIVES TO THE SHARED DRIVER — the mixture seam.
+     *
+     * A site whose opcode is in here gets a STUB body that calls `DRV` at its
+     * own offset, instead of the specialised body below. Its children keep
+     * their specialised bodies and the driver reaches them through `OVR`
+     * (`exec.ts`), so the choice is per CONSTRUCT KIND and does not drag a
+     * site's subtree along with it — which is the whole point of sweeping it.
+     */
+    mix: ReadonlySet<number> | undefined
+  },
   extraIps: readonly number[] = [],
 ): EmitResult {
   const { code, k, disp, dsp, triviaLabelled } = t
@@ -398,6 +410,7 @@ export function emitAssemblySource(
    * What stays interpreted is what was already interpreted for the strict path.
    */
   const REC = prog.rec === 1 && cfg.tolerant
+  const MIX = cfg.mix
   if (cfg.coverage) throw new Unemittable('a coverage assembly')
 
   // THE DOWNWARD PASS, BEFORE ANY LOWERING. The roots are exactly the sites
@@ -676,7 +689,33 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
     return undefined
   }
 
+  /**
+   * THE SEAM, EMITTED — a one-line forwarder to the shared driver at this
+   * site's own offset.
+   *
+   * `DRV` writes the SAME `EC` cell and returns the SAME `FAIL` (`cell.ts`), so
+   * there is nothing to translate on either side of this call: the stub is a
+   * `return`, not an adapter. It stays a per-site FUNCTION rather than having
+   * the parent call `DRV` inline, so a parent's child slot keeps naming ONE
+   * binding and stays monomorphic whichever engine owns the child.
+   *
+   * THE SPECIALISED BODY IS STILL PRODUCED, AND DISCARDED. That is not waste to
+   * be optimised away — it is what makes the sweep mean anything. `lower` is
+   * also how children get linked, so returning the stub early would leave a
+   * flipped site's SUBTREE unemitted, and every one of those children would
+   * fall to the driver too (no `OVR` entry ⇒ the driver runs its own row). A
+   * "flip NODE" configuration would then be measuring NODE and everything
+   * underneath it, and the per-construct axis would be a fiction. Producing and
+   * dropping the text costs build time only, and guarantees that flipping a
+   * construct changes exactly the sites of that construct.
+   */
   function lower(ip: number, fname: string): string {
+    const specialised = lowerSpecialised(ip, fname)
+    if (MIX === undefined || !MIX.has(code[ip]!)) return specialised
+    return `function ${fname}(input,pos,ctx){return DRV(${ip},input,pos,ctx)}`
+  }
+
+  function lowerSpecialised(ip: number, fname: string): string {
     const op = code[ip]
     const head = `function ${fname}(input,pos,ctx){`
     const L = labels.at(ip)
@@ -1619,6 +1658,22 @@ return nd
   // through `subtreeComb` outside the emitted scope, so they need names.
   const extra: string[] = []
   for (const ip of extraIps) extra.push(`${ip}:${link(ip)}`)
+  /**
+   * EVERY LINKED SITE, when this assembly is mixed — `assemble.ts` fills the
+   * driver's `OVR` from this map, and a specialised site missing from it would
+   * silently become driver-run.
+   *
+   * Only when mixed: an unmixed assembly emits the same `byIp` it always did,
+   * so the shipped configuration's text is unchanged and the endpoint of the
+   * sweep is the thing that actually ships.
+   */
+  if (MIX !== undefined) {
+    const seen = new Set(extraIps)
+    for (const [ip, fname] of byIp) {
+      if (seen.has(ip)) continue
+      extra.push(`${ip}:${fname}`)
+    }
+  }
 
   // The per-label trivia scans sit AFTER the hoisted pool they close over: they
   // are `function` declarations, so a body may call one that is textually below
