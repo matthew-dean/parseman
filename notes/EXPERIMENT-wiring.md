@@ -116,9 +116,17 @@ Bytecode size per emitted piece, `--print-bytecode`, pieces reached in two parse
 | css/stylesheet | 103 | 59 | 246 | 726 | 3,600 | **20 (19.4%)** |
 | less/stylesheet | 319 | 59 | 202 | 568 | 2,813 | **53 (16.6%)** |
 
-Source bytes, for comparison (`json`: min 93, p50 198, p90 2,277, max 2,520;
-`less/stylesheet`: min 105, p50 567, p90 1,528, max 4,877) — roughly 3:1
-source-to-bytecode, so ~1,400 source bytes is the practical inlining ceiling.
+Source bytes per body, for comparison:
+
+| workload | sites | distinct | min | p50 | p90 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| json/document | 28 | 27 | 93 | 198 | 2,277 | 2,520 |
+| graphql/document | 94 | 81 | — | — | — | — |
+| css/stylesheet | 177 | 156 | 103 | 371 | 1,880 | 8,159 |
+| less/stylesheet | 349 | 296 | 105 | 567 | 1,528 | 4,877 |
+
+Roughly 3:1 source-to-bytecode, so ~1,400 source bytes is the practical inlining
+ceiling.
 
 **The over-460 set is precisely the COMPOSITE pieces** — sequences and repeats,
 i.e. the parents. That has a direct consequence for the child-kind axis
@@ -201,8 +209,9 @@ axis measured, and it is the one the design work had not costed.
 | workload | sites | distinct bodies | wrapper cost |
 |---|---:|---:|---:|
 | json/document | 28 | 27 | +5.8% bytes |
-| graphql/document | 94 | 81 | — |
-| less/stylesheet | 349 | 296 | — |
+| graphql/document | 94 | 81 | not taken |
+| css/stylesheet | 177 | 156 | not taken |
+| less/stylesheet | 349 | 296 | not taken |
 
 **There is almost nothing to share.** 27 of 28 json bodies are distinct; 296 of
 349 on less. A shared-body-plus-wrapper scheme has no deduplication to pay for
@@ -245,8 +254,16 @@ would change the distinct-body count. The measurement to keep is the denominator
   term**, inside the piece body — an option-shaped consult on the parse path that
   §10.5's `forCtx` write-up does not mention. Found while reading the emitted json
   text; not investigated.
-- Every figure here is `trackLines: false` except the overgeneration alignment,
-  and `w4`'s byte cost is measured on json only.
+- Every figure here is `trackLines: false` except the overgeneration alignment.
+- **The seven-wiring byte table exists for `json/document` only.** The css and
+  graphql legs were RUNNING and were killed deliberately, not because they
+  failed: the box reached loadavg 20 with another lane holding the timing floor,
+  and a CPU-heavy build sweep during someone else's timing slot is the
+  contention this repo's A/B guidance exists to prevent. `pnpm` the same command
+  (`node --import tsx/esm bench/wiring/check.ts css/stylesheet graphql`) on a
+  quiet box to finish them; nothing about the instrument changed.
+- `w4`'s byte cost is measured on json only, and §5's argument rests on the
+  distinct-body counts, which are complete.
 - No wall-clock number anywhere in this file. The ranking in §6 is an inlining and
   byte-count ranking; whether −25.2% bytes and +3 inlined pieces is worth
   milliseconds is unmeasured.
