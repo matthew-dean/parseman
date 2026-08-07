@@ -23,7 +23,7 @@ import { createUnplugin } from 'unplugin'
 import { parseSync } from 'oxc-parser'
 import { ResolverFactory } from 'oxc-resolver'
 import MagicString from 'magic-string'
-import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, type Scope, type ScopeEntry } from './evaluator.ts'
+import { evaluateExpr, evaluateCombinatorArray, evaluateParserFactory, evaluateStaticValue, evaluateWordFactory, evaluateWhenFactory, evaluateRefDeclaration, applyDefineStatement, referencesAny, setReducerResolver, propName, type Scope, type ScopeEntry } from './evaluator.ts'
 import { classifyRuleMap } from '../analysis/commitment.ts'
 import { compileTable } from '../table/compile.ts'
 import { compileRuleMapTable } from '../table/compile-rule-map.ts'
@@ -101,6 +101,25 @@ function reasonSuffix(runtimeOnly: readonly string[] | undefined): string {
   return runtimeOnly === undefined || runtimeOnly.length === 0
     ? ''
     : ` — ${runtimeOnly.join('; ')}`
+}
+
+/** THE reader for a build-time options object — `rules({ … }, f)`, `compose(…, { … })`.
+ *
+ * Returns the value expression for `name`, or undefined when the object does not set it.
+ * Keys are compared through `propName`, the plugin's single property-key reader, so a
+ * QUOTED key is the same key and a COMPUTED key is no key at all.
+ *
+ * This existed three times, inline, each reading only `key.name`. The runtime path reads
+ * a real object and cannot tell `{ hostMode: 'cst' }` from `{ 'hostMode': 'cst' }`; the
+ * macro could, and dropped the second — shipping an 'ast' artifact for a source that
+ * asked for 'cst', with no warning, which `assertHostModeCompatible` then passed because
+ * the artifact genuinely WAS 'ast'. Two correct copies would not have been a fix here;
+ * there were three copies and all three were wrong the same way. */
+function optionProp(optExpr: AnyNode | undefined, name: string): Expression | undefined {
+  if (optExpr?.type !== 'ObjectExpression') return undefined
+  const found = ((optExpr.properties as AnyNode[] | undefined) ?? [])
+    .find(p => propName(p as never) === name)
+  return (found as { value?: Expression } | undefined)?.value
 }
 
 function unwrapStaticExpression(expr: Expression): Expression {
@@ -828,12 +847,7 @@ function transformMacroImpl(
     // map seeds them as the ambient defaults (build-time mirror of rules() tagging
     // grammarTrivia / grammarScanSkip at runtime).
     const optionsArg = (optionsFirst ? arg0 : arg1) as AnyNode | undefined
-    const optionValue = (name: string): Expression | undefined =>
-      optionsArg?.type === 'ObjectExpression'
-        ? (((optionsArg.properties as AnyNode[] | undefined) ?? []).find(
-            p => (p as { key?: { name?: string } }).key?.name === name,
-          ) as { value?: Expression } | undefined)?.value
-        : undefined
+    const optionValue = (name: string): Expression | undefined => optionProp(optionsArg, name)
 
     // Read and VALIDATE hostMode before evaluating the factory, so a mode the macro
     // cannot honour is reported even when the factory also fails to evaluate. Getting
@@ -1432,11 +1446,9 @@ function transformMacroImpl(
     const a0 = rulesArgs[0] as AnyNode | undefined
     const a1 = rulesArgs[1] as AnyNode | undefined
     const optExpr = (a0?.type === 'ObjectExpression' ? a0 : a1?.type === 'ObjectExpression' ? a1 : undefined) as AnyNode | undefined
-    const triviaProp = ((optExpr?.properties as AnyNode[] | undefined) ?? []).find(
-      p => (p as { key?: { name?: string } }).key?.name === 'trivia',
-    ) as { value?: Expression } | undefined
-    if (!triviaProp?.value) return undefined
-    return (evaluateExpr(triviaProp.value, scope, code, []) as Combinator<unknown> | null) ?? undefined
+    const triviaValue = optionProp(optExpr, 'trivia')
+    if (!triviaValue) return undefined
+    return (evaluateExpr(triviaValue, scope, code, []) as Combinator<unknown> | null) ?? undefined
   }
   const composingTrivia = (elements: ReadonlyArray<Expression | null>): Combinator<unknown> | undefined => {
     for (let i = elements.length - 1; i >= 0; i--) {
@@ -1492,11 +1504,7 @@ function transformMacroImpl(
     // because the artifact genuinely WAS 'ast'. Same vacuous-classification shape this
     // change exists to remove, one call site over.
     const cOptions = (init as unknown as { arguments: Expression[] }).arguments[1] as AnyNode | undefined
-    const cHostModeValue = cOptions?.type === 'ObjectExpression'
-      ? (((cOptions.properties as AnyNode[] | undefined) ?? []).find(
-          p => (p as { key?: { name?: string } }).key?.name === 'hostMode',
-        ) as { value?: Expression } | undefined)?.value
-      : undefined
+    const cHostModeValue = optionProp(cOptions, 'hostMode')
     const cHostMode = cHostModeValue?.type === 'Literal'
       ? (cHostModeValue as unknown as { value?: unknown }).value
       : undefined
