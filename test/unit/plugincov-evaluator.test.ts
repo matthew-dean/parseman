@@ -632,7 +632,10 @@ describe('evaluateParserFactory — body statements', () => {
   const fallback = otherwise(literal('x'))
   return { D: dispatch(regex(/[a-z]/), fallback) }
 })`)
-    expect(map?.get('D')?._def.tag).toBe('lazy')
+    // The rule itself, not a `lazy` wrapping it: `evaluateParserFactory` calls the real
+    // `rules()`, which keeps a placeholder only for a key something referenced through
+    // `g`. See `plugin-coverage.test.ts`'s note on the `A` rule for what that removed.
+    expect(map?.get('D')?._def.tag).toBe('dispatch')
     // The selector consumes the leading letter; the `otherwise` arm parses the tail.
     expect(parse(map!.get('D')!, 'ax').ok).toBe(true)
     expect(parse(map!.get('D')!, 'ay').ok).toBe(false)

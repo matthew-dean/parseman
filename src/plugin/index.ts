@@ -873,15 +873,24 @@ function transformMacroImpl(
     // points nowhere near the cause, and the dominant real cause — a forward
     // reference to a const declared lower down — is one the interpreter reports
     // precisely. Two lanes lost a round to the generic text.
-    const why: { reason?: string } = {}
-    const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [], why)
-    if (!ruleMap) {
-      warn(init.start, why.reason === undefined
-        ? `${label}: rules(...) factory isn't statically evaluable`
-        : `${label}: rules(...) factory isn't statically evaluable — ${why.reason}`)
-      return null
-    }
-
+    /*
+     * THE OPTIONS GO IN, THEY ARE NOT REAPPLIED AFTERWARDS.
+     *
+     * Three loops used to live below this point, stamping `grammarScanSkip`,
+     * `grammarHostMode` and `grammarTrackLines` onto the evaluated rules, each
+     * carrying a comment that the macro "evaluates the FACTORY directly and never
+     * calls `rules()`". It does now, so the options are threaded as the
+     * `RulesOptions` argument and `rules()` applies them — the same code, on the
+     * same rules, at the same point, for the runtime and the build.
+     *
+     * That also fixes the `trackLines` half, which the stamp-only copy got wrong:
+     * `rules()` does not merely mark the rules, it WRAPS each non-trivia rule in a
+     * `grammarParser({ trackLines: true })` scope (`parser.ts:228-242`). The macro
+     * carried the setting to the encoder by a different route instead, so the two
+     * routes built structurally different maps for the same source.
+     *
+     * Evaluated BEFORE the factory because they are now inputs to it.
+     */
     const triviaValue = optionValue('trivia')
     const gTrivia = triviaValue ? evaluateExpr(triviaValue, scope, code, []) : undefined
     const scanSkipValue = optionValue('scanSkip')
@@ -889,46 +898,18 @@ function transformMacroImpl(
       ? (evaluateCombinatorArray(scanSkipValue, scope, code) ?? undefined)
       : undefined
 
-    // STAMP `_meta.grammarScanSkip` on the evaluated rules, exactly as runtime
-    // `rules({ scanSkip })` does. The macro evaluates the FACTORY directly and never
-    // calls `rules()`, so without this the stamp is absent and every macro-side
-    // `compileLinkable`/`compileRuleMap` has to pass `opts.scanSkip` by hand — which
-    // was forgotten twice (the composeLeaf identifier branch, and the exported
-    // full-piece fallback), each time silently re-opening the raw-scan footgun
-    // downstream. Both compilers already fall back to this `_meta` field, so
-    // stamping here makes omission at a call site structurally impossible.
-    // Trivia rules are skipped, mirroring the runtime guard in `rules()`.
-    if (gScanSkip) {
-      for (const rule of ruleMap.values()) {
-        if (rule && !rule._meta.isTrivia) {
-          ;(rule._meta as { grammarScanSkip?: Combinator<unknown>[] }).grammarScanSkip = gScanSkip
-        }
-      }
-    }
-
-    // STAMP `_meta.grammarHostMode` for exactly the reason the scanSkip stamp above
-    // gives: every macro-side lowering path (`compileRuleMap`, `compileLinkable`,
-    // `materializePiece`) falls back to this field, so no call site can forget to
-    // thread the option — and forgetting THIS one is silent, not slow.
-    //
-    // This is what makes `rules({ hostMode: 'cst' }, factory)` work under the macro,
-    // which is the only way one grammar source can be compiled for both consumers:
-    // two `rules()` call sites over one shared factory become two independent
-    // top-level artifacts, each tree-shakeable, neither paying the other's cost.
-    if (gHostMode === 'cst') {
-      for (const rule of ruleMap.values()) {
-        if (rule && !rule._meta.isTrivia) {
-          ;(rule._meta as { grammarHostMode?: 'ast' | 'cst' }).grammarHostMode = 'cst'
-        }
-      }
-    }
-
-    if (gTrackLines === true) {
-      for (const rule of ruleMap.values()) {
-        if (rule && !rule._meta.isTrivia) {
-          ;(rule._meta as { grammarTrackLines?: true }).grammarTrackLines = true
-        }
-      }
+    const why: { reason?: string } = {}
+    const ruleMap = evaluateParserFactory(factoryArg, factoryScope, factoryCode, [], why, {
+      ...(gTrivia ? { trivia: gTrivia as Combinator<unknown> } : {}),
+      ...(gScanSkip ? { scanSkip: gScanSkip } : {}),
+      ...(gHostMode === 'cst' ? { hostMode: 'cst' as const } : {}),
+      ...(gTrackLines === true ? { trackLines: true } : {}),
+    })
+    if (!ruleMap) {
+      warn(init.start, why.reason === undefined
+        ? `${label}: rules(...) factory isn't statically evaluable`
+        : `${label}: rules(...) factory isn't statically evaluable — ${why.reason}`)
+      return null
     }
 
     return {

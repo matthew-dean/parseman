@@ -175,10 +175,21 @@ const grammar = rules(g => ({
     const ordinary = transformMacro(source, 'dispatch-coverage.ts', new Set(['parseman']))!
     const covered = transformMacro(source, 'dispatch-coverage.ts', new Set(['parseman']), false, false, true)!
     const grammar = evalMacroModule(covered.code, 'grammar') as Record<string, unknown>
+    /*
+     * NO `lazy:0` SEGMENT. The macro used to mint ids through a placeholder `ref()`
+     * that `evaluateParserFactory` created for every declared key whether or not the
+     * factory referenced it — its own copy of `rules()`. It calls the real `rules()`
+     * now, which keeps a placeholder only for a key something touched through `g`,
+     * so the id path no longer runs through a hop that is not in the grammar.
+     *
+     * These ids are the RUNTIME route's, verified against `buildGrammarPlan` over the
+     * same grammar built with the real `rules()`. The two routes were minting
+     * different coverage DENOMINATORS for one grammar; they now agree.
+     */
     expect(compiledGrammarCoverageDefinitions(grammar)).toEqual([
-      { id: 'dispatch:Entry/lazy:0/matcher:startsWith:%40-', kind: 'dispatch-arm' },
-      { id: 'dispatch:Entry/lazy:0/otherwise', kind: 'dispatch-arm' },
-      { id: 'dispatch:Entry/lazy:0/when:%40media', kind: 'dispatch-arm' },
+      { id: 'dispatch:Entry/matcher:startsWith:%40-', kind: 'dispatch-arm' },
+      { id: 'dispatch:Entry/otherwise', kind: 'dispatch-arm' },
+      { id: 'dispatch:Entry/when:%40media', kind: 'dispatch-arm' },
       { id: 'rule:Entry', kind: 'rule' },
     ])
   })
@@ -210,8 +221,8 @@ const grammar = rules(g => ({
     expect(covered.code).toContain('parseman.grammarCoverageDefinitions')
     const grammar = evalMacroModule(covered.code, 'grammar') as Record<string, unknown>
     expect(compiledGrammarCoverageDefinitions(grammar)).toEqual([
-      { id: 'choice:Entry/lazy:0/arm:0', kind: 'choice-arm' },
-      { id: 'choice:Entry/lazy:0/arm:1', kind: 'choice-arm' },
+      { id: 'choice:Entry/arm:0', kind: 'choice-arm' },
+      { id: 'choice:Entry/arm:1', kind: 'choice-arm' },
       { id: 'rule:Entry', kind: 'rule' },
     ])
   })
