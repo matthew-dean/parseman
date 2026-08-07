@@ -13,8 +13,8 @@
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
 import { reachableIps } from './inspect.ts'
-import { OP_NODE, OP_NODE_TRACK } from './ops.ts'
-import type { TableProgram, TableRule } from './program.ts'
+import { OP_NODE, OP_NODE_TRACK, OP_SCOPE } from './ops.ts'
+import { resolveTable, type TableProgram, type TableRule } from './program.ts'
 
 const EMPTY_FX: string[] = []
 
@@ -83,7 +83,26 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
   // `typeof r === 'function'` branch for compiled entries, which codegen stamps
   // with `_meta`. A table entry is a function too, so it must be stamped or
   // `run({ rootTrivia })` rejects a grammar that plainly has labelled trivia.
-  const meta = prog.labels === undefined && prog.classified !== 1
+  //
+  // `grammarTrivia` joins them for the same reason and with a sharper edge: `run()`
+  // now consumes the DOCUMENT ROOT's trailing trivia off the entry's own ambient
+  // trivia (see `ambientTriviaFromRunnable`), which a combinator entry carries on
+  // `_meta.grammarTrivia`. A table entry that did not carry it would leave the tail
+  // unconsumed and report a short `span` / a non-null `unconsumedFrom` where the
+  // interpreter reports the whole file — a three-way identity divergence that shows
+  // up as `ok: true` with bytes missing, never as an error.
+  //
+  // Read from the ENTRY ROW, not from one program-wide slot: `encodeRule` wraps each
+  // rule's entry in `OP_SCOPE <triviaSlot> <body>` iff THAT rule has ambient trivia,
+  // and a `composeLeaf` grammar's pieces do not agree (the same disagreement
+  // `scanSkipOf` exists for). `resolveTable` is memoised per program, so this is the
+  // array both drivers already built.
+  const triviaOfRule = (ip: number): Combinator<unknown> | undefined => {
+    if (prog.code[ip] !== OP_SCOPE) return undefined
+    const slot = prog.code[ip + 1]!
+    return slot < 0 ? undefined : resolveTable(prog).trivia[slot]
+  }
+  const baseMeta = prog.labels === undefined && prog.classified !== 1
     ? undefined
     : {
         ...(prog.labels === undefined ? {} : { triviaKindLabels: prog.labels }),
@@ -129,6 +148,10 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
       }
       return { ok: true, value: d.lastValue(), span: lines ? spanLines(ctx, pos, end) : { start: pos, end } }
     }
+    const ownTrivia = triviaOfRule(prog.rules[name]!)
+    const meta = ownTrivia === undefined
+      ? baseMeta
+      : { ...baseMeta, grammarTrivia: ownTrivia }
     out[name] = meta === undefined ? entryFn : Object.assign(entryFn, { _meta: meta })
   }
   // STAMP THE HOST MODE. `run()` reads it off the entry through `FUSED_HOST_MODE`

@@ -133,8 +133,14 @@ describe('a table entry carries the trivia metadata run() reads', () => {
   })
 
   /** The `_meta` a table rule function is stamped with, as `run()` sees it. */
-  const metaOf = (fn: unknown): { triviaKindLabels?: readonly string[]; rootTriviaClassified?: true } | undefined =>
-    (fn as { _meta?: { triviaKindLabels?: readonly string[]; rootTriviaClassified?: true } })._meta
+  const metaOf = (fn: unknown): {
+    triviaKindLabels?: readonly string[]
+    rootTriviaClassified?: true
+    grammarTrivia?: unknown
+  } | undefined =>
+    (fn as {
+      _meta?: { triviaKindLabels?: readonly string[]; rootTriviaClassified?: true; grammarTrivia?: unknown }
+    })._meta
 
   it('takes them off `parser({ trivia }, …)`, which leaves nothing on _meta', () => {
     // `parser()` stores the trivia on `_def.triviaParser` only — `_meta.grammarTrivia`
@@ -169,9 +175,16 @@ describe('a table entry carries the trivia metadata run() reads', () => {
     expect(metaOf(entry)?.rootTriviaClassified).toBe(true)
   })
 
-  it('leaves an unlabelled grammar with no metadata to report', () => {
+  it('leaves an unlabelled grammar with no LABEL metadata to report', () => {
     const doc = parser({ trivia: trivia(regex(/\s+/)) }, regex(/a/))
-    expect(metaOf(assembledRules(encodeTable({ Doc: doc }))['Doc'])).toBeUndefined()
+    const meta = metaOf(assembledRules(encodeTable({ Doc: doc }))['Doc'])
+    expect(meta?.triviaKindLabels).toBeUndefined()
+    expect(meta?.rootTriviaClassified).toBeUndefined()
+    // The trivia ITSELF is still stamped, labels or not: `run()` consumes the
+    // document root's trailing trivia off `_meta.grammarTrivia`, and an entry
+    // that withheld it would leave a table parse short of the interpreter's
+    // `span` / `unconsumedFrom` on any file ending in whitespace.
+    expect(meta?.grammarTrivia).toBeDefined()
   })
 })
 
