@@ -512,7 +512,14 @@ build error (`composeLeaf() must macro-fuse`), never a silent fallback. An unlow
 runtime call does not produce that artifact — it yields Parseman's internal
 interpreted fuse, which exists for diagnostics and differential harnesses. That is a
 different engine, not a different grammar, and it is not a supported way to ship a
-parser; the declared return type describes the macro-built artifact.
+parser.
+
+Because both paths are real, `composeLeaf` returns `Record<string, Runnable>`, not
+`Record<string, FusedRule>`. `Runnable` is "a compiled rule *or* a combinator", which
+is exactly what [`run`](#runentry-input-opts) and
+[`parseDoc`](#parsedocregistry-rootrule-input-opts) accept, so the declared type is
+true on both paths and you never narrow to use the result. Annotate a leaf grammar as
+`Record<keyof MyRules, Runnable>`.
 
 ## Trees
 

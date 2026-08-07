@@ -23,6 +23,7 @@ import { assembledRules } from '../table/assemble.ts'
 import { GRAMMAR_REFLECTION } from '../cst/reflection.ts'
 import { PARSEMAN_VERSION } from '../version.ts'
 import type { BuildHost, Combinator, CstCollapsePredicate, ParseContext, ParseResult } from '../types.ts'
+import type { Runnable } from '../functional/run.ts'
 
 /**
  * Compile a `rules()` map to a **linkable artifact** — the composable, shippable
@@ -646,27 +647,26 @@ export function compose(
  *
  * Called at runtime (no macro) it returns the INTERPRETED fuse of the same items —
  * a combinator map, not a map of compiled functions (`fuseInterpreted`), fused lazily
- * per rule name. `run()` / `parseDoc()` accept either shape.
+ * per rule name.
  *
- * THE DECLARED RETURN TYPE IS THE MACRO-PATH TYPE, AND ON THE RUNTIME PATH IT IS A
- * LIE — the values are combinators, not `FusedRule` functions, and the `as unknown as`
- * below is where that is laundered. It is stated rather than fixed because the two
- * honest fixes are both out of reach from here:
- *   - widening the return to a union breaks every consumer that annotates the result
- *     (jess's `scssGrammar: Record<keyof ScssRules, FusedRule> = composeLeaf([…])`);
- *   - making the runtime path produce real `FusedRule` functions, or throw like the
- *     macro's `must macro-fuse` guard, is a BEHAVIOUR change — the whole `bench/jess`
- *     harness family and two differential-gate legs (`emit-identity-one`,
- *     `scan-shape-oracle-one`) import un-macro'd grammar modules and depend on this
- *     lazy interpreted fuse existing, one dialect per process.
- * The mitigation is that the interpreted fuse is no longer public API: it is reachable
- * only from inside the library, so the population that can hold the wrong type is
- * Parseman's own diagnostics rather than every consumer. Fixing it properly means
- * deciding whether an un-macro'd `composeLeaf()` should exist at all — owner call.
+ * THE RETURN TYPE IS `Runnable`, NOT `FusedRule`, BECAUSE BOTH PATHS ARE REAL. A macro
+ * build yields fused functions; an un-macro'd call yields combinators. `Runnable` is
+ * already the library's name for "either of those" — it is what `run()` and
+ * `parseDoc()` take — so the declared type is TRUE on both paths and a caller needs no
+ * narrowing to use the result. This used to declare `Record<string, FusedRule>` and
+ * launder the runtime path through an `as unknown as`, which let a caller hold a
+ * combinator map while the type promised compiled functions.
+ *
+ * Do NOT "fix" this by deleting the runtime path. It is load-bearing: the `bench/jess`
+ * harness family and two differential-gate legs (`emit-identity-one`,
+ * `scan-shape-oracle-one`) import un-macro'd grammar modules and depend on this lazy
+ * interpreted fuse, one dialect per process. Whether an un-macro'd `composeLeaf()`
+ * should exist at all is a separate, open owner question — but while the gates depend
+ * on it, it exists, and the type says so.
  */
 export function composeLeaf(
   items: Array<LinkableTable | Record<string, unknown>>,
-): Record<string, FusedRule> {
+): Record<string, Runnable> {
   const pieces = items.flatMap(interpretedPieces)
   let fused: Record<string, Combinator<unknown>> | undefined
   const map: Record<string, unknown> = {}
@@ -690,7 +690,7 @@ export function composeLeaf(
     value: pieces.filter(p => p.plain).map(p => p.entries),
     enumerable: false,
   })
-  return map as unknown as Record<string, FusedRule>
+  return map as Record<string, Runnable>
 }
 
 /* ── Interpreted fuse ─────────────────────────────────────────────────────────

@@ -130,8 +130,13 @@ export type {
 // bench legs run a grammar without reaching codegen — not a supported way to ship a
 // parser. Publishing it advertised a second engine with the same grammar and different
 // runtime characteristics, and `isInterpretedFuse` existed as an escape hatch that not
-// even Parseman called. Both stay internal (./compiler/linker.ts); a diagnostic that
-// needs them imports from there.
+// even Parseman called. Both stay internal (./compiler/linker.ts).
+//
+// Withdrawing the discriminator is only safe because `composeLeaf()` no longer LIES
+// about which engine it returned: it is typed `Record<string, Runnable>`, true on both
+// paths, and `Runnable` is what `run()`/`parseDoc()` take. Were that type ever narrowed
+// back to `FusedRule`, `isInterpretedFuse` would have to be re-exported in the same
+// change — a dual shape with no way to detect it is the worse of the two.
 export { compose, composeLeaf, cstBuildHost } from './compiler/linker.ts'
 export type { CstBuildHostOptions, FusedRule } from './compiler/linker.ts'
 
