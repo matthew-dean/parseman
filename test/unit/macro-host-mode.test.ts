@@ -284,3 +284,72 @@ export const composedCst = compose([astG], { hostMode: 'cst' })
     if (out) expect(out.warnings.join('\n')).toMatch(/hostMode.*literal|literal.*hostMode/i)
   })
 })
+
+/**
+ * A QUOTED option key is the same key. `{ hostMode: 'cst' }` and `{ 'hostMode': 'cst' }`
+ * are one object literal in JavaScript, and the runtime path — which reads a real object —
+ * cannot tell them apart. The macro read only `key.name`, which oxc populates for an
+ * Identifier key and leaves undefined for a Literal one, so every quoted option was read
+ * as ABSENT.
+ *
+ * The consequence is the failure the two blocks above already exist to prevent, arriving
+ * through a different door: `rules({ 'hostMode': 'cst' }, f)` silently shipped an 'ast'
+ * artifact, no warning, and `assertHostModeCompatible` then passed because the artifact
+ * genuinely WAS 'ast'. The comment at index.ts:1487 describes that exact sequence — and
+ * the fix it documents was itself written with an Identifier-only reader.
+ *
+ * The plugin already had a correct reader: `propName` in evaluator.ts handled Identifier
+ * AND Literal, and checked `computed`. Three option readers in index.ts each re-derived
+ * the wrong half of it. The fix is one reader, imported — not a fourth correct copy.
+ *
+ * COMPUTED keys are the second half. `key.name === 'hostMode'` is TRUE for `{ [hostMode]:
+ * … }`, where `hostMode` is a variable whose VALUE names some other option entirely. The
+ * broken reader therefore both missed keys that were present and matched keys that were
+ * not.
+ */
+describe('macro options — a quoted key is the same key', () => {
+  const QUOTED_RULES = `
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+export const g = rules({ 'hostMode': 'cst' }, (g) => ({ Doc: node(regex(/a+/), _c => ({ mine: true })) }))
+`.trim()
+
+  const fusedStamp = (code: string): string | undefined =>
+    [...code.matchAll(/Symbol\.for\(['"]parseman\.fusedHostMode['"]\),\s*\{\s*value:\s*['"](\w+)['"]/g)].pop()?.[1]
+
+  it('honours a quoted hostMode on rules() — the shipped silent-wrong-artifact bug', async () => {
+    const { mod, warnings } = await build(QUOTED_RULES)
+    expect(warnings).toEqual([])
+    // Before the fix: 'ast'. The user asked for cst, got ast, and nothing said so.
+    expect(mod.g[FM]).toBe('cst')
+    expect(mod.g.Doc[FM]).toBe('cst')
+  })
+
+  it('honours a quoted hostMode on compose()', () => {
+    const out = transformMacro(`
+import { node, regex, rules, compose } from 'parseman' with { type: 'macro' }
+const factory = (g) => ({ Doc: node('Doc', regex(/a+/), (c) => ({ c })) })
+export const astG = rules(factory)
+export const composedCst = compose([astG], { 'hostMode': 'cst' })
+`.trim(), 'test.ts', new Set(['parseman']))
+    expect(out).not.toBeNull()
+    expect(fusedStamp(out!.code)).toBe('cst')
+  })
+
+  it('validates a quoted hostMode instead of dropping it', () => {
+    const out = transformMacro(QUOTED_RULES.replace("'cst'", "'nonsense'"), 'test.ts', new Set(['parseman']))
+    // Before the fix the bad value was never read, so it never failed validation either.
+    if (out) expect(out.warnings.join('\n')).toMatch(/must be the literal 'ast' or 'cst'/)
+  })
+
+  it('does NOT read a COMPUTED key as the option it happens to be named after', () => {
+    const out = transformMacro(`
+import { node, regex, rules } from 'parseman' with { type: 'macro' }
+const hostMode = 'somethingElse'
+export const g = rules({ [hostMode]: 'cst' }, (g) => ({ Doc: node(regex(/a+/)) }))
+`.trim(), 'test.ts', new Set(['parseman']))
+    // `key.name === 'hostMode'` is true here, but the key this object actually carries is
+    // 'somethingElse'. Reading it as hostMode is inventing an option the source never set.
+    expect(out).not.toBeNull()
+    expect(fusedStamp(out!.code) ?? 'ast').toBe('ast')
+  })
+})

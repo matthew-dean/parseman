@@ -444,3 +444,60 @@ const grammar = rules(g => ({
   })
 
 })
+
+/**
+ * `compose()` SHIPPED AN EMPTY COVERAGE DENOMINATOR.
+ *
+ * The macro has two ways to learn a grammar's coverage definitions: ask
+ * `buildGrammarPlan` (the authoritative producer, reached through
+ * `compileRuleMapTable`), or scrape `id: "…"` out of the emitted text with a regex.
+ * `rules()` and `composeLeaf()` prefer the plan and keep the scrape as a fallback.
+ * `compose()` had ONLY the scrape.
+ *
+ * And the scrape cannot work on a table. `program.ts` says so directly — definitions
+ * ship as table DATA, in the `cov` id/kind pool, and "a table has no statements, so
+ * there is nothing to scan". The source lowering the regex was written for was
+ * deleted. So every macro-composed grammar carried `[]`.
+ *
+ * An empty denominator is NO MEASUREMENT, not full coverage — a consumer's gate reads
+ * it as 100%. This was not entirely silent: `coverage-definitions-unavailable` fired
+ * on every macro compose(), which is the degradation record doing its job while the
+ * defect stayed unfixed for want of anyone reading it.
+ *
+ * `plugin/index.ts` imported `buildGrammarPlan` and never called it. The import was
+ * genuinely dead — the plan belongs to `compileRuleMapTable`, and the plugin's job is
+ * to stop dropping the `coverageDefinitions` it already hands back — but the import
+ * was an accurate signpost to the missing call.
+ */
+describe('macro compose() — the coverage denominator comes from the plan, not a regex', () => {
+  const COMPOSED = `
+import { node, regex, rules, compose } from 'parseman' with { type: 'macro' }
+const factory = (g) => ({ Doc: node('Doc', regex(/a+/), (c) => ({ c })) })
+export const astG = rules(factory)
+export const composed = compose([astG])
+`.trim()
+
+  /** Every `grammarCoverageDefinitions` stamp in the emitted text, in order. */
+  const stamps = (code: string): string[] =>
+    [...code.matchAll(/grammarCoverageDefinitions'\), \{ value: Object\.freeze\((\[.*?\])\.map/gs)].map(m => m[1]!)
+
+  it('stamps the composed grammar with the SAME definitions as the grammar it composes', () => {
+    const out = transformMacro(COMPOSED, 'compose-cov.ts', new Set(['parseman']), false, false, true)
+    expect(out).not.toBeNull()
+    const found = stamps(out!.code)
+    expect(found).toHaveLength(2)
+    // Before the fix the second stamp — compose()'s — was `[]`.
+    expect(JSON.parse(found[1]!)).toEqual([{ id: 'rule:Doc', kind: 'rule' }])
+    expect(JSON.parse(found[1]!)).toEqual(JSON.parse(found[0]!))
+  })
+
+  it('no longer reports the definitions as unavailable', () => {
+    const out = transformMacro(COMPOSED, 'compose-cov.ts', new Set(['parseman']), false, false, true)
+    expect(out!.warnings.join('\n')).not.toContain('coverage-definitions-unavailable')
+  })
+
+  it('emits no coverage stamp at all when coverage is off', () => {
+    const out = transformMacro(COMPOSED, 'compose-cov.ts', new Set(['parseman']))
+    expect(stamps(out!.code)).toEqual([])
+  })
+})

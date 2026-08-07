@@ -262,11 +262,26 @@ function isScopeEntry(v: unknown): v is ScopeEntry {
   return !!v && typeof v === 'object' && 'combi' in v && 'mfSrcs' in v
 }
 
-/** Read a non-computed object-property key name (Identifier or Literal), or null. */
-function propName(p: ObjectProperty): string | null {
-  if (p.computed) return null
-  const key = p.key as unknown as { type: string; name?: string; value?: unknown }
-  return key.type === 'Identifier' ? key.name ?? null
+/** THE reader for an object-literal property key, for every consumer in the plugin.
+ *
+ * Returns the key a JavaScript engine would use, or null when the property does not
+ * name a static key at all — a spread, a rest, or a COMPUTED key whose value is not
+ * known until runtime.
+ *
+ * Both halves are load-bearing and each was got wrong somewhere:
+ *   - a quoted key is a `Literal`, not an `Identifier`. Reading only `key.name` sees
+ *     `{ 'hostMode': 'cst' }` as having no hostMode, and drops the option SILENTLY.
+ *   - `key.name` is also populated for a COMPUTED key `{ [hostMode]: … }`, where the
+ *     identifier is a variable and the actual key is its value. Reading only
+ *     `key.name` there invents an option the source never set.
+ *
+ * So an Identifier-only reader both misses keys that are present and matches keys that
+ * are not. Three option readers in plugin/index.ts each re-derived one wrong half; the
+ * fix is this one function, imported. */
+export function propName(p: { type?: string; computed?: boolean; key?: unknown }): string | null {
+  if ((p.type !== undefined && p.type !== 'Property') || p.computed || !p.key) return null
+  const key = p.key as { type?: string; name?: unknown; value?: unknown }
+  return key.type === 'Identifier' ? (typeof key.name === 'string' ? key.name : null)
     : key.type === 'Literal' ? String(key.value)
     : null
 }
@@ -503,10 +518,7 @@ function staticNodeOptions(expr: Expression, scope: XScope): StaticNodeOptions {
     if ((prop as { type?: string }).type !== 'Property') return STATIC_NODE_OPTIONS_FAILED
     const p = prop as unknown as ObjectProperty
     if (p.computed) return STATIC_NODE_OPTIONS_FAILED
-    const key = p.key as unknown as { type: string; name?: string; value?: unknown }
-    const name = key.type === 'Identifier' ? key.name
-      : key.type === 'Literal' ? String(key.value)
-      : undefined
+    const name = propName(p as never)
     if (name === 'unwrap' || name === 'collapse' || name === 'captureTrivia' || name === 'trailingTrivia') {
       const value = staticLiteralValue(p.value)
       if (value === true) opts[name] = true
@@ -985,13 +997,7 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
   if (node.type === 'ObjectExpression') {
     const obj: Record<string, unknown> = {}
     for (const prop of node.properties) {
-      if (prop.type !== 'Property') return null
-      if ((prop as unknown as ObjectProperty).computed) return null
-      const key = (prop as unknown as ObjectProperty).key.type === 'Identifier'
-        ? ((prop as unknown as ObjectProperty).key as { name: string }).name
-        : (prop as unknown as ObjectProperty).key.type === 'Literal'
-        ? String(((prop as unknown as ObjectProperty).key as { value: unknown }).value)
-        : null
+      const key = propName(prop as never)
       if (key === null) return null
       obj[key] = anyValue((prop as unknown as ObjectProperty).value as Expression, scope, code, mfs)
     }
@@ -1022,9 +1028,11 @@ function anyValue(node: Expression, scope: XScope, code?: string, mfs?: string[]
       if (typeof key !== 'string' && typeof key !== 'number') return null
       return (obj as Record<string | number, unknown>)[key] ?? null
     }
-    const propName = (mem.property as { name?: string }).name
-    if (!propName) return null
-    return (obj as Record<string, unknown>)[propName] ?? null
+    // A member ACCESS name (`obj.foo`), not an object-literal key — a different thing
+    // from `propName`, and named apart from it so it cannot shadow the shared reader.
+    const memberName = (mem.property as { name?: string }).name
+    if (!memberName) return null
+    return (obj as Record<string, unknown>)[memberName] ?? null
   }
 
   if (node.type === 'CallExpression') {
@@ -1120,24 +1128,15 @@ export function evaluateCombinatorArray(
 // A rules() factory's returned object is a flat map of `key: combinator` — the
 // ONLY composition mechanism is compose() (see linker.ts). `...frag(g)` spreads
 // are not supported: a spread property makes the factory non-statically-evaluable
-// (propKey returns null below), so it falls back to the interpreter.
+// (propName returns null below), so it falls back to the interpreter.
 // ---------------------------------------------------------------------------
-
-/** Extract just the property key of a rules() return `Property`, or null
- * (a spread / computed / shorthand-rest property → not statically evaluable). */
-function propKey(prop: { type: string; computed?: boolean; key?: { type: string; name?: string; value?: unknown } }): string | null {
-  if (prop.type !== 'Property' || prop.computed || !prop.key) return null
-  if (prop.key.type === 'Identifier') return prop.key.name ?? null
-  if (prop.key.type === 'Literal') return String(prop.key.value)
-  return null
-}
 
 /** Collect every rule key from a rules() return object. A non-`key: value`
  * property (spread / computed / rest) → null → the caller falls back. */
 function collectRuleKeys(retObj: ObjectExpression): string[] | null {
   const out: string[] = []
   for (const prop of (retObj as unknown as { properties: Array<{ type: string }> }).properties) {
-    const key = propKey(prop as never)
+    const key = propName(prop as never)
     if (!key) return null
     out.push(key)
   }
@@ -1159,7 +1158,7 @@ type RuleEntry = { key: string; value: Expression; scope: XScope; code: string }
 function flattenRuleEntries(retObj: ObjectExpression, scope: XScope, code: string): RuleEntry[] | null {
   const out: RuleEntry[] = []
   for (const prop of (retObj as unknown as { properties: Array<{ type: string; value?: unknown }> }).properties) {
-    const key = propKey(prop as never)
+    const key = propName(prop as never)
     if (!key) return null
     out.push({ key, value: (prop as { value: Expression }).value, scope, code })
   }

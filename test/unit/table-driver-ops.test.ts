@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { encodeTable } from '../../src/table/encode.ts'
 import { execRules } from '../../src/table/exec.ts'
+import { execRulesBaseline } from '../../src/table/exec-baseline.ts'
+import { tableRules } from '../../src/table/assemble.ts'
+import { defaultAssemblyCfgs, emitTableModule } from '../../src/table/emit.ts'
 import { opHistogram, reachableOps } from '../../src/table/inspect.ts'
-import { resolveTable, type TableProgram } from '../../src/table/program.ts'
+import { resolveTable, type TableProgram, type TableRule } from '../../src/table/program.ts'
 import { OP_CHOICE, OP_EMPTY, OP_NODE, OP_RULE } from '../../src/table/ops.ts'
 import { run } from '../../src/functional/run.ts'
 import { compose } from '../../src/compiler/linker.ts'
@@ -342,6 +345,49 @@ describe('table driver — contract with the table itself', () => {
     expect(r.span).toEqual({ start: 0, end: 0 })
   })
 
+  /**
+   * ...and it succeeds at zero width in EVERY engine, with the same value.
+   *
+   * The test above ran `execRules` only, and that is precisely how the divergence
+   * survived: `emit-assembly.ts` returned `null` for OP_EMPTY where `exec.ts`,
+   * `exec-baseline.ts` and `assemble.ts` all returned `''`. The three-way identity
+   * sweep compares engines on grammars built from the combinator API, and no
+   * combinator lowers to OP_EMPTY — the opcode is emitted only as `finish()` padding
+   * when the rule map is EMPTY (encode.ts), and an empty rule map gives the emitter
+   * zero walk roots, so its OP_EMPTY arm was never compiled.
+   *
+   * Nothing ASSERTS that. It is two unguarded facts that happen to compose: no
+   * producer, and no roots. An `epsilon()` combinator, or an optimizer collapsing a
+   * zero-width construct, makes the divergence live with no build-time signal. This
+   * test removes the dependence on that accident — it reaches the row as DATA, which
+   * is the stated contract of this whole describe block, and pins all four engines
+   * to one answer.
+   */
+  it('OP_EMPTY yields the SAME value in all four engines', () => {
+    const p = prog([OP_EMPTY], { Doc: 0 })
+    const engines: Array<[string, Record<string, TableRule>]> = [
+      ['exec', execRules(p)],
+      ['exec-baseline', execRulesBaseline(p)],
+      ['assembled', tableRules(p)],
+    ]
+    for (const [name, rulesOf] of engines) {
+      const r = run(rulesOf.Doc! as never, 'abc')
+      expect(r.ok, name).toBe(true)
+      // `null` here is the emitted engine disagreeing with the other three.
+      expect(r.value, name).toBe('')
+      expect(r.span, name).toEqual({ start: 0, end: 0 })
+    }
+  })
+
+  it('the EMITTED module lowers OP_EMPTY to the same value it means everywhere else', () => {
+    // Asserted on the emitted SOURCE: `tableRules` may serve this program from the
+    // closure engine, which would hide the emitter's answer behind an agreeing one.
+    const p = prog([OP_EMPTY], { Doc: 0 })
+    const src = emitTableModule(p, { assemblies: defaultAssemblyCfgs(p) })
+    expect(src).toMatch(/EC\.e=pos;return ''/)
+    expect(src).not.toMatch(/EC\.e=pos;return null/)
+  })
+
   it('an unknown opcode THROWS in the driver and in the inspector', () => {
     // Both readers decode the same stream. A new row taught to one and not the
     // other is the failure this pair of throws exists to make loud.
@@ -429,6 +475,36 @@ describe('OP_NAMES covers every declared opcode', () => {
     // merge two rows into one number.
     const spelled = declared.map(([, code]) => names[code]!)
     expect(new Set(spelled).size).toBe(spelled.length)
+  })
+
+  /**
+   * THE EDGE TABLE IS A THIRD COPY OF THE OPCODE LIST — now a first copy, gated.
+   *
+   * "Which operand slots hold child instructions" was written twice: `site-labels.ts`
+   * over the 35 opcodes the emitter lowers, and `inspect.ts`'s `reachableIps` over all
+   * 40. They agreed slot-for-slot everywhere they overlapped, which is what made the
+   * duplication invisible — adding an opcode meant editing two switches in two files,
+   * and NOTHING failed if you edited one. `site-labels.ts`'s header warned about that
+   * drift while guarding only against it happening inside `site-labels.ts`.
+   *
+   * Collapsed to `child-slots.ts`. This is the gate that keeps it collapsed: asserted
+   * over the MODULE's exports, so a new opcode cannot be added without an edge answer,
+   * exactly as the block above does for names. The operands are zeroed, so every
+   * count-prefixed row (SEQ, CHOICE, DISPATCH, GREEDY) reports zero children — this
+   * asserts RECOGNITION, which is the half that silently regresses.
+   */
+  it('child-slots.ts has an edge answer for each OP_* constant', async () => {
+    const ops = await import('../../src/table/ops.ts')
+    const { childSlots } = await import('../../src/table/child-slots.ts')
+    const declared: Array<[string, number]> = Object.entries(ops as Record<string, unknown>)
+      .filter(([n, v]) => n.startsWith('OP_') && n !== 'OP_NAMES' && typeof v === 'number')
+      .map(([n, v]) => [n, v as number])
+    const unknown = declared.filter(([, code]) => {
+      const stream = new Int32Array(16)
+      stream[0] = code
+      return !childSlots(stream, 0, [])
+    }).map(([n]) => n)
+    expect(unknown, 'every opcode must declare which slots are children').toEqual([])
   })
 })
 
