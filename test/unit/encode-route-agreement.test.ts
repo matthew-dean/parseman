@@ -40,7 +40,7 @@ import { describe, expect, it } from 'vitest'
 import * as parseman from '../../src/index.ts'
 import { transformMacro } from '../../src/plugin/index.ts'
 import { encodeTable } from '../../src/table/encode.ts'
-import { assembledRules } from '../../src/table/assemble.ts'
+import { tableRules } from '../../src/table/assemble.ts'
 import { expandCompact, resolveTable, type CompactProgram, type TableProgram } from '../../src/table/program.ts'
 import { opHistogram, reachableIps } from '../../src/table/inspect.ts'
 import { OP_CHOICE } from '../../src/table/ops.ts'
@@ -81,7 +81,7 @@ function viaMacro(source: string): Shape {
   }
   const progs: (TableProgram | CompactProgram)[] = []
   evalMacroModule(out.code, 'grammar', {
-    tableRules: (p: TableProgram | CompactProgram) => { progs.push(p); return assembledRules(p) },
+    tableRules: (p: TableProgram | CompactProgram) => { progs.push(p); return tableRules(p) },
   })
   if (progs.length !== 1) throw new Error(`expected exactly one emitted program, got ${progs.length}`)
   return shapeOf(expandCompact(progs[0]!))
