@@ -1,5 +1,5 @@
 import type { AutoNotCheck, Combinator, FirstSet, ParserDef } from '../types.ts'
-import { firstSetOf, matchesEmpty, union } from '../combinators/first-set.ts'
+import { firstSetOf, matchesEmpty, union, type RefResolver } from '../combinators/first-set.ts'
 import { childrenOf } from '../analysis/gating.ts'
 import { getCoreLiteralValue } from '../combinators/choice.ts'
 import { deriveExpected } from '../combinators/expect.ts'
@@ -374,7 +374,8 @@ class Encoder {
    */
   private followClass(parsers: readonly Combinator<unknown>[], i: number): number {
     let fs: FirstSet = { kind: 'empty' }
-    for (let j = i + 1; j < parsers.length; j++) fs = union(fs, firstSetOf(parsers[j]!))
+    const rr = this.refResolver()
+    for (let j = i + 1; j < parsers.length; j++) fs = union(fs, firstSetOf(parsers[j]!, new Set(), rr))
     return this.charClass(fs)
   }
 
@@ -431,7 +432,42 @@ class Encoder {
     return i
   }
 
-  /** A first set becomes a char class STRING of `[lo, hi]` code-point pairs, or −1 for `any`. */
+  /**
+   * THE GATING ANALYSIS'S VIEW OF A CROSS-PIECE HOLE — `winners`, the same map
+   * emission already resolves those holes against.
+   *
+   * `firstSetOf` and `matchesEmpty` degrade a `lazy` whose thunk THROWS to `any`
+   * / nullable. A grammar loaded at runtime never hits that: `composeLeaf` binds
+   * every `g.X` before the encoder sees the map, so the thunks resolve. A grammar
+   * lowered by the MACRO does hit it — `plugin/evaluator.ts` mints an
+   * `externalRefs` slot for any `g.X` this `rules()` call does not itself define
+   * and never `.define()`s it, because the definition lives in another piece and
+   * is merged afterwards. The ref still ENCODES correctly (`case 'lazy'` resolves
+   * it through `winners` at `:1169`), so the artifact parses the same input — it
+   * simply parses it with the gate switched off at every choice arm that reaches
+   * a hole.
+   *
+   * Measured on jess's less grammar (`bench/jess/macro-program-diff.ts`): 195 of
+   * 562 reachable choice arms carried NO first set in the shipped artifact
+   * against 103 of 540 in the runtime encode, and 10 dispatch sites lost the O(1)
+   * `exclusive` piece (`assemble.ts:1758`) for the candidate-mask loop. With this
+   * resolver both figures land exactly on the runtime encode's: 103 and 41.
+   *
+   * SOUNDNESS. `firstSetOf` warns that deep resolution is sound only where refs
+   * are FINAL, because a compose OVERRIDE could widen a referenced rule's set
+   * after the fact. `winners` IS the final map — it is the merged rule map being
+   * encoded, the one `case 'lazy'` points the arm's CALL at. Gating an arm on the
+   * first set of the very row it will call cannot skip a match that row would
+   * accept. And this only ever runs in the CATCH branch: where a thunk resolves,
+   * nothing consults the resolver and nothing changes, which is why the runtime
+   * leg's counts are byte-for-byte what they were.
+   */
+  private refResolver(): RefResolver | undefined {
+    const w = this.winners
+    return w === undefined ? undefined : (name: string) => w[name]
+  }
+
+  /** A first set becomes a char class string, or −1 for `any`. */
   private charClass(fs: FirstSet): number {
     if (fs.kind !== 'ranges' || fs.ranges.length === 0) return -1
     // `fromCharCode` truncates every endpoint to 16 bits. That silently turned
@@ -494,7 +530,7 @@ class Encoder {
    */
   private subtree(c: Combinator<unknown>): SubtreeRef {
     const ip = this.node(c).ip
-    const fs = firstSetOf(c)
+    const fs = firstSetOf(c, new Set(), this.refResolver())
     return [ip, fs.kind === 'empty' ? -2 : this.charClass(fs)]
   }
 
@@ -868,7 +904,8 @@ class Encoder {
         // the O(1) table (`exclusive`) or falls to the ordered per-arm path.
         // Arm ORDER is preserved on both, which is what makes this a PEG-safe
         // change rather than a reordering.
-        const classes = arms.map(a => matchesEmpty(a) ? -1 : this.charClass(firstSetOf(a)))
+        const rr = this.refResolver()
+        const classes = arms.map(a => matchesEmpty(a, new Set(), rr) ? -1 : this.charClass(firstSetOf(a, new Set(), rr)))
         const dispIdx = this.disp.length
         this.disp.push(classes)
         // PER-ARM EXPECTED SETS RIDE ALONG, after the arm offsets. The ordered
@@ -929,7 +966,7 @@ class Encoder {
         if (this.rec) {
           return this.emit(
             OP_REP, child, d.min, d.max ?? -1, sep, flags,
-            this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator)),
+            this.expected(deriveExpected(d.parser)), this.charClass(firstSetOf(d.separator, new Set(), this.refResolver())),
           )
         }
         return d.min >= 2

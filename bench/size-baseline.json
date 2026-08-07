@@ -1,151 +1,151 @@
 {
   "updatedAt": "2026-08-07",
-  "gitRev": "1643f17",
+  "gitRev": "f6d5f83",
   "ceiling": 10,
   "ratchetSlackPct": 0.1,
   "fixtures": {
     "example/json": {
       "genBytes": 1342,
-      "gzipBytes": 695,
+      "gzipBytes": 685,
       "bytesRatio": 0.232,
       "locMultiplier": 0.084
     },
     "example/csv": {
       "genBytes": 794,
-      "gzipBytes": 435,
+      "gzipBytes": 429,
       "bytesRatio": 0.406,
       "locMultiplier": 0.176
     },
     "example/graphql": {
       "genBytes": 4688,
-      "gzipBytes": 1850,
+      "gzipBytes": 1811,
       "bytesRatio": 0.454,
       "locMultiplier": 0.05
     },
     "example/css": {
       "genBytes": 9235,
-      "gzipBytes": 2521,
+      "gzipBytes": 2505,
       "bytesRatio": 0.951,
       "locMultiplier": 0.07
     },
     "example/lang": {
       "genBytes": 3571,
-      "gzipBytes": 1207,
+      "gzipBytes": 1194,
       "bytesRatio": 0.727,
       "locMultiplier": 0.089
     },
     "example/toml-ish": {
       "genBytes": 1420,
-      "gzipBytes": 716,
+      "gzipBytes": 705,
       "bytesRatio": 0.429,
       "locMultiplier": 0.144
     },
     "example/jsonc": {
       "genBytes": 1388,
-      "gzipBytes": 721,
+      "gzipBytes": 709,
       "bytesRatio": 1.226,
       "locMultiplier": 0.382
     },
     "example/jsonl": {
       "genBytes": 1390,
-      "gzipBytes": 711,
+      "gzipBytes": 700,
       "bytesRatio": 1.687,
       "locMultiplier": 0.542
     },
     "probe/node-scale-4": {
-      "genBytes": 2628,
-      "gzipBytes": 979,
-      "bytesRatio": 3.576,
+      "genBytes": 2552,
+      "gzipBytes": 965,
+      "bytesRatio": 3.472,
       "locMultiplier": 2
     },
     "probe/node-scale-8": {
-      "genBytes": 3917,
-      "gzipBytes": 1236,
-      "bytesRatio": 3.289,
+      "genBytes": 3841,
+      "gzipBytes": 1216,
+      "bytesRatio": 3.225,
       "locMultiplier": 1.385
     },
     "probe/node-scale-16": {
-      "genBytes": 6565,
-      "gzipBytes": 1752,
-      "bytesRatio": 3.087,
+      "genBytes": 6489,
+      "gzipBytes": 1736,
+      "bytesRatio": 3.051,
       "locMultiplier": 0.857
     },
     "probe/node-scale-32": {
-      "genBytes": 11753,
-      "gzipBytes": 2716,
-      "bytesRatio": 2.927,
+      "genBytes": 11677,
+      "gzipBytes": 2707,
+      "bytesRatio": 2.908,
       "locMultiplier": 0.486
     },
     "probe/compose-depth-1": {
-      "genBytes": 2168,
-      "gzipBytes": 950,
-      "bytesRatio": 2.015,
+      "genBytes": 2100,
+      "gzipBytes": 940,
+      "bytesRatio": 1.952,
       "locMultiplier": 1.188
     },
     "probe/compose-depth-2": {
-      "genBytes": 2297,
-      "gzipBytes": 989,
-      "bytesRatio": 1.501,
+      "genBytes": 2228,
+      "gzipBytes": 979,
+      "bytesRatio": 1.456,
       "locMultiplier": 0.826
     },
     "probe/compose-depth-3": {
-      "genBytes": 2420,
-      "gzipBytes": 1021,
-      "bytesRatio": 1.22,
+      "genBytes": 2350,
+      "gzipBytes": 1014,
+      "bytesRatio": 1.184,
       "locMultiplier": 0.633
     },
     "probe/compose-leaf": {
-      "genBytes": 1483,
-      "gzipBytes": 690,
-      "bytesRatio": 1.911,
+      "genBytes": 1421,
+      "gzipBytes": 686,
+      "bytesRatio": 1.831,
       "locMultiplier": 1.357
     },
     "probe/trivia-on": {
-      "genBytes": 2304,
-      "gzipBytes": 939,
-      "bytesRatio": 4.122,
+      "genBytes": 2207,
+      "gzipBytes": 918,
+      "bytesRatio": 3.948,
       "locMultiplier": 3.333
     },
     "probe/trivia-off": {
-      "genBytes": 2052,
-      "gzipBytes": 843,
-      "bytesRatio": 4.162,
+      "genBytes": 1955,
+      "gzipBytes": 819,
+      "bytesRatio": 3.966,
       "locMultiplier": 2.25
     },
     "probe/hostmode-ast": {
-      "genBytes": 2509,
-      "gzipBytes": 1000,
-      "bytesRatio": 3.866,
+      "genBytes": 2423,
+      "gzipBytes": 991,
+      "bytesRatio": 3.733,
       "locMultiplier": 2
     },
     "probe/hostmode-cst": {
-      "genBytes": 2516,
-      "gzipBytes": 1003,
-      "bytesRatio": 3.877,
+      "genBytes": 2430,
+      "gzipBytes": 990,
+      "bytesRatio": 3.744,
       "locMultiplier": 2
     },
     "probe/variant": {
-      "genBytes": 1975,
-      "gzipBytes": 891,
-      "bytesRatio": 1.963,
+      "genBytes": 1908,
+      "gzipBytes": 881,
+      "bytesRatio": 1.897,
       "locMultiplier": 1.267
     },
     "probe/variants-1": {
-      "genBytes": 1742,
-      "gzipBytes": 796,
-      "bytesRatio": 2.074,
+      "genBytes": 1680,
+      "gzipBytes": 794,
+      "bytesRatio": 2,
       "locMultiplier": 2.067
     },
     "probe/variants-2": {
-      "genBytes": 3012,
-      "gzipBytes": 850,
-      "bytesRatio": 2.941,
+      "genBytes": 2888,
+      "gzipBytes": 846,
+      "bytesRatio": 2.82,
       "locMultiplier": 2.5
     },
     "probe/variants-4": {
-      "genBytes": 5548,
-      "gzipBytes": 916,
-      "bytesRatio": 3.94,
+      "genBytes": 5300,
+      "gzipBytes": 917,
+      "bytesRatio": 3.764,
       "locMultiplier": 3
     }
   }

@@ -344,7 +344,17 @@ describe('printability ratchets in both directions', { timeout: ONE_SPAWN_MS }, 
     // Named, not just counted — otherwise the reader cannot act on it.
     expect(r.out).toMatch(/rules\(\{ trivia \}\)/)
     // And it must never be described as a size win.
-    expect(r.out).not.toMatch(/BANK THE WIN[\s\S]*example\/css/)
+    //
+    // SCOPED TO THE SECTION. This was `/BANK THE WIN[\s\S]*example\/css/` over the
+    // whole report, which does not ask the question it means to: `[\s\S]*` runs past
+    // the end of the win section, so ANY fixture shrinking anywhere made it match the
+    // `example/css` that the STOPPED PRINTING section is REQUIRED to print two lines
+    // below. It only ever passed because no fixture happened to be under its ceiling
+    // in this scenario; the first change that banked a win turned a correct report
+    // into a red. Cut the report at the next section header and ask whether
+    // `example/css` is listed inside the win block, which is the actual claim.
+    const winSection = /⚠ BANK THE WIN[^\n]*\n((?:(?![ ]{2}[✗⚠→✓])[^\n]*\n)*)/.exec(r.out)?.[1] ?? ''
+    expect(winSection).not.toMatch(/example\/css/)
   })
 
   it('REPORTS a fixture that prints again, without failing on good news', () => {

@@ -217,7 +217,22 @@ describe('evaluator — evaluateParserFactory', () => {
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
     expect(map?.has('A')).toBe(true)
-    expect(map?.get('A')?._def.tag).toBe('lazy')
+    /*
+     * THE RULE ITSELF, NOT A `lazy` WRAPPING IT.
+     *
+     * `evaluateParserFactory` used to pre-mint a `ref()` for every declared key and
+     * hand those back whether or not the factory referenced them, because it was a
+     * second implementation of `rules()`. It calls the real `rules()` now, and
+     * `rules()` only keeps a placeholder for a key something actually touched
+     * through `g` — an untouched key is stored directly (`parser.ts:170-190`).
+     *
+     * So this assertion was encoding the copy's shape, not a contract. The runtime
+     * shape is the one the encoder is measured good on, and converging on it is what
+     * removed a spurious `lazy` hop from every macro-lowered rule: 4 size fixtures
+     * dropped below their committed ceiling, and the macro's coverage ids stopped
+     * carrying a `lazy:0` segment the runtime route never had.
+     */
+    expect(map?.get('A')?._def.tag).toBe('literal')
   })
 
   it('returns null when the factory body has unsupported statements', () => {
@@ -492,7 +507,8 @@ describe('evaluator — transform / node / sepBy / oneOrMore', () => {
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
     const ident = map?.get('Ident')
-    expect(ident?._def.tag).toBe('lazy')
+    // The rule itself, not a `lazy` wrapping it — see the note on the `A` rule above.
+    expect(ident?._def.tag).toBe('node')
     const result = run(ident!, 'abc', { build: cstBuildHost() })
     expect(result.value).toMatchObject({ _tag: 'node', type: 'Ident' })
   })
@@ -548,7 +564,8 @@ describe('evaluator — factory and define edge cases', () => {
     const call = parseInit(`const m = ${code}`)
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
-    expect(map?.get('leaf')?._def.tag).toBe('lazy')
+    // The rule itself, not a `lazy` wrapping it — see the note on the `A` rule above.
+    expect(map?.get('leaf')?._def.tag).toBe('literal')
     expect(parse(map!.get('leaf')!, 'x').ok).toBe(true)
   })
 
@@ -596,7 +613,8 @@ describe('evaluator — factory and define edge cases', () => {
     const call = parseInit(`const m = ${code}`)
     const factory = (call as { type: 'CallExpression'; arguments: Expression[] }).arguments[0]!
     const map = evaluateParserFactory(factory, new Map(), code, [])
-    expect(map?.get('kw')?._def.tag).toBe('lazy')
+    // The rule itself, not a `lazy` wrapping it — see the note on the `A` rule above.
+    expect(map?.get('kw')?._def.tag).toBe('keywords')
     expect(parse(map!.get('kw')!, 'IF').ok).toBe(true)
   })
 })
