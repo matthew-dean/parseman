@@ -9,7 +9,7 @@ protocol, and status below. Update the row when the final candidate changes.
 | Item | Value | Status |
 | --- | --- | --- |
 | Remote release base | `origin/release/0.47.0` at `9c3ce450ff7cd35efc0cdc76a5f27df65a9fad2b` | pinned |
-| Code candidate | `fix/0.47-audit` at `82f6e8e` | final source/artifact and external-parser gates passed; historical coverage ratchet remains red |
+| Code candidate | `fix/0.47-audit` at `0921af5` | canonical `a:[]` compiler/macro artifact landed; external-parser gate must be rerun from this head |
 | 0.46 comparison base | `a5dc9bd20a5cc509eb516c36cc46ca10c00c82f3` (`v0.46.0`) | pinned |
 
 ## Correctness and API
@@ -34,11 +34,11 @@ protocol, and status below. Update the row when the final candidate changes.
 
 | Comparison | Protocol | Observed result | Meaning | Status |
 | --- | --- | --- | --- | --- |
-| 0.47 table vs 0.46 on Jess/Less | Exact `82f6e8e` vs `a5dc9bd`, macro→emitted against macro→source, Node 25.9.0, `bench/jess/ab.ts --two-graph` | `benchmark.less`: 39.60 vs 16.93 ms (2.340x slower); generated workload: 110.18 vs 42.13 ms (2.615x slower); CSS: 15.28 vs 5.37 ms (2.845x slower). Full consumption; self checks 0.980-1.027x. | A real production-shaped regression; 0.48 work, not hidden. | recorded |
-| 0.47 table vs external parsers, JSON | Exact `82f6e8e`, `pnpm bench:margin -- --charts json,csv,graphql`; fresh process/bar, 3 rotated rounds, all rivals 3/3 | PM/Chevrotain: small 0.567/0.960us (1.69x), medium 15.191/28.333us (1.87x), large 120.098/228.785us (1.90x); A/A 0.1–0.4% | External-parser win at every measured size. | pass |
-| 0.47 table vs external parsers, CSV | same | PM/Peggy: small 0.412/1.881us (4.57x), large 70.991/412.163us (5.81x); A/A 0.9–4.6%; all five chart parsers yield equal rows and Parseman consumes 54/54 and 14,816/14,816 bytes. | External-parser win with permanent whole-input parity coverage. | pass |
-| 0.47 table vs external parsers, GraphQL | same | PM/Peggy: small 0.651/2.077us (3.19x), medium 5.176/12.337us versus Chevrotain (2.38x), large 113.279/319.030us (2.82x) | External-parser win at every measured size. | pass |
-| Commented small rows: JSON/CSV/GraphQL | Same final-candidate protocol with all three normally-commented small groups enabled together | All reported above; tightest eligible margin JSON small at 1.69x, above the 1.05x floor. | Diagnostic rows retained; no selective omission. | pass |
+| 0.47 table vs 0.46 on Jess/Less | Exact `82f6e8e` vs `a5dc9bd`, **macro→closure-table** against macro→source, Node 25.9.0, `bench/jess/ab.ts --two-graph` | `benchmark.less`: 39.60 vs 16.93 ms (2.340x slower); generated workload: 110.18 vs 42.13 ms (2.615x slower); CSS: 15.28 vs 5.37 ms (2.845x slower). Full consumption; self checks 0.980-1.027x. | A real production-shaped regression; 0.48 work, not hidden. | recorded |
+| Historical external-parser rows | Exact `82f6e8e`, prior `bench:margin` | The formerly reported 1.69–5.81× bars measured runtime `compile()`'s old emitted-assembly path while labeling it macro output. | They do **not** prove macro-artifact performance and are not current release evidence. | invalidated |
+| Current candidate, JSON external gate | `0921af5` code path (`8a40705`), fresh process/bar, 3 rotated rounds | PM/Chevrotain: medium 28.955 / 29.202 µs (1.009×); large 236.858 / 246.124 µs (1.039×). PM won each paired round, but the A/A control spread is up to ~5%. | Below the predeclared 1.05× resolvable margin; not a proven medium/large external win. | **fail — corrective work active** |
+| Current candidate, CSV and GraphQL external gate | Fresh complete rerun after the canonical artifact correction | Not yet recorded; the first full sweep was stopped when JSON failed its qualifying margin. | Must be measured from the final head. | pending |
+| Commented small rows | Same final-candidate protocol with all three normally-commented small groups enabled together | Not run on the canonical candidate. | Diagnostic only; never selects rows for the release gate. | pending |
 | CST bars | Supporting/non-identical work (rich object CST vs Lezer compact tree / Chev conversion) | Not used in the final external-equivalence gate. | Do not turn into a headline claim. | recorded |
 
 The 0.47 ship condition is **faster than the relevant external parsers on medium
