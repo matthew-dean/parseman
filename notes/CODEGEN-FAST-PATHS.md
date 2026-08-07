@@ -5,6 +5,72 @@ does**, and the rules to preserve (and extend) when touching `src/compiler/codeg
 It is prescriptive: new codegen should follow these, and new combinators should be
 checked against the **"early exit before setup"** rule below.
 
+
+---
+
+## STATUS CONVENTION (repo-wide, adopted 2026-08-07)
+
+`LANDED` · `MEASURED-NULL` · `REJECTED` · `QUEUED` · `UNMEASURED` · `REFERENCE`.
+Definitions and the repo-wide picture: `PERF_IDEAS.md` § STATUS CONVENTION AND
+COUNTS. Strikethroughs and "partial ✅" are retired; a compound item carries one
+marker per part. `UNCLASSIFIABLE` is used where an item genuinely does not fit,
+with the reason stated — it is not a sixth bucket, it is an admission.
+
+## ⚠️ READ THIS BEFORE THE REST OF THE FILE — IT DESCRIBES AN ENGINE THAT NO LONGER SHIPS
+
+This file is written prescriptively against `src/compiler/codegen.ts` and its
+`trivia-fast-path.ts` / `scannable-run.ts` machinery. **All three were DELETED
+during the 0.47 cutover.** `RELEASE-0.48-TARGET.md` §9 records it, files it as
+"**an LLM oversight, not a decision**", and gives the recovery point:
+**`3d4dac6`** (`trivia-fast-path.ts` 296 lines, `scannable-run.ts` 1,627 lines).
+What ships now is `src/table/emit-assembly.ts` (`RELEASE-0.48-TARGET.md` §8b's
+engine inventory).
+
+So this file's opening claim — "Codegen is the shipping lowering; this file is
+written against it and stays that way" — **is false as of 0.47**, and every
+technique below is `LANDED, THEN REMOVED`. That is not one of the six markers,
+deliberately: the work shipped and was then deleted without a decision, which is
+a different state from any of `LANDED` / `REJECTED` / `QUEUED`. Recovering it is
+`PERF_IDEAS.md` **U-53**.
+
+**Keep the file.** The *principle* ("reject on the cheapest available signal
+before allocating or mutating anything") is engine-independent and is the thing
+worth carrying into the assembler. The *call sites* are historical.
+
+## COUNTS — 16 items
+
+| marker | count |
+|---|---:|
+| `LANDED, THEN REMOVED` (module deleted at the 0.47 cutover — U-53) | 11 |
+| `QUEUED` | 2 |
+| **`UNMEASURED`** | **1** |
+| `REFERENCE` | 2 |
+
+> ### **Untried in this file: 2 — both file-local, neither in `PERF_IDEAS.md`.**
+> 1. **`sepBy` separator first-set guard** — `QUEUED`. The one `⬜ CANDIDATE` in the guard table, and the only technique here never built. Blocked on machinery, not on doubt: "marks precede the trivia-skip and the separator starts *after* trivia, so a clean pre-marks first-set check needs a post-trivia peek." Sized: 11 grammar uses against 35 `many(sequence(sep,elem))` already covered.
+> 2. **Interpreter first-set parity in `node`/`repeat`** — `UNMEASURED`, and **narrow it to `node()` before spending anything on it.** `INTERPRETER_PERF_IDEAS.md` records that the `many`/`oneOrMore` half of exactly this was tried and **regressed** GraphQL/CSS/TOML. This file does not know that. The two files were never cross-checked.
+
+**Per-item markers.** `## The one rule that matters most` — `REFERENCE` (a design
+law and a review criterion, not an item; its applications are the guard-table
+rows). Guard table: `choice` arm `LANDED` (pre-existing, no work needed) ·
+`many`/`oneOrMore` body `LANDED, THEN REMOVED` (0.29.0) · `node()` capture frame
+`LANDED, THEN REMOVED` (0.29.0) · `attempt(inner)` `LANDED, THEN REMOVED`
+(0.29.0) · `sepBy` separator loop `QUEUED` · `sequence` `LANDED` (already lazy,
+no work needed). The seven "techniques the generated code relies on" — labelled
+blocks, first-set char dispatch, arity-gated capture elision, profiling-phase
+hoist, zero-alloc failure payloads, trivia fast-path, `markUnusedValues` — all
+`LANDED, THEN REMOVED`. `## Measured impact` and `## Loop early-exit review
+(2026-07-22)` are `REFERENCE` (a results block and a completed audit whose one
+open finding is the `sepBy` row).
+
+> ### PROVENANCE WARNING FOR THIS FILE
+> "Measured impact" names a fixture (Less `benchmark.less`, parse-only) but **no
+> commit, no harness, no sample count and no protocol** for "~3–4%", "~6–7%",
+> "~11%". "~1% — reads, not allocs" has no fixture at all. The invocation counts
+> ("~56k times/parse — 981 `@`, 26 real `@{`") name no instrumentation, and the
+> "11 grammar uses vs 35" claim names no grammar set. Since the engine these were
+> measured on **no longer exists**, none of them is re-derivable as stated.
+
 > **Scope.** Two halves, and they generalise differently.
 >
 > - **The principle — reject on the cheapest available signal before allocating or

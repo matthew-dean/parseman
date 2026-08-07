@@ -2,6 +2,75 @@
 
 Library-level opportunities for faster interpreted parsers. Keep this separate from `PERF_IDEAS.md`: that file is mostly about generated code shape, while this one is about the runtime combinators in `src/combinators/*`, `src/cst/*`, and `src/functional/run.ts`.
 
+
+---
+
+## STATUS CONVENTION (repo-wide, adopted 2026-08-07)
+
+`LANDED` · `MEASURED-NULL` · `REJECTED` · `QUEUED` · `UNMEASURED` · `REFERENCE`.
+Definitions and the repo-wide picture: `PERF_IDEAS.md` § STATUS CONVENTION AND
+COUNTS. Strikethroughs and "partial ✅" are retired; a compound item carries one
+marker per part. `UNCLASSIFIABLE` is used where an item genuinely does not fit,
+with the reason stated — it is not a sixth bucket, it is an admission.
+
+## COUNTS — 26 items
+
+| marker | count |
+|---|---:|
+| `LANDED` | 13 |
+| `MEASURED-NULL` | 2 |
+| `REJECTED` | 7 |
+| `QUEUED` | 1 |
+| **`UNMEASURED`** | **2** |
+| `UNCLASSIFIABLE` | 1 |
+
+> ### **Untried in this file: 3.**
+> 1. `#1` "Remaining" — shape-specific runners (`seq` number tokens, string bodies), gated on fresh before/after `bench:parseman` numbers — `UNMEASURED`
+> 2. Low-priority table — lazy/scalar arrays for *consumed* `many()` values; conditional on an interpreter profile nobody has run — `UNMEASURED`
+> 3. `## Runtime bundle-size follow-up` — split a lean `parseman/runtime` entry from the compiler APIs — `QUEUED`
+
+**Per-item markers, in document order.** `## Already landed` (9 bullets): all
+`LANDED`. Note two riders inside them that are separately `MEASURED-NULL` and
+should not be re-chased — *dead aggregate elision* ("saved allocation but did not
+move parse time much") and the dead-`leaf` move in the single-char `literal()`
+entry ("measured neutral (V8 already sinks the dead allocation), kept for
+consistency"). Two further sub-items inside those bullets are `REJECTED` on
+measured regressions: the broad recursive `ScanShape` interpreter, and the
+`optional()` first-set shortcut's `many`/`oneOrMore` twin.
+
+`Rejected alongside these (2026-07-10)`: the `shortScanner` fixed-prefix
+generalisation is `MEASURED-NULL` (explicitly "measured flat" — GraphQL large
+426.8 vs 425.4 µs); the alt-star `loopScanner` is `REJECTED` (~30% slower,
+322→418 µs), a loss and not a null. The two are in one block and are **not** the
+same disposition.
+
+`#1 Interpreter regex scan lowering` — **`UNCLASSIFIABLE` as one item**, and the
+file's own "(partial ✅)" concedes it: three statuses under one heading. Narrow
+chars-only runner `LANDED`; generic recursive matcher `REJECTED` ("The broader
+version was slower"); `Remaining:` shape-specific runners `UNMEASURED`. Its
+nested `Rejected follow-up (2026-07-08)` is `REJECTED` (CSV large 348→389 µs
+across six rows).
+
+`#2` `LANDED` · `#3` `LANDED` · `#4` `LANDED` · `#5` `LANDED` (pooling half
+deliberately not done, and reappears in the low-priority table) · `#6`
+`REJECTED` (tried, regressed css/bootstrap4 52.8→57.4 ms and GraphQL large
+589.8→620.3 µs, backed out) and its `Related rejected follow-up` `REJECTED`
+(bootstrap 50.1→52.0 ms).
+
+Low-priority table: *lazy/scalar arrays for consumed `many()`* `UNMEASURED`;
+*full result pooling*, *new regex analysis*, *new public API for interpreter
+tuning* all `REJECTED` — on complexity, duplication and YAGNI grounds
+respectively, **not** on measurements.
+
+> ### PROVENANCE WARNING FOR THIS FILE
+> **No commit SHA appears anywhere in it.** Every before/after µs figure here is
+> unanchored to a tree state, and most give no bench command (the exceptions
+> name `pnpm bench:parseman -- --only=… --scale=… --samples=…`). The bundle
+> sizes "~28 KB" / "~5.5 KB" name no tool. The `literal.parse` 20.8%→5.8% figure
+> names no profiler. **Do not quote a number out of this file without re-deriving
+> it.** See also `PERF_IDEAS.md` fact N: an engine token in this repo does not
+> mean what it says.
+
 ## Already landed
 
 - **`node()` lazy capture** — `capture-buffer.ts` defers `children` / `rawChildren` / `triviaLog` array allocation until the first push, with a scalar fast path for one child. This is interpreter-specific and should stay here, not in the macro backlog.
@@ -22,7 +91,7 @@ Rejected alongside these (2026-07-10):
 
 ## High priority
 
-### ~~1. Interpreter regex scan lowering~~ (partial ✅)
+### 1. Interpreter regex scan lowering — `UNCLASSIFIABLE`: `LANDED` (narrow chars-only runner) + `REJECTED` (generic recursive matcher, slower) + `UNMEASURED` (shape-specific runners)
 
 Compiled parsers lower many `regex()` terminals to direct `charCodeAt` loops via `scannable-terminal.ts` and `scannable-run.ts`; the interpreter now does this for short simple char-class runs only.
 
@@ -36,7 +105,7 @@ Remaining: maybe add more shape-specific runners later (`seq` number tokens, str
 
 Rejected follow-up (2026-07-08): negated runs (`[^,\r\n]*`), required literal prefix + run (`#[^\n\r]*`), and optional literal prefix + run (`-?[0-9]+`) were tried together in the tiny runtime scanner. Fresh same-session baseline before the change, same command after: `pnpm bench:parseman -- --only=csv,toml,json,graphql,lang,css --scale=0.2 --samples=7`. It regressed the intended rows: CSV large **348→389µs**, TOML medium **67→73µs**, JSON large **422→446µs**, lang medium **19.9→21.5µs**, GraphQL large **585→630µs**, CSS bootstrap **52.6→54.1ms**. Leave them on native `RegExp.exec` unless a narrower single-shape experiment proves otherwise.
 
-### ~~2. Fast literal matching without `slice`~~ ✅
+### 2. Fast literal matching without `slice` — `LANDED`
 
 `literal()` currently builds `input.slice(pos, end)` before comparing, then allocates a leaf object on success. Compiled output uses char-code checks for short literals because that already measured faster up to the current codegen crossover.
 
@@ -48,7 +117,7 @@ Landed: case-sensitive `literal()` now probes with `input.startsWith(value, pos)
 
 Measure: `pnpm bench:literal` still compares `slice(pos,end)`, `startsWith(value,pos)`, and `charCodeAt`; keep it for future crossover checks.
 
-### ~~3. Reuse first-char dispatch plans in `choice()`~~ ✅
+### 3. Reuse first-char dispatch plans in `choice()` — `LANDED`
 
 `choice()` has disjoint dispatch, but the interpreter still scans parsers linearly to find the matching first set. The compiler has richer planning in `emitChoice` / `planDisjointDispatch`.
 
@@ -60,7 +129,7 @@ Landed: for already-disjoint choices, build a 128-entry ASCII table once and fal
 
 ## Medium priority
 
-### ~~4. Interpreter fast trivia scanner~~ ✅
+### 4. Interpreter fast trivia scanner — `LANDED`
 
 Compiled trivia has `trivia-fast-path.ts`; interpreted `advanceTrivia()` usually calls the trivia combinator, which recursively creates normal parse results just to skip whitespace/comments.
 
@@ -70,7 +139,7 @@ Guard: labeled trivia already has `tryFastLabeledScan`; do not duplicate that pa
 
 Landed: `advanceTrivia()` / no-capture `scanTrivia()` use a cached exact-shape scanner for unlabeled whitespace runs and CSS block comments. Labeled trivia stays on the existing labeled fast path. No generic regex analyzer was added to runtime.
 
-### ~~5. Result-object churn in wrapper combinators~~ ✅
+### 5. Result-object churn in wrapper combinators — `LANDED` (spreads removed; pooling half deliberately not done — see the low-priority table, where it is `REJECTED`)
 
 `transform()`, `skip()`, `label()`, `optional()`, `sequence()`, and repetition combinators allocate fresh `{ ok, value, span }` objects on hot paths. Some wrappers also spread result objects.
 
@@ -80,7 +149,7 @@ Guard: do not mutate child results in-place; failed parse objects are used for d
 
 Landed: removed the obvious object spreads in `transform()`, `skip()`, and failed `label()`. Stopped there; no result pooling.
 
-### ~~6. Avoid throwaway trivia contexts~~ ❌
+### 6. Avoid throwaway trivia contexts — `REJECTED` (tried, regressed, backed out)
 
 `advanceTrivia()` and `scanTrivia()` call `triviaP.parse()` with fresh tiny context objects. In trivia-heavy grammars that is one allocation per boundary.
 

@@ -1,5 +1,108 @@
 # 0.48 target — what 0.47 deliberately shelved
 
+---
+
+## STATUS CONVENTION (repo-wide, adopted 2026-08-07)
+
+`LANDED` · `MEASURED-NULL` · `REJECTED` · `QUEUED` · `UNMEASURED` · `REFERENCE`.
+Definitions and the repo-wide picture: `PERF_IDEAS.md` § STATUS CONVENTION AND
+COUNTS. `UNCLASSIFIABLE` is stated where an item genuinely does not fit — it is
+not a sixth bucket, it is an admission.
+
+**This file resists the convention more than any of its siblings, and the reason
+is structural: it is not a backlog.** It is four things interleaved — deferred
+work items, retracted figures, measurement-hygiene rules, and disclosed defects.
+Only the first of those four is an "idea". The retractions and rules are marked
+`REFERENCE`; the disclosed defects with no owner are marked `UNCLASSIFIABLE`
+rather than forced into `QUEUED`, because nobody has decided to do them, nobody
+has rejected them, and they are not ideas — they are known-broken facts recorded
+so a reader does not have to rediscover them.
+
+## COUNTS — 30 items
+
+| marker | count |
+|---|---:|
+| `LANDED` | 4 |
+| `MEASURED-NULL` | 2 |
+| `REJECTED` | 6 |
+| **`QUEUED`** | **11** |
+| `REFERENCE` | 4 |
+| `UNCLASSIFIABLE` | 3 |
+
+> ### **Untried in this file: 11, all `QUEUED`.** None is in `PERF_IDEAS.md`'s index; that index covers `PERF_IDEAS.md` only.
+> §1 `_grammarTrace` parity for the table · §2 token streaming · §4 CST leaf span
+> line-annotation (`TODO(table/expect-span-lines)`) · §7 expected-set granularity
+> on rule refs (blocked on §6) · §8 the 0.47 parse-time regression, **the headline
+> 0.48 item** · §8b the un-built **child-kind specialisation axis** · §9 recover
+> the deleted literal/regex/trivia fast paths (= `PERF_IDEAS.md` **U-53**) · §9b
+> write down what the trivia scope rule IS · §10.1 the broken `*-lines` variants ·
+> §10.4 `parseClassOperand`'s unguarded callers · §10.5 `forCtx`'s per-parse
+> config consult (= `PERF_IDEAS.md` **U-52**).
+
+**Per-item markers.** §1 `QUEUED` (owner ruling: counters are enough to ship) ·
+§2 `QUEUED`, and note its *benefit* is `UNMEASURED` by construction — "A prior
+bound of ~1.4 ms was measured against the BYTECODE INTERPRETER. **That bound does
+not transfer.**" · §3 `REFERENCE` — the section is now a retraction notice, and it
+retracts **1.66×** outright ("no fixture run, no commit, no harness is recorded
+for it anywhere in this repo") and the per-piece **48/28/20 ns** claims; its three
+data rows are the labelled-trivia scanner `LANDED` (−0.8 ms, 16/16 wins, ±1%
+control) and two textbook `MEASURED-NULL`s — per-`node()` capture allocation
+(~291k allocs/parse, predicted 1.5–3.0 ms, **measured zero**, V8 absorbs
+young-gen non-escaping allocation) and the CST mark protocol (predicted 0.5–0.9
+ms, **measured zero**, V8 already inlines it) · §4 `QUEUED` · §5 `LANDED`
+(`c398044`) · §5b `LANDED` (`10d21d8`) · §6 stale `disjoint` flag `REJECTED` —
+despite "deferred" framing, the recorded owner ruling is *not to fix it*, on
+blast-radius grounds, not on a measurement · §7 `QUEUED` (pinned as a subset
+relation, blocked on §6; the specific fix at :254 is `REJECTED` with evidence — it
+collapsed JSON `[1,2,]` from seven expected tokens to one) · §8 `QUEUED`, the
+headline · §8's "does not reproduce at scale" claim `REFERENCE` (a retracted
+reading of a harness — `fixture.ts` **builds every leg at HEAD**; there is no 0.46
+in the process) and its replacement measurement `REFERENCE` (the best-sourced
+block in these five files: harness `bench/jess/ab.ts`, anchor `a5dc9bd`, config
+`bench/jess/ab-config.json`, self-check 0.999–1.033, `benchmark.less` 106,802 B →
+**2.221×**) · the shelf mechanism (`shelvedRegressionKeys`, no
+`SKIP_PERF_GUARD=1`) `LANDED` as policy, though its stated justification is
+withdrawn · §8b `QUEUED` for the child-kind axis, `REFERENCE` for the owner's
+specification restatement; **the five mechanisms proposed for the gap during 0.47
+are all `REJECTED`** and the file says "Do not re-propose them" — runtime
+`compose()`, per-parse assembly, per-rule assembly, startup cost, interpreter
+fallback · §9 `QUEUED` (= U-53) · §9b `QUEUED` · §10.1 `QUEUED` (lane assigned) ·
+§10.2 and §10.3 **`UNCLASSIFIABLE`** — unassigned known-broken defects stated for
+disclosure, with no disposition · §10.4 `QUEUED` · §10.5 `QUEUED` (= U-52) ·
+`## Standing hazard` **`UNCLASSIFIABLE`** — a measurement-hygiene rule that
+invalidates a whole class of prior figures, plus the `expected`-digest rider
+(`PERF_IDEAS.md` U-55).
+
+> ### THREE FACTS FROM THIS FILE THAT GOVERN EVERY OTHER FIGURE IN THE REPO
+> 1. **`benchmark.jess` accepts 0 of its 124 bytes** — `ok: true`, `errors: 0`,
+>    `consumed: 0`, on **0.46 and 0.47 alike**. Any `jess` row in any chart is
+>    measuring an immediate accept of nothing.
+> 2. **`tolerant: true` assemblies refuse emission in all four dialects**, so
+>    recovery parses run the closure engine. Every recovery figure describes a
+>    different engine from every strict figure.
+> 3. **Every `PM_TABLE_COUNT` figure describes an engine nobody runs** — every row
+>    count, arm-entry count and per-op tally in this repo's notes and CHANGELOG is
+>    a measurement of the bytecode interpreter, not of the shipping path.
+>
+> Add to these `PERF_IDEAS.md` fact N: **39,718 records in
+> `notes/results/parse-consumed.jsonl` are tagged `"engine":"table"` and are
+> actually the reference interpreter**, 11 of 29 bench harnesses are mislabelled,
+> and `CHANGELOG.md:756-762` (the "codegen / table / interpreter" fixture table
+> present in this tree) carries the same defect. Its correction banner is on
+> `lane/name-collision` (`7f954af`) and **is not merged into `release/0.47.0` yet**.
+>
+> Also open, and unmeasured: **`trackLines` is unmeasured, not
+> measured-and-fine** — the `*-lines` grammar variants build a self-referential
+> `OP_RULE ip→ip` and stack-overflow on every file of every corpus (§10.1).
+>
+> **`PERF_IDEAS.md`'s 2026-08-07 fact I1 also refutes a figure this file carries**:
+> §3's "trivia scanner profiled at ~7.3% of parse self-time and was worth ~3.4%"
+> is a third number for a path that `lane/capoff` measured as a **null**. Three
+> documents, three numbers, one controlled measurement. Do not quote any of them.
+
+---
+
+
 0.47 is the table cutover: one lowering, one driver, the macro build emitting a
 table instead of a second recognition engine. Everything below was found during
 that work, understood well enough to size, and **deferred on purpose** rather

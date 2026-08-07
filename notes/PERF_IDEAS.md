@@ -4,7 +4,999 @@ Library-level opportunities for faster compiled parsers. Grammar authors can onl
 
 Interpreter-side ideas are split out to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRETER_PERF_IDEAS.md) so this file can stay focused on compiled/macro output.
 
-## Already landed
+---
+
+## STATUS CONVENTION AND COUNTS (updated 2026-08-07)
+
+One marker per item, across this file and its four siblings
+(`INTERPRETER_PERF_IDEAS.md`, `REVIEW-parseman-perf-proposals.md`,
+`CODEGEN-FAST-PATHS.md`, `RELEASE-0.48-TARGET.md`). Strikethroughs and
+"partial ✅" are retired: a compound item carries one marker per part.
+
+| marker | means |
+|---|---|
+| `LANDED` | implemented and in the tree |
+| `MEASURED-NULL` | built and measured; delta inside the control spread |
+| `REJECTED` | ruled out on grounds other than a null measurement (built-and-worse, moot, or scoped and deprioritized) |
+| `QUEUED` | decided to do, not done |
+| `UNMEASURED` | nobody has tried or costed it |
+| `REFERENCE` | data, protocol, invariant or design guidance — not a work item |
+
+**THE COUNT, which is the thing this file exists to make answerable:**
+
+> ## **56 untried items.**
+> **[§ Untried index](#untried-index-queued--unmeasured) is the authoritative list — one row each, no prose to read.**
+> Of the 56: **22 `QUEUED`** (decided, not done) and **34 `UNMEASURED`** (nobody has tried or costed it).
+> **26 of the 56 came out of the 2026-08 measurement batch** (U-31…U-56).
+
+Everything else, for orientation:
+
+| marker | where | count |
+|---|---|---:|
+| `LANDED` | 18 bullets under "Already landed" + 21 headings marked in place | 39 |
+| `MEASURED-NULL` | built and measured, delta inside the control spread | 2 |
+| `REJECTED` | ruled out on non-null grounds (built-and-worse, moot, scoped-and-deprioritized) | 9 |
+| `REFERENCE` | data, protocol, invariant, design guidance — not work items | 12 |
+
+Compound items carry one marker per part and are counted once per marker, so
+these totals exceed the 41 headings in the file. The untried count does **not**
+double-count: it is exactly the number of rows in the untried index.
+
+**Scope of the 56: this file only.** Each sibling carries its own count at its own
+top, under the same convention. Repo-wide, deduplicated:
+
+| file | items | untried | notes |
+|---|---:|---:|---|
+| `PERF_IDEAS.md` (this file) | 41 headings + 18 landed bullets | **56** | the U-index |
+| `INTERPRETER_PERF_IDEAS.md` | 26 | **3** | no commit SHA appears anywhere in it |
+| `REVIEW-parseman-perf-proposals.md` | 8 | **3** (1 net new — 2 are U-29 / U-30) | rigorous code citations, zero measurement provenance |
+| `CODEGEN-FAST-PATHS.md` | 16 | **2** (both file-local) | **describes an engine deleted at the 0.47 cutover** |
+| `RELEASE-0.48-TARGET.md` | 30 | **11** | not a backlog — four kinds of content interleaved |
+| | | **= 73 distinct** | |
+
+**Two files resisted classification and are marked as resisting, not forced.**
+`CODEGEN-FAST-PATHS.md` needed a state none of the six markers covers —
+`LANDED, THEN REMOVED`, because the work shipped and was then deleted *without a
+decision* (recovery is U-53). `RELEASE-0.48-TARGET.md` is not a backlog at all: it
+interleaves deferred work, retracted figures, hygiene rules and disclosed
+defects, and its two ownerless known-broken defects (§10.2, §10.3) are
+`UNCLASSIFIABLE` — nobody decided to do them, nobody rejected them, and they are
+not ideas. Read both files' headers before their bodies.
+
+---
+
+## 2026-08-07 — ESTABLISHED FACTS from the piece-library measurement batch
+
+`REFERENCE`. These are results, not proposals. They are recorded here because
+several of them **invalidate premises that items further down this file were
+designed against**, and because the artifacts lived only on lane branches until
+now.
+
+### Provenance table — read before quoting any number below
+
+| lane | branch SHA | artifact in-tree |
+|---|---|---|
+| cliff | `origin/exp/cliff` `405476d0c023487d87828f2d584a96b361f477a6` | `notes/EXPERIMENT-inlining-cliff.md`, `notes/results/inlining-cliff.jsonl` (275 records) |
+| wiring | `origin/exp/wiring` `5b45501ab03c0efad30c90f6eb598fb4e9ed7238` | `notes/EXPERIMENT-wiring.md`, `notes/results/wiring-sweep.jsonl` (34 records) |
+| mixture | `origin/exp/mixture` `c78a9cee2da84381b28e59a9f5f37e9543b832fe` | `notes/EXPERIMENT-mixture-sweep.md`, `notes/results/mixture-sweep.jsonl` (208 rows), `notes/results/mixture-shape.jsonl` (8 rows) |
+| balance | `origin/design/balance` `d026e56bc329eca5f166bc289d64aebbeee2b5f7` | `notes/DESIGN-piece-library.md`, `notes/probes/piece-library/` |
+| capoff | `origin/lane/capoff` `93de44ea8b8d36189cab70a0d202ad65780ce56a` | `notes/RESULT-capoff-trivia-scanner-is-a-null.md`, `notes/FINDING-rawchildren-collector-is-unread-in-ast.md` |
+| linker | `origin/lane/linker-engine` `249cbd9a1177fb1d20c8bbbf827f844e332f147d` | code + `249cbd9`'s bench result |
+
+All six lanes branched from `origin/release/0.47.0` = `6bc265f5b854b256a2e8ea0df5522ca7cfd57770`.
+All artifacts are now merged into `origin/release/0.47.0` at
+`67478722cc33fd6654fb44a48fd460a1ad5ced34`; `exp/wiring` and `exp/mixture` still
+carry unmerged *code* (the `setWiring` / `PM_MIX_DRIVER` hooks), but their notes
+and results files are byte-identical to the ones in this tree.
+
+Node `v24.11.1` / V8 `13.6.233.10-node.28` throughout. Cliff harness SHA
+`bbacf3d9eb7b75167bd22971bd7223ba851ea73d`, stamped on every jsonl record.
+
+### A. The V8 premise this file's per-site-body designs rested on is DEAD
+
+`EXPERIMENT-inlining-cliff.md` §1-§3, §6-§8. Modelled pieces (faithful reductions
+of `sequence.ts` / `choice.ts` disjoint arm / `repeat.ts` `many`), plain ESM, no
+build step. **A/A control 35.21 / 36.04 / 36.55 ns/op → 3.7% spread**; median
+within-config rep spread 7.5% across 131 timed configs. Nothing under ~4% is
+reported as signal; every effect below is ≥17%.
+
+1. **Closure count is free.** 40 closures from one `CreateClosure` site, all
+   sharing one FeedbackVector (`sharedFeedbackVector: true`, verified by *address
+   equality* in `%DebugPrint`), still inline at every N: `--trace-turbo-inlining`
+   reports 3 considered / 3 inlined at N=1 **and** at N=40, in both shape regimes,
+   monomorphic through megamorphic. `kManyClosures` is present in every one of
+   those rows and **is not itself a cost**. The chain "second closure ⇒
+   `kManyClosures` ⇒ megamorphic ⇒ must emit per-site bodies ⇒ must use
+   `new Function` ⇒ CSP guarantee broken" does not hold at any link.
+2. **The cliff for calls is the second distinct *executed* callee
+   FunctionLiteral, at N=2 — sharp, one step, flat to N=40.** V8 prints
+   `Call POLYMORPHIC` literally, but it behaves as a binary one-callee/many-callee
+   distinction, **not** a 4-wide tier. `kMaxPolymorphicMapCount = 4` governs
+   **property access**, not calls. Cost of the N=1→2 step under *identical* maps:
+   choice 7.58→10.43 (**+37.6%**), many 50.83→70.05 (**+37.8%**), seq
+   35.44→36.54 (+3.1%, inside the floor — seq's callee arrives via `parsers[i]`,
+   never a constant to begin with).
+3. **Memory control:** 40 sites BUILT / 1 EXERCISED stays MONOMORPHIC and stays
+   fast (seq 36.53, choice 7.71, many 51.45 — all within the floor of N=1). It is
+   the executed callee count, not the closure count.
+4. **A fifth distinct receiver map is a separate axis**, poly→MEGA at N=5 on the
+   `.parse` *load* slot: seq 38.28→45.01 (**+17.6%**), choice 10.39→12.96
+   (**+24.7%**), many 72.80→91.09 (**+25.1%**). Never fires when callees share a
+   map, at any N.
+5. **Captures 0→8: no effect** (every delta inside the 3.7% floor; the cliff does
+   not move). **The cliff does not compound through a call chain** —
+   seq-of-choices at N=40 is +21.8% against +22.0% unchained. **`--no-polymorphic-inlining`
+   changes nothing** (every column inside the floor), so the flat N=2..4 region is
+   flat for another reason. Deopt reasons are constant at 2 per run at every N in
+   both regimes (`OSR`, `Insufficient type feedback for generic named access`) —
+   no deopt storm, no N-dependence.
+
+### B. Callee bytecode size is the dominant axis, and the threshold is 460 B
+
+`EXPERIMENT-inlining-cliff.md` §4 (modelled) and `EXPERIMENT-wiring.md` §1
+(real emitted pieces). Two independent instruments agree.
+
+- **448 B inlines, 475 B does not** — identically for all three piece kinds, at
+  N=1 with identical shapes so the size effect is not confounded with callee
+  count. Padding sits behind `if (pos < 0)`, which never runs and which TurboFan
+  cannot fold, so bytecode grows while executed work stays constant. Sizes are
+  real `BytecodeArray[N]` lengths read from a cold twin via `%DebugPrint`.
+  That brackets `--max-inlined-bytecode-size=460` **to within 27 bytes**.
+- It is not merely slower: `consideredForInlining` drops **3 → 1** past the
+  boundary, so the callee is not even a candidate. Cost of crossing: seq
+  **+23.3%**, choice **+52.8%**, many **+34.9%**.
+- **Proved causally on real pieces.** `EXPERIMENT-wiring.md` §1: re-run with
+  `--max-inlined-bytecode-size=900 --max-inlined-bytecode-size-cumulative=5000`
+  gives **zero `Cannot consider` rows**, and every previously-refused piece
+  inlines (`_pf12` into `_pf43`/`_pf70`, `_pf43` into `_pf56`, `_pf92` into
+  `_pf56`/`_pf70`). Same source, same wiring, one flag. On real pieces the cutoff
+  is bracketed between 424 (inlines) and 647 (refused).
+- **There is NO 460–4,600 dead zone.** 920 and 4,600 are
+  `--max-inlined-bytecode-size-cumulative` and `-absolute` — **caller-side
+  budgets, not callee sizes**. From 475 B to 52,188 B the curve is one flat
+  plateau, across a range that crosses both several times over. The predicted
+  dead zone was a misreading of three flags as one axis.
+
+**Consequence, and it is the important one.** Real emitted bodies (`--print-bytecode`,
+pieces reached in two parses, `EXPERIMENT-wiring.md` §2):
+
+| workload | pieces | min | p50 | p90 | max | over 460 |
+|---|---:|---:|---:|---:|---:|---:|
+| json/document | 28 | 58 | 84 | 801 | 801 | **6 (21.4%)** |
+| graphql/document | 74 | 58 | 323 | 801 | 3,974 | **21 (28.4%)** |
+| css/stylesheet | 103 | 59 | 246 | 726 | 3,600 | **20 (19.4%)** |
+| less/stylesheet | 319 | 59 | 202 | 568 | 2,813 | **53 (16.6%)** |
+
+Roughly 3:1 source-to-bytecode, so ~1,400 source bytes is the practical ceiling.
+**The over-460 set is precisely the COMPOSITE pieces** — sequences and repeats,
+the parents. So: specialising a parent per child kind spends bytecode budget on
+the one class of piece already at the ceiling; it recovers the CHILD's inlining
+and can push the PARENT past 460, losing the parent's inlining into ITS parent.
+**Sharing is what makes a call site monomorphic, and reuse that shrinks bodies
+buys inlining rather than costing it.** Specialising to recover inlining recovers
+nothing at current sizes.
+
+> `EXPERIMENT-inlining-cliff.md` states the real `_pf` body sizes as 17.4 KB (css)
+> / 31.7 KB (less) — an aggregate figure it carries as still-owed context, whereas
+> the wiring lane's per-piece census above is the measured distribution. Both are
+> recorded; they are different quantities (whole emitted body text vs per-piece
+> bytecode) and neither is a correction of the other.
+
+### C. Wiring is free. Shared dispatch is the one thing that costs
+
+`EXPERIMENT-wiring.md` §1. `json/document`, 60 parses,
+`--trace-turbo-inlining`, counting DISTINCT emitted pieces. Every leg's parse
+result compared against the unrewritten one: **all seven wirings parse
+identically on every workload measured**.
+
+| wiring | considered | inlined | refusals |
+|---|---:|---:|---|
+| w0 direct hoisted name | 36 | 19 | reason5 × 11 |
+| w1 array of refs, indexed at each site | 35 | 19 | reason5 × 14 |
+| w2 object property → local const at link | 36 | 19 | reason5 × 11 |
+| w3 closure capture of the callee | 36 | 19 | reason5 × 11 |
+| w4 monomorphic wrapper over shared body | 60 | 38 | reason5 × 8 |
+| **w5 switch dispatch on a small integer** | **33** | **9** | **reason5 × 53** |
+| w7 partial sharing (snapshot prologue) | 52 | 22 | reason5 × 11 |
+
+Direct name, array index, object property and closure capture are
+indistinguishable to V8 at real body sizes — `design/balance` found this on
+51-byte synthetic pieces and it **holds at 800-byte real ones**. Those four are
+closed.
+
+**w5 switch dispatch halves inlining (19 → 9)** because routing every call through
+one `_disp(id, …)` makes the dispatcher a second distinct callee at every site —
+fact A2 reproduced on real pieces. The generalisation: **any shared indirection
+layer in front of the pieces costs the callers their inlining.** Never route
+calls through a shared dispatcher.
+
+> **Recorded trap.** The first run of that table read w1/w2/w3 at **1 inlined**
+> against w0's 19 — a clean, plausible, publication-shaped 19× collapse, and
+> entirely an artifact: those rewrites produce *anonymous* function expressions,
+> whose `SharedFunctionInfo` has an empty name and so vanishes from the trace.
+> Naming them (`P[0]=function _pf0(…)`) made the collapse disappear. The fix was
+> one character wide.
+
+### D. Partial sharing is the best result found
+
+`EXPERIMENT-wiring.md` §4. `emit-assembly.ts`'s own criterion — *a shared
+emitted-scope helper is sound exactly when it takes no piece as an argument* — is
+a **decomposition rule**, not an all-or-nothing verdict on a piece, and nothing
+had exercised it below the level of a whole piece. The emitted sequence-term
+prologue snapshots six CST sink lengths so a zero-width term can roll back; it
+takes no piece; it is repeated at every sequence term.
+
+| workload | baseline | shared prologue (`w7`) | delta | inlining |
+|---|---:|---:|---:|---|
+| json/document | 24,776 B | **18,540 B** | **−25.2%** | **22 inlined vs 19 — better** |
+
+Identical parse. It buys inlining *back*, because shrinking the composite bodies
+moves some of them under 460. This is the only one of the seven strategies that
+is unambiguously positive on every axis measured, and the one the design work had
+not costed. **Byte-and-inlining result only — no wall-clock number exists.**
+
+### E. Overgeneration is affordable when targeted
+
+`EXPERIMENT-wiring.md` §3. Axis: `trackLines`, aligned site-for-site between two
+emitted variants. The overgenerated module was **BUILT AND RUN**, not modelled: it
+parses identically to the baseline and the live half is the untouched direct-name
+wiring, so the un-picked variant's runtime cost is measured zero rather than
+asserted zero.
+
+| workload | sites | identical bodies | differing | option-INVARIANT |
+|---|---:|---:|---:|---:|
+| json/document | 28 | 12 | 16 | **42.9%** |
+| graphql/document | 94 | 45 | 49 | **47.9%** |
+| less/stylesheet | 349 | 136 | 213 | **39.0%** |
+
+| workload | one variant | overgenerate ALL | overgenerate MOVERS |
+|---|---:|---:|---:|
+| json/document | 24,776 B | 46,374 B (+87.2%) | ~32,342 B (**+30.5%**) |
+| graphql/document | 112,042 B | 219,979 B (+96.3%) | ~173,753 B (**+55.1%**) |
+| less/stylesheet | 268,576 B | 529,786 B (+97.3%) | ~394,972 B (**+47.1%**) |
+
+**Correction to a standing figure.** The circulating "~80% of piece bodies are
+option-INVARIANT" and "`trackLines` changes 16–21% of them" are wrong for this
+quantity. Measured on the emitted assembly, `trackLines` changes **57%** of bodies
+on json, **52%** on graphql, **61%** on less; the invariant fraction is
+**39–48%**. Whatever the 80% described, it is not bodies of emitted pieces under
+`trackLines`.
+
+### F. The monomorphic wrapper (D7) is dead, and its one win was a harness artifact
+
+Two independent kills.
+
+**Byte side** (`EXPERIMENT-wiring.md` §5) — **there is no denominator.** 27 of 28
+json bodies are distinct; 296 of 349 on less; 156 of 177 on css; 81 of 94 on
+graphql. A shared-body-plus-wrapper scheme has no deduplication to pay the
+wrapper with: on json it is +5.8% bytes, neither losing inlining (38 inlined,
+wrappers and impls both) nor gaining bytes. **Wrappers only pay when bodies
+actually repeat, and today they do not.**
+
+**Time side** (`EXPERIMENT-inlining-cliff.md` §5, §5b) — pure loss on seq and
+choice (**+1.3 to +3.6 ns/op**, ~145–149 B/site at N=1), and the inner body stays
+MEGAMORPHIC under it. `wrapCAP` (captured binding) and `wrapIND` (array element,
+not constant-foldable) agree everywhere within the floor, which independently
+falsifies the prediction that capture-wiring would win by constant-folding.
+
+Its one apparent win — `many` at N=5, **91.09 → 65.61** — is **traced to the
+benchmark driver**. Body sizes rule out the size explanation (`seq.parse` 248 B,
+`choice.parse` 213 B, `many.parse` 263 B, all under 460). What the trace shows: a
+per-site `new Function` literal makes the *caller's* call site megamorphic,
+inlining is refused, and `many` gets a clean standalone compilation. `many` is
+the only piece whose body loops over its callee (8 calls/op); inlined into
+`benchRound`, which already has two nested loops, it becomes a triple-nested loop
+in one function and TurboFan does materially worse. **Real callers are other
+pieces, not a degenerate two-deep counting loop.** One timing is still owed (see
+untried U-38).
+
+### G. The size lever, measured — 8.2× to 9.9×, at unknown speed cost
+
+`EXPERIMENT-mixture-sweep.md` Result 1. Four shipping jess dialects, `ast`
+variant, `JESS_ROOT=/Users/matthew/git/oss/jess`.
+
+| dialect | all-specialised | all-shared | ratio |
+|---|---:|---:|---:|
+| css | 1,021 KB | 125 KB | **8.2×** |
+| less | 1,986 KB | 218 KB | **9.1×** |
+| scss | 1,369 KB | 138 KB | **9.9×** |
+| jess | 1,443 KB | 160 KB | **9.0×** |
+
+**NO TIMING WAS TAKEN.** Every jsonl row carries `timing: null`. There is no
+Pareto curve, only its x-axis. **A 9× size lever is not a recommendation.**
+
+Validity controls that make the number mean something: 13 configurations on
+less/ast including all-shared digest IDENTICALLY to the all-specialised endpoint;
+across all 208 rows, 0 errors, 0 rows with `ok !== true`, **0 rows where
+`consumed !== bytes`**. Positive control: the all-specialised endpoint runs **0**
+driver rows; every flip shows rows appearing with the flipped construct on top.
+Mechanism control: less has no XFORM site, so `PM_MIX_DRIVER=XFORM` on less is an
+all-specialised parse carrying the whole mixture cost — **+28,764 B** — and every
+mixed byte count is net of that per-dialect constant.
+
+### H. Byte savings are additive across constructs
+
+`EXPERIMENT-mixture-sweep.md` Results 2-3. The forward sweep (flip one FROM
+all-specialised) and the reverse sweep (flip one TO specialised FROM all-shared)
+return **the same number for every construct, to the byte** — CHOICE 508 KB both
+ways on less, SEQV 440, NODE 240. The brief predicted disagreement and there is
+none. **Single flips fully determine the byte half of the curve; the greedy phase
+can discover nothing about it.** Any interaction effect will be in TIME.
+
+KB saved by sharing, net of the mechanism constant:
+
+| construct | css | less | scss | B/driver-row (less) |
+|---|---:|---:|---:|---:|
+| CHOICE | 207 | **508** | 353 | 5.09 |
+| SEQV | **231** | 440 | 347 | 2.83 |
+| NODE | 121 | 240 | 141 | 2.29 |
+| REPV | 42 | 137 | 106 | 4.58 |
+| OPT | 55 | 106 | 62 | 2.52 |
+| RX | 52 | 89 | 76 | 1.24 |
+| SCOPE | 55 | 79 | 52 | 0.98 |
+| NOT | 21 | 40 | 25 | 2.39 |
+| REP | 33 | 39 | 7 | 2.26 |
+| LIT | 27 | 37 | 28 | 0.83 |
+| DISPATCH | 23 | 21 | 20 | **13.66** |
+| GATE | 3 | 8 | 4 | 0.37 |
+| FIELD | 1 | 3 | 0.4 | 0.24 |
+
+Ranking stable across dialects. Six constructs — CHOICE, SEQV, NODE, REPV, OPT,
+RX — carry **77%** of the recoverable bytes on less. `B/driver-row` separates them
+by character: DISPATCH is the outlier at **13.66** (much source, few rows), while
+GATE **0.37** and FIELD **0.24** mean sharing them costs interpretive work and
+recovers almost nothing. **jess's density column is excluded** — its fixture
+(`benchmark.jess`) is 124 B, so row counts are 1-2 and `B/row` reads in the tens
+of thousands; jess's BYTE column is sound.
+
+### I. NULLS — recorded so nobody re-chases them
+
+**I1. Trivia scanning was never 28% of parse time.** `RESULT-capoff-trivia-scanner-is-a-null.md`.
+Change measured: `bccc32f` against `6bc265f`, one file (`src/combinators/trivia-skip.ts`).
+Protocol: `bench/jess/fixture.ts`, one directory, git-toggled by SHA between legs,
+3 interleaved base/fix rounds × 2 dialects = **12 load-gated legs**; each leg waits
+for the 1-minute load average to fall under 4 before starting; no leg `PM_FORCE`d;
+every leg reported three-way agreement YES.
+
+| fixture / engine | delta | base-spread |
+|---|---:|---:|
+| benchmark.css / assembler | −0.2% | 5.5% |
+| benchmark.css / interpreter | −2.1% | 3.6% |
+| benchmark.less / assembler | +0.7% | 2.4% |
+| benchmark.less / interpreter | −0.7% | 4.2% |
+| gen-workload.less / assembler | +0.7% | 2.0% |
+| gen-workload.less / interpreter | +0.2% | 2.0% |
+
+**Every delta is inside its own base-to-base spread and the signs are inconsistent
+across dialects.** The change is *not* inert: it flips `triviaScanLowered` from
+`[false,false,false,false]` to `[true,true,true,true]` for every dialect —
+verified in the emitted table, not inferred — so every trivia gap stops going
+through the per-character labelled classifier and starts going through a fused
+scanner. **The work was provably removed and the parse did not move.** Therefore
+the coarse-interval sampled self-time attribution that produced "28%" is wrong by
+**more than an order of magnitude**. Not an allocation fix either: `--trace-gc`
+css 34.68 → 34.29 MB/parse, less 64.48 → 64.56.
+
+> Method note worth keeping: at 10 legs the css assembler read −3.0% and looked
+> like a small win. The third base reading (13.08) widened the base spread to 5.5%
+> and the delta collapsed to −0.2%. **An A/B stopped at two rounds would have
+> published a 3% improvement that does not exist.**
+
+> **THREE-WAY LIVE DISAGREEMENT ON THIS NUMBER. Recorded, not smoothed.**
+>
+> - `RESULT-capoff-trivia-scanner-is-a-null.md:43` — **measured null**, 12
+>   load-gated legs, the attribution "wrong by more than an order of magnitude".
+> - `EXPERIMENT-mixture-sweep.md:188` still reasons from "~28% self-time in
+>   trivia" as a denominator ("capoff's real fix moves the total every
+>   construct's marginal value is expressed against, so the ranking may
+>   reorder"). I1 refutes that premise, so the mixture ranking's stated reason to
+>   re-take the top configs after capoff lands is **void** — the ranking itself
+>   is a byte ranking and is unaffected.
+> - `DESIGN-piece-library.md:1034-1036` is worse: it not only repeats
+>   **27.5–28.4%** (per `lane/emitprofile`) but **affirmatively re-endorses it** —
+>   "a figure that **stands** — the staleness caveat I attached to it in an earlier
+>   revision is retracted at §1, M-5". **That retraction pointer does not support
+>   the retraction:** §1/M-5 is the inlining-budget section and contains nothing
+>   about trivia. That file's §9.6 (the `ScanShape` genericity self-doubt, U-51
+>   below) is built on the 28% figure and inherits its weakness.
+> - `RELEASE-0.48-TARGET.md:88-89` carries a **third, much smaller** number for
+>   the same path: "The trivia scanner profiled at ~7.3% of parse self-time and was
+>   worth ~3.4%."
+>
+> Four documents, three numbers, one measured null. **Do not transcribe
+> 27.5–28.4% anywhere.** Only the capoff null is a controlled measurement of the
+> work actually being removed.
+>
+> **Transcription trap, flagged because the digits collide.** `EXPERIMENT-wiring.md:115`
+> reports graphql at **28.4%** *over-460 pieces*. That is numerically identical to
+> the disputed 28.4% *trivia self-time* and is a completely different quantity.
+
+**I2. CAP_ON site labels cost nothing.** `FINDING-rawchildren-collector-is-unread-in-ast.md`.
+Forcing `CAP_OFF` everywhere emits **byte-identical source** — css/ast is
+**1,049,296 bytes either way** — because `skipFor()` only consults `l.cap` when
+`hasScan` is true (`emit-assembly.ts:508`) and `triviaScan` was null in every slot
+of every grammar on base. Confirmed independently by `exp/mixture` on all four
+dialects. Actual CAP_ON share (`notes/results/mixture-shape.jsonl`, `ast` variant):
+**css 0.9%** (11 of 1,265 sites), **less 5.3%** (117 of 2,220), **scss 0%**,
+**jess 0%**. Under the `cst` variant the same census reads 54.6 / 66.9 / 61.4 /
+63.3% — so any circulated high CAP_ON figure is a `cst`-variant number being
+quoted against an `ast` parse.
+
+> **Unverified relay.** The brief that commissioned this consolidation states the
+> circulated 74%/84% figure was "the `buf` rollback share". **No committed
+> artifact in `notes/` states 74% or 84% for anything**, so that attribution is
+> recorded here as an unsourced claim, not as a fact. What the artifacts do say
+> about `buf`: it is **not** the wrong axis either — `buf: true` selects the
+> *cheap* mark (five unconditional loads, against a three-way discriminating chain
+> for `buf: false`), so eliding it would be **slower**.
+
+**I3. Deopts, body size and GC are all ruled out** as explanations for the
+emitted-engine gap. Deopts: constant at 2 per run at every N in both shape regimes
+(cliff §8). Body size: `seq.parse` 248 B / `choice.parse` 213 B / `many.parse`
+263 B, all under 460 (cliff §5b). GC: allocation per parse, `--trace-gc` byte
+deltas, `benchmark.css`, 100 parses — `90e115c9` 34.78 MB vs `6bc265f` 34.68 MB,
+a 0.3% difference, so it is also **not** an artefact of the pre-`09f3452`
+stale-assembly defect.
+
+**I4. 46.3 / 26.8 MB/parse DOES NOT REPRODUCE.** The widely-relayed figures of
+46.3 MB/parse (HEAD) vs 26.8 (0.46) do not reproduce. The controlled figure with
+provenance is **34.7 MB/parse on `6bc265f`** (precisely 34.68), stated with its
+fixture, size, warmup count, parse count, and the `ok`/`consumed` totals that
+prove every parse in the window actually parsed. Do not carry 46.3/26.8 forward.
+
+**I5. The 2.0–2.3× table-vs-codegen figure is UNEXAMINED — neither confirmed nor
+refuted.** Two lanes challenged it and both retracted. Do not record it as either.
+What is established instead: `fixture.ts`'s columns are **mislabelled** — the
+"codegen" column is the pm-macro leg resolving to `src/table/index.ts:28`
+(`assembledRules`, i.e. the shipped ASSEMBLER), and the "table" column is a direct
+`src/table/exec.ts` import (the reference INTERPRETER, which `src/table/index.ts:24-26`
+states is "not on the product path"). `src/compiler/codegen.ts` was deleted in
+`37c57b5`. **The 1.61–1.63× this harness prints is a ratio between two mislabelled
+columns and must not be quoted against 2.0–2.3×.** An earlier draft blamed the
+composition tax for the cross-harness gap; that was wrong and the same run's data
+refutes it (dropping the interpreter leg moved the assembler −1.5% on css and
++7.0% on less — not −24%, and not consistently signed).
+
+> **A partial provenance for 2.0–2.3× DOES exist and must be recorded, because it
+> narrows what "unexamined" means.** `DESIGN-piece-library.md:39-42` disqualifies
+> two endpoints up front: "the fully abstract closure table (2.0–2.3× slower,
+> **remeasured by `lane/emitprofile` at `c274a04`**)" and fully inline codegen
+> (`example/css` 224,100 B). So the figure has *an* attribution — to the fully
+> abstract **closure table**, not to `src/compiler/codegen.ts`, which was deleted
+> in `37c57b5` and against which the "table vs codegen" framing is meaningless at
+> this SHA. Two lanes then challenged the figure and both retracted. **Net: the
+> figure is not free-floating, but neither is it confirmed, and the two artifacts
+> it is quoted about are not the two artifacts it was measured on.** Record it as
+> neither confirmed nor refuted; state which two artifacts you mean before quoting
+> it. See U-45.
+>
+> Related, and separately unsourced: `RELEASE-0.48-TARGET.md:56` retracts
+> **1.66×** outright ("has no surviving provenance. No fixture run, no commit, no
+> harness is recorded for it anywhere in this repo"), and retracts the per-piece
+> **48 ns / 28 ns / 20 ns** claims the same way. Its own replacement measurement
+> (`bench/jess/ab.ts`, anchor `a5dc9bd`, `benchmark.less` 106,802 B, 17.40 ms vs
+> 38.65 ms) reads **2.221×** — for HEAD vs 0.46, which is again a different
+> comparison from either of the above.
+
+### J. The shipping artifact is ~29% slower than the same engine over the interpreted fuse
+
+`lane/linker-engine` `249cbd9`, reported in `RESULT-capoff-trivia-scanner-is-a-null.md`.
+Both built in one process, same grammar, same 278 rules, identical tree, identical
+106,802 bytes consumed, `benchmark.less`:
+
+| leg | run 1 | run 2 |
+|---|---:|---:|
+| `assembled` (interpreted fuse, `grammars.ts:75-85`) | 28.03 ms | 27.65 ms |
+| macro artifact (SHIPPED, `import('pm-macro:…')`) | 36.05 ms | 35.91 ms |
+| ratio | 1.286× | 1.299× |
+| macro wins | 0/16 | 0/16 |
+| CONTROL assembled/assembled | 1.8% | −0.1% |
+
+The two harnesses were never in conflict — **they measure different artifacts**.
+This is a real defect on the path every consumer ships, not a measurement
+artefact, and it is why the capoff assembler leg reads 33.5–34.3 ms where
+`g5-ms.ts` reads 27.3. Also established on the way: `fixture.ts` shows **no
+`interleave()` order effect** (21 CONTROL table/table rows span −1.5% to +1.9%,
+centred on zero), so `g5-ms.ts`'s +12–15% comes from that file's contest wiring,
+not the shared `ab-harness.ts`.
+
+### K. Bearing on the jess author-reducer gap (1.30–1.32×, identical source, two engines)
+
+`EXPERIMENT-inlining-cliff.md` "Bearing on…". The two candidate explanations were
+"more calls" and "worse IC feedback". Priced:
+
+| effect | measured ratio |
+|---|---|
+| one extra monomorphic call layer | 1.02× (seq) – 1.33× (choice) |
+| mono → megamorphic on an otherwise identical body | 1.19× (choice) – 1.28× (many) |
+| one callee → two executed callees at a site | 1.03× (seq) – 1.38× (choice/many) |
+| callee crossing 460 B of bytecode | 1.23× (seq) – 1.53× (choice) |
+
+**Worse IC feedback is sufficient on its own. Extra calls are not required to
+explain 1.30–1.32×.** The discriminating test is cheap and deterministic — see
+untried U-36.
+
+### N. **THE ENGINE TOKEN IN THIS REPO'S RESULTS DOES NOT MEAN WHAT IT SAYS**
+
+`lane/name-collision` (`origin/lane/name-collision` `7f954af`, **not yet merged
+into `release/0.47.0`**). This is the widest-blast-radius finding of the batch and
+it governs how every other number in the repo may be read.
+
+- **11 of 29 bench harnesses are mislabelled.**
+- **39,718 records in `notes/results/parse-consumed.jsonl` are tagged
+  `"engine":"table"` and are actually the reference INTERPRETER.** Verified
+  independently in this tree at `67478722`: the file's 87,947 rows split
+  `table` **39,718** / `interpreted` 34,044 / `assembled` 11,348 / `compiled`
+  2,837.
+- **The README legend omitted `assembled` entirely** — so the one token that names
+  the shipping engine was not in the key. Each harness now carries an
+  engine-token legend on that lane.
+
+This is the same defect as fact I5, at scale: `tableRules` names two different
+engines depending on import path, with the same type signature
+(`src/table/index.ts:28` exports `assembledRules as tableRules`, while
+`exec.ts`'s own `tableRules` is the reference driver). `7f954af` retires the
+collision — `exec.ts` exports `execRules`.
+
+**Published figures carrying the same mislabelling — DO NOT PROPAGATE:**
+
+- `CHANGELOG.md:756-762` — the "Absolute parse times on the canonical fixtures"
+  table, whose columns read **codegen / table / interpreter**. Present in this
+  tree at `67478722` and *uncorrected here*; the correction banner lives on
+  `lane/name-collision`. Per fact I5 the "codegen" column is the shipped
+  **assembler** and the "table" column is the reference **interpreter**, so the
+  headline `benchmark.less` row (17.41 / 46.86 / 99.68 ms) does not say what its
+  header says.
+- `docs/design/canonical-fixture-benchmark.md` — same mislabelling, same banner.
+
+> **Standing rule for anything added to this file from here on: name the ENGINE
+> and cite the harness, not the column header.** A figure whose engine is
+> identified only by the token `table` is unusable until the harness is checked.
+> The three engines are: reference interpreter (`src/table/exec.ts`), assembler
+> over the interpreted fuse (`assembledRules`), and the macro-fused shipping
+> artifact (`import('pm-macro:…')`) — and fact J measures a **~29% gap between the
+> last two**, so conflating any pair of them is a real error, not a naming nit.
+
+### L. The decision procedure that survives — D0…D5, with D6 and D7 REMOVED
+
+`DESIGN-piece-library.md` §2 states the piece-library decision procedure. The
+cliff and wiring lanes reordered it and deleted two steps. Recording the current
+shape here so nobody designs against the old one:
+
+| step | question | status after the batch |
+|---|---|---|
+| **D0** | Is the body under ~448 bytes of bytecode? | **Promoted to first, and it gates everything after it.** "Size is now D0." |
+| **D1** | Does anything vary between sites other than *bound data*? | A closed-over primitive or object reference does not enter any call site's feedback. **The single largest source of reuse, and it costs nothing.** |
+| **D2** | Does the site's child slot see more than one callee FunctionLiteral? | Count **kinds, not sites** — `OP_SCOPE` covering 1,331 sites is one kind and costs nothing. One → share, and the callee inlines. |
+| **D3** | If D2 fired, is the site hot? | Census instrument exists (`bench/table-opcode-gaps.ts`, `PM_TABLE_COUNT=1`); for json, 43% of executions land on 11 `OP_LIT` rows. **The threshold is open — see U-46.** |
+| **D4 / D4b** | Can the child be pasted instead of specialised, and does pasting cross 448 B? | D4 is **bounded by D0**: paste while the result stays under 448, and stop. "**The budget is 448 bytes of bytecode, not a node count**" — the correction to codegen's `INLINE_MAX_NODES = 1000`, the policy that produced the 17.4 KB bodies. |
+| **D5** | Otherwise specialise the parent by that slot's child kind | **"The weakest step in this procedure and may be net-negative on real grammars."** It spends size budget on pieces already at the limit: recovers the child's inlining, can lose the parent's. Apply only after D0 says the parent has room; prefer D4/splitting wherever both apply. |
+| **D6** | ~~460–4,600 dead zone~~ | **REMOVED.** The zone does not exist (fact B). Its live content is now D0. |
+| **D7** | ~~per-site monomorphic wrapper~~ | **REMOVED.** Refuted from two independent directions (fact F). "I proposed it as 'the cheap 80%-solution for the long tail'; it is neither cheap nor a solution." |
+
+The law the batch establishes, stated as one sentence:
+
+> **A call site inlines iff the callee's bytecode is under ~460 bytes AND exactly
+> one FunctionLiteral is *executed* there AND the receiver carries no more than
+> four distinct hidden classes. Closure count does not matter. Wiring does not
+> matter. Bound data does not matter.**
+
+The two IC axes are independent: the **call** axis is binary (mono vs many,
+stepping at the second executed callee) and the **map** axis is the classic 4-wide
+one (stepping at the fifth receiver map). And the reusable one-liner:
+**closures do not count, FunctionLiterals do** — 64 closures of one literal
+inline; 2 closures of two literals do not. *Sharing a piece across sites is what
+makes the call site monomorphic.* **The superseded design read `kManyClosures` as
+the defect when it is the cure.**
+
+> Two probes, two closure counts, no conflict: `design/balance`'s `probe/cliff.mjs`
+> swept to **N=64**, `exp/cliff` swept to **N=40** on real-scale bodies with the
+> 3.7% A/A floor and the `%DebugPrint` address-equality control. Both report
+> inlining at every N.
+
+### M. Option-invariance collapses with each option set added — the reusable lesson
+
+`DESIGN-piece-library.md` §5.3–§5.3b reconciles its own 89% against
+`exp/wiring`'s 39–48% and shows **both are right, because they are different
+quantities**. `probe/bodyshare.mjs` / `invariant-fraction.mjs`, `example/css`
+(163 bodies) and `example/json` (37 bodies):
+
+| comparison | css | json |
+|---|---:|---:|
+| k0↔k1 **pairwise** (`hostCst` only) | **145/163 (89.0%)** | 37/37 (100.0%) |
+| k0,k1,k2,k3 — 4 sets, **n-way** | 55/163 (**33.7%**) | 19/37 (**51.4%**) |
+| k0..k4 — 5 sets, **n-way** | 13/163 (8.0%) | 11/37 (29.7%) |
+
+The 89% is the *pairwise* figure and is the right one **only** because the shipped
+set is two (CLI `k0`, language service `k0+k1`), where n-way and pairwise
+coincide. The general shape:
+
+> **Invariance collapses fast with each option set added — 89% → 33.7% → 8.0% on
+> css. Any argument of the form "most bodies are option-invariant, so
+> overgeneration is cheap" is only true for a small shipped set and must name the
+> set.**
+
+Corresponding byte estimates, and the ratchet consequence: css one option set
+155,076 B; two sets deduped 178,791 B (**+15.3%**); **four sets 365,795 B
+(+136%)** against 620,304 naive — dedup still saves 41%. With D3's hot-only split
+at H-2's assumed 40–60% of sites, Tier G lands at roughly 0.4–0.6× of that
+(css 62,000–107,000 B). **Stated as a range because H-2 is unmeasured:**
+`example/css` **62,000–179,000 B**, `bytesRatio` **6.4–18.4**. The size gate's
+ceiling is 10 with `RATCHET_SLACK_PCT` 0.1 and no headroom by design, so **the
+ceiling is crossed across most of that range and `bench/size-baseline.json` needs
+a deliberate committed re-cut with owner sign-off.** Every figure in that section
+is a *pre*-sharing number — fact D's −25.2% is a downward lever not yet applied to
+it.
+
+> **Internal inconsistency in the source, recorded not smoothed.**
+> `DESIGN-piece-library.md:613` computes `bytesRatio` = 155,076 / **9,715** ≈ 16.0,
+> while its own §5.2 table at `:548` gives `example/css` table data as **9,229 B**.
+> The two denominators differ and the file does not reconcile them. Both are
+> recorded; neither is corrected here.
+
+Size endpoints for context (`probe/emitsize.mjs`, Node v24.11.1):
+`example/json` table data 1,336 B → emitted 24,782 B (0.46 codegen 15,138 B,
+**1.64×**); `example/css` 9,229 B → 155,076 B (codegen 224,100 B, **0.69×**). So
+full per-site emission is already **below** codegen on css and above it on json.
+**The size endpoint is not a wall; 0.46 already shipped 43.9 MB across the same 16
+modules and it went out.**
+
+---
+
+## 2026-08-07 — UNTRIED items generated by the measurement batch
+
+`UNMEASURED` unless marked otherwise. Each carries what is known and what is not.
+
+### U-31. Decompose emitted bodies toward the 460 B budget, as a first-class lowering goal — `UNMEASURED`
+
+**Known:** 460 bytecode bytes is a hard per-callee cliff (fact B), causally
+proved by moving the flag; 16.6–28.4% of real pieces are already past it and they
+are precisely the composites; crossing costs +23–53% on modelled pieces;
+shrinking bodies back under it demonstrably restores inlining (fact D, 19 → 22).
+Practical source-byte ceiling ≈ 1,400 B at the observed ~3:1 ratio.
+**Unmeasured:** everything about the lowering itself — whether a composite body
+*can* be decomposed under 460 without adding a shared indirection layer (which
+fact C says would cost the callers their inlining anyway), what the decomposition
+rule is, and what any of it is worth in wall-clock. This is the largest lever the
+batch identified and it has no implementation.
+
+### U-32. Targeted overgeneration — emit variants only for the bodies an option MOVES — `QUEUED`
+
+**Known:** +30.5% (json) / +55.1% (graphql) / +47.1% (less) against naive
++87.2/+96.3/+97.3%, for the same zero runtime cost and the same parse; the
+overgenerated module was built and run, not modelled; 39–48% of bodies are
+option-invariant (fact E). **Unmeasured:** only the `trackLines` axis was aligned
+site-for-site. `hostCst`, and the interaction when two or more options
+overgenerate together, are uncosted. Also unmeasured: whether the alignment
+procedure that identifies "movers" is cheap enough to run at macro time.
+
+### U-33. Partial sharing beyond the CST snapshot prologue — `QUEUED`
+
+**Known:** the one measured instance is −25.2% bytes on json with *more* inlining
+(22 vs 19) and an identical parse (fact D). The soundness criterion already exists
+in the tree — `emit-assembly.ts`: a shared emitted-scope helper is sound exactly
+when it takes no piece as an argument — and it is a decomposition rule that
+nothing had applied below whole-piece granularity. **Unmeasured:** every other
+piece-free fragment. Nobody has enumerated what else qualifies. No wall-clock
+number exists for even the measured instance, and the json-only scope means the
+−25.2% may not hold on css/less/graphql.
+
+### U-34. `rawChildren` elision — needs a 7th `OP_NODE` flag bit — `QUEUED`
+
+Full write-up: `notes/FINDING-rawchildren-collector-is-unread-in-ast.md`.
+**Known:** an AST parse maintains two parallel child collectors per node;
+`rawChildren` can only be read by a CST host or a build reducer declaring a 4th
+formal parameter, and **neither exists in an `ast` parse of any of the four
+shipping grammars**. It is still filled (`_pushLeafBuf`, `emit-assembly.ts:133-142`),
+still marked (`emitMark(buf:true)` reads both lengths, `:233-238`) and still
+truncated on rollback (`_rbBuf`, `:160-181`). Emitted site counts, css/ast:
+`_pushLeafBuf` 206, `_rbBuf` 678, `_accSet` 749. The oracle
+`buildReadsRaw` (`src/compiler/build-arity.ts:309`) is **exported and never called
+anywhere in `src/`** — as is `buildReadsChildren` (`:301`) — while its three
+siblings are wired at `encode.ts:1008-1010`. The flag word at `encode.ts:1014-1019`
+derives six bits and **there is no bit for raw**, which is why the question is
+never asked. Cost of a fix: the 7th bit plus `emit-assembly.ts` (`_pushLeafNoRaw`,
+four-slot `emitMark`/`_rbBuf`) plus the `assemble.ts` and `exec.ts` twins.
+**Unmeasured, and two caveats that must not be dropped:** (1) the arity walker
+(`bench/jess/capoff-rawcensus.ts`) **under-reaches** — 7 defs for css against 131
+`OP_NODE` sites, 5 for less against 259 — so treat "every def has confirmed arity
+≤ 3" as a strong indication, not a census; a real fix must derive the bit in
+`encode.ts` where every def is seen by construction. (2) The change touches the
+`OP_NODE` flag word, which participates in the **assembly key**. That is why it
+was scoped out of 0.47.
+
+### U-35. Finish the seven-wiring byte table on css and graphql — `QUEUED`
+
+**Known:** the table exists for `json/document` only. The css and graphql legs
+were RUNNING and were **killed deliberately, not because they failed** — the box
+reached loadavg 20 while another lane held the timing floor. Nothing about the
+instrument changed. **To run:** `node --import tsx/esm bench/wiring/check.ts css/stylesheet graphql`
+on a quiet box. Also outstanding: `w4`'s byte cost is json-only (§5's argument
+rests on the distinct-body counts, which *are* complete).
+
+### U-36. The discriminating test for the jess author-reducer gap — `QUEUED`, cheap and deterministic
+
+**Known:** fact K prices all four candidate mechanisms; worse IC feedback alone
+reaches 1.37–1.38×. The stated prior is that a **size threshold** is the
+explanation, because it produces exactly the flat, body-independent ratio observed
+(1.30–1.32×, *stable* across reducers), whereas a call-count difference would vary
+with reducer complexity. **The test, in order:** (1) `%DebugPrint` the reducer body
+under each engine and compare the Call-slot IC state — MONOMORPHIC under one and
+POLYMORPHIC under the other means the emitted engine instantiates the reducer at
+2+ sites where the other does at 1; (2) read the reducer's `BytecodeArray` length
+under each engine — one side under 460 and the other over is 1.23–1.53× and needs
+no further explanation; (3) only if both come back identical is "more calls" live,
+and then an invocation counter settles it. **Unmeasured:** all three steps. No
+timing required for (1) or (2).
+
+### U-37. Confirm the cliff on real emitted `_pf` bodies — `QUEUED`
+
+**Known:** everything in fact A is on **modelled** pieces, swept 70 B to 52,188 B,
+which straddles the whole real range. Fact B's real-piece leg (wiring §1-§2)
+confirms the 460 threshold on real pieces but not the N-axis or the map-count
+axis. **Unmeasured:** the N=2 call cliff and the N=5 map cliff on real bodies.
+Note the size axis makes this the *least* likely result to change: real bodies sit
+far past 460, entirely inside the not-inlined plateau.
+
+### U-38. The one owed cliff timing: the `shared` arm's throughput — `QUEUED`
+
+**Known:** the trace says `shared` (one literal, **zero** generated bytes) is
+inlined into `benchRound` exactly as `none` is. The lane states a scoreable
+**prediction**: `shared` ≈ `none` ≈ **91 ns/op**. It was deferred because the box
+was loaded. **Either outcome leaves D7 with nothing** — if `shared` is fast, a
+zero-byte shared trampoline buys the same thing; if `shared` is slow, per-site
+bodies "help" only by defeating inlining into a caller, which is a cost in any
+real caller. Also still owed by that lane: the mechanism behind `many`'s wrapper
+recovery.
+
+### U-39. The time axis of the mixture Pareto curve — `QUEUED`
+
+**Known:** the byte axis is complete and, per fact H, **fully determined by single
+flips**. **Unmeasured:** ns/parse, entirely — every row carries `timing: null`.
+Any interaction effect this sweep can find is in TIME. The mixture lane states
+three predictions the curve will confirm or refute explicitly: (1) shared-driver
+wins where a slot sees one callee kind and loses where a parent dispatches to
+several, with NODE (718 sites, 10.9%) the sharpest test; (2) `OVR`'s array
+indirection should NOT be visible (fact C); (3) sharing may win MORE than (1)
+implies, because specialisation spends body size on exactly the composites already
+at the ceiling (fact B).
+
+### U-40. Rename `fixture.ts`'s mislabelled engine columns — `QUEUED`
+
+**Known:** "codegen" is the shipped assembler and "table" is the reference
+interpreter (fact I5). It was recommended as a separate follow-up rather than
+landed with the capoff fix **because changing those column names changes what
+every published figure in this release cycle means.** **Unmeasured:** nothing to
+measure; this is a correctness-of-reporting change with a documentation blast
+radius.
+
+### U-41. The ~29% shipping-artifact gap — `UNMEASURED` cause, confirmed effect
+
+**Known:** fact J — 1.286×/1.299×, macro wins 0/16 in both runs, control clean,
+identical tree and identical consumed bytes. **Unmeasured:** the cause. It is a
+real defect on the path every consumer ships and nothing in this batch explains
+it. Facts I3 (deopts / body size / GC) rule out three candidate explanations;
+facts A/B name the live ones.
+
+### U-42. `grammar.ts:103` reads `opts.trackLines ?? _ctx?.trackLines` on scope entry, mid-parse — `UNMEASURED`
+
+An option-shaped consult on the parse path. Named as still-open by
+`EXPERIMENT-wiring.md` §7 and not fixed there. Directly adjacent to U-32: an
+option consulted at parse time is an option that could instead have been resolved
+into which body the site got.
+
+### U-43. The emitted sequence-term prologue branches on `ctx.trivia === undefined` **per term**, inside the piece body — `UNMEASURED`
+
+Found while reading the emitted json text; **not investigated**. Another
+option-shaped consult on the parse path, and one that `§10.5`'s `forCtx` write-up
+does not mention. Note this is the *same* prologue that U-33 shares — the two
+interact.
+
+### U-44. Print per-site named function declarations at macro time; retire `assemble.ts:2550`'s `new Function` — `QUEUED`
+
+**Known — this is what the wiring sweep says the macro should emit:**
+(1) direct hoisted names, because the wiring spelling is free (fact C) and that is
+what `emit-assembly.ts` already prints, leaving run-start to LINK and do nothing
+else; (2) **never** route calls through a shared dispatcher; (3) treat 460
+bytecode bytes as a hard per-piece budget; (4) overgenerate only the bodies an
+option MOVES; (5) share the option-invariant, piece-free prologues.
+**Unmeasured:** the sweep reached this through `new Function`, which is the
+*measurement vehicle, not the proposal*. **This sweep says WHAT the macro should
+print; it does not print it.** No wall-clock number anywhere backs the §6 ranking
+— it is an inlining and byte-count ranking, and whether −25.2% bytes and +3
+inlined pieces is worth milliseconds is unmeasured.
+
+### U-45. Settle the 2.0–2.3× table-vs-codegen figure — `UNMEASURED`
+
+Per fact I5 it is neither confirmed nor refuted, two lanes retracted, and the axis
+as originally stated **does not exist at this SHA** (`src/compiler/codegen.ts` was
+deleted in `37c57b5`; what exists is shared-driver `exec.ts` vs specialised
+`assemble.ts`+`emit-assembly.ts`, which are the same engine either side of a
+codegen step). Settling it therefore requires first stating which two artifacts
+the figure was ever about. Do not quote it in either direction until then.
+
+### U-46. H-2 — the D3 hot-site fraction. **The load-bearing unknown.** — `UNMEASURED`
+
+`DESIGN-piece-library.md` §9.1 names this itself: *"H-2, the D3 hot-site fraction,
+is the load-bearing unknown and I have not measured it. Every byte number in §5.4
+is a function of it, and my basis is one census on one grammar (json's
+43%-on-11-rows) generalised to four."* **Hypothesis:** a D3 threshold covering
+~90% of executed rows emits **40–60%** of sites, not 100%. **Falsified if** the
+execution histogram on jess's grammars is flat enough that 90% coverage needs
+>80% of sites — in which case Tier G is effectively "all sites", fact M's byte
+answer goes to its top end (155–179 KB per css-sized grammar), and the ratchet
+conversation is larger than the design implies. **`exp/mixture`'s Pareto curve
+measures this directly and should be read before anything is built** (so U-39
+gates this).
+
+### U-47. H-5's separating experiment — pad the wrapper past 460 B — `UNMEASURED`
+
+The `many` wrapper recovery (91.09 → 65.61, below even the identical-map 70.17)
+has two candidate mechanisms and the design lane owns explaining it.
+**The experiment:** pad the wrapper past 460 B. Under mechanism (i) recovery must
+**vanish entirely**, because an un-inlinable wrapper cannot hoist anything; under
+(ii) it must **largely survive**, because the megamorphic load is eliminated
+whether or not the wrapper inlines. One config on an existing harness. **A second,
+cheaper check that discriminates the same way:** vary `many`'s iteration count —
+both mechanisms predict recovery scales with it, so a **flat** result falsifies
+both and means neither explanation is right. **A third, currently unmeasured
+prediction that falls out:** `seq` at high arity should begin to recover, since
+many terms per call is the same multiplication by another name; if it does not,
+the loop is doing something neither mechanism captures. Note fact F already traces
+the *benchmark-driver* explanation for this anomaly — these three tests
+discriminate the residual mechanism, they do not reopen D7.
+
+### U-48. The ten-line falsifier that should run before any `rawChildren` encoder work — `QUEUED`
+
+H-4, stated with its falsifier: eliding the `raw` collector removes a measurable
+share of the 34.68 MB/parse allocation and of the CST-capture self-time.
+**Falsified if** a build with `_pushLeafBuf`'s raw arm **stubbed out** shows no
+allocation delta on css `benchmark.css` under capoff's protocol — which would mean
+the pair is being optimised away already and the cost is elsewhere. **That stub is
+a ten-line change and settles it before any encoder work starts.** U-34's
+dead-ness has been verified **statically**; it has **not been priced**. Run this
+first.
+
+### U-49. The no-`new Function` dynamic gate — does not exist, and is red on HEAD by design — `QUEUED`
+
+`DESIGN-piece-library.md` §6.3: *"There is no such test today."* The gate is a
+test that **fails on today's HEAD deliberately**, and goes green when
+`assemble.ts:2536`/`:2550`'s `new Function` is deleted. It is the enforcement
+half of U-44 and belongs to `lane/no-new-function`. The illustrative shape is in
+the design note, marked "Shape of the gate, not final code".
+
+### U-50. Two mechanical sync guards between the emitter and the opcode set — `UNMEASURED`
+
+**Known:** the emitter's `lower()` has **31 `case OP_*` labels** against
+`assemble.ts`'s **40** — a nine-opcode drift that nothing detects.
+**Proposed, not built:** (1) a **totality check** — for every `OP_*` in `ops.ts`,
+either `emit-assembly.ts` has a case or `OP_NAMES` marks it Tier-S-only, and a new
+opcode with neither fails the build; (2) reuse the **existing differential** as
+Tier G vs Tier S over the same table. Neither is costed.
+
+### U-51. §4.4's `ScanShape` fallback is not a settled genericity call — `UNMEASURED`
+
+`DESIGN-piece-library.md` §9.6, verbatim: *"this is where I am least comfortable
+calling something 'correct genericity'."* Saying "cold sites get the slow shape" is
+only safe **if trivia sites are cold, and that has not been established**. If
+trivia scanning is hot everywhere, §4.4 is a **deferred defect**, not a design
+call, and D3's threshold must be set by execution count on the trivia path
+specifically. **The input that settles it** is `lane/capoff`'s dump of the
+actually-emitted trivia-skip functions. **Caution:** the reasoning in §9.6 rests
+on the 27.5–28.4% trivia self-time figure that fact I1 refutes, so the question is
+live but its stated framing is not.
+
+### U-52. `INV-6` — 57 config reads inside piece-internal bodies that the invariant checker reports as 0 — `QUEUED`
+
+**Known:** `lane/no-new-function`'s `inv6x.mjs` found **57** config reads inside
+piece-internal bodies while `check-invariants.mjs` reports **0**. The checker and
+the reality disagree, which makes every "no config read on the run path" claim
+unverified. Related and already located: `forCtx` (`src/table/assemble.ts:2672`)
+reads five `ctx` fields **per parse**, and its own comment concedes it is "THE ONLY
+CONFIG READ ON THE RUN PATH" — but the criterion says *none*. **Unmeasured:** its
+cost, which is once-per-parse and therefore probably small; the issue is the
+invariant, not the nanoseconds. `DESIGN-piece-library.md` §9.8 states plainly that
+`lane/no-new-function` should land before anything in the piece-library design is
+built on: the corrected `INV-6` is the instrument that enumerates what a
+structure-only read of `assemble.ts` missed (2,731 lines; `OP_CHOICE`, `OP_REP`,
+`OP_NODE` known only by their closure-minting counts).
+
+### U-53. Recover the literal / regex / trivia fast paths deleted at the 0.47 cutover — `QUEUED`
+
+`RELEASE-0.48-TARGET.md` §9, and it is filed there as **"an LLM oversight, not a
+decision"**: retiring the literal- and regex-recognition optimisations "was a
+non-goal, and was never agreed to. It happened anyway."
+`src/compiler/codegen.ts`, `src/compiler/trivia-fast-path.ts` (296 lines) and
+`src/compiler/scannable-run.ts` (1,627 lines) were deleted; **recovery point
+`3d4dac6`**. The 0.48 instruction is to take whatever was valuable out of these
+modules when token streaming lands. **This is why `CODEGEN-FAST-PATHS.md`
+describes an engine that no longer ships** — see that file's header.
+
+### U-54. The three silent-wrong-output surfaces, ungated — `UNMEASURED`
+
+`DESIGN-piece-library.md` §9.7 names `OP_ADJ` (§4.5), capture-reachability, and
+the site-attribute record as **the three places the design can produce silently
+wrong output** rather than a slow parse. They are the ones to gate hardest, and
+the gate must be **whole-object comparison against the interpreter**
+(`test/parity/helpers/engine-parity.ts`), *not* a field checklist — which is how
+the `sepBy trailing:'require'` divergence got through. Nothing is built.
+
+### U-55. `expected` is not in the identity digest — `QUEUED`
+
+`RELEASE-0.48-TARGET.md`'s standing-hazard rider: **six** divergences hid behind
+this during 0.47. A gate defect, currently unassigned.
+
+---
+
+## Untried index (`QUEUED` + `UNMEASURED`)
+
+**56 items — 22 `QUEUED`, 34 `UNMEASURED`.** The count at the top of this file is
+this table's length. U-01…U-30 are the pre-existing backlog; U-31…U-56 came out
+of the 2026-08 measurement batch. Nothing is counted twice: an item whose
+siblings landed appears here once, for its unlanded part only.
+
+| # | item | marker |
+|---|---|---|
+| U-01 | P0 §1 — `none` and `gaps` root-trivia policies (`allEntries`/`selectedKinds` landed in 0.44.0) | `QUEUED` |
+| U-02 | P0 §4 — kind-query postings index instead of a repeated full gap scan | `UNMEASURED` |
+| U-03 | P0 §5 — split "need a gap" from "need every trivia token" in host contracts | `UNMEASURED` |
+| U-04 | P0 §6 — stop allocating the empty root sink and empty index | `UNMEASURED` |
+| U-05 | P0 §8 — typed-buffer (`Uint32Array`) alternative, last and only as an implementation detail | `UNMEASURED` |
+| U-06 | §2 — compile-time transparent-wrapper elimination when `buildSrc` is `(c) => c[0]` | `UNMEASURED` |
+| U-07 | §4 — inline transforms whose body references outer scope or non-destructure params | `UNMEASURED` |
+| U-08 | §5 — general `buildSrc` object-literal inlining for non-`mk` grammars | `UNMEASURED` |
+| U-09 | §6b — generalize the trivia fast-path to value-capturing positions | `UNMEASURED` |
+| U-10 | §7 — common-prefix choice factoring, generic | `UNMEASURED` |
+| U-11 | §7a — factor `Dimension`/`Num` into one numeric node (grammar-side; verified 2026-07-16) | `QUEUED` |
+| U-12 | §7b — partial first-char choice dispatch (switch + fallback) | `UNMEASURED` |
+| U-13 | §7c — richer dispatch structures: trie, second-char, length-switch, binary-search ranges, perfect hash | `UNMEASURED` |
+| U-14 | §8d — `/i` on char classes (ASCII case-fold ranges) | `UNMEASURED` |
+| U-15 | §8g — lazy-delimited `<open>[\s\S]*?<close>` | `UNMEASURED` |
+| U-16 | §8h-next — Approach B: divergence-set analysis or `regexp-tree` left-factoring | `UNMEASURED` |
+| U-17 | §regexp-tree — hand-rolled first-set parser, to drop `regexp-tree` for interpreter users too | `QUEUED` |
+| U-18 | cleanup — `emitSkip` still uses `try/catch {}`; move to `emitFallible` | `UNMEASURED` |
+| U-19 | cleanup — `withCtx`'s `{ ..._ctx, state: … }` allocates; save/restore `_ctx.state` | `UNMEASURED` |
+| U-20 | cleanup — `charCodeAt` instead of `codePointAt` in disjoint dispatch when the first-set proves BMP-only | `UNMEASURED` |
+| U-21 | cleanup — parallel `compile()` per rule; cache by combinator-tree hash | `UNMEASURED` |
+| U-22 | #1 — lazy/scalar promotion for the *consumed-but-tiny* `many` arrays (dead-value part landed at ~7% alloc / 0% time; size expectations accordingly) | `UNMEASURED` |
+| U-23 | #2 — residual intra-frame buffer-*reference* hoist (cold CST-capture path only; micro-opt) | `UNMEASURED` |
+| U-24 | #4 — kill the per-node `loc` object and per-build filtered child arrays in `buildNode` | `UNMEASURED` |
+| U-25 | Q-40 #1 — compile-time output-contract variants (recognizer-mode proof exists, unpublished, `c84d777`) | `QUEUED` |
+| U-26 | Q-40 #4a follow-on — extend the node-frame elision to the interpreter's `node.ts` | `UNMEASURED` |
+| U-27 | Q-40 #4a follow-on — the `_cstRawChildren`/`_ch`/`_raw` half, where a subtree proves no child capture | `UNMEASURED` |
+| U-28 | Q-40 #5 — host-boundary allocation contract (span numbers + positional access instead of `loc` + `filter`) | `UNMEASURED` |
+| U-29 | jess-host — collapse `children`/`rawChildren` when a node captures no trivia (bank as alloc/GC, not wall-clock) | `QUEUED` |
+| U-30 | jess-host — `(b)` per-call-site skip-only vs skip+log | `QUEUED` |
+| U-31 | decompose emitted bodies toward the 460 B budget as a first-class lowering goal | `UNMEASURED` |
+| U-32 | targeted overgeneration — variants only for the bodies an option MOVES | `QUEUED` |
+| U-33 | partial sharing beyond the CST snapshot prologue | `QUEUED` |
+| U-34 | `rawChildren` elision — 7th `OP_NODE` flag bit | `QUEUED` |
+| U-35 | finish the seven-wiring byte table on css and graphql | `QUEUED` |
+| U-36 | the discriminating `%DebugPrint` / `BytecodeArray` test on the author-reducer gap | `QUEUED` |
+| U-37 | confirm the cliff on real emitted `_pf` bodies | `QUEUED` |
+| U-38 | the owed `shared`-arm throughput timing (prediction: ≈ 91 ns/op) | `QUEUED` |
+| U-39 | the time axis of the mixture Pareto curve | `QUEUED` |
+| U-40 | rename `fixture.ts`'s mislabelled engine columns | `QUEUED` |
+| U-41 | the cause of the ~29% shipping-artifact gap | `UNMEASURED` |
+| U-42 | `grammar.ts:103`'s mid-parse `opts.trackLines ?? _ctx?.trackLines` | `UNMEASURED` |
+| U-43 | the per-term `ctx.trivia === undefined` branch inside the emitted sequence-term prologue | `UNMEASURED` |
+| U-44 | print per-site named declarations at macro time; retire `assemble.ts:2550`'s `new Function` | `QUEUED` |
+| U-45 | settle (or retire) the 2.0–2.3× table-vs-codegen figure | `UNMEASURED` |
+| U-46 | H-2 — the D3 hot-site fraction, on jess's execution histograms (**the load-bearing unknown**) | `UNMEASURED` |
+| U-47 | H-5's separating experiment — pad the wrapper past 460 B; vary `many`'s iteration count; `seq` at high arity | `UNMEASURED` |
+| U-48 | stub `_pushLeafBuf`'s raw arm and price it under capoff's protocol — **run before any U-34 encoder work** | `QUEUED` |
+| U-49 | the no-`new Function` dynamic gate (does not exist; red on HEAD by design) | `QUEUED` |
+| U-50 | mechanical sync guards — `OP_*` totality check; Tier G vs Tier S differential (emitter has 31 cases against 40 opcodes) | `UNMEASURED` |
+| U-51 | settle §4.4's `ScanShape` fallback — are trivia sites actually cold? | `UNMEASURED` |
+| U-52 | `INV-6` — 57 config reads in piece-internal bodies that `check-invariants.mjs` reports as 0; plus `forCtx` at `assemble.ts:2672` | `QUEUED` |
+| U-53 | recover the literal/regex/trivia fast paths deleted at the 0.47 cutover (recovery point `3d4dac6`) | `QUEUED` |
+| U-54 | gate the three silent-wrong-output surfaces (`OP_ADJ`, capture-reachability, site-attribute record) by whole-object parity | `UNMEASURED` |
+| U-55 | put `expected` in the identity digest (six divergences hid behind its absence during 0.47) | `QUEUED` |
+| U-56 | re-tag the 39,718 mislabelled `"engine":"table"` rows in `notes/results/parse-consumed.jsonl`, and land `lane/name-collision`'s legend + the `CHANGELOG.md:756-762` / `canonical-fixture-benchmark.md` correction banners on the release tip | `QUEUED` |
+
+---
+
+## Already landed — `LANDED` (18)
 
 - **Flat trivia log** — `_cstTriviaLog` as `[start, end, insertIdx, …]` per trivia entry; no per-entry `CSTTrivia` objects.
 - **`node()` ctx save/restore** — mutate `_ctx` fields instead of spreading a new `ParseContext` per call.
@@ -30,7 +1022,9 @@ Interpreter-side ideas are split out to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRE
 
 ## P0 — Root trivia: separate recognition, capture, and formatting facts (2026-07-30)
 
-### What is already cheap, and what is not
+`LANDED` × 2, `QUEUED` × 1, `UNMEASURED` × 4, `REFERENCE` × 3. Untried here: U-01…U-05.
+
+### What is already cheap, and what is not — `REFERENCE`
 
 The premise needs precision. Parseman has already made **skipping** trivia cheap:
 the compiled CSS-shaped loop is `charCodeAt`-based (`src/compiler/trivia-fast-path.ts`),
@@ -96,7 +1090,7 @@ The last clause matters: “capture nothing now, find comments later with a sour
 simply moves an O(source length) pass back into render, often once per output boundary.
 That is not a win.
 
-### The existing offset model is the baseline, not an optional optimization
+### The existing offset model is the baseline, not an optional optimization — `REFERENCE`
 
 `src/cst/offset-model.ts` already states the right representation: leaf/AST source
 spans are the anchors, and a trivia gap is the subtraction between adjacent spans.
@@ -121,7 +1115,7 @@ comment or newline is significant. The root capture redesign must use that model
 otherwise a new packed log merely preserves the current 22k-fact mistake in a smaller
 array.
 
-### 1. Add an explicit *root* capture policy — HIGH, first prototype
+### 1. Add an explicit *root* capture policy — `LANDED` (`allEntries`, `selectedKinds`) + `QUEUED` (`none`, `gaps` — U-01)
 
 Keep the current complete root log as the compatibility mode, but stop treating it as
 the only `run()` shape. Add a policy separate from the existing **per-node**
@@ -159,7 +1153,7 @@ allocated bytes. The expected `none` result is *zero root entries*, not merely a
 map query. Keep only modes that are neutral-or-better for no-capture parsing and win on
 the real Jess parse+emit workload.
 
-### 2. Represent `selectedKinds` as **owned-range rows + kind markers**, not filtered chunks — LANDED
+### 2. Represent `selectedKinds` as **owned-range rows + kind markers**, not filtered chunks — `LANDED`
 
 For the common CSS/Less requirement, an emitter needs two different facts:
 
@@ -201,7 +1195,7 @@ and a label mask of zero. Count emitted numeric cells on Bootstrap Less/CSS and 
 comment-dense stylesheet; this idea is worth implementing only if it materially reduces
 cells/GC and wins Parseman *and* Jess parse+emit.
 
-### 3. Make direct boundary queries truly sparse — LANDED for selected rows
+### 3. Make direct boundary queries truly sparse — `LANDED` (selected rows; the broad legacy APIs stay lazy adapters)
 
 Selected-root `gapBefore(offset)` and `gapAfter(offset)` now binary-search the ordered
 rows and do not force `buildRootMaps()` for the whole document. For an ordered gap stream, implement direct lookup with binary search
@@ -224,7 +1218,7 @@ that `gapBefore(oneOffset)` has not initialized legacy maps or visited unrelated
 Benchmark one lookup, N random lookups, and a full `entries()` enumeration independently;
 the full enumeration is allowed to be linear, the singleton lookup is not.
 
-### 4. Give kind queries an index, not a repeated full gap scan — MED/HIGH
+### 4. Give kind queries an index, not a repeated full gap scan — `UNMEASURED` (U-02)
 
 `gapsWithKind()` presently loops every gap, then loops its entries and resolves label
 strings. Build selected-kind postings while capturing (`kindIndex -> marker/gap ranges`) or,
@@ -243,7 +1237,7 @@ queries, duplicates, unknown labels, and unlabeled trivia. A test must call it t
 prove the second query neither rebuilds nor rescans. Report work proportional to matching
 markers, not only wall time.
 
-### 5. Split “need a gap” from “need every trivia token” in host contracts — MED
+### 5. Split “need a gap” from “need every trivia token” in host contracts — `UNMEASURED` (U-03)
 
 The current root log is effectively enabled by `run()` itself, while per-node capture has
 a host-aware plan. Add a declarative root demand to the `run`/build-host contract (or a
@@ -267,7 +1261,7 @@ For Jess, tests must demonstrate the selected policy preserves all output-requir
 and that `none` is used only where output has no formatting obligation. Run all four dialect
 parse + render corpora; no parser may "pass" simply because comments vanished from its AST.
 
-### 6. Stop allocating the empty root sink and empty index — MED, low risk
+### 6. Stop allocating the empty root sink and empty index — `UNMEASURED` (U-04)
 
 Even a no-trivia document currently allocates `triviaLog: []`, `errors: []`, a root-index
 closure, and an entry view in `runOnce()`. For root policy `none`, return shared immutable
@@ -280,7 +1274,7 @@ actually zero-sink rather than “capture an empty array.”
 expose a frozen/shared readonly empty view; if mutability is presently public, allocate
 only at that API boundary and document the legacy cost.
 
-### 7. Preserve source *ranges*, never eagerly rebuilt formatting strings — MED, invariant
+### 7. Preserve source *ranges*, never eagerly rebuilt formatting strings — `REFERENCE` (an invariant, not a work item)
 
 The right representation for reproducible formatting is offsets into the immutable input.
 The source already exists for parse lifetime, so exact output requires `slice(start,end)`
@@ -294,7 +1288,7 @@ re-emits authored layout should choose `none`; a formatter that needs a complete
 trivia stream should choose `allEntries`; comment-preserving output gets the intermediate
 gap+marker form. Do not make every parser pay the language-service formatter's bill.
 
-### 8. Measure a typed-buffer alternative last, and only as an implementation detail — LOW
+### 8. Measure a typed-buffer alternative last, and only as an implementation detail — `UNMEASURED` (U-05)
 
 The current JavaScript number arrays are already packed and append-friendly. Replacing
 them wholesale with `Uint32Array`/`Int32Array` can regress due to growth copies, bounds
@@ -306,7 +1300,7 @@ writer behind the same root-view API, with ordinary arrays as the control.
 compile+emit. A typed array is not a design win by itself; it is expressly not permission
 to reintroduce per-entry objects, Maps, or source rescans.
 
-### Required workload and review gates for this lane
+### Required workload and review gates for this lane — `REFERENCE`
 
 1. Add a reproducible **root-trivia workload** that uses a real compiled CSS/Less grammar
    and a real large stylesheet (including the PostCSS Bootstrap Less fixture when available),
@@ -331,13 +1325,15 @@ to reintroduce per-entry objects, Maps, or source rescans.
 
 ## High priority
 
-### ~~1. Choice fast paths disabled in CST grammars~~ ✅
+`LANDED` × 2, `REJECTED` × 1, `UNMEASURED` × 1 (U-06).
+
+### 1. Choice fast paths disabled in CST grammars — `LANDED`
 
 Moved to **Already landed**.
 
 ---
 
-### ~~2. `node()` per-invocation overhead~~ (partial — interpreter only)
+### 2. `node()` per-invocation overhead — `REJECTED` (both compiled attempts) + `UNMEASURED` (transparent-wrapper elimination — U-06)
 
 Interpreter-only `node()` capture work moved to [`INTERPRETER_PERF_IDEAS.md`](./INTERPRETER_PERF_IDEAS.md).
 
@@ -356,7 +1352,7 @@ Eager `[], [], []` in `emitNode` remains faster — branchy inline push costs mo
 
 ---
 
-### ~~3. Log-only compiled trivia capture~~ ✅
+### 3. Log-only compiled trivia capture — `LANDED`
 
 Moved to **Already landed**.
 
@@ -364,17 +1360,19 @@ Moved to **Already landed**.
 
 ## Medium priority
 
-### ~~4. Fuse `sequence` + `transform`~~ (partial ✅)
+`LANDED` × 4, `MEASURED-NULL` × 1, `REJECTED` × 1, `QUEUED` × 1 (U-11), `UNMEASURED` × 8 (U-07…U-10, U-12…U-16).
+
+### 4. Fuse `sequence` + `transform` — `LANDED` (destructure + unary) + `UNMEASURED` (outer-scope / non-destructure params — U-07)
 
 `transform(sequence(a, b, c), ([x, y, z]) => …)` with destructure-array `fnSrc` / arrow `toString()` now emits straight-line locals + inlined body — no `_arr`, no `_mf[n]`. Unary transforms (`s => parseInt(s, 10)`, object literals, etc.) also inline when closure-free.
 
 **Result:** GraphQL large compiled **−6%** (~149→~142µs); medium **−5%**. Remaining: transforms whose body references outer scope or non-destructure params.
 
-### ~~5. Inline transforms and builds at call sites~~ (partial ✅)
+### 5. Inline transforms and builds at call sites — `LANDED` (transform inlining) + `MEASURED-NULL` (`mk()` literal emission, CSS-neutral) + `UNMEASURED` (general `buildSrc` object-literal inlining — U-08)
 
 Macro `fnSrc` / `buildSrc` and runtime `toString()` for arrow builds. Landed: transform inlining (§4), CSS `mk(type,…)` literal emission (`inline-build.ts`, **neutral** on bootstrap4 — removes `_build` indirection but no measurable CSS win). Remaining: general `buildSrc` object-literal inlining for non-`mk` grammars.
 
-### ~~6. Trivia loop specialization~~ ✅
+### 6. Trivia loop specialization — `LANDED` + `REJECTED` (the inline-vs-hoist `charCodeAt` micro-tweak, measured the opposite way)
 
 When trivia is `oneOrMore(choice(ws, blockComment))` (CSS `rw`) or ASCII ws-only, emit a hand-rolled `charCodeAt` scan in `_tfN` instead of regex / combinator dispatch. Single alternation regexes are excluded — one `RegExp.exec` matches only one arm per call.
 
@@ -382,17 +1380,17 @@ When trivia is `oneOrMore(choice(ws, blockComment))` (CSS `rw`) or ASCII ws-only
 
 **Rejected micro-tweak (measured, do not retry):** inlining `input.charCodeAt(_e)` at each dispatch branch instead of hoisting `const c = input.charCodeAt(_e)` once per loop iteration. This was an attempt to apply the "repeated inline access beats a hoisted local" finding (the recalibrated-literal / charCodeAt-hoisting result) to the trivia loop. Measured the *opposite* here via an isolated in-process A/B recompiling the real CSS grammar both ways: **hoisting wins** — inline was 0.7–5% slower on bootstrap4 across 4 runs, never faster, and tied-or-slower on selector/decls. The finding doesn't generalize because in this loop `c` is compared across *several distinct branch sites* per iteration (ws class ranges, comment open literal), not two `charCodeAt` calls fused in one boolean expression in a single basic block (where V8's CSE reliably dedups). The hoisted form is already optimal.
 
-### 6b. Generalize the trivia fast-path to value-capturing positions — MED
+### 6b. Generalize the trivia fast-path to value-capturing positions — `UNMEASURED` (U-09)
 
 `trivia-fast-path.ts`'s own doc comments (and `scannable-run.ts`'s: "Trivia … is just the value-discarded instance of this; nothing here is trivia-specific") already claim the underlying dispatch-loop technique is general-purpose — but that generalization only ever happened *within* trivia (see the file's git history: several rounds of "generalize to any scannable-shape set," all still inside the trivia codegen path). Today a plain, ordinary (value-capturing) `oneOrMore(choice(regex(...), regex(...)))` or `many(choice(...))` sitting in a normal grammar position gets **none** of this treatment — `scannable-terminal.ts` only fast-paths a single regex per call site, not a multi-arm choice-loop, and `trivia-fast-path.ts`'s builders (`buildFastTriviaFnDecl`, `buildLabeledScannableTriviaFnDecl`, …) are hardcoded to discard the match and return only the end position (`return _e`).
 
 The reusable ~60–70%: `analyzeTriviaFastPath`'s recognition logic (minus the trivia-specific unwrap) and `composeFastLoop`'s loop skeleton, plus all of `scannable-run.ts`'s shape/branch machinery (`scanShapeFromRegex`, `scanBranch`, `emitShapeMatch`) — none of that is trivia-specific already. The net-new ~30–40%: an emit path that builds a value (`input.slice(start, _e)`) or CST node per matched run instead of discarding it, threading capture-buffer/CST child-append calls per arm the way `emitLeafCapture`/`inline-build.ts` already do elsewhere — essentially a `buildValueScanFnDecl` sibling to `buildFastTriviaFnDecl`. **Guard:** identical to what's already proven for the trivia loop (`scanBranch`'s completion semantics: only advance/log on real progress) — no new ambiguity analysis needed, this is a codegen-target change, not a new safety proof. **Measure:** any grammar with a hot value-capturing `oneOrMore(choice(...))` of scannable regexes — CSS's `anyValueTok`-adjacent value-list loops are a plausible candidate once profiled.
 
-### 7. Common-prefix choice factoring
+### 7. Common-prefix choice factoring — `UNMEASURED` (U-10)
 
 Arms like `ident '(' …` vs bare `ident` can't use disjoint dispatch. Generalize the CSS grammar hand-merge: parse shared prefix once, branch on lookahead. Complements existing `autoNot` (suffix rejection) but doesn't replace it.
 
-#### 7a. NEXT UP — factor `Dimension`/`Num` into one numeric node (grammar-side; verified 2026-07-16) — SMALL perf + a correctness fix
+#### 7a. Factor `Dimension`/`Num` into one numeric node (grammar-side; verified 2026-07-16) — `QUEUED` (U-11)
 
 **Verified against the real jess CSS grammar** (`@jesscss/core` `packages/css-parser/src/grammar.ts`), not projected:
 
@@ -446,7 +1444,7 @@ overall (numeric tokens are a subset; numPart is cheap) — worth doing for the 
 on the hot path AND because it makes the grammar correct and match how it reads. Measure on
 value-dense CSS via `pnpm bench:parseman -- --only=css` + a Jess CSS/Less A/B; guard with `perf:guard`.
 
-### 7b. Partial first-char choice dispatch (switch + fallback)
+### 7b. Partial first-char choice dispatch (switch + fallback) — `UNMEASURED` (U-12)
 
 **Problem:** `choice(quotedField, unquotedField)` in CSV is *not* marked `disjoint` because
 `unquotedField`'s first set (`[^,\r\n]*`) includes `"` — same as `quotedField`'s leading
@@ -475,7 +1473,7 @@ data grammars (CSV, config, log formats).
 **Measure:** `csv/small` + `csv/large` speedup ratio; `test/unit/choice-dispatch.test.ts` +
 `test/parity/failure-diagnostics.test.ts` for parity.
 
-### 7c. Richer dispatch structures (beyond the flat first-char `switch`)
+### 7c. Richer dispatch structures (beyond the flat first-char `switch`) — `UNMEASURED` (U-13)
 
 Today `planDisjointDispatch` emits a `switch (codePointAt)` / `if-else` chain keyed on **one** first code point. Several grammars want more than that:
 
@@ -487,7 +1485,7 @@ Today `planDisjointDispatch` emits a `switch (codePointAt)` / `if-else` chain ke
 
 **Guard:** all forms must preserve PEG ordered-choice semantics for overlapping arms (unique-key cases only for the O(1) paths). **Measure:** GraphQL (keyword-dense), CSS `combinator`/`pseudoColon`, `lang`.
 
-### 8. Simple regex lowering ✅ (partial)
+### 8. Simple regex lowering — `LANDED` (8a–8c, 8e–8i) + `UNMEASURED` (8d, 8g, 8h-next)
 
 `scanShapeFromRegex` shapes lower terminal `regex()` to `charCodeAt` scan loops in `emitRegex` (`scannable-terminal.ts`); trivia uses the same shapes via `trivia-fast-path.ts`. Supported:
 
@@ -503,47 +1501,47 @@ Lowering is disabled for `m`/`s`/`u` flags and for `/i` on anything but a pure l
 
 **Still open — concrete classes (ordered by payoff × frequency across the example grammars).** Each is a self-contained shape or `seq` extension; the guard column is what keeps a greedy code-point scan provably equal to the engine.
 
-#### ~~8a. `\s` as a fixed code-point set (trivia hot path)~~ ✅
+#### 8a. `\s` as a fixed code-point set (trivia hot path) — `LANDED`
 
 Moved to **Already landed**.
 
-#### ~~8b. Trailing lookahead boundary guard `(?!class)` / `(?=class)`~~ ✅
+#### 8b. Trailing lookahead boundary guard `(?!class)` / `(?=class)` — `LANDED`
 
 Moved to **Already landed**.
 
-#### ~~8c. Bounded repeat `{n}` / `{n,}` / `{n,m}` on a class/shorthand run~~ ✅
+#### 8c. Bounded repeat `{n}` / `{n,}` / `{n,m}` on a class/shorthand run — `LANDED`
 
 Moved to **Already landed**.
 
-#### 8d. `/i` on char classes (ASCII case-fold ranges) — MED
+#### 8d. `/i` on char classes (ASCII case-fold ranges) — `UNMEASURED` (U-14)
 
 Generalize `litFold` from literals to classes: for each range, add its ASCII-folded twin (`[a-z]→+[A-Z]`, etc.), then scan the widened range set. Unblocks CSS `attrMod` `[is]/i` and lets `/i` idents/keywords lower. **Guard:** only fold ASCII `A–Z`/`a–z`; a non-ASCII range under `/i` (Unicode case-fold, e.g. `ß`, `ﬀ`) stays on `exec`. **Measure:** CSS `AttributeSelector`.
 
-#### ~~8e. Top-level alternation `A|B|C` → ordered / first-char dispatch~~ ✅
+#### 8e. Top-level alternation `A|B|C` → ordered / first-char dispatch — `LANDED`
 
 Moved to **Already landed**.
 
-#### ~~8f. Non-capturing groups `(?:…)`, `(?:…)?`, `(?:…)+` → nested `seq`~~ ✅
+#### 8f. Non-capturing groups `(?:…)`, `(?:…)?`, `(?:…)+` → nested `seq` — `LANDED`
 
 Moved to **Already landed**.
 
-#### 8g. Lazy-delimited `<open>[\s\S]*?<close>` — LOW
+#### 8g. Lazy-delimited `<open>[\s\S]*?<close>` — `UNMEASURED` (U-15)
 
 `jsonc` block comment `/\*[\s\S]*?\*/` is "scan to first `<close>`" — the same core as `delimited` but lazy `*?` instead of the negated-body form. Recognize `<lit>[\s\S]*?<lit>` (and `.*?`) as a `delimited` variant. **Measure:** `jsonc` comment-heavy.
 
-#### ~~8h. Trailing non-disjoint-alt group → ordered-commit~~ ✅
+#### 8h. Trailing non-disjoint-alt group → ordered-commit — `LANDED` + `UNMEASURED` (Approach B widenings — U-16)
 
 Moved to **Already landed** (closes the CSS `numPart` gap §8f left open).
 
 **Next (non-trailing overlapping alternations):** the general form — a non-disjoint-alt group in *non*-trailing position, or an overlapping top-level alternation followed by more — needs a soundness gate (the alt's inter-arm *divergence set* must be disjoint from the continuation's first-set) or an automatic left-factoring pass over `regexp-tree`'s AST at macro time (subsumption + suffix-factor + prefix re-partition into a disjoint form). Bigger, and off the current hot path; deferred. Related cleanup surfaced while scoping this: `regexp-tree` is a compile-time analysis library but was imported by the *runtime* `regex()` combinator — **done**, see below.
 
-#### ~~Runtime `regex()` no longer statically depends on `regexp-tree`~~ ✅
+#### Runtime `regex()` no longer statically depends on `regexp-tree` — `LANDED` + `QUEUED` (hand-rolled first-set parser — U-17)
 
 `regexp-tree` was ~264 KB of `regex.ts`'s 271 KB runtime import graph (measured: bundling `regex.ts` alone = 271 094 B; with `regexp-tree` external = 7 148 B). Two changes: (1) **deleted `optimizeRegex`** outright — it did essentially nothing (only trivial char-class reordering; verified it leaves `abc|abd` and the CSS number regex unchanged) and additionally dragged in `regexp-tree`'s `optimizer`/`generator`/`transform` submodules. The now-redundant `_def.optimizedSource` field (always `=== source`) is dropped; codegen uses `def.source` directly. (2) **`firstSetFromRegex` moved to `src/combinators/regex-analyze.ts`** (the sole `regexp-tree` importer), reached from `regex.ts` through a `RegexFirstSetAnalyzer` injection seam (`registerRegexAnalyzer`). `index.ts` registers it as an import side-effect, so **every real code path — interpreter, JIT `compile()`, and the macro (its evaluator does `import * as parseman from '../index.ts'`) — gets byte-identical first-sets**. A consumer importing `regex` from the combinator subpath *without* the entry gets a permissive `any()` first-set (the same value `firstSetFromRegex` already returned on an unparseable pattern) — this only disables choice-dispatch fast paths, never changes a match. **Result:** `regex.ts` bundles to 2 527 B with `regexp-tree` absent; a lean `import { regex }` consumer tree-shakes it to 2 471 B / 0 B of `regexp-tree`; `index.ts` still bundles it (interpreter needs it). Full suite (1248) + typecheck pass. **Next (drop it for interpreter users too):** replace the `regexpTree.parse` call in `regex-analyze.ts` with a hand-rolled first-set parser producing the same AST shape `extractFirstSet` consumes — the injection seam means nothing else changes, and `regexp-tree` becomes a dev-only differential-test oracle.
 
 ---
 
-## Lower priority / cleanup
+## Lower priority / cleanup — `LANDED` × 2, `UNMEASURED` × 4 (U-18…U-21)
 
 | Target | Issue | Fix |
 |--------|-------|-----|
@@ -556,7 +1554,7 @@ Moved to **Already landed** (closes the CSS `numPart` gap §8f left open).
 
 ---
 
-## Measuring
+## Measuring — `REFERENCE`
 
 - `pnpm bench` — external parser comparison only (Peggy, Parsimmon, Chevrotain, Nearley, Jison, native JSON).
 - `pnpm bench:parseman` — Parseman interpreted vs compiled across all example grammars (with baseline Δ). For tweak loops, narrow it: `pnpm bench:parseman -- --only=json --scale=0.5 --samples=7`.
@@ -606,7 +1604,7 @@ find where that parse time goes, with measured evidence. **Ideas only — nothin
 here has been implemented.** Owner: leave core alone; these are parser-team
 candidates.
 
-## Honesty caveat: parse-once vs parse-per-render
+## Honesty caveat: parse-once vs parse-per-render — `REFERENCE`
 
 `@jesscss` `Compiler.render()` **re-parses the source on every render**
 (`Compiler.render` → `context.parseString(...)`; no AST cache keyed by input —
@@ -619,7 +1617,7 @@ cold-start / single-render / watch-mode-edit-a-file scenarios, and for the
 `Compiler` re-parse itself (an AST cache would erase most of it, but that's a
 jess-side change, out of scope for the parser team).
 
-## Measurement setup
+## Measurement setup — `REFERENCE`
 
 - Corpus (Less): `packages/jess/benchmark/benchmark.less` — 106,802 chars,
   **12,984 AST nodes** (~8.2 source chars / node), ~8.8 MB retained AST / parse.
@@ -631,7 +1629,7 @@ jess-side change, out of scope for the parser team).
   allocation-site counts.
 - Parse median: **Less 55.6 ms** (106 KB), **CSS 58.5 ms** (248 KB).
 
-## Aggregate self-time split (Less benchmark.less, 40 parses)
+## Aggregate self-time split (Less benchmark.less, 40 parses) — `REFERENCE`
 
 | Bucket | self-time | % |
 |--------|-----------|---|
@@ -645,7 +1643,7 @@ mix shifts: **GC 28.2%**, **`ensureProv` 12.5%**, reify 35.6%, `_dispatchBuild`
 2.4% — i.e. the per-node allocation + side-table cost climbs sharply when nodes
 are small and numerous (Num/Dimension/Color).
 
-## Hotspot ranking with evidence
+## Hotspot ranking with evidence — `REFERENCE`
 
 Self-time %, from the Less CPU profile unless noted. `_r_<Rule>` = the compiled
 reify function parseman emits for that grammar rule.
@@ -663,7 +1661,7 @@ reify function parseman emits for that grammar rule.
 | 9 | `_r_PseudoSelector`, `_r_SelectorList`, `_r_AttributeSelector`, `_r_Declaration`, `_r_Ruleset`, `_r_Dimension`, `_r_Call`, `_r_Reference`, `_r_valueList`, … | 0.9–2.5% ea. | grammar | the long reify tail — collectively the bulk of the 61.9% |
 | 10 | `buildNode`/`_dispatchBuild`/`_buildLessDeclaration`/`_buildDeclaration` | ~7% combined | less+css `builders.ts` | CST→AST host; per-node `loc` + filtered child arrays |
 
-### Static allocation-site counts in the compiled Less grammar (3.99 M chars emitted)
+### Static allocation-site counts in the compiled Less grammar (3.99 M chars emitted) — `REFERENCE`
 
 | pattern | count | meaning |
 |---------|-------|---------|
@@ -679,7 +1677,9 @@ reify function parseman emits for that grammar rule.
 (reclaiming ~58 MB each) — confirming the transient CST allocation is the GC
 driver, on top of the ~8.8 MB retained AST.
 
-## Optimization IDEAS (evidence-backed; NOT implemented)
+## Optimization IDEAS (evidence-backed)
+
+Per-item markers, in list order: #1 `LANDED` (dead-value part) + `UNMEASURED` (U-22) · #2 `LANDED` + `UNMEASURED` (U-23) · #3 `LANDED` by core, the idea itself moot · #4 `UNMEASURED` (U-24) · #5 `REJECTED` (scoped; ceiling well under 3.2%, no free redundancy) · #6 `REJECTED` (dispatch already fires; the residual is §7a) · #7 `REJECTED` (built as `precedence()` on branch `perf/precedence-collapse` and A/B'd: 4× only over a trivial operand, noise on the real grammar).
 
 1. **Reify per-`many` array pre-sizing / lazy alloc.** Every `many(...)` emits
    `const _arr = []` then `.push()` per match (465 arrays, 2520 pushes in the Less
@@ -928,7 +1928,7 @@ driver, on top of the ~8.8 MB retained AST.
    share confounds and gave three false positives before the real grammar exposed them.
    Measure the real thing first; drop to microbenchmarks only to *explain* a real delta.
 
-### Top ideas in one line each
+### Top ideas in one line each — `REFERENCE`
 
 - **#1 lazy/scalar `many` in the compiled reifier** — ⚠ the dead-value part landed
   and measured at only ~7% alloc / 0% time; array building is NOT the 61.9%. Not
@@ -953,7 +1953,7 @@ driver, on top of the ~8.8 MB retained AST.
 - Remember the **parse-once/render-many** caveat: an AST cache in `Compiler` (jess
   side) would amortize all of the above for the common re-render case.
 
-## Q-40 follow-up queue: fresh Parseman-versus-Less flow evidence
+## Q-40 follow-up queue: fresh Parseman-versus-Less flow evidence — `REFERENCE` header
 
 Added 2026-07-14 after tracing the generated Parseman flow against Less 4.x.
 This section is a ranking and an agent handoff, not an implementation claim.
@@ -973,7 +1973,7 @@ cost, but Less also benefits from declaration-before-ruleset dispatch and a
 raw `anonymousValue()` path taken by 2,024/2,902 benchmark declarations
 (69.7%). Those latter choices belong to the Less grammar/host, not Parseman.
 
-### Experimental result — compile-time stripped recognizer (2026-07-15; unpublished)
+### Experimental result — compile-time stripped recognizer (2026-07-15; unpublished) — `QUEUED` (U-25; measured positive in isolation, jess adoption `REJECTED` for now, branch never pushed)
 
 The first generic implementation proof now exists on local branch
 `feature/true-recognizer-20260715`, commit `c84d777`. It adds an opt-in
@@ -1006,6 +2006,8 @@ target below" — but that target has since been built through the fused path an
 measured neutral; see candidate #2, now shelved.)
 
 ### Ranked candidates
+
+Per-item markers: #1 `QUEUED` (U-25) · #2 `MEASURED-NULL` (built end-to-end through the fused path, array ≈ range on both time and heap; **do not ship**) · #3 `REJECTED` (same scoping as §5) · #4 `LANDED` (4a, `e4936d8`) + `UNMEASURED` (U-26, U-27) · #5 `UNMEASURED` (U-28) · #6 out of scope — jess-side, `REFERENCE` · #7 `REFERENCE` (a directive, not an item).
 
 1. **Compile-time output-contract variants — highest generic leverage.**
    Generate separate recognition, ordinary-value, structural-capture, and
@@ -1189,7 +2191,7 @@ measured neutral; see candidate #2, now shelved.)
    elimination already measured allocation relief without parse-time movement.
    These remain valid future work only when a new profile identifies a target.
 
-### Host-integration proof — DONE, and it is what settled the neutral verdict
+### Host-integration proof — `LANDED`, and it is what settled the neutral verdict
 
 The host-integration proof this section used to request as future work **was
 carried out** (commits `04c0573`/`b395706` above): the range-view runtime was
@@ -1210,6 +2212,8 @@ CSS-specific comment mode. Landed gates to compose with, not reinvent, live in
 `mayLeavePartialCapture`, and the rollback marks.
 
 ## Jess builder-host proposals (from jess `docs/future/parseman-perf-proposals.md` — reshaped/corrected)
+
+Per-bullet markers, in order: comment-lift `LANDED` · children/rawChildren collapse `QUEUED` (U-29) · `_tf0` (b) `QUEUED` (U-30), (a) `REJECTED` (the micro-tweak class measured neutral-to-negative twice) · single-frame node-scope `REJECTED` (the shape was rejected twice under §2) · declarative host-capture descriptor `REFERENCE` (hygiene, never land standalone for perf).
 
 Parseman-side changes proposed by the jess side to cut the `builders.ts` + capture
 cost, reviewed against the measured findings above and reshaped. Each still needs an
@@ -1256,7 +2260,7 @@ A/B (neutral-or-better) + all-four-parser-suites-green + CST byte-identity befor
   cleanliness, not perf.** Memoized to ~once-per-arity-per-parse, so not hot. Fold into
   the children/rawChildren collapse as hygiene; never land standalone for perf.
 
-## Design note: Trivia API — don't overfit `hasComment` (owner-flagged)
+## Design note: Trivia API — don't overfit `hasComment` (owner-flagged) — `REFERENCE` (the file says so itself: “Not a perf item.”)
 
 **Status (parseman side): the capture primitive now honours this** — per-node trivia
 capture filters by a general **kind mask** (`_triviaCaptureMask` / `triviaKindMask`), never
