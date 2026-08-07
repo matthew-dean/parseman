@@ -91,7 +91,7 @@ export class Unemittable extends Error {
  * runs and is wrong, which no type in this file would catch.
  */
 export const EMITTED_PARAMS = [
-  'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
+  'EC', 'FAIL', 'K', 'FX', 'FNS', 'MASK', 'CLS', 'AFX', 'TRIVIA', 'TRIVIALABELS', 'TRIVIASCAN',
   'SCANS', 'DISP', 'DSP', 'EMPTY_FX', 'EMPTY_CH', 'EMPTY_TLOG', 'EMPTY_TL',
   'cstCaptureActive', 'pushCstLeaf', 'pushCstChild', 'rollbackTriviaAt', 'failAt',
   'classHas', 'consumeTrivia', 'buildFieldMap', 'projectChild', 'unwrapChild',
@@ -110,8 +110,11 @@ export const EMITTED_PARAMS = [
 /**
  * The state the emitted scope owns, and the helpers that touch it.
  *
- * `_pfEnd` is the shared end-position out-parameter; `assemble.ts:342`'s own
- * comment already calls it *"`_pfEnd` in emitted code"*. `_pfScan` is the
+ * `EC` is the assembly's end-position cell, INJECTED (see `cell.ts`) rather
+ * than a slot this scope owns: a mixed assembly runs emitted pieces beside
+ * closure pieces or an `exec.ts` driver, and all three must write one slot or a
+ * cross-engine call reports the end of whatever the other engine last did.
+ * `_pfScan` is the
  * installed trivia scanner, which `OP_SCOPE` swaps mid-parse and so cannot be a
  * constant in either engine.
  *
@@ -119,7 +122,6 @@ export const EMITTED_PARAMS = [
  * piece as an argument.
  */
 const RUNTIME_PRELUDE = `
-let _pfEnd=0
 let _pfScan=null
 let _pfHost
 function _skipTrivia(input,cur,ctx){
@@ -310,14 +312,14 @@ function emitTerm(callee: string, dst: string, t: string, l: SiteLabel, skip: st
   const fast = `const ${t}v=${callee}(input,cur,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
-cur=_pfEnd`
+cur=EC.e`
   if (l.tri === TRI_NONE) return fast
   const scanned = `${emitMark(t, l.buf, s)}
 const ${t}s=${skip}(input,cur,ctx)
 const ${t}v=${callee}(input,${t}s,ctx)
 if(${t}v===FAIL)return FAIL
 ${dst}=${t}v
-if(_pfEnd>${t}s)cur=_pfEnd
+if(EC.e>${t}s)cur=EC.e
 else{${emitRollback(t, l.buf, s)}}`
   if (l.tri !== TRI_UNKNOWN) return scanned
   return `if(ctx.trivia===undefined){
@@ -581,7 +583,7 @@ if(${m.ok}){
 const e=${m.end}
 const v=input.slice(pos,e)
 ${captureLeaf('v')}
-${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
+${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
@@ -717,7 +719,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
 if(${test}){
 const e=pos+${s.length}
 ${captureLeaf(q(s))}
-${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
+${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return ${q(s)}
 }
 ctx._fe=pos;ctx._fx=${xf}
@@ -768,7 +770,7 @@ ${reads.length > 0 ? `${reads.join('\n')}\n` : ''}if(${tests.join('&&')}){
 const e=pos+${s.length}
 const v=input.slice(pos,e)
 ${captureLeaf('v')}
-${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
+${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
@@ -812,7 +814,7 @@ if(${re}.test(input)){
 const e=${re}.lastIndex
 const v=input.slice(pos,e)
 ${captureLeaf('v')}
-${track ? '_trackLines(ctx,input,e)\n' : ''}_pfEnd=e
+${track ? '_trackLines(ctx,input,e)\n' : ''}EC.e=e
 return v
 }
 ctx._fe=pos;ctx._fx=${xf}
@@ -821,7 +823,7 @@ ${cfg.probe ? `failAt(ctx,${xf},pos)\n` : ''}return FAIL
       }
 
       case OP_EMPTY:
-        return `${head}_pfEnd=pos;return null}`
+        return `${head}EC.e=pos;return null}`
 
       case OP_GATE: {
         const child = link(code[ip + 2]!)
@@ -840,7 +842,7 @@ return ${child}(input,pos,ctx)
         return `${head}
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
-return ${fn}(v,{start:pos,end:_pfEnd})
+return ${fn}(v,{start:pos,end:EC.e})
 }`
       }
 
@@ -868,7 +870,7 @@ return v
 const v=${child}(input,pos,ctx)
 if(v===FAIL)return FAIL
 const f=ctx._fields
-if(f!==undefined)f.push({name:${name},value:v,span:{start:pos,end:_pfEnd}})
+if(f!==undefined)f.push({name:${name},value:v,span:{start:pos,end:EC.e}})
 return v
 }`
       }
@@ -893,7 +895,7 @@ const err={_tag:'parseError',span:{start:pos,end:pos},expected:${xf}}
 const es=ctx._errors
 if(es!==undefined)es.push(err)
 ${REC ? 'if(ctx._tolerant===true)captureError(ctx,err)\n' : ''}ctx._fc=false
-_pfEnd=pos
+EC.e=pos
 return err
 }`
       }
@@ -911,7 +913,7 @@ if(it===undefined||pos!==it.span.start){
 ${fallback !== undefined ? `return ${fallback}(input,pos,ctx)` : 'ctx._fe=pos;ctx._fx=ROUTED_FX;return FAIL'}
 }
 ${L.buf ? push : `if(ctx._cstBuf!==undefined||ctx._cstLeaves!==undefined)${push}`}
-_pfEnd=it.span.end
+EC.e=it.span.end
 return it.value
 }`
       }
@@ -924,7 +926,7 @@ return it.value
         return `${head}
 const r=SCANS[${si}].parse(input,pos,ctx)
 if(!r.ok){ctx._fe=r.span.start;ctx._fx=r.expected??EMPTY_FX;return FAIL}
-_pfEnd=r.span.end
+EC.e=r.span.end
 return r.value
 }`
       }
@@ -1009,10 +1011,10 @@ ctx._cstTriviaLog=sTl
 ctx._triviaLog=sOtl
 }
 if(v===FAIL)return FAIL
-const e=_pfEnd
+const e=EC.e
 const out=${isToken ? 'input.slice(pos,e)' : `${fn}(v,{start:pos,end:e})`}
 if(wasCap)pushCstLeaf(ctx,{_tag:'leaf',value:out,span:{start:pos,end:e}})
-_pfEnd=e
+EC.e=e
 return out
 }`
       }
@@ -1041,7 +1043,7 @@ return FAIL
 ${emitMark(p, L.buf, sinks)}
 const v=${child}(input,pos,ctx)
 ${emitRollback(p, L.buf, sinks)}
-if(v===FAIL){_pfEnd=pos;return null}
+if(v===FAIL){EC.e=pos;return null}
 ctx._fe=pos
 ctx._fx=${xf}
 return FAIL
@@ -1057,7 +1059,7 @@ ${emitMark(p, L.buf, sinks)}
 const v=${child}(input,pos,ctx)
 ${emitRollback(p, L.buf, sinks)}
 if(v===FAIL){ctx._fe=pos;ctx._fx=${xf};return FAIL}
-_pfEnd=pos
+EC.e=pos
 return null
 }`
       }
@@ -1072,7 +1074,7 @@ const v=${child}(input,pos,ctx)
 if(v===FAIL){
 if(ctx._fc===true)return FAIL
 ${emitRollback(p, L.buf, sinks)}
-_pfEnd=pos
+EC.e=pos
 return null
 }
 return v
@@ -1133,10 +1135,10 @@ return v
         parts.push(`const v0=${kids[0]}(input,pos,ctx)`, 'if(v0===FAIL)return FAIL')
         const close = (): string => REC ? `${parts.join('\n')}\n}finally{ctx._sync=${sy}}\n}` : `${parts.join('\n')}\n}`
         if (n === 1) {
-          parts.push(fused ? `return ${fn}([v0],{start:pos,end:_pfEnd})` : wantValues ? 'return [v0]' : 'return undefined')
+          parts.push(fused ? `return ${fn}([v0],{start:pos,end:EC.e})` : wantValues ? 'return [v0]' : 'return undefined')
           return close()
         }
-        parts.push('let cur=_pfEnd')
+        parts.push('let cur=EC.e')
         const names: string[] = ['v0']
         for (let i = 1; i < n; i++) {
           const vn = `v${i}`
@@ -1145,7 +1147,7 @@ return v
           parts.push(emitTerm(kids[i]!, vn, tmp(), L, skipFor(L), sinks))
           names.push(vn)
         }
-        parts.push('_pfEnd=cur')
+        parts.push('EC.e=cur')
         parts.push(fused
           ? `return ${fn}([${names.join(',')}],{start:pos,end:cur})`
           : wantValues ? `return [${names.join(',')}]` : 'return undefined')
@@ -1306,7 +1308,7 @@ return FAIL
 ${emitMark(m1, L.buf, sinks)}
 const sv=${selector}(input,pos,ctx)
 if(sv===FAIL)return FAIL
-const selEnd=_pfEnd
+const selEnd=EC.e
 const key=sv
 let arm=${bk}.get(key)
 ${fold}${chain}let ur
@@ -1471,8 +1473,8 @@ ${rb}
 if(ctx._fc===true)return FAIL
 break
 }
-${keepSeparators ? '' : 'demoteCapturedToRaw(ctx,lb)\n'}sepEnd=_pfEnd
-itemStart=${hasTrivia === 'false' ? '_pfEnd' : hasTrivia === 'true' ? `${skip}(input,_pfEnd,ctx)` : `hasTrivia?${skip}(input,_pfEnd,ctx):_pfEnd`}
+${keepSeparators ? '' : 'demoteCapturedToRaw(ctx,lb)\n'}sepEnd=EC.e
+itemStart=${hasTrivia === 'false' ? 'EC.e' : hasTrivia === 'true' ? `${skip}(input,EC.e,ctx)` : `hasTrivia?${skip}(input,EC.e,ctx):EC.e`}
 }else ${leadSkip(hasTrivia, leadTrivia, skip)}
 ` : `${leadSkip(hasTrivia, leadTrivia, skip)}
 `}if(itemStart>=input.length&&${via}){
@@ -1498,17 +1500,17 @@ ${recBranch}${rb}`
 if(ctx._fc===true)return FAIL`}
 ${trailingAllowed ? 'if(sepEnd>=0)cur=sepEnd\n' : ''}break
 }
-if(_pfEnd===itemStart&&${via}){
+if(EC.e===itemStart&&${via}){
 ${rb}
 break
 }
-${collect ? 'out.push(v)\n' : ''}cur=_pfEnd
+${collect ? 'out.push(v)\n' : ''}cur=EC.e
 count++
 }
 ${min > 0 ? `if(count<${min}){
 ${reportItem ? `ctx._fe=cur;ctx._fx=${itemFx}\n` : ''}return FAIL
 }
-` : ''}_pfEnd=cur
+` : ''}EC.e=cur
 return out
 }`
       }
@@ -1570,7 +1572,7 @@ ${structural ? `const savedMask=ctx._triviaCaptureMask
 if(_pfHost!==undefined&&_pfHost._parsemanTriviaKinds!==undefined)ctx._triviaCaptureMask=_pfHost._parsemanTriviaKinds(${ty})
 ` : ''}const v=${child}(input,pos,ctx)
 ${trailingTrivia && L.tri !== TRI_NONE
-  ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})_pfEnd=consumeTrivia(input,_pfEnd,ctx)\n`
+  ? `if(v!==FAIL${L.tri === TRI_UNKNOWN ? '&&ctx.trivia!==undefined' : ''})EC.e=consumeTrivia(input,EC.e,ctx)\n`
   : ''}const fieldMap=${wantFields ? 'buildFieldMap(ctx._fields)' : 'undefined'}
 ctx._fields=savedFields
 ${structural ? 'ctx._triviaCaptureMask=savedMask\n' : ''}const kids=buf.ch??(buf.single!==undefined?[buf.single]:EMPTY_CH)
@@ -1583,7 +1585,7 @@ ctx._cstRawChildren=sRaw
 ctx._cstTriviaLog=sTl
 ctx.captureTrivia=sCap
 if(v===FAIL)return FAIL
-const end=_pfEnd
+const end=EC.e
 const span=${tracked ? 'spanLines(ctx,pos,end)' : '{start:pos,end}'}
 const st=${readsState ? '(ctx.state!==undefined?Object.assign({},ctx.state):undefined)' : 'undefined'}
 let nd
@@ -1594,7 +1596,7 @@ ${L.buf
   // so an in-node site's parent collector is present by the same fact.
   ? 'pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'
   : 'if(sBuf!==undefined||sCh!==undefined)pushCstChild(ctx,nd,rawEntry(nd,input,pos,end))'}
-_pfEnd=end
+EC.e=end
 return nd
 }`
       }
@@ -1630,7 +1632,7 @@ function _begin(ctx){_pfScan=null;_pfHost=ctx.build}
 return{
 pieces:{${ruleEntries.join(',')}},
 byIp:{${extra.join(',')}},
-end:function(){return _pfEnd},
+end:function(){return EC.e},
 begin:_begin
 }`
 

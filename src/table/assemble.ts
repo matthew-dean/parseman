@@ -134,8 +134,8 @@ import { captureError, firstSetSentinel, matchesAt, orSentinel, recoverScan } fr
 const EMIT_ENABLED = (globalThis as { process?: { env?: Record<string, string | undefined> } })
   .process?.env?.PM_TABLE_EMIT !== '0'
 
-/** Failure sentinel — identity-compared, never inspected. Mirrors `exec.ts`. */
-const FAIL: unique symbol = Symbol('pm.fail')
+/** Failure sentinel — SHARED with the other two engines, see `cell.ts`. */
+import { FAIL, newEndCell, type EndCell } from './cell.ts'
 
 const EMPTY_TL: readonly number[] = Object.freeze([])
 /** `finishCstBuf`'s two empty sentinels, held here so the node piece can inline it. */
@@ -189,7 +189,7 @@ const NO_COVERAGE = (_id: string): void => {}
  * exists to remove, and it would show up as exactly the megamorphic call sites
  * `exec`'s switch already was.
  *
- * The end position travels in the assembly-scope `END` slot, as it does in
+ * The end position travels in the assembly-scope `EC.e` slot, as it does in
  * `exec.ts` and in codegen's `_pfEnd`, rather than in the return value — a
  * `{ value, end }` pair would be an allocation per row.
  */
@@ -372,8 +372,17 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     return made
   }
 
-  /** Shared end-position out-parameter (`_pfEnd` in emitted code). */
-  let END = 0
+  /**
+   * THE ONE END-POSITION CELL FOR THIS ASSEMBLY (`_pfEnd` in emitted code).
+   *
+   * Whichever engines this assembly builds — the closure pieces below, the
+   * emitted pieces from `emit-assembly.ts`, an `exec.ts` driver — all write
+   * this slot, so a piece from one may be called by a piece from another. Per
+   * ASSEMBLY rather than per module: two grammars live in one process must not
+   * share it. See `cell.ts`.
+   */
+  const EC = newEndCell()
+
   /**
    * The INSTALLED trivia scanner for the scope currently running.
    *
@@ -407,7 +416,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /**
    * The three CST lengths of a rollback mark, as out-slots — see `markCst`.
    *
-   * Slots for the same reason `END` and `TERMV` are slots: a `{ raw, tl, lv }`
+   * Slots for the same reason `EC.e` and `TERMV` are slots: a `{ raw, tl, lv }`
    * return would be an allocation per mark, and marks are the single most
    * executed thing in the driver.
    *
@@ -531,7 +540,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
   /**
    * The value the last `nextTerm` produced.
    *
-   * A second out-parameter slot beside `END`, for the same reason `END` is one:
+   * A second out-parameter slot beside `EC.e`, for the same reason `EC.e` is one:
    * a `{ value, end }` pair would be an allocation per sequence TERM, which is
    * the single most executed thing in any grammar here.
    */
@@ -585,7 +594,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       const v = child(input, cur, ctx)
       if (v === FAIL) return -1
       TERMV = v
-      return END
+      return EC.e
     }
     // SCALAR MARKS — no per-term mark object, as `exec.ts` established.
     const need = markCst(ctx)
@@ -600,7 +609,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     const v = child(input, scanEnd, ctx)
     if (v === FAIL) return -1
     TERMV = v
-    if (END > scanEnd) return END
+    if (EC.e > scanEnd) return EC.e
     // The term matched nothing, so the trivia in front of it was never consumed
     // by anything — unrecord it and leave the cursor where it was.
     if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
@@ -693,7 +702,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (input.charCodeAt(pos) === c0) {
               const e = pos + 1
               if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
-              END = e
+              EC.e = e
               return s
             }
             ctx._fe = pos; ctx._fx = xf
@@ -707,7 +716,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             if (input.charCodeAt(pos) === c0 && input.charCodeAt(pos + 1) === c1) {
               const e = pos + 2
               if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
-              END = e
+              EC.e = e
               return s
             }
             ctx._fe = pos; ctx._fx = xf
@@ -722,7 +731,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               && input.charCodeAt(pos + 2) === c2) {
               const e = pos + 3
               if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
-              END = e
+              EC.e = e
               return s
             }
             ctx._fe = pos; ctx._fx = xf
@@ -734,7 +743,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (input.startsWith(s, pos)) {
             const e = pos + len
             if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
-            END = e
+            EC.e = e
             return s
           }
           ctx._fe = pos; ctx._fx = xf
@@ -754,7 +763,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const e = pos + 1
               if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
               trackLinesInto(ctx, input, e)
-              END = e
+              EC.e = e
               return s
             }
             ctx._fe = pos; ctx._fx = xf
@@ -769,7 +778,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const e = pos + 2
               if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
               trackLinesInto(ctx, input, e)
-              END = e
+              EC.e = e
               return s
             }
             ctx._fe = pos; ctx._fx = xf
@@ -785,7 +794,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const e = pos + 3
               if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
               trackLinesInto(ctx, input, e)
-              END = e
+              EC.e = e
               return s
             }
             ctx._fe = pos; ctx._fx = xf
@@ -798,7 +807,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const e = pos + len
             if (cstCaptureActive(ctx)) pushLeaf(ctx, s, pos, e)
             trackLinesInto(ctx, input, e)
-            END = e
+            EC.e = e
             return s
           }
           ctx._fe = pos; ctx._fx = xf
@@ -817,7 +826,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const v = m[0]
             const e = pos + v.length
             if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
-            END = e
+            EC.e = e
             return v
           }
           ctx._fe = pos; ctx._fx = xf
@@ -837,7 +846,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const e = pos + v.length
             if (cstCaptureActive(ctx)) pushLeaf(ctx, v, pos, e)
             trackLinesInto(ctx, input, e)
-            END = e
+            EC.e = e
             return v
           }
           ctx._fe = pos; ctx._fx = xf
@@ -882,7 +891,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const matched = input.slice(pos, e)
               if (cstCaptureActive(ctx)) pushLeaf(ctx, matched, pos, e)
               trackLinesInto(ctx, input, e)
-              END = e
+              EC.e = e
               return matched
             }
             ctx._fe = pos; ctx._fx = xf
@@ -896,7 +905,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // Yields the INPUT's casing (`literal.ts:86`), not the literal's.
             const matched = input.slice(pos, e)
             if (cstCaptureActive(ctx)) pushLeaf(ctx, matched, pos, e)
-            END = e
+            EC.e = e
             return matched
           }
           ctx._fe = pos; ctx._fx = xf
@@ -906,7 +915,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       }
 
       case OP_EMPTY:
-        return (_input, pos) => { END = pos; return '' }
+        return (_input, pos) => { EC.e = pos; return '' }
 
       /* ── transparent / structural ────────────────────────────────────────── */
 
@@ -914,7 +923,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         const pred = fns[code[ip + 1]!] as (s: unknown) => boolean
         const xf = fx[code[ip + 2]!] as string[]
         return (_input, pos, ctx) => {
-          if (pred(ctx.state)) { END = pos; return null }
+          if (pred(ctx.state)) { EC.e = pos; return null }
           ctx._fe = pos; ctx._fx = xf
           return FAIL
         }
@@ -991,7 +1000,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           )
         }
         const id = def[0]
-        // ENTRY vs SUCCESS, decided once. `END` is deliberately untouched on both
+        // ENTRY vs SUCCESS, decided once. `EC.e` is deliberately untouched on both
         // paths: the counter runs before the child (entry) or after the child's
         // value is already in hand (success), so nothing observes a stale end.
         if (code[ip + 3] === 0) {
@@ -1027,7 +1036,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._fc = r.committed === true
             return FAIL
           }
-          END = r.span.end
+          EC.e = r.span.end
           return r.value
         }
       }
@@ -1066,7 +1075,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             // input the interpreter accepts. Codegen has always cleared it
             // (`emitExpect`, `_ctx._fc = false`).
             ctx._fc = false
-            END = pos
+            EC.e = pos
             return err
           }
         }
@@ -1077,7 +1086,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const err = { _tag: 'parseError' as const, span, expected: xf }
           ctx._errors?.push(err)
           ctx._fc = false
-          END = pos
+          EC.e = pos
           return err
         }
       }
@@ -1088,7 +1097,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (input, pos, ctx) => {
           const v = child(input, pos, ctx)
           if (v === FAIL) return FAIL
-          ctx._fields?.push({ name, value: v, span: { start: pos, end: END } })
+          ctx._fields?.push({ name, value: v, span: { start: pos, end: EC.e } })
           return v
         }
       }
@@ -1099,7 +1108,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (input, pos, ctx) => {
           const v = child(input, pos, ctx)
           if (v === FAIL) return FAIL
-          return fn(v, { start: pos, end: END })
+          return fn(v, { start: pos, end: EC.e })
         }
       }
 
@@ -1118,7 +1127,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._fx = (r.expected ?? EMPTY_FX) as string[]
             return FAIL
           }
-          END = r.span.end
+          EC.e = r.span.end
           return r.value
         }
       }
@@ -1199,7 +1208,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return FAIL
           }
           if (cstCaptureActive(ctx)) pushCstLeaf(ctx, { _tag: 'leaf', value: item.value, span: item.span })
-          END = item.span.end
+          EC.e = item.span.end
           return item.value
         }
       }
@@ -1243,7 +1252,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const mRoot = need ? ctx._rootTriviaLog?.length ?? 0 : 0
           const v = child(input, pos, ctx)
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-          if (v === FAIL) { END = pos; return null }
+          if (v === FAIL) { EC.e = pos; return null }
           // `not.ts:50` — the ASSERTION's own set, at the assertion's position.
           ctx._fe = pos
           ctx._fx = xf
@@ -1267,7 +1276,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
           // `peek.ts:60` — the ASSERTION's own set, at the assertion's position.
           if (v === FAIL) { ctx._fe = pos; ctx._fx = xf; return FAIL }
-          END = pos
+          EC.e = pos
           return null
         }
       }
@@ -1288,7 +1297,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           if (v === FAIL) {
             if (committed(ctx)) return FAIL
             if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
-            END = pos
+            EC.e = pos
             // NULL, not undefined — `repeat.ts:269,277`, and grammars TEST for it.
             return null
           }
@@ -1335,10 +1344,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._rootTriviaLog = sRootTl
           }
           if (v === FAIL) return FAIL
-          const end = END
+          const end = EC.e
           const value = input.slice(pos, end)
           if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value, span: { start: pos, end } })
-          END = end
+          EC.e = end
           return value
         }
       }
@@ -1371,10 +1380,10 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._triviaLog = sOuterTl
           }
           if (v === FAIL) return FAIL
-          const end = END
+          const end = EC.e
           const out = fn(v, { start: pos, end })
           if (wasCapturing) pushCstLeaf(ctx, { _tag: 'leaf', value: out, span: { start: pos, end } })
-          END = end
+          EC.e = end
           return out
         }
       }
@@ -1410,7 +1419,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const v0 = kids[0]!(input, pos, ctx)
           if (v0 === FAIL) return -1
           if (values !== undefined) values.push(v0)
-          let cur = END
+          let cur = EC.e
           for (let i = 1; i < n; i++) {
             cur = nextTerm(kids[i]!, input, cur, ctx)
             if (cur < 0) return -1
@@ -1496,7 +1505,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const v0 = kids[0]!(input, pos, ctx)
             if (v0 === FAIL) { ctx._sync = inherited; return -1 }
             if (values !== undefined) values.push(v0)
-            let cur = END
+            let cur = EC.e
             for (let i = 1; i < n; i++) {
               ctx._sync = syncs[i] ?? inherited
               cur = runners[i]!(input, cur, ctx)
@@ -1511,7 +1520,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const values: unknown[] = []
               const cur = runSyncTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
-              END = cur
+              EC.e = cur
               return fn!(values, { start: pos, end: cur })
             }
           }
@@ -1520,14 +1529,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const values: unknown[] = []
               const cur = runSyncTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
-              END = cur
+              EC.e = cur
               return values
             }
           }
           return (input, pos, ctx) => {
             const cur = runSyncTerms(input, pos, ctx, undefined)
             if (cur < 0) return FAIL
-            END = cur
+            EC.e = cur
             return undefined
           }
         }
@@ -1564,7 +1573,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const v0 = kids[0]!(input, pos, ctx)
             if (v0 === FAIL) return -1
             if (values !== undefined) values.push(v0)
-            let cur = END
+            let cur = EC.e
             for (let i = 1; i < n; i++) {
               cur = runners[i]!(input, cur, ctx)
               if (cur < 0) return -1
@@ -1577,7 +1586,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const values: unknown[] = []
               const cur = runAdjTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
-              END = cur
+              EC.e = cur
               return fn!(values, { start: pos, end: cur })
             }
           }
@@ -1586,14 +1595,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               const values: unknown[] = []
               const cur = runAdjTerms(input, pos, ctx, values)
               if (cur < 0) return FAIL
-              END = cur
+              EC.e = cur
               return values
             }
           }
           return (input, pos, ctx) => {
             const cur = runAdjTerms(input, pos, ctx, undefined)
             if (cur < 0) return FAIL
-            END = cur
+            EC.e = cur
             return undefined
           }
         }
@@ -1621,7 +1630,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v = k0(input, pos, ctx)
               if (v === FAIL) return FAIL
-              return fn!([v], { start: pos, end: END })
+              return fn!([v], { start: pos, end: EC.e })
             }
           }
           if (wantValues) {
@@ -1644,9 +1653,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              const cur = nextTerm(k1, input, END, ctx)
+              const cur = nextTerm(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
-              END = cur
+              EC.e = cur
               return fn!([v0, TERMV], { start: pos, end: cur })
             }
           }
@@ -1654,18 +1663,18 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              const cur = nextTerm(k1, input, END, ctx)
+              const cur = nextTerm(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
-              END = cur
+              EC.e = cur
               return [v0, TERMV]
             }
           }
           return (input, pos, ctx) => {
             const v0 = k0(input, pos, ctx)
             if (v0 === FAIL) return FAIL
-            const cur = nextTerm(k1, input, END, ctx)
+            const cur = nextTerm(k1, input, EC.e, ctx)
             if (cur < 0) return FAIL
-            END = cur
+            EC.e = cur
             return undefined
           }
         }
@@ -1676,12 +1685,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              let cur = nextTerm(k1, input, END, ctx)
+              let cur = nextTerm(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               const v1 = TERMV
               cur = nextTerm(k2, input, cur, ctx)
               if (cur < 0) return FAIL
-              END = cur
+              EC.e = cur
               return fn!([v0, v1, TERMV], { start: pos, end: cur })
             }
           }
@@ -1689,23 +1698,23 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             return (input, pos, ctx) => {
               const v0 = k0(input, pos, ctx)
               if (v0 === FAIL) return FAIL
-              let cur = nextTerm(k1, input, END, ctx)
+              let cur = nextTerm(k1, input, EC.e, ctx)
               if (cur < 0) return FAIL
               const v1 = TERMV
               cur = nextTerm(k2, input, cur, ctx)
               if (cur < 0) return FAIL
-              END = cur
+              EC.e = cur
               return [v0, v1, TERMV]
             }
           }
           return (input, pos, ctx) => {
             const v0 = k0(input, pos, ctx)
             if (v0 === FAIL) return FAIL
-            let cur = nextTerm(k1, input, END, ctx)
+            let cur = nextTerm(k1, input, EC.e, ctx)
             if (cur < 0) return FAIL
             cur = nextTerm(k2, input, cur, ctx)
             if (cur < 0) return FAIL
-            END = cur
+            EC.e = cur
             return undefined
           }
         }
@@ -1715,7 +1724,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const values: unknown[] = []
             const cur = runTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
-            END = cur
+            EC.e = cur
             return fn!(values, { start: pos, end: cur })
           }
         }
@@ -1724,14 +1733,14 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             const values: unknown[] = []
             const cur = runTerms(input, pos, ctx, values)
             if (cur < 0) return FAIL
-            END = cur
+            EC.e = cur
             return values
           }
         }
         return (input, pos, ctx) => {
           const cur = runTerms(input, pos, ctx, undefined)
           if (cur < 0) return FAIL
-          END = cur
+          EC.e = cur
           return undefined
         }
       }
@@ -1941,9 +1950,9 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // The super arm's failure propagates verbatim — its `_fe`/`_fx`, not
           // the union of the arms (choice.ts:126).
           if (v === FAIL) return FAIL
-          const end = END
+          const end = EC.e
           const lit = byWord.get(input.slice(pos, end))
-          if (lit === undefined) { END = end; return v }
+          if (lit === undefined) { EC.e = end; return v }
           // Unwind the regex's leaf so the credited arm's own leaf is the only
           // one. Re-running the arm cannot fail: the word IS its literal.
           if (need) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
@@ -1988,7 +1997,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         return (input, pos, ctx) => {
           const v = child(input, pos, ctx)
           if (v === FAIL) return FAIL
-          const end = END
+          const end = EC.e
           for (let i = 0; i < ns; i++) {
             if (!input.startsWith(strs[i]!, end)) continue
             // A `continue` in the interpreter, not a failure — so no cut survives
@@ -2009,7 +2018,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               return FAIL
             }
           }
-          END = end
+          EC.e = end
           return v
         }
       }
@@ -2101,8 +2110,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                   break
                 }
                 if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
-                sepEnd = END
-                itemStart = hasTrivia ? skipTrivia(input, END, ctx) : END
+                sepEnd = EC.e
+                itemStart = hasTrivia ? skipTrivia(input, EC.e, ctx) : EC.e
               } else if (hasTrivia && (count > 0 || skipBeforeFirst)) {
                 itemStart = skipTrivia(input, itemStart, ctx)
               }
@@ -2138,19 +2147,19 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 if (trailingAllowed && sepEnd >= 0) cur = sepEnd
                 break
               }
-              if (END === itemStart && viaRepItem) {
+              if (EC.e === itemStart && viaRepItem) {
                 if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
                 break
               }
               if (out !== undefined) out.push(v)
-              cur = END
+              cur = EC.e
               count++
             }
             if (count < min) {
               if (reportItem) { ctx._fe = cur; ctx._fx = itemFx }
               return FAIL
             }
-            END = cur
+            EC.e = cur
             return out
           }
         }
@@ -2193,8 +2202,8 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
                 break
               }
               if (!keepSeparators) demoteCapturedToRaw(ctx, leavesBefore)
-              sepEnd = END
-              itemStart = hasTrivia ? skipTrivia(input, END, ctx) : END
+              sepEnd = EC.e
+              itemStart = hasTrivia ? skipTrivia(input, EC.e, ctx) : EC.e
             } else if (hasTrivia && (count > 0 || skipBeforeFirst)) {
               itemStart = skipTrivia(input, itemStart, ctx)
             }
@@ -2211,21 +2220,21 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
               if (trailingAllowed && sepEnd >= 0) cur = sepEnd
               break
             }
-            if (END === itemStart && viaRepItem) {
+            if (EC.e === itemStart && viaRepItem) {
               // Zero-width item: `repItem`'s TERMINATION device, not a semantic
               // filter — and it applies only where `repItem` runs.
               if (needMark) rollbackTriviaAt(ctx, mRaw, mTl, mLv, mFl, mEr, mLog, mRoot)
               break
             }
             if (out !== undefined) out.push(v)
-            cur = END
+            cur = EC.e
             count++
           }
           if (count < min) {
             if (reportItem) { ctx._fe = cur; ctx._fx = itemFx }
             return FAIL
           }
-          END = cur
+          EC.e = cur
           return out
         }
       }
@@ -2257,7 +2266,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const selectorMark = saveTriviaMark(ctx)
           const selVal = selector(input, pos, ctx)
           if (selVal === FAIL) return FAIL
-          const selEnd = END
+          const selEnd = EC.e
           const key = selVal as string
 
           let arm = byKey.get(key)
@@ -2379,7 +2388,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
             ctx._triviaCaptureMask = host._parsemanTriviaKinds(type)
           }
           const v = child(input, pos, ctx)
-          if (v !== FAIL && trailingTrivia && ctx.trivia !== undefined) END = consumeTrivia(input, END, ctx)
+          if (v !== FAIL && trailingTrivia && ctx.trivia !== undefined) EC.e = consumeTrivia(input, EC.e, ctx)
           const fieldMap: FieldMap | undefined = wantFields ? buildFieldMap(ctx._fields) : undefined
           ctx._fields = savedFields
           if (structural) ctx._triviaCaptureMask = savedMask
@@ -2393,7 +2402,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           ctx._cstTriviaLog = sTl
           ctx.captureTrivia = sCap
           if (v === FAIL) return FAIL
-          const end = END
+          const end = EC.e
           const span = tracked ? spanLines(ctx, pos, end) : { start: pos, end }
           const st = readsState && ctx.state !== undefined
             ? Object.assign({}, ctx.state as Record<string, unknown>)
@@ -2436,7 +2445,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           // own sink, not a parent node, and pushing into it published the root
           // node as a leaf of itself.
           if (sBuf !== undefined || sCh !== undefined) pushCstChild(ctx, nd, rawEntry(nd, input, pos, end))
-          END = end
+          EC.e = end
           return nd
         }
       }
@@ -2450,11 +2459,12 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
 
   function subtreeComb(r: SubtreeRef, def?: ParserDef): Combinator<unknown> {
     const piece = pieceAt(r[0])
-    // THE END SLOT BELONGS TO WHICHEVER ENGINE RAN THE PIECE. Reading this
-    // file's `END` after an emitted piece ran would report the end of whatever
-    // the closure engine last did — in a fresh emitted assembly, zero — and a
-    // scan sentinel would silently match an empty span.
-    const endOf = emitted !== undefined ? emitted.end : (): number => END
+    // THE END SLOT IS ONE CELL FOR THE WHOLE ASSEMBLY (`cell.ts`), so this
+    // reads the end of whichever engine ran the piece without asking which.
+    // It used to select `emitted.end` or this file's own slot, which was
+    // correct only because exactly one engine was ever live: an emitted piece
+    // writing its own private slot left this file's at zero, and a scan
+    // sentinel read that as an empty span.
     return {
       _tag: 'tableSubtree',
       _meta: { firstSet: refFirstSet(r[1]), canMatchNewline: true, isTrivia: false },
@@ -2466,7 +2476,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
           const at = fe === undefined || fe < 0 ? pos : fe
           return { ok: false, expected: (ctx._fx ?? EMPTY_FX) as string[], span: { start: at, end: at } }
         }
-        return { ok: true, value: v, span: { start: pos, end: endOf() } }
+        return { ok: true, value: v, span: { start: pos, end: EC.e } }
       },
     }
   }
@@ -2544,7 +2554,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
         throw new Unemittable(`the Function constructor (${String(e)})`)
       }
       emitted = factory(
-        FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
+        EC, FAIL, k, fx, fns, em.masks, em.classes, em.armExpected, trivia,
         trivia.map(tv => tv?._meta.triviaKindLabels), triviaScan,
         scansArr, disp, dsp, EMPTY_FX, EMPTY_CH, EMPTY_TLOG, EMPTY_TL,
         cstCaptureActive, pushCstLeaf, pushCstChild, rollbackTriviaAt, failAt,
@@ -2628,7 +2638,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
     COV = ctx._grammarCoverage ?? NO_COVERAGE
   }
 
-  return { pieces, end: () => END, begin, scanSkip, reached, emitRefusal }
+  return { pieces, end: () => EC.e, begin, scanSkip, reached, emitRefusal }
 }
 
 /**
