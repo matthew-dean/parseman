@@ -60,3 +60,11 @@ lines to 92.96%, statements to 90.82%, and functions to 92.59%. The full suite
 already added net 19,285 test lines over the baseline. This needs an explicit
 release-owner exception or a substantial new test campaign; it is the only
 remaining release decision.
+
+The reported `assemble.ts` aggregate also understates its exercised closure
+fallback: the dedicated module-reloaded fallback matrix runs 328 behavior
+assertions with `PM_TABLE_EMIT=0` and reports 87.22% line coverage for that
+module in isolation. V8's module-reset accounting does not preserve that work
+in the aggregate report. This is not a reason to exclude code or waive the
+gate automatically; it is evidence that adding coverage-padding tests would
+not improve release confidence.
