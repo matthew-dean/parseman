@@ -221,7 +221,8 @@ export const astOnly = rules((g) => ({ Doc: node(regex(/a+/), _c => ({ mine: tru
   it('stamps the cst mode on the emitted grammar value itself', () => {
     const out = transformMacro(SHARED_FACTORY, 'test.ts', new Set(['parseman']))
     expect(out).not.toBeNull()
-    expect(out!.code).toMatch(/fusedHostMode/)
+    expect(out!.code).not.toContain('Object.defineProperty')
+    expect(out!.code).toContain('h:"cst"')
   })
 
   it('classifies a serialized cst piece as cst, not as the ast default', () => {
@@ -257,14 +258,10 @@ export const astG = rules(factory)
 export const composedCst = compose([astG], { hostMode: 'cst' })
 `.trim()
 
-  /** The fused map's own stamp — the last `fusedHostMode` written, on `_map`. */
-  /** The fused map's own stamp — the last `fusedHostMode` value written.
-   *
-   * Matched on the SYMBOL rather than on the variable it is written to: `_map` was
-   * `fusedBody`'s local name, and the table stamps through its own emitter. The symbol
-   * is the contract; the identifier never was. */
+  /** The last table's encoded host mode. `tableRules` turns this DATA into the
+   * map/entry compatibility metadata at construction. */
   const fusedStamp = (code: string): string | undefined =>
-    [...code.matchAll(/Symbol\.for\(['"]parseman\.fusedHostMode['"]\),\s*\{\s*value:\s*['"](\w+)['"]/g)].pop()?.[1]
+    [...code.matchAll(/\bh:\s*["'](\w+)["']/g)].pop()?.[1]
 
   it('stamps the FUSED artifact cst when compose asks for it', () => {
     const out = transformMacro(COMPOSE_CST, 'test.ts', new Set(['parseman']))
@@ -314,7 +311,7 @@ export const g = rules({ 'hostMode': 'cst' }, (g) => ({ Doc: node(regex(/a+/), _
 `.trim()
 
   const fusedStamp = (code: string): string | undefined =>
-    [...code.matchAll(/Symbol\.for\(['"]parseman\.fusedHostMode['"]\),\s*\{\s*value:\s*['"](\w+)['"]/g)].pop()?.[1]
+    [...code.matchAll(/\bh:\s*["'](\w+)["']/g)].pop()?.[1]
 
   it('honours a quoted hostMode on rules() — the shipped silent-wrong-artifact bug', async () => {
     const { mod, warnings } = await build(QUOTED_RULES)

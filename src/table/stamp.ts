@@ -12,9 +12,10 @@
  */
 import type { Combinator, ParseContext, ParseResult } from '../types.ts'
 import { FUSED_HOST_ELIDED, FUSED_HOST_MODE } from '../cst/host-mode.ts'
+import { GRAMMAR_COVERAGE_DEFINITIONS } from '../grammar-metadata.ts'
 import { reachableIps } from './inspect.ts'
 import { OP_NODE, OP_NODE_TRACK, OP_SCOPE } from './ops.ts'
-import { resolveTable, type TableProgram, type TableRule } from './program.ts'
+import { covDefinitions, resolveTable, type TableProgram, type TableRule } from './program.ts'
 
 const EMPTY_FX: string[] = []
 
@@ -77,8 +78,11 @@ export type RuleRunner = {
  * The entries have the SAME signature as codegen rule functions, so `run()`, the
  * linker's public wrappers and every consumer are unchanged.
  */
-export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, TableRule> {
-  const out: Record<string, TableRule> = {}
+export function stampRuleMap(
+  prog: TableProgram,
+  d: RuleRunner,
+  artifactMetadata: Readonly<Record<symbol, unknown>> = {},
+): Record<string, TableRule> {
   // `run()` reads trivia metadata off the ENTRY and takes its
   // `typeof r === 'function'` branch for compiled entries, which codegen stamps
   // with `_meta`. A table entry is a function too, so it must be stamped or
@@ -111,6 +115,25 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
   // Chosen ONCE, from table data, at rule-map construction. Not a per-parse
   // branch on an option: a plain table never has this wrapper at all.
   const lines = prog.lines === 1
+  const mode = prog.hostMode ?? 'ast'
+  const elided = mode === 'ast' && hasDirectBuilder(prog)
+  const coverageDefinitions = prog.cov === undefined
+    ? undefined
+    : Object.freeze(covDefinitions(prog).map(Object.freeze))
+  // Metadata lives on the map's prototype FROM BIRTH. Symbol reads keep their
+  // existing contract, while Object.keys, object spread and Object.assign see
+  // only the map's own rule entries. This is the no-descriptor equivalent of the
+  // old non-enumerable stamps: no post-construction shape transition, WeakMap or
+  // generated wrapper is involved.
+  const metadataPrototype = {
+    ...artifactMetadata,
+    [FUSED_HOST_MODE]: mode,
+    [FUSED_HOST_ELIDED]: elided,
+    ...(coverageDefinitions === undefined
+      ? {}
+      : { [GRAMMAR_COVERAGE_DEFINITIONS]: coverageDefinitions }),
+  }
+  const out = Object.create(metadataPrototype) as Record<string, TableRule>
   const names = Object.keys(prog.rules)
   for (let ri = 0; ri < names.length; ri++) {
     const name = names[ri]!
@@ -162,14 +185,20 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
     const meta = ownTrivia === undefined
       ? baseMeta
       : { ...baseMeta, grammarTrivia: ownTrivia }
-    out[name] = meta === undefined ? entryFn : Object.assign(entryFn, { _meta: meta })
+    // A standalone entry has no registry from which `run()` could recover host
+    // mode, so keep the two ordinary symbol fields on the function itself. Every
+    // entry receives them in the same construction-time order.
+    out[name] = Object.assign(entryFn, {
+      ...(meta === undefined ? {} : { _meta: meta }),
+      [FUSED_HOST_MODE]: mode,
+      [FUSED_HOST_ELIDED]: elided,
+    })
   }
   // STAMP THE HOST MODE. `run()` reads it off the entry through `FUSED_HOST_MODE`
   // and `assertHostModeCompatible` throws when a 'cst' artifact runs without a
   // CST host. Encoding with `hostMode: 'cst'` set the capture flags but nothing
   // stamped the mode, so such a table returned the grammar's own AST objects with
   // `ok: true` while paying full CST capture.
-  const mode = prog.hostMode ?? 'ast'
   // WHAT `FUSED_HOST_ELIDED` MEANS is "a DIRECT BUILDER's positioned-CST branch was
   // dropped" — it is what makes `'ast' artifact + CST host` an error rather than a
   // preference. `mode === 'ast'` alone over-reports it: an all-STRUCTURAL grammar has
@@ -178,13 +207,6 @@ export function stampRuleMap(prog: TableProgram, d: RuleRunner): Record<string, 
   // has no direct builder, so the program answers this itself — and it MUST agree with
   // the macro's emitted stamp, or re-stamping the same map throws
   // "Cannot redefine property".
-  const elided = mode === 'ast' && hasDirectBuilder(prog)
-  for (const name of Object.keys(out)) {
-    Object.defineProperty(out[name]!, FUSED_HOST_MODE, { value: mode, enumerable: false })
-    Object.defineProperty(out[name]!, FUSED_HOST_ELIDED, { value: elided, enumerable: false })
-  }
-  Object.defineProperty(out, FUSED_HOST_MODE, { value: mode, enumerable: false })
-  Object.defineProperty(out, FUSED_HOST_ELIDED, { value: elided, enumerable: false })
   return out
 }
 

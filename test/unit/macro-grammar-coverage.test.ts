@@ -218,7 +218,8 @@ const grammar = rules(g => ({
     const ordinary = transformMacro(source, 'coverage-definitions.ts', new Set(['parseman']))!
     const covered = transformMacro(source, 'coverage-definitions.ts', new Set(['parseman']), false, false, true)!
     expect(ordinary.code).not.toContain('parseman.grammarCoverageDefinitions')
-    expect(covered.code).toContain('parseman.grammarCoverageDefinitions')
+    expect(covered.code).toContain('cv:')
+    expect(covered.code).not.toContain('Object.defineProperty')
     const grammar = evalMacroModule(covered.code, 'grammar') as Record<string, unknown>
     expect(compiledGrammarCoverageDefinitions(grammar)).toEqual([
       { id: 'choice:Entry/arm:0', kind: 'choice-arm' },
@@ -488,18 +489,16 @@ export const astG = rules(factory)
 export const composed = compose([astG])
 `.trim()
 
-  /** Every `grammarCoverageDefinitions` stamp in the emitted text, in order. */
-  const stamps = (code: string): string[] =>
-    [...code.matchAll(/grammarCoverageDefinitions'\), \{ value: Object\.freeze\((\[.*?\])\.map/gs)].map(m => m[1]!)
-
   it('stamps the composed grammar with the SAME definitions as the grammar it composes', () => {
     const out = transformMacro(COMPOSED, 'compose-cov.ts', new Set(['parseman']), false, false, true)
     expect(out).not.toBeNull()
-    const found = stamps(out!.code)
-    expect(found).toHaveLength(2)
-    // Before the fix the second stamp — compose()'s — was `[]`.
-    expect(JSON.parse(found[1]!)).toEqual([{ id: 'rule:Doc', kind: 'rule' }])
-    expect(JSON.parse(found[1]!)).toEqual(JSON.parse(found[0]!))
+    expect(out!.code).not.toContain('Object.defineProperty')
+    const grammars = evalMacroModule<{
+      astG: Record<string, unknown>
+      composed: Record<string, unknown>
+    }>(out!.code, '{ astG, composed }')
+    expect(compiledGrammarCoverageDefinitions(grammars.composed)).toEqual([{ id: 'rule:Doc', kind: 'rule' }])
+    expect(compiledGrammarCoverageDefinitions(grammars.composed)).toEqual(compiledGrammarCoverageDefinitions(grammars.astG))
   })
 
   it('no longer reports the definitions as unavailable', () => {
@@ -509,6 +508,6 @@ export const composed = compose([astG])
 
   it('emits no coverage stamp at all when coverage is off', () => {
     const out = transformMacro(COMPOSED, 'compose-cov.ts', new Set(['parseman']))
-    expect(stamps(out!.code)).toEqual([])
+    expect(out!.code).not.toContain('cv:')
   })
 })

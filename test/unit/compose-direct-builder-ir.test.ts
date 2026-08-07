@@ -213,6 +213,7 @@ export const parser = composeLeaf([syntax, rules(g => ({ Document: node('Documen
       expect(leaf.warnings).toEqual([])
       expect(/\bcomposeLeaf\s*\(/.test(leaf.code)).toBe(false)
       expect(/new Function/.test(leaf.code)).toBe(false)
+      expect(leaf.code).not.toContain('Object.defineProperty')
       expect(leaf.code).not.toContain('composedPieces')
       expect(leaf.code).toContain('leafComposed')
       // `g.Atom` is intentionally absent from the local rules map. The evaluator

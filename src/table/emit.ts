@@ -326,6 +326,8 @@ export type ExpressionEmitOptions = EmitOptions & {
    * splice point, which is what makes the two lowerings interchangeable there.
    */
   readonly entry?: string | null
+  /** Static metadata object passed to `tableRules` as its second argument. */
+  readonly metadataSource?: string
 }
 
 /**
@@ -346,10 +348,11 @@ export function emitTableExpression(prog: TableProgram, opts: ExpressionEmitOpti
   const entry = opts.entry === undefined ? 'grammar' : opts.entry
   const ref = opts.runtimeRef ?? 'tableRules'
   const fns = opts.fnSources ?? prog.fns.map(() => '() => {}')
+  const close = `}${opts.metadataSource === undefined ? '' : `,${opts.metadataSource}`})`
   return [
     `/* @__PURE__ */ ${ref}({`,
     ...programFields(prog, fns, opts),
-    entry === null ? `})` : `})[${jsString(entry)}]`,
+    entry === null ? close : `${close}[${jsString(entry)}]`,
   ].join('\n')
 }
 

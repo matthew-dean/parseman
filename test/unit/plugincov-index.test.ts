@@ -323,7 +323,8 @@ export const g = rules(gr => ({ Doc: parser({ trivia: ws }, many(gr.W)), W: rege
     const plain = transformMacro(SRC, ID, new Set(['parseman']), false, false, false)!
     const covered = transformMacro(SRC, ID, new Set(['parseman']), false, false, true)!
     expect(plain.code).not.toContain('grammarCoverageDefinitions')
-    expect(covered.code).toContain('grammarCoverageDefinitions')
+    expect(covered.code).toContain('cv:')
+    expect(covered.code).not.toContain('Object.defineProperty')
     expect(covered.warnings).toEqual([])
   })
 

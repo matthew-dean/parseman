@@ -98,6 +98,8 @@ export type CompiledRuleMapTable = {
   keys: string[]
   /** The expression that replaces the whole `rules(factory)` call. */
   replacement: string
+  /** Re-emit the same table call with construction-time artifact metadata. */
+  replacementWithMetadata(metadataSource: string): string
   hostMode: HostMode
   hostBranchElided: boolean
   reflection: GrammarReflection
@@ -212,7 +214,7 @@ function withAmbient(
 export function compileRuleMapRunnable(
   ruleMap: ReadonlyArray<readonly [string, Combinator<unknown>]>,
   opts: TableRuleMapOptions = {},
-): Omit<CompiledRuleMapTable, 'replacement'> | null {
+): Omit<CompiledRuleMapTable, 'replacement' | 'replacementWithMetadata'> | null {
   const encoded = encodeForRun(ruleMap, opts)
   if (encoded === null) return null
   const { prog, hostMode, plan } = encoded
@@ -302,15 +304,18 @@ export function compileRuleMap(
     )
   }
 
-  const replacement = emitTableExpression(prog, {
+  const replacementWithMetadata = (metadataSource?: string): string => emitTableExpression(prog, {
     entry: null,
     runtimeRef: opts.runtimeRef ?? 'tableRules',
     fnSources: sources as string[],
+    ...(metadataSource === undefined ? {} : { metadataSource }),
   })
+  const replacement = replacementWithMetadata()
 
   return {
     keys: ruleMap.map(([key]) => key),
     replacement,
+    replacementWithMetadata,
     hostMode,
     // WHAT THE FLAG MEANS is "a DIRECT BUILDER's positioned-CST branch was
     // dropped", which is what the driver's `'ast' artifact + CST host` check keys

@@ -2877,7 +2877,10 @@ export class AssemblyCache {
  * reads an option — `scripts/check-invariants.mjs` INV-6 asserts it. `forCtx`
  * carries the argument for why that read is irreducible rather than merely cheap.
  */
-export function tableRules(source: TableProgram | CompactProgram): Record<string, TableRule> {
+export function tableRules(
+  source: TableProgram | CompactProgram,
+  artifactMetadata: Readonly<Record<symbol, unknown>> = {},
+): Record<string, TableRule> {
   const prog = expandCompact(source)
   const cache = new AssemblyCache(prog)
   const names = Object.keys(prog.rules)
@@ -2917,5 +2920,5 @@ export function tableRules(source: TableProgram | CompactProgram): Record<string
       selected = a
       return a.scanSkip[skipOf?.[ri] ?? -1]
     },
-  })
+  }, artifactMetadata)
 }

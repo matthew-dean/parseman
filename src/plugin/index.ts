@@ -364,6 +364,19 @@ function findCarriedPiecesLiteral(root: AnyNode): { start: number; end: number }
       const obj = (callee?.object as { name?: string } | undefined)?.name
       const prop = (callee?.property as { name?: string } | undefined)?.name
       const args = node.arguments as AnyNode[] | undefined
+      // Table lowering: `tableRules(program, { [Symbol.for('…composedPieces')]:
+      // <literal>, … })`. The metadata object becomes the returned map's
+      // prototype, so the symbol remains readable without becoming an own key.
+      if ((callee as { type?: string; name?: string } | undefined)?.type === 'Identifier'
+        && (callee as { name?: string }).name === 'tableRules'
+        && (args?.[1] as AnyNode | undefined)?.type === 'ObjectExpression') {
+        for (const p of ((args![1] as AnyNode).properties as AnyNode[] | undefined) ?? []) {
+          if ((p as { computed?: boolean }).computed && isComposedPiecesSymbol(p.key as AnyNode) && p.value) {
+            found = { start: (p.value as AnyNode).start, end: (p.value as AnyNode).end }
+            return
+          }
+        }
+      }
       // Also accepted: `Object.assign(_g, { [Symbol.for('…composedPieces')]: <literal> })`
       // (transitional; the current emitter uses the non-enumerable defineProperty form below).
       if (obj === 'Object' && prop === 'assign' && args && (args[1] as AnyNode | undefined)?.type === 'ObjectExpression') {
@@ -929,7 +942,7 @@ function transformMacroImpl(
   const compileRulesFactory = (
     init: Expression,
     label: string,
-  ): { replacement: string | null; refusals?: readonly string[]; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
+  ): { replacement: string | null; replacementWithMetadata?: (metadataSource: string) => string; refusals?: readonly string[]; ruleMap: Map<string, Combinator<unknown>>; hostMode: HostMode; hostBranchElided: boolean; reflection: GrammarReflection; coverageDefinitions?: readonly { id: string; kind: string }[]; trivia?: Combinator<unknown>; scanSkip?: Combinator<unknown>[]; trackLines?: boolean; importedFactory?: string } | null => {
     const evaluated = evaluateRulesFactory(init, label)
     if (!evaluated) return null
     // The reasons, out of the encoder and into the warning. A bare "couldn't be
@@ -942,6 +955,7 @@ function transformMacroImpl(
     if (compiled !== null) usedTableRuntime = true
     return {
       replacement: compiled?.replacement ?? null,
+      ...(compiled === null ? {} : { replacementWithMetadata: compiled.replacementWithMetadata }),
       ...(compiled === null ? { refusals } : {}),
       ruleMap: evaluated.ruleMap,
       hostMode: compiled?.hostMode ?? 'ast',
@@ -1019,6 +1033,28 @@ function transformMacroImpl(
       : `{ ns: ${JSON.stringify(it.ns)}, ir: ${JSON.stringify(it.ir)}${it.trackLines ? ', trackLines: true' : ''} }`
   const serializeList = (list: CarriedItem[]): string => `[${list.map(serializeItem).join(', ')}]`
 
+  type StaticTableMetadata = {
+    carried?: CarriedItem[]
+    reflection?: GrammarReflection
+    leaf?: true
+  }
+  /** Metadata passed into `tableRules` at construction. `stampRuleMap` uses this
+   * object as the returned map's prototype, so these ordinary symbol fields are
+   * readable but never copied by object spread/Object.assign. Coverage comes
+   * directly from the emitted program's `cv` pool and host mode from `h`. */
+  const staticTableMetadataSource = (metadata: StaticTableMetadata): string => {
+    const fields = [
+      ...(metadata.carried === undefined ? [] : [
+        `[Symbol.for('parseman.composedPieces')]: ${serializeList(metadata.carried)}`,
+      ]),
+      ...(metadata.reflection === undefined ? [] : [
+        `[Symbol.for('parseman.grammarReflection')]: ${grammarReflectionSource(metadata.reflection)}`,
+      ]),
+      ...(metadata.leaf === true ? [`[Symbol.for('parseman.leafComposed')]: true`] : []),
+    ]
+    return `{ ${fields.join(', ')} }`
+  }
+
   /**
    * Attach a compiled grammar's linkable pieces onto the value, under
    * `Symbol.for('parseman.composedPieces')` — the same symbol `compose()` reads at
@@ -1032,33 +1068,6 @@ function transformMacroImpl(
    */
   const withCarriedPieces = (grammarExpr: string, list: CarriedItem[]): string =>
     `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.composedPieces'), { value: ${serializeList(list)}, enumerable: false })`
-  const withLeafMarker = (grammarExpr: string): string =>
-    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.leafComposed'), { value: true, enumerable: false })`
-  /**
-   * Stamp a macro-emitted `rules()` map with the host mode it was lowered for, and with
-   * whether any direct builder's positioned-CST branch was dropped.
-   *
-   * `compose()` output gets this from inside `fusedBody`, but a plain `rules()` grammar
-   * is emitted by `compileRuleMap` and had NO stamp at all — which is not cosmetic. The
-   * drivers read exactly these two symbols to refuse an artifact/host mismatch, so an
-   * unstamped map reads as `{ mode: 'ast', elided: false }` and every check passes
-   * vacuously. That is how a direct builder in a CST grammar reached a positioned-CST
-   * host with nothing raised and the node dropped from the tree.
-   *
-   * Stamped on the rule FUNCTIONS as well as the map, because `run(map.Rule, …)` is
-   * handed the rule and never sees the map. Mirrors `fusedBody`.
-   */
-  const withHostMode = (grammarExpr: string, mode: HostMode, elided: boolean): string =>
-    `/* @__PURE__ */ (m => { for (const k of Object.keys(m)) { `
-      // Object.defineProperty defaults enumerable to false; spelling it four times
-      // enlarges every macro artifact without changing the public map shape.
-      + `Object.defineProperty(m[k], Symbol.for('parseman.fusedHostMode'), { value: ${JSON.stringify(mode)} }); `
-      + `Object.defineProperty(m[k], Symbol.for('parseman.fusedHostElided'), { value: ${JSON.stringify(elided)} }) } `
-      + `Object.defineProperty(m, Symbol.for('parseman.fusedHostMode'), { value: ${JSON.stringify(mode)} }); `
-      + `Object.defineProperty(m, Symbol.for('parseman.fusedHostElided'), { value: ${JSON.stringify(elided)} }); `
-      + `return m })(${grammarExpr})`
-  const withGrammarReflection = (grammarExpr: string, reflection: GrammarReflection): string =>
-    `/* @__PURE__ */ Object.defineProperty(${grammarExpr}, Symbol.for('parseman.grammarReflection'), { value: ${grammarReflectionSource(reflection)}, enumerable: false })`
   /** Coverage-only macro output carries the exact IDs emitted in its generated
    * hooks. The metadata is non-enumerable so grammar maps keep their ordinary
    * public shape, and it is absent entirely from production builds. */
@@ -1403,7 +1412,7 @@ function transformMacroImpl(
   /** Compile `compose([...])` to STATIC fused source (eval-free) + its carried
    * (re-lowerable) list (for a sidecar / same-file chaining). null → leave the
    * runtime `compose()` in place (correct, just not build-fused). */
-  const compileComposeCall = (init: Expression): { replacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[]; coverageDefinitions?: readonly { id: string; kind: string }[] } | null => {
+  const compileComposeCall = (init: Expression): { replacement: string; exportedReplacement: string; carried: CarriedItem[]; trivia?: Combinator<unknown>; importedFactories?: string[]; coverageDefinitions?: readonly { id: string; kind: string }[] } | null => {
     const args = (init as unknown as { arguments: Expression[] }).arguments
     const arr = args[0]
     if (!arr || arr.type !== 'ArrayExpression') {
@@ -1459,14 +1468,14 @@ function transformMacroImpl(
       })
       if (compiled !== null) {
         usedTableRuntime = true
+        const reflectionMetadata = staticTableMetadataSource({ reflection: compiled.reflection })
+        const exportedMetadata = staticTableMetadataSource({
+          carried,
+          reflection: compiled.reflection,
+        })
         return {
-          // The host-mode stamp is NOT optional. `fusedBody` bakes it into the fused
-          // closure, so the source lowering carried it for free; a table expression
-          // carries nothing until it is stamped, and an unstamped map reads as
-          // `{ mode: 'ast', elided: false }` — every driver compatibility check then
-          // passes vacuously, which is precisely the silent-mismatch failure the stamp
-          // exists to catch.
-          replacement: withHostMode(compiled.replacement, compiled.hostMode, compiled.hostBranchElided),
+          replacement: compiled.replacementWithMetadata(reflectionMetadata),
+          exportedReplacement: compiled.replacementWithMetadata(exportedMetadata),
           carried,
           ...(composing ? { trivia: composing } : {}),
           ...(importedFactories.length ? { importedFactories } : {}),
@@ -1615,16 +1624,11 @@ function transformMacroImpl(
         )
         if (compiled !== null) {
           usedTableRuntime = true
-          const tableReplacement = withLeafMarker(
-            withHostMode(compiled.replacement, compiled.hostMode, compiled.hostBranchElided),
-          )
           return {
-            replacement: withCoverageDefinitions(
-              tableReplacement,
-              compiled.coverageDefinitions?.length
-                ? compiled.coverageDefinitions
-                : emittedCoverageDefinitions(tableReplacement, `${id} composeLeaf()`),
-            ),
+            replacement: compiled.replacementWithMetadata(staticTableMetadataSource({
+              reflection: compiled.reflection,
+              leaf: true,
+            })),
             ...(importedFactories.length ? { importedFactories } : {}),
           }
         }
@@ -1828,17 +1832,7 @@ function transformMacroImpl(
           // Carry only when the pieces are fully static (no runtime-only callbacks) —
           // otherwise the grammar isn't source-free composable and we ship it as a
           // plain map.
-          let replacement = withCoverageDefinitions(
-            source,
-            compiledRules.coverageDefinitions?.length ? compiledRules.coverageDefinitions : emittedCoverageDefinitions(source, `${id} rules()`),
-          )
-          // Only a genuinely lowered map is stamped. The SHARED-SHAPE fallback above keeps
-          // its `rules(…)` source, and that value is built by the interpreter at runtime —
-          // which stamps itself, and which never elides a branch.
-          if (compiledRules.replacement !== null) {
-            replacement = withHostMode(replacement, compiledRules.hostMode, compiledRules.hostBranchElided)
-            replacement = withGrammarReflection(replacement, compiledRules.reflection)
-          }
+          let carriedMetadata: CarriedItem[] | undefined
           if (exportPrefix && pieces) {
             // Carry the compact IR. Thread the grammar's scanSkip into it so a
             // downstream compose of this imported grammar re-lowers its
@@ -1851,7 +1845,7 @@ function transformMacroImpl(
             // simply is not carried: an absent carried list makes the downstream compose
             // say so, where a frozen one did not.
             const ir = serializeRuleMap([...compiledRules.ruleMap] as never, compiledRules.scanSkip)
-            if (ir) replacement = withCarriedPieces(replacement, [{ ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) }])
+            if (ir) carriedMetadata = [{ ns, ir, ...(compiledRules.trackLines ? { trackLines: true as const } : {}) }]
             // NOT SILENT. An export with no carried IR cannot be composed downstream at
             // all — the consumer's `compose()` will fall back to runtime and say so, but
             // by then the cause is a module away. The source lowering carried fully
@@ -1863,6 +1857,20 @@ function transformMacroImpl(
               + 'composable pieces — a downstream compose() of this grammar will fall back to runtime. '
               + 'Re-run with PARSEMAN_IR_DEBUG=1 to print the combinator that blocked serialization.')
           }
+          const replacement = compiledRules.replacement !== null
+            ? compiledRules.replacementWithMetadata!(staticTableMetadataSource({
+                ...(carriedMetadata === undefined ? {} : { carried: carriedMetadata }),
+                reflection: compiledRules.reflection,
+              }))
+            : (() => {
+                const covered = withCoverageDefinitions(
+                  source,
+                  compiledRules.coverageDefinitions?.length
+                    ? compiledRules.coverageDefinitions
+                    : emittedCoverageDefinitions(source, `${id} rules()`),
+                )
+                return carriedMetadata === undefined ? covered : withCarriedPieces(covered, carriedMetadata)
+              })()
           replacements.push({ start: init.start, end: init.end, replacement })
           if (compiledRules.replacement !== null) {
             markUsedImportedFactories(compiledRules.importedFactory ? [compiledRules.importedFactory] : undefined)
@@ -1883,17 +1891,10 @@ function transformMacroImpl(
           // grammar via `import { <name> }` (re-composition, no source) and re-lower it
           // under ITS composing trivia.
           localComposedCarried.set(varName, fused.carried)
-          const replacement = exportPrefix
-            ? withCarriedPieces(fused.replacement, fused.carried)
-            : fused.replacement
-          // The PLAN, then the scrape — the same order `rules()` and `composeLeaf()`
-          // already use. This call site had only the scrape, and a table has no
-          // `id: "…"` statements to scrape (ids ship as `prog.cov` pairs), so a
-          // macro-composed grammar's coverage denominator was EMPTY. An empty
-          // denominator is no measurement, not full coverage.
-          replacements.push({ start: init.start, end: init.end, replacement: withCoverageDefinitions(replacement, fused.coverageDefinitions?.length
-            ? fused.coverageDefinitions
-            : emittedCoverageDefinitions(replacement, `${id} compose()`)) })
+          const replacement = exportPrefix ? fused.exportedReplacement : fused.replacement
+          // Coverage definitions already ride in the table program's `cv` pool;
+          // `tableRules` exposes that same pool through the metadata prototype.
+          replacements.push({ start: init.start, end: init.end, replacement })
           markUsedImportedFactories(fused.importedFactories)
           continue
         }
