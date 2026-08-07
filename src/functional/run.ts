@@ -1,4 +1,4 @@
-import type { Combinator, ParseContext, ParseError, ParseResult } from '../types.ts'
+import type { Combinator, ParseContext, ParseError, ParseResult, Span } from '../types.ts'
 import { REC } from '../recovery/scan.ts'
 import { createParseContext } from '../parse-context.ts'
 import { buildRootTriviaIndex, type RootTriviaIndex } from '../cst/trivia-entries.ts'
@@ -39,14 +39,23 @@ export type RunOptions = {
   /** Initial grammar state threaded into `ctx.state`. */
   state?: unknown
   /**
-   * The grammar's trivia rule. A root rule consumes trivia BETWEEN terms but not
-   * after the last one, so trailing whitespace/comments would otherwise look like
-   * unparsed input. Given the trivia rule, `run` skips that tail before computing
-   * `unconsumedFrom` — so only real leftover is reported. Also encodes dialect
-   * differences for free: pass the CSS trivia and a trailing `//` counts as
-   * leftover; pass the Less trivia (which treats `//` as a line comment) and it
-   * doesn't. An UNTERMINATED comment (which the trivia rule won't match) surfaces
-   * at its start. Omit to require the parse to reach the exact end itself.
+   * The grammar's trivia rule — an OVERRIDE, no longer a requirement.
+   *
+   * A root rule consumes trivia BETWEEN terms but not after the last one, so
+   * trailing whitespace/comments would otherwise look like unparsed input. `run`
+   * skips that tail before computing `unconsumedFrom` and before reporting
+   * `span`, so only real leftover is reported.
+   *
+   * The trivia used is the ENTRY's own ambient trivia — whatever
+   * `rules({ trivia })` / `parser({ trivia })` declared — resolved automatically
+   * (see `ambientTriviaFromRunnable`). Pass this only to use a DIFFERENT trivia
+   * for the document tail than the grammar parses with; it wins when given.
+   * Passing the grammar's own trivia is now a no-op, and remains supported.
+   *
+   * Either way it encodes dialect differences for free: CSS trivia leaves a
+   * trailing `//` as leftover, Less trivia (which treats `//` as a line comment)
+   * does not. An UNTERMINATED comment (which the trivia rule won't match)
+   * surfaces at its start.
    */
   trivia?: Runnable
   /**
@@ -104,10 +113,10 @@ export type RunResult = {
    */
   rootTrivia?: RootTriviaCapture
   /** Offset where unparsed input begins — the first non-trivia character the parse
-   * left unconsumed (trailing trivia skipped when `trivia` is given), or null if
-   * the whole input was consumed. This is how you detect "the grammar stopped short,
-   * there's junk here". Only meaningful on success — a failed parse reports its own
-   * `span`/`expected`. */
+   * left unconsumed (the document's trailing trivia is always skipped; see
+   * `RunOptions.trivia`), or null if the whole input was consumed. This is how you
+   * detect "the grammar stopped short, there's junk here". Only meaningful on
+   * success — a failed parse reports its own `span`/`expected`. */
   unconsumedFrom: number | null
 }
 
@@ -289,7 +298,58 @@ type RunnableMeta = {
   readonly _meta?: {
     readonly triviaKindLabels?: readonly string[]
     readonly rootTriviaClassified?: true
+    readonly grammarTrivia?: Runnable
   }
+}
+
+/**
+ * THE DOCUMENT ROOT OWNS ITS TRAILING TRIVIA, and it is `run()` that decides
+ * which rule the document root is.
+ *
+ * `node({ trailingTrivia })` says the same thing per NODE, and its failure mode
+ * is a silent success: of jess's four shipping grammars two set it on
+ * `Stylesheet` and two did not, so a comment-only `.jess` document matched
+ * ZERO-WIDTH at the root and reported `ok: true` with `unconsumedFrom: 0` — 0 of
+ * 124 bytes consumed, no error, every gate green. 1626 of 2409 sass-spec inputs
+ * stopped exactly one byte short of the file for the same reason. An option
+ * every grammar author must remember, whose cost of forgetting is a parse that
+ * claims to have succeeded, is not an option.
+ *
+ * WHY THIS CANNOT BE A DEFAULT ON `node()`. A block bounded by a closing
+ * delimiter must NOT swallow the gap after its closer — that gap belongs to the
+ * parent, and handing it to the child mis-attributes trivia in the CST. That is
+ * a different silent defect, not a fix. Only the document root has no parent to
+ * take it.
+ *
+ * WHY IT CANNOT BE STAMPED BY `rules()` / `parser()` EITHER, which is the
+ * question this defect really turns on. A `rules()` map has many rules and ANY
+ * of them can be an entry; `compose()`/`linkable()` pieces bring their own. A
+ * rule is not a root — a rule is a root OF A PARSE. `Stylesheet` is the document
+ * root when you hand it to `run()`, and an ordinary interior rule when some
+ * other rule references it, and BOTH can be true of the same combinator object
+ * in the same process. Nothing at grammar-construction time can distinguish
+ * those two uses, which is exactly why this was made an opt-in in the first
+ * place. `run()` is the one place that knows: it is handed the entry.
+ *
+ * So there is no stamp and no per-rule flag. A referenced rule runs inside its
+ * referencing rule's body, `run()` never sees it, and the enclosing rule keeps
+ * ownership of the gap that follows it — unchanged, in every engine.
+ *
+ * THE THREE PLACES the ambient trivia can live are the same three
+ * `triviaKindLabelsFromRunnable` already reads, for the same reason: `rules({
+ * trivia }, …)` leaves it on `_meta.grammarTrivia`, `parser({ trivia }, …)`
+ * leaves it on `_def.triviaParser`, and a table/compiled entry is a FUNCTION
+ * that carries neither, so its rule map stamps `_meta.grammarTrivia` itself
+ * (`src/table/stamp.ts`). Reading fewer than three is how one engine's entry
+ * silently keeps the old behaviour while the others move.
+ */
+function ambientTriviaFromRunnable(r: Runnable | undefined): Runnable | undefined {
+  if (!r) return undefined
+  if (typeof r === 'function') return (r as RunnableMeta)._meta?.grammarTrivia
+  // A trivia rule handed in as the entry parses trivia; it has no tail of its own.
+  if (r._meta.isTrivia) return undefined
+  return (r._meta as { grammarTrivia?: Combinator<unknown> }).grammarTrivia
+    ?? (r._def.tag === 'grammar' ? r._def.triviaParser : undefined)
 }
 
 function triviaKindLabelsFromRunnable(r: Runnable | undefined): readonly string[] | undefined {
@@ -314,6 +374,32 @@ function makeSelectedRootLabelIndex(labels: readonly string[]): Readonly<Record<
     if (index[labels[i]!] === undefined) index[labels[i]!] = i
   }
   return index
+}
+
+/**
+ * Extend a result span's END over the document's trailing trivia.
+ *
+ * A NEW object, never a mutation: the entry's span may be the very object a node
+ * already published to the tree, and growing that in place would move a node's
+ * span as a side effect of asking the driver a document-level question.
+ *
+ * When the run tracked lines, `endLine`/`endColumn` are re-derived rather than
+ * carried over. Leaving them describing the OLD end while `end` names the new
+ * one reports a position that is off by however much trivia the file ends with —
+ * the same class of quietly-wrong answer this whole change exists to remove. The
+ * scan is over the trailing trivia only, and only when the fields are present,
+ * so a run without line tracking does no work at all.
+ */
+function growSpanEnd(span: Span, input: string, end: number): Span {
+  if (span.endLine === undefined || span.endColumn === undefined) {
+    return { start: span.start, end }
+  }
+  let line = span.endLine
+  let column = span.endColumn
+  for (let i = span.end; i < end; i++) {
+    if (input.charCodeAt(i) === 10) { line++; column = 1 } else { column++ }
+  }
+  return { ...span, end, endLine: line, endColumn: column }
 }
 
 /** Keep the run-entry closure independent from grammar-construction helpers. */
@@ -405,20 +491,29 @@ function runOnce(entry: Runnable, input: string, options: RunOptions): RunResult
   }
   const r = invoke(entry, input, 0, ctx)
 
+  const value = r.ok ? (r as { value: unknown }).value : undefined
+  let span = r.span ?? { start: 0, end: 0 }
+  const expected = r.ok ? [] : ((r as { expected?: string[] }).expected ?? [])
+
   let unconsumedFrom: number | null = null
   if (r.ok) {
-    let pos = r.span?.end ?? 0
-    if (options.trivia && pos < input.length) {
+    let pos = span.end
+    // The root's trailing trivia — see `ambientTriviaFromRunnable`. `options.trivia`
+    // wins because it is an explicit request to measure the tail with a DIFFERENT
+    // trivia than the grammar parses with.
+    const tail = options.trivia ?? ambientTriviaFromRunnable(entry)
+    if (tail !== undefined && pos < input.length) {
       // Throwaway ctx: trailing trivia must NOT pollute the parse's trivia log.
-      const t = invoke(options.trivia, input, pos, createParseContext())
-      if (t.ok && t.span.end > pos) pos = t.span.end
+      // This is a POSITION question, and the root's per-node trivia log is the
+      // separate, node-scoped answer that `node({ trailingTrivia })` gives.
+      const t = invoke(tail, input, pos, createParseContext())
+      if (t.ok && t.span.end > pos) {
+        span = growSpanEnd(span, input, t.span.end)
+        pos = t.span.end
+      }
     }
     unconsumedFrom = pos < input.length ? pos : null
   }
-
-  const value = r.ok ? (r as { value: unknown }).value : undefined
-  const span = r.span ?? { start: 0, end: 0 }
-  const expected = r.ok ? [] : ((r as { expected?: string[] }).expected ?? [])
 
   // `rootTrivia` is ABSENT rather than empty when no requested category was
   // retained, so branch on it — do not index into it. The branch is spelled as
