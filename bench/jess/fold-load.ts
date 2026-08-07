@@ -13,8 +13,8 @@
  * alone here; only the claim is corrected.
  *
  * The table lowering's headline advantage over a source lowering was a far
- * faster cold import (`src/compiler/codegen.ts`, the source lowering, was
- * DELETED in `37c57b5` — nothing lowers to source any more), so a fold that
+ * faster cold import (the source lowering was DELETED in `37c57b5` — nothing
+ * lowers to source any more), so a fold that
  * saved bytes by making load slower would be trading the thing the lowering is
  * for. It does the opposite, and this measures by how
  * much: every variant of a folded table shares the base's resolved char

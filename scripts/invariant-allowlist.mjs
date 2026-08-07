@@ -151,9 +151,9 @@ export const ALLOW = new Map([
    * something started importing the reference engine again.
    *
    * THE NAME COLLISION ITSELF IS GONE. `exec.ts` now exports `execRules`, so the
-   * two engines can no longer be confused by import path, and INV-7 fails any
+   * two engines can no longer be confused by import path, and INV-11 fails any
    * specifier that re-aliases one to the other across src/, test/ and bench/.
-   * This entry stays exactly as it is: INV-7 bans the mechanism, this entry
+   * This entry stays exactly as it is: INV-11 bans the mechanism, this entry
    * records that the reference driver is deliberately unreachable from a
    * published entry, and the two answer different questions. */
   ['INV-3:src/table/exec.ts',

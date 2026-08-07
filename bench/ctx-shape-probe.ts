@@ -10,7 +10,7 @@
  *      the three engines — the combinator graph (`interp`), the shipped
  *      ASSEMBLER `compose()` (`assembled`), and the REFERENCE bytecode
  *      interpreter `execRules()` (`exec`)? There is no source-lowering
- *      "codegen" engine: `src/compiler/codegen.ts` was DELETED in `37c57b5`.
+ *      "codegen" engine: the source lowering was DELETED in `37c57b5`.
  *      Measured with
  *      `%HaveSameMap`, not asserted.
  *   2. Is `ctx` still in fast properties after a parse that clears the trivia

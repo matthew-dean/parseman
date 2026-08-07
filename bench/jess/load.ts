@@ -7,8 +7,7 @@
  * what each one actually binds:
  *   codegen   transformMacro() / `pm-macro:`   the shipped ASSEMBLER. There is
  *                                              no source-lowering engine:
- *                                              `src/compiler/codegen.ts` was
- *                                              DELETED in `37c57b5`.
+ *                                              it was DELETED in `37c57b5`.
  *   table     execRules()                      the REFERENCE bytecode
  *                                              interpreter (NOT what ships)
  * The figures from this harness published in `CHANGELOG.md` were taken under the

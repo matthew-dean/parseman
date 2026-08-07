@@ -3,7 +3,7 @@
  *
  * `trackLines` × `hostMode` is the axis jess's css parser instantiates four
  * times over one set of shared recognition pieces. Under the SOURCE lowering
- * that this repo used to have — `src/compiler/codegen.ts`, DELETED in `37c57b5`
+ * that this repo used to have — DELETED in `37c57b5`
  * — each of those four was a separate emitted copy of every rule. Under the
  * table lowering they are four TABLES over ONE driver.
  *
@@ -74,8 +74,8 @@ function main(): void {
   console.log('')
   console.log(`  FOUR variants total ${total} B of table.`)
   console.log(`  The 16-rule ladder under the SOURCE lowering was 82,273 B for ONE variant`)
-  console.log(`  (bench/table-size.ts, /tmp/pm-table-size/ladder-16/g.codegen.js; that lowering,`)
-  console.log(`  src/compiler/codegen.ts, was DELETED in 37c57b5) — four of them is 4x that,`)
+  console.log(`  (bench/table-size.ts, /tmp/pm-table-size/ladder-16/g.codegen.js; that lowering`)
+  console.log(`  was DELETED in 37c57b5) — four of them is 4x that,`)
   console.log(`  which is exactly the defect notes/size-reduction.md records for jess's css parser.`)
   console.log('')
 

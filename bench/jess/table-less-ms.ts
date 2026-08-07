@@ -10,8 +10,8 @@
  * FOUR legs, all from the SAME grammar module in the SAME process:
  *
  *   assembled  `compose()` — the shipped ASSEMBLER, fused at runtime. There is
- *              no source-lowering "codegen" engine: `src/compiler/codegen.ts`
- *              was DELETED in `37c57b5`.
+ *              no source-lowering "codegen" engine: it was DELETED in
+ *              `37c57b5`.
  *   exec-      `execRules(prog, { leafSwap: false })`  the REFERENCE bytecode
  *              interpreter BEFORE the swap (NOT what ships)
  *   exec       `execRules(prog)`                       the same reference

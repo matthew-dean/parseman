@@ -5,7 +5,7 @@
  * WHICH ENGINES THIS BINDS. `compose()` (`src/compiler/linker.ts`) is the
  * shipped ASSEMBLER; `execRules()` (`src/table/exec.ts`) is the REFERENCE
  * bytecode interpreter, which is NOT what ships. No source-lowering "codegen"
- * engine is involved — `src/compiler/codegen.ts` was DELETED in `37c57b5`.
+ * engine is involved — the source lowering was DELETED in `37c57b5`.
  *
  * A relative slowdown of the reference interpreter against parseman's own
  * assembler only matters if it costs the field. This measures the reference

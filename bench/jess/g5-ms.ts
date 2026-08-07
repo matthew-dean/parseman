@@ -6,7 +6,7 @@
  * `tableRules()` (`src/table/assemble.ts`) are both the shipped ASSEMBLER,
  * reached by two routes; `execRules()` (`src/table/exec.ts`) is the REFERENCE
  * bytecode interpreter and is NOT what ships. No source-lowering "codegen"
- * engine is timed here — `src/compiler/codegen.ts` was DELETED in `37c57b5`.
+ * engine is timed here — the source lowering was DELETED in `37c57b5`.
  *
  * This is `bench/jess/table-less-ms.ts`'s instrument with one leg added, kept as
  * a separate file so that harness's own gate (`table- === table`) is untouched.

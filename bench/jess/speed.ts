@@ -8,7 +8,7 @@
  *   compiled     pm-macro:     the shipped ASSEMBLER — the macro routes
  *                              `compileLinkableTable` to the assembler; there is
  *                              no source-lowering "codegen" engine, because
- *                              `src/compiler/codegen.ts` was DELETED in `37c57b5`
+ *                              it was DELETED in `37c57b5`
  *   interpreted  the combinator graph
  *
  * THE PATH IS THE AST PATH. By owner ruling that is the canonical performance

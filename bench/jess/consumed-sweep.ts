@@ -72,8 +72,8 @@ const PM_ROOT = resolve(HERE, '../..')
  *   assembled    tableRules()   the shipped ASSEMBLER
  *   compiled     PM_MACRO=1         also the shipped ASSEMBLER — the macro
  *                                   routes to it. There is no source-lowering
- *                                   "codegen" engine: `src/compiler/codegen.ts`
- *                                   was DELETED in `37c57b5`.
+ *                                   "codegen" engine: it was DELETED in
+ *                                   `37c57b5`.
  *   interpreted  the combinator graph
  */
 type Engine = 'interpreted' | 'compiled' | 'table' | 'assembled'

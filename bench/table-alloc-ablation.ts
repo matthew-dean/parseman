@@ -8,8 +8,8 @@
  *                                       HEAD. NOT what ships.
  *   `compose()`                         the shipped ASSEMBLER
  *                                       (`src/compiler/linker.ts`).
- * There is no source-lowering "codegen" engine here — `src/compiler/codegen.ts`
- * was DELETED in `37c57b5`.
+ * There is no source-lowering "codegen" engine here — it was DELETED in
+ * `37c57b5`.
  *
  * The CONTROL and ABLATION rows are an INTERNAL ablation of the reference
  * interpreter against itself: `src/table/exec-baseline.ts` is that driver as

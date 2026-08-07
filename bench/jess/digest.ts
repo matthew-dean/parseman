@@ -16,8 +16,7 @@
  *   table        execRules()   the REFERENCE bytecode interpreter (NOT what ships)
  *   compiled     PM_MACRO=1    the shipped ASSEMBLER — the macro routes to it;
  *                              there is no source-lowering "codegen" engine,
- *                              because `src/compiler/codegen.ts` was DELETED in
- *                              `37c57b5`
+ *                              because it was DELETED in `37c57b5`
  *   interpreted  the combinator graph
  *
  * `compiled` REQUIRES `PM_MACRO=1`; without it the grammar module is a

@@ -37,8 +37,7 @@
  * each one actually binds:
  *   codegen   transformMacro() / `pm-macro:`   the shipped ASSEMBLER. There is
  *                                              no source-lowering engine:
- *                                              `src/compiler/codegen.ts` was
- *                                              DELETED in `37c57b5`.
+ *                                              it was DELETED in `37c57b5`.
  *   table     execRules()                      the REFERENCE bytecode
  *                                              interpreter (NOT what ships)
  * The `parse` phase's emitted JSON keys were renamed to match the engines:

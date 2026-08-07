@@ -50,7 +50,7 @@ import { encodeTable } from '../../src/table/encode.ts'
  *                         `src/table/index.ts:40`, `tableRules as tableRules`
  *   exec (reference)      `execRules(encodeTable(...))` — this import
  *
- * Both columns were previously wrong. `src/compiler/codegen.ts` was DELETED in
+ * Both columns were previously wrong. The source lowering was DELETED in
  * `37c57b5`, so the column headed `codegen` has measured the ASSEMBLER, not a
  * source lowering, since that commit. And the column headed `table` bound
  * `tableRules` from `exec.ts` — the same identifier `parseman/table` exports for
@@ -106,7 +106,7 @@ function protocol(m: Measurement, variant: Variant): string[] {
     `              exec (reference) — execRules(encodeTable(...)) over the SAME rules, the`,
     `              bytecode INTERPRETER that nothing ships on; interpreter — the combinator`,
     `              graph itself. NOTE these are TWO TABLE ENGINES plus the graph, not a source`,
-    `              lowering vs a table: src/compiler/codegen.ts was DELETED in 37c57b5 and this`,
+    `              lowering vs a table: the source lowering was DELETED in 37c57b5 and this`,
     `              harness has measured no codegen since. The proof below is a SHAPE check only`,
     `              (assembled must be a FUNCTION, interpreter must NOT be) — it cannot tell the`,
     `              two table engines apart, which is why they are imported by distinct names.`,

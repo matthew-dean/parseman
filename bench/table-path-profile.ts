@@ -11,8 +11,8 @@
  *   table     execRules()   the REFERENCE bytecode interpreter (NOT what ships)
  *   compiled  compose()     the shipped ASSEMBLER
  *   interp    the combinator graph
- * There is no source-lowering "codegen" engine to select — `src/compiler/codegen.ts`
- * was DELETED in `37c57b5`.
+ * There is no source-lowering "codegen" engine to select — it was DELETED in
+ * `37c57b5`.
  *
  * Usage: `node bench/table-path-profile.ts <table|compiled|interp> [reps]`
  */

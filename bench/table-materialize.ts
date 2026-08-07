@@ -4,8 +4,7 @@
  * WHICH ENGINES THIS BINDS. `execRules()` (`src/table/exec.ts`) is the REFERENCE
  * bytecode interpreter and is NOT what ships; `compose()`
  * (`src/compiler/linker.ts`) is the shipped ASSEMBLER. No source-lowering
- * "codegen" engine appears here — `src/compiler/codegen.ts` was DELETED in
- * `37c57b5`.
+ * "codegen" engine appears here — the source lowering was DELETED in `37c57b5`.
  *
  * The question this exists to answer: the reference interpreter is 2.2x-3.3x
  * slower than the assembler, and one live explanation is that `src/table/exec.ts` is an

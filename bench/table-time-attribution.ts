@@ -4,7 +4,7 @@
  * WHICH ENGINES THIS BINDS. `execRules()` (`src/table/exec.ts`) is the REFERENCE
  * bytecode interpreter and is NOT what ships; `compose()`
  * (`src/compiler/linker.ts`) is the shipped ASSEMBLER. No source-lowering
- * "codegen" engine is profiled here — `src/compiler/codegen.ts` was DELETED in
+ * "codegen" engine is profiled here — the source lowering was DELETED in
  * `37c57b5`.
  *
  * Two independent instruments, because a plausible mechanism has been wrong
