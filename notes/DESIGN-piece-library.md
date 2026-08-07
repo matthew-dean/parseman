@@ -155,9 +155,33 @@ non-variable.
 | `wrapper` | one parent literal + ONE shared wrapper literal in front of every child | `pieceWrapper→seqShared` inlines (the slot is monomorphic again) but `leaf→pieceWrapper` **does not** (0 events). The megamorphism moved inward one frame. |
 | `pasted` | child body inlined textually; no call | no child slot exists. Control. |
 
-The `wrapper` row is the answer to "does a monomorphic per-site wrapper recover inlining." It
-**partially** does: it restores the parent body's optimisation and costs one extra frame, but the
-callee is still not inlined. It is the cheap fallback for cold sites, not the answer for hot ones.
+> **SUPERSEDED by `exp/cliff` (275 records, `notes/results/inlining-cliff.jsonl`), which ran this
+> on real-scale bodies with a 3.7% A/A floor. Keep the `shared`/`specialised` rows; the `wrapper`
+> row's design reading was wrong and my D7 fell with it (§2).**
+>
+> - **`shared` vs `specialised` confirmed**, and the closure-count half confirmed at real scale:
+>   40 closures from one `CreateClosure` site, one FeedbackVector verified by address equality in
+>   `%DebugPrint`, **3 considered / 3 inlined at N=1 and at N=40**. Inlining never stops with N.
+>   The clinching control is 40 sites built / 1 exercised: monomorphic *and* fast, so
+>   `kManyClosures` is not itself a cost. It is the **executed** callee count.
+> - **The step is at N=2 and is a single step** — N=2 and N=40 cost the same. Calls do have a
+>   polymorphic state, but it behaves as a binary one-callee/many-callee distinction, not a 4-wide
+>   tier. Cost: choice **+37.6%**, many **+37.8%**, seq **nil** (+3.1%, inside the floor) — seq's
+>   callee arrives via `parsers[i]`, an array element that was never a constant, so it had nothing
+>   to lose. My probe read the sign correctly and could not have seen the magnitudes.
+> - **A third axis I did not have: receiver maps.** A fifth distinct hidden class takes the
+>   `.parse` **LoadProperty** slot poly→megamorphic at N=5 (+17.6% seq / +24.7% choice / +25.1%
+>   many). This is the real `kMaxPolymorphicMapCount = 4`, on property access, and it never fires
+>   when callees share a map at any N. Separate axis from calls; both are live.
+> - **My `wrapper` reading is refuted.** `exp/cliff` predicted a capture-wired wrapper would win by
+>   constant-folding and **falsified its own prediction**: `wrapCAP` and `wrapIND` agree everywhere.
+>   On `seq` and `choice` the wrapper is **pure loss** (+1.3 to +3.6 ns/op, ~149 B/site, inner body
+>   still megamorphic). `exp/wiring` refutes it from a second direction — it has **no denominator**:
+>   27 of 28 json bodies and 296 of 349 less bodies are already distinct, so there is nothing to
+>   dedup and it is ~pure byte cost (+5.8%) with no inlining change either way.
+> - **The one exception, and it is mine to explain:** on `many` the wrapper recovers the entire
+>   megamorphic penalty — **91.09 → 65.61**, below even the `identical`-map baseline of 70.17 — at
+>   725–5,830 bytes. See H-5 in §2 D7.
 
 ### M-5 — the size axis nobody has named: V8's inlining budget is a hard number.
 
@@ -172,16 +196,61 @@ callee is still not inlined. It is the cheap fallback for cold sites, not the an
 ```
 
 `probe/budget.mjs` confirms the shape: a perfectly monomorphic callee inlines at bytecode sizes
-29, 116 and 390 — and 460 is the documented wall.
+29, 116 and 390. **This is the axis that explains both disqualified endpoints and it appears in
+neither previous design.** A piece can be perfectly monomorphic and still not inline because it is
+too big.
 
-**This is the axis that explains both disqualified endpoints and it appears in neither previous
-design.** A piece can be perfectly monomorphic and still not inline because it is too big.
-`lane/emitprofile` reports the largest emitted `_pf` at 17.4 KB (css) / 31.7 KB (less) of source —
-far over 4,600 bytecode bytes. Those bodies are inlining **roots**: they inline nothing into
-anything above them, and they may absorb at most 920 cumulative bytecode bytes of callees inside
-themselves.
+> **`exp/cliff` and `exp/wiring` have now measured this axis properly. One half of what I wrote is
+> confirmed sharply; the other half was my invention and is dead.**
+>
+> - **The 460 B edge is real and bracketed to 27 bytes: 448 B inlines, 475 B does not**, identically
+>   for all three piece kinds, with `consideredForInlining` dropping **3 → 1** past it — so past 460
+>   the callee is not even a candidate. Cost of crossing: seq **+23.3%**, choice **+52.8%**, many
+>   **+34.9%**. `exp/wiring` proves the same thing causally from the other side: every
+>   `Cannot consider (reason: 5)` is exactly the over-460 set (refused 801/801/801/746/647/647), and
+>   raising `--max-inlined-bytecode-size` to 900 produces **zero** refusals with every
+>   previously-refused piece inlining.
+> - **There is NO 460–4,600 dead zone. I invented it and it does not exist.** From 475 B to
+>   **52,188 B** the curve is one flat plateau, across a range crossing 920 and 4,600 several times
+>   over. My error has an exact root cause worth recording: **920 and 4,600 are caller-side budgets
+>   — cumulative and absolute inlining across one compilation — not callee sizes.** I read three
+>   numbers off a flag list and treated them as three thresholds on the same quantity. §9.3 flagged
+>   this as inferred-not-measured, which was right, but flagging it did not stop me building D6 on
+>   it.
 
-It also gives a candidate mechanism for the finding `lane/emitprofile` flagged as unattributed.
+### M-5b — the consequence that reshapes the design: the real population is entirely past the edge
+
+Real emitted `_pf` bodies are **17.4 KB (css)** and **31.7 KB (less)**. Both sit far past 460 B,
+i.e. **entirely inside the not-inlined plateau.** And it is not only the outliers: `exp/wiring`
+measures **17–28% of all real pieces already over the 460 ceiling** — json 6/28, graphql 21/74,
+css 20/103, less 53/319 — **and they are the composites.**
+
+Three things follow, and together they are the largest correction in this document.
+
+1. **At current body sizes, specialising to recover inlining recovers nothing, because there is no
+   inlining to recover.** D2/D5 were built to make a child slot monomorphic so the callee would
+   inline. If the callee is 17 KB, it will not inline whether the slot is monomorphic or not.
+2. **Body size is the primary lever**, ahead of both IC axes. And it points somewhere neither
+   design considered: *getting bodies under 460 B*, rather than choosing between shared and
+   specialised at their current size.
+3. **The tradeoff the whole design was framed around inverts.** I framed reuse and speed as opposed
+   — share to save bytes, specialise to go fast. On the size axis they are *aligned*: reuse that
+   shrinks a body buys inlining. `exp/wiring` demonstrated exactly this rather than arguing it —
+   sharing the piece-free CST snapshot prologue gave **−25.2% bytes on json, identical parse, and
+   MORE inlining than baseline (22 vs 19)**, because shrinking composite bodies moved some back
+   under 460. That is the balance point, measured: **the best byte result and the best inlining
+   result were the same change.**
+
+> **H-1 is superseded.** I proposed the reducer gap was a *cumulative-budget* effect — which rested
+> on the 920 number I had misread, so the mechanism as stated cannot be right. `exp/cliff` prices
+> the candidates: one extra monomorphic call layer is 1.02–1.33×; one callee → two executed callees
+> is 1.03–1.38×; crossing 460 B is 1.23–1.53×. **Worse IC feedback is sufficient on its own; extra
+> calls are not required.** Its prior is the size threshold, and the reasoning is better than mine
+> was: the observed ratio is **stable across reducers**, and a body-size cliff produces exactly that
+> flat, complexity-independent ratio where a call-count difference would vary with reducer
+> complexity. The deterministic test it names — read each reducer's `BytecodeArray` length under
+> both engines, off a **cold twin**, because a tiered-up function prints no bytecode line — is the
+> one to run.
 
 > **Two retractions, both measured by `lane/capoff`, recorded here because this document cited the
 > withdrawn figures.**
@@ -212,8 +281,14 @@ cumulative bytes against everything else in that body. Same source, different in
 
 ### The law, as measured
 
-> **A call site inlines iff exactly one FunctionLiteral reaches it and that callee's bytecode is
-> under 460 bytes. Closure count does not matter. Wiring does not matter. Bound data does not matter.**
+> **A call site inlines iff the callee's bytecode is under ~460 bytes AND exactly one
+> FunctionLiteral is *executed* there AND the receiver carries no more than four distinct hidden
+> classes. Closure count does not matter. Wiring does not matter. Bound data does not matter.**
+
+Three conditions, in that order — size first, because §M-5b shows the real population fails it
+before either IC condition is even reached. The two IC axes are independent: the call axis is
+binary (mono vs many, stepping at the **second executed callee**) and the map axis is the classic
+4-wide one (stepping at the **fifth receiver map**).
 
 Both halves are necessary and neither previous design had both.
 
@@ -221,14 +296,50 @@ Both halves are necessary and neither previous design had both.
 
 ## 2. The decision procedure
 
-Someone holding a new opcode, or a new site, applies this and gets an answer. It is grounded in
-M-1…M-5 and nothing else.
+Someone holding a new opcode, or a new site, applies this and gets an answer.
+
+**This procedure has been reordered by `exp/cliff` and `exp/wiring`.** The original put the IC
+axes first and the size check last, as D6. That was wrong: §M-5b shows 17–28% of real pieces —
+and every composite — already fail the size condition, so for them the IC questions never arise.
+**Size is now D0 and it gates everything after it.**
 
 **Default: share.** A site uses the generic library piece for its `(opcode, arity)` unless a rule
-below fires. Reuse is free — M-1 proves an unbounded number of sites may share one FunctionLiteral
-with no IC penalty, and M-3 proves the linking mechanism is irrelevant, so pick the simplest.
+below fires. Reuse is free on the IC axes — M-1 proves an unbounded number of sites may share one
+FunctionLiteral with no penalty, and M-3 proves the linking mechanism is irrelevant — and on the
+size axis reuse is *actively good*, because a shared piece is a small piece (§M-5b.3).
 
 Then, in order:
+
+**D0 — Is the body under ~448 bytes of bytecode?**
+Measured edge: 448 inlines, 475 does not, and past it the callee is not even considered. This is
+the first question because it is the only one whose answer the others depend on.
+
+- **Under 448 → the body is inlinable into its parent.** Proceed to D1; the IC axes now matter,
+  because there is inlining to win or lose.
+- **Over 460 → the body is a root, and everything from 475 B to 52,188 B is one flat plateau.**
+  The IC axes still cost *within* the body, but no amount of specialisation will make it inline.
+  For a root, the only two useful moves are (a) **split it back under 448**, which is the
+  high-value move and the one `exp/wiring` demonstrated, or (b) accept root status and paste
+  freely, since past the edge additional size is free at runtime and costs only shipped bytes.
+
+**The failure mode to look for is a root that has not earned it** — a body over 460 that still
+makes megamorphic calls out to other pieces. It pays the plateau's non-inlining *and* collects
+none of the fusion that would justify being large. The 17.4 KB `_pf` bodies are exactly this
+shape, and it is the sharpest available account of why the current engine is 2.0–2.6× slower.
+**Unproven:** that this is the dominant term rather than one of several. See H-6.
+
+**D0 supersedes the old D6.** There is no dead zone to avoid (§M-5); there is one edge, and the
+question is which side of it you are on and whether you have earned the far side.
+
+> **H-6 — the unearned root is the dominant term in the 2.0–2.6× gap.** Mechanism: the composite
+> `_pf` bodies sit past 460 B so nothing inlines into or out of them, while still dispatching to
+> other pieces through slots that are polymorphic on callee and megamorphic on receiver map — the
+> plateau's cost with none of the plateau's compensation. **Falsified if** splitting the over-460
+> composites back under 448 (the `exp/wiring` prologue-sharing move, applied to the composites
+> rather than the prologues) fails to move the ratio materially — which would mean the gap is
+> mostly elsewhere and body size is a real but secondary term. This is the cheapest available test
+> of the whole reordered procedure, because `exp/wiring` has already built the splitter; note its
+> splitter currently **throws** on `example/css`, and that throw is a prerequisite, not an obstacle.
 
 **D1 — Does anything vary between sites other than *bound data*?**
 If the only difference is a literal's characters, a char code, a regex, an expected-set index, a
@@ -260,30 +371,58 @@ needs no call into another piece, allocates nothing, and exposes no backtrack po
 > invariant is what makes a paste safe. Builtin calls (`indexOf`, measured 4.3× on
 > `until`/`delimited`) must not be excluded.
 
+**D4b — Does pasting push the body over 448 B?** Pasting is how a small piece becomes a root, and
+`exp/wiring` measures the composites as already the over-460 class. So D4 is bounded by D0: paste
+while the result stays under 448, and stop. **The budget is 448 bytes of bytecode, not a node
+count** — which is the correction to codegen's `INLINE_MAX_NODES = 1000` policy, the policy that
+produced the 17.4 KB bodies. If a paste would cross the edge, either don't, or commit to root
+status and paste until the remaining calls out are cold.
+
 **D5 — Otherwise specialise the parent by that slot's child kind.** One new FunctionLiteral per
 distinct kind at that slot (M-4 `specialised`).
 
-**D6 — Budget check, and this is the one everyone will skip.**
-After pasting, is the resulting body under **460** bytecode bytes? If yes, it inlines into *its*
-parent and you have won twice. If it is between 460 and 4,600 it is in the **dead zone**: too big
-to inline, too small to have absorbed much. **Either shrink it back under 460 or keep pasting until
-the remaining calls out of it are cold.** Do not stop in the dead zone. This is, in one line, why
-the 0.47 table (everything under 27, nothing monomorphic) and 0.46 codegen (huge roots, everything
-already fused) are both coherent and the naive middle is not.
+> **D5 is the weakest step in this procedure and may be net-negative on real grammars.**
+> `exp/wiring` measures 17–28% of real pieces already over 460 — json 6/28, graphql 21/74, css
+> 20/103, less 53/319 — **and they are the composites**, which is exactly the class D5 specialises.
+> Specialising a parent per child kind grows the parent. So D5 spends size budget on the pieces
+> already at the limit: it recovers the *child's* inlining and can lose the *parent's*. Apply D5
+> only after D0 says the parent has room, and prefer D4/splitting over D5 wherever both apply.
 
-**D7 — Cold sites that failed D2 get the `wrapper` shape**, not a specialisation. M-4 shows a
-single shared wrapper literal restores the parent's optimisation for one extra frame and one
-FunctionLiteral total, for the whole library. It is the cheap 80%-solution for the long tail.
+**D6 — REMOVED.** It asserted a 460–4,600 dead zone that does not exist (§M-5). Its live content
+is now D0.
 
-> **For `exp/wiring`, which owns overgeneration and partial sharing.** M-3 says the seven linking
-> strategies should be expected to be *indistinguishable on inlining* when the callee kind is
-> uniform — closure capture, constant index, property and variable index all inlined identically
-> here. If the sweep finds a spread between them anyway, the difference is **not** IC state and the
-> mechanism has to be named before it is designed against; my first guess would be the
-> `max-inlined-bytecode-size` interaction of §M-5, because different wirings change the *parent's*
-> bytecode size, not the child's dispatch. And D7's `wrapper` row is the measured shape of partial
-> sharing: it recovers the parent body and **not** the callee, which is a real half-win and should
-> be priced as one rather than scored pass/fail.
+**D7 — REMOVED. The wrapper is refuted from two independent directions.** `exp/cliff`: pure loss
+on `seq` and `choice` (+1.3 to +3.6 ns/op, inner body still megamorphic), and `wrapCAP` ≈ `wrapIND`
+kills the constant-folding rationale. `exp/wiring`: it has **no denominator** — 27 of 28 json
+bodies and 296 of 349 less bodies are already distinct, so there is nothing to dedup and it is
+~pure byte cost (+5.8%) with no inlining change. I proposed it as "the cheap 80%-solution for the
+long tail"; it is neither cheap nor a solution.
+
+> **H-5 — the one place the wrapper earns its bytes, and the mechanism is mine to explain.**
+> On `many` the wrapper recovers everything: **91.09 → 65.61**, *below* the `identical`-map baseline
+> of 70.17. `many` is the only piece whose dispatch sits inside a hot inner loop. Two candidate
+> mechanisms, and I can name an experiment that separates them:
+>
+> - **(i) Loop-invariant hoisting.** The per-site wrapper has a per-site feedback vector, so the
+>   `.parse` load inside it is monomorphic; the wrapper (145 B, under 448) inlines into `many`'s
+>   loop body, and the now-monomorphic loop-invariant load hoists out of the loop. Recovery is then
+>   proportional to iteration count.
+> - **(ii) Load elimination.** The wrapper is a plain function, so calling it replaces a
+>   *megamorphic LoadProperty* (`.parse` on 5 distinct maps, the +25.1% term) with a *polymorphic
+>   Call*. The load is gone regardless of inlining; the loop merely multiplies the saving until it
+>   exceeds the added frame, which is why `seq`/`choice` — dispatching once per call, not once per
+>   iteration — stay net-negative.
+>
+> **The separating experiment: pad the wrapper past 460 B.** Under (i) recovery must vanish
+> entirely, because an un-inlinable wrapper cannot hoist anything. Under (ii) recovery must
+> largely survive, because the megamorphic load is eliminated whether or not the wrapper inlines.
+> One config on an existing harness. A second, cheaper check that discriminates the same way:
+> **vary `many`'s iteration count** — both mechanisms predict recovery scales with it, so a *flat*
+> result falsifies both and means neither of my explanations is right.
+>
+> This also predicts something testable and currently unmeasured: **`seq` at high arity should
+> begin to recover**, since many terms per call is the same multiplication by another name. If it
+> does not, the loop is doing something neither mechanism captures.
 
 **What never earns a piece.** An option. Options select *which generated body a site links to*;
 they are not a slot-kind and they do not enter D2. Their cost is bytes (§5), which is why §5 treats
@@ -313,11 +452,15 @@ Two tiers, and the split is the design.
 One piece per `(opcode, arity)`. Today's `assemble.ts` already is this: **61 `(input,pos,ctx)=>`
 Piece literals inside `lower()`**, over 40 opcodes, with arity specialisation on `SEQ/SEQV/SEQX`
 (1/2/3/general × fused/wantValues/neither = 18) and length specialisation on `LIT`/`LIT_TRACK`
-(4 each). Plus 4 `TermRunner` literals. Add arity 4 (+3 for SEQ family) and the shared
-`pieceWrapper` of D7: **≈65 authored pieces.**
+(4 each). Plus 4 `TermRunner` literals. Add arity 4 (+3 for SEQ family): **≈64 authored pieces.**
+(Was ≈65 including D7's `pieceWrapper`; D7 is removed, so that piece is not authored.)
 
 Tier S is not deleted and is not a fallback of last resort. It is the correct answer for every
-site that fails D3, which by execution share is most of them.
+site that fails D3, which by execution share is most of them — **and, after §M-5b, it has a second
+justification stronger than the first: Tier S pieces are small, so they are on the inlinable side
+of D0. Tier G's per-site bodies are the ones at risk of becoming unearned roots.** The tier split
+was originally justified on IC grounds and survives on size grounds, which is a better argument
+than the one I built it with.
 
 **Tier G — generated per-site bodies, emitted at macro time.**
 One `_pf<ip>` per site that passes D3. Measured today, when the emitter runs for every site:
@@ -433,16 +576,33 @@ truth.
 | k2 `trackLines` | 19 (51.4%) | 18 | 9,501 |
 | k4 `tolerant` | 11 (29.7%) | 26 | 24,537 |
 
-**A correction to the relayed measurement, offered as a divergence rather than a contradiction.**
-`hostCst` at 11.0% (css) / 0% (json) matches the relayed 10–14%. `tolerant` at 83.3% / 70.3%
-matches the relayed 67–83%. But **`trackLines` measures 66.3% (css) and 48.6% (json) here, against
-a relayed 16–21%.** My fixtures are the toy examples and the relay's were jess's grammars, so both
-can be right; but `trackLines` is the axis the whole "generate once, vary a fifth" story leans on,
-and a 3× disagreement on it must be resolved before it is planned against.
+**`trackLines`: resolved, and my number stands.** I measured 66.3% (css) / 48.6% (json) against a
+relayed 16–21% and flagged it as an open disagreement. `exp/wiring` is now a **third independent
+measurement by a different method: 52–61%**, converging with mine and not with the relay. The
+16–21% is retracted at source. H-3 is closed — not because I was believed, but because two methods
+that share no code agree.
 
-> **H-3 (for `exp/mixture`).** Re-run `probe/bodyshare.mjs`'s method against
-> jess's four grammars. **Falsified if** `trackLines` diverges ≤25% of bodies there, in which case
-> the relay is right and the toys are unrepresentative. Deterministic; no timing.
+### 5.3b — PAIRWISE vs N-WAY invariance: reconciling 89% with 39–48%
+
+`exp/wiring` reports the **option-invariant fraction at 39–48%**, against my 89%, and asked me to
+re-base §5.4 on it. These are two different quantities and both are right. Measured in this lane
+with `notes/probes/piece-library/invariant-fraction.mjs`:
+
+| set of option sets | `example/css` | `example/json` |
+|---|---:|---:|
+| k0↔k1 **pairwise** (`hostCst` only) | **145/163 (89.0%)** | 37/37 (100.0%) |
+| k0,k1,k2,k3 — 4 sets, **n-way** | 55/163 (**33.7%**) | 19/37 (**51.4%**) |
+| k0..k4 — 5 sets, **n-way** | 13/163 (8.0%) | 11/37 (29.7%) |
+
+**My own data reproduces `exp/wiring`'s 39–48% when computed its way** — the 4-set n-way row is
+33.7%/51.4%, which brackets it. The 89% is the *pairwise* k0↔k1 figure, and it is the right one
+**only** because the shipped set is two (CLI k0, language service k0+k1), where n-way and pairwise
+coincide. So §5.4 does not need re-basing as it stands — but it is now explicitly conditional on
+the shipped set staying at two, and that condition is stated below rather than assumed.
+
+The general shape, which is the reusable lesson: **invariance collapses fast with each option set
+added.** 89% → 33.7% → 8.0% on css. Any argument of the form "most bodies are option-invariant, so
+overgeneration is cheap" is only true for a small shipped set and must name the set.
 
 ### 5.4 The estimate
 
@@ -463,9 +623,26 @@ most of this range and `bench/size-baseline.json` needs a deliberate committed r
 sign-off.** Saying so now is cheaper than discovering it mid-unit — the superseded design's
 16–24 KB figure would have stalled exactly there.
 
+**Conditional on the shipped set being two.** Per §5.3b, invariance collapses with each option set
+added: the +15.3% for a second set becomes **+136%** for four (155,076 + 23,715 + 90,451 + 96,553 =
+365,795 B deduped, against 620,304 naive — dedup still saves 41%). If the shipped set grows past
+two, this estimate must be recomputed, not extrapolated.
+
+**Independently corroborated on the overgeneration axis.** `exp/wiring` measures targeted
+overgeneration — restricting it to the bodies an option actually moves — at **+30–55%** against
+naive **+87–97%**, at identical zero runtime cost. My measured single-option deltas bracket that:
+`hostCst` +15.3%, `trackLines` +58.3%. Two methods, same conclusion: **overgeneration is affordable
+when targeted and not otherwise.**
+
+**And the estimate has a downward lever I did not have.** §M-5b.3: `exp/wiring`'s partial-sharing
+result took **−25.2% bytes on json with more inlining, not less** (22 vs 19). Every number in this
+section is a *pre*-sharing figure. Sharing the piece-free prologues moves the whole range down and
+the inlining count up at the same time, which is the one direction this design did not previously
+believe existed.
+
 **What narrows it:** H-2, first and by far. Then whether Tier G emits per-option-set artifacts or
-one artifact carrying deduped variant bodies selected at link (the latter is 15.3% not 100% on the
-measured css pair, and is what §6 assumes).
+one artifact carrying deduped variant bodies selected at link (the latter, per §5.3b, and what §6
+assumes). Then how much of the −25.2% generalises past json.
 
 ---
 
@@ -756,9 +933,14 @@ identity reference. Rule 3 does not admit that justification.
    site monomorphic.* The superseded design read `kManyClosures` as the defect when it is the cure.
 3. **The array indexing is not the problem.** M-3. `REVIEW-child-kind-law.md`'s Test C was
    confounded — it varied kind count and index together. `kids[i]` inlines fine at uniform kind.
-4. **A third axis exists and neither design has it: callee bytecode size.** M-5, with V8's own flag
-   values (460 / 920 / 4,600 / 27 / 61,440). It explains both disqualified endpoints, predicts the
-   dead zone in the middle, and offers a mechanism (H-1) for the unattributed reducer slowdown.
+4. **A third axis exists and neither design has it: callee bytecode size.** Half right, and the
+   half I got wrong was mine alone. The **460 B edge is real** and is now the design's primary
+   lever (§M-5b) — but the **460–4,600 "dead zone" I predicted does not exist**; 475 B to 52,188 B
+   is one flat plateau. Root cause of my error, recorded because it is a reusable trap: **920 and
+   4,600 are caller-side budgets (cumulative and absolute inlining across one compilation), not
+   callee sizes.** I read three numbers off a flag list and treated them as three thresholds on one
+   quantity. A fourth axis I did not have at all: **receiver-map count**, poly→mega at the fifth
+   map, +17–25%.
 5. **`_probe` is already a `RunCfg` bit** at `c8eb725` (`assemble.ts:262–279`, `cfgKey` `:282`).
    The superseded design proposes adding it. The tree moved.
 6. **`cfgKey` is five bits / 32 assemblies**, not three/eight — `assemble.ts:282` and the 32-slot
@@ -768,10 +950,10 @@ identity reference. Rule 3 does not admit that justification.
 7. **The size gate measures the per-grammar artifact only** (`bench/size-guard.ts:454`, `:465`).
    Tier S is not counted by it. Comparing a shipped library against 224,100 B is comparing
    different things.
-8. **`trackLines` divergence is 66.3% / 48.6% on these fixtures, not 16–21%** (§5.3). Now the
-   primary figure — the relayed 16–21% has no stated provenance and two sibling figures from the
-   same source were subsequently retracted (§1, M-5). Still only one lane and two toy fixtures:
-   see §9.4.
+8. **`trackLines` divergence is 66.3% / 48.6%, not 16–21%** (§5.3). **Settled.** `exp/wiring`'s
+   independent third measurement is 52–61%, converging with mine; the 16–21% is retracted at
+   source. This is the one place a number of mine survived a challenge, and it survived because a
+   different method reproduced it, not because the challenge was withdrawn.
 9. **`rawChildren` is dead work with an unused oracle already in the tree** (§7.3). Verified in this
    lane: `buildReadsRaw`/`buildReadsChildren` (`build-arity.ts:309`, `:301`) are called from nowhere
    in `src/`, `encode.ts:1014–1019` has no raw bit, and `assemble.ts:2426`'s
@@ -816,29 +998,32 @@ Every byte number in §5.4 is a function of it, and my basis is one census on on
 conversation is larger than §5.4 implies. `exp/mixture`'s Pareto curve measures this directly and
 should be read before anything is built.
 
-**9.2 — I measured the cliff on synthetic pieces, not on real ones.** My `seq2` is 51 bytecode
-bytes; a real `OP_SEQ` piece with mark/rollback and trivia is far larger. M-5 says size interacts
-with inlining, so it is possible that on real pieces the D2 win is smaller than M-4 suggests
-because the parent was never going to inline the child anyway. `exp/cliff` running the same sweep
-on actual sequence/dispatch/repetition bodies is the check, and it is the reason that lane exists.
-**I would not schedule Tier G work before that result lands.**
+**9.2 — RESOLVED, and the worry was the right one.** I flagged that my `seq2` was 51 bytecode bytes
+against real pieces that are far larger, and that on real pieces the D2 win might be smaller because
+"the parent was never going to inline the child anyway." That is exactly what `exp/cliff` and
+`exp/wiring` found: **17–28% of real pieces, and every composite, are already past 460 B**, so for
+them there is no inlining to win. The instinct was right and I still built D5 on the assumption it
+was not. That is the pattern to watch in the rest of this document — §9 correctly named two of my
+three biggest errors before they were measured, and naming them did not stop me designing on them.
 
-**9.3 — The dead zone (D6) is inferred from flag values, not observed.** I measured that 390
-bytecode bytes inlines and read that 460 is the wall. I did **not** measure a body at 500 and show
-it does not, nor demonstrate that the 460–4,600 band is actually worse than either side on a real
-grammar. It is the most confident-sounding claim in this document and the least directly tested.
-One `probe/budget.mjs` ladder extended past 460 settles the first half; only `exp/mixture` settles
-the second.
+**9.3 — REFUTED, and I flagged it as inferred-not-measured before it was.** The dead zone does not
+exist. What I wrote here — "the most confident-sounding claim in this document and the least
+directly tested" — was accurate, and the ladder I proposed (`probe/budget.mjs` extended past 460)
+is precisely the run that killed it. Kept in place rather than deleted, because the useful artifact
+is the record that a self-flagged weak claim still made it into the procedure as D6.
 
-**9.4 — §5.3's `trackLines` divergence: mine is now the primary number, and that is a downgrade in
-confidence, not an upgrade.** I originally flagged 66.3%/48.6% against a relayed 16–21% as a
-disagreement to be resolved. Two of the three figures relayed from that source have since failed to
-reproduce (§1, M-5), so the relayed 16–21% is the suspect one and my measurement stands until
-someone reproduces 16–21% **with stated provenance**. But note what that leaves: a load-bearing
-number resting on **one lane, one method, two toy fixtures**, with no independent confirmation. The
-per-body sha1 method is reproducible from `notes/probes/piece-library/bodyshare.mjs` and takes
-seconds; H-3 (run it against jess's four grammars) is now more valuable than before, not less,
-because it is the only remaining check on it.
+**9.4 — CLOSED.** `trackLines` at 66.3%/48.6% is corroborated by `exp/wiring`'s independent
+52–61% by a different method. I had recorded the interim state as a *downgrade* in confidence — one
+lane, one method, two toy fixtures, with the only opposing number withdrawn rather than reproduced.
+That was the correct reading at the time and the resolution came from a third measurement, not from
+the objection being dropped.
+
+**9.4b — The separate reconciliation, and the one I nearly got wrong.** `exp/wiring` reported the
+option-invariant fraction at 39–48% against my 89% and asked me to re-base §5.4. Recomputing my own
+committed data n-way rather than pairwise gives 33.7%/51.4% over four option sets — which brackets
+their number. Both were right; they measure different quantities (§5.3b). The trap worth recording:
+the fastest response would have been to retract 89%, and that would have thrown away a correct
+measurement. **Reconcile before retracting.**
 
 **9.5 — I did not measure the reducer finding, only offer a mechanism for it (H-1).** "Identical
 source, 1.30–1.32× slower" is the sharpest unexplained fact in the tree and my budget explanation
