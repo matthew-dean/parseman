@@ -14,7 +14,7 @@ Run the local CI preflight and report its result before creating or pushing a
 code PR:
 
 ```sh
-pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
+pnpm typecheck && pnpm lint && pnpm check:invariants && pnpm check:differentials && pnpm test:coverage && pnpm coverage:guard && pnpm test && pnpm build && npm pack --dry-run && pnpm docs:verify
 ```
 
 `check:invariants` decides five source-level rules that no type or test can
@@ -36,6 +36,46 @@ the code is right), `BY-DESIGN` (permanent and argued), or `DEBT` (must be
 fixed, and must name a `ref` that owns the fix) — and a stale entry still fails
 the gate. Outstanding `DEBT` is printed on every run, green ones included. See
 `docs/design/invariant-gate.md`.
+
+## A differential that has never been shown to fail is not evidence
+
+Do not report a number from a sweep, oracle, identity check or A/B until you have
+made that instrument go RED on purpose. A vacuous harness does not look broken —
+it prints a clean, plausible, self-consistent number in exactly the shape you
+expected. Six defects shipped through a fully green 3300-test suite in one day
+this way. The modes, each with the instance that shipped:
+
+- **Both legs the same engine.** `bench/jess/fixture.ts` builds every leg at
+  HEAD, so a "table vs codegen" run through it was table-vs-table: 1.09×,
+  reported as release quality.
+- **A leg that throws identically on every row.** A `cst` table refuses to run
+  without a build host, so a hostless `cst` leg was 87/87 identical `threw:`
+  rows — and two dead legs agree perfectly. Three harnesses had this.
+- **A success predicate that means "did not throw".** `!row.startsWith('threw:')`
+  printed `parse ok: true` for a parse that read 218 bytes of 287,543 and ranked
+  it a 200× speedup.
+- **An option that selects a different artifact.** `tolerant` decides WHICH TABLE
+  is built, so `run(entry, input)` with no options never realises the tolerant
+  assembly; a before/after of a recovery change was guaranteed to show zero.
+- **A result dominated by an artifact of the harness** — leg count changing V8
+  inlining, leg order, output paths, a dirty working tree.
+- **An import that reaches past the shipped export.** A sweep imported
+  `tableRules` from `exec.ts` while the shipped name is `assembledRules`, and
+  gated a driver nothing ships.
+
+Two standing obligations:
+
+- **Every harness prints what engine each leg ran and the resolved `realpath` of
+  its source, before any number.** Three harnesses labelled a table as `codegen`
+  this cycle.
+- **`consumed` is `unconsumedFrom ?? bytes`** — a FAILED parse records the full
+  byte count. Never read it without `ok`. That misreading has already happened.
+
+`pnpm check:differentials` plants a real defect in `src/` and requires each
+registered differential to catch it (`--list` for the registry and each entry's
+contract, `--strict` for a release). Adding a differential means adding its
+plant. Full standard, including how to register one and what the gate
+deliberately does not check: `docs/design/differential-gates.md`.
 
 If your change touches `src/codegen.ts`, dispatch, or anything else on the parse
 hot path, also check it against the comparison-chart bar — **"still the fastest
