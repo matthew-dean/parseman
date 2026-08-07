@@ -99,8 +99,8 @@ export function checkIdentity(
   const ref = referenceRules(prog)[entryRule]
   if (ref === undefined) throw new Error(`reference table has no rule '${entryRule}'`)
 
-  // The shipped compiled path, fused at runtime (same codegen, `new Function`
-  // instead of a build-time splice).
+  // The public composed path, lowered to the same canonical closure table
+  // artifact as macro output.
   const compiledMap = opts.interpreterOnly
     ? undefined
     : compose([ruleMap as never]) as unknown as Record<string, RunnableLike>

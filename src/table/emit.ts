@@ -129,12 +129,11 @@ export function defaultAssemblyCfgs(prog: TableProgram): RunCfg[] {
  * Print the assemblies a build pre-compiled, as the `a:` field of the program
  * literal — see `TableProgram.asm`.
  *
- * THE FACTORY IS A REAL FUNCTION LITERAL. That is the whole point: `assemble.ts`
- * used to build the identical text at RUN TIME and hand it to `new Function`,
- * which a Content-Security-Policy without `unsafe-eval` forbids — so the two
- * shipped statements that a macro build is the CSP answer were false. Emitting
- * it here is not a new engine; it is the SAME emitter, called at the only time
- * the answer is actually a constant.
+ * THE FACTORY IS A REAL FUNCTION LITERAL. This is a low-level experiment, not
+ * a normal compiler route: normal `compile()` and macro output both serialize
+ * `a:[]` and use the compact closure assembler. If a future specialization can
+ * meet semantic identity and the size budget, it must preserve that one public
+ * artifact contract rather than recreate the old runtime/macro split.
  *
  * A refusal is not an error. `Unemittable` names a construct the emitter does
  * not lower; that option set simply gets no entry, and `assemble.ts` runs the
@@ -144,10 +143,10 @@ function emitAssemblies(prog: TableProgram, cfgs: readonly RunCfg[]): string[] {
   /**
    * `a:[]` IS NOT `a` ABSENT, and the difference is the whole property.
    *
-   * The field's PRESENCE is the artifact saying "a build produced me". That is
-   * what switches the runtime `Function` constructor off (`assemble.ts`), and it
-   * costs four bytes. Its CONTENTS are the assemblies the build chose to
-   * pre-compile; with none, the artifact runs the closure engine — no eval, no
+   * The field's PRESENCE is the compiler artifact contract. That is what switches
+   * the runtime `Function` constructor off (`assemble.ts`), and it costs four
+   * bytes. Its CONTENTS are optional experimental factories; with none, the
+   * artifact runs the closure engine — no eval, no
    * size growth, and the refusal readable on `Assembly.emitRefusal`.
    *
    * Pre-compiling is therefore a SPEED option, not a correctness one, and it is
