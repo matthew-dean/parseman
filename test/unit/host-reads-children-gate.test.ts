@@ -116,6 +116,59 @@ describe('_parsemanReadsChildren opt-out — structural children-array elision',
     }
   })
 
+  it('restores an assembled table host after re-entry without a trivia predicate', () => {
+    // The predicate-bearing re-entry case above selects distinct assemblies for
+    // the two hosts. Ordinary structural hosts share one assembly, which is the
+    // path that used to leave its HOST slot pointed at the nested parser's host.
+    const nestedGrammar = rules(g => ({
+      Child: node('Child', sequence(literal('a'), literal('b'))),
+      Doc: node('Doc', sequence(g.Child, g.Child)),
+    }))
+    const prog = encodeTable(nestedGrammar)
+    const entries = [
+      ['emitted assembly', tableRules(prog).Doc!],
+      // An empty assembly inventory forbids the Function constructor and proves
+      // the linked-closure path restores its own scalar frame too.
+      ['closure assembly', tableRules({ ...prog, asm: [] }).Doc!],
+    ] as const
+
+    for (const [engine, entry] of entries) {
+      for (const nestedExit of ['return', 'throw'] as const) {
+        let nested = false
+        const calls: string[] = []
+        const inner: BuildHost = (type, children, _fields, span, rawChildren) => {
+          calls.push(`inner:${type}`)
+          if (nestedExit === 'throw') throw new Error('nested host failure')
+          return { owner: 'inner', type, children, span, rawChildren }
+        }
+        const outer: BuildHost = (type, children, _fields, span, rawChildren) => {
+          calls.push(`outer:${type}`)
+          if (type === 'Child' && !nested) {
+            nested = true
+            if (nestedExit === 'throw') {
+              expect(() => run(entry as never, 'abab', { build: inner })).toThrow('nested host failure')
+            } else {
+              expect(run(entry as never, 'abab', { build: inner }).ok, engine).toBe(true)
+            }
+          }
+          return { owner: 'outer', type, children, span, rawChildren }
+        }
+
+        const result = run(entry as never, 'abab', { build: outer })
+        expect(result.ok, `${engine}: ${nestedExit}`).toBe(true)
+        expect(calls.filter(c => c.startsWith('outer:')), `${engine}: ${nestedExit}`).toEqual([
+          'outer:Child', 'outer:Child', 'outer:Doc',
+        ])
+        expect(calls.filter(c => c.startsWith('inner:')), `${engine}: ${nestedExit}`).toEqual(
+          nestedExit === 'throw'
+            ? ['inner:Child']
+            : ['inner:Child', 'inner:Child', 'inner:Doc'],
+        )
+        if (result.ok) expect((result.value as { owner: string }).owner, `${engine}: ${nestedExit}`).toBe('outer')
+      }
+    }
+  })
+
   it('produces byte-identical output to the non-opted-out host', () => {
     const base = parse(fromRaw(false))
     const opt = parse(fromRaw(true))

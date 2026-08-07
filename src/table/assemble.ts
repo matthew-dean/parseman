@@ -324,6 +324,8 @@ export type Assembly = {
    * clearing the installed scanner and latching the host value.
    */
   readonly begin: (ctx: ParseContext) => void
+  /** Close an invocation and restore a suspended re-entrant frame, if any. */
+  readonly finish: () => void
   readonly scanSkip: readonly (readonly Combinator<unknown>[])[]
   /**
    * The sites this option set actually REACHED. A strict subset of the table's
@@ -603,6 +605,20 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * finds one on the context that selected it.
    */
   let COV: (id: string) => void = NO_COVERAGE
+
+  /**
+   * Assembly-local slots are scalar on the ordinary path. User host/reducer
+   * code can synchronously invoke this same table map, though, so suspend them
+   * only for that cold nested case rather than letting the inner parse poison
+   * its caller's scanner, host, coverage sink, or end cell.
+   */
+  const frames: Array<{
+    scan: FastTriviaScanner | null
+    host: ParseContext['build']
+    coverage: (id: string) => void
+    end: number
+  }> = []
+  let depth = 0
 
   /**
    * A NON-FIRST sequence term: skip the installed trivia, run the child, and
@@ -2723,6 +2739,7 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
       pieces: em.pieces as Record<string, Piece>,
       end: em.end,
       begin: em.begin,
+      finish: em.finish,
       scanSkip,
       reached: emitReached!,
       emitRefusal: undefined,
@@ -2743,12 +2760,29 @@ export function assemble(t: ResolvedTable, prog: TableProgram, cfg: RunCfg): Ass
    * host itself — and it is read here, once, instead of per node.
    */
   function begin(ctx: ParseContext): void {
+    // Read user-owned values before touching the active frame. A getter that
+    // throws must not leave an outer parse suspended.
+    const nextHost = ctx.build
+    const nextCoverage = ctx._grammarCoverage ?? NO_COVERAGE
+    if (depth > 0) frames.push({ scan: SCAN, host: HOST, coverage: COV, end: EC.e })
+    depth++
     SCAN = null
-    HOST = ctx.build
-    COV = ctx._grammarCoverage ?? NO_COVERAGE
+    HOST = nextHost
+    COV = nextCoverage
   }
 
-  return { pieces, end: () => EC.e, begin, scanSkip, reached, emitRefusal }
+  function finish(): void {
+    if (depth <= 0) throw new Error('parseman table assembly frame underflow')
+    depth--
+    if (depth === 0) return
+    const prior = frames.pop()!
+    SCAN = prior.scan
+    HOST = prior.host
+    COV = prior.coverage
+    EC.e = prior.end
+  }
+
+  return { pieces, end: () => EC.e, begin, finish, scanSkip, reached, emitRefusal }
 }
 
 /**
@@ -2916,10 +2950,16 @@ export function tableRules(
       const a = selected ?? cache.forCtx(ctx)
       selected = undefined
       a.begin(ctx)
-      const v = a.pieces[names[ri]!]!(input, pos, ctx)
-      if (v === FAIL) return -1
-      last = v
-      return a.end()
+      try {
+        const v = a.pieces[names[ri]!]!(input, pos, ctx)
+        if (v === FAIL) return -1
+        last = v
+        return a.end()
+      } finally {
+        // A host callback or direct reducer can run this same map before its
+        // outer entry returns. Restore the assembly frame on every exit.
+        a.finish()
+      }
     },
     lastValue: () => last,
     scanSkipFor: (ri, ctx) => {

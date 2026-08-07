@@ -70,6 +70,7 @@ export type EmittedAssembly = {
   readonly byIp: Record<number, EmittedPiece | undefined>
   readonly end: () => number
   readonly begin: (ctx: ParseContext) => void
+  readonly finish: () => void
 }
 /** The `new Function` result. Its parameters are `EMITTED_PARAMS`, in order. */
 export type EmittedFactory = (...args: readonly unknown[]) => EmittedAssembly
@@ -124,6 +125,8 @@ export const EMITTED_PARAMS = [
 const RUNTIME_PRELUDE = `
 let _pfScan=null
 let _pfHost
+let _pfDepth=0
+const _pfFrames=[]
 function _skipTrivia(input,cur,ctx){
 const s=_pfScan
 if(s!==null&&ctx._triviaLog===undefined&&!(ctx.captureTrivia===true&&(ctx._cstBuf!==undefined||ctx._cstTriviaLog!==undefined)))return s(input,cur)
@@ -1732,12 +1735,28 @@ return nd
 ${prelude.join('\n')}
 ${skipDefs.join('\n')}
 ${bodies.join('\n')}
-function _begin(ctx){_pfScan=null;_pfHost=ctx.build}
+function _begin(ctx){
+const host=ctx.build
+if(_pfDepth>0)_pfFrames.push([_pfScan,_pfHost,EC.e])
+_pfDepth++
+_pfScan=null
+_pfHost=host
+}
+function _finish(){
+if(_pfDepth<=0)throw new Error('parseman emitted table assembly frame underflow')
+_pfDepth--
+if(_pfDepth===0)return
+const prior=_pfFrames.pop()
+_pfScan=prior[0]
+_pfHost=prior[1]
+EC.e=prior[2]
+}
 return{
 pieces:{${ruleEntries.join(',')}},
 byIp:{${extra.join(',')}},
 end:function(){return EC.e},
-begin:_begin
+begin:_begin,
+finish:_finish
 }`
 
   return {
